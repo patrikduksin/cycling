@@ -29,6 +29,11 @@ against this device: their defaults can replace the bootloader or stock slot.
 
 Device tasks hold an exclusive local lock so monitoring cannot race a flash command.
 
+After reset, the helper opens USB with DTR/RTS released and captures three seconds
+of boot output in `.local/device/`. On the tested C606, stock stayed dark until this
+port-open step. A completed reset command alone does not confirm startup; check
+the screen. The underlying reset-line behavior is not yet established.
+
 The helper is specific to this board layout. It is not a universal recovery tool.
 An interrupted operation may leave the ESP in download mode; reconnect and inspect
 its private logs, then use the stock task with the verified backup.

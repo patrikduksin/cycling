@@ -130,6 +130,11 @@ class Device:
 
     def reboot(self):
         self.run("get-security-info", after="hard-reset")
+        # On this C606, stock only became visible after opening USB with both
+        # control lines released. Keep the port open briefly and save boot output.
+        path = LOCAL / f"{time.time_ns()}-boot.log"
+        with path.open("wb") as output:
+            monitor(self.port, 3, output=output)
 
     def backup(self, metadata, identity):
         require((max(records(metadata))[0] - 1) % 2 == 0, "Boot stock slot A before making the baseline backup")
@@ -144,7 +149,7 @@ class Device:
                     "stock_length": len(stock), "bootloader_region_sha256": sha(backup[:0x8000])}
         (LOCAL / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         self.reboot()
-        print("Full backup verified; stock rebooted. Backup stays in ignored .local/device/.")
+        print("Full backup verified; stock reset and USB capture complete. Confirm the screen.")
 
     def baseline(self, identity, metadata):
         require((LOCAL / "manifest.json").exists(), "Run mise run backup before flashing")
@@ -178,21 +183,22 @@ class Device:
         actual, _ = self.read(0x8000, 0x8000, "after.bin")
         require(actual == expected, "Boot selection readback does not match the planned change")
         self.reboot()
-        print(f"Slot {'A (stock)' if slot == 0 else 'B (cycling)'} selected; device rebooted.")
+        print(f"Slot {'A (stock)' if slot == 0 else 'B (cycling)'} selected; reset and USB capture complete. Confirm the screen.")
 
 
-def monitor(port, seconds):
+def monitor(port, seconds, output=None):
     import serial
     connection = serial.Serial()
     connection.port, connection.baudrate, connection.timeout = port, 115200, 0.2
     connection.dtr = connection.rts = False
     connection.open()
+    output = sys.stdout.buffer if output is None else output
     deadline = time.monotonic() + seconds
     with connection:
         while time.monotonic() < deadline:
             data = connection.read(4096)
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
+            output.write(data)
+            output.flush()
 
 
 def main():

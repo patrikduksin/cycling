@@ -1,5 +1,6 @@
 /target/
 /.local/
+/packages/stock/magene-c606/.local/
 .env
 .env.*
 !.env.example

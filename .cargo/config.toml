@@ -1,0 +1,5 @@
+[target.xtensa-esp32s3-none-elf]
+rustflags = ["-C", "link-arg=-Tlinkall.x", "-C", "force-frame-pointers=yes"]
+
+[unstable]
+build-std = ["core"]

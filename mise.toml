@@ -1,0 +1,47 @@
+[tools]
+rust = "1.98.1"
+python = "3.14.7"
+uv = "0.12.10"
+"github:esp-rs/espup" = "0.17.1"
+"github:esp-rs/espflash" = "4.5.0"
+
+[tasks.setup]
+description = "Install the pinned Xtensa Rust toolchain"
+run = "mkdir -p .local && espup install --targets esp32s3 --toolchain-version 1.97.0.0 --name cycling-esp --export-file .local/export-esp.sh"
+
+[tasks.build]
+description = "Build C606 firmware and its application image"
+run = "bash scripts/build.sh"
+
+[tasks.test]
+description = "Test the renderer on this computer"
+run = ["cargo test --workspace --locked", "python -m unittest discover -s scripts -p test_device.py"]
+
+[tasks.fmt]
+description = "Format Rust code"
+run = "cargo fmt --all"
+
+[tasks.check]
+description = "Check formatting and lint host code"
+run = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --locked -- -D warnings"]
+
+[tasks.preview]
+description = "Render a frame without a device"
+run = "mkdir -p .local && cargo run --locked --example preview -- .local/coin.ppm 8"
+
+[tasks.backup]
+description = "Read and verify a private full-flash backup from stock"
+run = "uv run scripts/device.py backup"
+
+[tasks.flash]
+description = "Verify stock, flash cycling to slot B, and boot it"
+depends = ["build"]
+run = "uv run scripts/device.py flash"
+
+[tasks.stock]
+description = "Verify and boot preserved stock firmware"
+run = "uv run scripts/device.py stock"
+
+[tasks.monitor]
+description = "Read USB logs without resetting the device"
+run = "uv run scripts/device.py monitor"

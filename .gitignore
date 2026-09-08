@@ -1,0 +1,14 @@
+/target/
+/.local/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.bin
+*.elf
+*.map
+*.mitm
+*.log
+*.pem
+*.key

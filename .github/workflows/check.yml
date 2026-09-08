@@ -1,0 +1,17 @@
+name: check
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: jdx/mise-action@v4.3.0
+      - run: mise run test
+      - run: mise run check
+      - run: mise run setup
+      - run: mise run build

@@ -1,0 +1,28 @@
+[package]
+name = "cycling-os"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+c606 = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf"]
+
+[dependencies]
+libm = "0.2.16"
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"], optional = true }
+esp-backtrace = { version = "0.20.0", features = ["esp32s3", "panic-handler", "println"], optional = true }
+esp-println = { version = "0.18.0", default-features = false, features = ["esp32s3", "jtag-serial", "critical-section"], optional = true }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3"], optional = true }
+
+[[bin]]
+name = "cycling-os"
+path = "src/main.rs"
+required-features = ["c606"]
+
+[[example]]
+name = "preview"
+path = "examples/preview.rs"

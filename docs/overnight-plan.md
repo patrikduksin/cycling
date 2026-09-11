@@ -45,9 +45,14 @@ The GPS issue contains the user-authorized public reference coordinates.
   quad PSRAM; smoke and 60-second soak passed. Dedicated external allocator keeps
   normal allocations internal. Astra approved after mode/evidence corrections.
   Earlier transient heap and USB reply issues are tracked under #12.
-- Starting #2. Storage preflight is in ignored .local/overnight/storage-preflight.md.
-  Investigate SD/MMC first; safe settings fallback may reserve owned ota_1 tail.
-  Device currently runs harness-enabled PSRAM firmware.
+- #2 complete: PR #22 merged as c7ff2e4. Two-sector settings journal at
+  0xe98000..0xe9a000, protected by a reduced flasher image limit. Host torn-write
+  tests passed; marker persisted through a second safe application reflash.
+  Astra approved. Bulk SD/MMC probing remains #21, with recovered pin map in
+  packages/stock/magene-c606/storage.md. Resolve bulk storage before real ride
+  recording if the small settings journal is insufficient.
+- Starting #3 UI foundation. Preflights for UI and networking are saved in
+  ignored .local/overnight/. Device runs harness-enabled PSRAM/storage firmware.
 
 Update this section after each issue with branch/PR, verification, review outcome,
 and the next task. Keep raw evidence in .local/ and link written results in PRs.

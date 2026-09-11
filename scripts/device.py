@@ -56,7 +56,7 @@ def image_length(data):
 
 
 def validate_candidate(data):
-    require(image_length(data) == len(data), "Image has bytes outside its signed extent")
+    require(image_length(data) == len(data), "Image has bytes outside its validated image extent")
     require(len(data) <= APP_SIZE, "Image overlaps the reserved slot-B settings journal")
 
 

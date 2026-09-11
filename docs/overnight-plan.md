@@ -102,14 +102,26 @@ Starting baseline main e7df373, enabled device Home, four rides/slot22.
   prior5632-byte four-ride prefix exactly. Keep actual readings/peer IDs private.
   Current observed prefs50/30/20/-180 supersede earlier50/30/10/60; preserve them.
   No PERSIST was issued to make that change; compare each test's current baseline.
-- Starting #21 native read-only SD/MMC probe. Sol owns source/Git/device after
-  handoff. Follow .local/overnight/sdmmc-followup-preflight.md, keep pinned HAL,
-  default1bit400kHz, explicit read-only commands and bounded IDMAC lifetime.
-  No vendor filesystem writes, format, repartitioning or unknown power GPIOs.
-  Then #44 explicit reclaim after verified export. Reclaim preflight is
-  .local/overnight/ride-reclaim-followup-preflight.md; now five known agent rides,
-  including real-HRS test ride5 whose raw data remains private. Re-export current
-  contents and identify any new records before a destructive test.
+- #21 complete: PR #49 merged, a2e5892. An opt-in native one-bit 400 kHz
+  probe identified MMC product field004GA1, capacity3,959,422,976 bytes and
+  512-byte sectors. Three bounded reads succeeded on each of two reset boots;
+  repeated sector zero matched, as did private descriptors/hashes across boots.
+  CLK13/CMD14/D016 are verified. D1-D3 remain candidates and no write ownership
+  is granted. Settings and rides keep their existing internal reservations.
+  Stock image verification/slot selection passed; stock UI/filesystem startup
+  was not observed. Normal no-probe HRS/harness firmware was restored, Home/Ready,
+  five rides/slot30. Latest observed prefs100/30/20/-180 supersede brightness50;
+  no settings write was issued by this task. Preserve the current baseline.
+  Astra approved in two rounds;78Rust/15vendor/42Python/check and probe/default/
+  disabled builds passed. Also ignored nested vendor build artifacts.
+- Starting #44 visible ride capacity and explicit reclaim after verified export.
+  Sol owns source/Git/device after handoff. Read the updated private preflight
+  .local/overnight/ride-reclaim-followup-preflight.md. Five known agent test rides
+  include real-HRS ride5, slots22..29; its18 readings and all raw exports stay
+  private. Re-export current contents and identify later records before clear.
+  Do not erase unknown user data or the vendor MMC. Favor a small explicit
+  clear-all within the existing1MiB ride reservation, with honest interrupted
+  clear semantics, verified completion and an explicit retry path.
 
 ## Progress
 

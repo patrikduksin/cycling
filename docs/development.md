@@ -80,6 +80,45 @@ raised the run's maximum to 45 ms, so it is evidence of harness cost rather than
 normal rendering bound. A lease-expiry test also canceled a held menu item and
 restored screen, focus, brightness and counters without activation.
 
+### Input policy
+
+A menu tap must start and end on the same enabled item and stay within 18 physical
+pixels of its initial point on both axes. Moving outside that slop cancels the tap
+for the rest of the gesture. Visible menu hit regions include their horizontal and
+vertical bounds; moving into a target after starting outside does not acquire it.
+Controls keep a separate drag rule: the brightness slider captures only gestures
+that start within physical y 231–294, clamps x to 24–216, and keeps the drag until
+release or cancellation.
+
+A real or injected release completes the gesture owned by that source. Touch
+timeout, I2C failure, source transition, lease expiry and explicit `CANCEL` abandon
+it. If a button changes the screen while a finger is held, all pointer reports are
+ignored until release, including across repeated button presses. This prevents the
+same finger from becoming a new gesture on the destination screen.
+
+Only companion code 1 is assigned an action because it is the physically verified
+short click. On the menu, bottom-left and bottom-right move focus and top-left
+selects an enabled item. In Controls, top-left returns to the menu and the bottom
+buttons adjust brightness. Other codes remain logged and counted for investigation
+but do not change application state. Tap, drag, cancellation and cross-screen
+suppression are verified through injection; no new physical hold, repeat or release
+semantics are claimed.
+
+The input scenario passed on the C606 with 44 debug commands. It covered two
+button navigations while a touch remained held, ignored another report from that
+finger, resumed after release, completed and canceled slider drags, rejected a
+19-pixel menu movement, exercised the visible hit boundary and left the screen
+unchanged for injected code 2. Companion frames advanced from 32 to 164 without
+new CRC or UART errors, and sampled minimum heap was 115,988 bytes. The harness
+build was 559,632 bytes and ordinary sampled frame work was 19–20 ms; a capture
+raised the maximum to 44 ms. The prior navigation scenario also passed unchanged.
+
+One first attempt at that regression did not parse its `BEGIN` reply because a
+periodic frame log and debug reply interleaved on USB. The firmware continued
+rendering until the test lease expired, and the immediate rerun passed. This is a
+test-harness transport limitation already tracked with broader regression work,
+not evidence of an input-state failure.
+
 The stock ESP-IDF bootloader loads the Rust application; no ESP-IDF application
 runtime is linked. A compatible application descriptor is supplied by
 `esp-bootloader-esp-idf`.

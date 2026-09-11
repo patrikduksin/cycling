@@ -136,8 +136,9 @@ class Device:
                     raise RuntimeError('Test session did not release injected state')
                 if self.final['brightness'] != self.baseline['brightness']:
                     raise RuntimeError('Test session did not restore brightness')
-                if (self.final['screen'], self.final['focus'], self.final['pressed']) != \
-                        (self.baseline['screen'], self.baseline['focus'], -1):
+                if (self.final['screen'], self.final['focus'], self.final['pressed'],
+                        self.final['input_blocked']) != \
+                        (self.baseline['screen'], self.baseline['focus'], -1, False):
                     raise RuntimeError('Test session did not restore navigation')
         except Exception as e:
             cleanup_error = str(e)

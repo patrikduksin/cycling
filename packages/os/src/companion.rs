@@ -189,6 +189,16 @@ mod tests {
         assert_eq!(crc16(b"123456789"), 0x31c3);
     }
     #[test]
+    fn unknown_button_codes_remain_counted_for_investigation() {
+        let mut status = Status::default();
+        status.update(Event::Button {
+            button: Button::TopLeft,
+            code: 2,
+        });
+        assert_eq!(status.button_counts, [1, 0, 0]);
+        assert_eq!(status.last_button, Some(Button::TopLeft));
+    }
+    #[test]
     fn fragmented_battery_and_button_reports() {
         let f = packet(0, [0x52, 0xff, 0xff, 0xff, 0xa0, 0x0f, 73, 0xff]);
         let mut d = Decoder::default();

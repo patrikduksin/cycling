@@ -6,6 +6,7 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::{FlashStorage, FlashStorageError};
 
 pub const BASE: u32 = 0x00e9_8000;
+pub const RIDE_BASE: u32 = 0x00d9_8000;
 pub struct Loaded {
     pub settings: Settings,
     pub source: Source,
@@ -15,6 +16,74 @@ pub struct Loaded {
 
 struct Backend<'d> {
     flash: FlashStorage<'d>,
+}
+
+impl Backend<'_> {
+    fn ride_address(offset: usize, length: usize) -> Option<u32> {
+        offset
+            .checked_add(length)
+            .filter(|end| *end <= cycling_os::ride_log::REGION_SIZE)
+            .and_then(|_| u32::try_from(offset).ok())
+            .and_then(|offset| RIDE_BASE.checked_add(offset))
+    }
+
+    fn ride_read_sector(
+        &mut self,
+        sector: usize,
+        output: &mut cycling_os::ride_log::Sector,
+    ) -> Result<(), FlashStorageError> {
+        let offset = sector
+            .checked_mul(cycling_os::ride_log::SECTOR_SIZE)
+            .and_then(|offset| Self::ride_address(offset, output.0.len()))
+            .ok_or(FlashStorageError::OutOfBounds)?;
+        self.flash.read(offset, &mut output.0)
+    }
+
+    fn ride_read_slot(
+        &mut self,
+        slot: usize,
+        output: &mut cycling_os::ride_log::Slot,
+    ) -> Result<(), FlashStorageError> {
+        let offset = slot
+            .checked_mul(cycling_os::ride_log::SLOT_SIZE)
+            .and_then(|offset| Self::ride_address(offset, output.0.len()))
+            .ok_or(FlashStorageError::OutOfBounds)?;
+        self.flash.read(offset, &mut output.0)
+    }
+
+    fn ride_erase_sector(&mut self, sector: usize) -> Result<(), FlashStorageError> {
+        let from = sector
+            .checked_mul(cycling_os::ride_log::SECTOR_SIZE)
+            .and_then(|offset| Self::ride_address(offset, cycling_os::ride_log::SECTOR_SIZE))
+            .ok_or(FlashStorageError::OutOfBounds)?;
+        self.flash
+            .erase(from, from + cycling_os::ride_log::SECTOR_SIZE as u32)
+    }
+
+    fn ride_write_slot(
+        &mut self,
+        slot: usize,
+        data: &cycling_os::ride_log::Slot,
+    ) -> Result<(), FlashStorageError> {
+        let offset = slot
+            .checked_mul(cycling_os::ride_log::SLOT_SIZE)
+            .and_then(|offset| Self::ride_address(offset, data.0.len()))
+            .ok_or(FlashStorageError::OutOfBounds)?;
+        self.flash.write(offset, &data.0)
+    }
+
+    fn ride_commit_slot(
+        &mut self,
+        slot: usize,
+        commit: &cycling_os::ride_log::Commit,
+    ) -> Result<(), FlashStorageError> {
+        let relative = slot
+            .checked_mul(cycling_os::ride_log::SLOT_SIZE)
+            .and_then(|offset| offset.checked_add(cycling_os::ride_log::SLOT_SIZE - 4))
+            .and_then(|offset| Self::ride_address(offset, commit.0.len()))
+            .ok_or(FlashStorageError::OutOfBounds)?;
+        self.flash.write(relative, &commit.0)
+    }
 }
 
 impl storage::Flash for Backend<'_> {
@@ -87,5 +156,41 @@ impl Store {
                 _ => Err(error),
             },
         }
+    }
+
+    pub fn ride_read_sector(
+        &mut self,
+        sector: usize,
+        output: &mut cycling_os::ride_log::Sector,
+    ) -> Result<(), FlashStorageError> {
+        self.journal.flash_mut().ride_read_sector(sector, output)
+    }
+
+    pub fn ride_read_slot(
+        &mut self,
+        slot: usize,
+        output: &mut cycling_os::ride_log::Slot,
+    ) -> Result<(), FlashStorageError> {
+        self.journal.flash_mut().ride_read_slot(slot, output)
+    }
+
+    pub fn ride_erase_sector(&mut self, sector: usize) -> Result<(), FlashStorageError> {
+        self.journal.flash_mut().ride_erase_sector(sector)
+    }
+
+    pub fn ride_write_slot(
+        &mut self,
+        slot: usize,
+        data: &cycling_os::ride_log::Slot,
+    ) -> Result<(), FlashStorageError> {
+        self.journal.flash_mut().ride_write_slot(slot, data)
+    }
+
+    pub fn ride_commit_slot(
+        &mut self,
+        slot: usize,
+        commit: &cycling_os::ride_log::Commit,
+    ) -> Result<(), FlashStorageError> {
+        self.journal.flash_mut().ride_commit_slot(slot, commit)
     }
 }

@@ -2,11 +2,33 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from debug import Device, Recording
+from debug import Device, Recording, finish_created_ride
 from screenshot import checksum
 
 
 class RecordingTests(unittest.TestCase):
+    def test_created_ride_cleanup_is_bounded_by_current_phase(self):
+        class Fake:
+            def __init__(self, phase):
+                self.phase = phase
+                self.commands = []
+
+            def command(self, command, timeout=0):
+                self.commands.append((command, timeout))
+                if command == 'RIDE PAUSE':
+                    self.phase = 'paused'
+                elif command == 'RIDE FINISH':
+                    self.phase = 'saved'
+                return {'ride_recording': self.phase}
+
+        running = Fake('recording')
+        finish_created_ride(running)
+        self.assertEqual([command for command, _ in running.commands],
+                         ['STATE', 'RIDE PAUSE', 'RIDE FINISH'])
+        saved = Fake('saved')
+        finish_created_ride(saved)
+        self.assertEqual([command for command, _ in saved.commands], ['STATE'])
+
     def key(self, decoder, color=0):
         pixels = [color] * 8480
         decoder.feed(f'CYCLING_REC BEGIN 10 0 1 100 1 {checksum(pixels):08x}'.encode())

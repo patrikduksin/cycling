@@ -15,6 +15,7 @@ pub mod network_time;
 pub mod preferences;
 pub mod redraw;
 pub mod ride;
+pub mod ride_log;
 pub mod screenshot;
 pub mod storage;
 pub mod ui;

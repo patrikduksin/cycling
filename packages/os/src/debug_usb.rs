@@ -30,6 +30,10 @@ pub struct Debug {
     runtime: Option<(Settings, Idle)>,
     reboot: Option<Reboot>,
     reboot_ready: Option<Reboot>,
+    ride: Option<(
+        u32,
+        Option<(cycling_os::ride::Action, cycling_os::ride_log::Source)>,
+    )>,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +62,7 @@ impl Debug {
             runtime: None,
             reboot: None,
             reboot_ready: None,
+            ride: None,
         }
     }
     pub fn recording(&self) -> bool {
@@ -74,6 +79,17 @@ impl Debug {
     }
     pub fn take_reboot(&mut self) -> Option<Reboot> {
         self.reboot_ready.take()
+    }
+    pub fn take_ride(
+        &mut self,
+    ) -> Option<(
+        u32,
+        Option<(cycling_os::ride::Action, cycling_os::ride_log::Source)>,
+    )> {
+        self.ride.take()
+    }
+    pub fn ride_result(&mut self, id: u32, ok: bool) {
+        self.pending = Some((id, if ok { "OK" } else { "RIDE_FAILED" }));
     }
     fn stop(&mut self) {
         if self.recording() {
@@ -148,7 +164,14 @@ impl Debug {
         if !self.active
             && !matches!(
                 action,
-                Action::Begin | Action::State | Action::End | Action::Persist(_)
+                Action::Begin
+                    | Action::State
+                    | Action::End
+                    | Action::Persist(_)
+                    | Action::Ride(..)
+                    | Action::RideInit
+                    | Action::Panic
+                    | Action::Restart
             )
         {
             self.pending = Some((id, "NO_SESSION"));
@@ -234,6 +257,16 @@ impl Debug {
                 self.pending = Some((id, "ARMED"));
                 return;
             }
+            Action::Ride(action, source) => {
+                self.end(app, status, settings, idle);
+                self.ride = Some((id, Some((action, source))));
+                return;
+            }
+            Action::RideInit => {
+                self.end(app, status, settings, idle);
+                self.ride = Some((id, None));
+                return;
+            }
             Action::Record(_, _) | Action::Capture => {
                 if screenshot_busy || self.recording() {
                     result = "BUSY";
@@ -272,6 +305,16 @@ impl Debug {
                 crate::wifi::online(),
             );
             let ride = app.ride.metrics(now);
+            let (ride_speed, ride_distance, ride_elapsed) =
+                if metrics.ride_source == Some(cycling_os::ride_log::Source::Live) {
+                    (-1, -1, metrics.recording_active_ms as i64)
+                } else {
+                    (
+                        i64::from(ride.speed_mm_s),
+                        ride.distance_mm.min(i64::MAX as u64) as i64,
+                        ride.active_ms.min(i64::MAX as u64) as i64,
+                    )
+                };
             let (percent, mv) = status
                 .battery
                 .map(|(p, m)| (i32::from(p), i32::from(m)))
@@ -281,7 +324,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"ride_recording\":\"{}\",\"ride_source\":\"{}\",\"recording_active_ms\":{},\"recorded_samples\":{},\"recording_dropped\":{},\"recorded_rides\":{},\"recording_slot\":{},\"recording_write_ms\":{},\"recording_erase_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -303,11 +346,23 @@ impl Debug {
                 clock.millis,
                 clock.age_ms.unwrap_or(0),
                 app.ride.phase().name(),
-                ride.speed_mm_s,
-                ride.distance_mm,
-                ride.active_ms,
+                ride_speed,
+                ride_distance,
+                ride_elapsed,
                 app.ride_page,
                 app.ride_layout,
+                metrics.ride_recording.name(),
+                metrics
+                    .ride_source
+                    .map(|source| source.name())
+                    .unwrap_or("none"),
+                metrics.recording_active_ms,
+                metrics.recorded_samples,
+                metrics.recording_dropped,
+                metrics.recorded_rides,
+                metrics.recording_slot,
+                metrics.recording_write_ms,
+                metrics.recording_erase_ms,
                 x,
                 y,
                 status.button_counts[0],

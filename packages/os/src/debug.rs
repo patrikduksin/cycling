@@ -1,5 +1,7 @@
 //! Bounded, versioned USB test commands and row compression.
-use crate::{companion::Button, input::Point};
+use crate::{
+    companion::Button, input::Point, ride::Action as RideAction, ride_log::Source as RideSource,
+};
 
 #[derive(Default)]
 pub struct PointerInjection {
@@ -45,6 +47,8 @@ pub enum Action {
     Idle(u16, u8),
     Panic,
     Restart,
+    Ride(RideAction, RideSource),
+    RideInit,
 }
 
 pub fn parse(line: &str) -> Option<(u32, Action)> {
@@ -89,6 +93,21 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
         }
         "PANIC" => Action::Panic,
         "RESTART" => Action::Restart,
+        "RIDE" => match words.next()? {
+            "START" => Action::Ride(
+                RideAction::Start,
+                match words.next() {
+                    None | Some("DEMO") => RideSource::Demo,
+                    Some("LIVE") => RideSource::Live,
+                    _ => return None,
+                },
+            ),
+            "PAUSE" => Action::Ride(RideAction::Pause, RideSource::Demo),
+            "RESUME" => Action::Ride(RideAction::Resume, RideSource::Demo),
+            "FINISH" => Action::Ride(RideAction::Finish, RideSource::Demo),
+            "INIT" => Action::RideInit,
+            _ => return None,
+        },
         "TOUCH" => {
             let (x, y) = (number()?, number()?);
             if x >= 240 || y >= 320 {
@@ -227,6 +246,15 @@ mod tests {
         );
         assert_eq!(parse("DBG 17 PANIC"), Some((17, Action::Panic)));
         assert_eq!(parse("DBG 18 RESTART"), Some((18, Action::Restart)));
+        assert_eq!(
+            parse("DBG 19 RIDE START"),
+            Some((19, Action::Ride(RideAction::Start, RideSource::Demo)))
+        );
+        assert_eq!(
+            parse("DBG 21 RIDE START LIVE"),
+            Some((21, Action::Ride(RideAction::Start, RideSource::Live)))
+        );
+        assert_eq!(parse("DBG 20 RIDE INIT"), Some((20, Action::RideInit)));
     }
     #[test]
     fn overflow_discards_entire_line_then_recovers() {

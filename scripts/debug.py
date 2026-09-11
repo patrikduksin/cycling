@@ -691,6 +691,128 @@ def crash_test(port, directory):
     (directory / 'crash-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
 
 
+def finish_created_ride(device):
+    """Best-effort bounded cleanup only after this test acknowledged START."""
+    state = device.command('STATE', timeout=3)
+    if state['ride_recording'] == 'recording':
+        state = device.command('RIDE PAUSE', timeout=8)
+    if state['ride_recording'] == 'paused':
+        device.command('RIDE FINISH', timeout=8)
+
+
+def ride_recording_test(port, directory):
+    """Exercise explicit initialization, durable demo recovery, and a live ride."""
+    def home(device):
+        wake_if_dimmed(device)
+        state = device.command('STATE')
+        for _ in range(3):
+            if state['screen'] == 'home':
+                return state
+            state = device.command('BUTTON 0 1')
+        raise AssertionError(f'cannot return home from {state["screen"]}')
+
+    first = Device(port, directory / 'before-restart')
+    demo_created = False
+    try:
+        first.__enter__()
+        state = first.command('STATE')
+        if state['ride_recording'] == 'scanning':
+            deadline = time.monotonic() + 20
+            while state['ride_recording'] == 'scanning' and time.monotonic() < deadline:
+                first.wait(.25)
+                state = first.command('STATE')
+        if state['ride_recording'] == 'needs_init':
+            state = first.command('RIDE INIT', timeout=60)
+            first.command('BEGIN')
+        if state['ride_recording'] not in ('ready', 'saved', 'recovered'):
+            raise AssertionError(f'ride storage unavailable: {state["ride_recording"]}')
+
+        # An ordinary injected UI ride is restored and never consumes a flash slot.
+        baseline_slot = state['recording_slot']
+        home(first)
+        first.tap(80, 260)
+        temporary = first.command('BUTTON 2 1')
+        assert temporary['ride_phase'] == 'running'
+        assert temporary['recording_slot'] == baseline_slot
+        restored = first.command('END')
+        assert restored['ride_phase'] == 'ready' and restored['recording_slot'] == baseline_slot
+
+        started = first.command('RIDE START DEMO', timeout=15)
+        demo_created = True
+        assert started['ride_source'] == 'demo' and started['ride_recording'] == 'recording'
+        first.wait(4.4)
+        paused = first.command('RIDE PAUSE', timeout=15)
+        assert paused['ride_recording'] == 'paused' and paused['recording_active_ms'] >= 4000
+        first.command('RIDE RESUME', timeout=15)
+        first.wait(2.2)
+        before = first.command('STATE')
+        armed = first.command('RESTART', expected='ARMED')
+        assert not armed['active']
+        first.active = False
+    except BaseException:
+        if demo_created:
+            try:
+                finish_created_ride(first)
+            except BaseException as cleanup_error:
+                (directory / 'RECOVERY_REQUIRED.txt').write_text(
+                    f'Test-created demo ride may remain open: {cleanup_error}\n'
+                    'Restart the device so boot recovery can finalize it.\n')
+        raise
+    finally:
+        first.close()
+
+    drain_expected_reboot(port, directory / 'restart-boot.log')
+    with Device(port, directory / 'after-restart') as device:
+        live_created = False
+        deadline = time.monotonic() + 20
+        recovered = device.command('STATE')
+        while (recovered['ride_recording'] == 'scanning'
+               or recovered['recorded_rides'] <= before['recorded_rides']):
+            if time.monotonic() >= deadline:
+                raise TimeoutError('interrupted ride was not finalized after scan')
+            device.wait(.25)
+            recovered = device.command('STATE')
+        assert recovered['ride_recording'] == 'recovered'
+        assert recovered['recording_slot'] > before['recording_slot']
+
+        try:
+            live = device.command('RIDE START LIVE', timeout=15)
+            live_created = True
+            assert live['ride_source'] == 'live' and live['ride_speed_mm_s'] == -1
+            assert live['ride_distance_mm'] == -1
+            device.command('BEGIN')
+            home(device)
+            device.tap(80, 260)
+            device.expect({'screen': 'ride', 'ride_source': 'live'})
+            device.wait(4.2)
+            device.capture()
+            device.command('END')
+            paused_live = device.command('RIDE PAUSE', timeout=15)
+            assert paused_live['recording_active_ms'] >= 4000
+            finished = device.command('RIDE FINISH', timeout=15)
+            live_created = False
+            assert finished['ride_recording'] == 'saved'
+            assert finished['recorded_rides'] == recovered['recorded_rides'] + 1
+        finally:
+            if live_created:
+                try:
+                    finish_created_ride(device)
+                except BaseException as cleanup_error:
+                    (directory / 'RECOVERY_REQUIRED.txt').write_text(
+                        f'Test-created live ride may remain open: {cleanup_error}\n'
+                        'Restart the device so boot recovery can finalize it.\n')
+
+    summary = {
+        'temporary': temporary,
+        'before_restart': before,
+        'recovered': recovered,
+        'live_started': live,
+        'live_paused': paused_live,
+        'finished': finished,
+    }
+    (directory / 'ride-recording-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
@@ -703,6 +825,7 @@ def main():
     commands.add_parser('wifi-recovery')
     commands.add_parser('ride-demo')
     commands.add_parser('crash-test')
+    commands.add_parser('ride-recording-test')
     soak_parser = commands.add_parser('soak')
     soak_parser.add_argument('--seconds', type=float, default=60)
     record = commands.add_parser('record')
@@ -718,6 +841,13 @@ def main():
         directory.mkdir(parents=True, exist_ok=False, mode=0o700)
         try:
             crash_test(args.port, directory)
+        finally:
+            print(f'Evidence: {directory}')
+        return
+    if args.action == 'ride-recording-test':
+        directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+        try:
+            ride_recording_test(args.port, directory)
         finally:
             print(f'Evidence: {directory}')
         return

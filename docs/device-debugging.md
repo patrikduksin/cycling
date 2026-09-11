@@ -68,6 +68,7 @@ mise run debug -- run scripts/scenarios/controls.json
 mise run debug -- lease-test
 mise run debug -- wifi-recovery
 mise run debug -- ride-demo
+mise run debug -- ride-recording-test
 mise run crash-test
 mise run debug -- soak --seconds 60
 ```
@@ -166,8 +167,13 @@ milliseconds, synchronization age, and `unavailable`, `syncing`, `fresh`,
 `offline` or `stale` status. UTC is zero when unavailable; check `time_status`
 before using it.
 Ride reports include phase, speed in millimeters per second, distance in
-millimeters, active elapsed milliseconds, page and layout. These are deterministic
-demo values and do not represent GPS, sensors or a stored ride.
+millimeters, active elapsed milliseconds, page and layout. `ride_recording`,
+`ride_source`, `recording_active_ms`, slot/sample/drop/ride counters, and maximum
+write/erase time describe durable recording. Demo speed and distance are
+deterministic. Live speed and distance are `-1` until a real source exists; live
+records can include available UTC, fresh GPS coordinates and battery state. The
+final #17 live hardware run had UTC and battery but GPS was `no_fix`, so it did
+not prove a persisted location sample.
 GPS reports include `gps_state`, coordinates scaled by 10^7, the latest recent
 GGA satellite count, fix age, received bytes, valid sentences and transport,
 line, checksum, parse and UART error counters. Unavailable coordinates use
@@ -210,15 +216,21 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `IDLE seconds brightness` | Temporarily set timeout (`0` disables) and dim level for the current session |
 | `PANIC` | Harness only: restore the session, reply `ARMED`, then trigger a controlled Rust panic and software reset |
 | `RESTART` | Harness only: restore the session, reply `ARMED`, then perform a clean whole-chip software reset |
+| `RIDE START [DEMO|LIVE]` | End the temporary session and commit a durable ride start; default is `DEMO` |
+| `RIDE PAUSE` / `RIDE RESUME` / `RIDE FINISH` | Commit a durable ride transition after readback verification |
+| `RIDE INIT` | Explicitly erase and verify only the owned ride reservation when startup reports `needs_init` |
 | `STOP` | Stop recording |
 | `END` | Stop recording, cancel touch, clear battery override and restore saved UI values |
 
 The host opens a session automatically and sends heartbeats every second.
 The firmware expires a session after three seconds without an accepted command.
-Ordinary injected state is temporary and never written to flash. `PERSIST` is the
-explicit exception: it restores and ends the session, commits and verifies the
+Ordinary injected state is temporary and never written to flash. `PERSIST` and
+`RIDE` are explicit exceptions: each restores and ends the session before the
+operation. `PERSIST` commits and verifies the
 supplied brightness, applies PWM, redraws, then acknowledges. Further injected
-commands require a new `BEGIN`. Battery injection affects
+commands require a new `BEGIN`. A `RIDE` acknowledgment follows commit/readback
+and the corresponding redraw. `STATE`, captures, and a new temporary session
+remain usable while durable recording continues. Battery injection affects
 the displayed status; it does not change charging or send companion commands.
 Button code 1 is the verified short-click action. Other codes can be injected,
 but their physical long-press meanings are not verified. There is no invented

@@ -6,7 +6,7 @@ use crate::{
     controls::Controls,
     input::Point,
     metrics,
-    ride::{Phase, Ride},
+    ride::{Action as RideAction, Phase, Ride},
 };
 
 pub mod theme {
@@ -70,6 +70,7 @@ pub struct App {
     pub ride: Ride,
     pub ride_page: u8,
     pub ride_layout: u8,
+    ride_action: Option<RideAction>,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
     settings_dragging: bool,
@@ -89,6 +90,7 @@ impl Default for App {
             ride: Ride::default(),
             ride_page: 0,
             ride_layout: 0,
+            ride_action: None,
             point: None,
             origin: None,
             settings_dragging: false,
@@ -190,7 +192,10 @@ impl App {
                 self.origin = None;
                 match self.pressed.take() {
                     Some(0) => self.ride_layout ^= 1,
-                    Some(1) => self.ride.reset(),
+                    Some(1) => {
+                        self.ride_action = Some(RideAction::Finish);
+                        self.apply_ride_action(RideAction::Finish, _now);
+                    }
                     _ => {}
                 }
             }
@@ -205,6 +210,7 @@ impl App {
         self.settings_dragging = false;
         self.suppress_pointer = false;
         self.controls.update(None);
+        self.ride_action = None;
     }
 
     pub fn button(&mut self, button: Button, code: u16) {
@@ -251,7 +257,15 @@ impl App {
             Screen::Ride => match button {
                 Button::TopLeft => self.navigate(Screen::Home),
                 Button::BottomLeft => self.ride_page ^= 1,
-                Button::BottomRight => self.ride.toggle(now),
+                Button::BottomRight => {
+                    let action = match self.ride.phase() {
+                        Phase::Ready => RideAction::Start,
+                        Phase::Running => RideAction::Pause,
+                        Phase::Paused => RideAction::Resume,
+                    };
+                    self.ride_action = Some(action);
+                    self.apply_ride_action(action, now);
+                }
             },
         }
         self.suppress_pointer = pointer_was_held;
@@ -259,6 +273,18 @@ impl App {
 
     pub fn pointer_suppressed(&self) -> bool {
         self.suppress_pointer
+    }
+
+    pub fn take_ride_action(&mut self) -> Option<RideAction> {
+        self.ride_action.take()
+    }
+
+    pub fn apply_ride_action(&mut self, action: RideAction, now: u64) {
+        match action {
+            RideAction::Start | RideAction::Resume => self.ride.start_or_resume(now),
+            RideAction::Pause => self.ride.pause(now),
+            RideAction::Finish => self.ride.reset(),
+        }
     }
 
     pub fn render(
@@ -280,7 +306,13 @@ impl App {
                 self.controls.render(pixels, available, status);
                 crate::controls::wifi_label(pixels, wifi);
             }
-            Screen::Ride => self.render_ride(pixels, metrics.uptime_ms),
+            Screen::Ride => self.render_ride(
+                pixels,
+                metrics.uptime_ms,
+                metrics.ride_recording,
+                metrics.ride_source,
+                metrics.recording_active_ms,
+            ),
         }
     }
 
@@ -689,9 +721,24 @@ impl App {
         text(pixels, 27, 94, b"TOP BACK", theme::MUTED);
     }
 
-    fn render_ride(&self, pixels: &mut [u16; PIXELS], now: u64) {
+    fn render_ride(
+        &self,
+        pixels: &mut [u16; PIXELS],
+        now: u64,
+        recording: crate::ride_log::Status,
+        source: Option<crate::ride_log::Source>,
+        recording_active_ms: u64,
+    ) {
         pixels.fill(theme::BACKGROUND);
-        text(pixels, 4, 3, b"DEMO RIDE", theme::ACCENT);
+        let live = source == Some(crate::ride_log::Source::Live);
+        text(
+            pixels,
+            4,
+            3,
+            if live { b"LIVE RIDE" } else { b"DEMO RIDE" },
+            theme::ACCENT,
+        );
+        text(pixels, 48, 3, recording.short(), theme::MUTED);
         text(
             pixels,
             4,
@@ -713,7 +760,14 @@ impl App {
             _ => [1, 0, 2],
         };
         for (row, field) in order.into_iter().enumerate() {
-            render_ride_field(pixels, 4, 27 + row * 13, field, values);
+            render_ride_field(
+                pixels,
+                4,
+                27 + row * 13,
+                field,
+                values,
+                live.then_some(recording_active_ms),
+            );
         }
         rect(
             pixels,
@@ -751,7 +805,7 @@ impl App {
                     theme::SURFACE
                 },
             );
-            text(pixels, 8, 85, b"RESET", theme::TEXT);
+            text(pixels, 8, 85, b"FINISH", theme::TEXT);
         }
         text(pixels, 0, 95, b"TOP BACK L PAGE", theme::MUTED);
         text(
@@ -944,10 +998,15 @@ fn render_ride_field(
     y: usize,
     field: u8,
     values: crate::ride::Metrics,
+    live_active_ms: Option<u64>,
 ) {
     match field {
         0 => {
             text(pixels, x, y, b"SPEED", theme::MUTED);
+            if live_active_ms.is_some() {
+                text(pixels, 31, y, b"--.- KMH", theme::MUTED);
+                return;
+            }
             let tenths = (values.speed_mm_s.saturating_mul(36) / 1_000).min(999);
             number(pixels, 31, y, tenths / 10, theme::TEXT);
             text(pixels, 39, y, b".", theme::TEXT);
@@ -956,6 +1015,10 @@ fn render_ride_field(
         }
         1 => {
             text(pixels, x, y, b"DIST", theme::MUTED);
+            if live_active_ms.is_some() {
+                text(pixels, 27, y, b"--.-- KM", theme::MUTED);
+                return;
+            }
             let hundredths = (values.distance_mm / 10_000).min(9_999) as u32;
             number(pixels, 27, y, hundredths / 100, theme::TEXT);
             text(pixels, 35, y, b".", theme::TEXT);
@@ -968,7 +1031,7 @@ fn render_ride_field(
         }
         _ => {
             text(pixels, x, y, b"TIME", theme::MUTED);
-            let seconds = values.active_ms / 1_000;
+            let seconds = live_active_ms.unwrap_or(values.active_ms) / 1_000;
             let hours = (seconds / 3_600).min(99);
             let minutes = seconds / 60 % 60;
             let seconds = seconds % 60;
@@ -1377,6 +1440,15 @@ mod tests {
         let metrics = metrics::Snapshot {
             reset: crate::crash::Reset::Software,
             crash: crate::crash::Marker::default(),
+            ride_recording: crate::ride_log::Status::Ready,
+            ride_source: None,
+            recording_active_ms: 0,
+            recorded_samples: 0,
+            recording_dropped: 0,
+            recorded_rides: 0,
+            recording_slot: 0,
+            recording_write_ms: 0,
+            recording_erase_ms: 0,
             gps: crate::gps::Snapshot::default(),
             uptime_ms: 3_723_000,
             frame_ms: 20,

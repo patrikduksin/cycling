@@ -55,6 +55,11 @@ impl<F: Flash> Journal<F> {
         }
     }
 
+    /// Lend the sole backend for a disjoint, bounds-checked storage operation.
+    pub fn flash_mut(&mut self) -> &mut F {
+        &mut self.flash
+    }
+
     pub fn load(&mut self, output: &mut [u8]) -> Result<Option<Record>, Error<F::Error>> {
         let newest = self.scan()?;
         let Some((sector, record)) = newest else {

@@ -9,6 +9,7 @@ mod display;
 mod gps_uart;
 mod persistent;
 mod psram;
+mod ride_recorder;
 mod touch;
 mod wifi;
 
@@ -21,6 +22,7 @@ use cycling_os::{
     metrics::Snapshot as Metrics,
     preferences::{Saver, Settings},
     redraw::Tracker,
+    ride_log::Sample as RideSample,
     ui::App,
 };
 #[cfg(feature = "debug-harness")]
@@ -249,6 +251,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let mut display_skips = 0u32;
     let mut display_metrics = Metrics::default();
     let mut next_metrics = 0u64;
+    let mut ride_recorder = ride_recorder::Recorder::default();
+    let mut last_recording_status = ride_recorder.status();
     loop {
         let start = Instant::now();
         let now = start.duration_since_epoch().as_millis();
@@ -265,6 +269,15 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let mut metrics = Metrics {
             reset,
             crash,
+            ride_recording: ride_recorder.status(),
+            ride_source: ride_recorder.source(),
+            recording_active_ms: ride_recorder.active_ms(now),
+            recorded_samples: ride_recorder.written_samples(),
+            recording_dropped: ride_recorder.dropped_samples(),
+            recorded_rides: ride_recorder.completed(),
+            recording_slot: ride_recorder.next_slot().min(u16::MAX as usize) as u16,
+            recording_write_ms: ride_recorder.max_write_ms(),
+            recording_erase_ms: ride_recorder.max_erase_ms(),
             gps: cycling_os::gps::Snapshot::default(),
             uptime_ms: now,
             frame_ms: last_frame_ms,
@@ -292,6 +305,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             dim_brightness: runtime_settings.dim_brightness,
         };
         let previous = app.point();
+        let ride_before_input = app.ride;
         let brightness = app.controls.brightness;
         if last_rx.elapsed().as_millis() > 250 {
             decoder.reset();
@@ -446,6 +460,30 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 break;
             }
         }
+        let ride_action = app.take_ride_action();
+        #[cfg(feature = "debug-harness")]
+        let temporary_ride = debug.active;
+        #[cfg(not(feature = "debug-harness"))]
+        let temporary_ride = false;
+        if let Some(action) = ride_action
+            && !temporary_ride
+        {
+            let _accepted =
+                ride_recorder.request(action, cycling_os::ride_log::Source::Demo, now, 0);
+            // Durable controls change the visible demo only after the record is
+            // committed and read back. Rejected and failed operations stay put.
+            app.ride = ride_before_input;
+        }
+        #[cfg(feature = "debug-harness")]
+        if let Some((id, action)) = debug.take_ride() {
+            let accepted = match action {
+                Some((action, source)) => ride_recorder.request(action, source, now, id),
+                None => ride_recorder.initialize(id),
+            };
+            if !accepted {
+                debug.ride_result(id, false);
+            }
+        }
         if app.point() != previous {
             println!("CYCLING_TOUCH point={:?}", app.point());
         }
@@ -489,6 +527,73 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         };
         #[cfg(not(feature = "debug-harness"))]
         let explicit_settings = false;
+        // The prior LCD DMA is complete. Service one bounded flash operation,
+        // apply its verified result, and only then render/ack the new state.
+        let ride_clock = cycling_os::network_time::snapshot(now, 0, wifi::online());
+        let ride_sample = RideSample {
+            active_ms: 0,
+            utc_ms: ride_clock.unix_seconds.and_then(|seconds| {
+                seconds
+                    .checked_mul(1_000)
+                    .and_then(|value| value.checked_add(u64::from(ride_clock.millis)))
+            }),
+            location_e7: (metrics.gps.state == cycling_os::gps::FixState::Fresh)
+                .then(|| Some((metrics.gps.latitude_e7?, metrics.gps.longitude_e7?)))
+                .flatten(),
+            demo_speed_mm_s: Some(cycling_os::ride::DEMO_SPEED_MM_S),
+            heart_bpm: None,
+            cadence_tenths: None,
+            battery_percent: status.battery.map(|(percent, _)| percent),
+        };
+        let ride_flash = ride_recorder.service(&mut settings_store, now, ride_sample);
+        if ride_recorder.status() != last_recording_status {
+            last_recording_status = ride_recorder.status();
+            println!(
+                "CYCLING_RIDE_RECORD status={} source={} slot={} rides={} samples={} dropped={} write_ms={} erase_ms={}",
+                last_recording_status.name(),
+                ride_recorder
+                    .source()
+                    .map(|source| source.name())
+                    .unwrap_or("none"),
+                ride_recorder.next_slot(),
+                ride_recorder.completed(),
+                ride_recorder.written_samples(),
+                ride_recorder.dropped_samples(),
+                ride_recorder.max_write_ms(),
+                ride_recorder.max_erase_ms()
+            );
+        }
+        if let Some(result) = ride_recorder.take_result() {
+            if result.ok
+                && let Some(action) = result.action
+            {
+                app.apply_ride_action(action, now);
+            }
+            #[cfg(feature = "debug-harness")]
+            if result.token != 0 {
+                debug.ride_result(result.token, result.ok);
+            }
+        }
+        metrics.ride_recording = ride_recorder.status();
+        metrics.ride_source = ride_recorder.source();
+        metrics.recording_active_ms = ride_recorder.active_ms(now);
+        metrics.recorded_samples = ride_recorder.written_samples();
+        metrics.recording_dropped = ride_recorder.dropped_samples();
+        metrics.recorded_rides = ride_recorder.completed();
+        metrics.recording_slot = ride_recorder.next_slot().min(u16::MAX as usize) as u16;
+        metrics.recording_write_ms = ride_recorder.max_write_ms();
+        metrics.recording_erase_ms = ride_recorder.max_erase_ms();
+        // Recorder transitions are rendered in the same acknowledged frame;
+        // unrelated diagnostics retain their bounded one-second refresh.
+        display_metrics.ride_recording = metrics.ride_recording;
+        display_metrics.ride_source = metrics.ride_source;
+        display_metrics.recording_active_ms = metrics.recording_active_ms;
+        display_metrics.recorded_samples = metrics.recorded_samples;
+        display_metrics.recording_dropped = metrics.recording_dropped;
+        display_metrics.recorded_rides = metrics.recorded_rides;
+        display_metrics.recording_slot = metrics.recording_slot;
+        display_metrics.recording_write_ms = metrics.recording_write_ms;
+        display_metrics.recording_erase_ms = metrics.recording_erase_ms;
         idle_config = IdleConfig {
             timeout_ms: (runtime_settings.dim_timeout_secs != 0)
                 .then_some(u64::from(runtime_settings.dim_timeout_secs) * 1_000),
@@ -550,7 +655,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         #[cfg(not(feature = "debug-harness"))]
         let temporary_settings = false;
         let current_settings = runtime_settings;
-        if !explicit_settings
+        if !ride_flash
+            && !explicit_settings
             && settings_saver.ready(
                 now,
                 current_settings,

@@ -20,8 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local/device"
 FLASH_SIZE = 0x1000000
 SLOT_SIZE = 0x73A000
-STORAGE_SIZE = 0x2000
-APP_SIZE = SLOT_SIZE - STORAGE_SIZE
+SETTINGS_SIZE = 0x2000
+RIDE_SIZE = 0x100000
+APP_SIZE = SLOT_SIZE - SETTINGS_SIZE - RIDE_SIZE
 SLOTS = (0x20000, 0x760000)
 
 
@@ -57,7 +58,7 @@ def image_length(data):
 
 def validate_candidate(data):
     require(image_length(data) == len(data), "Image has bytes outside its validated image extent")
-    require(len(data) <= APP_SIZE, "Image overlaps the reserved slot-B settings journal")
+    require(len(data) <= APP_SIZE, "Image overlaps the reserved slot-B ride/settings storage")
 
 
 def partitions(metadata):

@@ -1,13 +1,15 @@
-use cycling_os::storage::{self, Journal, Sector};
+use cycling_os::{
+    preferences::{self, Settings, Source},
+    storage::{self, Journal, Sector},
+};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::{FlashStorage, FlashStorageError};
 
 pub const BASE: u32 = 0x00e9_8000;
-const INITIAL_RECORD: &[u8] = b"cycling\x01";
-
-pub struct Report {
-    pub initialized: bool,
-    pub sequence: u32,
+pub struct Loaded {
+    pub settings: Settings,
+    pub source: Source,
+    pub sequence: Option<u32>,
     pub length: usize,
 }
 
@@ -39,27 +41,51 @@ impl storage::Flash for Backend<'_> {
     }
 }
 
-pub fn init(
-    flash: esp_hal::peripherals::FLASH<'static>,
-) -> Result<Report, storage::Error<FlashStorageError>> {
-    let backend = Backend {
-        flash: FlashStorage::new(flash),
-    };
-    let mut journal = Journal::new(backend);
-    let mut payload = [0u8; storage::CAPACITY];
-    match journal.load(&mut payload)? {
-        Some(record) => Ok(Report {
-            initialized: false,
-            sequence: record.sequence,
-            length: record.length,
-        }),
-        None => {
-            let record = journal.save(INITIAL_RECORD)?;
-            Ok(Report {
-                initialized: true,
-                sequence: record.sequence,
-                length: record.length,
-            })
+pub struct Store {
+    journal: Journal<Backend<'static>>,
+}
+
+impl Store {
+    pub fn open(
+        flash: esp_hal::peripherals::FLASH<'static>,
+    ) -> (Self, Result<Loaded, storage::Error<FlashStorageError>>) {
+        let mut store = Self {
+            journal: Journal::new(Backend {
+                flash: FlashStorage::new(flash),
+            }),
+        };
+        let loaded = store.load();
+        (store, loaded)
+    }
+
+    pub fn load(&mut self) -> Result<Loaded, storage::Error<FlashStorageError>> {
+        let mut payload = [0u8; storage::CAPACITY];
+        let record = self.journal.load(&mut payload)?;
+        let bytes = record.map(|record| &payload[..record.length]);
+        let (settings, source) = preferences::decode(bytes);
+        Ok(Loaded {
+            settings,
+            source,
+            sequence: record.map(|record| record.sequence),
+            length: record.map(|record| record.length).unwrap_or(0),
+        })
+    }
+
+    pub fn save(
+        &mut self,
+        settings: Settings,
+    ) -> Result<storage::Record, storage::Error<FlashStorageError>> {
+        match self.journal.save(&settings.encode()) {
+            Ok(record) => Ok(record),
+            Err(error) => match self.load() {
+                Ok(loaded) if loaded.source == Source::Current && loaded.settings == settings => {
+                    Ok(storage::Record {
+                        sequence: loaded.sequence.unwrap(),
+                        length: loaded.length,
+                    })
+                }
+                _ => Err(error),
+            },
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod debug;
 pub mod input;
 pub mod metrics;
 pub mod network;
+pub mod preferences;
 pub mod screenshot;
 pub mod storage;
 pub mod ui;

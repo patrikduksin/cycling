@@ -24,6 +24,7 @@ pub struct Debug {
     sequence: u32,
     stream: u32,
     pixels: [u16; PIXELS],
+    persistence: Option<(u32, u8)>,
 }
 impl Debug {
     pub fn new() -> Self {
@@ -42,6 +43,7 @@ impl Debug {
             sequence: 0,
             stream: 0,
             pixels: [0; PIXELS],
+            persistence: None,
         }
     }
     pub fn recording(&self) -> bool {
@@ -49,6 +51,12 @@ impl Debug {
     }
     pub fn touch_injected(&self) -> bool {
         self.injection.active()
+    }
+    pub fn take_persistence(&mut self) -> Option<(u32, u8)> {
+        self.persistence.take()
+    }
+    pub fn persistence_result(&mut self, id: u32, result: &'static str) {
+        self.pending = Some((id, result));
     }
     fn stop(&mut self) {
         if self.recording() {
@@ -100,7 +108,12 @@ impl Debug {
         screenshot_busy: bool,
     ) {
         let mut result = "OK";
-        if !self.active && !matches!(action, Action::Begin | Action::State | Action::End) {
+        if !self.active
+            && !matches!(
+                action,
+                Action::Begin | Action::State | Action::End | Action::Persist(_)
+            )
+        {
             self.pending = Some((id, "NO_SESSION"));
             return;
         }
@@ -150,6 +163,11 @@ impl Debug {
                 }
             }
             Action::Stop => self.stop(),
+            Action::Persist(brightness) => {
+                self.end(app, status);
+                self.persistence = Some((id, brightness));
+                return;
+            }
             Action::Record(_, _) | Action::Capture => {
                 if screenshot_busy || self.recording() {
                     result = "BUSY";

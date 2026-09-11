@@ -171,12 +171,16 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `WIFI` | Request a real station disconnect followed by normal reconnection |
 | `CAPTURE` | Capture one compressed frame |
 | `RECORD milliseconds fps` | Record 100–30000 ms at a requested 1–10 fps |
+| `PERSIST brightness` | End and restore the temporary session, then explicitly save a validated 5–100% brightness |
 | `STOP` | Stop recording |
 | `END` | Stop recording, cancel touch, clear battery override and restore saved UI values |
 
 The host opens a session automatically and sends heartbeats every second.
 The firmware expires a session after three seconds without an accepted command.
-Injected state is temporary and never written to flash. Battery injection affects
+Ordinary injected state is temporary and never written to flash. `PERSIST` is the
+explicit exception: it restores and ends the session, commits and verifies the
+supplied brightness, applies PWM, redraws, then acknowledges. Further injected
+commands require a new `BEGIN`. Battery injection affects
 the displayed status; it does not change charging or send companion commands.
 Button code 1 is the verified short-click action. Other codes can be injected,
 but their physical long-press meanings are not verified. There is no invented

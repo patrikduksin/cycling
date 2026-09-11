@@ -470,8 +470,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         if let Some(action) = ride_action
             && !temporary_ride
         {
-            let _accepted =
-                ride_recorder.request(action, cycling_os::ride_log::Source::Demo, now, 0);
+            let _accepted = ride_recorder.request(action, app.selected_ride_source(), now, 0);
             // Durable controls change the visible demo only after the record is
             // committed and read back. Rejected and failed operations stay put.
             app.ride = ride_before_input;

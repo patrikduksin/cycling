@@ -350,16 +350,25 @@ impl Debug {
                 crate::wifi::online(),
             );
             let ride = app.ride.metrics(now);
-            let (ride_speed, ride_distance, ride_elapsed) =
-                if metrics.ride_source == Some(cycling_os::ride_log::Source::Live) {
-                    (-1, -1, metrics.recording_active_ms as i64)
-                } else {
-                    (
-                        i64::from(ride.speed_mm_s),
-                        ride.distance_mm.min(i64::MAX as u64) as i64,
-                        ride.active_ms.min(i64::MAX as u64) as i64,
-                    )
-                };
+            let (ride_speed, ride_distance, ride_elapsed) = if cycling_os::ui::effective_ride_source(
+                metrics.ride_source,
+                app.selected_ride_source(),
+            )
+                == cycling_os::ride_log::Source::Live
+            {
+                let elapsed = cycling_os::ui::live_ride_elapsed(
+                    metrics.ride_source,
+                    metrics.recording_active_ms,
+                    ride.active_ms,
+                );
+                (-1, -1, elapsed as i64)
+            } else {
+                (
+                    i64::from(ride.speed_mm_s),
+                    ride.distance_mm.min(i64::MAX as u64) as i64,
+                    ride.active_ms.min(i64::MAX as u64) as i64,
+                )
+            };
             let (percent, mv) = status
                 .battery
                 .map(|(p, m)| (i32::from(p), i32::from(m)))
@@ -369,7 +378,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"ride_recording\":\"{}\",\"ride_source\":\"{}\",\"recording_active_ms\":{},\"recorded_samples\":{},\"recording_dropped\":{},\"recorded_rides\":{},\"recording_slot\":{},\"recording_write_ms\":{},\"recording_erase_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"ride_recording\":\"{}\",\"ride_source\":\"{}\",\"ride_selected_source\":\"{}\",\"recording_active_ms\":{},\"recorded_samples\":{},\"recording_dropped\":{},\"recorded_rides\":{},\"recording_slot\":{},\"recording_write_ms\":{},\"recording_erase_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -401,6 +410,7 @@ impl Debug {
                     .ride_source
                     .map(|source| source.name())
                     .unwrap_or("none"),
+                app.selected_ride_source().name(),
                 metrics.recording_active_ms,
                 metrics.recorded_samples,
                 metrics.recording_dropped,

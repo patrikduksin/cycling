@@ -21,6 +21,28 @@ pub mod theme {
 
 pub const TAP_SLOP: u16 = 18;
 
+pub const fn effective_ride_source(
+    recorder: Option<crate::ride_log::Source>,
+    selected: crate::ride_log::Source,
+) -> crate::ride_log::Source {
+    match recorder {
+        Some(source) => source,
+        None => selected,
+    }
+}
+
+pub const fn live_ride_elapsed(
+    recorder: Option<crate::ride_log::Source>,
+    recorder_ms: u64,
+    app_ms: u64,
+) -> u64 {
+    if recorder.is_some() {
+        recorder_ms
+    } else {
+        app_ms
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
     Home,
@@ -60,6 +82,7 @@ pub struct Snapshot {
     ride_page: u8,
     ride_layout: u8,
     history_page: u8,
+    ride_source: crate::ride_log::Source,
 }
 
 pub struct App {
@@ -74,6 +97,7 @@ pub struct App {
     pub ride_page: u8,
     pub ride_layout: u8,
     pub history_page: u8,
+    ride_source: crate::ride_log::Source,
     ride_action: Option<RideAction>,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
@@ -95,6 +119,7 @@ impl Default for App {
             ride_page: 0,
             ride_layout: 0,
             history_page: 0,
+            ride_source: crate::ride_log::Source::Demo,
             ride_action: None,
             point: None,
             origin: None,
@@ -117,6 +142,7 @@ impl App {
             ride_page: self.ride_page,
             ride_layout: self.ride_layout,
             history_page: self.history_page,
+            ride_source: self.ride_source,
         }
     }
 
@@ -132,6 +158,7 @@ impl App {
         self.ride_page = snapshot.ride_page;
         self.ride_layout = snapshot.ride_layout;
         self.history_page = snapshot.history_page;
+        self.ride_source = snapshot.ride_source;
     }
 
     pub fn point(&self) -> Option<Point> {
@@ -199,6 +226,12 @@ impl App {
                 self.point = None;
                 self.origin = None;
                 match self.pressed.take() {
+                    Some(0) if self.ride.phase() == Phase::Ready => {
+                        self.ride_source = match self.ride_source {
+                            crate::ride_log::Source::Demo => crate::ride_log::Source::Live,
+                            crate::ride_log::Source::Live => crate::ride_log::Source::Demo,
+                        }
+                    }
                     Some(0) => self.ride_layout ^= 1,
                     Some(1) => {
                         self.ride_action = Some(RideAction::Finish);
@@ -295,6 +328,10 @@ impl App {
 
     pub fn take_ride_action(&mut self) -> Option<RideAction> {
         self.ride_action.take()
+    }
+
+    pub const fn selected_ride_source(&self) -> crate::ride_log::Source {
+        self.ride_source
     }
 
     pub fn apply_ride_action(&mut self, action: RideAction, now: u64) {
@@ -749,7 +786,7 @@ impl App {
         recording_active_ms: u64,
     ) {
         pixels.fill(theme::BACKGROUND);
-        let live = source == Some(crate::ride_log::Source::Live);
+        let live = effective_ride_source(source, self.ride_source) == crate::ride_log::Source::Live;
         text(
             pixels,
             4,
@@ -772,6 +809,11 @@ impl App {
         let page = [b'P', b'A', b'G', b'E', b' ', b'1' + self.ride_page];
         text(pixels, 52, 13, &page, theme::MUTED);
         let values = self.ride.metrics(now);
+        let live_active_ms = live.then_some(live_ride_elapsed(
+            source,
+            recording_active_ms,
+            values.active_ms,
+        ));
         let order = match (self.ride_layout, self.ride_page) {
             (0, 0) => [0, 1, 2],
             (0, _) => [1, 2, 0],
@@ -779,14 +821,7 @@ impl App {
             _ => [1, 0, 2],
         };
         for (row, field) in order.into_iter().enumerate() {
-            render_ride_field(
-                pixels,
-                4,
-                27 + row * 13,
-                field,
-                values,
-                live.then_some(recording_active_ms),
-            );
+            render_ride_field(pixels, 4, 27 + row * 13, field, values, live_active_ms);
         }
         rect(
             pixels,
@@ -804,7 +839,12 @@ impl App {
             pixels,
             8,
             70,
-            if self.ride_layout == 0 {
+            if self.ride.phase() == Phase::Ready {
+                match self.ride_source {
+                    crate::ride_log::Source::Demo => b"MODE DEMO",
+                    crate::ride_log::Source::Live => b"MODE LIVE",
+                }
+            } else if self.ride_layout == 0 {
                 b"LAYOUT A"
             } else {
                 b"LAYOUT B"
@@ -1529,6 +1569,33 @@ mod tests {
         tap(&mut app, Point { x: 80, y: 260 });
         assert_eq!(app.ride.phase(), Phase::Ready);
         assert_eq!(app.ride.metrics(20_000).active_ms, 0);
+    }
+
+    #[test]
+    fn ready_ride_source_selection_is_visible_to_start_and_restored() {
+        let mut app = App {
+            screen: Screen::Ride,
+            ..App::default()
+        };
+        assert_eq!(app.selected_ride_source(), crate::ride_log::Source::Demo);
+        assert_eq!(live_ride_elapsed(None, 9_000, 0), 0);
+        assert_eq!(live_ride_elapsed(None, 9_000, 2_000), 2_000);
+        assert_eq!(
+            live_ride_elapsed(Some(crate::ride_log::Source::Live), 9_000, 2_000),
+            9_000
+        );
+        let snapshot = app.snapshot();
+        tap(&mut app, Point { x: 80, y: 220 });
+        assert_eq!(app.selected_ride_source(), crate::ride_log::Source::Live);
+        app.button_at(Button::BottomRight, 1, 100);
+        assert_eq!(app.take_ride_action(), Some(RideAction::Start));
+        assert_eq!(app.selected_ride_source(), crate::ride_log::Source::Live);
+        tap(&mut app, Point { x: 80, y: 220 });
+        assert_eq!(app.ride_layout, 1);
+        assert_eq!(app.selected_ride_source(), crate::ride_log::Source::Live);
+        app.restore(snapshot);
+        assert_eq!(app.ride.phase(), Phase::Ready);
+        assert_eq!(app.selected_ride_source(), crate::ride_log::Source::Demo);
     }
 
     #[test]

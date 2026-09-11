@@ -73,7 +73,13 @@ The GPS issue contains the user-authorized public reference coordinates.
   Seven device reports prove temporary65 does not survive reflash, explicit65
   does, and original50 is restored. Writes34–35ms, no new CRC/UART or retained
   heap loss. Both builds/checks passed; Astra approved. Device includes X glyph.
-- Starting #8 dim/wake. Preflights for UI, networking, settings, dimming,
+- #8 complete: PR #28 merged as f9c7fb1. Persistent timeout/OFF and dim level,
+  shared wake consumption, selected/effective brightness and temporary idle controls.
+  Device test verified dim despite heartbeats, held-touch wake, button/tap wake
+  and END restoration. PWM commands observed; actual luminance is not measured.
+  Astra approved with a final portable gesture fix and regression test; checks
+  passed. Screenshot linked in PR. Next flash deploys that narrow gesture fix.
+- Starting #9 Wi-Fi recovery. Preflights for UI, networking, settings, dimming,
   Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
   now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
   These remain stock-code findings pending actual device validation.

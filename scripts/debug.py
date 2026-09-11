@@ -371,9 +371,14 @@ def smoke(device):
         device.expect({'wifi': 4}, 45)
     screen = device.command('STATE')['screen']
     if screen != 'controls':
-        if screen != 'home':
+        for _ in range(2):
+            if screen == 'home':
+                break
             device.command('BUTTON 0 1')
-            device.expect({'screen': 'home'})
+            screen = device.command('STATE')['screen']
+        if screen != 'home':
+            raise AssertionError(f'Cannot return home from {screen}')
+        device.expect({'screen': 'home'})
         device.tap(80, 210)
         device.expect({'screen': 'controls', 'pressed': -1})
     baseline = device.command('STATE')

@@ -317,7 +317,7 @@ impl Parser {
             satellites: self
                 .satellites_at
                 .filter(|at| now.saturating_sub(*at) <= STALE_MS)
-                .filter(|_| expose && self.satellites_epoch == self.current_epoch)
+                .filter(|_| !expose || self.satellites_epoch == self.current_epoch)
                 .and(self.satellites),
             utc: self.utc,
             age_ms: age,
@@ -523,6 +523,10 @@ mod tests {
     #[test]
     fn exposes_satellites_only_for_the_coordinate_epoch() {
         let mut parser = Parser::default();
+        body(&mut parser, b"GNGGA,010201.00,,,,,0,0,,,M,,M,,", 0);
+        assert_eq!(parser.snapshot(0).state, FixState::NoFix);
+        assert_eq!(parser.snapshot(0).satellites, Some(0));
+        assert_eq!(parser.snapshot(STALE_MS + 1).satellites, None);
         body(
             &mut parser,
             b"GNGGA,010202.00,3321.8814,S,07030.9348,W,1,09,,,M,,M,,",

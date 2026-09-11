@@ -389,9 +389,19 @@ and restored the open frame four seconds later. Parser counters stayed fixed at
 11,008 bytes and 129 valid sentences between the two markers, then advanced by
 5,120 bytes and 58 sentences over the next two seconds. This verifies stream
 control through the companion command path; it does not establish electrical
-power state. The current device location is indoors; earlier indoor positions
-near the authorized reference remain valid evidence, while outdoor reception is
-still untested.
+power state. A September 11 indoor trace contained checksum-valid GGA quality 0 with zero
+satellites used, RMC status `V`/mode `N`, GSA fix type 1 and GSV entries with no
+reported SNR. The parser and UART fault counters remained unchanged, so this was
+a receiver-declared no-fix condition rather than rejected position data. The
+user then took the powered device outdoors and observed that the GPS screen
+acquired and worked well; no raw outdoor position was retained, so this verifies
+outdoor acquisition but not accuracy against the reference. After returning
+indoors, valid NMEA continued while the last-fix age increased again.
+
+When no position is available, the GPS page now says `WAITING FOR FIX` and shows
+the fresh GGA satellites-used count plus the age of the last accepted fix. This
+keeps receiver-reported zero satellites distinct from unavailable status without
+changing the fix acceptance rules.
 
 ## Bluetooth
 

@@ -650,6 +650,7 @@ impl App {
         );
     }
 
+    #[inline(never)]
     fn render_gps(&self, pixels: &mut [u16; PIXELS], gps: &crate::gps::Snapshot) {
         pixels.fill(theme::BACKGROUND);
         text(pixels, 3, 3, b"GPS", theme::TEXT);
@@ -666,32 +667,36 @@ impl App {
             },
             theme::ACCENT,
         );
-        text(pixels, 3, 23, b"LAT", theme::MUTED);
-        coordinate_value(pixels, 23, 23, gps.latitude_e7);
-        text(pixels, 3, 33, b"LON", theme::MUTED);
-        coordinate_value(pixels, 23, 33, gps.longitude_e7);
-        text(pixels, 3, 43, b"SATS", theme::MUTED);
-        match gps.satellites {
-            Some(value) => number(pixels, 31, 43, u32::from(value), theme::TEXT),
-            None => text(pixels, 31, 43, b"--", theme::MUTED),
-        }
-        text(pixels, 3, 53, b"UTC", theme::MUTED);
-        match gps.utc {
-            Some(value) => {
-                text(pixels, 23, 53, &value[..2], theme::TEXT);
-                text(pixels, 31, 53, b":", theme::TEXT);
-                text(pixels, 35, 53, &value[2..4], theme::TEXT);
-                text(pixels, 43, 53, b":", theme::TEXT);
-                text(pixels, 47, 53, &value[4..], theme::TEXT);
+        if matches!(
+            gps.state,
+            crate::gps::FixState::NoData | crate::gps::FixState::NoFix
+        ) {
+            text(pixels, 3, 23, b"WAITING FOR FIX", theme::ACCENT);
+            text(pixels, 3, 43, b"SATS USED", theme::MUTED);
+            receiver_value(pixels, 51, 43, gps.satellites);
+            metric_optional(pixels, 3, 63, b"LAST MS", gps.age_ms);
+        } else {
+            text(pixels, 3, 23, b"LAT", theme::MUTED);
+            coordinate_value(pixels, 23, 23, gps.latitude_e7);
+            text(pixels, 3, 33, b"LON", theme::MUTED);
+            coordinate_value(pixels, 23, 33, gps.longitude_e7);
+            text(pixels, 3, 43, b"SATS", theme::MUTED);
+            match gps.satellites {
+                Some(value) => number(pixels, 31, 43, u32::from(value), theme::TEXT),
+                None => text(pixels, 31, 43, b"--", theme::MUTED),
             }
-            None => text(pixels, 23, 53, b"--:--:--", theme::MUTED),
-        }
-        text(pixels, 3, 63, b"AGE MS", theme::MUTED);
-        match gps.age_ms {
-            Some(age) => {
-                metric_row(pixels, 3, 63, b"AGE MS", age, b"");
+            text(pixels, 3, 53, b"UTC", theme::MUTED);
+            match gps.utc {
+                Some(value) => {
+                    text(pixels, 23, 53, &value[..2], theme::TEXT);
+                    text(pixels, 31, 53, b":", theme::TEXT);
+                    text(pixels, 35, 53, &value[2..4], theme::TEXT);
+                    text(pixels, 43, 53, b":", theme::TEXT);
+                    text(pixels, 47, 53, &value[4..], theme::TEXT);
+                }
+                None => text(pixels, 23, 53, b"--:--:--", theme::MUTED),
             }
-            None => text(pixels, 35, 63, b"--", theme::MUTED),
+            metric_optional(pixels, 3, 63, b"AGE MS", gps.age_ms);
         }
         metric_row(pixels, 3, 73, b"RX", gps.bytes as u64, b"");
         metric_row(pixels, 3, 83, b"VALID", gps.valid_sentences as u64, b"");
@@ -1089,6 +1094,36 @@ fn metric_pair(
 ) {
     let next = metric_row(pixels, x, y, first, a, b"");
     metric_row(pixels, next + 4, y, second, b, b"");
+}
+
+fn receiver_value(pixels: &mut [u16; PIXELS], x: usize, y: usize, value: Option<u8>) {
+    match value {
+        Some(value) => number(pixels, x, y, u32::from(value), theme::TEXT),
+        None => text(pixels, x, y, b"--", theme::MUTED),
+    }
+}
+
+fn metric_optional(
+    pixels: &mut [u16; PIXELS],
+    x: usize,
+    y: usize,
+    label: &[u8],
+    value: Option<u64>,
+) {
+    text(pixels, x, y, label, theme::MUTED);
+    match value {
+        Some(value) => {
+            let (digits, len) = metrics::compact(value);
+            text(
+                pixels,
+                x + label.len() * 4 + 4,
+                y,
+                &digits[..len],
+                theme::TEXT,
+            );
+        }
+        None => text(pixels, x + label.len() * 4 + 4, y, b"--", theme::MUTED),
+    }
 }
 
 fn home_item(point: Point) -> Option<u8> {

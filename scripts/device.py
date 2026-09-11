@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local/device"
 FLASH_SIZE = 0x1000000
 SLOT_SIZE = 0x73A000
+STORAGE_SIZE = 0x2000
+APP_SIZE = SLOT_SIZE - STORAGE_SIZE
 SLOTS = (0x20000, 0x760000)
 
 
@@ -51,6 +53,11 @@ def image_length(data):
     require(data[23] == 1, "Expected appended SHA-256")
     require(data[end:end + 32] == hashlib.sha256(data[:end]).digest(), "ESP SHA-256 mismatch")
     return end + 32
+
+
+def validate_candidate(data):
+    require(image_length(data) == len(data), "Image has bytes outside its signed extent")
+    require(len(data) <= APP_SIZE, "Image overlaps the reserved slot-B settings journal")
 
 
 def partitions(metadata):
@@ -215,7 +222,7 @@ def main():
     candidate = ROOT / ".local/cycling.bin"
     if args.action == "flash":
         image = candidate.read_bytes()
-        require(image_length(image) == len(image) <= SLOT_SIZE, "Image does not fit slot B exactly")
+        validate_candidate(image)
     metadata, identity = device.connect()
     if args.action == "backup":
         device.backup(metadata, identity)

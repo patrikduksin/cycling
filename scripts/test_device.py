@@ -51,6 +51,16 @@ class Formats(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 device.image_length(image()[:length])
 
+    def test_application_limit_reserves_two_tail_sectors(self):
+        self.assertEqual(device.APP_SIZE, 0x738000)
+        self.assertEqual(device.SLOTS[1] + device.APP_SIZE, 0xE98000)
+        self.assertEqual(device.SLOTS[1] + device.SLOT_SIZE, 0xE9A000)
+        with patch.object(device, "image_length", return_value=device.APP_SIZE):
+            device.validate_candidate(bytes(device.APP_SIZE))
+        with patch.object(device, "image_length", return_value=device.APP_SIZE + 1):
+            with self.assertRaises(RuntimeError):
+                device.validate_candidate(bytes(device.APP_SIZE + 1))
+
     def test_partition_table_digest_is_required(self):
         good = metadata()
         device.partitions(good)

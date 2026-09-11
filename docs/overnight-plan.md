@@ -41,7 +41,13 @@ The GPS issue contains the user-authorized public reference coordinates.
 ## Progress
 
 - Planning complete. Issues #1 through #19 created.
-- Starting #1. No implementation changes yet.
+- #1 complete: PR #20 merged as 134017e. Two reset boots detected/tested 2 MiB
+  quad PSRAM; smoke and 60-second soak passed. Dedicated external allocator keeps
+  normal allocations internal. Astra approved after mode/evidence corrections.
+  Earlier transient heap and USB reply issues are tracked under #12.
+- Starting #2. Storage preflight is in ignored .local/overnight/storage-preflight.md.
+  Investigate SD/MMC first; safe settings fallback may reserve owned ota_1 tail.
+  Device currently runs harness-enabled PSRAM firmware.
 
 Update this section after each issue with branch/PR, verification, review outcome,
 and the next task. Keep raw evidence in .local/ and link written results in PRs.

@@ -418,6 +418,53 @@ def wifi_recovery(device):
     assert final['uart_errors'] == baseline['uart_errors']
 
 
+def ride_demo(device):
+    wake_if_dimmed(device)
+    state = device.command('STATE')
+    for _ in range(3):
+        if state['screen'] == 'home':
+            break
+        device.command('BUTTON 0 1')
+        state = device.command('STATE')
+    assert state['screen'] == 'home'
+    device.tap(80, 260)
+    state = device.expect({'screen': 'ride'})
+    if state['ride_phase'] == 'running':
+        state = device.command('BUTTON 2 1')
+    if state['ride_phase'] == 'paused':
+        device.tap(80, 260)
+    ready = device.expect({'ride_phase': 'ready', 'ride_elapsed_ms': 0,
+                           'ride_distance_mm': 0, 'ride_speed_mm_s': 0})
+
+    device.command('RECORD 8000 5')
+    started = device.command('BUTTON 2 1')
+    assert started['ride_phase'] == 'running' and started['ride_speed_mm_s'] == 5000
+    device.wait(2.1)
+    running = device.command('STATE')
+    assert running['ride_elapsed_ms'] >= 2000
+    assert running['ride_distance_mm'] == running['ride_elapsed_ms'] * 5
+    device.command('BUTTON 1 1')
+    device.expect({'ride_page': ready['ride_page'] ^ 1})
+    device.tap(80, 220)
+    device.expect({'ride_layout': ready['ride_layout'] ^ 1})
+    paused = device.command('BUTTON 2 1')
+    assert paused['ride_phase'] == 'paused' and paused['ride_speed_mm_s'] == 0
+    device.wait(1.1)
+    frozen = device.command('STATE')
+    assert frozen['ride_elapsed_ms'] == paused['ride_elapsed_ms']
+    assert frozen['ride_distance_mm'] == paused['ride_distance_mm']
+    device.command('BUTTON 2 1')
+    device.wait(1.1)
+    resumed = device.command('STATE')
+    assert resumed['ride_phase'] == 'running'
+    assert resumed['ride_elapsed_ms'] > frozen['ride_elapsed_ms']
+    device.command('BUTTON 2 1')
+    device.tap(80, 260)
+    device.expect({'ride_phase': 'ready', 'ride_elapsed_ms': 0, 'ride_distance_mm': 0})
+    device.command('STOP')
+    device.capture()
+
+
 def smoke(device):
     wake_if_dimmed(device)
     if device.command('STATE')['wifi'] != 0:
@@ -536,6 +583,7 @@ def main():
     commands.add_parser('lease-test')
     commands.add_parser('smoke')
     commands.add_parser('wifi-recovery')
+    commands.add_parser('ride-demo')
     soak_parser = commands.add_parser('soak')
     soak_parser.add_argument('--seconds', type=float, default=60)
     record = commands.add_parser('record')
@@ -562,6 +610,8 @@ def main():
                 smoke(device)
             elif args.action == 'wifi-recovery':
                 wifi_recovery(device)
+            elif args.action == 'ride-demo':
+                ride_demo(device)
             elif args.action == 'record':
                 device.command(f'RECORD {round(args.seconds * 1000)} {args.fps}')
                 device.wait(args.seconds + .5)

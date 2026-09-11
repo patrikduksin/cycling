@@ -266,7 +266,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                             Event::Button { button, code } => {
                                 println!("CYCLING_BUTTON button={:?} code={}", button, code);
                                 if code != 1 || idle.button(now) == Gate::Forward {
-                                    app.button(button, code);
+                                    app.button_at(button, code, now);
                                 }
                             }
                         }
@@ -309,7 +309,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 available = true;
                 if !touch_injected {
                     if idle.release(now) == Gate::Forward {
-                        app.release();
+                        app.release_at(now);
                     } else {
                         app.cancel();
                     }

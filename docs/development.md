@@ -283,6 +283,33 @@ advancing with no new CRC or UART errors.
 The parser currently handles NTP era 0. Because it rejects wrapped timestamps
 below the Unix epoch offset, it will need era handling before February 2036.
 
+## Simulated ride
+
+Home's `DEMO RIDE` entry opens a prototype with two selectable pages and A/B
+field layouts. Every page remains visibly marked as demo data. The right button
+starts, pauses and resumes according to the displayed phase; the left button
+changes page; the top button returns Home. A separate touch target changes the
+layout, and Reset is available only while paused. Navigating or changing the
+page/layout does not pause or reset a running ride.
+
+The portable model uses caller-provided monotonic milliseconds. While running it
+simulates a constant 5,000 mm/s (18.0 km/h), calculates distance as five times
+active milliseconds, and stops both speed and accumulation while paused. It is
+independent of render rate and capture stalls. Live debug metrics use the current
+monotonic timestamp; the on-screen fields use the existing one-second display
+snapshot and can trail them by roughly one second.
+
+On hardware, the scripted run measured 2,231 ms and 11,155 mm, then froze at
+2,721 ms and 13,605 mm throughout a 1.1-second pause. After resume it reached
+3,888 ms and 19,440 mm before pause/reset returned elapsed and distance to zero.
+The run produced 27 verified frames with 10 distinct images while page and layout
+changed. Companion packets advanced from 228 to 432, free heap remained 116,288
+bytes, and CRC/UART counts did not increase. Debug session cleanup restored the
+original screen, ride phase, monotonic anchor, page and layout; a pre-session
+running ride therefore includes wall time spent in the temporary session after
+its original anchor is restored. This prototype does not read sensors or write
+ride records.
+
 ## Artwork
 
 The demo uses a rasterized and colored version of the Rust logo. Its attribution

@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod network;
 pub mod network_time;
 pub mod preferences;
+pub mod ride;
 pub mod screenshot;
 pub mod storage;
 pub mod ui;

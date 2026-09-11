@@ -67,6 +67,7 @@ mise run e2e
 mise run debug -- run scripts/scenarios/controls.json
 mise run debug -- lease-test
 mise run debug -- wifi-recovery
+mise run debug -- ride-demo
 mise run debug -- soak --seconds 60
 ```
 
@@ -157,6 +158,9 @@ Time reports include the fixed timezone offset in minutes, UTC seconds and
 milliseconds, synchronization age, and `unavailable`, `syncing`, `fresh`,
 `offline` or `stale` status. UTC is zero when unavailable; check `time_status`
 before using it.
+Ride reports include phase, speed in millimeters per second, distance in
+millimeters, active elapsed milliseconds, page and layout. These are deterministic
+demo values and do not represent GPS, sensors or a stored ride.
 
 ## Protocol and cleanup
 

@@ -171,7 +171,7 @@ impl Debug {
             Action::Release => {
                 if self.injection.finish() {
                     if idle.release(now) == Gate::Forward {
-                        app.release();
+                        app.release_at(now);
                     } else {
                         app.cancel();
                     }
@@ -185,7 +185,7 @@ impl Debug {
             }
             Action::Button(button, code) => {
                 if code != 1 || idle.button(now) == Gate::Forward {
-                    app.button(button, code);
+                    app.button_at(button, code, now);
                 }
                 status.update(Event::Button { button, code });
             }
@@ -247,6 +247,7 @@ impl Debug {
                 app.timezone_minutes,
                 crate::wifi::online(),
             );
+            let ride = app.ride.metrics(now);
             let (percent, mv) = status
                 .battery
                 .map(|(p, m)| (i32::from(p), i32::from(m)))
@@ -256,7 +257,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -277,6 +278,12 @@ impl Debug {
                 clock.unix_seconds.unwrap_or(0),
                 clock.millis,
                 clock.age_ms.unwrap_or(0),
+                app.ride.phase().name(),
+                ride.speed_mm_s,
+                ride.distance_mm,
+                ride.active_ms,
+                app.ride_page,
+                app.ride_layout,
                 x,
                 y,
                 status.button_counts[0],

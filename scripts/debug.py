@@ -382,6 +382,7 @@ def smoke(device):
         device.expect({'wifi': 4}, 45)
         device.wait(8)
         device.expect({'wifi': 4}, 45)
+    wake_if_dimmed(device)
     screen = device.command('STATE')['screen']
     if screen != 'controls':
         for _ in range(2):

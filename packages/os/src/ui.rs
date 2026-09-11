@@ -264,6 +264,9 @@ impl App {
                 })
                 .map(|(item, _)| item)
         };
+        if !self.settings_dragging && self.origin.is_some() && self.pressed.is_none() {
+            self.origin = None;
+        }
         if self.settings_dragging {
             self.controls.brightness = brightness_at(point.x);
         }
@@ -810,6 +813,11 @@ mod tests {
         assert_eq!(app.dim_brightness, 20);
         app.pointer(Point { x: 80, y: 235 });
         app.cancel();
+        app.release();
+        assert_eq!(app.dim_timeout_secs, 60);
+        app.pointer(Point { x: 80, y: 235 });
+        app.pointer(Point { x: 0, y: 235 });
+        app.pointer(Point { x: 80, y: 235 });
         app.release();
         assert_eq!(app.dim_timeout_secs, 60);
     }

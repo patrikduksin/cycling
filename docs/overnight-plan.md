@@ -147,12 +147,20 @@ The GPS issue contains the user-authorized public reference coordinates.
   Astra reviewed3rounds;64 Rust/25 Python/check/bothbuilds passed. Live screenshot
   attached. Next flash must deploy final same-frame recorder display refresh.
   Physical controls currently start demo; live start is USB-only, documented TODO.
-- Starting #18 saved ride history, then #19 USB export/GPX. Reuse docs/ride-recording.md
-  and the bounded record format; preserve current4test rides. Keep pagination
-  bounded and missing fields explicit. Export preflight is in
-  .local/overnight/ride-export-preflight.md. Additional live position-bearing
-  recording can be made if GNSS reacquires while working, without blocking merges.
-  GPS model/control/epoch/loss followup#34, continuousBLE/interop#36 and SD#21 remain.
+- #18 complete: PR #41 merged as b326790. Latest four completed summaries in a
+  fixed array, two cards/page, total count retained; complete records remain for
+  export. Four rides/slot22 survived flash and both captured pages. Final targeted
+  window GPS UART0 to0, companion UART1 to1, heap80276 stable, max frame25 to32ms.
+  Earlier setup/capture window GPS+2/max912ms remains unresolved and documented.
+  Astra approved after2rounds;66 Rust/25 Python/check/bothbuilds passed. Both
+  screenshots attached outside Git. Enabled firmware installed, including #17's
+  final same-frame recorder refresh.
+- Starting #19 USB export/GPX. Read .local/overnight/ride-export-preflight.md and
+  .local/overnight/ride-export-integration-preflight.md. Export complete raw slot
+  inventory, not only latest-four history; preserve gaps and do not invent UTC.
+  Preserve current four rides. A position-bearing recording can be made if GNSS
+  reacquires. After #19, small follow-up #40 adds on-device live/demo selection.
+  GPS model/control/epoch/loss #34, continuous BLE/interop #36 and SD #21 remain.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

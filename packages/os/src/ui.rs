@@ -5,6 +5,7 @@ use crate::{
     companion::{Button, Status},
     controls::Controls,
     input::Point,
+    metrics,
 };
 
 pub mod theme {
@@ -24,6 +25,7 @@ pub enum Screen {
     Home,
     Settings,
     Device,
+    Diagnostics,
     Controls,
 }
 
@@ -33,6 +35,7 @@ impl Screen {
             Self::Home => "home",
             Self::Settings => "settings",
             Self::Device => "device",
+            Self::Diagnostics => "diagnostics",
             Self::Controls => "controls",
         }
     }
@@ -101,7 +104,8 @@ impl App {
         match self.screen {
             Screen::Home => self.home_pointer(point),
             Screen::Settings => self.settings_pointer(point),
-            Screen::Device => self.point = Some(point),
+            Screen::Device => self.device_pointer(point),
+            Screen::Diagnostics => self.point = Some(point),
             Screen::Controls => self.controls.update(Some(point)),
         }
     }
@@ -124,7 +128,13 @@ impl App {
                 self.pressed = None;
                 self.settings_dragging = false;
             }
-            Screen::Device => self.point = None,
+            Screen::Device => {
+                self.point = None;
+                if self.pressed.take().is_some() {
+                    self.navigate(Screen::Diagnostics);
+                }
+            }
+            Screen::Diagnostics => self.point = None,
             Screen::Controls => self.controls.update(None),
         }
     }
@@ -156,7 +166,17 @@ impl App {
                 Button::BottomLeft => self.controls.button(button, code),
                 Button::BottomRight => self.controls.button(button, code),
             },
-            Screen::Device | Screen::Controls => match button {
+            Screen::Device => match button {
+                Button::TopLeft => self.navigate(Screen::Home),
+                Button::BottomRight => self.navigate(Screen::Diagnostics),
+                _ => {}
+            },
+            Screen::Diagnostics => {
+                if button == Button::TopLeft {
+                    self.navigate(Screen::Device);
+                }
+            }
+            Screen::Controls => match button {
                 Button::TopLeft => self.navigate(Screen::Home),
                 _ if self.screen == Screen::Controls => self.controls.button(button, code),
                 _ => {}
@@ -175,11 +195,13 @@ impl App {
         available: bool,
         status: &Status,
         wifi: &[u8],
+        metrics: &metrics::Snapshot,
     ) {
         match self.screen {
             Screen::Home => self.render_home(pixels, status, wifi),
             Screen::Settings => self.render_settings(pixels),
             Screen::Device => self.render_device(pixels, status, wifi),
+            Screen::Diagnostics => self.render_diagnostics(pixels, wifi, metrics),
             Screen::Controls => {
                 self.controls.render(pixels, available, status);
                 crate::controls::wifi_label(pixels, wifi);
@@ -217,6 +239,24 @@ impl App {
         self.pressed = self.settings_dragging.then_some(0);
         if self.settings_dragging {
             self.controls.brightness = brightness_at(point.x);
+        }
+    }
+
+    fn device_pointer(&mut self, point: Point) {
+        if self.point.is_none() {
+            self.origin = diagnostics_item(point).then_some((0, point));
+        }
+        self.point = Some(point);
+        self.pressed = self
+            .origin
+            .filter(|&(_, start)| {
+                diagnostics_item(point)
+                    && point.x.abs_diff(start.x) <= TAP_SLOP
+                    && point.y.abs_diff(start.y) <= TAP_SLOP
+            })
+            .map(|_| 0);
+        if self.origin.is_some() && self.pressed.is_none() {
+            self.origin = None;
         }
     }
 
@@ -317,11 +357,11 @@ impl App {
 
     fn render_device(&self, pixels: &mut [u16; PIXELS], status: &Status, wifi: &[u8]) {
         pixels.fill(theme::BACKGROUND);
-        text(pixels, 5, 5, b"DEVICE", theme::TEXT);
-        text(pixels, 5, 16, b"BATTERY", theme::MUTED);
+        text(pixels, 5, 3, b"DEVICE", theme::TEXT);
+        text(pixels, 5, 13, b"BATTERY", theme::MUTED);
         if let Some((percent, millivolts)) = status.battery {
-            number(pixels, 45, 16, u32::from(percent), theme::ACCENT);
-            text(pixels, 57, 16, b"%", theme::ACCENT);
+            number(pixels, 45, 13, u32::from(percent), theme::ACCENT);
+            text(pixels, 57, 13, b"%", theme::ACCENT);
             let voltage = [
                 b'0' + (millivolts / 1000) as u8,
                 b'.',
@@ -329,16 +369,16 @@ impl App {
                 b'0' + ((millivolts / 10) % 10) as u8,
                 b'V',
             ];
-            text(pixels, 45, 25, &voltage, theme::ACCENT);
+            text(pixels, 45, 22, &voltage, theme::ACCENT);
         } else {
-            text(pixels, 45, 16, b"--", theme::MUTED);
-            text(pixels, 45, 25, b"--.--V", theme::MUTED);
+            text(pixels, 45, 13, b"--", theme::MUTED);
+            text(pixels, 45, 22, b"--.--V", theme::MUTED);
         }
-        text(pixels, 5, 37, b"POWER", theme::MUTED);
+        text(pixels, 5, 32, b"POWER", theme::MUTED);
         text(
             pixels,
             33,
-            37,
+            32,
             power_label(status.power),
             if status.power.is_some() {
                 theme::ACCENT
@@ -346,18 +386,123 @@ impl App {
                 theme::MUTED
             },
         );
-        text(pixels, 5, 51, b"WIFI", theme::MUTED);
-        text(pixels, 5, 60, wifi, theme::ACCENT);
-        text(pixels, 5, 74, b"FIRMWARE", theme::MUTED);
+        text(pixels, 5, 42, b"WIFI", theme::MUTED);
+        text(pixels, 5, 51, wifi, theme::ACCENT);
+        text(pixels, 5, 61, b"FIRMWARE", theme::MUTED);
         text(
             pixels,
             5,
-            83,
+            70,
             env!("CARGO_PKG_VERSION").as_bytes(),
             theme::TEXT,
         );
-        text(pixels, 5, 98, b"TOP BACK", theme::MUTED);
+        item(
+            pixels,
+            80,
+            b"DIAGNOSTICS",
+            true,
+            true,
+            self.pressed == Some(0),
+        );
+        text(pixels, 5, 100, b"TOP BACK RIGHT OPEN", theme::MUTED);
     }
+
+    fn render_diagnostics(&self, pixels: &mut [u16; PIXELS], wifi: &[u8], m: &metrics::Snapshot) {
+        pixels.fill(theme::BACKGROUND);
+        text(pixels, 3, 3, b"DIAGNOSTICS", theme::TEXT);
+        metric_row(pixels, 3, 13, b"UP", m.uptime_ms / 1_000, b"S");
+        metric_pair(
+            pixels,
+            3,
+            22,
+            b"F MS",
+            m.frame_ms as u64,
+            b"MAX",
+            m.max_frame_ms as u64,
+        );
+        metric_row(pixels, 3, 31, b"HEAP KIB", (m.heap_free / 1024) as u64, b"");
+        metric_row(
+            pixels,
+            3,
+            40,
+            b"MIN SAMP KIB",
+            (m.heap_min_sampled / 1024) as u64,
+            b"",
+        );
+        metric_pair(
+            pixels,
+            3,
+            49,
+            b"PS KIB",
+            (m.psram_free / 1024) as u64,
+            b"OF",
+            (m.psram_capacity / 1024) as u64,
+        );
+        text(pixels, 3, 58, wifi, theme::ACCENT);
+        metric_pair(
+            pixels,
+            3,
+            67,
+            b"OK",
+            m.companion_valid as u64,
+            b"CRC",
+            m.companion_bad_crc as u64,
+        );
+        metric_pair(
+            pixels,
+            3,
+            76,
+            b"UART",
+            m.uart_errors as u64,
+            b"TCH",
+            m.touch_errors as u64,
+        );
+        text(
+            pixels,
+            3,
+            85,
+            match (m.harness, m.recording) {
+                (true, true) => b"HAR ON  REC ON",
+                (true, false) => b"HAR ON  REC OFF",
+                (false, _) => b"HAR OFF REC OFF",
+            },
+            theme::MUTED,
+        );
+        text(pixels, 3, 98, b"TOP BACK", theme::MUTED);
+    }
+}
+
+fn diagnostics_item(point: Point) -> bool {
+    (9..=230).contains(&point.x) && (240..=297).contains(&point.y)
+}
+
+fn metric_row(
+    pixels: &mut [u16; PIXELS],
+    x: usize,
+    y: usize,
+    label: &[u8],
+    value: u64,
+    suffix: &[u8],
+) -> usize {
+    text(pixels, x, y, label, theme::MUTED);
+    let value_x = x + (label.len() + 1) * 4;
+    let (digits, length) = metrics::compact(value);
+    text(pixels, value_x, y, &digits[..length], theme::TEXT);
+    text(pixels, value_x + length * 4, y, suffix, theme::MUTED);
+    value_x + (length + suffix.len()) * 4
+}
+
+fn metric_pair(
+    pixels: &mut [u16; PIXELS],
+    x: usize,
+    y: usize,
+    first: &[u8],
+    a: u64,
+    second: &[u8],
+    b: u64,
+) {
+    let next = metric_row(pixels, x, y, first, a, b"");
+    metric_row(pixels, next + 4, y, second, b, b"");
 }
 
 fn home_item(point: Point) -> Option<u8> {
@@ -485,6 +630,7 @@ pub fn text(p: &mut [u16; PIXELS], x: usize, y: usize, s: &[u8], color: u16) {
             b'U' => [5, 5, 5, 5, 7],
             b'V' => [5, 5, 5, 5, 2],
             b'W' => [5, 5, 7, 7, 5],
+            b'X' => [5, 5, 2, 5, 5],
             b'Y' => [5, 5, 2, 2, 2],
             b'.' => [0, 0, 0, 0, 2],
             b'-' => [0, 0, 7, 0, 0],
@@ -639,7 +785,50 @@ mod tests {
         let mut app = App::default();
         tap(&mut app, Point { x: 80, y: 150 });
         let mut pixels = [0; PIXELS];
-        app.render(&mut pixels, true, &Status::default(), b"WIFI NOT SET UP");
+        app.render(
+            &mut pixels,
+            true,
+            &Status::default(),
+            b"WIFI NOT SET UP",
+            &metrics::Snapshot::default(),
+        );
+        assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
+    }
+
+    #[test]
+    fn diagnostics_is_reachable_by_touch_and_button_and_returns_to_device() {
+        let mut app = App::default();
+        tap(&mut app, Point { x: 80, y: 150 });
+        tap(&mut app, Point { x: 80, y: 270 });
+        assert_eq!(app.screen, Screen::Diagnostics);
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Device);
+        app.button(Button::BottomRight, 1);
+        assert_eq!(app.screen, Screen::Diagnostics);
+
+        let mut pixels = [0; PIXELS];
+        let metrics = metrics::Snapshot {
+            uptime_ms: 3_723_000,
+            frame_ms: 20,
+            max_frame_ms: 44,
+            heap_free: 116 * 1024,
+            heap_min_sampled: 115 * 1024,
+            psram_capacity: 2 * 1024 * 1024,
+            psram_free: 2 * 1024 * 1024,
+            companion_valid: u32::MAX,
+            companion_bad_crc: 2,
+            uart_errors: 1,
+            touch_errors: 0,
+            harness: true,
+            recording: false,
+        };
+        app.render(
+            &mut pixels,
+            true,
+            &Status::default(),
+            b"WIFI TEST OK",
+            &metrics,
+        );
         assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
     }
 }

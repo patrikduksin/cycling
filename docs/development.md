@@ -98,9 +98,9 @@ same finger from becoming a new gesture on the destination screen.
 
 Only companion code 1 is assigned an action because it is the physically verified
 short click. On Home, bottom-left and bottom-right move focus and top-left
-selects an enabled item. In other screens, top-left returns Home; in Settings and
-Controls the bottom
-buttons adjust brightness. Other codes remain logged and counted for investigation
+selects an enabled item. Top-left returns toward Home, with Diagnostics returning
+through Device; in Settings and Controls the bottom buttons adjust brightness,
+and Device bottom-right opens Diagnostics. Other codes remain logged and counted for investigation
 but do not change application state. Tap, drag, cancellation and cross-screen
 suppression are verified through injection; no new physical hold, repeat or release
 semantics are claimed.
@@ -149,6 +149,29 @@ truncation points, including the `render_ms` field, while reboot, lease-expiry,
 malformed reply and recording validation remain strict. This addresses the
 specific flaky test start observed during UI work; broader harness reliability
 remains tracked separately.
+
+### On-device diagnostics (2026-09-11)
+
+Device links to a Diagnostics screen by touch or the bottom-right button. It shows
+uptime; previous and maximum frame processing time in milliseconds; free heap and
+the sampled minimum in KiB; PSRAM free and capacity; Wi-Fi; valid companion and
+CRC counts; UART and touch errors; and harness/recording state. Growing counters
+use bounded K/M notation. Runtime minima, maxima and counters are collected every
+display cycle in both build modes. The displayed copy updates once per second to
+bound redraw churn, while USB state reports retain live per-frame metrics. The
+sampled heap minimum is not a peak-allocation or stack high-water measurement.
+
+The harness-disabled image was 554,304 bytes and the restored harness-enabled
+image was 564,640 bytes. On the C606, touch navigation, top-button back and
+bottom-right reopen all passed. A representative capture showed 19 ms current and
+47 ms maximum frame work, 113 KiB free and sampled-minimum heap, 2,048 KiB PSRAM
+free of 2,048 KiB, Wi-Fi test success, zero CRC and touch errors and one existing
+UART startup overflow. The corresponding live report was 19/47 ms, 116,288 free
+and 115,860 sampled-minimum bytes, and 2,097,152 PSRAM bytes free/capacity. The
+displayed valid-frame count trailed the live report by less than its one-second
+refresh interval. Companion frames advanced from 361 to 476 without new errors or
+retained heap loss. The capture itself raised the maximum from 28 to 47 ms, so 47
+ms is harness capture timing rather than an ordinary rendering baseline.
 
 The stock ESP-IDF bootloader loads the Rust application; no ESP-IDF application
 runtime is linked. A compatible application descriptor is supplied by

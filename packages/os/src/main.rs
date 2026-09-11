@@ -13,6 +13,7 @@ use cycling_os::{
     coin,
     companion::{Decoder, Event, Status},
     input::Report,
+    metrics::Snapshot as Metrics,
     ui::App,
 };
 use esp_backtrace as _;
@@ -167,8 +168,38 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let mut last_battery = Instant::now();
     let mut last_power = Instant::now();
     let mut uart_errors = 0u32;
+    let mut heap_min_sampled = esp_alloc::HEAP.free();
+    let mut last_frame_ms = 0u32;
+    let mut max_frame_ms = 0u32;
+    let mut display_metrics = Metrics::default();
+    let mut next_metrics = 0u64;
     loop {
         let start = Instant::now();
+        let now = start.duration_since_epoch().as_millis();
+        let heap_free = esp_alloc::HEAP.free();
+        heap_min_sampled = heap_min_sampled.min(heap_free);
+        let metrics = Metrics {
+            uptime_ms: now,
+            frame_ms: last_frame_ms,
+            max_frame_ms,
+            heap_free,
+            heap_min_sampled,
+            psram_capacity: psram::CAPACITY,
+            psram_free: psram::external_free(),
+            companion_valid: decoder.valid_frames,
+            companion_bad_crc: decoder.bad_crc,
+            uart_errors,
+            touch_errors: errors,
+            harness: cfg!(feature = "debug-harness"),
+            #[cfg(feature = "debug-harness")]
+            recording: debug.recording(),
+            #[cfg(not(feature = "debug-harness"))]
+            recording: false,
+        };
+        if now >= next_metrics {
+            display_metrics = metrics;
+            next_metrics = now + 1_000;
+        }
         let previous = app.point();
         let brightness = app.controls.brightness;
         #[cfg(feature = "debug-harness")]
@@ -300,7 +331,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let visible_status = debug.status(&status);
         #[cfg(not(feature = "debug-harness"))]
         let visible_status = status;
-        app.render(&mut canvas, available, &visible_status, wifi::label());
+        app.render(
+            &mut canvas,
+            available,
+            &visible_status,
+            wifi::label(),
+            &display_metrics,
+        );
         screen.draw(&canvas);
         #[cfg(feature = "debug-harness")]
         if screenshot_requested {
@@ -323,9 +360,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             &app,
             &visible_status,
             available,
-            decoder.valid_frames,
-            decoder.bad_crc,
-            uart_errors,
+            &metrics,
         );
         #[cfg(feature = "debug-harness")]
         if screenshot_row < coin::HEIGHT {
@@ -364,11 +399,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             );
         }
         let elapsed = start.elapsed().as_millis();
-        #[cfg(feature = "debug-harness")]
-        {
-            debug.frame_ms = elapsed;
-            debug.max_frame_ms = debug.max_frame_ms.max(elapsed);
-        }
+        last_frame_ms = elapsed.min(u64::from(u32::MAX)) as u32;
+        max_frame_ms = max_frame_ms.max(last_frame_ms);
         if elapsed < 42 {
             embassy_time::Timer::after_millis(42 - elapsed).await;
         }

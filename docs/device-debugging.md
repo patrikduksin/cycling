@@ -140,12 +140,14 @@ pointer input is blocked pending release, brightness,
 touch point, button counters, battery values, whether battery data is simulated, Wi-Fi state, physical
 touch availability, companion packet/error counters, free heap, sampled minimum
 heap, PSRAM capacity and free space, previous frame processing time and maximum
-observed frame processing time.
+observed frame processing time, and the touch error counter.
 A missing touch coordinate, battery reading or power status is `-1`.
 
 Wi-Fi values are 0 unconfigured, 1 connecting, 2 awaiting DHCP, 3 connected,
 4 public HTTP test passed and 5 retrying. Heap minima are sampled once per display
-cycle, not allocator high-water marks. Stack usage is not measured. Frame time
+cycle, not allocator high-water marks. The on-device Diagnostics screen caches a
+copy for one second to bound visual refresh, while these USB values remain live.
+Stack usage is not measured. Frame time
 includes recording work but excludes the wait for the next display cycle.
 
 ## Protocol and cleanup

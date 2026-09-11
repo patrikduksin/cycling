@@ -1,0 +1,15 @@
+[
+  {"action": "expect", "state": {"screen": "home"}},
+  {"action": "tap", "point": [80, 150]},
+  {"action": "expect", "state": {"screen": "device"}},
+  {"action": "tap", "point": [80, 270]},
+  {"action": "expect", "state": {"screen": "diagnostics"}},
+  {"action": "wait", "seconds": 1.2},
+  {"action": "capture"},
+  {"action": "command", "value": "BUTTON 0 1"},
+  {"action": "expect", "state": {"screen": "device"}},
+  {"action": "command", "value": "BUTTON 2 1"},
+  {"action": "expect", "state": {"screen": "diagnostics"}},
+  {"action": "wait", "seconds": 1.2},
+  {"action": "capture"}
+]

@@ -3,6 +3,7 @@ use cycling_os::{
     coin::{HEIGHT, PIXELS, WIDTH},
     companion::{Event, Status},
     debug::{Action, PointerInjection, encode_row},
+    metrics::Snapshot as Metrics,
     screenshot::checksum,
     ui::{App, Snapshot},
 };
@@ -23,9 +24,6 @@ pub struct Debug {
     sequence: u32,
     stream: u32,
     pixels: [u16; PIXELS],
-    pub heap_min: usize,
-    pub frame_ms: u64,
-    pub max_frame_ms: u64,
 }
 impl Debug {
     pub fn new() -> Self {
@@ -44,9 +42,6 @@ impl Debug {
             sequence: 0,
             stream: 0,
             pixels: [0; PIXELS],
-            heap_min: usize::MAX,
-            frame_ms: 0,
-            max_frame_ms: 0,
         }
     }
     pub fn recording(&self) -> bool {
@@ -76,7 +71,6 @@ impl Debug {
         self.battery = None;
     }
     pub fn tick(&mut self, now: u64, app: &mut App, status: &mut Status) {
-        self.heap_min = self.heap_min.min(esp_alloc::HEAP.free());
         if self.active && now >= self.lease {
             self.end(app, status);
             println!("CYCLING_DEBUG expired");
@@ -183,9 +177,7 @@ impl Debug {
         app: &App,
         status: &Status,
         touch_ok: bool,
-        valid: u32,
-        bad_crc: u32,
-        uart_errors: u32,
+        metrics: &Metrics,
     ) {
         if let Some((id, result)) = self.pending.take() {
             let (percent, mv) = status
@@ -197,7 +189,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -219,15 +211,16 @@ impl Debug {
                 self.battery.is_some(),
                 crate::wifi::state(),
                 touch_ok,
-                esp_alloc::HEAP.free(),
-                self.heap_min,
-                crate::psram::CAPACITY,
-                crate::psram::external_free(),
-                self.frame_ms,
-                self.max_frame_ms,
-                valid,
-                bad_crc,
-                uart_errors,
+                metrics.heap_free,
+                metrics.heap_min_sampled,
+                metrics.psram_capacity,
+                metrics.psram_free,
+                metrics.frame_ms,
+                metrics.max_frame_ms,
+                metrics.companion_valid,
+                metrics.companion_bad_crc,
+                metrics.uart_errors,
+                metrics.touch_errors,
                 self.recording()
             );
         }

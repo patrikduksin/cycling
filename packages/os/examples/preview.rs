@@ -22,6 +22,7 @@ fn main() -> io::Result<()> {
             true,
             &cycling_os::companion::Status::default(),
             b"WIFI READY",
+            &cycling_os::metrics::Snapshot::default(),
         );
     }
     let mut out = io::BufWriter::new(File::create(path)?);

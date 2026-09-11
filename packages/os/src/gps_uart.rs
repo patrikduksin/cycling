@@ -1,107 +1,116 @@
-//! Interrupt-fed UART0 receiver for the C606's verified NMEA stream.
+//! DMA-fed UART0 receiver for the C606's verified NMEA stream.
 
-use core::cell::RefCell;
-use critical_section::Mutex;
 use esp_hal::{
     Blocking,
-    peripherals::{GPIO0, UART0},
-    uart::{Config, RxConfig, Uart, UartInterrupt},
+    dma::DmaRxStreamBuf,
+    dma_rx_stream_buffer,
+    peripherals::{DMA_CH1, GPIO0, UART0, UHCI0},
+    uart::{
+        Config, RxConfig, Uart,
+        uhci::{self, Uhci, UhciDmaRxTransfer},
+    },
 };
 
 const CAPACITY: usize = 8192;
+const CHUNK: usize = 256;
 
-struct State {
-    receiver: Option<Uart<'static, Blocking>>,
-    bytes: [u8; CAPACITY],
-    read: usize,
-    write: usize,
-    overflow: u32,
+/// Continuous DMA ownership for UART0. DMA_CH1 is separate from LCD DMA_CH0.
+pub struct Receiver {
+    transfer: Option<UhciDmaRxTransfer<'static, Blocking, DmaRxStreamBuf>>,
+    dma_losses: u32,
     uart_errors: u32,
-    discarding: bool,
 }
 
-static STATE: Mutex<RefCell<State>> = Mutex::new(RefCell::new(State {
-    receiver: None,
-    bytes: [0; CAPACITY],
-    read: 0,
-    write: 0,
-    overflow: 0,
-    uart_errors: 0,
-    discarding: false,
-}));
-
-pub fn init(uart: UART0<'static>, rx: GPIO0<'static>) {
+pub fn init(
+    uart: UART0<'static>,
+    rx: GPIO0<'static>,
+    uhci: UHCI0<'static>,
+    dma: DMA_CH1<'static>,
+) -> Receiver {
     let config = Config::default()
         .with_baudrate(921600)
         .with_rx(RxConfig::default().with_fifo_full_threshold(32));
-    let mut receiver = Uart::new(uart, config).unwrap().with_rx(rx);
-    receiver.set_interrupt_handler(interrupt_handler);
-    critical_section::with(|cs| STATE.borrow_ref_mut(cs).receiver = Some(receiver));
-    critical_section::with(|cs| {
-        STATE
-            .borrow_ref_mut(cs)
-            .receiver
-            .as_mut()
-            .unwrap()
-            .listen(UartInterrupt::RxFifoFull | UartInterrupt::RxTimeout)
-    });
+    let uart = Uart::new(uart, config).unwrap().with_rx(rx);
+    let mut receiver = Uhci::new(uart, uhci, dma);
+    receiver
+        .apply_rx_config(&uhci::RxConfig::default().with_chunk_limit(CHUNK as u16))
+        .unwrap();
+    let (receiver, _unused_tx) = receiver.split();
+    let buffer = dma_rx_stream_buffer!(CAPACITY, CHUNK);
+    let transfer = receiver
+        .read(buffer)
+        .unwrap_or_else(|_| panic!("GPS DMA start failed"));
+    Receiver {
+        transfer: Some(transfer),
+        dma_losses: 0,
+        uart_errors: 0,
+    }
 }
 
-pub fn drain(output: &mut [u8]) -> (usize, u32, u32) {
-    critical_section::with(|cs| {
-        let mut state = STATE.borrow_ref_mut(cs);
-        let mut count = 0;
-        while count < output.len() && state.read != state.write {
-            output[count] = state.bytes[state.read];
-            state.read = (state.read + 1) % CAPACITY;
-            count += 1;
+impl Receiver {
+    /// Copy currently available bytes without waiting. Hardware UART or DMA
+    /// faults restart reception and make the parser discard a partial sentence.
+    pub fn drain(&mut self, output: &mut [u8]) -> (usize, u32, u32) {
+        let uart = esp_hal::peripherals::UART0::regs();
+        let uart_raw = uart.int_raw().read();
+        let uart_error = uart_raw.rxfifo_ovf().bit_is_set()
+            || uart_raw.glitch_det().bit_is_set()
+            || uart_raw.frm_err().bit_is_set()
+            || uart_raw.parity_err().bit_is_set();
+        if uart_error {
+            self.uart_errors = self.uart_errors.saturating_add(1);
+            uart.int_clr().write(|w| {
+                w.rxfifo_ovf().clear_bit_by_one();
+                w.glitch_det().clear_bit_by_one();
+                w.frm_err().clear_bit_by_one();
+                w.parity_err().clear_bit_by_one()
+            });
         }
-        (count, state.overflow, state.uart_errors)
-    })
-}
 
-#[esp_hal::handler(priority = esp_hal::interrupt::Priority::Priority3)]
-fn interrupt_handler() {
-    critical_section::with(|cs| {
-        let mut state = STATE.borrow_ref_mut(cs);
-        let mut input = [0u8; 128];
-        for _ in 0..64 {
-            let result = match state.receiver.as_mut() {
-                Some(receiver) => receiver.read_buffered(&mut input),
-                None => return,
-            };
-            match result {
-                Ok(0) => break,
-                Ok(count) => {
-                    for &byte in &input[..count] {
-                        if state.discarding {
-                            if byte != b'$' {
-                                continue;
-                            }
-                            state.discarding = false;
-                        }
-                        let next = (state.write + 1) % CAPACITY;
-                        if next == state.read {
-                            state.overflow = state.overflow.saturating_add(1);
-                            state.read = state.write;
-                            state.discarding = true;
-                        } else {
-                            let write = state.write;
-                            state.bytes[write] = byte;
-                            state.write = next;
-                        }
-                    }
-                }
-                Err(_) => {
-                    state.uart_errors = state.uart_errors.saturating_add(1);
-                    state.read = state.write;
-                    state.discarding = true;
-                }
+        let dma = unsafe { &*esp32s3::DMA::ptr() };
+        let dma_raw = dma.ch(1).in_int().raw().read();
+        let dma_error = dma_raw.in_dscr_empty().bit_is_set()
+            || dma_raw.in_dscr_err().bit_is_set()
+            || dma_raw.in_err_eof().bit_is_set();
+        if uart_error || dma_error {
+            if dma_error {
+                self.dma_losses = self.dma_losses.saturating_add(1);
             }
+            dma.ch(1).in_int().clr().write(|w| {
+                w.in_dscr_empty().clear_bit_by_one();
+                w.in_dscr_err().clear_bit_by_one();
+                w.in_err_eof().clear_bit_by_one()
+            });
+            self.restart(uart_raw.rxfifo_ovf().bit_is_set());
+            return (0, self.dma_losses, self.uart_errors);
         }
-        if let Some(receiver) = state.receiver.as_mut() {
-            let pending = receiver.interrupts();
-            receiver.clear_interrupts(pending);
+
+        let mut count = 0;
+        while count < output.len() {
+            let available = self.transfer.as_ref().unwrap().peek();
+            if available.is_empty() {
+                break;
+            }
+            let copied = available.len().min(output.len() - count);
+            output[count..count + copied].copy_from_slice(&available[..copied]);
+            let consumed = self.transfer.as_mut().unwrap().consume(copied);
+            debug_assert_eq!(consumed, copied);
+            count += copied;
         }
-    });
+        (count, self.dma_losses, self.uart_errors)
+    }
+
+    fn restart(&mut self, reset_fifo: bool) {
+        let (receiver, buffer) = self.transfer.take().unwrap().cancel();
+        if reset_fifo {
+            let uart = esp_hal::peripherals::UART0::regs();
+            uart.conf0().modify(|_, w| w.rxfifo_rst().set_bit());
+            uart.conf0().modify(|_, w| w.rxfifo_rst().clear_bit());
+        }
+        self.transfer = Some(
+            receiver
+                .read(buffer)
+                .unwrap_or_else(|_| panic!("GPS DMA restart failed")),
+        );
+    }
 }

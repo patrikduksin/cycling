@@ -185,12 +185,19 @@ deterministic. Live speed and distance are `-1` until a real source exists; live
 records can include available UTC, fresh GPS coordinates and battery state. The
 final #17 live hardware run had UTC and battery but GPS was `no_fix`, so it did
 not prove a persisted location sample.
-GPS reports include `gps_state`, coordinates scaled by 10^7, the latest recent
+GPS reports include `gps_state`, coordinates scaled by 10^7, an epoch-matched
 GGA satellite count, fix age, received bytes, valid sentences and transport,
-line, checksum, parse and UART error counters. Unavailable coordinates use
+line, checksum, parse and UART error counters. `gps_overflows` counts DMA receive
+chain loss/restarts; `gps_uart_errors` counts observed UART FIFO, framing, parity
+or glitch flags. Unavailable coordinates use
 `i32::MIN`, unavailable satellites use `-1`, and unavailable age is zero; check
-`gps_state` before using them. The satellite count is aged independently and is
-not yet associated with the coordinate epoch.
+`gps_state` before using them. Satellites are exposed only when the GGA time,
+including its fractional second, matches the displayed coordinate epoch.
+
+Run `mise run gps-stress` on a harness-enabled build for a 20-second bounded
+transport check. It requires complete state replies, advancing GNSS bytes and
+valid sentences, unchanged settings and ride inventory, and no advancing DMA,
+UART, parser, checksum or line-loss counters. Output stays under `.local/`.
 
 Bluetooth test evidence is emitted as aggregate `CYCLING_BLE` log lines. The
 firmware never logs peer addresses or advertisement payloads. Run

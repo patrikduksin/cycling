@@ -4,11 +4,35 @@ const LINE: usize = 512;
 pub const STALE_MS: u64 = 3_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Epoch {
+    utc: [u8; 6],
+    nanos: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FixState {
     NoData,
     NoFix,
     Fresh,
     Stale,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Identity {
+    Unknown,
+    Pair,
+    Pdt,
+    Conflicting,
+}
+impl Identity {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Pair => "pair",
+            Self::Pdt => "pdt",
+            Self::Conflicting => "conflicting",
+        }
+    }
 }
 impl FixState {
     pub const fn name(self) -> &'static str {
@@ -24,6 +48,7 @@ impl FixState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Snapshot {
     pub state: FixState,
+    pub identity: Identity,
     pub latitude_e7: Option<i32>,
     pub longitude_e7: Option<i32>,
     pub satellites: Option<u8>,
@@ -42,6 +67,7 @@ impl Default for Snapshot {
     fn default() -> Self {
         Self {
             state: FixState::NoData,
+            identity: Identity::Unknown,
             latitude_e7: None,
             longitude_e7: None,
             satellites: None,
@@ -75,7 +101,10 @@ pub struct Parser {
     longitude_e7: i32,
     satellites: Option<u8>,
     satellites_at: Option<u64>,
+    satellites_epoch: Option<Epoch>,
     utc: Option<[u8; 6]>,
+    current_epoch: Option<Epoch>,
+    identity: Identity,
 }
 
 impl Default for Parser {
@@ -97,7 +126,10 @@ impl Default for Parser {
             longitude_e7: 0,
             satellites: None,
             satellites_at: None,
+            satellites_epoch: None,
             utc: None,
+            current_epoch: None,
+            identity: Identity::Unknown,
         }
     }
 }
@@ -161,6 +193,11 @@ impl Parser {
             self.checksum_errors = self.checksum_errors.saturating_add(1);
             return true;
         }
+        if line[1..star].starts_with(b"PAIR020,") || line[1..star].starts_with(b"PAIR001,020") {
+            self.observe_identity(Identity::Pair);
+        } else if line[1..star].starts_with(b"PDTINFO,") {
+            self.observe_identity(Identity::Pdt);
+        }
         let mut fields = line[1..star].split(|&b| b == b',');
         let Some(kind) = fields.next() else {
             return false;
@@ -200,17 +237,20 @@ impl Parser {
         let Some(quality) = decimal_u8(f[5]) else {
             return false;
         };
+        let epoch = parse_epoch(f[0]);
         self.satellites = decimal_u8(f[6]);
         self.satellites_at = self.satellites.map(|_| now);
+        self.satellites_epoch = self.satellites.and(epoch);
         if !matches!(quality, 1 | 2 | 4 | 5) {
             self.current_fix = false;
             return true;
         }
-        let Some(utc) = parse_time(f[0]) else {
+        let Some(epoch) = epoch else {
             return false;
         };
         if self.set_fix(f[1], f[2], f[3], f[4], now) {
-            self.utc = Some(utc);
+            self.utc = Some(epoch.utc);
+            self.current_epoch = Some(epoch);
             true
         } else {
             false
@@ -226,14 +266,15 @@ impl Parser {
             self.current_fix = false;
             return true;
         }
-        let Some(utc) = parse_time(f[0]) else {
+        let Some(epoch) = parse_epoch(f[0]) else {
             return false;
         };
         if f[8].len() != 6 || !f[8].iter().all(u8::is_ascii_digit) {
             return false;
         }
         if self.set_fix(f[2], f[3], f[4], f[5], now) {
-            self.utc = Some(utc);
+            self.utc = Some(epoch.utc);
+            self.current_epoch = Some(epoch);
             true
         } else {
             false
@@ -270,11 +311,13 @@ impl Parser {
         let expose = matches!(state, FixState::Fresh | FixState::Stale);
         Snapshot {
             state,
+            identity: self.identity,
             latitude_e7: expose.then_some(self.latitude_e7),
             longitude_e7: expose.then_some(self.longitude_e7),
             satellites: self
                 .satellites_at
                 .filter(|at| now.saturating_sub(*at) <= STALE_MS)
+                .filter(|_| expose && self.satellites_epoch == self.current_epoch)
                 .and(self.satellites),
             utc: self.utc,
             age_ms: age,
@@ -286,6 +329,14 @@ impl Parser {
             line_overflows: self.line_overflows,
             uart_errors: 0,
         }
+    }
+
+    fn observe_identity(&mut self, identity: Identity) {
+        self.identity = match (self.identity, identity) {
+            (Identity::Unknown, identity) | (identity, Identity::Unknown) => identity,
+            (left, right) if left == right => left,
+            _ => Identity::Conflicting,
+        };
     }
 }
 
@@ -309,10 +360,14 @@ fn decimal_u8(bytes: &[u8]) -> Option<u8> {
             .checked_add(b.checked_sub(b'0').filter(|d| *d < 10)?)
     })
 }
-fn parse_time(v: &[u8]) -> Option<[u8; 6]> {
+fn parse_epoch(v: &[u8]) -> Option<Epoch> {
     if v.len() < 6
         || !v[..6].iter().all(u8::is_ascii_digit)
-        || (v.len() > 6 && (v[6] != b'.' || !v[7..].iter().all(u8::is_ascii_digit)))
+        || (v.len() > 6
+            && (v[6] != b'.'
+                || v.len() == 7
+                || v[7..].len() > 9
+                || !v[7..].iter().all(u8::is_ascii_digit)))
     {
         return None;
     }
@@ -320,7 +375,19 @@ fn parse_time(v: &[u8]) -> Option<[u8; 6]> {
     let h = (out[0] - b'0') * 10 + out[1] - b'0';
     let m = (out[2] - b'0') * 10 + out[3] - b'0';
     let s = (out[4] - b'0') * 10 + out[5] - b'0';
-    (h < 24 && m < 60 && s <= 60).then_some(out)
+    if h >= 24 || m >= 60 || s > 60 {
+        return None;
+    }
+    let mut nanos = 0u32;
+    if v.len() > 7 {
+        for &digit in &v[7..] {
+            nanos = nanos * 10 + u32::from(digit - b'0');
+        }
+        for _ in v[7..].len()..9 {
+            nanos *= 10;
+        }
+    }
+    Some(Epoch { utc: out, nanos })
 }
 fn coordinate(
     v: &[u8],
@@ -451,5 +518,57 @@ mod tests {
         parser.data_loss();
         body(&mut parser, valid, 2);
         assert_eq!(parser.snapshot(2).state, FixState::NoFix);
+    }
+
+    #[test]
+    fn exposes_satellites_only_for_the_coordinate_epoch() {
+        let mut parser = Parser::default();
+        body(
+            &mut parser,
+            b"GNGGA,010202.00,3321.8814,S,07030.9348,W,1,09,,,M,,M,,",
+            1,
+        );
+        assert_eq!(parser.snapshot(1).satellites, Some(9));
+        body(
+            &mut parser,
+            b"GPRMC,010203.00,A,3321.8814,S,07030.9348,W,0,0,110926,,,A",
+            2,
+        );
+        assert_eq!(parser.snapshot(2).satellites, None);
+        body(
+            &mut parser,
+            b"GNGGA,010203.50,3321.8814,S,07030.9348,W,1,09,,,M,,M,,",
+            3,
+        );
+        assert_eq!(parser.snapshot(3).satellites, Some(9));
+        body(
+            &mut parser,
+            b"GPRMC,010203.00,A,3321.8814,S,07030.9348,W,0,0,110926,,,A",
+            4,
+        );
+        assert_eq!(parser.snapshot(4).satellites, None);
+        body(
+            &mut parser,
+            b"GNGGA,010203.000,3321.8814,S,07030.9348,W,1,09,,,M,,M,,",
+            5,
+        );
+        assert_eq!(parser.snapshot(5).satellites, Some(9));
+        body(
+            &mut parser,
+            b"GPRMC,010204.00,A,3321.8814,S,07030.9348,W,0,0,110926,,,A",
+            6,
+        );
+        assert_eq!(parser.snapshot(6).satellites, None);
+    }
+
+    #[test]
+    fn recognizes_only_checksum_valid_identity_protocol_responses() {
+        let mut parser = Parser::default();
+        body(&mut parser, b"PAIR001,020,0", 1);
+        assert_eq!(parser.snapshot(1).identity, Identity::Pair);
+        feed(&mut parser, "$PDTINFO,spoofed*00\n", 2);
+        assert_eq!(parser.snapshot(2).identity, Identity::Pair);
+        body(&mut parser, b"PDTINFO,model", 3);
+        assert_eq!(parser.snapshot(3).identity, Identity::Conflicting);
     }
 }

@@ -169,11 +169,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         Ok(count) => println!("CYCLING_GPS companion_open_short bytes={}", count),
         Err(error) => println!("CYCLING_GPS companion_open_failed error={:?}", error),
     }
-    gps_uart::init(p.UART0, p.GPIO0);
+    let mut gps_receiver = gps_uart::init(p.UART0, p.GPIO0, p.UHCI0, p.DMA_CH1);
     let mut gps_parser = cycling_os::gps::Parser::default();
     let mut gps_ring_overflow = 0u32;
     let mut gps_uart_errors_seen = 0u32;
-    println!("CYCLING_GPS ready uart=0 rx=0 baud=921600 buffer=8192 mode=stock_open_candidate");
+    println!(
+        "CYCLING_GPS ready uart=0 rx=0 baud=921600 dma=uhci0 channel=1 buffer=8192 mode=stock_open_candidate"
+    );
 
     let mut ledc = Ledc::new(p.LEDC);
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
@@ -360,7 +362,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             _ => {}
         }
         let mut gps_bytes = [0u8; 2048];
-        let (gps_count, gps_overflow, gps_uart_errors) = gps_uart::drain(&mut gps_bytes);
+        let (gps_count, gps_overflow, gps_uart_errors) = gps_receiver.drain(&mut gps_bytes);
         gps_parser.overflow(gps_overflow.saturating_sub(gps_ring_overflow));
         gps_ring_overflow = gps_overflow;
         if gps_uart_errors != gps_uart_errors_seen {
@@ -375,8 +377,9 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         metrics.gps = gps;
         if frame % 240 == 0 {
             println!(
-                "CYCLING_GPS state={:?} bytes={} valid={} checksum_errors={} parse_errors={} ring_overflow={} line_overflow={} uart_errors={}",
+                "CYCLING_GPS state={:?} identity={} bytes={} valid={} checksum_errors={} parse_errors={} dma_losses={} line_overflow={} uart_errors={}",
                 gps.state,
+                gps.identity.name(),
                 gps.bytes,
                 gps.valid_sentences,
                 gps.checksum_errors,

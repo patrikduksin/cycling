@@ -10,7 +10,7 @@ Ride features include a deterministic demo, live recording with GPS/battery fiel
 after reset, recent ride history, and USB raw/JSON export with GPX for recorded
 location tracks. Live speed and distance are still unavailable. BLE scan, GATT echo
 and a laptop HRS/CSC sensor simulator have been tested; continuous sensor acquisition,
-GNSS transport hardening and SD/MMC storage remain follow-ups.
+GNSS outdoor/model validation and SD/MMC storage remain follow-ups.
 
 [Ride recording and export](docs/ride-recording.md) ·
 [Device testing tools](docs/device-debugging.md) ·

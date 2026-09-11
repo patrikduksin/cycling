@@ -312,6 +312,52 @@ running ride therefore includes wall time spent in the temporary session after
 its original anchor is restored. This prototype does not read sensors or write
 ride records.
 
+## GNSS transport follow-up
+
+The original interrupt-fed UART receiver lost data under bounded load. In a
+20-second harness comparison, 451 complete `STATE` replies advanced the loss
+counter by 10 while a 20-second closed-USB control advanced it by zero. A normal
+heartbeat advanced it by one, 30 short USB reopen sessions by five, and a Wi-Fi
+reconnect plus heartbeats by two. These observations support interrupt blackout
+during long JTAG output as the leading mechanism. The radio-plus-heartbeat run
+also lost data, but it does not isolate a radio-specific contribution or assign
+every historical loss to one source.
+
+UART0 RX now feeds an 8 KiB internal-memory UHCI stream on DMA channel 1; the LCD
+continues to own DMA channel 0. The main loop copies only currently available
+bytes with bounded `peek`/`consume` operations. DMA descriptor-empty/error and
+UART FIFO/framing/parity/glitch flags are read separately. Either condition
+invalidates the partial NMEA sentence and restarts the receive transfer. A
+controlled six-second consumer stall filled the descriptor chain, recorded one
+DMA loss plus the resulting UART FIFO overflow, restarted, and resumed parsing
+355 valid sentences. This proves the tested recovery path, not indefinite input
+retention during an unbounded stall.
+
+On the final harness-enabled firmware, the same rapid test completed 451 state
+replies in 20.058 seconds while GNSS advanced 43,264 bytes and 516 valid
+sentences; UART, DMA, checksum, parser and line-loss counters were unchanged. A
+Wi-Fi reconnect plus 20 seconds of heartbeats advanced 43,008 bytes and 512
+valid sentences with those counters unchanged. A separate 15-second recording
+captured 118 frames while GNSS advanced 36,096 bytes and 403 valid sentences,
+also without an observed counter increase. These bounded runs show the original
+reproduction no longer fails; they do not prove loss-free operation under every
+load or duration.
+
+The parser associates satellite count with coordinates only when checksum-valid
+GGA and coordinate sentences have the same UTC value, including normalized
+fractional seconds. A bounded hardware probe sent the two stock-supported,
+read-only `PAIR020` and `PDTINFO` queries over recovered UART0 TX1. It produced no
+recognized checksum-valid identity response and caused two overlong input lines,
+so the probe is absent from normal startup and the fitted receiver remains
+unidentified. A separate bounded test sent the exact recovered stock close frame
+and restored the open frame four seconds later. Parser counters stayed fixed at
+11,008 bytes and 129 valid sentences between the two markers, then advanced by
+5,120 bytes and 58 sentences over the next two seconds. This verifies stream
+control through the companion command path; it does not establish electrical
+power state. The current device location is indoors; earlier indoor positions
+near the authorized reference remain valid evidence, while outdoor reception is
+still untested.
+
 ## Bluetooth
 
 The C606 now runs the pinned `esp-radio` controller with Trouble Host 0.6.0. On

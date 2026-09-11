@@ -155,12 +155,21 @@ The GPS issue contains the user-authorized public reference coordinates.
   Astra approved after2rounds;66 Rust/25 Python/check/bothbuilds passed. Both
   screenshots attached outside Git. Enabled firmware installed, including #17's
   final same-frame recorder refresh.
-- Starting #19 USB export/GPX. Read .local/overnight/ride-export-preflight.md and
-  .local/overnight/ride-export-integration-preflight.md. Export complete raw slot
-  inventory, not only latest-four history; preserve gaps and do not invent UTC.
-  Preserve current four rides. A position-bearing recording can be made if GNSS
-  reacquires. After #19, small follow-up #40 adds on-device live/demo selection.
-  GPS model/control/epoch/loss #34, continuous BLE/interop #36 and SD #21 remain.
+- #19 complete: PR #42 merged as 5af6b36. Read-only bounded full-prefix USB
+  export, raw preservation, independent format/CRC validation, JSON and GPX1.1.
+  Intentional interruption after256bytes then two identical5632byte/22slot retries.
+  Root independently checked every commit/CRC and all9fields of24samples;
+  four rides had10/4/5/5samples, no invalid slots. No recorded positions in these
+  rides, so explicit no-route result; GPX verified with synthetic fixtures.
+  Slot22/rides4/prefs50/30/10/0/heap80308/GPS UART0/companion UART1 unchanged.
+  Astra approved2rounds;66 Rust/32 Python/check/bothbuilds passed. Enabled firmware
+  installed; private exports ignored, sanitized written proof attached to PR.
+- Original queue #1 through #19 is complete. Starting small follow-up #40:
+  on-device live/demo selection, preserving History navigation and debug-session
+  restoration. Also fix stale regression helper assumptions documented in
+  .local/overnight/final-regression-preflight.md. Run70s rehearsal then full
+  persistence+600s regression before final handoff. Final checklist:
+  .local/overnight/final-handoff-checklist.md. GPS #34, BLE #36 and SD #21 remain.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

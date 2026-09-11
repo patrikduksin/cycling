@@ -6,6 +6,7 @@ use crate::{
     controls::Controls,
     input::Point,
     metrics,
+    ride::{Phase, Ride},
 };
 
 pub mod theme {
@@ -27,6 +28,7 @@ pub enum Screen {
     Device,
     Diagnostics,
     Controls,
+    Ride,
 }
 
 impl Screen {
@@ -37,6 +39,7 @@ impl Screen {
             Self::Device => "device",
             Self::Diagnostics => "diagnostics",
             Self::Controls => "controls",
+            Self::Ride => "ride",
         }
     }
 }
@@ -49,6 +52,9 @@ pub struct Snapshot {
     dim_timeout_secs: u16,
     dim_brightness: u8,
     timezone_minutes: i16,
+    ride: Ride,
+    ride_page: u8,
+    ride_layout: u8,
 }
 
 pub struct App {
@@ -59,6 +65,9 @@ pub struct App {
     pub dim_timeout_secs: u16,
     pub dim_brightness: u8,
     pub timezone_minutes: i16,
+    pub ride: Ride,
+    pub ride_page: u8,
+    pub ride_layout: u8,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
     settings_dragging: bool,
@@ -75,6 +84,9 @@ impl Default for App {
             dim_timeout_secs: 30,
             dim_brightness: 10,
             timezone_minutes: 0,
+            ride: Ride::default(),
+            ride_page: 0,
+            ride_layout: 0,
             point: None,
             origin: None,
             settings_dragging: false,
@@ -92,6 +104,9 @@ impl App {
             dim_timeout_secs: self.dim_timeout_secs,
             dim_brightness: self.dim_brightness,
             timezone_minutes: self.timezone_minutes,
+            ride: self.ride,
+            ride_page: self.ride_page,
+            ride_layout: self.ride_layout,
         }
     }
 
@@ -103,6 +118,9 @@ impl App {
         self.dim_timeout_secs = snapshot.dim_timeout_secs;
         self.dim_brightness = snapshot.dim_brightness;
         self.timezone_minutes = snapshot.timezone_minutes;
+        self.ride = snapshot.ride;
+        self.ride_page = snapshot.ride_page;
+        self.ride_layout = snapshot.ride_layout;
     }
 
     pub fn point(&self) -> Option<Point> {
@@ -122,11 +140,16 @@ impl App {
             Screen::Device => self.device_pointer(point),
             Screen::Diagnostics => self.point = Some(point),
             Screen::Controls => self.controls.update(Some(point)),
+            Screen::Ride => self.ride_pointer(point),
         }
     }
 
     /// Complete a physical or injected pointer gesture and activate its target.
     pub fn release(&mut self) {
+        self.release_at(0);
+    }
+
+    pub fn release_at(&mut self, _now: u64) {
         if core::mem::take(&mut self.suppress_pointer) {
             return;
         }
@@ -156,6 +179,15 @@ impl App {
             }
             Screen::Diagnostics => self.point = None,
             Screen::Controls => self.controls.update(None),
+            Screen::Ride => {
+                self.point = None;
+                self.origin = None;
+                match self.pressed.take() {
+                    Some(0) => self.ride_layout ^= 1,
+                    Some(1) => self.ride.reset(),
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -170,6 +202,10 @@ impl App {
     }
 
     pub fn button(&mut self, button: Button, code: u16) {
+        self.button_at(button, code, 0);
+    }
+
+    pub fn button_at(&mut self, button: Button, code: u16, now: u64) {
         if code != 1 {
             return;
         }
@@ -201,6 +237,11 @@ impl App {
                 _ if self.screen == Screen::Controls => self.controls.button(button, code),
                 _ => {}
             },
+            Screen::Ride => match button {
+                Button::TopLeft => self.navigate(Screen::Home),
+                Button::BottomLeft => self.ride_page ^= 1,
+                Button::BottomRight => self.ride.toggle(now),
+            },
         }
         self.suppress_pointer = pointer_was_held;
     }
@@ -227,6 +268,7 @@ impl App {
                 self.controls.render(pixels, available, status);
                 crate::controls::wifi_label(pixels, wifi);
             }
+            Screen::Ride => self.render_ride(pixels, metrics.uptime_ms),
         }
     }
 
@@ -297,6 +339,24 @@ impl App {
         }
     }
 
+    fn ride_pointer(&mut self, point: Point) {
+        if self.point.is_none() {
+            self.origin = ride_item(point, self.ride.phase()).map(|item| (item, point));
+        }
+        self.point = Some(point);
+        self.pressed = self
+            .origin
+            .filter(|&(item, start)| {
+                ride_item(point, self.ride.phase()) == Some(item)
+                    && point.x.abs_diff(start.x) <= TAP_SLOP
+                    && point.y.abs_diff(start.y) <= TAP_SLOP
+            })
+            .map(|(item, _)| item);
+        if self.origin.is_some() && self.pressed.is_none() {
+            self.origin = None;
+        }
+    }
+
     fn navigate(&mut self, screen: Screen) {
         self.cancel();
         self.screen = screen;
@@ -308,6 +368,7 @@ impl App {
             0 => Some(Screen::Settings),
             1 => Some(Screen::Device),
             2 => Some(Screen::Controls),
+            3 => Some(Screen::Ride),
             _ => None,
         };
         if let Some(screen) = screen {
@@ -351,7 +412,14 @@ impl App {
             self.focus == 2,
             self.pressed == Some(2),
         );
-        item(pixels, 80, b"RIDES  LATER", false, self.focus == 3, false);
+        item(
+            pixels,
+            80,
+            b"DEMO RIDE",
+            true,
+            self.focus == 3,
+            self.pressed == Some(3),
+        );
         text(pixels, 5, 100, b"TOP SELECT", theme::MUTED);
     }
 
@@ -551,6 +619,88 @@ impl App {
         );
         text(pixels, 3, 98, b"TOP BACK", theme::MUTED);
     }
+
+    fn render_ride(&self, pixels: &mut [u16; PIXELS], now: u64) {
+        pixels.fill(theme::BACKGROUND);
+        text(pixels, 4, 3, b"DEMO RIDE", theme::ACCENT);
+        text(
+            pixels,
+            4,
+            13,
+            match self.ride.phase() {
+                Phase::Ready => b"READY",
+                Phase::Running => b"RUNNING",
+                Phase::Paused => b"PAUSED",
+            },
+            theme::TEXT,
+        );
+        let page = [b'P', b'A', b'G', b'E', b' ', b'1' + self.ride_page];
+        text(pixels, 52, 13, &page, theme::MUTED);
+        let values = self.ride.metrics(now);
+        let order = match (self.ride_layout, self.ride_page) {
+            (0, 0) => [0, 1, 2],
+            (0, _) => [1, 2, 0],
+            (1, 0) => [2, 0, 1],
+            _ => [1, 0, 2],
+        };
+        for (row, field) in order.into_iter().enumerate() {
+            render_ride_field(pixels, 4, 27 + row * 13, field, values);
+        }
+        rect(
+            pixels,
+            4,
+            66,
+            72,
+            12,
+            if self.pressed == Some(0) {
+                theme::PRESSED
+            } else {
+                theme::SURFACE
+            },
+        );
+        text(
+            pixels,
+            8,
+            70,
+            if self.ride_layout == 0 {
+                b"LAYOUT A"
+            } else {
+                b"LAYOUT B"
+            },
+            theme::TEXT,
+        );
+        if self.ride.phase() == Phase::Paused {
+            rect(
+                pixels,
+                4,
+                81,
+                72,
+                12,
+                if self.pressed == Some(1) {
+                    theme::PRESSED
+                } else {
+                    theme::SURFACE
+                },
+            );
+            text(pixels, 8, 85, b"RESET", theme::TEXT);
+        }
+        text(pixels, 0, 95, b"TOP BACK L PAGE", theme::MUTED);
+        text(
+            pixels,
+            match self.ride.phase() {
+                Phase::Ready => 52,
+                Phase::Running => 48,
+                Phase::Paused => 44,
+            },
+            101,
+            match self.ride.phase() {
+                Phase::Ready => b"R START",
+                Phase::Running => b"R PAUSE",
+                Phase::Paused => b"R RESUME",
+            },
+            theme::MUTED,
+        );
+    }
 }
 
 fn diagnostics_item(point: Point) -> bool {
@@ -672,7 +822,67 @@ fn home_item(point: Point) -> Option<u8> {
 }
 
 fn home_enabled(item: u8) -> bool {
-    item < 3
+    item < 4
+}
+
+fn ride_item(point: Point, phase: Phase) -> Option<u8> {
+    if !(12..=228).contains(&point.x) {
+        return None;
+    }
+    match point.y {
+        199..=235 => Some(0),
+        244..=280 if phase == Phase::Paused => Some(1),
+        _ => None,
+    }
+}
+
+fn render_ride_field(
+    pixels: &mut [u16; PIXELS],
+    x: usize,
+    y: usize,
+    field: u8,
+    values: crate::ride::Metrics,
+) {
+    match field {
+        0 => {
+            text(pixels, x, y, b"SPEED", theme::MUTED);
+            let tenths = (values.speed_mm_s.saturating_mul(36) / 1_000).min(999);
+            number(pixels, 31, y, tenths / 10, theme::TEXT);
+            text(pixels, 39, y, b".", theme::TEXT);
+            number(pixels, 43, y, tenths % 10, theme::TEXT);
+            text(pixels, 51, y, b"KMH", theme::MUTED);
+        }
+        1 => {
+            text(pixels, x, y, b"DIST", theme::MUTED);
+            let hundredths = (values.distance_mm / 10_000).min(9_999) as u32;
+            number(pixels, 27, y, hundredths / 100, theme::TEXT);
+            text(pixels, 35, y, b".", theme::TEXT);
+            let fraction = [
+                b'0' + (hundredths / 10 % 10) as u8,
+                b'0' + (hundredths % 10) as u8,
+            ];
+            text(pixels, 39, y, &fraction, theme::TEXT);
+            text(pixels, 51, y, b"KM", theme::MUTED);
+        }
+        _ => {
+            text(pixels, x, y, b"TIME", theme::MUTED);
+            let seconds = values.active_ms / 1_000;
+            let hours = (seconds / 3_600).min(99);
+            let minutes = seconds / 60 % 60;
+            let seconds = seconds % 60;
+            let value = [
+                b'0' + (hours / 10) as u8,
+                b'0' + (hours % 10) as u8,
+                b':',
+                b'0' + (minutes / 10) as u8,
+                b'0' + (minutes % 10) as u8,
+                b':',
+                b'0' + (seconds / 10) as u8,
+                b'0' + (seconds % 10) as u8,
+            ];
+            text(pixels, 27, y, &value, theme::TEXT);
+        }
+    }
 }
 
 fn brightness_at(x: u16) -> u8 {
@@ -822,11 +1032,12 @@ mod tests {
     }
 
     #[test]
-    fn home_routes_to_all_available_screens_and_keeps_disabled_item() {
+    fn home_routes_to_all_available_screens() {
         for (point, screen) in [
             (Point { x: 80, y: 100 }, Screen::Settings),
             (Point { x: 80, y: 150 }, Screen::Device),
             (Point { x: 80, y: 210 }, Screen::Controls),
+            (Point { x: 80, y: 260 }, Screen::Ride),
         ] {
             let mut app = App::default();
             tap(&mut app, point);
@@ -834,10 +1045,6 @@ mod tests {
             app.button(Button::TopLeft, 1);
             assert_eq!(app.screen, Screen::Home);
         }
-        let mut app = App::default();
-        tap(&mut app, Point { x: 80, y: 260 });
-        assert_eq!(app.screen, Screen::Home);
-        assert_eq!(app.focus, 3);
     }
 
     #[test]
@@ -920,12 +1127,60 @@ mod tests {
         }
         assert_eq!(app.focus, 3);
         app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Ride);
+        app.button(Button::TopLeft, 1);
         assert_eq!(app.screen, Screen::Home);
-        app.button(Button::BottomLeft, 1);
+        app.button(Button::BottomRight, 1);
+        app.button(Button::BottomRight, 1);
         app.button(Button::TopLeft, 1);
         assert_eq!(app.screen, Screen::Controls);
         app.button(Button::TopLeft, 2);
         assert_eq!(app.screen, Screen::Controls);
+    }
+
+    #[test]
+    fn ride_navigation_pages_layout_and_transitions_preserve_metrics() {
+        let mut app = App::default();
+        tap(&mut app, Point { x: 80, y: 260 });
+        assert_eq!(app.screen, Screen::Ride);
+        app.button_at(Button::BottomRight, 1, 100);
+        assert_eq!(app.ride.phase(), Phase::Running);
+        assert_eq!(app.ride.metrics(2_100).distance_mm, 10_000);
+        tap(&mut app, Point { x: 80, y: 260 });
+        assert_eq!(app.ride.phase(), Phase::Running);
+        assert_eq!(app.ride.metrics(2_100).distance_mm, 10_000);
+        app.button_at(Button::BottomLeft, 1, 2_100);
+        assert_eq!(app.ride_page, 1);
+        app.pointer(Point { x: 80, y: 220 });
+        app.release_at(2_100);
+        assert_eq!(app.ride_layout, 1);
+        assert_eq!(app.ride.metrics(2_100).distance_mm, 10_000);
+        app.button_at(Button::BottomRight, 1, 2_100);
+        assert_eq!(app.ride.phase(), Phase::Paused);
+        assert_eq!(app.ride.metrics(20_000).active_ms, 2_000);
+
+        app.pointer(Point { x: 80, y: 260 });
+        app.pointer(Point { x: 0, y: 260 });
+        app.pointer(Point { x: 80, y: 260 });
+        app.release_at(20_000);
+        assert_eq!(app.ride.metrics(20_000).active_ms, 2_000);
+        tap(&mut app, Point { x: 80, y: 260 });
+        assert_eq!(app.ride.phase(), Phase::Ready);
+        assert_eq!(app.ride.metrics(20_000).active_ms, 0);
+    }
+
+    #[test]
+    fn snapshot_restores_running_ride_with_original_timeline() {
+        let mut app = App::default();
+        app.ride.start_or_resume(100);
+        let snapshot = app.snapshot();
+        app.ride.pause(200);
+        app.ride_page = 1;
+        app.ride_layout = 1;
+        app.restore(snapshot);
+        assert_eq!(app.ride.phase(), Phase::Running);
+        assert_eq!(app.ride.metrics(1_100).active_ms, 1_000);
+        assert_eq!((app.ride_page, app.ride_layout), (0, 0));
     }
 
     #[test]

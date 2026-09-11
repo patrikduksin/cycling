@@ -35,6 +35,8 @@ updates rather than moving Git branches.
 | `mise run check` | Formatting and Clippy |
 | `mise run build` | Release ELF and `.local/cycling.bin` |
 | `mise run preview` | Render the current 240×320 app preview to `.local/controls.ppm` |
+| `mise run bluetooth-echo` | Verify the owned C606 echo peripheral from Linux BlueZ |
+| `mise run ble-simulator` | Advertise the owned deterministic HRS/CSC test fixture |
 
 The OS is `no_std`, using esp-rtos and Embassy for asynchronous Wi-Fi alongside
 the display loop, with a 160 KiB internal heap. An 80×106 RGB565 canvas is enlarged
@@ -52,8 +54,8 @@ Bottom-left and bottom-right short clicks also change brightness by five
 points. The companion receiver uses UART2 RX41 at 115200 baud and validates
 packet CRCs; it sends no commands. Wi-Fi station support uses DHCP and reconnects after disconnects. The C606's
 2 MiB Quad SPI RAM is initialized at 40 MHz, tested on each boot and exposed
-through a separate external-only allocator. BLE and companion power control are
-still future work.
+through a separate external-only allocator. Bluetooth uses the same radio stack
+as Wi-Fi; companion power control is still future work.
 
 Keep allocations in internal RAM if they contain atomics, back task stacks or
 must work while the external-memory cache is disabled. The existing radio and
@@ -309,6 +311,50 @@ original screen, ride phase, monotonic anchor, page and layout; a pre-session
 running ride therefore includes wall time spent in the temporary session after
 its original anchor is restored. This prototype does not read sensors or write
 ride records.
+
+## Bluetooth
+
+The C606 now runs the pinned `esp-radio` controller with Trouble Host 0.6.0. On
+startup it performs a bounded ten-second active LE scan, reports only aggregate
+count and RSSI range, optionally runs the owned laptop HRS/CSC fixture once, and
+then advertises `Cycling Echo`. The custom characteristic accepts exactly eight
+little-endian bytes and exposes the accepted value through write, read and
+notification. The laptop client verifies a rejected short write, unchanged
+readback, notification, disconnect and reconnect. Neither tool pairs or bonds.
+
+The host reserves one connection, two L2CAP channels and four 64-byte packets in
+internal memory. BLE initialization reduced measured internal free heap from
+163,840 to 127,920 bytes; after Wi-Fi and the other device tasks settled, about
+80 KiB remained. The tested Linux client negotiated ATT MTU 60. Trouble Host's
+current server can truncate mixed short/long characteristic declarations during
+discovery at the initial ATT MTU 23, so clients that do not negotiate a larger
+MTU are not yet proven compatible.
+
+A simultaneous startup window observed 22 advertisement reports at the C606
+with RSSI -99 to -50 dBm and 27 BlueZ RSSI updates at the laptop with RSSI -100
+to -46 dBm. These are controller-specific reports from overlapping scans, not a
+claim that either radio saw the same advertisers or that their RSSI values are
+directly comparable.
+
+The owned laptop simulator advertised standard Heart Rate and Cycling Speed and
+Cadence services. The C606 discovered it, checked body-sensor location and CSC
+feature values, parsed two deterministic heart-rate notifications and three
+crank notifications, and derived 73 BPM and 60.0 RPM before returning to its
+peripheral role. This is a one-shot protocol fixture, not a continuous ride
+sensor implementation or real-sensor validation. The parsers reject malformed
+flags and lengths, bound RR intervals to four, age cadence baselines by local
+receipt time and use widened arithmetic. They do not yet apply physiological
+plausibility limits to reset-derived cadence.
+
+During a 30-second running-demo coexistence window, the two-round echo client
+passed while 696 display loops, 715 valid GPS sentences and 988 companion packets
+advanced. Wi-Fi remained verified, CRC/parser/ring counters stayed unchanged,
+and free heap ranged from 80,168 to 80,308 bytes. GPS UART errors increased by
+three around the BLE connections and recovered; this is tracked with the existing
+UART-loss investigation rather than treated as clean coexistence. All 64 sampled
+GPS states were fresh: their positions were 7.6–11.4 m from the issue-authorized
+reference with reported ages of 0–941 ms. This is an indoor position comparison,
+not a receiver accuracy or satellite-epoch claim.
 
 ## Artwork
 

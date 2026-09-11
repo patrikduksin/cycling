@@ -4,6 +4,7 @@ pub mod ble_sensor;
 pub mod coin;
 pub mod companion;
 pub mod controls;
+pub mod crash;
 pub mod debug;
 pub mod gps;
 pub mod idle;

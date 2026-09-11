@@ -2,6 +2,7 @@
 #![no_main]
 
 mod bluetooth;
+mod crash_rtc;
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
 mod display;
@@ -22,6 +23,8 @@ use cycling_os::{
     redraw::Tracker,
     ui::App,
 };
+#[cfg(feature = "debug-harness")]
+use embassy_time::Timer;
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
@@ -45,11 +48,26 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) -> ! {
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
+    let reset = crash_rtc::reset();
+    let crash = crash_rtc::take();
     println!(
         "CYCLING_BOOT version={} board=magene-c606 harness={}",
         env!("CARGO_PKG_VERSION"),
         cfg!(feature = "debug-harness")
     );
+    match crash {
+        cycling_os::crash::Marker::Valid(report) => println!(
+            "CYCLING_RESET reason={} marker={} version={}",
+            reset.name(),
+            crash.name(),
+            report.version()
+        ),
+        _ => println!(
+            "CYCLING_RESET reason={} marker={}",
+            reset.name(),
+            crash.name()
+        ),
+    }
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 96 * 1024);
     let psram = psram::init(p.PSRAM);
@@ -245,6 +263,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let heap_free = esp_alloc::HEAP.free();
         heap_min_sampled = heap_min_sampled.min(heap_free);
         let mut metrics = Metrics {
+            reset,
+            crash,
             gps: cycling_os::gps::Snapshot::default(),
             uptime_ms: now,
             frame_ms: last_frame_ms,
@@ -578,6 +598,14 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             available,
             &metrics,
         );
+        #[cfg(feature = "debug-harness")]
+        if let Some(reboot) = debug.take_reboot() {
+            Timer::after_millis(50).await;
+            match reboot {
+                debug_usb::Reboot::Panic => crash_rtc::controlled_panic(),
+                debug_usb::Reboot::Restart => esp_hal::system::software_reset(),
+            }
+        }
         #[cfg(feature = "debug-harness")]
         if screenshot_row < coin::HEIGHT {
             let mut hex = [0u8; coin::WIDTH * 4];

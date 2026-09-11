@@ -356,6 +356,37 @@ GPS states were fresh: their positions were 7.6–11.4 m from the issue-authoriz
 reference with reported ages of 0–941 ms. This is an indoor position comparison,
 not a receiver accuracy or satellite-epoch claim.
 
+## Crash and reset diagnostics
+
+The firmware reads the ESP32-S3 reset reason at startup and consumes a seven-word
+panic record from RTC fast persistent memory. The record has magic, schema, panic
+kind, an eight-byte bounded firmware version, checksum and a commit word written
+last. Missing, torn, corrupt and unsupported records are handled without blocking
+startup. Consumption clears the commit first and then the body, so an old panic
+is reported once. No flash partition, settings record or heap allocation is used.
+
+The existing `esp-backtrace` panic handler calls a small pre-hook that performs
+only fixed volatile RTC writes, prints its normal best-effort backtrace, and then
+calls a custom halt hook that resets the whole chip. The marker distinguishes a
+generic panic from the harness-only controlled test; a software reset reason by
+itself is never labeled as a panic. Diagnostics and USB state expose bounded reset
+and marker names, while the boot log also includes the version stored with a
+valid marker.
+
+On hardware, the controlled command acknowledged `ARMED`, restored its temporary
+session, printed a backtrace and rebooted. The next boot reported software reset,
+controlled marker and version 0.1.0. Brightness, dim timeout/level and timezone
+were unchanged; over the next two seconds display frames advanced from 1 to 49
+and companion packets from 0 to 70. A clean requested restart then reported
+software reset with no marker, proving the consumed record was not replayed.
+
+RTC retention is verified here only across the tested whole-chip software reset.
+It is not power-loss persistence and is not promised across reflashing or booting
+stock. The HAL also documents ambiguity in the chip-power-on reason, so that label
+is not proof against brownout or a super-watchdog reset. Cache-disabled faults,
+corrupt stacks, exceptions and watchdog paths may not reach the Rust panic hook or
+finish backtrace output.
+
 ## Artwork
 
 The demo uses a rasterized and colored version of the Rust logo. Its attribution

@@ -43,6 +43,8 @@ pub enum Action {
     Record(u16, u8),
     Persist(u8),
     Idle(u16, u8),
+    Panic,
+    Restart,
 }
 
 pub fn parse(line: &str) -> Option<(u32, Action)> {
@@ -85,6 +87,8 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
             }
             Action::Idle(seconds, dim as u8)
         }
+        "PANIC" => Action::Panic,
+        "RESTART" => Action::Restart,
         "TOUCH" => {
             let (x, y) = (number()?, number()?);
             if x >= 240 || y >= 320 {
@@ -221,6 +225,8 @@ mod tests {
             parse("DBG 16 WIFI_FAULT 2"),
             Some((16, Action::WifiFault(2)))
         );
+        assert_eq!(parse("DBG 17 PANIC"), Some((17, Action::Panic)));
+        assert_eq!(parse("DBG 18 RESTART"), Some((18, Action::Restart)));
     }
     #[test]
     fn overflow_discards_entire_line_then_recovers() {

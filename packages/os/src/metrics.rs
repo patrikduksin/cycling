@@ -2,6 +2,8 @@
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
+    pub reset: crate::crash::Reset,
+    pub crash: crate::crash::Marker,
     pub gps: crate::gps::Snapshot,
     pub uptime_ms: u64,
     pub frame_ms: u32,

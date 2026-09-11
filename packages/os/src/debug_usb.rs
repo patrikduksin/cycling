@@ -28,6 +28,14 @@ pub struct Debug {
     pixels: [u16; PIXELS],
     persistence: Option<(u32, u8)>,
     runtime: Option<(Settings, Idle)>,
+    reboot: Option<Reboot>,
+    reboot_ready: Option<Reboot>,
+}
+
+#[derive(Clone, Copy)]
+pub enum Reboot {
+    Panic,
+    Restart,
 }
 impl Debug {
     pub fn new() -> Self {
@@ -48,6 +56,8 @@ impl Debug {
             pixels: [0; PIXELS],
             persistence: None,
             runtime: None,
+            reboot: None,
+            reboot_ready: None,
         }
     }
     pub fn recording(&self) -> bool {
@@ -61,6 +71,9 @@ impl Debug {
     }
     pub fn persistence_result(&mut self, id: u32, result: &'static str) {
         self.pending = Some((id, result));
+    }
+    pub fn take_reboot(&mut self) -> Option<Reboot> {
+        self.reboot_ready.take()
     }
     fn stop(&mut self) {
         if self.recording() {
@@ -210,6 +223,17 @@ impl Debug {
                 app.dim_timeout_secs = seconds;
                 app.dim_brightness = dim;
             }
+            Action::Panic | Action::Restart => {
+                let reboot = if matches!(action, Action::Panic) {
+                    Reboot::Panic
+                } else {
+                    Reboot::Restart
+                };
+                self.end(app, status, settings, idle);
+                self.reboot = Some(reboot);
+                self.pending = Some((id, "ARMED"));
+                return;
+            }
             Action::Record(_, _) | Action::Capture => {
                 if screenshot_busy || self.recording() {
                     result = "BUSY";
@@ -257,7 +281,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -311,6 +335,9 @@ impl Debug {
                 metrics.companion_bad_crc,
                 metrics.uart_errors,
                 metrics.touch_errors,
+                metrics.reset.name(),
+                metrics.crash.name(),
+                metrics.crash.firmware(),
                 metrics.gps.state.name(),
                 metrics.gps.latitude_e7.unwrap_or(i32::MIN),
                 metrics.gps.longitude_e7.unwrap_or(i32::MIN),
@@ -325,6 +352,9 @@ impl Debug {
                 metrics.gps.uart_errors,
                 self.recording()
             );
+            if self.reboot.is_some() {
+                self.reboot_ready = self.reboot.take();
+            }
         }
         if self.recording() && now >= self.next {
             let key = self.sequence == 0;

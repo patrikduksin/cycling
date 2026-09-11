@@ -17,5 +17,6 @@ pub mod redraw;
 pub mod ride;
 pub mod ride_log;
 pub mod screenshot;
+pub mod sdmmc_probe;
 pub mod storage;
 pub mod ui;

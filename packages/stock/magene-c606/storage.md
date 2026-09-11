@@ -15,16 +15,42 @@ is overwritten with these GPIO numbers immediately before the mount call:
 | D2 | 18 |
 | D3 | 15 |
 
-Card-detect and write-protect are disabled in that configuration. These values are
-recovered driver candidates. Cycling firmware has not initialized the bus or read
-CID/CSD, so the wiring and whether the fitted device is SD or MMC/eMMC remain
-unverified. The first hardware investigation must stay at the read-only block
-layer and must not format, repair, or mount the vendor filesystem read-write. That
-work is tracked in [issue #21](https://github.com/patrikduksin/cycling/issues/21).
+Card-detect and write-protect are disabled in that configuration. A bounded native
+one-bit probe has now verified slot 1 with CLK, CMD and D0 on GPIO13, GPIO14 and
+GPIO16, and identified the fitted device as high-capacity MMC/eMMC. D1 through D3
+remain stock-derived candidates because the probe leaves them in pulled-up input
+mode. The CID product field is `004GA1`; EXT_CSD reports
+3,959,422,976 bytes in 512-byte sectors. The raw CID, CSD, sector hashes and read
+traces remain private.
 
-The current firmware pins `esp-hal` 1.1.2, which does not include its later SDMMC
-driver. Updating the HAL also changes the radio dependency set. Issue #2 therefore
-does not add a private register-level driver merely to probe this medium.
+The firmware remains pinned to `esp-hal` 1.1.2. Its small ESP32-S3-only probe is
+adapted from the upstream 1.2.1 driver and uses the matching PAC already required
+by the GNSS DMA path. It is compiled in only with `CYCLING_SDMMC_PROBE=1`; ordinary
+firmware reserves the recovered peripheral and pins but does not initialize the
+medium.
+
+The probe uses slot 1, one-bit width, 400 kHz and 3.3 V signaling. It issues only
+the audited identification, selection and read commands. On this unit SD CMD8 and
+CMD55 did not respond; after a separate CMD0, MMC CMD1 did. The probe read EXT_CSD,
+sector zero twice and the final reported sector. Both sector-zero reads matched,
+and all three bounded reads completed on two boots with the same private hashes.
+Every transfer stops or resets IDMAC before its aligned internal buffer leaves
+scope. It does not mount, format, repair, erase or write the medium.
+
+After probing, `mise run stock` verified and selected the preserved stock slot,
+then `mise run flash` restored the harness-enabled cycling application. The stock
+application does not expose a USB startup log through this harness, and no camera
+was available, so this proves the safe selector/verification path rather than a
+visual stock-screen or stock-filesystem test. The restored cycling application
+reported five rides at slot 30, unchanged preferences, working display/touch,
+verified Wi-Fi and time, advancing GNSS/companion data and the selected HRS link.
+
+Read success does not grant write ownership. Empty sectors or gaps would not prove
+that stock ignores them. Settings and rides remain in their existing explicit
+`ota_1` reservations. A future bulk backend must first map the partition and
+filesystem read-only, establish stock's resource/update use, and obtain an
+explicitly owned namespace or region with bounded and recoverable writes. Until
+then, no cycling code writes this MMC device.
 
 ## Settings journal in owned slot B
 

@@ -74,6 +74,19 @@ mise run ride-export
 mise run debug -- soak --seconds 60
 ```
 
+The native storage probe is a special read-only firmware build:
+
+```sh
+CYCLING_SDMMC_PROBE=1 mise run flash
+mise run monitor
+mise run stock
+mise run flash
+```
+
+It emits raw CID, CSD and sector hashes on a line marked `CYCLING_SDMMC_PRIVATE`;
+keep that complete output in ignored `.local/`. The ordinary final `mise run flash`
+removes the startup probe. The probe never mounts or writes the fitted medium.
+
 Each invocation creates a directory in ignored `.local/tests/` and prints its
 location. `--output` selects a new directory; existing directories are not
 replaced. `--port` or `CYCLING_PORT` selects USB. Global flags go before the

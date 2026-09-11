@@ -1,4 +1,5 @@
 /target/
+/packages/os/vendor/trouble-host/target/
 /.local/
 /packages/stock/magene-c606/.local/
 .env

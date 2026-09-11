@@ -10,6 +10,7 @@ mod gps_uart;
 mod persistent;
 mod psram;
 mod ride_recorder;
+mod sdmmc;
 mod touch;
 mod wifi;
 
@@ -106,6 +107,49 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             Settings::default()
         }
     };
+    if option_env!("CYCLING_SDMMC_PROBE") == Some("1") {
+        println!(
+            "CYCLING_SDMMC probe=start mode=native-read-only slot=1 width=1 clock_hz=400000 pins=13,14,16"
+        );
+        match sdmmc::probe(
+            p.SDHOST, p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15,
+        ) {
+            Ok(report) => {
+                let model = core::str::from_utf8(&report.product).unwrap_or("??????");
+                println!(
+                    "CYCLING_SDMMC ready kind={} model={} high_capacity={} capacity_bytes={} sector_size={} reads={} repeated_equal={}",
+                    report.kind.name(),
+                    model,
+                    report.high_capacity,
+                    report.sectors * u64::from(report.sector_size),
+                    report.sector_size,
+                    report.reads,
+                    report.repeated_equal
+                );
+                println!(
+                    "CYCLING_SDMMC_PRIVATE rca={:04x} cid={:08x},{:08x},{:08x},{:08x} csd={:08x},{:08x},{:08x},{:08x} first_hash={:08x} second_hash={:08x} last_hash={:08x}",
+                    report.rca,
+                    report.cid[0],
+                    report.cid[1],
+                    report.cid[2],
+                    report.cid[3],
+                    report.csd[0],
+                    report.csd[1],
+                    report.csd[2],
+                    report.csd[3],
+                    report.first_hash,
+                    report.second_hash,
+                    report.last_hash
+                );
+            }
+            Err(error) => println!("CYCLING_SDMMC probe_failed error={:?}", error),
+        }
+    } else {
+        // Own the recovered storage pins even in ordinary builds so later
+        // changes cannot silently assign them to another peripheral.
+        let _sdhost = p.SDHOST;
+        let _storage_pins = (p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15);
+    }
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
     let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);

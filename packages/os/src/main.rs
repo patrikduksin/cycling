@@ -176,6 +176,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     app.controls.brightness = loaded_settings.brightness;
     app.dim_timeout_secs = loaded_settings.dim_timeout_secs;
     app.dim_brightness = loaded_settings.dim_brightness;
+    app.timezone_minutes = loaded_settings.timezone_minutes;
     let mut settings_saver = Saver::new(loaded_settings);
     let mut runtime_settings = loaded_settings;
     let mut idle = Idle::new(Instant::now().duration_since_epoch().as_millis());
@@ -364,12 +365,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         if app.controls.brightness != brightness {
             println!("CYCLING_BRIGHTNESS percent={}", app.controls.brightness);
         }
-        runtime_settings = Settings::with_idle(
-            app.controls.brightness,
-            app.dim_timeout_secs,
-            app.dim_brightness,
-        )
-        .unwrap();
+        runtime_settings = runtime_settings
+            .with_brightness(app.controls.brightness)
+            .unwrap()
+            .with_idle_preferences(app.dim_timeout_secs, app.dim_brightness)
+            .unwrap()
+            .with_timezone(app.timezone_minutes)
+            .unwrap();
         // The previous LCD transfer is complete here. Explicit persistence ends
         // any temporary session before changing the live App and PWM state.
         #[cfg(feature = "debug-harness")]
@@ -431,12 +433,18 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let visible_status = debug.status(&status);
         #[cfg(not(feature = "debug-harness"))]
         let visible_status = status;
+        let clock = cycling_os::network_time::snapshot(
+            now,
+            runtime_settings.timezone_minutes,
+            wifi::online(),
+        );
         app.render(
             &mut canvas,
             available,
             &visible_status,
             wifi::label(),
             &display_metrics,
+            &clock,
         );
         screen.draw(&canvas);
         #[cfg(feature = "debug-harness")]

@@ -3,17 +3,19 @@
 pub const DEFAULT_BRIGHTNESS: u8 = 50;
 pub const DEFAULT_DIM_TIMEOUT_SECS: u16 = 30;
 pub const DEFAULT_DIM_BRIGHTNESS: u8 = 10;
+pub const DEFAULT_TIMEZONE_MINUTES: i16 = 0;
 pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
-const VERSION: u8 = 3;
-const LENGTH: usize = 13;
+const VERSION: u8 = 4;
+const LENGTH: usize = 15;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
     pub brightness: u8,
     pub dim_timeout_secs: u16,
     pub dim_brightness: u8,
+    pub timezone_minutes: i16,
 }
 
 impl Default for Settings {
@@ -22,6 +24,7 @@ impl Default for Settings {
             brightness: DEFAULT_BRIGHTNESS,
             dim_timeout_secs: DEFAULT_DIM_TIMEOUT_SECS,
             dim_brightness: DEFAULT_DIM_BRIGHTNESS,
+            timezone_minutes: DEFAULT_TIMEZONE_MINUTES,
         }
     }
 }
@@ -32,18 +35,58 @@ impl Settings {
     }
 
     pub fn with_idle(brightness: u8, dim_timeout_secs: u16, dim_brightness: u8) -> Option<Self> {
-        ((5..=100).contains(&brightness)
-            && dim_timeout_secs <= 3_600
-            && (5..=100).contains(&dim_brightness))
-        .then_some(Self {
+        Self::with_values(
             brightness,
             dim_timeout_secs,
             dim_brightness,
-        })
+            DEFAULT_TIMEZONE_MINUTES,
+        )
+    }
+
+    pub fn with_values(
+        brightness: u8,
+        dim_timeout_secs: u16,
+        dim_brightness: u8,
+        timezone_minutes: i16,
+    ) -> Option<Self> {
+        ((5..=100).contains(&brightness)
+            && dim_timeout_secs <= 3_600
+            && (5..=100).contains(&dim_brightness)
+            && (-720..=840).contains(&timezone_minutes)
+            && timezone_minutes % 30 == 0)
+            .then_some(Self {
+                brightness,
+                dim_timeout_secs,
+                dim_brightness,
+                timezone_minutes,
+            })
     }
 
     pub fn with_brightness(self, brightness: u8) -> Option<Self> {
-        Self::with_idle(brightness, self.dim_timeout_secs, self.dim_brightness)
+        Self::with_values(
+            brightness,
+            self.dim_timeout_secs,
+            self.dim_brightness,
+            self.timezone_minutes,
+        )
+    }
+
+    pub fn with_idle_preferences(self, dim_timeout_secs: u16, dim_brightness: u8) -> Option<Self> {
+        Self::with_values(
+            self.brightness,
+            dim_timeout_secs,
+            dim_brightness,
+            self.timezone_minutes,
+        )
+    }
+
+    pub fn with_timezone(self, timezone_minutes: i16) -> Option<Self> {
+        Self::with_values(
+            self.brightness,
+            self.dim_timeout_secs,
+            self.dim_brightness,
+            timezone_minutes,
+        )
     }
 
     pub fn encode(self) -> [u8; LENGTH] {
@@ -53,6 +96,7 @@ impl Settings {
         output[8] = self.brightness;
         output[9..11].copy_from_slice(&self.dim_timeout_secs.to_le_bytes());
         output[11] = self.dim_brightness;
+        output[12..14].copy_from_slice(&self.timezone_minutes.to_le_bytes());
         output
     }
 }
@@ -84,10 +128,21 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
                 None => (Settings::default(), Source::Malformed),
             };
         }
-        VERSION if payload.len() == LENGTH && payload[12] == 0 => Settings::with_idle(
+        3 if payload.len() == 13 && payload[12] == 0 => {
+            return match Settings::with_idle(
+                payload[8],
+                u16::from_le_bytes([payload[9], payload[10]]),
+                payload[11],
+            ) {
+                Some(settings) => (settings, Source::Migrated),
+                None => (Settings::default(), Source::Malformed),
+            };
+        }
+        VERSION if payload.len() == LENGTH && payload[14] == 0 => Settings::with_values(
             payload[8],
             u16::from_le_bytes([payload[9], payload[10]]),
             payload[11],
+            i16::from_le_bytes([payload[12], payload[13]]),
         ),
         VERSION => None,
         _ => return (Settings::default(), Source::Unsupported),
@@ -159,10 +214,19 @@ mod tests {
         assert_eq!(decode(Some(b"cycling\x01")).1, Source::LegacyDefaults);
         assert_eq!(decode(None).1, Source::Missing);
         assert_eq!(decode(Some(b"garbage")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x04\x32\0")).1, Source::Unsupported);
+        assert_eq!(decode(Some(b"cycling\x05\x32\0")).1, Source::Unsupported);
         assert_eq!(decode(Some(b"cycling\x02\x00\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x65\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x4b\0")).1, Source::Migrated);
+        let mut version_three = [0u8; 13];
+        version_three[..7].copy_from_slice(b"cycling");
+        version_three[7] = 3;
+        version_three[8] = 75;
+        version_three[9..11].copy_from_slice(&30u16.to_le_bytes());
+        version_three[11] = 10;
+        assert_eq!(decode(Some(&version_three)), (settings, Source::Migrated));
+        assert!(settings.with_timezone(330).is_some());
+        assert!(settings.with_timezone(331).is_none());
     }
 
     #[test]

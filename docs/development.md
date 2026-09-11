@@ -129,8 +129,9 @@ shows battery percentage and voltage, charging/battery/unknown power, the curren
 Wi-Fi connection state and firmware version. Missing battery data renders `--`
 and `--.--V`; missing or unrecognized power renders `UNKNOWN`, and unconfigured
 Wi-Fi renders `WIFI NOT SET UP`. Status older than five seconds is already cleared
-by the device loop and therefore uses these missing-value forms. Settings are not
-persisted yet; that belongs to the planned settings issue.
+by the device loop and therefore uses these missing-value forms. Brightness,
+idle controls and the fixed timezone offset now share the persistent settings
+record described below.
 
 The harness-enabled 562,064-byte image was flashed through the safe slot-B
 workflow after both build modes passed. A device scenario navigated through all
@@ -153,8 +154,9 @@ remains tracked separately.
 
 ### Persistent preferences (2026-09-11)
 
-Brightness uses a validated version 3 settings record in the two-sector journal.
-Version 2 records migrate their brightness while taking the default idle settings.
+Brightness, idle controls and timezone use a validated version 4 settings record
+in the two-sector journal. Version 3 records migrate with a UTC timezone; version
+2 records migrate their brightness while taking the default idle settings.
 The earlier `cycling` version 1 marker migrates to the 50% default. Missing,
 malformed and unsupported records also use defaults without overwriting the
 unknown record. Live changes save once they are unchanged for one second and no
@@ -249,6 +251,37 @@ after a one-second retry. Free heap changed from 116,288 to 116,240 bytes;
 companion packets advanced from 296 to 604 with no new CRC or UART errors. This
 was a short harness-enabled recovery test against one public server, not a
 long-duration network or memory soak.
+
+## Network time
+
+Once DHCP is ready, the firmware queries `time.cloudflare.com` over SNTP and
+keeps a UTC anchor against Embassy's monotonic clock. DNS and UDP receive each
+have five-second limits, the whole attempt is limited to ten seconds, ordinary
+failures use the capped retry delay, and a successful clock refreshes hourly.
+Server replies must match the selected source and echoed request timestamp and
+must have a valid server mode, version, leap state, stratum and timestamps.
+`RATE` replies impose a 15-minute deadline that survives reconnects; `DENY` and
+`RSTR` disable further requests until restart.
+
+The Device screen shows local `HH:MM` with `SYNCED`, `OFFLINE TIME`, `STALE TIME`,
+`SYNCING` or `NO TIME`. Settings cycles a persisted fixed offset in 30-minute
+steps from UTC-12:00 through UTC+14:00; UTC is the default. The offset has no
+automatic daylight-saving or timezone-rule support. There is no verified RTC,
+so every restart begins without time until a valid network reply arrives. A
+valid anchor continues advancing while temporarily offline and becomes stale
+after six hours without synchronization.
+
+On the C606, the first reply reported stratum 3 and a 32 ms UDP round trip. A
+near-simultaneous host comparison observed device UTC 3 ms behind the host
+midpoint, within a 194 ms host command window. The client anchors the server's
+transmit time at receipt and does not calculate the full four-timestamp NTP
+offset, so this observation is not a general accuracy bound. During a deliberate
+Wi-Fi reconnect the anchored time continued advancing, then the synchronization
+age fell from 29,369 ms to 250 ms after a fresh reply. Companion packets kept
+advancing with no new CRC or UART errors.
+
+The parser currently handles NTP era 0. Because it rejects wrapped timestamps
+below the Unix epoch offset, it will need era handling before February 2036.
 
 ## Artwork
 

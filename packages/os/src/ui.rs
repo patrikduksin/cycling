@@ -48,6 +48,7 @@ pub struct Snapshot {
     brightness: u8,
     dim_timeout_secs: u16,
     dim_brightness: u8,
+    timezone_minutes: i16,
 }
 
 pub struct App {
@@ -57,6 +58,7 @@ pub struct App {
     pub controls: Controls,
     pub dim_timeout_secs: u16,
     pub dim_brightness: u8,
+    pub timezone_minutes: i16,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
     settings_dragging: bool,
@@ -72,6 +74,7 @@ impl Default for App {
             controls: Controls::default(),
             dim_timeout_secs: 30,
             dim_brightness: 10,
+            timezone_minutes: 0,
             point: None,
             origin: None,
             settings_dragging: false,
@@ -88,6 +91,7 @@ impl App {
             brightness: self.controls.brightness,
             dim_timeout_secs: self.dim_timeout_secs,
             dim_brightness: self.dim_brightness,
+            timezone_minutes: self.timezone_minutes,
         }
     }
 
@@ -98,6 +102,7 @@ impl App {
         self.controls.brightness = snapshot.brightness;
         self.dim_timeout_secs = snapshot.dim_timeout_secs;
         self.dim_brightness = snapshot.dim_brightness;
+        self.timezone_minutes = snapshot.timezone_minutes;
     }
 
     pub fn point(&self) -> Option<Point> {
@@ -139,6 +144,7 @@ impl App {
                 match self.pressed.take() {
                     Some(1) => self.dim_timeout_secs = next_timeout(self.dim_timeout_secs),
                     Some(2) => self.dim_brightness = next_dim_level(self.dim_brightness),
+                    Some(3) => self.timezone_minutes = next_timezone(self.timezone_minutes),
                     _ => {}
                 }
             }
@@ -210,11 +216,12 @@ impl App {
         status: &Status,
         wifi: &[u8],
         metrics: &metrics::Snapshot,
+        clock: &crate::network_time::Snapshot,
     ) {
         match self.screen {
             Screen::Home => self.render_home(pixels, status, wifi),
             Screen::Settings => self.render_settings(pixels),
-            Screen::Device => self.render_device(pixels, status, wifi),
+            Screen::Device => self.render_device(pixels, status, wifi, clock),
             Screen::Diagnostics => self.render_diagnostics(pixels, wifi, metrics),
             Screen::Controls => {
                 self.controls.render(pixels, available, status);
@@ -404,10 +411,18 @@ impl App {
             theme::ACCENT,
         );
         text(pixels, 61, 83, b"%", theme::ACCENT);
+        text(pixels, 5, 92, b"TIMEZONE", theme::MUTED);
+        timezone(pixels, 41, 92, self.timezone_minutes, theme::ACCENT);
         text(pixels, 5, 98, b"TOP BACK", theme::MUTED);
     }
 
-    fn render_device(&self, pixels: &mut [u16; PIXELS], status: &Status, wifi: &[u8]) {
+    fn render_device(
+        &self,
+        pixels: &mut [u16; PIXELS],
+        status: &Status,
+        wifi: &[u8],
+        clock: &crate::network_time::Snapshot,
+    ) {
         pixels.fill(theme::BACKGROUND);
         text(pixels, 5, 3, b"DEVICE", theme::TEXT);
         text(pixels, 5, 13, b"BATTERY", theme::MUTED);
@@ -440,23 +455,37 @@ impl App {
         );
         text(pixels, 5, 42, b"WIFI", theme::MUTED);
         text(pixels, 5, 51, wifi, theme::ACCENT);
-        text(pixels, 5, 61, b"FIRMWARE", theme::MUTED);
+        text(pixels, 5, 61, b"FW", theme::MUTED);
         text(
             pixels,
-            5,
-            70,
+            20,
+            61,
             env!("CARGO_PKG_VERSION").as_bytes(),
             theme::TEXT,
         );
+        text(pixels, 5, 71, b"TIME", theme::MUTED);
+        match clock.local_minutes {
+            Some(minutes) => {
+                let time = [
+                    b'0' + (minutes / 60 / 10) as u8,
+                    b'0' + (minutes / 60 % 10) as u8,
+                    b':',
+                    b'0' + (minutes % 60 / 10) as u8,
+                    b'0' + (minutes % 10) as u8,
+                ];
+                text(pixels, 25, 71, &time, theme::TEXT);
+            }
+            None => text(pixels, 25, 71, b"--:--", theme::MUTED),
+        }
+        text(pixels, 5, 80, time_status(clock.status), theme::ACCENT);
         item(
             pixels,
-            80,
+            89,
             b"DIAGNOSTICS",
             true,
             true,
             self.pressed == Some(0),
         );
-        text(pixels, 5, 100, b"TOP BACK RIGHT OPEN", theme::MUTED);
     }
 
     fn render_diagnostics(&self, pixels: &mut [u16; PIXELS], wifi: &[u8], m: &metrics::Snapshot) {
@@ -525,7 +554,7 @@ impl App {
 }
 
 fn diagnostics_item(point: Point) -> bool {
-    (9..=230).contains(&point.x) && (240..=297).contains(&point.y)
+    (9..=230).contains(&point.x) && (267..=319).contains(&point.y)
 }
 
 fn settings_item(point: Point) -> Option<u8> {
@@ -533,9 +562,51 @@ fn settings_item(point: Point) -> Option<u8> {
         return None;
     }
     match point.y {
-        216..=255 => Some(1),
-        258..=297 => Some(2),
+        216..=249 => Some(1),
+        250..=280 => Some(2),
+        281..=319 => Some(3),
         _ => None,
+    }
+}
+
+fn next_timezone(value: i16) -> i16 {
+    let value = value.clamp(-720, 840).div_euclid(30) * 30;
+    if value >= 840 {
+        -720
+    } else {
+        (value + 30).min(840)
+    }
+}
+
+fn timezone(pixels: &mut [u16; PIXELS], x: usize, y: usize, minutes: i16, color: u16) {
+    if minutes == 0 {
+        text(pixels, x, y, b"UTC", color);
+        return;
+    }
+    let hours = minutes.unsigned_abs() / 60;
+    let remainder = minutes.unsigned_abs() % 60;
+    let value = [
+        b'U',
+        b'T',
+        b'C',
+        if minutes < 0 { b'-' } else { b'+' },
+        b'0' + (hours / 10) as u8,
+        b'0' + (hours % 10) as u8,
+        b':',
+        b'0' + (remainder / 10) as u8,
+        b'0' + (remainder % 10) as u8,
+    ];
+    text(pixels, x, y, &value, color);
+}
+
+fn time_status(status: crate::network_time::Status) -> &'static [u8] {
+    use crate::network_time::Status;
+    match status {
+        Status::Unavailable => b"NO TIME",
+        Status::Syncing => b"SYNCING",
+        Status::Fresh => b"SYNCED",
+        Status::Offline => b"OFFLINE TIME",
+        Status::Stale => b"STALE TIME",
     }
 }
 
@@ -717,6 +788,7 @@ pub fn text(p: &mut [u16; PIXELS], x: usize, y: usize, s: &[u8], color: u16) {
             b'.' => [0, 0, 0, 0, 2],
             b'-' => [0, 0, 7, 0, 0],
             b'+' => [0, 2, 7, 2, 0],
+            b':' => [0, 2, 0, 2, 0],
             b'0' => [7, 5, 5, 5, 7],
             b'1' => [2, 6, 2, 2, 7],
             b'2' => [6, 1, 7, 4, 7],
@@ -811,6 +883,8 @@ mod tests {
         assert_eq!(app.dim_timeout_secs, 60);
         tap(&mut app, Point { x: 80, y: 275 });
         assert_eq!(app.dim_brightness, 20);
+        tap(&mut app, Point { x: 80, y: 300 });
+        assert_eq!(app.timezone_minutes, 30);
         app.pointer(Point { x: 80, y: 235 });
         app.cancel();
         app.release();
@@ -870,6 +944,7 @@ mod tests {
         assert_eq!(app.controls.brightness, 50);
         assert_eq!(app.dim_timeout_secs, 30);
         assert_eq!(app.dim_brightness, 10);
+        assert_eq!(app.timezone_minutes, 0);
         assert_eq!(app.point(), None);
         assert_eq!(app.pressed, None);
     }
@@ -888,8 +963,46 @@ mod tests {
             &Status::default(),
             b"WIFI NOT SET UP",
             &metrics::Snapshot::default(),
+            &crate::network_time::Snapshot::default(),
         );
         assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
+    }
+
+    #[test]
+    fn timezone_cycle_is_bounded_and_clock_states_render() {
+        assert_eq!(next_timezone(825), 840);
+        assert_eq!(next_timezone(840), -720);
+        assert_eq!(next_timezone(-719), -690);
+        let app = App {
+            screen: Screen::Device,
+            timezone_minutes: 330,
+            ..App::default()
+        };
+        let mut pixels = [0; PIXELS];
+        let clock = crate::network_time::Snapshot {
+            unix_seconds: Some(1_700_000_000),
+            millis: 0,
+            local_minutes: Some(5 * 60 + 30),
+            age_ms: Some(2_000),
+            status: crate::network_time::Status::Fresh,
+        };
+        app.render(
+            &mut pixels,
+            true,
+            &Status::default(),
+            b"WIFI TEST OK",
+            &metrics::Snapshot::default(),
+            &clock,
+        );
+        assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
+        assert_eq!(
+            time_status(crate::network_time::Status::Offline),
+            b"OFFLINE TIME"
+        );
+        assert_eq!(
+            time_status(crate::network_time::Status::Stale),
+            b"STALE TIME"
+        );
     }
 
     #[test]
@@ -931,6 +1044,7 @@ mod tests {
             &Status::default(),
             b"WIFI TEST OK",
             &metrics,
+            &crate::network_time::Snapshot::default(),
         );
         assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
     }

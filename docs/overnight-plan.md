@@ -87,14 +87,29 @@ Starting baseline main e7df373, enabled device Home, four rides/slot22.
   absent from final startup. User confirms indoors; model/outdoor work stays open.
   Astra approved,69Rust/39Python/check/both builds passed. Final enabled firmware
   restored, four rides/slot22 and prefs50/30/10/60 preserved.
-- Starting #36 BLE MTU23 and continuous sensors. Sol owns source/Git/device after
-  handoff. User authorized a worn, powered Polar H10; its details are private in
-  .local/overnight/authorized-heart-sensor.json. Do not publish identifiers or
-  actual personal readings. Use aggregate comparison results and labeled laptop
-  cadence fixtures. BLE preflights: ble-followup-preflight.md and
-  ble-mtu-repro-preflight.md under .local/overnight/.
-  SD preflight .local/overnight/sdmmc-followup-preflight.md; reclaim preflight
-  .local/overnight/ride-reclaim-followup-preflight.md.
+- #36 complete: PR #48 merged,3ddf13f. Pinned licensed Trouble Host0.6
+  patch fixes MTU23 mixed-length discovery. Two physical minimum-MTU echo sessions
+  passed full UUID discovery/write/notify/read and rejected short writes without
+  changing data. Continuous one-peer HRS or CSC now has freshness/contact/reconnect
+  handling, live UI and fresh Live record fields. Real authorized H10 connected
+  and reconnected; laptop CSC-only fixture verified cadence/stale/reconnect.
+  Final45.435s HRS coexistence added46notifications/975GPS/1513companion messages,
+  faults unchanged, heap80336→80336, sampled minimum79848. Astra approved in two
+  rounds.75Rust/15vendored/42Python/check/both builds passed. Final actual-HRS
+  harness-enabled firmware remains on device; captures remain outside Git.
+  New explicit agent ride5,slots22..29,18HRS-bearing samples, is saved. Current
+  inventory5rides/slot30. Export .local/exports/1789134457934860141 preserves the
+  prior5632-byte four-ride prefix exactly. Keep actual readings/peer IDs private.
+  Current observed prefs50/30/20/-180 supersede earlier50/30/10/60; preserve them.
+  No PERSIST was issued to make that change; compare each test's current baseline.
+- Starting #21 native read-only SD/MMC probe. Sol owns source/Git/device after
+  handoff. Follow .local/overnight/sdmmc-followup-preflight.md, keep pinned HAL,
+  default1bit400kHz, explicit read-only commands and bounded IDMAC lifetime.
+  No vendor filesystem writes, format, repartitioning or unknown power GPIOs.
+  Then #44 explicit reclaim after verified export. Reclaim preflight is
+  .local/overnight/ride-reclaim-followup-preflight.md; now five known agent rides,
+  including real-HRS test ride5 whose raw data remains private. Re-export current
+  contents and identify any new records before a destructive test.
 
 ## Progress
 

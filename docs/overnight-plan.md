@@ -67,6 +67,21 @@ At follow-up start12:28UTC, sudo works and its original expiry is still
 13:37Chile/16:37UTC today. Do not assume the window renews automatically.
 Starting baseline main e7df373, enabled device Home, four rides/slot22.
 
+## Follow-up progress
+
+- #43 complete: PR #46 merged. Host cleanup disables heartbeat before awaiting
+  END. Baseline forced handoffs failed5/12 and left an orphan PING after each
+  successful cleanup; fixed20/20 forced plus10/10 normal heartbeat sessions
+  passed with no orphan replies. Parser stays strict. Astra approved one round;
+  67Rust/38Python/check passed. No firmware source changed or reflash needed.
+  Device remains enabled. Four rides/slot22 and observed preferences50/30/10/60
+  preserved. Timezone60 is the current baseline; historical0 must not be restored.
+- Starting #34 GNSS reproduce/diagnose transport losses, epoch association and
+  receiver/control research. Sol owns implementation/device after handoff.
+  SD preflight .local/overnight/sdmmc-followup-preflight.md; BLE preflight
+  .local/overnight/ble-followup-preflight.md; reclaim preflight
+  .local/overnight/ride-reclaim-followup-preflight.md. All are private working notes.
+
 ## Progress
 
 - Planning complete. Issues #1 through #19 created.

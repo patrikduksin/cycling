@@ -104,7 +104,16 @@ The GPS issue contains the user-authorized public reference coordinates.
   host Back-navigation bug; fixed with fake-device tests and reran only soak.
   Earlier failure is documented separately. Astra approved;47 Rust/24 Python,
   check/build passed. Device remains enabled with original settings restored.
-- Starting #13 performance. Additional ignored preflights now include
+- #13 complete: PR #33 merged as be3152e. Exact image comparison skips unchanged
+  LCD writes using16960 bytes external PSRAM. Typical sampled work20 to3ms;
+  changed Ride frame22ms, same loop frequency/bus timing and no power claim.
+  Static windows0draws/115skips, Ride4/112. Heap unchanged; both builds/hardware
+  baselines passed, enabled restored, targeted regression/60s soak passed.
+  Astra approved;48 Rust/24 Python/check passed.
+- Starting #14 GPS. Private gps-preflight-reviewer.md now has exact companion
+  open/close frames and stock-confirmed TX42/RX41; gps-parser-preflight.md and
+  gps-uart-buffer-preflight.md cover validity/buffering. Hardware remains unverified.
+  Additional ignored preflights now include
   ride-ui-preflight.md, crash-preflight.md, regression-preflight.md,
   performance-preflight.md and ride-storage-option.md.
   Preflights for UI, networking, settings, dimming,

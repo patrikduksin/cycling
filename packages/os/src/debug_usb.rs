@@ -34,6 +34,8 @@ pub struct Debug {
         u32,
         Option<(cycling_os::ride::Action, cycling_os::ride_log::Source)>,
     )>,
+    export: Option<(u32, Option<u16>)>,
+    export_hex: [u8; cycling_os::ride_log::SLOT_SIZE * 2],
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +65,8 @@ impl Debug {
             reboot: None,
             reboot_ready: None,
             ride: None,
+            export: None,
+            export_hex: [0; cycling_os::ride_log::SLOT_SIZE * 2],
         }
     }
     pub fn recording(&self) -> bool {
@@ -90,6 +94,37 @@ impl Debug {
     }
     pub fn ride_result(&mut self, id: u32, ok: bool) {
         self.pending = Some((id, if ok { "OK" } else { "RIDE_FAILED" }));
+    }
+    pub fn take_export(&mut self) -> Option<(u32, Option<u16>)> {
+        self.export.take()
+    }
+    pub fn export_error(&mut self, id: u32, error: &'static str) {
+        println!("CYCLING_EXPORT {} ERROR {}", id, error);
+    }
+    pub fn export_info(&mut self, id: u32, upper: usize, status: &'static str) {
+        println!(
+            "CYCLING_EXPORT {} INFO {} {} {} {}",
+            id,
+            cycling_os::ride_log::VERSION,
+            cycling_os::ride_log::SLOT_SIZE,
+            upper,
+            status
+        );
+    }
+    pub fn export_slot(&mut self, id: u32, index: u16, slot: &cycling_os::ride_log::Slot) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for (index, byte) in slot.0.iter().copied().enumerate() {
+            self.export_hex[index * 2] = HEX[usize::from(byte >> 4)];
+            self.export_hex[index * 2 + 1] = HEX[usize::from(byte & 15)];
+        }
+        let encoded = unsafe { core::str::from_utf8_unchecked(&self.export_hex) };
+        esp_println::println!(
+            "CYCLING_EXPORT {} SLOT {} {:08x} {}",
+            id,
+            index,
+            cycling_os::ride_log::transport_checksum(&slot.0),
+            encoded
+        );
     }
     fn stop(&mut self) {
         if self.recording() {
@@ -172,6 +207,8 @@ impl Debug {
                     | Action::RideInit
                     | Action::Panic
                     | Action::Restart
+                    | Action::ExportInfo
+                    | Action::ExportSlot(_)
             )
         {
             self.pending = Some((id, "NO_SESSION"));
@@ -265,6 +302,14 @@ impl Debug {
             Action::RideInit => {
                 self.end(app, status, settings, idle);
                 self.ride = Some((id, None));
+                return;
+            }
+            Action::ExportInfo => {
+                self.export = Some((id, None));
+                return;
+            }
+            Action::ExportSlot(index) => {
+                self.export = Some((id, Some(index)));
                 return;
             }
             Action::Record(_, _) | Action::Capture => {

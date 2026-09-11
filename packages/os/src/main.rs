@@ -547,7 +547,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             cadence_tenths: None,
             battery_percent: status.battery.map(|(percent, _)| percent),
         };
-        let ride_flash = ride_recorder.service(&mut settings_store, now, ride_sample);
+        let mut ride_flash = ride_recorder.service(&mut settings_store, now, ride_sample);
         if ride_recorder.status() != last_recording_status {
             last_recording_status = ride_recorder.status();
             println!(
@@ -574,6 +574,25 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             #[cfg(feature = "debug-harness")]
             if result.token != 0 {
                 debug.ride_result(result.token, result.ok);
+            }
+        }
+        #[cfg(feature = "debug-harness")]
+        if let Some((id, slot)) = debug.take_export() {
+            if !ride_recorder.exportable() {
+                debug.export_error(id, "BUSY");
+            } else if let Some(index) = slot {
+                if usize::from(index) >= ride_recorder.next_slot() {
+                    debug.export_error(id, "BOUNDS");
+                } else {
+                    let mut bytes = cycling_os::ride_log::Slot::default();
+                    match settings_store.ride_read_slot(usize::from(index), &mut bytes) {
+                        Ok(()) => debug.export_slot(id, index, &bytes),
+                        Err(_) => debug.export_error(id, "READ"),
+                    }
+                    ride_flash = true;
+                }
+            } else {
+                debug.export_info(id, ride_recorder.next_slot(), ride_recorder.status().name());
             }
         }
         metrics.ride_recording = ride_recorder.status();

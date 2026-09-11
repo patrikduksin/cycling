@@ -49,6 +49,8 @@ pub enum Action {
     Restart,
     Ride(RideAction, RideSource),
     RideInit,
+    ExportInfo,
+    ExportSlot(u16),
 }
 
 pub fn parse(line: &str) -> Option<(u32, Action)> {
@@ -106,6 +108,11 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
             "RESUME" => Action::Ride(RideAction::Resume, RideSource::Demo),
             "FINISH" => Action::Ride(RideAction::Finish, RideSource::Demo),
             "INIT" => Action::RideInit,
+            _ => return None,
+        },
+        "EXPORT" => match words.next()? {
+            "INFO" => Action::ExportInfo,
+            "SLOT" => Action::ExportSlot(words.next()?.parse().ok()?),
             _ => return None,
         },
         "TOUCH" => {
@@ -230,6 +237,8 @@ mod tests {
             "DBG 1 IDLE 3601 10",
             "DBG 1 IDLE 2 4",
             "DBG 1 WIFI_FAULT 3",
+            "DBG 1 EXPORT",
+            "DBG 1 EXPORT SLOT 65536",
         ] {
             assert_eq!(parse(line), None, "{line}");
         }
@@ -255,6 +264,11 @@ mod tests {
             Some((21, Action::Ride(RideAction::Start, RideSource::Live)))
         );
         assert_eq!(parse("DBG 20 RIDE INIT"), Some((20, Action::RideInit)));
+        assert_eq!(parse("DBG 22 EXPORT INFO"), Some((22, Action::ExportInfo)));
+        assert_eq!(
+            parse("DBG 23 EXPORT SLOT 4095"),
+            Some((23, Action::ExportSlot(4095)))
+        );
     }
     #[test]
     fn overflow_discards_entire_line_then_recovers() {

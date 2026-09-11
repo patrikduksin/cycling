@@ -40,6 +40,7 @@ pub enum Action {
     Button(Button, u16),
     Battery(u8, u16, u8),
     Record(u16, u8),
+    Persist(u8),
 }
 
 pub fn parse(line: &str) -> Option<(u32, Action)> {
@@ -61,6 +62,13 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
         "WIFI" => Action::Wifi,
         "STOP" => Action::Stop,
         "CAPTURE" => Action::Capture,
+        "PERSIST" => {
+            let brightness = number()?;
+            if !(5..=100).contains(&brightness) {
+                return None;
+            }
+            Action::Persist(brightness as u8)
+        }
         "TOUCH" => {
             let (x, y) = (number()?, number()?);
             if x >= 240 || y >= 320 {
@@ -178,6 +186,8 @@ mod tests {
             "DBG 1 BUTTON 3 1",
             "DBG 1 STATE extra",
             "DBG 1 BUTTON 0 0",
+            "DBG 1 PERSIST 4",
+            "DBG 1 PERSIST 101",
         ] {
             assert_eq!(parse(line), None, "{line}");
         }
@@ -186,6 +196,7 @@ mod tests {
             Some((12, Action::Touch(Point { x: 239, y: 319 })))
         );
         assert_eq!(parse("DBG 13 CANCEL"), Some((13, Action::Cancel)));
+        assert_eq!(parse("DBG 14 PERSIST 75"), Some((14, Action::Persist(75))));
     }
     #[test]
     fn overflow_discards_entire_line_then_recovers() {

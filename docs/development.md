@@ -47,7 +47,8 @@ handlers. The controls diagnostics shows battery percentage, voltage and power
 status, counts button events, and tests brightness from 5 to 100 percent.
 Target cadence is 24 fps. Touch uses the stock 0x5a report protocol over I2C;
 brightness changes the existing backlight PWM duty. It resets to 50 percent on
-boot. Bottom-left and bottom-right short clicks also change brightness by five
+first use, then restores the last valid saved value before configuring PWM.
+Bottom-left and bottom-right short clicks also change brightness by five
 points. The companion receiver uses UART2 RX41 at 115200 baud and validates
 packet CRCs; it sends no commands. Wi-Fi station support uses DHCP and reconnects after disconnects. The C606's
 2 MiB Quad SPI RAM is initialized at 40 MHz, tested on each boot and exposed
@@ -149,6 +150,23 @@ truncation points, including the `render_ms` field, while reboot, lease-expiry,
 malformed reply and recording validation remain strict. This addresses the
 specific flaky test start observed during UI work; broader harness reliability
 remains tracked separately.
+
+### Persistent preferences (2026-09-11)
+
+Brightness uses a validated version 2 settings record in the two-sector journal.
+The earlier `cycling` version 1 marker migrates to the 50% default. Missing,
+malformed and unsupported records also use defaults without overwriting the
+unknown record. Live changes save once they are unchanged for one second and no
+gesture is active; failures wait five seconds, and an uncertain result is reloaded
+before another erase. Temporary debug sessions neither stage nor flush changes.
+
+The hardware persistence test held an injected 65% value beyond the debounce,
+reflashed safely and recovered the original 50%. It then explicitly saved 65%,
+reflashed and recovered 65%, before saving and reflashing back to the original
+50%. The two verified writes took 35 and 34 ms. Companion frames continued, CRC
+and UART counts did not increase, and free heap stayed at 116,240 bytes. One save
+raised its session maximum frame work from 23 to 55 ms; another session already
+contained an unrelated 898 ms startup/Wi-Fi sample before the save.
 
 ### On-device diagnostics (2026-09-11)
 

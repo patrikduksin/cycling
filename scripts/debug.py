@@ -126,6 +126,7 @@ class Device:
             termios.tcsetattr(self.fd, termios.TCSANOW, attributes)
             self.log = (self.directory / 'usb.log').open('wb')
             self.baseline = self.command('BEGIN')
+            self.expected_brightness = self.baseline['brightness']
             if self.baseline.get('protocol') != 1:
                 raise RuntimeError('Unsupported device debug protocol')
             self.active = True
@@ -153,7 +154,7 @@ class Device:
                 self.active = False
                 if self.final['active'] or self.final['fake_battery'] or self.final['x'] != -1:
                     raise RuntimeError('Test session did not release injected state')
-                if self.final['brightness'] != self.baseline['brightness']:
+                if self.final['brightness'] != self.expected_brightness:
                     raise RuntimeError('Test session did not restore brightness')
                 if (self.final['screen'], self.final['focus'], self.final['pressed'],
                         self.final['input_blocked']) != \
@@ -245,6 +246,8 @@ class Device:
         result, state = self.replies.pop(id)
         if result != 'OK':
             raise RuntimeError(f'{command}: {result}')
+        if command.startswith('PERSIST '):
+            self.expected_brightness = state['brightness']
         self.completed = id
         return state
 

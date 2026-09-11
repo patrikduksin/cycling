@@ -14,6 +14,7 @@ use cycling_os::{
     companion::{Decoder, Event, Status},
     input::Report,
     metrics::Snapshot as Metrics,
+    preferences::{Saver, Settings},
     ui::App,
 };
 use esp_backtrace as _;
@@ -58,17 +59,28 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         psram.allocator_probe,
         psram.allocator_alignment
     );
-    match persistent::init(p.FLASH) {
-        Ok(report) => println!(
-            "CYCLING_STORAGE ready backend=ota_1_tail base=0x{:08x} sectors=2 capacity={} initialized={} sequence={} length={}",
-            persistent::BASE,
-            cycling_os::storage::CAPACITY,
-            report.initialized,
-            report.sequence,
-            report.length
-        ),
-        Err(error) => println!("CYCLING_STORAGE error={:?}", error),
-    }
+    let (mut settings_store, loaded) = persistent::Store::open(p.FLASH);
+    let loaded_settings = match loaded {
+        Ok(loaded) => {
+            println!(
+                "CYCLING_STORAGE ready backend=ota_1_tail base=0x{:08x} sectors=2 capacity={} source={:?} sequence={:?} length={} brightness={}",
+                persistent::BASE,
+                cycling_os::storage::CAPACITY,
+                loaded.source,
+                loaded.sequence,
+                loaded.length,
+                loaded.settings.brightness
+            );
+            loaded.settings
+        }
+        Err(error) => {
+            println!(
+                "CYCLING_STORAGE load_failed error={:?} using=defaults",
+                error
+            );
+            Settings::default()
+        }
+    };
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
     let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);
@@ -136,7 +148,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     backlight
         .configure(channel::config::Config {
             timer: &timer,
-            duty_pct: 50,
+            duty_pct: loaded_settings.brightness,
             drive_mode: DriveMode::PushPull,
         })
         .unwrap();
@@ -160,6 +172,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let mut screenshot_frame = 0u32;
     let mut frame = 0u32;
     let mut app = App::default();
+    app.controls.brightness = loaded_settings.brightness;
+    let mut settings_saver = Saver::new(loaded_settings);
     let mut last_touch = Instant::now();
     let mut errors = 0u32;
     let mut decoder = Decoder::default();
@@ -327,6 +341,36 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             backlight.set_duty(app.controls.brightness).unwrap();
             println!("CYCLING_BRIGHTNESS percent={}", app.controls.brightness);
         }
+        // The previous LCD transfer is complete here. Explicit persistence ends
+        // any temporary session before changing the live App and PWM state.
+        #[cfg(feature = "debug-harness")]
+        let explicit_settings = if let Some((id, brightness)) = debug.take_persistence() {
+            let settings = Settings::new(brightness).unwrap();
+            let save_started = Instant::now();
+            match settings_store.save(settings) {
+                Ok(record) => {
+                    app.controls.brightness = brightness;
+                    backlight.set_duty(brightness).unwrap();
+                    settings_saver.saved(settings);
+                    println!(
+                        "CYCLING_SETTINGS persisted sequence={} brightness={} write_ms={}",
+                        record.sequence,
+                        brightness,
+                        save_started.elapsed().as_millis()
+                    );
+                    debug.persistence_result(id, "OK");
+                }
+                Err(error) => {
+                    println!("CYCLING_SETTINGS persist_failed error={:?}", error);
+                    debug.persistence_result(id, "PERSIST_FAILED");
+                }
+            }
+            true
+        } else {
+            false
+        };
+        #[cfg(not(feature = "debug-harness"))]
+        let explicit_settings = false;
         #[cfg(feature = "debug-harness")]
         let visible_status = debug.status(&status);
         #[cfg(not(feature = "debug-harness"))]
@@ -339,6 +383,36 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             &display_metrics,
         );
         screen.draw(&canvas);
+        #[cfg(feature = "debug-harness")]
+        let temporary_settings = debug.active;
+        #[cfg(not(feature = "debug-harness"))]
+        let temporary_settings = false;
+        let current_settings = Settings::new(app.controls.brightness).unwrap();
+        if !explicit_settings
+            && settings_saver.ready(
+                now,
+                current_settings,
+                temporary_settings,
+                app.point().is_some(),
+            )
+        {
+            let save_started = Instant::now();
+            match settings_store.save(current_settings) {
+                Ok(record) => {
+                    settings_saver.saved(current_settings);
+                    println!(
+                        "CYCLING_SETTINGS saved sequence={} brightness={} write_ms={}",
+                        record.sequence,
+                        current_settings.brightness,
+                        save_started.elapsed().as_millis()
+                    );
+                }
+                Err(error) => {
+                    settings_saver.failed(now);
+                    println!("CYCLING_SETTINGS save_failed error={:?}", error);
+                }
+            }
+        }
         #[cfg(feature = "debug-harness")]
         if screenshot_requested {
             snapshot.copy_from_slice(&canvas);

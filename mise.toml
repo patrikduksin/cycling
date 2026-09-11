@@ -61,3 +61,7 @@ run = "python scripts/debug.py"
 [tasks.e2e]
 description = "Run device UI and Wi-Fi recovery tests and save visual evidence"
 run = "python scripts/debug.py smoke"
+
+[tasks.persistence-test]
+description = "Verify preferences across temporary sessions and safe reflashes"
+run = "python scripts/persistence_test.py"

@@ -163,6 +163,12 @@ before using it.
 Ride reports include phase, speed in millimeters per second, distance in
 millimeters, active elapsed milliseconds, page and layout. These are deterministic
 demo values and do not represent GPS, sensors or a stored ride.
+GPS reports include `gps_state`, coordinates scaled by 10^7, the latest recent
+GGA satellite count, fix age, received bytes, valid sentences and transport,
+line, checksum, parse and UART error counters. Unavailable coordinates use
+`i32::MIN`, unavailable satellites use `-1`, and unavailable age is zero; check
+`gps_state` before using them. The satellite count is aged independently and is
+not yet associated with the coordinate epoch.
 
 ## Protocol and cleanup
 

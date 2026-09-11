@@ -17,7 +17,7 @@
 | Buttons / power | UART2 RX41 at 115200; all three short-click IDs mapped | Three buttons and brightness shortcuts physically confirmed; power control pending |
 | Battery / charge | Companion streams voltage, percentage and power status | Percentage and USB power transition physically confirmed; calibration pending |
 | Sound | Companion buzzer control; main audio-resource management | Buzzer lead; speaker/codec unconfirmed |
-| GNSS | NMEA and adaptive receiver logic; PAIR/PDTINFO/CCMSG/CFGMSG command families | Exact receiver and UART path pending |
+| GNSS | UART0 RX0 at 921600; live GN NMEA | Verified receive path; exact receiver and control effect pending |
 | Motion | Companion `icm42607` and `qma6100` ID checks | Variant candidates |
 | Pressure | Companion `spl0601`, `spl06001`, `spa06003` diagnostic names | Variant candidates; spelling preserved |
 | Resource storage | SD/MMC, FAT, `/sdcard` mount | Medium, capacity and pins pending |
@@ -40,8 +40,10 @@ Touch initialization at `0x4202ad98` tries address `0x38` and registers `a8`, `0
 `a6`, `af`; its fallback at `0x5a` uses register `d045`. Address alone does not identify
 a controller. Main I2C configuration begins at `0x4202b438`.
 
-Generic UART setup has branches UART0 TX1/RX0 and UART2 TX42/RX41. Their assignment
-to each external component remains unresolved. These are not identified debug pads.
+Stock firmware uses UART0 TX1/RX0 for GNSS and UART2 TX42/RX41 for the companion.
+The custom firmware has verified both receive paths. It completed a UART2 write
+on TX42, but external reception was not verified. The GNSS TX1 electrical path
+has not been exercised by the custom firmware.
 
 ## Next measurements
 
@@ -52,6 +54,52 @@ functions without reimplementing its sensor and power-management drivers.
 
 Sources: [ESP32-S3 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf),
 local N21/N22 update analysis, USB ROM inspection and the independent C display test.
+
+## GNSS receive bring-up, 2026-09-11
+
+The connected unit produces checksum-valid GN talker NMEA on UART0 RX0 at the
+stock startup rate of 921600 baud. A passive capture received GGA, GLL and GSA
+sentences before the custom firmware sent any control command. The indoor unit
+reported quality 0, zero satellites and no position. The exact receiver model,
+antenna state and any adaptive baud behavior remain unknown.
+
+Stock analysis recovered UART2 TX42/RX41 at 115200 and one complete 16-byte
+companion command used by its GPS open path. The custom firmware sends that
+candidate once at startup. The live NMEA stream existed before the command, and
+no acknowledgment or change in acquisition state was observed after it. This
+confirms only that the candidate frame was sent. It does not verify power or
+enable semantics. The custom firmware does not send the recovered close or
+reset-like commands and does not change unverified GPIOs.
+
+UART0 receive uses an interrupt-fed 8 KiB internal-RAM ring and drains at most
+2 KiB per display loop. The parser bounds lines to 512 bytes, validates NMEA
+checksums and coordinate fields, and discards through the next `$` after known
+UART or ring data loss. It reports no data, no fix, fresh fix and stale fix
+separately. Satellite count is the latest recent GGA report and is not yet
+matched to the coordinate epoch.
+
+In a 30.055-second run with Wi-Fi connected, the simulated Ride screen updating,
+LCD rendering, touch polling and companion receive active, GNSS input advanced
+55,245 bytes and 639 valid sentences. This is about 1.84 kB/s and 21.3 sentences
+per second. Display frames advanced by 707 and companion reports by 1,004. GNSS
+ring, line, checksum, parse and UART error counters did not change during that
+window; companion CRC/UART and touch errors were also unchanged. This observed
+rate is far below the configured baud rate and does not prove continuous
+921600-baud buffering capacity.
+
+The full steady-coexistence scenario started with one cumulative UART loss and
+detected two more during its GPS capture, navigation and Ride setup, before the
+clean 30.055-second measurement window. Separate deliberate Wi-Fi disconnect
+and reassociation tests each detected one loss while still advancing NMEA. In
+every case the parser discarded the damaged fragment and resumed at a fresh
+sentence with no checksum or parse errors. A higher UART interrupt priority did
+not remove the losses. Their exact trigger is unresolved; active screen changes
+and network recovery cannot yet be described as lossless.
+
+After several indoor minutes, the device still reported no fix and zero
+satellites. No live coordinates, receiver accuracy or distance to the authorized
+reference point were available, so this bring-up makes no positional claim.
+Raw NMEA, USB logs and the screen capture remain in ignored `.local/`.
 
 ## PSRAM bring-up, 2026-09-11
 

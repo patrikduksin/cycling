@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 debug-harness = []
-c606 = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:esp-storage", "dep:embedded-storage", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:static_cell", "dep:embassy-futures"]
+c606 = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:esp-storage", "dep:embedded-storage", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:static_cell", "dep:embassy-futures", "dep:critical-section"]
 
 [dependencies]
 libm = "0.2.16"
@@ -29,6 +29,7 @@ embassy-executor = { version = "0.10.0", optional = true }
 embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "tcp", "udp", "dns", "auto-icmp-echo-reply"], optional = true }
 embassy-time = { version = "0.5.0", optional = true }
 static_cell = { version = "2.1.1", optional = true }
+critical-section = { version = "1.2.0", optional = true }
 
 [[bin]]
 name = "cycling-os"

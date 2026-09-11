@@ -26,6 +26,7 @@ pub enum Screen {
     Home,
     Settings,
     Device,
+    Gps,
     Diagnostics,
     Controls,
     Ride,
@@ -37,6 +38,7 @@ impl Screen {
             Self::Home => "home",
             Self::Settings => "settings",
             Self::Device => "device",
+            Self::Gps => "gps",
             Self::Diagnostics => "diagnostics",
             Self::Controls => "controls",
             Self::Ride => "ride",
@@ -138,6 +140,7 @@ impl App {
             Screen::Home => self.home_pointer(point),
             Screen::Settings => self.settings_pointer(point),
             Screen::Device => self.device_pointer(point),
+            Screen::Gps => self.point = Some(point),
             Screen::Diagnostics => self.point = Some(point),
             Screen::Controls => self.controls.update(Some(point)),
             Screen::Ride => self.ride_pointer(point),
@@ -173,10 +176,13 @@ impl App {
             }
             Screen::Device => {
                 self.point = None;
-                if self.pressed.take().is_some() {
-                    self.navigate(Screen::Diagnostics);
+                match self.pressed.take() {
+                    Some(0) => self.navigate(Screen::Gps),
+                    Some(1) => self.navigate(Screen::Diagnostics),
+                    _ => {}
                 }
             }
+            Screen::Gps => self.point = None,
             Screen::Diagnostics => self.point = None,
             Screen::Controls => self.controls.update(None),
             Screen::Ride => {
@@ -224,9 +230,14 @@ impl App {
             },
             Screen::Device => match button {
                 Button::TopLeft => self.navigate(Screen::Home),
+                Button::BottomLeft => self.navigate(Screen::Gps),
                 Button::BottomRight => self.navigate(Screen::Diagnostics),
-                _ => {}
             },
+            Screen::Gps => {
+                if button == Button::TopLeft {
+                    self.navigate(Screen::Device);
+                }
+            }
             Screen::Diagnostics => {
                 if button == Button::TopLeft {
                     self.navigate(Screen::Device);
@@ -263,6 +274,7 @@ impl App {
             Screen::Home => self.render_home(pixels, status, wifi),
             Screen::Settings => self.render_settings(pixels),
             Screen::Device => self.render_device(pixels, status, wifi, clock),
+            Screen::Gps => self.render_gps(pixels, &metrics.gps),
             Screen::Diagnostics => self.render_diagnostics(pixels, wifi, metrics),
             Screen::Controls => {
                 self.controls.render(pixels, available, status);
@@ -323,17 +335,17 @@ impl App {
 
     fn device_pointer(&mut self, point: Point) {
         if self.point.is_none() {
-            self.origin = diagnostics_item(point).then_some((0, point));
+            self.origin = device_item(point).map(|item| (item, point));
         }
         self.point = Some(point);
         self.pressed = self
             .origin
-            .filter(|&(_, start)| {
-                diagnostics_item(point)
+            .filter(|&(item, start)| {
+                device_item(point) == Some(item)
                     && point.x.abs_diff(start.x) <= TAP_SLOP
                     && point.y.abs_diff(start.y) <= TAP_SLOP
             })
-            .map(|_| 0);
+            .map(|(item, _)| item);
         if self.origin.is_some() && self.pressed.is_none() {
             self.origin = None;
         }
@@ -549,11 +561,59 @@ impl App {
         item(
             pixels,
             89,
-            b"DIAGNOSTICS",
+            b"L GPS R DIAG",
             true,
             true,
-            self.pressed == Some(0),
+            self.pressed == Some(1),
         );
+    }
+
+    fn render_gps(&self, pixels: &mut [u16; PIXELS], gps: &crate::gps::Snapshot) {
+        pixels.fill(theme::BACKGROUND);
+        text(pixels, 3, 3, b"GPS", theme::TEXT);
+        text(pixels, 3, 13, b"STATE", theme::MUTED);
+        text(
+            pixels,
+            31,
+            13,
+            match gps.state {
+                crate::gps::FixState::NoData => b"NO DATA",
+                crate::gps::FixState::NoFix => b"NO FIX",
+                crate::gps::FixState::Fresh => b"FRESH",
+                crate::gps::FixState::Stale => b"STALE",
+            },
+            theme::ACCENT,
+        );
+        text(pixels, 3, 23, b"LAT", theme::MUTED);
+        coordinate_value(pixels, 23, 23, gps.latitude_e7);
+        text(pixels, 3, 33, b"LON", theme::MUTED);
+        coordinate_value(pixels, 23, 33, gps.longitude_e7);
+        text(pixels, 3, 43, b"SATS", theme::MUTED);
+        match gps.satellites {
+            Some(value) => number(pixels, 31, 43, u32::from(value), theme::TEXT),
+            None => text(pixels, 31, 43, b"--", theme::MUTED),
+        }
+        text(pixels, 3, 53, b"UTC", theme::MUTED);
+        match gps.utc {
+            Some(value) => {
+                text(pixels, 23, 53, &value[..2], theme::TEXT);
+                text(pixels, 31, 53, b":", theme::TEXT);
+                text(pixels, 35, 53, &value[2..4], theme::TEXT);
+                text(pixels, 43, 53, b":", theme::TEXT);
+                text(pixels, 47, 53, &value[4..], theme::TEXT);
+            }
+            None => text(pixels, 23, 53, b"--:--:--", theme::MUTED),
+        }
+        text(pixels, 3, 63, b"AGE MS", theme::MUTED);
+        match gps.age_ms {
+            Some(age) => {
+                metric_row(pixels, 3, 63, b"AGE MS", age, b"");
+            }
+            None => text(pixels, 35, 63, b"--", theme::MUTED),
+        }
+        metric_row(pixels, 3, 73, b"RX", gps.bytes as u64, b"");
+        metric_row(pixels, 3, 83, b"VALID", gps.valid_sentences as u64, b"");
+        text(pixels, 3, 98, b"TOP BACK", theme::MUTED);
     }
 
     fn render_diagnostics(&self, pixels: &mut [u16; PIXELS], wifi: &[u8], m: &metrics::Snapshot) {
@@ -703,8 +763,14 @@ impl App {
     }
 }
 
-fn diagnostics_item(point: Point) -> bool {
-    (9..=230).contains(&point.x) && (267..=319).contains(&point.y)
+fn device_item(point: Point) -> Option<u8> {
+    if !(9..=230).contains(&point.x) {
+        return None;
+    }
+    match point.y {
+        267..=319 => Some(1),
+        _ => None,
+    }
 }
 
 fn settings_item(point: Point) -> Option<u8> {
@@ -726,6 +792,33 @@ fn next_timezone(value: i16) -> i16 {
     } else {
         (value + 30).min(840)
     }
+}
+
+fn coordinate_value(pixels: &mut [u16; PIXELS], x: usize, y: usize, value: Option<i32>) {
+    let Some(value) = value else {
+        text(pixels, x, y, b"--", theme::MUTED);
+        return;
+    };
+    let magnitude = value.unsigned_abs();
+    let degrees = magnitude / 10_000_000;
+    let fraction = (magnitude % 10_000_000) / 100;
+    let mut output = [b' '; 10];
+    let mut at = 0;
+    if value < 0 {
+        output[at] = b'-';
+        at += 1;
+    }
+    if degrees >= 100 {
+        output[at] = b'0' + (degrees / 100) as u8;
+        at += 1;
+    }
+    output[at] = b'0' + ((degrees / 10) % 10) as u8;
+    output[at + 1] = b'0' + (degrees % 10) as u8;
+    output[at + 2] = b'.';
+    for digit in 0..5 {
+        output[at + 3 + digit] = b'0' + ((fraction / 10u32.pow((4 - digit) as u32)) % 10) as u8;
+    }
+    text(pixels, x, y, &output[..at + 8], theme::TEXT);
 }
 
 fn timezone(pixels: &mut [u16; PIXELS], x: usize, y: usize, minutes: i16, color: u16) {
@@ -1273,6 +1366,7 @@ mod tests {
 
         let mut pixels = [0; PIXELS];
         let metrics = metrics::Snapshot {
+            gps: crate::gps::Snapshot::default(),
             uptime_ms: 3_723_000,
             frame_ms: 20,
             max_frame_ms: 44,
@@ -1304,5 +1398,17 @@ mod tests {
             &crate::network_time::Snapshot::default(),
         );
         assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
+    }
+
+    #[test]
+    fn gps_is_reachable_from_device_and_returns() {
+        let mut app = App {
+            screen: Screen::Device,
+            ..App::default()
+        };
+        app.button(Button::BottomLeft, 1);
+        assert_eq!(app.screen, Screen::Gps);
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Device);
     }
 }

@@ -4,6 +4,7 @@
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
 mod display;
+mod gps_uart;
 mod persistent;
 mod psram;
 mod touch;
@@ -129,13 +130,29 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     println!("CYCLING_TOUCH probe={:02x?}", probe);
     let mut available = probe.is_ok();
 
-    let mut companion = esp_hal::uart::UartRx::new(
+    let companion_uart = esp_hal::uart::Uart::new(
         p.UART2,
         esp_hal::uart::Config::default().with_baudrate(115200),
     )
     .unwrap()
-    .with_rx(p.GPIO41);
-    println!("CYCLING_COMPANION listening uart=2 rx=41 baud=115200");
+    .with_rx(p.GPIO41)
+    .with_tx(p.GPIO42);
+    let (mut companion, mut companion_tx) = companion_uart.split();
+    println!("CYCLING_COMPANION listening uart=2 tx=42 rx=41 baud=115200");
+    const GPS_OPEN: [u8; 16] = [
+        0xa5, 0x0c, 0x6f, 0xf1, 0x02, 0x10, 0xe2, 0x02, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x89,
+        0xe5,
+    ];
+    match companion_tx.write(&GPS_OPEN) {
+        Ok(16) => println!("CYCLING_GPS companion_open=sent source=stock_candidate"),
+        Ok(count) => println!("CYCLING_GPS companion_open_short bytes={}", count),
+        Err(error) => println!("CYCLING_GPS companion_open_failed error={:?}", error),
+    }
+    gps_uart::init(p.UART0, p.GPIO0);
+    let mut gps_parser = cycling_os::gps::Parser::default();
+    let mut gps_ring_overflow = 0u32;
+    let mut gps_uart_errors_seen = 0u32;
+    println!("CYCLING_GPS ready uart=0 rx=0 baud=921600 buffer=8192 mode=stock_open_candidate");
 
     let mut ledc = Ledc::new(p.LEDC);
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
@@ -226,6 +243,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let heap_free = esp_alloc::HEAP.free();
         heap_min_sampled = heap_min_sampled.min(heap_free);
         let mut metrics = Metrics {
+            gps: cycling_os::gps::Snapshot::default(),
             uptime_ms: now,
             frame_ms: last_frame_ms,
             max_frame_ms,
@@ -302,6 +320,33 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 }
             }
             _ => {}
+        }
+        let mut gps_bytes = [0u8; 2048];
+        let (gps_count, gps_overflow, gps_uart_errors) = gps_uart::drain(&mut gps_bytes);
+        gps_parser.overflow(gps_overflow.saturating_sub(gps_ring_overflow));
+        gps_ring_overflow = gps_overflow;
+        if gps_uart_errors != gps_uart_errors_seen {
+            gps_parser.data_loss();
+            gps_uart_errors_seen = gps_uart_errors;
+        }
+        for &byte in &gps_bytes[..gps_count] {
+            gps_parser.push(byte, now);
+        }
+        let mut gps = gps_parser.snapshot(now);
+        gps.uart_errors = gps_uart_errors;
+        metrics.gps = gps;
+        if frame % 240 == 0 {
+            println!(
+                "CYCLING_GPS state={:?} bytes={} valid={} checksum_errors={} parse_errors={} ring_overflow={} line_overflow={} uart_errors={}",
+                gps.state,
+                gps.bytes,
+                gps.valid_sentences,
+                gps.checksum_errors,
+                gps.parse_errors,
+                gps.overflows,
+                gps.line_overflows,
+                gps_uart_errors
+            );
         }
         if last_battery.elapsed().as_millis() > 5000 {
             status.battery = None;

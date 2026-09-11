@@ -2,8 +2,13 @@
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_net::{Runner, Stack, StackResources, dns::DnsQueryType, tcp::TcpSocket};
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_net::{
+    Runner, Stack, StackResources,
+    dns::DnsQueryType,
+    tcp::TcpSocket,
+    udp::{PacketMetadata, UdpSocket},
+};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::{peripherals::WIFI, rng::Rng};
 use esp_println::println;
 use esp_radio::wifi::{
@@ -88,6 +93,10 @@ pub fn label() -> &'static [u8] {
     }
 }
 
+pub fn online() -> bool {
+    LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
+}
+
 #[embassy_executor::task]
 pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
     if config::SSID.is_empty() {
@@ -139,6 +148,7 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
     spawner.spawn(connection(controller, stack).unwrap());
     spawner.spawn(network(runner).unwrap());
     spawner.spawn(verify(stack).unwrap());
+    spawner.spawn(time_sync(stack).unwrap());
 }
 
 async fn reconnect_requested() -> u8 {
@@ -375,4 +385,121 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
     cycling_os::network::verified_response(&response[..used])
         .then_some(())
         .ok_or("response")
+}
+
+#[embassy_executor::task]
+async fn time_sync(stack: Stack<'static>) {
+    let mut retry_not_before = 0u64;
+    loop {
+        stack.wait_config_up().await;
+        let mut failures = 0u8;
+        while stack.is_config_up() {
+            let now = Instant::now().as_millis();
+            if now < retry_not_before {
+                if matches!(
+                    select(
+                        stack.wait_config_down(),
+                        Timer::after_millis(retry_not_before - now),
+                    )
+                    .await,
+                    Either::First(_)
+                ) {
+                    break;
+                }
+                continue;
+            }
+            cycling_os::network_time::set_syncing(true);
+            let generation = GENERATION.load(Ordering::Acquire);
+            let result = with_timeout(Duration::from_secs(10), sync_time(stack)).await;
+            let current = generation == GENERATION.load(Ordering::Acquire) && stack.is_config_up();
+            match result {
+                Ok(Ok((timestamp, rtt_ms))) if current => {
+                    let now = Instant::now().as_millis();
+                    cycling_os::network_time::update(timestamp, now);
+                    failures = 0;
+                    println!(
+                        "CYCLING_TIME synced unix={} stratum={} rtt_ms={}",
+                        timestamp.unix_seconds, timestamp.stratum, rtt_ms
+                    );
+                    match select(stack.wait_config_down(), Timer::after_secs(60 * 60)).await {
+                        Either::First(_) => cycling_os::network_time::set_syncing(false),
+                        Either::Second(_) => {}
+                    }
+                }
+                result => {
+                    cycling_os::network_time::set_syncing(false);
+                    if current {
+                        if matches!(result, Ok(Err("denied"))) {
+                            println!("CYCLING_TIME sync_disabled kind=denied until=restart");
+                            return;
+                        }
+                        let (kind, delay) = if matches!(result, Ok(Err("rate_limited"))) {
+                            retry_not_before = Instant::now().as_millis() + 15 * 60 * 1_000;
+                            ("rate_limited", 15 * 60)
+                        } else {
+                            let delay = cycling_os::network::retry_delay_secs(failures);
+                            failures = failures.saturating_add(1);
+                            ("request", delay)
+                        };
+                        println!(
+                            "CYCLING_TIME sync_failed kind={} retry_in_s={}",
+                            kind, delay
+                        );
+                        if matches!(
+                            select(stack.wait_config_down(), Timer::after_secs(delay)).await,
+                            Either::First(_)
+                        ) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn sync_time(
+    stack: Stack<'static>,
+) -> Result<(cycling_os::network_time::Timestamp, u64), &'static str> {
+    let addresses = with_timeout(
+        Duration::from_secs(5),
+        stack.dns_query("time.cloudflare.com", DnsQueryType::A),
+    )
+    .await
+    .map_err(|_| "dns_timeout")?
+    .map_err(|_| "dns")?;
+    let host = *addresses.first().ok_or("dns_empty")?;
+    let mut rx_meta = [PacketMetadata::EMPTY];
+    let mut tx_meta = [PacketMetadata::EMPTY];
+    let mut socket_rx = [0; 512];
+    let mut tx = [0; 48];
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut socket_rx, &mut tx_meta, &mut tx);
+    socket.bind(0).map_err(|_| "bind")?;
+    let mut request = [0u8; 48];
+    request[0] = 0x23;
+    let sent_ms = Instant::now().as_millis();
+    request[40..48].copy_from_slice(&sent_ms.to_be_bytes());
+    socket
+        .send_to(&request, (host, 123))
+        .await
+        .map_err(|_| "send")?;
+    let mut response = [0; 512];
+    let (length, source) = with_timeout(Duration::from_secs(5), socket.recv_from(&mut response))
+        .await
+        .map_err(|_| "response_timeout")?
+        .map_err(|_| "response")?;
+    let timestamp = cycling_os::network_time::parse_response(
+        &response[..length],
+        request[40..48].try_into().unwrap(),
+        source.endpoint == (host, 123).into(),
+    )
+    .map_err(|error| match error {
+        cycling_os::network_time::ParseError::RateLimited => "rate_limited",
+        cycling_os::network_time::ParseError::Denied => "denied",
+        _ => "invalid_response",
+    })?;
+    Ok((
+        timestamp,
+        Instant::now().as_millis().saturating_sub(sent_ms),
+    ))
 }

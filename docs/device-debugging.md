@@ -153,6 +153,10 @@ cycle, not allocator high-water marks. The on-device Diagnostics screen caches a
 copy for one second to bound visual refresh, while these USB values remain live.
 Stack usage is not measured. Frame time
 includes recording work but excludes the wait for the next display cycle.
+Time reports include the fixed timezone offset in minutes, UTC seconds and
+milliseconds, synchronization age, and `unavailable`, `syncing`, `fresh`,
+`offline` or `stale` status. UTC is zero when unavailable; check `time_status`
+before using it.
 
 ## Protocol and cleanup
 

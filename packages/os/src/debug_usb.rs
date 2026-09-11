@@ -206,7 +206,7 @@ impl Debug {
                 return;
             }
             Action::Idle(seconds, dim) => {
-                *settings = Settings::with_idle(app.controls.brightness, seconds, dim).unwrap();
+                *settings = settings.with_idle_preferences(seconds, dim).unwrap();
                 app.dim_timeout_secs = seconds;
                 app.dim_brightness = dim;
             }
@@ -242,6 +242,11 @@ impl Debug {
         if let Some((id, result)) = self.pending.take() {
             let (wifi_associations, wifi_successes, wifi_failures, wifi_fault) =
                 crate::wifi::stats();
+            let clock = cycling_os::network_time::snapshot(
+                now,
+                app.timezone_minutes,
+                crate::wifi::online(),
+            );
             let (percent, mv) = status
                 .battery
                 .map(|(p, m)| (i32::from(p), i32::from(m)))
@@ -251,7 +256,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -267,6 +272,11 @@ impl Debug {
                 metrics.idle_ms,
                 metrics.dim_timeout_secs,
                 metrics.dim_brightness,
+                app.timezone_minutes,
+                clock.status.name(),
+                clock.unix_seconds.unwrap_or(0),
+                clock.millis,
+                clock.age_ms.unwrap_or(0),
                 x,
                 y,
                 status.button_counts[0],

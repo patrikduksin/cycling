@@ -3,6 +3,13 @@
 Approved by the user on 2026-09-11. Continue through this queue without routine
 permission requests. This file is the durable handoff across compactions.
 
+## Latest device state
+
+At the user's request after the GPS work, `mise run stock` completed successfully
+on September 11. Stock slot A was selected and the device reset. The stock UI
+was not independently observed. Leave stock selected until the user asks to
+resume custom firmware. This supersedes earlier custom-firmware handoff notes.
+
 ## Work order
 
 1. #1 PSRAM, then #2 safe persistent storage.

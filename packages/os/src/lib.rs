@@ -4,6 +4,7 @@ pub mod coin;
 pub mod companion;
 pub mod controls;
 pub mod debug;
+pub mod gps;
 pub mod idle;
 pub mod input;
 pub mod metrics;

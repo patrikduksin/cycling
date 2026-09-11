@@ -9,6 +9,7 @@ mod psram;
 mod touch;
 mod wifi;
 
+use core::{alloc::Layout, ptr, slice};
 use cycling_os::{
     coin,
     companion::{Decoder, Event, Status},
@@ -16,6 +17,7 @@ use cycling_os::{
     input::Report,
     metrics::Snapshot as Metrics,
     preferences::{Saver, Settings},
+    redraw::Tracker,
     ui::App,
 };
 use esp_backtrace as _;
@@ -156,6 +158,20 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 
     println!("CYCLING_DISPLAY ready canvas=80x106 heap=163840");
     let mut canvas = [0; coin::PIXELS];
+    let previous_layout = Layout::new::<[u16; coin::PIXELS]>();
+    let previous_pointer = unsafe { psram::allocate_external(previous_layout) };
+    if previous_pointer.is_null() {
+        panic!("display history allocation failed");
+    }
+    unsafe { ptr::write_bytes(previous_pointer, 0, previous_layout.size()) };
+    let previous_canvas =
+        unsafe { slice::from_raw_parts_mut(previous_pointer.cast::<u16>(), coin::PIXELS) };
+    let mut redraw = Tracker::default();
+    println!(
+        "CYCLING_DISPLAY history=exact bytes={} memory=external external_free={}",
+        previous_layout.size(),
+        psram::external_free()
+    );
     spawner.spawn(wifi::start(p.WIFI, spawner).unwrap());
     #[cfg(feature = "debug-harness")]
     let (mut usb_rx, _usb_tx) = esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE).split();
@@ -192,6 +208,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let mut heap_min_sampled = esp_alloc::HEAP.free();
     let mut last_frame_ms = 0u32;
     let mut max_frame_ms = 0u32;
+    let mut display_draws = 0u32;
+    let mut display_skips = 0u32;
     let mut display_metrics = Metrics::default();
     let mut next_metrics = 0u64;
     loop {
@@ -211,6 +229,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             uptime_ms: now,
             frame_ms: last_frame_ms,
             max_frame_ms,
+            display_draws,
+            display_skips,
             heap_free,
             heap_min_sampled,
             psram_capacity: psram::CAPACITY,
@@ -446,7 +466,18 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             &display_metrics,
             &clock,
         );
-        screen.draw(&canvas);
+        if redraw.changed(&canvas, previous_canvas) {
+            screen.draw(&canvas);
+            redraw.commit(&canvas, previous_canvas);
+            display_draws = display_draws.saturating_add(1);
+        } else {
+            display_skips = display_skips.saturating_add(1);
+        }
+        #[cfg(feature = "debug-harness")]
+        {
+            metrics.display_draws = display_draws;
+            metrics.display_skips = display_skips;
+        }
         #[cfg(feature = "debug-harness")]
         let temporary_settings = debug.active;
         #[cfg(not(feature = "debug-harness"))]
@@ -531,9 +562,11 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         }
         if frame % 24 == 0 {
             println!(
-                "CYCLING_FRAME frame={} render_ms={}",
+                "CYCLING_FRAME frame={} render_ms={} draws={} skipped={}",
                 frame,
-                start.elapsed().as_millis()
+                start.elapsed().as_millis(),
+                display_draws,
+                display_skips
             );
         }
         let elapsed = start.elapsed().as_millis();

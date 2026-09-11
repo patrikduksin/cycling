@@ -1276,6 +1276,8 @@ mod tests {
             uptime_ms: 3_723_000,
             frame_ms: 20,
             max_frame_ms: 44,
+            display_draws: 20,
+            display_skips: 80,
             heap_free: 116 * 1024,
             heap_min_sampled: 115 * 1024,
             psram_capacity: 2 * 1024 * 1024,

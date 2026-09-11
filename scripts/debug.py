@@ -25,13 +25,16 @@ def torn_frame_prefix(prefix):
         return True
     if not prefix.startswith(FRAME_LOG):
         return False
-    suffix = prefix[len(FRAME_LOG):]
-    frame_digits = len(suffix) - len(suffix.lstrip(b'0123456789'))
-    remainder = suffix[frame_digits:]
-    timing = b' render_ms='
-    if timing.startswith(remainder):
-        return True
-    return remainder.startswith(timing) and remainder[len(timing):].isdigit()
+    remainder = prefix[len(FRAME_LOG):]
+    for field in [b' render_ms=', b' draws=', b' skipped=']:
+        digits = len(remainder) - len(remainder.lstrip(b'0123456789'))
+        remainder = remainder[digits:]
+        if field.startswith(remainder):
+            return True
+        if not remainder.startswith(field):
+            return False
+        remainder = remainder[len(field):]
+    return not remainder or remainder.isdigit()
 
 
 class Recording:

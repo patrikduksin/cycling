@@ -75,6 +75,8 @@ class StreamTests(unittest.TestCase):
                 b'CYCLING_FRA',
                 b'CYCLING_FRAME frame=',
                 b'CYCLING_FRAME frame=12 render_ms=',
+                b'CYCLING_FRAME frame=12 render_ms=1 dra',
+                b'CYCLING_FRAME frame=12 render_ms=1 draws=3 skip',
             ]:
                 device = self.device(directory)
                 reply = prefix + b'CYCLING_DEBUG 7 OK {"screen":"home"}\n'

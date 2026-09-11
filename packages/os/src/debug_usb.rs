@@ -228,7 +228,7 @@ impl Debug {
         }
         self.pending = Some((id, result));
     }
-    /// Called after LCD draw, so ACK frame numbers identify a displayed result.
+    /// Called after the LCD update decision, with the canvas matching panel state.
     pub fn drawn(
         &mut self,
         frame: u32,
@@ -257,7 +257,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -305,6 +305,8 @@ impl Debug {
                 metrics.psram_free,
                 metrics.frame_ms,
                 metrics.max_frame_ms,
+                metrics.display_draws,
+                metrics.display_skips,
                 metrics.companion_valid,
                 metrics.companion_bad_crc,
                 metrics.uart_errors,

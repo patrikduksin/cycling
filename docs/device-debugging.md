@@ -70,6 +70,7 @@ mise run debug -- wifi-recovery
 mise run debug -- ride-demo
 mise run debug -- ride-recording-test
 mise run crash-test
+mise run ride-export
 mise run debug -- soak --seconds 60
 ```
 
@@ -219,6 +220,7 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `RIDE START [DEMO|LIVE]` | End the temporary session and commit a durable ride start; default is `DEMO` |
 | `RIDE PAUSE` / `RIDE RESUME` / `RIDE FINISH` | Commit a durable ride transition after readback verification |
 | `RIDE INIT` | Explicitly erase and verify only the owned ride reservation when startup reports `needs_init` |
+| `EXPORT INFO` / `EXPORT SLOT index` | Read the immutable ride prefix metadata or one bounded 256-byte slot without an injection session |
 | `STOP` | Stop recording |
 | `END` | Stop recording, cancel touch, clear battery override and restore saved UI values |
 

@@ -10,7 +10,7 @@ pub const SAMPLES_PER_BATCH: usize = 4;
 pub const HISTORY_CAPACITY: usize = 4;
 
 const MAGIC: [u8; 4] = *b"RIDE";
-const VERSION: u8 = 1;
+pub const VERSION: u8 = 1;
 const HEADER_SIZE: usize = 32;
 const SAMPLE_SIZE: usize = 48;
 const COMMIT_OFFSET: usize = 252;
@@ -564,6 +564,10 @@ fn checksum(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+pub fn transport_checksum(bytes: &[u8]) -> u32 {
+    checksum(bytes)
 }
 
 fn get_u16(bytes: &[u8], offset: usize) -> u16 {

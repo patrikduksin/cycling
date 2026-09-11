@@ -55,6 +55,43 @@ A later targeted two-page capture held rides/slot at 4/22, GPS UART at 0,
 companion UART at 1, and free heap at 80,276 bytes while companion valid frames
 advanced 393 to 421; observed maximum frame time rose from 25 to 32 ms.
 
+## Export
+
+`mise run ride-export` reads the complete occupied prefix without starting an
+injection session or changing flash. `EXPORT INFO` captures format version,
+256-byte slot size, current upper bound and recorder state. Each correlated
+`EXPORT SLOT` response contains one exact index, 512 hexadecimal characters and
+a transport CRC. Export is refused during scan, formatting, recording, pause,
+recovery finalization or an error. A physical start during transfer causes the
+next request to fail rather than exporting a changing ride.
+
+The host writes `ride-slots.bin.partial` and renames it only after every slot
+passes index, length and transport CRC checks. It then independently validates
+record version, commit word, record CRC, sequence, source and field flags. The
+canonical raw prefix and its SHA-256 remain alongside a manifest and one JSON
+file per ride. An interrupted run leaves a partial file; retry starts from slot
+zero. Ride IDs are local to a formatted reservation, so the manifest identity
+also includes the START slot digest and final raw digest.
+
+GPX output uses version 1.1 and only recorded location samples. It preserves
+the recorded system UTC estimate when present and omits time when absent. Pause,
+resume, invalid records, missing locations, sequence gaps and backward UTC split
+track segments. Longitude +180 is normalized to -180; other invalid coordinates
+are omitted. Location-free rides still export raw/JSON and report `no valid
+location samples` rather than creating a route. Elevation, accuracy, and
+satellite metadata remain absent. All exports and raw USB logs stay in ignored
+`.local/exports/` unless an explicit output directory is selected.
+
+On hardware, an intentionally interrupted transfer stopped after one 256-byte
+slot and left only the partial file. Two subsequent complete transfers each
+read the same 22-slot (5,632-byte) prefix and produced identical raw hashes.
+Both recovered the existing four rides with 10/4/5/5 samples: one saved demo,
+two recovered demos and one saved live ride. No slot failed integrity
+validation. The live ride had no demo speed, and all four reported that GPX was
+unavailable because those recordings contained no locations. Recorder state
+remained ready at four rides and slot 22 before and after export; saved
+brightness, dim and timezone values were also unchanged.
+
 Hardware initialization of the previously occupied reservation took at most
 41 ms per sector and increased GPS UART errors by 19 during the one-time erase.
 Normal committed appends measured 0–1 ms in the tested demo/live sessions and

@@ -113,6 +113,16 @@ impl Recorder {
         self.catalog.summary_count
     }
 
+    pub fn exportable(&self) -> bool {
+        !self.open_ride
+            && self.pending.is_none()
+            && self.result.is_none()
+            && matches!(
+                self.status,
+                Status::Ready | Status::Saved | Status::Recovered | Status::Full
+            )
+    }
+
     pub fn request(&mut self, action: Action, source: Source, now: u64, token: u32) -> bool {
         if self.pending.is_some() || self.result.is_some() {
             return false;

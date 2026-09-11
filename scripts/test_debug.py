@@ -1,6 +1,8 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-from debug import Recording
+from debug import Device, Recording
 from screenshot import checksum
 
 
@@ -54,3 +56,40 @@ class RecordingTests(unittest.TestCase):
         decoder.feed(b'CYCLING_REC ROW 10 0 0 50ffff')
         with self.assertRaises(ValueError):
             decoder.feed(b'CYCLING_REC ROW 10 0 0 50ffff')
+
+
+class StreamTests(unittest.TestCase):
+    def device(self, directory):
+        device = Device.__new__(Device)
+        device.pending = bytearray()
+        device.replies = {}
+        device.events = [dict(id=7, command='BEGIN')]
+        device.recording = Recording()
+        device.directory = Path(directory)
+        device.frames = []
+        return device
+
+    def test_split_reply_resynchronizes_after_torn_frame_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for prefix in [
+                b'CYCLING_FRA',
+                b'CYCLING_FRAME frame=',
+                b'CYCLING_FRAME frame=12 render_ms=',
+            ]:
+                device = self.device(directory)
+                reply = prefix + b'CYCLING_DEBUG 7 OK {"screen":"home"}\n'
+                device.feed(reply[:17])
+                self.assertEqual(device.replies, {})
+                device.feed(reply[17:])
+                self.assertEqual(device.replies[7], ('OK', {'screen': 'home'}))
+
+    def test_reboot_expiry_and_malformed_replies_still_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for line, error in [
+                (b'CYCLING_BOOT version=x\n', RuntimeError),
+                (b'CYCLING_DEBUG expired\n', RuntimeError),
+                (b'CYCLING_DEBUG broken\n', ValueError),
+            ]:
+                device = self.device(directory)
+                with self.assertRaises(error):
+                    device.feed(line)

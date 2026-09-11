@@ -105,6 +105,12 @@ Failures exit nonzero and retain collected evidence. Session cleanup runs on
 ordinary Python exceptions and Ctrl-C. If the process is killed or USB goes away,
 the firmware's lease timeout provides cleanup.
 
+The parser accepts a valid debug reply after a recognized, truncated periodic
+`CYCLING_FRAME` prefix. This handles the observed case where the USB printer lost
+part of a normal frame line before emitting a complete reply. Arbitrary prefixes,
+malformed replies, reboot notices, lease expiry and incomplete recordings remain
+errors.
+
 ## Input and state
 
 JSON scenarios contain sequential actions. See

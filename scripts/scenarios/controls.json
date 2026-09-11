@@ -1,5 +1,5 @@
 [
-  {"action": "tap", "point": [80, 100]},
+  {"action": "tap", "point": [80, 210]},
   {"action": "expect", "state": {"screen": "controls"}},
   {"action": "command", "value": "RECORD 10000 5"},
   {"action": "tap", "point": [24, 260]},

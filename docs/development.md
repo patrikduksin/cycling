@@ -39,9 +39,9 @@ updates rather than moving Git branches.
 The OS is `no_std`, using esp-rtos and Embassy for asynchronous Wi-Fi alongside
 the display loop, with a 160 KiB internal heap. An 80×106 RGB565 canvas is enlarged
 3× onto the 240×320 display, using eight-row DMA transfers. A portable `App` owns
-the current screen, focus, pressed gesture and the existing controls state. The
-initial menu exposes the controls diagnostics and shows a disabled placeholder
-for later device screens. Pointer release activates a target; timeout, input
+the current screen, focus, pressed gesture and the existing controls state. Home
+links to Settings, Device, the controls diagnostics, and a disabled future Rides
+entry. Pointer release activates a target; timeout, input
 failure and debug cleanup cancel it. Physical and injected input call the same app
 handlers. The controls diagnostics shows battery percentage, voltage and power
 status, counts button events, and tests brightness from 5 to 100 percent.
@@ -82,9 +82,9 @@ restored screen, focus, brightness and counters without activation.
 
 ### Input policy
 
-A menu tap must start and end on the same enabled item and stay within 18 physical
+A Home tap must start and end on the same enabled item and stay within 18 physical
 pixels of its initial point on both axes. Moving outside that slop cancels the tap
-for the rest of the gesture. Visible menu hit regions include their horizontal and
+for the rest of the gesture. Visible Home hit regions include their horizontal and
 vertical bounds; moving into a target after starting outside does not acquire it.
 Controls keep a separate drag rule: the brightness slider captures only gestures
 that start within physical y 231–294, clamps x to 24–216, and keeps the drag until
@@ -97,8 +97,9 @@ ignored until release, including across repeated button presses. This prevents t
 same finger from becoming a new gesture on the destination screen.
 
 Only companion code 1 is assigned an action because it is the physically verified
-short click. On the menu, bottom-left and bottom-right move focus and top-left
-selects an enabled item. In Controls, top-left returns to the menu and the bottom
+short click. On Home, bottom-left and bottom-right move focus and top-left
+selects an enabled item. In other screens, top-left returns Home; in Settings and
+Controls the bottom
 buttons adjust brightness. Other codes remain logged and counted for investigation
 but do not change application state. Tap, drag, cancellation and cross-screen
 suppression are verified through injection; no new physical hold, repeat or release
@@ -118,6 +119,36 @@ periodic frame log and debug reply interleaved on USB. The firmware continued
 rendering until the test lease expired, and the immediate rerun passed. This is a
 test-harness transport limitation already tracked with broader regression work,
 not evidence of an input-state failure.
+
+### Home, settings and device screens (2026-09-11)
+
+Home summarizes battery and Wi-Fi state. Settings provides the same live 5–100%
+brightness value through a larger touch slider and the two lower buttons. Device
+shows battery percentage and voltage, charging/battery/unknown power, the current
+Wi-Fi connection state and firmware version. Missing battery data renders `--`
+and `--.--V`; missing or unrecognized power renders `UNKNOWN`, and unconfigured
+Wi-Fi renders `WIFI NOT SET UP`. Status older than five seconds is already cleared
+by the device loop and therefore uses these missing-value forms. Settings are not
+persisted yet; that belongs to the planned settings issue.
+
+The harness-enabled 562,064-byte image was flashed through the safe slot-B
+workflow after both build modes passed. A device scenario navigated through all
+four screens, dragged brightness from 5% to 100%, and rendered injected 8%, 3.30 V,
+battery-power data. Its 28 checksummed frames contained 17 distinct images, and a
+6.2-second transition clip plus Home, Settings and Device PNGs were retained as
+private evidence. Companion frames advanced from 36 to 240 without new CRC or UART
+errors; sampled minimum heap was 116,240 bytes. Ordinary frames took 20 ms. A
+897 ms maximum had already been sampled during startup/USB initialization before
+the session and did not increase during it, so it is not attributed to a screen.
+The updated Controls smoke test also passed 51 captured frames and restored Home,
+brightness, focus and counters at cleanup.
+
+The host USB parser now recovers a valid debug reply that immediately follows a
+recognized truncated `CYCLING_FRAME` prefix. Tests cover split reads at three
+truncation points, including the `render_ms` field, while reboot, lease-expiry,
+malformed reply and recording validation remain strict. This addresses the
+specific flaky test start observed during UI work; broader harness reliability
+remains tracked separately.
 
 The stock ESP-IDF bootloader loads the Rust application; no ESP-IDF application
 runtime is linked. A compatible application descriptor is supplied by

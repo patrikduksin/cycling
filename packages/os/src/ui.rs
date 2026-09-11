@@ -21,14 +21,18 @@ pub const TAP_SLOP: u16 = 18;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
-    Menu,
+    Home,
+    Settings,
+    Device,
     Controls,
 }
 
 impl Screen {
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Menu => "menu",
+            Self::Home => "home",
+            Self::Settings => "settings",
+            Self::Device => "device",
             Self::Controls => "controls",
         }
     }
@@ -48,18 +52,20 @@ pub struct App {
     pub controls: Controls,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
+    settings_dragging: bool,
     suppress_pointer: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
-            screen: Screen::Menu,
+            screen: Screen::Home,
             focus: 0,
             pressed: None,
             controls: Controls::default(),
             point: None,
             origin: None,
+            settings_dragging: false,
             suppress_pointer: false,
         }
     }
@@ -83,8 +89,8 @@ impl App {
 
     pub fn point(&self) -> Option<Point> {
         match self.screen {
-            Screen::Menu => self.point,
             Screen::Controls => self.controls.point,
+            _ => self.point,
         }
     }
 
@@ -93,27 +99,9 @@ impl App {
             return;
         }
         match self.screen {
-            Screen::Menu => {
-                if self.point.is_none() {
-                    self.origin = menu_item(point).map(|item| (item, point));
-                }
-                self.point = Some(point);
-                self.pressed = self
-                    .origin
-                    .filter(|&(item, start)| {
-                        menu_item(point) == Some(item)
-                            && point.x.abs_diff(start.x) <= TAP_SLOP
-                            && point.y.abs_diff(start.y) <= TAP_SLOP
-                            && enabled(item)
-                    })
-                    .map(|(item, _)| item);
-                if self.origin.is_some() && self.pressed.is_none() {
-                    self.origin = None;
-                }
-                if let Some(item) = menu_item(point) {
-                    self.focus = item;
-                }
-            }
+            Screen::Home => self.home_pointer(point),
+            Screen::Settings => self.settings_pointer(point),
+            Screen::Device => self.point = Some(point),
             Screen::Controls => self.controls.update(Some(point)),
         }
     }
@@ -124,13 +112,19 @@ impl App {
             return;
         }
         match self.screen {
-            Screen::Menu => {
+            Screen::Home => {
                 self.point = None;
                 self.origin = None;
                 if let Some(item) = self.pressed.take() {
-                    self.activate(item);
+                    self.activate_home(item);
                 }
             }
+            Screen::Settings => {
+                self.point = None;
+                self.pressed = None;
+                self.settings_dragging = false;
+            }
+            Screen::Device => self.point = None,
             Screen::Controls => self.controls.update(None),
         }
     }
@@ -140,6 +134,7 @@ impl App {
         self.point = None;
         self.origin = None;
         self.pressed = None;
+        self.settings_dragging = false;
         self.suppress_pointer = false;
         self.controls.update(None);
     }
@@ -151,14 +146,20 @@ impl App {
         let pointer_was_held = self.suppress_pointer || self.point().is_some();
         self.cancel();
         match self.screen {
-            Screen::Menu => match button {
+            Screen::Home => match button {
                 Button::BottomLeft => self.focus = self.focus.saturating_sub(1),
-                Button::BottomRight => self.focus = (self.focus + 1).min(1),
-                Button::TopLeft => self.activate(self.focus),
+                Button::BottomRight => self.focus = (self.focus + 1).min(3),
+                Button::TopLeft => self.activate_home(self.focus),
             },
-            Screen::Controls => match button {
-                Button::TopLeft => self.navigate(Screen::Menu),
-                _ => self.controls.button(button, code),
+            Screen::Settings => match button {
+                Button::TopLeft => self.navigate(Screen::Home),
+                Button::BottomLeft => self.controls.button(button, code),
+                Button::BottomRight => self.controls.button(button, code),
+            },
+            Screen::Device | Screen::Controls => match button {
+                Button::TopLeft => self.navigate(Screen::Home),
+                _ if self.screen == Screen::Controls => self.controls.button(button, code),
+                _ => {}
             },
         }
         self.suppress_pointer = pointer_was_held;
@@ -176,11 +177,46 @@ impl App {
         wifi: &[u8],
     ) {
         match self.screen {
-            Screen::Menu => self.render_menu(pixels),
+            Screen::Home => self.render_home(pixels, status, wifi),
+            Screen::Settings => self.render_settings(pixels),
+            Screen::Device => self.render_device(pixels, status, wifi),
             Screen::Controls => {
                 self.controls.render(pixels, available, status);
                 crate::controls::wifi_label(pixels, wifi);
             }
+        }
+    }
+
+    fn home_pointer(&mut self, point: Point) {
+        if self.point.is_none() {
+            self.origin = home_item(point).map(|item| (item, point));
+        }
+        self.point = Some(point);
+        self.pressed = self
+            .origin
+            .filter(|&(item, start)| {
+                home_item(point) == Some(item)
+                    && point.x.abs_diff(start.x) <= TAP_SLOP
+                    && point.y.abs_diff(start.y) <= TAP_SLOP
+                    && home_enabled(item)
+            })
+            .map(|(item, _)| item);
+        if self.origin.is_some() && self.pressed.is_none() {
+            self.origin = None;
+        }
+        if let Some(item) = home_item(point) {
+            self.focus = item;
+        }
+    }
+
+    fn settings_pointer(&mut self, point: Point) {
+        if self.point.is_none() {
+            self.settings_dragging = (130..=210).contains(&point.y);
+        }
+        self.point = Some(point);
+        self.pressed = self.settings_dragging.then_some(0);
+        if self.settings_dragging {
+            self.controls.brightness = brightness_at(point.x);
         }
     }
 
@@ -190,43 +226,175 @@ impl App {
         self.focus = 0;
     }
 
-    fn activate(&mut self, item: u8) {
-        if item == 0 {
-            self.navigate(Screen::Controls);
+    fn activate_home(&mut self, item: u8) {
+        let screen = match item {
+            0 => Some(Screen::Settings),
+            1 => Some(Screen::Device),
+            2 => Some(Screen::Controls),
+            _ => None,
+        };
+        if let Some(screen) = screen {
+            self.navigate(screen);
         }
     }
 
-    fn render_menu(&self, pixels: &mut [u16; PIXELS]) {
+    fn render_home(&self, pixels: &mut [u16; PIXELS], status: &Status, wifi: &[u8]) {
         pixels.fill(theme::BACKGROUND);
-        text(pixels, 5, 6, b"CYCLING", theme::TEXT);
-        text(pixels, 5, 15, b"MENU", theme::MUTED);
+        text(pixels, 5, 4, b"CYCLING", theme::TEXT);
+        text(pixels, 5, 13, b"BAT", theme::MUTED);
+        match status.battery {
+            Some((percent, _)) => {
+                number(pixels, 20, 13, u32::from(percent), theme::ACCENT);
+                text(pixels, 32, 13, b"%", theme::ACCENT);
+            }
+            None => text(pixels, 20, 13, b"--", theme::MUTED),
+        }
+        text(pixels, 40, 13, short_wifi(wifi), theme::MUTED);
         item(
             pixels,
-            25,
-            b"CONTROLS",
+            23,
+            b"SETTINGS",
             true,
             self.focus == 0,
             self.pressed == Some(0),
         );
-        item(pixels, 50, b"DEVICE  LATER", false, self.focus == 1, false);
-        text(pixels, 5, 91, b"TOP SELECT", theme::MUTED);
-        text(pixels, 5, 99, b"LEFT RIGHT", theme::MUTED);
+        item(
+            pixels,
+            42,
+            b"DEVICE",
+            true,
+            self.focus == 1,
+            self.pressed == Some(1),
+        );
+        item(
+            pixels,
+            61,
+            b"CONTROLS",
+            true,
+            self.focus == 2,
+            self.pressed == Some(2),
+        );
+        item(pixels, 80, b"RIDES  LATER", false, self.focus == 3, false);
+        text(pixels, 5, 100, b"TOP SELECT", theme::MUTED);
+    }
+
+    fn render_settings(&self, pixels: &mut [u16; PIXELS]) {
+        pixels.fill(theme::BACKGROUND);
+        text(pixels, 5, 5, b"SETTINGS", theme::TEXT);
+        text(pixels, 5, 17, b"BRIGHTNESS", theme::MUTED);
+        rect(
+            pixels,
+            3,
+            27,
+            74,
+            39,
+            if self.pressed == Some(0) {
+                theme::PRESSED
+            } else {
+                theme::SURFACE
+            },
+        );
+        let digits = [
+            b'0' + self.controls.brightness / 100,
+            b'0' + (self.controls.brightness / 10) % 10,
+            b'0' + self.controls.brightness % 10,
+            b'%',
+        ];
+        text(
+            pixels,
+            31,
+            35,
+            &digits[usize::from(self.controls.brightness < 100)..],
+            theme::TEXT,
+        );
+        rect(pixels, 8, 52, 65, 2, 0x4a69);
+        let knob = 8 + (usize::from(self.controls.brightness) - 5) * 64 / 95;
+        rect(pixels, 8, 52, knob - 7, 2, theme::ACCENT);
+        rect(pixels, knob - 2, 48, 5, 10, theme::TEXT);
+        text(pixels, 5, 76, b"LEFT - RIGHT +", theme::MUTED);
+        text(pixels, 5, 98, b"TOP BACK", theme::MUTED);
+    }
+
+    fn render_device(&self, pixels: &mut [u16; PIXELS], status: &Status, wifi: &[u8]) {
+        pixels.fill(theme::BACKGROUND);
+        text(pixels, 5, 5, b"DEVICE", theme::TEXT);
+        text(pixels, 5, 16, b"BATTERY", theme::MUTED);
+        if let Some((percent, millivolts)) = status.battery {
+            number(pixels, 45, 16, u32::from(percent), theme::ACCENT);
+            text(pixels, 57, 16, b"%", theme::ACCENT);
+            let voltage = [
+                b'0' + (millivolts / 1000) as u8,
+                b'.',
+                b'0' + ((millivolts / 100) % 10) as u8,
+                b'0' + ((millivolts / 10) % 10) as u8,
+                b'V',
+            ];
+            text(pixels, 45, 25, &voltage, theme::ACCENT);
+        } else {
+            text(pixels, 45, 16, b"--", theme::MUTED);
+            text(pixels, 45, 25, b"--.--V", theme::MUTED);
+        }
+        text(pixels, 5, 37, b"POWER", theme::MUTED);
+        text(
+            pixels,
+            33,
+            37,
+            power_label(status.power),
+            if status.power.is_some() {
+                theme::ACCENT
+            } else {
+                theme::MUTED
+            },
+        );
+        text(pixels, 5, 51, b"WIFI", theme::MUTED);
+        text(pixels, 5, 60, wifi, theme::ACCENT);
+        text(pixels, 5, 74, b"FIRMWARE", theme::MUTED);
+        text(
+            pixels,
+            5,
+            83,
+            env!("CARGO_PKG_VERSION").as_bytes(),
+            theme::TEXT,
+        );
+        text(pixels, 5, 98, b"TOP BACK", theme::MUTED);
     }
 }
 
-fn menu_item(point: Point) -> Option<u8> {
+fn home_item(point: Point) -> Option<u8> {
     if !(9..=230).contains(&point.x) {
         return None;
     }
     match point.y {
-        76..=135 => Some(0),
-        151..=210 => Some(1),
+        70..=123 => Some(0),
+        127..=180 => Some(1),
+        184..=237 => Some(2),
+        241..=294 => Some(3),
         _ => None,
     }
 }
 
-fn enabled(item: u8) -> bool {
-    item == 0
+fn home_enabled(item: u8) -> bool {
+    item < 3
+}
+
+fn brightness_at(x: u16) -> u8 {
+    (5 + (u32::from(x.clamp(24, 216)) - 24) * 95 / 192) as u8
+}
+
+fn short_wifi(wifi: &[u8]) -> &[u8] {
+    match wifi {
+        b"WIFI TEST OK" | b"WIFI CONNECTED" => b"WIFI OK",
+        b"WIFI NOT SET UP" => b"WIFI --",
+        _ => b"WIFI ...",
+    }
+}
+
+fn power_label(power: Option<u8>) -> &'static [u8] {
+    match power {
+        Some(0) => b"CHARGING",
+        Some(1) => b"BATTERY",
+        _ => b"UNKNOWN",
+    }
 }
 
 pub fn item(
@@ -244,7 +412,9 @@ pub fn item(
     } else {
         theme::BACKGROUND
     };
-    let color = if enabled {
+    let color = if pressed {
+        theme::BACKGROUND
+    } else if enabled {
         if focused { theme::ACCENT } else { theme::TEXT }
     } else {
         theme::DISABLED
@@ -346,112 +516,130 @@ pub fn text(p: &mut [u16; PIXELS], x: usize, y: usize, s: &[u8], color: u16) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn release_activates_but_cancel_does_not() {
-        let mut app = App::default();
-        app.pointer(Point { x: 20, y: 100 });
-        assert_eq!(app.pressed, Some(0));
-        app.cancel();
-        assert_eq!(app.screen, Screen::Menu);
-        app.pointer(Point { x: 20, y: 100 });
+    fn tap(app: &mut App, point: Point) {
+        app.pointer(point);
         app.release();
-        assert_eq!(app.screen, Screen::Controls);
     }
 
     #[test]
-    fn disabled_item_can_focus_but_not_press_or_activate() {
+    fn home_routes_to_all_available_screens_and_keeps_disabled_item() {
+        for (point, screen) in [
+            (Point { x: 80, y: 100 }, Screen::Settings),
+            (Point { x: 80, y: 150 }, Screen::Device),
+            (Point { x: 80, y: 210 }, Screen::Controls),
+        ] {
+            let mut app = App::default();
+            tap(&mut app, point);
+            assert_eq!(app.screen, screen);
+            app.button(Button::TopLeft, 1);
+            assert_eq!(app.screen, Screen::Home);
+        }
         let mut app = App::default();
-        app.pointer(Point { x: 20, y: 180 });
-        assert_eq!(app.focus, 1);
-        assert_eq!(app.pressed, None);
-        app.release();
-        assert_eq!(app.screen, Screen::Menu);
-        app.button(Button::TopLeft, 1);
-        assert_eq!(app.screen, Screen::Menu);
+        tap(&mut app, Point { x: 80, y: 260 });
+        assert_eq!(app.screen, Screen::Home);
+        assert_eq!(app.focus, 3);
     }
 
     #[test]
-    fn menu_hit_test_requires_visible_bounds_and_original_target() {
+    fn menu_hit_test_requires_bounds_original_target_and_tap_slop() {
         let mut app = App::default();
         app.pointer(Point { x: 0, y: 100 });
         app.pointer(Point { x: 80, y: 100 });
         assert_eq!(app.pressed, None);
         app.release();
-        assert_eq!(app.screen, Screen::Menu);
+        assert_eq!(app.screen, Screen::Home);
 
         app.pointer(Point { x: 80, y: 100 });
         app.pointer(Point { x: 80, y: 119 });
-        assert_eq!(app.pressed, None);
         app.pointer(Point { x: 80, y: 100 });
         assert_eq!(app.pressed, None);
         app.release();
+        assert_eq!(app.screen, Screen::Home);
 
-        app.pointer(Point { x: 9, y: 76 });
+        app.pointer(Point { x: 9, y: 70 });
         assert_eq!(app.pressed, Some(0));
         app.cancel();
-        app.pointer(Point { x: 8, y: 76 });
+        app.pointer(Point { x: 8, y: 70 });
         assert_eq!(app.pressed, None);
     }
 
     #[test]
-    fn short_click_buttons_navigate_and_disabled_item_does_not_activate() {
+    fn settings_brightness_supports_drag_buttons_and_cancel() {
         let mut app = App::default();
+        tap(&mut app, Point { x: 80, y: 100 });
+        app.pointer(Point { x: 24, y: 170 });
+        assert_eq!(app.controls.brightness, 5);
+        assert_eq!(app.pressed, Some(0));
+        app.pointer(Point { x: 216, y: 300 });
+        assert_eq!(app.controls.brightness, 100);
+        app.cancel();
+        assert_eq!(app.point(), None);
+        assert_eq!(app.pressed, None);
+        app.button(Button::BottomLeft, 1);
+        assert_eq!(app.controls.brightness, 95);
         app.button(Button::BottomRight, 1);
+        assert_eq!(app.controls.brightness, 100);
+    }
+
+    #[test]
+    fn held_pointer_is_suppressed_across_repeated_button_navigation() {
+        let mut app = App::default();
+        app.pointer(Point { x: 80, y: 100 });
         app.button(Button::TopLeft, 1);
-        assert_eq!(app.screen, Screen::Menu);
+        assert_eq!(app.screen, Screen::Settings);
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Home);
+        assert!(app.pointer_suppressed());
+        app.pointer(Point { x: 80, y: 210 });
+        assert_eq!(app.point(), None);
+        app.release();
+        tap(&mut app, Point { x: 80, y: 210 });
+        assert_eq!(app.screen, Screen::Controls);
+    }
+
+    #[test]
+    fn button_focus_select_and_unknown_codes_are_bounded() {
+        let mut app = App::default();
+        for _ in 0..8 {
+            app.button(Button::BottomRight, 1);
+        }
+        assert_eq!(app.focus, 3);
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Home);
         app.button(Button::BottomLeft, 1);
         app.button(Button::TopLeft, 1);
         assert_eq!(app.screen, Screen::Controls);
-        app.button(Button::TopLeft, 1);
-        assert_eq!(app.screen, Screen::Menu);
-    }
-
-    #[test]
-    fn held_pointer_is_suppressed_across_button_navigation_until_release() {
-        let mut app = App::default();
-        app.pointer(Point { x: 80, y: 100 });
-        app.button(Button::TopLeft, 1);
+        app.button(Button::TopLeft, 2);
         assert_eq!(app.screen, Screen::Controls);
-        assert!(app.pointer_suppressed());
-        app.button(Button::TopLeft, 1);
-        assert_eq!(app.screen, Screen::Menu);
-        assert!(app.pointer_suppressed());
-        app.pointer(Point { x: 80, y: 100 });
-        assert_eq!(app.point(), None);
-        assert_eq!(app.controls.brightness, 50);
-        app.release();
-        assert!(!app.pointer_suppressed());
-        app.pointer(Point { x: 80, y: 100 });
-        app.release();
-        assert_eq!(app.screen, Screen::Controls);
-        app.pointer(Point { x: 24, y: 260 });
-        assert_eq!(app.controls.brightness, 5);
     }
 
     #[test]
-    fn unknown_button_codes_do_not_change_app_state() {
-        let mut app = App::default();
-        for code in [0, 2, 0x7fff] {
-            app.button(Button::TopLeft, code);
-        }
-        assert_eq!(app.screen, Screen::Menu);
-        assert_eq!(app.focus, 0);
-    }
-
-    #[test]
-    fn snapshot_restores_navigation_and_cancels_gesture() {
+    fn snapshot_restores_screen_focus_brightness_and_cancels_gesture() {
         let mut app = App {
             focus: 1,
             ..App::default()
         };
         let snapshot = app.snapshot();
-        app.focus = 0;
         app.button(Button::TopLeft, 1);
-        app.pointer(Point { x: 24, y: 260 });
+        app.pointer(Point { x: 10, y: 10 });
+        app.controls.brightness = 90;
         app.restore(snapshot);
-        assert_eq!(app.screen, Screen::Menu);
+        assert_eq!(app.screen, Screen::Home);
         assert_eq!(app.focus, 1);
+        assert_eq!(app.controls.brightness, 50);
         assert_eq!(app.point(), None);
         assert_eq!(app.pressed, None);
+    }
+
+    #[test]
+    fn missing_device_values_render_explicit_placeholders() {
+        assert_eq!(power_label(None), b"UNKNOWN");
+        assert_eq!(power_label(Some(2)), b"UNKNOWN");
+        assert_eq!(short_wifi(b"WIFI NOT SET UP"), b"WIFI --");
+        let mut app = App::default();
+        tap(&mut app, Point { x: 80, y: 150 });
+        let mut pixels = [0; PIXELS];
+        app.render(&mut pixels, true, &Status::default(), b"WIFI NOT SET UP");
+        assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
     }
 }

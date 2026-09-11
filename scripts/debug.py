@@ -14,6 +14,25 @@ import tty
 
 from screenshot import ROOT, checksum, png
 
+FRAME_LOG = b'CYCLING_FRAME frame='
+
+
+def torn_frame_prefix(prefix):
+    """Recognize a truncated ordinary frame line without accepting arbitrary junk."""
+    if not prefix:
+        return False
+    if FRAME_LOG.startswith(prefix):
+        return True
+    if not prefix.startswith(FRAME_LOG):
+        return False
+    suffix = prefix[len(FRAME_LOG):]
+    frame_digits = len(suffix) - len(suffix.lstrip(b'0123456789'))
+    remainder = suffix[frame_digits:]
+    timing = b' render_ms='
+    if timing.startswith(remainder):
+        return True
+    return remainder.startswith(timing) and remainder[len(timing):].isdigit()
+
 
 class Recording:
     """Reject incomplete delta streams rather than making misleading videos."""
@@ -173,19 +192,29 @@ class Device:
             raise RuntimeError('Device disconnected')
         self.log.write(data)
         self.log.flush()
+        self.feed(data)
+
+    def feed(self, data):
+        """Parse USB bytes and tolerate reads split across one known torn log prefix."""
         self.pending.extend(data)
         while b'\n' in self.pending:
             line, _, self.pending = self.pending.partition(b'\n')
-            if line.startswith(b'CYCLING_BOOT'):
+            if b'CYCLING_BOOT' in line:
                 raise RuntimeError('Device rebooted during test session')
-            if line == b'CYCLING_DEBUG expired':
+            if b'CYCLING_DEBUG expired' in line:
                 raise RuntimeError('Device test lease expired')
+            marker = line.find(b'CYCLING_DEBUG ')
+            if marker > 0 and torn_frame_prefix(line[:marker]):
+                line = line[marker:]
             if line.startswith(b'CYCLING_DEBUG '):
-                _, id_text, result, body = line.split(b' ', 3)
-                id = int(id_text)
+                try:
+                    _, id_text, result, body = line.split(b' ', 3)
+                    id = int(id_text)
+                    state = json.loads(body)
+                except (ValueError, json.JSONDecodeError) as error:
+                    raise ValueError('Malformed debug reply') from error
                 if id == 0 and result == b'INVALID':
                     raise ValueError('Firmware rejected a malformed debug command')
-                state = json.loads(body)
                 self.replies[id] = result.decode(), state
                 # Keep evidence including heartbeat responses, without unbounded reply storage.
                 for event in reversed(self.events):
@@ -340,8 +369,12 @@ def smoke(device):
         device.expect({'wifi': 4}, 45)
         device.wait(8)
         device.expect({'wifi': 4}, 45)
-    if device.command('STATE')['screen'] != 'controls':
-        device.tap(80, 100)
+    screen = device.command('STATE')['screen']
+    if screen != 'controls':
+        if screen != 'home':
+            device.command('BUTTON 0 1')
+            device.expect({'screen': 'home'})
+        device.tap(80, 210)
         device.expect({'screen': 'controls', 'pressed': -1})
     baseline = device.command('STATE')
     device.command('RECORD 15000 5')
@@ -357,8 +390,12 @@ def smoke(device):
     device.pixel(24, 260, 0xffff, dim['ms'] + 1)
     for button in [1, 2, 0]:
         device.command(f'BUTTON {button} 1')
-    device.tap(80, 100)
-    device.expect({'brightness': 10, 'buttons': [n + 1 for n in baseline['buttons']]})
+    device.tap(80, 210)
+    device.expect({
+        'screen': 'controls',
+        'brightness': 10,
+        'buttons': [n + 1 for n in baseline['buttons']],
+    })
     device.command('BATTERY 8 3300 1')
     device.expect({'battery': 8, 'power': 1, 'fake_battery': True})
     device.wait(.5)

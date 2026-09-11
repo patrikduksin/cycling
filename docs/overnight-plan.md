@@ -128,13 +128,21 @@ The GPS issue contains the user-authorized public reference coordinates.
   continuous/real sensor support. Astra approved after2rounds;56 Rust/24 Python,
   check/bothbuilds passed. Enabled firmware installed; laptop test peers and
   advertisements cleaned up. Written evidence linked in PR; raw data ignored.
-- Starting #16 crash diagnostics. Read .local/overnight/crash-preflight.md.
-  Next #17 storage preflights are ride-recording-preflight.md,
-  ride-storage-option.md and ride-storage-integration-preflight.md; export notes
-  are ride-export-preflight.md. GPS now has fresh fixes, but receiver accuracy,
-  model/control semantics, epoch metadata and intermittent UART loss remain open.
-  BLE sensor support currently validates a one-shot simulator; live continuous
-  readings must remain absent in rides until implemented, not reused as real data.
+- #16 complete: PR #38 merged as ff5137d. Seven-word RTC panic marker,
+  reset classification, retained version in USB, Diagnostics status and controlled
+  PANIC/RESTART. Final hardware run read software/controlled/0.1.0 after panic,
+  then software/none/empty after clean restart. Preferences unchanged; display
+  frame1..49 and companion0..72 in2s. Astra reviewed; visual masks corrected;
+  58 Rust/24 Python/check/both builds passed. Enabled firmware installed.
+  Clean-restart screenshot attached to PR; raw backtrace ignored. Retention proof
+  covers software reset only, not power loss, watchdogs or cache-off failures.
+- Starting #17 ride recording/recovery, then #18 history and #19 export.
+  Read .local/overnight/ride-recording-preflight.md, ride-storage-option.md and
+  ride-storage-integration-preflight.md; export notes are ride-export-preflight.md.
+  GPS now has fresh fixes, but receiver accuracy, model/control semantics,
+  epoch metadata and intermittent UART loss remain open in #34. BLE currently
+  validates a one-shot simulator; continuous live sensor fields remain absent
+  until implemented (#36). Keep durable demo records explicitly marked.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

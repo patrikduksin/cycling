@@ -2,17 +2,17 @@
 use cycling_os::{
     coin::{HEIGHT, PIXELS, WIDTH},
     companion::{Event, Status},
-    controls::Controls,
-    debug::{Action, encode_row},
+    debug::{Action, PointerInjection, encode_row},
     screenshot::checksum,
+    ui::{App, Snapshot},
 };
 use esp_println::println;
 
 pub struct Debug {
     pub active: bool,
-    pub touch_injected: bool,
+    injection: PointerInjection,
     lease: u64,
-    brightness: u8,
+    app: Option<Snapshot>,
     counts: [u32; 3],
     last_button: Option<cycling_os::companion::Button>,
     battery: Option<(u8, u16, u8)>,
@@ -31,9 +31,9 @@ impl Debug {
     pub fn new() -> Self {
         Self {
             active: false,
-            touch_injected: false,
+            injection: PointerInjection::default(),
             lease: 0,
-            brightness: 50,
+            app: None,
             counts: [0; 3],
             last_button: None,
             battery: None,
@@ -52,28 +52,33 @@ impl Debug {
     pub fn recording(&self) -> bool {
         self.until != 0
     }
+    pub fn touch_injected(&self) -> bool {
+        self.injection.active()
+    }
     fn stop(&mut self) {
         if self.recording() {
             println!("CYCLING_REC STOP {} {}", self.stream, self.sequence);
         }
         self.until = 0;
     }
-    fn end(&mut self, ui: &mut Controls, status: &mut Status) {
+    fn end(&mut self, app: &mut App, status: &mut Status) {
         self.stop();
         if self.active {
-            ui.update(None);
-            ui.brightness = self.brightness;
+            app.cancel();
+            if let Some(snapshot) = self.app.take() {
+                app.restore(snapshot);
+            }
             status.button_counts = self.counts;
             status.last_button = self.last_button;
         }
         self.active = false;
-        self.touch_injected = false;
+        self.injection.finish();
         self.battery = None;
     }
-    pub fn tick(&mut self, now: u64, ui: &mut Controls, status: &mut Status) {
+    pub fn tick(&mut self, now: u64, app: &mut App, status: &mut Status) {
         self.heap_min = self.heap_min.min(esp_alloc::HEAP.free());
         if self.active && now >= self.lease {
-            self.end(ui, status);
+            self.end(app, status);
             println!("CYCLING_DEBUG expired");
         }
         if self.recording() && now >= self.until {
@@ -96,7 +101,7 @@ impl Debug {
         id: u32,
         action: Action,
         now: u64,
-        ui: &mut Controls,
+        app: &mut App,
         status: &mut Status,
         screenshot_busy: bool,
     ) {
@@ -111,26 +116,34 @@ impl Debug {
         match action {
             Action::Begin => {
                 if !self.active {
-                    self.brightness = ui.brightness;
+                    self.app = Some(app.snapshot());
                     self.counts = status.button_counts;
                     self.last_button = status.last_button;
-                    ui.update(None);
+                    app.cancel();
                     self.active = true;
                     self.lease = now + 3000;
                 }
             }
-            Action::End => self.end(ui, status),
+            Action::End => self.end(app, status),
             Action::Ping | Action::State => {}
             Action::Touch(point) => {
-                self.touch_injected = true;
-                ui.update(Some(point));
+                if self.injection.press() {
+                    app.cancel();
+                }
+                app.pointer(point);
             }
             Action::Release => {
-                self.touch_injected = false;
-                ui.update(None);
+                if self.injection.finish() {
+                    app.release();
+                }
+            }
+            Action::Cancel => {
+                if self.injection.finish() {
+                    app.cancel();
+                }
             }
             Action::Button(button, code) => {
-                ui.button(button, code);
+                app.button(button, code);
                 status.update(Event::Button { button, code });
             }
             Action::Battery(p, mv, power) => self.battery = Some((p, mv, power)),
@@ -167,7 +180,7 @@ impl Debug {
         frame: u32,
         now: u64,
         canvas: &[u16; PIXELS],
-        ui: &Controls,
+        app: &App,
         status: &Status,
         touch_ok: bool,
         valid: u32,
@@ -179,18 +192,21 @@ impl Debug {
                 .battery
                 .map(|(p, m)| (i32::from(p), i32::from(m)))
                 .unwrap_or((-1, -1));
-            let (x, y) = ui
-                .point
+            let (x, y) = app
+                .point()
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"controls\",\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"recording\":{}}}",
                 id,
                 result,
+                app.screen.name(),
+                app.focus,
+                app.pressed.map(i32::from).unwrap_or(-1),
                 frame,
                 now,
                 self.active,
-                ui.brightness,
+                app.controls.brightness,
                 x,
                 y,
                 status.button_counts[0],

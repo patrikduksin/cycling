@@ -1,6 +1,29 @@
 //! Bounded, versioned USB test commands and row compression.
 use crate::{companion::Button, input::Point};
 
+#[derive(Default)]
+pub struct PointerInjection {
+    active: bool,
+}
+
+impl PointerInjection {
+    /// Returns true when an injected pointer takes ownership from another source.
+    pub fn press(&mut self) -> bool {
+        let started = !self.active;
+        self.active = true;
+        started
+    }
+
+    /// Returns true only when an injected gesture owned the pointer.
+    pub fn finish(&mut self) -> bool {
+        core::mem::take(&mut self.active)
+    }
+
+    pub fn active(&self) -> bool {
+        self.active
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Begin,
@@ -8,6 +31,7 @@ pub enum Action {
     Ping,
     State,
     Release,
+    Cancel,
     Live,
     Wifi,
     Stop,
@@ -32,6 +56,7 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
         "PING" => Action::Ping,
         "STATE" => Action::State,
         "RELEASE" => Action::Release,
+        "CANCEL" => Action::Cancel,
         "LIVE" => Action::Live,
         "WIFI" => Action::Wifi,
         "STOP" => Action::Stop,
@@ -160,6 +185,7 @@ mod tests {
             parse("DBG 12 TOUCH 239 319"),
             Some((12, Action::Touch(Point { x: 239, y: 319 })))
         );
+        assert_eq!(parse("DBG 13 CANCEL"), Some((13, Action::Cancel)));
     }
     #[test]
     fn overflow_discards_entire_line_then_recovers() {
@@ -182,5 +208,16 @@ mod tests {
         assert_eq!(encode_row(&[0; 80], &mut buffer), 6);
         let row: [u16; 80] = core::array::from_fn(|i| i as u16);
         assert_eq!(encode_row(&row, &mut buffer), 480);
+    }
+
+    #[test]
+    fn injection_transition_has_explicit_ownership() {
+        let mut injection = PointerInjection::default();
+        assert!(injection.press());
+        assert!(!injection.press());
+        assert!(injection.active());
+        assert!(injection.finish());
+        assert!(!injection.finish());
+        assert!(!injection.active());
     }
 }

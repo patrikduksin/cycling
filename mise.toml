@@ -49,3 +49,7 @@ run = "uv run scripts/device.py monitor"
 [tasks.wifi-setup]
 description = "Save current NetworkManager Wi-Fi credentials privately"
 run = "python scripts/wifi.py setup"
+
+[tasks.screenshot]
+description = "Capture the device screen as a private PNG over USB"
+run = "python scripts/screenshot.py"

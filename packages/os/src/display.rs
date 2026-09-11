@@ -1,5 +1,5 @@
 //! ST7789 transport on the C606's recovered 16-bit I80 wiring.
-use cycling_os::coin::{HEIGHT, PIXELS, WIDTH};
+use cycling_os::{coin::PIXELS, screenshot::canvas_index};
 use esp_hal::{Blocking, delay::Delay, dma::DmaTxBuf, lcd_cam::lcd::i8080::I8080};
 
 pub struct Display<'d> {
@@ -75,9 +75,8 @@ impl<'d> Display<'d> {
         let mut strip = [0u8; 240 * 8 * 2];
         for top in (0..320usize).step_by(8) {
             for row in 0..8 {
-                let sy = ((top + row).saturating_sub(1) / 3).min(HEIGHT - 1);
                 for x in 0..240 {
-                    let color = canvas[sy * WIDTH + x / 3].to_le_bytes();
+                    let color = canvas[canvas_index(x, top + row)].to_le_bytes();
                     let offset = (row * 240 + x) * 2;
                     strip[offset..offset + 2].copy_from_slice(&color);
                 }

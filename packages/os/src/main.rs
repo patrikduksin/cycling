@@ -115,6 +115,11 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     println!("CYCLING_DISPLAY ready canvas=80x106 heap=163840");
     let mut canvas = [0; coin::PIXELS];
     spawner.spawn(wifi::start(p.WIFI, spawner).unwrap());
+    let (mut usb_rx, _usb_tx) = esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE).split();
+    let mut screenshot_command = cycling_os::screenshot::Command::default();
+    let mut snapshot = [0u16; coin::PIXELS];
+    let mut screenshot_row = coin::HEIGHT;
+    let mut screenshot_frame = 0u32;
     let mut frame = 0u32;
     let mut ui = Controls::default();
     let mut last_touch = Instant::now();
@@ -226,6 +231,44 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         ui.render(&mut canvas, available, &status);
         cycling_os::controls::wifi_label(&mut canvas, wifi::label());
         screen.draw(&canvas);
+        // Bound input work and stream one row per frame so input and Wi-Fi keep running.
+        for _ in 0..64 {
+            let Ok(byte) = usb_rx.read_byte() else { break };
+            if screenshot_command.push(byte) && screenshot_row == coin::HEIGHT {
+                snapshot.copy_from_slice(&canvas);
+                screenshot_frame = frame;
+                screenshot_row = 0;
+                println!(
+                    "CYCLING_SHOT BEGIN {} {} {} {:08x}",
+                    screenshot_frame,
+                    coin::WIDTH,
+                    coin::HEIGHT,
+                    cycling_os::screenshot::checksum(&snapshot)
+                );
+            }
+        }
+        if screenshot_row < coin::HEIGHT {
+            let mut hex = [0u8; coin::WIDTH * 4];
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            for (pixel, output) in snapshot[screenshot_row * coin::WIDTH..][..coin::WIDTH]
+                .iter()
+                .zip(hex.chunks_exact_mut(4))
+            {
+                for (i, byte) in output.iter_mut().enumerate() {
+                    *byte = DIGITS[((pixel >> (12 - i * 4)) & 15) as usize];
+                }
+            }
+            println!(
+                "CYCLING_SHOT ROW {} {} {}",
+                screenshot_frame,
+                screenshot_row,
+                core::str::from_utf8(&hex).unwrap()
+            );
+            screenshot_row += 1;
+            if screenshot_row == coin::HEIGHT {
+                println!("CYCLING_SHOT END {}", screenshot_frame);
+            }
+        }
         if frame % 240 == 0 {
             println!(
                 "CYCLING_COMPANION valid={} bad_crc={} uart_errors={}",

@@ -81,3 +81,36 @@ USB logs omit SSIDs, passwords and network addresses.
 The demo uses a rasterized and colored version of the Rust logo. Its attribution
 and CC BY 4.0 license are in [the asset directory](../packages/os/assets/README.md).
 Our code is MIT licensed.
+
+## Device screenshots
+
+```sh
+mise run screenshot
+mise run screenshot -- --output .local/screenshots/current.png
+```
+
+The tool requests a frame from the running firmware over USB and saves a 240×320
+PNG in ignored `.local/screenshots/` by default. It uses the same USB lock as the
+flash and monitor tools. Close other serial readers first. `--port` or
+`CYCLING_PORT` selects the port; `--timeout` defaults to 20 seconds.
+
+The firmware copies the canvas immediately after drawing it and transmits one
+row per display cycle, taking about five seconds. The frozen copy costs 16,960
+bytes of RAM. Input handling and Wi-Fi continue during transfer. The PNG expands
+RGB565 colors and reproduces the LCD's 3× scaling, including its edge rows.
+This captures the pixels sent by firmware, not panel readback or backlight output.
+
+The text command is `SCREENSHOT\n`. `CYCLING_SHOT BEGIN` gives the frame number,
+canvas width, height and an FNV-1a checksum of little-endian RGB565 bytes. `ROW`
+lines contain the frame number, zero-based row and four hex digits per pixel.
+`END` carries the frame number. Ordinary USB logs can appear between these lines.
+The host requires ordered rows and a matching checksum before writing a PNG.
+Requests during a transfer are ignored. No credentials or memory dumps are exposed.
+
+The host tool uses Linux terminal APIs without changing DTR/RTS and disables
+hangup-on-close. This avoids the restart observed when opening this device with
+the monitor's serial configuration. Two separate tool invocations captured advancing frame numbers
+without restarting the app. Hardware captures showed battery
+readings and `WIFI TEST OK`; both HTTP checks passed, rendering remained at
+19–20 ms during transfer, and companion reception continued with zero CRC errors.
+The previously observed single UART overflow during Wi-Fi startup remained.

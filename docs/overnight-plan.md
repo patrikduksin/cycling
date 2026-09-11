@@ -126,14 +126,26 @@ Empty/new exports: .local/exports/issue44-empty and issue44-new-demo-final.
   Raw evidence remains in .local/tests/companion-*. No hardware ring-exhaustion
   fault or physical button presses were forced during this follow-up.
 
-The authorized follow-up queue is complete. Only #34 remains open for outdoor
-GPS validation, fitted-receiver identification and electrical power/acquisition
-behavior beyond proven stream control. Its issue body now reflects the completed
-transport/epoch work. Do not repeat indoor probes or restart the completed queue
-without new evidence or direction. MMC reads are verified, but vendor filesystem
-write ownership remains unestablished. Normal HRS/harness firmware is installed;
-current preferences and demo ride above are preserved. Root owns final handoff.
-Sudo still expires at 16:37 UTC on 2026-09-11.
+The authorized follow-up queue is complete. Only #34 remains open for measured
+outdoor reference accuracy, fitted-receiver identification and electrical power
+behavior beyond proven stream control. Outdoor acquisition is now user-confirmed.
+On September 11 the user reported NO FIX indoors; live parsing advanced without
+faults, and a private trace showed receiver-invalid GGA/RMC reports. The user
+then took the powered device outdoors on battery and reported successful GPS.
+After reconnecting indoors, telemetry showed a fix accepted 140,322 ms earlier.
+No raw outdoor position was captured, so no reference-accuracy claim is made.
+
+PR #53, 0454edd, adds WAITING FOR FIX, a fresh satellites-used count and units for
+last-fix age. It does not change position validity or receiver configuration.
+Astra approved the trimmed change; 87 firmware, 15 vendor and 45 Python tests,
+check and both builds passed. Final normal HRS/harness firmware is installed,
+with one ride/slot 4 and preferences 100/30/20/-180 preserved. The inspected GPS
+screenshot was attached outside Git; raw evidence is in
+.local/tests/gps-diagnostics-screen and gps-outdoor-return-direct. Receiver
+identity and accuracy follow-up remains #34. No further GSA/GSV draft is pending.
+Root owns final handoff; Git is on main. Do not restart completed tasks without
+new direction. MMC reads are verified, but vendor filesystem write ownership
+remains unestablished. Sudo expires at 16:37 UTC on 2026-09-11.
 
 ## Progress
 

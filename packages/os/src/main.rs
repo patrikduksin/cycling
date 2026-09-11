@@ -4,6 +4,7 @@
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
 mod display;
+mod psram;
 mod touch;
 mod wifi;
 
@@ -43,6 +44,18 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     );
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 96 * 1024);
+    let psram = psram::init(p.PSRAM);
+    println!(
+        "CYCLING_PSRAM ready mode=quad ram_mhz=40 capacity={} tested={} passes={} internal_before={} internal_after={} external_free={} allocator_probe={} allocator_alignment={}",
+        psram.capacity,
+        psram.tested,
+        psram.passes,
+        psram.internal_before,
+        psram.internal_after,
+        psram.external_free,
+        psram.allocator_probe,
+        psram.allocator_alignment
+    );
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
     let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);

@@ -1,5 +1,8 @@
 # cycling
 
+The approved autonomous issue queue and execution agreement are in
+`docs/overnight-plan.md`.
+
 Keep the workspace small. Firmware lives in `packages/os`; device research lives in
 `packages/stock/<device>`. Use mise tasks and commit the Cargo lockfile.
 

@@ -118,12 +118,23 @@ The GPS issue contains the user-authorized public reference coordinates.
   without verified effect. Follow-up #34 covers outdoor fix, model/control,
   epoch association and loss cause. Astra approved;52 Rust/24 Python/check/both
   builds passed. Screenshot linked on PR; enabled firmware remains installed.
-- Starting #15 Bluetooth. Read ignored bluetooth-preflight.md and
-  ble-simulator-preflight.md. Laptop BlueZ has GATT/advertising managers,
-  8 supported advertising instances and no connected peers at the preflight.
-  Use owned laptop peer only; raw identities stay private. Later preflights
-  include crash-preflight.md, ride-recording-preflight.md,
-  ride-storage-option.md and ride-export-preflight.md under .local/overnight/.
+- #15 complete: PR #37 merged as 5c3d53b. BLE scan and eight-byte GATT echo
+  verified with owned laptop across two reconnect rounds at ATT MTU60, including
+  exact notifications/readback and malformed-write rejection. Owned HRS/CSC
+  simulator produced73BPM/60RPM and returned to peripheral advertising. Concurrent
+  30s Ride/Wi-Fi/BLE window kept heap80168..80308, companion clean; GPS UART+3
+  with recovery. All64 GPS samples were fresh,7.6..11.4m from the authorized
+  reference, ages0..941ms; #34 updated. #36 tracks MTU23 interoperability and
+  continuous/real sensor support. Astra approved after2rounds;56 Rust/24 Python,
+  check/bothbuilds passed. Enabled firmware installed; laptop test peers and
+  advertisements cleaned up. Written evidence linked in PR; raw data ignored.
+- Starting #16 crash diagnostics. Read .local/overnight/crash-preflight.md.
+  Next #17 storage preflights are ride-recording-preflight.md,
+  ride-storage-option.md and ride-storage-integration-preflight.md; export notes
+  are ride-export-preflight.md. GPS now has fresh fixes, but receiver accuracy,
+  model/control semantics, epoch metadata and intermittent UART loss remain open.
+  BLE sensor support currently validates a one-shot simulator; live continuous
+  readings must remain absent in rides until implemented, not reused as real data.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

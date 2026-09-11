@@ -136,6 +136,9 @@ class Device:
                     raise RuntimeError('Test session did not release injected state')
                 if self.final['brightness'] != self.baseline['brightness']:
                     raise RuntimeError('Test session did not restore brightness')
+                if (self.final['screen'], self.final['focus'], self.final['pressed']) != \
+                        (self.baseline['screen'], self.baseline['focus'], -1):
+                    raise RuntimeError('Test session did not restore navigation')
         except Exception as e:
             cleanup_error = str(e)
         finally:
@@ -336,6 +339,9 @@ def smoke(device):
         device.expect({'wifi': 4}, 45)
         device.wait(8)
         device.expect({'wifi': 4}, 45)
+    if device.command('STATE')['screen'] != 'controls':
+        device.tap(80, 100)
+        device.expect({'screen': 'controls', 'pressed': -1})
     baseline = device.command('STATE')
     device.command('RECORD 15000 5')
     touched = device.command('TOUCH 80 120')
@@ -348,8 +354,9 @@ def smoke(device):
     device.drag([216, 260], [24, 260])
     dim = device.expect({'brightness': 5})
     device.pixel(24, 260, 0xffff, dim['ms'] + 1)
-    for button in range(3):
+    for button in [1, 2, 0]:
         device.command(f'BUTTON {button} 1')
+    device.tap(80, 100)
     device.expect({'brightness': 10, 'buttons': [n + 1 for n in baseline['buttons']]})
     device.command('BATTERY 8 3300 1')
     device.expect({'battery': 8, 'power': 1, 'fake_battery': True})
@@ -395,7 +402,7 @@ def soak(device, seconds):
 
 def lease_test(device):
     baseline = device.command('STATE')
-    device.command('TOUCH 24 260')
+    device.command('TOUCH 80 100')
     device.command('BATTERY 8 3300 1')
     device.command('RECORD 10000 5')
     device.active = False  # Simulate a host that no longer renews the lease.
@@ -409,6 +416,7 @@ def lease_test(device):
     state = device.command('STATE')
     assert not state['active'] and not state['fake_battery'] and not state['recording']
     assert state['x'] == -1 and state['brightness'] == baseline['brightness']
+    assert state['screen'] == baseline['screen'] and state['pressed'] == -1
     try:
         device.command('TOUCH 100 100')
     except RuntimeError as error:

@@ -1,0 +1,21 @@
+[
+  {"action": "expect", "state": {"screen": "menu", "focus": 0, "pressed": -1}},
+  {"action": "command", "value": "TOUCH 80 100"},
+  {"action": "expect", "state": {"screen": "menu", "focus": 0, "pressed": 0}},
+  {"action": "capture"},
+  {"action": "pixel", "point": [210, 100], "rgb565": "259b"},
+  {"action": "command", "value": "CANCEL"},
+  {"action": "expect", "state": {"screen": "menu", "pressed": -1}},
+  {"action": "tap", "point": [80, 180]},
+  {"action": "expect", "state": {"screen": "menu", "focus": 1, "pressed": -1}},
+  {"action": "command", "value": "BUTTON 0 1"},
+  {"action": "expect", "state": {"screen": "menu", "focus": 1}},
+  {"action": "command", "value": "BUTTON 1 1"},
+  {"action": "command", "value": "BUTTON 0 1"},
+  {"action": "expect", "state": {"screen": "controls", "focus": 0}},
+  {"action": "command", "value": "BUTTON 0 1"},
+  {"action": "expect", "state": {"screen": "menu", "focus": 0}},
+  {"action": "tap", "point": [80, 100]},
+  {"action": "expect", "state": {"screen": "controls", "pressed": -1}},
+  {"action": "capture"}
+]

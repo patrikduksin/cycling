@@ -12,8 +12,8 @@ mod wifi;
 use cycling_os::{
     coin,
     companion::{Decoder, Event, Status},
-    controls::Controls,
     input::Report,
+    ui::App,
 };
 use esp_backtrace as _;
 use esp_hal::{
@@ -158,7 +158,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     #[cfg(feature = "debug-harness")]
     let mut screenshot_frame = 0u32;
     let mut frame = 0u32;
-    let mut ui = Controls::default();
+    let mut app = App::default();
     let mut last_touch = Instant::now();
     let mut errors = 0u32;
     let mut decoder = Decoder::default();
@@ -169,12 +169,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let mut uart_errors = 0u32;
     loop {
         let start = Instant::now();
-        let previous = ui.point;
-        let brightness = ui.brightness;
+        let previous = app.point();
+        let brightness = app.controls.brightness;
         #[cfg(feature = "debug-harness")]
         debug.tick(
             start.duration_since_epoch().as_millis(),
-            &mut ui,
+            &mut app,
             &mut status,
         );
         if last_rx.elapsed().as_millis() > 250 {
@@ -209,7 +209,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                             }
                             Event::Button { button, code } => {
                                 println!("CYCLING_BUTTON button={:?} code={}", button, code);
-                                ui.button(button, code);
+                                app.button(button, code);
                             }
                         }
                         status.update(event);
@@ -232,7 +232,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             status.power = None;
         }
         #[cfg(feature = "debug-harness")]
-        let touch_injected = debug.touch_injected;
+        let touch_injected = debug.touch_injected();
         #[cfg(not(feature = "debug-harness"))]
         let touch_injected = false;
         match touch.poll() {
@@ -240,13 +240,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 available = true;
                 last_touch = Instant::now();
                 if !touch_injected {
-                    ui.update(Some(point));
+                    app.pointer(point);
                 }
             }
             Ok(Report::Release) => {
                 available = true;
                 if !touch_injected {
-                    ui.update(None);
+                    app.release();
                 }
             }
             Ok(Report::Invalid) => {}
@@ -257,12 +257,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 }
                 available = false;
                 if !touch_injected {
-                    ui.update(None);
+                    app.cancel();
                 }
             }
         }
         if !touch_injected && last_touch.elapsed().as_millis() > 250 {
-            ui.update(None);
+            app.cancel();
         }
         #[cfg(feature = "debug-harness")]
         let mut screenshot_requested = false;
@@ -280,7 +280,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                         id,
                         action,
                         start.duration_since_epoch().as_millis(),
-                        &mut ui,
+                        &mut app,
                         &mut status,
                         screenshot_requested || screenshot_row != coin::HEIGHT,
                     ),
@@ -289,19 +289,18 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 break;
             }
         }
-        if ui.point != previous {
-            println!("CYCLING_TOUCH point={:?}", ui.point);
+        if app.point() != previous {
+            println!("CYCLING_TOUCH point={:?}", app.point());
         }
-        if ui.brightness != brightness {
-            backlight.set_duty(ui.brightness).unwrap();
-            println!("CYCLING_BRIGHTNESS percent={}", ui.brightness);
+        if app.controls.brightness != brightness {
+            backlight.set_duty(app.controls.brightness).unwrap();
+            println!("CYCLING_BRIGHTNESS percent={}", app.controls.brightness);
         }
         #[cfg(feature = "debug-harness")]
         let visible_status = debug.status(&status);
         #[cfg(not(feature = "debug-harness"))]
         let visible_status = status;
-        ui.render(&mut canvas, available, &visible_status);
-        cycling_os::controls::wifi_label(&mut canvas, wifi::label());
+        app.render(&mut canvas, available, &visible_status, wifi::label());
         screen.draw(&canvas);
         #[cfg(feature = "debug-harness")]
         if screenshot_requested {
@@ -321,7 +320,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             frame,
             Instant::now().duration_since_epoch().as_millis(),
             &canvas,
-            &ui,
+            &app,
             &visible_status,
             available,
             decoder.valid_frames,

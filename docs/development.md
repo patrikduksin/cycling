@@ -34,12 +34,17 @@ updates rather than moving Git branches.
 | `mise run test` | Host input, UI, renderer and flash-format tests |
 | `mise run check` | Formatting and Clippy |
 | `mise run build` | Release ELF and `.local/cycling.bin` |
-| `mise run preview` | Render `.local/controls.ppm` on the host |
+| `mise run preview` | Render the current 240×320 app preview to `.local/controls.ppm` |
 
 The OS is `no_std`, using esp-rtos and Embassy for asynchronous Wi-Fi alongside
 the display loop, with a 160 KiB internal heap. An 80×106 RGB565 canvas is enlarged
-3× onto the 240×320 display, using eight-row DMA transfers. The current screen shows battery percentage, voltage and power status, counts
-button events, tests touch and controls brightness from 5 to 100 percent.
+3× onto the 240×320 display, using eight-row DMA transfers. A portable `App` owns
+the current screen, focus, pressed gesture and the existing controls state. The
+initial menu exposes the controls diagnostics and shows a disabled placeholder
+for later device screens. Pointer release activates a target; timeout, input
+failure and debug cleanup cancel it. Physical and injected input call the same app
+handlers. The controls diagnostics shows battery percentage, voltage and power
+status, counts button events, and tests brightness from 5 to 100 percent.
 Target cadence is 24 fps. Touch uses the stock 0x5a report protocol over I2C;
 brightness changes the existing backlight PWM duty. It resets to 50 percent on
 boot. Bottom-left and bottom-right short clicks also change brightness by five
@@ -56,6 +61,24 @@ alignment and cache-maintenance requirements checked and validated on hardware.
 
 The original coin renderer remains available through
 `mise exec -- cargo run --locked --example preview -- .local/coin.ppm 8 coin`.
+
+### UI foundation validation (2026-09-11)
+
+The host preview now uses the same one-pixel vertical offset as the display and
+capture mapping and produces an exact 240×320 image. Both harness-enabled and
+harness-disabled target builds passed. The enabled 559,312-byte image was flashed
+with the safe slot-B workflow.
+
+On hardware, an injected navigation scenario verified the menu's focused, pressed
+and disabled states, cancellation without activation, touch activation, button
+selection and return from Controls. Two checksummed captures show the pressed menu
+and Controls screens. The existing smoke scenario then passed 48 captured frames
+with 27 distinct images after explicitly navigating to Controls. Companion frames
+advanced from 934 to 1,748 without new CRC or UART errors; sampled free heap changed
+from 116,288 to 116,240 bytes. Ordinary frame work was 20–21 ms. Full-frame capture
+raised the run's maximum to 45 ms, so it is evidence of harness cost rather than a
+normal rendering bound. A lease-expiry test also canceled a held menu item and
+restored screen, focus, brightness and counters without activation.
 
 The stock ESP-IDF bootloader loads the Rust application; no ESP-IDF application
 runtime is linked. A compatible application descriptor is supplied by

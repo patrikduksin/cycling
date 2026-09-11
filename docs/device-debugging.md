@@ -129,8 +129,8 @@ Python scenarios can import `Device` from `scripts/debug.py`. Its `command`,
 `pixel(..., after_ms=ack['ms'] + 1)` waits for a recorded frame after an input
 acknowledgment. This links a visual assertion to a displayed input result.
 
-State reports include the current screen, brightness, touch point, button
-counters, battery values, whether battery data is simulated, Wi-Fi state, physical
+State reports include the current screen, focused and pressed control, brightness,
+touch point, button counters, battery values, whether battery data is simulated, Wi-Fi state, physical
 touch availability, companion packet/error counters, free heap, sampled minimum
 heap, PSRAM capacity and free space, previous frame processing time and maximum
 observed frame processing time.
@@ -151,10 +151,11 @@ so their frame numbers identify displayed results. Malformed commands produce
 
 | Command | Purpose |
 |---|---|
-| `BEGIN` | Start a test session and save brightness and button counters |
+| `BEGIN` | Start a test session and save navigation, brightness and button counters |
 | `PING` | Renew the session lease |
 | `STATE` | Inspect state; also allowed outside a session |
-| `TOUCH x y` / `RELEASE` | Inject touch or release it |
+| `TOUCH x y` / `RELEASE` | Inject touch or complete the gesture |
+| `CANCEL` | Abandon the injected gesture without activating it |
 | `BUTTON id code` | Inject a companion button event, IDs 0 top, 1 left, 2 right |
 | `BATTERY percent millivolts power` | Override displayed battery values; power 0 charging, 1 battery, 2 unknown |
 | `LIVE` | Resume current physical battery readings |
@@ -162,7 +163,7 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `CAPTURE` | Capture one compressed frame |
 | `RECORD milliseconds fps` | Record 100–30000 ms at a requested 1–10 fps |
 | `STOP` | Stop recording |
-| `END` | Stop recording, release touch, clear battery override and restore saved UI values |
+| `END` | Stop recording, cancel touch, clear battery override and restore saved UI values |
 
 The host opens a session automatically and sends heartbeats every second.
 The firmware expires a session after three seconds without an accepted command.

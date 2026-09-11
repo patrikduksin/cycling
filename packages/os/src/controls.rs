@@ -117,6 +117,12 @@ impl Controls {
     }
 }
 
+/// Show connection progress without displaying network identifiers.
+pub fn wifi_label(pixels: &mut [u16; PIXELS], label: &[u8]) {
+    rect(pixels, 0, 63, 80, 8, 0x0863);
+    text(pixels, 5, 65, label, 0x07ff);
+}
+
 fn number(p: &mut [u16; PIXELS], x: usize, y: usize, n: u32, color: u16) {
     let n = n.min(999);
     let digits = [

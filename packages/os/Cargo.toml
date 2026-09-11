@@ -9,14 +9,23 @@ publish = false
 
 [features]
 default = []
-c606 = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf"]
+c606 = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:static_cell", "dep:embassy-futures"]
 
 [dependencies]
 libm = "0.2.16"
-esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"], optional = true }
+esp-hal = { version = "=1.1.2", features = ["esp32s3", "unstable"], optional = true }
 esp-backtrace = { version = "0.20.0", features = ["esp32s3", "panic-handler", "println"], optional = true }
 esp-println = { version = "0.18.0", default-features = false, features = ["esp32s3", "jtag-serial", "critical-section"], optional = true }
-esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3"], optional = true }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"], optional = true }
+
+esp-radio = { version = "=1.0.0-beta.0", features = ["esp32s3", "wifi"], optional = true }
+esp-rtos = { version = "=0.3.0", features = ["esp32s3", "esp-radio", "embassy"], optional = true }
+esp-alloc = { version = "0.10.0", features = ["esp32s3"], optional = true }
+embassy-futures = { version = "0.1.2", optional = true }
+embassy-executor = { version = "0.10.0", optional = true }
+embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "tcp", "dns", "auto-icmp-echo-reply"], optional = true }
+embassy-time = { version = "0.5.0", optional = true }
+static_cell = { version = "2.1.1", optional = true }
 
 [[bin]]
 name = "cycling-os"

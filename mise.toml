@@ -15,7 +15,7 @@ run = "bash scripts/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-run = ["cargo test --workspace --locked", "python -m unittest discover -s scripts -p test_device.py"]
+run = ["cargo test --workspace --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
 
 [tasks.fmt]
 description = "Format Rust code"
@@ -45,3 +45,7 @@ run = "uv run scripts/device.py stock"
 [tasks.monitor]
 description = "Read USB logs without resetting the device"
 run = "uv run scripts/device.py monitor"
+
+[tasks.wifi-setup]
+description = "Save current NetworkManager Wi-Fi credentials privately"
+run = "python scripts/wifi.py setup"

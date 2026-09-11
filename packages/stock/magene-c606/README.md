@@ -5,6 +5,7 @@ analysis tools are public; vendor firmware, disassembly and device dumps are not
 
 - [Hardware map](hardware.md)
 - [Companion buttons and battery](companion.md)
+- [Wi-Fi bring-up](wifi.md)
 - [Firmware format and boot process](firmware.md)
 - [Partition layout](partitions.csv)
 - [Unpacker](unpack.py)

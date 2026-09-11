@@ -3,6 +3,7 @@
 
 mod display;
 mod touch;
+mod wifi;
 
 use cycling_os::{
     coin,
@@ -13,7 +14,6 @@ use cycling_os::{
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
-    delay::Delay,
     dma_tx_buffer,
     gpio::{DriveMode, Level, Output, OutputConfig},
     lcd_cam::{
@@ -25,20 +25,24 @@ use esp_hal::{
         channel::{self, ChannelIFace},
         timer::{self, TimerIFace},
     },
-    main,
     time::{Instant, Rate},
 };
 use esp_println::println;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[main]
-fn main() -> ! {
+#[esp_rtos::main]
+async fn main(spawner: embassy_executor::Spawner) -> ! {
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
     println!(
         "CYCLING_BOOT version={} board=magene-c606",
         env!("CARGO_PKG_VERSION")
     );
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 96 * 1024);
+    let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
+    let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);
     let _rd = Output::new(p.GPIO39, Level::High, OutputConfig::default());
     let lcd = LcdCam::new(p.LCD_CAM);
     let bus = I8080::new(
@@ -108,9 +112,9 @@ fn main() -> ! {
         })
         .unwrap();
 
-    println!("CYCLING_DISPLAY ready canvas=80x106 heap=0");
+    println!("CYCLING_DISPLAY ready canvas=80x106 heap=163840");
     let mut canvas = [0; coin::PIXELS];
-    let delay = Delay::new();
+    spawner.spawn(wifi::start(p.WIFI, spawner).unwrap());
     let mut frame = 0u32;
     let mut ui = Controls::default();
     let mut last_touch = Instant::now();
@@ -220,6 +224,7 @@ fn main() -> ! {
             println!("CYCLING_BRIGHTNESS percent={}", ui.brightness);
         }
         ui.render(&mut canvas, available, &status);
+        cycling_os::controls::wifi_label(&mut canvas, wifi::label());
         screen.draw(&canvas);
         if frame % 240 == 0 {
             println!(
@@ -236,8 +241,9 @@ fn main() -> ! {
         }
         let elapsed = start.elapsed().as_millis();
         if elapsed < 42 {
-            delay.delay_millis((42 - elapsed) as u32);
+            embassy_time::Timer::after_millis(42 - elapsed).await;
         }
+        embassy_futures::yield_now().await;
         frame = frame.wrapping_add(1);
     }
 }

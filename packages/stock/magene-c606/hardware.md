@@ -10,7 +10,8 @@
 | Boot flash | 16 MiB; JEDEC manufacturer `c8`, device `4018` | Verified full readback |
 | LCD | ST7789-compatible, 240×320, 16-bit I80 | Independent C display confirmed |
 | Backlight | GPIO45, LEDC 20 kHz, 10-bit PWM | Independent C test confirmed |
-| Wi-Fi / BLE | ESP32-S3 integrated radios; stock ESP-IDF driver paths | Custom radio tests pending |
+| Wi-Fi | ESP32-S3 integrated 2.4 GHz radio | Rust WPA2 association, DHCP, DNS, public HTTP and reconnect verified |
+| BLE | ESP32-S3 integrated radio; stock ESP-IDF driver paths | Custom test pending |
 | Companion | Official N22 update identifies `NRF52810_APP`; Nordic/ANT implementation | Update identified; chip readback pending |
 | Touch | I2C0, SDA21, SCL12; `0x5a`, packed coordinates at `0xd000` | Rust touch and visual alignment confirmed; exact part ID pending |
 | Buttons / power | UART2 RX41 at 115200; all three short-click IDs mapped | Three buttons and brightness shortcuts physically confirmed; power control pending |

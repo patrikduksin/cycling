@@ -111,17 +111,29 @@ The old five rides remain in private verified exports, including
 .local/exports/1789136629778452425 and .local/exports/1789134457934860141.
 Empty/new exports: .local/exports/issue44-empty and issue44-new-demo-final.
 
-A final 25.122-second settled check received 892 companion messages and 535 GPS
-sentences, with stable 80,336-byte free heap and connected HRS. GPS faults stayed
-unchanged, but companion UART errors grew 11 to 16 without ride writes. This is
-an unresolved observation, not a proven pre-existing fault or an established
-regression. New issue #51 tracks a focused diagnosis with the same Sol/Astra
-workflow. Sol owns source/Git/device after handoff. Establish a red-capable loop,
-identify actual UART flags, compare controlled conditions, and fix a demonstrated
-cause if feasible. Current brightness 100 versus earlier stable runs at 50 is a
-candidate variable, not a conclusion. Preserve data/preferences, keep raw logs
-private, and finish with normal HRS/harness firmware. No more ride clearing or
-MMC access is needed. Sudo still expires at 16:37 UTC on 2026-09-11.
+- #51 complete, PR #52, d71358c. A final settled check exposed companion UART
+  loss and led to a controlled reproduction. Instrumented polling received 412
+  valid reports with three FIFO-overflow reports in 12.068 seconds. Matched
+  brightness 50/100 tests each added four errors. UART2 now feeds a 2 KiB ring
+  from a bounded interrupt handler. Decoder reset precedes post-loss data, and
+  optional GPS-open TX failure cannot disable companion RX. Host tests cover
+  overflow/resynchronization. Final normal HRS/harness replay received 732
+  reports in 20.059 seconds with no new UART/CRC faults, advancing GPS, connected
+  HRS and stable 80,336-byte free heap. Brightness, heartbeat, reconnect, capture
+  and quiet comparison windows also passed. Settings and the one demo ride were
+  preserved. Astra approved after two review rounds plus final evidence review;
+  87 firmware, 15 vendor and 45 Python tests, check and both builds passed.
+  Raw evidence remains in .local/tests/companion-*. No hardware ring-exhaustion
+  fault or physical button presses were forced during this follow-up.
+
+The authorized follow-up queue is complete. Only #34 remains open for outdoor
+GPS validation, fitted-receiver identification and electrical power/acquisition
+behavior beyond proven stream control. Its issue body now reflects the completed
+transport/epoch work. Do not repeat indoor probes or restart the completed queue
+without new evidence or direction. MMC reads are verified, but vendor filesystem
+write ownership remains unestablished. Normal HRS/harness firmware is installed;
+current preferences and demo ride above are preserved. Root owns final handoff.
+Sudo still expires at 16:37 UTC on 2026-09-11.
 
 ## Progress
 

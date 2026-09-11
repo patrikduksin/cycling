@@ -367,6 +367,7 @@ impl App {
                 metrics.ride_recording,
                 metrics.ride_source,
                 metrics.recording_active_ms,
+                metrics.ble,
             ),
             Screen::History => self.render_history(pixels, metrics),
         }
@@ -784,6 +785,7 @@ impl App {
         recording: crate::ride_log::Status,
         source: Option<crate::ride_log::Source>,
         recording_active_ms: u64,
+        sensors: crate::ble_sensor::Snapshot,
     ) {
         pixels.fill(theme::BACKGROUND);
         let live = effective_ride_source(source, self.ride_source) == crate::ride_log::Source::Live;
@@ -822,6 +824,20 @@ impl App {
         };
         for (row, field) in order.into_iter().enumerate() {
             render_ride_field(pixels, 4, 27 + row * 13, field, values, live_active_ms);
+        }
+        if live {
+            text(pixels, 4, 59, b"HR", theme::MUTED);
+            if let Some(value) = sensors.heart_bpm {
+                number(pixels, 14, 59, u32::from(value), theme::TEXT);
+            } else {
+                text(pixels, 14, 59, b"--", theme::MUTED);
+            }
+            text(pixels, 38, 59, b"CAD", theme::MUTED);
+            if let Some(value) = sensors.cadence_tenths {
+                number(pixels, 54, 59, u32::from(value / 10), theme::TEXT);
+            } else {
+                text(pixels, 54, 59, b"--", theme::MUTED);
+            }
         }
         rect(
             pixels,
@@ -1764,6 +1780,7 @@ mod tests {
             ride_summaries: [None; crate::ride_log::HISTORY_CAPACITY],
             ride_summary_count: 0,
             gps: crate::gps::Snapshot::default(),
+            ble: crate::ble_sensor::Snapshot::default(),
             uptime_ms: 3_723_000,
             frame_ms: 20,
             max_frame_ms: 44,

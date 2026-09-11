@@ -283,6 +283,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             ride_summaries: ride_recorder.summaries(),
             ride_summary_count: ride_recorder.summary_count(),
             gps: cycling_os::gps::Snapshot::default(),
+            ble: bluetooth::snapshot(now),
             uptime_ms: now,
             frame_ms: last_frame_ms,
             max_frame_ms,
@@ -534,6 +535,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         // The prior LCD DMA is complete. Service one bounded flash operation,
         // apply its verified result, and only then render/ack the new state.
         let ride_clock = cycling_os::network_time::snapshot(now, 0, wifi::online());
+        let (ride_heart_bpm, ride_cadence_tenths) =
+            cycling_os::ble_sensor::ride_fields(metrics.ble, ride_recorder.source());
         let ride_sample = RideSample {
             active_ms: 0,
             utc_ms: ride_clock.unix_seconds.and_then(|seconds| {
@@ -545,8 +548,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 .then(|| Some((metrics.gps.latitude_e7?, metrics.gps.longitude_e7?)))
                 .flatten(),
             demo_speed_mm_s: Some(cycling_os::ride::DEMO_SPEED_MM_S),
-            heart_bpm: None,
-            cadence_tenths: None,
+            heart_bpm: ride_heart_bpm,
+            cadence_tenths: ride_cadence_tenths,
             battery_percent: status.battery.map(|(percent, _)| percent),
         };
         let mut ride_flash = ride_recorder.service(&mut settings_store, now, ride_sample);

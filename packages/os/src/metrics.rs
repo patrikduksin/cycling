@@ -16,6 +16,7 @@ pub struct Snapshot {
     pub ride_summaries: [Option<crate::ride_log::Summary>; crate::ride_log::HISTORY_CAPACITY],
     pub ride_summary_count: u8,
     pub gps: crate::gps::Snapshot,
+    pub ble: crate::ble_sensor::Snapshot,
     pub uptime_ms: u64,
     pub frame_ms: u32,
     pub max_frame_ms: u32,

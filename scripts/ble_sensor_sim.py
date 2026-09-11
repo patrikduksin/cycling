@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 """Owned deterministic HRS/CSC simulator for the C606 central-role test."""
+import os
 import signal
 
 import dbus
@@ -16,12 +17,19 @@ SERVICE = "org.bluez.GattService1"
 CHAR = "org.bluez.GattCharacteristic1"
 ADV = "org.bluez.LEAdvertisement1"
 ROOT = "/com/cycling/simulator"
+PROFILE = os.environ.get("CYCLING_SIM_PROFILE", "both")
+if PROFILE not in {"heart", "csc", "both"}:
+    raise SystemExit("CYCLING_SIM_PROFILE must be heart, csc, or both")
 
 
 class Application(dbus.service.Object):
     def __init__(self, bus):
         super().__init__(bus, ROOT)
-        self.services = [HeartRateService(bus, 0), CscService(bus, 1)]
+        self.services = []
+        if PROFILE in {"heart", "both"}:
+            self.services.append(HeartRateService(bus, len(self.services)))
+        if PROFILE in {"csc", "both"}:
+            self.services.append(CscService(bus, len(self.services)))
 
     @dbus.service.method(OM, out_signature="a{oa{sa{sv}}}")
     def GetManagedObjects(self):
@@ -169,7 +177,10 @@ class Advertisement(dbus.service.Object):
             raise dbus.exceptions.DBusException("unsupported interface")
         return {
             "Type": "peripheral",
-            "ServiceUUIDs": dbus.Array(["180D", "1816"], signature="s"),
+            "ServiceUUIDs": dbus.Array(
+                (["180D"] if PROFILE == "heart" else ["1816"] if PROFILE == "csc" else ["180D", "1816"]),
+                signature="s",
+            ),
             "LocalName": "Cycling Sim",
         }
 
@@ -194,7 +205,7 @@ registered = {"gatt": False, "advertisement": False}
 def ready(label):
     registered[label] = True
     if all(registered.values()):
-        print("CYCLING_SIM ready", flush=True)
+        print(f"CYCLING_SIM ready profile={PROFILE}", flush=True)
 
 
 def failed(error):

@@ -15,7 +15,7 @@ run = "bash scripts/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-run = ["cargo test --workspace --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
+run = ["cargo test --workspace --locked", "cargo test --manifest-path packages/os/vendor/trouble-host/Cargo.toml --lib --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
 
 [tasks.fmt]
 description = "Format Rust code"

@@ -34,6 +34,7 @@ pub enum Action {
     Cancel,
     Live,
     Wifi,
+    WifiFault(u8),
     Stop,
     Capture,
     Touch(Point),
@@ -61,6 +62,13 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
         "CANCEL" => Action::Cancel,
         "LIVE" => Action::Live,
         "WIFI" => Action::Wifi,
+        "WIFI_FAULT" => {
+            let fault = number()?;
+            if fault > 2 {
+                return None;
+            }
+            Action::WifiFault(fault as u8)
+        }
         "STOP" => Action::Stop,
         "CAPTURE" => Action::Capture,
         "PERSIST" => {
@@ -198,6 +206,7 @@ mod tests {
             "DBG 1 PERSIST 101",
             "DBG 1 IDLE 3601 10",
             "DBG 1 IDLE 2 4",
+            "DBG 1 WIFI_FAULT 3",
         ] {
             assert_eq!(parse(line), None, "{line}");
         }
@@ -208,6 +217,10 @@ mod tests {
         assert_eq!(parse("DBG 13 CANCEL"), Some((13, Action::Cancel)));
         assert_eq!(parse("DBG 14 PERSIST 75"), Some((14, Action::Persist(75))));
         assert_eq!(parse("DBG 15 IDLE 2 5"), Some((15, Action::Idle(2, 5))));
+        assert_eq!(
+            parse("DBG 16 WIFI_FAULT 2"),
+            Some((16, Action::WifiFault(2)))
+        );
     }
     #[test]
     fn overflow_discards_entire_line_then_recovers() {

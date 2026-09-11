@@ -1,5 +1,5 @@
-//! Wi-Fi station with DHCP, reconnects and a public HTTP bring-up test.
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+//! Wi-Fi station with bounded recovery and a public HTTP connectivity check.
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_net::{Runner, Stack, StackResources, dns::DnsQueryType, tcp::TcpSocket};
@@ -16,26 +16,74 @@ mod config {
     include!(env!("CYCLING_WIFI_CONFIG"));
 }
 
-static STATE: AtomicU8 = AtomicU8::new(0);
-static RECONNECT: AtomicBool = AtomicBool::new(false);
+const LINK_UNCONFIGURED: u8 = 0;
+const LINK_CONNECTING: u8 = 1;
+const LINK_ASSOCIATED: u8 = 2;
+const LINK_RETRYING: u8 = 3;
+const LINK_FAILED: u8 = 4;
+const PROBE_WAITING: u8 = 0;
+const PROBE_READY: u8 = 1;
+const PROBE_OK: u8 = 2;
+const PROBE_FAILED: u8 = 3;
+const REQUEST_MANUAL: u8 = 1;
+const REQUEST_RECOVERY: u8 = 2;
+
+static LINK: AtomicU8 = AtomicU8::new(LINK_UNCONFIGURED);
+static PROBE: AtomicU8 = AtomicU8::new(PROBE_WAITING);
+static REQUEST: AtomicU8 = AtomicU8::new(0);
+static RECOVERY_GENERATION: AtomicU32 = AtomicU32::new(0);
+static FAULT: AtomicU8 = AtomicU8::new(0);
+static GENERATION: AtomicU32 = AtomicU32::new(0);
+static ASSOCIATIONS: AtomicU32 = AtomicU32::new(0);
+static PROBE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
+static PROBE_FAILURES: AtomicU32 = AtomicU32::new(0);
 static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+
+fn public_state() -> u8 {
+    match LINK.load(Ordering::Relaxed) {
+        LINK_UNCONFIGURED => 0,
+        LINK_CONNECTING => 1,
+        LINK_ASSOCIATED => match PROBE.load(Ordering::Relaxed) {
+            PROBE_WAITING => 2,
+            PROBE_READY => 3,
+            PROBE_OK => 4,
+            _ => 5,
+        },
+        LINK_RETRYING => 5,
+        _ => 6,
+    }
+}
 
 #[cfg(feature = "debug-harness")]
 pub fn state() -> u8 {
-    STATE.load(Ordering::Relaxed)
+    public_state()
 }
 #[cfg(feature = "debug-harness")]
 pub fn reconnect() {
-    RECONNECT.store(true, Ordering::Relaxed);
+    REQUEST.store(REQUEST_MANUAL, Ordering::Release);
+}
+#[cfg(feature = "debug-harness")]
+pub fn set_fault(fault: u8) {
+    FAULT.store(fault, Ordering::Relaxed);
+}
+#[cfg(feature = "debug-harness")]
+pub fn stats() -> (u32, u32, u32, u8) {
+    (
+        ASSOCIATIONS.load(Ordering::Relaxed),
+        PROBE_SUCCESSES.load(Ordering::Relaxed),
+        PROBE_FAILURES.load(Ordering::Relaxed),
+        FAULT.load(Ordering::Relaxed),
+    )
 }
 
 pub fn label() -> &'static [u8] {
-    match STATE.load(Ordering::Relaxed) {
+    match public_state() {
         1 => b"WIFI CONNECTING",
         2 => b"WIFI GETTING IP",
         3 => b"WIFI CONNECTED",
         4 => b"WIFI TEST OK",
         5 => b"WIFI RETRYING",
+        6 => b"WIFI FAILED",
         _ => b"WIFI NOT SET UP",
     }
 }
@@ -46,7 +94,7 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
         println!("CYCLING_WIFI unconfigured");
         return;
     }
-    STATE.store(1, Ordering::Relaxed);
+    LINK.store(LINK_CONNECTING, Ordering::Relaxed);
     let auth = if config::WPA3 {
         AuthenticationMethod::Wpa3Personal
     } else {
@@ -61,9 +109,9 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
         ControllerConfig::default().with_initial_config(Config::Station(station)),
     ) {
         Ok(controller) => controller,
-        Err(error) => {
-            STATE.store(5, Ordering::Relaxed);
-            println!("CYCLING_WIFI init_failed error={:?}", error);
+        Err(_) => {
+            LINK.store(LINK_FAILED, Ordering::Relaxed);
+            println!("CYCLING_WIFI init_failed");
             return;
         }
     };
@@ -88,48 +136,121 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
         RESOURCES.init(StackResources::new()),
         seed,
     );
-    spawner.spawn(connection(controller).unwrap());
+    spawner.spawn(connection(controller, stack).unwrap());
     spawner.spawn(network(runner).unwrap());
     spawner.spawn(verify(stack).unwrap());
 }
 
-async fn reconnect_requested() {
+async fn reconnect_requested() -> u8 {
     loop {
-        if RECONNECT.swap(false, Ordering::Relaxed) {
-            return;
+        let request = REQUEST.swap(0, Ordering::AcqRel);
+        if request == REQUEST_MANUAL
+            || (request == REQUEST_RECOVERY
+                && RECOVERY_GENERATION.load(Ordering::Acquire)
+                    == GENERATION.load(Ordering::Acquire))
+        {
+            return request;
         }
         Timer::after_millis(250).await;
     }
 }
 
+fn request_recovery(generation: u32) {
+    if generation == GENERATION.load(Ordering::Acquire)
+        && LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
+    {
+        RECOVERY_GENERATION.store(generation, Ordering::Release);
+        REQUEST.store(REQUEST_RECOVERY, Ordering::Release);
+    }
+}
+
+async fn retry_or_late_connection(stack: Stack<'_>, seconds: u64) -> bool {
+    for _ in 0..seconds * 4 {
+        if stack.is_link_up() {
+            println!("CYCLING_WIFI associated_late");
+            return true;
+        }
+        Timer::after_millis(250).await;
+    }
+    stack.is_link_up()
+}
+
 #[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>) {
+async fn connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
+    let mut failures = 0u8;
     loop {
-        STATE.store(1, Ordering::Relaxed);
-        println!("CYCLING_WIFI connecting");
-        match controller.connect_async().await {
-            Ok(_) => {
-                STATE.store(2, Ordering::Relaxed);
-                println!("CYCLING_WIFI associated");
-                match select(
-                    controller.wait_for_disconnect_async(),
-                    reconnect_requested(),
-                )
-                .await
-                {
-                    Either::First(_) => println!("CYCLING_WIFI disconnected"),
-                    Either::Second(_) => {
-                        println!("CYCLING_WIFI reconnect_test disconnecting");
-                        if let Err(error) = controller.disconnect_async().await {
-                            println!("CYCLING_WIFI disconnect_failed error={:?}", error);
-                        }
-                    }
+        LINK.store(LINK_CONNECTING, Ordering::Relaxed);
+        PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+        println!(
+            "CYCLING_WIFI connecting attempt={}",
+            u16::from(failures) + 1
+        );
+        let connected = if stack.is_link_up() {
+            true
+        } else {
+            match with_timeout(Duration::from_secs(20), controller.connect_async()).await {
+                Ok(Ok(_)) => true,
+                Ok(Err(_)) => {
+                    println!("CYCLING_WIFI connect_failed kind=driver");
+                    false
+                }
+                Err(_) => {
+                    println!("CYCLING_WIFI connect_failed kind=timeout");
+                    false
                 }
             }
-            Err(error) => println!("CYCLING_WIFI connect_failed error={:?}", error),
+        };
+        let connected = if connected {
+            true
+        } else {
+            LINK.store(LINK_RETRYING, Ordering::Relaxed);
+            let delay = cycling_os::network::retry_delay_secs(failures);
+            failures = failures.saturating_add(1);
+            println!("CYCLING_WIFI retry_in_s={}", delay);
+            retry_or_late_connection(stack, delay).await
+        };
+        if !connected {
+            continue;
         }
-        STATE.store(5, Ordering::Relaxed);
-        Timer::after_secs(5).await;
+
+        failures = 0;
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+        ASSOCIATIONS.fetch_add(1, Ordering::Relaxed);
+        LINK.store(LINK_ASSOCIATED, Ordering::Relaxed);
+        PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+        println!("CYCLING_WIFI associated");
+        match select(
+            controller.wait_for_disconnect_async(),
+            reconnect_requested(),
+        )
+        .await
+        {
+            Either::First(_) => println!("CYCLING_WIFI disconnected"),
+            Either::Second(reason) => {
+                GENERATION.fetch_add(1, Ordering::Relaxed);
+                LINK.store(LINK_RETRYING, Ordering::Relaxed);
+                PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+                println!(
+                    "CYCLING_WIFI disconnecting reason={}",
+                    if reason == REQUEST_MANUAL {
+                        "test"
+                    } else {
+                        "recovery"
+                    }
+                );
+                match with_timeout(Duration::from_secs(5), controller.disconnect_async()).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) => println!("CYCLING_WIFI disconnect_failed kind=driver"),
+                    Err(_) => println!("CYCLING_WIFI disconnect_failed kind=timeout"),
+                }
+            }
+        }
+        if LINK.load(Ordering::Relaxed) != LINK_RETRYING {
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+            LINK.store(LINK_RETRYING, Ordering::Relaxed);
+            PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+        }
+        Timer::after_secs(1).await;
     }
 }
 
@@ -141,68 +262,98 @@ async fn network(mut runner: Runner<'static, Interface>) {
 #[embassy_executor::task]
 async fn verify(stack: Stack<'static>) {
     let mut successes = 0u32;
-    let mut reconnect_tested = false;
+    let mut probe_failures = 0u8;
+    let mut dhcp_failures = 0u8;
     loop {
-        if with_timeout(Duration::from_secs(30), stack.wait_config_up())
+        if with_timeout(Duration::from_secs(20), stack.wait_config_up())
             .await
             .is_err()
         {
-            println!("CYCLING_WIFI dhcp_waiting");
+            println!("CYCLING_WIFI dhcp_failed kind=timeout");
+            PROBE.store(PROBE_FAILED, Ordering::Relaxed);
+            if LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED {
+                let generation = GENERATION.load(Ordering::Relaxed);
+                let delay = cycling_os::network::retry_delay_secs(dhcp_failures);
+                dhcp_failures = dhcp_failures.saturating_add(1);
+                println!("CYCLING_WIFI dhcp_retry_in_s={}", delay);
+                Timer::after_secs(delay).await;
+                if generation == GENERATION.load(Ordering::Relaxed)
+                    && LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
+                    && !stack.is_config_up()
+                {
+                    request_recovery(generation);
+                }
+            }
             continue;
         }
-        STATE.store(3, Ordering::Relaxed);
-        // Network addresses are intentionally omitted from logs and the public UI.
+        dhcp_failures = 0;
+        let generation = GENERATION.load(Ordering::Relaxed);
+        PROBE.store(PROBE_READY, Ordering::Relaxed);
         println!("CYCLING_WIFI dhcp_ready");
-        let dns_ok = matches!(with_timeout(Duration::from_secs(10), stack.dns_query("example.com", DnsQueryType::A)).await, Ok(Ok(addresses)) if !addresses.is_empty());
-        println!("CYCLING_WIFI dns_ok={}", dns_ok);
+        let result = with_timeout(Duration::from_secs(15), probe(stack)).await;
+        if generation != GENERATION.load(Ordering::Relaxed)
+            || LINK.load(Ordering::Relaxed) != LINK_ASSOCIATED
+            || !stack.is_config_up()
         {
-            match with_timeout(Duration::from_secs(15), probe(stack)).await {
-                Ok(Ok(())) => {
-                    successes = successes.saturating_add(1);
-                    STATE.store(4, Ordering::Relaxed);
-                    println!(
-                        "CYCLING_WIFI http_verified count={} heap_free={}",
-                        successes,
-                        esp_alloc::HEAP.free()
-                    );
-                    if reconnect_tested {
-                        stack.wait_config_down().await;
-                        continue;
-                    }
-                    if !reconnect_tested {
-                        // Repeat the public HTTP check after a deliberate reconnect.
-                        reconnect_tested = true;
-                        Timer::after_secs(3).await;
-                        RECONNECT.store(true, Ordering::Relaxed);
-                        let _ =
-                            with_timeout(Duration::from_secs(10), stack.wait_config_down()).await;
-                        continue;
-                    }
-                }
-                _ => println!("CYCLING_WIFI http_test_failed"),
+            println!("CYCLING_WIFI request_stale");
+            PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+            continue;
+        }
+        match result {
+            Ok(Ok(())) => {
+                successes = successes.saturating_add(1);
+                PROBE_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+                probe_failures = 0;
+                PROBE.store(PROBE_OK, Ordering::Relaxed);
+                println!(
+                    "CYCLING_WIFI http_verified count={} heap_free={}",
+                    successes,
+                    esp_alloc::HEAP.free()
+                );
+                stack.wait_config_down().await;
+                continue;
+            }
+            Ok(Err(kind)) => {
+                PROBE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                PROBE.store(PROBE_FAILED, Ordering::Relaxed);
+                println!("CYCLING_WIFI request_failed kind={}", kind);
+            }
+            Err(_) => {
+                PROBE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                PROBE.store(PROBE_FAILED, Ordering::Relaxed);
+                println!("CYCLING_WIFI request_failed kind=timeout");
             }
         }
-        let _ = with_timeout(Duration::from_secs(30), stack.wait_config_down()).await;
+        let delay = cycling_os::network::retry_delay_secs(probe_failures);
+        probe_failures = probe_failures.saturating_add(1);
+        println!("CYCLING_WIFI request_retry_in_s={}", delay);
+        let _ = with_timeout(Duration::from_secs(delay), stack.wait_config_down()).await;
     }
 }
 
-async fn probe(stack: Stack<'static>) -> Result<(), ()> {
+async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
+    if FAULT.load(Ordering::Relaxed) == 1 {
+        return Err("injected_dns");
+    }
+    let addresses = stack
+        .dns_query("example.com", DnsQueryType::A)
+        .await
+        .map_err(|_| "dns")?;
+    if FAULT.load(Ordering::Relaxed) == 2 {
+        return Err("injected_request");
+    }
+    let host = *addresses.first().ok_or("dns_empty")?;
     let mut rx = [0; 1024];
     let mut tx = [0; 512];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
     socket.set_timeout(Some(Duration::from_secs(10)));
-    let addresses = stack
-        .dns_query("example.com", DnsQueryType::A)
-        .await
-        .map_err(|_| ())?;
-    let host = *addresses.first().ok_or(())?;
-    socket.connect((host, 80)).await.map_err(|_| ())?;
+    socket.connect((host, 80)).await.map_err(|_| "connect")?;
     let mut request =
         b"GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\n\r\n".as_slice();
     while !request.is_empty() {
-        let n = socket.write(request).await.map_err(|_| ())?;
+        let n = socket.write(request).await.map_err(|_| "write")?;
         if n == 0 {
-            return Err(());
+            return Err("write_zero");
         }
         request = &request[n..];
     }
@@ -210,18 +361,18 @@ async fn probe(stack: Stack<'static>) -> Result<(), ()> {
     let mut used = 0;
     loop {
         if used == response.len() {
-            return Err(());
+            return Err("response_large");
         }
-        let n = socket.read(&mut response[used..]).await.map_err(|_| ())?;
+        let n = socket
+            .read(&mut response[used..])
+            .await
+            .map_err(|_| "read")?;
         if n == 0 {
             break;
         }
         used += n;
     }
-    let response = &response[..used];
-    if cycling_os::network::verified_response(response) {
-        Ok(())
-    } else {
-        Err(())
-    }
+    cycling_os::network::verified_response(&response[..used])
+        .then_some(())
+        .ok_or("response")
 }

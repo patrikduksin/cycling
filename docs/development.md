@@ -233,11 +233,22 @@ Builds generate private Rust configuration and place all firmware build artifact
 in `.local/firmware`. Configured images contain the Wi-Fi password and must remain
 private. Without a configuration file, the firmware builds with Wi-Fi disabled.
 
-The bring-up task resolves `example.com`, fetches its page over HTTP, and checks
-for a successful response containing the expected heading. It disconnects the
-C606 once after success, reconnects, and repeats the check. This is a connectivity
-test, not TLS or authenticated server verification. The screen shows progress;
-USB logs omit SSIDs, passwords and network addresses.
+The connectivity task resolves `example.com`, fetches its page over HTTP, and
+checks for a successful response containing the expected heading. A successful
+connection stays up. Association, DHCP and requests have bounded timeouts;
+failures retry with delays capped at 30 seconds. Public-server probe failures
+retry without tearing down a usable Wi-Fi link, while DHCP failures request a
+fresh association. This is a connectivity test, not TLS or authenticated server
+verification. The screen shows current progress; USB logs omit SSIDs, passwords,
+network addresses and driver-provided identity details.
+
+On the C606, one deliberate reconnect and two controlled public-server failures
+completed with association/probe counters advancing from 1/1/0 to 4/4/2. The
+injected DNS and request failures each recovered on the existing association
+after a one-second retry. Free heap changed from 116,288 to 116,240 bytes;
+companion packets advanced from 296 to 604 with no new CRC or UART errors. This
+was a short harness-enabled recovery test against one public server, not a
+long-duration network or memory soak.
 
 ## Artwork
 

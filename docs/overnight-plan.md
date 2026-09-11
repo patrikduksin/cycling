@@ -85,7 +85,16 @@ The GPS issue contains the user-authorized public reference coordinates.
   Heap116288 to116240, no new CRC/UART errors. Actual AP loss and DHCP timeout
   were not forced on hardware. Astra approved; required checks/both builds passed.
   Device runs enabled build, including final #8 gesture fix.
-- Starting #10 network time. Preflights for UI, networking, settings, dimming,
+- #10 complete: PR #30 merged as 67ffd3e. Validated bounded SNTP, UTC anchored
+  to monotonic time, offline/stale status and fixed timezone preferences.
+  Device Cloudflare sync, offline progression and reconnect resync passed;
+  screenshots linked in PR. Host comparison is within a194ms command window,
+  not a millisecond accuracy guarantee. No RTC/DST; NTP era0 limitation documented.
+  Astra approved;43 Rust/19 Python/check/both builds passed.
+- Starting #11 simulated ride. Additional ignored preflights now include
+  ride-ui-preflight.md, crash-preflight.md, regression-preflight.md,
+  performance-preflight.md and ride-storage-option.md.
+  Preflights for UI, networking, settings, dimming,
   Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
   now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
   These remain stock-code findings pending actual device validation.

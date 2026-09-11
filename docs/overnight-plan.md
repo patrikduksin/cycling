@@ -38,6 +38,35 @@ The GPS issue contains the user-authorized public reference coordinates.
 - Finish with the latest working firmware and debugging enabled on the device.
   Report merged work, actual hardware results and remaining TODOs.
 
+## Follow-up queue authorized on 2026-09-11
+
+The user authorized continuing through all remaining issues with the same
+implementation, review, evidence and merge workflow. This supersedes the earlier
+completed-queue stop note for these follow-ups. Work in this order:
+
+1. #43 USB debug session handoff, to make unattended hardware testing reliable.
+2. #34 GNSS transport loss, epoch metadata and receiver/control investigation.
+3. #36 BLE MTU23 interoperability and continuous sensor acquisition.
+4. #21 read-only SD/MMC hardware probing and identification.
+5. #44 visible ride capacity and explicit reclaim after verified export.
+
+Sol medium implements one issue at a time; Astra medium reviews within four
+rounds. Independent read-only preflights may run alongside implementation. Keep
+hardware and source ownership explicit. Establish a failing reproduction for
+bugs, test candidate fixes, and favor useful tested merges. Hardware-dependent
+requirements may remain open with exact evidence; do not close an unverified
+requirement just because a partial increment merged.
+
+Existing four rides are agent-created test records and have two identical
+verified raw exports plus the final post-soak export under .local/exports/.
+Before any reclaim test, export current contents again and verify identity;
+exercise destructive paths only on identified disposable test data, confined
+to the owned ride reservation. Never write the vendor bulk-storage filesystem.
+
+At follow-up start12:28UTC, sudo works and its original expiry is still
+13:37Chile/16:37UTC today. Do not assume the window renews automatically.
+Starting baseline main e7df373, enabled device Home, four rides/slot22.
+
 ## Progress
 
 - Planning complete. Issues #1 through #19 created.

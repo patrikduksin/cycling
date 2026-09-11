@@ -51,8 +51,16 @@ The GPS issue contains the user-authorized public reference coordinates.
   Astra approved. Bulk SD/MMC probing remains #21, with recovered pin map in
   packages/stock/magene-c606/storage.md. Resolve bulk storage before real ride
   recording if the small settings journal is insufficient.
-- Starting #3 UI foundation. Preflights for UI and networking are saved in
-  ignored .local/overnight/. Device runs harness-enabled PSRAM/storage firmware.
+- #3 complete: PR #23 merged as a6f0048. Portable App/menu, shared drawing,
+  release/cancel and injection ownership, session navigation restore, exact preview.
+  Navigation, smoke and lease tests passed; both builds passed. Astra approved.
+  Screenshots and video are linked on #23 via release evidence-2026-09-11 assets,
+  never Git files. Device runs this harness-enabled build.
+- Starting #4 input behavior. Preflights for UI, networking and Bluetooth are
+  saved in ignored .local/overnight/. Address held touch across button navigation.
+- For later media, use unique sanitized filenames under .local/overnight/evidence,
+  inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
+  Browser attachment UI is unavailable. Never upload raw logs or credentials.
 
 Update this section after each issue with branch/PR, verification, review outcome,
 and the next task. Keep raw evidence in .local/ and link written results in PRs.

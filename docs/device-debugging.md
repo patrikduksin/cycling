@@ -144,6 +144,8 @@ touch availability, companion packet/error counters, free heap, sampled minimum
 heap, PSRAM capacity and free space, previous frame processing time and maximum
 observed frame processing time, the touch error counter, selected/effective
 brightness, dim state, idle age, timeout and dim level.
+They also expose cumulative `display_draws` and `display_skips`; the display loop
+frame number continues to advance when an identical canvas skips LCD transfer.
 A missing touch coordinate, battery reading or power status is `-1`.
 
 Wi-Fi values are 0 unconfigured, 1 connecting, 2 awaiting DHCP, 3 connected,
@@ -262,6 +264,40 @@ covered with a fake-device regression before the successful full-duration
 rerun. Evidence is in ignored `.local/tests/issue-12-final*`.
 
 ## Hardware validation
+
+### Exact redraw skip (2026-09-11)
+
+Before this optimization, recording-off harness measurements on Home, Settings,
+the running demo Ride and Home after network recovery all had a 20 ms median
+loop-work time and a 19–22 ms range. Each five-second window advanced about 114
+loop frames. A harness-disabled Home sample reported 20 ms on every periodic
+line. The loop sent the full display on every frame.
+
+After adding exact canvas comparison, recording-off Home and Settings each drew
+0 and skipped 115 transfers over about 4.9 seconds. The running Ride drew 4 and
+skipped 112 over the same interval; Home after network recovery drew 0 and
+skipped 115. All four enabled windows had a 3 ms median loop-work time, with
+2–5 ms observed. Harness-disabled Home reported 3 ms while draws stayed at 4 and
+skips advanced from 21 to 285. These are cumulative transfer decisions, distinct
+from loop frames and physical panel refreshes.
+State polling sampled typical loops and could miss the Ride's changed-draw
+iterations; periodic logs measured the first changed draw at 20 ms and one
+changed Ride loop at 22 ms.
+
+The comparison retains one 16,960-byte canvas in explicitly allocated external
+PSRAM. Reported external free memory fell from 2,097,152 to 2,080,192 bytes;
+internal DMA storage stayed internal and measured internal free heap remained
+116,240–116,288 bytes. Linker `.data`, `.data.wifi`, `.rwtext` and `.rwtext.wifi`
+were unchanged. In the enabled build `.bss` increased 40 bytes while `.stack`
+decreased 40; in the disabled build the corresponding change was 32 bytes each.
+Those linker sections are reservations, not measured stack use.
+
+The first canvas always draws. Later canvases skip only after an exact pixel
+comparison, and a changed canvas is copied to history only after the blocking LCD
+transfer succeeds. A skipped loop still handles input, timers, Wi-Fi, debug
+commands and acknowledgments. This measurement shows less loop work and fewer
+LCD transfers; it does not establish lower touch latency, panel refresh rate,
+power savings or worst-case animation performance.
 
 The smoke test verified the touch marker in captured pixels, dragged the slider
 to both endpoints, checked the white knob at each endpoint, injected all three

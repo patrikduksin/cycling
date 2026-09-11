@@ -5,6 +5,8 @@ pub struct Snapshot {
     pub uptime_ms: u64,
     pub frame_ms: u32,
     pub max_frame_ms: u32,
+    pub display_draws: u32,
+    pub display_skips: u32,
     pub heap_free: usize,
     pub heap_min_sampled: usize,
     pub psram_capacity: usize,

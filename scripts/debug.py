@@ -153,8 +153,11 @@ class Device:
         cleanup_error = None
         try:
             if self.active:
-                self.final = self.command('END')
+                # END is the final command for this transport owner. Mark the host
+                # session inactive before waiting so pump cannot enqueue a PING
+                # whose long reply would outlive the file descriptor.
                 self.active = False
+                self.final = self.command('END')
                 if self.final['active'] or self.final['fake_battery'] or self.final['x'] != -1:
                     raise RuntimeError('Test session did not release injected state')
                 if self.final['brightness'] != self.expected_brightness:

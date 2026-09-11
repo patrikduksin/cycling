@@ -13,8 +13,8 @@
 | Wi-Fi / BLE | ESP32-S3 integrated radios; stock ESP-IDF driver paths | Custom radio tests pending |
 | Companion | Official N22 update identifies `NRF52810_APP`; Nordic/ANT implementation | Update identified; chip readback pending |
 | Touch | I2C0, SDA21, SCL12; `0x5a`, packed coordinates at `0xd000` | Rust touch and visual alignment confirmed; exact part ID pending |
-| Buttons / power | Companion button events, combinations and power control | Protocol pending |
-| Battery / charge | Companion voltage, capacity, charging and temperature handling | Circuit and calibration pending |
+| Buttons / power | UART2 RX41 at 115200; all three short-click IDs mapped | Three buttons and brightness shortcuts physically confirmed; power control pending |
+| Battery / charge | Companion streams voltage, percentage and power status | Percentage and USB power transition physically confirmed; calibration pending |
 | Sound | Companion buzzer control; main audio-resource management | Buzzer lead; speaker/codec unconfirmed |
 | GNSS | NMEA and adaptive receiver logic; PAIR/PDTINFO/CCMSG/CFGMSG command families | Exact receiver and UART path pending |
 | Motion | Companion `icm42607` and `qma6100` ID checks | Variant candidates |
@@ -44,7 +44,7 @@ to each external component remains unresolved. These are not identified debug pa
 
 ## Next measurements
 
-Identify the exact touch controller, decode companion status/button packets, capture GNSS
+Identify the exact touch controller, investigate companion power control, capture GNSS
 identity and position data, read storage CID/CSD, then exercise wireless. Keep the
 companion firmware initially; accessing its host protocol may expose several
 functions without reimplementing its sensor and power-management drivers.
@@ -77,3 +77,5 @@ including 11 through 71 percent during the initial boot capture. Frame work was
 that the slider visibly changes brightness, describing both as perfect. This is
 a user-observed hardware result, not a measured full-panel calibration or
 backlight luminance measurement. Private captures remain in `.local/device/`.
+
+Button and battery packet details are in [the companion notes](companion.md).

@@ -4,6 +4,7 @@ Research from stock release 1.956 and one physical C606. Written findings and ou
 analysis tools are public; vendor firmware, disassembly and device dumps are not.
 
 - [Hardware map](hardware.md)
+- [Companion buttons and battery](companion.md)
 - [Firmware format and boot process](firmware.md)
 - [Partition layout](partitions.csv)
 - [Unpacker](unpack.py)
@@ -32,3 +33,8 @@ finger tracking and visible brightness changes. The touch UI takes about 19 ms
 per frame for input, rendering and transfer, at a 42 ms cadence. The application
 image is 124,480 bytes with no heap. Stock slot A, bootloader and partition table
 passed the device workflow verification. See the [bring-up notes](hardware.md#touch-and-brightness-bring-up-2026-09-11).
+
+The same day's companion bring-up added battery percentage, reported voltage,
+power status and all three physical buttons. The user confirmed the counters,
+brightness shortcuts and USB unplug/replug status changes work. This application
+is 136,112 bytes. See [companion protocol and validation](companion.md).

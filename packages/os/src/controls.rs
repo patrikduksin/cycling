@@ -1,6 +1,7 @@
 //! Touch test and brightness UI on the existing 80x106 canvas.
 use crate::{
     coin::{HEIGHT, PIXELS, WIDTH},
+    companion::Status,
     input::Point,
 };
 
@@ -35,13 +36,49 @@ impl Controls {
         self.point = point;
     }
 
-    pub fn render(&self, pixels: &mut [u16; PIXELS], available: bool) {
+    pub fn render(&self, pixels: &mut [u16; PIXELS], available: bool, status: &Status) {
         pixels.fill(0x0863);
-        text(pixels, 5, 5, b"TOUCH TEST", 0xffff);
+        text(pixels, 5, 5, b"BATTERY", 0xffff);
+        if let Some((percent, mv)) = status.battery {
+            number(pixels, 53, 5, percent as u32, 0x07ff);
+            text(pixels, 69, 5, b"%", 0x07ff);
+            let voltage = [
+                b'0' + (mv / 1000) as u8,
+                b'.',
+                b'0' + ((mv / 100) % 10) as u8,
+                b'0' + ((mv / 10) % 10) as u8,
+                b'V',
+            ];
+            text(pixels, 5, 15, &voltage, 0x8c71);
+        } else {
+            text(pixels, 53, 5, b"--", 0x8c71);
+        }
         text(
             pixels,
             5,
-            15,
+            25,
+            match status.power {
+                Some(0) => b"CHARGING",
+                Some(1) => b"ON BATTERY",
+                _ => b"POWER UNKNOWN",
+            },
+            0x8c71,
+        );
+        for (i, label) in [b"TOP".as_slice(), b"LEFT", b"RIGHT"].iter().enumerate() {
+            let x = 3 + i * 26;
+            let color = if status.last_button.is_some_and(|b| b.index() == i) {
+                0x07ff
+            } else {
+                0x8c71
+            };
+            rect(pixels, x, 37, 24, 23, 0x18e5);
+            text(pixels, x + 2, 40, label, color);
+            number(pixels, x + 2, 51, status.button_counts[i].min(999), color);
+        }
+        text(
+            pixels,
+            5,
+            65,
             if available {
                 b"TAP OR DRAG"
             } else {
@@ -49,11 +86,6 @@ impl Controls {
             },
             0x8c71,
         );
-        for x in [5, 74] {
-            for y in [26, 65] {
-                cross(pixels, x, y, 0x4a69);
-            }
-        }
         if let Some(p) = self.point {
             cross(
                 pixels,
@@ -81,9 +113,25 @@ impl Controls {
         let knob = 8 + (usize::from(self.brightness) - 5) * 64 / 95;
         rect(pixels, 8, 87, knob - 8 + 1, 2, 0x07ff);
         rect(pixels, knob - 2, 83, 5, 10, 0xffff);
-        text(pixels, 5, 98, b"DIM", 0x8c71);
-        text(pixels, 51, 98, b"BRIGHT", 0x8c71);
+        text(pixels, 5, 98, b"LEFT - RIGHT +", 0x8c71);
     }
+}
+
+fn number(p: &mut [u16; PIXELS], x: usize, y: usize, n: u32, color: u16) {
+    let n = n.min(999);
+    let digits = [
+        b'0' + (n / 100) as u8,
+        b'0' + ((n / 10) % 10) as u8,
+        b'0' + (n % 10) as u8,
+    ];
+    let start = if n < 10 {
+        2
+    } else if n < 100 {
+        1
+    } else {
+        0
+    };
+    text(p, x, y, &digits[start..], color);
 }
 
 fn rect(p: &mut [u16; PIXELS], x: usize, y: usize, w: usize, h: usize, color: u16) {
@@ -114,6 +162,7 @@ fn text(p: &mut [u16; PIXELS], x: usize, y: usize, s: &[u8], color: u16) {
             b'G' => [3, 4, 5, 5, 3],
             b'H' => [5, 5, 7, 5, 5],
             b'I' => [7, 2, 2, 2, 7],
+            b'K' => [5, 5, 6, 5, 5],
             b'L' => [4, 4, 4, 4, 7],
             b'M' => [5, 7, 7, 5, 5],
             b'N' => [5, 7, 7, 7, 5],
@@ -123,6 +172,12 @@ fn text(p: &mut [u16; PIXELS], x: usize, y: usize, s: &[u8], color: u16) {
             b'S' => [3, 4, 2, 1, 6],
             b'T' => [7, 2, 2, 2, 2],
             b'U' => [5, 5, 5, 5, 7],
+            b'V' => [5, 5, 5, 5, 2],
+            b'W' => [5, 5, 7, 7, 5],
+            b'Y' => [5, 5, 2, 2, 2],
+            b'.' => [0, 0, 0, 0, 2],
+            b'-' => [0, 0, 7, 0, 0],
+            b'+' => [0, 2, 7, 2, 0],
             b'0' => [7, 5, 5, 5, 7],
             b'1' => [2, 6, 2, 2, 7],
             b'2' => [6, 1, 7, 4, 7],

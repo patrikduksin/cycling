@@ -16,7 +16,7 @@ fn main() -> io::Result<()> {
     if args.next().as_deref() == Some("coin") {
         coin::render(frame, &mut pixels);
     } else {
-        Controls::default().render(&mut pixels, true);
+        Controls::default().render(&mut pixels, true, &cycling_os::companion::Status::default());
     }
     let mut out = io::BufWriter::new(File::create(path)?);
     write!(out, "P6\n{} {}\n255\n", WIDTH * 3, HEIGHT * 3)?;

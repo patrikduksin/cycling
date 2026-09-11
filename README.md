@@ -2,7 +2,7 @@
 
 Open-source bike computer firmware, written in Rust. Starting with the Magene C606.
 
-A small `no_std` firmware with a touch test screen, brightness control, a pixel-art
+A small `no_std` firmware with touch, buttons, battery status, brightness control, a pixel-art
 Rust coin renderer, and the hardware notes needed to build the rest.
 
 <img src="docs/demo.gif" alt="A pixel-art Rust coin rotating on the C606 display" width="240">

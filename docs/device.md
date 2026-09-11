@@ -48,6 +48,8 @@ On one C606 with stock release 1.956:
 - Rust `no_std` firmware rendering a smoothly spinning coin, physically confirmed.
 - Rust touch test UI with finger tracking and a 5–100% brightness slider,
   physically confirmed on 2026-09-11. Brightness starts at 50% after reboot.
+- Three physical button counters and brightness shortcuts, plus battery status
+  changing correctly through USB unplug/replug, physically confirmed on 2026-09-11.
 - Original stock slot A preserved throughout.
 
 The Rust demo's hardware result is recorded in [the C606 notes](../packages/stock/magene-c606/README.md).

@@ -4,7 +4,12 @@
 mod display;
 mod touch;
 
-use cycling_os::{coin, controls::Controls, input::Report};
+use cycling_os::{
+    coin,
+    companion::{Button, Decoder, Event, Status},
+    controls::Controls,
+    input::Report,
+};
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
@@ -76,6 +81,14 @@ fn main() -> ! {
     println!("CYCLING_TOUCH probe={:02x?}", probe);
     let mut available = probe.is_ok();
 
+    let mut companion = esp_hal::uart::UartRx::new(
+        p.UART2,
+        esp_hal::uart::Config::default().with_baudrate(115200),
+    )
+    .unwrap()
+    .with_rx(p.GPIO41);
+    println!("CYCLING_COMPANION listening uart=2 rx=41 baud=115200");
+
     let mut ledc = Ledc::new(p.LEDC);
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
     let mut timer = ledc.timer::<LowSpeed>(timer::Number::Timer0);
@@ -102,10 +115,80 @@ fn main() -> ! {
     let mut ui = Controls::default();
     let mut last_touch = Instant::now();
     let mut errors = 0u32;
+    let mut decoder = Decoder::default();
+    let mut status = Status::default();
+    let mut last_rx = Instant::now();
+    let mut last_battery = Instant::now();
+    let mut last_power = Instant::now();
+    let mut uart_errors = 0u32;
     loop {
         let start = Instant::now();
         let previous = ui.point;
         let brightness = ui.brightness;
+        if last_rx.elapsed().as_millis() > 250 {
+            decoder.reset();
+        }
+        let mut bytes = [0u8; 128];
+        match companion.read_buffered(&mut bytes) {
+            Ok(n) if n > 0 => {
+                last_rx = Instant::now();
+                for &byte in &bytes[..n] {
+                    if let Some(event) = decoder.push(byte) {
+                        match event {
+                            Event::Battery {
+                                percent,
+                                millivolts,
+                            } => {
+                                if status.battery.is_none()
+                                    || last_battery.elapsed().as_millis() > 1000
+                                {
+                                    println!(
+                                        "CYCLING_BATTERY percent={} millivolts={}",
+                                        percent, millivolts
+                                    );
+                                }
+                                last_battery = Instant::now();
+                            }
+                            Event::Power { status: value } => {
+                                if status.power != Some(value) {
+                                    println!("CYCLING_POWER status={}", value);
+                                }
+                                last_power = Instant::now();
+                            }
+                            Event::Button { button, code } => {
+                                println!("CYCLING_BUTTON button={:?} code={}", button, code);
+                                if code == 1 {
+                                    match button {
+                                        Button::BottomLeft => {
+                                            ui.brightness = ui.brightness.saturating_sub(5).max(5)
+                                        }
+                                        Button::BottomRight => {
+                                            ui.brightness = ui.brightness.saturating_add(5).min(100)
+                                        }
+                                        Button::TopLeft => {}
+                                    }
+                                }
+                            }
+                        }
+                        status.update(event);
+                    }
+                }
+            }
+            Err(e) => {
+                uart_errors = uart_errors.saturating_add(1);
+                decoder.reset();
+                if uart_errors % 120 == 1 {
+                    println!("CYCLING_COMPANION error={:?} count={}", e, uart_errors);
+                }
+            }
+            _ => {}
+        }
+        if last_battery.elapsed().as_millis() > 5000 {
+            status.battery = None;
+        }
+        if last_power.elapsed().as_millis() > 5000 {
+            status.power = None;
+        }
         match touch.poll() {
             Ok(Report::Press(point)) => {
                 available = true;
@@ -136,8 +219,14 @@ fn main() -> ! {
             backlight.set_duty(ui.brightness).unwrap();
             println!("CYCLING_BRIGHTNESS percent={}", ui.brightness);
         }
-        ui.render(&mut canvas, available);
+        ui.render(&mut canvas, available, &status);
         screen.draw(&canvas);
+        if frame % 240 == 0 {
+            println!(
+                "CYCLING_COMPANION valid={} bad_crc={} uart_errors={}",
+                decoder.valid_frames, decoder.bad_crc, uart_errors
+            );
+        }
         if frame % 24 == 0 {
             println!(
                 "CYCLING_FRAME frame={} render_ms={}",

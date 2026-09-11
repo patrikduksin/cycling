@@ -113,6 +113,26 @@ impl Decoder {
         }
     }
 }
+
+/// Reset an already-partial frame before feeding bytes captured after a
+/// transport loss. Returns the current loss counter for the caller to retain.
+pub fn feed_batch(
+    decoder: &mut Decoder,
+    previous_losses: u32,
+    current_losses: u32,
+    bytes: &[u8],
+    mut event: impl FnMut(Event),
+) -> u32 {
+    if current_losses != previous_losses {
+        decoder.reset();
+    }
+    for byte in bytes {
+        if let Some(value) = decoder.push(*byte) {
+            event(value);
+        }
+    }
+    current_losses
+}
 fn decode(frame: &[u8]) -> Option<Event> {
     // Only the installed companion's eight-byte reports, not external sensors.
     if frame.len() != 16 || frame[4] != 4 {
@@ -242,6 +262,26 @@ mod tests {
             })
         );
         assert_eq!(d.bad_crc, 1);
+    }
+    #[test]
+    fn reported_loss_resets_partial_before_post_loss_batch() {
+        let old = packet(16, [0x49, 0, 0, 0, 0, 0, 1, 0x80]);
+        let fresh = packet(0, [0x52, 0xff, 0xff, 0xff, 0xa0, 0x0f, 73, 0xff]);
+        let mut decoder = Decoder::default();
+        for byte in &old[..8] {
+            assert_eq!(decoder.push(*byte), None);
+        }
+        let mut events = [None; 1];
+        let losses = feed_batch(&mut decoder, 0, 1, &fresh, |event| events[0] = Some(event));
+        assert_eq!(losses, 1);
+        assert_eq!(
+            events[0],
+            Some(Event::Battery {
+                percent: 73,
+                millivolts: 4000
+            })
+        );
+        assert_eq!((decoder.valid_frames, decoder.bad_crc), (1, 0));
     }
     #[test]
     fn rejects_invalid_fields_and_unrelated_reports() {

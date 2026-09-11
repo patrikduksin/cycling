@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+from unittest import mock
+import io
 from pathlib import Path
 
 from debug import (Device, Recording, finish_created_ride, restore_ride_view,
@@ -144,6 +146,39 @@ class StreamTests(unittest.TestCase):
                 self.assertEqual(device.replies, {})
                 device.feed(reply[17:])
                 self.assertEqual(device.replies[7], ('OK', {'screen': 'home'}))
+
+    def test_duplicate_debug_prefix_at_session_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            device = self.device(directory)
+            with self.assertRaises(ValueError):
+                device.feed(b'CYCLING_DEBUG CYCLING_DEBUG 7 OK {"screen":"home"}\n')
+
+    def test_session_end_does_not_enqueue_a_heartbeat_before_close(self):
+        with tempfile.TemporaryDirectory() as directory:
+            device = self.device(directory)
+            device.fd = 7
+            device.log = io.BytesIO()
+            device.lock = None
+            device.active = True
+            device.counter = 0
+            device.last_ping = 0
+            device.expected_brightness = 50
+            device.baseline = {'screen': 'home', 'focus': 0}
+            reply = (b'CYCLING_DEBUG 1 OK {"active":false,"fake_battery":false,'
+                     b'"x":-1,"brightness":50,"screen":"home","focus":0,'
+                     b'"pressed":-1,"input_blocked":false}\n')
+            writes = []
+
+            def write(_fd, data):
+                writes.append(data)
+                return len(data)
+
+            with mock.patch('debug.os.write', side_effect=write), \
+                    mock.patch('debug.select.select', return_value=([7], [], [])), \
+                    mock.patch('debug.os.read', return_value=reply), \
+                    mock.patch('debug.os.close'):
+                device.__exit__(None, None, None)
+            self.assertEqual(writes, [b'DBG 1 END\n'])
 
     def test_reboot_expiry_and_malformed_replies_still_fail(self):
         with tempfile.TemporaryDirectory() as directory:

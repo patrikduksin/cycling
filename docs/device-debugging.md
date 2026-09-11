@@ -115,8 +115,16 @@ The parser accepts a valid debug reply after a recognized, truncated periodic
 part of a normal frame line before emitting a complete reply. Arbitrary prefixes,
 malformed replies, reboot notices, lease expiry and incomplete recordings remain
 errors. One final rehearsal correctly rejected a duplicated `CYCLING_DEBUG`
-prefix before a valid reply; the source-identical retry passed, and the transport
-handoff is tracked in [#43](https://github.com/patrikduksin/cycling/issues/43).
+prefix before a valid reply. The preceding session had acknowledged `END`, then
+the host enqueued a heartbeat whose reply was never read before closing USB. A
+forced teardown test reproduced an orphan heartbeat on every successful old
+cleanup and 5 failures in 12 following sessions. Cleanup now marks the host
+session inactive before waiting for `END`, so its pump cannot enqueue a command
+after the terminal command. The same forced test passed 20 handoffs without an
+orphan, and 10 ordinary 1.25-second sessions received all 10 normal heartbeats
+before clean teardown. The duplicated-prefix parser fixture remains an error;
+request correlation, reboot detection, and malformed-reply rejection are not
+relaxed.
 
 ## Input and state
 

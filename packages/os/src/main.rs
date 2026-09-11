@@ -278,6 +278,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             recording_slot: ride_recorder.next_slot().min(u16::MAX as usize) as u16,
             recording_write_ms: ride_recorder.max_write_ms(),
             recording_erase_ms: ride_recorder.max_erase_ms(),
+            ride_summaries: ride_recorder.summaries(),
+            ride_summary_count: ride_recorder.summary_count(),
             gps: cycling_os::gps::Snapshot::default(),
             uptime_ms: now,
             frame_ms: last_frame_ms,
@@ -583,6 +585,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         metrics.recording_slot = ride_recorder.next_slot().min(u16::MAX as usize) as u16;
         metrics.recording_write_ms = ride_recorder.max_write_ms();
         metrics.recording_erase_ms = ride_recorder.max_erase_ms();
+        metrics.ride_summaries = ride_recorder.summaries();
+        metrics.ride_summary_count = ride_recorder.summary_count();
         // Recorder transitions are rendered in the same acknowledged frame;
         // unrelated diagnostics retain their bounded one-second refresh.
         display_metrics.ride_recording = metrics.ride_recording;
@@ -594,6 +598,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         display_metrics.recording_slot = metrics.recording_slot;
         display_metrics.recording_write_ms = metrics.recording_write_ms;
         display_metrics.recording_erase_ms = metrics.recording_erase_ms;
+        display_metrics.ride_summaries = metrics.ride_summaries;
+        display_metrics.ride_summary_count = metrics.ride_summary_count;
         idle_config = IdleConfig {
             timeout_ms: (runtime_settings.dim_timeout_secs != 0)
                 .then_some(u64::from(runtime_settings.dim_timeout_secs) * 1_000),

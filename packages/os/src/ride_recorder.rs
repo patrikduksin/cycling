@@ -2,7 +2,7 @@
 
 use cycling_os::{
     ride::Action,
-    ride_log::{self, Catalog, Entry, Kind, Sample, Scanner, Slot, Source, Status},
+    ride_log::{self, Catalog, Entry, Kind, Sample, Scanner, Slot, Source, Status, Summary},
 };
 
 #[derive(Clone, Copy)]
@@ -33,6 +33,7 @@ pub struct Recorder {
     stop_at: Option<u64>,
     source: Source,
     open_ride: bool,
+    summary: Summary,
     samples: [Sample; ride_log::SAMPLES_PER_BATCH],
     sample_count: usize,
     next_sample: u64,
@@ -59,6 +60,7 @@ impl Default for Recorder {
             stop_at: None,
             source: Source::Demo,
             open_ride: false,
+            summary: Summary::default(),
             samples: [Sample::default(); ride_log::SAMPLES_PER_BATCH],
             sample_count: 0,
             next_sample: 0,
@@ -101,6 +103,14 @@ impl Recorder {
 
     pub fn source(&self) -> Option<Source> {
         self.open_ride.then_some(self.source)
+    }
+
+    pub fn summaries(&self) -> [Option<Summary>; ride_log::HISTORY_CAPACITY] {
+        self.catalog.summaries
+    }
+
+    pub fn summary_count(&self) -> u8 {
+        self.catalog.summary_count
     }
 
     pub fn request(&mut self, action: Action, source: Source, now: u64, token: u32) -> bool {
@@ -197,6 +207,9 @@ impl Recorder {
                 self.catalog.recovery = None;
                 self.accumulated_ms = recovery.active_ms;
                 self.open_ride = false;
+                let mut summary = recovery.summary;
+                summary.finish(Kind::Recovered, recovery.active_ms, recovery.gap);
+                self.catalog.push_summary(summary);
             }
             return true;
         }
@@ -247,6 +260,7 @@ impl Recorder {
                         self.stop_at = None;
                         self.source = source;
                         self.open_ride = true;
+                        self.summary = Summary::started(self.ride_id, source);
                         self.status = Status::Recording;
                     }
                     Action::Pause => {
@@ -264,6 +278,8 @@ impl Recorder {
                         self.stop_at = None;
                         self.open_ride = false;
                         self.status = Status::Saved;
+                        self.summary.finish(Kind::Finish, active_ms, false);
+                        self.catalog.push_summary(self.summary);
                         self.catalog.completed = self.catalog.completed.saturating_add(1);
                         self.catalog.next_ride_id = self.ride_id.wrapping_add(1).max(1);
                     }
@@ -312,6 +328,7 @@ impl Recorder {
                 self.sequence = recovery.next_sequence;
                 self.source = recovery.source;
                 self.open_ride = true;
+                self.summary = recovery.summary;
                 Status::Recovered
             } else {
                 Status::Ready
@@ -376,7 +393,12 @@ impl Recorder {
                 self.sequence,
                 self.active_ms(now),
             );
-            let _ = self.append(store, &entry, true, now);
+            if self.append(store, &entry, true, now) {
+                self.summary.finish(Kind::Full, entry.active_ms, false);
+                self.catalog.push_summary(self.summary);
+                self.catalog.completed = self.catalog.completed.saturating_add(1);
+                self.open_ride = false;
+            }
             self.status = Status::Full;
             return false;
         }
@@ -389,6 +411,9 @@ impl Recorder {
         .unwrap();
         if self.append(store, &entry, false, now) {
             self.sequence = self.sequence.wrapping_add(1);
+            for sample in &self.samples[..self.sample_count] {
+                self.summary.add_sample(*sample);
+            }
             self.written_samples = self
                 .written_samples
                 .saturating_add(self.sample_count as u32);

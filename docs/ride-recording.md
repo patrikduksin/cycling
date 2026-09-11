@@ -36,6 +36,25 @@ there create demo records. `RIDE START LIVE` is currently a harness-only start;
 the page labels it `LIVE RIDE`, shows elapsed time, and displays speed and
 distance as unavailable. A physical live/demo selector is follow-up work.
 
+The History page retains the four latest completed summaries in a fixed array
+and shows two per page. Its header reports retained/total rides, so older rides
+are not presented as deleted or browseable through this first bounded view.
+Each summary shows source, saved/recovered/full/gap state, duration, deterministic
+demo distance, first known sample date, GPS sample count, and average heart rate
+or cadence when present. Missing values are explicit. The first known UTC sample
+is not labeled as ride start time because active duration excludes pauses. Raw
+storage remains the complete inventory for export.
+
+On hardware, the bounded scan reconstructed four existing rides through slot 22
+without writing the journal. Both two-ride pages rendered the saved/recovered and
+live/demo labels plus first-known dates and explicit missing sensor fields. GPS
+UART errors increased from 0 to 2 during the broader capture window and then
+stayed at 2 in the follow-up state sample; this is retained as the existing GPS
+transport issue rather than evidence that history capture is loss-free.
+A later targeted two-page capture held rides/slot at 4/22, GPS UART at 0,
+companion UART at 1, and free heap at 80,276 bytes while companion valid frames
+advanced 393 to 421; observed maximum frame time rose from 25 to 32 ms.
+
 Hardware initialization of the previously occupied reservation took at most
 41 ms per sector and increased GPS UART errors by 19 during the one-time erase.
 Normal committed appends measured 0–1 ms in the tested demo/live sessions and

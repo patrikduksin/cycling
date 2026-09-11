@@ -3,12 +3,14 @@
 use cycling_os::{
     ride::Action,
     ride_log::{self, Catalog, Entry, Kind, Sample, Scanner, Slot, Source, Status, Summary},
+    ride_reclaim::{Clear, Media, Progress},
 };
 
 #[derive(Clone, Copy)]
 enum Pending {
     Ride(Action, Source, u64, u32),
     Initialize(u32),
+    Clear(u32),
 }
 
 #[derive(Clone, Copy)]
@@ -24,6 +26,7 @@ pub struct Recorder {
     catalog: Catalog,
     status: Status,
     format_sector: usize,
+    clear: Clear,
     pending: Option<Pending>,
     result: Option<ResultEvent>,
     ride_id: u32,
@@ -51,6 +54,7 @@ impl Default for Recorder {
             catalog: Catalog::default(),
             status: Status::Scanning,
             format_sector: 0,
+            clear: Clear::default(),
             pending: None,
             result: None,
             ride_id: 0,
@@ -119,7 +123,11 @@ impl Recorder {
             && self.result.is_none()
             && matches!(
                 self.status,
-                Status::Ready | Status::Saved | Status::Recovered | Status::Full
+                Status::NeedsInit
+                    | Status::Ready
+                    | Status::Saved
+                    | Status::Recovered
+                    | Status::Full
             )
     }
 
@@ -163,6 +171,22 @@ impl Recorder {
         true
     }
 
+    pub fn clear(&mut self, expected_upper: usize, token: u32) -> bool {
+        if !cycling_os::ride_reclaim::request_allowed(
+            self.status,
+            self.open_ride,
+            self.pending.is_some() || self.result.is_some(),
+            expected_upper,
+            self.catalog.next_slot,
+        ) {
+            return false;
+        }
+        self.pending = Some(Pending::Clear(token));
+        self.clear = Clear::default();
+        self.status = Status::Clearing;
+        true
+    }
+
     pub fn take_result(&mut self) -> Option<ResultEvent> {
         self.result.take()
     }
@@ -188,6 +212,10 @@ impl Recorder {
         }
         if self.status == Status::Formatting {
             self.format(store);
+            return true;
+        }
+        if self.status == Status::Clearing {
+            self.clear_all(store);
             return true;
         }
 
@@ -225,6 +253,9 @@ impl Recorder {
         }
 
         if let Some(Pending::Initialize(_)) = self.pending {
+            return false;
+        }
+        if let Some(Pending::Clear(_)) = self.pending {
             return false;
         }
         if let Some(Pending::Ride(action, source, action_ms, token)) = self.pending {
@@ -386,6 +417,66 @@ impl Recorder {
                 token,
                 ok: true,
             });
+        }
+    }
+
+    fn clear_all(&mut self, store: &mut crate::persistent::Store) {
+        struct StoreMedia<'a>(&'a mut crate::persistent::Store);
+        impl Media for StoreMedia<'_> {
+            type Error = ();
+            fn erase_sector(&mut self, sector: usize) -> Result<(), Self::Error> {
+                self.0.ride_erase_sector(sector).map_err(|_| ())
+            }
+            fn read_sector(
+                &mut self,
+                sector: usize,
+                output: &mut ride_log::Sector,
+            ) -> Result<(), Self::Error> {
+                self.0.ride_read_sector(sector, output).map_err(|_| ())
+            }
+        }
+        let started = esp_hal::time::Instant::now();
+        let progress = self
+            .clear
+            .service(&mut StoreMedia(store), &mut self.scan_sector);
+        self.max_erase_ms = self
+            .max_erase_ms
+            .max(started.elapsed().as_millis().min(u64::from(u32::MAX)) as u32);
+        match progress {
+            Ok(Progress::More) => {}
+            Ok(Progress::Complete) => {
+                let token = match self.pending.take() {
+                    Some(Pending::Clear(token)) => token,
+                    _ => 0,
+                };
+                self.catalog = Catalog {
+                    next_ride_id: 1,
+                    ..Catalog::default()
+                };
+                self.ride_id = 0;
+                self.sequence = 0;
+                self.accumulated_ms = 0;
+                self.open_ride = false;
+                self.sample_count = 0;
+                self.status = Status::Ready;
+                self.result = Some(ResultEvent {
+                    action: None,
+                    token,
+                    ok: true,
+                });
+            }
+            Err(_) => {
+                let token = match self.pending.take() {
+                    Some(Pending::Clear(token)) => token,
+                    _ => 0,
+                };
+                self.status = Status::Error;
+                self.result = Some(ResultEvent {
+                    action: None,
+                    token,
+                    ok: false,
+                });
+            }
         }
     }
 

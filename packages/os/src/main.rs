@@ -526,8 +526,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         #[cfg(feature = "debug-harness")]
         if let Some((id, action)) = debug.take_ride() {
             let accepted = match action {
-                Some((action, source)) => ride_recorder.request(action, source, now, id),
-                None => ride_recorder.initialize(id),
+                debug_usb::RideRequest::Action(action, source) => {
+                    ride_recorder.request(action, source, now, id)
+                }
+                debug_usb::RideRequest::Initialize => ride_recorder.initialize(id),
+                debug_usb::RideRequest::Clear(expected) => {
+                    ride_recorder.clear(usize::from(expected), id)
+                }
             };
             if !accepted {
                 debug.ride_result(id, false);

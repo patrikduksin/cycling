@@ -109,6 +109,60 @@ unavailable because those recordings contained no locations. Recorder state
 remained ready at four rides and slot 22 before and after export; saved
 brightness, dim and timezone values were also unchanged.
 
+## Capacity and explicit reclaim
+
+The Ride screen shows used and total slots, free slots, and an estimated
+remaining duration while it is ready. The estimate assumes 1 Hz samples packed
+four per slot and reserves START and terminal records. Events and partial batch
+flushes reduce the real duration, so this is an upper estimate. The 1 MiB
+reservation contains 4,096 slots, roughly 4.5 hours before that overhead.
+
+There is no automatic deletion, compaction, or erase on boot or START. To clear
+all rides, first make a complete `mise run ride-export` export and retain its raw
+file and manifest. Then pass that exact directory to:
+
+```text
+mise run ride-clear -- .local/exports/<export-id>
+```
+
+The helper validates the raw SHA-256 and length, reads the complete current
+device prefix and requires its SHA-256 to match, rechecks the upper slot bound,
+and sends the exact destructive request
+`RIDE CLEAR CONFIRM <upper>`. The firmware accepts it only while the recorder is
+closed and in a known exportable state. A completed scan that finds only invalid
+remnants (`needs_init`) is accepted only through the same freshly exported,
+hash-matched clear workflow. It erases and reads back one sector per
+main-loop iteration, and acknowledges success only after the complete owned
+`0xD98000..0xE98000` ride reservation is erased. Settings, MMC, vendor data, and
+other flash regions are outside this operation.
+
+If the command times out or power is interrupted, do not send it again blindly.
+Restart, wait for the bounded journal scan, inspect `STATE`, make a fresh export
+of any remaining records, and retry with that export's upper bound. A failure
+puts the recorder in `error` until restart. An interrupted erase can leave only
+the later portion of the old journal; the operation does not claim atomic
+deletion. After a complete clear, ride IDs restart at 1, while exports retain
+content hashes and START-record identities.
+
+The destructive hardware test first exported the existing 30-slot journal and
+matched its 7,680-byte SHA-256 to the prior export: five known test rides,
+including the separately authorized HRS test ride, with no invalid slots. The
+clear completed in 256 bounded erase/readback steps, reported ready with zero
+rides and zero used slots, and produced a second empty export. A newly created
+demo test ride then saved four samples in slots 0 through 3 and exported with no
+invalid slots. Preferences remained brightness 100, timeout 30 seconds, dim 20,
+and timezone UTC-03:00. Two earlier attempts did not mutate storage: the first
+timed out reading INFO immediately after flashing, and the second was refused as
+busy while the startup scan was still running. Interruption and readback failure
+recovery are fake-media tests; no physical power-cut test was performed.
+
+After the final harness-enabled reflash, a quiet 25.122-second settled window
+kept the recorder ready at one ride/four slots, Wi-Fi and time fresh, HRS linked,
+heap free at 80,336 bytes, and all five GPS fault counters unchanged while valid
+GPS and companion packets advanced. The companion UART counter increased from
+11 to 16 despite no ride flash work in that window; this remains an unresolved observed transport limitation; the cause was not
+isolated, and this is not a loss-free stability result.
+
 Hardware initialization of the previously occupied reservation took at most
 41 ms per sector and increased GPS UART errors by 19 during the one-time erase.
 Normal committed appends measured 0–1 ms in the tested demo/live sessions and

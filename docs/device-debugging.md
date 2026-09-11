@@ -71,6 +71,7 @@ mise run debug -- ride-demo
 mise run debug -- ride-recording-test
 mise run crash-test
 mise run ride-export
+mise run ride-clear -- .local/exports/<export-id>
 mise run debug -- soak --seconds 60
 ```
 

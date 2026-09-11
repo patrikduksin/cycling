@@ -361,14 +361,7 @@ impl App {
                 self.controls.render(pixels, available, status);
                 crate::controls::wifi_label(pixels, wifi);
             }
-            Screen::Ride => self.render_ride(
-                pixels,
-                metrics.uptime_ms,
-                metrics.ride_recording,
-                metrics.ride_source,
-                metrics.recording_active_ms,
-                metrics.ble,
-            ),
+            Screen::Ride => self.render_ride(pixels, metrics.uptime_ms, metrics),
             Screen::History => self.render_history(pixels, metrics),
         }
     }
@@ -778,15 +771,12 @@ impl App {
         text(pixels, 27, 94, b"TOP BACK", theme::MUTED);
     }
 
-    fn render_ride(
-        &self,
-        pixels: &mut [u16; PIXELS],
-        now: u64,
-        recording: crate::ride_log::Status,
-        source: Option<crate::ride_log::Source>,
-        recording_active_ms: u64,
-        sensors: crate::ble_sensor::Snapshot,
-    ) {
+    fn render_ride(&self, pixels: &mut [u16; PIXELS], now: u64, metrics: &metrics::Snapshot) {
+        let recording = metrics.ride_recording;
+        let source = metrics.ride_source;
+        let recording_active_ms = metrics.recording_active_ms;
+        let recording_slot = metrics.recording_slot;
+        let sensors = metrics.ble;
         pixels.fill(theme::BACKGROUND);
         let live = effective_ride_source(source, self.ride_source) == crate::ride_log::Source::Live;
         text(
@@ -811,19 +801,40 @@ impl App {
         let page = [b'P', b'A', b'G', b'E', b' ', b'1' + self.ride_page];
         text(pixels, 52, 13, &page, theme::MUTED);
         let values = self.ride.metrics(now);
-        let live_active_ms = live.then_some(live_ride_elapsed(
-            source,
-            recording_active_ms,
-            values.active_ms,
-        ));
-        let order = match (self.ride_layout, self.ride_page) {
-            (0, 0) => [0, 1, 2],
-            (0, _) => [1, 2, 0],
-            (1, 0) => [2, 0, 1],
-            _ => [1, 0, 2],
-        };
-        for (row, field) in order.into_iter().enumerate() {
-            render_ride_field(pixels, 4, 27 + row * 13, field, values, live_active_ms);
+        if self.ride.phase() == Phase::Ready {
+            let used = usize::from(recording_slot);
+            text(pixels, 4, 27, b"SLOTS", theme::MUTED);
+            number4(pixels, 30, 27, u32::from(recording_slot), theme::TEXT);
+            text(pixels, 47, 27, b"/4096", theme::MUTED);
+            text(pixels, 4, 40, b"FREE", theme::MUTED);
+            number4(
+                pixels,
+                27,
+                40,
+                crate::ride_reclaim::free_slots(used) as u32,
+                theme::TEXT,
+            );
+            text(pixels, 4, 53, b"EST", theme::MUTED);
+            let minutes = crate::ride_reclaim::estimated_seconds(used) / 60;
+            number(pixels, 22, 53, minutes / 60, theme::TEXT);
+            text(pixels, 34, 53, b"H", theme::MUTED);
+            number(pixels, 41, 53, minutes % 60, theme::TEXT);
+            text(pixels, 53, 53, b"M", theme::MUTED);
+        } else {
+            let live_active_ms = live.then_some(live_ride_elapsed(
+                source,
+                recording_active_ms,
+                values.active_ms,
+            ));
+            let order = match (self.ride_layout, self.ride_page) {
+                (0, 0) => [0, 1, 2],
+                (0, _) => [1, 2, 0],
+                (1, 0) => [2, 0, 1],
+                _ => [1, 0, 2],
+            };
+            for (row, field) in order.into_iter().enumerate() {
+                render_ride_field(pixels, 4, 27 + row * 13, field, values, live_active_ms);
+            }
         }
         if live {
             text(pixels, 4, 59, b"HR", theme::MUTED);
@@ -1361,6 +1372,26 @@ pub fn number(p: &mut [u16; PIXELS], x: usize, y: usize, n: u32, color: u16) {
     let start = if n < 10 {
         2
     } else if n < 100 {
+        1
+    } else {
+        0
+    };
+    text(p, x, y, &digits[start..], color);
+}
+
+fn number4(p: &mut [u16; PIXELS], x: usize, y: usize, n: u32, color: u16) {
+    let n = n.min(9_999);
+    let digits = [
+        b'0' + (n / 1_000) as u8,
+        b'0' + ((n / 100) % 10) as u8,
+        b'0' + ((n / 10) % 10) as u8,
+        b'0' + (n % 10) as u8,
+    ];
+    let start = if n < 10 {
+        3
+    } else if n < 100 {
+        2
+    } else if n < 1_000 {
         1
     } else {
         0

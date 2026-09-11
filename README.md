@@ -10,7 +10,7 @@ Ride features include a deterministic demo, live recording with GPS/battery fiel
 after reset, recent ride history, and USB raw/JSON export with GPX for recorded
 location tracks. Live speed and distance are still unavailable. BLE supports minimum-MTU
 GATT echo testing and one explicitly selected continuous Heart Rate or Cadence sensor;
-simultaneous sensors, GNSS outdoor/model validation and SD/MMC storage remain follow-ups.
+simultaneous sensors, GNSS outdoor/model validation and writable bulk storage remain follow-ups.
 
 [Ride recording and export](docs/ride-recording.md) ·
 [Device testing tools](docs/device-debugging.md) ·

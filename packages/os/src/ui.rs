@@ -17,6 +17,8 @@ pub mod theme {
     pub const DISABLED: u16 = 0x4228;
 }
 
+pub const TAP_SLOP: u16 = 18;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
     Menu,
@@ -45,7 +47,8 @@ pub struct App {
     pub pressed: Option<u8>,
     pub controls: Controls,
     point: Option<Point>,
-    origin: Option<u8>,
+    origin: Option<(u8, Point)>,
+    suppress_pointer: bool,
 }
 
 impl Default for App {
@@ -57,6 +60,7 @@ impl Default for App {
             controls: Controls::default(),
             point: None,
             origin: None,
+            suppress_pointer: false,
         }
     }
 }
@@ -85,15 +89,27 @@ impl App {
     }
 
     pub fn pointer(&mut self, point: Point) {
+        if self.suppress_pointer {
+            return;
+        }
         match self.screen {
             Screen::Menu => {
                 if self.point.is_none() {
-                    self.origin = menu_item(point);
+                    self.origin = menu_item(point).map(|item| (item, point));
                 }
                 self.point = Some(point);
                 self.pressed = self
                     .origin
-                    .filter(|&item| menu_item(point) == Some(item) && enabled(item));
+                    .filter(|&(item, start)| {
+                        menu_item(point) == Some(item)
+                            && point.x.abs_diff(start.x) <= TAP_SLOP
+                            && point.y.abs_diff(start.y) <= TAP_SLOP
+                            && enabled(item)
+                    })
+                    .map(|(item, _)| item);
+                if self.origin.is_some() && self.pressed.is_none() {
+                    self.origin = None;
+                }
                 if let Some(item) = menu_item(point) {
                     self.focus = item;
                 }
@@ -104,6 +120,9 @@ impl App {
 
     /// Complete a physical or injected pointer gesture and activate its target.
     pub fn release(&mut self) {
+        if core::mem::take(&mut self.suppress_pointer) {
+            return;
+        }
         match self.screen {
             Screen::Menu => {
                 self.point = None;
@@ -121,6 +140,7 @@ impl App {
         self.point = None;
         self.origin = None;
         self.pressed = None;
+        self.suppress_pointer = false;
         self.controls.update(None);
     }
 
@@ -128,6 +148,7 @@ impl App {
         if code != 1 {
             return;
         }
+        let pointer_was_held = self.suppress_pointer || self.point().is_some();
         self.cancel();
         match self.screen {
             Screen::Menu => match button {
@@ -140,6 +161,11 @@ impl App {
                 _ => self.controls.button(button, code),
             },
         }
+        self.suppress_pointer = pointer_was_held;
+    }
+
+    pub fn pointer_suppressed(&self) -> bool {
+        self.suppress_pointer
     }
 
     pub fn render(
@@ -354,10 +380,17 @@ mod tests {
         assert_eq!(app.screen, Screen::Menu);
 
         app.pointer(Point { x: 80, y: 100 });
-        app.pointer(Point { x: 80, y: 180 });
+        app.pointer(Point { x: 80, y: 119 });
         assert_eq!(app.pressed, None);
         app.pointer(Point { x: 80, y: 100 });
+        assert_eq!(app.pressed, None);
+        app.release();
+
+        app.pointer(Point { x: 9, y: 76 });
         assert_eq!(app.pressed, Some(0));
+        app.cancel();
+        app.pointer(Point { x: 8, y: 76 });
+        assert_eq!(app.pressed, None);
     }
 
     #[test]
@@ -371,6 +404,38 @@ mod tests {
         assert_eq!(app.screen, Screen::Controls);
         app.button(Button::TopLeft, 1);
         assert_eq!(app.screen, Screen::Menu);
+    }
+
+    #[test]
+    fn held_pointer_is_suppressed_across_button_navigation_until_release() {
+        let mut app = App::default();
+        app.pointer(Point { x: 80, y: 100 });
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Controls);
+        assert!(app.pointer_suppressed());
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(app.pointer_suppressed());
+        app.pointer(Point { x: 80, y: 100 });
+        assert_eq!(app.point(), None);
+        assert_eq!(app.controls.brightness, 50);
+        app.release();
+        assert!(!app.pointer_suppressed());
+        app.pointer(Point { x: 80, y: 100 });
+        app.release();
+        assert_eq!(app.screen, Screen::Controls);
+        app.pointer(Point { x: 24, y: 260 });
+        assert_eq!(app.controls.brightness, 5);
+    }
+
+    #[test]
+    fn unknown_button_codes_do_not_change_app_state() {
+        let mut app = App::default();
+        for code in [0, 2, 0x7fff] {
+            app.button(Button::TopLeft, code);
+        }
+        assert_eq!(app.screen, Screen::Menu);
+        assert_eq!(app.focus, 0);
     }
 
     #[test]

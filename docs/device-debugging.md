@@ -129,7 +129,8 @@ Python scenarios can import `Device` from `scripts/debug.py`. Its `command`,
 `pixel(..., after_ms=ack['ms'] + 1)` waits for a recorded frame after an input
 acknowledgment. This links a visual assertion to a displayed input result.
 
-State reports include the current screen, focused and pressed control, brightness,
+State reports include the current screen, focused and pressed control, whether
+pointer input is blocked pending release, brightness,
 touch point, button counters, battery values, whether battery data is simulated, Wi-Fi state, physical
 touch availability, companion packet/error counters, free heap, sampled minimum
 heap, PSRAM capacity and free space, previous frame processing time and maximum

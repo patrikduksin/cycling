@@ -79,7 +79,13 @@ The GPS issue contains the user-authorized public reference coordinates.
   and END restoration. PWM commands observed; actual luminance is not measured.
   Astra approved with a final portable gesture fix and regression test; checks
   passed. Screenshot linked in PR. Next flash deploys that narrow gesture fix.
-- Starting #9 Wi-Fi recovery. Preflights for UI, networking, settings, dimming,
+- #9 complete: PR #29 merged as 88f7897. Bounded connection/DHCP/request waits,
+  capped retries, generation-scoped recovery, truthful states and controlled faults.
+  Three requested reconnects and two same-link probe fault recoveries passed.
+  Heap116288 to116240, no new CRC/UART errors. Actual AP loss and DHCP timeout
+  were not forced on hardware. Astra approved; required checks/both builds passed.
+  Device runs enabled build, including final #8 gesture fix.
+- Starting #10 network time. Preflights for UI, networking, settings, dimming,
   Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
   now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
   These remain stock-code findings pending actual device validation.

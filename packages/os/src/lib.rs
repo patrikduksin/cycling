@@ -23,4 +23,5 @@ pub mod ride_reclaim;
 pub mod screenshot;
 pub mod sdmmc_probe;
 pub mod storage;
+pub mod uart_ring;
 pub mod ui;

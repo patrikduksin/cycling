@@ -86,6 +86,10 @@ run = "python scripts/clear_rides.py"
 description = "Check GNSS progress and transport counters under repeated USB state replies"
 run = "python scripts/gps_stress.py .local/tests/gps-stress --require-no-loss"
 
+[tasks.companion-stress]
+description = "Check companion progress and transport counters under repeated USB state replies"
+run = "python scripts/companion_stress.py .local/tests/companion-stress"
+
 [tasks.bluetooth-echo]
 description = "Verify C606 BLE echo notifications, reads and reconnect with this laptop"
 run = "/usr/bin/python3 scripts/bluetooth.py"

@@ -2,6 +2,7 @@
 #![no_main]
 
 mod bluetooth;
+mod companion_uart;
 mod crash_rtc;
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
@@ -195,24 +196,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     println!("CYCLING_TOUCH probe={:02x?}", probe);
     let mut available = probe.is_ok();
 
-    let companion_uart = esp_hal::uart::Uart::new(
-        p.UART2,
-        esp_hal::uart::Config::default().with_baudrate(115200),
-    )
-    .unwrap()
-    .with_rx(p.GPIO41)
-    .with_tx(p.GPIO42);
-    let (mut companion, mut companion_tx) = companion_uart.split();
-    println!("CYCLING_COMPANION listening uart=2 tx=42 rx=41 baud=115200");
-    const GPS_OPEN: [u8; 16] = [
-        0xa5, 0x0c, 0x6f, 0xf1, 0x02, 0x10, 0xe2, 0x02, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x89,
-        0xe5,
-    ];
-    match companion_tx.write(&GPS_OPEN) {
+    match companion_uart::init(p.UART2, p.GPIO41, p.GPIO42) {
         Ok(16) => println!("CYCLING_GPS companion_open=sent source=stock_candidate"),
         Ok(count) => println!("CYCLING_GPS companion_open_short bytes={}", count),
-        Err(error) => println!("CYCLING_GPS companion_open_failed error={:?}", error),
+        Err(()) => println!("CYCLING_GPS companion_open_failed"),
     }
+    println!("CYCLING_COMPANION listening uart=2 tx=42 rx=41 baud=115200 buffer=2048");
     let mut gps_receiver = gps_uart::init(p.UART0, p.GPIO0, p.UHCI0, p.DMA_CH1);
     let mut gps_parser = cycling_os::gps::Parser::default();
     let mut gps_ring_overflow = 0u32;
@@ -360,52 +349,58 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             decoder.reset();
         }
         let mut bytes = [0u8; 128];
-        match companion.read_buffered(&mut bytes) {
-            Ok(n) if n > 0 => {
-                last_rx = Instant::now();
-                for &byte in &bytes[..n] {
-                    if let Some(event) = decoder.push(byte) {
-                        match event {
-                            Event::Battery {
-                                percent,
-                                millivolts,
-                            } => {
-                                if status.battery.is_none()
-                                    || last_battery.elapsed().as_millis() > 1000
-                                {
-                                    println!(
-                                        "CYCLING_BATTERY percent={} millivolts={}",
-                                        percent, millivolts
-                                    );
-                                }
-                                last_battery = Instant::now();
-                            }
-                            Event::Power { status: value } => {
-                                if status.power != Some(value) {
-                                    println!("CYCLING_POWER status={}", value);
-                                }
-                                last_power = Instant::now();
-                            }
-                            Event::Button { button, code } => {
-                                println!("CYCLING_BUTTON button={:?} code={}", button, code);
-                                if code != 1 || idle.button(now) == Gate::Forward {
-                                    app.button_at(button, code, now);
-                                }
-                            }
+        let (companion_count, companion_counters) = companion_uart::drain(&mut bytes);
+        let next_uart_errors = companion_counters.errors();
+        if next_uart_errors != uart_errors {
+            println!(
+                "CYCLING_COMPANION loss total={} ring={} fifo={} glitch={} frame={} parity={} other={}",
+                next_uart_errors,
+                companion_counters.ring_overflows,
+                companion_counters.fifo_overflows,
+                companion_counters.glitches,
+                companion_counters.frame_errors,
+                companion_counters.parity_errors,
+                companion_counters.other_errors
+            );
+        }
+        if companion_count > 0 {
+            last_rx = Instant::now();
+        }
+        uart_errors = cycling_os::companion::feed_batch(
+            &mut decoder,
+            uart_errors,
+            next_uart_errors,
+            &bytes[..companion_count],
+            |event| {
+                match event {
+                    Event::Battery {
+                        percent,
+                        millivolts,
+                    } => {
+                        if status.battery.is_none() || last_battery.elapsed().as_millis() > 1000 {
+                            println!(
+                                "CYCLING_BATTERY percent={} millivolts={}",
+                                percent, millivolts
+                            );
                         }
-                        status.update(event);
+                        last_battery = Instant::now();
+                    }
+                    Event::Power { status: value } => {
+                        if status.power != Some(value) {
+                            println!("CYCLING_POWER status={}", value);
+                        }
+                        last_power = Instant::now();
+                    }
+                    Event::Button { button, code } => {
+                        println!("CYCLING_BUTTON button={:?} code={}", button, code);
+                        if code != 1 || idle.button(now) == Gate::Forward {
+                            app.button_at(button, code, now);
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                uart_errors = uart_errors.saturating_add(1);
-                decoder.reset();
-                if uart_errors % 120 == 1 {
-                    println!("CYCLING_COMPANION error={:?} count={}", e, uart_errors);
-                }
-            }
-            _ => {}
-        }
+                status.update(event);
+            },
+        );
         let mut gps_bytes = [0u8; 2048];
         let (gps_count, gps_overflow, gps_uart_errors) = gps_receiver.drain(&mut gps_bytes);
         gps_parser.overflow(gps_overflow.saturating_sub(gps_ring_overflow));

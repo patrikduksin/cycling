@@ -52,10 +52,45 @@ brightness changes the existing backlight PWM duty. It resets to 50 percent on
 first use, then restores the last valid saved value before configuring PWM.
 Bottom-left and bottom-right short clicks also change brightness by five
 points. The companion receiver uses UART2 RX41 at 115200 baud and validates
-packet CRCs; it sends no commands. Wi-Fi station support uses DHCP and reconnects after disconnects. The C606's
+packet CRCs. Boot sends the single stock-candidate GPS open frame but no button,
+power, reset, or update command. Wi-Fi station support uses DHCP and reconnects
+after disconnects. The C606's
 2 MiB Quad SPI RAM is initialized at 40 MHz, tested on each boot and exposed
 through a separate external-only allocator. Bluetooth uses the same radio stack
 as Wi-Fi; companion power control is still future work.
+
+The companion UART receiver is interrupt-fed into a 2,048-byte internal-memory
+ring. The ISR drains at most 16 128-byte chunks per invocation; the main loop
+then consumes bounded 128-byte batches. A FIFO, framing, parity, glitch, or ring
+loss clears queued bytes and resumes only at the next `0xa5` frame marker before
+the CRC-validating decoder runs. Per-kind loss logs reflect the first error
+reported by the pinned HAL, so they do not prove that simultaneous raw hardware
+flags were absent.
+
+This replaced one 128-byte polling read per roughly 42 ms display loop. The
+agent-runnable `mise run companion-stress` loop reproduced the original symptom:
+one instrumented 12.068-second settled run received 412 valid reports while
+three UART errors advanced, and all three new errors were reported as FIFO
+overflow (ring/glitch/frame/parity/other stayed zero). Matched 12-second USB
+tests at temporary brightness 50 and 100 each accumulated four UART errors, so
+brightness did not explain the observed difference between earlier sessions.
+
+With interrupt buffering, matched rapid-STATE runs at brightness 100 and 50
+received 439 and 445 valid reports with zero UART or CRC growth. A 20.100-second
+requested Wi-Fi reconnect received 727, a 10.565-second screen recording
+received 389 across 47 captured frames, and a quiet 25.117-second window
+received 905; all retained zero companion faults. GPS also progressed with zero
+reported faults, HRS remained connected, ride storage stayed at one ride/four
+slots, and preferences returned to 100/30/20/-180. These tests isolate the old
+main-loop polling cadence as insufficient for observed FIFO bursts; they do not
+identify which particular display, USB, or radio stall coincided with every
+overflow. Host tests cover explicit loss/resynchronization and a full ring, but
+no hardware ring-exhaustion fault was forced.
+
+The final normal harness/HRS build repeated the red-loop workload for 20.059
+seconds: companion reports advanced 501 to 1,233 with CRC and UART counters both
+unchanged at zero. GPS valid sentences advanced 319 to 780 with all GPS fault
+counters unchanged, HRS stayed connected, and free heap remained 80,336 bytes.
 
 Keep allocations in internal RAM if they contain atomics, back task stacks or
 must work while the external-memory cache is disabled. The existing radio and

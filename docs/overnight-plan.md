@@ -136,13 +136,23 @@ The GPS issue contains the user-authorized public reference coordinates.
   58 Rust/24 Python/check/both builds passed. Enabled firmware installed.
   Clean-restart screenshot attached to PR; raw backtrace ignored. Retention proof
   covers software reset only, not power loss, watchdogs or cache-off failures.
-- Starting #17 ride recording/recovery, then #18 history and #19 export.
-  Read .local/overnight/ride-recording-preflight.md, ride-storage-option.md and
-  ride-storage-integration-preflight.md; export notes are ride-export-preflight.md.
-  GPS now has fresh fixes, but receiver accuracy, model/control semantics,
-  epoch metadata and intermittent UART loss remain open in #34. BLE currently
-  validates a one-shot simulator; continuous live sensor fields remain absent
-  until implemented (#36). Keep durable demo records explicitly marked.
+- #17 complete: PR #39 merged as 1b66aec. Owned1MiB ride region
+  D98000..E98000, app ceiling638000, settings unchanged; explicit verified init,
+  256-byte committed batches, live/demo provenance and recovery at last commit.
+  Init256sectors max41ms withGPS UART+19; normal appends0..1ms with no new
+  GPS/companion errors in tested sessions, heap~80KiB. Final scenario keptslot11
+  during temporary input, recovered demo atslot17, then saved5live samples to
+  slot22 with4saved/recovered rides. Live GPS was nofix; no persisted-position
+  claim. Up to4in-flight samples may be lost; uncertain writes require restart.
+  Astra reviewed3rounds;64 Rust/25 Python/check/bothbuilds passed. Live screenshot
+  attached. Next flash must deploy final same-frame recorder display refresh.
+  Physical controls currently start demo; live start is USB-only, documented TODO.
+- Starting #18 saved ride history, then #19 USB export/GPX. Reuse docs/ride-recording.md
+  and the bounded record format; preserve current4test rides. Keep pagination
+  bounded and missing fields explicit. Export preflight is in
+  .local/overnight/ride-export-preflight.md. Additional live position-bearing
+  recording can be made if GNSS reacquires while working, without blocking merges.
+  GPS model/control/epoch/loss followup#34, continuousBLE/interop#36 and SD#21 remain.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

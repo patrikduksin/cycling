@@ -232,6 +232,10 @@ class Device:
                 name = f"frame-{metadata['stream']:04d}-{metadata['sequence']:04d}.png"
                 (self.directory / name).write_bytes(png(pixels))
                 metadata['file'] = name
+                raw_name = name.removesuffix('.png') + '.rgb565'
+                (self.directory / raw_name).write_bytes(
+                    b''.join(pixel.to_bytes(2, 'little') for pixel in pixels))
+                metadata['raw_file'] = raw_name
                 self.frames.append(metadata)
         if len(self.pending) > 8192:
             raise ValueError('Oversized USB line')
@@ -386,15 +390,27 @@ def wait_increase(device, key, previous, timeout=45):
     raise TimeoutError(f'{key} did not increase from {previous}')
 
 
+def wait_below(device, key, previous, timeout=45):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = device.command('STATE')
+        if state[key] < previous:
+            return state
+        device.wait(.25)
+    raise TimeoutError(f'{key} did not fall below {previous}')
+
+
 def wifi_recovery(device):
-    baseline = device.expect({'wifi': 4, 'wifi_fault': 0}, 45)
+    baseline = device.expect({'wifi': 4, 'wifi_fault': 0, 'time_status': 'fresh'}, 45)
     state = baseline
 
     # A deliberate link reset must associate and verify again.
     device.command('WIFI')
-    device.expect({'wifi': 5}, 5)
+    offline = device.expect({'wifi': 5, 'time_status': 'offline'}, 5)
     state = wait_increase(device, 'wifi_successes', state['wifi_successes'])
     device.expect({'wifi': 4})
+    state = wait_below(device, 'time_age_ms', offline['time_age_ms'])
+    assert state['utc'] >= offline['utc']
     assert state['wifi_associations'] > baseline['wifi_associations']
 
     # Public-server failures retry over the usable link, without another association.
@@ -461,6 +477,9 @@ def ride_demo(device):
     device.command('BUTTON 2 1')
     device.tap(80, 260)
     device.expect({'ride_phase': 'ready', 'ride_elapsed_ms': 0, 'ride_distance_mm': 0})
+    device.command('BUTTON 1 1')
+    device.tap(80, 220)
+    device.expect({'ride_page': ready['ride_page'], 'ride_layout': ready['ride_layout']})
     device.command('STOP')
     device.capture()
 

@@ -132,7 +132,8 @@ acknowledgment. This links a visual assertion to a displayed input result.
 State reports include the current screen, brightness, touch point, button
 counters, battery values, whether battery data is simulated, Wi-Fi state, physical
 touch availability, companion packet/error counters, free heap, sampled minimum
-heap, previous frame processing time and maximum observed frame processing time.
+heap, PSRAM capacity and free space, previous frame processing time and maximum
+observed frame processing time.
 A missing touch coordinate, battery reading or power status is `-1`.
 
 Wi-Fi values are 0 unconfigured, 1 connecting, 2 awaiting DHCP, 3 connected,

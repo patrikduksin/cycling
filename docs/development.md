@@ -44,8 +44,15 @@ Target cadence is 24 fps. Touch uses the stock 0x5a report protocol over I2C;
 brightness changes the existing backlight PWM duty. It resets to 50 percent on
 boot. Bottom-left and bottom-right short clicks also change brightness by five
 points. The companion receiver uses UART2 RX41 at 115200 baud and validates
-packet CRCs; it sends no commands. Wi-Fi station support uses DHCP and reconnects after disconnects. BLE, PSRAM and
-companion power control are still future work.
+packet CRCs; it sends no commands. Wi-Fi station support uses DHCP and reconnects after disconnects. The C606's
+2 MiB Quad SPI RAM is initialized at 40 MHz, tested on each boot and exposed
+through a separate external-only allocator. BLE and companion power control are
+still future work.
+
+Keep allocations in internal RAM if they contain atomics, back task stacks or
+must work while the external-memory cache is disabled. The existing radio and
+LCD DMA paths use internal memory. New PSRAM DMA use needs the peripheral's
+alignment and cache-maintenance requirements checked and validated on hardware.
 
 The original coin renderer remains available through
 `mise exec -- cargo run --locked --example preview -- .local/coin.ppm 8 coin`.

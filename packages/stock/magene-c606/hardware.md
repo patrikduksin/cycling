@@ -6,7 +6,7 @@
 | Function | Evidence | Status |
 |---|---|---|
 | Main MCU | ESP32-S3 QFN56 rev 0.2; two LX7 cores; 512 KiB internal SRAM | Verified chip, published SRAM size |
-| PSRAM | Chip identifies 2 MiB in-package PSRAM | Identified; custom bring-up pending |
+| PSRAM | 2 MiB in-package Quad SPI RAM at 40 MHz | Rust initialization and full-range startup test verified |
 | Boot flash | 16 MiB; JEDEC manufacturer `c8`, device `4018` | Verified full readback |
 | LCD | ST7789-compatible, 240×320, 16-bit I80 | Independent C display confirmed |
 | Backlight | GPIO45, LEDC 20 kHz, 10-bit PWM | Independent C test confirmed |
@@ -52,6 +52,43 @@ functions without reimplementing its sensor and power-management drivers.
 
 Sources: [ESP32-S3 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf),
 local N21/N22 update analysis, USB ROM inspection and the independent C display test.
+
+## PSRAM bring-up, 2026-09-11
+
+USB ROM inspection identifies the connected QFN56 chip as an ESP32-S3 with
+2 MiB of embedded 3.3 V PSRAM. [Espressif documents the S3R2 package as Quad
+SPI](https://docs.espressif.com/projects/esp-faq/en/latest/software-framework/peripherals/spi.html);
+the 8 MiB S3R8 package uses Octal SPI. The Rust firmware selects Quad SPI
+explicitly at 40 MHz and asks `esp-hal` to detect the capacity from the PSRAM
+chip ID. The connected unit reported 2,097,152 bytes.
+
+Every boot tests all 524,288 mapped words with an address-dependent pattern and
+its complement before making the memory available. It also checks walking bits
+at 32 addresses spread across the range. These are memory integrity checks
+through the cache, not direct measurements of package data pins. A failure or a
+capacity other than 2 MiB stops startup instead of exposing suspect memory.
+
+PSRAM uses a separate external-only allocator. A startup probe allocated 64 KiB
+with 64-byte alignment, checked both ends and returned it successfully. Ordinary
+global allocations, task stacks, atomics, the radio and the current LCD DMA
+buffers remain in internal RAM. PSRAM is cache-backed and cannot hold data that
+must remain accessible while the external-memory cache is disabled. `esp-alloc`
+also warns that ESP32-S3 atomic operations do not work correctly in PSRAM.
+
+Two reset boots detected and tested the same 2,097,152-byte capacity. Internal
+free memory was 163,840 bytes both before and after PSRAM setup, and the
+external allocator had 2,097,152 bytes free after its probe. On both boots the
+display continued at mostly 19–20 ms per sampled frame, touch probe succeeded,
+companion battery and power reports arrived, and Wi-Fi completed both public
+HTTP checks.
+
+The existing end-to-end harness test passed with 51 captured frames while
+display, injected touch, companion input and Wi-Fi recovery ran together. PSRAM
+free space stayed at 2,097,152 bytes. A later 60-second stability run passed with
+1,419 advancing display frames, 2,008 additional valid companion frames, no new
+CRC or UART errors, unchanged internal and external free memory, and a 44 ms
+maximum sampled frame time during its final capture. Raw USB and test-harness
+evidence remains in ignored `.local/`.
 
 ## Touch and brightness bring-up, 2026-09-11
 

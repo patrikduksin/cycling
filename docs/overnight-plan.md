@@ -56,8 +56,13 @@ The GPS issue contains the user-authorized public reference coordinates.
   Navigation, smoke and lease tests passed; both builds passed. Astra approved.
   Screenshots and video are linked on #23 via release evidence-2026-09-11 assets,
   never Git files. Device runs this harness-enabled build.
-- Starting #4 input behavior. Preflights for UI, networking and Bluetooth are
-  saved in ignored .local/overnight/. Address held touch across button navigation.
+- #4 complete: PR #24 merged as 189a1bb. Tap bounds/slop, repeated-button held
+  pointer suppression, release recovery and unknown-code policy verified by a
+  44-command injected device scenario. Both builds passed; Astra approved.
+- Starting #5 home/settings/device screens. Preflights for UI, networking,
+  settings, Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
+  now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
+  These remain stock-code findings pending actual device validation.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

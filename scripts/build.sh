@@ -13,7 +13,9 @@ esac
 echo "Building with USB test harness=${CYCLING_HARNESS:-1}"
 source .local/export-esp.sh
 python scripts/wifi.py generate
+python scripts/ble_config.py
 export CYCLING_WIFI_CONFIG="$PWD/.local/wifi/config.rs"
+export CYCLING_BLE_CONFIG="$PWD/.local/ble/config.rs"
 export CARGO_TARGET_DIR="$PWD/$firmware_target"
 cargo +cycling-esp build --release --locked --no-default-features --features "$firmware_features" --target xtensa-esp32s3-none-elf
 espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb \

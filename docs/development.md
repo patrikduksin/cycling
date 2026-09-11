@@ -360,21 +360,22 @@ still untested.
 
 ## Bluetooth
 
-The C606 now runs the pinned `esp-radio` controller with Trouble Host 0.6.0. On
-startup it performs a bounded ten-second active LE scan, reports only aggregate
-count and RSSI range, optionally runs the owned laptop HRS/CSC fixture once, and
-then advertises `Cycling Echo`. The custom characteristic accepts exactly eight
-little-endian bytes and exposes the accepted value through write, read and
-notification. The laptop client verifies a rejected short write, unchanged
-readback, notification, disconnect and reconnect. Neither tool pairs or bonds.
+The C606 runs the pinned `esp-radio` controller with a locally patched Trouble
+Host 0.6.0. A build selects either the `Cycling Echo` peripheral or one continuous
+Heart Rate or Cycling Speed and Cadence peer. Sensor mode performs bounded scans,
+matches only its explicit local target, subscribes to the selected standard
+measurement characteristic and reconnects with capped backoff. It does not pair,
+bond, connect to unknown peers, or acquire two sensors simultaneously.
 
 The host reserves one connection, two L2CAP channels and four 64-byte packets in
 internal memory. BLE initialization reduced measured internal free heap from
 163,840 to 127,920 bytes; after Wi-Fi and the other device tasks settled, about
-80 KiB remained. The tested Linux client negotiated ATT MTU 60. Trouble Host's
-current server can truncate mixed short/long characteristic declarations during
-discovery at the initial ATT MTU 23, so clients that do not negotiate a larger
-MTU are not yet proven compatible.
+80 KiB remained. The unmodified server reproduced a mixed short/long declaration
+truncation at ATT MTU 23: BlueZ discovered the long characteristic as the false
+short UUID `0x0c06`. The carried patch stops a discovery response before a later
+entry would change its element size or be truncated. Two minimum-MTU sessions
+then discovered the full UUID and completed notification, exact eight-byte write
+and readback, and rejected a short write without changing the value.
 
 A simultaneous startup window observed 22 advertisement reports at the C606
 with RSSI -99 to -50 dBm and 27 BlueZ RSSI updates at the laptop with RSSI -100
@@ -382,15 +383,23 @@ to -46 dBm. These are controller-specific reports from overlapping scans, not a
 claim that either radio saw the same advertisers or that their RSSI values are
 directly comparable.
 
-The owned laptop simulator advertised standard Heart Rate and Cycling Speed and
-Cadence services. The C606 discovered it, checked body-sensor location and CSC
-feature values, parsed two deterministic heart-rate notifications and three
-crank notifications, and derived 73 BPM and 60.0 RPM before returning to its
-peripheral role. This is a one-shot protocol fixture, not a continuous ride
-sensor implementation or real-sensor validation. The parsers reject malformed
-flags and lengths, bound RR intervals to four, age cadence baselines by local
-receipt time and use widened arithmetic. They do not yet apply physiological
-plausibility limits to reset-derived cadence.
+The owned laptop simulator separately verified continuous CSC-only acquisition,
+stale-value removal and explicit reconnect. A user-authorized real HRS device
+verified HR-only acquisition and reconnect without publishing its identity or
+physiological readings. Contact-not-detected removes a heart-rate value; devices
+without contact support remain accepted. The parsers reject malformed lengths,
+retain bounded information from the first four RR intervals, count additional
+intervals, and reject duplicate or implausible cadence updates without refreshing
+freshness. Simulator measurements are fixture evidence, not physiological data.
+
+A short explicit live recording from the authorized HRS device stored 18 samples
+with heart-rate fields in ride 5, slots 22 through 29. A 45.435-second coexistence
+window observed 46 BLE notifications, 975 valid GPS sentences and 1,513 companion
+packets while Wi-Fi remained verified. BLE invalid/disconnect, GPS fault and
+companion fault counters did not advance; free heap was 80,336 bytes before and
+after with a sampled minimum of 79,848 bytes. The record format identifies the
+ride as `live`; it does not distinguish a real sensor from the owned simulator,
+so fixture recordings must retain that provenance in their test evidence.
 
 During a 30-second running-demo coexistence window, the two-round echo client
 passed while 696 display loops, 715 valid GPS sentences and 988 companion packets

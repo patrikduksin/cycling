@@ -199,14 +199,25 @@ transport check. It requires complete state replies, advancing GNSS bytes and
 valid sentences, unchanged settings and ride inventory, and no advancing DMA,
 UART, parser, checksum or line-loss counters. Output stays under `.local/`.
 
-Bluetooth test evidence is emitted as aggregate `CYCLING_BLE` log lines. The
-firmware never logs peer addresses or advertisement payloads. Run
-`mise run bluetooth-echo` after the startup scan to exercise the exact eight-byte
-read/write/notify protocol twice with a disconnect between rounds. Run
-`mise run ble-simulator` before resetting the C606 to exercise the bounded,
-one-shot HRS/CSC central test; stop it afterward so BlueZ unregisters the owned
-advertisement and GATT application. Both laptop tools require the system Python
-because its D-Bus and GLib bindings are supplied by the operating system.
+Bluetooth test evidence is emitted as aggregate `CYCLING_BLE` log lines. These
+ordinary logs omit peer addresses, advertisement payloads and sensor values;
+harness state reports contain private readings for validation.
+Build with `CYCLING_BLE_MODE=echo` before `mise run bluetooth-echo`; the accepted
+echo protocol is exactly eight bytes. `btgatt-client --mtu 23` is the minimum-MTU
+interoperability check. `CYCLING_BLE_MODE=sim-heart` or `sim-csc` selects the owned
+laptop fixture, and `CYCLING_SIM_PROFILE=heart` or `csc` makes that fixture expose
+only the selected standard service. With no mode override, the build selects the
+explicitly authorized local HRS record when present and otherwise builds echo mode.
+The ignored generated configuration contains the target name/address; neither is
+committed. Stop the simulator afterward so BlueZ unregisters its advertisement and
+GATT application. These laptop tools require the system Python because its D-Bus
+and GLib bindings come from the operating system.
+
+Harness state reports expose `ble_profile`, `ble_state`, fresh HR/cadence values and
+ages, plus connection, disconnection, notification, invalid-packet and discarded-RR
+counters. `BLE_RECONNECT` deliberately drops only the firmware-owned sensor link and
+rescans the configured peer. It is a test operation and requires an active session.
+Real sensor values and peer identifiers belong only in ignored evidence.
 
 ## Protocol and cleanup
 

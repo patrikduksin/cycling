@@ -1,5 +1,6 @@
 [workspace]
 members = ["packages/os"]
+exclude = ["packages/os/vendor/trouble-host"]
 resolver = "3"
 
 [workspace.package]
@@ -16,3 +17,6 @@ codegen-units = 1
 debug = 2
 panic = "abort"
 overflow-checks = true
+
+[patch.crates-io]
+trouble-host = { path = "packages/os/vendor/trouble-host" }

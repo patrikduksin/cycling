@@ -16,9 +16,12 @@ Records are 256-byte version-1 slots. A CRC covers the header and up to four
 48-byte samples, and a separate aligned word is programmed last to commit the
 slot. Headers persist the ride ID, sequence, active duration and `demo` or `live`
 provenance. Samples can carry UTC milliseconds, fresh GPS coordinates, battery,
-and future heart/cadence values. Live samples omit demo speed. GPS satellites,
-accuracy and BLE sensor values remain absent because they are not yet associated
-with the recorded sample epoch or a continuous live sensor connection.
+heart rate and cadence. Live samples omit demo speed. GPS satellites and accuracy
+remain absent because they are not associated with the sample epoch.
+Fresh BLE heart-rate or cadence values are stored in live samples; values older
+than five seconds or received while disconnected are omitted. The current BLE
+build selects one authorized HRS or CSC peer, so it does not record heart rate
+and cadence from two separate sensors at the same time.
 
 Recording samples once per second and writes batches of four. Pause and finish
 freeze at the accepted monotonic timestamp before a pending batch is written.

@@ -37,6 +37,7 @@ pub enum Action {
     Live,
     Wifi,
     WifiFault(u8),
+    BleReconnect,
     Stop,
     Capture,
     Touch(Point),
@@ -77,6 +78,7 @@ pub fn parse(line: &str) -> Option<(u32, Action)> {
             }
             Action::WifiFault(fault as u8)
         }
+        "BLE_RECONNECT" => Action::BleReconnect,
         "STOP" => Action::Stop,
         "CAPTURE" => Action::Capture,
         "PERSIST" => {
@@ -254,6 +256,10 @@ mod tests {
             Some((16, Action::WifiFault(2)))
         );
         assert_eq!(parse("DBG 17 PANIC"), Some((17, Action::Panic)));
+        assert_eq!(
+            parse("DBG 18 BLE_RECONNECT"),
+            Some((18, Action::BleReconnect))
+        );
         assert_eq!(parse("DBG 18 RESTART"), Some((18, Action::Restart)));
         assert_eq!(
             parse("DBG 19 RIDE START"),

@@ -59,8 +59,13 @@ The GPS issue contains the user-authorized public reference coordinates.
 - #4 complete: PR #24 merged as 189a1bb. Tap bounds/slop, repeated-button held
   pointer suppression, release recovery and unknown-code policy verified by a
   44-command injected device scenario. Both builds passed; Astra approved.
-- Starting #5 home/settings/device screens. Preflights for UI, networking,
-  settings, Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
+- #5 complete: PR #25 merged as d3b0dfa. Home/settings/device screens, brightness
+  slider, status placeholders and host DEBUG stream resynchronization. Both builds,
+  30 Rust/19 Python tests, 28-frame device scenario and visual inspection passed.
+  Astra approved; screenshots/transition video linked in PR. Coordinator handled
+  final commit/publication after implementation and review were complete.
+- Starting #6 diagnostics. Preflights for UI, networking, settings, dimming,
+  Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
   now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
   These remain stock-code findings pending actual device validation.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,

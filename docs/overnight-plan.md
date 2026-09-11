@@ -69,59 +69,59 @@ Starting baseline main e7df373, enabled device Home, four rides/slot22.
 
 ## Follow-up progress
 
-- #43 complete: PR #46 merged. Host cleanup disables heartbeat before awaiting
-  END. Baseline forced handoffs failed5/12 and left an orphan PING after each
-  successful cleanup; fixed20/20 forced plus10/10 normal heartbeat sessions
-  passed with no orphan replies. Parser stays strict. Astra approved one round;
-  67Rust/38Python/check passed. No firmware source changed or reflash needed.
-  Device remains enabled. Four rides/slot22 and observed preferences50/30/10/60
-  preserved. Timezone60 is the current baseline; historical0 must not be restored.
-- #34 partial increment merged in PR #47, a935766. UART0 now uses 8 KiB
-  UHCI DMA on channel1, with separate actual UART/DMA fault counters and bounded
-  recovery. Final451 STATE replies/20.058s parsed516 sentences with zero new
-  transport/parser faults; Wi-Fi reconnect and118-frame capture also passed.
-  Forced6s starvation produced DMA1/UART1 then resumed355 valid sentences.
-  Satellite metadata matches fractional UTC epochs. Exact stock close/open
-  paused counters for4s then resumed58 sentences in2s, proving stream control,
-  not electrical power. Identity queries got no recognized response and are
-  absent from final startup. User confirms indoors; model/outdoor work stays open.
-  Astra approved,69Rust/39Python/check/both builds passed. Final enabled firmware
-  restored, four rides/slot22 and prefs50/30/10/60 preserved.
-- #36 complete: PR #48 merged,3ddf13f. Pinned licensed Trouble Host0.6
-  patch fixes MTU23 mixed-length discovery. Two physical minimum-MTU echo sessions
-  passed full UUID discovery/write/notify/read and rejected short writes without
-  changing data. Continuous one-peer HRS or CSC now has freshness/contact/reconnect
-  handling, live UI and fresh Live record fields. Real authorized H10 connected
-  and reconnected; laptop CSC-only fixture verified cadence/stale/reconnect.
-  Final45.435s HRS coexistence added46notifications/975GPS/1513companion messages,
-  faults unchanged, heap80336→80336, sampled minimum79848. Astra approved in two
-  rounds.75Rust/15vendored/42Python/check/both builds passed. Final actual-HRS
-  harness-enabled firmware remains on device; captures remain outside Git.
-  New explicit agent ride5,slots22..29,18HRS-bearing samples, is saved. Current
-  inventory5rides/slot30. Export .local/exports/1789134457934860141 preserves the
-  prior5632-byte four-ride prefix exactly. Keep actual readings/peer IDs private.
-  Current observed prefs50/30/20/-180 supersede earlier50/30/10/60; preserve them.
-  No PERSIST was issued to make that change; compare each test's current baseline.
-- #21 complete: PR #49 merged, a2e5892. An opt-in native one-bit 400 kHz
-  probe identified MMC product field004GA1, capacity3,959,422,976 bytes and
-  512-byte sectors. Three bounded reads succeeded on each of two reset boots;
-  repeated sector zero matched, as did private descriptors/hashes across boots.
-  CLK13/CMD14/D016 are verified. D1-D3 remain candidates and no write ownership
-  is granted. Settings and rides keep their existing internal reservations.
-  Stock image verification/slot selection passed; stock UI/filesystem startup
-  was not observed. Normal no-probe HRS/harness firmware was restored, Home/Ready,
-  five rides/slot30. Latest observed prefs100/30/20/-180 supersede brightness50;
-  no settings write was issued by this task. Preserve the current baseline.
-  Astra approved in two rounds;78Rust/15vendor/42Python/check and probe/default/
-  disabled builds passed. Also ignored nested vendor build artifacts.
-- Starting #44 visible ride capacity and explicit reclaim after verified export.
-  Sol owns source/Git/device after handoff. Read the updated private preflight
-  .local/overnight/ride-reclaim-followup-preflight.md. Five known agent test rides
-  include real-HRS ride5, slots22..29; its18 readings and all raw exports stay
-  private. Re-export current contents and identify later records before clear.
-  Do not erase unknown user data or the vendor MMC. Favor a small explicit
-  clear-all within the existing1MiB ride reservation, with honest interrupted
-  clear semantics, verified completion and an explicit retry path.
+- #43 complete, PR #46, bf37a22. Host cleanup stops heartbeats before END.
+  The forced handoff reproduction failed 5/12 before the fix; 20/20 forced and
+  10/10 ordinary heartbeat sessions passed afterward. The parser stays strict.
+- #34 partial increment merged in PR #47, a935766. UART0 uses an 8 KiB UHCI DMA
+  stream with separate UART/DMA fault reporting and bounded recovery. Final
+  451-request stress, Wi-Fi reconnect and capture runs advanced GPS parsing with
+  no new faults. Forced starvation recovered. Satellite counts match fractional
+  coordinate epochs. Stock close/open commands paused and resumed the stream,
+  without proving electrical power behavior. Receiver identity is unknown and
+  outdoor validation remains open; the user confirmed the device is indoors.
+- #36 complete, PR #48, 3ddf13f. A licensed pinned Trouble Host patch fixes
+  minimum-MTU discovery. Two MTU 23 sessions passed discovery/write/notify/read
+  and rejected short writes without changing data. Continuous one-peer HRS or
+  CSC has freshness/contact/reconnect handling, live UI and recording support.
+  Real Polar H10 and laptop CSC-only fixture tests passed. The HRS coexistence
+  run received 46 notifications with no new GPS/companion faults and stable heap.
+  Real readings and peer identifiers remain private. The simulator screenshot
+  was attached outside Git. Simultaneous separate sensors remain unsupported.
+- #21 complete, PR #49, a2e5892. The opt-in one-bit native probe identified MMC
+  product field 004GA1, capacity 3,959,422,976 bytes and 512-byte sectors. Bounded
+  repeated reads matched across two reset boots. CLK13/CMD14/D016 are verified;
+  D1-D3 remain candidates. No write ownership was granted. Stock image verification
+  and slot selection passed, but stock UI/filesystem operation was not observed.
+  Normal no-probe HRS/harness firmware was restored. Vendor build artifacts are
+  ignored. All required tests and probe/default/disabled builds passed.
+- #44 complete, PR #50, c03358c. Capacity is visible before riding. Explicit clear
+  verifies a supplied export against the current prefix hash and checks the
+  exported slot bound before erasing. Each owned sector is erased/read-verified;
+  there is no automatic erase or blind mutation retry. Interrupted-clear and
+  refusal paths are covered by shared fake-media/host tests. Hardware preserved
+  the known five-ride export, cleared to a verified zero-byte export, then saved
+  and exported a four-sample demo ride. The capacity screenshot was attached
+  outside Git. Tests: 84 firmware, 15 vendor and 45 Python; check and both builds
+  passed. Astra approved each merged issue within two review rounds.
+
+Current device: normal no-probe HRS/harness firmware, Home/Ready, one saved demo
+ride in slots 0..3, next slot 4. Latest observed preferences are brightness 100,
+timeout 30, dim 20, timezone -180. Preserve these, not historical test settings.
+The old five rides remain in private verified exports, including
+.local/exports/1789136629778452425 and .local/exports/1789134457934860141.
+Empty/new exports: .local/exports/issue44-empty and issue44-new-demo-final.
+
+A final 25.122-second settled check received 892 companion messages and 535 GPS
+sentences, with stable 80,336-byte free heap and connected HRS. GPS faults stayed
+unchanged, but companion UART errors grew 11 to 16 without ride writes. This is
+an unresolved observation, not a proven pre-existing fault or an established
+regression. New issue #51 tracks a focused diagnosis with the same Sol/Astra
+workflow. Sol owns source/Git/device after handoff. Establish a red-capable loop,
+identify actual UART flags, compare controlled conditions, and fix a demonstrated
+cause if feasible. Current brightness 100 versus earlier stable runs at 50 is a
+candidate variable, not a conclusion. Preserve data/preferences, keep raw logs
+private, and finish with normal HRS/harness firmware. No more ride clearing or
+MMC access is needed. Sudo still expires at 16:37 UTC on 2026-09-11.
 
 ## Progress
 

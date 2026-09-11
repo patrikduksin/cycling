@@ -13,6 +13,12 @@ pub fn verified_response(response: &[u8]) -> bool {
         })
 }
 
+pub fn retry_delay_secs(failures: u8) -> u64 {
+    1u64.checked_shl(u32::from(failures.min(5)))
+        .unwrap_or(32)
+        .min(30)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -31,5 +37,13 @@ mod tests {
         ] {
             assert!(!verified_response(response));
         }
+    }
+
+    #[test]
+    fn retry_backoff_is_bounded() {
+        assert_eq!(
+            core::array::from_fn::<_, 8, _>(|i| retry_delay_secs(i as u8)),
+            [1, 2, 4, 8, 16, 30, 30, 30]
+        );
     }
 }

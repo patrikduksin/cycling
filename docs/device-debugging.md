@@ -66,6 +66,7 @@ mise run debug -- record --seconds 10 --fps 5
 mise run e2e
 mise run debug -- run scripts/scenarios/controls.json
 mise run debug -- lease-test
+mise run debug -- wifi-recovery
 mise run debug -- soak --seconds 60
 ```
 
@@ -145,7 +146,9 @@ brightness, dim state, idle age, timeout and dim level.
 A missing touch coordinate, battery reading or power status is `-1`.
 
 Wi-Fi values are 0 unconfigured, 1 connecting, 2 awaiting DHCP, 3 connected,
-4 public HTTP test passed and 5 retrying. Heap minima are sampled once per display
+4 public HTTP test passed, 5 retrying and 6 failed initialization. Debug state
+also reports association, successful-probe and failed-probe counters plus the
+active injected fault. Heap minima are sampled once per display
 cycle, not allocator high-water marks. The on-device Diagnostics screen caches a
 copy for one second to bound visual refresh, while these USB values remain live.
 Stack usage is not measured. Frame time
@@ -170,6 +173,7 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `BATTERY percent millivolts power` | Override displayed battery values; power 0 charging, 1 battery, 2 unknown |
 | `LIVE` | Resume current physical battery readings |
 | `WIFI` | Request a real station disconnect followed by normal reconnection |
+| `WIFI_FAULT 0/1/2` | Clear faults or inject a DNS/request failure for recovery tests |
 | `CAPTURE` | Capture one compressed frame |
 | `RECORD milliseconds fps` | Record 100–30000 ms at a requested 1–10 fps |
 | `PERSIST brightness` | End and restore the temporary session, then explicitly save a validated 5–100% brightness |
@@ -188,7 +192,7 @@ Button code 1 is the verified short-click action. Other codes can be injected,
 but their physical long-press meanings are not verified. There is no invented
 button-down/button-up protocol.
 
-Session cleanup restores saved button counters, including when they changed
+Session cleanup clears injected Wi-Fi faults and restores saved button counters, including when they changed
 through physical presses during the test. Brightness returns to its initial
 value. Wi-Fi follows its normal reconnect loop; ending a test does not cancel
 an in-progress reconnect.

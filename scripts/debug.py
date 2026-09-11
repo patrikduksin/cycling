@@ -376,6 +376,48 @@ def wake_if_dimmed(device):
         device.expect({'dimmed': False, 'x': -1, 'y': -1})
 
 
+def wait_increase(device, key, previous, timeout=45):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = device.command('STATE')
+        if state[key] > previous:
+            return state
+        device.wait(.25)
+    raise TimeoutError(f'{key} did not increase from {previous}')
+
+
+def wifi_recovery(device):
+    baseline = device.expect({'wifi': 4, 'wifi_fault': 0}, 45)
+    state = baseline
+
+    # A deliberate link reset must associate and verify again.
+    device.command('WIFI')
+    device.expect({'wifi': 5}, 5)
+    state = wait_increase(device, 'wifi_successes', state['wifi_successes'])
+    device.expect({'wifi': 4})
+    assert state['wifi_associations'] > baseline['wifi_associations']
+
+    # Public-server failures retry over the usable link, without another association.
+    for fault in (1, 2):
+        device.command(f'WIFI_FAULT {fault}')
+        associations = state['wifi_associations']
+        failures = state['wifi_failures']
+        successes = state['wifi_successes']
+        device.command('WIFI')
+        failed = wait_increase(device, 'wifi_failures', failures)
+        assert failed['wifi'] == 5 and failed['wifi_fault'] == fault
+        device.command('WIFI_FAULT 0')
+        state = wait_increase(device, 'wifi_successes', successes)
+        assert state['wifi_associations'] == failed['wifi_associations']
+        assert failed['wifi_associations'] > associations
+        device.expect({'wifi': 4, 'wifi_fault': 0})
+
+    final = device.command('STATE')
+    assert final['heap_free'] >= baseline['heap_free'] - 4096
+    assert final['bad_crc'] == baseline['bad_crc']
+    assert final['uart_errors'] == baseline['uart_errors']
+
+
 def smoke(device):
     wake_if_dimmed(device)
     if device.command('STATE')['wifi'] != 0:
@@ -493,6 +535,7 @@ def main():
     commands.add_parser('capture')
     commands.add_parser('lease-test')
     commands.add_parser('smoke')
+    commands.add_parser('wifi-recovery')
     soak_parser = commands.add_parser('soak')
     soak_parser.add_argument('--seconds', type=float, default=60)
     record = commands.add_parser('record')
@@ -517,6 +560,8 @@ def main():
                 soak(device, args.seconds)
             elif args.action == 'smoke':
                 smoke(device)
+            elif args.action == 'wifi-recovery':
+                wifi_recovery(device)
             elif args.action == 'record':
                 device.command(f'RECORD {round(args.seconds * 1000)} {args.fps}')
                 device.wait(args.seconds + .5)

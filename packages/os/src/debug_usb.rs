@@ -91,6 +91,7 @@ impl Debug {
         self.active = false;
         self.injection.finish();
         self.battery = None;
+        crate::wifi::set_fault(0);
     }
     pub fn tick(
         &mut self,
@@ -197,6 +198,7 @@ impl Debug {
                     crate::wifi::reconnect();
                 }
             }
+            Action::WifiFault(fault) => crate::wifi::set_fault(fault),
             Action::Stop => self.stop(),
             Action::Persist(brightness) => {
                 self.end(app, status, settings, idle);
@@ -238,6 +240,8 @@ impl Debug {
         metrics: &Metrics,
     ) {
         if let Some((id, result)) = self.pending.take() {
+            let (wifi_associations, wifi_successes, wifi_failures, wifi_fault) =
+                crate::wifi::stats();
             let (percent, mv) = status
                 .battery
                 .map(|(p, m)| (i32::from(p), i32::from(m)))
@@ -247,7 +251,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -273,6 +277,10 @@ impl Debug {
                 status.power.map(i32::from).unwrap_or(-1),
                 self.battery.is_some(),
                 crate::wifi::state(),
+                wifi_associations,
+                wifi_successes,
+                wifi_failures,
+                wifi_fault,
                 touch_ok,
                 metrics.heap_free,
                 metrics.heap_min_sampled,

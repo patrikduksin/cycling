@@ -64,7 +64,11 @@ The GPS issue contains the user-authorized public reference coordinates.
   30 Rust/19 Python tests, 28-frame device scenario and visual inspection passed.
   Astra approved; screenshots/transition video linked in PR. Coordinator handled
   final commit/publication after implementation and review were complete.
-- Starting #6 diagnostics. Preflights for UI, networking, settings, dimming,
+- #6 complete: PR #26 merged as 0d7f2f9. Diagnostics screen, live frame metrics
+  and one-second display snapshot. Device navigation/value comparison passed;
+  stable heap and no new CRC/UART/touch errors. Astra approved. Screenshot linked
+  in PR predates tiny X glyph fix; next safe flash must deploy that fix.
+- Starting #7 persistent settings. Preflights for UI, networking, settings, dimming,
   Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
   now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
   These remain stock-code findings pending actual device validation.

@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod ble_sensor;
 pub mod coin;
 pub mod companion;
 pub mod controls;

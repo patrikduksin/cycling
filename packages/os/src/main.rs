@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod bluetooth;
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
 mod display;
@@ -190,6 +191,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         psram::external_free()
     );
     spawner.spawn(wifi::start(p.WIFI, spawner).unwrap());
+    spawner.spawn(bluetooth::start(p.BT).unwrap());
     #[cfg(feature = "debug-harness")]
     let (mut usb_rx, _usb_tx) = esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE).split();
     #[cfg(feature = "debug-harness")]

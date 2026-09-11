@@ -170,6 +170,15 @@ line, checksum, parse and UART error counters. Unavailable coordinates use
 `gps_state` before using them. The satellite count is aged independently and is
 not yet associated with the coordinate epoch.
 
+Bluetooth test evidence is emitted as aggregate `CYCLING_BLE` log lines. The
+firmware never logs peer addresses or advertisement payloads. Run
+`mise run bluetooth-echo` after the startup scan to exercise the exact eight-byte
+read/write/notify protocol twice with a disconnect between rounds. Run
+`mise run ble-simulator` before resetting the C606 to exercise the bounded,
+one-shot HRS/CSC central test; stop it afterward so BlueZ unregisters the owned
+advertisement and GATT application. Both laptop tools require the system Python
+because its D-Bus and GLib bindings are supplied by the operating system.
+
 ## Protocol and cleanup
 
 Commands are ASCII lines, `DBG <request-id> <command>\n`, with a maximum of 96

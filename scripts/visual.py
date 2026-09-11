@@ -2,6 +2,8 @@
 
 PIXELS = 80 * 106
 
+RIDE_STATUS_MASKS = ((48, 3, 32, 5),)
+
 
 def read_rgb565(path):
     data = path.read_bytes()

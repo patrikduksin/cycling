@@ -12,6 +12,7 @@ from debug import Device, ROOT, export, wake_if_dimmed
 from visual import (
     DIAGNOSTICS_MASKS,
     DIAGNOSTICS_STATIC_REGIONS,
+    RIDE_STATUS_MASKS,
     compare,
     compare_regions,
     read_rgb565,
@@ -111,6 +112,10 @@ def scene_change(device, minute):
             if state['ride_phase'] != 'running':
                 raise AssertionError('Ride scene did not start')
         elif scene == 1:
+            if state['ride_phase'] == 'ready':
+                state = device.command('BUTTON 2 1')
+                if state['screen'] != 'ride' or state['ride_phase'] != 'running':
+                    raise AssertionError('Ride scene did not start before page change')
             old_page = state['ride_page']
             state = device.command('BUTTON 1 1')
             if state['screen'] != 'ride' or state['ride_page'] == old_page:
@@ -134,11 +139,22 @@ def scene_change(device, minute):
             raise AssertionError('Controls scene navigation failed')
 
 
+def wait_closed_recorder(device, timeout=20):
+    deadline = time.monotonic() + timeout
+    while True:
+        state = device.command('STATE')
+        if state['ride_recording'] in ('ready', 'saved', 'recovered', 'full'):
+            return state
+        if state['ride_recording'] != 'scanning' or time.monotonic() >= deadline:
+            raise AssertionError(f"Recorder is not closed: {state['ride_recording']}")
+        device.wait(.5)
+
+
 def stability(port, output, seconds):
     directory = output / 'stability'
     with Device(port, directory) as device:
         wake_if_dimmed(device)
-        initial = device.command('STATE')
+        initial = wait_closed_recorder(device)
         if initial['wifi'] != 0:
             device.expect({'wifi': 4, 'time_status': 'fresh'}, 45)
         baseline = previous = device.command('STATE')
@@ -155,6 +171,9 @@ def stability(port, output, seconds):
             samples += 1
             if current['frame'] <= previous['frame']:
                 raise AssertionError('Display stopped advancing or device restarted')
+            for key in ['recorded_rides', 'recording_slot']:
+                if current[key] != baseline[key]:
+                    raise AssertionError(f'{key} changed during temporary stability scenes')
             for key in ['bad_crc', 'uart_errors', 'touch_errors']:
                 if current[key] != baseline[key]:
                     raise AssertionError(f'{key} increased during stability test')
@@ -189,6 +208,9 @@ def stability(port, output, seconds):
     for key in ['bad_crc', 'uart_errors', 'touch_errors']:
         if settled[key] != baseline[key]:
             raise AssertionError(f'{key} increased after cleanup')
+    for key in ['recorded_rides', 'recording_slot']:
+        if settled[key] != baseline[key]:
+            raise AssertionError(f'{key} changed after temporary stability scenes')
     summary = {
         'requested_seconds': seconds,
         'observed_seconds': round(time.monotonic() - started, 3),
@@ -200,17 +222,32 @@ def stability(port, output, seconds):
         'transient_heap_limit_bytes': 8192,
         'retained_heap_limit_bytes': 4096,
         'scene_interval_seconds': 60,
+        'gps_deltas': {
+            key: settled[key] - baseline[key]
+            for key in ['gps_bytes', 'gps_valid', 'gps_checksum_errors',
+                        'gps_parse_errors', 'gps_overflows', 'gps_line_overflows',
+                        'gps_uart_errors']
+        },
     }
     (output / 'stability-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+    return summary
 
 
 def suite(port, output, soak_seconds, skip_persistence):
+    with Device(port, output / 'suite-baseline') as device:
+        suite_baseline = wait_closed_recorder(device)
     for scenario in ['navigation', 'input', 'device-screens', 'diagnostics', 'idle-dimming']:
         debug(port, output, scenario, 'run', ROOT / 'scripts/scenarios' / f'{scenario}.json')
     debug(port, output, 'wifi-clock', 'wifi-recovery')
     debug(port, output, 'ride', 'ride-demo')
 
-    compare(captured_canvas(output, 'ride'), expected_canvas(output, 'ride'))
+    ride_report = json.loads((output / 'ride' / 'report.json').read_text())
+    ride_state = ride_report['events'][-1]['state']
+    if ride_state['ride_source'] != 'none' or ride_state['ride_recording'] not in (
+            'ready', 'saved', 'recovered', 'full'):
+        raise AssertionError('Ride canvas fixture requires a closed recorder')
+    compare(captured_canvas(output, 'ride'), expected_canvas(output, 'ride'),
+            masks=RIDE_STATUS_MASKS)
     actual_diagnostics = captured_canvas(output, 'diagnostics')
     expected_diagnostics = expected_canvas(output, 'diagnostics')
     compare_regions(actual_diagnostics, expected_diagnostics, DIAGNOSTICS_STATIC_REGIONS)
@@ -227,7 +264,11 @@ def suite(port, output, soak_seconds, skip_persistence):
              '--output', output / 'persistence'],
             output / 'persistence.log',
         )
-    stability(port, output, soak_seconds)
+    stability_summary = stability(port, output, soak_seconds)
+    for snapshot in [stability_summary['baseline'], stability_summary['settled']]:
+        for key in ['recorded_rides', 'recording_slot']:
+            if snapshot[key] != suite_baseline[key]:
+                raise AssertionError(f'{key} changed during full regression suite')
 
 
 def main():

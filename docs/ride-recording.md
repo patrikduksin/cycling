@@ -30,11 +30,25 @@ Invalid occupied slots are skipped and
 mark the open ride as having a gap. An uncertain write stops until reboot so the
 scanner, rather than an automatic retry, decides whether the commit reached
 flash. The last slot is reserved for `FINISH`, `RECOVERED`, or `FULL`.
+The reservation holds 4,096 slots, at most about 4.5 hours of one-hertz samples
+at four samples per batch before event and partial-batch overhead. There is no
+reclaim, delete or reuse command yet; reaching full stops new recording. Safe
+reclaim after export is tracked in [#44](https://github.com/patrikduksin/cycling/issues/44).
 
-The on-device Rides page keeps its deterministic demo controls. Physical starts
-there create demo records. `RIDE START LIVE` is currently a harness-only start;
-the page labels it `LIVE RIDE`, shows elapsed time, and displays speed and
-distance as unavailable. A physical live/demo selector is follow-up work.
+The on-device Rides page has a mode row while ready. Tapping it selects `DEMO`
+or `LIVE`, and the right button starts that source; the left button still opens
+History. The selected mode remains fixed through pause, resume and finish, while
+the recorder's committed source is authoritative for an active ride. Live rides
+show elapsed time and explicitly unavailable speed and distance. Debug sessions
+can temporarily change the selection, but `END` restores the prior value.
+On hardware, injected touch selected Live while preserving History navigation.
+The ready view showed zero elapsed time and unavailable speed/distance; a
+temporary Live ride advanced to 2.18 seconds with both values still unavailable.
+Ending the session restored Demo and left the durable journal at four rides and
+slot 22. These injected gestures verify firmware routing, not physical touch or
+button operation. GPS UART errors increased by one during this capture window;
+the unresolved transport loss remains tracked in
+[#34](https://github.com/patrikduksin/cycling/issues/34).
 
 The History page retains the four latest completed summaries in a fixed array
 and shows two per page. Its header reports retained/total rides, so older rides

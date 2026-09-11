@@ -114,7 +114,9 @@ The parser accepts a valid debug reply after a recognized, truncated periodic
 `CYCLING_FRAME` prefix. This handles the observed case where the USB printer lost
 part of a normal frame line before emitting a complete reply. Arbitrary prefixes,
 malformed replies, reboot notices, lease expiry and incomplete recordings remain
-errors.
+errors. One final rehearsal correctly rejected a duplicated `CYCLING_DEBUG`
+prefix before a valid reply; the source-identical retry passed, and the transport
+handoff is tracked in [#43](https://github.com/patrikduksin/cycling/issues/43).
 
 ## Input and state
 

@@ -437,6 +437,20 @@ def wifi_recovery(device):
     assert final['uart_errors'] == baseline['uart_errors']
 
 
+def restore_ride_view(device, ready):
+    device.command('BUTTON 1 1')
+    device.tap(80, 220)
+    return device.expect({'screen': 'ride', 'ride_page': ready['ride_page'],
+                          'ride_layout': ready['ride_layout']})
+
+
+def select_demo_ride(device, state):
+    if state['ride_selected_source'] == 'live':
+        device.tap(80, 220)
+        state = device.expect({'screen': 'ride', 'ride_selected_source': 'demo'})
+    return state
+
+
 def ride_demo(device):
     wake_if_dimmed(device)
     state = device.command('STATE')
@@ -452,8 +466,9 @@ def ride_demo(device):
         state = device.command('BUTTON 2 1')
     if state['ride_phase'] == 'paused':
         device.tap(80, 260)
-    ready = device.expect({'ride_phase': 'ready', 'ride_elapsed_ms': 0,
-                           'ride_distance_mm': 0, 'ride_speed_mm_s': 0})
+    ready = device.expect({'ride_phase': 'ready', 'ride_elapsed_ms': 0})
+    ready = select_demo_ride(device, ready)
+    ready = device.expect({'ride_distance_mm': 0, 'ride_speed_mm_s': 0})
 
     device.command('RECORD 8000 5')
     started = device.command('BUTTON 2 1')
@@ -478,11 +493,10 @@ def ride_demo(device):
     assert resumed['ride_phase'] == 'running'
     assert resumed['ride_elapsed_ms'] > frozen['ride_elapsed_ms']
     device.command('BUTTON 2 1')
+    restore_ride_view(device, ready)
     device.tap(80, 260)
-    device.expect({'ride_phase': 'ready', 'ride_elapsed_ms': 0, 'ride_distance_mm': 0})
-    device.command('BUTTON 1 1')
-    device.tap(80, 220)
-    device.expect({'ride_page': ready['ride_page'], 'ride_layout': ready['ride_layout']})
+    device.expect({'screen': 'ride', 'ride_phase': 'ready', 'ride_elapsed_ms': 0,
+                   'ride_distance_mm': 0})
     device.command('STOP')
     device.capture()
 

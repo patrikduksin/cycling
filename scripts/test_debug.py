@@ -2,11 +2,49 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from debug import Device, Recording, finish_created_ride
+from debug import (Device, Recording, finish_created_ride, restore_ride_view,
+                   select_demo_ride)
 from screenshot import checksum
 
 
 class RecordingTests(unittest.TestCase):
+    def test_demo_view_is_restored_before_finish_target_is_used(self):
+        class Fake:
+            def __init__(self):
+                self.actions = []
+
+            def command(self, command):
+                self.actions.append(command)
+
+            def tap(self, x, y):
+                self.actions.append(f'TAP {x} {y}')
+
+            def expect(self, wanted):
+                self.actions.append(('EXPECT', wanted))
+                return wanted
+
+        device = Fake()
+        restore_ride_view(device, {'ride_page': 0, 'ride_layout': 1})
+        self.assertEqual(device.actions[:2], ['BUTTON 1 1', 'TAP 80 220'])
+        self.assertEqual(device.actions[-1][1]['screen'], 'ride')
+
+    def test_demo_scenario_temporarily_changes_live_selection(self):
+        class Fake:
+            def __init__(self):
+                self.taps = []
+
+            def tap(self, x, y):
+                self.taps.append((x, y))
+
+            def expect(self, wanted):
+                return {**wanted, 'ride_selected_source': 'demo'}
+
+        device = Fake()
+        state = select_demo_ride(device, {'ride_selected_source': 'live'})
+        self.assertEqual(device.taps, [(80, 220)])
+        self.assertEqual(state['ride_selected_source'], 'demo')
+        self.assertEqual(select_demo_ride(device, state), state)
+
     def test_created_ride_cleanup_is_bounded_by_current_phase(self):
         class Fake:
             def __init__(self, phase):

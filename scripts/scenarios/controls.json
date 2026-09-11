@@ -1,0 +1,15 @@
+[
+  {"action": "command", "value": "RECORD 10000 5"},
+  {"action": "tap", "point": [24, 260]},
+  {"action": "expect", "state": {"brightness": 5, "x": -1}},
+  {"action": "drag", "from": [24, 260], "to": [216, 260], "seconds": 2},
+  {"action": "expect", "state": {"brightness": 100, "x": -1}},
+  {"action": "command", "value": "BUTTON 1 1"},
+  {"action": "expect", "state": {"brightness": 95}},
+  {"action": "command", "value": "BATTERY 8 3300 1"},
+  {"action": "expect", "state": {"battery": 8, "power": 1, "fake_battery": true}},
+  {"action": "wait", "seconds": 0.5},
+  {"action": "command", "value": "LIVE"},
+  {"action": "command", "value": "STOP"},
+  {"action": "capture"}
+]

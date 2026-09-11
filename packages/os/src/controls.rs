@@ -1,7 +1,7 @@
 //! Touch test and brightness UI on the existing 80x106 canvas.
 use crate::{
     coin::{HEIGHT, PIXELS, WIDTH},
-    companion::Status,
+    companion::{Button, Status},
     input::Point,
 };
 
@@ -22,6 +22,16 @@ impl Default for Controls {
 }
 
 impl Controls {
+    pub fn button(&mut self, button: Button, code: u16) {
+        if code == 1 {
+            match button {
+                Button::BottomLeft => self.brightness = self.brightness.saturating_sub(5).max(5),
+                Button::BottomRight => self.brightness = self.brightness.saturating_add(5).min(100),
+                Button::TopLeft => {}
+            }
+        }
+    }
+
     pub fn update(&mut self, point: Option<Point>) {
         if self.point.is_none() {
             self.dragging = point.is_some_and(|p| (231..=294).contains(&p.y));

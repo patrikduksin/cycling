@@ -53,3 +53,11 @@ run = "python scripts/wifi.py setup"
 [tasks.screenshot]
 description = "Capture the device screen as a private PNG over USB"
 run = "python scripts/screenshot.py"
+
+[tasks.debug]
+description = "Inspect, record, and exercise the running device over USB"
+run = "python scripts/debug.py"
+
+[tasks.e2e]
+description = "Run device UI and Wi-Fi recovery tests and save visual evidence"
+run = "python scripts/debug.py smoke"

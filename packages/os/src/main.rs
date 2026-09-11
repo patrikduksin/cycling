@@ -1,13 +1,15 @@
 #![no_std]
 #![no_main]
 
+#[cfg(feature = "debug-harness")]
+mod debug_usb;
 mod display;
 mod touch;
 mod wifi;
 
 use cycling_os::{
     coin,
-    companion::{Button, Decoder, Event, Status},
+    companion::{Decoder, Event, Status},
     controls::Controls,
     input::Report,
 };
@@ -35,8 +37,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(spawner: embassy_executor::Spawner) -> ! {
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
     println!(
-        "CYCLING_BOOT version={} board=magene-c606",
-        env!("CARGO_PKG_VERSION")
+        "CYCLING_BOOT version={} board=magene-c606 harness={}",
+        env!("CARGO_PKG_VERSION"),
+        cfg!(feature = "debug-harness")
     );
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 96 * 1024);
@@ -115,10 +118,19 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     println!("CYCLING_DISPLAY ready canvas=80x106 heap=163840");
     let mut canvas = [0; coin::PIXELS];
     spawner.spawn(wifi::start(p.WIFI, spawner).unwrap());
+    #[cfg(feature = "debug-harness")]
     let (mut usb_rx, _usb_tx) = esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE).split();
+    #[cfg(feature = "debug-harness")]
+    let mut debug = debug_usb::Debug::new();
+    #[cfg(feature = "debug-harness")]
+    let mut debug_lines = cycling_os::debug::Lines::default();
+    #[cfg(feature = "debug-harness")]
     let mut screenshot_command = cycling_os::screenshot::Command::default();
+    #[cfg(feature = "debug-harness")]
     let mut snapshot = [0u16; coin::PIXELS];
+    #[cfg(feature = "debug-harness")]
     let mut screenshot_row = coin::HEIGHT;
+    #[cfg(feature = "debug-harness")]
     let mut screenshot_frame = 0u32;
     let mut frame = 0u32;
     let mut ui = Controls::default();
@@ -134,6 +146,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let start = Instant::now();
         let previous = ui.point;
         let brightness = ui.brightness;
+        #[cfg(feature = "debug-harness")]
+        debug.tick(
+            start.duration_since_epoch().as_millis(),
+            &mut ui,
+            &mut status,
+        );
         if last_rx.elapsed().as_millis() > 250 {
             decoder.reset();
         }
@@ -166,17 +184,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                             }
                             Event::Button { button, code } => {
                                 println!("CYCLING_BUTTON button={:?} code={}", button, code);
-                                if code == 1 {
-                                    match button {
-                                        Button::BottomLeft => {
-                                            ui.brightness = ui.brightness.saturating_sub(5).max(5)
-                                        }
-                                        Button::BottomRight => {
-                                            ui.brightness = ui.brightness.saturating_add(5).min(100)
-                                        }
-                                        Button::TopLeft => {}
-                                    }
-                                }
+                                ui.button(button, code);
                             }
                         }
                         status.update(event);
@@ -198,15 +206,23 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         if last_power.elapsed().as_millis() > 5000 {
             status.power = None;
         }
+        #[cfg(feature = "debug-harness")]
+        let touch_injected = debug.touch_injected;
+        #[cfg(not(feature = "debug-harness"))]
+        let touch_injected = false;
         match touch.poll() {
             Ok(Report::Press(point)) => {
                 available = true;
                 last_touch = Instant::now();
-                ui.update(Some(point));
+                if !touch_injected {
+                    ui.update(Some(point));
+                }
             }
             Ok(Report::Release) => {
                 available = true;
-                ui.update(None);
+                if !touch_injected {
+                    ui.update(None);
+                }
             }
             Ok(Report::Invalid) => {}
             Err(error) => {
@@ -215,11 +231,38 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                     println!("CYCLING_TOUCH error={:?} count={}", error, errors);
                 }
                 available = false;
-                ui.update(None);
+                if !touch_injected {
+                    ui.update(None);
+                }
             }
         }
-        if last_touch.elapsed().as_millis() > 250 {
+        if !touch_injected && last_touch.elapsed().as_millis() > 250 {
             ui.update(None);
+        }
+        #[cfg(feature = "debug-harness")]
+        let mut screenshot_requested = false;
+        // Bound input work and stream one row per frame so input and Wi-Fi keep running.
+        #[cfg(feature = "debug-harness")]
+        for _ in 0..64 {
+            let Ok(byte) = usb_rx.read_byte() else { break };
+            if screenshot_command.push(byte) && screenshot_row == coin::HEIGHT && !debug.recording()
+            {
+                screenshot_requested = true;
+            }
+            if let Some(command) = debug_lines.push(byte) {
+                match command {
+                    Ok((id, action)) => debug.command(
+                        id,
+                        action,
+                        start.duration_since_epoch().as_millis(),
+                        &mut ui,
+                        &mut status,
+                        screenshot_requested || screenshot_row != coin::HEIGHT,
+                    ),
+                    Err(()) => println!("CYCLING_DEBUG 0 INVALID {{}}"),
+                }
+                break;
+            }
         }
         if ui.point != previous {
             println!("CYCLING_TOUCH point={:?}", ui.point);
@@ -228,25 +271,39 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             backlight.set_duty(ui.brightness).unwrap();
             println!("CYCLING_BRIGHTNESS percent={}", ui.brightness);
         }
-        ui.render(&mut canvas, available, &status);
+        #[cfg(feature = "debug-harness")]
+        let visible_status = debug.status(&status);
+        #[cfg(not(feature = "debug-harness"))]
+        let visible_status = status;
+        ui.render(&mut canvas, available, &visible_status);
         cycling_os::controls::wifi_label(&mut canvas, wifi::label());
         screen.draw(&canvas);
-        // Bound input work and stream one row per frame so input and Wi-Fi keep running.
-        for _ in 0..64 {
-            let Ok(byte) = usb_rx.read_byte() else { break };
-            if screenshot_command.push(byte) && screenshot_row == coin::HEIGHT {
-                snapshot.copy_from_slice(&canvas);
-                screenshot_frame = frame;
-                screenshot_row = 0;
-                println!(
-                    "CYCLING_SHOT BEGIN {} {} {} {:08x}",
-                    screenshot_frame,
-                    coin::WIDTH,
-                    coin::HEIGHT,
-                    cycling_os::screenshot::checksum(&snapshot)
-                );
-            }
+        #[cfg(feature = "debug-harness")]
+        if screenshot_requested {
+            snapshot.copy_from_slice(&canvas);
+            screenshot_frame = frame;
+            screenshot_row = 0;
+            println!(
+                "CYCLING_SHOT BEGIN {} {} {} {:08x}",
+                screenshot_frame,
+                coin::WIDTH,
+                coin::HEIGHT,
+                cycling_os::screenshot::checksum(&snapshot)
+            );
         }
+        #[cfg(feature = "debug-harness")]
+        debug.drawn(
+            frame,
+            Instant::now().duration_since_epoch().as_millis(),
+            &canvas,
+            &ui,
+            &visible_status,
+            available,
+            decoder.valid_frames,
+            decoder.bad_crc,
+            uart_errors,
+        );
+        #[cfg(feature = "debug-harness")]
         if screenshot_row < coin::HEIGHT {
             let mut hex = [0u8; coin::WIDTH * 4];
             const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -283,6 +340,11 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             );
         }
         let elapsed = start.elapsed().as_millis();
+        #[cfg(feature = "debug-harness")]
+        {
+            debug.frame_ms = elapsed;
+            debug.max_frame_ms = debug.max_frame_ms.max(elapsed);
+        }
         if elapsed < 42 {
             embassy_time::Timer::after_millis(42 - elapsed).await;
         }

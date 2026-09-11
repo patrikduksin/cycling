@@ -148,7 +148,7 @@ fn decode(frame: &[u8]) -> Option<Event> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Status {
     pub battery: Option<(u8, u16)>,
     pub power: Option<u8>,

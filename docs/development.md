@@ -114,3 +114,6 @@ without restarting the app. Hardware captures showed battery
 readings and `WIFI TEST OK`; both HTTP checks passed, rendering remained at
 19–20 ms during transfer, and companion reception continued with zero CRC errors.
 The previously observed single UART overflow during Wi-Fi startup remained.
+
+See [device debugging](device-debugging.md) for injected input, video recording,
+state assertions, Wi-Fi recovery tests and scripted end-to-end runs.

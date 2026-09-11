@@ -20,6 +20,15 @@ static STATE: AtomicU8 = AtomicU8::new(0);
 static RECONNECT: AtomicBool = AtomicBool::new(false);
 static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
 
+#[cfg(feature = "debug-harness")]
+pub fn state() -> u8 {
+    STATE.load(Ordering::Relaxed)
+}
+#[cfg(feature = "debug-harness")]
+pub fn reconnect() {
+    RECONNECT.store(true, Ordering::Relaxed);
+}
+
 pub fn label() -> &'static [u8] {
     match STATE.load(Ordering::Relaxed) {
         1 => b"WIFI CONNECTING",

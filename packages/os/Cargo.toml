@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+debug-harness = []
 c606 = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:static_cell", "dep:embassy-futures"]
 
 [dependencies]

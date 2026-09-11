@@ -76,11 +76,25 @@ Starting baseline main e7df373, enabled device Home, four rides/slot22.
   67Rust/38Python/check passed. No firmware source changed or reflash needed.
   Device remains enabled. Four rides/slot22 and observed preferences50/30/10/60
   preserved. Timezone60 is the current baseline; historical0 must not be restored.
-- Starting #34 GNSS reproduce/diagnose transport losses, epoch association and
-  receiver/control research. Sol owns implementation/device after handoff.
-  SD preflight .local/overnight/sdmmc-followup-preflight.md; BLE preflight
-  .local/overnight/ble-followup-preflight.md; reclaim preflight
-  .local/overnight/ride-reclaim-followup-preflight.md. All are private working notes.
+- #34 partial increment merged in PR #47, a935766. UART0 now uses 8 KiB
+  UHCI DMA on channel1, with separate actual UART/DMA fault counters and bounded
+  recovery. Final451 STATE replies/20.058s parsed516 sentences with zero new
+  transport/parser faults; Wi-Fi reconnect and118-frame capture also passed.
+  Forced6s starvation produced DMA1/UART1 then resumed355 valid sentences.
+  Satellite metadata matches fractional UTC epochs. Exact stock close/open
+  paused counters for4s then resumed58 sentences in2s, proving stream control,
+  not electrical power. Identity queries got no recognized response and are
+  absent from final startup. User confirms indoors; model/outdoor work stays open.
+  Astra approved,69Rust/39Python/check/both builds passed. Final enabled firmware
+  restored, four rides/slot22 and prefs50/30/10/60 preserved.
+- Starting #36 BLE MTU23 and continuous sensors. Sol owns source/Git/device after
+  handoff. User authorized a worn, powered Polar H10; its details are private in
+  .local/overnight/authorized-heart-sensor.json. Do not publish identifiers or
+  actual personal readings. Use aggregate comparison results and labeled laptop
+  cadence fixtures. BLE preflights: ble-followup-preflight.md and
+  ble-mtu-repro-preflight.md under .local/overnight/.
+  SD preflight .local/overnight/sdmmc-followup-preflight.md; reclaim preflight
+  .local/overnight/ride-reclaim-followup-preflight.md.
 
 ## Progress
 

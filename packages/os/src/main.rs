@@ -4,6 +4,7 @@
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
 mod display;
+mod persistent;
 mod psram;
 mod touch;
 mod wifi;
@@ -56,6 +57,17 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         psram.allocator_probe,
         psram.allocator_alignment
     );
+    match persistent::init(p.FLASH) {
+        Ok(report) => println!(
+            "CYCLING_STORAGE ready backend=ota_1_tail base=0x{:08x} sectors=2 capacity={} initialized={} sequence={} length={}",
+            persistent::BASE,
+            cycling_os::storage::CAPACITY,
+            report.initialized,
+            report.sequence,
+            report.length
+        ),
+        Err(error) => println!("CYCLING_STORAGE error={:?}", error),
+    }
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
     let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);

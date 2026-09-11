@@ -7,3 +7,4 @@ pub mod debug;
 pub mod input;
 pub mod network;
 pub mod screenshot;
+pub mod storage;

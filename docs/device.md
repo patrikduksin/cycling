@@ -15,8 +15,11 @@ Backups, device identity and logs stay in ignored `.local/device/`. Keep a separ
 copy of that directory. The helper refuses to overwrite an existing baseline backup.
 It checks the connected device, partition layout, bootloader and stock image before
 changing firmware. A candidate must pass ESP image checksum/hash and size checks.
-Flash writes are limited to slot B and one OTA selection sector; readback validates
-the change. No bootloader, partition-table, settings or eFuse writes are requested.
+Flash writes are limited to the application portion of slot B and one OTA selection
+sector; readback validates the change. The final two erase sectors of slot B are
+reserved for the cycling settings journal, and the helper rejects an application
+that overlaps them. No bootloader, partition-table, stock-slot or eFuse writes are
+requested.
 
 On Linux, the serial device needs read/write permission. A temporary ACL is sufficient:
 

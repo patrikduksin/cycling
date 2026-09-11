@@ -182,6 +182,7 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "esp-storage",
+ "esp32s3",
  "libm",
  "static_cell",
  "trouble-host",

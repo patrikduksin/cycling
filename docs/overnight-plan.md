@@ -110,16 +110,20 @@ The GPS issue contains the user-authorized public reference coordinates.
   Static windows0draws/115skips, Ride4/112. Heap unchanged; both builds/hardware
   baselines passed, enabled restored, targeted regression/60s soak passed.
   Astra approved;48 Rust/24 Python/check passed.
-- Starting #14 GPS. Private gps-preflight-reviewer.md now has exact companion
-  open/close frames and stock-confirmed TX42/RX41; gps-parser-preflight.md and
-  gps-uart-buffer-preflight.md cover validity/buffering. Hardware remains unverified.
-  Additional ignored preflights now include
-  ride-ui-preflight.md, crash-preflight.md, regression-preflight.md,
-  performance-preflight.md and ride-storage-option.md.
-  Preflights for UI, networking, settings, dimming,
-  Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
-  now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
-  These remain stock-code findings pending actual device validation.
+- #14 complete: PR #35 merged as 1f8590d. Live GN NMEA verified on UART0
+  RX0 at921600, bounded parser and interrupt-fed8KiB ring, GPS screen/debug.
+  Selected30.055s connected coexistence window clean with639 valid sentences;
+  setup/capture/navigation and Wi-Fi reassociation detected UART losses and
+  recovered. Indoor nofix/sats0, no positional claim. Stock open candidate sent
+  without verified effect. Follow-up #34 covers outdoor fix, model/control,
+  epoch association and loss cause. Astra approved;52 Rust/24 Python/check/both
+  builds passed. Screenshot linked on PR; enabled firmware remains installed.
+- Starting #15 Bluetooth. Read ignored bluetooth-preflight.md and
+  ble-simulator-preflight.md. Laptop BlueZ has GATT/advertising managers,
+  8 supported advertising instances and no connected peers at the preflight.
+  Use owned laptop peer only; raw identities stay private. Later preflights
+  include crash-preflight.md, ride-recording-preflight.md,
+  ride-storage-option.md and ride-export-preflight.md under .local/overnight/.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

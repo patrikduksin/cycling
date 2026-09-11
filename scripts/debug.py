@@ -243,7 +243,7 @@ class Device:
         if len(self.pending) > 8192:
             raise ValueError('Oversized USB line')
 
-    def command(self, command, timeout=5):
+    def command(self, command, timeout=5, expected='OK'):
         id = self.send(command)
         deadline = time.monotonic() + timeout
         while id not in self.replies:
@@ -251,7 +251,7 @@ class Device:
                 raise TimeoutError(f'No acknowledgment for {command}')
             self.pump()
         result, state = self.replies.pop(id)
-        if result != 'OK':
+        if result != expected:
             raise RuntimeError(f'{command}: {result}')
         if command.startswith('PERSIST '):
             self.expected_brightness = state['brightness']
@@ -595,6 +595,102 @@ def lease_test(device):
     device.active = True
 
 
+def drain_expected_reboot(port, path, timeout=15):
+    """Drain one explicitly requested reboot without weakening normal session checks."""
+    lock = (ROOT / '.local/usb.lock').open('w')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    deadline = time.monotonic() + timeout
+    quiet_since = None
+    seen_boot = False
+    recent = bytearray()
+    fd = None
+    try:
+        with path.open('wb') as log:
+            while time.monotonic() < deadline:
+                if fd is None:
+                    try:
+                        fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+                        tty.setraw(fd)
+                        attributes = termios.tcgetattr(fd)
+                        attributes[2] = (attributes[2] | termios.CLOCAL | termios.CREAD) & ~termios.HUPCL
+                        attributes[4] = attributes[5] = termios.B115200
+                        termios.tcsetattr(fd, termios.TCSANOW, attributes)
+                    except OSError:
+                        time.sleep(.1)
+                        continue
+                if select.select([fd], [], [], .1)[0]:
+                    try:
+                        data = os.read(fd, 65536)
+                    except OSError:
+                        os.close(fd)
+                        fd = None
+                        continue
+                    log.write(data)
+                    log.flush()
+                    recent.extend(data)
+                    seen_boot |= b'CYCLING_BOOT ' in recent
+                    if len(recent) > 64:
+                        del recent[:-64]
+                    quiet_since = time.monotonic()
+                elif seen_boot and quiet_since is not None and time.monotonic() - quiet_since >= .5:
+                    return
+        raise TimeoutError('expected reboot did not produce a boot log')
+    finally:
+        if fd is not None:
+            os.close(fd)
+        lock.close()
+
+
+def crash_test(port, directory):
+    def arm(command, folder):
+        device = Device(port, folder)
+        try:
+            device.__enter__()
+            before = device.command('STATE')
+            armed = device.command(command, expected='ARMED')
+            if armed['active']:
+                raise AssertionError(f'{command} did not restore the temporary session')
+            device.active = False
+            return before
+        finally:
+            device.close()
+
+    before = arm('PANIC', directory / 'panic-arm')
+    drain_expected_reboot(port, directory / 'panic-boot.log')
+    with Device(port, directory / 'panic-recovered') as device:
+        recovered = device.command('STATE')
+        if recovered['reset_reason'] != 'software' or recovered['crash_marker'] != 'controlled':
+            raise AssertionError('controlled panic marker or reset reason missing')
+        if not recovered['crash_firmware']:
+            raise AssertionError('retained panic firmware version missing')
+        for key in ['brightness', 'dim_timeout', 'dim_brightness', 'timezone']:
+            if recovered[key] != before[key]:
+                raise AssertionError(f'panic changed preference {key}')
+        frame, valid = recovered['frame'], recovered['valid']
+        device.wait(2)
+        resumed = device.command('STATE')
+        if resumed['frame'] <= frame or resumed['valid'] <= valid:
+            raise AssertionError('display or companion did not resume after panic')
+
+    arm('RESTART', directory / 'restart-arm')
+    drain_expected_reboot(port, directory / 'restart-boot.log')
+    with Device(port, directory / 'restart-recovered') as device:
+        clean = device.command('STATE')
+        if (clean['reset_reason'] != 'software' or clean['crash_marker'] != 'none'
+                or clean['crash_firmware']):
+            raise AssertionError('consumed panic marker replayed after clean restart')
+        for key in ['brightness', 'dim_timeout', 'dim_brightness', 'timezone']:
+            if clean[key] != before[key]:
+                raise AssertionError(f'clean restart changed preference {key}')
+    summary = {
+        'before': before,
+        'panic_recovered': recovered,
+        'resumed': resumed,
+        'clean_restart': clean,
+    }
+    (directory / 'crash-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
@@ -606,6 +702,7 @@ def main():
     commands.add_parser('smoke')
     commands.add_parser('wifi-recovery')
     commands.add_parser('ride-demo')
+    commands.add_parser('crash-test')
     soak_parser = commands.add_parser('soak')
     soak_parser.add_argument('--seconds', type=float, default=60)
     record = commands.add_parser('record')
@@ -617,6 +714,13 @@ def main():
     command.add_argument('value')
     args = parser.parse_args()
     directory = args.output or ROOT / '.local/tests' / str(time.time_ns())
+    if args.action == 'crash-test':
+        directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+        try:
+            crash_test(args.port, directory)
+        finally:
+            print(f'Evidence: {directory}')
+        return
     device = Device(args.port, directory)
     try:
         with device:

@@ -70,6 +70,10 @@ run = "python scripts/persistence_test.py"
 description = "Run device scenarios, restart checks, visual comparisons and stability soak"
 run = "python scripts/regression.py"
 
+[tasks.crash-test]
+description = "Trigger a controlled panic and verify one-shot reset diagnostics"
+run = "python scripts/debug.py crash-test"
+
 [tasks.bluetooth-echo]
 description = "Verify C606 BLE echo notifications, reads and reconnect with this laptop"
 run = "/usr/bin/python3 scripts/bluetooth.py"

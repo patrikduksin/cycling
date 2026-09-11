@@ -68,6 +68,7 @@ mise run debug -- run scripts/scenarios/controls.json
 mise run debug -- lease-test
 mise run debug -- wifi-recovery
 mise run debug -- ride-demo
+mise run crash-test
 mise run debug -- soak --seconds 60
 ```
 
@@ -147,6 +148,10 @@ brightness, dim state, idle age, timeout and dim level.
 They also expose cumulative `display_draws` and `display_skips`; the display loop
 frame number continues to advance when an identical canvas skips LCD transfer.
 A missing touch coordinate, battery reading or power status is `-1`.
+`reset_reason` is a bounded reset category, `crash_marker` is `none`, `panic`,
+`controlled` or `invalid`, and `crash_firmware` is the retained version or empty.
+The on-device Diagnostics footer shows the same reset
+and marker state as `RST` and `CR`; `H` and `R` show harness and recording flags.
 
 Wi-Fi values are 0 unconfigured, 1 connecting, 2 awaiting DHCP, 3 connected,
 4 public HTTP test passed, 5 retrying and 6 failed initialization. Debug state
@@ -203,6 +208,8 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `RECORD milliseconds fps` | Record 100–30000 ms at a requested 1–10 fps |
 | `PERSIST brightness` | End and restore the temporary session, then explicitly save a validated 5–100% brightness |
 | `IDLE seconds brightness` | Temporarily set timeout (`0` disables) and dim level for the current session |
+| `PANIC` | Harness only: restore the session, reply `ARMED`, then trigger a controlled Rust panic and software reset |
+| `RESTART` | Harness only: restore the session, reply `ARMED`, then perform a clean whole-chip software reset |
 | `STOP` | Stop recording |
 | `END` | Stop recording, cancel touch, clear battery override and restore saved UI values |
 
@@ -216,6 +223,14 @@ the displayed status; it does not change charging or send companion commands.
 Button code 1 is the verified short-click action. Other codes can be injected,
 but their physical long-press meanings are not verified. There is no invented
 button-down/button-up protocol.
+
+`mise run crash-test` is the dedicated expected-reboot path. It requires the
+`ARMED` reply, releases the ordinary USB session, drains the requested reboot
+under the shared device lock, and then starts a fresh strict session. Unexpected
+boots during every other command remain failures. The test checks the software
+reset reason, controlled marker, restored preferences, resumed display and
+companion traffic, and a second clean restart with no replayed marker. Raw panic
+text and backtrace addresses remain in ignored evidence.
 
 Session cleanup clears injected Wi-Fi faults and restores saved button counters, including when they changed
 through physical presses during the test. Brightness returns to its initial

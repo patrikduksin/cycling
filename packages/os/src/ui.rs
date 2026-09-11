@@ -666,18 +666,27 @@ impl App {
             b"TCH",
             m.touch_errors as u64,
         );
+        text(pixels, 3, 85, b"RST", theme::MUTED);
+        text(pixels, 19, 85, m.reset.short(), theme::ACCENT);
+        text(pixels, 45, 85, b"CR", theme::MUTED);
+        text(pixels, 57, 85, m.crash.short(), theme::ACCENT);
+        text(pixels, 3, 94, b"H", theme::MUTED);
         text(
             pixels,
-            3,
-            85,
-            match (m.harness, m.recording) {
-                (true, true) => b"HAR ON  REC ON",
-                (true, false) => b"HAR ON  REC OFF",
-                (false, _) => b"HAR OFF REC OFF",
-            },
-            theme::MUTED,
+            7,
+            94,
+            if m.harness { b"1" } else { b"0" },
+            theme::TEXT,
         );
-        text(pixels, 3, 98, b"TOP BACK", theme::MUTED);
+        text(pixels, 13, 94, b"R", theme::MUTED);
+        text(
+            pixels,
+            17,
+            94,
+            if m.recording { b"1" } else { b"0" },
+            theme::TEXT,
+        );
+        text(pixels, 27, 94, b"TOP BACK", theme::MUTED);
     }
 
     fn render_ride(&self, pixels: &mut [u16; PIXELS], now: u64) {
@@ -1366,6 +1375,8 @@ mod tests {
 
         let mut pixels = [0; PIXELS];
         let metrics = metrics::Snapshot {
+            reset: crate::crash::Reset::Software,
+            crash: crate::crash::Marker::default(),
             gps: crate::gps::Snapshot::default(),
             uptime_ms: 3_723_000,
             frame_ms: 20,

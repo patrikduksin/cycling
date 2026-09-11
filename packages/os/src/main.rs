@@ -2,8 +2,9 @@
 #![no_main]
 
 mod display;
+mod touch;
 
-use cycling_os::coin;
+use cycling_os::{coin, controls::Controls, input::Report};
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
@@ -63,6 +64,18 @@ fn main() -> ! {
     let mut screen = display::Display::new(bus, dma_tx_buffer!(3840).unwrap());
     screen.init();
 
+    let touch_bus = esp_hal::i2c::master::I2c::new(
+        p.I2C0,
+        esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(100)),
+    )
+    .unwrap()
+    .with_sda(p.GPIO21)
+    .with_scl(p.GPIO12);
+    let mut touch = touch::Touch::new(touch_bus);
+    let probe = touch.probe();
+    println!("CYCLING_TOUCH probe={:02x?}", probe);
+    let mut available = probe.is_ok();
+
     let mut ledc = Ledc::new(p.LEDC);
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
     let mut timer = ledc.timer::<LowSpeed>(timer::Number::Timer0);
@@ -77,7 +90,7 @@ fn main() -> ! {
     backlight
         .configure(channel::config::Config {
             timer: &timer,
-            duty_pct: 49,
+            duty_pct: 50,
             drive_mode: DriveMode::PushPull,
         })
         .unwrap();
@@ -86,9 +99,44 @@ fn main() -> ! {
     let mut canvas = [0; coin::PIXELS];
     let delay = Delay::new();
     let mut frame = 0u32;
+    let mut ui = Controls::default();
+    let mut last_touch = Instant::now();
+    let mut errors = 0u32;
     loop {
         let start = Instant::now();
-        coin::render(frame, &mut canvas);
+        let previous = ui.point;
+        let brightness = ui.brightness;
+        match touch.poll() {
+            Ok(Report::Press(point)) => {
+                available = true;
+                last_touch = Instant::now();
+                ui.update(Some(point));
+            }
+            Ok(Report::Release) => {
+                available = true;
+                ui.update(None);
+            }
+            Ok(Report::Invalid) => {}
+            Err(error) => {
+                errors = errors.saturating_add(1);
+                if errors % 120 == 1 {
+                    println!("CYCLING_TOUCH error={:?} count={}", error, errors);
+                }
+                available = false;
+                ui.update(None);
+            }
+        }
+        if last_touch.elapsed().as_millis() > 250 {
+            ui.update(None);
+        }
+        if ui.point != previous {
+            println!("CYCLING_TOUCH point={:?}", ui.point);
+        }
+        if ui.brightness != brightness {
+            backlight.set_duty(ui.brightness).unwrap();
+            println!("CYCLING_BRIGHTNESS percent={}", ui.brightness);
+        }
+        ui.render(&mut canvas, available);
         screen.draw(&canvas);
         if frame % 24 == 0 {
             println!(

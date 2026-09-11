@@ -25,3 +25,10 @@ mise exec -- python packages/stock/magene-c606/unpack.py /path/to/N21_update.bin
 Output is local analysis material, not redistributable project source. The parser
 reconstructs images and ELF load segments; it does not recover original symbols or
 source code. It does not flash hardware.
+
+On 2026-09-11, Rust touch input and a 5–100% brightness slider were flashed through
+slot B. USB captured touch drags and PWM updates; the user confirmed accurate
+finger tracking and visible brightness changes. The touch UI takes about 19 ms
+per frame for input, rendering and transfer, at a 42 ms cadence. The application
+image is 124,480 bytes with no heap. Stock slot A, bootloader and partition table
+passed the device workflow verification. See the [bring-up notes](hardware.md#touch-and-brightness-bring-up-2026-09-11).

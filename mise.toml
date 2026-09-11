@@ -14,7 +14,7 @@ description = "Build C606 firmware and its application image"
 run = "bash scripts/build.sh"
 
 [tasks.test]
-description = "Test the renderer on this computer"
+description = "Test host firmware logic and device tools"
 run = ["cargo test --workspace --locked", "python -m unittest discover -s scripts -p test_device.py"]
 
 [tasks.fmt]
@@ -27,7 +27,7 @@ run = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --l
 
 [tasks.preview]
 description = "Render a frame without a device"
-run = "mkdir -p .local && cargo run --locked --example preview -- .local/coin.ppm 8"
+run = "mkdir -p .local && cargo run --locked --example preview -- .local/controls.ppm"
 
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"

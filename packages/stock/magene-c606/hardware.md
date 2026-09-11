@@ -12,7 +12,7 @@
 | Backlight | GPIO45, LEDC 20 kHz, 10-bit PWM | Independent C test confirmed |
 | Wi-Fi / BLE | ESP32-S3 integrated radios; stock ESP-IDF driver paths | Custom radio tests pending |
 | Companion | Official N22 update identifies `NRF52810_APP`; Nordic/ANT implementation | Update identified; chip readback pending |
-| Touch | I2C0, SDA21, SCL12; probe `0x38`, then `0x5a` | Recovered; actual ID pending |
+| Touch | I2C0, SDA21, SCL12; `0x5a`, packed coordinates at `0xd000` | Rust touch and visual alignment confirmed; exact part ID pending |
 | Buttons / power | Companion button events, combinations and power control | Protocol pending |
 | Battery / charge | Companion voltage, capacity, charging and temperature handling | Circuit and calibration pending |
 | Sound | Companion buzzer control; main audio-resource management | Buzzer lead; speaker/codec unconfirmed |
@@ -44,10 +44,36 @@ to each external component remains unresolved. These are not identified debug pa
 
 ## Next measurements
 
-Read the actual touch ID, decode companion status/button packets, capture GNSS
+Identify the exact touch controller, decode companion status/button packets, capture GNSS
 identity and position data, read storage CID/CSD, then exercise wireless. Keep the
 companion firmware initially; accessing its host protocol may expose several
 functions without reimplementing its sensor and power-management drivers.
 
 Sources: [ESP32-S3 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf),
 local N21/N22 update analysis, USB ROM inspection and the independent C display test.
+
+## Touch and brightness bring-up, 2026-09-11
+
+The connected unit acknowledges `0x5a` on I2C0 at 100 kHz. Register `0xd045`
+returns four bytes `04 00 00 01`. The recovered `0x38` probes receive address
+NACKs. These observations establish the working address, not an exact part ID.
+
+Stock's routine at `0x4202b850` reads seven bytes from `0xd000` and acknowledges
+with `d0 00 ab`. Coordinates use byte 1 and the high nibble of byte 3 for X,
+byte 2 and the low nibble of byte 3 for Y. Low nibble 6 of byte 0 means pressed.
+The format agrees with the [Hynitron CST3240 application manual](https://www.buydisplay.com/download/ic/CST3240_Application_Manual.pdf),
+but CST3240 remains a controller candidate, not a verified fitted part.
+
+Our Rust implementation polls once per 42 ms frame, accepts one finger, and
+rejects malformed or out-of-panel coordinates. It leaves controller firmware,
+calibration and reset alone. The UI shows touch position and a slider which
+sets GPIO45 PWM duty from 5 to 100 percent. It starts at 50 percent after each
+boot; settings are not persisted. A drag must start in the slider area to change
+brightness. Lost reports cancel an active touch after 250 ms.
+
+USB captured live drag coordinates and corresponding successful PWM duty updates,
+including 11 through 71 percent during the initial boot capture. Frame work was
+19 ms. The user confirmed that the marker follows their finger accurately and
+that the slider visibly changes brightness, describing both as perfect. This is
+a user-observed hardware result, not a measured full-panel calibration or
+backlight luminance measurement. Private captures remain in `.local/device/`.

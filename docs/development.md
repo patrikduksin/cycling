@@ -1,6 +1,6 @@
 # Development
 
-This is a Cargo workspace. `packages/os` contains a portable renderer and a
+This is a Cargo workspace. `packages/os` contains portable rendering and input logic and a
 C606 firmware binary. Add workspace members when there is something real to share.
 
 ## Tools
@@ -30,15 +30,19 @@ updates rather than moving Git branches.
 | Command | Purpose |
 |---|---|
 | `mise run fmt` | Format Rust |
-| `mise run test` | Host renderer and flash-format tests |
+| `mise run test` | Host input, UI, renderer and flash-format tests |
 | `mise run check` | Formatting and Clippy |
 | `mise run build` | Release ELF and `.local/cycling.bin` |
-| `mise run preview` | Render `.local/coin.ppm` on the host |
+| `mise run preview` | Render `.local/controls.ppm` on the host |
 
 The OS is `no_std`, with no allocator or RTOS yet. An 80×106 RGB565 canvas is enlarged
-3× onto the 240×320 display, using eight-row DMA transfers. The coin completes a
-turn every 96 frames. Target cadence is 24 fps; hardware measurements determine
-actual performance. Radio, PSRAM, touch and companion integration are still future work.
+3× onto the 240×320 display, using eight-row DMA transfers. The current screen tests touch and controls brightness from 5 to 100 percent.
+Target cadence is 24 fps. Touch uses the stock 0x5a report protocol over I2C;
+brightness changes the existing backlight PWM duty. It resets to 50 percent on
+boot. Radio, PSRAM and companion integration are still future work.
+
+The original coin renderer remains available through
+`mise exec -- cargo run --locked --example preview -- .local/coin.ppm 8 coin`.
 
 The stock ESP-IDF bootloader loads the Rust application; no ESP-IDF application
 runtime is linked. A compatible application descriptor is supplied by

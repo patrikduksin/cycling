@@ -65,3 +65,7 @@ run = "python scripts/debug.py smoke"
 [tasks.persistence-test]
 description = "Verify preferences across temporary sessions and safe reflashes"
 run = "python scripts/persistence_test.py"
+
+[tasks.regression]
+description = "Run device scenarios, restart checks, visual comparisons and stability soak"
+run = "python scripts/regression.py"

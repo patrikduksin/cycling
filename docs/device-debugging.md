@@ -211,6 +211,56 @@ its stream ID, sequence, display frame number, device timestamp and checksum.
 The checksum is FNV-1a over little-endian canvas pixels. A STOP record gives the
 total frame count. Legacy screenshots and recordings cannot run together.
 
+## Regression suite
+
+`mise run regression` combines the navigation, input, device, diagnostics,
+idle, Wi-Fi/clock, ride and preference-restart checks, then runs a ten-minute
+stability test. Use `python scripts/regression.py --only-soak --soak-seconds 600`
+when the preceding scenarios already passed. Reports, raw RGB565 frames and PNGs
+remain under ignored `.local/tests/`.
+
+The ride capture is compared exactly with a host-rendered 80×106 canvas. The
+Diagnostics comparison masks only changing row tails. Its fixed headings,
+left-hand labels, layout and footer are also compared in explicit exact regions;
+right-hand labels and suffixes that shift with number width remain masked. The
+comparison helper supports bounded per-channel RGB565 tolerance, though the
+current fixtures use exact pixels. Unit tests prove that an unmasked change
+fails and that static regions still fail when they overlap a general mask.
+
+The stability test changes scenes once a minute and verifies every sample has a
+new display frame, companion valid packets advance within five seconds, and
+CRC, UART and touch error counters do not increase. It permits up to 8 KiB of
+temporary free-heap reduction during the session and up to 4 KiB after cleanup
+and a one-second settling interval. The report records the observed minimum and
+the before, pre-cleanup and settled states so a transient allocation is not
+reported as retained memory.
+
+The suite deliberately fails one scenario after applying a battery override and
+checks that the intended assertion was reached and cleanup restored all saved
+state. A separate lease-expiry test covers cleanup when the host stops renewing
+the session. These injected checks verify firmware state and captured pixels;
+they do not establish physical touch accuracy, switch behavior, panel quality,
+outdoor readability or long-duration reliability beyond the stated run.
+
+On 2026-09-11 the combined functional run passed all listed scenarios, exact
+Ride comparison, masked Diagnostics comparison with separate static-label
+checks, intentional-failure cleanup and lease-expiry cleanup. The preference
+stage verified temporary 65% brightness returned to the saved 50% after a safe
+reflash, an explicit 65% save survived a safe reflash, and restoring 50% also
+survived a safe reflash.
+
+The successful stability rerun observed 602.013 seconds and 562 samples while
+changing scenes each minute. Display frames advanced from 6,201 to 20,349 and
+valid companion packets from 8,773 to 28,805. Free heap started, ended and
+settled at 116,240 bytes; the test-loop minimum was 116,192 bytes, a transient
+48-byte reduction with no retained reduction. CRC remained 0, the pre-existing
+UART error count remained 1, touch errors remained 0, and PSRAM free remained
+2,097,152 bytes. An earlier attempt stopped around four minutes because the host
+navigation helper did not allow for a wake-consumed Back action from dimmed
+Diagnostics. Its device counters and heap were clean; the helper was fixed and
+covered with a fake-device regression before the successful full-duration
+rerun. Evidence is in ignored `.local/tests/issue-12-final*`.
+
 ## Hardware validation
 
 The smoke test verified the touch marker in captured pixels, dragged the slider

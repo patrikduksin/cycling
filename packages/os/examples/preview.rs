@@ -2,7 +2,7 @@
 use cycling_os::{
     coin::{self, PIXELS, WIDTH},
     screenshot::canvas_index,
-    ui::App,
+    ui::{App, Screen},
 };
 use std::{
     fs::File,
@@ -12,21 +12,38 @@ use std::{
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     let path = args.next().unwrap_or_else(|| "preview.ppm".into());
-    let frame = args.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    let mode = args.next();
+    let frame = mode.as_deref().and_then(|n| n.parse().ok()).unwrap_or(0);
     let mut pixels = [0; PIXELS];
     if args.next().as_deref() == Some("coin") {
         coin::render(frame, &mut pixels);
     } else {
-        App::default().render(
+        let mut app = App::default();
+        let mut metrics = cycling_os::metrics::Snapshot::default();
+        match mode.as_deref() {
+            Some("ride-raw") => app.screen = Screen::Ride,
+            Some("diagnostics-raw") => {
+                app.screen = Screen::Diagnostics;
+                metrics.harness = true;
+            }
+            _ => {}
+        }
+        app.render(
             &mut pixels,
             true,
             &cycling_os::companion::Status::default(),
-            b"WIFI READY",
-            &cycling_os::metrics::Snapshot::default(),
+            b"WIFI TEST OK",
+            &metrics,
             &cycling_os::network_time::Snapshot::default(),
         );
     }
     let mut out = io::BufWriter::new(File::create(path)?);
+    if matches!(mode.as_deref(), Some("ride-raw" | "diagnostics-raw")) {
+        for pixel in pixels {
+            out.write_all(&pixel.to_le_bytes())?;
+        }
+        return Ok(());
+    }
     write!(out, "P6\n240 320\n255\n")?;
     for y in 0..320 {
         for x in 0..WIDTH * 3 {

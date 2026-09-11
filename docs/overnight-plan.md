@@ -164,12 +164,34 @@ The GPS issue contains the user-authorized public reference coordinates.
   Slot22/rides4/prefs50/30/10/0/heap80308/GPS UART0/companion UART1 unchanged.
   Astra approved2rounds;66 Rust/32 Python/check/bothbuilds passed. Enabled firmware
   installed; private exports ignored, sanitized written proof attached to PR.
-- Original queue #1 through #19 is complete. Starting small follow-up #40:
-  on-device live/demo selection, preserving History navigation and debug-session
-  restoration. Also fix stale regression helper assumptions documented in
-  .local/overnight/final-regression-preflight.md. Run70s rehearsal then full
-  persistence+600s regression before final handoff. Final checklist:
-  .local/overnight/final-handoff-checklist.md. GPS #34, BLE #36 and SD #21 remain.
+- #40 complete: PR #45 merged as 581f2bc. On-device Live/Demo selection,
+  preserved History navigation, shared source/elapsed presentation and restored
+  temporary selection. Device Ready Live elapsed0; temporary Running2180ms;
+  speed/distance unavailable. Screenshots/video attached outside Git. Final
+  required checks:67 Rust/36 Python/check/bothbuilds; Astra reviewed within the
+  four-round limit. README now describes current features and limits.
+- Final integration: functional/visual/cleanup/persistence passed in
+  .local/tests/issue40-final/. A post-flash Scanning precondition exposed a
+  missing wait in the host helper; bounded20s scan wait added/tested/reviewed.
+  Continued with .local/tests/issue40-final-soak/:602.034seconds,581samples,
+  frames878 to15007, companion1249 to21325; heap80308 to80260, minimum80132,
+  PSRAM free2080192. No new companion CRC/UART or touch errors. GPS added
+  1080425bytes/12571valid sentences, no checksum/parse/ring/line-overflow errors,
+  but47 UART errors. This is not loss-free GNSS evidence; follow-up #34 remains.
+  Root reconciled both stages: four rides/slot22 and prefs50/30/10/0 unchanged.
+- Final coordinator export .local/exports/final-preserved/ matched every5632byte
+  of the #19 baseline exactly:22slots,4rides,24samples. Proof comment on PR#45.
+  Final state .local/tests/final-handoff/: enabled firmware, Home, Demo selected,
+  recorder ready, no active test session/recording, Wi-Fi connected/time fresh,
+  heap80260 and PSRAM free2080192. GPS nofix indoors at handoff; earlier actual
+  fixes near the authorized reference remain separately documented under #34.
+- Overnight queue is complete: #1 through #19 plus #40 merged. Remaining tracked
+  work: SD/MMC probing #21; GNSS model/control/epoch/loss #34; continuous BLE and
+  MTU23 interoperability #36; occasional truncated USB startup prefix #43;
+  capacity display/explicit ride reclaim #44. Current journal has roughly4.5h
+  total1Hz sample capacity before event overhead, with no reclaim workflow yet.
+  Do not relaunch this completed queue after compaction. Next work starts from
+  those follow-ups or new user direction. Sudo expiry remains13:37 -03 today.
 - For later media, use unique sanitized filenames under .local/overnight/evidence,
   inspect them, upload with gh release upload evidence-2026-09-11, then link from PR.
   Browser attachment UI is unavailable. Never upload raw logs or credentials.

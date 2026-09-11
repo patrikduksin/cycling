@@ -1,4 +1,5 @@
 [
+  {"action": "wake"},
   {"action": "expect", "state": {"screen": "home", "brightness": 50}},
   {"action": "command", "value": "RECORD 8000 5"},
   {"action": "tap", "point": [80, 100]},

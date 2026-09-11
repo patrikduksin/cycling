@@ -153,7 +153,8 @@ remains tracked separately.
 
 ### Persistent preferences (2026-09-11)
 
-Brightness uses a validated version 2 settings record in the two-sector journal.
+Brightness uses a validated version 3 settings record in the two-sector journal.
+Version 2 records migrate their brightness while taking the default idle settings.
 The earlier `cycling` version 1 marker migrates to the 50% default. Missing,
 malformed and unsupported records also use defaults without overwriting the
 unknown record. Live changes save once they are unchanged for one second and no
@@ -167,6 +168,27 @@ reflashed and recovered 65%, before saving and reflashing back to the original
 and UART counts did not increase, and free heap stayed at 116,240 bytes. One save
 raised its session maximum frame work from 23 to 55 ms; another session already
 contained an unrelated 898 ms startup/Wi-Fi sample before the save.
+
+### Idle dimming and wake (2026-09-11)
+
+Settings includes tap rows for a 15/30/60/120-second or disabled dim timeout and
+a 5/10/20/30% dim level. These fields share the debounced versioned preference
+record. The selected brightness remains unchanged while the applied PWM becomes
+the smaller of selected and dim level. Real and injected touch/button input use
+one monotonic idle gate. The first wake button is consumed; a wake touch and all
+of its reports through release are consumed. A held contact stays awake, and its
+release starts a fresh inactivity interval. USB status, heartbeats, captures,
+battery and Wi-Fi activity do not reset the timer.
+
+On the C606, a temporary two-second timeout dimmed from selected 50% to effective
+10% while state heartbeats continued. A held wake touch stayed awake for 2.4
+seconds, then the first button and first tap each only woke the display after
+subsequent dim cycles; the next inputs changed focus and opened Settings. Session
+cleanup restored the persisted 30-second/10% configuration and its original idle
+anchor. Companion frames advanced from 33 to 305 with no new CRC or UART errors,
+and free heap did not decline. Capture work raised the sampled maximum frame time
+from 22 to 44 ms. These checks verify PWM state and firmware behavior; they do not
+measure panel brightness or power.
 
 ### On-device diagnostics (2026-09-11)
 

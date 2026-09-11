@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from debug import Device, ROOT
+from debug import Device, ROOT, wake_if_dimmed
 
 
 def flash():
@@ -30,6 +30,7 @@ def persist(port, directory, brightness):
 
 def temporary_change(port, directory, expected, changed):
     with Device(port, directory) as device:
+        wake_if_dimmed(device)
         device.expect({'screen': 'home', 'brightness': expected})
         device.tap(80, 100)
         device.expect({'screen': 'settings'})

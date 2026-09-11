@@ -140,7 +140,8 @@ pointer input is blocked pending release, brightness,
 touch point, button counters, battery values, whether battery data is simulated, Wi-Fi state, physical
 touch availability, companion packet/error counters, free heap, sampled minimum
 heap, PSRAM capacity and free space, previous frame processing time and maximum
-observed frame processing time, and the touch error counter.
+observed frame processing time, the touch error counter, selected/effective
+brightness, dim state, idle age, timeout and dim level.
 A missing touch coordinate, battery reading or power status is `-1`.
 
 Wi-Fi values are 0 unconfigured, 1 connecting, 2 awaiting DHCP, 3 connected,
@@ -172,6 +173,7 @@ so their frame numbers identify displayed results. Malformed commands produce
 | `CAPTURE` | Capture one compressed frame |
 | `RECORD milliseconds fps` | Record 100–30000 ms at a requested 1–10 fps |
 | `PERSIST brightness` | End and restore the temporary session, then explicitly save a validated 5–100% brightness |
+| `IDLE seconds brightness` | Temporarily set timeout (`0` disables) and dim level for the current session |
 | `STOP` | Stop recording |
 | `END` | Stop recording, cancel touch, clear battery override and restore saved UI values |
 

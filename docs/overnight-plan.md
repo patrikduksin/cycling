@@ -91,7 +91,13 @@ The GPS issue contains the user-authorized public reference coordinates.
   screenshots linked in PR. Host comparison is within a194ms command window,
   not a millisecond accuracy guarantee. No RTC/DST; NTP era0 limitation documented.
   Astra approved;43 Rust/19 Python/check/both builds passed.
-- Starting #11 simulated ride. Additional ignored preflights now include
+- #11 complete: PR #31 merged as 914f532. DEMO ride with deterministic speed,
+  monotonic distance/time, two pages/layouts and start/pause/resume/reset.
+  Device27-frame recording verified exact values, pause freeze and cleanup;
+  heap116288 unchanged, no new CRC/UART errors. Media linked in PR.
+  Astra approved;47 Rust/19 Python/check/both builds passed. Also scoped the
+  workflow token to espup setup after intermittent GitHub403 download failures.
+- Starting #12 regression/stability. Additional ignored preflights now include
   ride-ui-preflight.md, crash-preflight.md, regression-preflight.md,
   performance-preflight.md and ride-storage-option.md.
   Preflights for UI, networking, settings, dimming,

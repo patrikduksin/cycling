@@ -78,6 +78,10 @@ run = "python scripts/debug.py crash-test"
 description = "Export the complete read-only ride prefix as private raw, JSON and GPX files"
 run = "python scripts/export_rides.py"
 
+[tasks.ride-clear]
+description = "Clear the owned ride journal after verifying a named complete export"
+run = "python scripts/clear_rides.py"
+
 [tasks.gps-stress]
 description = "Check GNSS progress and transport counters under repeated USB state replies"
 run = "python scripts/gps_stress.py .local/tests/gps-stress --require-no-loss"

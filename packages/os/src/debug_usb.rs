@@ -30,10 +30,7 @@ pub struct Debug {
     runtime: Option<(Settings, Idle)>,
     reboot: Option<Reboot>,
     reboot_ready: Option<Reboot>,
-    ride: Option<(
-        u32,
-        Option<(cycling_os::ride::Action, cycling_os::ride_log::Source)>,
-    )>,
+    ride: Option<(u32, RideRequest)>,
     export: Option<(u32, Option<u16>)>,
     export_hex: [u8; cycling_os::ride_log::SLOT_SIZE * 2],
 }
@@ -42,6 +39,12 @@ pub struct Debug {
 pub enum Reboot {
     Panic,
     Restart,
+}
+#[derive(Clone, Copy)]
+pub enum RideRequest {
+    Action(cycling_os::ride::Action, cycling_os::ride_log::Source),
+    Initialize,
+    Clear(u16),
 }
 impl Debug {
     pub fn new() -> Self {
@@ -84,12 +87,7 @@ impl Debug {
     pub fn take_reboot(&mut self) -> Option<Reboot> {
         self.reboot_ready.take()
     }
-    pub fn take_ride(
-        &mut self,
-    ) -> Option<(
-        u32,
-        Option<(cycling_os::ride::Action, cycling_os::ride_log::Source)>,
-    )> {
+    pub fn take_ride(&mut self) -> Option<(u32, RideRequest)> {
         self.ride.take()
     }
     pub fn ride_result(&mut self, id: u32, ok: bool) {
@@ -205,6 +203,7 @@ impl Debug {
                     | Action::Persist(_)
                     | Action::Ride(..)
                     | Action::RideInit
+                    | Action::RideClear(_)
                     | Action::Panic
                     | Action::Restart
                     | Action::ExportInfo
@@ -303,12 +302,17 @@ impl Debug {
             }
             Action::Ride(action, source) => {
                 self.end(app, status, settings, idle);
-                self.ride = Some((id, Some((action, source))));
+                self.ride = Some((id, RideRequest::Action(action, source)));
                 return;
             }
             Action::RideInit => {
                 self.end(app, status, settings, idle);
-                self.ride = Some((id, None));
+                self.ride = Some((id, RideRequest::Initialize));
+                return;
+            }
+            Action::RideClear(expected) => {
+                self.end(app, status, settings, idle);
+                self.ride = Some((id, RideRequest::Clear(expected)));
                 return;
             }
             Action::ExportInfo => {
@@ -385,7 +389,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"ride_recording\":\"{}\",\"ride_source\":\"{}\",\"ride_selected_source\":\"{}\",\"recording_active_ms\":{},\"recorded_samples\":{},\"recording_dropped\":{},\"recorded_rides\":{},\"recording_slot\":{},\"recording_write_ms\":{},\"recording_erase_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"ble_profile\":\"{}\",\"ble_state\":\"{}\",\"heart_bpm\":{},\"heart_age_ms\":{},\"cadence_tenths\":{},\"cadence_age_ms\":{},\"ble_connections\":{},\"ble_disconnections\":{},\"ble_notifications\":{},\"ble_invalid\":{},\"ble_rr_dropped\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"timezone\":{},\"time_status\":\"{}\",\"utc\":{},\"time_ms\":{},\"time_age_ms\":{},\"ride_phase\":\"{}\",\"ride_speed_mm_s\":{},\"ride_distance_mm\":{},\"ride_elapsed_ms\":{},\"ride_page\":{},\"ride_layout\":{},\"ride_recording\":\"{}\",\"ride_source\":\"{}\",\"ride_selected_source\":\"{}\",\"recording_active_ms\":{},\"recorded_samples\":{},\"recording_dropped\":{},\"recorded_rides\":{},\"recording_slot\":{},\"recording_slots_total\":{},\"recording_slots_used\":{},\"recording_slots_free\":{},\"recording_estimate_seconds\":{},\"recording_write_ms\":{},\"recording_erase_ms\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"wifi_associations\":{},\"wifi_successes\":{},\"wifi_failures\":{},\"wifi_fault\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"display_draws\":{},\"display_skips\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"reset_reason\":\"{}\",\"crash_marker\":\"{}\",\"crash_firmware\":\"{}\",\"gps_state\":\"{}\",\"gps_lat_e7\":{},\"gps_lon_e7\":{},\"gps_satellites\":{},\"gps_age_ms\":{},\"gps_bytes\":{},\"gps_valid\":{},\"gps_checksum_errors\":{},\"gps_parse_errors\":{},\"gps_overflows\":{},\"gps_line_overflows\":{},\"gps_uart_errors\":{},\"ble_profile\":\"{}\",\"ble_state\":\"{}\",\"heart_bpm\":{},\"heart_age_ms\":{},\"cadence_tenths\":{},\"cadence_age_ms\":{},\"ble_connections\":{},\"ble_disconnections\":{},\"ble_notifications\":{},\"ble_invalid\":{},\"ble_rr_dropped\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -423,6 +427,10 @@ impl Debug {
                 metrics.recording_dropped,
                 metrics.recorded_rides,
                 metrics.recording_slot,
+                cycling_os::ride_log::SLOTS,
+                metrics.recording_slot,
+                cycling_os::ride_reclaim::free_slots(usize::from(metrics.recording_slot)),
+                cycling_os::ride_reclaim::estimated_seconds(usize::from(metrics.recording_slot)),
                 metrics.recording_write_ms,
                 metrics.recording_erase_ms,
                 x,

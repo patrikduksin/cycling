@@ -97,7 +97,14 @@ The GPS issue contains the user-authorized public reference coordinates.
   heap116288 unchanged, no new CRC/UART errors. Media linked in PR.
   Astra approved;47 Rust/19 Python/check/both builds passed. Also scoped the
   workflow token to espup setup after intermittent GitHub403 download failures.
-- Starting #12 regression/stability. Additional ignored preflights now include
+- #12 complete: PR #32 merged as 7ef6185. Repeatable functional/visual/cleanup/
+  persistence suite and bounded soak. Corrected soak602.013s/562samples passed;
+  frame6201 to20349, companion8773 to28805, heap116240 before/after cleanup,
+  sampled minimum116192, no new CRC/UART/touch errors. First soak exposed a
+  host Back-navigation bug; fixed with fake-device tests and reran only soak.
+  Earlier failure is documented separately. Astra approved;47 Rust/24 Python,
+  check/build passed. Device remains enabled with original settings restored.
+- Starting #13 performance. Additional ignored preflights now include
   ride-ui-preflight.md, crash-preflight.md, regression-preflight.md,
   performance-preflight.md and ride-storage-option.md.
   Preflights for UI, networking, settings, dimming,

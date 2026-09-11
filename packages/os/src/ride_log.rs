@@ -7,6 +7,7 @@ pub const SLOTS_PER_SECTOR: usize = SECTOR_SIZE / SLOT_SIZE;
 pub const SECTORS: usize = REGION_SIZE / SECTOR_SIZE;
 pub const SLOTS: usize = REGION_SIZE / SLOT_SIZE;
 pub const SAMPLES_PER_BATCH: usize = 4;
+pub const HISTORY_CAPACITY: usize = 4;
 
 const MAGIC: [u8; 4] = *b"RIDE";
 const VERSION: u8 = 1;
@@ -298,6 +299,68 @@ pub struct Recovery {
     pub next_sequence: u32,
     pub active_ms: u64,
     pub gap: bool,
+    pub summary: Summary,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Summary {
+    pub ride_id: u32,
+    pub source: Option<Source>,
+    pub recovered: bool,
+    pub full: bool,
+    pub gap: bool,
+    pub active_ms: u64,
+    pub first_utc_ms: Option<u64>,
+    pub distance_mm: Option<u64>,
+    pub gps_samples: u16,
+    pub heart_average: Option<u16>,
+    pub cadence_average: Option<u16>,
+    demo_speed_mm_s: Option<u32>,
+    heart_sum: u32,
+    heart_count: u16,
+    cadence_sum: u32,
+    cadence_count: u16,
+}
+
+impl Summary {
+    pub fn started(ride_id: u32, source: Source) -> Self {
+        Self {
+            ride_id,
+            source: Some(source),
+            ..Self::default()
+        }
+    }
+
+    pub fn add_sample(&mut self, sample: Sample) {
+        self.first_utc_ms = self.first_utc_ms.or(sample.utc_ms);
+        self.gps_samples = self
+            .gps_samples
+            .saturating_add(u16::from(sample.location_e7.is_some()));
+        self.demo_speed_mm_s = self.demo_speed_mm_s.or(sample.demo_speed_mm_s);
+        if let Some(value) = sample.heart_bpm {
+            self.heart_sum = self.heart_sum.saturating_add(u32::from(value));
+            self.heart_count = self.heart_count.saturating_add(1);
+        }
+        if let Some(value) = sample.cadence_tenths {
+            self.cadence_sum = self.cadence_sum.saturating_add(u32::from(value));
+            self.cadence_count = self.cadence_count.saturating_add(1);
+        }
+        self.active_ms = sample.active_ms;
+    }
+
+    pub fn finish(&mut self, kind: Kind, active_ms: u64, gap: bool) {
+        self.active_ms = active_ms;
+        self.recovered = kind == Kind::Recovered;
+        self.full = kind == Kind::Full;
+        self.gap |= gap;
+        self.distance_mm = self
+            .demo_speed_mm_s
+            .map(|speed| active_ms.saturating_mul(u64::from(speed)) / 1_000);
+        self.heart_average =
+            (self.heart_count != 0).then(|| (self.heart_sum / u32::from(self.heart_count)) as u16);
+        self.cadence_average = (self.cadence_count != 0)
+            .then(|| (self.cadence_sum / u32::from(self.cadence_count)) as u16);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -308,6 +371,20 @@ pub struct Catalog {
     pub invalid_slots: u16,
     pub valid_slots: u16,
     pub recovery: Option<Recovery>,
+    pub summaries: [Option<Summary>; HISTORY_CAPACITY],
+    pub summary_count: u8,
+}
+
+impl Catalog {
+    pub fn push_summary(&mut self, summary: Summary) {
+        if usize::from(self.summary_count) < HISTORY_CAPACITY {
+            self.summaries[usize::from(self.summary_count)] = Some(summary);
+            self.summary_count += 1;
+        } else {
+            self.summaries.rotate_left(1);
+            self.summaries[HISTORY_CAPACITY - 1] = Some(summary);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -318,6 +395,8 @@ pub struct Scanner {
     invalid_slots: u16,
     valid_slots: u16,
     open: Option<Recovery>,
+    summaries: [Option<Summary>; HISTORY_CAPACITY],
+    summary_count: u8,
     max_ride_id: u32,
 }
 
@@ -356,6 +435,8 @@ impl Scanner {
             invalid_slots: self.invalid_slots,
             valid_slots: self.valid_slots,
             recovery: self.open,
+            summaries: self.summaries,
+            summary_count: self.summary_count,
         })
     }
 
@@ -370,6 +451,7 @@ impl Scanner {
                     next_sequence: entry.sequence.wrapping_add(1),
                     active_ms: entry.active_ms,
                     gap: false,
+                    summary: Summary::started(entry.ride_id, entry.source),
                 });
             }
             Kind::Samples | Kind::Pause | Kind::Resume => {
@@ -385,6 +467,11 @@ impl Scanner {
                 }
                 open.next_sequence = open.next_sequence.wrapping_add(1);
                 open.active_ms = entry.active_ms;
+                if entry.kind == Kind::Samples {
+                    for sample in &entry.samples[..usize::from(entry.count)] {
+                        open.summary.add_sample(*sample);
+                    }
+                }
             }
             Kind::Finish | Kind::Recovered | Kind::Full => {
                 let Some(open) = self.open else { return };
@@ -393,11 +480,24 @@ impl Scanner {
                     && entry.sequence == open.next_sequence
                 {
                     self.completed = self.completed.saturating_add(1);
+                    let mut summary = open.summary;
+                    summary.finish(entry.kind, entry.active_ms, open.gap);
+                    self.push_summary(summary);
                     self.open = None;
                 } else if let Some(open) = self.open.as_mut() {
                     open.gap = true;
                 }
             }
+        }
+    }
+
+    fn push_summary(&mut self, summary: Summary) {
+        if usize::from(self.summary_count) < HISTORY_CAPACITY {
+            self.summaries[usize::from(self.summary_count)] = Some(summary);
+            self.summary_count += 1;
+        } else {
+            self.summaries.rotate_left(1);
+            self.summaries[HISTORY_CAPACITY - 1] = Some(summary);
         }
     }
 }
@@ -590,6 +690,70 @@ mod tests {
         let catalog = scan.finish().unwrap();
         assert_eq!(catalog.completed, 0);
         assert_eq!(catalog.recovery.unwrap().source, Source::Demo);
+    }
+
+    #[test]
+    fn history_is_empty_or_keeps_four_latest_complete_summaries() {
+        let mut empty = Scanner::default();
+        for _ in 0..SECTORS {
+            empty.accept(&Sector([0xff; SECTOR_SIZE]));
+        }
+        assert_eq!(empty.finish().unwrap().summary_count, 0);
+
+        let mut sector = Sector([0xff; SECTOR_SIZE]);
+        let mut index = 0;
+        for ride_id in 1..=5 {
+            let source = if ride_id == 5 {
+                Source::Live
+            } else {
+                Source::Demo
+            };
+            let mut value = sample(60_000 + u64::from(ride_id) * 1_000).for_source(source);
+            value.utc_ms = Some(1_789_000_000_000 + u64::from(ride_id));
+            value.location_e7 = (ride_id == 5).then_some((-333_646_900, -705_155_800));
+            value.heart_bpm = (ride_id == 5).then_some(72);
+            value.cadence_tenths = (ride_id == 5).then_some(615);
+            let entries = [
+                Entry::event(Kind::Start, source, ride_id, 0, 0),
+                Entry::batch(source, ride_id, 1, &[value]).unwrap(),
+                Entry::event(
+                    if ride_id == 4 {
+                        Kind::Recovered
+                    } else {
+                        Kind::Finish
+                    },
+                    source,
+                    ride_id,
+                    2,
+                    value.active_ms,
+                ),
+            ];
+            for entry in entries {
+                let mut slot = encode(&entry);
+                slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
+                sector.0[index * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
+                index += 1;
+            }
+        }
+        sector.0[index * SLOT_SIZE] = 0;
+        let mut scan = Scanner::default();
+        scan.accept(&sector);
+        for _ in 1..SECTORS {
+            scan.accept(&Sector([0xff; SECTOR_SIZE]));
+        }
+        let catalog = scan.finish().unwrap();
+        assert_eq!(catalog.completed, 5);
+        assert_eq!(catalog.invalid_slots, 1);
+        assert_eq!(catalog.summary_count, 4);
+        assert_eq!(catalog.summaries[0].unwrap().ride_id, 2);
+        assert!(catalog.summaries[2].unwrap().recovered);
+        let live = catalog.summaries[3].unwrap();
+        assert_eq!(live.source, Some(Source::Live));
+        assert_eq!(live.distance_mm, None);
+        assert_eq!(live.gps_samples, 1);
+        assert_eq!(live.heart_average, Some(72));
+        assert_eq!(live.cadence_average, Some(615));
+        assert_eq!(live.first_utc_ms, Some(1_789_000_000_005));
     }
 
     #[test]

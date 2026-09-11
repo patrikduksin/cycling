@@ -30,6 +30,7 @@ pub enum Screen {
     Diagnostics,
     Controls,
     Ride,
+    History,
 }
 
 impl Screen {
@@ -42,6 +43,7 @@ impl Screen {
             Self::Diagnostics => "diagnostics",
             Self::Controls => "controls",
             Self::Ride => "ride",
+            Self::History => "history",
         }
     }
 }
@@ -57,6 +59,7 @@ pub struct Snapshot {
     ride: Ride,
     ride_page: u8,
     ride_layout: u8,
+    history_page: u8,
 }
 
 pub struct App {
@@ -70,6 +73,7 @@ pub struct App {
     pub ride: Ride,
     pub ride_page: u8,
     pub ride_layout: u8,
+    pub history_page: u8,
     ride_action: Option<RideAction>,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
@@ -90,6 +94,7 @@ impl Default for App {
             ride: Ride::default(),
             ride_page: 0,
             ride_layout: 0,
+            history_page: 0,
             ride_action: None,
             point: None,
             origin: None,
@@ -111,6 +116,7 @@ impl App {
             ride: self.ride,
             ride_page: self.ride_page,
             ride_layout: self.ride_layout,
+            history_page: self.history_page,
         }
     }
 
@@ -125,6 +131,7 @@ impl App {
         self.ride = snapshot.ride;
         self.ride_page = snapshot.ride_page;
         self.ride_layout = snapshot.ride_layout;
+        self.history_page = snapshot.history_page;
     }
 
     pub fn point(&self) -> Option<Point> {
@@ -146,6 +153,7 @@ impl App {
             Screen::Diagnostics => self.point = Some(point),
             Screen::Controls => self.controls.update(Some(point)),
             Screen::Ride => self.ride_pointer(point),
+            Screen::History => self.point = Some(point),
         }
     }
 
@@ -196,9 +204,11 @@ impl App {
                         self.ride_action = Some(RideAction::Finish);
                         self.apply_ride_action(RideAction::Finish, _now);
                     }
+                    Some(2) => self.navigate(Screen::History),
                     _ => {}
                 }
             }
+            Screen::History => self.point = None,
         }
     }
 
@@ -256,6 +266,9 @@ impl App {
             },
             Screen::Ride => match button {
                 Button::TopLeft => self.navigate(Screen::Home),
+                Button::BottomLeft if self.ride.phase() == Phase::Ready => {
+                    self.navigate(Screen::History)
+                }
                 Button::BottomLeft => self.ride_page ^= 1,
                 Button::BottomRight => {
                     let action = match self.ride.phase() {
@@ -266,6 +279,11 @@ impl App {
                     self.ride_action = Some(action);
                     self.apply_ride_action(action, now);
                 }
+            },
+            Screen::History => match button {
+                Button::TopLeft => self.navigate(Screen::Ride),
+                Button::BottomLeft => self.history_page = self.history_page.saturating_sub(1),
+                Button::BottomRight => self.history_page = (self.history_page + 1).min(1),
             },
         }
         self.suppress_pointer = pointer_was_held;
@@ -313,6 +331,7 @@ impl App {
                 metrics.ride_source,
                 metrics.recording_active_ms,
             ),
+            Screen::History => self.render_history(pixels, metrics),
         }
     }
 
@@ -806,8 +825,21 @@ impl App {
                 },
             );
             text(pixels, 8, 85, b"FINISH", theme::TEXT);
+        } else if self.ride.phase() == Phase::Ready {
+            rect(pixels, 4, 81, 72, 12, theme::SURFACE);
+            text(pixels, 8, 85, b"HISTORY", theme::TEXT);
         }
-        text(pixels, 0, 95, b"TOP BACK L PAGE", theme::MUTED);
+        text(
+            pixels,
+            0,
+            95,
+            if self.ride.phase() == Phase::Ready {
+                b"TOP BACK L HIST"
+            } else {
+                b"TOP BACK L PAGE"
+            },
+            theme::MUTED,
+        );
         text(
             pixels,
             match self.ride.phase() {
@@ -823,6 +855,34 @@ impl App {
             },
             theme::MUTED,
         );
+    }
+
+    fn render_history(&self, pixels: &mut [u16; PIXELS], metrics: &metrics::Snapshot) {
+        pixels.fill(theme::BACKGROUND);
+        text(pixels, 3, 3, b"HISTORY", theme::ACCENT);
+        let count = usize::from(metrics.ride_summary_count);
+        number(pixels, 35, 3, count as u32, theme::TEXT);
+        text(pixels, 41, 3, b"/", theme::MUTED);
+        let (total, total_len) = metrics::compact(u64::from(metrics.recorded_rides));
+        text(pixels, 45, 3, &total[..total_len], theme::TEXT);
+        if count == 0 {
+            text(pixels, 3, 26, b"NO SAVED RIDES", theme::MUTED);
+        } else {
+            let page = usize::from(self.history_page).min((count - 1) / 2);
+            let page_label = [b'P', b'1' + page as u8];
+            text(pixels, 69, 3, &page_label, theme::MUTED);
+            for row in 0..2 {
+                let newest_offset = page * 2 + row;
+                if newest_offset >= count {
+                    break;
+                }
+                let index = count - 1 - newest_offset;
+                if let Some(summary) = metrics.ride_summaries[index] {
+                    render_summary(pixels, 3, 14 + row * 39, summary);
+                }
+            }
+        }
+        text(pixels, 0, 96, b"TOP BACK L/R PAGE", theme::MUTED);
     }
 }
 
@@ -988,6 +1048,7 @@ fn ride_item(point: Point, phase: Phase) -> Option<u8> {
     match point.y {
         199..=235 => Some(0),
         244..=280 if phase == Phase::Paused => Some(1),
+        244..=280 if phase == Phase::Ready => Some(2),
         _ => None,
     }
 }
@@ -1048,6 +1109,141 @@ fn render_ride_field(
             text(pixels, 27, y, &value, theme::TEXT);
         }
     }
+}
+
+fn render_summary(
+    pixels: &mut [u16; PIXELS],
+    x: usize,
+    y: usize,
+    summary: crate::ride_log::Summary,
+) {
+    text(pixels, x, y, b"R", theme::MUTED);
+    number(pixels, x + 5, y, summary.ride_id, theme::TEXT);
+    text(
+        pixels,
+        27,
+        y,
+        match summary.source {
+            Some(crate::ride_log::Source::Demo) => b"DEMO",
+            Some(crate::ride_log::Source::Live) => b"LIVE",
+            None => b"----",
+        },
+        theme::ACCENT,
+    );
+    text(
+        pixels,
+        49,
+        y,
+        if summary.recovered && summary.gap {
+            b"REC!"
+        } else if summary.recovered {
+            b"RECOV"
+        } else if summary.full {
+            b"FULL"
+        } else if summary.gap {
+            b"GAP"
+        } else {
+            b"SAVED"
+        },
+        theme::MUTED,
+    );
+    if let Some(utc) = summary.first_utc_ms {
+        text(pixels, x, y + 9, &date_utc(utc / 1_000), theme::TEXT);
+    } else {
+        text(pixels, x, y + 9, b"DATE --", theme::MUTED);
+    }
+    text(pixels, x, y + 18, b"T", theme::MUTED);
+    text(
+        pixels,
+        x + 6,
+        y + 18,
+        &duration_short(summary.active_ms),
+        theme::TEXT,
+    );
+    text(pixels, 35, y + 18, b"D", theme::MUTED);
+    if let Some(distance) = summary.distance_mm {
+        let meters = distance / 1_000;
+        if meters < 10_000 {
+            number(pixels, 41, y + 18, meters as u32, theme::TEXT);
+            text(pixels, 61, y + 18, b"M", theme::MUTED);
+        } else {
+            number(
+                pixels,
+                41,
+                y + 18,
+                (meters / 1_000).min(999) as u32,
+                theme::TEXT,
+            );
+            text(pixels, 57, y + 18, b"KM", theme::MUTED);
+        }
+    } else {
+        text(pixels, 41, y + 18, b"--", theme::MUTED);
+    }
+    text(pixels, x, y + 27, b"G", theme::MUTED);
+    let (gps, gps_len) = metrics::compact(u64::from(summary.gps_samples));
+    text(pixels, x + 6, y + 27, &gps[..gps_len], theme::TEXT);
+    text(pixels, 25, y + 27, b"H", theme::MUTED);
+    match summary.heart_average {
+        Some(value) => number(pixels, 31, y + 27, u32::from(value), theme::TEXT),
+        None => text(pixels, 31, y + 27, b"--", theme::MUTED),
+    }
+    text(pixels, 49, y + 27, b"C", theme::MUTED);
+    match summary.cadence_average {
+        Some(value) => number(pixels, 55, y + 27, u32::from(value) / 10, theme::TEXT),
+        None => text(pixels, 55, y + 27, b"--", theme::MUTED),
+    }
+}
+
+fn duration_short(active_ms: u64) -> [u8; 5] {
+    let seconds = active_ms / 1_000;
+    if seconds < 3_600 {
+        let minutes = seconds / 60;
+        let seconds = seconds % 60;
+        [
+            b'0' + (minutes / 10) as u8,
+            b'0' + (minutes % 10) as u8,
+            b':',
+            b'0' + (seconds / 10) as u8,
+            b'0' + (seconds % 10) as u8,
+        ]
+    } else {
+        let hours = (seconds / 3_600).min(99);
+        let minutes = seconds / 60 % 60;
+        [
+            b'0' + (hours / 10) as u8,
+            b'0' + (hours % 10) as u8,
+            b'H',
+            b'0' + (minutes / 10) as u8,
+            b'0' + (minutes % 10) as u8,
+        ]
+    }
+}
+
+fn date_utc(unix_seconds: u64) -> [u8; 10] {
+    let z = (unix_seconds / 86_400).min(i64::MAX as u64) as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    let year = year.clamp(0, 9999) as u16;
+    [
+        b'0' + (year / 1000) as u8,
+        b'0' + (year / 100 % 10) as u8,
+        b'0' + (year / 10 % 10) as u8,
+        b'0' + (year % 10) as u8,
+        b'-',
+        b'0' + (month / 10) as u8,
+        b'0' + (month % 10) as u8,
+        b'-',
+        b'0' + (day / 10) as u8,
+        b'0' + (day % 10) as u8,
+    ]
 }
 
 fn brightness_at(x: u16) -> u8 {
@@ -1164,6 +1360,7 @@ pub fn text(p: &mut [u16; PIXELS], x: usize, y: usize, s: &[u8], color: u16) {
             b'-' => [0, 0, 7, 0, 0],
             b'+' => [0, 2, 7, 2, 0],
             b':' => [0, 2, 0, 2, 0],
+            b'/' => [1, 1, 2, 4, 4],
             b'0' => [7, 5, 5, 5, 7],
             b'1' => [2, 6, 2, 2, 7],
             b'2' => [6, 1, 7, 4, 7],
@@ -1426,6 +1623,54 @@ mod tests {
     }
 
     #[test]
+    fn history_navigation_and_calendar_are_bounded() {
+        assert_eq!(date_utc(0), *b"1970-01-01");
+        assert_eq!(date_utc(1_789_000_000), *b"2026-09-10");
+        assert_eq!(duration_short(65_000), *b"01:05");
+        assert_eq!(duration_short(3_723_000), *b"01H02");
+        let mut app = App {
+            screen: Screen::Ride,
+            ..App::default()
+        };
+        app.button(Button::BottomLeft, 1);
+        assert_eq!(app.screen, Screen::History);
+        app.button(Button::BottomRight, 1);
+        app.button(Button::BottomRight, 1);
+        assert_eq!(app.history_page, 1);
+        app.button(Button::BottomLeft, 1);
+        assert_eq!(app.history_page, 0);
+        let mut summary = crate::ride_log::Summary::started(7, crate::ride_log::Source::Live);
+        summary.add_sample(crate::ride_log::Sample {
+            active_ms: 65_000,
+            utc_ms: Some(1_789_000_000_000),
+            location_e7: Some((-333_646_900, -705_155_800)),
+            heart_bpm: Some(72),
+            cadence_tenths: Some(615),
+            ..crate::ride_log::Sample::default()
+        });
+        summary.finish(crate::ride_log::Kind::Recovered, 65_000, true);
+        let mut metrics = metrics::Snapshot {
+            recorded_rides: 9,
+            ride_summary_count: 1,
+            ..metrics::Snapshot::default()
+        };
+        metrics.ride_summaries[0] = Some(summary);
+        let mut pixels = [0; PIXELS];
+        app.screen = Screen::History;
+        app.render(
+            &mut pixels,
+            true,
+            &Status::default(),
+            b"WIFI TEST OK",
+            &metrics,
+            &crate::network_time::Snapshot::default(),
+        );
+        assert_ne!(pixels, [theme::BACKGROUND; PIXELS]);
+        app.button(Button::TopLeft, 1);
+        assert_eq!(app.screen, Screen::Ride);
+    }
+
+    #[test]
     fn diagnostics_is_reachable_by_touch_and_button_and_returns_to_device() {
         let mut app = App::default();
         tap(&mut app, Point { x: 80, y: 150 });
@@ -1449,6 +1694,8 @@ mod tests {
             recording_slot: 0,
             recording_write_ms: 0,
             recording_erase_ms: 0,
+            ride_summaries: [None; crate::ride_log::HISTORY_CAPACITY],
+            ride_summary_count: 0,
             gps: crate::gps::Snapshot::default(),
             uptime_ms: 3_723_000,
             frame_ms: 20,

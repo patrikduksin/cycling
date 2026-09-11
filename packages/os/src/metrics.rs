@@ -13,6 +13,8 @@ pub struct Snapshot {
     pub recording_slot: u16,
     pub recording_write_ms: u32,
     pub recording_erase_ms: u32,
+    pub ride_summaries: [Option<crate::ride_log::Summary>; crate::ride_log::HISTORY_CAPACITY],
+    pub ride_summary_count: u8,
     pub gps: crate::gps::Snapshot,
     pub uptime_ms: u64,
     pub frame_ms: u32,

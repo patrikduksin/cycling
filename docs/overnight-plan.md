@@ -68,7 +68,12 @@ The GPS issue contains the user-authorized public reference coordinates.
   and one-second display snapshot. Device navigation/value comparison passed;
   stable heap and no new CRC/UART/touch errors. Astra approved. Screenshot linked
   in PR predates tiny X glyph fix; next safe flash must deploy that fix.
-- Starting #7 persistent settings. Preflights for UI, networking, settings, dimming,
+- #7 complete: PR #27 merged as 7207e2b. Versioned preferences, idle debounce,
+  temporary-session isolation, explicit PERSIST and automated restart test.
+  Seven device reports prove temporary65 does not survive reflash, explicit65
+  does, and original50 is restored. Writes34–35ms, no new CRC/UART or retained
+  heap loss. Both builds/checks passed; Astra approved. Device includes X glyph.
+- Starting #8 dim/wake. Preflights for UI, networking, settings, dimming,
   Bluetooth and GPS are saved in ignored .local/overnight/. GPS trace
   now supports UART0 RX0/TX1, startup 921600 baud, companion power callbacks.
   These remain stock-code findings pending actual device validation.

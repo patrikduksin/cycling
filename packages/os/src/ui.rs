@@ -46,6 +46,8 @@ pub struct Snapshot {
     screen: Screen,
     focus: u8,
     brightness: u8,
+    dim_timeout_secs: u16,
+    dim_brightness: u8,
 }
 
 pub struct App {
@@ -53,6 +55,8 @@ pub struct App {
     pub focus: u8,
     pub pressed: Option<u8>,
     pub controls: Controls,
+    pub dim_timeout_secs: u16,
+    pub dim_brightness: u8,
     point: Option<Point>,
     origin: Option<(u8, Point)>,
     settings_dragging: bool,
@@ -66,6 +70,8 @@ impl Default for App {
             focus: 0,
             pressed: None,
             controls: Controls::default(),
+            dim_timeout_secs: 30,
+            dim_brightness: 10,
             point: None,
             origin: None,
             settings_dragging: false,
@@ -80,6 +86,8 @@ impl App {
             screen: self.screen,
             focus: self.focus,
             brightness: self.controls.brightness,
+            dim_timeout_secs: self.dim_timeout_secs,
+            dim_brightness: self.dim_brightness,
         }
     }
 
@@ -88,6 +96,8 @@ impl App {
         self.screen = snapshot.screen;
         self.focus = snapshot.focus;
         self.controls.brightness = snapshot.brightness;
+        self.dim_timeout_secs = snapshot.dim_timeout_secs;
+        self.dim_brightness = snapshot.dim_brightness;
     }
 
     pub fn point(&self) -> Option<Point> {
@@ -125,8 +135,12 @@ impl App {
             }
             Screen::Settings => {
                 self.point = None;
-                self.pressed = None;
                 self.settings_dragging = false;
+                match self.pressed.take() {
+                    Some(1) => self.dim_timeout_secs = next_timeout(self.dim_timeout_secs),
+                    Some(2) => self.dim_brightness = next_dim_level(self.dim_brightness),
+                    _ => {}
+                }
             }
             Screen::Device => {
                 self.point = None;
@@ -234,9 +248,25 @@ impl App {
     fn settings_pointer(&mut self, point: Point) {
         if self.point.is_none() {
             self.settings_dragging = (130..=210).contains(&point.y);
+            if !self.settings_dragging {
+                self.origin = settings_item(point).map(|item| (item, point));
+            }
         }
         self.point = Some(point);
-        self.pressed = self.settings_dragging.then_some(0);
+        self.pressed = if self.settings_dragging {
+            Some(0)
+        } else {
+            self.origin
+                .filter(|&(item, start)| {
+                    settings_item(point) == Some(item)
+                        && point.x.abs_diff(start.x) <= TAP_SLOP
+                        && point.y.abs_diff(start.y) <= TAP_SLOP
+                })
+                .map(|(item, _)| item)
+        };
+        if !self.settings_dragging && self.origin.is_some() && self.pressed.is_none() {
+            self.origin = None;
+        }
         if self.settings_dragging {
             self.controls.brightness = brightness_at(point.x);
         }
@@ -351,7 +381,29 @@ impl App {
         let knob = 8 + (usize::from(self.controls.brightness) - 5) * 64 / 95;
         rect(pixels, 8, 52, knob - 7, 2, theme::ACCENT);
         rect(pixels, knob - 2, 48, 5, 10, theme::TEXT);
-        text(pixels, 5, 76, b"LEFT - RIGHT +", theme::MUTED);
+        text(pixels, 5, 61, b"DRAG OR BUTTONS", theme::MUTED);
+        text(pixels, 5, 72, b"DIM AFTER", theme::MUTED);
+        if self.dim_timeout_secs == 0 {
+            text(pixels, 49, 72, b"OFF", theme::ACCENT);
+        } else {
+            number(
+                pixels,
+                49,
+                72,
+                u32::from(self.dim_timeout_secs),
+                theme::ACCENT,
+            );
+            text(pixels, 61, 72, b"S", theme::ACCENT);
+        }
+        text(pixels, 5, 83, b"DIM LEVEL", theme::MUTED);
+        number(
+            pixels,
+            49,
+            83,
+            u32::from(self.dim_brightness),
+            theme::ACCENT,
+        );
+        text(pixels, 61, 83, b"%", theme::ACCENT);
         text(pixels, 5, 98, b"TOP BACK", theme::MUTED);
     }
 
@@ -474,6 +526,36 @@ impl App {
 
 fn diagnostics_item(point: Point) -> bool {
     (9..=230).contains(&point.x) && (240..=297).contains(&point.y)
+}
+
+fn settings_item(point: Point) -> Option<u8> {
+    if !(9..=230).contains(&point.x) {
+        return None;
+    }
+    match point.y {
+        216..=255 => Some(1),
+        258..=297 => Some(2),
+        _ => None,
+    }
+}
+
+fn next_timeout(value: u16) -> u16 {
+    match value {
+        0 => 15,
+        1..=15 => 30,
+        16..=30 => 60,
+        31..=60 => 120,
+        _ => 0,
+    }
+}
+
+fn next_dim_level(value: u8) -> u8 {
+    match value {
+        0..=5 => 10,
+        6..=10 => 20,
+        11..=20 => 30,
+        _ => 5,
+    }
 }
 
 fn metric_row(
@@ -725,6 +807,19 @@ mod tests {
         assert_eq!(app.controls.brightness, 95);
         app.button(Button::BottomRight, 1);
         assert_eq!(app.controls.brightness, 100);
+        tap(&mut app, Point { x: 80, y: 235 });
+        assert_eq!(app.dim_timeout_secs, 60);
+        tap(&mut app, Point { x: 80, y: 275 });
+        assert_eq!(app.dim_brightness, 20);
+        app.pointer(Point { x: 80, y: 235 });
+        app.cancel();
+        app.release();
+        assert_eq!(app.dim_timeout_secs, 60);
+        app.pointer(Point { x: 80, y: 235 });
+        app.pointer(Point { x: 0, y: 235 });
+        app.pointer(Point { x: 80, y: 235 });
+        app.release();
+        assert_eq!(app.dim_timeout_secs, 60);
     }
 
     #[test]
@@ -773,6 +868,8 @@ mod tests {
         assert_eq!(app.screen, Screen::Home);
         assert_eq!(app.focus, 1);
         assert_eq!(app.controls.brightness, 50);
+        assert_eq!(app.dim_timeout_secs, 30);
+        assert_eq!(app.dim_brightness, 10);
         assert_eq!(app.point(), None);
         assert_eq!(app.pressed, None);
     }
@@ -821,6 +918,12 @@ mod tests {
             touch_errors: 0,
             harness: true,
             recording: false,
+            selected_brightness: 50,
+            effective_brightness: 50,
+            dimmed: false,
+            idle_ms: 0,
+            dim_timeout_secs: 30,
+            dim_brightness: 10,
         };
         app.render(
             &mut pixels,

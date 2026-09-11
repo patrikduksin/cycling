@@ -1,0 +1,23 @@
+[
+  {"action": "expect", "state": {"screen": "home", "brightness": 50}},
+  {"action": "command", "value": "IDLE 2 10"},
+  {"action": "expect", "state": {"dim_timeout": 2, "dim_brightness": 10}},
+  {"action": "expect", "state": {"dimmed": true, "effective_brightness": 10}, "timeout": 4},
+  {"action": "command", "value": "TOUCH 80 100"},
+  {"action": "expect", "state": {"dimmed": false, "effective_brightness": 50, "x": -1}},
+  {"action": "wait", "seconds": 2.4},
+  {"action": "expect", "state": {"dimmed": false, "effective_brightness": 50, "x": -1}},
+  {"action": "command", "value": "RELEASE"},
+  {"action": "wait", "seconds": 2.2},
+  {"action": "expect", "state": {"dimmed": true, "effective_brightness": 10}},
+  {"action": "command", "value": "BUTTON 2 1"},
+  {"action": "expect", "state": {"dimmed": false, "effective_brightness": 50, "screen": "home", "focus": 0}},
+  {"action": "command", "value": "BUTTON 2 1"},
+  {"action": "expect", "state": {"focus": 1}},
+  {"action": "wait", "seconds": 2.2},
+  {"action": "tap", "point": [80, 100]},
+  {"action": "expect", "state": {"screen": "home", "focus": 1, "dimmed": false}},
+  {"action": "tap", "point": [80, 100]},
+  {"action": "expect", "state": {"screen": "settings"}},
+  {"action": "capture"}
+]

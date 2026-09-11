@@ -363,15 +363,26 @@ def scenario(device, steps):
             device.capture()
         elif action == 'pixel':
             device.pixel(*step['point'], int(step['rgb565'], 16))
+        elif action == 'wake':
+            wake_if_dimmed(device)
         else:
             raise ValueError(f'Unknown scenario action {action}')
 
 
+def wake_if_dimmed(device):
+    if device.command('STATE').get('dimmed'):
+        device.command('TOUCH 1 1')
+        device.command('RELEASE')
+        device.expect({'dimmed': False, 'x': -1, 'y': -1})
+
+
 def smoke(device):
+    wake_if_dimmed(device)
     if device.command('STATE')['wifi'] != 0:
         device.expect({'wifi': 4}, 45)
         device.wait(8)
         device.expect({'wifi': 4}, 45)
+    wake_if_dimmed(device)
     screen = device.command('STATE')['screen']
     if screen != 'controls':
         for _ in range(2):

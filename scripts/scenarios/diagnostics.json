@@ -1,4 +1,5 @@
 [
+  {"action": "wake"},
   {"action": "expect", "state": {"screen": "home"}},
   {"action": "tap", "point": [80, 150]},
   {"action": "expect", "state": {"screen": "device"}},

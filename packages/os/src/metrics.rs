@@ -15,6 +15,12 @@ pub struct Snapshot {
     pub touch_errors: u32,
     pub harness: bool,
     pub recording: bool,
+    pub selected_brightness: u8,
+    pub effective_brightness: u8,
+    pub dimmed: bool,
+    pub idle_ms: u64,
+    pub dim_timeout_secs: u16,
+    pub dim_brightness: u8,
 }
 
 /// Format a growing counter in at most four characters using K/M suffixes.

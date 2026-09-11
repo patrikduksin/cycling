@@ -3,7 +3,9 @@ use cycling_os::{
     coin::{HEIGHT, PIXELS, WIDTH},
     companion::{Event, Status},
     debug::{Action, PointerInjection, encode_row},
+    idle::{Gate, Idle},
     metrics::Snapshot as Metrics,
+    preferences::Settings,
     screenshot::checksum,
     ui::{App, Snapshot},
 };
@@ -25,6 +27,7 @@ pub struct Debug {
     stream: u32,
     pixels: [u16; PIXELS],
     persistence: Option<(u32, u8)>,
+    runtime: Option<(Settings, Idle)>,
 }
 impl Debug {
     pub fn new() -> Self {
@@ -44,6 +47,7 @@ impl Debug {
             stream: 0,
             pixels: [0; PIXELS],
             persistence: None,
+            runtime: None,
         }
     }
     pub fn recording(&self) -> bool {
@@ -64,12 +68,22 @@ impl Debug {
         }
         self.until = 0;
     }
-    fn end(&mut self, app: &mut App, status: &mut Status) {
+    fn end(
+        &mut self,
+        app: &mut App,
+        status: &mut Status,
+        settings: &mut Settings,
+        idle: &mut Idle,
+    ) {
         self.stop();
         if self.active {
             app.cancel();
             if let Some(snapshot) = self.app.take() {
                 app.restore(snapshot);
+            }
+            if let Some((saved_settings, saved_idle)) = self.runtime.take() {
+                *settings = saved_settings;
+                *idle = saved_idle;
             }
             status.button_counts = self.counts;
             status.last_button = self.last_button;
@@ -78,9 +92,16 @@ impl Debug {
         self.injection.finish();
         self.battery = None;
     }
-    pub fn tick(&mut self, now: u64, app: &mut App, status: &mut Status) {
+    pub fn tick(
+        &mut self,
+        now: u64,
+        app: &mut App,
+        status: &mut Status,
+        settings: &mut Settings,
+        idle: &mut Idle,
+    ) {
         if self.active && now >= self.lease {
-            self.end(app, status);
+            self.end(app, status, settings, idle);
             println!("CYCLING_DEBUG expired");
         }
         if self.recording() && now >= self.until {
@@ -105,6 +126,8 @@ impl Debug {
         now: u64,
         app: &mut App,
         status: &mut Status,
+        settings: &mut Settings,
+        idle: &mut Idle,
         screenshot_busy: bool,
     ) {
         let mut result = "OK";
@@ -124,6 +147,7 @@ impl Debug {
             Action::Begin => {
                 if !self.active {
                     self.app = Some(app.snapshot());
+                    self.runtime = Some((*settings, *idle));
                     self.counts = status.button_counts;
                     self.last_button = status.last_button;
                     app.cancel();
@@ -131,26 +155,37 @@ impl Debug {
                     self.lease = now + 3000;
                 }
             }
-            Action::End => self.end(app, status),
+            Action::End => self.end(app, status, settings, idle),
             Action::Ping | Action::State => {}
             Action::Touch(point) => {
                 if self.injection.press() {
                     app.cancel();
                 }
-                app.pointer(point);
+                if idle.contact(now) == Gate::Forward {
+                    app.pointer(point);
+                } else {
+                    app.cancel();
+                }
             }
             Action::Release => {
                 if self.injection.finish() {
-                    app.release();
+                    if idle.release(now) == Gate::Forward {
+                        app.release();
+                    } else {
+                        app.cancel();
+                    }
                 }
             }
             Action::Cancel => {
                 if self.injection.finish() {
+                    idle.release(now);
                     app.cancel();
                 }
             }
             Action::Button(button, code) => {
-                app.button(button, code);
+                if code != 1 || idle.button(now) == Gate::Forward {
+                    app.button(button, code);
+                }
                 status.update(Event::Button { button, code });
             }
             Action::Battery(p, mv, power) => self.battery = Some((p, mv, power)),
@@ -164,9 +199,14 @@ impl Debug {
             }
             Action::Stop => self.stop(),
             Action::Persist(brightness) => {
-                self.end(app, status);
+                self.end(app, status, settings, idle);
                 self.persistence = Some((id, brightness));
                 return;
+            }
+            Action::Idle(seconds, dim) => {
+                *settings = Settings::with_idle(app.controls.brightness, seconds, dim).unwrap();
+                app.dim_timeout_secs = seconds;
+                app.dim_brightness = dim;
             }
             Action::Record(_, _) | Action::Capture => {
                 if screenshot_busy || self.recording() {
@@ -207,7 +247,7 @@ impl Debug {
                 .map(|p| (i32::from(p.x), i32::from(p.y)))
                 .unwrap_or((-1, -1));
             println!(
-                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
+                "CYCLING_DEBUG {} {} {{\"protocol\":1,\"screen\":\"{}\",\"focus\":{},\"pressed\":{},\"input_blocked\":{},\"frame\":{},\"ms\":{},\"active\":{},\"brightness\":{},\"effective_brightness\":{},\"dimmed\":{},\"idle_ms\":{},\"dim_timeout\":{},\"dim_brightness\":{},\"x\":{},\"y\":{},\"buttons\":[{},{},{}],\"battery\":{},\"millivolts\":{},\"power\":{},\"fake_battery\":{},\"wifi\":{},\"touch_ok\":{},\"heap_free\":{},\"heap_min_sampled\":{},\"psram_capacity\":{},\"psram_free\":{},\"frame_ms\":{},\"max_frame_ms\":{},\"valid\":{},\"bad_crc\":{},\"uart_errors\":{},\"touch_errors\":{},\"recording\":{}}}",
                 id,
                 result,
                 app.screen.name(),
@@ -218,6 +258,11 @@ impl Debug {
                 now,
                 self.active,
                 app.controls.brightness,
+                metrics.effective_brightness,
+                metrics.dimmed,
+                metrics.idle_ms,
+                metrics.dim_timeout_secs,
+                metrics.dim_brightness,
                 x,
                 y,
                 status.button_counts[0],

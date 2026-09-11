@@ -12,6 +12,7 @@ mod wifi;
 use cycling_os::{
     coin,
     companion::{Decoder, Event, Status},
+    idle::{Config as IdleConfig, Gate, Idle},
     input::Report,
     metrics::Snapshot as Metrics,
     preferences::{Saver, Settings},
@@ -173,7 +174,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let mut frame = 0u32;
     let mut app = App::default();
     app.controls.brightness = loaded_settings.brightness;
+    app.dim_timeout_secs = loaded_settings.dim_timeout_secs;
+    app.dim_brightness = loaded_settings.dim_brightness;
     let mut settings_saver = Saver::new(loaded_settings);
+    let mut runtime_settings = loaded_settings;
+    let mut idle = Idle::new(Instant::now().duration_since_epoch().as_millis());
+    let mut applied_brightness = loaded_settings.brightness;
     let mut last_touch = Instant::now();
     let mut errors = 0u32;
     let mut decoder = Decoder::default();
@@ -190,9 +196,17 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     loop {
         let start = Instant::now();
         let now = start.duration_since_epoch().as_millis();
+        #[cfg(feature = "debug-harness")]
+        debug.tick(now, &mut app, &mut status, &mut runtime_settings, &mut idle);
+        let mut idle_config = IdleConfig {
+            timeout_ms: (runtime_settings.dim_timeout_secs != 0)
+                .then_some(u64::from(runtime_settings.dim_timeout_secs) * 1_000),
+            dim_level: runtime_settings.dim_brightness,
+        };
+        idle.tick(now, idle_config);
         let heap_free = esp_alloc::HEAP.free();
         heap_min_sampled = heap_min_sampled.min(heap_free);
-        let metrics = Metrics {
+        let mut metrics = Metrics {
             uptime_ms: now,
             frame_ms: last_frame_ms,
             max_frame_ms,
@@ -209,19 +223,15 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             recording: debug.recording(),
             #[cfg(not(feature = "debug-harness"))]
             recording: false,
+            selected_brightness: app.controls.brightness,
+            effective_brightness: idle.effective(app.controls.brightness, idle_config),
+            dimmed: idle.dimmed(),
+            idle_ms: idle.age_ms(now),
+            dim_timeout_secs: runtime_settings.dim_timeout_secs,
+            dim_brightness: runtime_settings.dim_brightness,
         };
-        if now >= next_metrics {
-            display_metrics = metrics;
-            next_metrics = now + 1_000;
-        }
         let previous = app.point();
         let brightness = app.controls.brightness;
-        #[cfg(feature = "debug-harness")]
-        debug.tick(
-            start.duration_since_epoch().as_millis(),
-            &mut app,
-            &mut status,
-        );
         if last_rx.elapsed().as_millis() > 250 {
             decoder.reset();
         }
@@ -254,7 +264,9 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                             }
                             Event::Button { button, code } => {
                                 println!("CYCLING_BUTTON button={:?} code={}", button, code);
-                                app.button(button, code);
+                                if code != 1 || idle.button(now) == Gate::Forward {
+                                    app.button(button, code);
+                                }
                             }
                         }
                         status.update(event);
@@ -285,13 +297,21 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 available = true;
                 last_touch = Instant::now();
                 if !touch_injected {
-                    app.pointer(point);
+                    if idle.contact(now) == Gate::Forward {
+                        app.pointer(point);
+                    } else {
+                        app.cancel();
+                    }
                 }
             }
             Ok(Report::Release) => {
                 available = true;
                 if !touch_injected {
-                    app.release();
+                    if idle.release(now) == Gate::Forward {
+                        app.release();
+                    } else {
+                        app.cancel();
+                    }
                 }
             }
             Ok(Report::Invalid) => {}
@@ -302,11 +322,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 }
                 available = false;
                 if !touch_injected {
+                    idle.release(now);
                     app.cancel();
                 }
             }
         }
         if !touch_injected && last_touch.elapsed().as_millis() > 250 {
+            idle.release(now);
             app.cancel();
         }
         #[cfg(feature = "debug-harness")]
@@ -327,6 +349,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                         start.duration_since_epoch().as_millis(),
                         &mut app,
                         &mut status,
+                        &mut runtime_settings,
+                        &mut idle,
                         screenshot_requested || screenshot_row != coin::HEIGHT,
                     ),
                     Err(()) => println!("CYCLING_DEBUG 0 INVALID {{}}"),
@@ -338,19 +362,24 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             println!("CYCLING_TOUCH point={:?}", app.point());
         }
         if app.controls.brightness != brightness {
-            backlight.set_duty(app.controls.brightness).unwrap();
             println!("CYCLING_BRIGHTNESS percent={}", app.controls.brightness);
         }
+        runtime_settings = Settings::with_idle(
+            app.controls.brightness,
+            app.dim_timeout_secs,
+            app.dim_brightness,
+        )
+        .unwrap();
         // The previous LCD transfer is complete here. Explicit persistence ends
         // any temporary session before changing the live App and PWM state.
         #[cfg(feature = "debug-harness")]
         let explicit_settings = if let Some((id, brightness)) = debug.take_persistence() {
-            let settings = Settings::new(brightness).unwrap();
+            let settings = runtime_settings.with_brightness(brightness).unwrap();
             let save_started = Instant::now();
             match settings_store.save(settings) {
                 Ok(record) => {
                     app.controls.brightness = brightness;
-                    backlight.set_duty(brightness).unwrap();
+                    runtime_settings = settings;
                     settings_saver.saved(settings);
                     println!(
                         "CYCLING_SETTINGS persisted sequence={} brightness={} write_ms={}",
@@ -371,6 +400,33 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         };
         #[cfg(not(feature = "debug-harness"))]
         let explicit_settings = false;
+        idle_config = IdleConfig {
+            timeout_ms: (runtime_settings.dim_timeout_secs != 0)
+                .then_some(u64::from(runtime_settings.dim_timeout_secs) * 1_000),
+            dim_level: runtime_settings.dim_brightness,
+        };
+        idle.tick(now, idle_config);
+        let effective_brightness = idle.effective(app.controls.brightness, idle_config);
+        metrics.selected_brightness = app.controls.brightness;
+        metrics.effective_brightness = effective_brightness;
+        metrics.dimmed = idle.dimmed();
+        metrics.idle_ms = idle.age_ms(now);
+        metrics.dim_timeout_secs = runtime_settings.dim_timeout_secs;
+        metrics.dim_brightness = runtime_settings.dim_brightness;
+        if now >= next_metrics {
+            display_metrics = metrics;
+            next_metrics = now + 1_000;
+        }
+        if effective_brightness != applied_brightness {
+            backlight.set_duty(effective_brightness).unwrap();
+            applied_brightness = effective_brightness;
+            println!(
+                "CYCLING_BACKLIGHT selected={} effective={} dimmed={}",
+                app.controls.brightness,
+                effective_brightness,
+                idle.dimmed()
+            );
+        }
         #[cfg(feature = "debug-harness")]
         let visible_status = debug.status(&status);
         #[cfg(not(feature = "debug-harness"))]
@@ -387,7 +443,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let temporary_settings = debug.active;
         #[cfg(not(feature = "debug-harness"))]
         let temporary_settings = false;
-        let current_settings = Settings::new(app.controls.brightness).unwrap();
+        let current_settings = runtime_settings;
         if !explicit_settings
             && settings_saver.ready(
                 now,

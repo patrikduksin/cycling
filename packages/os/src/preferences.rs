@@ -1,30 +1,49 @@
 //! Versioned user preferences and wear-conscious save scheduling.
 
 pub const DEFAULT_BRIGHTNESS: u8 = 50;
+pub const DEFAULT_DIM_TIMEOUT_SECS: u16 = 30;
+pub const DEFAULT_DIM_BRIGHTNESS: u8 = 10;
 pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
-const VERSION: u8 = 2;
-const LENGTH: usize = 10;
+const VERSION: u8 = 3;
+const LENGTH: usize = 13;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
     pub brightness: u8,
+    pub dim_timeout_secs: u16,
+    pub dim_brightness: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             brightness: DEFAULT_BRIGHTNESS,
+            dim_timeout_secs: DEFAULT_DIM_TIMEOUT_SECS,
+            dim_brightness: DEFAULT_DIM_BRIGHTNESS,
         }
     }
 }
 
 impl Settings {
     pub fn new(brightness: u8) -> Option<Self> {
-        (5..=100)
-            .contains(&brightness)
-            .then_some(Self { brightness })
+        Self::with_idle(brightness, DEFAULT_DIM_TIMEOUT_SECS, DEFAULT_DIM_BRIGHTNESS)
+    }
+
+    pub fn with_idle(brightness: u8, dim_timeout_secs: u16, dim_brightness: u8) -> Option<Self> {
+        ((5..=100).contains(&brightness)
+            && dim_timeout_secs <= 3_600
+            && (5..=100).contains(&dim_brightness))
+        .then_some(Self {
+            brightness,
+            dim_timeout_secs,
+            dim_brightness,
+        })
+    }
+
+    pub fn with_brightness(self, brightness: u8) -> Option<Self> {
+        Self::with_idle(brightness, self.dim_timeout_secs, self.dim_brightness)
     }
 
     pub fn encode(self) -> [u8; LENGTH] {
@@ -32,6 +51,8 @@ impl Settings {
         output[..PREFIX.len()].copy_from_slice(PREFIX);
         output[7] = VERSION;
         output[8] = self.brightness;
+        output[9..11].copy_from_slice(&self.dim_timeout_secs.to_le_bytes());
+        output[11] = self.dim_brightness;
         output
     }
 }
@@ -40,6 +61,7 @@ impl Settings {
 pub enum Source {
     Current,
     LegacyDefaults,
+    Migrated,
     Missing,
     Malformed,
     Unsupported,
@@ -55,13 +77,22 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
     if !payload.starts_with(PREFIX) || payload.len() < 8 {
         return (Settings::default(), Source::Malformed);
     }
-    if payload[7] != VERSION {
-        return (Settings::default(), Source::Unsupported);
-    }
-    if payload.len() != LENGTH || payload[9] != 0 {
-        return (Settings::default(), Source::Malformed);
-    }
-    match Settings::new(payload[8]) {
+    let settings = match payload[7] {
+        2 if payload.len() == 10 && payload[9] == 0 => {
+            return match Settings::new(payload[8]) {
+                Some(settings) => (settings, Source::Migrated),
+                None => (Settings::default(), Source::Malformed),
+            };
+        }
+        VERSION if payload.len() == LENGTH && payload[12] == 0 => Settings::with_idle(
+            payload[8],
+            u16::from_le_bytes([payload[9], payload[10]]),
+            payload[11],
+        ),
+        VERSION => None,
+        _ => return (Settings::default(), Source::Unsupported),
+    };
+    match settings {
         Some(settings) => (settings, Source::Current),
         None => (Settings::default(), Source::Malformed),
     }
@@ -128,9 +159,10 @@ mod tests {
         assert_eq!(decode(Some(b"cycling\x01")).1, Source::LegacyDefaults);
         assert_eq!(decode(None).1, Source::Missing);
         assert_eq!(decode(Some(b"garbage")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x03\x32\0")).1, Source::Unsupported);
+        assert_eq!(decode(Some(b"cycling\x04\x32\0")).1, Source::Unsupported);
         assert_eq!(decode(Some(b"cycling\x02\x00\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x65\0")).1, Source::Malformed);
+        assert_eq!(decode(Some(b"cycling\x02\x4b\0")).1, Source::Migrated);
     }
 
     #[test]

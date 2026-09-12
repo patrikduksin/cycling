@@ -70,13 +70,14 @@ The generic facade cannot identify secrets inside an arbitrary formatted string.
 
 ```sh
 mise run logs -- --seconds 60 --output .local/logs/session
-mise run terminal -- --seconds 5 --command STATUS --command POSITION
+mise run logs -- --seconds 5 --command STATUS --command POSITION
 mise run logs -- --filter .local/logs/session/records.jsonl --component position
 mise run logs -- --filter .local/logs/session/records.jsonl --level WARN
 ```
 
-`terminal` and `logs` share this single owner. Each new session
+`terminal` and `logs` share this single owner. Each new collector session
 writes private `raw.bin`, `records.jsonl` and `summary.json` under ignored `.local/`.
+The interactive/one-shot terminal stores its raw traffic separately in `.local/terminal/`.
 Raw bytes are saved before decoding. `host_ns` is host receipt UTC time; device
 `ms` is monotonic. The line accumulator is bounded to 4,096 bytes, discards overlong
 input until newline and records incomplete lines at disconnect/end. ROM/panic

@@ -1,42 +1,23 @@
 # Magene C606
 
 Research from stock release 1.956 and one physical C606. Written findings and our
-analysis tools are public; vendor firmware, disassembly and device dumps are not.
+analysis tools are public; vendor firmware, disassembly and device dumps stay private.
 
-- [Hardware map](hardware.md)
-- [Companion buttons and battery](companion.md)
-- [Wi-Fi bring-up](wifi.md)
-- [Storage map and settings journal](storage.md)
-- [Firmware format and boot process](firmware.md)
-- [Partition layout](partitions.csv)
-- [Unpacker](unpack.py)
+- [Hardware and fitted-part uncertainty](hardware.md)
+- [Companion wire protocol](companion.md)
+- [Storage investigation](storage.md)
+- [Vendor firmware format and boot process](firmware.md)
+- [Stock partition layout](partitions.csv)
+- [Safe device workflow](../../../.agents/skills/c606/SKILL.md)
 
-Independent C firmware has booted through the original bootloader, driven the screen
-and returned to stock. The Rust coin demo also boots through that bootloader: the user confirmed correct
-colors and smooth rotation on 2026-09-08. USB reported completed frames every
-42 ms, with render/transfer work taking 28–33 ms. The application image is 113,088
-bytes; it uses no heap. Stock ota_0 remains verified and preserved.
-
-## Local analysis
-
-Supply your own firmware update file:
+Supply your own update file to the read-only [unpacker](unpack.py):
 
 ```sh
 mise exec -- python packages/stock/magene-c606/unpack.py /path/to/N21_update.bin --output .local/stock
 ```
 
-Output is local analysis material, not redistributable project source. The parser
-reconstructs images and ELF load segments; it does not recover original symbols or
-source code. It does not flash hardware.
+It reconstructs images and ELF load segments, not original symbols or source.
+Output is private analysis material. It does not flash hardware.
 
-On 2026-09-11, Rust touch input and a 5–100% brightness slider were flashed through
-slot B. USB captured touch drags and PWM updates; the user confirmed accurate
-finger tracking and visible brightness changes. The touch UI takes about 19 ms
-per frame for input, rendering and transfer, at a 42 ms cadence. The application
-image is 124,480 bytes with no heap. Stock slot A, bootloader and partition table
-passed the device workflow verification. See the [bring-up notes](hardware.md#touch-and-brightness-bring-up-2026-09-11).
-
-The same day's companion bring-up added battery percentage, reported voltage,
-power status and all three physical buttons. The user confirmed the counters,
-brightness shortcuts and USB unplug/replug status changes work. This application
-is 136,112 bytes. See [companion protocol and validation](companion.md).
+Historical evidence lives in [Wi-Fi bring-up](https://github.com/patrikduksin/cycling/issues/9#issuecomment-5647388326)
+and [base/SDK validation](https://github.com/patrikduksin/cycling/pull/71#issuecomment-5647388096).

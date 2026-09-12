@@ -25,7 +25,6 @@ run = "cargo fmt --all"
 description = "Check formatting and lint host code"
 run = ["python scripts/check_boundaries.py", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features cycling -- -D warnings"]
 
-
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"
 run = "uv run scripts/device.py backup"
@@ -47,12 +46,6 @@ run = "uv run scripts/device.py monitor"
 description = "Save current NetworkManager Wi-Fi credentials privately"
 run = "python scripts/wifi.py setup"
 
-
-
-
-
-
-
 [tasks.ride-export]
 description = "Export the complete read-only ride prefix as private raw, JSON and GPX files"
 run = "python scripts/export_rides.py"
@@ -63,11 +56,11 @@ run = "python scripts/clear_rides.py"
 
 [tasks.gps-stress]
 description = "Check GNSS progress and transport counters under repeated USB state replies"
-run = "python scripts/gps_stress.py .local/tests/gps-stress-$(date +%s) --require-no-loss"
+run = "python scripts/service_stress.py gps .local/tests/gps-stress-$(date +%s)"
 
 [tasks.companion-stress]
 description = "Check companion progress and transport counters under repeated USB state replies"
-run = "python scripts/companion_stress.py .local/tests/companion-stress-$(date +%s)"
+run = "python scripts/service_stress.py companion .local/tests/companion-stress-$(date +%s)"
 
 [tasks.bluetooth-echo]
 description = "Verify C606 BLE echo notifications, reads and reconnect with this laptop"

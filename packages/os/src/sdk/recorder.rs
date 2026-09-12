@@ -1,4 +1,14 @@
 //! Incremental scanner and append scheduler for the owned ride region.
+//!
+//! Boot scans without erasing. Unknown occupied data requires explicit initialize;
+//! start never reclaims space. A media failure stops mutation until inspection or
+//! reboot/rescan resolves an uncertain commit. Clear verifies each erased sector
+//! but is not atomic across power loss. Never retry a timed-out mutation blindly.
+//!
+//! Pause/finish freeze active duration when accepted, before flushing. Sampling
+//! does not backfill delayed periods, and the drop counter does not count every
+//! missed period. Reset can lose three buffered samples, or four during commit.
+//! One operation and its unconsumed completion exclude further mutations.
 
 use super::{
     ride::Action,

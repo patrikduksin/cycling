@@ -20,17 +20,8 @@ SHA-256. N22 yields ARM Thumb firmware whose header identifies NRF52810_APP; its
 flash base is `0x12000`. Neither an XOR wrapper nor an unkeyed checksum authenticates
 a firmware publisher.
 
-## Main image comparison
-
-| | Release 1.410 | Release 1.956 |
-|---|---:|---:|
-| Decoded bytes | 6,029,392 | 7,036,224 |
-| Build label | C606_V1.409-dirty | C606_oversea_V1.955-1-gaab2fd4f |
-| Build date | 2025-05-29 | 2026-03-31 |
-
-About 98% of the size growth is in read-only data. This does not establish that all
-of it is UI artwork. Stock uses ESP-IDF, FreeRTOS and LVGL. Images do not contain the
-original debug symbols, source files, partition table or full recovery environment.
+Stock uses ESP-IDF, FreeRTOS and LVGL. Unpacked applications do not contain the
+original debug symbols, partition table or full recovery environment.
 
 ## Boot and recovery
 

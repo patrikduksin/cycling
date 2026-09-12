@@ -1,11 +1,12 @@
 """Bounded ordinary-terminal progress checks, valid with either harness mode."""
+import argparse
+import os
 import json
 import re
 import time
 from pathlib import Path
 
-from export_rides import ExportConnection
-from logs import ROOT
+from usb import ROOT, UsbConnection
 
 FAULTS = {
     'POSITION': ('checksum_errors', 'parse_errors', 'dma_losses', 'line_overflows', 'uart_errors'),
@@ -51,7 +52,7 @@ def run(port, directory, seconds=20, command='POSITION', interval=.05, allow_los
     if command not in PROGRESS or not 2 <= seconds <= 600 or not .01 <= interval <= 5:
         raise ValueError('command must be POSITION/INPUT, seconds 2..600, interval .01..5')
     directory = private_directory(directory)
-    with ExportConnection(port, directory / 'raw.bin') as connection:
+    with UsbConnection(port, directory / 'raw.bin') as connection:
         build = read(connection, 'INFO')
         settings = read(connection, 'SETTINGS')
         system = read(connection, 'STATUS')
@@ -102,3 +103,21 @@ def run(port, directory, seconds=20, command='POSITION', interval=.05, allow_los
         finally:
             (directory / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('service', choices=('gps', 'companion'))
+    parser.add_argument('directory')
+    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    parser.add_argument('--seconds', type=float, default=20)
+    parser.add_argument('--interval', type=float, default=.05)
+    parser.add_argument('--allow-loss', action='store_true')
+    args = parser.parse_args()
+    command = {'gps': 'POSITION', 'companion': 'INPUT'}[args.service]
+    print(json.dumps(run(args.port, args.directory, args.seconds, command,
+                         args.interval, args.allow_loss), indent=2))
+
+
+if __name__ == '__main__':
+    main()

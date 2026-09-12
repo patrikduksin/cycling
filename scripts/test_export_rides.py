@@ -6,8 +6,9 @@ import xml.etree.ElementTree as ET
 import zlib
 
 from export_rides import (COMMIT, SLOT_SIZE, decode_slot, download_prefix,
-                          export_reply, terminal_reply, read_slot, rides_from_slots, write_gpx)
+                          read_slot, rides_from_slots, write_gpx)
 
+from usb import terminal_reply
 
 def slot(kind, source, ride_id, sequence, active_ms, samples=()):
     data = bytearray(b'\xff' * SLOT_SIZE)
@@ -52,13 +53,12 @@ class FakeConnection:
     def __init__(self, slots, fail_at=None):
         self.slots, self.fail_at = slots, fail_at
 
-    def command(self, command):
-        index = int(command.split()[1])
+    def terminal_command(self, command):
+        index = int(command.split()[2])
         if index == self.fail_at:
             raise TimeoutError('injected interruption')
         data = self.slots[index]
-        return ['CYCLING_EXPORT', str(index + 1), 'SLOT', str(index),
-                f'{zlib.crc32(data):08x}', data.hex()]
+        return dict(id=index + 1, status='OK', data=f'SLOT {index} {zlib.crc32(data):08x} {data.hex()}')
 
 
 class RideExportTests(unittest.TestCase):
@@ -133,26 +133,25 @@ class RideExportTests(unittest.TestCase):
         reply = b'noise\n' + b''.join(json.dumps(dict(type='reply', id=index, status='OK', data='INFO 1 256 2 ready')).encode() + b'\n' for index in [3, 4])
         for split in range(len(reply) + 1):
             pending = bytearray()
-            first = export_reply(pending, reply[:split], 4)
-            result = first or export_reply(pending, reply[split:], 4)
-            self.assertEqual(result[2], 'INFO')
+            first = terminal_reply(pending, reply[:split], 4)
+            result = first or terminal_reply(pending, reply[split:], 4)
+            self.assertEqual(result['data'].split()[0], 'INFO')
         with self.assertRaises(RuntimeError):
-            export_reply(bytearray(), b'CYCLING_BOOT version=x\n', 1)
+            terminal_reply(bytearray(), b'CYCLING_BOOT version=x\n', 1)
         raw = self.fixture()[0]
         class Reply:
             def __init__(self, index=0, crc=None):
                 self.index, self.crc = index, crc
-            def command(self, _):
-                return ['CYCLING_EXPORT', '1', 'SLOT', str(self.index),
-                        f'{(zlib.crc32(raw) if self.crc is None else self.crc):08x}', raw.hex()]
+            def terminal_command(self, _):
+                return dict(id=1, status='OK', data=f'SLOT {self.index} {(zlib.crc32(raw) if self.crc is None else self.crc):08x} {raw.hex()}')
         with self.assertRaises(ValueError):
             read_slot(Reply(index=1), 0)
         with self.assertRaises(ValueError):
             read_slot(Reply(crc=0), 0)
         class Short(Reply):
-            def command(self, _):
-                reply = super().command(_)
-                reply[5] = reply[5][:-2]
+            def terminal_command(self, _):
+                reply = super().terminal_command(_)
+                reply['data'] = reply['data'][:-2]
                 return reply
         with self.assertRaises(ValueError):
             read_slot(Short(), 0)

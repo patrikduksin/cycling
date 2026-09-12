@@ -4,7 +4,6 @@ mod bluetooth;
 mod core_system;
 mod device;
 mod logging;
-mod persistent;
 #[cfg(feature = "cycling")]
 mod sdk_runtime;
 mod services;

@@ -5,8 +5,8 @@ import json
 import time
 from pathlib import Path
 
-from export_rides import ExportConnection, info, read_slot
-from logs import ROOT
+from export_rides import info, read_slot
+from usb import ROOT, UsbConnection
 
 
 def verified_manifest(directory):
@@ -66,7 +66,7 @@ def clear(port, export_directory, output):
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     # Keep the same advisory lock and no-reset descriptor through the complete
     # verification, accepted mutation and completion query. No lease handoff.
-    with ExportConnection(port, output / 'usb.log') as connection:
+    with UsbConnection(port, output / 'usb.log') as connection:
         current = info(connection)
         digest = hashlib.sha256()
         for index in range(current['upper_bound']):

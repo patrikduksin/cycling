@@ -36,7 +36,7 @@ class ClearRidesTests(unittest.TestCase):
             {'status': 'OK', 'data': 'state=clearing slot=2 pending=7'},
             {'status': 'OK', 'data': 'state=ready slot=0 pending=0 completed=7 result=OK'},
         ]
-        with (patch('clear_rides.ExportConnection', return_value=context) as factory,
+        with (patch('clear_rides.UsbConnection', return_value=context) as factory,
               patch('clear_rides.info', side_effect=infos),
               patch('clear_rides.read_slot', side_effect=[raw[i:i + 256]
                                                           for i in range(0, len(raw), 256)]),

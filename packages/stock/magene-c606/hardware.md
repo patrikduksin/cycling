@@ -11,7 +11,7 @@
 | LCD | ST7789-compatible, 240×320, 16-bit I80 | Independent C display confirmed |
 | Backlight | GPIO45, LEDC 20 kHz, 10-bit PWM | Independent C test confirmed |
 | Wi-Fi | ESP32-S3 integrated 2.4 GHz radio | Rust WPA2 association, DHCP, DNS, public HTTP and reconnect verified |
-| BLE | ESP32-S3 integrated radio; stock ESP-IDF driver paths | Custom test pending |
+| BLE | ESP32-S3 integrated radio; stock ESP-IDF driver paths | Echo/reconnect verified, including forced MTU 23; see PR #71 |
 | Companion | Official N22 update identifies `NRF52810_APP`; Nordic/ANT implementation | Update identified; chip readback pending |
 | Touch | I2C0, SDA21, SCL12; `0x5a`, packed coordinates at `0xd000` | Rust touch and visual alignment confirmed; exact part ID pending |
 | Buttons / power | UART2 RX41 at 115200; all three short-click IDs mapped | Three buttons and brightness shortcuts physically confirmed; power control pending |
@@ -20,7 +20,7 @@
 | GNSS | UART0 RX0 at 921600; live GN NMEA | Verified receive path; exact receiver and control effect pending |
 | Motion | Companion `icm42607` and `qma6100` ID checks | Variant candidates |
 | Pressure | Companion `spl0601`, `spl06001`, `spa06003` diagnostic names | Variant candidates; spelling preserved |
-| Resource storage | SD/MMC, FAT, `/sdcard` mount | Medium, capacity and pins pending |
+| Resource storage | SD/MMC, FAT, `/sdcard` mount | MMC/eMMC identification and one-bit reads verified; see storage.md |
 
 ## Display wiring
 
@@ -45,17 +45,10 @@ The custom firmware has verified both receive paths. It completed a UART2 write
 on TX42, but external reception was not verified. The GNSS TX1 electrical path
 has not been exercised by the custom firmware.
 
-## Next measurements
-
-Identify the exact touch controller, investigate companion power control, capture GNSS
-identity and position data, read storage CID/CSD, then exercise wireless. Keep the
-companion firmware initially; accessing its host protocol may expose several
-functions without reimplementing its sensor and power-management drivers.
-
 Sources: [ESP32-S3 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf),
-local N21/N22 update analysis, USB ROM inspection and the independent C display test.
+N21/N22 update analysis, USB ROM inspection and independent display tests.
 
-## GNSS receive bring-up, 2026-09-11
+## GNSS evidence and limits
 
 The connected unit produces checksum-valid GN talker NMEA on UART0 RX0 at the
 stock startup rate of 921600 baud. A passive capture received GGA, GLL and GSA
@@ -71,37 +64,21 @@ confirms only that the candidate frame was sent. It does not verify power or
 enable semantics. The custom firmware does not send the recovered close or
 reset-like commands and does not change unverified GPIOs.
 
-UART0 receive uses an interrupt-fed 8 KiB internal-RAM ring and drains at most
-2 KiB per display loop. The parser bounds lines to 512 bytes, validates NMEA
-checksums and coordinate fields, and discards through the next `$` after known
-UART or ring data loss. It reports no data, no fix, fresh fix and stale fix
-separately. Satellite count is the latest recent GGA report and is not yet
-matched to the coordinate epoch.
+Current acquisition uses UART0/UHCI DMA and an independent Embassy task, with
+resynchronization after reported transport loss. The parser distinguishes no data,
+no fix, fresh and stale fixes and matches satellite data to the coordinate epoch.
+The owning code is [gps_uart.rs](../../os/src/device/gps_uart.rs),
+[positioning.rs](../../os/src/services/positioning.rs) and [gps.rs](../../os/src/gps.rs).
 
-In a 30.055-second run with Wi-Fi connected, the simulated Ride screen updating,
-LCD rendering, touch polling and companion receive active, GNSS input advanced
-55,245 bytes and 639 valid sentences. This is about 1.84 kB/s and 21.3 sentences
-per second. Display frames advanced by 707 and companion reports by 1,004. GNSS
-ring, line, checksum, parse and UART error counters did not change during that
-window; companion CRC/UART and touch errors were also unchanged. This observed
-rate is far below the configured baud rate and does not prove continuous
-921600-baud buffering capacity.
+Early display-coupled reception suffered UART losses during network and UI work.
+That implementation is retired. [#34](https://github.com/patrikduksin/cycling/issues/34)
+contains the subsequent investigation and user-confirmed outdoor functionality.
+[PR #71 evidence](https://github.com/patrikduksin/cycling/pull/71#issuecomment-5647388096)
+records indoor parser progress and recovery after deliberate executor starvation.
+Neither establishes receiver identity, electrical enable semantics or measured
+outdoor accuracy. Raw NMEA and coordinates remain private.
 
-The full steady-coexistence scenario started with one cumulative UART loss and
-detected two more during its GPS capture, navigation and Ride setup, before the
-clean 30.055-second measurement window. Separate deliberate Wi-Fi disconnect
-and reassociation tests each detected one loss while still advancing NMEA. In
-every case the parser discarded the damaged fragment and resumed at a fresh
-sentence with no checksum or parse errors. A higher UART interrupt priority did
-not remove the losses. Their exact trigger is unresolved; active screen changes
-and network recovery cannot yet be described as lossless.
-
-After several indoor minutes, the device still reported no fix and zero
-satellites. No live coordinates, receiver accuracy or distance to the authorized
-reference point were available, so this bring-up makes no positional claim.
-Raw NMEA, USB logs and the screen capture remain in ignored `.local/`.
-
-## PSRAM bring-up, 2026-09-11
+## PSRAM
 
 USB ROM inspection identifies the connected QFN56 chip as an ESP32-S3 with
 2 MiB of embedded 3.3 V PSRAM. [Espressif documents the S3R2 package as Quad
@@ -110,11 +87,9 @@ the 8 MiB S3R8 package uses Octal SPI. The Rust firmware selects Quad SPI
 explicitly at 40 MHz and asks `esp-hal` to detect the capacity from the PSRAM
 chip ID. The connected unit reported 2,097,152 bytes.
 
-Every boot tests all 524,288 mapped words with an address-dependent pattern and
-its complement before making the memory available. It also checks walking bits
-at 32 addresses spread across the range. These are memory integrity checks
-through the cache, not direct measurements of package data pins. A failure or a
-capacity other than 2 MiB stops startup instead of exposing suspect memory.
+Startup detected and tested the full 2,097,152-byte range on two reset boots.
+The integrity test operates through the cache, not directly on package data pins.
+Its implementation and failure policy live in [psram.rs](../../os/src/device/psram.rs).
 
 PSRAM uses a separate external-only allocator. A startup probe allocated 64 KiB
 with 64-byte alignment, checked both ends and returned it successfully. Ordinary
@@ -123,22 +98,7 @@ buffers remain in internal RAM. PSRAM is cache-backed and cannot hold data that
 must remain accessible while the external-memory cache is disabled. `esp-alloc`
 also warns that ESP32-S3 atomic operations do not work correctly in PSRAM.
 
-Two reset boots detected and tested the same 2,097,152-byte capacity. Internal
-free memory was 163,840 bytes both before and after PSRAM setup, and the
-external allocator had 2,097,152 bytes free after its probe. On both boots the
-display continued at mostly 19–20 ms per sampled frame, touch probe succeeded,
-companion battery and power reports arrived, and Wi-Fi completed both public
-HTTP checks.
-
-The existing end-to-end harness test passed with 51 captured frames while
-display, injected touch, companion input and Wi-Fi recovery ran together. PSRAM
-free space stayed at 2,097,152 bytes. A later 60-second stability run passed with
-1,419 advancing display frames, 2,008 additional valid companion frames, no new
-CRC or UART errors, unchanged internal and external free memory, and a 44 ms
-maximum sampled frame time during its final capture. Raw USB and test-harness
-evidence remains in ignored `.local/`.
-
-## Touch and brightness bring-up, 2026-09-11
+## Touch and backlight
 
 The connected unit acknowledges `0x5a` on I2C0 at 100 kHz. Register `0xd045`
 returns four bytes `04 00 00 01`. The recovered `0x38` probes receive address
@@ -150,18 +110,15 @@ byte 2 and the low nibble of byte 3 for Y. Low nibble 6 of byte 0 means pressed.
 The format agrees with the [Hynitron CST3240 application manual](https://www.buydisplay.com/download/ic/CST3240_Application_Manual.pdf),
 but CST3240 remains a controller candidate, not a verified fitted part.
 
-Our Rust implementation polls once per 42 ms frame, accepts one finger, and
-rejects malformed or out-of-panel coordinates. It leaves controller firmware,
-calibration and reset alone. The UI shows touch position and a slider which
-sets GPIO45 PWM duty from 5 to 100 percent. It starts at 50 percent after each
-boot; settings are not persisted. A drag must start in the slider area to change
-brightness. Lost reports cancel an active touch after 250 ms.
+The current [input service](../../os/src/services/io.rs) polls independently of
+display submissions. It validates one-finger coordinates and leaves controller
+firmware, calibration and reset alone. Brightness preferences are now persisted;
+the former slider and per-frame polling are retired.
 
-USB captured live drag coordinates and corresponding successful PWM duty updates,
-including 11 through 71 percent during the initial boot capture. Frame work was
-19 ms. The user confirmed that the marker follows their finger accurately and
-that the slider visibly changes brightness, describing both as perfect. This is
-a user-observed hardware result, not a measured full-panel calibration or
-backlight luminance measurement. Private captures remain in `.local/device/`.
+On 2026-09-11 the user confirmed accurate finger tracking and visible brightness
+changes in the retired touch UI. This was a physical observation, not a full-panel
+calibration or luminance measurement. The earlier Rust coin demo had physically
+confirmed colors and smooth rotation on 2026-09-08. Current terminal display
+completion alone does not repeat those physical observations.
 
 Button and battery packet details are in [the companion notes](companion.md).

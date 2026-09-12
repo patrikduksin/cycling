@@ -5,7 +5,7 @@ import re
 import time
 from pathlib import Path
 
-from export_rides import ExportConnection
+from usb import UsbConnection
 from service_stress import PREFERENCES, private_directory, read, validate
 
 
@@ -25,7 +25,7 @@ def reopen(port, directory, label, deadline=20):
     attempt = 0
     while True:
         attempt += 1
-        connection = ExportConnection(port, directory / f'{label}-{attempt}.bin')
+        connection = UsbConnection(port, directory / f'{label}-{attempt}.bin')
         entered = False
         try:
             connection.__enter__()

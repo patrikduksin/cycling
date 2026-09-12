@@ -1,6 +1,7 @@
 # Core contracts and migration inventory
 
-Decision for #55, audited against eb0c7d2 on 2026-09-12. These are implementation
+Initial decision for #55, audited against eb0c7d2 on 2026-09-12. See
+[implemented architecture](architecture.md) for final ownership and bounds. These were implementation
 contracts for #54, not a claim that the target architecture or build matrix works
 already. Keep modules in `packages/os`; change this document when working code
 shows a simpler boundary.
@@ -148,14 +149,14 @@ replace means keep the old path until the named replacement is verified.
 | `ride.rs`, `ride_log.rs`, `ride_reclaim.rs`, `ride_recorder.rs` | Move non-demo workflows/formats/tests to SDK. Replace direct flash use with core reservations; delete deterministic demo source only after real/source-controlled sampling tests exist. |
 | `metrics.rs` | Replace combined snapshot with core diagnostics and SDK status; delete UI number formatting after terminal diagnostics checks. |
 | `debug.rs`, `debug_usb.rs` | Replace mixed protocol/UI authority with supported terminal plus optional harness; preserve framing, request correlation, lease cleanup, export and loss regression coverage before removing old commands. |
-| `screenshot.rs`, `redraw.rs` | Move capture encoding/checksum into harness and required coordinate mapping into display; delete shell redraw tracker after explicit display submission and capture tests replace it. |
+| `screenshot.rs`, `redraw.rs` | Final #64 decision: remove capture/recording and shell redraw code because the base has no UI capture consumer. Preserve coordinate mapping in tested generic display capabilities and validate explicit display submission. |
 | `ui.rs`, `controls.rs`, `coin.rs`, `packages/os/examples/preview.rs` | Delete in #64 after terminal covers settings/status/ride workflows and input/display capabilities have focused tests. Extract required geometry first. Retire shell-only unit tests with their code. |
 | `packages/os/assets/{README.md,rust-logo.mask,rust-logo.svg}`, `docs/demo.gif`, `scripts/logo.py` | Delete in #64 after removing coin/preview references; no replacement artwork needed. |
 | `scripts/build.sh`, `scripts/device.py`, `scripts/test_device.py` | Retain safe image/backup/flash/stock logic; extend feature matrix and keep protected-region tests. |
 | `scripts/{wifi.py,ble_config.py,test_wifi.py,test_ble_config.py,bluetooth.py,ble_sensor_sim.py}` | Retain configuration privacy and radio fixtures; update transport callers where needed and rerun affected tests. |
 | `scripts/{debug.py,test_debug.py,gps_stress.py,test_gps_stress.py,companion_stress.py,persistence_test.py}` | Replace UI/debug protocol use with terminal/harness client; preserve framing/handoff, stress counters and persistence restart coverage before deleting paths. |
 | `scripts/{export_rides.py,test_export_rides.py,clear_rides.py,test_clear_rides.py}` | Retain SDK export/reclaim tooling and tests; migrate transport after byte-identical export and clear-refusal tests pass. |
-| `scripts/{screenshot.py,test_screenshot.py}` | Retain as optional harness capability; replace old framing after capture round-trip tests. |
+| `scripts/{screenshot.py,test_screenshot.py}` | Final #64 decision: remove with the unused UI capture protocol. Terminal/display-transfer checks and mapping tests replace the relevant base coverage. |
 | `scripts/{visual.py,test_visual.py,regression.py,test_regression.py}` | Replace useful soak/reconnect/loss checks with service/terminal tests, then delete shell visual comparison/navigation code and its tests. |
 | `scripts/scenarios/{navigation,diagnostics,device-screens,controls,idle-dimming,input}.json` | Delete shell scenarios after status/settings, idle and physical-input contracts have replacement checks; injected gestures do not prove physical switches. |
 | `packages/os/vendor/trouble-host/**` | Retain complete licensed pinned source, patch note, lockfile, scripts and tests. No vendor cleanup in this refactor. |

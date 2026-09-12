@@ -1,172 +1,184 @@
 # Ride recording
 
-The C606 stores rides in the 1 MiB owned reservation from `0x00d98000` through
-`0x00e98000`. The settings journal remains at `0x00e98000`. The safe application
-limit is therefore `0x638000` bytes from the slot-B base. Stock slot A, the
-partition table, bootloader, settings journal and other vendor regions are not
-written.
+Ride workflows belong to the optional `cycling` SDK. Build with
+`CYCLING_SDK=1`; they work through the ordinary USB terminal with either
+`CYCLING_HARNESS=0` or `1`. Base firmware leaves the ride reservation untouched
+and rejects SDK commands with INVALID. There is no graphical Rides/History
+page, injection session or terminal demo-start command.
 
-Startup scans one 4 KiB sector per display loop. Empty space is never erased by
-`START`. If the reservation contains unknown data and no valid ride record, the
-recorder reports `needs_init`; only the explicit harness `RIDE INIT` command
-erases one reserved sector per loop and verifies it reads back erased. A scan or
-erase error stops the recorder. Formatting does not run automatically.
+See [architecture](architecture.md) for ownership and
+[terminal/device testing](device-debugging.md) for framing, private capture and
+safe device access. This document describes implemented behavior; it does not
+claim that each path has been newly validated on hardware.
 
-Records are 256-byte version-1 slots. A CRC covers the header and up to four
-48-byte samples, and a separate aligned word is programmed last to commit the
-slot. Headers persist the ride ID, sequence, active duration and `demo` or `live`
-provenance. Samples can carry UTC milliseconds, fresh GPS coordinates, battery,
-heart rate and cadence. Live samples omit demo speed. GPS satellites and accuracy
-remain absent because they are not associated with the sample epoch.
-Fresh BLE heart-rate or cadence values are stored in live samples; values older
-than five seconds or received while disconnected are omitted. The current BLE
-build selects one authorized HRS or CSC peer, so it does not record heart rate
-and cadence from two separate sensors at the same time.
+## Commands and completion
 
-Recording samples once per second and writes batches of four. Pause and finish
-freeze at the accepted monotonic timestamp before a pending batch is written.
-After reset, a valid open ride is finalized with a recovery record at its last
-committed active duration; time while the device was down is not added. Up to
-one four-sample batch can be lost (three buffered between commits, or four while
-a commit is in flight). Delayed sampling and explicit drop counters are separate.
-Invalid occupied slots are skipped and
-mark the open ride as having a gap. An uncertain write stops until reboot so the
-scanner, rather than an automatic retry, decides whether the commit reached
-flash. The last slot is reserved for `FINISH`, `RECOVERED`, or `FULL`.
-The reservation holds 4,096 slots, at most about 4.5 hours of one-hertz samples
-at four samples per batch before event and partial-batch overhead. There is no
-reclaim, delete or reuse command yet; reaching full stops new recording. Safe
-reclaim after export is tracked in [#44](https://github.com/patrikduksin/cycling/issues/44).
+Requests use the ordinary `CMD <request-id> <command>` protocol. For example,
+`CMD 1 RIDE STATUS` inspects the recorder without modifying flash.
 
-The on-device Rides page has a mode row while ready. Tapping it selects `DEMO`
-or `LIVE`, and the right button starts that source; the left button still opens
-History. The selected mode remains fixed through pause, resume and finish, while
-the recorder's committed source is authoritative for an active ride. Live rides
-show elapsed time and explicitly unavailable speed and distance. Debug sessions
-can temporarily change the selection, but `END` restores the prior value.
-On hardware, injected touch selected Live while preserving History navigation.
-The ready view showed zero elapsed time and unavailable speed/distance; a
-temporary Live ride advanced to 2.18 seconds with both values still unavailable.
-Ending the session restored Demo and left the durable journal at four rides and
-slot 22. These injected gestures verify firmware routing, not physical touch or
-button operation. GPS UART errors increased by one during this capture window;
-the unresolved transport loss remains tracked in
-[#34](https://github.com/patrikduksin/cycling/issues/34).
+| Command | Behavior |
+| --- | --- |
+| `RIDE STATUS` | Recorder state, used-slot bound, ride/sample/drop counts and pending/completed operation token |
+| `RIDE SENSORS` | Selected sensor profile, link, fresh values/ages and decoder counters |
+| `RIDE HISTORY` | Up to four latest completed summaries |
+| `RIDE START` | Start a live ride when ready and capacity permits |
+| `RIDE PAUSE` | Pause a recording ride |
+| `RIDE RESUME` | Resume a paused ride |
+| `RIDE FINISH` | Finish a paused ride |
+| `RIDE INIT` | Explicitly initialize the owned reservation when state is `needs_init` |
+| `EXPORT INFO`, `EXPORT SLOT index` | Read export metadata or one bounded slot |
+| `RIDE CLEAR CONFIRM upper` | Destructive clear; use the hash-verifying host helper below |
 
-The History page retains the four latest completed summaries in a fixed array
-and shows two per page. Its header reports retained/total rides, so older rides
-are not presented as deleted or browseable through this first bounded view.
-Each summary shows source, saved/recovered/full/gap state, duration, deterministic
-demo distance, first known sample date, GPS sample count, and average heart rate
-or cadence when present. Missing values are explicit. The first known UTC sample
-is not labeled as ride start time because active duration excludes pauses. Raw
-storage remains the complete inventory for export.
+Mutations return ACCEPTED with an operation token. That acknowledges acceptance,
+not flash completion. Poll `RIDE STATUS` for the matching `completed` token and
+`result=OK` or `FAILED` before sending another mutation. One operation can be
+pending, and its completion is retained until a status response retrieves it.
+Further mutations return BUSY while either is outstanding. A timed-out or lost
+reply can leave completion uncertain; do not repeat the mutation blindly.
 
-On hardware, the bounded scan reconstructed four existing rides through slot 22
-without writing the journal. Both two-ride pages rendered the saved/recovered and
-live/demo labels plus first-known dates and explicit missing sensor fields. GPS
-UART errors increased from 0 to 2 during the broader capture window and then
-stayed at 2 in the follow-up state sample; this is retained as the existing GPS
-transport issue rather than evidence that history capture is loss-free.
-A later targeted two-page capture held rides/slot at 4/22, GPS UART at 0,
-companion UART at 1, and free heap at 80,276 bytes while companion valid frames
-advanced 393 to 421; observed maximum frame time rose from 25 to 32 ms.
+The console calls the SDK's service step independently of terminal requests.
+GNSS, physical input and BLE transport have their own acquisition tasks. The
+recorder performs at most one bounded media step per invocation; flash still
+blocks its caller. No display loop or active graphical screen is required.
+
+## Reservation, format and recovery
+
+The owned ride reservation is 1 MiB at `0x00d98000..0x00e98000`, with the upper
+address excluded. The two-sector settings journal starts at `0x00e98000`.
+The safe application limit is `0x638000` bytes from the slot-B base. Ride writes
+cannot reach stock slot A, the bootloader, partition table, settings journal,
+eFuses or vendor bulk storage. Use repository flash/stock tasks; do not replace
+them with generic flash commands.
+
+Startup scans one 4 KiB sector per recorder service step. START does not erase
+space. Unknown occupied data without a valid ride record yields `needs_init`;
+initialization is an explicit destructive operation on this reservation, never
+a boot default. Scan, write or erase failures stop recording for inspection.
+
+The existing version-1 format remains 256-byte slots. Each holds a header and
+up to four 48-byte samples, protected by a record CRC. A separate aligned word
+is programmed last to commit the slot. Headers retain ride ID, sequence, active
+duration and live/demo provenance. Old demo records remain readable; new terminal
+rides are live and contain no generated demo speed.
+
+Sampling targets one sample per second and writes batches of four. Pause and
+finish freeze active duration at the accepted monotonic timestamp before flushing
+pending samples. Delayed service lowers the achieved sample rate. Missed periods are not
+backfilled or comprehensively counted; the drop counter covers full buffers and
+samples discarded at capacity. A reset can lose the uncommitted batch: up to three
+buffered samples between commits, or four while a commit is in flight.
+
+On restart, a valid open ride is finalized with a recovery record at its last
+committed active duration. Downtime is not added. Invalid occupied slots are
+skipped and mark a gap. An uncertain write stops until reboot, when scanning
+determines whether its commit reached flash. The last slot is reserved for a
+FINISH, RECOVERED or FULL terminal record.
+
+There are 4,096 slots. At one-hertz sampling and four samples per slot, capacity
+is at most roughly 4.5 hours before event records, terminal-slot reservation and
+partial batches reduce it. `RIDE STATUS` reports the used-slot bound; the complete
+raw export is the inventory. HISTORY retains four summaries, not every old ride.
+There is no automatic deletion, compaction or reuse when full.
+
+## Sample semantics
+
+Samples can contain system UTC milliseconds, fresh GPS coordinates, battery
+percentage, heart rate and cadence. Live speed and distance remain unavailable.
+Location-free recordings are valid; an indoor receiver reporting no fix is not
+a reason to fabricate coordinates. Satellite/accuracy/elevation metadata are
+absent from this record format and are not inferred during export.
+
+HRS/CSC interpretation belongs to the SDK. Heart rate and cadence older than
+five seconds, disconnected readings and measurements invalidated by detected
+transport discontinuity are omitted. Heart-rate contact loss clears the usable
+value. Core BLE selects one explicit peer/UUID pair; the current SDK selects one
+HRS or CSC profile. Simultaneous heart rate and cadence from separate devices
+are unsupported. Real readings and peer identifiers remain private.
+
+Battery sampling retains the last observed percentage, including a stale core
+observation; the ride format has no battery-age field. The ordinary BATTERY
+command exposes freshness separately. A recorded percentage is therefore not
+a guarantee of a fresh or calibrated battery-capacity measurement.
 
 ## Export
 
-`mise run ride-export` reads the complete occupied prefix without starting an
-injection session or changing flash. `EXPORT INFO` captures format version,
-256-byte slot size, current upper bound and recorder state. Each correlated
-`EXPORT SLOT` response contains one exact index, 512 hexadecimal characters and
-a transport CRC. Export is refused during scan, formatting, recording, pause,
-recovery finalization or an error. A physical start during transfer causes the
-next request to fail rather than exporting a changing ride.
+```sh
+mise run ride-export
+```
 
-The host writes `ride-slots.bin.partial` and renames it only after every slot
-passes index, length and transport CRC checks. It then independently validates
-record version, commit word, record CRC, sequence, source and field flags. The
-canonical raw prefix and its SHA-256 remain alongside a manifest and one JSON
-file per ride. An interrupted run leaves a partial file; retry starts from slot
-zero. Ride IDs are local to a formatted reservation, so the manifest identity
-also includes the START slot digest and final raw digest.
+The host uses ordinary terminal requests with correlated IDs under the shared
+USB lock. Export does not start a test session or modify flash. It is refused
+while scanning, formatting, recording, paused, finalizing recovery or in an error
+state. Wait for a known exportable state first.
 
-GPX output uses version 1.1 and only recorded location samples. It preserves
-the recorded system UTC estimate when present and omits time when absent. Pause,
-resume, invalid records, missing locations, sequence gaps and backward UTC split
-track segments. Longitude +180 is normalized to -180; other invalid coordinates
-are omitted. Location-free rides still export raw/JSON and report `no valid
-location samples` rather than creating a route. Elevation, accuracy, and
-satellite metadata remain absent. All exports and raw USB logs stay in ignored
-`.local/exports/` unless an explicit output directory is selected.
+`EXPORT INFO` reports format version, slot size, current upper bound and recorder
+state. Each `EXPORT SLOT` reply contains the requested index, exactly 256 bytes
+as 512 hexadecimal characters and a transport CRC. The host checks each index,
+length and CRC, then rechecks metadata after downloading the prefix. A changing
+or unavailable prefix fails the transfer.
 
-On hardware, an intentionally interrupted transfer stopped after one 256-byte
-slot and left only the partial file. Two subsequent complete transfers each
-read the same 22-slot (5,632-byte) prefix and produced identical raw hashes.
-Both recovered the existing four rides with 10/4/5/5 samples: one saved demo,
-two recovered demos and one saved live ride. No slot failed integrity
-validation. The live ride had no demo speed, and all four reported that GPX was
-unavailable because those recordings contained no locations. Recorder state
-remained ready at four rides and slot 22 before and after export; saved
-brightness, dim and timezone values were also unchanged.
+The host writes `ride-slots.bin.partial` and renames it only after the complete
+transfer passes those checks. It independently validates slot version, commit
+word, record CRC, sequence, source and field flags. Invalid occupied slots remain
+in the canonical raw prefix and are identified in the manifest rather than
+silently discarded. An interrupted transfer leaves a partial file; a new export
+starts at slot zero.
 
-## Capacity and explicit reclaim
+The export directory contains the raw prefix, its SHA-256, a manifest and one
+JSON file per reconstructed ride. Ride IDs restart after clearing a reservation,
+so identities also retain START-slot digests and the final raw digest.
 
-The Ride screen shows used and total slots, free slots, and an estimated
-remaining duration while it is ready. The estimate assumes 1 Hz samples packed
-four per slot and reserves START and terminal records. Events and partial batch
-flushes reduce the real duration, so this is an upper estimate. The 1 MiB
-reservation contains 4,096 slots, roughly 4.5 hours before that overhead.
+GPX 1.1 contains only recorded location samples. It preserves recorded system UTC
+when available and omits missing times. Pause/resume, invalid records, missing
+locations, sequence gaps and backward UTC split segments. Longitude +180 is
+normalized to -180; other invalid coordinates are omitted. A location-free ride
+still exports raw/JSON with an explicit GPX-unavailable reason, not an invented
+route. Keep exports and USB captures in ignored `.local/`, normally
+`.local/exports/`.
 
-There is no automatic deletion, compaction, or erase on boot or START. To clear
-all rides, first make a complete `mise run ride-export` export and retain its raw
-file and manifest. Then pass that exact directory to:
+## Explicit reclaim after verified export
 
-```text
+First retain a complete export and its manifest. Then pass that exact directory:
+
+```sh
 mise run ride-clear -- .local/exports/<export-id>
 ```
 
-The helper validates the raw SHA-256 and length, reads the complete current
-device prefix and requires its SHA-256 to match, rechecks the upper slot bound,
-and sends the exact destructive request
-`RIDE CLEAR CONFIRM <upper>`. The firmware accepts it only while the recorder is
-closed and in a known exportable state. A completed scan that finds only invalid
-remnants (`needs_init`) is accepted only through the same freshly exported,
-hash-matched clear workflow. It erases and reads back one sector per
-main-loop iteration, and acknowledges success only after the complete owned
-`0xD98000..0xE98000` ride reservation is erased. Settings, MMC, vendor data, and
+The helper verifies the local raw length and SHA-256, reads the entire current
+device prefix and requires an identical SHA-256, then rechecks metadata and the
+upper-slot bound. It holds the same USB lock from verification through the
+mutation and completion query. Only then does it send `RIDE CLEAR CONFIRM upper`.
+The firmware validates that bound and its closed/exportable recorder state;
+the host performs the full-content hash comparison.
+
+Clear erases and read-verifies one sector per recorder step, confined to the
+owned ride reservation. Success is reported only after all 256 sectors have
+been verified erased. A completed scan containing only invalid remnants can be
+cleared through the same fresh-export/hash-match workflow. Settings, MMC and
 other flash regions are outside this operation.
 
-If the command times out or power is interrupted, do not send it again blindly.
-Restart, wait for the bounded journal scan, inspect `STATE`, make a fresh export
-of any remaining records, and retry with that export's upper bound. A failure
-puts the recorder in `error` until restart. An interrupted erase can leave only
-the later portion of the old journal; the operation does not claim atomic
-deletion. After a complete clear, ride IDs restart at 1, while exports retain
-content hashes and START-record identities.
+A power interruption can leave a later portion of the old journal intact;
+clear is not atomic deletion. On failure or timeout, do not resend automatically.
+Restart, wait for scanning, inspect RIDE STATUS and export the remaining prefix
+again before deciding whether to clear it. A complete clear resets ride IDs to
+1; retained exports still identify content by hashes and START records.
 
-The destructive hardware test first exported the existing 30-slot journal and
-matched its 7,680-byte SHA-256 to the prior export: five known test rides,
-including the separately authorized HRS test ride, with no invalid slots. The
-clear completed in 256 bounded erase/readback steps, reported ready with zero
-rides and zero used slots, and produced a second empty export. A newly created
-demo test ride then saved four samples in slots 0 through 3 and exported with no
-invalid slots. Preferences remained brightness 100, timeout 30 seconds, dim 20,
-and timezone UTC-03:00. Two earlier attempts did not mutate storage: the first
-timed out reading INFO immediately after flashing, and the second was refused as
-busy while the startup scan was still running. Interruption and readback failure
-recovery are fake-media tests; no physical power-cut test was performed.
+## Historical evidence
 
-After the final harness-enabled reflash, a quiet 25.122-second settled window
-kept the recorder ready at one ride/four slots, Wi-Fi and time fresh, HRS linked,
-heap free at 80,336 bytes, and all five GPS fault counters unchanged while valid
-GPS and companion packets advanced. The companion UART counter increased from
-11 to 16 despite no ride flash work in that window; this remains an unresolved observed transport limitation; the cause was not
-isolated, and this is not a loss-free stability result.
+September 11, 2026 tests used the now-retired graphical firmware. Two complete
+exports matched a 22-slot, 5,632-byte prefix containing four rides. A later
+explicit reclaim test verified a 30-slot prefix before clearing, then exported
+an empty journal and a new four-sample demo ride. Preferences were preserved.
+These are historical format/export/reclaim observations, not new terminal or
+current-build hardware results.
 
-Hardware initialization of the previously occupied reservation took at most
-41 ms per sector and increased GPS UART errors by 19 during the one-time erase.
-Normal committed appends measured 0–1 ms in the tested demo/live sessions and
-did not increase GPS UART or companion error counters. These observations do
-not prove interruption behavior at every flash instruction; host tests cover
-torn bodies, torn commit words, corruption, invalid occupied space, exact-full
-capacity and recovery from the last committed duration.
+Historical initialization measured up to 41 ms per sector and added GPS UART
+errors during that run; normal tested appends measured 0–1 ms. Later UART/DMA
+fixes and their separate transport evidence must not be conflated with those
+older capture windows. Torn-body/commit, corruption, exact-full, recovery and
+interrupted-clear behavior also have host fake-media tests; they do not prove
+physical power-cut behavior at every flash instruction.
+
+Current device state, observed validation and remaining hardware limits belong
+in [the execution handoff](overnight-plan.md), rather than a historical ride
+count or build claim in this guide.

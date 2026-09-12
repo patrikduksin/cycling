@@ -7,7 +7,8 @@ Keep the workspace small. Firmware lives in `packages/os`; device research lives
 `packages/stock/<device>`. Use mise tasks and commit the Cargo lockfile.
 
 Run `mise run test`, `mise run check`, and `mise run build` for firmware changes.
-The renderer also runs on the host through `mise run preview`.
+Run both base and cycling SDK checks through the mise tasks. The legacy renderer
+and preview task were removed by refactor #64.
 
 For the C606, preserve stock ota_0, the bootloader, partition table and eFuses.
 Use `mise run backup`, `mise run flash`, and `mise run stock`; generic flash
@@ -18,22 +19,19 @@ Publish our code, tools and written findings. Keep vendor firmware, disassembly,
 flash dumps, credentials, device identifiers and capture logs in ignored `.local/`.
 Distinguish verified hardware from driver candidates supported by stock firmware.
 
-## Device test harness
+## Device test controls
 
-`mise run build` and `mise run flash` enable the USB test harness by default.
-Use `CYCLING_HARNESS=0 mise run build` or `CYCLING_HARNESS=0 mise run flash`
-for firmware without injection, screenshots, recording or their buffers.
-When changing the feature boundary, build both modes and validate device access.
-Restore a harness-enabled build on the development device after testing.
+`mise run build` and `mise run flash` enable bounded diagnostic fault controls by
+default. `CYCLING_HARNESS=0` removes those controls; ordinary terminal commands,
+JSON logging, Wi-Fi and the public HTTP bring-up check remain available. The
+legacy UI injection/capture/recording buffers were removed by refactor #64.
+Use `CYCLING_SDK=1` for the optional cycling composition; the default base has no
+cycling code. Build both harness modes for feature-boundary changes and restore
+a harness-enabled base on the development device after testing.
 
-Read `docs/device-debugging.md` before using the harness or interpreting its
-measurements. Recording changes frame timing: observed processing was mostly
-20–30 ms, with a 44 ms full-frame capture against a 42 ms frame budget. Requested
-capture fps is not achieved fps; use device timestamps. Capture buffers reserve
-33.125 KiB even when idle. Idle CPU overhead has not been measured separately.
-Use harness-disabled firmware for performance/power baselines, and record the
-build mode and recording state with results. Ordinary logs and the Wi-Fi
-bring-up test remain enabled in that mode; it is not a quiet production build.
-Injected inputs and captured pixels verify firmware behavior, not physical
-switches, touch accuracy, panel output or battery hardware. Keep evidence in
-ignored `.local/` and distinguish sampled heap minima from peak memory usage.
+Read `docs/device-debugging.md` before device tests. Keep build mode and collection
+state with observations. Use harness-disabled builds for performance/power
+baselines. Serial commands and successful LCD transfers do not prove physical
+switches, touch accuracy, panel output or battery hardware. Keep raw evidence,
+coordinates, sensor readings and identifiers in ignored `.local/`. Distinguish
+sampled heap minima from peak memory and event timing from power measurements.

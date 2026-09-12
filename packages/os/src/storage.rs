@@ -40,6 +40,11 @@ pub enum Error<E> {
     PayloadTooLarge,
     OutputTooSmall,
     ReadbackFailed,
+    /// No committed supported record exists, but at least one sector is occupied.
+    /// Preserve the bytes for inspection instead of treating them as unused flash.
+    UnrecognizedJournal,
+    /// Outer journal is valid but its settings payload cannot be safely replaced.
+    UnrecognizedSettings,
 }
 
 pub struct Journal<F> {
@@ -124,10 +129,12 @@ impl<F: Flash> Journal<F> {
 
     fn scan(&mut self) -> Result<Option<(usize, Record)>, Error<F::Error>> {
         let mut newest = None;
+        let mut occupied = false;
         for sector in 0..SECTOR_COUNT {
             self.flash
                 .read_sector(sector, &mut self.scratch)
                 .map_err(Error::Flash)?;
+            occupied |= self.scratch.0.iter().any(|byte| *byte != 0xff);
             if let Some(record) = decode(&self.scratch)
                 && newest
                     .map(|(_, current): (usize, Record)| newer(record.sequence, current.sequence))
@@ -135,6 +142,9 @@ impl<F: Flash> Journal<F> {
             {
                 newest = Some((sector, record));
             }
+        }
+        if newest.is_none() && occupied {
+            return Err(Error::UnrecognizedJournal);
         }
         Ok(newest)
     }
@@ -274,6 +284,72 @@ mod tests {
         }
     }
 
+    impl OwnedFlash for Memory {
+        fn geometry(&self) -> Geometry {
+            Geometry {
+                capacity: 0,
+                program_size: 4,
+                erase_size: SECTOR_SIZE,
+            }
+        }
+        fn read_data(&mut self, _: usize, _: &mut [u8]) -> Result<(), ()> {
+            panic!("settings test accessed data reservation")
+        }
+        fn program_data(&mut self, _: usize, _: &[u8]) -> Result<(), ()> {
+            panic!("settings test programmed data reservation")
+        }
+        fn erase_data(&mut self, _: usize, _: usize) -> Result<(), ()> {
+            panic!("settings test erased data reservation")
+        }
+    }
+
+    #[test]
+    fn unsupported_and_malformed_settings_are_readable_but_cannot_be_overwritten() {
+        use crate::preferences::{Settings, Source};
+        for (payload, source) in [
+            (b"cycling\x05".as_slice(), Source::Unsupported),
+            (b"unrecognized".as_slice(), Source::Malformed),
+            (b"cycling\x04".as_slice(), Source::Malformed),
+        ] {
+            let mut journal = Journal::new(Memory::default());
+            journal.save(&Settings::default().encode()).unwrap();
+            journal.save(payload).unwrap();
+            let mut store = Store { journal };
+            assert_eq!(store.load().unwrap().source, source);
+            let before = store.journal.flash.bytes;
+            let operations = store.journal.flash.operations;
+            assert_eq!(
+                store.save(Settings::default()),
+                Err(Error::UnrecognizedSettings)
+            );
+            assert_eq!(store.journal.flash.bytes, before);
+            // Two scan reads plus a verified load; no mutation operation.
+            assert_eq!(store.journal.flash.operations - operations, 3);
+        }
+    }
+
+    #[test]
+    fn supported_settings_versions_and_missing_journal_remain_writable() {
+        use crate::preferences::{Settings, Source};
+        for payload in [
+            None,
+            Some(b"cycling\x01".as_slice()),
+            Some(b"cycling\x02\x32\x00".as_slice()),
+            Some(Settings::default().encode().as_slice()),
+        ] {
+            let mut journal = Journal::new(Memory::default());
+            if let Some(payload) = payload {
+                journal.save(payload).unwrap();
+            }
+            let mut store = Store { journal };
+            let settings = Settings::new(75).unwrap();
+            store.save(settings).unwrap();
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.source, Source::Current);
+            assert_eq!(loaded.settings, settings);
+        }
+    }
+
     #[test]
     fn saves_reads_and_uses_full_capacity() {
         let mut journal = Journal::new(Memory::default());
@@ -309,6 +385,66 @@ mod tests {
     }
 
     #[test]
+    fn erased_journal_is_missing_and_can_be_saved_explicitly() {
+        let mut journal = Journal::new(Memory::default());
+        assert_eq!(journal.load(&mut [0; 8]), Ok(None));
+        assert!(
+            journal
+                .flash
+                .bytes
+                .iter()
+                .flatten()
+                .all(|byte| *byte == 0xff)
+        );
+        assert_eq!(journal.save(b"first").unwrap().sequence, 1);
+    }
+
+    #[test]
+    fn occupied_unrecognized_journals_refuse_load_and_save_without_mutation() {
+        for scenario in 0..4 {
+            let mut journal = Journal::new(Memory::default());
+            match scenario {
+                0 => journal.flash.bytes[0][0] = 0, // One unknown occupied sector.
+                1 => journal
+                    .flash
+                    .bytes
+                    .iter_mut()
+                    .for_each(|sector| sector.fill(0)),
+                _ => {
+                    journal.save(b"existing").unwrap();
+                    if scenario == 2 {
+                        journal.flash.bytes[0][4..6].copy_from_slice(&2u16.to_le_bytes());
+                    } else {
+                        journal.flash.bytes[0][HEADER_SIZE] ^= 1;
+                    }
+                }
+            }
+            let before = journal.flash.bytes;
+            let operations = journal.flash.operations;
+            assert_eq!(journal.load(&mut [0; 16]), Err(Error::UnrecognizedJournal));
+            assert_eq!(
+                journal.save(b"replacement"),
+                Err(Error::UnrecognizedJournal)
+            );
+            assert_eq!(journal.flash.bytes, before);
+            assert_eq!(journal.flash.operations - operations, SECTOR_COUNT * 2);
+        }
+    }
+
+    #[test]
+    fn torn_first_write_is_preserved_and_cannot_be_retried_as_empty() {
+        let mut journal = Journal::new(Memory::default());
+        journal.flash.fail_after = Some(3); // First payload program, after scan + erase.
+        journal.flash.tear_bytes = HEADER_SIZE + 1;
+        assert_eq!(journal.save(b"first"), Err(Error::Flash(())));
+        journal.flash.fail_after = None;
+        let before = journal.flash.bytes;
+        assert_eq!(journal.load(&mut [0; 8]), Err(Error::UnrecognizedJournal));
+        assert_eq!(journal.save(b"retry"), Err(Error::UnrecognizedJournal));
+        assert_eq!(journal.flash.bytes, before);
+    }
+
+    #[test]
     fn interruption_before_commit_keeps_previous_record() {
         for failed_operation in 2..5 {
             for tear_bytes in [0, 1, 2, 3, 16, 2048, 4095] {
@@ -329,5 +465,149 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// Physical geometry of an exclusively owned byte reservation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Geometry {
+    pub capacity: usize,
+    pub program_size: usize,
+    pub erase_size: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessError<E> {
+    OutOfBounds,
+    Unaligned,
+    Device(E),
+}
+
+/// Validate relative ranges before translating them to physical addresses.
+pub fn checked_range<E>(
+    capacity: usize,
+    offset: usize,
+    length: usize,
+    alignment: usize,
+) -> Result<(), AccessError<E>> {
+    if offset.checked_add(length).is_none_or(|end| end > capacity) {
+        return Err(AccessError::OutOfBounds);
+    }
+    if alignment == 0 || !offset.is_multiple_of(alignment) || !length.is_multiple_of(alignment) {
+        return Err(AccessError::Unaligned);
+    }
+    Ok(())
+}
+
+/// Sole physical owner of the journal and a disjoint application reservation.
+/// Implementations must enforce their fixed reservations on every operation.
+pub trait OwnedFlash: Flash {
+    fn geometry(&self) -> Geometry;
+    fn read_data(&mut self, offset: usize, output: &mut [u8]) -> Result<(), Self::Error>;
+    fn program_data(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
+    fn erase_data(&mut self, offset: usize, length: usize) -> Result<(), Self::Error>;
+}
+
+pub struct Loaded {
+    pub settings: crate::preferences::Settings,
+    pub source: crate::preferences::Source,
+    pub sequence: Option<u32>,
+    pub length: usize,
+}
+
+/// Settings journal and generic owned bytes. No application format or reclaim policy.
+/// Calls are synchronous: the caller yields between bounded media operations.
+/// ESP flash programming/erase can suspend interrupts and acquisition. Callers
+/// must retain transport loss detection and reset parsing after detected gaps.
+/// A failed mutation is ambiguous; reconcile by reading, never blindly retry it.
+pub struct Store<B> {
+    journal: Journal<B>,
+}
+
+impl<B: OwnedFlash> Store<B> {
+    pub fn new(backend: B) -> Self {
+        Self {
+            journal: Journal::new(backend),
+        }
+    }
+
+    pub fn load(&mut self) -> Result<Loaded, Error<B::Error>> {
+        let mut payload = [0u8; CAPACITY];
+        let record = self.journal.load(&mut payload)?;
+        let bytes = record.map(|record| &payload[..record.length]);
+        let (settings, source) = crate::preferences::decode(bytes);
+        Ok(Loaded {
+            settings,
+            source,
+            sequence: record.map(|r| r.sequence),
+            length: record.map(|r| r.length).unwrap_or(0),
+        })
+    }
+
+    pub fn save(
+        &mut self,
+        settings: crate::preferences::Settings,
+    ) -> Result<Record, Error<B::Error>> {
+        if matches!(
+            self.load()?.source,
+            crate::preferences::Source::Unsupported | crate::preferences::Source::Malformed
+        ) {
+            return Err(Error::UnrecognizedSettings);
+        }
+        match self.journal.save(&settings.encode()) {
+            Ok(record) => Ok(record),
+            Err(error) => match self.load() {
+                Ok(loaded)
+                    if loaded.source == crate::preferences::Source::Current
+                        && loaded.settings == settings =>
+                {
+                    Ok(Record {
+                        sequence: loaded.sequence.unwrap(),
+                        length: loaded.length,
+                    })
+                }
+                _ => Err(error),
+            },
+        }
+    }
+
+    pub fn geometry(&mut self) -> Geometry {
+        self.journal.flash_mut().geometry()
+    }
+    pub fn read(&mut self, offset: usize, output: &mut [u8]) -> Result<(), B::Error> {
+        self.journal.flash_mut().read_data(offset, output)
+    }
+    pub fn program(&mut self, offset: usize, bytes: &[u8]) -> Result<(), B::Error> {
+        self.journal.flash_mut().program_data(offset, bytes)
+    }
+    pub fn erase(&mut self, offset: usize, length: usize) -> Result<(), B::Error> {
+        self.journal.flash_mut().erase_data(offset, length)
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    #[test]
+    fn reservations_reject_overflow_boundary_crossing_and_alignment() {
+        assert_eq!(checked_range::<()>(8192, 8192, 0, 1), Ok(()));
+        assert_eq!(checked_range::<()>(8192, 8191, 1, 1), Ok(()));
+        assert_eq!(
+            checked_range::<()>(8192, 8192, 1, 1),
+            Err(AccessError::OutOfBounds)
+        );
+        assert_eq!(
+            checked_range::<()>(8192, usize::MAX, 2, 1),
+            Err(AccessError::OutOfBounds)
+        );
+        assert_eq!(
+            checked_range::<()>(8192, 1, 4, 4),
+            Err(AccessError::Unaligned)
+        );
+        assert_eq!(
+            checked_range::<()>(8192, 0, 4095, 4096),
+            Err(AccessError::Unaligned)
+        );
+        assert_eq!(checked_range::<()>(8192, 4096, 4096, 4096), Ok(()));
     }
 }

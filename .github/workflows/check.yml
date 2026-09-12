@@ -6,14 +6,26 @@ permissions:
   contents: read
 
 jobs:
-  firmware:
+  host:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: jdx/mise-action@v4.3.0
       - run: mise run test
       - run: mise run check
+  firmware:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        sdk: ['0', '1']
+        harness: ['0', '1']
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: jdx/mise-action@v4.3.0
       - run: mise run setup
         env:
           GITHUB_TOKEN: ${{ github.token }}
       - run: mise run build
+        env:
+          CYCLING_SDK: ${{ matrix.sdk }}
+          CYCLING_HARNESS: ${{ matrix.harness }}

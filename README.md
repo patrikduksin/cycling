@@ -1,33 +1,40 @@
 # cycling
 
-Open-source bike computer firmware, written in Rust. Starting with the Magene C606.
+Open-source Rust firmware for the Magene C606 bike computer.
 
-The `no_std` firmware has touch and button controls, brightness, battery status,
-persistent settings, idle dimming, Wi-Fi recovery and network time. It uses verified
-2 MiB PSRAM and reserved flash regions for settings and rides.
+The base `no_std` firmware provides positioning, physical input, battery/power
+observations, display submission, persistent settings, idle dimming, Wi-Fi,
+network time and BLE transport. An ordinary USB terminal and bounded JSON logs
+work with the test harness disabled. There is no graphical application or demo.
 
-Ride features include a deterministic demo, live recording with GPS/battery fields, recovery
-after reset, recent ride history, and USB raw/JSON export with GPX for recorded
-location tracks. Live speed and distance are still unavailable. BLE supports minimum-MTU
-GATT echo testing and one explicitly selected continuous Heart Rate or Cadence sensor;
-simultaneous sensors, GNSS outdoor/model validation and writable bulk storage remain follow-ups.
-
-[Ride recording and export](docs/ride-recording.md) ·
-[Device testing tools](docs/device-debugging.md) ·
-[Development progress](docs/overnight-plan.md)
-
-The initial renderer demo:
-
-<img src="docs/demo.gif" alt="A pixel-art Rust coin rotating on the C606 display" width="240">
+The optional `cycling` SDK adds one explicitly selected Heart Rate or Cadence
+sensor, live ride recording, recovery, history and raw/JSON/GPX export. Live speed
+and distance and simultaneous separate sensors are unsupported. Receiver identity
+and measured GNSS accuracy remain follow-ups; MMC identification and reads are
+verified, but vendor filesystem writes are not authorized.
 
 ```sh
 mise install
 mise run setup
-mise run build
+mise run test
+mise run check
+mise run build                       # Base, development harness enabled
+CYCLING_SDK=1 mise run build          # Add the cycling SDK
+mise run terminal -- STATUS          # Query an already-running device
+mise run terminal                    # Interactive USB prompt
 ```
 
-- [`packages/os`](packages/os) — firmware
-- [`packages/stock/magene-c606`](packages/stock/magene-c606) — hardware research and analysis tools
-- [`docs`](docs) — development and device testing
+Use the repository's safe flash tasks. Stock slot A, the bootloader, partition
+table, eFuses and existing persisted data must be preserved.
 
-[Development](docs/development.md) · [Device workflow](docs/device.md) · [MIT license](LICENSE)
+- [Development and build matrix](docs/development.md)
+- [Safe device workflow](docs/device.md)
+- [Terminal and device validation](docs/device-debugging.md)
+- [Ride recording and export](docs/ride-recording.md)
+- [Architecture and migration inventory](docs/core-architecture.md)
+- [Development evidence and open work](docs/overnight-plan.md)
+- [C606 hardware research](packages/stock/magene-c606)
+
+Firmware lives in `packages/os`; device research lives in `packages/stock`.
+Vendor images, device identifiers, credentials and raw evidence stay in ignored
+`.local/`. [MIT license](LICENSE).

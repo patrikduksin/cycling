@@ -9,10 +9,14 @@ publish = false
 
 [features]
 default = []
+cycling = []
 debug-harness = []
 c606 = ["dep:esp-hal", "dep:esp32s3", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:esp-storage", "dep:embedded-storage", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:embassy-sync", "dep:static_cell", "dep:embassy-futures", "dep:critical-section", "dep:trouble-host", "dep:bt-hci"]
 
 [dependencies]
+log = { version = "=0.4.34", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["derive"] }
+serde-json-core = { version = "=0.6.0", default-features = false }
 libm = "0.2.16"
 esp-hal = { version = "=1.1.2", features = ["esp32s3", "unstable"], optional = true }
 esp32s3 = { version = "=0.35.2", optional = true }
@@ -39,7 +43,3 @@ bt-hci = { version = "0.8", optional = true }
 name = "cycling-os"
 path = "src/main.rs"
 required-features = ["c606"]
-
-[[example]]
-name = "preview"
-path = "examples/preview.rs"

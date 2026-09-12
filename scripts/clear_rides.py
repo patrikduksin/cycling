@@ -5,9 +5,8 @@ import json
 import time
 from pathlib import Path
 
-from debug import Device
 from export_rides import ExportConnection, info, read_slot
-from screenshot import ROOT
+from logs import ROOT
 
 
 def verified_manifest(directory):
@@ -23,32 +22,71 @@ def verified_manifest(directory):
     return manifest
 
 
+def status_fields(reply):
+    if reply['status'] != 'OK':
+        raise RuntimeError(f'ride status rejected: {reply["status"]}')
+    try:
+        return dict(field.split('=', 1) for field in reply['data'].split())
+    except ValueError:
+        raise ValueError('malformed ride status') from None
+
+
+def mutate_once(connection, command, timeout=90):
+    """Accept once, then poll only status until that token completes."""
+    deadline = time.monotonic() + timeout
+    reply = connection.terminal_command(command, timeout=min(8, timeout))
+    if reply['status'] != 'ACCEPTED':
+        raise RuntimeError(f'ride mutation rejected: {reply["status"]}')
+    try:
+        accepted = dict(field.split('=', 1) for field in reply['data'].split())
+        token = int(accepted['token'])
+        if not 1 <= token <= 0xffffffff:
+            raise ValueError()
+    except (KeyError, ValueError):
+        raise RuntimeError('mutation accepted with an invalid token; outcome is uncertain') from None
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        result = status_fields(connection.terminal_command('RIDE STATUS', timeout=min(8, remaining)))
+        if 'completed' in result:
+            if result['completed'] != str(token):
+                raise RuntimeError('different mutation completed; outcome is uncertain')
+            if result.get('result') != 'OK':
+                raise RuntimeError('ride mutation failed; inspect status before any retry')
+            return result
+        if result.get('pending') != str(token):
+            raise RuntimeError('mutation completion is missing; outcome is uncertain')
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+    raise TimeoutError('ride mutation completion deadline expired')
+
+
 def clear(port, export_directory, output):
     manifest = verified_manifest(export_directory)
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    with ExportConnection(port, output / 'before-usb.log') as connection:
+    # Keep the same advisory lock and no-reset descriptor through the complete
+    # verification, accepted mutation and completion query. No lease handoff.
+    with ExportConnection(port, output / 'usb.log') as connection:
         current = info(connection)
         digest = hashlib.sha256()
         for index in range(current['upper_bound']):
             digest.update(read_slot(connection, index))
         unchanged = info(connection) == current
-    if not unchanged or current['upper_bound'] != manifest['upper_bound']:
-        raise RuntimeError('journal advanced after export; create and verify a new export')
-    if digest.hexdigest() != manifest['raw_sha256']:
-        raise RuntimeError('device journal does not match the supplied export')
-    try:
-        with Device(port, output / 'clear') as device:
-            # This durable command ends the temporary injection session before
-            # erasing; suppress lease heartbeats and END while waiting.
-            device.active = False
-            result = device.command(
-                f'RIDE CLEAR CONFIRM {manifest["upper_bound"]}', timeout=90)
-            if result['ride_recording'] != 'ready' or result['recording_slot'] != 0:
-                raise RuntimeError('clear acknowledged without an empty ready journal')
-    except TimeoutError:
-        raise RuntimeError(
-            'clear outcome is uncertain; inspect STATE after reboot and do not retry '
-            'until scanning completes') from None
+        if not unchanged or current['upper_bound'] != manifest['upper_bound']:
+            raise RuntimeError('journal advanced after export; create and verify a new export')
+        if digest.hexdigest() != manifest['raw_sha256']:
+            raise RuntimeError('device journal does not match the supplied export')
+        try:
+            result = mutate_once(connection, f'RIDE CLEAR CONFIRM {manifest["upper_bound"]}')
+        except TimeoutError:
+            raise RuntimeError(
+                'clear outcome is uncertain; inspect RIDE STATUS after reboot and do not retry '
+                'until scanning completes') from None
+        if result.get('state') != 'ready' or result.get('slot') != '0':
+            raise RuntimeError('clear completed without an empty ready journal')
+        after = info(connection)
+        if after['upper_bound'] != 0 or after['status'] != 'ready':
+            raise RuntimeError('clear readback did not report an empty ready journal')
     summary = {'export': str(export_directory), 'raw_sha256': manifest['raw_sha256'],
                'cleared_upper_bound': manifest['upper_bound'], 'result': result}
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')

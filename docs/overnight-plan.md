@@ -40,21 +40,51 @@ evidence. Validate transport/parser progression, no-fix/freshness and recovery;
 lack of an indoor fix alone is not a regression or blocker. Preserve the proven
 GPS behavior and do not claim new outdoor accuracy.
 
-Progress at 15:22 UTC: #55 contract and inventory independently approved by Astra
-medium against actual source and live requirements. Root prepares its PR.
-Branch refactor/contracts, authorization commit 227417e. Git signing helper could
-not reach 1Password; use per-command unsigned commits without changing config.
-Astra medium board agent owns main.rs/device extraction #56; Astra medium logging
-agent owns new logging/host adapter files and Cargo/build metadata #66. Root owns
-integration and USB. Reviewer is available for completed increments.
+Progress at 15:40 UTC: #55 closed by merged PR #67, b6f680c. #56 closed by
+merged PR #68, 193c133, implementation e8155ea. Both independently approved by
+Astra medium. Board test/check/both builds passed. Enabled hardware window
+152318..162472 ms advanced GNSS valid3333..3543 and companion5033..5369 with all
+UART/DMA/CRC/touch counters zero and heap80336 unchanged. Preferences100/30/20/-180
+and one saved demo/four slots remain. `.local/exports/refactor-baseline` and
+`refactor-board` are byte-identical. Captured Home pixels inspected; physical
+panel not observed. Disabled mode touch, battery/display/Wi-Fi/HTTP/time observed;
+short disabled sample is not GNSS interval evidence. First enabled postflash USB
+open was silent; documented monitor release booted it and retry passed.
 
-Baseline safe `sudo -n -E mise run flash` succeeded after ordinary-user USB access
-was denied. Existing backup manifest was reused and checked by safe flash. Stock
-slot, bootloader and partition verification passed; B selected. Unchanged baseline
-harness firmware booted and the no-reset export tool read one saved demo ride,
-four slots/four samples into `.local/exports/refactor-baseline`. No mutation of
-ride data. Debug state collection succeeded at `.local/tests/refactor-baseline`.
-Root owns no ongoing serial reader. New hardware accuracy not measured.
+Progress at 16:04 UTC: branch `refactor/base-services`, committed integration
+`c815338`. Independent medium reviews approved positioning/input, BLE, SDK runtime,
+protected storage (including refusal of unknown settings without mutation),
+terminal/log queue and legacy cleanup. Required tests/checks and all four build
+combinations passed: base enabled/disabled images 803392/802544 bytes; SDK
+enabled/disabled 835664/834832 bytes. Latest follow-ups expose the actual Embassy
+network Stack and a human terminal CLI; final CLI rejection recheck is pending.
+These follow-ups require a new commit/build matrix before final hardware evidence.
+
+The device currently runs the initial shell-free base harness-enabled image from
+15:37, no SDK/render loop. It has ordinary JSON terminal/logging, GNSS receiving
+with no fix, companion/touch/battery and network time. One initial postflash open
+was silent; monitor release and retry worked. Preliminary closed-host/saturation
+capture observed explicit loss108 and a sequence gap107 while commands/acquisition
+continued. BLE echo passed two normal reconnects at observed MTU60; a separate
+MTU23 client passed discovery/notify/readback and short-write refusal (second
+MTU23 reconnect in progress). These are preliminary evidence, not final integrated
+firmware validation. All raw evidence remains under `.local/refactor-session`,
+`.local/logs` and `.local/exports`.
+
+Root owns all serialized hardware access. No agent owns a device session. The
+remaining work is final four-mode checks/hardware, safe settings restart/restore,
+SDK progress/export preservation, terminal fault/loss/recovery measurements,
+publication and issue closure only with requirements met. The indoor/user-confirmed
+GNSS distinction above remains authoritative. No destructive ride reclaim has run
+in this refactor; the baseline saved demo/four slots is preserved.
+
+Baseline safe `sudo -n -E mise run flash` reused existing backup with safeguards.
+Ordinary user lacks USB permissions; sudo task works. Sudo builds create root-owned
+.local artifacts; root restores ownership narrowly before normal builds. Signing
+helper cannot reach1Password; per-command unsigned commits used without config
+changes. No system security changes. Raw evidence stays private. No agent has
+permission to independently touch USB/Bluetooth hardware. No persistent collector
+or test peer should remain at final handoff.
 
 
 ## Historical latest device state

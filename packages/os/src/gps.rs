@@ -84,6 +84,7 @@ impl Default for Snapshot {
     }
 }
 
+#[derive(Clone)]
 pub struct Parser {
     line: [u8; LINE],
     len: usize,

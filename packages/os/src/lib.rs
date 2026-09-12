@@ -3,25 +3,32 @@
 #[cfg(test)]
 extern crate std;
 
-pub mod ble_sensor;
-pub mod coin;
+#[cfg(feature = "cycling")]
+pub use sdk::ble_sensor;
 pub mod companion;
-pub mod controls;
 pub mod crash;
-pub mod debug;
 pub mod gps;
 pub mod idle;
 pub mod input;
-pub mod metrics;
 pub mod network;
 pub mod network_time;
 pub mod preferences;
-pub mod redraw;
-pub mod ride;
-pub mod ride_log;
-pub mod ride_reclaim;
-pub mod screenshot;
+#[cfg(feature = "cycling")]
+pub use sdk::ride;
+#[cfg(feature = "cycling")]
+pub use sdk::ride_log;
+#[cfg(feature = "cycling")]
+pub use sdk::ride_reclaim;
 pub mod sdmmc_probe;
 pub mod storage;
 pub mod uart_ring;
-pub mod ui;
+
+pub mod log_record;
+
+#[cfg(feature = "cycling")]
+pub mod sdk;
+
+pub mod ble_transport;
+pub mod capabilities;
+pub mod positioning;
+pub mod terminal_protocol;

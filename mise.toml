@@ -15,7 +15,7 @@ run = "bash scripts/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-run = ["cargo test --workspace --locked", "cargo test --manifest-path packages/os/vendor/trouble-host/Cargo.toml --lib --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
+run = ["cargo test --workspace --locked --no-default-features", "cargo test --workspace --locked --no-default-features --features cycling", "cargo test --manifest-path packages/os/vendor/trouble-host/Cargo.toml --lib --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
 
 [tasks.fmt]
 description = "Format Rust code"
@@ -23,11 +23,8 @@ run = "cargo fmt --all"
 
 [tasks.check]
 description = "Check formatting and lint host code"
-run = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --locked -- -D warnings"]
+run = ["python scripts/check_boundaries.py", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features cycling -- -D warnings"]
 
-[tasks.preview]
-description = "Render a frame without a device"
-run = "mkdir -p .local && cargo run --locked --example preview -- .local/controls.ppm"
 
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"
@@ -50,29 +47,11 @@ run = "uv run scripts/device.py monitor"
 description = "Save current NetworkManager Wi-Fi credentials privately"
 run = "python scripts/wifi.py setup"
 
-[tasks.screenshot]
-description = "Capture the device screen as a private PNG over USB"
-run = "python scripts/screenshot.py"
 
-[tasks.debug]
-description = "Inspect, record, and exercise the running device over USB"
-run = "python scripts/debug.py"
 
-[tasks.e2e]
-description = "Run device UI and Wi-Fi recovery tests and save visual evidence"
-run = "python scripts/debug.py smoke"
 
-[tasks.persistence-test]
-description = "Verify preferences across temporary sessions and safe reflashes"
-run = "python scripts/persistence_test.py"
 
-[tasks.regression]
-description = "Run device scenarios, restart checks, visual comparisons and stability soak"
-run = "python scripts/regression.py"
 
-[tasks.crash-test]
-description = "Trigger a controlled panic and verify one-shot reset diagnostics"
-run = "python scripts/debug.py crash-test"
 
 [tasks.ride-export]
 description = "Export the complete read-only ride prefix as private raw, JSON and GPX files"
@@ -84,11 +63,11 @@ run = "python scripts/clear_rides.py"
 
 [tasks.gps-stress]
 description = "Check GNSS progress and transport counters under repeated USB state replies"
-run = "python scripts/gps_stress.py .local/tests/gps-stress --require-no-loss"
+run = "python scripts/gps_stress.py .local/tests/gps-stress-$(date +%s) --require-no-loss"
 
 [tasks.companion-stress]
 description = "Check companion progress and transport counters under repeated USB state replies"
-run = "python scripts/companion_stress.py .local/tests/companion-stress"
+run = "python scripts/companion_stress.py .local/tests/companion-stress-$(date +%s)"
 
 [tasks.bluetooth-echo]
 description = "Verify C606 BLE echo notifications, reads and reconnect with this laptop"
@@ -97,3 +76,27 @@ run = "/usr/bin/python3 scripts/bluetooth.py"
 [tasks.ble-simulator]
 description = "Advertise deterministic HRS and CSC fixtures from this laptop"
 run = "/usr/bin/python3 scripts/ble_sensor_sim.py"
+
+[tasks.logs]
+description = "Capture private JSON logs without resetting; send optional commands once"
+run = "python scripts/logs.py"
+
+[tasks.terminal]
+description = "Run a command or open the interactive no-reset USB terminal"
+run = "python scripts/terminal.py"
+
+[tasks.e2e]
+description = "Verify terminal framing, repeated no-reset opens and independent acquisition"
+run = "python scripts/base_test.py .local/tests/base-$(date +%s)"
+
+[tasks.persistence-test]
+description = "Save a temporary brightness, restart, verify and restore original preferences"
+run = "python scripts/base_test.py .local/tests/persistence-$(date +%s) --write-settings --restart"
+
+[tasks.regression]
+description = "Run a 60-second no-render terminal and acquisition regression"
+run = "python scripts/base_test.py .local/tests/regression-$(date +%s) --seconds 60"
+
+[tasks.crash-test]
+description = "Verify controlled panic, software reboot and one-shot marker through ordinary terminal"
+run = "python scripts/base_test.py .local/tests/crash-$(date +%s) --panic"

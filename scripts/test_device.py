@@ -4,7 +4,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zlib
 import device
 
@@ -35,6 +35,33 @@ def metadata():
 
 
 class Formats(unittest.TestCase):
+    def test_reboot_uses_watchdog_to_leave_usb_download_mode(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(device, "LOCAL", Path(temp)):
+            target = device.Device("unused")
+            target.run = Mock()
+            with patch.object(device, "monitor"):
+                target.reboot()
+            target.run.assert_called_once_with("get-security-info", after="watchdog-reset")
+
+    def test_reboot_rejects_rom_download_capture(self):
+        def capture(port, seconds, output):
+            output.write(b"rst:0x15 (USB_UART_CHIP_RESET),boot:0x0 (DOWNLOAD(USB/UART0))\r\nwaiting for download\r\n")
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(device, "LOCAL", Path(temp)):
+            target = device.Device("unused")
+            target.run = Mock()
+            with patch.object(device, "monitor", side_effect=capture):
+                with self.assertRaisesRegex(RuntimeError, "download mode"):
+                    target.reboot()
+
+    def test_reboot_reports_usb_disappearance_without_claiming_capture(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(device, "LOCAL", Path(temp)):
+            target = device.Device("unused")
+            target.run = Mock()
+            with patch.object(device, "monitor", side_effect=FileNotFoundError), patch("builtins.print") as output:
+                target.reboot()
+            self.assertIn("USB boot capture unavailable", output.call_args.args[0])
+
     def test_valid_image_and_extent(self):
         good = image()
         self.assertEqual(device.image_length(good + b"\xff" * 32), len(good))

@@ -137,12 +137,18 @@ class Device:
                  hex(address), path)
 
     def reboot(self):
-        self.run("get-security-info", after="hard-reset")
-        # On this C606, stock only became visible after opening USB with both
-        # control lines released. Keep the port open briefly and save boot output.
+        # RTS hard-reset left this C606 in ROM download mode. The watchdog
+        # reset boots the selected app, and stock can then remove the USB port.
+        self.run("get-security-info", after="watchdog-reset")
         path = LOCAL / f"{time.time_ns()}-boot.log"
         with path.open("wb") as output:
-            monitor(self.port, 3, output=output)
+            try:
+                monitor(self.port, 3, output=output)
+            except OSError:
+                print("USB boot capture unavailable after reset; confirm startup on the screen.")
+        captured = path.read_bytes()
+        require(b"waiting for download" not in captured and b"DOWNLOAD(USB/UART0)" not in captured,
+                f"Device is still in ROM download mode; inspect private boot logs in {LOCAL}")
 
     def backup(self, metadata, identity):
         require((max(records(metadata))[0] - 1) % 2 == 0, "Boot stock slot A before making the baseline backup")
@@ -157,7 +163,7 @@ class Device:
                     "stock_length": len(stock), "bootloader_region_sha256": sha(backup[:0x8000])}
         (LOCAL / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         self.reboot()
-        print("Full backup verified; stock reset and USB capture complete. Confirm the screen.")
+        print("Full backup verified; stock watchdog reset sent. Confirm the screen.")
 
     def baseline(self, identity, metadata):
         require((LOCAL / "manifest.json").exists(), "Run mise run backup before flashing")
@@ -191,7 +197,7 @@ class Device:
         actual, _ = self.read(0x8000, 0x8000, "after.bin")
         require(actual == expected, "Boot selection readback does not match the planned change")
         self.reboot()
-        print(f"Slot {'A (stock)' if slot == 0 else 'B (cycling)'} selected; reset and USB capture complete. Confirm the screen.")
+        print(f"Slot {'A (stock)' if slot == 0 else 'B (cycling)'} selected; watchdog reset sent. Confirm the screen.")
 
 
 def monitor(port, seconds, output=None):

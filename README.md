@@ -15,6 +15,7 @@ mise run check
 mise run build                       # Base, development harness enabled
 CYCLING_SDK=1 mise run build          # Add the cycling SDK
 mise run terminal -- STATUS          # Query an already-running device
+mise run boot-stock                  # Verify, select and boot preserved stock
 ```
 
 Setup installs the pinned Xtensa toolchain; builds load its environment without

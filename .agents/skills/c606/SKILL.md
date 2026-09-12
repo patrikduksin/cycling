@@ -6,7 +6,8 @@ description: Flash, access serial, debug or measure the connected Magene C606 sa
 # C606
 
 Use [device.py](../../../scripts/device.py) through `mise run backup`,
-`mise run flash` and `mise run stock`. The recovered layout assumes secure boot
+`mise run flash` and `mise run stock`, also available as `mise run boot-stock`.
+The recovered layout assumes secure boot
 and flash encryption are disabled. Generic flashing tools can replace protected
 boot metadata or stock ota_0. Repository helpers verify the device and baseline,
 validate image/ranges, restrict writes to the owned application/OTA selection,
@@ -18,11 +19,13 @@ The one-time full-flash backup is private under `.local/device`; keep a separate
 copy. Existing baseline backups must not be overwritten. An interrupted operation
 can leave download mode active; inspect the private logs, reconnect and use the
 stock task with the verified backup. Reset completion alone does not prove boot.
-The helper opens USB with DTR/RTS released after reset; stock has stayed dark until
-that step. Physical startup still needs observation. If USB is silent immediately after a
-safe flash, `mise run monitor -- --seconds 5` can release the control lines and
-start/reset the device. Stop monitor before opening a no-reset reader, and record
-the startup failure separately from successful attachment.
+The helper uses a watchdog reset. RTS hard-reset left this device in ROM download
+mode even with stock selected; watchdog reset reached normal stock startup, as
+confirmed by the user. Stock can remove the USB port during startup. The helper
+attempts a brief capture with DTR/RTS released, reports unavailable USB and rejects
+captured ROM download mode. A silent or missing port does not prove boot failure
+or success. Physical startup still needs observation. Stop monitor before opening
+a no-reset reader, and record startup separately from successful attachment.
 
 ## Access and collection
 

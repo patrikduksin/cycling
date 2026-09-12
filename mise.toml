@@ -35,6 +35,7 @@ depends = ["build"]
 run = "uv run scripts/device.py flash"
 
 [tasks.stock]
+alias = "boot-stock"
 description = "Verify and boot preserved stock firmware"
 run = "uv run scripts/device.py stock"
 

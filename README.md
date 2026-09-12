@@ -31,7 +31,8 @@ table, eFuses and existing persisted data must be preserved.
 - [Safe device workflow](docs/device.md)
 - [Terminal and device validation](docs/device-debugging.md)
 - [Ride recording and export](docs/ride-recording.md)
-- [Architecture and migration inventory](docs/core-architecture.md)
+- [Architecture and port obligations](docs/architecture.md)
+- [Refactor hardware evidence](docs/refactor-validation.md)
 - [Development evidence and open work](docs/overnight-plan.md)
 - [C606 hardware research](packages/stock/magene-c606)
 

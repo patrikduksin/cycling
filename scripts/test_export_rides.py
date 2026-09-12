@@ -168,8 +168,11 @@ class RideExportTests(unittest.TestCase):
         for data in [b'x' * 4097, b'x' * 4097 + b'\n']:
             with self.assertRaisesRegex(ValueError, 'oversized'):
                 terminal_reply(bytearray(), data, 10)
-        with self.assertRaisesRegex(RuntimeError, 'rebooted'):
-            terminal_reply(bytearray(), line(type='log', boot=8, component='boot'), 10)
+        initial_boot = [None]
+        self.assertIsNone(terminal_reply(bytearray(), line(type='log', boot=8, component='boot'), 10, initial_boot))
+        self.assertEqual(initial_boot, [8])
+        with self.assertRaisesRegex(RuntimeError, 'no identity'):
+            terminal_reply(bytearray(), line(type='log', component='boot'), 10, initial_boot)
         boot = [None]
         self.assertIsNone(terminal_reply(bytearray(), line(type='log', boot=8, component='gps'), 10, boot))
         with self.assertRaisesRegex(RuntimeError, 'rebooted'):
@@ -196,6 +199,30 @@ class RideExportTests(unittest.TestCase):
             self.assertEqual((reply['id'], reply['data']), (2, 'brightness=100'))
         with self.assertRaisesRegex(RuntimeError, 'rebooted'):
             terminal_reply(bytearray(), line(type='log', boot=13, component='boot'), 2, [12])
+
+    def test_first_clean_boot_token_establishes_identity_after_ansi_startup(self):
+        def line(**values):
+            return json.dumps(values).encode() + b'\n'
+        first = b'\x1b[31m' + line(type='log', boot=12, component='build')
+        first += line(type='reply', id=1, status='OK', data='metadata')
+        second = line(type='log', boot=12, component='boot', message='crash=controlled')
+        second += line(type='reply', id=2, status='OK', data='ready')
+        wire = first + second
+        for split in range(len(wire) + 1):
+            pending, boot = bytearray(), [None]
+            reply = terminal_reply(pending, wire[:split], 1, boot)
+            if reply is None:
+                reply = terminal_reply(pending, wire[split:], 1, boot)
+                remaining = b''
+            else:
+                remaining = wire[split:]
+            self.assertEqual(reply['id'], 1)
+            self.assertIsNone(boot[0])
+            reply = terminal_reply(pending, remaining, 2, boot)
+            self.assertEqual((reply['id'], boot[0]), (2, 12))
+        for component in ['boot', 'position']:
+            with self.assertRaisesRegex(RuntimeError, 'rebooted'):
+                terminal_reply(bytearray(), line(type='log', boot=13, component=component), 3, boot)
 
     def test_single_outstanding_command_receives_id_zero_parse_rejection(self):
         for status in ['INVALID', 'OVERLONG']:

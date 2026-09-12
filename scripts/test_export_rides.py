@@ -175,6 +175,20 @@ class RideExportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'rebooted'):
             terminal_reply(bytearray(), line(type='log', boot=9, component='gps'), 10, boot)
 
+    def test_single_outstanding_command_receives_id_zero_parse_rejection(self):
+        for status in ['INVALID', 'OVERLONG']:
+            wire = json.dumps(dict(type='reply', id=0, status=status, ms=123, data='')).encode() + b'\n'
+            for split in range(len(wire) + 1):
+                pending = bytearray()
+                reply = terminal_reply(pending, wire[:split], 42)
+                reply = reply or terminal_reply(pending, wire[split:], 42)
+                self.assertEqual((reply['id'], reply['status'], reply['ms']), (0, status, 123))
+        for status in ['OK', 'ACCEPTED', 'STATE']:
+            wire = json.dumps(dict(type='reply', id=0, status=status, data='')).encode() + b'\n'
+            self.assertIsNone(terminal_reply(bytearray(), wire, 42))
+        wire = json.dumps(dict(type='reply', id=41, status='INVALID', data='')).encode() + b'\n'
+        self.assertIsNone(terminal_reply(bytearray(), wire, 42))
+
     def test_backward_utc_across_untimed_point_and_overflow_are_explicit(self):
         points = [
             {'active_ms': 1000, 'utc_ms': 100, 'location': (1, 2)},

@@ -33,13 +33,17 @@ Harness selection only controls test operations, not ordinary terminal access.
 | Task | Purpose |
 | --- | --- |
 | `fmt`, `test`, `check`, `build` | Format, verify and build |
-| `terminal`, `logs` | Ordinary commands and private JSON capture |
+| `terminal`, `logs` | Interactive/one-shot commands and continuous private JSON capture |
 | `e2e`, `regression` | Framing, no-reset opens and acquisition without rendering |
 | `gps-stress`, `companion-stress` | Bounded read-only acquisition/error checks |
 | `persistence-test` | Explicit temporary save/restart and original-settings restoration |
 | `crash-test` | Harness-controlled panic and one-shot reset marker verification |
 | `bluetooth-echo`, `ble-simulator` | Owned Linux BlueZ interoperability fixtures |
 | `ride-export`, `ride-clear` | SDK export and explicitly verified reclaim |
+
+Use `mise run terminal -- STATUS` for one JSON reply, or `mise run terminal`
+for an interactive prompt. Use `mise run logs -- --seconds 30 --command INFO`
+for continuous capture; run only one USB owner at a time.
 
 ## Resource and service ownership
 

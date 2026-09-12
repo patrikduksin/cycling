@@ -20,6 +20,8 @@ mise run test
 mise run check
 mise run build                       # Base, development harness enabled
 CYCLING_SDK=1 mise run build          # Add the cycling SDK
+mise run terminal -- STATUS          # Query an already-running device
+mise run terminal                    # Interactive USB prompt
 ```
 
 Use the repository's safe flash tasks. Stock slot A, the bootloader, partition

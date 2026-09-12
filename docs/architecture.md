@@ -48,6 +48,26 @@ loss or reconnect. Trouble Host retains its upstream two-entry notification
 queue; lag hidden inside that queue is not fully reported by the core drop
 counter. This is not a lossless sensor stream or simultaneous-sensors claim.
 
+
+Wi-Fi offers `wifi::initialize(peripheral, spawner).await -> Option<Stack<'static>>`
+for consumers that need real DNS/TCP/UDP operations. It consumes the HAL Wi-Fi
+token once, starts the existing connection/network/probe tasks and returns the
+actual Embassy stack. None means unconfigured or radio initialization failed;
+Some means transport resources exist, not link, DHCP or internet readiness.
+Current `wifi::start` calls that interface and passes the returned handle to the
+network-time consumer. Composition can instead retain the handle for another
+same-executor consumer. No global getter or unsafe Send implementation is used:
+Embassy Stack contains a RefCell reference and is Copy but not Send/Sync.
+
+The stack handle survives reconnects. Consumers wait for config readiness with
+a deadline, bound their DNS/connect/read/write waits, and cancel by dropping the
+operation/socket. `connection_generation()` exposes the same association counter
+used by the existing recovery checks; results tied to a link must check it after
+awaiting. The four socket slots remain shared with DHCP, DNS, the public probe
+and time synchronization. Additional clients must coordinate that bounded
+capacity; the capability does not promise an unlimited socket pool. Existing
+probe/SNTP deadlines and generation-scoped recovery remain unchanged.
+
 The console loop yields through an Embassy 5 ms timer. It services general power
 and optional recording before reading a terminal command, including when no
 client is connected. Core acquisition has separate tasks. Flash and display

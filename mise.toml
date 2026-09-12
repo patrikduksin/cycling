@@ -82,8 +82,8 @@ description = "Capture private JSON logs without resetting; send optional comman
 run = "python scripts/logs.py"
 
 [tasks.terminal]
-description = "Send ordinary commands with --command TEXT and capture correlated replies"
-run = "python scripts/logs.py"
+description = "Run a command or open the interactive no-reset USB terminal"
+run = "python scripts/terminal.py"
 
 [tasks.e2e]
 description = "Verify terminal framing, repeated no-reset opens and independent acquisition"

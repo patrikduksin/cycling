@@ -81,11 +81,32 @@ pub fn online() -> bool {
     LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
 }
 
+/// Current firmware composition: initialize data transport and start network time.
 #[embassy_executor::task]
 pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
+    if let Some(stack) = initialize(peripheral, spawner).await {
+        spawner.spawn(time_sync(stack).unwrap());
+    }
+}
+
+/// Initialize the station and return Embassy's actual DNS/TCP/UDP capability.
+///
+/// None means unconfigured or failed radio initialization. Some means the stack
+/// and its runner exist, not that association, DHCP or internet access succeeded.
+/// Await `stack.wait_config_up()` under a caller deadline before data operations.
+/// The same handle survives reconnects. Compare `connection_generation()` around
+/// awaited operations when a result must belong to the same association.
+///
+/// Stack is Copy but !Send/!Sync: pass it only among tasks on this executor. Do
+/// not wrap it in an unsafe Send/global singleton. Callers own socket buffers,
+/// bound DNS/connect/read/write waits, and cancel by dropping their operation and
+/// socket. The four-socket pool is shared with DHCP, DNS, probe and time clients;
+/// additional consumers must coordinate socket use rather than assume capacity.
+/// Consuming WIFI prevents a second initialization through the safe interface.
+pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<Stack<'static>> {
     if config::SSID.is_empty() {
         log::info!(target: "wifi", "CYCLING_WIFI unconfigured");
-        return;
+        return None;
     }
     LINK.store(LINK_CONNECTING, Ordering::Relaxed);
     let auth = if config::WPA3 {
@@ -105,7 +126,7 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
         Err(_) => {
             LINK.store(LINK_FAILED, Ordering::Relaxed);
             log::warn!(target: "wifi", "CYCLING_WIFI init_failed");
-            return;
+            return None;
         }
     };
     log::info!(target: "wifi",
@@ -134,7 +155,13 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
     spawner.spawn(connection(controller, stack).unwrap());
     spawner.spawn(network(runner).unwrap());
     spawner.spawn(verify(stack).unwrap());
-    spawner.spawn(time_sync(stack).unwrap());
+    Some(stack)
+}
+
+/// Association generation used by existing probe/SNTP recovery validation.
+/// A changed generation invalidates results tied to the previous connection.
+pub fn connection_generation() -> u32 {
+    GENERATION.load(Ordering::Acquire)
 }
 
 async fn reconnect_requested() -> u8 {
@@ -399,9 +426,9 @@ async fn time_sync(stack: Stack<'static>) {
                 continue;
             }
             cycling_os::network_time::set_syncing(true);
-            let generation = GENERATION.load(Ordering::Acquire);
+            let generation = connection_generation();
             let result = with_timeout(Duration::from_secs(10), sync_time(stack)).await;
-            let current = generation == GENERATION.load(Ordering::Acquire) && stack.is_config_up();
+            let current = generation == connection_generation() && stack.is_config_up();
             match result {
                 Ok(Ok((timestamp, rtt_ms))) if current => {
                     let now = Instant::now().as_millis();

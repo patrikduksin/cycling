@@ -12,9 +12,17 @@ mise run build
 CYCLING_HARNESS=0 mise run build
 CYCLING_SDK=1 mise run build
 CYCLING_SDK=1 CYCLING_HARNESS=0 mise run build
-mise run terminal -- --seconds 10 --command INFO --command STATUS --command POSITION
+mise run terminal -- STATUS           # Print one correlated JSON reply
+mise run terminal                     # INFO, then an interactive prompt
 mise run logs -- --seconds 30 --command INFO
 ```
+
+The terminal accepts commands without the `CMD id` prefix. One-shot mode exits
+after printing the reply; interactive mode prints initial `INFO` metadata, then
+accepts commands until `quit`, EOF or Ctrl-C. `ACCEPTED` means queued, not complete.
+It sends each command once and writes private raw USB bytes under `.local/terminal`
+or `--output`. It reads USB while awaiting replies, not while waiting for keyboard
+input; use `logs` for continuous collection. Both use the same exclusive USB lock.
 
 `CYCLING_SDK=0` is the base default; `CYCLING_SDK=1` enables cycling workflows.
 `CYCLING_HARNESS=1` is the development default; zero removes optional test faults,

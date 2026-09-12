@@ -38,12 +38,18 @@ class ExportConnection:
             raise
 
     def __exit__(self, *_):
-        if self.fd is not None:
-            os.close(self.fd)
-        if self.log is not None:
-            self.log.close()
-        if self.lock is not None:
-            self.lock.close()
+        fd, log, lock = self.fd, self.log, self.lock
+        self.fd = self.log = self.lock = None
+        try:
+            if fd is not None:
+                os.close(fd)
+        finally:
+            try:
+                if log is not None:
+                    log.close()
+            finally:
+                if lock is not None:
+                    lock.close()
 
     def terminal_command(self, command, timeout=8):
         """Send once. The caller decides how to handle an uncertain mutation."""
@@ -95,7 +101,15 @@ def terminal_reply(pending, data, expected_id, boot=None):
                     raise RuntimeError('device rebooted during command')
                 boot[0] = reply['boot']
             continue
-        if reply.get('type') != 'reply' or reply.get('id') != expected_id:
+        if reply.get('type') != 'reply':
+            continue
+        # The firmware discards the id when line parsing fails. This connection
+        # permits only one outstanding command, so its documented id-zero parse
+        # rejection belongs to that command. Never accept id-zero success or an
+        # unrelated numbered reply as its completion.
+        parse_rejection = (type(reply.get('id')) is int and reply['id'] == 0
+                           and reply.get('status') in ('INVALID', 'OVERLONG'))
+        if reply.get('id') != expected_id and not parse_rejection:
             continue
         if (type(reply.get('id')) is not int
                 or not isinstance(reply.get('status'), str)

@@ -51,26 +51,32 @@ panel not observed. Disabled mode touch, battery/display/Wi-Fi/HTTP/time observe
 short disabled sample is not GNSS interval evidence. First enabled postflash USB
 open was silent; documented monitor release booted it and retry passed.
 
-Current branch refactor/base-services atop193c133. Uncommitted integrated work:
-positioning/input service owners #57/#60; generic protected persistence #59;
-optional physical SDK #62; generic BLE transport #58; base settings/power and
-terminal composition #61/#63; log facade/JSONL queue+collector #66. Root owns
-main/core_system/terminal/protocol/logging integration and all device access.
-Astra medium persistence agent owns SDK runtime and safe export/clear host
-migration. Astra medium board agent owns obsolete UI/tool cleanup and replacement
-terminal stress/regression scripts. Independent medium reviewer approved scoped
-position/input, BLE adapter and runtime, pending integrated tests/hardware. Its
-settings-corruption preservation finding was fixed with fake-media tests; review
-recheck pending. Logging receipt timestamp finding fixed with six host tests.
+Progress at 16:04 UTC: branch `refactor/base-services`, committed integration
+`c815338`. Independent medium reviews approved positioning/input, BLE, SDK runtime,
+protected storage (including refusal of unknown settings without mutation),
+terminal/log queue and legacy cleanup. Required tests/checks and all four build
+combinations passed: base enabled/disabled images 803392/802544 bytes; SDK
+enabled/disabled 835664/834832 bytes. Latest follow-ups expose the actual Embassy
+network Stack and a human terminal CLI; final CLI rejection recheck is pending.
+These follow-ups require a new commit/build matrix before final hardware evidence.
 
-Initial shell-free base compiled and passed mise test/check, then safe-flashed
-harness-enabled at15:37. It has no SDK or App composition; USB collection is being
-validated. Current first collection owns USB for10s only. Latest source adds
-ordinary scheduled RESTART and TEST11 panic, not yet flashed. TEST10 saturates
-bounded logs; TEST0..4 are existing Wi-Fi fault controls. Root still must integrate
-SDK runtime feature composition, finish/review terminal, measure all matrix
-builds, validate recovery/console/storage/log loss and coexistence, retire legacy
-tools only after replacements pass, publish useful increments and final handoff.
+The device currently runs the initial shell-free base harness-enabled image from
+15:37, no SDK/render loop. It has ordinary JSON terminal/logging, GNSS receiving
+with no fix, companion/touch/battery and network time. One initial postflash open
+was silent; monitor release and retry worked. Preliminary closed-host/saturation
+capture observed explicit loss108 and a sequence gap107 while commands/acquisition
+continued. BLE echo passed two normal reconnects at observed MTU60; a separate
+MTU23 client passed discovery/notify/readback and short-write refusal (second
+MTU23 reconnect in progress). These are preliminary evidence, not final integrated
+firmware validation. All raw evidence remains under `.local/refactor-session`,
+`.local/logs` and `.local/exports`.
+
+Root owns all serialized hardware access. No agent owns a device session. The
+remaining work is final four-mode checks/hardware, safe settings restart/restore,
+SDK progress/export preservation, terminal fault/loss/recovery measurements,
+publication and issue closure only with requirements met. The indoor/user-confirmed
+GNSS distinction above remains authoritative. No destructive ride reclaim has run
+in this refactor; the baseline saved demo/four slots is preserved.
 
 Baseline safe `sudo -n -E mise run flash` reused existing backup with safeguards.
 Ordinary user lacks USB permissions; sudo task works. Sudo builds create root-owned

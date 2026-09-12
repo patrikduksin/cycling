@@ -51,32 +51,46 @@ panel not observed. Disabled mode touch, battery/display/Wi-Fi/HTTP/time observe
 short disabled sample is not GNSS interval evidence. First enabled postflash USB
 open was silent; documented monitor release booted it and retry passed.
 
-Progress at 16:04 UTC: branch `refactor/base-services`, committed integration
-`c815338`. Independent medium reviews approved positioning/input, BLE, SDK runtime,
-protected storage (including refusal of unknown settings without mutation),
-terminal/log queue and legacy cleanup. Required tests/checks and all four build
-combinations passed: base enabled/disabled images 803392/802544 bytes; SDK
-enabled/disabled 835664/834832 bytes. Latest follow-ups expose the actual Embassy
-network Stack and a human terminal CLI; final CLI rejection recheck is pending.
-These follow-ups require a new commit/build matrix before final hardware evidence.
+Progress at 16:23 UTC: PR #69 merged as `0539c03`; #57–64 closed after
+independent Astra-medium code and hardware evidence approval. #55/#56 were already
+closed by PRs #67/#68. Branch `refactor/validation` now owns final #65/#66 evidence.
+Required tests/checks pass: 54 base, 87 SDK, 15 pinned BLE vendor and 53 Python.
+GitHub host and all four firmware jobs passed. Images: base enabled/disabled
+803552/802688 bytes; SDK 835792/834960 bytes; pre-refactor baseline 856224 bytes.
+Latest firmware logic is8bc6482; later source changes were docs and host-only fixes.
 
-The device currently runs the initial shell-free base harness-enabled image from
-15:37, no SDK/render loop. It has ordinary JSON terminal/logging, GNSS receiving
-with no fix, companion/touch/battery and network time. One initial postflash open
-was silent; monitor release and retry worked. Preliminary closed-host/saturation
-capture observed explicit loss108 and a sequence gap107 while commands/acquisition
-continued. BLE echo passed two normal reconnects at observed MTU60; a separate
-MTU23 client passed discovery/notify/readback and short-write refusal (second
-MTU23 reconnect in progress). These are preliminary evidence, not final integrated
-firmware validation. All raw evidence remains under `.local/refactor-session`,
-`.local/logs` and `.local/exports`.
+Disabled base: 20-second no-render GNSS/companion progress with zero new faults;
+normal terminal/logs, malformed-line rejection, three no-reset opens, display DMA
+completion13–14ms and settings save/restart/readback/restore passed. Preferences
+100/30/20/-180 restored. First restart test exposed queued same-token startup logs
+falsely treated as a reboot by the host. Captured-trace regression, independent
+review and hardware retry passed. Initial postflash silence required documented
+monitor release; no-reset ordinary attachment then worked.
 
-Root owns all serialized hardware access. No agent owns a device session. The
-remaining work is final four-mode checks/hardware, safe settings restart/restore,
-SDK progress/export preservation, terminal fault/loss/recovery measurements,
-publication and issue closure only with requirements met. The indoor/user-confirmed
-GNSS distinction above remains authoritative. No destructive ride reclaim has run
-in this refactor; the baseline saved demo/four slots is preserved.
+SDK disabled: GNSS+18688bytes/+217valid and companion+340 in10seconds, all tracked
+fault deltas0. Ordinary terminal/logging available; TEST10 UNSUPPORTED. Existing
+one saved demo/four slots exported byte-identically to the baseline.
+SDK enabled sim-csc9817bf1: owned60rpm fixture freshness, reconnect1→2 and stale
+value omission observed. Twelve samples committed with USB closed. Pause held
+active duration; resume/finish saved19samples at17308ms. A second disposable live
+ride recovered after software restart at last committed3026ms (four samples).
+Final export3rides/18slots/4608bytes has no invalid slots and preserves the original
+1024-byte prefix exactly. No initialization/reclaim/erase ran. One private test
+assertion expectedready afterfinish; actualsaved is correct, and continuation
+inspected state without replaying mutations. The fixture is stopped/unregistered.
+
+BLE base echo passed two ordinary reconnects at observedMTU60 and two independent
+MTU23 discovery/notify/readback/short-write-refusal sessions. Reviewer independently
+checked both logs, image evidence and prefix preservation. Physical panel/switch
+behavior, upstream BLE notification lag, outdoor GNSS and #34 remain explicit
+limits. Capture is removed; no new power or peak-memory claim.
+
+Root exclusively owns device access. Current device SDK+harness9817bf1, recovered
+inventory3rides/18slots. No serial reader or simulator remains. Next safe-flash the
+merged base+harness and finish controlled transport/Wi-Fi/panic recovery, bounded
+log overflow/slow-host collection and final metadata. Then publish #65/#66 written
+evidence and close only after independent review, leaving verified base firmware
+running with no readers or test peers. Raw evidence remains ignored/private.
 
 Baseline safe `sudo -n -E mise run flash` reused existing backup with safeguards.
 Ordinary user lacks USB permissions; sudo task works. Sudo builds create root-owned

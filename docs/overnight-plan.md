@@ -3,7 +3,42 @@
 Approved by the user on 2026-09-11. Continue through this queue without routine
 permission requests. This file is the durable handoff across compactions.
 
-## Latest device state
+## Active refactor session, 2026-09-12
+
+This section supersedes historical queue, device and agent instructions below.
+The user authorized this new session to complete epic #54 and live child issues
+#55 through #66 autonomously, including implementation, independent review,
+publication, merges, issue closure when fulfilled, safe flashing and rebooting.
+Do not restart the completed historical queues. #34 retains its separate limits.
+
+The user explicitly authorized custom firmware on the connected USB C606 and
+leaving the verified device/core build running with ordinary terminal/logging and
+the development harness enabled. Preserve stock ota_0, bootloader, partition
+table, eFuses and all existing persisted data. Use repository backup/flash/stock
+tasks. No vendor filesystem writes. Raw evidence stays in ignored `.local/`.
+Passwordless sudo was verified at 15:12 UTC. The reported 250-minute window
+started around or before 15:10 UTC; recheck availability and prioritize hardware
+validation. Do not modify system security or assume renewal.
+
+Root owns architecture, integration, publication and ALL serialized device access.
+Use GPT-6 Astra low for bounded implementation, medium for persistence/concurrency
+ownership and independent review. At most two implementers and one reviewer may
+work alongside root, with explicit file/worktree ownership. Reviews block concrete
+correctness, agreed boundary violations, protected data risks and missing checks.
+After two substantive fix rounds, split scope or escalate instead of polishing.
+Run mise test/check/build for firmware changes, both harness modes for feature
+boundaries, and actual device checks for changed hardware access/display timing.
+
+Current starting state: clean main at eb0c7d2. Live #54-#66 bodies fetched at
+15:12 UTC to private `.local/refactor-session/issue-*.json`. Historical state says
+stock selected; current boot/USB state has not yet been observed. Root owns device;
+no agent or collector owns a serial session. No source edits preceded this session.
+
+Next: short contract/deletion inventory #55, device ownership #56, then early
+logging #66 alongside independent service extraction. Track branch/PR, review,
+checks and observed device state here after each increment.
+
+## Historical latest device state
 
 At the user's request after the GPS work, `mise run stock` completed successfully
 on September 11. Stock slot A was selected and the device reset. The stock UI

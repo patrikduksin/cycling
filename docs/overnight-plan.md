@@ -29,7 +29,7 @@ After two substantive fix rounds, split scope or escalate instead of polishing.
 Run mise test/check/build for firmware changes, both harness modes for feature
 boundaries, and actual device checks for changed hardware access/display timing.
 
-Current starting state: clean main at eb0c7d2. Live #54-#66 bodies fetched at
+Session starting state: clean main at eb0c7d2. Live #54-#66 bodies fetched at
 15:12 UTC to private `.local/refactor-session/issue-*.json`. Historical state says
 stock selected; current boot/USB state has not yet been observed. Root owns device;
 no agent or collector owns a serial session. No source edits preceded this session.
@@ -51,14 +51,16 @@ panel not observed. Disabled mode touch, battery/display/Wi-Fi/HTTP/time observe
 short disabled sample is not GNSS interval evidence. First enabled postflash USB
 open was silent; documented monitor release booted it and retry passed.
 
-Progress at 16:34 UTC: PRs #67/#68/#69 merged; #55–64 closed. Service merge
-is `0539c03`. Final publication branch is `refactor/validation`; it includes
-checkpoint660affd and host-only validation fixes. #54/#65/#66 await the final PR
-merge/closure. All live #54–66 issue bodies were rechecked and remain unchanged.
-Astra-medium final source, documentation and hardware evidence review approved
-#65/#66 closure. Required checks pass: 54 base, 87 SDK, 15 pinned BLE vendor and
-55 Python tests, boundary/fmt/Clippy checks and four firmware combinations.
-The final build-script check also passed; no firmware logic changed after8bc6482.
+Final handoff at 16:41 UTC: **epic #54 and every child #55–66 are closed**.
+Merged PRs are #67 (b6f680c), #68 (193c133), #69 (0539c03) and #71 (10d11e3).
+The workspace is on `main`; integrated firmware/tools are at10d11e3, followed by
+this documentation-only checkpoint. Independent Astra-medium source, documentation
+and hardware evidence reviews approved completion. Required tests pass: 54 base,
+87 SDK, 15 pinned BLE vendor and55 Python; boundary/fmt/Clippy and all four firmware
+combinations pass. GitHub host and four firmware jobs passed on the final PR.
+The final build-script check passed. No firmware logic changed after8bc6482;
+later host, documentation and CI changes do not require reflashing the verified
+image. Fulfilled issue acceptance checklists link the published evidence.
 
 The C606 is running **660affdce26e, clean base, harness enabled, SDK disabled,
 INFO logging, no capture**. Final device timestamps270625–270884ms confirmed
@@ -94,9 +96,21 @@ and recovery evidence. #34 stays open for its unverified receiver/control/outdoo
 requirements. Physical panel/switch/touch accuracy and power were not newly
 established. BLE remains onepeer with upstream queue-lag limitations. Explicit
 unknown-settings recovery is follow-up #70; normal SAVE remains non-destructive.
-Next: publish and merge the reviewed validation/host-fix PR, close #65/#66/#54,
-confirm repository/issue state and return the concise handoff. No routine user
-approval or new hardware test is required.
+This queue is complete. No reader, fixture, device mutation or historical queue
+is pending in this session. Separate #34/#70 work must not be silently restarted.
+
+From the repository, ordinary access on this host is:
+
+```sh
+sudo -E mise run terminal
+sudo -E mise run terminal -- STATUS
+sudo -E mise run logs -- --seconds 60
+```
+
+Use one owner at a time. Commands above do not reset the running device. Logs and
+exports stay private under ignored `.local/`. Sudo is needed for this host's
+existing USB permissions; its temporary passwordless authorization was not renewed
+and system security was not changed.
 
 Baseline safe `sudo -n -E mise run flash` reused existing backup with safeguards.
 Ordinary user lacks USB permissions; sudo task works. Sudo builds create root-owned

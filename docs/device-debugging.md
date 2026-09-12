@@ -35,8 +35,12 @@ records raw bytes, decoded records and a summary, reconnects with bounded backof
 and sends each requested command once. Reconnection never replays mutations.
 Pass `--port` or `CYCLING_PORT` if needed. Add `sudo` only when USB permissions
 require it. Do not change system security for a test. See [safe device tasks](device.md)
-for flashing and stock restoration; always pass the desired build mode to
-`mise run flash`, since it rebuilds `.local/cycling.bin`.
+for flashing and stock restoration. Pass both build-mode values to flash, which
+rebuilds `.local/cycling.bin`, for example:
+
+```sh
+CYCLING_SDK=1 CYCLING_HARNESS=0 mise run flash
+```
 
 ## Ordinary protocol
 

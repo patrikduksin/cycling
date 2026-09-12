@@ -57,7 +57,7 @@ loss/depth, target queue storage bytes, and maximum measured active USB pump tim
 The enqueue measurement excludes facade message formatting; the USB pump includes
 reply traffic. Instrumentation itself has a cost. Report firmware configuration
 and collection state with measurements; these are observed samples, not worst-case
-latency, peak memory or power measurements. See the final validation evidence for
+latency, peak memory or power measurements. See [the final validation evidence](refactor-validation.md) for
 actual values. No screenshot or recording buffer remains in the base.
 
 Boot records contain commit/dirty state, harness/SDK mode, recording=false, queue

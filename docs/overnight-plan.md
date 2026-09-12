@@ -51,32 +51,52 @@ panel not observed. Disabled mode touch, battery/display/Wi-Fi/HTTP/time observe
 short disabled sample is not GNSS interval evidence. First enabled postflash USB
 open was silent; documented monitor release booted it and retry passed.
 
-Progress at 16:04 UTC: branch `refactor/base-services`, committed integration
-`c815338`. Independent medium reviews approved positioning/input, BLE, SDK runtime,
-protected storage (including refusal of unknown settings without mutation),
-terminal/log queue and legacy cleanup. Required tests/checks and all four build
-combinations passed: base enabled/disabled images 803392/802544 bytes; SDK
-enabled/disabled 835664/834832 bytes. Latest follow-ups expose the actual Embassy
-network Stack and a human terminal CLI; final CLI rejection recheck is pending.
-These follow-ups require a new commit/build matrix before final hardware evidence.
+Progress at 16:34 UTC: PRs #67/#68/#69 merged; #55–64 closed. Service merge
+is `0539c03`. Final publication branch is `refactor/validation`; it includes
+checkpoint660affd and host-only validation fixes. #54/#65/#66 await the final PR
+merge/closure. All live #54–66 issue bodies were rechecked and remain unchanged.
+Astra-medium final source, documentation and hardware evidence review approved
+#65/#66 closure. Required checks pass: 54 base, 87 SDK, 15 pinned BLE vendor and
+55 Python tests, boundary/fmt/Clippy checks and four firmware combinations.
+The final build-script check also passed; no firmware logic changed after8bc6482.
 
-The device currently runs the initial shell-free base harness-enabled image from
-15:37, no SDK/render loop. It has ordinary JSON terminal/logging, GNSS receiving
-with no fix, companion/touch/battery and network time. One initial postflash open
-was silent; monitor release and retry worked. Preliminary closed-host/saturation
-capture observed explicit loss108 and a sequence gap107 while commands/acquisition
-continued. BLE echo passed two normal reconnects at observed MTU60; a separate
-MTU23 client passed discovery/notify/readback and short-write refusal (second
-MTU23 reconnect in progress). These are preliminary evidence, not final integrated
-firmware validation. All raw evidence remains under `.local/refactor-session`,
-`.local/logs` and `.local/exports`.
+The C606 is running **660affdce26e, clean base, harness enabled, SDK disabled,
+INFO logging, no capture**. Final device timestamps270625–270884ms confirmed
+receiving/no-fix GNSS5799valid, companion8985valid, all current tracked faults0,
+Wi-Fi verified/fault0, fresh network time, echo advertising, crashnone and
+preferences100/30/20/-180 without persistence error. Display black fill completed
+at13ms maximum. All serial readers, tests and owned BLE fixtures have stopped;
+CDC driver was restored after the reconnect test. Root has exclusive ownership;
+no further device mutation is needed. Firmware ELF/image snapshots are private
+under `.local/refactor-session/firmware-660affd.*`.
 
-Root owns all serialized hardware access. No agent owns a device session. The
-remaining work is final four-mode checks/hardware, safe settings restart/restore,
-SDK progress/export preservation, terminal fault/loss/recovery measurements,
-publication and issue closure only with requirements met. The indoor/user-confirmed
-GNSS distinction above remains authoritative. No destructive ride reclaim has run
-in this refactor; the baseline saved demo/four slots is preserved.
+[Sanitized validation](refactor-validation.md) records all four configurations,
+settings save/restart/restore, SDK disabled export, owned CSC reconnect/freshness,
+12samples with USBclosed, 19-sample saved ride and four-sample recovered ride.
+The last SDK export contains3rides/18slots and preserves the original1024-byte
+prefix exactly. Two identified disposable records were appended; no ride erase,
+initialization or reclaim ran. The final base flash used protected repository
+logic and the base has no ride writer. Original settings remain preserved.
+
+Final base tests observed actual GNSS DMA/UART loss and companion UART loss under
+a six-second stall, then sustained recovery; injected Wi-Fi failure/recovery;
+controlled panic and a clean one-shot marker reset; 25seconds with hostclosed
+and visible logloss without acquisition faults; CDCport removal/reconnect with
+bounded backoff and the same boot identity. Two host startup misclassifications
+were reproduced from private traces and fixed with independent review; their
+failed reports remain. The panic retry and final evidence pass. Raw logs, private
+identifiers and exports stay ignored. Firmware image803552bytes; queue3124bytes;
+final sampled freeheap80308/min79860, enqueue max1829µs and USBpump max310µs are
+observations, not peak memory, WCET or power measurements.
+
+The user-confirmed indoor GPS baseline remains separate from new no-fix/parser
+and recovery evidence. #34 stays open for its unverified receiver/control/outdoor
+requirements. Physical panel/switch/touch accuracy and power were not newly
+established. BLE remains onepeer with upstream queue-lag limitations. Explicit
+unknown-settings recovery is follow-up #70; normal SAVE remains non-destructive.
+Next: publish and merge the reviewed validation/host-fix PR, close #65/#66/#54,
+confirm repository/issue state and return the concise handoff. No routine user
+approval or new hardware test is required.
 
 Baseline safe `sudo -n -E mise run flash` reused existing backup with safeguards.
 Ordinary user lacks USB permissions; sudo task works. Sudo builds create root-owned

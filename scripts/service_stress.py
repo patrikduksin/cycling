@@ -70,20 +70,35 @@ def run(port, directory, seconds=20, command='POSITION', interval=.05, allow_los
         final_settings = read(connection, 'SETTINGS')
         final_system = read(connection, 'STATUS')
         sampled_minimum = min(sampled_minimum, int(final_system['heap_free']))
-        for key in PREFERENCES:
-            if final_settings[key] != settings[key]:
-                raise AssertionError(f'preference changed: {key}')
-        if final_system['storage_ops'] != system['storage_ops']:
-            raise AssertionError('storage operations occurred during read-only stress')
-        if inventory is not None:
-            final_inventory = read(connection, 'RIDE STATUS')
-            for key in ('slot', 'rides', 'samples', 'pending'):
-                if inventory[key] != final_inventory[key]:
-                    raise AssertionError(f'ride inventory changed: {key}')
         result = dict(command=command, build=build, recording=False,
-                      requested_seconds=seconds, device_elapsed_ms=after['ms'] - before['ms'],
+                      requested_seconds=seconds, device_elapsed_ms=None,
                       samples=samples, before=before, after=after,
+                      settings_before=settings, settings_after=final_settings,
+                      status_before=system, status_after=final_system,
+                      inventory_before=inventory, inventory_after=None,
                       sampled_heap_min=sampled_minimum, final_heap_free=int(final_system['heap_free']),
-                      delta=validate(command, before, after, allow_loss))
-    (directory / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
+                      delta=None, ok=False, error=None)
+        try:
+            # Keep computable deltas even when a progress/loss assertion fails.
+            result['delta'] = {key: int(after[key]) - int(before[key])
+                               for key in PROGRESS[command] + FAULTS[command]}
+            result['device_elapsed_ms'] = after['ms'] - before['ms']
+            for key in PREFERENCES:
+                if final_settings[key] != settings[key]:
+                    raise AssertionError(f'preference changed: {key}')
+            if final_system['storage_ops'] != system['storage_ops']:
+                raise AssertionError('storage operations occurred during read-only stress')
+            if inventory is not None:
+                final_inventory = read(connection, 'RIDE STATUS')
+                result['inventory_after'] = final_inventory
+                for key in ('slot', 'rides', 'samples', 'pending'):
+                    if inventory[key] != final_inventory[key]:
+                        raise AssertionError(f'ride inventory changed: {key}')
+            validate(command, before, after, allow_loss)
+            result['ok'] = True
+        except Exception as error:
+            result['error'] = dict(type=type(error).__name__, message=str(error))
+            raise
+        finally:
+            (directory / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
     return result

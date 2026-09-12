@@ -169,7 +169,7 @@ media, validity and loss tests with the lower owner; keep ride/sensor tests with
 SDK; replace shell-coupled tests before deleting them. No blanket test deletion.
 
 Mise task disposition is explicit. Retain `setup`, `build`, `test`, `fmt`, `check`,
-`backup`, `flash`, `stock`, `monitor`, `wifi-setup`, `screenshot`, `ride-export`,
+`backup`, `flash`, `stock`, `monitor`, `wifi-setup`, `ride-export`,
 `ride-clear`, `gps-stress`, `companion-stress`, `bluetooth-echo`, `ble-simulator`.
 Replace `debug`, `e2e`, `persistence-test`, `regression`, `crash-test` with supported
 terminal/service checks before retiring old entry points. Delete `preview` when

@@ -1,5 +1,9 @@
+import json
+import tempfile
 import unittest
-from service_stress import fields, validate
+from pathlib import Path
+from unittest.mock import patch
+from service_stress import fields, validate, run
 
 class ServiceStressTests(unittest.TestCase):
     def position(self, ms=1, **changes):
@@ -36,6 +40,31 @@ class ServiceStressTests(unittest.TestCase):
         after = dict(before, ms=2, companion_valid='20', input_lost='16')
         with self.assertRaises(AssertionError):
             validate('INPUT', before, after)
+
+    def test_failed_run_retains_summary_and_raw_before_raising(self):
+        settings = dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='0')
+        system = dict(heap_free='1000', storage_ops='0')
+        before = self.position()
+        after = self.position(ms=2, bytes='20', valid='2', dma_losses='1')
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            raw = directory / 'raw.bin'
+            raw.write_bytes(b'private capture remains')
+            with patch('service_stress.private_directory', return_value=directory), \
+                    patch('service_stress.ExportConnection'), \
+                    patch('service_stress.read', side_effect=[
+                        dict(cycling='false'), settings, system, before, after, settings, system]), \
+                    patch('service_stress.time.monotonic', side_effect=[0, 0, 0, 3]), \
+                    patch('service_stress.time.sleep'), \
+                    self.assertRaisesRegex(AssertionError, 'faults advanced'):
+                run('/dev/fake', directory, seconds=2)
+            result = json.loads((directory / 'summary.json').read_text())
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['before'], before)
+            self.assertEqual(result['after'], after)
+            self.assertEqual(result['delta']['dma_losses'], 1)
+            self.assertEqual(result['error']['type'], 'AssertionError')
+            self.assertEqual(raw.read_bytes(), b'private capture remains')
 
 if __name__ == '__main__':
     unittest.main()

@@ -21,7 +21,8 @@ python scripts/wifi.py generate
 python scripts/ble_config.py
 export CYCLING_WIFI_CONFIG="$PWD/.local/wifi/config.rs"
 export CYCLING_BLE_CONFIG="$PWD/.local/ble/config.rs"
-export CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
+CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
+export CYCLING_BUILD_COMMIT
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   export CYCLING_BUILD_DIRTY=1
 else

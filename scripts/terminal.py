@@ -6,8 +6,7 @@ from pathlib import Path
 import sys
 import time
 
-from export_rides import ExportConnection
-from logs import ROOT
+from usb import ROOT, UsbConnection
 
 
 def exchange(connection, command):
@@ -24,7 +23,7 @@ def exchange(connection, command):
 
 def run(port, output, command):
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    with ExportConnection(port, output / 'usb.log') as connection:
+    with UsbConnection(port, output / 'usb.log') as connection:
         if command:
             return 0 if exchange(connection, ' '.join(command)) else 1
         if not exchange(connection, 'INFO'):

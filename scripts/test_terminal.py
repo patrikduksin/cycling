@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from export_rides import ExportConnection
+from usb import UsbConnection
 from terminal import exchange, run
 
 
@@ -22,7 +22,7 @@ class TerminalTests(unittest.TestCase):
         connection = self.connection('ACCEPTED')
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
-            with patch('terminal.ExportConnection', return_value=connection), contextlib.redirect_stdout(output):
+            with patch('terminal.UsbConnection', return_value=connection), contextlib.redirect_stdout(output):
                 result = run('/dev/test', Path(directory) / 'log', ['RIDE', 'START'])
             self.assertEqual(result, 0)
             self.assertEqual(json.loads(output.getvalue())['status'], 'ACCEPTED')
@@ -32,7 +32,7 @@ class TerminalTests(unittest.TestCase):
     def test_interactive_initial_info_single_owner_and_eof_release(self):
         connection = self.connection()
         with tempfile.TemporaryDirectory() as directory:
-            with (patch('terminal.ExportConnection', return_value=connection) as factory,
+            with (patch('terminal.UsbConnection', return_value=connection) as factory,
                   patch('builtins.input', side_effect=['STATUS', EOFError()]),
                   contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())):
                 self.assertEqual(run('/dev/test', Path(directory) / 'log', []), 0)
@@ -49,7 +49,7 @@ class TerminalTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
-            with (patch('terminal.ExportConnection', return_value=connection),
+            with (patch('terminal.UsbConnection', return_value=connection),
                   patch('builtins.input', side_effect=['BOGUS', 'STATUS', EOFError()]),
                   contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO())):
                 self.assertEqual(run('/dev/test', Path(directory) / 'log', []), 0)
@@ -67,7 +67,7 @@ class TerminalTests(unittest.TestCase):
     def test_firmware_rejection_is_nonzero_and_transport_error_is_not_retried(self):
         connection = self.connection('STATE')
         with tempfile.TemporaryDirectory() as directory:
-            with patch('terminal.ExportConnection', return_value=connection), contextlib.redirect_stdout(io.StringIO()):
+            with patch('terminal.UsbConnection', return_value=connection), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(run('/dev/test', Path(directory) / 'rejected', ['RIDE', 'START']), 1)
                 connection.terminal_command.side_effect = TimeoutError('uncertain')
                 with self.assertRaises(TimeoutError):
@@ -76,10 +76,10 @@ class TerminalTests(unittest.TestCase):
 
     def test_shared_connection_cleanup_is_idempotent_even_after_close_failure(self):
         for error in [None, OSError('close failed')]:
-            connection = ExportConnection('/dev/test', 'unused')
+            connection = UsbConnection('/dev/test', 'unused')
             connection.fd = 123
             log, lock = connection.log, connection.lock = MagicMock(), MagicMock()
-            with patch('export_rides.os.close', side_effect=error) as close:
+            with patch('usb.os.close', side_effect=error) as close:
                 if error:
                     with self.assertRaises(OSError):
                         connection.__exit__()

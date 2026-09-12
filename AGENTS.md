@@ -1,37 +1,23 @@
 # cycling
 
-The approved autonomous issue queue and execution agreement are in
-`docs/overnight-plan.md`.
+Code owns implementation; GitHub issues and PRs own requirements, decisions and history.
+Keep firmware in `packages/os` and device research in `packages/stock/<device>`.
+Device hides board wiring/HAL/quirks; core owns general capabilities; the optional
+cycling SDK owns cycling interpretation, rides, selection and export semantics.
+Read [architecture](docs/architecture.md) when changing those ownership boundaries.
 
-Keep the workspace small. Firmware lives in `packages/os`; device research lives in
-`packages/stock/<device>`. Use mise tasks and commit the Cargo lockfile.
+Use mise tasks and commit Cargo.lock. For firmware changes run `mise run test`,
+`mise run check` and `mise run build`; the host tasks check both base and cycling SDK.
+For feature-boundary changes build base and SDK with both harness modes.
+Preserve the licensed Trouble Host patch and its minimum-MTU regression coverage.
 
-Run `mise run test`, `mise run check`, and `mise run build` for firmware changes.
-Run both base and cycling SDK checks through the mise tasks. The legacy renderer
-and preview task were removed by refactor #64.
+Read [c606](.agents/skills/c606/SKILL.md) before flashing, serial access or device tests.
+Use `mise run backup`, `mise run flash` and `mise run stock` for device firmware changes.
+Preserve stock ota_0, bootloader, partition table, eFuses and existing persisted data.
+No vendor filesystem writes. Serialize all device access and validate changed
+hardware access or display timing on hardware; report what was actually observed.
+Restore a harness-enabled base on the development device after tests.
+Publish code, tools and sanitized findings; keep vendor firmware, disassembly,
+flash dumps, credentials, identifiers and raw captures in ignored `.local/`.
 
-For the C606, preserve stock ota_0, the bootloader, partition table and eFuses.
-Use `mise run backup`, `mise run flash`, and `mise run stock`; generic flash
-commands may replace the bootloader or stock slot. Validate on hardware when
-changing display timing or device access. Report what was actually observed.
-
-Publish our code, tools and written findings. Keep vendor firmware, disassembly,
-flash dumps, credentials, device identifiers and capture logs in ignored `.local/`.
-Distinguish verified hardware from driver candidates supported by stock firmware.
-
-## Device test controls
-
-`mise run build` and `mise run flash` enable bounded diagnostic fault controls by
-default. `CYCLING_HARNESS=0` removes those controls; ordinary terminal commands,
-JSON logging, Wi-Fi and the public HTTP bring-up check remain available. The
-legacy UI injection/capture/recording buffers were removed by refactor #64.
-Use `CYCLING_SDK=1` for the optional cycling composition; the default base has no
-cycling code. Build both harness modes for feature-boundary changes and restore
-a harness-enabled base on the development device after testing.
-
-Read `docs/device-debugging.md` before device tests. Keep build mode and collection
-state with observations. Use harness-disabled builds for performance/power
-baselines. Serial commands and successful LCD transfers do not prove physical
-switches, touch accuracy, panel output or battery hardware. Keep raw evidence,
-coordinates, sensor readings and identifiers in ignored `.local/`. Distinguish
-sampled heap minima from peak memory and event timing from power measurements.
+For autonomous issue or queue delivery, read [deliver](.agents/skills/deliver/SKILL.md).

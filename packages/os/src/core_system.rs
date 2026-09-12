@@ -3,6 +3,7 @@ use cycling_os::{
     capabilities::Input,
     idle::{Config, Idle},
     preferences::Settings,
+    storage::Store,
 };
 use esp_hal::ledc::{
     LowSpeed,
@@ -10,7 +11,7 @@ use esp_hal::ledc::{
 };
 
 pub struct System {
-    pub store: crate::persistent::Store,
+    pub store: Store<crate::device::storage::Backend<'static>>,
     pub settings: Settings,
     pub settings_source: &'static str,
     pub settings_error: bool,
@@ -35,7 +36,8 @@ impl System {
         reset: cycling_os::crash::Reset,
         crash: cycling_os::crash::Marker,
     ) -> Self {
-        let (store, loaded) = crate::persistent::Store::open(flash);
+        let mut store = Store::new(crate::device::storage::Backend::new(flash));
+        let loaded = store.load();
         let (settings, source, error) = match loaded {
             Ok(value) => (
                 value.settings,

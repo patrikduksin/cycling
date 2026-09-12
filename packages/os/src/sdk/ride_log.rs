@@ -1,4 +1,14 @@
 //! Fixed-slot, append-only ride records with commit-last recovery.
+//!
+//! Persisted version 1 is shared with the host exporter and existing device data.
+//! Keep the 256-byte slot, 32-byte header, four 48-byte samples, CRC and separate
+//! aligned commit word compatible. `encode` leaves the commit erased; media must
+//! program the body before `commit_word`. Demo provenance remains decodable even
+//! though ordinary terminal recording creates only live rides.
+//!
+//! Occupied invalid slots consume capacity and mark gaps; they are never free
+//! space. Scanning recovers an open ride at its last committed active duration,
+//! excluding downtime. The final slot is reserved for a terminal record.
 
 pub const REGION_SIZE: usize = 1024 * 1024;
 pub const SECTOR_SIZE: usize = 4096;

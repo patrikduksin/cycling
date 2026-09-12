@@ -1,32 +1,14 @@
 """Private, reconnecting C606 JSON Lines capture through the single USB owner."""
 import argparse
 from collections import Counter
-import fcntl
 import json
 import os
 from pathlib import Path
 import select
-import termios
 import time
-import tty
 
-ROOT = Path(__file__).resolve().parents[1]
+from usb import ROOT, acquire_lock, open_no_reset
 MAX_LINE = 4096
-
-
-def open_no_reset(port):
-    """Linux tty open without modem-control ioctls, reset, or input flushing."""
-    fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-    try:
-        attrs = termios.tcgetattr(fd)
-        tty.cfmakeraw(attrs)
-        attrs[2] = (attrs[2] | termios.CLOCAL | termios.CREAD) & ~termios.HUPCL
-        attrs[4] = attrs[5] = termios.B115200
-        termios.tcsetattr(fd, termios.TCSANOW, attrs)
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
 
 
 class Decoder:
@@ -107,8 +89,7 @@ def collect(port, directory, seconds=None, commands=()):
         raise ValueError('Capture output must be inside ignored .local/')
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
     (ROOT / '.local').mkdir(exist_ok=True)
-    with (ROOT / '.local/usb.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with acquire_lock():
         with private_file(directory / 'raw.bin', 'wb') as raw, \
                 private_file(directory / 'records.jsonl', 'w') as decoded:
             def emit(record):

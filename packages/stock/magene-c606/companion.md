@@ -11,8 +11,8 @@ Stock's logical UART 1 maps to ESP32-S3 UART2, TX42/RX41. Initialization at
 `0x42009d74` supplies 115200 baud to the wrapper at `0x4203b1e8`.
 The configuration is 8 data bits, no parity, one stop bit, no flow control.
 
-Custom firmware receives on GPIO41 only. It does not configure TX42 or send any
-commands. The companion streams reports while our application runs, including
+Custom firmware receives on GPIO41 and sends the stock-derived GPS-open candidate
+once on TX42. The stream predates that command; its control effect is unverified. The companion streams reports while our application runs, including
 buttons, battery, power status, time and other sensor pages. This demonstrates
 communication with the installed companion, not its exact chip or firmware ID.
 
@@ -32,11 +32,8 @@ Total frame length is byte 1 plus four. Eight-byte payloads produce sixteen-byte
 frames. Stock framing and checksum checks are at `0x4204b140` and `0x4204b227`;
 checksum entry points are `0x42218090` and `0x422a2a1c`.
 
-The Rust decoder validates marker, length and CRC before decoding an event. It
-handles split and adjacent frames, skips unrelated report groups, and
-resynchronizes after malformed frames. UART errors or a receive gap over 250 ms
-clear partial data. Battery and power displays expire independently after five
-seconds without their respective reports.
+The [decoder](../../os/src/companion.rs) owns validation and resynchronization.
+The [input service](../../os/src/services/io.rs) owns freshness and loss reporting.
 
 ## Reports implemented
 
@@ -51,16 +48,12 @@ Offsets below are relative to the eight-byte payload, not the frame.
 The voltage scale is interpreted as millivolts from companion battery conversion
 and capacity-table analysis. N22's ADC conversion at `0x1cc44` uses a scale of
 0.87890625 multiplied by four. Capacity-table endpoints are 3007 and 4295.
-The custom UI displays the reported value in volts to two decimal places. This
-is not an independent measurement of cell voltage or calibration accuracy.
+The reported value is not an independent measurement of cell voltage or calibration accuracy.
 Percentage comes from the companion, not a new voltage-to-percentage estimate.
 
-Stock treats power status zero as charging. The first custom boot reported
-100 percent, 4337 mV and status zero while USB was connected. USB connected or
-charging status does not by itself prove that current is entering a full battery.
-The UI labels zero `CHARGING`, one `ON BATTERY`, and other values `POWER UNKNOWN`.
-The user confirmed the display changed correctly when USB was unplugged and
-reconnected, and the device continued running on battery.
+Stock treats power status zero as charging. USB power transitions were physically confirmed on 2026-09-11 in the retired UI.
+Charging status alone does not prove current enters a full battery. Current core
+code exposes the raw status; meanings beyond stock's zero remain unverified.
 
 | Button ID | Position | Observed event |
 |---|---|---|
@@ -68,25 +61,10 @@ reconnected, and the device continued running on battery.
 | 1 | Bottom left | Short click, wire event `0x8001` |
 | 2 | Bottom right | Short click, wire event `0x8001` |
 
-The initial ordered test captured IDs 1 and 2. A separate top-left-only test
-captured three ID 0 clicks. Firmware counts valid button events and highlights
-the last button. Short clicks on bottom left/right adjust brightness by five
-percentage points, clamped to 5–100. Top-left clicks update its counter.
-Other nonzero button event codes are counted and logged without assigning a
-long-press or release meaning or changing brightness. No shutdown, reset or
-button-combination actions are implemented.
+Physical tests captured IDs 1 and 2, then three isolated ID 0 clicks. The user
+confirmed all three counters and the former brightness shortcuts. Current core
+code exposes button events without assigning navigation or brightness policy.
+Long presses, other event words, combinations and power control remain unverified.
 
-## Validation
-
-Host tests cover a standard CRC vector, fragmented reports, corrupted frames,
-resynchronization, invalid values, unrelated pages and partial-buffer reset.
-Initial live captures contained checksum-valid periodic battery/power reports
-and physical button events. The parser-enabled application booted from slot B
-and reported battery and power state over USB. The user confirmed all three
-button counters and brightness shortcuts work, and battery status changes
-correctly through USB unplug/replug. The application image is 136,112 bytes.
-Stock slot A is verified by the flash workflow; the
-bootloader, partition table and eFuses are preserved.
-
-A post-reconnection USB capture reached 340 valid frames with zero CRC failures
-and zero UART errors. Long presses and button combinations remain unverified.
+Host regression tests retain CRC, fragmented/corrupted-frame and resynchronization
+coverage. Raw captures and physiological observations stay private.

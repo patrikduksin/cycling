@@ -1,10 +1,9 @@
 #!/usr/bin/python3
+"""Verify owned C606 BLE echo notifications, readback and reconnects."""
+import argparse
 import json
 import time
 
-import dbus
-import dbus.mainloop.glib
-from gi.repository import GLib
 
 BLUEZ = "org.bluez"
 DEVICE = "org.bluez.Device1"
@@ -13,10 +12,6 @@ PROPS = "org.freedesktop.DBus.Properties"
 MANAGER = "org.freedesktop.DBus.ObjectManager"
 SERVICE_UUID = "7e570001-2a6f-4d75-9f6a-5afbf0f50c06"
 CHAR_UUID = "7e570002-2a6f-4d75-9f6a-5afbf0f50c06"
-
-dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-bus = dbus.SystemBus()
-manager = dbus.Interface(bus.get_object(BLUEZ, "/"), MANAGER)
 
 
 def objects():
@@ -160,6 +155,21 @@ def exchange(device_path, round_number, payload):
             pass
 
 
-device_path = discover_owned()
-exchange(device_path, 1, bytes([1, 0x43, 0x36, 0x30, 0x36, 0xaa, 0x55, 0x7e]))
-exchange(device_path, 2, bytes([2, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70]))
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
+    global dbus, GLib, bus, manager
+    import dbus
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    manager = dbus.Interface(bus.get_object(BLUEZ, "/"), MANAGER)
+    device_path = discover_owned()
+    exchange(device_path, 1, bytes([1, 0x43, 0x36, 0x30, 0x36, 0xaa, 0x55, 0x7e]))
+    exchange(device_path, 2, bytes([2, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70]))
+
+
+if __name__ == '__main__':
+    main()

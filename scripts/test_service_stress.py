@@ -51,7 +51,7 @@ class ServiceStressTests(unittest.TestCase):
             raw = directory / 'raw.bin'
             raw.write_bytes(b'private capture remains')
             with patch('service_stress.private_directory', return_value=directory), \
-                    patch('service_stress.ExportConnection'), \
+                    patch('service_stress.UsbConnection'), \
                     patch('service_stress.read', side_effect=[
                         dict(cycling='false'), settings, system, before, after, settings, system]), \
                     patch('service_stress.time.monotonic', side_effect=[0, 0, 0, 3]), \

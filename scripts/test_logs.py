@@ -2,7 +2,8 @@ import json
 import unittest
 from unittest.mock import patch
 import termios
-from logs import Decoder, MAX_LINE, open_no_reset
+from logs import Decoder, MAX_LINE
+from usb import open_no_reset
 
 
 def log(boot=1, seq=0, **fields):
@@ -54,8 +55,8 @@ class LogsTests(unittest.TestCase):
 
     def test_open_no_flush_or_modem_calls(self):
         attrs = [0, 0, termios.HUPCL, 0, 0, 0, [b'\0'] * 32]
-        with patch('logs.os.open', return_value=5), patch('logs.termios.tcgetattr', return_value=attrs), \
-                patch('logs.termios.tcsetattr') as setter, patch('logs.tty.cfmakeraw') as raw:
+        with patch('usb.os.open', return_value=5), patch('usb.termios.tcgetattr', return_value=attrs), \
+                patch('usb.termios.tcsetattr') as setter, patch('usb.tty.cfmakeraw') as raw:
             self.assertEqual(open_no_reset('/dev/fake'), 5)
             raw.assert_called_once_with(attrs)
             setter.assert_called_once_with(5, termios.TCSANOW, attrs)

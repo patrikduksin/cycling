@@ -1,5 +1,5 @@
 //! Composition of core snapshots and the portable cycling SDK.
-//! Main calls tick every 10 ms regardless of terminal traffic. Flash work remains
+//! Main calls tick independently of terminal requests. Flash work remains
 //! synchronous and bounded to one recorder step, with no lock held across it.
 use core::fmt::Write;
 use cycling_os::{
@@ -34,7 +34,11 @@ impl Runtime {
         }
     }
 
-    pub fn tick(&mut self, store: &mut crate::persistent::Store, now: u64) {
+    pub fn tick(
+        &mut self,
+        store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
+        now: u64,
+    ) {
         let transport = crate::bluetooth::snapshot();
         self.sensors.update(transport);
         // Core queue has two packets. Never drain an unbounded producer here.
@@ -80,7 +84,7 @@ impl Runtime {
             cadence_tenths,
             battery_percent,
         };
-        self.recorder.service(&mut **store, now, sample, &|| {
+        self.recorder.service(store, now, sample, &|| {
             embassy_time::Instant::now().as_millis()
         });
         if let Some(result) = self.recorder.take_result() {
@@ -94,7 +98,7 @@ impl Runtime {
     pub fn command(
         &mut self,
         words: &str,
-        store: &mut crate::persistent::Store,
+        store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
         now: u64,
         output: &mut impl Write,
     ) -> &'static str {

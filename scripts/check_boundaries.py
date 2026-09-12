@@ -5,11 +5,9 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'packages/os/src'
 # These modules compose consumers. All other top-level modules and every device/
-# and services/ module must remain usable without the cycling SDK or old shell.
+# and services/ module must remain usable without cycling SDK or consumer policy.
 COMPOSITION = {'lib.rs', 'main.rs', 'terminal.rs', 'sdk_runtime.rs'}
-FORBIDDEN = {'sdk', 'sdk_runtime', 'ride', 'ride_log', 'ride_reclaim', 'ride_recorder',
-             'ble_sensor', 'ui', 'coin', 'controls', 'debug', 'debug_usb', 'metrics',
-             'redraw', 'screenshot'}
+FORBIDDEN = {'sdk', 'sdk_runtime', 'terminal'}
 STRING = re.compile(r'r(?P<hashes>\#*)".*?"(?P=hashes)|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'', re.S)
 
 
@@ -70,14 +68,16 @@ def violations(text):
 
 
 def self_test():
-    for source in ['use cycling_os::{sdk, storage};', 'crate::ride_log::Slot',
-                   'pub mod ui;', '#[path = "../sdk/ride.rs"] mod hidden;',
-                   'use crate::{sdk as consumer};']:
+    for source in ['use cycling_os::{sdk, storage};', 'crate::sdk::ride_log::Slot',
+                   'pub mod terminal;', '#[path = "../sdk/ride.rs"] mod hidden;',
+                   'use crate::{sdk as consumer};',
+                   '#[cfg(feature = "cycling")] use cycling_os::sdk::recorder;',
+                   '#[cfg(feature = "harness")] use crate::terminal;']:
         assert violations(source), source
     harmless = '''// use crate::sdk;
-/* nested /* sdk::Recorder */ ui::App */
+/* nested /* sdk::Recorder */ terminal::Terminal */
 const NAME: &str = "sdk::Recorder // text";
-const RAW: &str = r##"/* use crate::ui; */"##;
+const RAW: &str = r##"/* use crate::terminal; */"##;
 use cycling_os::{storage, gps};
 log::debug!("read failed");
 '''

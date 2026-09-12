@@ -3,7 +3,6 @@
 //! HAL initialization claims the singleton peripheral set. Consuming its tokens
 //! assigns LCD DMA_CH0, GNSS UHCI0/DMA_CH1, and companion UART2 interrupts once.
 //! MMC remains opt-in read-only; D1-D3 are reserved candidates, not verified lanes.
-//! Display geometry still belongs to the legacy renderer until issue #60.
 
 use super::{companion_uart, crash_rtc, display, gps_uart, psram, sdmmc, touch};
 use esp_hal::{

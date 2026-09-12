@@ -1,17 +1,11 @@
 # cycling
 
-Open-source Rust firmware for the Magene C606 bike computer.
-
-The base `no_std` firmware provides positioning, physical input, battery/power
-observations, display submission, persistent settings, idle dimming, Wi-Fi,
-network time and BLE transport. An ordinary USB terminal and bounded JSON logs
-work with the test harness disabled. There is no graphical application or demo.
-
-The optional `cycling` SDK adds one explicitly selected Heart Rate or Cadence
-sensor, live ride recording, recovery, history and raw/JSON/GPX export. Live speed
-and distance and simultaneous separate sensors are unsupported. Receiver identity
-and measured GNSS accuracy remain follow-ups; MMC identification and reads are
-verified, but vendor filesystem writes are not authorized.
+Open-source Rust firmware for the Magene C606 bike computer. The `no_std` base
+provides positioning, physical input, display, settings, networking and BLE
+transport through an ordinary USB terminal. The optional cycling SDK adds one
+selected Heart Rate or Cadence sensor, ride recording, recovery and export.
+There is no graphical application; live speed/distance and simultaneous separate
+sensors are not implemented.
 
 ```sh
 mise install
@@ -21,21 +15,25 @@ mise run check
 mise run build                       # Base, development harness enabled
 CYCLING_SDK=1 mise run build          # Add the cycling SDK
 mise run terminal -- STATUS          # Query an already-running device
-mise run terminal                    # Interactive USB prompt
 ```
 
-Use the repository's safe flash tasks. Stock slot A, the bootloader, partition
-table, eFuses and existing persisted data must be preserved.
+Setup installs the pinned Xtensa toolchain; builds load its environment without
+changing your shell. [Mise](mise.toml), Cargo configuration and CLI `--help` own
+the current tool versions, task catalog and check matrix.
 
-- [Development and build matrix](docs/development.md)
-- [Safe device workflow](docs/device.md)
-- [Terminal and device validation](docs/device-debugging.md)
+Wi-Fi is unconfigured by default. Before building, `mise run wifi-setup` can
+copy the connected NetworkManager personal-network profile into ignored
+`.local/wifi/`. Credentials are compiled into the image; keep configured firmware
+images private as well as the configuration.
+
+Before connecting or flashing, read the [C606 workflow](.agents/skills/c606/SKILL.md).
+It preserves stock firmware and existing data. Firmware lives in `packages/os`;
+vendor artifacts, credentials and raw evidence stay in ignored `.local/`.
+
+- [Architecture and ownership](docs/architecture.md)
 - [Ride recording and export](docs/ride-recording.md)
-- [Architecture and port obligations](docs/architecture.md)
-- [Refactor hardware evidence](docs/refactor-validation.md)
-- [Development evidence and open work](docs/overnight-plan.md)
 - [C606 hardware research](packages/stock/magene-c606)
+- [Requirements and history](https://github.com/patrikduksin/cycling/issues)
+- [Agent delivery workflow](.agents/skills/deliver/SKILL.md)
 
-Firmware lives in `packages/os`; device research lives in `packages/stock`.
-Vendor images, device identifiers, credentials and raw evidence stay in ignored
-`.local/`. [MIT license](LICENSE).
+[MIT license](LICENSE).

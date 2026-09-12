@@ -66,8 +66,7 @@ newline. A client must correlate replies and keep at most one request pending.
 | `TEST n` | Optional harness operations; disabled builds return UNSUPPORTED |
 
 SDK builds additionally expose ride/sensor/history/export operations described in
-[ride recording](ride-recording.md). Base firmware returns UNSUPPORTED for SDK
-commands. Read `HELP` and build metadata before choosing feature-specific tests.
+[ride recording](ride-recording.md). Base firmware rejects SDK commands with INVALID. Read `HELP` and build metadata before choosing feature-specific tests.
 Test operations include Wi-Fi fault controls, log saturation, a controlled panic
 and `TEST 20`, a six-second executor stall. The stall blocks executor acquisition
 while the existing UART interrupts/DMA continue; buffers may exhaust and report

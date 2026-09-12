@@ -175,6 +175,28 @@ class RideExportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'rebooted'):
             terminal_reply(bytearray(), line(type='log', boot=9, component='gps'), 10, boot)
 
+    def test_delayed_same_boot_startup_log_does_not_reject_next_reply(self):
+        def line(**values):
+            return json.dumps(values).encode() + b'\n'
+        first = line(type='log', boot=12, component='build', ms=1334)
+        first += line(type='reply', id=1, status='OK', data='metadata', ms=1923)
+        second = line(type='log', boot=12, component='boot', ms=1334)
+        second += line(type='reply', id=2, status='OK', data='brightness=100', ms=1969)
+        for split in range(len(first) + len(second) + 1):
+            wire = first + second
+            pending, boot = bytearray(), [None]
+            reply = terminal_reply(pending, wire[:split], 1, boot)
+            if reply is None:
+                reply = terminal_reply(pending, wire[split:], 1, boot)
+                remaining = b''
+            else:
+                remaining = wire[split:]
+            self.assertEqual(reply['id'], 1)
+            reply = terminal_reply(pending, remaining, 2, boot)
+            self.assertEqual((reply['id'], reply['data']), (2, 'brightness=100'))
+        with self.assertRaisesRegex(RuntimeError, 'rebooted'):
+            terminal_reply(bytearray(), line(type='log', boot=13, component='boot'), 2, [12])
+
     def test_single_outstanding_command_receives_id_zero_parse_rejection(self):
         for status in ['INVALID', 'OVERLONG']:
             wire = json.dumps(dict(type='reply', id=0, status=status, ms=123, data='')).encode() + b'\n'

@@ -94,7 +94,11 @@ def terminal_reply(pending, data, expected_id, boot=None):
         if not isinstance(reply, dict):
             continue
         if reply.get('type') == 'log':
-            if reply.get('component') == 'boot':
+            # Replies can precede queued startup logs. A boot record from the
+            # already observed token is delayed metadata, not another reset.
+            same_boot = (boot is not None and type(reply.get('boot')) is int
+                         and boot[0] == reply['boot'])
+            if reply.get('component') == 'boot' and not same_boot:
                 raise RuntimeError('device rebooted during command')
             if boot is not None and type(reply.get('boot')) is int:
                 if boot[0] is not None and boot[0] != reply['boot']:

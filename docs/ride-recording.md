@@ -3,7 +3,7 @@
 Ride workflows belong to the optional `cycling` SDK. Build with
 `CYCLING_SDK=1`; they work through the ordinary USB terminal with either
 `CYCLING_HARNESS=0` or `1`. Base firmware leaves the ride reservation untouched
-and returns UNSUPPORTED for SDK commands. There is no graphical Rides/History
+and rejects SDK commands with INVALID. There is no graphical Rides/History
 page, injection session or terminal demo-start command.
 
 See [architecture](architecture.md) for ownership and
@@ -63,8 +63,9 @@ rides are live and contain no generated demo speed.
 
 Sampling targets one sample per second and writes batches of four. Pause and
 finish freeze active duration at the accepted monotonic timestamp before flushing
-pending samples. Delays are counted as dropped samples, not silently filled with
-invented measurements. A reset can lose the uncommitted batch: up to three
+pending samples. Delayed service lowers the achieved sample rate. Missed periods are not
+backfilled or comprehensively counted; the drop counter covers full buffers and
+samples discarded at capacity. A reset can lose the uncommitted batch: up to three
 buffered samples between commits, or four while a commit is in flight.
 
 On restart, a valid open ride is finalized with a recovery record at its last

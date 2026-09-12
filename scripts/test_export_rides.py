@@ -1,11 +1,12 @@
 import tempfile
+import json
 import unittest
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import zlib
 
 from export_rides import (COMMIT, SLOT_SIZE, decode_slot, download_prefix,
-                          export_reply, read_slot, rides_from_slots, write_gpx)
+                          export_reply, terminal_reply, read_slot, rides_from_slots, write_gpx)
 
 
 def slot(kind, source, ride_id, sequence, active_ms, samples=()):
@@ -129,7 +130,7 @@ class RideExportTests(unittest.TestCase):
         self.assertEqual(len(ride['samples']), 1)
 
     def test_parser_fragmentation_ids_index_and_crc_are_strict(self):
-        reply = b'noise\nCYCLING_EXPORT 3 INFO 1 256 2 ready\nCYCLING_EXPORT 4 INFO 1 256 2 ready\n'
+        reply = b'noise\n' + b''.join(json.dumps(dict(type='reply', id=index, status='OK', data='INFO 1 256 2 ready')).encode() + b'\n' for index in [3, 4])
         for split in range(len(reply) + 1):
             pending = bytearray()
             first = export_reply(pending, reply[:split], 4)
@@ -155,6 +156,24 @@ class RideExportTests(unittest.TestCase):
                 return reply
         with self.assertRaises(ValueError):
             read_slot(Short(), 0)
+
+    def test_terminal_json_is_bounded_correlated_and_detects_reboots(self):
+        def line(**values):
+            return json.dumps(values).encode() + b'\n'
+        pending = bytearray()
+        data = line(type='reply', id=9, status='OK', data='wrong') + line(type='reply', id=10, status='BUSY', data='')
+        self.assertEqual(terminal_reply(pending, data, 10)['status'], 'BUSY')
+        with self.assertRaisesRegex(ValueError, 'malformed'):
+            terminal_reply(bytearray(), line(type='reply', id=10, status='OK', data=3), 10)
+        for data in [b'x' * 4097, b'x' * 4097 + b'\n']:
+            with self.assertRaisesRegex(ValueError, 'oversized'):
+                terminal_reply(bytearray(), data, 10)
+        with self.assertRaisesRegex(RuntimeError, 'rebooted'):
+            terminal_reply(bytearray(), line(type='log', boot=8, component='boot'), 10)
+        boot = [None]
+        self.assertIsNone(terminal_reply(bytearray(), line(type='log', boot=8, component='gps'), 10, boot))
+        with self.assertRaisesRegex(RuntimeError, 'rebooted'):
+            terminal_reply(bytearray(), line(type='log', boot=9, component='gps'), 10, boot)
 
     def test_backward_utc_across_untimed_point_and_overflow_are_explicit(self):
         points = [

@@ -40,21 +40,45 @@ evidence. Validate transport/parser progression, no-fix/freshness and recovery;
 lack of an indoor fix alone is not a regression or blocker. Preserve the proven
 GPS behavior and do not claim new outdoor accuracy.
 
-Progress at 15:22 UTC: #55 contract and inventory independently approved by Astra
-medium against actual source and live requirements. Root prepares its PR.
-Branch refactor/contracts, authorization commit 227417e. Git signing helper could
-not reach 1Password; use per-command unsigned commits without changing config.
-Astra medium board agent owns main.rs/device extraction #56; Astra medium logging
-agent owns new logging/host adapter files and Cargo/build metadata #66. Root owns
-integration and USB. Reviewer is available for completed increments.
+Progress at 15:40 UTC: #55 closed by merged PR #67, b6f680c. #56 closed by
+merged PR #68, 193c133, implementation e8155ea. Both independently approved by
+Astra medium. Board test/check/both builds passed. Enabled hardware window
+152318..162472 ms advanced GNSS valid3333..3543 and companion5033..5369 with all
+UART/DMA/CRC/touch counters zero and heap80336 unchanged. Preferences100/30/20/-180
+and one saved demo/four slots remain. `.local/exports/refactor-baseline` and
+`refactor-board` are byte-identical. Captured Home pixels inspected; physical
+panel not observed. Disabled mode touch, battery/display/Wi-Fi/HTTP/time observed;
+short disabled sample is not GNSS interval evidence. First enabled postflash USB
+open was silent; documented monitor release booted it and retry passed.
 
-Baseline safe `sudo -n -E mise run flash` succeeded after ordinary-user USB access
-was denied. Existing backup manifest was reused and checked by safe flash. Stock
-slot, bootloader and partition verification passed; B selected. Unchanged baseline
-harness firmware booted and the no-reset export tool read one saved demo ride,
-four slots/four samples into `.local/exports/refactor-baseline`. No mutation of
-ride data. Debug state collection succeeded at `.local/tests/refactor-baseline`.
-Root owns no ongoing serial reader. New hardware accuracy not measured.
+Current branch refactor/base-services atop193c133. Uncommitted integrated work:
+positioning/input service owners #57/#60; generic protected persistence #59;
+optional physical SDK #62; generic BLE transport #58; base settings/power and
+terminal composition #61/#63; log facade/JSONL queue+collector #66. Root owns
+main/core_system/terminal/protocol/logging integration and all device access.
+Astra medium persistence agent owns SDK runtime and safe export/clear host
+migration. Astra medium board agent owns obsolete UI/tool cleanup and replacement
+terminal stress/regression scripts. Independent medium reviewer approved scoped
+position/input, BLE adapter and runtime, pending integrated tests/hardware. Its
+settings-corruption preservation finding was fixed with fake-media tests; review
+recheck pending. Logging receipt timestamp finding fixed with six host tests.
+
+Initial shell-free base compiled and passed mise test/check, then safe-flashed
+harness-enabled at15:37. It has no SDK or App composition; USB collection is being
+validated. Current first collection owns USB for10s only. Latest source adds
+ordinary scheduled RESTART and TEST11 panic, not yet flashed. TEST10 saturates
+bounded logs; TEST0..4 are existing Wi-Fi fault controls. Root still must integrate
+SDK runtime feature composition, finish/review terminal, measure all matrix
+builds, validate recovery/console/storage/log loss and coexistence, retire legacy
+tools only after replacements pass, publish useful increments and final handoff.
+
+Baseline safe `sudo -n -E mise run flash` reused existing backup with safeguards.
+Ordinary user lacks USB permissions; sudo task works. Sudo builds create root-owned
+.local artifacts; root restores ownership narrowly before normal builds. Signing
+helper cannot reach1Password; per-command unsigned commits used without config
+changes. No system security changes. Raw evidence stays private. No agent has
+permission to independently touch USB/Bluetooth hardware. No persistent collector
+or test peer should remain at final handoff.
 
 
 ## Historical latest device state

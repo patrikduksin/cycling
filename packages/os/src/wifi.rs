@@ -10,7 +10,6 @@ use embassy_net::{
 };
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::{peripherals::WIFI, rng::Rng};
-use esp_println::println;
 use esp_radio::wifi::{
     AuthenticationMethod, Config, ControllerConfig, Interface, WifiController, scan::ScanConfig,
     sta::StationConfig,
@@ -59,11 +58,9 @@ fn public_state() -> u8 {
     }
 }
 
-#[cfg(feature = "debug-harness")]
 pub fn state() -> u8 {
     public_state()
 }
-#[cfg(feature = "debug-harness")]
 pub fn reconnect() {
     REQUEST.store(REQUEST_MANUAL, Ordering::Release);
 }
@@ -71,7 +68,6 @@ pub fn reconnect() {
 pub fn set_fault(fault: u8) {
     FAULT.store(fault, Ordering::Relaxed);
 }
-#[cfg(feature = "debug-harness")]
 pub fn stats() -> (u32, u32, u32, u8) {
     (
         ASSOCIATIONS.load(Ordering::Relaxed),
@@ -81,18 +77,6 @@ pub fn stats() -> (u32, u32, u32, u8) {
     )
 }
 
-pub fn label() -> &'static [u8] {
-    match public_state() {
-        1 => b"WIFI CONNECTING",
-        2 => b"WIFI GETTING IP",
-        3 => b"WIFI CONNECTED",
-        4 => b"WIFI TEST OK",
-        5 => b"WIFI RETRYING",
-        6 => b"WIFI FAILED",
-        _ => b"WIFI NOT SET UP",
-    }
-}
-
 pub fn online() -> bool {
     LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
 }
@@ -100,7 +84,7 @@ pub fn online() -> bool {
 #[embassy_executor::task]
 pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
     if config::SSID.is_empty() {
-        println!("CYCLING_WIFI unconfigured");
+        log::info!(target: "wifi", "CYCLING_WIFI unconfigured");
         return;
     }
     LINK.store(LINK_CONNECTING, Ordering::Relaxed);
@@ -120,11 +104,11 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
         Ok(controller) => controller,
         Err(_) => {
             LINK.store(LINK_FAILED, Ordering::Relaxed);
-            println!("CYCLING_WIFI init_failed");
+            log::warn!(target: "wifi", "CYCLING_WIFI init_failed");
             return;
         }
     };
-    println!(
+    log::info!(target: "wifi",
         "CYCLING_WIFI radio_ready heap_free={}",
         esp_alloc::HEAP.free()
     );
@@ -134,8 +118,10 @@ pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
     )
     .await
     {
-        Ok(Ok(aps)) => println!("CYCLING_WIFI scan configured_network_matches={}", aps.len()),
-        _ => println!("CYCLING_WIFI scan_failed"),
+        Ok(Ok(aps)) => {
+            log::info!(target: "wifi", "CYCLING_WIFI scan configured_network_matches={}", aps.len())
+        }
+        _ => log::warn!(target: "wifi", "CYCLING_WIFI scan_failed"),
     }
     let rng = Rng::new();
     let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
@@ -177,7 +163,7 @@ fn request_recovery(generation: u32) {
 async fn retry_or_late_connection(stack: Stack<'_>, seconds: u64) -> bool {
     for _ in 0..seconds * 4 {
         if stack.is_link_up() {
-            println!("CYCLING_WIFI associated_late");
+            log::info!(target: "wifi", "CYCLING_WIFI associated_late");
             return true;
         }
         Timer::after_millis(250).await;
@@ -191,7 +177,7 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
     loop {
         LINK.store(LINK_CONNECTING, Ordering::Relaxed);
         PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-        println!(
+        log::info!(target: "wifi",
             "CYCLING_WIFI connecting attempt={}",
             u16::from(failures) + 1
         );
@@ -201,11 +187,11 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
             match with_timeout(Duration::from_secs(20), controller.connect_async()).await {
                 Ok(Ok(_)) => true,
                 Ok(Err(_)) => {
-                    println!("CYCLING_WIFI connect_failed kind=driver");
+                    log::warn!(target: "wifi", "CYCLING_WIFI connect_failed kind=driver");
                     false
                 }
                 Err(_) => {
-                    println!("CYCLING_WIFI connect_failed kind=timeout");
+                    log::warn!(target: "wifi", "CYCLING_WIFI connect_failed kind=timeout");
                     false
                 }
             }
@@ -216,7 +202,7 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
             LINK.store(LINK_RETRYING, Ordering::Relaxed);
             let delay = cycling_os::network::retry_delay_secs(failures);
             failures = failures.saturating_add(1);
-            println!("CYCLING_WIFI retry_in_s={}", delay);
+            log::info!(target: "wifi", "CYCLING_WIFI retry_in_s={}", delay);
             retry_or_late_connection(stack, delay).await
         };
         if !connected {
@@ -228,19 +214,19 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
         ASSOCIATIONS.fetch_add(1, Ordering::Relaxed);
         LINK.store(LINK_ASSOCIATED, Ordering::Relaxed);
         PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-        println!("CYCLING_WIFI associated");
+        log::info!(target: "wifi", "CYCLING_WIFI associated");
         match select(
             controller.wait_for_disconnect_async(),
             reconnect_requested(),
         )
         .await
         {
-            Either::First(_) => println!("CYCLING_WIFI disconnected"),
+            Either::First(_) => log::info!(target: "wifi", "CYCLING_WIFI disconnected"),
             Either::Second(reason) => {
                 GENERATION.fetch_add(1, Ordering::Relaxed);
                 LINK.store(LINK_RETRYING, Ordering::Relaxed);
                 PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-                println!(
+                log::info!(target: "wifi",
                     "CYCLING_WIFI disconnecting reason={}",
                     if reason == REQUEST_MANUAL {
                         "test"
@@ -250,8 +236,12 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
                 );
                 match with_timeout(Duration::from_secs(5), controller.disconnect_async()).await {
                     Ok(Ok(_)) => {}
-                    Ok(Err(_)) => println!("CYCLING_WIFI disconnect_failed kind=driver"),
-                    Err(_) => println!("CYCLING_WIFI disconnect_failed kind=timeout"),
+                    Ok(Err(_)) => {
+                        log::warn!(target: "wifi", "CYCLING_WIFI disconnect_failed kind=driver")
+                    }
+                    Err(_) => {
+                        log::warn!(target: "wifi", "CYCLING_WIFI disconnect_failed kind=timeout")
+                    }
                 }
             }
         }
@@ -279,13 +269,13 @@ async fn verify(stack: Stack<'static>) {
             .await
             .is_err()
         {
-            println!("CYCLING_WIFI dhcp_failed kind=timeout");
+            log::warn!(target: "wifi", "CYCLING_WIFI dhcp_failed kind=timeout");
             PROBE.store(PROBE_FAILED, Ordering::Relaxed);
             if LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED {
                 let generation = GENERATION.load(Ordering::Relaxed);
                 let delay = cycling_os::network::retry_delay_secs(dhcp_failures);
                 dhcp_failures = dhcp_failures.saturating_add(1);
-                println!("CYCLING_WIFI dhcp_retry_in_s={}", delay);
+                log::info!(target: "wifi", "CYCLING_WIFI dhcp_retry_in_s={}", delay);
                 Timer::after_secs(delay).await;
                 if generation == GENERATION.load(Ordering::Relaxed)
                     && LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
@@ -299,13 +289,13 @@ async fn verify(stack: Stack<'static>) {
         dhcp_failures = 0;
         let generation = GENERATION.load(Ordering::Relaxed);
         PROBE.store(PROBE_READY, Ordering::Relaxed);
-        println!("CYCLING_WIFI dhcp_ready");
+        log::info!(target: "wifi", "CYCLING_WIFI dhcp_ready");
         let result = with_timeout(Duration::from_secs(15), probe(stack)).await;
         if generation != GENERATION.load(Ordering::Relaxed)
             || LINK.load(Ordering::Relaxed) != LINK_ASSOCIATED
             || !stack.is_config_up()
         {
-            println!("CYCLING_WIFI request_stale");
+            log::info!(target: "wifi", "CYCLING_WIFI request_stale");
             PROBE.store(PROBE_WAITING, Ordering::Relaxed);
             continue;
         }
@@ -315,7 +305,7 @@ async fn verify(stack: Stack<'static>) {
                 PROBE_SUCCESSES.fetch_add(1, Ordering::Relaxed);
                 probe_failures = 0;
                 PROBE.store(PROBE_OK, Ordering::Relaxed);
-                println!(
+                log::info!(target: "wifi",
                     "CYCLING_WIFI http_verified count={} heap_free={}",
                     successes,
                     esp_alloc::HEAP.free()
@@ -326,17 +316,17 @@ async fn verify(stack: Stack<'static>) {
             Ok(Err(kind)) => {
                 PROBE_FAILURES.fetch_add(1, Ordering::Relaxed);
                 PROBE.store(PROBE_FAILED, Ordering::Relaxed);
-                println!("CYCLING_WIFI request_failed kind={}", kind);
+                log::warn!(target: "wifi", "CYCLING_WIFI request_failed kind={}", kind);
             }
             Err(_) => {
                 PROBE_FAILURES.fetch_add(1, Ordering::Relaxed);
                 PROBE.store(PROBE_FAILED, Ordering::Relaxed);
-                println!("CYCLING_WIFI request_failed kind=timeout");
+                log::warn!(target: "wifi", "CYCLING_WIFI request_failed kind=timeout");
             }
         }
         let delay = cycling_os::network::retry_delay_secs(probe_failures);
         probe_failures = probe_failures.saturating_add(1);
-        println!("CYCLING_WIFI request_retry_in_s={}", delay);
+        log::info!(target: "wifi", "CYCLING_WIFI request_retry_in_s={}", delay);
         let _ = with_timeout(Duration::from_secs(delay), stack.wait_config_down()).await;
     }
 }
@@ -417,7 +407,7 @@ async fn time_sync(stack: Stack<'static>) {
                     let now = Instant::now().as_millis();
                     cycling_os::network_time::update(timestamp, now);
                     failures = 0;
-                    println!(
+                    log::info!(target: "wifi",
                         "CYCLING_TIME synced unix={} stratum={} rtt_ms={}",
                         timestamp.unix_seconds, timestamp.stratum, rtt_ms
                     );
@@ -430,7 +420,7 @@ async fn time_sync(stack: Stack<'static>) {
                     cycling_os::network_time::set_syncing(false);
                     if current {
                         if matches!(result, Ok(Err("denied"))) {
-                            println!("CYCLING_TIME sync_disabled kind=denied until=restart");
+                            log::info!(target: "wifi", "CYCLING_TIME sync_disabled kind=denied until=restart");
                             return;
                         }
                         let (kind, delay) = if matches!(result, Ok(Err("rate_limited"))) {
@@ -441,7 +431,7 @@ async fn time_sync(stack: Stack<'static>) {
                             failures = failures.saturating_add(1);
                             ("request", delay)
                         };
-                        println!(
+                        log::info!(target: "wifi",
                             "CYCLING_TIME sync_failed kind={} retry_in_s={}",
                             kind, delay
                         );

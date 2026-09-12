@@ -1,7 +1,7 @@
 # Device workflow
 
 These tasks support the recovered C606 layout, with secure boot and flash encryption
-disabled. Connect USB and start on stock firmware. The default port is `/dev/ttyACM0`;
+disabled. Connect USB and follow the active device handoff in `docs/overnight-plan.md`. The default port is `/dev/ttyACM0`;
 set `CYCLING_PORT` to use another port.
 
 ```sh
@@ -16,9 +16,9 @@ copy of that directory. The helper refuses to overwrite an existing baseline bac
 It checks the connected device, partition layout, bootloader and stock image before
 changing firmware. A candidate must pass ESP image checksum/hash and size checks.
 Flash writes are limited to the application portion of slot B and one OTA selection
-sector; readback validates the change. The final two erase sectors of slot B are
-reserved for the cycling settings journal, and the helper rejects an application
-that overlaps them. No bootloader, partition-table, stock-slot or eFuse writes are
+sector; readback validates the change. A 1 MiB ride reservation begins at 0x00d98000 and the two-sector settings
+journal begins at 0x00e98000 in slot B. The helper rejects any application
+that overlaps the owned tail reservations. No bootloader, partition-table, stock-slot or eFuse writes are
 requested.
 
 On Linux, the serial device needs read/write permission. A temporary ACL is sufficient:
@@ -50,7 +50,8 @@ On one C606 with stock release 1.956:
 - Booting an independent C application and displaying text and animated graphics.
 - Rust `no_std` firmware rendering a smoothly spinning coin, physically confirmed.
 - Rust touch test UI with finger tracking and a 5–100% brightness slider,
-  physically confirmed on 2026-09-11. Brightness starts at 50% after reboot.
+  physically confirmed on 2026-09-11 in the retired UI. Current firmware restores
+  the last valid saved brightness.
 - Three physical button counters and brightness shortcuts, plus battery status
   changing correctly through USB unplug/replug, physically confirmed on 2026-09-11.
 - Original stock slot A preserved throughout.

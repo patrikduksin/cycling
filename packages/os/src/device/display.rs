@@ -1,5 +1,5 @@
 //! ST7789 transport on the C606's recovered 16-bit I80 wiring.
-use cycling_os::{coin::PIXELS, screenshot::canvas_index};
+use cycling_os::capabilities::{FRAME_PIXELS, PANEL_HEIGHT, PANEL_WIDTH, frame_index};
 use esp_hal::{Blocking, delay::Delay, dma::DmaTxBuf, lcd_cam::lcd::i8080::I8080};
 
 pub struct Display<'d> {
@@ -70,14 +70,28 @@ impl<'d> Display<'d> {
         }
     }
 
-    pub fn draw(&mut self, canvas: &[u16; PIXELS]) {
-        // Eight physical rows per DMA transfer; nearest-neighbor 3× enlargement.
-        let mut strip = [0u8; 240 * 8 * 2];
-        for top in (0..320usize).step_by(8) {
+    /// Submit the explicit 80x106 RGB565 frame with the existing 3x mapping.
+    /// The exclusive borrow prevents concurrent submission. Each DMA transfer
+    /// completes before its buffer is reused; return means the last strip has
+    /// completed. Forty strips bound work; the HAL's blocking wait has no new
+    /// timeout/recovery policy in this extraction.
+    pub fn draw(&mut self, canvas: &[u16; FRAME_PIXELS]) {
+        self.draw_pixels(|x, y| canvas[frame_index(x, y)]);
+    }
+
+    /// Full native-panel solid fill, useful without retaining a frame buffer.
+    pub fn fill(&mut self, rgb565: u16) {
+        self.draw_pixels(|_, _| rgb565);
+    }
+
+    fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
+        // Eight physical rows per DMA transfer; unchanged strip timing.
+        let mut strip = [0u8; PANEL_WIDTH * 8 * 2];
+        for top in (0..PANEL_HEIGHT).step_by(8) {
             for row in 0..8 {
-                for x in 0..240 {
-                    let color = canvas[canvas_index(x, top + row)].to_le_bytes();
-                    let offset = (row * 240 + x) * 2;
+                for x in 0..PANEL_WIDTH {
+                    let color = pixel(x, top + row).to_le_bytes();
+                    let offset = (row * PANEL_WIDTH + x) * 2;
                     strip[offset..offset + 2].copy_from_slice(&color);
                 }
             }

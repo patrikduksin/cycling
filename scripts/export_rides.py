@@ -7,13 +7,11 @@ import json
 import os
 from pathlib import Path
 import select
-import termios
 import time
-import tty
 import xml.etree.ElementTree as ET
 import zlib
 
-from screenshot import ROOT
+from logs import ROOT, open_no_reset
 
 SLOT_SIZE = 256
 COMMIT = 0x434F4D54
@@ -26,17 +24,13 @@ class ExportConnection:
         self.fd = self.lock = self.log = None
         self.pending = bytearray()
         self.request_id = 0
+        self.boot = [None]
 
     def __enter__(self):
         try:
             self.lock = (ROOT / '.local/usb.lock').open('w')
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.fd = os.open(self.port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-            tty.setraw(self.fd)
-            attr = termios.tcgetattr(self.fd)
-            attr[2] = (attr[2] | termios.CLOCAL | termios.CREAD) & ~termios.HUPCL
-            attr[4] = attr[5] = termios.B115200
-            termios.tcsetattr(self.fd, termios.TCSANOW, attr)
+            self.fd = open_no_reset(self.port)
             self.log = self.log_path.open('wb')
             return self
         except BaseException:
@@ -51,50 +45,76 @@ class ExportConnection:
         if self.lock is not None:
             self.lock.close()
 
-    def command(self, command, timeout=8):
+    def terminal_command(self, command, timeout=8):
+        """Send once. The caller decides how to handle an uncertain mutation."""
         self.request_id += 1
-        request = f'DBG {self.request_id} EXPORT {command}\n'.encode()
+        request = f'CMD {self.request_id} {command}\n'.encode()
         if os.write(self.fd, request) != len(request):
-            raise RuntimeError('short USB command write')
+            raise RuntimeError('short USB command write; outcome may be uncertain')
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if not select.select([self.fd], [], [], min(.2, deadline - time.monotonic()))[0]:
+            if not select.select([self.fd], [], [], min(.2, max(0, deadline - time.monotonic())))[0]:
                 continue
             data = os.read(self.fd, 65536)
             if not data:
-                raise RuntimeError('device disconnected during export')
+                raise RuntimeError('device disconnected; command outcome may be uncertain')
             self.log.write(data)
             self.log.flush()
-            parts = export_reply(self.pending, data, self.request_id)
-            if parts is not None:
-                if parts[2] == 'ERROR':
-                    raise RuntimeError(f'export rejected: {parts[3]}')
-                return parts
-        raise TimeoutError(f'no export response for {command}')
+            reply = terminal_reply(self.pending, data, self.request_id, self.boot)
+            if reply is not None:
+                return reply
+        raise TimeoutError(f'no terminal response for {command}')
+
+    def command(self, command, timeout=8):
+        reply = self.terminal_command(f'EXPORT {command}', timeout)
+        if reply['status'] != 'OK':
+            raise RuntimeError(f'export rejected: {reply["status"]}')
+        return ['CYCLING_EXPORT', str(reply['id']), *reply['data'].split()]
 
 
-def export_reply(pending, data, expected_id):
+def terminal_reply(pending, data, expected_id, boot=None):
     pending.extend(data)
     while b'\n' in pending:
         line, _, remainder = pending.partition(b'\n')
         pending[:] = remainder
+        if len(line) > 4096:
+            raise ValueError('oversized USB terminal line')
         if b'CYCLING_BOOT ' in line:
-            raise RuntimeError('device rebooted during export')
-        if not line.startswith(b'CYCLING_EXPORT '):
-            continue
+            raise RuntimeError('device rebooted during command')
         try:
-            parts = line.decode('ascii').split()
-            response_id = int(parts[1])
-        except (UnicodeDecodeError, ValueError, IndexError) as error:
-            raise ValueError('malformed export reply') from error
-        if response_id != expected_id:
+            reply = json.loads(line)
+        except (UnicodeDecodeError, ValueError):
             continue
-        if len(parts) < 4 or parts[2] not in ('INFO', 'SLOT', 'ERROR'):
-            raise ValueError('malformed export reply')
-        return parts
-    if len(pending) > 2048:
-        raise ValueError('oversized USB export line')
+        if not isinstance(reply, dict):
+            continue
+        if reply.get('type') == 'log':
+            if reply.get('component') == 'boot':
+                raise RuntimeError('device rebooted during command')
+            if boot is not None and type(reply.get('boot')) is int:
+                if boot[0] is not None and boot[0] != reply['boot']:
+                    raise RuntimeError('device rebooted during command')
+                boot[0] = reply['boot']
+            continue
+        if reply.get('type') != 'reply' or reply.get('id') != expected_id:
+            continue
+        if (type(reply.get('id')) is not int
+                or not isinstance(reply.get('status'), str)
+                or not isinstance(reply.get('data'), str)):
+            raise ValueError('malformed terminal reply')
+        return reply
+    if len(pending) > 4096:
+        raise ValueError('oversized USB terminal line')
     return None
+
+
+def export_reply(pending, data, expected_id):
+    """Export payload compatibility for callers; transport is ordinary terminal JSON."""
+    reply = terminal_reply(pending, data, expected_id)
+    if reply is None:
+        return None
+    if reply['status'] != 'OK':
+        return ['CYCLING_EXPORT', str(reply['id']), 'ERROR', reply['status']]
+    return ['CYCLING_EXPORT', str(reply['id']), *reply['data'].split()]
 
 
 def info(connection):

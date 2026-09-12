@@ -1,4 +1,4 @@
-//! BLE echo peripheral or one explicitly selected continuous standard sensor.
+//! One-peer BLE discovery, bounded notification bytes and echo transport.
 
 use bt_hci::{cmd::le::LeSetScanParams, controller::ControllerCmdSync};
 use core::{
@@ -7,18 +7,17 @@ use core::{
 };
 use critical_section::Mutex;
 use embassy_futures::select::{Either, select};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal::peripherals::BT;
-use esp_println::println;
 use esp_radio::ble::controller::BleConnector;
 use trouble_host::prelude::*;
 
-use cycling_os::ble_sensor::{
-    CadenceReading, CscMeasurement, HeartRate, Link, Profile, Snapshot, fresh_u16, usable_heart,
-};
-
-mod config {
-    include!(env!("CYCLING_BLE_CONFIG"));
+use cycling_os::ble_transport::{Link, Packet, Selection, Snapshot};
+static SELECTION: Mutex<RefCell<Option<Selection>>> = Mutex::new(RefCell::new(None));
+static PACKETS: Channel<CriticalSectionRawMutex, Packet, 4> = Channel::new();
+pub fn take_packet() -> Option<Packet> {
+    PACKETS.try_receive().ok()
 }
 
 const CONNECTIONS: usize = 1;
@@ -30,34 +29,14 @@ static SCAN_RSSI_MAX: AtomicI32 = AtomicI32::new(i32::MIN);
 static TARGET: Mutex<RefCell<Option<Address>>> = Mutex::new(RefCell::new(None));
 static RECONNECT: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy)]
-struct SensorState {
-    link: Link,
-    heart: Option<(u16, u64)>,
-    cadence: Option<(u16, u64)>,
-    connections: u32,
-    disconnections: u32,
-    notifications: u32,
-    invalid: u32,
-    rr_dropped: u32,
-}
-
-impl SensorState {
-    const fn new() -> Self {
-        Self {
-            link: Link::Off,
-            heart: None,
-            cadence: None,
-            connections: 0,
-            disconnections: 0,
-            notifications: 0,
-            invalid: 0,
-            rr_dropped: 0,
-        }
-    }
-}
-
-static SENSOR: Mutex<RefCell<SensorState>> = Mutex::new(RefCell::new(SensorState::new()));
+static STATE: Mutex<RefCell<Snapshot>> = Mutex::new(RefCell::new(Snapshot {
+    link: Link::Off,
+    connections: 0,
+    disconnections: 0,
+    notifications: 0,
+    dropped: 0,
+    scan_reports: 0,
+}));
 
 #[gatt_server]
 struct Server {
@@ -84,15 +63,17 @@ impl EventHandler for ScanCounter {
             SCAN_REPORTS.fetch_add(1, Ordering::Relaxed);
             SCAN_RSSI_MIN.fetch_min(i32::from(report.rssi), Ordering::Relaxed);
             SCAN_RSSI_MAX.fetch_max(i32::from(report.rssi), Ordering::Relaxed);
-            if config::PROFILE == 0 {
+            let Some(selection) = critical_section::with(|cs| *SELECTION.borrow_ref(cs)) else {
                 continue;
-            }
-            let name_matches = AdStructure::decode(report.data).any(|item| {
-                matches!(item,
+            };
+            let name_matches = (selection.name.is_empty() && selection.address.is_some())
+                || AdStructure::decode(report.data).any(|item| {
+                    matches!(item,
                     Ok(AdStructure::CompleteLocalName(name) | AdStructure::ShortenedLocalName(name))
-                    if name == config::TARGET_NAME)
-            });
-            let address_matches = config::TARGET_ADDRESS
+                    if name == selection.name)
+                });
+            let address_matches = selection
+                .address
                 .is_none_or(|address| report.addr.raw() == address.as_slice());
             if name_matches && address_matches {
                 critical_section::with(|cs| {
@@ -106,66 +87,48 @@ impl EventHandler for ScanCounter {
     }
 }
 
-pub fn snapshot(now: u64) -> Snapshot {
-    critical_section::with(|cs| {
-        let state = *SENSOR.borrow_ref(cs);
-        let (heart_bpm, heart_age_ms) = state
-            .heart
-            .map(|(value, at)| fresh_u16(value, at, now))
-            .unwrap_or((None, None));
-        let (cadence_tenths, cadence_age_ms) = state
-            .cadence
-            .map(|(value, at)| fresh_u16(value, at, now))
-            .unwrap_or((None, None));
-        Snapshot {
-            profile: Profile::from_u8(config::PROFILE),
-            link: state.link,
-            heart_bpm,
-            heart_age_ms,
-            cadence_tenths,
-            cadence_age_ms,
-            connections: state.connections,
-            disconnections: state.disconnections,
-            notifications: state.notifications,
-            invalid: state.invalid,
-            rr_dropped: state.rr_dropped,
-        }
-    })
+pub fn snapshot() -> Snapshot {
+    let mut state = critical_section::with(|cs| *STATE.borrow_ref(cs));
+    state.scan_reports = SCAN_REPORTS.load(Ordering::Relaxed);
+    state
 }
-
 pub fn request_reconnect() -> bool {
-    if config::PROFILE == 0 {
+    if critical_section::with(|cs| SELECTION.borrow_ref(cs).is_none()) {
         false
     } else {
         RECONNECT.store(true, Ordering::Relaxed);
         true
     }
 }
-
-fn update_sensor(update: impl FnOnce(&mut SensorState)) {
-    critical_section::with(|cs| update(&mut SENSOR.borrow_ref_mut(cs)));
+fn update_state(update: impl FnOnce(&mut Snapshot)) {
+    critical_section::with(|cs| update(&mut STATE.borrow_ref_mut(cs)));
 }
 
 fn set_link(link: Link) {
-    update_sensor(|state| state.link = link);
+    update_state(|state| state.link = link);
 }
 
 fn disconnected() {
-    update_sensor(|state| {
+    update_state(|state| {
         state.link = Link::Retrying;
-        state.heart = None;
-        state.cadence = None;
         state.disconnections = state.disconnections.saturating_add(1);
     });
 }
 
 #[embassy_executor::task]
-pub async fn start(bt: BT<'static>) {
+pub async fn start(bt: BT<'static>, selection: Option<Selection>) {
+    if selection.is_some_and(|selection| selection.name.is_empty() && selection.address.is_none()) {
+        set_link(Link::Failed);
+        log::warn!(target: "ble", "selection rejected reason=missing_peer");
+        return;
+    }
+    critical_section::with(|cs| *SELECTION.borrow_ref_mut(cs) = selection);
     let heap_before = esp_alloc::HEAP.free();
     let connector = match BleConnector::new(bt, Default::default()) {
         Ok(connector) => connector,
         Err(error) => {
-            println!("CYCLING_BLE init_failed error={:?}", error);
+            set_link(Link::Failed);
+            log::info!(target: "ble", "CYCLING_BLE init_failed error={:?}", error);
             return;
         }
     };
@@ -186,48 +149,49 @@ pub async fn start(bt: BT<'static>) {
     })) {
         Ok(server) => server,
         Err(_) => {
-            println!("CYCLING_BLE server_failed");
+            set_link(Link::Failed);
+            log::info!(target: "ble", "CYCLING_BLE server_failed");
             return;
         }
     };
-    let profile = Profile::from_u8(config::PROFILE);
-    println!(
+
+    log::info!(target: "ble",
         "CYCLING_BLE ready mode={} att_mtu_max=60 heap_before={} heap_after={}",
-        profile.name(),
+        if selection.is_some() { "client" } else { "echo" },
         heap_before,
         esp_alloc::HEAP.free()
     );
 
     let app = async {
-        if profile == Profile::Echo {
-            set_link(Link::Off);
+        if selection.is_none() {
+            set_link(Link::Advertising);
             loop {
                 if advertise_and_echo(&mut peripheral, &server).await.is_err() {
-                    println!("CYCLING_BLE peripheral_error retry_ms=1000");
+                    log::info!(target: "ble", "CYCLING_BLE peripheral_error retry_ms=1000");
                     Timer::after_secs(1).await;
                 }
             }
         } else {
-            sensor_loop(&stack, central, profile).await;
+            client_loop(&stack, central, selection.unwrap()).await;
         }
     };
     let outcome = select(runner.run_with_handler(&ScanCounter), app).await;
-    update_sensor(|state| {
-        state.link = Link::Off;
-        state.heart = None;
-        state.cadence = None;
+    update_state(|state| {
+        state.link = Link::Failed;
     });
     match outcome {
-        Either::First(Ok(())) => println!("CYCLING_BLE runner_stopped result=ok"),
-        Either::First(Err(_)) => println!("CYCLING_BLE runner_stopped result=error"),
-        Either::Second(()) => println!("CYCLING_BLE application_stopped"),
+        Either::First(Ok(())) => log::info!(target: "ble", "CYCLING_BLE runner_stopped result=ok"),
+        Either::First(Err(_)) => {
+            log::info!(target: "ble", "CYCLING_BLE runner_stopped result=error")
+        }
+        Either::Second(()) => log::info!(target: "ble", "CYCLING_BLE application_stopped"),
     }
 }
 
-async fn sensor_loop<'stack, C>(
+async fn client_loop<'stack, C>(
     stack: &'stack Stack<'stack, C, DefaultPacketPool>,
     mut central: Central<'stack, C, DefaultPacketPool>,
-    profile: Profile,
+    selection: Selection,
 ) where
     C: Controller + ControllerCmdSync<LeSetScanParams>,
 {
@@ -237,19 +201,19 @@ async fn sensor_loop<'stack, C>(
         central = returned;
         let Some(target) = target else {
             set_link(Link::Retrying);
-            println!("CYCLING_BLE sensor_found=false retry_s={}", retry_seconds);
+            log::info!(target: "ble", "CYCLING_BLE peer_found=false retry_s={}", retry_seconds);
             Timer::after_secs(retry_seconds).await;
             retry_seconds = (retry_seconds * 2).min(30);
             continue;
         };
         set_link(Link::Connecting);
         RECONNECT.store(false, Ordering::Relaxed);
-        let before = snapshot(embassy_time::Instant::now().as_millis());
-        match sensor_attempt(stack, &mut central, target, profile).await {
-            Ok(()) => println!("CYCLING_BLE sensor_disconnected requested=true"),
-            Err(()) => println!("CYCLING_BLE sensor_disconnected requested=false"),
+        let before = snapshot();
+        match client_attempt(stack, &mut central, target, selection).await {
+            Ok(()) => log::info!(target: "ble", "CYCLING_BLE peer_disconnected requested=true"),
+            Err(()) => log::info!(target: "ble", "CYCLING_BLE peer_disconnected requested=false"),
         }
-        let after = snapshot(embassy_time::Instant::now().as_millis());
+        let after = snapshot();
         if after.connections != before.connections {
             disconnected();
         } else {
@@ -285,11 +249,11 @@ where
             drop(session);
             Timer::after_millis(100).await;
         }
-        Err(_) => println!("CYCLING_BLE scan_failed"),
+        Err(_) => log::info!(target: "ble", "CYCLING_BLE scan_failed"),
     }
     let target = critical_section::with(|cs| TARGET.borrow_ref_mut(cs).take());
     let reports = SCAN_REPORTS.load(Ordering::Relaxed);
-    println!(
+    log::info!(target: "ble",
         "CYCLING_BLE scan_done found={} reports={} rssi_min={} rssi_max={}",
         target.is_some(),
         reports,
@@ -307,11 +271,11 @@ where
     (scanner.into_inner(), target)
 }
 
-async fn sensor_attempt<'stack, C>(
+async fn client_attempt<'stack, C>(
     stack: &'stack Stack<'stack, C, DefaultPacketPool>,
     central: &mut Central<'stack, C, DefaultPacketPool>,
     target: Address,
-    profile: Profile,
+    selection: Selection,
 ) -> Result<(), ()>
 where
     C: Controller,
@@ -330,8 +294,8 @@ where
             .await
             .map_err(|_| ())?
             .map_err(|_| ())?;
-    update_sensor(|state| state.connections = state.connections.saturating_add(1));
-    println!("CYCLING_BLE sensor_connected profile={}", profile.name());
+    update_state(|state| state.connections = state.connections.saturating_add(1));
+    log::info!(target: "ble", "CYCLING_BLE transport_connected");
     let client = embassy_time::with_timeout(
         Duration::from_secs(10),
         GattClient::<C, DefaultPacketPool, 12>::new(stack, &connection),
@@ -339,28 +303,24 @@ where
     .await
     .map_err(|_| ())?
     .map_err(|_| ())?;
-    let result = match profile {
-        Profile::HeartRate => match select(client.task(), heart_protocol(&client)).await {
-            Either::First(_) => Err(()),
-            Either::Second(result) => result,
-        },
-        Profile::Cadence => match select(client.task(), cadence_protocol(&client)).await {
-            Either::First(_) => Err(()),
-            Either::Second(result) => result,
-        },
-        Profile::Echo => Err(()),
+    let result = match select(client.task(), data_protocol(&client, selection)).await {
+        Either::First(_) => Err(()),
+        Either::Second(result) => result,
     };
     connection.disconnect();
     result
 }
 
-async fn heart_protocol<C>(client: &GattClient<'_, C, DefaultPacketPool, 12>) -> Result<(), ()>
+async fn data_protocol<C>(
+    client: &GattClient<'_, C, DefaultPacketPool, 12>,
+    selection: Selection,
+) -> Result<(), ()>
 where
     C: Controller,
 {
     let services = embassy_time::with_timeout(
         Duration::from_secs(10),
-        client.services_by_uuid(&Uuid::new_short(0x180d)),
+        client.services_by_uuid(&Uuid::new_short(selection.service)),
     )
     .await
     .map_err(|_| ())?
@@ -368,7 +328,7 @@ where
     let service = services.first().cloned().ok_or(())?;
     let measurement: Characteristic<[u8]> = embassy_time::with_timeout(
         Duration::from_secs(10),
-        client.characteristic_by_uuid(&service, &Uuid::new_short(0x2a37)),
+        client.characteristic_by_uuid(&service, &Uuid::new_short(selection.characteristic)),
     )
     .await
     .map_err(|_| ())?
@@ -391,70 +351,26 @@ where
             continue;
         };
         let now = embassy_time::Instant::now().as_millis();
-        if let Some(value) = HeartRate::parse(notification.as_ref()) {
-            update_sensor(|state| {
-                state.notifications = state.notifications.saturating_add(1);
-                state.rr_dropped = state.rr_dropped.saturating_add(u32::from(value.rr_dropped));
-                if let Some(bpm) = usable_heart(value) {
-                    state.heart = Some((bpm, now));
-                } else {
-                    state.heart = None;
-                }
-            });
-        } else {
-            update_sensor(|state| state.invalid = state.invalid.saturating_add(1));
-        }
-    }
-}
-
-async fn cadence_protocol<C>(client: &GattClient<'_, C, DefaultPacketPool, 12>) -> Result<(), ()>
-where
-    C: Controller,
-{
-    let services = embassy_time::with_timeout(
-        Duration::from_secs(10),
-        client.services_by_uuid(&Uuid::new_short(0x1816)),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    let service = services.first().cloned().ok_or(())?;
-    let measurement: Characteristic<[u8]> = embassy_time::with_timeout(
-        Duration::from_secs(10),
-        client.characteristic_by_uuid(&service, &Uuid::new_short(0x2a5b)),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    let mut subscription = embassy_time::with_timeout(
-        Duration::from_secs(10),
-        client.subscribe(&measurement, false),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    let mut cadence = CadenceReading::default();
-    set_link(Link::Connected);
-    loop {
-        if RECONNECT.swap(false, Ordering::Relaxed) {
-            cadence.disconnected();
-            return Ok(());
-        }
-        let Ok(notification) =
-            embassy_time::with_timeout(Duration::from_secs(1), subscription.next()).await
-        else {
-            continue;
+        let data: &[u8] = notification.as_ref();
+        update_state(|state| state.notifications = state.notifications.saturating_add(1));
+        let state = snapshot();
+        let mut packet = Packet {
+            connection: state.connections,
+            sequence: state.notifications,
+            dropped: state.dropped,
+            received_ms: now,
+            bytes: [0; 60],
+            length: data.len().min(60) as u8,
         };
-        let now = embassy_time::Instant::now().as_millis();
-        let Some(value) = CscMeasurement::parse(notification.as_ref()) else {
-            update_sensor(|state| state.invalid = state.invalid.saturating_add(1));
+        if data.len() > packet.bytes.len() {
+            update_state(|state| state.dropped = state.dropped.saturating_add(1));
             continue;
-        };
-        update_sensor(|state| state.notifications = state.notifications.saturating_add(1));
-        if let Some((revolutions, event_time)) = value.crank
-            && let Some(value) = cadence.update(revolutions, event_time, now)
-        {
-            update_sensor(|state| state.cadence = Some((value as u16, now)));
+        }
+        packet.bytes[..data.len()].copy_from_slice(data);
+        // One bounded consumer queue. A slow client cannot stall BLE acquisition;
+        // sequence/drop stamps let it reject queued data from before a loss.
+        if PACKETS.try_send(packet).is_err() {
+            update_state(|state| state.dropped = state.dropped.saturating_add(1));
         }
     }
 }
@@ -476,7 +392,8 @@ where
         )],
         &mut adv_data,
     )?;
-    println!("CYCLING_BLE advertising");
+    set_link(Link::Advertising);
+    log::info!(target: "ble", "CYCLING_BLE advertising");
     let advertiser = peripheral
         .advertise(
             &Default::default(),
@@ -487,15 +404,17 @@ where
         )
         .await?;
     let connection = advertiser.accept().await?.with_attribute_server(server)?;
-    update_sensor(|state| state.connections = state.connections.saturating_add(1));
-    println!("CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
+    update_state(|state| state.connections = state.connections.saturating_add(1));
+    set_link(Link::Connected);
+    log::info!(target: "ble", "CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
     loop {
         match connection.next().await {
             GattConnectionEvent::Disconnected { reason } => {
-                update_sensor(|state| {
-                    state.disconnections = state.disconnections.saturating_add(1)
+                update_state(|state| {
+                    state.disconnections = state.disconnections.saturating_add(1);
+                    state.link = Link::Advertising;
                 });
-                println!("CYCLING_BLE disconnected reason={:?}", reason);
+                log::info!(target: "ble", "CYCLING_BLE disconnected reason={:?}", reason);
                 return Ok(());
             }
             GattConnectionEvent::Gatt { event } => {
@@ -507,15 +426,15 @@ where
                             .reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)?
                             .send()
                             .await;
-                        println!("CYCLING_BLE echo_rejected reason=length");
+                        log::info!(target: "ble", "CYCLING_BLE echo_rejected reason=length");
                     } else {
                         write.accept()?.send().await;
                         let value = server.get(&server.echo.value)?;
-                        update_sensor(|state| {
+                        update_state(|state| {
                             state.notifications = state.notifications.saturating_add(1)
                         });
                         if server.echo.value.notify(&connection, &value).await.is_err() {
-                            println!("CYCLING_BLE notify_failed");
+                            log::info!(target: "ble", "CYCLING_BLE notify_failed");
                         }
                     }
                 } else {

@@ -34,9 +34,28 @@ Current starting state: clean main at eb0c7d2. Live #54-#66 bodies fetched at
 stock selected; current boot/USB state has not yet been observed. Root owns device;
 no agent or collector owns a serial session. No source edits preceded this session.
 
-Next: short contract/deletion inventory #55, device ownership #56, then early
-logging #66 alongside independent service extraction. Track branch/PR, review,
-checks and observed device state here after each increment.
+User clarification at session start: C606 is indoors. User confirms the existing
+GPS implementation works well. This is user-confirmed baseline, not new measured
+evidence. Validate transport/parser progression, no-fix/freshness and recovery;
+lack of an indoor fix alone is not a regression or blocker. Preserve the proven
+GPS behavior and do not claim new outdoor accuracy.
+
+Progress at 15:22 UTC: #55 contract and inventory independently approved by Astra
+medium against actual source and live requirements. Root prepares its PR.
+Branch refactor/contracts, authorization commit 227417e. Git signing helper could
+not reach 1Password; use per-command unsigned commits without changing config.
+Astra medium board agent owns main.rs/device extraction #56; Astra medium logging
+agent owns new logging/host adapter files and Cargo/build metadata #66. Root owns
+integration and USB. Reviewer is available for completed increments.
+
+Baseline safe `sudo -n -E mise run flash` succeeded after ordinary-user USB access
+was denied. Existing backup manifest was reused and checked by safe flash. Stock
+slot, bootloader and partition verification passed; B selected. Unchanged baseline
+harness firmware booted and the no-reset export tool read one saved demo ride,
+four slots/four samples into `.local/exports/refactor-baseline`. No mutation of
+ride data. Debug state collection succeeded at `.local/tests/refactor-baseline`.
+Root owns no ongoing serial reader. New hardware accuracy not measured.
+
 
 ## Historical latest device state
 

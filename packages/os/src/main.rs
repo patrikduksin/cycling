@@ -2,17 +2,11 @@
 #![no_main]
 
 mod bluetooth;
-mod companion_uart;
-mod crash_rtc;
 #[cfg(feature = "debug-harness")]
 mod debug_usb;
-mod display;
-mod gps_uart;
+mod device;
 mod persistent;
-mod psram;
 mod ride_recorder;
-mod sdmmc;
-mod touch;
 mod wifi;
 
 use core::{alloc::Layout, ptr, slice};
@@ -27,66 +21,32 @@ use cycling_os::{
     ride_log::Sample as RideSample,
     ui::App,
 };
+use device::{companion_uart, crash_rtc, psram};
 #[cfg(feature = "debug-harness")]
 use embassy_time::Timer;
 use esp_backtrace as _;
-use esp_hal::{
-    clock::CpuClock,
-    dma_tx_buffer,
-    gpio::{DriveMode, Level, Output, OutputConfig},
-    lcd_cam::{
-        LcdCam,
-        lcd::i8080::{Config, I8080},
-    },
-    ledc::{
-        LSGlobalClkSource, Ledc, LowSpeed,
-        channel::{self, ChannelIFace},
-        timer::{self, TimerIFace},
-    },
-    time::{Instant, Rate},
-};
+use esp_hal::{ledc::channel::ChannelIFace, time::Instant};
 use esp_println::println;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) -> ! {
-    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
-    let reset = crash_rtc::reset();
-    let crash = crash_rtc::take();
-    println!(
-        "CYCLING_BOOT version={} board=magene-c606 harness={}",
-        env!("CARGO_PKG_VERSION"),
-        cfg!(feature = "debug-harness")
-    );
-    match crash {
-        cycling_os::crash::Marker::Valid(report) => println!(
-            "CYCLING_RESET reason={} marker={} version={}",
-            reset.name(),
-            crash.name(),
-            report.version()
-        ),
-        _ => println!(
-            "CYCLING_RESET reason={} marker={}",
-            reset.name(),
-            crash.name()
-        ),
-    }
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
-    esp_alloc::heap_allocator!(size: 96 * 1024);
-    let psram = psram::init(p.PSRAM);
-    println!(
-        "CYCLING_PSRAM ready mode=quad ram_mhz=40 capacity={} tested={} passes={} internal_before={} internal_after={} external_free={} allocator_probe={} allocator_alignment={}",
-        psram.capacity,
-        psram.tested,
-        psram.passes,
-        psram.internal_before,
-        psram.internal_after,
-        psram.external_free,
-        psram.allocator_probe,
-        psram.allocator_alignment
-    );
-    let (mut settings_store, loaded) = persistent::Store::open(p.FLASH);
+    let device::c606::Resources {
+        reset,
+        crash,
+        flash,
+        wifi,
+        bluetooth,
+        usb,
+        mut screen,
+        mut touch,
+        touch_available: mut available,
+        mut gps_receiver,
+        backlight,
+        _lcd_read,
+    } = device::c606::init();
+    let (mut settings_store, loaded) = persistent::Store::open(flash);
     let loaded_settings = match loaded {
         Ok(loaded) => {
             println!(
@@ -108,126 +68,10 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             Settings::default()
         }
     };
-    if option_env!("CYCLING_SDMMC_PROBE") == Some("1") {
-        println!(
-            "CYCLING_SDMMC probe=start mode=native-read-only slot=1 width=1 clock_hz=400000 pins=13,14,16"
-        );
-        match sdmmc::probe(
-            p.SDHOST, p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15,
-        ) {
-            Ok(report) => {
-                let model = core::str::from_utf8(&report.product).unwrap_or("??????");
-                println!(
-                    "CYCLING_SDMMC ready kind={} model={} high_capacity={} capacity_bytes={} sector_size={} reads={} repeated_equal={}",
-                    report.kind.name(),
-                    model,
-                    report.high_capacity,
-                    report.sectors * u64::from(report.sector_size),
-                    report.sector_size,
-                    report.reads,
-                    report.repeated_equal
-                );
-                println!(
-                    "CYCLING_SDMMC_PRIVATE rca={:04x} cid={:08x},{:08x},{:08x},{:08x} csd={:08x},{:08x},{:08x},{:08x} first_hash={:08x} second_hash={:08x} last_hash={:08x}",
-                    report.rca,
-                    report.cid[0],
-                    report.cid[1],
-                    report.cid[2],
-                    report.cid[3],
-                    report.csd[0],
-                    report.csd[1],
-                    report.csd[2],
-                    report.csd[3],
-                    report.first_hash,
-                    report.second_hash,
-                    report.last_hash
-                );
-            }
-            Err(error) => println!("CYCLING_SDMMC probe_failed error={:?}", error),
-        }
-    } else {
-        // Own the recovered storage pins even in ordinary builds so later
-        // changes cannot silently assign them to another peripheral.
-        let _sdhost = p.SDHOST;
-        let _storage_pins = (p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15);
-    }
-    let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
-    let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);
-    let _rd = Output::new(p.GPIO39, Level::High, OutputConfig::default());
-    let lcd = LcdCam::new(p.LCD_CAM);
-    let bus = I8080::new(
-        lcd.lcd,
-        p.DMA_CH0,
-        Config::default().with_frequency(Rate::from_mhz(10)),
-    )
-    .unwrap()
-    .with_cs(p.GPIO2)
-    .with_dc(p.GPIO40)
-    .with_wrx(p.GPIO3)
-    .with_data0(p.GPIO4)
-    .with_data1(p.GPIO38)
-    .with_data2(p.GPIO5)
-    .with_data3(p.GPIO37)
-    .with_data4(p.GPIO6)
-    .with_data5(p.GPIO36)
-    .with_data6(p.GPIO7)
-    .with_data7(p.GPIO35)
-    .with_data8(p.GPIO8)
-    .with_data9(p.GPIO34)
-    .with_data10(p.GPIO9)
-    .with_data11(p.GPIO33)
-    .with_data12(p.GPIO10)
-    .with_data13(p.GPIO47)
-    .with_data14(p.GPIO11)
-    .with_data15(p.GPIO48);
-    let mut screen = display::Display::new(bus, dma_tx_buffer!(3840).unwrap());
-    screen.init();
-
-    let touch_bus = esp_hal::i2c::master::I2c::new(
-        p.I2C0,
-        esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(100)),
-    )
-    .unwrap()
-    .with_sda(p.GPIO21)
-    .with_scl(p.GPIO12);
-    let mut touch = touch::Touch::new(touch_bus);
-    let probe = touch.probe();
-    println!("CYCLING_TOUCH probe={:02x?}", probe);
-    let mut available = probe.is_ok();
-
-    match companion_uart::init(p.UART2, p.GPIO41, p.GPIO42) {
-        Ok(16) => println!("CYCLING_GPS companion_open=sent source=stock_candidate"),
-        Ok(count) => println!("CYCLING_GPS companion_open_short bytes={}", count),
-        Err(()) => println!("CYCLING_GPS companion_open_failed"),
-    }
-    println!("CYCLING_COMPANION listening uart=2 tx=42 rx=41 baud=115200 buffer=2048");
-    let mut gps_receiver = gps_uart::init(p.UART0, p.GPIO0, p.UHCI0, p.DMA_CH1);
+    backlight.set_duty(loaded_settings.brightness).unwrap();
     let mut gps_parser = cycling_os::gps::Parser::default();
     let mut gps_ring_overflow = 0u32;
     let mut gps_uart_errors_seen = 0u32;
-    println!(
-        "CYCLING_GPS ready uart=0 rx=0 baud=921600 dma=uhci0 channel=1 buffer=8192 mode=stock_open_candidate"
-    );
-
-    let mut ledc = Ledc::new(p.LEDC);
-    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
-    let mut timer = ledc.timer::<LowSpeed>(timer::Number::Timer0);
-    timer
-        .configure(timer::config::Config {
-            duty: timer::config::Duty::Duty10Bit,
-            clock_source: timer::LSClockSource::APBClk,
-            frequency: Rate::from_khz(20),
-        })
-        .unwrap();
-    let mut backlight = ledc.channel(channel::Number::Channel0, p.GPIO45);
-    backlight
-        .configure(channel::config::Config {
-            timer: &timer,
-            duty_pct: loaded_settings.brightness,
-            drive_mode: DriveMode::PushPull,
-        })
-        .unwrap();
 
     println!("CYCLING_DISPLAY ready canvas=80x106 heap=163840");
     let mut canvas = [0; coin::PIXELS];
@@ -245,10 +89,12 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         previous_layout.size(),
         psram::external_free()
     );
-    spawner.spawn(wifi::start(p.WIFI, spawner).unwrap());
-    spawner.spawn(bluetooth::start(p.BT).unwrap());
+    spawner.spawn(wifi::start(wifi, spawner).unwrap());
+    spawner.spawn(bluetooth::start(bluetooth).unwrap());
     #[cfg(feature = "debug-harness")]
-    let (mut usb_rx, _usb_tx) = esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE).split();
+    let (mut usb_rx, _usb_tx) = usb.split();
+    #[cfg(not(feature = "debug-harness"))]
+    let _usb = usb;
     #[cfg(feature = "debug-harness")]
     let mut debug = debug_usb::Debug::new();
     #[cfg(feature = "debug-harness")]

@@ -5,8 +5,7 @@ use cycling_os::{
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::{FlashStorage, FlashStorageError};
 
-pub const BASE: u32 = 0x00e9_8000;
-pub const RIDE_BASE: u32 = 0x00d9_8000;
+pub use crate::device::storage::{RIDE_BASE, SETTINGS_BASE as BASE};
 pub struct Loaded {
     pub settings: Settings,
     pub source: Source,

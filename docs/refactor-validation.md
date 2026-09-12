@@ -227,8 +227,11 @@ the final protected base flash; the base has no ride writer.
 
 Physical panel/switch/touch accuracy, battery hardware behavior and new electrical
 power measurements were not established by these terminal tests. The retained
-MMC read-only result does not authorize vendor filesystem writes. #34 still owns
-receiver identity, electrical control and measured outdoor reference accuracy.
+MMC read-only result does not authorize vendor filesystem writes. Historical
+#34 was already closed before this session; it was not reopened. Its receiver
+identity, electrical-control and measured outdoor reference-accuracy limits were
+not newly resolved here. Outdoor functionality was user-confirmed in that issue,
+separate from this session's indoor transport measurements.
 BLE remains one peer; lag hidden in Trouble Host's two-entry notification queue
 is not fully represented by the core drop counter. This is not a lossless sensor
 stream or an unlimited-duration reliability claim.

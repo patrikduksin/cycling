@@ -92,12 +92,13 @@ final sampled freeheap80308/min79860, enqueue max1829µs and USBpump max310µs a
 observations, not peak memory, WCET or power measurements.
 
 The user-confirmed indoor GPS baseline remains separate from new no-fix/parser
-and recovery evidence. #34 stays open for its unverified receiver/control/outdoor
-requirements. Physical panel/switch/touch accuracy and power were not newly
+and recovery evidence. Live issue audit confirmed #34 was already closed at
+14:49 UTC, before this session; it was not reopened. Its historical receiver,
+electrical-control and measured-accuracy limits remain unverified here. Physical panel/switch/touch accuracy and power were not newly
 established. BLE remains onepeer with upstream queue-lag limitations. Explicit
 unknown-settings recovery is follow-up #70; normal SAVE remains non-destructive.
 This queue is complete. No reader, fixture, device mutation or historical queue
-is pending in this session. Separate #34/#70 work must not be silently restarted.
+is pending in this session. The closed #34 queue must not be restarted; optional #70 remains separate.
 
 From the repository, ordinary access on this host is:
 
@@ -251,7 +252,8 @@ Empty/new exports: .local/exports/issue44-empty and issue44-new-demo-final.
   Raw evidence remains in .local/tests/companion-*. No hardware ring-exhaustion
   fault or physical button presses were forced during this follow-up.
 
-The authorized follow-up queue is complete. Only #34 remains open for measured
+At that historical checkpoint the follow-up queue was complete except #34
+(later closed before this refactor), which still recorded limits for measured
 outdoor reference accuracy, fitted-receiver identification and electrical power
 behavior beyond proven stream control. Outdoor acquisition is now user-confirmed.
 On September 11 the user reported NO FIX indoors; live parsing advanced without

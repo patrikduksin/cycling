@@ -5,10 +5,67 @@ import struct
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 import zlib
 
 from harness import Runner, decode_chunk, events_for, png_rgb565, preflight, execute
 from harness_transport import Real
+
+
+class CleanupTransport:
+    """Records commands and separates lost replies from whether a mutation acted."""
+    virtual = True
+    def __init__(self, close_timeout=None, restore_timeout=None, apply_before_timeout=False):
+        self.original = {'brightness': '61', 'timezone': '-180', 'dim_timeout': '33', 'dim_brightness': '22'}
+        self.settings = dict(self.original)
+        self.commands, self.closed, self.request_id = [], False, 1
+        self.close_timeout, self.restore_timeout = close_timeout, restore_timeout
+        self.apply_before_timeout = apply_before_timeout
+        self.status_reads, self.now = 0, 100.0
+    def __enter__(self):
+        return self
+    def __exit__(self, *_):
+        self.closed = True
+    def terminal_command(self, command, **_):
+        self.commands.append(command)
+        self.request_id += 1
+        if command == 'INFO':
+            data = 'cycling=false recording=false'
+        elif command == 'HARNESS CAPS':
+            data = ('input=supported capture=supported boot=1 '
+                    'ordinary=INFO,STATUS,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE')
+        elif command.startswith('HARNESS OPEN '):
+            data = f'nonce={command.split()[2]} boot=1 session=7'
+        elif command == 'HARNESS 7 CLOSE':
+            if self.close_timeout is not None:
+                self.now += self.close_timeout
+                raise TimeoutError('CLOSE reply lost')
+            data = 'boot=1 session=0'
+        elif command == 'HARNESS 7 PING':
+            raise TimeoutError('session unavailable after uncertain CLOSE')
+        elif command == 'STATUS':
+            self.status_reads += 1
+            if self.status_reads > 1:
+                raise KeyboardInterrupt()
+            data = 'input_events=0'
+        elif command == 'SETTINGS':
+            data = ' '.join(f'{key}={value}' for key, value in self.settings.items())
+        else:
+            if command == self.restore_timeout and not self.apply_before_timeout:
+                raise TimeoutError('preference mutation reply lost')
+            words = command.split()
+            if words[0] == 'BRIGHTNESS':
+                self.settings['brightness'] = words[1]
+            elif words[0] == 'TIMEZONE':
+                self.settings['timezone'] = words[1]
+            elif words[0] == 'IDLE':
+                self.settings['dim_timeout'], self.settings['dim_brightness'] = words[1:]
+            else:
+                raise AssertionError(command)
+            if command == self.restore_timeout:
+                raise TimeoutError('preference mutation reply lost')
+            data = ''
+        return {'status': 'OK', 'data': data}
 
 
 class HarnessTests(unittest.TestCase):
@@ -48,50 +105,93 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 decode_chunk(chunk | replacement, 1, 0, 4096)
 
-    def test_failure_restores_all_unsaved_preferences_without_save(self):
-        from types import SimpleNamespace
-        class Fake:
-            virtual = True
-            request_id = 1
-            def __init__(self, *_args):
-                self.settings = {'brightness': '61', 'timezone': '-180', 'dim_timeout': '33', 'dim_brightness': '22'}
-                self.commands = []
-                self.closed = False
-            def __enter__(self):
-                return self
-            def __exit__(self, *_):
-                self.closed = True
-            def terminal_command(self, command, **_):
-                self.commands.append(command)
-                if command == 'INFO':
-                    data = 'cycling=false recording=false'
-                elif command == 'HARNESS CAPS':
-                    data = 'input=unsupported capture=unsupported boot=1 ordinary=INFO,STATUS,SETTINGS'
-                elif command == 'SETTINGS':
-                    data = ' '.join(f'{k}={v}' for k,v in self.settings.items())
-                elif command.startswith('BRIGHTNESS '):
-                    self.settings['brightness'] = command.split()[1]; data = ''
-                elif command.startswith('TIMEZONE '):
-                    self.settings['timezone'] = command.split()[1]; data = ''
-                elif command.startswith('IDLE '):
-                    self.settings['dim_timeout'], self.settings['dim_brightness'] = command.split()[1:]; data = ''
-                else:
-                    data = ''
-                return {'status': 'OK', 'data': data}
-        fake = Fake()
-        original = dict(fake.settings)
-        def failing_step(*_):
-            fake.settings.update(brightness='50', timezone='0', dim_timeout='30', dim_brightness='10')
-            raise TimeoutError('uncertain operation')
+    def run_cleanup_case(self, fake, captures=()):
+        scenario = {'steps': [
+            {'op': 'command', 'command': 'BRIGHTNESS 50'},
+            {'op': 'virtual-command', 'command': 'TIMEZONE 0'},
+            {'op': 'virtual-command', 'command': 'IDLE 30 10'},
+            {'op': 'command', 'command': 'STATUS'},
+        ], 'captures': [{'kind': capture.kind} for capture in captures]}
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual',
+                               state_dir=None, sdk=False, no_harness=False)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, sdk=False, no_harness=True)
-            with patch('harness.Virtual', return_value=fake), patch.object(Runner, 'step', failing_step), patch('sys.stdout', io.StringIO()):
-                self.assertEqual(execute(args, {'steps': [{'op': 'command', 'command': 'STATUS'}]}, output), 1)
-            self.assertEqual(fake.settings, original)
-            self.assertNotIn('SAVE', fake.commands)
-            self.assertTrue(fake.closed)
-            self.assertEqual(json.loads((output / 'report.json').read_text())['cleanup']['preferences'], 'verified')
+            with patch('harness.Virtual', return_value=fake), \
+                 patch('harness.Capture', side_effect=captures), \
+                 patch('harness.time.monotonic', side_effect=lambda: fake.now), \
+                 patch('sys.stdout', io.StringIO()):
+                code = execute(args, scenario, output)
+            report = json.loads((output / 'report.json').read_text())
+        self.assertTrue(fake.closed)
+        self.assertNotIn('SAVE', fake.commands)
+        return code, report
+
+    def test_interruption_closes_session_before_restoring_all_unsaved_preferences(self):
+        fake = CleanupTransport()
+        code, report = self.run_cleanup_case(fake)
+        self.assertEqual(code, 1)
+        self.assertEqual(report['status'], 'fail')
+        self.assertEqual(report['cleanup']['input_capture'], 'closed')
+        self.assertEqual(report['cleanup']['preferences'], 'verified')
+        self.assertEqual(fake.settings, fake.original)
+        close = fake.commands.index('HARNESS 7 CLOSE')
+        self.assertEqual(fake.commands[close + 1:], [
+            'SETTINGS', 'BRIGHTNESS 61', 'SETTINGS', 'TIMEZONE -180', 'IDLE 33 22', 'SETTINGS'])
+        self.assertEqual(report['steps'][-1]['error'], '')  # KeyboardInterrupt has no message.
+
+    def test_failed_close_does_not_prevent_independent_preference_inspection(self):
+        for elapsed in (0, 31):
+            with self.subTest(close_timeout_seconds=elapsed):
+                fake = CleanupTransport(close_timeout=elapsed)
+                code, report = self.run_cleanup_case(fake)
+                self.assertEqual(code, 2)
+                self.assertEqual(report['status'], 'inconclusive')
+                self.assertIn('uncertain', report['cleanup']['input_capture'])
+                self.assertEqual(report['cleanup']['preferences'], 'verified')
+                self.assertEqual(fake.settings, fake.original)
+                close = fake.commands.index('HARNESS 7 CLOSE')
+                self.assertEqual(fake.commands[close + 1], 'SETTINGS')
+                self.assertEqual(fake.commands.count('HARNESS 7 CLOSE'), 1)
+
+    def test_uncertain_preference_restore_is_never_replayed(self):
+        restores = ['BRIGHTNESS 61', 'TIMEZONE -180', 'IDLE 33 22']
+        for failed in restores:
+            for applied in (False, True):
+                with self.subTest(failed=failed, mutation_applied=applied):
+                    fake = CleanupTransport(restore_timeout=failed, apply_before_timeout=applied)
+                    code, report = self.run_cleanup_case(fake)
+                    self.assertEqual(code, 2)
+                    self.assertEqual(report['status'], 'inconclusive')
+                    self.assertIn('uncertain', report['cleanup']['preferences'])
+                    self.assertEqual(fake.commands.count(failed), 1)
+                    self.assertTrue(all(fake.commands.count(command) <= 1 for command in restores))
+                    self.assertEqual(report['cleanup']['input_capture'], 'closed')
+
+    def test_partial_av_startup_releases_started_and_partially_started_capture_and_usb(self):
+        events = []
+        class Capture:
+            def __init__(self, kind):
+                self.kind = kind
+            def preflight(self):
+                events.append((self.kind, 'preflight'))
+            def start(self):
+                events.append((self.kind, 'start'))
+                if self.kind == 'microphone':
+                    raise OSError('fixture playback could not start after capture launch')
+            def finish(self, cancel=False):
+                events.append((self.kind, 'finish', cancel))
+                return {'status': 'skipped'}
+        fake = CleanupTransport()
+        code, report = self.run_cleanup_case(fake, [Capture('camera'), Capture('microphone')])
+        self.assertEqual(code, 1)
+        self.assertEqual(events, [('camera', 'preflight'), ('microphone', 'preflight'),
+            ('camera', 'start'), ('microphone', 'start'),
+            ('camera', 'finish', True), ('microphone', 'finish', True)])
+        self.assertEqual(report['cleanup']['input_capture'], 'closed')
+        self.assertEqual(report['cleanup']['preferences'], 'verified')
+        self.assertEqual(fake.settings, fake.original)
+        self.assertTrue(all(step['status'] == 'skipped' for step in report['steps']))
+        self.assertEqual(len(report['captures']), 2)
 
     def test_stale_session_cannot_complete_operation(self):
         class Fake:

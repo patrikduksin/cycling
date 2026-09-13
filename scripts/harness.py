@@ -77,10 +77,11 @@ RECIPES['virtual-sdk'] = {'steps': [
     {'op': 'virtual-command', 'command': 'EXPORT INFO'},
 ]}
 RECIPES['acceptance'] = {'captures': [
-    {'kind': 'camera', 'seconds': 8, 'samples_s': [.5, 1.5, 2.5, 3.5, 7.5]},
+    {'kind': 'camera', 'seconds': 10, 'samples_s': [1.5, 2.5, 3.5, 4.5, 9.5]},
     {'kind': 'microphone', 'seconds': 5, 'fixture': True, 'floor_db': -60, 'margin_db': 8,
      'position': 'Laptop microphone and laptop speaker fixture; document unchanged physical placement in evidence.'}],
     'steps': [
+        {'op': 'delay', 'seconds': 2},
         {'op': 'command', 'command': 'BRIGHTNESS 100'},
         {'op': 'command', 'command': 'DISPLAY f800'}, {'op': 'delay', 'seconds': 1},
         {'op': 'command', 'command': 'DISPLAY 07e0'}, {'op': 'delay', 'seconds': 1},
@@ -445,6 +446,9 @@ def execute(args, scenario, output):
     report = {'version': VERSION, 'run_id': args.run_id or output.name, 'status': 'running', 'steps': [],
               'host_invocations': 1, 'agent_tool_calls': args.agent_tool_calls,
               'report': str(output / 'report.json'), 'host_started_unix_s': time.time(),
+              'scenario': scenario,
+              'host_revision': subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip(),
+              'host_dirty': bool(subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()),
               'clock_correlation': 'Device reply ms is sampled at loop start and may predate host send by loop work. Host send/receive times are retained; exact device/AV alignment is unmeasured, including AV startup/buffering.',
               'limits': ['Synthetic input does not verify physical sensing.', 'Submitted pixels do not verify the panel.',
                          'USB recovery does not remove VBUS.', 'Virtual runs do not establish hardware timing.']}
@@ -537,6 +541,7 @@ def execute(args, scenario, output):
                     except (Exception, KeyboardInterrupt) as error:
                         cleanup['input_capture'] = 'uncertain; device lease expiry cancels held input'
                         cleanup['cancel_error'] = str(error)
+                        runner.session = None  # Inspect preferences without renewing an uncertain session.
                         report['status'] = 'inconclusive'
                 if original:
                     actual = runner.command('SETTINGS')

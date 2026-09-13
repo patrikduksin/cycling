@@ -19,7 +19,11 @@ def discover():
     cameras = []
     for path in sorted(Path('/sys/class/video4linux').glob('video*')):
         name = (path / 'name').read_text().strip()
-        cameras.append({'path': '/dev/' + path.name, 'name': name})
+        device = '/dev/' + path.name
+        info = command(['v4l2-ctl', '-d', device, '--all'])
+        import re
+        card = re.search(r'Card type\s*:\s*(.+)', info)
+        cameras.append({'path': device, 'name': card.group(1) if card else name, 'video_capture': 'Video Capture' in info})
     sources = []
     if shutil.which('pactl'):
         for source in json.loads(command(['pactl', '-f', 'json', 'list', 'sources'])):
@@ -119,7 +123,9 @@ class Capture:
         if self.kind == 'camera':
             selected = self.config.get('device')
             matches = [item for item in inventory['cameras'] if item['path'] == selected] if selected else [
-                item for item in inventory['cameras'] if 'camera' in item['name'].lower()]
+                item for item in inventory['cameras'] if item['video_capture']]
+            if not selected and len(matches) > 1:
+                matches = [item for item in matches if 'camera' in item['name'].lower()]
             if len(matches) != 1:
                 raise ValueError('select one camera path from harness av-discover')
             self.setup = matches[0]
@@ -190,7 +196,7 @@ class Capture:
             self.log.close()
         result = {'status': 'fail' if self.process.returncode else 'pass', 'path': str(self.path),
                   'host_started_monotonic_s': self.started, 'host_finished_monotonic_s': time.monotonic(),
-                  'configuration': self.setup, 'settings_changed': False,
+                  'configuration': self.setup, 'requested': self.config, 'settings_changed': False,
                   'clock_uncertainty': 'Process launch precedes first sample by unmeasured backend startup/buffering latency.'}
         if self.path.exists():
             result['sha256'] = hashlib.sha256(self.path.read_bytes()).hexdigest()
@@ -199,7 +205,10 @@ class Capture:
             if self.fixture is not None:
                 result['fixture_exit'] = self.fixture.returncode
                 events = result['analysis']['events']
-                result['fixture_verified'] = self.fixture.returncode == 0 and len(events) == 2 and all(abs(event['dominant_hz'] - 1000) <= 10 for event in events)
+                matches = [event for event in events if .2 <= event['duration_s'] <= 1.5 and abs(event['dominant_hz'] - 1000) <= 10]
+                result['fixture_events'] = matches
+                result['other_audio_events'] = len(events) - len(matches)
+                result['fixture_verified'] = self.fixture.returncode == 0 and result['analysis']['clipped_samples'] == 0 and len(matches) == 2
                 if not result['fixture_verified']:
                     result['status'] = 'inconclusive'
         elif self.process.returncode == 0:

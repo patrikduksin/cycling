@@ -18,6 +18,8 @@ mise run setup
 mise run test
 mise run check
 mise run simulate                    # Shared shell with deterministic host devices
+mise run harness-virtual             # Shared command/input/capture/persistence scenarios
+mise run harness -- run input-screen # Real C606 input and screenshots
 mise run build                       # Base, development harness enabled
 CYCLING_SDK=1 mise run build          # Add the cycling SDK
 mise run terminal -- STATUS          # Query an already-running device
@@ -49,6 +51,7 @@ It preserves stock firmware and existing data. Firmware lives in `packages/os`;
 vendor artifacts, credentials and raw evidence stay in ignored `.local/`.
 
 - [Architecture and ownership](docs/architecture.md)
+- [Testing harness and recipes](docs/testing-harness.md)
 - [Ride recording and export](docs/ride-recording.md)
 - [C606 hardware research](packages/stock/magene-c606)
 - [Requirements and history](https://github.com/patrikduksin/cycling/issues)

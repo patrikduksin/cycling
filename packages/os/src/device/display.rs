@@ -1,5 +1,7 @@
 //! ST7789 transport on the C606's recovered 16-bit I80 wiring.
-use cycling_os::capabilities::{FRAME_PIXELS, PANEL_HEIGHT, PANEL_WIDTH, frame_index};
+use cycling_os::capabilities::{Display as DisplayCapability, Error, Geometry};
+const PANEL_WIDTH: usize = 240;
+const PANEL_HEIGHT: usize = 320;
 use esp_hal::{Blocking, delay::Delay, dma::DmaTxBuf, lcd_cam::lcd::i8080::I8080};
 
 pub struct Display<'d> {
@@ -13,7 +15,7 @@ impl<'d> Display<'d> {
         }
     }
 
-    fn send(&mut self, command: u8, bytes: &[u8], pixels: bool) {
+    fn send(&mut self, command: u8, bytes: &[u8], pixels: bool) -> Result<(), Error> {
         let (bus, mut buffer) = self.resources.take().unwrap();
         buffer.fill(bytes);
         let transfer = if pixels {
@@ -26,14 +28,14 @@ impl<'d> Display<'d> {
             Err((error, bus, buffer)) => (Err(error), bus, buffer),
         };
         self.resources = Some((bus, buffer));
-        result.unwrap();
+        result.map_err(|_| Error::Failed)
     }
 
     pub fn init(&mut self) {
         let delay = Delay::new();
-        self.send(0x01, &[], false);
+        self.send(0x01, &[], false).unwrap();
         delay.delay_millis(150);
-        self.send(0x11, &[], false);
+        self.send(0x11, &[], false).unwrap();
         delay.delay_millis(120);
         // Controller configuration recovered from stock, validated by the C demo.
         const INIT: &[(u8, &[u8])] = &[
@@ -65,26 +67,19 @@ impl<'d> Display<'d> {
             (0x29, &[]),
         ];
         for &(command, data) in INIT {
-            self.send(command, data, false);
+            self.send(command, data, false).unwrap();
             delay.delay_millis(2);
         }
     }
-
-    /// Submit the explicit 80x106 RGB565 frame with the existing 3x mapping.
-    /// The exclusive borrow prevents concurrent submission. Each DMA transfer
-    /// completes before its buffer is reused; return means the last strip has
-    /// completed. Forty strips bound work; the HAL's blocking wait has no new
-    /// timeout/recovery policy in this extraction.
-    pub fn draw(&mut self, canvas: &[u16; FRAME_PIXELS]) {
-        self.draw_pixels(|x, y| canvas[frame_index(x, y)]);
+}
+impl DisplayCapability for Display<'_> {
+    fn geometry(&self) -> Geometry {
+        Geometry {
+            width: PANEL_WIDTH,
+            height: PANEL_HEIGHT,
+        }
     }
-
-    /// Full native-panel solid fill, useful without retaining a frame buffer.
-    pub fn fill(&mut self, rgb565: u16) {
-        self.draw_pixels(|_, _| rgb565);
-    }
-
-    pub fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
+    fn submit(&mut self, pixel: impl Fn(usize, usize) -> u16) -> Result<(), Error> {
         // Eight physical rows per DMA transfer; unchanged strip timing.
         let mut strip = [0u8; PANEL_WIDTH * 8 * 2];
         for top in (0..PANEL_HEIGHT).step_by(8) {
@@ -95,7 +90,7 @@ impl<'d> Display<'d> {
                     strip[offset..offset + 2].copy_from_slice(&color);
                 }
             }
-            self.send(0x2a, &[0, 0, 0, 239], false);
+            self.send(0x2a, &[0, 0, 0, 239], false)?;
             self.send(
                 0x2b,
                 &[
@@ -105,8 +100,9 @@ impl<'d> Display<'d> {
                     (top + 7) as u8,
                 ],
                 false,
-            );
-            self.send(0x2c, &strip, true);
+            )?;
+            self.send(0x2c, &strip, true)?;
         }
+        Ok(())
     }
 }

@@ -81,14 +81,6 @@ pub fn online() -> bool {
     LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
 }
 
-/// Current firmware composition: initialize data transport and start network time.
-#[embassy_executor::task]
-pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
-    if let Some(stack) = initialize(peripheral, spawner).await {
-        spawner.spawn(time_sync(stack).unwrap());
-    }
-}
-
 /// Initialize the station and return Embassy's actual DNS/TCP/UDP capability.
 ///
 /// None means unconfigured or failed radio initialization. Some means the stack
@@ -118,7 +110,7 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         .with_ssid(config::SSID)
         .with_password(config::PASSWORD.into())
         .with_auth_method(auth);
-    let mut controller = match WifiController::new(
+    let controller = match WifiController::new(
         peripheral,
         ControllerConfig::default().with_initial_config(Config::Station(station)),
     ) {
@@ -133,17 +125,6 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         "CYCLING_WIFI radio_ready heap_free={}",
         esp_alloc::HEAP.free()
     );
-    match with_timeout(
-        Duration::from_secs(15),
-        controller.scan_async(&ScanConfig::default().with_ssid(config::SSID).with_max(8)),
-    )
-    .await
-    {
-        Ok(Ok(aps)) => {
-            log::info!(target: "wifi", "CYCLING_WIFI scan configured_network_matches={}", aps.len())
-        }
-        _ => log::warn!(target: "wifi", "CYCLING_WIFI scan_failed"),
-    }
     let rng = Rng::new();
     let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
     let (stack, runner) = embassy_net::new(
@@ -200,6 +181,18 @@ async fn retry_or_late_connection(stack: Stack<'_>, seconds: u64) -> bool {
 
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
+    // Optional discovery must not delay terminal, backlight or BLE startup.
+    match with_timeout(
+        Duration::from_secs(15),
+        controller.scan_async(&ScanConfig::default().with_ssid(config::SSID).with_max(8)),
+    )
+    .await
+    {
+        Ok(Ok(aps)) => {
+            log::info!(target: "wifi", "CYCLING_WIFI scan configured_network_matches={}", aps.len())
+        }
+        _ => log::warn!(target: "wifi", "CYCLING_WIFI scan_failed"),
+    }
     let mut failures = 0u8;
     loop {
         LINK.store(LINK_CONNECTING, Ordering::Relaxed);
@@ -405,7 +398,7 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
 }
 
 #[embassy_executor::task]
-async fn time_sync(stack: Stack<'static>) {
+pub async fn time_sync(stack: Stack<'static>) {
     let mut retry_not_before = 0u64;
     loop {
         stack.wait_config_up().await;

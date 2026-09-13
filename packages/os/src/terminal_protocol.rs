@@ -1,5 +1,17 @@
 //! Bounded ordinary terminal framing, independent of USB and the test harness.
 
+/// A transport accepting a request has queued work, not completed a reconnect.
+pub fn request_status(result: Result<(), crate::capabilities::Error>) -> &'static str {
+    use crate::capabilities::Error;
+    match result {
+        Ok(()) => "ACCEPTED",
+        Err(Error::Unsupported) => "UNSUPPORTED",
+        Err(Error::Unavailable) => "UNAVAILABLE",
+        Err(Error::Failed) => "FAILED",
+        Err(Error::Invalid) => "INVALID",
+    }
+}
+
 pub const MAX_LINE: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,5 +326,28 @@ mod tests {
                 command: Command::Status
             }))
         );
+    }
+}
+
+#[cfg(test)]
+mod request_status_tests {
+    use super::request_status;
+    use crate::capabilities::{Availability, Error};
+    #[test]
+    fn reconnect_rejections_do_not_queue_or_claim_acceptance() {
+        for (availability, expected) in [
+            (Availability::Unsupported, "UNSUPPORTED"),
+            (Availability::Initializing, "UNAVAILABLE"),
+            (Availability::Unconfigured, "UNAVAILABLE"),
+            (Availability::Failed, "FAILED"),
+            (Availability::Ready, "ACCEPTED"),
+        ] {
+            let mut queued = false;
+            let result = availability.require_ready().map(|()| queued = true);
+            assert_eq!(request_status(result), expected);
+            assert_eq!(queued, availability == Availability::Ready);
+        }
+        assert_eq!(request_status(Err(Error::Invalid)), "INVALID");
+        assert_eq!(request_status(Err(Error::Failed)), "FAILED");
     }
 }

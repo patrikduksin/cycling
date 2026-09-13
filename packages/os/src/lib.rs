@@ -1,17 +1,15 @@
 #![no_std]
 
-#[cfg(test)]
+#[cfg(any(test, feature = "simulator"))]
 extern crate std;
 
 pub mod ant;
 pub mod companion;
 pub mod crash;
 pub mod gps;
-pub mod idle;
 pub mod input;
 pub mod network;
 pub mod network_time;
-pub mod preferences;
 pub mod sdmmc_probe;
 pub mod storage;
 pub mod uart_ring;
@@ -25,3 +23,8 @@ pub mod ble_transport;
 pub mod capabilities;
 pub mod positioning;
 pub mod terminal_protocol;
+
+pub mod shell;
+
+#[cfg(any(test, feature = "simulator"))]
+pub mod simulator;

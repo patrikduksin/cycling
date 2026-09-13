@@ -1,7 +1,6 @@
 //! Single bounded USB owner for ordinary commands and JSON logs.
 use core::fmt::{self, Write};
 use cycling_os::terminal_protocol::{Command, Lines, Request};
-use esp_hal::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx};
 use serde::Serialize;
 
 const BYTES: usize = 1536;
@@ -38,9 +37,16 @@ struct Reply<'a> {
     ms: u64,
     data: &'a str,
 }
-pub struct Terminal {
-    rx: UsbSerialJtagRx<'static, esp_hal::Blocking>,
-    tx: UsbSerialJtagTx<'static, esp_hal::Blocking>,
+pub trait Diagnostics {
+    fn board(&self) -> &'static str;
+    fn heap_free(&self) -> usize;
+    fn external_free(&self) -> usize;
+    fn restart(&self, panic: bool) -> !;
+    fn set_fault(&self, fault: u8);
+    fn stall(&self);
+}
+pub struct Terminal<T> {
+    usb: T,
     lines: Lines,
     current: [u8; BYTES],
     length: usize,
@@ -52,12 +58,10 @@ pub struct Terminal {
     tx_max_us: u64,
     reboot: Option<(u64, bool)>,
 }
-impl Terminal {
-    pub fn new(usb: esp_hal::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>) -> Self {
-        let (rx, tx) = usb.split();
+impl<T: cycling_os::capabilities::Console> Terminal<T> {
+    pub fn new(usb: T) -> Self {
         Self {
-            rx,
-            tx,
+            usb,
             lines: Lines::default(),
             current: [0; BYTES],
             length: 0,
@@ -119,26 +123,20 @@ impl Terminal {
             if self.offset == self.length {
                 break;
             }
-            if self.tx.write_byte_nb(self.current[self.offset]).is_err() {
+            if !self.usb.write(self.current[self.offset]) {
                 break;
             }
             self.offset += 1;
         }
-        let _ = self.tx.flush_tx_nb();
+        self.usb.flush();
         self.tx_max_us = self.tx_max_us.max(started.elapsed().as_micros());
     }
-    pub fn finish_reboot(&self, now: u64) {
+    pub fn finish_reboot(&self, now: u64, diagnostics: &impl Diagnostics) {
         if let Some((at, panic)) = self.reboot {
             if now >= at + 1000
                 || (now >= at + 100 && self.reply_len == 0 && self.offset == self.length)
             {
-                #[cfg(feature = "debug-harness")]
-                if panic {
-                    crate::device::crash_rtc::controlled_panic();
-                }
-                #[cfg(not(feature = "debug-harness"))]
-                let _ = panic;
-                esp_hal::system::software_reset();
+                diagnostics.restart(panic);
             }
         }
     }
@@ -147,7 +145,7 @@ impl Terminal {
             return None;
         }
         for _ in 0..64 {
-            let Ok(byte) = self.rx.read_byte() else {
+            let Some(byte) = self.usb.read() else {
                 break;
             };
             if let Some(result) = self.lines.push(byte) {
@@ -177,11 +175,23 @@ impl Terminal {
     }
 }
 
-pub fn execute(
-    terminal: &mut Terminal,
+#[allow(clippy::too_many_arguments)]
+pub fn execute<
+    D: cycling_os::capabilities::Display,
+    I: cycling_os::capabilities::InputSource,
+    P: cycling_os::capabilities::Power,
+    B: cycling_os::storage::OwnedFlash,
+>(
+    terminal: &mut Terminal<impl cycling_os::capabilities::Console>,
     request: Request,
-    system: &mut crate::core_system::System,
+    system: &mut cycling_os::shell::Shell<D, I, P, B>,
     now: u64,
+    ant: &mut impl cycling_os::capabilities::Ant,
+    ble: &mut impl cycling_os::capabilities::Ble,
+    position: &impl cycling_os::capabilities::Positioning,
+    network: &mut impl cycling_os::capabilities::Network,
+    input: &impl cycling_os::capabilities::InputObservation,
+    diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut crate::sdk_runtime::Runtime,
 ) {
     let mut output = Text::new();
@@ -191,14 +201,15 @@ pub fn execute(
         Command::Domain { bytes, length } => {
             status = sdk.command(
                 core::str::from_utf8(&bytes[..length]).unwrap_or(""),
-                &mut system.store,
+                &mut system.store.data(),
                 now,
                 &mut output,
+                ant,
             );
         }
         Command::Ant => {
-            let _ = write!(output, "scanning={} ", crate::services::ant::scanning());
-            for channel in crate::services::ant::snapshots(now).iter().flatten() {
+            let _ = write!(output, "scanning={} ", ant.scanning());
+            for channel in ant.channels(now).iter().flatten() {
                 if let Some(peer) = channel.selected {
                     let _ = write!(
                         output,
@@ -213,14 +224,14 @@ pub fn execute(
             }
         }
         Command::AntChannel(kind) => {
-            if let Some(channel) = crate::services::ant::channel(kind, now) {
+            if let Some(channel) = ant.channel(kind, now) {
                 let _ = write!(output, "{:?}", channel);
             } else {
                 status = "UNAVAILABLE";
             }
         }
         Command::AntDevices => {
-            for device in crate::services::ant::discoveries().iter().flatten() {
+            for device in ant.discoveries().iter().flatten() {
                 let p = device.identity;
                 let _ = write!(
                     output,
@@ -239,28 +250,27 @@ pub fn execute(
                 status = "SDK_OWNS_QUEUE";
             }
             #[cfg(not(feature = "cycling"))]
-            if let Some(packet) = crate::services::ant::take_packet() {
+            if let Some(packet) = ant.take_packet() {
                 let _ = write!(output, "{:?}", packet);
             } else {
                 status = "EMPTY";
             }
         }
         Command::AntScan(seconds) => {
-            status = crate::services::ant::request(
-                crate::services::ant::Operation::Scan(u32::from(seconds) * 1000),
+            status = ant.request(
+                cycling_os::capabilities::AntOperation::Scan(u32::from(seconds) * 1000),
                 now,
             );
         }
         Command::AntStop => {
-            status = crate::services::ant::request(crate::services::ant::Operation::StopScan, now);
+            status = ant.request(cycling_os::capabilities::AntOperation::StopScan, now);
         }
         Command::AntConnect(peer) => {
-            status =
-                crate::services::ant::request(crate::services::ant::Operation::Connect(peer), now);
+            status = ant.request(cycling_os::capabilities::AntOperation::Connect(peer), now);
         }
         Command::AntDisconnect(kind) => {
-            status = crate::services::ant::request(
-                crate::services::ant::Operation::Disconnect(kind),
+            status = ant.request(
+                cycling_os::capabilities::AntOperation::Disconnect(kind),
                 now,
             );
         }
@@ -278,7 +288,8 @@ pub fn execute(
             crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board=c606 commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=128 log_slots=8 log_bytes=384",
+                "board={} commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=128 log_slots=8 log_bytes=384",
+                diagnostics.board(),
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                 cfg!(feature = "debug-harness"),
                 cfg!(feature = "cycling"),
@@ -293,9 +304,9 @@ pub fn execute(
                 now,
                 system.reset.name(),
                 system.crash.name(),
-                esp_alloc::HEAP.free(),
+                diagnostics.heap_free(),
                 system.heap_min_sampled,
-                crate::device::psram::external_free(),
+                diagnostics.external_free(),
                 system.input_events,
                 system.display_submissions,
                 system.display_max_ms,
@@ -312,7 +323,7 @@ pub fn execute(
             );
         }
         Command::Position => {
-            if let Some(p) = crate::services::positioning::snapshot(now) {
+            if let Some(p) = position.snapshot(now) {
                 let g = p.gps;
                 let _ = write!(
                     output,
@@ -335,7 +346,7 @@ pub fn execute(
             }
         }
         Command::Input | Command::Battery => {
-            if let Some(s) = crate::services::io::snapshot(now) {
+            if let Some(s) = input.snapshot(now) {
                 let _ = write!(
                     output,
                     "touch_available={} touch_errors={} companion_valid={} bad_crc={} uart_errors={} input_lost={} buttons={:?} battery={:?} power={:?}",
@@ -357,7 +368,7 @@ pub fn execute(
             let t = cycling_os::network_time::snapshot(
                 now,
                 system.settings.timezone_minutes,
-                crate::wifi::online(),
+                network.online(),
             );
             let _ = write!(output, "{:?}", t);
         }
@@ -400,7 +411,10 @@ pub fn execute(
             }
         }
         Command::Save => {
-            if !system.save() {
+            let started = embassy_time::Instant::now();
+            let saved = system.save();
+            system.storage_max_ms = system.storage_max_ms.max(started.elapsed().as_millis());
+            if !saved {
                 status = "FAILED";
             }
         }
@@ -409,17 +423,16 @@ pub fn execute(
             let _ = write!(
                 output,
                 "state={} online={} stats={:?}",
-                crate::wifi::state(),
-                crate::wifi::online(),
-                crate::wifi::stats()
+                network.state(),
+                network.online(),
+                network.stats()
             );
         }
         Command::WifiReconnect => {
-            crate::wifi::reconnect();
-            status = "ACCEPTED";
+            status = cycling_os::terminal_protocol::request_status(network.reconnect());
         }
         Command::Ble => {
-            let s = crate::bluetooth::snapshot();
+            let s = ble.snapshot();
             let _ = write!(
                 output,
                 "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={}",
@@ -432,16 +445,19 @@ pub fn execute(
             );
         }
         Command::BleReconnect => {
-            status = if crate::bluetooth::request_reconnect() {
-                "ACCEPTED"
-            } else {
-                "UNSUPPORTED"
-            };
+            status = cycling_os::terminal_protocol::request_status(ble.reconnect());
         }
         Command::Storage => {
-            let _ = write!(output, "{:?}", system.store.geometry());
+            let _ = write!(output, "{:?}", system.store.data().geometry());
         }
-        Command::Display(color) => system.fill(color),
+        Command::Display(color) => {
+            let started = embassy_time::Instant::now();
+            system.fill(color);
+            system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
+            if system.display_error {
+                status = "FAILED";
+            }
+        }
         Command::Restart => {
             terminal.reboot = Some((now, false));
             status = "ACCEPTED";
@@ -451,12 +467,12 @@ pub fn execute(
             {
                 match n {
                     0..=4 => {
-                        crate::wifi::set_fault(n);
+                        diagnostics.set_fault(n);
                         status = "ACCEPTED";
                     }
                     20 => {
                         log::warn!(target:"diagnostic","controlled executor stall ms=6000");
-                        esp_hal::delay::Delay::new().delay_millis(6000);
+                        diagnostics.stall();
                         log::info!(target:"diagnostic","executor stall ended");
                         status = "ACCEPTED";
                     }

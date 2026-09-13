@@ -1,6 +1,6 @@
-//! Ride layout adapter over core-owned bytes. Core never interprets these records.
+//! Ride layout adapter over an exclusively borrowed byte reservation.
 use super::ride_log::{self, Commit, Sector, Slot};
-use crate::storage::{AccessError, OwnedFlash, Store, checked_range};
+use crate::storage::{AccessError, OwnedFlash, RegionAccess, checked_range};
 
 pub trait RideStorage {
     type Error;
@@ -25,7 +25,7 @@ fn offset<E>(
     Ok(offset)
 }
 
-impl<B: OwnedFlash> RideStorage for Store<B> {
+impl<B: OwnedFlash> RideStorage for RegionAccess<'_, B> {
     type Error = AccessError<B::Error>;
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Self::Error> {
         self.read(
@@ -71,42 +71,29 @@ mod tests {
     use super::*;
     use crate::storage::{self, Geometry};
     struct Backend;
-    impl storage::Flash for Backend {
-        type Error = ();
-        fn read_sector(&mut self, _: usize, _: &mut storage::Sector) -> Result<(), ()> {
-            panic!("unexpected settings read")
-        }
-        fn erase_sector(&mut self, _: usize) -> Result<(), ()> {
-            panic!("unexpected settings erase")
-        }
-        fn write_sector(&mut self, _: usize, _: &storage::Sector) -> Result<(), ()> {
-            panic!("unexpected settings write")
-        }
-        fn commit_sector(&mut self, _: usize, _: &[u8; 4]) -> Result<(), ()> {
-            panic!("unexpected settings commit")
-        }
-    }
     impl OwnedFlash for Backend {
-        fn geometry(&self) -> Geometry {
+        type Error = ();
+        fn geometry(&self, _: storage::Region) -> Geometry {
             Geometry {
                 capacity: ride_log::REGION_SIZE,
                 program_size: 4,
                 erase_size: 4096,
             }
         }
-        fn read_data(&mut self, _: usize, _: &mut [u8]) -> Result<(), ()> {
+        fn read(&mut self, _: storage::Region, _: usize, _: &mut [u8]) -> Result<(), ()> {
             panic!("out of range read reached media")
         }
-        fn program_data(&mut self, _: usize, _: &[u8]) -> Result<(), ()> {
+        fn program(&mut self, _: storage::Region, _: usize, _: &[u8]) -> Result<(), ()> {
             panic!("out of range program reached media")
         }
-        fn erase_data(&mut self, _: usize, _: usize) -> Result<(), ()> {
+        fn erase(&mut self, _: storage::Region, _: usize, _: usize) -> Result<(), ()> {
             panic!("out of range erase reached media")
         }
     }
     #[test]
     fn invalid_ride_indices_never_reach_the_backend() {
-        let mut store = Store::new(Backend);
+        let mut backend = Backend;
+        let mut store = RegionAccess::new(&mut backend, storage::Region::Data);
         for index in [ride_log::SLOTS, usize::MAX] {
             assert_eq!(
                 store.ride_read_slot(index, &mut Slot::default()),

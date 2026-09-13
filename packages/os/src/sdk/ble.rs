@@ -22,18 +22,6 @@ pub fn selection(
     })
 }
 
-#[cfg(feature = "c606")]
-pub fn configured() -> (Option<Selection>, Profile) {
-    mod config {
-        include!(env!("CYCLING_BLE_CONFIG"));
-    }
-    let profile = Profile::from_u8(config::PROFILE);
-    (
-        selection(profile, config::TARGET_NAME, config::TARGET_ADDRESS),
-        profile,
-    )
-}
-
 pub struct Client {
     profile: Profile,
     transport: ble_transport::Snapshot,

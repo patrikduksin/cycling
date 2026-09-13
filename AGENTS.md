@@ -2,8 +2,9 @@
 
 Code owns implementation; GitHub issues and PRs own requirements, decisions and history.
 Keep firmware in `packages/os` and device research in `packages/stock/<device>`.
-Device hides board wiring/HAL/quirks; core owns general capabilities; the optional
-cycling SDK owns cycling interpretation, rides, selection and export semantics.
+Shells consume small device capability interfaces. Device implementations hide
+wiring/HAL/quirks; shells and domain libraries own UI, preferences and domain
+policy. Shared mechanisms belong in focused reusable libraries.
 Read [architecture](docs/architecture.md) when changing those ownership boundaries.
 
 Use mise tasks and commit Cargo.lock. For firmware changes run `mise run test`,

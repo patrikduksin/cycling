@@ -3,7 +3,7 @@
 //! queue with explicit cancellation after loss; status is latest-value only.
 use core::cell::RefCell;
 use cycling_os::{
-    capabilities::{self, Edge, Edges, Input, Observation},
+    capabilities::{self, Edge, Edges, Input},
     companion::{self, Decoder, Event, Status},
     input::Report,
 };
@@ -27,25 +27,13 @@ struct State {
     uart_errors: u32,
 }
 
-#[derive(Clone, Copy)]
-pub struct Snapshot {
-    pub battery: Observation<(u8, u16)>,
-    /// Zero means charging in stock; all other values remain uninterpreted.
-    pub power: Observation<u8>,
-    pub button_counts: [u32; 3],
-    pub touch_available: bool,
-    pub touch_errors: u32,
-    pub companion_valid: u32,
-    pub companion_bad_crc: u32,
-    pub uart_errors: u32,
-    pub input_lost: u32,
-}
+pub use cycling_os::capabilities::InputSnapshot as Snapshot;
 
 pub fn snapshot(now: u64) -> Option<Snapshot> {
     let state = LATEST.lock(|latest| *latest.borrow());
     state.map(|state| Snapshot {
-        battery: capabilities::observation(state.battery, now),
-        power: capabilities::observation(state.power, now),
+        battery: capabilities::observation(state.battery, now, 5_000),
+        power: capabilities::observation(state.power, now, 5_000),
         button_counts: state.status.button_counts,
         touch_available: state.touch_available,
         touch_errors: state.touch_errors,

@@ -1,57 +1,106 @@
 # Architecture
 
-Firmware stays in `packages/os`. Device code hides board wiring, HAL resources
-and hardware quirks, transferring each peripheral to one owner. Core provides
-general capabilities such as acquisition, display, settings, connectivity and
-bounded storage. The optional cycling SDK owns sensor interpretation and
-selection, ride lifecycle, sampling, recovery, history and export/reclaim
-semantics. Consumers compose these layers. Device and core cannot import SDK
-or diagnostic policy, including behind feature gates.
+Shells and apps consume device capabilities. Device implementations provide those
+capabilities through component drivers and an MCU HAL. Embassy provides execution,
+time, synchronization and reusable protocol stacks. A firmware entry point
+composes a device and shell into a device-specific image.
+
+Firmware belongs in `packages/os`; device research belongs in
+`packages/stock/<device>`. Code owns API names, buffer sizes, timings and concrete
+crate layout. GitHub issues and PRs own requirements, decisions and history.
+
+## Ownership and dependencies
+
+| Part | Owns |
+| --- | --- |
+| Capability interfaces | Separate contracts for display, input, storage, power, positioning and connectivity, including availability, limits, errors and completion semantics. |
+| Component drivers | Component commands and protocols, using standard embedded interfaces where suitable. |
+| Device implementation | Board wiring, MCU HAL resources, initialization, interrupts, buses, DMA, memory placement, power sequencing and hardware quirks. Implements the capabilities. |
+| Shell and apps | Presentation, navigation, physical-input mapping, app lifecycle, preferences and domain policy. A shell manages access among its apps. |
+| Firmware entry point | Selects a device and shell, allocates their resources and starts the required tasks. |
+
+Shells depend on capability interfaces. Device implementations implement those
+interfaces and use component drivers and the MCU HAL. Interfaces, drivers and
+device implementations cannot import shell, app, domain SDK or diagnostic policy,
+including behind feature gates. Only composition connects a concrete device to
+a shell. Shell code cannot import a device implementation or branch on board names.
+
+Shared mechanisms such as journals, protocol decoders and bounded queues belong
+in focused reusable libraries. They do not own shell policy or form a central
+System object or mandatory service registry. Each resource has one owner, either
+through direct ownership or a device task with bounded request and observation
+handles. Acquisition lifetime is independent of the foreground app and terminal
+connection.
 
 Use Embassy's executor, timers, synchronization and network stack directly.
-An adapter earns its place by hiding ownership or translating between layers;
-a wrapper that only forwards calls adds another interface to maintain.
+Device code selects and initializes the compatible MCU HAL/runtime. Reuse
+`embedded-hal`, `embedded-hal-async`, `embedded-io` and `embedded-io-async`
+where they fit. Specialized buses and DMA can use device-specific adapters.
+An adapter hides ownership or translates between interfaces; a wrapper that only
+forwards calls adds another interface to maintain.
 
-Acquisition runs independently of terminal traffic and consumers. Latest
-snapshots carry observation times, so readers calculate freshness when reading
-and missed publications do not accumulate. No fix, stale data, silence and
-transport failure remain distinct. Input overflow cancels held state; UART
-loss resets framing before post-loss bytes. BLE carries generic notification
-bytes with connection/loss information; the SDK resets sensor continuity after
-loss or reconnect. The upstream notification queue can hide lag, so the stream
-is not lossless.
-ANT similarly delivers profile-independent packets with generation and loss stamps.
-The C606 adapter translates its companion bridge and identity-report quirk; core
-owns up to three selected receive channels, one per device type. The SDK interprets radar pages and expires
-targets independently of background channel traffic. See the
-[ANT companion notes](../packages/stock/magene-c606/ant.md) for bridge limitations.
+## Capability contracts
 
-One owner serializes USB replies and bounded logs, prioritizing replies. A
-missing host must not block acquisition or grow memory without bound. A queued
-mutation is not a completed mutation; ambiguous failures require inspection or
-rescan before another attempt. Display and flash operations can block the
-caller, so timer periods do not guarantee achieved latency. Display ownership
-lasts until DMA completes.
+Capabilities are independently composable. A shell declares required capabilities
+and resource needs, and handles optional capabilities explicitly. Missing hardware
+must not report success or masquerade as a temporary failure. Build composition
+checks required support where possible; initialization reports unavailable or
+failed hardware. Device descriptions expose limits such as display geometry,
+input controls and available storage. The same shell source runs on devices that
+satisfy its capability and resource requirements.
 
-The Wi-Fi capability exposes the actual Embassy stack on the same executor.
-A stack handle means transport resources exist, not that the link or internet
-is ready. It survives reconnects; callers bound waits, check readiness and reject
-results from an obsolete connection generation. Socket capacity is shared with
-the built-in network consumers.
+Display exposes geometry, supported formats and submission completion. Device
+code owns panel quirks and DMA lifetime; the shell owns layout, rendering scale
+and presentation. Shared interfaces contain no board-specific geometry or rendering
+policy. Buffer ownership lasts until DMA completes, including error and
+cancellation paths.
 
-Core storage exposes checked relative access to owned reservations, without ride
-types or access to stock and vendor regions. Settings retain their on-flash
-format and commit ordering. Unsupported or corrupt occupied journals remain
-available for diagnosis and cannot silently become empty settings. The SDK
-owns ride format compatibility and recovery; export precedes explicit verified
-reclaim. See [ride recording](ride-recording.md).
+Input exposes physical controls and observations without navigation or gesture
+policy. Device code translates hardware reports into supported physical events
+without inventing releases that the hardware cannot establish. Overflow cancels
+held state. The shell maps controls to actions and chooses wake-input behavior.
 
-Normal allocation, radio/task state and DMA stay in internal memory. PSRAM has
-a separate allocator and cannot hold atomics or data needed with its cache
-disabled. New PSRAM DMA use requires alignment/cache validation on hardware.
-The licensed Trouble Host patch remains necessary for minimum-MTU discovery.
+Power exposes battery observations, brightness control and supported power
+operations. Device code enforces hardware limits and safe sequencing. The shell
+chooses inactivity timeouts, brightness preferences and user-facing sleep policy.
+Shell preferences and their schema belong above device storage; board calibration
+and hardware configuration remain device concerns.
 
-Code owns API names, buffer sizes, timings and geometry. The boundary check is a
-source guard, not a Rust semantic analyzer; both base and SDK compilation matter.
-C606 is the verified board. [Research](../packages/stock/magene-c606) distinguishes
-measured hardware from stock-supported driver candidates.
+Storage exposes checked relative access to owned reservations and explicit
+completion/error behavior, without domain record types or access to stock and
+vendor regions. Shared journal implementations can be reused. The shell or domain
+library owns its schema, compatibility, recovery and export/reclaim semantics.
+Unsupported or corrupt occupied journals remain available for diagnosis and
+cannot silently become empty settings. Domain storage rules are described in
+[ride recording](ride-recording.md).
+
+Networking exposes the actual Embassy stack; connection-control contracts hide
+hardware differences where needed. A stack handle means transport resources exist,
+not that the link or internet is ready. It survives reconnects; callers bound
+waits, check readiness and reject results from an obsolete connection generation.
+Socket capacity is shared among consumers.
+
+BLE and ANT transports expose profile-independent data with connection and loss
+information. Device code handles controller and bridge quirks; reusable transport
+code manages connections and channels. Domain consumers own sensor selection,
+profile interpretation and continuity after loss or reconnect. A transport must
+not promise lossless delivery when upstream queues can hide lag.
+
+## Resource and observation semantics
+
+Observations carry timestamps and loss/connection information where relevant.
+Readers determine freshness for their use; no fix, stale data, silence and
+transport failure remain distinct. Latest snapshots do not accumulate missed
+publications. Bounded streams report loss; UART loss resets framing before
+post-loss bytes.
+
+A queued mutation is not a completed mutation. Ambiguous failures require
+inspection or rescan before another attempt. One owner serializes terminal
+replies and bounded logs, prioritizing replies. A missing host cannot block
+acquisition or grow memory without bound. Blocking display and flash operations
+mean timer periods do not guarantee achieved latency.
+
+Device code owns memory-region, alignment and cache constraints. Capability
+contracts express usable buffers and ownership without exposing those hardware
+details to the shell. Device implementations preserve those constraints through
+operation completion, failure and cancellation.

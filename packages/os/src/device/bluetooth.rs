@@ -445,3 +445,12 @@ where
         }
     }
 }
+
+pub fn availability() -> cycling_os::capabilities::Availability {
+    use cycling_os::capabilities::Availability;
+    match snapshot().link {
+        Link::Off => Availability::Initializing,
+        Link::Failed => Availability::Failed,
+        _ => Availability::Ready,
+    }
+}

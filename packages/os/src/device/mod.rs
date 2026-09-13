@@ -10,3 +10,8 @@ pub mod psram;
 pub mod sdmmc;
 pub mod storage;
 pub mod touch;
+
+pub mod bluetooth;
+pub mod services;
+pub mod usb;
+pub mod wifi;

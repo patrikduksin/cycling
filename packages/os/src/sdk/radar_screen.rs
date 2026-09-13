@@ -1,4 +1,4 @@
-//! Native 240x320 RGB565 status screen for the outdoor ANT sensor capture test.
+//! Logical 240x320 RGB565 status screen for the outdoor ANT sensor capture test.
 //! The caller supplies live connection and verified storage-commit state.
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

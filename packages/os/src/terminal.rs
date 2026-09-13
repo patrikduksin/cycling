@@ -242,10 +242,6 @@ pub fn execute(
             status =
                 crate::services::ant::request(crate::services::ant::Operation::Disconnect, now);
         }
-        #[cfg(feature = "cycling")]
-        Command::Radar => {
-            let _ = write!(output, "{:?}", sdk.radar(now));
-        }
         Command::Help => {
             let _ = write!(
                 output,

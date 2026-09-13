@@ -53,3 +53,9 @@ verify erased. Invalid remnants can be cleared through the same fresh-export
 workflow. A power interruption can leave part of the old journal intact. After
 failure or timeout, restart, wait for scanning, inspect status and export again
 before deciding whether to clear. Never automatically resend clear.
+
+The [ANT outdoor diagnostic capture](../packages/stock/magene-c606/ant.md) appends
+its own committed records to unused tail slots in this reservation without erasing.
+It excludes ordinary ride writes for the rest of that boot. Restart rescans the
+occupied prefix. Raw exports preserve these records; use `mise run ant-export` to
+decode ANT captures. Existing rides and their record format remain unchanged.

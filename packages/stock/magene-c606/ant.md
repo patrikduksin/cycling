@@ -101,3 +101,54 @@ not claim certification or complete device-profile compliance.
 The validation device is the owner's iGPSPORT SR mini. Its identifier and raw
 radio/USB captures stay private. Commit-specific hardware results and remaining
 acceptance gaps are recorded in the implementation PR for #73.
+
+## Standalone outdoor capture
+
+The SDK test build can save raw ANT pages and link transitions without USB.
+Connect the radar, then send `RADAR LOG START`. The logger scans the owned ride
+reservation, requires at least 800 erased tail slots, and appends after every
+occupied record. It never erases, reclaims or overwrites existing rides. Only one
+writer is allowed: ordinary RIDE/EXPORT commands are blocked after capture starts
+until restart and rescan. Unknown occupied capture slots remain preserved by the
+ride scanner and raw exporter.
+
+The display refreshes once per second during the test. A green CONNECTED banner
+means the selected radar channel has fresh traffic. LOG SAVING additionally
+requires a packet batch committed to flash, read back successfully, and a recent
+commit. SAVED counts verified packets, not queued writes. WAIT, disconnected,
+full or error states do not claim ongoing recording. The test keeps the backlight
+awake without saving different preferences. Initial packets arriving during the
+storage scan are counted as dropped before recording begins.
+
+The capture stores received timestamps, full sensor identity, raw eight-byte
+pages, transport generation/loss and link transitions. Packet batches flush after
+one second or eight packets. Link and terminal records retain capture drop
+counters. Sudden power loss can lose buffered/uncommitted packets and counters
+since the latest metadata record; previously committed records remain exportable.
+This is a diagnostic capture, not a new ride or GPS track. Available duration
+depends on remaining capacity and packet/event rate; full storage stops recording.
+
+After the ride, reconnect USB and run:
+
+```text
+RADAR LOG STOP
+RADAR LOG STATUS
+```
+
+Wait for `status: Stopped`, then export privately:
+
+```sh
+CYCLING_PORT=/dev/ttyACM0 mise run ant-export -- .local/ant-outdoor-export
+```
+
+Use the current USB port. The exporter downloads the immutable occupied prefix,
+checks transport CRCs and ANT commit/CRC records, rechecks metadata, and saves raw
+bytes, decoded record fields and a SHA-256 manifest. It preserves invalid records
+and reports sequence gaps. It performs no erase. After a reboot, wait for the
+ordinary ride scanner to finish before export; committed capture records remain
+available even without a terminal stop marker.
+
+During capture, a confirmed disconnection triggers one reconnect attempt for the
+same selected identity. Failed/uncertain attempts remain visible for inspection;
+they are not blindly retried. No automatic capture starts after a reboot. Leave
+the device powered on and confirm CONNECTED plus LOG SAVING before riding.

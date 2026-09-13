@@ -94,3 +94,7 @@ run = "python scripts/base_test.py .local/tests/regression-$(date +%s) --seconds
 [tasks.crash-test]
 description = "Verify controlled panic, software reboot and one-shot marker through ordinary terminal"
 run = "python scripts/base_test.py .local/tests/crash-$(date +%s) --panic"
+
+[tasks.ant-export]
+description = "Export stopped radar test captures to a private directory"
+run = "python scripts/ant_capture.py"

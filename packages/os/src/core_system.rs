@@ -131,6 +131,13 @@ impl System {
         }
         result.is_ok()
     }
+    /// Caller supplies presentation; device retains exclusive DMA ownership.
+    pub fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
+        let start = embassy_time::Instant::now();
+        self.screen.draw_pixels(pixel);
+        self.display_submissions = self.display_submissions.saturating_add(1);
+        self.display_max_ms = self.display_max_ms.max(start.elapsed().as_millis());
+    }
     /// One synchronous owned submission. Completion returns only after the DMA buffer is back with the driver.
     pub fn fill(&mut self, color: u16) {
         let start = embassy_time::Instant::now();

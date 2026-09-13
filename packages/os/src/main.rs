@@ -61,6 +61,8 @@ async fn console(
         system.tick(now);
         #[cfg(feature = "cycling")]
         sdk.tick(&mut system.store, now);
+        #[cfg(feature = "cycling")]
+        sdk.test_display(&mut system, now);
         terminal.pump();
         terminal.finish_reboot(now);
         if let Some(request) = terminal.request(now) {

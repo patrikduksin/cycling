@@ -16,8 +16,6 @@ pub enum Command {
     AntDisconnect,
     AntDevices,
     AntRead,
-    #[cfg(feature = "cycling")]
-    Radar,
     Help,
     Info,
     Status,
@@ -109,7 +107,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
     let verb = words.next().ok_or(Error::Invalid)?;
     let command = match verb {
         #[cfg(feature = "cycling")]
-        "RIDE" | "EXPORT" => {
+        "RIDE" | "EXPORT" | "RADAR" => {
             let text = &line[line.find(verb).ok_or(Error::Invalid)?..];
             let mut bytes = [0; 128];
             if text.len() > bytes.len() {
@@ -158,8 +156,6 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             }),
             _ => return Err(Error::Invalid),
         },
-        #[cfg(feature = "cycling")]
-        "RADAR" => Command::Radar,
         "HELP" => Command::Help,
         "INFO" => Command::Info,
         "STATUS" => Command::Status,

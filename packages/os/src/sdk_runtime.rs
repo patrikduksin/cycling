@@ -50,6 +50,10 @@ impl Runtime {
         }
     }
 
+    pub fn recording(&self) -> bool {
+        self.capture.snapshot().recording || self.recorder.status() == ride_log::Status::Recording
+    }
+
     pub fn radar(&self, now: u64) -> cycling_os::sdk::radar::Snapshot {
         self.radar.snapshot(now)
     }

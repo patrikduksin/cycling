@@ -249,13 +249,18 @@ pub fn execute(
             );
         }
         Command::Info => {
-            crate::logging::metadata(false);
+            #[cfg(feature = "cycling")]
+            let recording = sdk.recording();
+            #[cfg(not(feature = "cycling"))]
+            let recording = false;
+            crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board=c606 commit={} harness={} cycling={} logging=INFO recording=false protocol=1 max_line=128 log_slots=8 log_bytes=384",
+                "board=c606 commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=128 log_slots=8 log_bytes=384",
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                 cfg!(feature = "debug-harness"),
-                cfg!(feature = "cycling")
+                cfg!(feature = "cycling"),
+                recording
             );
         }
         Command::Status => {

@@ -83,7 +83,11 @@ class UsbConnection:
         while time.monotonic() < deadline:
             if not select.select([self.fd], [], [], min(.2, max(0, deadline - time.monotonic())))[0]:
                 continue
-            data = os.read(self.fd, 65536)
+            try:
+                data = os.read(self.fd, 65536)
+            except BlockingIOError:
+                # Readiness can disappear before a nonblocking tty read.
+                continue
             if not data:
                 raise RuntimeError('device disconnected; command outcome may be uncertain')
             self.log.write(data)

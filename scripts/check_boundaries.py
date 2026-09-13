@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'packages/os/src'
 # These modules compose consumers. All other top-level modules and every device/
 # and services/ module must remain usable without cycling SDK or consumer policy.
-COMPOSITION = {'lib.rs', 'main.rs'}
+COMPOSITION = {'lib.rs', 'main.rs', 'simulator/session.rs'}
 FORBIDDEN = {'sdk', 'sdk_runtime', 'terminal', 'shell'}
 HARDWARE = {'device', 'esp_hal', 'esp32s3', 'esp_radio', 'esp_rtos', 'esp_storage', 'esp_alloc', 'esp_println', 'services', 'c606', 'core_system', 'simulator'}
 STRING = re.compile(r'r(?P<hashes>\#*)".*?"(?P=hashes)|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'', re.S)

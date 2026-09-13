@@ -1,4 +1,5 @@
 //! Portable foreground presentation and preferences. Acquisition lives independently.
+pub mod commands;
 pub mod idle;
 pub mod preferences;
 pub mod storage;
@@ -20,6 +21,10 @@ pub enum Screen {
     Blank,
 }
 pub struct Shell<D, I, P, B> {
+    #[cfg(feature = "debug-harness")]
+    pub harness: crate::harness::State,
+    pub boot_id: u32,
+    pub synthetic_events: u32,
     pub store: Store<B>,
     pub settings: Settings,
     pub settings_source: &'static str,
@@ -47,6 +52,7 @@ pub struct Shell<D, I, P, B> {
     pub position: Option<crate::positioning::Snapshot>,
     next_button: Option<Button>,
     dirty: bool,
+    fill_color: Option<u16>,
 }
 impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<D, I, P, B> {
     pub fn new(display: D, input: I, power: P, backend: B, now: u64) -> Result<Self, Error> {
@@ -94,6 +100,10 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
         };
         log::info!(target:"settings", "loaded source={} failed={}", source,error);
         Ok(Self {
+            #[cfg(feature = "debug-harness")]
+            harness: crate::harness::State::default(),
+            boot_id: 0,
+            synthetic_events: 0,
             store,
             settings,
             settings_source: source,
@@ -121,6 +131,7 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
             position: None,
             next_button,
             dirty: true,
+            fill_color: None,
         })
     }
     pub fn activity(&mut self, now: u64) {
@@ -162,21 +173,26 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
                 break;
             };
             self.input_events = self.input_events.saturating_add(1);
-            let gate = match edge.input {
-                Input::Touch(_) => self.idle.contact(now),
-                Input::Release | Input::Cancel => self.idle.release(now),
-                Input::Button { .. } => self.idle.button(now),
-            };
-            if gate == Gate::Forward {
-                self.routed_events = self.routed_events.saturating_add(1);
-                if matches!(edge.input, Input::Button { button, code: 1 } if Some(button) == self.next_button)
-                {
-                    self.foreground = match self.foreground {
-                        Screen::Status => Screen::Blank,
-                        Screen::Blank => Screen::Status,
-                    };
-                    self.dirty = true;
-                }
+            #[cfg(feature = "debug-harness")]
+            if edge.input == Input::Cancel {
+                self.harness.stop_input("physical_loss");
+            }
+            self.consume(edge.input, now);
+        }
+        // Physical events already queued win ties; synthetic events use the same
+        // consumer and wake gate without incrementing physical observations.
+        #[cfg(feature = "debug-harness")]
+        {
+            self.harness.expire(now);
+            for _ in 0..crate::harness::EVENTS + 1 {
+                let Some(event) = self.harness.next_input(now) else {
+                    break;
+                };
+                self.synthetic_events = self.synthetic_events.saturating_add(1);
+                self.consume(event, now);
+            }
+            if self.harness.capture_due(now) {
+                self.dirty = true;
             }
         }
         let config = Config {
@@ -201,14 +217,73 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
         // Foreground owns display submission. Background acquisition never waits
         // on this owner or on terminal attachment.
     }
+    fn consume(&mut self, input: Input, now: u64) {
+        let gate = match input {
+            Input::Touch(_) => self.idle.contact(now),
+            Input::Release | Input::Cancel => self.idle.release(now),
+            Input::Button { .. } => self.idle.button(now),
+        };
+        if gate == Gate::Forward {
+            self.routed_events = self.routed_events.saturating_add(1);
+            if matches!(input, Input::Button { button, code: 1 } if Some(button) == self.next_button)
+            {
+                self.fill_color = None;
+                self.foreground = match self.foreground {
+                    Screen::Status => Screen::Blank,
+                    Screen::Blank => Screen::Status,
+                };
+                self.dirty = true;
+            }
+        }
+    }
+    pub fn harness_command(
+        &mut self,
+        command: crate::harness::Command,
+        now: u64,
+        out: &mut impl core::fmt::Write,
+    ) -> &'static str {
+        #[cfg(feature = "debug-harness")]
+        {
+            let status = self.harness.command(
+                command,
+                self.input.controls(),
+                self.display.geometry(),
+                now,
+                out,
+            );
+            if self.harness.take_cancel() {
+                self.synthetic_events = self.synthetic_events.saturating_add(1);
+                self.consume(Input::Cancel, now);
+            }
+            status
+        }
+        #[cfg(not(feature = "debug-harness"))]
+        {
+            let _ = now;
+            let _ = write!(
+                out,
+                "version=1 input=unsupported capture=unsupported harness=false boot={} session=0",
+                self.boot_id
+            );
+            if command.operation == crate::harness::Operation::Caps {
+                "OK"
+            } else {
+                "UNSUPPORTED"
+            }
+        }
+    }
+
     pub fn present(&mut self) {
         if !self.dirty {
             return;
         }
         let geometry = self.display.geometry();
         let screen = self.foreground;
+        let fill = self.fill_color;
         self.draw_pixels(|x, y| {
-            if screen == Screen::Blank {
+            if let Some(color) = fill {
+                color
+            } else if screen == Screen::Blank {
                 0
             } else if x < geometry.width / 8 || y < geometry.height / 8 {
                 0x07e0
@@ -228,7 +303,27 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
         result.is_ok()
     }
     pub fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
-        self.display_error = self.display.submit(pixel).is_err();
+        #[cfg(feature = "debug-harness")]
+        {
+            if self.harness.begin_frame(self.display.geometry()) {
+                let capture = core::cell::RefCell::new(&mut self.harness);
+                self.display_error = self
+                    .display
+                    .submit(|x, y| {
+                        let value = pixel(x, y);
+                        capture.borrow_mut().pixel(x, y, value);
+                        value
+                    })
+                    .is_err();
+                self.harness.finish_frame(!self.display_error);
+            } else {
+                self.display_error = self.display.submit(pixel).is_err();
+            }
+        }
+        #[cfg(not(feature = "debug-harness"))]
+        {
+            self.display_error = self.display.submit(pixel).is_err();
+        }
         self.display_submissions = self.display_submissions.saturating_add(1);
     }
     /// Fit an application's logical canvas to the advertised display geometry.
@@ -242,6 +337,7 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
         self.draw_pixels(|x, y| pixel(x * width / geometry.width, y * height / geometry.height));
     }
     pub fn fill(&mut self, color: u16) {
+        self.fill_color = Some(color);
         self.draw_pixels(|_, _| color);
         self.dirty = false;
     }

@@ -3,7 +3,7 @@
 mod device;
 mod logging;
 #[cfg(feature = "cycling")]
-mod sdk_runtime;
+use cycling_os::sdk_runtime;
 mod terminal;
 use esp_backtrace as _;
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -22,7 +22,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     #[cfg(not(feature = "cycling"))]
     let selection = None;
     let board = device::c606::start(spawner, selection).await;
-    logging::init(esp_hal::rng::Rng::new().random());
+    let boot = esp_hal::rng::Rng::new().random();
+    logging::init(boot);
     logging::metadata(false);
     let mut system = cycling_os::shell::Shell::new(
         board.display,
@@ -32,6 +33,22 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         embassy_time::Instant::now().as_millis(),
     )
     .unwrap();
+    #[cfg(feature = "debug-harness")]
+    {
+        system.harness = cycling_os::harness::State::new(boot);
+        system.harness.clock = Some(|| embassy_time::Instant::now().as_millis());
+        // Composition reserves capture storage in external RAM. The library
+        // receives only an owned byte slice; DMA still uses device-owned strips.
+        let layout =
+            core::alloc::Layout::from_size_align(cycling_os::harness::CAPTURE_BYTES, 4).unwrap();
+        let pointer = unsafe { device::psram::allocate_external(layout) };
+        if !pointer.is_null() {
+            system.harness.buffer = Some(cycling_os::harness::CaptureBuffer::Borrowed(unsafe {
+                core::slice::from_raw_parts_mut(pointer, layout.size())
+            }));
+        }
+    }
+    system.boot_id = boot;
     system.reset = board.reset;
     system.crash = board.crash;
     system.heap_min_sampled = esp_alloc::HEAP.free();
@@ -66,6 +83,10 @@ async fn console(
     let mut next_health = 0;
     #[cfg(feature = "cycling")]
     let mut sdk = sdk_runtime::Runtime::new(profile);
+    #[cfg(feature = "cycling")]
+    {
+        sdk.clock = Some(|| embassy_time::Instant::now().as_millis());
+    }
     let started = embassy_time::Instant::now();
     system.present();
     system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
@@ -84,7 +105,7 @@ async fn console(
             &mut ant,
             &mut ble,
             &position,
-            &network,
+            cycling_os::capabilities::Network::online(&network),
             &input,
         );
         #[cfg(feature = "cycling")]

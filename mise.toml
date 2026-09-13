@@ -15,7 +15,7 @@ run = "bash scripts/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-run = ["cargo test --workspace --locked --no-default-features", "cargo test --locked --no-default-features --features simulator --test shell_portability", "cargo test --workspace --locked --no-default-features --features cycling", "cargo test --manifest-path packages/os/vendor/trouble-host/Cargo.toml --lib --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
+run = ["cargo test --workspace --locked --no-default-features", "cargo test --locked --no-default-features --features simulator --test shell_portability --test virtual_session", "cargo test --locked --no-default-features --features simulator,debug-harness --test harness --test virtual_session", "cargo test --locked --no-default-features --features simulator,debug-harness,cycling --test harness --test virtual_session", "cargo test --workspace --locked --no-default-features --features cycling", "cargo test --manifest-path packages/os/vendor/trouble-host/Cargo.toml --lib --locked", "python -m unittest discover -s scripts -p 'test_*.py'"]
 
 [tasks.fmt]
 description = "Format Rust code"
@@ -23,7 +23,7 @@ run = "cargo fmt --all"
 
 [tasks.check]
 description = "Check formatting and lint host code"
-run = ["python scripts/check_boundaries.py", "cargo check --locked --no-default-features --features network-stack", "cargo clippy --all-targets --locked --no-default-features --features simulator -- -D warnings", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features cycling -- -D warnings"]
+run = ["python scripts/check_boundaries.py", "cargo check --locked --no-default-features --features network-stack", "cargo clippy --all-targets --locked --no-default-features --features simulator -- -D warnings", "cargo clippy --all-targets --locked --no-default-features --features simulator,debug-harness,cycling -- -D warnings", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features cycling -- -D warnings"]
 
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"
@@ -102,3 +102,11 @@ run = "python scripts/ant_capture.py"
 [tasks.simulate]
 description = "Run the portable shell against deterministic display and input devices"
 run = "cargo run --locked --no-default-features --features simulator --bin shell-simulator"
+
+[tasks.harness]
+description = "Run a named or structured C606/virtual harness scenario and return compact JSON"
+run = "python scripts/harness.py"
+
+[tasks.harness-virtual]
+description = "Run shared deterministic input, capture and restart scenarios"
+run = ["python scripts/harness.py run shared --backend virtual", "python scripts/harness.py run virtual-foundation --backend virtual", "python scripts/harness.py run virtual-sdk --backend virtual --sdk"]

@@ -16,6 +16,7 @@ pub const MAX_LINE: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
+    Harness(crate::harness::Command),
     #[cfg(feature = "cycling")]
     Domain {
         bytes: [u8; 128],
@@ -107,6 +108,9 @@ impl Lines {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
+    if bytes.len() > MAX_LINE {
+        return Err(Error::Overlong);
+    }
     let line = core::str::from_utf8(bytes).map_err(|_| Error::Invalid)?;
     let mut words = line.split_ascii_whitespace();
     if words.next() != Some("CMD") {
@@ -119,6 +123,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         .map_err(|_| Error::Invalid)?;
     let verb = words.next().ok_or(Error::Invalid)?;
     let command = match verb {
+        "HARNESS" => Command::Harness(crate::harness::parse(&mut words).ok_or(Error::Invalid)?),
         #[cfg(feature = "cycling")]
         "RIDE" | "EXPORT" | "RADAR" => {
             let text = &line[line.find(verb).ok_or(Error::Invalid)?..];

@@ -16,6 +16,7 @@ jobs:
       - run: mise run test
       - run: mise run check
       - run: mise run simulate
+      - run: mise run harness-virtual
   firmware:
     runs-on: ubuntu-24.04
     strategy:

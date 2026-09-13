@@ -28,3 +28,8 @@ pub mod shell;
 
 #[cfg(any(test, feature = "simulator"))]
 pub mod simulator;
+
+pub mod harness;
+
+#[cfg(feature = "cycling")]
+pub mod sdk_runtime;

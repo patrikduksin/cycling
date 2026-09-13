@@ -188,7 +188,7 @@ pub fn execute<
     now: u64,
     ant: &mut impl cycling_os::capabilities::Ant,
     ble: &mut impl cycling_os::capabilities::Ble,
-    position: &impl cycling_os::capabilities::Positioning,
+    _position: &impl cycling_os::capabilities::Positioning,
     network: &mut impl cycling_os::capabilities::Network,
     input: &impl cycling_os::capabilities::InputObservation,
     diagnostics: &impl Diagnostics,
@@ -196,6 +196,38 @@ pub fn execute<
 ) {
     let mut output = Text::new();
     let mut status = "OK";
+    let started = embassy_time::Instant::now();
+    if let Some(status) =
+        cycling_os::shell::commands::execute(request.command, system, now, &mut output)
+    {
+        if matches!(
+            request.command,
+            Command::Harness(cycling_os::harness::Command {
+                operation: cycling_os::harness::Operation::Caps,
+                ..
+            })
+        ) {
+            let _ = write!(
+                output,
+                " ordinary=HELP,INFO,STATUS,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,STORAGE,DISPLAY,RESTART,TEST"
+            );
+            #[cfg(feature = "cycling")]
+            {
+                let _ = write!(output, ",RIDE,EXPORT,RADAR");
+            }
+        }
+        match request.command {
+            Command::Save => {
+                system.storage_max_ms = system.storage_max_ms.max(started.elapsed().as_millis())
+            }
+            Command::Display(_) => {
+                system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis())
+            }
+            _ => {}
+        }
+        terminal.reply(request.id, status, output.as_str(), now);
+        return;
+    }
     match request.command {
         #[cfg(feature = "cycling")]
         Command::Domain { bytes, length } => {
@@ -297,6 +329,11 @@ pub fn execute<
             );
         }
         Command::Status => {
+            let _ = write!(
+                output,
+                "synthetic_events={} routed_events={} foreground={:?} ",
+                system.synthetic_events, system.routed_events, system.foreground
+            );
             let logs = crate::logging::stats();
             let _ = write!(
                 output,
@@ -322,29 +359,7 @@ pub fn execute<
                 terminal.tx_max_us
             );
         }
-        Command::Position => {
-            if let Some(p) = position.snapshot(now) {
-                let g = p.gps;
-                let _ = write!(
-                    output,
-                    "transport={} fix={} sequence={} bytes={} valid={} checksum_errors={} parse_errors={} dma_losses={} line_overflows={} uart_errors={} fix_age_ms={:?} satellites={:?}",
-                    p.transport.name(),
-                    g.state.name(),
-                    p.sequence,
-                    g.bytes,
-                    g.valid_sentences,
-                    g.checksum_errors,
-                    g.parse_errors,
-                    g.overflows,
-                    g.line_overflows,
-                    g.uart_errors,
-                    g.age_ms,
-                    g.satellites
-                );
-            } else {
-                status = "UNAVAILABLE";
-            }
-        }
+
         Command::Input | Command::Battery => {
             if let Some(s) = input.snapshot(now) {
                 let _ = write!(
@@ -372,53 +387,16 @@ pub fn execute<
             );
             let _ = write!(output, "{:?}", t);
         }
-        Command::Settings => {
-            let s = system.settings;
-            let _ = write!(
-                output,
-                "brightness={} dim_timeout={} dim_brightness={} timezone={} effective={} dimmed={} source={} persistence_error={}",
-                s.brightness,
-                s.dim_timeout_secs,
-                s.dim_brightness,
-                s.timezone_minutes,
-                system.effective(),
-                system.dimmed(),
-                system.settings_source,
-                system.settings_error
-            );
-        }
-        Command::SetBrightness(v) => {
-            if let Some(s) = system.settings.with_brightness(v) {
-                system.settings = s;
-                system.activity(now);
-            } else {
-                status = "INVALID";
-            }
-        }
-        Command::SetTimezone(v) => {
-            if let Some(s) = system.settings.with_timezone(v) {
-                system.settings = s;
-            } else {
-                status = "INVALID";
-            }
-        }
-        Command::SetIdle(t, v) => {
-            if let Some(s) = system.settings.with_idle_preferences(t, v) {
-                system.settings = s;
-                system.activity(now);
-            } else {
-                status = "INVALID";
-            }
-        }
-        Command::Save => {
-            let started = embassy_time::Instant::now();
-            let saved = system.save();
-            system.storage_max_ms = system.storage_max_ms.max(started.elapsed().as_millis());
-            if !saved {
-                status = "FAILED";
-            }
-        }
-        Command::Activity => system.activity(now),
+
+        Command::Harness(_)
+        | Command::Position
+        | Command::Settings
+        | Command::SetBrightness(_)
+        | Command::SetTimezone(_)
+        | Command::SetIdle(..)
+        | Command::Save
+        | Command::Display(_)
+        | Command::Activity => unreachable!("shared shell command"),
         Command::Wifi => {
             let _ = write!(
                 output,
@@ -450,14 +428,7 @@ pub fn execute<
         Command::Storage => {
             let _ = write!(output, "{:?}", system.store.data().geometry());
         }
-        Command::Display(color) => {
-            let started = embassy_time::Instant::now();
-            system.fill(color);
-            system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
-            if system.display_error {
-                status = "FAILED";
-            }
-        }
+
         Command::Restart => {
             terminal.reboot = Some((now, false));
             status = "ACCEPTED";

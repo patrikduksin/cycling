@@ -335,6 +335,7 @@ impl cycling_os::capabilities::Ble for Ble {
         super::bluetooth::take_packet()
     }
     fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        self.availability().require_ready()?;
         if super::bluetooth::request_reconnect() {
             Ok(())
         } else {
@@ -397,6 +398,7 @@ impl cycling_os::capabilities::Network for Network {
         super::wifi::connection_generation()
     }
     fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        self.availability().require_ready()?;
         super::wifi::reconnect();
         Ok(())
     }

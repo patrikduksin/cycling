@@ -15,6 +15,17 @@ pub enum Error {
     Failed,
     Invalid,
 }
+impl Availability {
+    /// Reject operations before enqueueing when no initialized owner can act.
+    pub fn require_ready(self) -> Result<(), Error> {
+        match self {
+            Self::Ready => Ok(()),
+            Self::Unsupported => Err(Error::Unsupported),
+            Self::Initializing | Self::Unconfigured => Err(Error::Unavailable),
+            Self::Failed => Err(Error::Failed),
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Geometry {
     pub width: usize,

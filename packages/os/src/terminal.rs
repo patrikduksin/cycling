@@ -429,8 +429,7 @@ pub fn execute<
             );
         }
         Command::WifiReconnect => {
-            let _ = network.reconnect();
-            status = "ACCEPTED";
+            status = cycling_os::terminal_protocol::request_status(network.reconnect());
         }
         Command::Ble => {
             let s = ble.snapshot();
@@ -446,11 +445,7 @@ pub fn execute<
             );
         }
         Command::BleReconnect => {
-            status = if ble.reconnect().is_ok() {
-                "ACCEPTED"
-            } else {
-                "UNSUPPORTED"
-            };
+            status = cycling_os::terminal_protocol::request_status(ble.reconnect());
         }
         Command::Storage => {
             let _ = write!(output, "{:?}", system.store.data().geometry());

@@ -197,7 +197,14 @@ impl Runtime {
                 self.capture.observe_link(ant.link, ant.generation, now);
                 self.capture_link = Some((ant.link, ant.generation));
             }
-            if ant.link == cycling_os::ant::LinkState::Disconnected && now >= self.next_reconnect {
+            if matches!(
+                self.capture.snapshot().status,
+                cycling_os::sdk::ant_capture::Status::Scanning
+                    | cycling_os::sdk::ant_capture::Status::Ready
+                    | cycling_os::sdk::ant_capture::Status::Recording
+            ) && ant.link == cycling_os::ant::LinkState::Disconnected
+                && now >= self.next_reconnect
+            {
                 if let Some(peer) = ant.selected {
                     let _ = crate::services::ant::request(
                         crate::services::ant::Operation::Connect(peer),

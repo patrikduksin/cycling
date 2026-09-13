@@ -190,3 +190,10 @@ The screen shows GPS FIX or WAIT separately from the number of verified saved
 GPS records, which includes samples without a fix. The exporter keeps coordinates
 and raw captures private. The preflight includes 600 extra slots for ten minutes
 of GPS samples. Actual capacity still depends on sensor traffic and flush cadence.
+
+
+`ANT STOP` retains scan ownership until the companion reports scan completion or
+a two-second stop timeout expires. Another scan or connection cannot start during
+that interval; duplicate stops are rejected. The bridge does not tag scan epochs,
+so an acknowledgment arriving after the bounded timeout cannot be attributed to
+an older scan with certainty.

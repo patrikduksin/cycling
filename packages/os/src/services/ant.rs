@@ -42,7 +42,7 @@ pub fn request(operation: Operation, now: u64) -> &'static str {
         }
         let result = match operation {
             Operation::Scan(ms) => s.state.begin_scan(now, ms),
-            Operation::StopScan => Ok(s.state.stop_scan()),
+            Operation::StopScan => s.state.stop_scan(now),
             Operation::Connect(peer) => s.state.connect(peer, now),
             Operation::Disconnect(kind) => match s.state.disconnect(kind, now) {
                 Some(request) => Ok(request),

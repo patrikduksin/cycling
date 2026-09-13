@@ -7,6 +7,7 @@
 pub const DISCOVERY_CAPACITY: usize = 8;
 pub const PACKET_CAPACITY: usize = 4;
 pub const CONNECT_TIMEOUT_MS: u64 = 10_000;
+pub const SCAN_STOP_TIMEOUT_MS: u64 = 2_000;
 pub const STALE_MS: u64 = 3_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +101,7 @@ pub struct Snapshot {
 
 pub struct State {
     scan_until: Option<u64>,
+    scan_stopping: bool,
     discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
     selected: Option<Identity>,
     link: LinkState,
@@ -125,6 +127,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             scan_until: None,
+            scan_stopping: false,
             discoveries: [None; DISCOVERY_CAPACITY],
             selected: None,
             link: LinkState::Idle,
@@ -158,9 +161,14 @@ impl State {
         Ok(Request::Scan { duration_ms })
     }
 
-    pub fn stop_scan(&mut self) -> Request {
-        self.scan_until = None;
-        Request::StopScan
+    /// Keep discovery ownership while the untagged stop acknowledgment is pending.
+    pub fn stop_scan(&mut self, now: u64) -> Result<Request, Error> {
+        if self.scan_until.is_none() || self.scan_stopping {
+            return Err(Error::Busy);
+        }
+        self.scan_stopping = true;
+        self.scan_until = Some(now.saturating_add(SCAN_STOP_TIMEOUT_MS));
+        Ok(Request::StopScan)
     }
 
     pub fn connect(&mut self, identity: Identity, now: u64) -> Result<Request, Error> {
@@ -214,6 +222,7 @@ impl State {
     pub fn tick(&mut self, now: u64) {
         if self.scan_until.is_some_and(|deadline| now >= deadline) {
             self.scan_until = None;
+            self.scan_stopping = false;
         }
         if matches!(self.link, LinkState::Connecting | LinkState::Disconnecting)
             && now >= self.connect_until
@@ -228,7 +237,7 @@ impl State {
         self.tick(now);
         let (device_type, data) = match event {
             Event::Discovery { identity, rssi } => {
-                if self.scan_until.is_none() {
+                if self.scan_until.is_none() || self.scan_stopping {
                     return;
                 }
                 let slot = self
@@ -249,6 +258,7 @@ impl State {
             }
             Event::ScanEnded => {
                 self.scan_until = None;
+                self.scan_stopping = false;
                 return;
             }
             Event::Connected(identity) => {
@@ -302,6 +312,7 @@ impl State {
     pub fn transport_loss(&mut self, _now: u64) {
         self.transport_losses = self.transport_losses.saturating_add(1);
         self.scan_until = None;
+        self.scan_stopping = false;
         self.invalidate();
         self.link = LinkState::TransportLost;
     }
@@ -382,8 +393,8 @@ impl Channels {
         self.discovery.begin_scan(now, duration_ms)
     }
 
-    pub fn stop_scan(&mut self) -> Request {
-        self.discovery.stop_scan()
+    pub fn stop_scan(&mut self, now: u64) -> Result<Request, Error> {
+        self.discovery.stop_scan(now)
     }
 
     pub fn scanning(&self) -> bool {
@@ -663,6 +674,53 @@ mod tests {
     }
 
     #[test]
+    fn scan_stop_holds_ownership_until_completion() {
+        let mut channels = Channels::new();
+        channels.begin_scan(0, 100).unwrap();
+        channels.stop_scan(1).unwrap();
+        assert!(channels.scanning());
+        assert_eq!(channels.begin_scan(2, 100), Err(Error::Busy));
+        assert_eq!(channels.connect(HR, 2), Err(Error::Busy));
+        channels.receive(Event::ScanEnded, 3);
+        channels.begin_scan(4, 100).unwrap();
+        channels.receive(
+            Event::Discovery {
+                identity: HR,
+                rssi: -50,
+            },
+            5,
+        );
+        assert!(channels.scanning());
+        assert_eq!(channels.discoveries().iter().flatten().count(), 1);
+    }
+
+    #[test]
+    fn scan_stop_timeout_is_bounded_and_duplicate_stops_are_rejected() {
+        let mut channels = Channels::new();
+        channels.begin_scan(0, 100).unwrap();
+        channels.stop_scan(1).unwrap();
+        assert_eq!(channels.stop_scan(2), Err(Error::Busy));
+        channels.tick(100);
+        assert!(channels.scanning()); // Original scan deadline must not release a pending stop.
+        channels.receive(
+            Event::Discovery {
+                identity: HR,
+                rssi: -50,
+            },
+            101,
+        );
+        assert_eq!(channels.discoveries().iter().flatten().count(), 0);
+        channels.tick(SCAN_STOP_TIMEOUT_MS);
+        assert!(channels.scanning());
+        channels.tick(SCAN_STOP_TIMEOUT_MS + 1);
+        assert!(!channels.scanning());
+        channels.begin_scan(SCAN_STOP_TIMEOUT_MS + 2, 100).unwrap();
+        channels.stop_scan(SCAN_STOP_TIMEOUT_MS + 3).unwrap();
+        channels.transport_loss(SCAN_STOP_TIMEOUT_MS + 4);
+        assert!(!channels.scanning());
+    }
+
+    #[test]
     fn scan_is_global_and_cannot_run_alongside_live_channels() {
         let mut channels = Channels::new();
         channels.begin_scan(0, 100).unwrap();
@@ -677,7 +735,8 @@ mod tests {
         }
         assert_eq!(channels.discoveries().iter().flatten().count(), 3);
         assert_eq!(channels.connect(HR, 2), Err(Error::Busy));
-        channels.stop_scan();
+        channels.stop_scan(2).unwrap();
+        channels.receive(Event::ScanEnded, 3);
         channels.connect(HR, 3).unwrap();
         assert_eq!(channels.begin_scan(4, 100), Err(Error::Busy));
         channels.receive(Event::Connected(HR), 5);

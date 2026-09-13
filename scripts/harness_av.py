@@ -4,6 +4,7 @@ import cmath
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -32,6 +33,15 @@ def discover():
             sources.append({key: source.get(key) for key in
                             ('name', 'description', 'mute', 'volume', 'sample_specification', 'properties')})
     return {'cameras': cameras, 'microphones': sources, 'ffmpeg': shutil.which('ffmpeg') is not None}
+
+
+def camera_format(device):
+    text = command(['v4l2-ctl', '-d', device, '--get-fmt-video'])
+    geometry = re.search(r'Width/Height\s*:\s*(\d+)\s*/\s*(\d+)', text)
+    pixel = re.search(r"Pixel Format\s*:\s*'([A-Za-z0-9 ]{4})'", text)
+    if not geometry or not pixel or not all(int(value) > 0 for value in geometry.groups()):
+        raise ValueError('cannot snapshot camera width/height and pixel format')
+    return {'width': int(geometry[1]), 'height': int(geometry[2]), 'pixel_format': pixel[1]}
 
 
 def fft(values):
@@ -130,6 +140,7 @@ class Capture:
                 raise ValueError('select one camera path from harness av-discover')
             self.setup = matches[0]
             self.setup['controls'] = command(['v4l2-ctl', '-d', self.setup['path'], '--list-ctrls'])
+            self.setup['format_before'] = camera_format(self.setup['path'])
         else:
             selected = self.config.get('source')
             matches = [item for item in inventory['microphones'] if item['name'] == selected] if selected else [
@@ -172,7 +183,61 @@ class Capture:
             self.fixture = subprocess.Popen(['paplay', '--volume=65536', '--device=' + self.setup['fixture_sink'], str(fixture)],
                                             stdout=subprocess.DEVNULL, stderr=self.log)
 
+    def restore_camera_format(self):
+        if self.started is None:
+            return {'status': 'not-started'}
+        original = self.setup['format_before']
+        result = {'status': 'uncertain', 'before': original}
+        try:
+            if self.process is not None and self.process.poll() is None:
+                raise RuntimeError('camera process still running; format restoration deferred')
+            current = camera_format(self.setup['path'])
+            result.update(observed=current, change_observed=current != original)
+            if current == original:
+                return result | {'status': 'unchanged', 'after': current}
+            value = f"width={original['width']},height={original['height']},pixelformat={original['pixel_format']}"
+            try:
+                command(['v4l2-ctl', '-d', self.setup['path'], '--set-fmt-video=' + value])
+            except (Exception, KeyboardInterrupt) as error:
+                # A lost write reply is uncertain. Inspect once, never replay.
+                result['write_error'] = str(error) or 'interrupted restoration'
+            after = camera_format(self.setup['path'])
+            result['after'] = after
+            if after != original:
+                raise RuntimeError('camera format restoration readback differs from snapshot')
+            result['status'] = 'verified'
+        except (Exception, KeyboardInterrupt) as error:
+            result['error'] = str(error) or 'interrupted format inspection'
+        return result
+
     def finish(self, cancel=False):
+        try:
+            result = self.finish_capture(cancel)
+        except (Exception, KeyboardInterrupt) as error:
+            result = {'status': 'inconclusive', 'error': str(error) or 'interrupted capture cleanup'}
+        finally:
+            # Also release a process when wait/analysis failed before normal cleanup.
+            try:
+                if self.process is not None and self.process.poll() is None:
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait(timeout=2)
+            except (Exception, KeyboardInterrupt):
+                pass  # The restoration report below must expose a still-running camera.
+            if self.log is not None:
+                self.log.close()
+        if self.kind == 'camera':
+            restoration = self.restore_camera_format()
+            result['settings_changed'] = None  # No observation of intermediate format changes.
+            result['format_restoration'] = restoration
+            if restoration['status'] == 'uncertain':
+                result['status'] = 'inconclusive'
+        return result
+
+    def finish_capture(self, cancel=False):
         if self.process is None:
             if self.log is not None:
                 self.log.close()

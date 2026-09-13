@@ -164,8 +164,9 @@ PipeWire sources. A scenario's optional `captures` list selects `camera` and/or
 Only one of each can run. AV processes have independent duration caps and are
 terminated on failure/cancellation. Device USB still has one reader.
 
-The tool records current camera controls and microphone route/gain without changing
-them. Record microphone `position` and keep the source, placement and processing
+The tool records camera controls and microphone route/gain. It snapshots the video
+format, restores it after capture if changed, and verifies the readback. It retains
+microphone gain and routing. Record microphone `position` and keep the source, placement and processing
 unchanged for relative comparisons. Host processing is not assumed disabled;
 comparisons remain limited when AGC/noise processing is unverified. `fixture: true`
 plays two known 1 kHz bursts through `sink` or the default speaker route. Quiet
@@ -174,7 +175,8 @@ background before the bursts supplies the analysis noise reference. Thresholds
 
 Audio analysis returns detected onset, duration, repetition count, dominant FFT
 frequency, frequency-bin resolution, recorded dBFS level, noise and clipping.
-Clipping or absent events is inconclusive. No result is calibrated dB SPL. Camera
+Clipping or absent events is inconclusive. Fixture checks identify the two sustained
+1 kHz bursts while retaining unrelated ambient events in the report. No result is calibrated dB SPL. Camera
 recordings include representative frames; inspect these for framing and visible
 patterns/backlight changes. Software screenshots remain separate evidence.
 

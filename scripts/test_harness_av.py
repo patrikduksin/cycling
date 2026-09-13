@@ -43,6 +43,8 @@ class CaptureTests(unittest.TestCase):
             calls = []
             def command(args):
                 calls.append(args)
+                if args[-1] == '--get-fmt-video':
+                    return "Width/Height : 1280/720\nPixel Format : 'NV12'\n"
                 if args[-1] == '--list-ctrls':
                     return 'exposure: current=100 default=100'
                 self.assertEqual(args[-1], '--all')
@@ -59,7 +61,7 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual(setup['path'], '/dev/video0')
             self.assertEqual(setup['name'], 'FaceTime HD Camera')
             self.assertIn(['v4l2-ctl', '-d', '/dev/video0', '--list-ctrls'], calls)
-            self.assertTrue(all(args[-1] in ('--all', '--list-ctrls') for args in calls))
+            self.assertTrue(all(args[-1] in ('--all', '--list-ctrls', '--get-fmt-video') for args in calls))
 
     def test_fixture_verification_separates_other_tones_and_rejects_extra_matching_tone(self):
         for frequency, expected_status in ((300, 'pass'), (1000, 'inconclusive')):
@@ -94,3 +96,59 @@ class CaptureTests(unittest.TestCase):
                 self.assertTrue(capture.log.closed)
                 capture.process.wait.assert_called_once()
                 capture.fixture.wait.assert_called_once()
+
+
+    def test_camera_format_restored_after_exit_including_failed_and_partial_start(self):
+        before = "Width/Height : 1280/720\nPixel Format : 'NV12'\n"
+        changed = "Width/Height : 640/480\nPixel Format : 'YUYV'\n"
+        for mode in ('unchanged', 'changed', 'capture-failed', 'partial-start', 'write-failed', 'readback-mismatch', 'lost-write-reply'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                capture = Capture('camera', {'samples_s': []}, Path(directory))
+                inventory = {'ffmpeg': True, 'cameras': [{'path': '/dev/fake', 'name': 'Camera', 'video_capture': True}]}
+                with patch('harness_av.discover', return_value=inventory), patch('harness_av.command', side_effect=['controls', before]):
+                    capture.preflight()
+                capture.started, capture.log = 0, io.BytesIO()
+                if mode != 'partial-start':
+                    capture.process = Mock(returncode=1 if mode == 'capture-failed' else 0)
+                    capture.process.poll.return_value = capture.process.returncode
+                current = before if mode == 'unchanged' else changed
+                calls = []
+                def command(args):
+                    nonlocal current
+                    calls.append(args)
+                    if capture.process is not None:
+                        capture.process.wait.assert_called_once()
+                    if args[-1] == '--get-fmt-video':
+                        return current
+                    self.assertEqual(args[-1], '--set-fmt-video=width=1280,height=720,pixelformat=NV12')
+                    if mode == 'write-failed':
+                        raise OSError('camera format write rejected')
+                    if mode != 'readback-mismatch':
+                        current = before
+                    if mode == 'lost-write-reply':
+                        raise TimeoutError('write completed but reply lost')
+                    return ''
+                with patch('harness_av.command', side_effect=command), patch('harness_av.time.monotonic', return_value=0):
+                    result = capture.finish()
+                uncertain = mode in ('write-failed', 'readback-mismatch')
+                restoration = result['format_restoration']
+                self.assertEqual(restoration['status'], 'uncertain' if uncertain else 'unchanged' if mode == 'unchanged' else 'verified')
+                self.assertIsNone(result['settings_changed'])
+                if uncertain:
+                    self.assertEqual(result['status'], 'inconclusive')
+                elif mode == 'capture-failed':
+                    self.assertEqual(result['status'], 'fail')
+                else:
+                    self.assertEqual(result['status'], 'skipped' if mode == 'partial-start' else 'pass')
+                self.assertEqual(sum('--set-fmt-video=' in args[-1] for args in calls), 0 if mode == 'unchanged' else 1)
+                self.assertTrue(capture.log.closed)
+
+    def test_camera_format_snapshot_failure_prevents_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture('camera', {}, Path(directory))
+            inventory = {'ffmpeg': True, 'cameras': [{'path': '/dev/fake', 'name': 'Camera', 'video_capture': True}]}
+            with patch('harness_av.discover', return_value=inventory), patch('harness_av.command', side_effect=['controls', 'unrecognized format']):
+                with self.assertRaisesRegex(ValueError, 'cannot snapshot camera'):
+                    capture.preflight()
+            self.assertIsNone(capture.started)
+            self.assertIsNone(capture.process)

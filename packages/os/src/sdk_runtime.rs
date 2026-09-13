@@ -16,6 +16,9 @@ use cycling_os::{
 };
 
 pub struct Runtime {
+    radar: cycling_os::sdk::radar::Radar,
+    ant_generation: u32,
+    ant_losses: u32,
     recorder: Recorder,
     sensors: Client,
     next_token: u32,
@@ -26,6 +29,9 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(profile: Profile) -> Self {
         Self {
+            radar: cycling_os::sdk::radar::Radar::new(),
+            ant_generation: 0,
+            ant_losses: 0,
             recorder: Recorder::default(),
             sensors: Client::new(profile),
             next_token: 1,
@@ -34,11 +40,35 @@ impl Runtime {
         }
     }
 
+    pub fn radar(&self, now: u64) -> cycling_os::sdk::radar::Snapshot {
+        self.radar.snapshot(now)
+    }
+
     pub fn tick(
         &mut self,
         store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
         now: u64,
     ) {
+        let ant = crate::services::ant::snapshot(now);
+        if ant.generation != self.ant_generation
+            || ant.link != cycling_os::ant::LinkState::Connected
+        {
+            self.radar.reset();
+            self.ant_generation = ant.generation;
+        }
+        for _ in 0..cycling_os::ant::PACKET_CAPACITY {
+            let Some(packet) = crate::services::ant::take_packet() else {
+                break;
+            };
+            if packet.generation != self.ant_generation || packet.loss_count != self.ant_losses {
+                self.radar.reset();
+                self.ant_generation = packet.generation;
+                self.ant_losses = packet.loss_count;
+            }
+            if packet.identity.device_type == 40 {
+                self.radar.receive(packet.data, packet.received_ms);
+            }
+        }
         let transport = crate::bluetooth::snapshot();
         self.sensors.update(transport);
         // Core queue has two packets. Never drain an unbounded producer here.

@@ -78,6 +78,22 @@ pub fn init(uart: UART2<'static>, rx: GPIO41<'static>, tx: GPIO42<'static>) -> R
     written
 }
 
+/// Single bounded FIFO attempt. A short write is an uncertain command failure;
+/// callers invalidate the operation and do not replay it automatically.
+pub fn send(frame: &[u8; 16]) -> Result<(), ()> {
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow_ref_mut(cs);
+        let uart = state.uart.as_mut().ok_or(())?;
+        if !uart.write_ready() {
+            return Err(());
+        }
+        match uart.write(frame) {
+            Ok(16) => Ok(()),
+            _ => Err(()),
+        }
+    })
+}
+
 pub fn drain(output: &mut [u8]) -> (usize, Counters) {
     critical_section::with(|cs| {
         let mut state = STATE.borrow_ref_mut(cs);

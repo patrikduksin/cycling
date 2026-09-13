@@ -20,6 +20,11 @@ loss resets framing before post-loss bytes. BLE carries generic notification
 bytes with connection/loss information; the SDK resets sensor continuity after
 loss or reconnect. The upstream notification queue can hide lag, so the stream
 is not lossless.
+ANT similarly delivers profile-independent packets with generation and loss stamps.
+The C606 adapter translates its companion bridge and identity-report quirk; core
+owns one selected receive channel. The SDK interprets radar pages and expires
+targets independently of background channel traffic. See the
+[ANT companion notes](../packages/stock/magene-c606/ant.md) for bridge limitations.
 
 One owner serializes USB replies and bounded logs, prioritizing replies. A
 missing host must not block acquisition or grow memory without bound. A queued

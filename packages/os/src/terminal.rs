@@ -196,10 +196,60 @@ pub fn execute(
                 &mut output,
             );
         }
+        Command::Ant => {
+            let _ = write!(output, "{:?}", crate::services::ant::snapshot(now));
+        }
+        Command::AntDevices => {
+            for device in crate::services::ant::discoveries().iter().flatten() {
+                let p = device.identity;
+                let _ = write!(
+                    output,
+                    "type={} number={} transmission={} rssi={} age_ms={}; ",
+                    p.device_type,
+                    p.device_number,
+                    p.transmission_type,
+                    device.rssi,
+                    now.saturating_sub(device.seen_ms)
+                );
+            }
+        }
+        Command::AntRead => {
+            #[cfg(feature = "cycling")]
+            {
+                status = "SDK_OWNS_QUEUE";
+            }
+            #[cfg(not(feature = "cycling"))]
+            if let Some(packet) = crate::services::ant::take_packet() {
+                let _ = write!(output, "{:?}", packet);
+            } else {
+                status = "EMPTY";
+            }
+        }
+        Command::AntScan(seconds) => {
+            status = crate::services::ant::request(
+                crate::services::ant::Operation::Scan(u32::from(seconds) * 1000),
+                now,
+            );
+        }
+        Command::AntStop => {
+            status = crate::services::ant::request(crate::services::ant::Operation::StopScan, now);
+        }
+        Command::AntConnect(peer) => {
+            status =
+                crate::services::ant::request(crate::services::ant::Operation::Connect(peer), now);
+        }
+        Command::AntDisconnect => {
+            status =
+                crate::services::ant::request(crate::services::ant::Operation::Disconnect, now);
+        }
+        #[cfg(feature = "cycling")]
+        Command::Radar => {
+            let _ = write!(output, "{:?}", sdk.radar(now));
+        }
         Command::Help => {
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT|READ]|RADAR SDK|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {

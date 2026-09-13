@@ -1,20 +1,6 @@
 //! C606 companion framing and local input reports, recovered from stock N21.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Button {
-    TopLeft,
-    BottomLeft,
-    BottomRight,
-}
-impl Button {
-    pub fn index(self) -> usize {
-        match self {
-            Self::TopLeft => 0,
-            Self::BottomLeft => 1,
-            Self::BottomRight => 2,
-        }
-    }
-}
+pub use crate::capabilities::Button;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -245,8 +231,9 @@ impl Status {
             } => self.battery = Some((percent, millivolts)),
             Event::Power { status } => self.power = Some(status),
             Event::Button { button, .. } => {
-                self.button_counts[button.index()] =
-                    self.button_counts[button.index()].saturating_add(1);
+                if let Some(count) = self.button_counts.get_mut(button.index()) {
+                    *count = count.saturating_add(1);
+                }
                 self.last_button = Some(button);
             }
         }

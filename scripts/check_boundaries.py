@@ -6,8 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'packages/os/src'
 # These modules compose consumers. All other top-level modules and every device/
 # and services/ module must remain usable without cycling SDK or consumer policy.
-COMPOSITION = {'lib.rs', 'main.rs', 'terminal.rs', 'sdk_runtime.rs'}
-FORBIDDEN = {'sdk', 'sdk_runtime', 'terminal'}
+COMPOSITION = {'lib.rs', 'main.rs'}
+FORBIDDEN = {'sdk', 'sdk_runtime', 'terminal', 'shell'}
+HARDWARE = {'device', 'esp_hal', 'esp32s3', 'esp_radio', 'esp_rtos', 'esp_storage', 'esp_alloc', 'esp_println', 'services', 'c606', 'core_system', 'simulator'}
 STRING = re.compile(r'r(?P<hashes>\#*)".*?"(?P=hashes)|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'', re.S)
 
 
@@ -47,23 +48,26 @@ def without_comments(text):
     return ''.join(result)
 
 
-def violations(text):
+def violations(text, forbidden=FORBIDDEN, portable=False):
     comments_removed = without_comments(text)
     code = STRING.sub(lambda match: blank(match.group()), comments_removed)
     findings = set()
     # Qualified expressions and aliases still reveal the prohibited module name.
     for match in re.finditer(r'\b([a-z_][a-z_0-9]*)\s*::|\bmod\s+([a-z_][a-z_0-9]*)', code):
         name = match[1] or match[2]
-        if name in FORBIDDEN:
+        if name in forbidden:
             findings.add((code.count('\n', 0, match.start()) + 1, name))
     # Grouped local imports need no :: after the imported module itself.
     for match in re.finditer(r'\buse\s+(?:::)?(?:crate|self|super|cycling_os)\b[^;]*;', code):
-        for name in set(re.findall(r'\b[a-z_][a-z_0-9]*\b', match.group())) & FORBIDDEN:
+        for name in set(re.findall(r'\b[a-z_][a-z_0-9]*\b', match.group())) & forbidden:
             findings.add((code.count('\n', 0, match.start()) + 1, name))
     for match in re.finditer(r'#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]', comments_removed):
         parts = set(re.findall(r'[a-z_][a-z_0-9]*', match[1]))
-        for name in parts & FORBIDDEN:
+        for name in parts & forbidden:
             findings.add((code.count('\n', 0, match.start()) + 1, name))
+    if portable:
+        for match in re.finditer(r'\b(?:cfg|cfg_attr)!?\s*[\[(][^;]*?(?:c606|esp32|magene)', comments_removed, re.S):
+            findings.add((comments_removed.count('\n', 0, match.start()) + 1, 'board condition'))
     return sorted(findings)
 
 
@@ -82,17 +86,24 @@ use cycling_os::{storage, gps};
 log::debug!("read failed");
 '''
     assert not violations(harmless)
+    for source in ['use crate::device::c606;', 'use esp_hal::{gpio};', '#[cfg(feature = "c606")] fn hidden() {}', 'use crate::{device as board};']:
+        assert violations(source, HARDWARE, True), source
+    assert violations('use crate::shell::preferences;')
+    assert not violations('use crate::capabilities::{Display, InputSource};', HARDWARE, True)
 
 
 def main():
     self_test()
-    paths = sorted(path for path in SOURCE.rglob('*.rs')
-                   if 'sdk' not in path.relative_to(SOURCE).parts
-                   and path.relative_to(SOURCE).as_posix() not in COMPOSITION)
+    paths = sorted(SOURCE.rglob('*.rs'))
     failures = []
     for path in paths:
-        failures.extend(f'{path.relative_to(ROOT)}:{line}: lower layer depends on {name}'
-                        for line, name in violations(path.read_text()))
+        relative = path.relative_to(SOURCE)
+        if relative.as_posix() in COMPOSITION or relative.parts[0] == 'bin':
+            continue
+        portable = relative.parts[0] in {'shell', 'sdk'} or relative.name in {'terminal.rs', 'sdk_runtime.rs'}
+        forbidden = HARDWARE | ({'shell'} if relative.parts[0] == 'sdk' else set()) if portable else FORBIDDEN
+        failures.extend(f'{path.relative_to(ROOT)}:{line}: prohibited dependency on {name}'
+                        for line, name in violations(path.read_text(), forbidden, portable))
     if failures:
         raise SystemExit('\n'.join(failures))
     print(f'Boundary imports passed for {len(paths)} core/device files; run cargo base/cycling checks too.')

@@ -11,7 +11,6 @@ use cycling_os::{
         recorder::{Recorder, ResultEvent},
         ride::Action,
         ride_log::{self, Sample, Slot, Source},
-        storage::RideStorage,
     },
 };
 
@@ -62,7 +61,21 @@ impl Runtime {
         self.radar.snapshot(now)
     }
 
-    pub fn test_display(&mut self, system: &mut crate::core_system::System, now: u64) {
+    pub fn test_display<
+        D: cycling_os::capabilities::Display,
+        I: cycling_os::capabilities::InputSource,
+        P: cycling_os::capabilities::Power,
+        B: cycling_os::storage::OwnedFlash,
+    >(
+        &mut self,
+        system: &mut cycling_os::shell::Shell<D, I, P, B>,
+        now: u64,
+        ant: &impl cycling_os::capabilities::Ant,
+        position: &impl cycling_os::capabilities::Positioning,
+    ) {
+        if system.foreground == cycling_os::shell::Screen::Blank {
+            return;
+        }
         let Some(started) = self.capture_started else {
             return;
         };
@@ -70,12 +83,12 @@ impl Runtime {
             return;
         }
         self.next_display = now.saturating_add(1000);
-        let channels = crate::services::ant::snapshots(now);
+        let channels = ant.channels(now);
         let capture = self.capture.snapshot();
         let screen = cycling_os::sdk::radar_screen::Screen {
             sensors: [40, 120, 11].map(|kind| {
                 use cycling_os::sdk::radar_screen::SensorState;
-                match crate::services::ant::channel(kind, now) {
+                match ant.channel(kind, now) {
                     None => SensorState::Off,
                     Some(s) if s.link == cycling_os::ant::LinkState::Connected && !s.stale => {
                         SensorState::On
@@ -88,7 +101,7 @@ impl Runtime {
                 && capture
                     .last_commit_ms
                     .is_some_and(|at| now.saturating_sub(at) < 3000),
-            gps_fix: crate::services::positioning::snapshot(now).is_some_and(|s| {
+            gps_fix: position.snapshot(now).is_some_and(|s| {
                 s.gps.state == FixState::Fresh
                     && s.gps.latitude_e7.is_some()
                     && s.gps.longitude_e7.is_some()
@@ -110,7 +123,11 @@ impl Runtime {
                 || capture.status == cycling_os::sdk::ant_capture::Status::Full,
         };
         system.activity(now);
-        system.draw_pixels(|x, y| cycling_os::sdk::radar_screen::pixel(x, y, screen));
+        let started = embassy_time::Instant::now();
+        system.draw_scaled(240, 320, |x, y| {
+            cycling_os::sdk::radar_screen::pixel(x, y, screen)
+        });
+        system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
     }
 
     fn radar_command(
@@ -118,9 +135,10 @@ impl Runtime {
         operation: Option<&str>,
         argument: Option<&str>,
         bound: Option<&str>,
-        store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
+        store: &mut impl cycling_os::sdk::storage::RideStorage,
         now: u64,
         output: &mut impl Write,
+        ant: &impl cycling_os::capabilities::Ant,
     ) -> &'static str {
         use cycling_os::sdk::ant_capture::Status as CaptureStatus;
         if operation.is_none() && argument.is_none() && bound.is_none() {
@@ -145,7 +163,7 @@ impl Runtime {
                 {
                     return "BUSY";
                 }
-                let channels = crate::services::ant::snapshots(now);
+                let channels = ant.channels(now);
                 if !channels
                     .iter()
                     .flatten()
@@ -223,16 +241,21 @@ impl Runtime {
 
     pub fn tick(
         &mut self,
-        store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
+        store: &mut impl cycling_os::sdk::storage::RideStorage,
         now: u64,
+        ant: &mut impl cycling_os::capabilities::Ant,
+        ble: &mut impl cycling_os::capabilities::Ble,
+        position: &impl cycling_os::capabilities::Positioning,
+        network: &impl cycling_os::capabilities::Network,
+        input: &impl cycling_os::capabilities::InputObservation,
     ) {
-        let channels = crate::services::ant::snapshots(now);
+        let channels = ant.channels(now);
         let capture_status = self.capture.snapshot().status;
         for (index, channel) in channels.iter().enumerate() {
-            let Some(ant) = channel else {
+            let Some(channel_state) = channel else {
                 continue;
             };
-            let Some(peer) = ant.selected else {
+            let Some(peer) = channel_state.selected else {
                 continue;
             };
             if self.capture_started.is_some() {
@@ -241,24 +264,34 @@ impl Runtime {
                     cycling_os::sdk::ant_capture::Status::Ready
                         | cycling_os::sdk::ant_capture::Status::Recording
                 ) && self.capture_link[index]
-                    != Some((peer.device_type, ant.link, ant.generation))
+                    != Some((
+                        peer.device_type,
+                        channel_state.link,
+                        channel_state.generation,
+                    ))
                 {
-                    self.capture
-                        .observe_link(peer.device_type, ant.link, ant.generation, now);
-                    self.capture_link[index] = Some((peer.device_type, ant.link, ant.generation));
+                    self.capture.observe_link(
+                        peer.device_type,
+                        channel_state.link,
+                        channel_state.generation,
+                        now,
+                    );
+                    self.capture_link[index] = Some((
+                        peer.device_type,
+                        channel_state.link,
+                        channel_state.generation,
+                    ));
                 }
                 if matches!(
                     capture_status,
                     cycling_os::sdk::ant_capture::Status::Scanning
                         | cycling_os::sdk::ant_capture::Status::Ready
                         | cycling_os::sdk::ant_capture::Status::Recording
-                ) && ant.link == cycling_os::ant::LinkState::Disconnected
+                ) && channel_state.link == cycling_os::ant::LinkState::Disconnected
                     && now >= self.next_reconnect[index]
                 {
-                    let result = crate::services::ant::request(
-                        crate::services::ant::Operation::Connect(peer),
-                        now,
-                    );
+                    let result =
+                        ant.request(cycling_os::capabilities::AntOperation::Connect(peer), now);
                     if result == "ACCEPTED" {
                         self.next_reconnect[index] = now.saturating_add(5000);
                     }
@@ -266,7 +299,7 @@ impl Runtime {
             }
         }
         for (index, kind) in [40, 120, 11].iter().enumerate() {
-            let channel = crate::services::ant::channel(*kind, now);
+            let channel = ant.channel(*kind, now);
             if channel.is_none_or(|s| {
                 s.link != cycling_os::ant::LinkState::Connected
                     || self.ant_epochs[index]
@@ -281,7 +314,7 @@ impl Runtime {
             }
         }
         for _ in 0..cycling_os::ant::PACKET_CAPACITY * cycling_os::ant::CHANNEL_CAPACITY {
-            let Some(packet) = crate::services::ant::take_packet() else {
+            let Some(packet) = ant.take_packet() else {
                 break;
             };
             self.capture.packet(packet);
@@ -317,23 +350,23 @@ impl Runtime {
                 }
             }
         }
-        let transport = crate::bluetooth::snapshot();
+        let transport = ble.snapshot();
         self.sensors.update(transport);
         // Core queue has two packets. Never drain an unbounded producer here.
         for _ in 0..2 {
-            let Some(packet) = crate::bluetooth::take_packet() else {
+            let Some(packet) = ble.take_packet() else {
                 break;
             };
             self.sensors.packet(packet);
         }
         let sensors = self.sensors.snapshot(now);
         let (heart_bpm, cadence_tenths) = ble_sensor::ride_fields(sensors, self.recorder.source());
-        let location_e7 = crate::services::positioning::snapshot(now).and_then(|snapshot| {
+        let location_e7 = position.snapshot(now).and_then(|snapshot| {
             (snapshot.gps.state == FixState::Fresh)
                 .then(|| Some((snapshot.gps.latitude_e7?, snapshot.gps.longitude_e7?)))
                 .flatten()
         });
-        let clock = cycling_os::network_time::snapshot(now, 0, crate::wifi::online());
+        let clock = cycling_os::network_time::snapshot(now, 0, network.online());
         let utc_ms = clock.unix_seconds.and_then(|seconds| {
             seconds
                 .checked_mul(1_000)?
@@ -341,8 +374,9 @@ impl Runtime {
         });
         // Keep existing last-observed battery behavior. Core status still exposes
         // its age; these ride format bytes have no battery-age field.
-        let battery_percent =
-            crate::services::io::snapshot(now).and_then(|snapshot| match snapshot.battery {
+        let battery_percent = input
+            .snapshot(now)
+            .and_then(|snapshot| match snapshot.battery {
                 Observation::Fresh {
                     value: (percent, _),
                     ..
@@ -370,7 +404,8 @@ impl Runtime {
             ) && now >= self.next_position
             {
                 self.next_position = now.saturating_add(1000);
-                let observed_ms = crate::services::positioning::snapshot(now)
+                let observed_ms = position
+                    .snapshot(now)
                     .and_then(|s| s.gps.age_ms)
                     .and_then(|age| now.checked_sub(age));
                 self.capture
@@ -398,9 +433,10 @@ impl Runtime {
     pub fn command(
         &mut self,
         words: &str,
-        store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
+        store: &mut impl cycling_os::sdk::storage::RideStorage,
         now: u64,
         output: &mut impl Write,
+        ant: &impl cycling_os::capabilities::Ant,
     ) -> &'static str {
         let mut words = words.split_ascii_whitespace();
         let domain = words.next();
@@ -411,7 +447,7 @@ impl Runtime {
             return "INVALID";
         }
         if domain == Some("RADAR") {
-            return self.radar_command(operation, argument, bound, store, now, output);
+            return self.radar_command(operation, argument, bound, store, now, output, ant);
         }
         // Capture appends to the same owned reservation. The ride catalog is
         // intentionally frozen until restart/rescan, so it cannot overwrite it.

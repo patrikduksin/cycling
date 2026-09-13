@@ -1,9 +1,5 @@
 //! Single-finger reports used by the C606's stock 0x5a touch driver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Point {
-    pub x: u16,
-    pub y: u16,
-}
+pub use crate::capabilities::Point;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Report {

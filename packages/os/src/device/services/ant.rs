@@ -1,6 +1,6 @@
 //! ANT state shared with the console; the existing IO task owns all UART work.
 use core::cell::RefCell;
-use cycling_os::ant::{Channels, Discovery, Identity, Packet, Request, Snapshot};
+use cycling_os::ant::{Channels, Discovery, Packet, Request, Snapshot};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 struct Shared {
@@ -12,9 +12,6 @@ static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefC
     pending: None,
 }));
 
-pub fn channel(device_type: u8, now: u64) -> Option<Snapshot> {
-    SHARED.lock(|s| s.borrow().state.channel(device_type, now))
-}
 pub fn snapshots(now: u64) -> [Option<Snapshot>; cycling_os::ant::CHANNEL_CAPACITY] {
     SHARED.lock(|s| s.borrow().state.snapshots(now))
 }
@@ -28,12 +25,7 @@ pub fn take_packet() -> Option<Packet> {
     SHARED.lock(|s| s.borrow_mut().state.pop_packet())
 }
 
-pub enum Operation {
-    Scan(u32),
-    StopScan,
-    Connect(Identity),
-    Disconnect(u8),
-}
+pub use cycling_os::capabilities::AntOperation as Operation;
 pub fn request(operation: Operation, now: u64) -> &'static str {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();

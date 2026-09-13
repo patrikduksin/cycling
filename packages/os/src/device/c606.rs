@@ -27,7 +27,7 @@ use static_cell::StaticCell;
 // storage, so moving Resources cannot invalidate the channel's reference.
 static BACKLIGHT_TIMER: StaticCell<timer::Timer<'static, LowSpeed>> = StaticCell::new();
 
-pub struct Resources {
+struct Resources {
     pub reset: cycling_os::crash::Reset,
     pub crash: cycling_os::crash::Marker,
     pub flash: esp_hal::peripherals::FLASH<'static>,
@@ -45,7 +45,7 @@ pub struct Resources {
 
 /// Claim the board once. A second call is rejected by esp_hal's singleton guard.
 /// Backlight starts off; composition applies the persisted brightness after load.
-pub fn init() -> Resources {
+fn init() -> Resources {
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
     let reset = crash_rtc::reset();
     let crash = crash_rtc::take();
@@ -212,5 +212,192 @@ pub fn init() -> Resources {
         gps_receiver,
         backlight,
         _lcd_read: _rd,
+    }
+}
+
+/// Handles expose capabilities, never raw peripheral tokens to consumers.
+pub struct Input;
+impl cycling_os::capabilities::InputSource for Input {
+    fn controls(&self) -> cycling_os::capabilities::Controls {
+        use cycling_os::capabilities::{Availability, Button, Controls};
+        Controls {
+            touch: match super::services::io::snapshot(embassy_time::Instant::now().as_millis()) {
+                Some(s) if s.touch_available => Availability::Ready,
+                Some(_) => Availability::Failed,
+                None => Availability::Initializing,
+            },
+            buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+        }
+    }
+    fn take_edge(&mut self) -> Option<cycling_os::capabilities::Edge> {
+        super::services::io::take_edge()
+    }
+}
+pub struct Power(channel::Channel<'static, LowSpeed>);
+impl cycling_os::capabilities::Power for Power {
+    fn availability(&self) -> cycling_os::capabilities::Availability {
+        cycling_os::capabilities::Availability::Ready
+    }
+    fn battery(&self) -> Option<(u8, u16, u64)> {
+        use cycling_os::capabilities::Observation;
+        super::services::io::snapshot(embassy_time::Instant::now().as_millis()).and_then(
+            |s| match s.battery {
+                Observation::Fresh {
+                    value: (percent, mv),
+                    received_ms,
+                }
+                | Observation::Stale {
+                    value: (percent, mv),
+                    received_ms,
+                } => Some((percent, mv, received_ms)),
+                Observation::Unavailable => None,
+            },
+        )
+    }
+    fn brightness(&mut self, percent: u8) -> Result<(), cycling_os::capabilities::Error> {
+        if percent > 100 {
+            return Err(cycling_os::capabilities::Error::Invalid);
+        }
+        self.0
+            .set_duty(percent)
+            .map_err(|_| cycling_os::capabilities::Error::Failed)
+    }
+}
+pub struct Positioning;
+impl cycling_os::capabilities::Positioning for Positioning {
+    fn availability(&self) -> cycling_os::capabilities::Availability {
+        cycling_os::capabilities::Availability::Ready
+    }
+    fn snapshot(&self, now_ms: u64) -> Option<cycling_os::positioning::Snapshot> {
+        super::services::positioning::snapshot(now_ms)
+    }
+}
+/// Composition receives exclusive initialized handles. Acquisition is already
+/// running and outlives foreground presentation and terminal connections.
+pub struct Parts {
+    pub display: display::Display<'static>,
+    pub input: Input,
+    pub input_observation: Input,
+    pub ant: Ant,
+    pub ble: Ble,
+    pub positioning: Positioning,
+    pub network: Network,
+    pub power: Power,
+    pub storage: super::storage::Backend<'static>,
+    pub terminal: super::usb::Usb,
+    pub reset: cycling_os::crash::Reset,
+    pub crash: cycling_os::crash::Marker,
+}
+pub async fn start(
+    spawner: embassy_executor::Spawner,
+    selection: Option<cycling_os::ble_transport::Selection>,
+) -> Parts {
+    let board = init();
+    spawner.spawn(super::services::positioning::run(board.gps_receiver).unwrap());
+    spawner.spawn(super::services::io::run(board.touch, board.touch_available).unwrap());
+    let stack = super::wifi::initialize(board.wifi, spawner).await;
+    if let Some(stack) = stack {
+        spawner.spawn(super::wifi::time_sync(stack).unwrap());
+    }
+    spawner.spawn(super::bluetooth::start(board.bluetooth, selection).unwrap());
+    // Output intentionally remains asserted for the device lifetime.
+    core::mem::forget(board._lcd_read);
+    Parts {
+        display: board.screen,
+        input: Input,
+        input_observation: Input,
+        ant: Ant,
+        ble: Ble,
+        positioning: Positioning,
+        network: Network(stack),
+        power: Power(board.backlight),
+        storage: super::storage::Backend::new(board.flash),
+        terminal: super::usb::Usb::new(board.usb),
+        reset: board.reset,
+        crash: board.crash,
+    }
+}
+
+impl cycling_os::capabilities::InputObservation for Input {
+    fn snapshot(&self, now_ms: u64) -> Option<cycling_os::capabilities::InputSnapshot> {
+        super::services::io::snapshot(now_ms)
+    }
+}
+pub struct Ble;
+impl cycling_os::capabilities::Ble for Ble {
+    fn availability(&self) -> cycling_os::capabilities::Availability {
+        super::bluetooth::availability()
+    }
+    fn snapshot(&self) -> cycling_os::ble_transport::Snapshot {
+        super::bluetooth::snapshot()
+    }
+    fn take_packet(&mut self) -> Option<cycling_os::ble_transport::Packet> {
+        super::bluetooth::take_packet()
+    }
+    fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        if super::bluetooth::request_reconnect() {
+            Ok(())
+        } else {
+            Err(cycling_os::capabilities::Error::Unsupported)
+        }
+    }
+}
+pub struct Ant;
+impl cycling_os::capabilities::Ant for Ant {
+    fn availability(&self) -> cycling_os::capabilities::Availability {
+        cycling_os::capabilities::Availability::Ready
+    }
+    fn channels(
+        &self,
+        now_ms: u64,
+    ) -> [Option<cycling_os::ant::Snapshot>; cycling_os::ant::CHANNEL_CAPACITY] {
+        super::services::ant::snapshots(now_ms)
+    }
+    fn take_packet(&mut self) -> Option<cycling_os::ant::Packet> {
+        super::services::ant::take_packet()
+    }
+    fn scanning(&self) -> bool {
+        super::services::ant::scanning()
+    }
+    fn discoveries(&self) -> [Option<cycling_os::ant::Discovery>; 8] {
+        super::services::ant::discoveries()
+    }
+    fn request(
+        &mut self,
+        operation: cycling_os::capabilities::AntOperation,
+        now_ms: u64,
+    ) -> &'static str {
+        super::services::ant::request(operation, now_ms)
+    }
+}
+pub struct Network(Option<embassy_net::Stack<'static>>);
+impl cycling_os::capabilities::Network for Network {
+    fn availability(&self) -> cycling_os::capabilities::Availability {
+        if self.0.is_some() {
+            cycling_os::capabilities::Availability::Ready
+        } else if super::wifi::state() == 0 {
+            cycling_os::capabilities::Availability::Unconfigured
+        } else {
+            cycling_os::capabilities::Availability::Failed
+        }
+    }
+    fn stack(&self) -> Option<embassy_net::Stack<'static>> {
+        self.0
+    }
+    fn online(&self) -> bool {
+        super::wifi::online()
+    }
+    fn state(&self) -> u8 {
+        super::wifi::state()
+    }
+    fn stats(&self) -> (u32, u32, u32, u8) {
+        super::wifi::stats()
+    }
+    fn connection_generation(&self) -> u32 {
+        super::wifi::connection_generation()
+    }
+    fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        super::wifi::reconnect();
+        Ok(())
     }
 }

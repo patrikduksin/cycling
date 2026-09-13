@@ -1,7 +1,7 @@
 //! Sole physical flash owner. Reservations are fixed, never caller-selected.
 //! No access to stock, boot metadata, eFuses or the vendor filesystem is exposed.
 
-use cycling_os::storage::{self, AccessError, Geometry, OwnedFlash, Sector};
+use cycling_os::storage::{self, AccessError, Geometry, OwnedFlash, Region};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::{FlashStorage, FlashStorageError};
 
@@ -32,76 +32,26 @@ impl<'d> Backend<'d> {
         let relative = u32::try_from(offset).map_err(|_| AccessError::OutOfBounds)?;
         base.checked_add(relative).ok_or(AccessError::OutOfBounds)
     }
-    fn settings_offset(sector: usize, within: usize) -> Result<usize, Error> {
-        sector
-            .checked_mul(storage::SECTOR_SIZE)
-            .and_then(|v| v.checked_add(within))
-            .ok_or(AccessError::OutOfBounds)
-    }
-}
-
-impl storage::Flash for Backend<'_> {
-    type Error = Error;
-    fn read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Error> {
-        let address = Self::address(
-            SETTINGS_BASE,
-            SETTINGS_SIZE,
-            Self::settings_offset(sector, 0)?,
-            output.0.len(),
-            1,
-        )?;
-        self.flash
-            .read(address, &mut output.0)
-            .map_err(AccessError::Device)
-    }
-    fn erase_sector(&mut self, sector: usize) -> Result<(), Error> {
-        let address = Self::address(
-            SETTINGS_BASE,
-            SETTINGS_SIZE,
-            Self::settings_offset(sector, 0)?,
-            storage::SECTOR_SIZE,
-            FlashStorage::ERASE_SIZE,
-        )?;
-        self.flash
-            .erase(address, address + storage::SECTOR_SIZE as u32)
-            .map_err(AccessError::Device)
-    }
-    fn write_sector(&mut self, sector: usize, data: &Sector) -> Result<(), Error> {
-        let address = Self::address(
-            SETTINGS_BASE,
-            SETTINGS_SIZE,
-            Self::settings_offset(sector, 0)?,
-            data.0.len(),
-            FlashStorage::WRITE_SIZE,
-        )?;
-        self.flash
-            .write(address, &data.0)
-            .map_err(AccessError::Device)
-    }
-    fn commit_sector(&mut self, sector: usize, commit: &[u8; 4]) -> Result<(), Error> {
-        let address = Self::address(
-            SETTINGS_BASE,
-            SETTINGS_SIZE,
-            Self::settings_offset(sector, 20)?,
-            4,
-            FlashStorage::WRITE_SIZE,
-        )?;
-        self.flash
-            .write(address, commit)
-            .map_err(AccessError::Device)
+    fn region(region: Region) -> (u32, usize) {
+        match region {
+            Region::Configuration => (SETTINGS_BASE, SETTINGS_SIZE),
+            Region::Data => (DATA_BASE, DATA_SIZE),
+        }
     }
 }
 
 impl OwnedFlash for Backend<'_> {
-    fn geometry(&self) -> Geometry {
+    type Error = Error;
+    fn geometry(&self, region: Region) -> Geometry {
         Geometry {
-            capacity: DATA_SIZE,
+            capacity: Self::region(region).1,
             program_size: FlashStorage::WRITE_SIZE,
             erase_size: FlashStorage::ERASE_SIZE,
         }
     }
-    fn read_data(&mut self, offset: usize, output: &mut [u8]) -> Result<(), Error> {
-        let address = Self::address(DATA_BASE, DATA_SIZE, offset, output.len(), 1)?;
+    fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), Error> {
+        let (base, capacity) = Self::region(region);
+        let address = Self::address(base, capacity, offset, output.len(), 1)?;
         // Adapt arbitrary byte reads to the physical four-byte read granularity.
         // Every aligned word remains inside this sector-aligned reservation.
         let mut address = address;
@@ -138,10 +88,11 @@ impl OwnedFlash for Backend<'_> {
         }
         Ok(())
     }
-    fn program_data(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Error> {
+    fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), Error> {
+        let (base, capacity) = Self::region(region);
         let address = Self::address(
-            DATA_BASE,
-            DATA_SIZE,
+            base,
+            capacity,
             offset,
             bytes.len(),
             FlashStorage::WRITE_SIZE,
@@ -150,14 +101,9 @@ impl OwnedFlash for Backend<'_> {
             .write(address, bytes)
             .map_err(AccessError::Device)
     }
-    fn erase_data(&mut self, offset: usize, length: usize) -> Result<(), Error> {
-        let address = Self::address(
-            DATA_BASE,
-            DATA_SIZE,
-            offset,
-            length,
-            FlashStorage::ERASE_SIZE,
-        )?;
+    fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), Error> {
+        let (base, capacity) = Self::region(region);
+        let address = Self::address(base, capacity, offset, length, FlashStorage::ERASE_SIZE)?;
         self.flash
             .erase(address, address + length as u32)
             .map_err(AccessError::Device)

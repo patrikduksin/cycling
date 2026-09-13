@@ -81,14 +81,6 @@ pub fn online() -> bool {
     LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
 }
 
-/// Current firmware composition: initialize data transport and start network time.
-#[embassy_executor::task]
-pub async fn start(peripheral: WIFI<'static>, spawner: Spawner) {
-    if let Some(stack) = initialize(peripheral, spawner).await {
-        spawner.spawn(time_sync(stack).unwrap());
-    }
-}
-
 /// Initialize the station and return Embassy's actual DNS/TCP/UDP capability.
 ///
 /// None means unconfigured or failed radio initialization. Some means the stack
@@ -405,7 +397,7 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
 }
 
 #[embassy_executor::task]
-async fn time_sync(stack: Stack<'static>) {
+pub async fn time_sync(stack: Stack<'static>) {
     let mut retry_not_before = 0u64;
     loop {
         stack.wait_config_up().await;

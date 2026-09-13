@@ -1,17 +1,139 @@
 //! Presentation geometry and physical observations, without gesture policy.
-use crate::{companion::Button, input::Point};
-
-pub const PANEL_WIDTH: usize = 240;
-pub const PANEL_HEIGHT: usize = 320;
-pub const FRAME_WIDTH: usize = 80;
-pub const FRAME_HEIGHT: usize = 106;
-pub const FRAME_PIXELS: usize = FRAME_WIDTH * FRAME_HEIGHT;
-pub const OBSERVATION_STALE_MS: u64 = 5_000;
-
-/// Existing 3x mapping, including the panel's one-row top offset and bottom clamp.
-/// Call only for coordinates within PANEL_WIDTH x PANEL_HEIGHT.
-pub fn frame_index(x: usize, y: usize) -> usize {
-    ((y.saturating_sub(1) / 3).min(FRAME_HEIGHT - 1)) * FRAME_WIDTH + x / 3
+/// Availability describes support and initialization, separately from observation freshness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Unsupported,
+    Initializing,
+    Unconfigured,
+    Ready,
+    Failed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    Unsupported,
+    Unavailable,
+    Failed,
+    Invalid,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Geometry {
+    pub width: usize,
+    pub height: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Rgb565,
+}
+/// Submission is synchronous. Return, including error, means all DMA access has
+/// ended and the device owns its buffers again. No cancellable future is exposed.
+pub trait Display {
+    fn availability(&self) -> Availability {
+        Availability::Ready
+    }
+    fn geometry(&self) -> Geometry;
+    fn format(&self) -> Format {
+        Format::Rgb565
+    }
+    fn submit(&mut self, pixel: impl Fn(usize, usize) -> u16) -> Result<(), Error>;
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Point {
+    pub x: u16,
+    pub y: u16,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    TopLeft,
+    BottomLeft,
+    BottomRight,
+    Center,
+}
+impl Button {
+    pub fn index(self) -> usize {
+        match self {
+            Self::TopLeft => 0,
+            Self::BottomLeft => 1,
+            Self::BottomRight => 2,
+            Self::Center => 3,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Controls {
+    pub touch: Availability,
+    pub buttons: &'static [Button],
+}
+pub trait InputSource {
+    fn controls(&self) -> Controls;
+    fn take_edge(&mut self) -> Option<Edge>;
+}
+pub trait Power {
+    fn availability(&self) -> Availability;
+    fn battery(&self) -> Option<(u8, u16, u64)>;
+    fn brightness(&mut self, percent: u8) -> Result<(), Error>;
+}
+pub trait Positioning {
+    fn availability(&self) -> Availability;
+    fn snapshot(&self, now_ms: u64) -> Option<crate::positioning::Snapshot>;
+}
+pub trait Ble {
+    fn availability(&self) -> Availability;
+    fn snapshot(&self) -> crate::ble_transport::Snapshot;
+    fn take_packet(&mut self) -> Option<crate::ble_transport::Packet>;
+    fn reconnect(&mut self) -> Result<(), Error>;
+}
+pub enum AntOperation {
+    Scan(u32),
+    StopScan,
+    Connect(crate::ant::Identity),
+    Disconnect(u8),
+}
+pub trait Ant {
+    fn scanning(&self) -> bool;
+    fn discoveries(&self) -> [Option<crate::ant::Discovery>; 8];
+    fn request(&mut self, operation: AntOperation, now_ms: u64) -> &'static str;
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<crate::ant::Snapshot> {
+        self.channels(now_ms)
+            .into_iter()
+            .flatten()
+            .find(|s| s.selected.is_some_and(|p| p.device_type == kind))
+    }
+    fn availability(&self) -> Availability;
+    fn channels(&self, now_ms: u64)
+    -> [Option<crate::ant::Snapshot>; crate::ant::CHANNEL_CAPACITY];
+    fn take_packet(&mut self) -> Option<crate::ant::Packet>;
+}
+#[derive(Clone, Copy)]
+pub struct InputSnapshot {
+    pub battery: Observation<(u8, u16)>,
+    pub power: Observation<u8>,
+    pub button_counts: [u32; 3],
+    pub touch_available: bool,
+    pub touch_errors: u32,
+    pub companion_valid: u32,
+    pub companion_bad_crc: u32,
+    pub uart_errors: u32,
+    pub input_lost: u32,
+}
+pub trait InputObservation {
+    fn snapshot(&self, now_ms: u64) -> Option<InputSnapshot>;
+}
+pub trait Console {
+    fn read(&mut self) -> Option<u8>;
+    fn write(&mut self, byte: u8) -> bool;
+    fn flush(&mut self);
+}
+/// The concrete network handle is Embassy's Stack. Transport existence does not
+/// promise DHCP/link/internet readiness; compare generations around awaited IO.
+#[cfg(feature = "network-stack")]
+pub trait Network {
+    fn online(&self) -> bool;
+    fn state(&self) -> u8;
+    fn stats(&self) -> (u32, u32, u32, u8);
+    fn availability(&self) -> Availability;
+    fn stack(&self) -> Option<embassy_net::Stack<'static>>;
+    fn connection_generation(&self) -> u32;
+    fn reconnect(&mut self) -> Result<(), Error>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,10 +142,10 @@ pub enum Observation<T> {
     Fresh { value: T, received_ms: u64 },
     Stale { value: T, received_ms: u64 },
 }
-pub fn observation<T: Copy>(value: Option<(T, u64)>, now: u64) -> Observation<T> {
+pub fn observation<T: Copy>(value: Option<(T, u64)>, now: u64, stale_ms: u64) -> Observation<T> {
     match value {
         None => Observation::Unavailable,
-        Some((value, received_ms)) if now.saturating_sub(received_ms) <= OBSERVATION_STALE_MS => {
+        Some((value, received_ms)) if now.saturating_sub(received_ms) <= stale_ms => {
             Observation::Fresh { value, received_ms }
         }
         Some((value, received_ms)) => Observation::Stale { value, received_ms },
@@ -133,32 +255,23 @@ mod tests {
     }
     #[test]
     fn stale_values_keep_observation_time_and_unavailable_stays_absent() {
-        assert_eq!(observation::<u8>(None, 9000), Observation::Unavailable);
         assert_eq!(
-            observation(Some((50, 10)), 5011),
+            observation::<u8>(None, 9000, 5000),
+            Observation::Unavailable
+        );
+        assert_eq!(
+            observation(Some((50, 10)), 5011, 5000),
             Observation::Stale {
                 value: 50,
                 received_ms: 10
             }
         );
         assert_eq!(
-            observation(Some((50, 10)), 5010),
+            observation(Some((50, 10)), 5010, 5000),
             Observation::Fresh {
                 value: 50,
                 received_ms: 10
             }
         );
-    }
-    #[test]
-    fn every_panel_pixel_maps_inside_frame_and_matches_existing_edges() {
-        for y in 0..PANEL_HEIGHT {
-            for x in 0..PANEL_WIDTH {
-                assert!(frame_index(x, y) < FRAME_PIXELS);
-            }
-        }
-        assert_eq!(frame_index(0, 0), 0);
-        assert_eq!(frame_index(0, 3), 0);
-        assert_eq!(frame_index(0, 4), FRAME_WIDTH);
-        assert_eq!(frame_index(239, 319), FRAME_PIXELS - 1);
     }
 }

@@ -1,4 +1,4 @@
-//! A two-sector, power-loss-tolerant journal for small settings records.
+//! A two-sector, power-loss-tolerant journal for small records.
 
 pub const SECTOR_SIZE: usize = 4096;
 pub const SECTOR_COUNT: usize = 2;
@@ -19,15 +19,6 @@ impl Default for Sector {
     }
 }
 
-pub trait Flash {
-    type Error;
-
-    fn read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Self::Error>;
-    fn erase_sector(&mut self, sector: usize) -> Result<(), Self::Error>;
-    fn write_sector(&mut self, sector: usize, data: &Sector) -> Result<(), Self::Error>;
-    fn commit_sector(&mut self, sector: usize, commit: &[u8; 4]) -> Result<(), Self::Error>;
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Record {
     pub sequence: u32,
@@ -43,20 +34,21 @@ pub enum Error<E> {
     /// No committed supported record exists, but at least one sector is occupied.
     /// Preserve the bytes for inspection instead of treating them as unused flash.
     UnrecognizedJournal,
-    /// Outer journal is valid but its settings payload cannot be safely replaced.
-    UnrecognizedSettings,
+    UnsupportedGeometry,
 }
 
 pub struct Journal<F> {
-    flash: F,
+    pub(crate) flash: F,
     scratch: Sector,
+    region: Region,
 }
 
-impl<F: Flash> Journal<F> {
-    pub fn new(flash: F) -> Self {
+impl<F: OwnedFlash> Journal<F> {
+    pub fn new(flash: F, region: Region) -> Self {
         Self {
             flash,
             scratch: Sector::default(),
+            region,
         }
     }
 
@@ -74,7 +66,7 @@ impl<F: Flash> Journal<F> {
             return Err(Error::OutputTooSmall);
         }
         self.flash
-            .read_sector(sector, &mut self.scratch)
+            .read(self.region, sector * SECTOR_SIZE, &mut self.scratch.0)
             .map_err(Error::Flash)?;
         let verified = decode(&self.scratch).ok_or(Error::ReadbackFailed)?;
         if verified != record {
@@ -105,17 +97,23 @@ impl<F: Flash> Journal<F> {
         let checksum = checksum(sequence, payload);
         put_u32(&mut self.scratch.0, 16, checksum);
 
-        self.flash.erase_sector(target).map_err(Error::Flash)?;
         self.flash
-            .write_sector(target, &self.scratch)
+            .erase(self.region, target * SECTOR_SIZE, SECTOR_SIZE)
             .map_err(Error::Flash)?;
         self.flash
-            .commit_sector(target, &COMMITTED.to_le_bytes())
+            .program(self.region, target * SECTOR_SIZE, &self.scratch.0)
+            .map_err(Error::Flash)?;
+        self.flash
+            .program(
+                self.region,
+                target * SECTOR_SIZE + COMMIT_OFFSET,
+                &COMMITTED.to_le_bytes(),
+            )
             .map_err(Error::Flash)?;
 
         let mut verify = Sector::default();
         self.flash
-            .read_sector(target, &mut verify)
+            .read(self.region, target * SECTOR_SIZE, &mut verify.0)
             .map_err(Error::Flash)?;
         let record = decode(&verify).ok_or(Error::ReadbackFailed)?;
         if record.sequence != sequence
@@ -128,11 +126,20 @@ impl<F: Flash> Journal<F> {
     }
 
     fn scan(&mut self) -> Result<Option<(usize, Record)>, Error<F::Error>> {
+        let geometry = self.flash.geometry(self.region);
+        if geometry.capacity < SECTOR_COUNT * SECTOR_SIZE
+            || geometry.program_size == 0
+            || !4usize.is_multiple_of(geometry.program_size)
+            || geometry.erase_size == 0
+            || !SECTOR_SIZE.is_multiple_of(geometry.erase_size)
+        {
+            return Err(Error::UnsupportedGeometry);
+        }
         let mut newest = None;
         let mut occupied = false;
         for sector in 0..SECTOR_COUNT {
             self.flash
-                .read_sector(sector, &mut self.scratch)
+                .read(self.region, sector * SECTOR_SIZE, &mut self.scratch.0)
                 .map_err(Error::Flash)?;
             occupied |= self.scratch.0.iter().any(|byte| *byte != 0xff);
             if let Some(record) = decode(&self.scratch)
@@ -203,15 +210,15 @@ fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[derive(Clone)]
-    struct Memory {
-        bytes: [[u8; SECTOR_SIZE]; SECTOR_COUNT],
+    pub(crate) struct Memory {
+        pub(crate) bytes: [[u8; SECTOR_SIZE]; SECTOR_COUNT],
         fail_after: Option<usize>,
         tear_bytes: usize,
-        operations: usize,
+        pub(crate) operations: usize,
     }
 
     impl Default for Memory {
@@ -235,124 +242,137 @@ mod tests {
         }
     }
 
-    impl Flash for Memory {
-        type Error = ();
-
-        fn read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Self::Error> {
-            if self.fails() {
-                return Err(());
-            }
-            output.0.copy_from_slice(&self.bytes[sector]);
-            Ok(())
-        }
-
-        fn erase_sector(&mut self, sector: usize) -> Result<(), Self::Error> {
-            let fails = self.fails();
-            let length = if fails {
-                self.tear_bytes.min(SECTOR_SIZE)
-            } else {
-                SECTOR_SIZE
-            };
-            self.bytes[sector][..length].fill(0xff);
-            if fails { Err(()) } else { Ok(()) }
-        }
-
-        fn write_sector(&mut self, sector: usize, data: &Sector) -> Result<(), Self::Error> {
-            let fails = self.fails();
-            let length = if fails {
-                self.tear_bytes.min(SECTOR_SIZE)
-            } else {
-                SECTOR_SIZE
-            };
-            for (stored, new) in self.bytes[sector][..length].iter_mut().zip(data.0) {
-                *stored &= new;
-            }
-            if fails { Err(()) } else { Ok(()) }
-        }
-
-        fn commit_sector(&mut self, sector: usize, commit: &[u8; 4]) -> Result<(), Self::Error> {
-            let fails = self.fails();
-            let length = if fails { self.tear_bytes.min(4) } else { 4 };
-            for (stored, new) in self.bytes[sector][COMMIT_OFFSET..COMMIT_OFFSET + 4]
-                .iter_mut()
-                .zip(commit)
-                .take(length)
-            {
-                *stored &= *new;
-            }
-            if fails { Err(()) } else { Ok(()) }
-        }
-    }
-
     impl OwnedFlash for Memory {
-        fn geometry(&self) -> Geometry {
+        type Error = ();
+        fn geometry(&self, region: Region) -> Geometry {
             Geometry {
-                capacity: 0,
+                capacity: if region == Region::Configuration {
+                    SECTOR_SIZE * SECTOR_COUNT
+                } else {
+                    0
+                },
                 program_size: 4,
                 erase_size: SECTOR_SIZE,
             }
         }
-        fn read_data(&mut self, _: usize, _: &mut [u8]) -> Result<(), ()> {
-            panic!("settings test accessed data reservation")
-        }
-        fn program_data(&mut self, _: usize, _: &[u8]) -> Result<(), ()> {
-            panic!("settings test programmed data reservation")
-        }
-        fn erase_data(&mut self, _: usize, _: usize) -> Result<(), ()> {
-            panic!("settings test erased data reservation")
-        }
-    }
-
-    #[test]
-    fn unsupported_and_malformed_settings_are_readable_but_cannot_be_overwritten() {
-        use crate::preferences::{Settings, Source};
-        for (payload, source) in [
-            (b"cycling\x05".as_slice(), Source::Unsupported),
-            (b"unrecognized".as_slice(), Source::Malformed),
-            (b"cycling\x04".as_slice(), Source::Malformed),
-        ] {
-            let mut journal = Journal::new(Memory::default());
-            journal.save(&Settings::default().encode()).unwrap();
-            journal.save(payload).unwrap();
-            let mut store = Store { journal };
-            assert_eq!(store.load().unwrap().source, source);
-            let before = store.journal.flash.bytes;
-            let operations = store.journal.flash.operations;
-            assert_eq!(
-                store.save(Settings::default()),
-                Err(Error::UnrecognizedSettings)
-            );
-            assert_eq!(store.journal.flash.bytes, before);
-            // Two scan reads plus a verified load; no mutation operation.
-            assert_eq!(store.journal.flash.operations - operations, 3);
-        }
-    }
-
-    #[test]
-    fn supported_settings_versions_and_missing_journal_remain_writable() {
-        use crate::preferences::{Settings, Source};
-        for payload in [
-            None,
-            Some(b"cycling\x01".as_slice()),
-            Some(b"cycling\x02\x32\x00".as_slice()),
-            Some(Settings::default().encode().as_slice()),
-        ] {
-            let mut journal = Journal::new(Memory::default());
-            if let Some(payload) = payload {
-                journal.save(payload).unwrap();
+        fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), ()> {
+            assert_eq!(region, Region::Configuration);
+            checked_range::<()>(SECTOR_SIZE * SECTOR_COUNT, offset, output.len(), 1)
+                .map_err(|_| ())?;
+            if self.fails() {
+                return Err(());
             }
-            let mut store = Store { journal };
-            let settings = Settings::new(75).unwrap();
-            store.save(settings).unwrap();
-            let loaded = store.load().unwrap();
-            assert_eq!(loaded.source, Source::Current);
-            assert_eq!(loaded.settings, settings);
+            for (i, byte) in output.iter_mut().enumerate() {
+                *byte = self.bytes[(offset + i) / SECTOR_SIZE][(offset + i) % SECTOR_SIZE];
+            }
+            Ok(())
         }
+        fn program(&mut self, region: Region, offset: usize, data: &[u8]) -> Result<(), ()> {
+            assert_eq!(region, Region::Configuration);
+            checked_range::<()>(SECTOR_SIZE * SECTOR_COUNT, offset, data.len(), 4)
+                .map_err(|_| ())?;
+            let fails = self.fails();
+            let length = if fails {
+                self.tear_bytes.min(data.len())
+            } else {
+                data.len()
+            };
+            for (i, byte) in data[..length].iter().enumerate() {
+                self.bytes[(offset + i) / SECTOR_SIZE][(offset + i) % SECTOR_SIZE] &= *byte;
+            }
+            if fails { Err(()) } else { Ok(()) }
+        }
+        fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), ()> {
+            assert_eq!(region, Region::Configuration);
+            checked_range::<()>(SECTOR_SIZE * SECTOR_COUNT, offset, length, SECTOR_SIZE)
+                .map_err(|_| ())?;
+            let fails = self.fails();
+            let length = if fails {
+                self.tear_bytes.min(length)
+            } else {
+                length
+            };
+            for i in offset..offset + length {
+                self.bytes[i / SECTOR_SIZE][i % SECTOR_SIZE] = 0xff;
+            }
+            if fails { Err(()) } else { Ok(()) }
+        }
+    }
+
+    #[test]
+    fn journal_owns_commit_layout_and_preserves_operation_order() {
+        use std::vec::Vec;
+        struct Trace {
+            memory: Memory,
+            calls: Vec<(&'static str, Region, usize, usize)>,
+        }
+        impl OwnedFlash for Trace {
+            type Error = ();
+            fn geometry(&self, region: Region) -> Geometry {
+                self.memory.geometry(region)
+            }
+            fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), ()> {
+                self.calls.push(("read", region, offset, output.len()));
+                self.memory.read(region, offset, output)
+            }
+            fn program(&mut self, region: Region, offset: usize, data: &[u8]) -> Result<(), ()> {
+                self.calls.push(("program", region, offset, data.len()));
+                self.memory.program(region, offset, data)
+            }
+            fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), ()> {
+                self.calls.push(("erase", region, offset, length));
+                self.memory.erase(region, offset, length)
+            }
+        }
+        let mut journal = Journal::new(
+            Trace {
+                memory: Memory::default(),
+                calls: Vec::new(),
+            },
+            Region::Configuration,
+        );
+        journal.save(b"existing format").unwrap();
+        let region = Region::Configuration;
+        assert_eq!(
+            journal.flash.calls,
+            [
+                ("read", region, 0, 4096),
+                ("read", region, 4096, 4096),
+                ("erase", region, 0, 4096),
+                ("program", region, 0, 4096),
+                ("program", region, 20, 4),
+                ("read", region, 0, 4096),
+            ]
+        );
+        assert_eq!(&journal.flash.memory.bytes[0][..8], b"C606\x01\x00\x18\x00");
+        assert_eq!(
+            &journal.flash.memory.bytes[0][20..24],
+            &COMMITTED.to_le_bytes()
+        );
+        journal.flash.calls.clear();
+        journal.save(b"second").unwrap();
+        assert_eq!(
+            journal.flash.calls[2..],
+            [
+                ("erase", region, 4096, 4096),
+                ("program", region, 4096, 4096),
+                ("program", region, 4116, 4),
+                ("read", region, 4096, 4096),
+            ]
+        );
+    }
+
+    #[test]
+    fn insufficient_reservation_refuses_journal_access_before_io() {
+        let mut journal = Journal::new(Memory::default(), Region::Data);
+        assert_eq!(journal.load(&mut [0; 8]), Err(Error::UnsupportedGeometry));
+        assert_eq!(journal.save(b"no"), Err(Error::UnsupportedGeometry));
+        assert_eq!(journal.flash.operations, 0);
     }
 
     #[test]
     fn saves_reads_and_uses_full_capacity() {
-        let mut journal = Journal::new(Memory::default());
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
         let payload = [0xa5; CAPACITY];
         assert_eq!(journal.save(&payload).unwrap().sequence, 1);
         let mut output = [0; CAPACITY];
@@ -363,7 +383,7 @@ mod tests {
 
     #[test]
     fn rejects_oversize_and_short_output() {
-        let mut journal = Journal::new(Memory::default());
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
         assert_eq!(
             journal.save(&[0; CAPACITY + 1]),
             Err(Error::PayloadTooLarge)
@@ -374,7 +394,7 @@ mod tests {
 
     #[test]
     fn checksum_corruption_falls_back_to_previous_record() {
-        let mut journal = Journal::new(Memory::default());
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
         journal.save(b"old").unwrap();
         journal.save(b"new").unwrap();
         journal.flash.bytes[1][HEADER_SIZE] ^= 1;
@@ -386,7 +406,7 @@ mod tests {
 
     #[test]
     fn erased_journal_is_missing_and_can_be_saved_explicitly() {
-        let mut journal = Journal::new(Memory::default());
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
         assert_eq!(journal.load(&mut [0; 8]), Ok(None));
         assert!(
             journal
@@ -402,7 +422,7 @@ mod tests {
     #[test]
     fn occupied_unrecognized_journals_refuse_load_and_save_without_mutation() {
         for scenario in 0..4 {
-            let mut journal = Journal::new(Memory::default());
+            let mut journal = Journal::new(Memory::default(), Region::Configuration);
             match scenario {
                 0 => journal.flash.bytes[0][0] = 0, // One unknown occupied sector.
                 1 => journal
@@ -433,7 +453,7 @@ mod tests {
 
     #[test]
     fn torn_first_write_is_preserved_and_cannot_be_retried_as_empty() {
-        let mut journal = Journal::new(Memory::default());
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
         journal.flash.fail_after = Some(3); // First payload program, after scan + erase.
         journal.flash.tear_bytes = HEADER_SIZE + 1;
         assert_eq!(journal.save(b"first"), Err(Error::Flash(())));
@@ -448,7 +468,7 @@ mod tests {
     fn interruption_before_commit_keeps_previous_record() {
         for failed_operation in 2..5 {
             for tear_bytes in [0, 1, 2, 3, 16, 2048, 4095] {
-                let mut journal = Journal::new(Memory::default());
+                let mut journal = Journal::new(Memory::default(), Region::Configuration);
                 journal.save(b"older").unwrap();
                 journal.save(b"old").unwrap();
                 journal.flash.operations = 0;
@@ -499,89 +519,50 @@ pub fn checked_range<E>(
     Ok(())
 }
 
-/// Sole physical owner of the journal and a disjoint application reservation.
-/// Implementations must enforce their fixed reservations on every operation.
-pub trait OwnedFlash: Flash {
-    fn geometry(&self) -> Geometry;
-    fn read_data(&mut self, offset: usize, output: &mut [u8]) -> Result<(), Self::Error>;
-    fn program_data(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
-    fn erase_data(&mut self, offset: usize, length: usize) -> Result<(), Self::Error>;
+/// Device-owned reservations. These names select disjoint bounds, not schemas.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Region {
+    Configuration,
+    Data,
 }
 
-pub struct Loaded {
-    pub settings: crate::preferences::Settings,
-    pub source: crate::preferences::Source,
-    pub sequence: Option<u32>,
-    pub length: usize,
+/// Sole physical owner of independently bounded reservations. Every operation
+/// uses relative byte offsets; no caller can select a physical flash address.
+/// Return means completed hardware access, including on failure. A failed
+/// mutation may have changed bytes: inspect/rescan before deciding to retry.
+pub trait OwnedFlash {
+    type Error;
+    fn availability(&self, _region: Region) -> crate::capabilities::Availability {
+        crate::capabilities::Availability::Ready
+    }
+    fn geometry(&self, region: Region) -> Geometry;
+    fn read(&mut self, region: Region, offset: usize, output: &mut [u8])
+    -> Result<(), Self::Error>;
+    fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
+    fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), Self::Error>;
 }
 
-/// Settings journal and generic owned bytes. No application format or reclaim policy.
-/// Calls are synchronous: the caller yields between bounded media operations.
-/// ESP flash programming/erase can suspend interrupts and acquisition. Callers
-/// must retain transport loss detection and reset parsing after detected gaps.
-/// A failed mutation is ambiguous; reconcile by reading, never blindly retry it.
-pub struct Store<B> {
-    journal: Journal<B>,
+/// An exclusive borrow of one reservation. Journals and domain adapters can
+/// use different reservations while the backend serializes physical access.
+pub struct RegionAccess<'a, B> {
+    backend: &'a mut B,
+    region: Region,
 }
-
-impl<B: OwnedFlash> Store<B> {
-    pub fn new(backend: B) -> Self {
-        Self {
-            journal: Journal::new(backend),
-        }
+impl<'a, B: OwnedFlash> RegionAccess<'a, B> {
+    pub fn new(backend: &'a mut B, region: Region) -> Self {
+        Self { backend, region }
     }
-
-    pub fn load(&mut self) -> Result<Loaded, Error<B::Error>> {
-        let mut payload = [0u8; CAPACITY];
-        let record = self.journal.load(&mut payload)?;
-        let bytes = record.map(|record| &payload[..record.length]);
-        let (settings, source) = crate::preferences::decode(bytes);
-        Ok(Loaded {
-            settings,
-            source,
-            sequence: record.map(|r| r.sequence),
-            length: record.map(|r| r.length).unwrap_or(0),
-        })
-    }
-
-    pub fn save(
-        &mut self,
-        settings: crate::preferences::Settings,
-    ) -> Result<Record, Error<B::Error>> {
-        if matches!(
-            self.load()?.source,
-            crate::preferences::Source::Unsupported | crate::preferences::Source::Malformed
-        ) {
-            return Err(Error::UnrecognizedSettings);
-        }
-        match self.journal.save(&settings.encode()) {
-            Ok(record) => Ok(record),
-            Err(error) => match self.load() {
-                Ok(loaded)
-                    if loaded.source == crate::preferences::Source::Current
-                        && loaded.settings == settings =>
-                {
-                    Ok(Record {
-                        sequence: loaded.sequence.unwrap(),
-                        length: loaded.length,
-                    })
-                }
-                _ => Err(error),
-            },
-        }
-    }
-
-    pub fn geometry(&mut self) -> Geometry {
-        self.journal.flash_mut().geometry()
+    pub fn geometry(&self) -> Geometry {
+        self.backend.geometry(self.region)
     }
     pub fn read(&mut self, offset: usize, output: &mut [u8]) -> Result<(), B::Error> {
-        self.journal.flash_mut().read_data(offset, output)
+        self.backend.read(self.region, offset, output)
     }
     pub fn program(&mut self, offset: usize, bytes: &[u8]) -> Result<(), B::Error> {
-        self.journal.flash_mut().program_data(offset, bytes)
+        self.backend.program(self.region, offset, bytes)
     }
     pub fn erase(&mut self, offset: usize, length: usize) -> Result<(), B::Error> {
-        self.journal.flash_mut().erase_data(offset, length)
+        self.backend.erase(self.region, offset, length)
     }
 }
 

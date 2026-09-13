@@ -20,10 +20,11 @@ pub struct Runtime {
     capture: cycling_os::sdk::ant_capture::Capturer,
     capture_started: Option<u64>,
     next_display: u64,
-    next_reconnect: u64,
-    capture_link: Option<(cycling_os::ant::LinkState, u32)>,
-    ant_generation: u32,
-    ant_losses: u32,
+    next_reconnect: [u64; 3],
+    capture_link: [Option<(u8, cycling_os::ant::LinkState, u32)>; 3],
+    ant_epochs: [Option<(u32, u32)>; 3],
+    heart: Option<(cycling_os::sdk::ant_sensors::HeartRate, u64)>,
+    power: Option<(cycling_os::sdk::ant_sensors::Power, u64)>,
     recorder: Recorder,
     sensors: Client,
     next_token: u32,
@@ -38,10 +39,11 @@ impl Runtime {
             capture: cycling_os::sdk::ant_capture::Capturer::new(),
             capture_started: None,
             next_display: 0,
-            next_reconnect: 0,
-            capture_link: None,
-            ant_generation: 0,
-            ant_losses: 0,
+            next_reconnect: [0; 3],
+            capture_link: [None; 3],
+            ant_epochs: [None; 3],
+            heart: None,
+            power: None,
             recorder: Recorder::default(),
             sensors: Client::new(profile),
             next_token: 1,
@@ -66,10 +68,19 @@ impl Runtime {
             return;
         }
         self.next_display = now.saturating_add(1000);
-        let ant = crate::services::ant::snapshot(now);
+        let channels = crate::services::ant::snapshots(now);
         let capture = self.capture.snapshot();
         let screen = cycling_os::sdk::radar_screen::Screen {
-            connected: ant.link == cycling_os::ant::LinkState::Connected && !ant.stale,
+            sensors: [40, 120, 11].map(|kind| {
+                use cycling_os::sdk::radar_screen::SensorState;
+                match crate::services::ant::channel(kind, now) {
+                    None => SensorState::Off,
+                    Some(s) if s.link == cycling_os::ant::LinkState::Connected && !s.stale => {
+                        SensorState::On
+                    }
+                    _ => SensorState::Wait,
+                }
+            }),
             logging: capture.recording
                 && capture.packets > 0
                 && capture
@@ -79,7 +90,12 @@ impl Runtime {
             dropped: capture
                 .dropped
                 .saturating_add(capture.dropped_links)
-                .saturating_add(ant.dropped_packets),
+                .saturating_add(
+                    channels
+                        .iter()
+                        .flatten()
+                        .fold(0u32, |sum, s| sum.saturating_add(s.dropped_packets)),
+                ),
             elapsed_secs: (now.saturating_sub(started) / 1000).min(u64::from(u32::MAX)) as u32,
             error: capture.error.is_some()
                 || capture.status == cycling_os::sdk::ant_capture::Status::Full,
@@ -102,6 +118,12 @@ impl Runtime {
             let _ = write!(output, "{:?}", self.radar(now));
             return "OK";
         }
+        if operation == Some("SENSORS") && argument.is_none() && bound.is_none() {
+            let heart = self.heart.filter(|(_, at)| now.saturating_sub(*at) < 3000);
+            let power = self.power.filter(|(_, at)| now.saturating_sub(*at) < 3000);
+            let _ = write!(output, "heart={:?} power={:?}", heart, power);
+            return "OK";
+        }
         if operation != Some("LOG") {
             return "INVALID";
         }
@@ -114,12 +136,17 @@ impl Runtime {
                 {
                     return "BUSY";
                 }
-                let ant = crate::services::ant::snapshot(now);
-                if ant.link != cycling_os::ant::LinkState::Connected
-                    || ant.stale
-                    || !ant.selected.is_some_and(|peer| peer.device_type == 40)
+                let channels = crate::services::ant::snapshots(now);
+                if !channels
+                    .iter()
+                    .flatten()
+                    .any(|s| s.selected.is_some_and(|peer| peer.device_type == 40))
+                    || channels
+                        .iter()
+                        .flatten()
+                        .any(|s| s.link != cycling_os::ant::LinkState::Connected || s.stale)
                 {
-                    return "RADAR_NOT_READY";
+                    return "SENSORS_NOT_READY";
                 }
                 if !self.capture.start() {
                     return "STATE";
@@ -190,52 +217,95 @@ impl Runtime {
         store: &mut cycling_os::storage::Store<crate::device::storage::Backend<'static>>,
         now: u64,
     ) {
-        let ant = crate::services::ant::snapshot(now);
-        if self.capture_started.is_some() {
-            if matches!(
-                self.capture.snapshot().status,
-                cycling_os::sdk::ant_capture::Status::Ready
-                    | cycling_os::sdk::ant_capture::Status::Recording
-            ) && self.capture_link != Some((ant.link, ant.generation))
-            {
-                self.capture.observe_link(ant.link, ant.generation, now);
-                self.capture_link = Some((ant.link, ant.generation));
-            }
-            if matches!(
-                self.capture.snapshot().status,
-                cycling_os::sdk::ant_capture::Status::Scanning
-                    | cycling_os::sdk::ant_capture::Status::Ready
-                    | cycling_os::sdk::ant_capture::Status::Recording
-            ) && ant.link == cycling_os::ant::LinkState::Disconnected
-                && now >= self.next_reconnect
-            {
-                if let Some(peer) = ant.selected {
-                    let _ = crate::services::ant::request(
+        let channels = crate::services::ant::snapshots(now);
+        let capture_status = self.capture.snapshot().status;
+        for (index, channel) in channels.iter().enumerate() {
+            let Some(ant) = channel else {
+                continue;
+            };
+            let Some(peer) = ant.selected else {
+                continue;
+            };
+            if self.capture_started.is_some() {
+                if matches!(
+                    capture_status,
+                    cycling_os::sdk::ant_capture::Status::Ready
+                        | cycling_os::sdk::ant_capture::Status::Recording
+                ) && self.capture_link[index]
+                    != Some((peer.device_type, ant.link, ant.generation))
+                {
+                    self.capture
+                        .observe_link(peer.device_type, ant.link, ant.generation, now);
+                    self.capture_link[index] = Some((peer.device_type, ant.link, ant.generation));
+                }
+                if matches!(
+                    capture_status,
+                    cycling_os::sdk::ant_capture::Status::Scanning
+                        | cycling_os::sdk::ant_capture::Status::Ready
+                        | cycling_os::sdk::ant_capture::Status::Recording
+                ) && ant.link == cycling_os::ant::LinkState::Disconnected
+                    && now >= self.next_reconnect[index]
+                {
+                    let result = crate::services::ant::request(
                         crate::services::ant::Operation::Connect(peer),
                         now,
                     );
-                    self.next_reconnect = now.saturating_add(5000);
+                    if result == "ACCEPTED" {
+                        self.next_reconnect[index] = now.saturating_add(5000);
+                    }
                 }
             }
         }
-        if ant.generation != self.ant_generation
-            || ant.link != cycling_os::ant::LinkState::Connected
-        {
-            self.radar.reset();
-            self.ant_generation = ant.generation;
+        for (index, kind) in [40, 120, 11].iter().enumerate() {
+            let channel = crate::services::ant::channel(*kind, now);
+            if channel.is_none_or(|s| {
+                s.link != cycling_os::ant::LinkState::Connected
+                    || self.ant_epochs[index]
+                        .is_some_and(|(generation, _)| generation != s.generation)
+            }) {
+                match index {
+                    0 => self.radar.reset(),
+                    1 => self.heart = None,
+                    _ => self.power = None,
+                }
+                self.ant_epochs[index] = None;
+            }
         }
-        for _ in 0..cycling_os::ant::PACKET_CAPACITY {
+        for _ in 0..cycling_os::ant::PACKET_CAPACITY * cycling_os::ant::CHANNEL_CAPACITY {
             let Some(packet) = crate::services::ant::take_packet() else {
                 break;
             };
-            if packet.generation != self.ant_generation || packet.loss_count != self.ant_losses {
-                self.radar.reset();
-                self.ant_generation = packet.generation;
-                self.ant_losses = packet.loss_count;
-            }
             self.capture.packet(packet);
-            if packet.identity.device_type == 40 {
-                self.radar.receive(packet.data, packet.received_ms);
+            let Some(index) = [40, 120, 11]
+                .iter()
+                .position(|kind| *kind == packet.identity.device_type)
+            else {
+                continue;
+            };
+            let epoch = (packet.generation, packet.loss_count);
+            if self.ant_epochs[index] != Some(epoch) {
+                match index {
+                    0 => self.radar.reset(),
+                    1 => self.heart = None,
+                    _ => self.power = None,
+                }
+                self.ant_epochs[index] = Some(epoch);
+            }
+            match index {
+                0 => {
+                    self.radar.receive(packet.data, packet.received_ms);
+                }
+                1 => {
+                    self.heart = Some((
+                        cycling_os::sdk::ant_sensors::HeartRate::decode(packet.data),
+                        packet.received_ms,
+                    ))
+                }
+                _ => {
+                    if let Some(power) = cycling_os::sdk::ant_sensors::Power::decode(packet.data) {
+                        self.power = Some((power, packet.received_ms));
+                    }
+                }
             }
         }
         let transport = crate::bluetooth::snapshot();

@@ -96,5 +96,5 @@ description = "Verify controlled panic, software reboot and one-shot marker thro
 run = "python scripts/base_test.py .local/tests/crash-$(date +%s) --panic"
 
 [tasks.ant-export]
-description = "Export stopped radar test captures to a private directory"
+description = "Export stopped ANT sensor test captures to a private directory"
 run = "python scripts/ant_capture.py"

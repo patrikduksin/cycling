@@ -41,9 +41,9 @@ def decode_slot(data):
     if zlib.crc32(data[:248]) != int.from_bytes(data[248:252], 'little'):
         raise ValueError('ANT slot CRC mismatch')
     kind, count = data[5:7]
-    if kind not in (1, 2, 3, 4) or (kind == 1 and not 1 <= count <= 8) or (kind == 4 and count != 1) or (kind in (2, 3) and count != 0):
+    if kind not in (1, 2, 3, 4, 5) or (kind == 1 and not 1 <= count <= 8) or (kind in (4, 5) and count != 1) or (kind in (2, 3) and count != 0):
         raise ValueError('invalid ANT record kind/count')
-    record = dict(kind={1: 'packets', 2: 'stopped', 3: 'full', 4: 'link'}[kind],
+    record = dict(kind={1: 'packets', 2: 'stopped', 3: 'full', 4: 'link', 5: 'link'}[kind],
                   capture_id=int.from_bytes(data[8:12], 'little'),
                   sequence=int.from_bytes(data[12:16], 'little'),
                   prepared_ms=int.from_bytes(data[16:24], 'little'))
@@ -55,13 +55,16 @@ def decode_slot(data):
                                 device_number=number, received_ms=received, generation=generation,
                                 transport_loss_count=loss, payload_hex=payload.hex()))
         record['packets'] = records
-    elif kind == 4:
-        if data[24] >= len(LINKS) or data[25:28] != bytes(3):
+    elif kind in (4, 5):
+        state_offset = 24 if kind == 4 else 25
+        if data[state_offset] >= len(LINKS) or any(data[state_offset + 1:28]):
             raise ValueError('invalid link record')
-        record.update(link=LINKS[data[24]], received_ms=int.from_bytes(data[28:36], 'little'),
+        record.update(link=LINKS[data[state_offset]], received_ms=int.from_bytes(data[28:36], 'little'),
                       generation=int.from_bytes(data[36:40], 'little'),
                       dropped_packets=int.from_bytes(data[40:44], 'little'),
                       dropped_links=int.from_bytes(data[44:48], 'little'))
+        if kind == 5:
+            record['device_type'] = data[24]
     else:
         record.update(dropped_packets=int.from_bytes(data[24:28], 'little'),
                       dropped_links=int.from_bytes(data[28:32], 'little'))

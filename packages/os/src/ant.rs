@@ -1,4 +1,4 @@
-//! Bounded ANT discovery and one selected receive channel.
+//! Bounded ANT discovery and independent receive channels by device type.
 //!
 //! The device translates control requests and classifies transport messages. Data
 //! has no sender identifier, so it is admitted only after a matching connection
@@ -345,6 +345,182 @@ impl State {
     }
 }
 
+/// The adapter identifies received pages by type, so only one peer of each type
+/// can be selected. Slots with uncertain radio ownership are never reassigned.
+pub const CHANNEL_CAPACITY: usize = 3;
+
+pub struct Channels {
+    discovery: State,
+    channels: [State; CHANNEL_CAPACITY],
+    next_packet: usize,
+}
+
+impl Default for Channels {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Channels {
+    pub const fn new() -> Self {
+        Self {
+            discovery: State::new(),
+            channels: [const { State::new() }; CHANNEL_CAPACITY],
+            next_packet: 0,
+        }
+    }
+
+    pub fn begin_scan(&mut self, now: u64, duration_ms: u32) -> Result<Request, Error> {
+        if self.channels.iter().any(|channel| {
+            matches!(
+                channel.link,
+                LinkState::Connecting | LinkState::Connected | LinkState::Disconnecting
+            )
+        }) {
+            return Err(Error::Busy);
+        }
+        self.discovery.begin_scan(now, duration_ms)
+    }
+
+    pub fn stop_scan(&mut self) -> Request {
+        self.discovery.stop_scan()
+    }
+
+    pub fn scanning(&self) -> bool {
+        self.discovery.scan_until.is_some()
+    }
+
+    fn index(&self, device_type: u8) -> Option<usize> {
+        self.channels.iter().position(|channel| {
+            channel
+                .selected
+                .is_some_and(|identity| identity.device_type == device_type)
+        })
+    }
+
+    pub fn connect(&mut self, identity: Identity, now: u64) -> Result<Request, Error> {
+        if identity.device_type == 0
+            || identity.device_number == 0
+            || identity.transmission_type == 0
+        {
+            return Err(Error::InvalidIdentity);
+        }
+        if self.scanning() {
+            return Err(Error::Busy);
+        }
+        let slot = self
+            .index(identity.device_type)
+            .or_else(|| {
+                self.channels
+                    .iter()
+                    .position(|channel| channel.selected.is_none())
+            })
+            .or_else(|| {
+                self.channels
+                    .iter()
+                    .position(|channel| channel.link == LinkState::Disconnected)
+            })
+            .ok_or(Error::Busy)?;
+        self.channels[slot].connect(identity, now)
+    }
+
+    pub fn disconnect(&mut self, device_type: u8, now: u64) -> Option<Request> {
+        let slot = self.index(device_type)?;
+        self.channels[slot].disconnect(now)
+    }
+
+    pub fn receive(&mut self, event: Event, now: u64) {
+        self.tick(now);
+        let device_type = match event {
+            Event::Discovery { .. } | Event::ScanEnded => {
+                self.discovery.receive(event, now);
+                return;
+            }
+            Event::Connected(identity)
+            | Event::Disconnected(identity)
+            | Event::Timeout(identity) => identity.device_type,
+            Event::Data { device_type, .. } => device_type,
+        };
+        if let Some(slot) = self.index(device_type) {
+            self.channels[slot].receive(event, now);
+        }
+    }
+
+    pub fn tick(&mut self, now: u64) {
+        self.discovery.tick(now);
+        for channel in &mut self.channels {
+            channel.tick(now);
+        }
+    }
+
+    pub fn transport_loss(&mut self, now: u64) {
+        self.discovery.transport_loss(now);
+        for channel in &mut self.channels {
+            if channel.selected.is_some() {
+                channel.transport_loss(now);
+            }
+        }
+    }
+
+    /// Use when the failed command is unknown or the shared transport failed.
+    pub fn tx_failed(&mut self, now: u64) {
+        self.discovery.tx_failed(now);
+        for channel in &mut self.channels {
+            if channel.selected.is_some() {
+                channel.tx_failed(now);
+            }
+        }
+    }
+
+    /// A command-specific failure invalidates only the channel it addressed.
+    pub fn request_failed(&mut self, request: Request, now: u64) {
+        match request {
+            Request::Scan { .. } | Request::StopScan => self.discovery.tx_failed(now),
+            Request::Connect { identity } | Request::Disconnect { identity } => {
+                if let Some(slot) = self.index(identity.device_type)
+                    && self.channels[slot].selected == Some(identity)
+                {
+                    self.channels[slot].tx_failed(now);
+                }
+            }
+        }
+    }
+
+    pub fn discoveries(&self) -> &[Option<Discovery>; DISCOVERY_CAPACITY] {
+        self.discovery.discoveries()
+    }
+
+    /// Global discovery and transport diagnostics; per-peer state is in channel().
+    pub fn snapshot(&self, now: u64) -> Snapshot {
+        self.discovery.snapshot(now)
+    }
+
+    pub fn channel(&self, device_type: u8, now: u64) -> Option<Snapshot> {
+        self.index(device_type)
+            .map(|slot| self.channels[slot].snapshot(now))
+    }
+
+    pub fn snapshots(&self, now: u64) -> [Option<Snapshot>; CHANNEL_CAPACITY] {
+        core::array::from_fn(|slot| {
+            self.channels[slot]
+                .selected
+                .map(|_| self.channels[slot].snapshot(now))
+        })
+    }
+
+    /// Round-robin draining keeps a busy sensor from starving the other queues.
+    pub fn pop_packet(&mut self) -> Option<Packet> {
+        for offset in 0..CHANNEL_CAPACITY {
+            let slot = (self.next_packet + offset) % CHANNEL_CAPACITY;
+            if let Some(packet) = self.channels[slot].pop_packet() {
+                self.next_packet = (slot + 1) % CHANNEL_CAPACITY;
+                return Some(packet);
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +532,195 @@ mod tests {
     fn connected(state: &mut State) {
         state.connect(PEER, 0).unwrap();
         state.receive(Event::Connected(PEER), 1);
+    }
+
+    const HR: Identity = Identity {
+        device_type: 120,
+        device_number: 456,
+        transmission_type: 1,
+    };
+    const POWER: Identity = Identity {
+        device_type: 11,
+        device_number: 789,
+        transmission_type: 1,
+    };
+
+    fn three_channels() -> Channels {
+        let mut channels = Channels::new();
+        for peer in [PEER, HR, POWER] {
+            channels.connect(peer, 0).unwrap();
+            channels.receive(Event::Connected(peer), 1);
+        }
+        channels
+    }
+
+    fn page(channels: &mut Channels, peer: Identity, value: u8, now: u64) {
+        channels.receive(
+            Event::Data {
+                device_type: peer.device_type,
+                data: [value; 8],
+            },
+            now,
+        );
+    }
+
+    #[test]
+    fn three_types_route_independently_and_drain_fairly() {
+        let mut channels = three_channels();
+        for value in 0..6 {
+            page(&mut channels, PEER, value, 2);
+        }
+        page(&mut channels, HR, 90, 3);
+        page(&mut channels, POWER, 200, 4);
+        page(
+            &mut channels,
+            Identity {
+                device_type: 99,
+                ..PEER
+            },
+            99,
+            4,
+        );
+        assert_eq!(channels.snapshots(4).iter().flatten().count(), 3);
+        for (identity, value) in [(PEER, 2), (HR, 90), (POWER, 200), (PEER, 3)] {
+            let packet = channels.pop_packet().unwrap();
+            assert_eq!(packet.identity, identity);
+            assert_eq!(packet.data, [value; 8]);
+        }
+        assert_eq!(channels.channel(40, 4).unwrap().dropped_packets, 2);
+        assert_eq!(channels.channel(120, 4).unwrap().dropped_packets, 0);
+        channels.pop_packet();
+        assert_eq!(channels.pop_packet().unwrap().loss_count, 2);
+        assert!(channels.pop_packet().is_none());
+    }
+
+    #[test]
+    fn channel_loss_and_reconnect_preserve_other_peers() {
+        let mut channels = three_channels();
+        for peer in [PEER, HR, POWER] {
+            page(&mut channels, peer, 1, 2);
+        }
+        let radar_generation = channels.channel(40, 2).unwrap().generation;
+        let hr_generation = channels.channel(120, 2).unwrap().generation;
+        channels.disconnect(40, 3).unwrap();
+        channels.receive(Event::Disconnected(PEER), 4);
+        channels.connect(PEER, 5).unwrap();
+        page(&mut channels, PEER, 9, 6); // no open acknowledgement yet
+        channels.receive(Event::Connected(PEER), 7);
+        page(&mut channels, PEER, 2, 8);
+        assert!(channels.channel(40, 8).unwrap().generation > radar_generation);
+        assert_eq!(channels.channel(120, 8).unwrap().generation, hr_generation);
+        let radar = channels.pop_packet().unwrap();
+        assert_eq!(radar.identity, PEER);
+        assert_eq!(radar.data, [2; 8]);
+        assert_eq!(channels.pop_packet().unwrap().identity, HR);
+        assert_eq!(channels.pop_packet().unwrap().identity, POWER);
+        assert!(channels.pop_packet().is_none());
+    }
+
+    #[test]
+    fn slots_and_same_type_replacement_require_confirmed_cleanup() {
+        let mut channels = three_channels();
+        let replacement = Identity {
+            device_number: 124,
+            ..PEER
+        };
+        let fourth = Identity {
+            device_type: 99,
+            ..PEER
+        };
+        assert_eq!(channels.connect(replacement, 2), Err(Error::Busy));
+        assert_eq!(channels.connect(fourth, 2), Err(Error::Busy));
+        channels.disconnect(40, 3);
+        channels.tick(CONNECT_TIMEOUT_MS + 3);
+        assert_eq!(
+            channels.connect(replacement, CONNECT_TIMEOUT_MS + 4),
+            Err(Error::Busy)
+        );
+        assert_eq!(
+            channels.connect(fourth, CONNECT_TIMEOUT_MS + 4),
+            Err(Error::Busy)
+        );
+        channels.receive(Event::Disconnected(replacement), CONNECT_TIMEOUT_MS + 5);
+        assert_eq!(
+            channels.connect(replacement, CONNECT_TIMEOUT_MS + 6),
+            Err(Error::Busy)
+        );
+        channels.receive(Event::Disconnected(PEER), CONNECT_TIMEOUT_MS + 7);
+        channels
+            .connect(replacement, CONNECT_TIMEOUT_MS + 8)
+            .unwrap();
+        channels.receive(Event::Connected(PEER), CONNECT_TIMEOUT_MS + 9);
+        assert_eq!(
+            channels.channel(40, CONNECT_TIMEOUT_MS + 9).unwrap().link,
+            LinkState::Connecting
+        );
+        channels.disconnect(40, CONNECT_TIMEOUT_MS + 10);
+        channels.receive(Event::Disconnected(replacement), CONNECT_TIMEOUT_MS + 11);
+        channels.connect(fourth, CONNECT_TIMEOUT_MS + 12).unwrap();
+        assert!(channels.channel(40, CONNECT_TIMEOUT_MS + 12).is_none());
+        assert!(channels.channel(99, CONNECT_TIMEOUT_MS + 12).is_some());
+    }
+
+    #[test]
+    fn scan_is_global_and_cannot_run_alongside_live_channels() {
+        let mut channels = Channels::new();
+        channels.begin_scan(0, 100).unwrap();
+        for peer in [PEER, HR, POWER] {
+            channels.receive(
+                Event::Discovery {
+                    identity: peer,
+                    rssi: -50,
+                },
+                1,
+            );
+        }
+        assert_eq!(channels.discoveries().iter().flatten().count(), 3);
+        assert_eq!(channels.connect(HR, 2), Err(Error::Busy));
+        channels.stop_scan();
+        channels.connect(HR, 3).unwrap();
+        assert_eq!(channels.begin_scan(4, 100), Err(Error::Busy));
+        channels.receive(Event::Connected(HR), 5);
+        assert_eq!(channels.begin_scan(6, 100), Err(Error::Busy));
+        channels.disconnect(120, 7);
+        assert_eq!(channels.begin_scan(8, 100), Err(Error::Busy));
+        channels.receive(Event::Disconnected(HR), 9);
+        channels.begin_scan(10, 100).unwrap();
+        channels.tick(110);
+        assert!(!channels.scanning());
+    }
+
+    #[test]
+    fn request_failure_is_local_but_transport_loss_invalidates_all() {
+        let mut channels = three_channels();
+        for peer in [PEER, HR, POWER] {
+            page(&mut channels, peer, 1, 2);
+        }
+        channels.request_failed(Request::Disconnect { identity: HR }, 3);
+        assert_eq!(
+            channels.channel(120, 3).unwrap().link,
+            LinkState::TransportLost
+        );
+        assert_eq!(channels.channel(40, 3).unwrap().link, LinkState::Connected);
+        assert_eq!(channels.channel(11, 3).unwrap().link, LinkState::Connected);
+        assert_eq!(channels.pop_packet().unwrap().identity, PEER);
+        assert_eq!(channels.pop_packet().unwrap().identity, POWER);
+        assert!(channels.pop_packet().is_none());
+        page(&mut channels, PEER, 2, 4);
+        channels.transport_loss(5);
+        for peer in [PEER, HR, POWER] {
+            channels.receive(Event::Connected(peer), 6);
+            page(&mut channels, peer, 3, 7);
+            assert_eq!(
+                channels.channel(peer.device_type, 7).unwrap().link,
+                LinkState::TransportLost
+            );
+        }
+        assert!(channels.pop_packet().is_none());
+        channels.connect(PEER, 8).unwrap();
+        channels.receive(Event::Connected(PEER), 9);
+        page(&mut channels, PEER, 4, 10);
+        assert_eq!(channels.pop_packet().unwrap().loss_count, 1);
     }
 
     #[test]

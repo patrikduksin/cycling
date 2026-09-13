@@ -8,11 +8,11 @@ Exact companion chip and installed firmware version remain unverified.
 ## Scope and ownership
 
 Device code translates the C606 companion protocol. Core owns bounded discovery,
-one explicitly selected receive channel, lifecycle and packet delivery. The cycling
+up to three explicitly selected receive channels, one per device type, lifecycle and packet delivery. The cycling
 SDK interprets radar pages. There is no radar-specific channel setup in core.
 
 The bridge forwards a device type and eight data bytes, without a device number
-or channel index. This implementation therefore selects one sensor at a time.
+or channel index. This implementation therefore selects up to three sensors of different device types.
 It cannot prove the sender of a data page independently of the matching connection
 report. Additional profile decoders can consume `ant::Packet` through the same
 queue. The SDK composition is its sole consumer when enabled; the base console
@@ -74,7 +74,7 @@ ANT STOP
 ANT CONNECT 40 1234 5
 ANT
 ANT READ
-ANT DISCONNECT
+ANT DISCONNECT 40
 ```
 
 `ACCEPTED` means queued. Inspect `ANT` for completion; successful UART submission
@@ -106,7 +106,7 @@ acceptance gaps are recorded in the implementation PR for #73.
 
 The SDK test build can save raw ANT pages and link transitions without USB.
 Connect the radar, then send `RADAR LOG START`. The logger scans the owned ride
-reservation, requires at least 800 erased tail slots, and appends after every
+reservation, requires at least 1,800 erased tail slots, and appends after every
 occupied record. It never erases, reclaims or overwrites existing rides. Only one
 writer is allowed: ordinary RIDE/EXPORT commands are blocked after capture starts
 until restart and rescan. Unknown occupied capture slots remain preserved by the
@@ -152,3 +152,27 @@ During capture, a confirmed disconnection triggers one reconnect attempt for the
 same selected identity. Failed/uncertain attempts remain visible for inspection;
 they are not blindly retried. No automatic capture starts after a reboot. Leave
 the device powered on and confirm CONNECTED plus LOG SAVING before riding.
+
+## Multiple sensor types
+
+The core keeps three independent channel lifecycles and packet queues, with at
+most one selected peer for each device type. Packet draining rotates between
+channels. A disconnect or command failure for one type does not reset the others;
+a shared UART/CRC loss invalidates all channels. Scanning requires closing live
+channels first. Use `ANT CHANNEL type` for detailed state and `ANT DISCONNECT type`
+for a specific channel.
+
+The SDK interprets radar type 40, heart-rate type 120 common fields, and bicycle
+power type 11 standard power page 0x10. `RADAR SENSORS` reports fresh interpreted
+heart-rate/power observations; raw capture retains all received pages, including
+pages without a decoder. The test screen has separate RADAR, HEART and POWER
+indicators. OFF means unselected; WAIT means selected without fresh channel data.
+LOG SAVING still requires recent verified storage commits, independently of those
+connection indicators. Starting a test requires every selected channel to be fresh.
+
+The capture preserves sensor identity on each packet. New kind-5 link records
+include device type; the exporter retains compatibility with earlier untyped
+kind-4 link records. The capture buffers sixteen packets plus an eight-packet
+pending batch. The 1,800-slot preflight is an allowance for a ten-minute
+multi-sensor test, not a guaranteed duration at arbitrary packet rates. Full
+storage stops capture without overwriting occupied records.

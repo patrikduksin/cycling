@@ -1,7 +1,8 @@
 //! Append-only raw ANT capture in the owned ride reservation. Never erases.
 //!
 //! Each 256-byte slot is independently exportable, little-endian throughout:
-//! 0..4 `ANT1`, 4 version=1, 5 kind (1 packets, 2 stopped, 3 full, 4 link), 6 count
+//! 0..4 `ANT1`, 4 version=1, 5 kind (1 packets, 2 stopped, 3 full, 4 legacy link,
+//! 5 typed link), 6 count
 //! (0..8), 7 reserved=0, 8..12 capture ID (first slot index), 12..16 sequence,
 //! 16..24 batch preparation uptime in ms. Eight 28-byte packet records begin at
 //! 24: type u8, transmission type u8, device number u16, received uptime u64,
@@ -10,6 +11,8 @@
 //! 3 disconnecting,4 disconnected,5 timed_out,6 transport_lost), bytes25..28 zero,
 //! 28..36 observation uptime u64,36..40 generation u32,40..44 capture dropped
 //! packets u32,44..48 dropped link observations u32; remaining bytes FF.
+//! Kind 5 uses the same link layout, with device type at24, state at25 and
+//! bytes26..28 zero. Kind 4 remains readable in existing captures.
 //! Terminal kinds2/3 store these two capture drop counters at24..28/28..32.
 //! Counters after the last link/terminal record may be lost on power failure.
 //! Header count is1 for link records; they do not contribute to packet counts.
@@ -27,7 +30,11 @@ use super::{
 use crate::ant::{LinkState, Packet};
 
 pub const PACKETS_PER_SLOT: usize = 8;
-pub const REQUIRED_SLOTS: usize = 800;
+// Preflight allowance for roughly 20 packets/s over ten minutes, with room for
+// link records and partial batches. Actual duration depends on incoming traffic
+// and flush cadence; callers must report the remaining append-only tail.
+pub const REQUIRED_SLOTS: usize = 1800;
+const BUFFERED_PACKETS: usize = 16;
 const FLUSH_MS: u64 = 1_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +100,7 @@ enum Step {
 
 #[derive(Clone, Copy)]
 struct LinkRecord {
+    device_type: u8,
     state: LinkState,
     generation: u32,
     now: u64,
@@ -107,11 +115,11 @@ pub struct Capturer {
     packets: u32,
     dropped: u32,
     dropped_links: u32,
-    links: [Option<LinkRecord>; 4],
+    links: [Option<LinkRecord>; 16],
     link_count: usize,
     error: Option<Error>,
     last_commit_ms: Option<u64>,
-    buffered: [Option<Packet>; PACKETS_PER_SLOT],
+    buffered: [Option<Packet>; BUFFERED_PACKETS],
     count: usize,
     pending: Slot,
     step: Step,
@@ -135,11 +143,11 @@ impl Capturer {
             packets: 0,
             dropped: 0,
             dropped_links: 0,
-            links: [None; 4],
+            links: [None; 16],
             link_count: 0,
             error: None,
             last_commit_ms: None,
-            buffered: [None; PACKETS_PER_SLOT],
+            buffered: [None; BUFFERED_PACKETS],
             count: 0,
             pending: Slot([0xff; ride_log::SLOT_SIZE]),
             step: Step::Idle,
@@ -176,7 +184,7 @@ impl Capturer {
         if !matches!(self.status, Status::Ready | Status::Recording) {
             return;
         }
-        if self.count == PACKETS_PER_SLOT {
+        if self.count == BUFFERED_PACKETS {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
@@ -184,7 +192,7 @@ impl Capturer {
         self.count += 1;
     }
 
-    pub fn observe_link(&mut self, state: LinkState, generation: u32, now: u64) {
+    pub fn observe_link(&mut self, device_type: u8, state: LinkState, generation: u32, now: u64) {
         if !matches!(
             self.status,
             Status::Scanning | Status::Ready | Status::Recording
@@ -196,6 +204,7 @@ impl Capturer {
             return;
         }
         self.links[self.link_count] = Some(LinkRecord {
+            device_type,
             state,
             generation,
             now,
@@ -265,9 +274,9 @@ impl Capturer {
                 self.link_count = 0;
                 self.prepare(3, now);
             } else if self.link_count != 0 {
-                self.prepare(4, now);
+                self.prepare(5, now);
             } else if self.count != 0
-                && (self.count == PACKETS_PER_SLOT
+                && (self.count >= PACKETS_PER_SLOT
                     || self.stopping
                     || self.buffered[0]
                         .is_some_and(|packet| now.saturating_sub(packet.received_ms) >= FLUSH_MS))
@@ -348,8 +357,8 @@ impl Capturer {
         bytes[4] = 1;
         bytes[5] = kind;
         bytes[6] = match kind {
-            1 => self.count as u8,
-            4 => 1,
+            1 => self.count.min(PACKETS_PER_SLOT) as u8,
+            5 => 1,
             _ => 0,
         };
         bytes[7] = 0;
@@ -357,12 +366,13 @@ impl Capturer {
             .copy_from_slice(&(self.first_slot.unwrap_or(self.next_slot) as u32).to_le_bytes());
         bytes[12..16].copy_from_slice(&self.committed.to_le_bytes());
         bytes[16..24].copy_from_slice(&now.to_le_bytes());
-        if kind == 4 {
+        if kind == 5 {
             let link = self.links[0].unwrap();
             self.links.rotate_left(1);
             self.link_count -= 1;
             self.links[self.link_count] = None;
-            bytes[24] = match link.state {
+            bytes[24] = link.device_type;
+            bytes[25] = match link.state {
                 LinkState::Idle => 0,
                 LinkState::Connecting => 1,
                 LinkState::Connected => 2,
@@ -371,7 +381,7 @@ impl Capturer {
                 LinkState::TimedOut => 5,
                 LinkState::TransportLost => 6,
             };
-            bytes[25..28].fill(0);
+            bytes[26..28].fill(0);
             bytes[28..36].copy_from_slice(&link.now.to_le_bytes());
             bytes[36..40].copy_from_slice(&link.generation.to_le_bytes());
             bytes[40..44].copy_from_slice(&self.dropped.to_le_bytes());
@@ -380,7 +390,11 @@ impl Capturer {
             bytes[24..28].copy_from_slice(&self.dropped.to_le_bytes());
             bytes[28..32].copy_from_slice(&self.dropped_links.to_le_bytes());
         }
-        for (index, packet) in self.buffered[..if kind == 1 { self.count } else { 0 }]
+        for (index, packet) in self.buffered[..if kind == 1 {
+            self.count.min(PACKETS_PER_SLOT)
+        } else {
+            0
+        }]
             .iter()
             .enumerate()
         {
@@ -397,8 +411,10 @@ impl Capturer {
         let crc = ride_log::transport_checksum(&bytes[..248]);
         bytes[248..252].copy_from_slice(&crc.to_le_bytes());
         if kind == 1 {
-            self.buffered.fill(None);
-            self.count = 0;
+            let written = usize::from(bytes[6]);
+            self.buffered.rotate_left(written);
+            self.count -= written;
+            self.buffered[self.count..].fill(None);
         }
         self.step = Step::Check;
     }
@@ -413,7 +429,7 @@ impl Capturer {
         if self.step != Step::Idle {
             match self.pending.0[5] {
                 1 => self.dropped = self.dropped.saturating_add(u32::from(self.pending.0[6])),
-                4 => self.dropped_links = self.dropped_links.saturating_add(1),
+                5 => self.dropped_links = self.dropped_links.saturating_add(1),
                 _ => {}
             }
         }
@@ -624,11 +640,46 @@ mod tests {
     }
 
     #[test]
+    fn buffers_three_sensor_bursts_while_an_eight_packet_batch_is_pending() {
+        let mut media = Memory::new();
+        let mut capture = Capturer::new();
+        scan(&mut capture, &mut media);
+        for n in 0..8 {
+            capture.packet(packet(n));
+        }
+        capture.service(&mut media, 200);
+        for n in 8..24 {
+            let mut sample = packet(n);
+            sample.identity.device_type = [40, 120, 11][usize::from(n) % 3];
+            sample.identity.device_number = u16::from(n);
+            capture.packet(sample);
+        }
+        capture.stop();
+        for _ in 0..20 {
+            capture.service(&mut media, 2_000);
+        }
+        assert_eq!(capture.snapshot().status, Status::Stopped);
+        assert_eq!(capture.snapshot().packets, 24);
+        assert_eq!(capture.snapshot().dropped, 0);
+        for n in 0..24usize {
+            let start = (n / 8) * 256 + 24 + (n % 8) * 28;
+            assert_eq!(media.bytes[start + 20], n as u8);
+            if n >= 8 {
+                assert_eq!(media.bytes[start], [40, 120, 11][n % 3]);
+                assert_eq!(
+                    u16::from_le_bytes(media.bytes[start + 2..start + 4].try_into().unwrap()),
+                    n as u16
+                );
+            }
+        }
+    }
+
+    #[test]
     fn queue_overflow_and_full_close_are_bounded() {
         let mut media = Memory::new();
         let mut capture = Capturer::new();
         scan(&mut capture, &mut media);
-        for n in 0..9 {
+        for n in 0..17 {
             capture.packet(packet(n));
         }
         assert_eq!(capture.snapshot().dropped, 1);
@@ -639,7 +690,7 @@ mod tests {
         flush(&mut capture, &mut media);
         assert_eq!(capture.snapshot().status, Status::Full);
         assert_eq!(capture.snapshot().packets, 8);
-        assert_eq!(capture.snapshot().dropped, 2);
+        assert_eq!(capture.snapshot().dropped, 10);
         assert_eq!(media.bytes[(ride_log::SLOTS - 1) * 256 + 5], 3);
         assert_eq!(ride_log::transport_checksum(b"123456789"), 0xcbf4_3926);
     }
@@ -648,20 +699,20 @@ mod tests {
         let mut media = Memory::new();
         let mut capture = Capturer::new();
         scan(&mut capture, &mut media);
-        capture.observe_link(LinkState::Connected, 7, 123);
-        capture.observe_link(LinkState::TransportLost, 8, 456);
+        capture.observe_link(40, LinkState::Connected, 7, 123);
+        capture.observe_link(120, LinkState::TransportLost, 8, 456);
         capture.packet(packet(1));
         flush(&mut capture, &mut media);
         assert_eq!(capture.snapshot().packets, 0);
         assert!(!capture.snapshot().recording);
         flush(&mut capture, &mut media);
-        assert_eq!(&media.bytes[5..7], &[4, 1]);
-        assert_eq!(media.bytes[24], 2);
+        assert_eq!(&media.bytes[5..7], &[5, 1]);
+        assert_eq!(&media.bytes[24..28], &[40, 2, 0, 0]);
         assert_eq!(
             u64::from_le_bytes(media.bytes[28..36].try_into().unwrap()),
             123
         );
-        assert_eq!(media.bytes[256 + 24], 6);
+        assert_eq!(&media.bytes[256 + 24..256 + 28], &[120, 6, 0, 0]);
         assert_eq!(
             u32::from_le_bytes(media.bytes[256 + 36..256 + 40].try_into().unwrap()),
             8
@@ -679,13 +730,13 @@ mod tests {
         assert_eq!(media.calls, 0);
         assert_eq!(capture.snapshot().dropped, 0);
         assert!(capture.start());
-        capture.observe_link(LinkState::Connected, 1, 100);
+        capture.observe_link(40, LinkState::Connected, 1, 100);
         capture.packet(packet(1));
         for _ in 0..ride_log::SECTORS {
             capture.service(&mut media, 100);
         }
         flush(&mut capture, &mut media);
-        assert_eq!(media.bytes[24], 2);
+        assert_eq!(&media.bytes[24..28], &[40, 2, 0, 0]);
         assert_eq!(
             u32::from_le_bytes(media.bytes[40..44].try_into().unwrap()),
             1

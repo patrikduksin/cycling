@@ -13,7 +13,8 @@ pub enum Command {
     AntScan(u8),
     AntStop,
     AntConnect(crate::ant::Identity),
-    AntDisconnect,
+    AntDisconnect(u8),
+    AntChannel(u8),
     AntDevices,
     AntRead,
     Help,
@@ -136,7 +137,20 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             Some("STOP") => Command::AntStop,
             Some("DEVICES") => Command::AntDevices,
             Some("READ") => Command::AntRead,
-            Some("DISCONNECT") => Command::AntDisconnect,
+            Some("DISCONNECT") => Command::AntDisconnect(
+                words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+            ),
+            Some("CHANNEL") => Command::AntChannel(
+                words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+            ),
             Some("CONNECT") => Command::AntConnect(crate::ant::Identity {
                 device_type: words
                     .next()

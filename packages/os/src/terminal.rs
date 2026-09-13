@@ -197,7 +197,27 @@ pub fn execute(
             );
         }
         Command::Ant => {
-            let _ = write!(output, "{:?}", crate::services::ant::snapshot(now));
+            let _ = write!(output, "scanning={} ", crate::services::ant::scanning());
+            for channel in crate::services::ant::snapshots(now).iter().flatten() {
+                if let Some(peer) = channel.selected {
+                    let _ = write!(
+                        output,
+                        "type={} link={} packets={} dropped={} stale={}; ",
+                        peer.device_type,
+                        channel.link.name(),
+                        channel.packets,
+                        channel.dropped_packets,
+                        channel.stale
+                    );
+                }
+            }
+        }
+        Command::AntChannel(kind) => {
+            if let Some(channel) = crate::services::ant::channel(kind, now) {
+                let _ = write!(output, "{:?}", channel);
+            } else {
+                status = "UNAVAILABLE";
+            }
         }
         Command::AntDevices => {
             for device in crate::services::ant::discoveries().iter().flatten() {
@@ -238,14 +258,16 @@ pub fn execute(
             status =
                 crate::services::ant::request(crate::services::ant::Operation::Connect(peer), now);
         }
-        Command::AntDisconnect => {
-            status =
-                crate::services::ant::request(crate::services::ant::Operation::Disconnect, now);
+        Command::AntDisconnect(kind) => {
+            status = crate::services::ant::request(
+                crate::services::ant::Operation::Disconnect(kind),
+                now,
+            );
         }
         Command::Help => {
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT|READ]|RADAR SDK|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {

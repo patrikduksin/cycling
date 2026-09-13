@@ -22,7 +22,7 @@ loss or reconnect. The upstream notification queue can hide lag, so the stream
 is not lossless.
 ANT similarly delivers profile-independent packets with generation and loss stamps.
 The C606 adapter translates its companion bridge and identity-report quirk; core
-owns one selected receive channel. The SDK interprets radar pages and expires
+owns up to three selected receive channels, one per device type. The SDK interprets radar pages and expires
 targets independently of background channel traffic. See the
 [ANT companion notes](../packages/stock/magene-c606/ant.md) for bridge limitations.
 

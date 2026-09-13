@@ -1,10 +1,21 @@
-//! Native 240x320 RGB565 status screen for the outdoor radar capture test.
+//! Native 240x320 RGB565 status screen for the outdoor ANT sensor capture test.
 //! The caller supplies live connection and verified storage-commit state.
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SensorState {
+    /// No sensor selected.
+    #[default]
+    Off,
+    /// Selected, but no fresh packets.
+    Wait,
+    /// Selected sensor packets are fresh.
+    On,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Screen {
-    /// True only while packets from the selected radar are fresh.
-    pub connected: bool,
+    /// Independent packet freshness in RADAR, HEART, POWER order.
+    pub sensors: [SensorState; 3],
     /// True only after the capture has verified a storage commit.
     pub logging: bool,
     pub saved_packets: u32,
@@ -24,20 +35,21 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
     if x >= 240 || y >= 320 {
         return BLACK;
     }
-    if (58..106).contains(&y) {
-        let (label, color) = if state.connected {
-            (b"CONNECTED".as_slice(), GREEN)
-        } else {
-            (b"DISCONNECTED".as_slice(), RED)
-        };
-        return if text(x, y, (240 - label.len() * 18) / 2, 71, 3, label) {
-            BLACK
-        } else {
-            color
-        };
-    }
-    if text(x, y, 62, 15, 4, b"RADAR") {
+    if text(x, y, 30, 10, 3, b"ANT SENSORS") {
         return WHITE;
+    }
+    for (index, label) in [b"RADAR", b"HEART", b"POWER"].iter().enumerate() {
+        let top = 44 + index * 34;
+        if (top..top + 28).contains(&y) {
+            let (status, color) = match state.sensors[index] {
+                SensorState::Off => (b"OFF".as_slice(), WHITE),
+                SensorState::Wait => (b"WAIT".as_slice(), YELLOW),
+                SensorState::On => (b"ON".as_slice(), GREEN),
+            };
+            if text(x, y, 12, top + 4, 3, *label) || text(x, y, 156, top + 4, 3, status) {
+                return color;
+            }
+        }
     }
     let (log_label, log_color) = if state.error {
         (b"LOG ERROR".as_slice(), RED)
@@ -46,13 +58,13 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
     } else {
         (b"LOG WAIT".as_slice(), YELLOW)
     };
-    if text(x, y, (240 - log_label.len() * 18) / 2, 124, 3, log_label) {
+    if text(x, y, (240 - log_label.len() * 18) / 2, 151, 3, log_label) {
         return log_color;
     }
-    if text(x, y, 42, 162, 2, b"SAVED PACKETS")
-        || number(x, y, 30, 184, 3, state.saved_packets)
-        || text(x, y, 54, 224, 2, b"ELAPSED SEC")
-        || number(x, y, 60, 246, 2, state.elapsed_secs)
+    if text(x, y, 42, 186, 2, b"SAVED PACKETS")
+        || number(x, y, 30, 207, 3, state.saved_packets)
+        || text(x, y, 54, 239, 2, b"ELAPSED SEC")
+        || number(x, y, 60, 260, 2, state.elapsed_secs)
     {
         return WHITE;
     }
@@ -111,6 +123,8 @@ fn dot(character: u8, x: usize, y: usize) -> bool {
         b'C' => [14, 17, 16, 16, 16, 17, 14],
         b'D' => [30, 17, 17, 17, 17, 17, 30],
         b'E' => [31, 16, 16, 30, 16, 16, 31],
+        b'F' => [31, 16, 16, 30, 16, 16, 16],
+        b'H' => [17, 17, 17, 31, 17, 17, 17],
         b'G' => [14, 17, 16, 23, 17, 17, 15],
         b'I' => [31, 4, 4, 4, 4, 4, 31],
         b'K' => [17, 18, 20, 24, 20, 18, 17],
@@ -143,26 +157,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connection_and_logging_are_independent_and_error_overrides_saving() {
-        for connected in [false, true] {
-            for logging in [false, true] {
-                for error in [false, true] {
-                    let state = Screen {
-                        connected,
-                        logging,
-                        error,
-                        ..Screen::default()
-                    };
-                    assert_eq!(pixel(0, 58, state), if connected { GREEN } else { RED });
-                    let expected = if error {
-                        RED
-                    } else if logging {
-                        GREEN
-                    } else {
+    fn each_sensor_row_and_logging_are_independent() {
+        for index in 0..3 {
+            for status in [SensorState::Off, SensorState::Wait, SensorState::On] {
+                let mut state = Screen::default();
+                state.sensors[index] = status;
+                for row in 0..3 {
+                    let expected = if row != index || status == SensorState::Off {
+                        WHITE
+                    } else if status == SensorState::Wait {
                         YELLOW
+                    } else {
+                        GREEN
                     };
                     let mut lit = 0;
-                    for y in 124..145 {
+                    for y in 44 + row * 34..72 + row * 34 {
                         for x in 0..240 {
                             let color = pixel(x, y, state);
                             if color != BLACK {
@@ -172,6 +181,30 @@ mod tests {
                         }
                     }
                     assert!(lit > 100);
+                }
+                for logging in [false, true] {
+                    for error in [false, true] {
+                        state.logging = logging;
+                        state.error = error;
+                        let expected = if error {
+                            RED
+                        } else if logging {
+                            GREEN
+                        } else {
+                            YELLOW
+                        };
+                        let mut lit = 0;
+                        for y in 151..172 {
+                            for x in 0..240 {
+                                let color = pixel(x, y, state);
+                                if color != BLACK {
+                                    assert_eq!(color, expected);
+                                    lit += 1;
+                                }
+                            }
+                        }
+                        assert!(lit > 100);
+                    }
                 }
             }
         }
@@ -188,7 +221,7 @@ mod tests {
             };
             let mut lit = [0; 3];
             for (index, (top, bottom)) in
-                [(184, 205), (246, 260), (292, 306)].into_iter().enumerate()
+                [(207, 228), (260, 274), (292, 306)].into_iter().enumerate()
             {
                 for y in top..bottom {
                     for x in 0..240 {

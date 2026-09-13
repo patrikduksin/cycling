@@ -1,7 +1,7 @@
 //! ANT messages of the installed C606 companion firmware.
 //!
 //! Timeout fields are inferred to be seconds from stock callers. Data reports
-//! carry only the device type, so the core exposes one selected receive channel.
+//! carry only the device type, so the core exposes up to three selected receive channels, one per device type.
 
 use cycling_os::{
     ant::{Event, Identity, Request},

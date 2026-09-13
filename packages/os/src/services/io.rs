@@ -97,23 +97,33 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
             point = None;
             log::warn!(target: "input", "companion loss uart={} ring={}", errors, counters.ring_overflows);
         }
-        state.uart_errors = companion::feed_batch(
+        state.uart_errors = companion::feed_frames(
             &mut decoder,
             state.uart_errors,
             errors,
             &bytes[..count],
-            |event| {
-                state.status.update(event);
-                match event {
-                    Event::Battery {
-                        percent,
-                        millivolts,
-                    } => state.battery = Some(((percent, millivolts), now)),
-                    Event::Power { status } => state.power = Some((status, now)),
-                    Event::Button { button, code } => edge(now, Input::Button { button, code }),
+            |frame| {
+                let Ok(frame) = frame else {
+                    super::ant::loss(now);
+                    return;
+                };
+                if let Some((group, payload)) = frame.report() {
+                    super::ant::receive(group, payload, now);
+                }
+                if let Some(event) = frame.input() {
+                    state.status.update(event);
+                    match event {
+                        Event::Battery {
+                            percent,
+                            millivolts,
+                        } => state.battery = Some(((percent, millivolts), now)),
+                        Event::Power { status } => state.power = Some((status, now)),
+                        Event::Button { button, code } => edge(now, Input::Button { button, code }),
+                    }
                 }
             },
         );
+        super::ant::tick(now);
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;

@@ -1,5 +1,4 @@
-//! Receive-only C606 companion protocol, recovered from stock N21 release 1.956.
-//! No requests, power commands, firmware updates or companion resets are sent.
+//! C606 companion framing and local input reports, recovered from stock N21.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -49,6 +48,36 @@ pub fn crc16(data: &[u8]) -> u16 {
     crc
 }
 
+/// A complete checksum-validated companion envelope.
+pub struct Frame {
+    bytes: [u8; 256],
+    len: usize,
+}
+impl Frame {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+    pub fn report(&self) -> Option<(u8, [u8; 8])> {
+        if self.len != 16 || self.bytes[4] != 4 {
+            return None;
+        }
+        Some((self.bytes[5], self.bytes[6..14].try_into().ok()?))
+    }
+    pub fn input(&self) -> Option<Event> {
+        decode(self.as_bytes())
+    }
+}
+
+/// Only the fixed-size command envelope; callers own allowed command semantics.
+pub fn command(group: u8, payload: [u8; 8]) -> [u8; 16] {
+    let mut frame = [0; 16];
+    frame[..6].copy_from_slice(&[0xa5, 12, 0x6f, 0xf1, 2, group]);
+    frame[6..14].copy_from_slice(&payload);
+    let crc = crc16(&frame[..14]);
+    frame[14..].copy_from_slice(&crc.to_le_bytes());
+    frame
+}
+
 pub struct Decoder {
     bytes: [u8; 256],
     len: usize,
@@ -74,6 +103,11 @@ impl Decoder {
         self.len -= count;
     }
     pub fn push(&mut self, byte: u8) -> Option<Event> {
+        self.push_frame(byte)
+            .and_then(|frame| decode(frame.as_bytes()))
+    }
+    /// Return validated frames so the single UART owner can route external sensors.
+    pub fn push_frame(&mut self, byte: u8) -> Option<Frame> {
         if self.len == self.bytes.len() {
             self.discard(1);
         }
@@ -105,11 +139,13 @@ impl Decoder {
                 continue;
             }
             self.valid_frames = self.valid_frames.saturating_add(1);
-            let event = decode(&self.bytes[..size]);
+            let mut frame = Frame {
+                bytes: [0; 256],
+                len: size,
+            };
+            frame.bytes[..size].copy_from_slice(&self.bytes[..size]);
             self.discard(size);
-            if event.is_some() {
-                return event;
-            }
+            return Some(frame);
         }
     }
 }
@@ -123,16 +159,41 @@ pub fn feed_batch(
     bytes: &[u8],
     mut event: impl FnMut(Event),
 ) -> u32 {
+    feed_frames(decoder, previous_losses, current_losses, bytes, |frame| {
+        if let Ok(frame) = frame
+            && let Some(value) = frame.input()
+        {
+            event(value);
+        }
+    })
+}
+
+/// Loss is delivered before any frame recovered after a UART or CRC failure.
+/// Consumers must invalidate continuity on Err; no corrupt payload is exposed.
+pub fn feed_frames(
+    decoder: &mut Decoder,
+    previous_losses: u32,
+    current_losses: u32,
+    bytes: &[u8],
+    mut event: impl FnMut(Result<Frame, ()>),
+) -> u32 {
     if current_losses != previous_losses {
         decoder.reset();
+        event(Err(()));
     }
     for byte in bytes {
-        if let Some(value) = decoder.push(*byte) {
-            event(value);
+        let previous_crc = decoder.bad_crc;
+        let frame = decoder.push_frame(*byte);
+        if decoder.bad_crc != previous_crc {
+            event(Err(()));
+        }
+        if let Some(frame) = frame {
+            event(Ok(frame));
         }
     }
     current_losses
 }
+
 fn decode(frame: &[u8]) -> Option<Event> {
     // Only the installed companion's eight-byte reports, not external sensors.
     if frame.len() != 16 || frame[4] != 4 {

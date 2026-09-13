@@ -3,6 +3,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod ant;
 pub mod companion;
 pub mod crash;
 pub mod gps;

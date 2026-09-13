@@ -1,5 +1,6 @@
 //! C606 hardware ownership. Protocol and application services remain separate.
 
+pub mod ant_protocol;
 pub mod c606;
 pub mod companion_uart;
 pub mod crash_rtc;

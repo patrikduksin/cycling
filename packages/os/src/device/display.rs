@@ -84,7 +84,7 @@ impl<'d> Display<'d> {
         self.draw_pixels(|_, _| rgb565);
     }
 
-    fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
+    pub fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
         // Eight physical rows per DMA transfer; unchanged strip timing.
         let mut strip = [0u8; PANEL_WIDTH * 8 * 2];
         for top in (0..PANEL_HEIGHT).step_by(8) {

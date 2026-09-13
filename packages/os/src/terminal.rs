@@ -196,20 +196,93 @@ pub fn execute(
                 &mut output,
             );
         }
+        Command::Ant => {
+            let _ = write!(output, "scanning={} ", crate::services::ant::scanning());
+            for channel in crate::services::ant::snapshots(now).iter().flatten() {
+                if let Some(peer) = channel.selected {
+                    let _ = write!(
+                        output,
+                        "type={} link={} packets={} dropped={} stale={}; ",
+                        peer.device_type,
+                        channel.link.name(),
+                        channel.packets,
+                        channel.dropped_packets,
+                        channel.stale
+                    );
+                }
+            }
+        }
+        Command::AntChannel(kind) => {
+            if let Some(channel) = crate::services::ant::channel(kind, now) {
+                let _ = write!(output, "{:?}", channel);
+            } else {
+                status = "UNAVAILABLE";
+            }
+        }
+        Command::AntDevices => {
+            for device in crate::services::ant::discoveries().iter().flatten() {
+                let p = device.identity;
+                let _ = write!(
+                    output,
+                    "type={} number={} transmission={} rssi={} age_ms={}; ",
+                    p.device_type,
+                    p.device_number,
+                    p.transmission_type,
+                    device.rssi,
+                    now.saturating_sub(device.seen_ms)
+                );
+            }
+        }
+        Command::AntRead => {
+            #[cfg(feature = "cycling")]
+            {
+                status = "SDK_OWNS_QUEUE";
+            }
+            #[cfg(not(feature = "cycling"))]
+            if let Some(packet) = crate::services::ant::take_packet() {
+                let _ = write!(output, "{:?}", packet);
+            } else {
+                status = "EMPTY";
+            }
+        }
+        Command::AntScan(seconds) => {
+            status = crate::services::ant::request(
+                crate::services::ant::Operation::Scan(u32::from(seconds) * 1000),
+                now,
+            );
+        }
+        Command::AntStop => {
+            status = crate::services::ant::request(crate::services::ant::Operation::StopScan, now);
+        }
+        Command::AntConnect(peer) => {
+            status =
+                crate::services::ant::request(crate::services::ant::Operation::Connect(peer), now);
+        }
+        Command::AntDisconnect(kind) => {
+            status = crate::services::ant::request(
+                crate::services::ant::Operation::Disconnect(kind),
+                now,
+            );
+        }
         Command::Help => {
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {
-            crate::logging::metadata(false);
+            #[cfg(feature = "cycling")]
+            let recording = sdk.recording();
+            #[cfg(not(feature = "cycling"))]
+            let recording = false;
+            crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board=c606 commit={} harness={} cycling={} logging=INFO recording=false protocol=1 max_line=128 log_slots=8 log_bytes=384",
+                "board=c606 commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=128 log_slots=8 log_bytes=384",
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                 cfg!(feature = "debug-harness"),
-                cfg!(feature = "cycling")
+                cfg!(feature = "cycling"),
+                recording
             );
         }
         Command::Status => {

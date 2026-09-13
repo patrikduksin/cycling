@@ -9,6 +9,14 @@ pub enum Command {
         bytes: [u8; 128],
         length: usize,
     },
+    Ant,
+    AntScan(u8),
+    AntStop,
+    AntConnect(crate::ant::Identity),
+    AntDisconnect(u8),
+    AntChannel(u8),
+    AntDevices,
+    AntRead,
     Help,
     Info,
     Status,
@@ -100,7 +108,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
     let verb = words.next().ok_or(Error::Invalid)?;
     let command = match verb {
         #[cfg(feature = "cycling")]
-        "RIDE" | "EXPORT" => {
+        "RIDE" | "EXPORT" | "RADAR" => {
             let text = &line[line.find(verb).ok_or(Error::Invalid)?..];
             let mut bytes = [0; 128];
             if text.len() > bytes.len() {
@@ -113,6 +121,55 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
                 length: text.len(),
             }
         }
+        "ANT" => match words.next() {
+            None => Command::Ant,
+            Some("SCAN") => {
+                let seconds: u8 = words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?;
+                if !(1..=60).contains(&seconds) {
+                    return Err(Error::Invalid);
+                }
+                Command::AntScan(seconds)
+            }
+            Some("STOP") => Command::AntStop,
+            Some("DEVICES") => Command::AntDevices,
+            Some("READ") => Command::AntRead,
+            Some("DISCONNECT") => Command::AntDisconnect(
+                words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+            ),
+            Some("CHANNEL") => Command::AntChannel(
+                words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+            ),
+            Some("CONNECT") => Command::AntConnect(crate::ant::Identity {
+                device_type: words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+                device_number: words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+                transmission_type: words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+            }),
+            _ => return Err(Error::Invalid),
+        },
         "HELP" => Command::Help,
         "INFO" => Command::Info,
         "STATUS" => Command::Status,
@@ -195,6 +252,26 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ant_commands_are_bounded_and_explicit() {
+        assert_eq!(
+            parse(b"CMD 1 ANT SCAN 60").unwrap().command,
+            Command::AntScan(60)
+        );
+        assert!(matches!(
+            parse(b"CMD 2 ANT CONNECT 40 1234 5").unwrap().command,
+            Command::AntConnect(_)
+        ));
+        for input in [
+            b"CMD 1 ANT SCAN 0".as_slice(),
+            b"CMD 1 ANT SCAN 61",
+            b"CMD 1 ANT CONNECT 40 1234",
+            b"CMD 1 ANT STOP extra",
+            b"CMD 1 ANT CONNECT 256 1234 5",
+        ] {
+            assert_eq!(parse(input), Err(Error::Invalid));
+        }
+    }
     #[test]
     fn malformed_and_trailing_arguments_cannot_act() {
         for line in [

@@ -63,6 +63,30 @@ class AntCaptureTests(unittest.TestCase):
                           for p in packets], identities)
         self.assertEqual([p['received_ms'] for p in packets], [990] * 3)
 
+    def test_positions_with_fix_stale_and_no_source(self):
+        for flags, observed, latitude, longitude in (
+                (3, 900, -334567890, -706543210), (1, 100, 0, 0), (0, 0, 0, 0)):
+            data = slot(6, 1)
+            data[24:28] = bytes([flags, 0, 0, 0])
+            struct.pack_into('<QQiiI', data, 28, 1000, observed, latitude, longitude, 2)
+            record = decode_slot(commit(data))
+            self.assertEqual(record['kind'], 'position')
+            self.assertEqual(record['fix_valid'], bool(flags & 2))
+            self.assertEqual(record['latitude_e7'], latitude if flags & 2 else None)
+            self.assertEqual(record['longitude_e7'], longitude if flags & 2 else None)
+            self.assertEqual(record['source_age_ms'], 1000 - observed if flags & 1 else None)
+            self.assertEqual(record['dropped_positions'], 2)
+        for offset, value in ((24, 4), (25, 1), (36, 1), (44, 1)):
+            invalid = bytearray(data)
+            invalid[offset] = value
+            with self.assertRaises(ValueError):
+                decode_slot(commit(invalid))
+        terminal = slot(2, 0)
+        self.assertNotIn('dropped_positions', decode_slot(terminal))
+        terminal[32:36] = b'GPS1'
+        struct.pack_into('<I', terminal, 36, 3)
+        self.assertEqual(decode_slot(commit(terminal))['dropped_positions'], 3)
+
     def test_link_terminal_and_foreign_records(self):
         data = slot(4, 1)
         data[24:28] = bytes([4, 0, 0, 0])
@@ -74,7 +98,7 @@ class AntCaptureTests(unittest.TestCase):
         struct.pack_into('<II', data, 24, 8, 2)
         self.assertEqual(decode_slot(commit(data))['kind'], 'stopped')
         self.assertIsNone(decode_slot(b'RIDE' + bytes(252)))
-        for kind, count in [(1, 0), (1, 9), (2, 1), (4, 0), (5, 0), (5, 2), (8, 0)]:
+        for kind, count in [(1, 0), (1, 9), (2, 1), (4, 0), (5, 0), (5, 2), (6, 0), (6, 2), (8, 0)]:
             with self.assertRaises(ValueError):
                 decode_slot(slot(kind, count))
 

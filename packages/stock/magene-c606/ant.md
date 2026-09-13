@@ -173,6 +173,20 @@ connection indicators. Starting a test requires every selected channel to be fre
 The capture preserves sensor identity on each packet. New kind-5 link records
 include device type; the exporter retains compatibility with earlier untyped
 kind-4 link records. The capture buffers sixteen packets plus an eight-packet
-pending batch. The 1,800-slot preflight is an allowance for a ten-minute
+pending batch. The 2,400-slot preflight is an allowance for a ten-minute
 multi-sensor test, not a guaranteed duration at arbitrary packet rates. Full
 storage stops capture without overwriting occupied records.
+
+
+## GPS in the outdoor capture
+
+The SDK samples the existing positioning snapshot once per second into the same
+append-only capture. Kind-6 records carry sample uptime, the last valid fix
+observation uptime when available, and paired latitude/longitude in degrees times
+10^7 only while the core reports a fresh fix. Missing or stale fixes produce a
+record without coordinates; they do not repeat a last known point as current.
+GPS and ANT uptime timestamps share the same boot clock for later comparison.
+The screen shows GPS FIX or WAIT separately from the number of verified saved
+GPS records, which includes samples without a fix. The exporter keeps coordinates
+and raw captures private. The preflight includes 600 extra slots for ten minutes
+of GPS samples. Actual capacity still depends on sensor traffic and flush cadence.

@@ -20,6 +20,7 @@ pub struct Runtime {
     capture: cycling_os::sdk::ant_capture::Capturer,
     capture_started: Option<u64>,
     next_display: u64,
+    next_position: u64,
     next_reconnect: [u64; 3],
     capture_link: [Option<(u8, cycling_os::ant::LinkState, u32)>; 3],
     ant_epochs: [Option<(u32, u32)>; 3],
@@ -39,6 +40,7 @@ impl Runtime {
             capture: cycling_os::sdk::ant_capture::Capturer::new(),
             capture_started: None,
             next_display: 0,
+            next_position: 0,
             next_reconnect: [0; 3],
             capture_link: [None; 3],
             ant_epochs: [None; 3],
@@ -86,10 +88,17 @@ impl Runtime {
                 && capture
                     .last_commit_ms
                     .is_some_and(|at| now.saturating_sub(at) < 3000),
+            gps_fix: crate::services::positioning::snapshot(now).is_some_and(|s| {
+                s.gps.state == FixState::Fresh
+                    && s.gps.latitude_e7.is_some()
+                    && s.gps.longitude_e7.is_some()
+            }),
+            saved_positions: capture.saved_positions,
             saved_packets: capture.packets,
             dropped: capture
                 .dropped
                 .saturating_add(capture.dropped_links)
+                .saturating_add(capture.dropped_positions)
                 .saturating_add(
                     channels
                         .iter()
@@ -354,6 +363,24 @@ impl Runtime {
             battery_percent,
         };
         if self.capture_started.is_some() {
+            if matches!(
+                capture_status,
+                cycling_os::sdk::ant_capture::Status::Ready
+                    | cycling_os::sdk::ant_capture::Status::Recording
+            ) && now >= self.next_position
+            {
+                self.next_position = now.saturating_add(1000);
+                let observed_ms = crate::services::positioning::snapshot(now)
+                    .and_then(|s| s.gps.age_ms)
+                    .and_then(|age| now.checked_sub(age));
+                self.capture
+                    .position(cycling_os::sdk::ant_capture::PositionRecord {
+                        now,
+                        observed_ms,
+                        latitude_e7: location_e7.map(|p| p.0),
+                        longitude_e7: location_e7.map(|p| p.1),
+                    });
+            }
             self.capture.service(store, now);
         } else {
             self.recorder.service(store, now, sample, &|| {

@@ -19,6 +19,10 @@ pub struct Screen {
     /// True only after the capture has verified a storage commit.
     pub logging: bool,
     pub saved_packets: u32,
+    /// Fresh live position fix, independent of capture commits.
+    pub gps_fix: bool,
+    /// Verified GPS records, including records without a fix.
+    pub saved_positions: u32,
     pub dropped: u32,
     pub elapsed_secs: u32,
     pub error: bool,
@@ -35,7 +39,7 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
     if x >= 240 || y >= 320 {
         return BLACK;
     }
-    if text(x, y, 30, 10, 3, b"ANT SENSORS") {
+    if text(x, y, 39, 10, 3, b"RIDE TEST") {
         return WHITE;
     }
     for (index, label) in [b"RADAR", b"HEART", b"POWER"].iter().enumerate() {
@@ -51,6 +55,18 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
             }
         }
     }
+    if text(x, y, 12, 150, 3, b"GPS")
+        || text(
+            x,
+            y,
+            156,
+            150,
+            3,
+            if state.gps_fix { b"FIX" } else { b"WAIT" },
+        )
+    {
+        return if state.gps_fix { GREEN } else { YELLOW };
+    }
     let (log_label, log_color) = if state.error {
         (b"LOG ERROR".as_slice(), RED)
     } else if state.logging {
@@ -58,17 +74,19 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
     } else {
         (b"LOG WAIT".as_slice(), YELLOW)
     };
-    if text(x, y, (240 - log_label.len() * 18) / 2, 151, 3, log_label) {
+    if text(x, y, (240 - log_label.len() * 18) / 2, 184, 3, log_label) {
         return log_color;
     }
-    if text(x, y, 42, 186, 2, b"SAVED PACKETS")
-        || number(x, y, 30, 207, 3, state.saved_packets)
-        || text(x, y, 54, 239, 2, b"ELAPSED SEC")
-        || number(x, y, 60, 260, 2, state.elapsed_secs)
+    if text(x, y, 6, 219, 2, b"ANT SAVED")
+        || number(x, y, 114, 219, 2, state.saved_packets)
+        || text(x, y, 6, 241, 2, b"GPS SAVED")
+        || number(x, y, 114, 241, 2, state.saved_positions)
+        || text(x, y, 6, 263, 2, b"SECONDS")
+        || number(x, y, 114, 263, 2, state.elapsed_secs)
     {
         return WHITE;
     }
-    if text(x, y, 12, 292, 2, b"DROPPED") || number(x, y, 108, 292, 2, state.dropped) {
+    if text(x, y, 6, 285, 2, b"DROPPED") || number(x, y, 114, 285, 2, state.dropped) {
         return if state.dropped == 0 { WHITE } else { YELLOW };
     }
     BLACK
@@ -137,6 +155,7 @@ fn dot(character: u8, x: usize, y: usize) -> bool {
         b'T' => [31, 4, 4, 4, 4, 4, 4],
         b'V' => [17, 17, 17, 17, 17, 10, 4],
         b'W' => [17, 17, 17, 21, 21, 21, 10],
+        b'X' => [17, 17, 10, 4, 10, 17, 17],
         b'0' => [14, 17, 19, 21, 25, 17, 14],
         b'1' => [4, 12, 4, 4, 4, 4, 14],
         b'2' => [14, 17, 1, 2, 4, 8, 31],
@@ -194,7 +213,7 @@ mod tests {
                             YELLOW
                         };
                         let mut lit = 0;
-                        for y in 151..172 {
+                        for y in 184..205 {
                             for x in 0..240 {
                                 let color = pixel(x, y, state);
                                 if color != BLACK {
@@ -215,16 +234,18 @@ mod tests {
         for value in [0, 600, u32::MAX] {
             let state = Screen {
                 saved_packets: value,
+                saved_positions: value,
                 elapsed_secs: value,
                 dropped: value,
                 ..Screen::default()
             };
-            let mut lit = [0; 3];
-            for (index, (top, bottom)) in
-                [(207, 228), (260, 274), (292, 306)].into_iter().enumerate()
+            let mut lit = [0; 4];
+            for (index, (top, bottom)) in [(219, 233), (241, 255), (263, 277), (285, 299)]
+                .into_iter()
+                .enumerate()
             {
                 for y in top..bottom {
-                    for x in 0..240 {
+                    for x in 114..240 {
                         if pixel(x, y, state) != BLACK {
                             lit[index] += 1;
                         }

@@ -542,3 +542,16 @@ Subsequent reads showed fresh pressure and both motion streams, two intentional
 sensor invalidations, GNSS reception, fresh UTC and a successful bounded MMC read.
 RTC elapsed and wake status establish the bounded hardware sleep/wake event;
 no current-saving or fully powered-down radio claim follows from them.
+
+A second MCU sleep cycle on final base/harness `2a8e56317005` accepted at uptime
+16,196 ms and reported timer wake after 10,000,743 microseconds RTC time, with
+10,011,270 microseconds uptime and no rejection. Recovery completed at 28,097 ms.
+Final observations confirmed fresh motion/pressure, GNSS reception, verified
+Wi-Fi state, zero UART/CRC errors and successful bounded MMC access. The device
+remained ready in normal operation, with all collectors stopped. The first cycle
+has the owner's physical screen confirmation; the repeat has telemetry evidence.
+
+`mise run test`, `mise run check` and all four base/SDK × harness firmware builds
+passed for the delivered implementation. Independent review covered the final
+MCU-only sequencing, receive boundaries, recovery and capability limits. The
+existing Trouble Host patch and its minimum-MTU regression remain intact.

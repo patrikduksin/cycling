@@ -3,7 +3,7 @@
 //! Each 256-byte slot is independently exportable, little-endian throughout:
 //! 0..4 `ANT1`, 4 version=1, 5 kind (1 packets, 2 stopped, 3 full, 4 legacy link,
 //! 5 typed link, 6 position, 7 environment), 6 count
-//! (0..8), 7 reserved=0, 8..12 capture ID (first slot index), 12..16 sequence,
+//! (0..8), 7 capture mode (0 raw, 1 sampled), 8..12 capture ID (first slot index), 12..16 sequence,
 //! 16..24 batch preparation uptime in ms. Eight 28-byte packet records begin at
 //! 24: type u8, transmission type u8, device number u16, received uptime u64,
 //! generation u32, loss count u32, raw page [u8;8]. Unused records remain FF.
@@ -28,6 +28,12 @@
 //! Raw-power timestamp u64 at108 and status u8 at116. UART/CRC counters u32 at120/124.
 //! Reserved bytes and absent fields through127 are zero, remaining bytes FF.
 //! Terminal records append ENV1 at40 and dropped environmental count u32 at44.
+//! Sampled mode retains environment/GPS/latest ANT per selected radar/HR/power type
+//! every 2000 ms, with changed link snapshots at most every 10000 ms. Intermediate
+//! link transitions are omitted without a counter. Each record carries header byte7=1.
+//! Sampled environment records add SMP1 at128 and cumulative intentionally omitted
+//! ANT packets u32 at132; terminals add SMP1 at48 and the count at52. Intentional
+//! omissions are separate from buffer/transport drops and do not imply full-rate continuity.
 //! Header count is1 for environmental and link records; they do not contribute to packet counts.
 //! 248..252 CRC32/ISO-HDLC over bytes 0..248; 252..256 is the separately written
 //! ride_log COMT commit word. Only committed CRC-valid slots are records. Power
@@ -95,6 +101,8 @@ pub struct Snapshot {
     pub committed: u32,
     pub packets: u32,
     pub dropped: u32,
+    pub sampled: bool,
+    pub sampled_out_packets: u32,
     pub dropped_links: u32,
     pub saved_positions: u32,
     pub dropped_positions: u32,
@@ -188,6 +196,8 @@ pub struct Capturer {
     committed: u32,
     packets: u32,
     dropped: u32,
+    sampled: bool,
+    sampled_out_packets: u32,
     dropped_links: u32,
     saved_positions: u32,
     dropped_positions: u32,
@@ -224,6 +234,8 @@ impl Capturer {
             committed: 0,
             packets: 0,
             dropped: 0,
+            sampled: false,
+            sampled_out_packets: 0,
             dropped_links: 0,
             saved_positions: 0,
             dropped_positions: 0,
@@ -255,6 +267,26 @@ impl Capturer {
         self.required_slots = required_slots;
         self.status = Status::Scanning;
         true
+    }
+
+    pub fn start_sampled(&mut self, required_slots: usize) -> bool {
+        if !self.start(required_slots) {
+            return false;
+        }
+        self.sampled = true;
+        true
+    }
+
+    /// One incoming packet deliberately replaced by a newer per-peer sample.
+    pub fn sampled_out_packet(&mut self) {
+        if self.sampled
+            && matches!(
+                self.status,
+                Status::Scanning | Status::Ready | Status::Recording
+            )
+        {
+            self.sampled_out_packets = self.sampled_out_packets.saturating_add(1);
+        }
     }
 
     pub fn stop(&mut self) {
@@ -337,6 +369,8 @@ impl Capturer {
             committed: self.committed,
             packets: self.packets,
             dropped: self.dropped,
+            sampled: self.sampled,
+            sampled_out_packets: self.sampled_out_packets,
             dropped_links: self.dropped_links,
             saved_positions: self.saved_positions,
             dropped_positions: self.dropped_positions,
@@ -510,7 +544,7 @@ impl Capturer {
             5..=7 => 1,
             _ => 0,
         };
-        bytes[7] = 0;
+        bytes[7] = u8::from(self.sampled);
         bytes[8..12]
             .copy_from_slice(&(self.first_slot.unwrap_or(self.next_slot) as u32).to_le_bytes());
         bytes[12..16].copy_from_slice(&self.committed.to_le_bytes());
@@ -610,6 +644,17 @@ impl Capturer {
             record[12..16].copy_from_slice(&packet.generation.to_le_bytes());
             record[16..20].copy_from_slice(&packet.loss_count.to_le_bytes());
             record[20..28].copy_from_slice(&packet.data);
+        }
+        if self.sampled {
+            let offset = match kind {
+                7 => Some(128),
+                2 | 3 => Some(48),
+                _ => None,
+            };
+            if let Some(at) = offset {
+                bytes[at..at + 4].copy_from_slice(b"SMP1");
+                bytes[at + 4..at + 8].copy_from_slice(&self.sampled_out_packets.to_le_bytes());
+            }
         }
         let crc = ride_log::transport_checksum(&bytes[..248]);
         bytes[248..252].copy_from_slice(&crc.to_le_bytes());
@@ -759,6 +804,85 @@ mod tests {
             capture.service(media, 2_000);
             assert!(media.calls <= before + 1);
         }
+    }
+
+    #[test]
+    fn sampled_slots_keep_raw_layout_and_separate_omissions() {
+        for kind in [1, 2, 3, 5, 6, 7] {
+            let prepare = |sampled| {
+                let mut capture = Capturer::new();
+                assert!(if sampled {
+                    capture.start_sampled(764)
+                } else {
+                    capture.start(764)
+                });
+                capture.status = Status::Ready;
+                capture.packet(packet(1));
+                capture.observe_link(40, LinkState::Connected, 7, 100);
+                capture.position(PositionRecord {
+                    now: 100,
+                    observed_ms: None,
+                    latitude_e7: None,
+                    longitude_e7: None,
+                });
+                capture.environment(environment(100));
+                capture.sampled_out_packet();
+                capture.sampled_out_packet();
+                assert_eq!(
+                    capture.snapshot().sampled_out_packets,
+                    if sampled { 2 } else { 0 }
+                );
+                assert_eq!(capture.snapshot().dropped, 0);
+                capture.prepare(kind, 2000);
+                capture.pending.0
+            };
+            let raw = prepare(false);
+            let mut sampled = prepare(true);
+            assert_eq!(sampled[7], 1);
+            assert_eq!(
+                u32::from_le_bytes(sampled[248..252].try_into().unwrap()),
+                ride_log::transport_checksum(&sampled[..248])
+            );
+            let offset = match kind {
+                7 => Some(128),
+                2 | 3 => Some(48),
+                _ => None,
+            };
+            if let Some(at) = offset {
+                assert_eq!(&sampled[at..at + 4], b"SMP1");
+                assert_eq!(
+                    u32::from_le_bytes(sampled[at + 4..at + 8].try_into().unwrap()),
+                    2
+                );
+                sampled[at..at + 8].fill(0xff);
+            }
+            sampled[7] = 0;
+            assert_eq!(&sampled[..248], &raw[..248]);
+            assert_eq!(&raw[252..], &[0xff; 4]);
+        }
+    }
+
+    #[test]
+    fn sampled_commit_is_exportable_without_terminal_and_restart_resets_mode() {
+        let mut capture = Capturer::new();
+        let mut media = Memory::new();
+        assert!(capture.start_sampled(764));
+        for _ in 0..ride_log::SECTORS {
+            capture.service(&mut media, 0);
+        }
+        capture.sampled_out_packet();
+        capture.environment(environment(100));
+        flush(&mut capture, &mut media);
+        assert!(capture.snapshot().recording);
+        assert_eq!(media.bytes[7], 1);
+        assert_eq!(&media.bytes[128..132], b"SMP1");
+        assert_eq!(&media.bytes[252..256], b"TMOC");
+        capture.stop();
+        flush(&mut capture, &mut media);
+        assert_eq!(capture.snapshot().status, Status::Stopped);
+        assert!(capture.start(764));
+        assert!(!capture.snapshot().sampled);
+        assert_eq!(capture.snapshot().sampled_out_packets, 0);
     }
 
     #[test]

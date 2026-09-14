@@ -94,6 +94,25 @@ pub fn tick(now: u64) {
         let result = super::super::companion_uart::send(&super::super::companion_startup::frame());
         SHARED.lock(|s| s.borrow_mut().startup.submitted(result.map(|()| 16), now));
     }
+    let wake = SHARED.lock(|s| {
+        let mut s = s.borrow_mut();
+        let sample = s.state.unwrap_or_default().snapshot(now, 5000);
+        s.startup.wake(
+            sample,
+            bridge_fresh,
+            transport_clean && sample.losses == 0,
+            radio_seen,
+        )
+    });
+    if wake {
+        let result =
+            super::super::companion_uart::send(&super::super::companion_startup::wake_frame());
+        SHARED.lock(|s| {
+            s.borrow_mut()
+                .startup
+                .wake_submitted(result.map(|()| 16), now)
+        });
+    }
     let send = SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         let sample = s.state.unwrap_or_default().snapshot(now, 5000);

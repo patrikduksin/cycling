@@ -108,8 +108,10 @@ The firmware observes three seconds of companion traffic before considering this
 acknowledgment. Any motion/pressure report, including malformed known pages, or
 ANT traffic suppresses it. Healthy advancing sensors report `already_running`;
 partial activity reports `running_degraded`. This preserves operating companion
-state across main-only restarts. Only absent sensor/radio traffic with fresh
-battery/power and intact transport permits one fixed acknowledgment. It is never
+state across main-only restarts. Absent sensor/radio traffic with intact transport permits one fixed
+acknowledgment after three seconds. Battery startup does not emit periodic
+battery/power reports until this acknowledgment; requiring those reports first
+deadlocks startup and allows the companion acknowledgment timeout to shut down. It is never
 retried after uncertain submission or timeout. `COMPANION` exposes startup state
 and the raw reason. Reason 4 remains `charging` until a later operating reason;
 reasons 5/6 start a bounded wait for all three sensor timestamps to advance.
@@ -278,3 +280,32 @@ private logger, with one USB owner. Save logs before changing USB or power state
 
 Installed part identification, physical motion/hold/wake observations, independent
 voltage/pressure calibration and new ANT operation end-to-end evidence remain open.
+
+## Automatic initialization after charging startup
+
+The recovered N22 class-2/group-16 receiver accepts page `e2/02`, operation index
+zero, value seven as its normal initialization transition. Receiver `0x178a4`
+reaches `0x173a8(7)` through `0x178fa`; setter seven changes RAM state, without the
+shutdown branches used by values zero and three. State seven dispatches through
+`0x1751e`. Retained boot subtype zero or two runs the same ordinary initialization
+subtree and emits reason six or five. Subtype one performs partial initialization
+without that reason; other retained values can complete without acquisition. This
+is receiver-supported behavior, not a recovered N21 sender constant or a promise
+of success for every retained state.
+
+The device uses the fixed payload `e2 02 00 00 00 07 00 00` only once after an
+explicit charging reason four, with a fresh, clean bridge and no observed sensor
+or radio activity. A short/failed submission is uncertain and is never replayed.
+Readiness requires a subsequent normal-start reason and independently advancing
+fresh motion and pressure timestamps; timeout is a failure. The audited branches
+contain no identified flash erase, vendor-filesystem write or calibration-program
+path; the existing stock motion initialization retains its opaque internal limits.
+
+Source `382c85cadeb1` kept probing when battery/power reports were absent. This
+was insufficient for battery startup, which waits for the acknowledgment before
+periodic reports and shuts down after its acknowledgment timeout. Source
+`271749ae53ac` removes that prerequisite for the one-shot acknowledgment after
+three seconds of clean passive observation. The charging initialization transition
+still requires a fresh bridge. Live validation of source `382c85cadeb1` reached ready with reason
+six and independently advancing sensors after charging startup, with zero button
+reports after boot. This observation does not establish every power-cycle path.

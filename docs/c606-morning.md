@@ -72,12 +72,21 @@ completed five-second device capture reported `INFO 1 256 3090 stopped`, leaving
 is `INFO 1 256 3090 idle`. Recheck before departure because another capture reduces
 that tail. Existing rides, captures and occupied invalid slots remain preserved.
 
-For an owner-requested radar/power ride, open the physical ANT menu over USB
-before departure, without selecting peers or starting recording:
+The SDK boots directly into the physical ANT menu with a seven-minute duration.
+Reboot returns to that menu without USB; sensor selection is volatile. The base
+firmware has a text status screen. A coordinator can reopen the menu or change
+the preview duration without selecting peers or starting recording:
 
 ```text
 FOUNDATION MENU 420
 ```
+
+If the companion is in charging startup, the menu says `HOLD TOP LEFT 2S TO WAKE`.
+That physical hold is handled by the companion; synthetic UI events cannot change
+its electrical power state. ANT scan/connect stays blocked until startup permits
+it. Software restart returns to the menu but does not pretend charging is normal
+acquisition. `FOUNDATION MENU STATUS` exposes menu selection and startup state for
+diagnosis. The harness can exercise scan/selection through the same input route.
 
 The lower-left button moves the selection; lower-right chooses it. Top-left returns
 to the first row, then to ride status. From idle ride status, top-left opens the

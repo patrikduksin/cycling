@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import time
 from usb import ROOT, UsbConnection
+from device_port import DiscoveryError, resolve_port
 
 STEPS = (
     (0, 'Leave the device still, screen facing up, for the quiet baseline.'),
@@ -15,9 +16,13 @@ STEPS = (
     (35, 'Hold bottom-left for two seconds, release, then wait.'),
     (43, 'Hold bottom-right for two seconds, release, then wait.'),
     (51, 'Hold bottom-left and bottom-right together for two seconds, then release both.'),
-    (60, 'Keep screen up and still for five seconds, then rotate onto its left edge and hold still.'),
-    (75, 'Rotate onto its top edge and hold still for five seconds, then screen down and hold still.'),
-    (90, 'Return screen up. Lift the device and lower it slowly twice without pulling the USB cable.'),
+    (60, 'Keep screen up and still for five seconds.'),
+    (65, 'Rotate onto its left edge and hold still for five seconds.'),
+    (70, 'Rotate onto its right edge and hold still for five seconds.'),
+    (75, 'Rotate onto its top edge and hold still for five seconds.'),
+    (80, 'Rotate onto its bottom edge and hold still for five seconds.'),
+    (85, 'Turn screen down and hold still for five seconds.'),
+    (90, 'Return screen up. Slowly rotate, lift and lower the device for fifteen seconds without pulling the USB cable.'),
     (105, 'Hold top-left for two seconds then release. The companion may restart independently; watch the screen.'),
     (115, 'If it remains responsive, hold top-left for five seconds then release. If it turns off, use the normal power button to start it; reconnect USB only if needed.'),
     (130, 'Leave it still and connected. Wait for the capture to finish at 150 seconds.'),
@@ -35,6 +40,7 @@ def collect(directory, port, seconds=150):
     connection = None
     attempt = 0
     count = gaps = 0
+    interrupted = False
     with (directory / 'observations.jsonl').open('x') as output:
         try:
             while time.monotonic() - start < seconds:
@@ -45,11 +51,15 @@ def collect(directory, port, seconds=150):
                     next_step += 1
                 if connection is None:
                     attempt += 1
-                    candidate = UsbConnection(port, directory / f'usb-{attempt}.log')
                     try:
+                        verified = resolve_port()
+                        candidate_port = Path(port) if attempt == 1 else verified
+                        if candidate_port.resolve() != verified.resolve():
+                            raise DiscoveryError('requested port does not match the backed-up device')
+                        candidate = UsbConnection(candidate_port, directory / f'usb-{attempt}.log')
                         candidate.__enter__()
                         connection = candidate
-                    except (OSError, RuntimeError, TimeoutError):
+                    except (OSError, RuntimeError, TimeoutError, DiscoveryError):
                         # Opening/handshake is read-only. Do not replay mutations.
                         output.write(json.dumps(dict(type='gap', elapsed_s=elapsed, reason='USB unavailable during physical sequence'))+'\n')
                         output.flush()
@@ -68,13 +78,17 @@ def collect(directory, port, seconds=150):
                     connection = None
                 output.flush()
                 time.sleep(.1)
+        except KeyboardInterrupt:
+            interrupted = True
+            output.write(json.dumps(dict(type='interrupted', elapsed_s=time.monotonic() - start))+'\n')
+            output.flush()
         finally:
             if connection is not None:
                 connection.__exit__(None, None, None)
-    result = dict(status='captured', samples=count, transport_gaps=gaps, report=str(directory), physical_acceptance='requires inspection of observations and owner actions')
+    result = dict(status='interrupted' if interrupted else 'captured', elapsed_s=time.monotonic() - start, samples=count, transport_gaps=gaps, report=str(directory), physical_acceptance='requires inspection of observations and owner actions')
     (directory/'summary.json').write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))
-    return 0
+    return 130 if interrupted else 0
 
 
 def main():

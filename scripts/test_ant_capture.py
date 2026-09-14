@@ -1,4 +1,6 @@
 import struct
+import hashlib
+import json
 import contextlib
 import io
 import tempfile
@@ -192,6 +194,77 @@ class AntCaptureTests(unittest.TestCase):
             self.assertEqual((output / 'prefix.partial').read_bytes(), blob)
             self.assertFalse((output / 'prefix.bin').exists())
             self.assertFalse((output / 'manifest.json').exists())
+
+    def test_range_keeps_absolute_slots_initial_gap_and_hash(self):
+        media = []
+        for sequence in range(3):
+            blob = self.environmental()
+            struct.pack_into('<II', blob, 8, 0, sequence)
+            media.append(commit(blob))
+        commands = []
+        class Connection:
+            def __init__(self, *args): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def terminal_command(self, command):
+                commands.append(command)
+                if command.endswith('INFO'):
+                    return dict(status='OK', data='INFO 1 256 3 stopped')
+                index = int(command.split()[-1])
+                blob = media[index]
+                return dict(status='OK', data=f'SLOT {index} {zlib.crc32(blob):08x} {blob.hex()}')
+        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
+            output = Path(directory) / 'range'
+            with contextlib.redirect_stdout(io.StringIO()):
+                manifest = ant_capture.export('fake', output, 'FOUNDATION', start_slot=1)
+            raw = bytes(media[1] + media[2])
+            self.assertEqual((output / 'range.bin').read_bytes(), raw)
+            self.assertFalse((output / 'prefix.bin').exists())
+            self.assertEqual((manifest['lower'], manifest['upper']), (1, 3))
+            self.assertEqual(manifest['sha256'], hashlib.sha256(raw).hexdigest())
+            records = json.loads((output / 'records.json').read_text())
+            self.assertEqual([(r['slot'], r['capture_id'], r['sequence']) for r in records], [(1, 0, 1), (2, 0, 2)])
+            self.assertEqual(manifest['sequence_gaps'], [dict(slot=1, capture_id=0, expected_sequence=0)])
+            self.assertEqual(commands, ['FOUNDATION LOG INFO', 'FOUNDATION LOG READ 1', 'FOUNDATION LOG READ 2', 'FOUNDATION LOG INFO'])
+
+    def test_range_bounds_integrity_and_changed_info_never_finalize(self):
+        blob = self.environmental()
+        commands = []
+        class Connection:
+            mode = 'bounds'
+            def __init__(self, *args): self.infos = 0
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def terminal_command(self, command):
+                commands.append(command)
+                if command.endswith('INFO'):
+                    self.infos += 1
+                    upper = 3 if self.mode == 'changed' and self.infos == 2 else 2
+                    return dict(status='OK', data=f'INFO 1 256 {upper} stopped')
+                crc = zlib.crc32(blob) ^ (self.mode == 'corrupt')
+                return dict(status='OK', data=f'SLOT 1 {crc:08x} {blob.hex()}')
+        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
+            for lower in (-1, True, 4097, '1'):
+                with self.assertRaises(ValueError):
+                    ant_capture.export('fake', Path(directory) / str(lower), start_slot=lower)
+            self.assertEqual(commands, [])
+            with self.assertRaises(ValueError):
+                ant_capture.export('fake', Path(directory) / 'bounds', start_slot=3)
+            self.assertEqual(commands, ['RADAR LOG INFO'])
+            for mode in ('corrupt', 'changed'):
+                Connection.mode = mode
+                output = Path(directory) / mode
+                with self.assertRaises(ValueError):
+                    ant_capture.export('fake', output, start_slot=1)
+                self.assertEqual((output / 'range.partial').read_bytes(), b'' if mode == 'corrupt' else blob)
+                self.assertFalse((output / 'range.bin').exists())
+                self.assertFalse((output / 'manifest.json').exists())
+            Connection.mode = 'bounds'
+            output = Path(directory) / 'empty'
+            with contextlib.redirect_stdout(io.StringIO()):
+                manifest = ant_capture.export('fake', output, start_slot=2)
+            self.assertEqual((output / 'range.bin').read_bytes(), b'')
+            self.assertEqual((manifest['lower'], manifest['upper']), (2, 2))
 
     def test_link_terminal_and_foreign_records(self):
         data = slot(4, 1)

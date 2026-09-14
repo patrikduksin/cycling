@@ -71,12 +71,19 @@ the selection from the current record, not every historical journal byte.
 captured original idle base state. It does not access the device.
 
 ```sh
+export CYCLING_PORT="$(python scripts/device_port.py)"
 python scripts/connectivity_scenarios.py
 mise run harness -- run .local/foundation/scenarios/connectivity-wifi.json
 # Start the existing owned host fixture before the BLE SDK scenario:
 /usr/bin/python3 scripts/ble_sensor_sim.py --profile both
 mise run harness -- run .local/foundation/scenarios/connectivity-ble.json
 ```
+
+The port helper reads sysfs and requires exactly one VID/PID and identity match
+to the private backup manifest; it does not open USB. Stop if discovery fails.
+Repeat `export CYCLING_PORT="$(python scripts/device_port.py)"` after flashing,
+reconnection or any port renumbering before running the next terminal or harness.
+`mise run device-port` also prints the verified path.
 
 Run the BLE fixture as an owned process, stop it after the test, and restore the
 harness-enabled base with the protected firmware workflow. The Wi-Fi scenario tests

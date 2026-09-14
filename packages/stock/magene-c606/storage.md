@@ -19,13 +19,12 @@ Card-detect and write-protect are disabled in that configuration. A bounded nati
 one-bit probe has now verified slot 1 with CLK, CMD and D0 on GPIO13, GPIO14 and
 GPIO16, and identified the fitted device as high-capacity MMC/eMMC. D1 through D3
 remain stock-derived candidates because the probe leaves them in pulled-up input
-mode. The CID product field is `004GA1`; EXT_CSD reports
-3,959,422,976 bytes in 512-byte sectors. The raw CID, CSD, sector hashes and read
+mode. EXT_CSD reports 3,959,422,976 bytes in 512-byte sectors. The raw CID, CSD, sector hashes and read
 traces remain private.
 
-The optional read-only probe is enabled with `CYCLING_SDMMC_PROBE=1`; ordinary
-firmware reserves the peripheral and pins without initializing the medium.
-Its implementation is in [sdmmc.rs](../../os/src/device/sdmmc.rs).
+The original optional probe used `CYCLING_SDMMC_PROBE=1`. The current bounded
+read-only backend is available through ordinary `MMC` commands; its implementation
+is in [sdmmc.rs](../../os/src/device/sdmmc.rs).
 
 The probe uses slot 1, one-bit width, 400 kHz and 3.3 V signaling. It issues only
 the audited identification, selection and read commands. On this unit SD CMD8 and
@@ -39,10 +38,34 @@ scope. It does not mount, format, repair, erase or write the medium.
 stock-selection/restoration evidence. Selection and checksum verification did
 not establish visual stock startup or stock-filesystem behavior.
 
+## Read-only layout and clock validation
+
+Harness-enabled base revision `740b36c83e76` identified 7,733,248 sectors and
+completed the bounded layout investigation. Sector zero contains a FAT32
+superfloppy volume covering the entire reported medium, with eight sectors per
+cluster, 964,608 data clusters, and the data region starting at sector 16,384.
+The parser read four distinct sectors and reached the root directory terminator.
+That establishes a complete root listing for this traversal; child directories,
+allocation consistency and stock resource/update behavior were not exhaustively
+inspected. Raw directory names, identifiers, sectors and captures remain private.
+
+Repeated reads of sectors 0, 1 and 2,048 returned matching per-sector CRCs at
+400 kHz, 4 MHz and 20 MHz. Representative repeated sector-zero device read times
+were 10,934, 1,506 and 670 microseconds, respectively. Each terminal response
+returned 256 bytes from a bounded sector read. These samples establish successful
+reads at those controller clocks, not sustained filesystem or USB throughput.
+GNSS and companion observations continued without new errors during the scenario.
+The harness verified restoration of the original controller clock and preferences.
+
+The host investigator [mmc.py](../../../scripts/mmc.py) validates each sector as
+two CRC-checked chunks, limits distinct reads to 128, and bounds FAT root traversal.
+It stores findings only in a new ignored `.local/` directory. It does not recurse
+through the vendor tree or issue filesystem writes.
+
 Read success does not grant write ownership. Empty sectors or gaps would not prove
 that stock ignores them. Settings and rides remain in their existing explicit
-`ota_1` reservations. A future bulk backend must first map the partition and
-filesystem read-only, establish stock's resource/update use, and obtain an
+`ota_1` reservations. A future bulk backend must establish stock's resource/update use beyond the bounded root listing
+and obtain an
 explicitly owned namespace or region with bounded and recoverable writes. Until
 then, no cycling code writes this MMC device.
 

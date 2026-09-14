@@ -193,3 +193,112 @@ fn runtime_sensor_change_clears_old_readings_and_survives_restart() {
     s.restart().unwrap();
     assert!(command(&mut s, "BLE").1.contains("saved=false"));
 }
+
+#[cfg(feature = "cycling")]
+#[test]
+fn foundation_runtime_deadline_commits_stop_without_peers_and_preserves_existing_prefix() {
+    use cycling_os::sdk::ride_log::{self, Entry, Kind, Slot, Source};
+    let t = Temp::new();
+    let mut s = Session::new(&t.0, 32, 24).unwrap();
+    let data_path = t.0.join("data.bin");
+    let mut bytes = std::fs::read(&data_path).unwrap();
+    // A real committed ride and an occupied unknown slot must survive the whole capture.
+    for (index, kind) in [Kind::Start, Kind::Finish].into_iter().enumerate() {
+        let mut slot = ride_log::encode(&Entry::event(
+            kind,
+            Source::Live,
+            7,
+            index as u32,
+            1000 * index as u64,
+        ));
+        slot.0[252..].copy_from_slice(&ride_log::commit_word().0);
+        assert!(ride_log::decode(&slot).is_some());
+        bytes[index * 256..(index + 1) * 256].copy_from_slice(&slot.0);
+    }
+    bytes[512..768].fill(0x5a);
+    let original_prefix = bytes[..768].to_vec();
+    std::fs::write(&data_path, bytes).unwrap();
+    s.advance(3000).unwrap();
+    assert!(command(&mut s, "RIDE STATUS").1.contains("rides=1"));
+    assert_eq!(
+        command(&mut s, "FOUNDATION LOG INFO"),
+        ("OK", "INFO 1 256 3 idle".into())
+    );
+    assert_eq!(command(&mut s, "FOUNDATION LOG START 300").0, "ACCEPTED");
+    assert!(s.sdk.recording());
+    // This uses the production runtime's scan, deadline, acquisition and writer.
+    for _ in 0..600 {
+        if command(&mut s, "FOUNDATION LOG STATUS")
+            .1
+            .contains("status: Recording")
+        {
+            break;
+        }
+        s.advance(10).unwrap();
+    }
+    let recording = command(&mut s, "FOUNDATION LOG STATUS").1;
+    assert!(recording.contains("status: Recording"), "{recording}");
+    assert!(recording.contains("required_slots: 608"), "{recording}");
+    assert!(
+        recording.contains("requested_seconds=Some(300)"),
+        "{recording}"
+    );
+    let first_recording_ms = s.now;
+    for delta in [120_000, 120_000, 59_000] {
+        s.advance(delta).unwrap();
+    }
+    assert!(
+        command(&mut s, "FOUNDATION LOG STATUS")
+            .1
+            .contains("status: Recording")
+    );
+    // No STOP command is sent. Crossing the production deadline must flush a stop record.
+    s.advance(2000).unwrap();
+    let stopped = command(&mut s, "FOUNDATION LOG STATUS").1;
+    assert!(stopped.contains("status: Stopped"), "{stopped}");
+    assert!(stopped.contains("error: None"), "{stopped}");
+    assert!(!s.sdk.recording());
+    let info = command(&mut s, "FOUNDATION LOG INFO");
+    assert_eq!(info.0, "OK");
+    let upper: usize = info.1.split_whitespace().nth(3).unwrap().parse().unwrap();
+    let after = std::fs::read(&data_path).unwrap();
+    assert_eq!(&after[..original_prefix.len()], original_prefix.as_slice());
+    let appended = after[768..upper * 256].as_chunks::<256>().0;
+    assert!(
+        appended.len() > 590,
+        "five minutes must retain GPS/environment progress"
+    );
+    assert!(
+        appended.len() <= 608,
+        "no-peer capture must fit its reservation"
+    );
+    for slot in appended {
+        assert_eq!(&slot[..4], b"ANT1");
+        assert_eq!(&slot[252..], &ride_log::commit_word().0);
+        assert_eq!(
+            u32::from_le_bytes(slot[248..252].try_into().unwrap()),
+            ride_log::transport_checksum(&slot[..248])
+        );
+        assert!(
+            matches!(slot[5], 2 | 6 | 7),
+            "no ANT packets or links without selected peers"
+        );
+    }
+    assert_eq!(appended.iter().filter(|slot| slot[5] == 2).count(), 1);
+    let stop = appended.last().unwrap();
+    assert_eq!(stop[5], 2);
+    let stop_ms = u64::from_le_bytes(stop[16..24].try_into().unwrap());
+    assert!((299_900..=300_100).contains(&stop_ms.saturating_sub(first_recording_ms)));
+    assert!(after[upper * 256..].iter().all(|byte| *byte == 0xff));
+    // No later tick can keep appending after automatic stop, and restart preserves export.
+    s.advance(5000).unwrap();
+    assert_eq!(std::fs::read(&data_path).unwrap(), after);
+    s.restart().unwrap();
+    s.advance(3000).unwrap();
+    assert_eq!(
+        command(&mut s, "FOUNDATION LOG INFO").1,
+        format!("INFO 1 256 {upper} idle")
+    );
+    assert_eq!(std::fs::read(&data_path).unwrap(), after);
+    assert!(ride_log::decode(&Slot(after[..256].try_into().unwrap())).is_some());
+}

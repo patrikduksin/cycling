@@ -118,3 +118,7 @@ run = "python scripts/mmc.py"
 [tasks.foundation-bench]
 description = "Guide and privately capture the owner's 150-second C606 physical bench sequence"
 run = "python scripts/bench.py"
+
+[tasks.device-port]
+description = "Resolve the backed-up C606's current USB port without opening it"
+run = "python scripts/device_port.py"

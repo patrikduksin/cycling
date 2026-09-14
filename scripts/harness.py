@@ -281,6 +281,24 @@ def peripheral_command(step):
     raise ValueError('unsupported bounded peripheral operation')
 
 
+def ant_command(step):
+    action = step.get('action')
+    allowed = {'op', 'action'}
+    if action == 'scan':
+        allowed.add('seconds')
+        seconds = step.get('seconds')
+        if type(seconds) is not int or not 1 <= seconds <= 10:
+            raise ValueError('ANT scan requires integer seconds from 1 to 10')
+        command = f'ANT SCAN {seconds}'
+    elif action == 'stop':
+        command = 'ANT STOP'
+    else:
+        raise ValueError('unsupported typed ANT operation')
+    if set(step) - allowed:
+        raise ValueError('unexpected typed ANT fields')
+    return command
+
+
 def foundation_command(step):
     action = step.get('action')
     if not 0 < float(step.get('timeout_s', 30)) <= 120:
@@ -318,6 +336,7 @@ def preflight(scenario):
         raise ValueError('scenario requires 1..256 steps')
     baselines = {}
     foundation_started = foundation_stopped = False
+    ant_started = ant_stopped = False
     for step in steps:
         op = step.get('op')
         if 'progress_from' in step and baselines.get(step['progress_from']) != step.get('command'):
@@ -327,7 +346,7 @@ def preflight(scenario):
         if op in ('command', 'wait'):
             command = step['command']
             words = command.split()
-            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in ('RIDE SENSORS', 'RADAR SENSORS', 'FOUNDATION LOG STATUS', 'FOUNDATION LOG INFO')
+            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in ('RIDE SENSORS', 'RADAR SENSORS', 'FOUNDATION LOG STATUS', 'FOUNDATION LOG INFO', 'ANT DEVICES')
             permitted = read_only
             permitted |= bool(re.fullmatch(r'DISPLAY [0-9a-fA-F]{1,4}', command))
             permitted |= bool(re.fullmatch(r'BRIGHTNESS (?:100|[0-9]{1,2})', command))
@@ -335,6 +354,16 @@ def preflight(scenario):
                 raise ValueError('scenario command is not a supported read or temporary display/brightness operation; persistence mutations require dedicated protected workflows')
             if op == 'wait' and not 0 < float(step.get('timeout_s', 10)) <= 120:
                 raise ValueError('wait timeout must be 0..120 seconds')
+        elif op == 'ant':
+            ant_command(step)
+            if step['action'] == 'scan':
+                if ant_started:
+                    raise ValueError('one ANT scan is allowed per run')
+                ant_started = True
+            else:
+                if not ant_started or ant_stopped:
+                    raise ValueError('ANT stop requires this run preceding scan')
+                ant_stopped = True
         elif op == 'foundation':
             foundation_command(step)
             if step['action'] == 'start':
@@ -398,6 +427,10 @@ class Runner:
         self.caps = {}
         self.last_lease = time.monotonic()
         self.observations = {}
+        self.ant_eligible = False
+        self.ant_scan_may_apply = False
+        self.ant_scan_observed = False
+        self.ant_stop_sent = False
         self.foundation_eligible = False
         self.foundation_start_may_apply = False
         self.foundation_stop_sent = False
@@ -521,12 +554,73 @@ class Runner:
                 raise RuntimeError('radio operation has no inspectable terminal state')
         self.command(command, ('ACCEPTED',))
         sequence = str((int(before['sequence']) + 1) % (1 << 32))
-        result = self.wait(radio.upper(), {'sequence': sequence, 'operation': step.get('completion', 'completed')}, float(step.get('timeout_s', 55)))
+        expected = step.get('completion', 'completed')
+        deadline = time.monotonic() + float(step.get('timeout_s', 55))
+        for _ in range(2401):
+            result = self.command(radio.upper())
+            operation = result.get('operation')
+            if result.get('sequence') == sequence and operation in ('completed', 'error'):
+                if operation != expected:
+                    # Only firmware's fixed control codes may enter a public error.
+                    known_errors = {'none', 'configuration_failed', 'connect_failed',
+                                    'connect_timeout', 'disconnect_failed', 'disconnect_timeout',
+                                    'scan_failed', 'unconfigured', 'peer_not_found',
+                                    'connection_ended', 'gatt_failed', 'runner_stopped'}
+                    error = result.get('error')
+                    error = error if error in known_errors else 'unknown'
+                    raise RuntimeError(f'{radio.upper()} operation {operation} (error={error}); expected {expected}')
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError('condition did not complete within bounded wait')
+            self.delay(.05)
+        else:
+            raise TimeoutError('condition did not complete within bounded wait')
         for key, value in step.get('expect', {}).items():
             if result.get(key) != str(value):
                 raise AssertionError('connectivity completion assertion failed for ' + key)
         if step['action'] == 'scan':
             self.command('WIFI NETWORKS' if radio == 'wifi' else 'BLE PEERS')
+        return result
+
+    def ant_idle(self):
+        state = self.command('ANT')
+        if state.get('scanning') != 'false' or 'type' in state:
+            raise ValueError('ANT scan requires originally idle radio with no selected channels')
+        return state
+
+    def stop_ant(self):
+        if not self.ant_scan_may_apply:
+            return {'scanning': 'false'}
+        state = self.command('ANT')
+        if state.get('scanning') == 'false' and not self.ant_scan_observed:
+            # ACCEPTED may precede dispatch; an initial false is not completion.
+            state = self.wait('ANT', {'scanning': True}, 1)
+        if state.get('scanning') == 'true':
+            self.ant_scan_observed = True
+            if self.ant_stop_sent:
+                raise RuntimeError('previous ANT stop remains uncertain; not replayed')
+            self.ant_stop_sent = True
+            self.command('ANT STOP', ('ACCEPTED',))
+        elif state.get('scanning') != 'false':
+            raise RuntimeError('unknown ANT scan state')
+        state = self.wait('ANT', {'scanning': False}, 12)
+        self.ant_scan_may_apply = False
+        return state
+
+    def ant(self, step):
+        command = ant_command(step)
+        if step['action'] == 'stop':
+            return self.stop_ant()
+        if not self.ant_eligible or self.ant_scan_may_apply:
+            raise ValueError('ANT scan lacks verified original idle ownership')
+        self.ant_idle()
+        self.ant_eligible = False
+        self.ant_scan_may_apply = True
+        self.command(command, ('ACCEPTED',))
+        self.wait('ANT', {'scanning': True}, 1)
+        self.ant_scan_observed = True
+        result = self.wait('ANT', {'scanning': False}, 12)
+        self.ant_scan_may_apply = False
         return result
 
     def foundation_idle(self, build):
@@ -581,6 +675,8 @@ class Runner:
 
     def step(self, step, index):
         op = step['op']
+        if op == 'ant':
+            return self.ant(step)
         if op == 'foundation':
             return self.foundation(step)
         if op in ('wifi', 'ble'):
@@ -700,6 +796,9 @@ def execute(args, scenario, output):
         transport.__enter__()
         runner = Runner(transport, output)
         report['build'] = runner.command('INFO')
+        if any(step['op'] == 'ant' for step in scenario['steps']):
+            report['initial_ant'] = runner.ant_idle()
+            runner.ant_eligible = True
         if any(step['op'] == 'foundation' for step in scenario['steps']):
             report['initial_foundation'] = runner.foundation_idle(report['build'])
             runner.foundation_eligible = True
@@ -833,6 +932,11 @@ def execute(args, scenario, output):
                     state = runner.stop_foundation()
                     cleanup['foundation'] = 'verified ' + state['status'] + '; appended records preserved'
 
+                if runner.ant_scan_may_apply:
+                    def restore_ant():
+                        runner.stop_ant()
+                        cleanup['ant'] = 'scan idle verified; selected channels unchanged'
+                    restore_one('ant', restore_ant)
                 if runner.foundation_start_may_apply:
                     restore_one('foundation', restore_foundation)
                 if 'sound' in peripheral_touched: restore_one('sound', restore_sound)

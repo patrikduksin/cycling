@@ -108,6 +108,66 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(report['cleanup']['preferences'],'verified')
         self.assertEqual(fake.settings,fake.original)
 
+    def test_connectivity_terminal_mismatch_fails_without_delay(self):
+        for expected, actual, code in [('completed', 'error', 'peer_not_found'),
+                                       ('error', 'completed', 'none'),
+                                       ('completed', 'error', 'private-secret')]:
+            with self.subTest(expected=expected, actual=actual, code=code):
+                runner = object.__new__(Runner)
+                replies = [{'sequence': '4', 'operation': 'completed'}, {},
+                           {'sequence': '5', 'operation': actual, 'error': code}]
+                with patch.object(runner, 'command', side_effect=replies), \
+                     patch.object(runner, 'delay') as delay:
+                    with self.assertRaises(RuntimeError) as caught:
+                        runner.connectivity('ble', {'action': 'connect', 'completion': expected})
+                delay.assert_not_called()
+                self.assertIn('BLE operation ' + actual, str(caught.exception))
+                self.assertIn('error=' + ('unknown' if code == 'private-secret' else code), str(caught.exception))
+                self.assertNotIn('private-secret', str(caught.exception))
+
+    def test_connectivity_ignores_previous_sequence_terminal_state(self):
+        runner = object.__new__(Runner)
+        replies = [{'sequence': '4', 'operation': 'completed'}, {},
+                   {'sequence': '4', 'operation': 'error', 'error': 'peer_not_found'},
+                   {'sequence': '5', 'operation': 'pending'},
+                   {'sequence': '5', 'operation': 'completed'}]
+        with patch.object(runner, 'command', side_effect=replies), \
+             patch.object(runner, 'delay') as delay:
+            result = runner.connectivity('ble', {'action': 'connect'})
+        self.assertEqual(result['operation'], 'completed')
+        self.assertEqual(delay.call_count, 2)
+
+    def test_connectivity_failure_still_restores_radio_and_preferences(self):
+        class FailedConnect(CleanupTransport):
+            sequence, radio_operation, radio_error = 0, 'completed', 'none'
+            def terminal_command(self, command, **kwargs):
+                if command == 'BLE':
+                    return {'status': 'OK', 'data': f'sequence={self.sequence} operation={self.radio_operation} error={self.radio_error}'}
+                if command in ('BLE CONNECT', 'BLE FORGET'):
+                    self.commands.append(command)
+                    self.sequence += 1
+                    self.radio_operation = 'error' if command == 'BLE CONNECT' else 'completed'
+                    self.radio_error = 'peer_not_found' if command == 'BLE CONNECT' else 'none'
+                    return {'status': 'ACCEPTED', 'data': ''}
+                return super().terminal_command(command, **kwargs)
+        fake = FailedConnect()
+        scenario = {'connectivity_restore': {'ble': {'mode': 'none', 'connected': False}},
+                    'steps': [dict(op='command', command='BRIGHTNESS 20'), dict(op='ble', action='connect')]}
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None,
+                               sdk=True, no_harness=False)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with patch('harness.Virtual', return_value=fake), patch.object(Runner, 'delay') as delay, \
+                 patch('sys.stdout', io.StringIO()):
+                code = execute(args, scenario, output)
+            report = json.loads((output / 'report.json').read_text())
+        self.assertEqual(code, 1)
+        delay.assert_not_called()
+        self.assertIn('BLE FORGET', fake.commands)
+        self.assertIn('completion verified', report['cleanup']['ble'])
+        self.assertEqual(report['cleanup']['preferences'], 'verified')
+        self.assertEqual(fake.settings, fake.original)
+
     def test_png_exact_geometry_and_pixels(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'frame.png'
@@ -356,6 +416,67 @@ class HarnessTests(unittest.TestCase):
                     with self.assertRaises(ValueError): runner.foundation_idle(runner.command('INFO'))
                 with self.assertRaises(ValueError): runner.stop_foundation()
                 self.assertFalse(any(command.startswith('FOUNDATION LOG START') or command == 'FOUNDATION LOG STOP' for command in fake.commands))
+            finally: runner.trace.close()
+
+    def test_ant_allowlist_requires_bounded_scan_and_owned_stop(self):
+        scan = dict(op='ant', action='scan', seconds=10)
+        preflight({'steps': [scan, dict(op='command', command='ANT DEVICES'), dict(op='ant', action='stop')]})
+        for step in [dict(scan, seconds=True), dict(scan, seconds=0), dict(scan, seconds=11),
+                     dict(scan, command='ANT CONNECT 40 1 1'), dict(op='ant', action='connect'),
+                     dict(op='ant', action='stop'), dict(op='command', command='ANT SCAN 10'),
+                     dict(op='command', command='ANT STOP'), dict(op='command', command='ANT DEVICES extra')]:
+            with self.assertRaises(ValueError): preflight({'steps': [step]})
+
+    def test_ant_scan_observes_start_and_cleanup_only_stops_owned_scan(self):
+        class Fake:
+            virtual = True
+            request_id = 1
+            def __init__(self):
+                self.commands = []
+                self.states = ['false']
+                self.selected = False
+                self.lose_scan = False
+            def delay(self, _): pass
+            def terminal_command(self, command, **_):
+                self.commands.append(command)
+                self.request_id += 1
+                if command == 'ANT':
+                    state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+                    return {'status': 'OK', 'data': 'scanning=' + state + (' type=40 link=connected' if self.selected else '')}
+                if command == 'ANT SCAN 1':
+                    self.states = ['false', 'true', 'false']
+                    if self.lose_scan: raise TimeoutError('scan accepted, reply lost')
+                elif command == 'ANT STOP': self.states = ['true', 'false']
+                else: raise AssertionError(command)
+                return {'status': 'ACCEPTED', 'data': ''}
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Fake()
+            runner = Runner(fake, Path(directory))
+            try:
+                runner.stop_ant()
+                self.assertEqual(fake.commands, [])
+                fake.selected = True
+                with self.assertRaises(ValueError): runner.ant_idle()
+                fake.selected = False
+                fake.states = ['true']
+                with self.assertRaises(ValueError): runner.ant_idle()
+                fake.states = ['false']
+                runner.ant_idle()
+                runner.ant_eligible = True
+                self.assertEqual(runner.ant(dict(op='ant', action='scan', seconds=1))['scanning'], 'false')
+                self.assertTrue(runner.ant_scan_observed)
+                self.assertFalse(runner.ant_scan_may_apply)
+                self.assertNotIn('ANT STOP', fake.commands)
+                runner.stop_ant()
+                self.assertNotIn('ANT STOP', fake.commands)
+                # A lost START reply can leave a queued false before active true.
+                runner.ant_eligible = True
+                runner.ant_scan_observed = False
+                fake.lose_scan = True
+                with self.assertRaises(TimeoutError): runner.ant(dict(op='ant', action='scan', seconds=1))
+                runner.stop_ant()
+                self.assertEqual(fake.commands.count('ANT STOP'), 1)
+                self.assertFalse(runner.ant_scan_may_apply)
             finally: runner.trace.close()
 
 if __name__ == '__main__':

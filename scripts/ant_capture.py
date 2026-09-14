@@ -135,16 +135,21 @@ def decode_slot(data):
     return record
 
 
-def export(port, output, domain='RADAR'):
+def export(port, output, domain='RADAR', start_slot=0):
     if domain not in ('RADAR', 'FOUNDATION'):
         raise ValueError('unsupported capture domain')
+    if type(start_slot) is not int or not 0 <= start_slot <= MAX_SLOTS:
+        raise ValueError('invalid capture range lower bound')
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    partial = output / 'prefix.partial'
+    artifact = 'range' if start_slot else 'prefix'
+    partial = output / f'{artifact}.partial'
     records, invalid = [], []
     with UsbConnection(port, output / 'usb.log') as connection:
         before = info(connection, domain)
+        if start_slot > before['upper']:
+            raise ValueError('capture range starts beyond occupied prefix')
         with partial.open('wb') as raw:
-            for index in range(before['upper']):
+            for index in range(start_slot, before['upper']):
                 fields = command(connection, f'READ {index}', domain)
                 if len(fields) != 4 or fields[0] != 'SLOT' or int(fields[1]) != index:
                     raise ValueError('wrong capture slot reply')
@@ -164,7 +169,7 @@ def export(port, output, domain='RADAR'):
             os.fsync(raw.fileno())
         if info(connection, domain) != before:
             raise ValueError('capture prefix changed during export')
-    raw_path = output / 'prefix.bin'
+    raw_path = output / f'{artifact}.bin'
     partial.rename(raw_path)
     sequences = {}
     gaps = []
@@ -174,7 +179,7 @@ def export(port, output, domain='RADAR'):
         if record['sequence'] != expected or capture > record['slot']:
             gaps.append({'slot': record['slot'], 'capture_id': capture, 'expected_sequence': expected})
         sequences[capture] = record['sequence'] + 1
-    manifest = dict(version=1, slot_size=SLOT_SIZE, **before,
+    manifest = dict(version=1, slot_size=SLOT_SIZE, lower=start_slot, **before,
                     sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest(),
                     positions=sum(r['kind'] == 'position' for r in records),
                     environmental_samples=sum(r['kind'] == 'environment' for r in records),
@@ -191,8 +196,9 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
     parser.add_argument('--domain', choices=('RADAR', 'FOUNDATION'), default='RADAR')
+    parser.add_argument('--start-slot', type=int, default=0, help='export from this absolute slot through the occupied upper bound; default preserves the full prefix')
     args = parser.parse_args()
-    export(args.port, args.output, args.domain)
+    export(args.port, args.output, args.domain, args.start_slot)
 
 
 if __name__ == '__main__':

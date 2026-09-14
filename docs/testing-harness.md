@@ -200,3 +200,23 @@ supplies `connectivity_restore` with the original private profile and connection
 intent. Cleanup restores that configuration through ordinary commands and checks
 completion. See [runtime connectivity](runtime-connectivity.md) for commands,
 scenario generation, private profile paths and radio evidence limits.
+
+## Foundation operations
+
+The real runner also accepts typed `sound` play/stop, `gnss` pause/resume,
+read-only `mmc` read/clock/recover, `companion` query, and bounded `ant` scan/stop.
+These validate the supported command parameters; they do not enable arbitrary
+mutation commands. Sound is limited to four finite patterns. GNSS pauses carry
+an on-device resume deadline. Cleanup checks sound settling, resumed GNSS progress,
+the original MMC clock and completed ANT scanning independently of preference
+and radio restoration.
+
+An SDK scenario can append a short capture with
+`{"op":"foundation","action":"start","duration_seconds":300}` and stop it
+with `{"op":"foundation","action":"stop"}`. The runner requires idle recording
+and capture owners, waits for actual recording, and stops only its own possibly
+applied start during cleanup. An uncertain stop is inspected rather than replayed.
+This writes new owned journal slots and never reclaims old ones. Disruptive real
+recovery rechecks idle recording immediately before restart/reset; terminal reopen
+remains available during acquisition. See [morning checks](c606-morning.md) for
+capacity requirements, physical actions and export.

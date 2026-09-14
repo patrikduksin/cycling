@@ -10,9 +10,15 @@ Start with the tested harness-enabled base, USB connected, and no other terminal
 logger, exporter or harness holding USB. From the repository root:
 
 ```sh
+export CYCLING_PORT="$(python scripts/device_port.py)"
 mise run foundation-bench -- --plan
 mise run foundation-bench -- .local/foundation-morning-bench
 ```
+
+The port helper reads sysfs and matches the private backup manifest without
+opening USB. Stop if it reports no unique match. Repeat the export after every
+flash, reconnection or USB port renumbering before starting another reader.
+`mise run device-port` also prints the current verified path.
 
 Follow the timed prompts. The sequence covers a stationary baseline, isolated and
 repeated clicks on all three buttons, two-second lower-button holds and their
@@ -36,54 +42,52 @@ USB connected, use the protected helper for the tested SDK configuration:
 
 ```sh
 CYCLING_SDK=1 CYCLING_HARNESS=1 mise run flash
+export CYCLING_PORT="$(python scripts/device_port.py)"
 mise run terminal
 ```
 
 In the terminal, inspect `INFO`, `STATUS`, `MOTION`, `PRESSURE`, `BATTERY` and
 `POSITION`. Confirm the intended firmware revision and SDK/harness modes.
 
-Before selecting any ANT peer, have the coordinator establish the measured free
-append tail after the storage scan. Do not use the total partition size as free
-capacity. Five minutes requires 608 slots with no selected ANT channels; six
-minutes requires 728 and ten minutes requires 1,208. Any selected ANT channel
-raises the five-minute reservation to 1,508 slots (six minutes: 1,808; ten minutes:
-3,008), even when that sensor is asleep. These are reservations, not a claim about
-the device's current free tail. If fewer than 608 slots remain, stop preparation
-and preserve the existing data.
-
-ANT peers are optional. Select them only if the measured tail supports their
-larger reservation for the chosen duration. Otherwise leave all ANT channels
-unselected and capture GPS, pressure, raw motion and battery alone. If capacity
-allows and the existing SR mini radar, Polar H10 or Magene PES P515 are awake,
-scan before starting capture:
+Establish the append tail before starting. An idle `FOUNDATION LOG STATUS` can
+show `remaining_slots: 4096` because the capture has not scanned storage. That
+number is not measured free capacity. Let the ordinary recorder scan finish:
 
 ```text
-ANT SCAN 10
-ANT
-ANT DEVICES
+RIDE STATUS
+FOUNDATION LOG INFO
 ```
 
-Wait for scanning to finish. The coordinator compares each discovery's full
-identity against the private inventory `.local/foundation/owned-ant.json`, which
-comes from the owner's previously confirmed three-sensor ride. Connect only exact
-matches, using each discovered decimal device number and transmission type:
+Poll `RIDE STATUS` until `state=ready`. If `FOUNDATION LOG INFO` returns `BUSY`,
+wait and inspect again. Its successful reply has this form:
 
 ```text
-ANT CONNECT <device-type> <device-number> <transmission-type>
-ANT
+INFO 1 256 <occupied-upper> idle
 ```
 
-Known types are 40 for radar, 120 for heart rate and 11 for power. Do not substitute
-another nearby identity of the same type. Check selected peers reach connected
-and fresh status. Missing or sleeping peers do not block a foundation capture.
-The bridge still permits one selected peer per type, and scanning requires closed
-channels. Keep identifiers out of tracked notes.
+The fourth value is the exclusive occupied upper slot. Compute free append slots
+as `4096 - occupied-upper`; do not subtract only valid records. The most recent
+completed five-second device capture reported `INFO 1 256 3090 stopped`, leaving
+1,006 slots. After an SDK restart and storage scan, the equivalent expected reply
+is `INFO 1 256 3090 idle`. Recheck before departure because another capture reduces
+that tail. Existing rides, captures and occupied invalid slots remain preserved.
 
-Select the duration explicitly. The example requests five minutes; values from
-300 through 600 seconds are accepted. Start the capture:
+The prepared session requests **420 seconds, seven minutes, with no selected ANT
+peers**. Its reservation is `2 × 420 + 8 = 848` slots, which fits the measured
+1,006-slot tail with 158 slots beyond the reservation. If the newly measured tail
+is below 848, do not start this duration. Five minutes without ANT requires 608
+slots, six requires 728 and ten requires 1,208.
+
+Keep ANT peers unselected for this session. Any selected ANT channel raises the
+seven-minute reservation to 2,108 slots; even five minutes with a selected peer
+requires 1,508, which exceeds the current tail. Sleeping sensors still count as
+selected. Inspect `ANT` and have the coordinator close any selected channel before
+starting; do not scan or connect a sensor during this capture.
+
+Start the seven-minute capture:
 
 ```text
-FOUNDATION LOG START 300
+FOUNDATION LOG START 420
 FOUNDATION LOG STATUS
 ```
 
@@ -113,8 +117,8 @@ not reclaim any slots, and there is no erase step in this procedure.
 
 After recording is confirmed, enter `quit` to close the USB terminal. Disconnect
 the cable promptly. The requested duration includes preparation after readiness;
-plan the outdoor portion within that countdown. Five minutes is the default
-example above; request up to ten minutes only when the measured free tail allows.
+plan the outdoor portion within that countdown. Seven minutes is the prepared
+session above; it includes preparation after recording becomes ready.
 Wait briefly outdoors for positioning to establish a fix. Include a modest
 observable elevation change if convenient. Keep the device secured; do not operate
 commands or perform button/rotation tests while riding.
@@ -138,7 +142,14 @@ calibration. The session remains useful without a phone.
 
 ## Stop, export and restore base
 
-Reconnect USB, then run `mise run terminal` and enter:
+Reconnect USB, resolve its current port again, then open the terminal:
+
+```sh
+export CYCLING_PORT="$(python scripts/device_port.py)"
+mise run terminal
+```
+
+Enter:
 
 ```text
 FOUNDATION LOG STOP
@@ -153,13 +164,20 @@ until `Stopped`. Note saved counts, drop counters and any
 error. Enter `quit`, then export to a new private directory:
 
 ```sh
-mise run ant-export -- .local/foundation-morning-export --domain FOUNDATION
+mise run ant-export -- .local/foundation-morning-export --domain FOUNDATION --start-slot 3090
 ```
 
-The exporter checks slot CRCs, commit words and sequence gaps, and preserves the
-complete occupied prefix, including unknown or interrupted records. Inspect
-`manifest.json` and retain `prefix.bin` and `records.json`. An interrupted export
-retains `prefix.partial`; it does not claim a completed manifest. After an
+The prepared value 3090 is the measured start of the unused tail. Confirm the
+start slot again before recording if any additional session has written data.
+This exports only the new range, keeping absolute slot and capture identities,
+and avoids downloading the old recordings again. The overnight complete export
+remains in `.local/foundation/capture-export`.
+
+The exporter checks slot CRCs, commit words, sequence gaps and an unchanged source
+bound. Inspect `manifest.json` and retain `range.bin` and `records.json`. An
+interrupted range export retains `range.partial`; it does not claim a completed
+manifest. Omit `--start-slot` for the complete occupied prefix (`prefix.bin`),
+including unknown or interrupted records. Neither operation reclaims data. After an
 unexpected restart, let the ordinary ride scanner finish before export. Existing
 committed captures remain exportable, but a new capture does not start itself.
 
@@ -167,6 +185,7 @@ After export and inspection, restore the required development configuration:
 
 ```sh
 CYCLING_SDK=0 CYCLING_HARNESS=1 mise run flash
+export CYCLING_PORT="$(python scripts/device_port.py)"
 mise run terminal -- INFO
 ```
 

@@ -147,6 +147,57 @@ The existing truncated identity acknowledgment and type-only data routing still
 apply. The companion's larger type table neither restores missing device-number
 bits nor permits independent routing of same-type peers.
 
+## Bounded sound control and observations
+
+N22 routes class 2, group 16, eight-byte payload `e2 01 PP 00 00 00 00 00`
+to its fixed-pattern buzzer player. Bytes after the pattern selector do not
+provide arbitrary frequency, duration or amplitude. The recovered PWM uses fixed
+50% duty. No separate speaker or codec is established. Pattern 19 cancels playback;
+it changes volatile playback state, without a configuration save in that path.
+The bridge response does not establish acoustic completion.
+
+The C606 capability exposes only patterns 0, 10, 21 and 22. Their recovered table
+values are respectively 3 kHz/75 ms, 4 kHz/100 ms, 2.5 kHz/150 ms and 3 kHz/300 ms.
+These durations are nominal timer values from the analyzed update, not measured
+electrical or acoustic durations on the installed companion. The capability has
+one pending request, rejects overlap, expires an unsent start after one second,
+uses conservative settling guards, and requires explicit stop after uncertain
+submission. Stop cancels a queued start. It never queues repetitions or retries
+an uncertain start automatically. Pattern 18 has an unbounded counter-wrap path;
+24 and 25 write companion configuration. None is accepted.
+
+Base revision `740b36c83e76` produced all four tones through the actual C606.
+The existing laptop microphone recorded them without a host speaker fixture.
+Frequency-selective analysis found approximately 118, 356, 153 and 341 ms of
+corresponding tonal energy, using 5 ms windows and 1 ms steps. Pattern 10's
+extended 4 kHz event remains unexplained: the recording does not resolve separate
+bursts or distinguish installed firmware, acoustic decay and host processing.
+Do not claim its nominal 100 ms acoustic duration was verified. A second pattern
+22 request followed by STOP shortened recorded tonal activity to roughly 190 ms.
+Threshold choice affects endpoints; capture startup latency and absolute SPL are
+unmeasured. Microphone gain/routing and device placement were retained.
+
+Across this scenario companion reports advanced by 411 and valid GNSS sentences
+by 252, with no new input, UART, CRC, DMA or parser errors. Battery/power reports
+remained fresh. No active ANT peer was part of this observation. No shutdown or
+sleep transition was tested. A main-CPU restart does not prove that companion
+playback was cancelled; finite patterns remain the bound. Future power sequencing
+must quiesce sound explicitly and verify its own recovery behavior. Issue #84
+therefore retains its timing, ANT-coexistence and power-transition limitations.
+
+## Installed read-only storage evidence
+
+Base revision `740b36c83e76` completed the bounded MMC layout and clock scenario.
+The FAT32 superfloppy spans all 7,733,248 reported sectors. Four distinct sector
+reads reached the root directory terminator; child trees and allocation ownership
+remain unverified. Repeated selected-sector CRCs matched at 400 kHz, 4 MHz and
+20 MHz, with no new GNSS or companion errors observed during that scenario.
+Representative repeated sector-zero read times were 10,934, 1,506 and 670
+microseconds. These are bounded read samples, not sustained throughput results.
+The original clock and preferences were restored. See [storage.md](storage.md)
+for geometry and validation limits. No part of this vendor volume has established
+application write ownership, and it is not a writable bulk-storage backend.
+
 ## Physical validation still needed
 
 The morning procedure should use the reviewed build's ordinary command help and

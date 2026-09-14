@@ -89,7 +89,7 @@ fn production_parser_bounds_and_typed_forms() {
         assert!(terminal_protocol::parse(line.as_bytes()).is_err());
     }
     let mut lines = terminal_protocol::Lines::default();
-    for _ in 0..200 {
+    for _ in 0..terminal_protocol::MAX_LINE + 1 {
         assert!(lines.push(b'x').is_none());
     }
     assert_eq!(

@@ -12,10 +12,11 @@ pub fn request_status(result: Result<(), crate::capabilities::Error>) -> &'stati
     }
 }
 
-pub const MAX_LINE: usize = 128;
+pub const MAX_LINE: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
+    Peripheral(crate::peripheral_commands::Command),
     Harness(crate::harness::Command),
     #[cfg(feature = "cycling")]
     Domain {
@@ -45,8 +46,19 @@ pub enum Command {
     Activity,
     Wifi,
     WifiReconnect,
+    WifiScan,
+    WifiNetworks,
+    WifiConfigure(crate::connectivity::WifiConfig),
+    WifiDisconnect,
+    WifiForget,
     Ble,
     BleReconnect,
+    BleScan,
+    BlePeers,
+    BleSelect(crate::ble_transport::Selection, u8),
+    BleDisconnect,
+    BleForget,
+    BleEcho,
     Storage,
     Display(u16),
     Restart,
@@ -125,7 +137,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
     let command = match verb {
         "HARNESS" => Command::Harness(crate::harness::parse(&mut words).ok_or(Error::Invalid)?),
         #[cfg(feature = "cycling")]
-        "RIDE" | "EXPORT" | "RADAR" => {
+        "RIDE" | "EXPORT" | "RADAR" | "FOUNDATION" => {
             let text = &line[line.find(verb).ok_or(Error::Invalid)?..];
             let mut bytes = [0; 128];
             if text.len() > bytes.len() {
@@ -187,6 +199,11 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             }),
             _ => return Err(Error::Invalid),
         },
+        name @ ("MMC" | "SOUND" | "GNSS" | "PRESSURE" | "MOTION" | "COMPANION") => {
+            Command::Peripheral(
+                crate::peripheral_commands::parse(name, &mut words).ok_or(Error::Invalid)?,
+            )
+        }
         "HELP" => Command::Help,
         "INFO" => Command::Info,
         "STATUS" => Command::Status,
@@ -201,12 +218,65 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         "RESTART" => Command::Restart,
         "WIFI" => match words.next() {
             None => Command::Wifi,
-            Some("RECONNECT") => Command::WifiReconnect,
+            Some("CONNECT" | "RECONNECT") => Command::WifiReconnect,
+            Some("SCAN") => Command::WifiScan,
+            Some("NETWORKS") => Command::WifiNetworks,
+            Some("DISCONNECT") => Command::WifiDisconnect,
+            Some("FORGET") => Command::WifiForget,
+            Some("CONFIG") => {
+                let auth = match words.next() {
+                    Some("WPA2") => false,
+                    Some("WPA3") => true,
+                    _ => return Err(Error::Invalid),
+                };
+                let ssid = hex::<32>(words.next().ok_or(Error::Invalid)?)?;
+                let password = hex::<63>(words.next().ok_or(Error::Invalid)?)?;
+                Command::WifiConfigure(
+                    crate::connectivity::WifiConfig::new(ssid.bytes(), password.bytes(), auth)
+                        .ok_or(Error::Invalid)?,
+                )
+            }
             _ => return Err(Error::Invalid),
         },
         "BLE" => match words.next() {
             None => Command::Ble,
-            Some("RECONNECT") => Command::BleReconnect,
+            Some("CONNECT" | "RECONNECT") => Command::BleReconnect,
+            Some("SCAN") => Command::BleScan,
+            Some("PEERS") => Command::BlePeers,
+            Some("DISCONNECT") => Command::BleDisconnect,
+            Some("FORGET") => Command::BleForget,
+            Some("ECHO") => Command::BleEcho,
+            Some("SELECT") => {
+                let profile = match words.next() {
+                    Some("HRS") => 1,
+                    Some("CSC") => 2,
+                    _ => return Err(Error::Invalid),
+                };
+                let name = hex::<32>(words.next().ok_or(Error::Invalid)?)?;
+                let address = match words.next().ok_or(Error::Invalid)? {
+                    "-" => None,
+                    value => {
+                        let mut bytes = [0; 6];
+                        decode_hex(value, &mut bytes)?;
+                        if value.len() != 12 {
+                            return Err(Error::Invalid);
+                        }
+                        Some(bytes)
+                    }
+                };
+                if name.is_empty() && address.is_none() {
+                    return Err(Error::Invalid);
+                }
+                Command::BleSelect(
+                    crate::ble_transport::Selection {
+                        name,
+                        address,
+                        service: 0,
+                        characteristic: 0,
+                    },
+                    profile,
+                )
+            }
             _ => return Err(Error::Invalid),
         },
         "BRIGHTNESS" => {
@@ -354,5 +424,66 @@ mod request_status_tests {
         }
         assert_eq!(request_status(Err(Error::Invalid)), "INVALID");
         assert_eq!(request_status(Err(Error::Failed)), "FAILED");
+    }
+}
+
+fn decode_hex(value: &str, output: &mut [u8]) -> Result<usize, Error> {
+    if !value.len().is_multiple_of(2) || value.len() / 2 > output.len() {
+        return Err(Error::Invalid);
+    }
+    for (slot, pair) in output
+        .iter_mut()
+        .zip(value.as_bytes().as_chunks::<2>().0.iter())
+    {
+        let digit = |v: u8| match v {
+            b'0'..=b'9' => Some(v - b'0'),
+            b'a'..=b'f' => Some(v - b'a' + 10),
+            b'A'..=b'F' => Some(v - b'A' + 10),
+            _ => None,
+        };
+        *slot =
+            digit(pair[0]).ok_or(Error::Invalid)? * 16 + digit(pair[1]).ok_or(Error::Invalid)?;
+    }
+    Ok(value.len() / 2)
+}
+fn hex<const N: usize>(value: &str) -> Result<crate::connectivity::Text<N>, Error> {
+    if value == "-" {
+        return Ok(crate::connectivity::Text::empty());
+    }
+    let mut bytes = [0; N];
+    let n = decode_hex(value, &mut bytes)?;
+    crate::connectivity::Text::new(&bytes[..n]).ok_or(Error::Invalid)
+}
+
+#[cfg(test)]
+mod connectivity_tests {
+    use super::*;
+    #[test]
+    fn runtime_credentials_use_bounded_hex_and_cannot_inject_commands() {
+        let command = parse(b"CMD 1 WIFI CONFIG WPA2 54657374 70617373776f7264")
+            .unwrap()
+            .command;
+        let Command::WifiConfigure(config) = command else {
+            panic!("configuration expected")
+        };
+        assert_eq!(config.ssid.text(), "Test");
+        assert_eq!(config.password.text(), "password");
+        for value in [
+            b"CMD 1 WIFI CONFIG WPA2 ff 70617373776f7264".as_slice(),
+            b"CMD 1 WIFI CONFIG WPA2 54657374 00",
+            b"CMD 1 WIFI CONFIG WPA2 54657374 70617373776f7264 RESTART",
+            b"CMD 1 BLE SELECT HRS - -",
+            b"CMD 1 BLE SELECT HRS 00 -",
+            b"CMD 1 BLE SELECT NEW 61 -",
+            b"CMD 1 BLE SELECT HRS - abcdef",
+        ] {
+            assert!(parse(value).is_err());
+        }
+        assert!(matches!(
+            parse(b"CMD 1 BLE SELECT CSC 54657374 060504030201")
+                .unwrap()
+                .command,
+            Command::BleSelect(_, 2)
+        ));
     }
 }

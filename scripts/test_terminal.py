@@ -59,7 +59,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_local_line_validation_precedes_transport(self):
         connection = self.connection()
-        for command in ['x' * 123, 'STATUS\nRESTART', 'é']:
+        for command in ['x' * 251, 'STATUS\nRESTART', 'é']:
             with self.assertRaises(ValueError):
                 exchange(connection, command)
         connection.terminal_command.assert_not_called()

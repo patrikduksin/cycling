@@ -1,4 +1,4 @@
-"""Read the current Wi-Fi profile into ignored firmware configuration."""
+"""Save a private Wi-Fi profile for ordinary runtime USB provisioning."""
 import argparse
 import json
 import os
@@ -48,36 +48,27 @@ def setup():
 def validate(config):
     if not isinstance(config.get("ssid"), str) or not 1 <= len(config["ssid"].encode()) <= 32:
         raise ValueError("SSID must contain 1 to 32 UTF-8 bytes")
+    if "\x00" in config["ssid"]:
+        raise ValueError("SSID cannot contain NUL")
     password = config.get("password")
-    if not isinstance(password, str) or not 8 <= len(password.encode()) <= 63 or password == "<hidden>":
+    if not isinstance(password, str) or not 8 <= len(password.encode()) <= 63 or password == "<hidden>" or "\x00" in password:
         raise ValueError("An accessible 8 to 63 byte Wi-Fi password is required")
     if config.get("security", "wpa-psk") not in ("wpa-psk", "sae"):
         raise ValueError("Unsupported Wi-Fi authentication")
 
 
-def rust_string(value):
-    # Encode every character, including quotes, backslashes and newlines.
-    return '"' + ''.join('\\u{' + format(ord(c), 'x') + '}' for c in value) + '"'
-
-
-def generate():
-    config = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
-    if config:
-        validate(config)
-    values = {"SSID": config.get("ssid", ""), "PASSWORD": config.get("password", "")}
-    source = "// Generated private configuration. Never publish this file or its firmware image.\n"
-    source += ''.join(f"pub const {name}: &str = {rust_string(value)};\n" for name, value in values.items())
-    source += f"pub const WPA3: bool = {str(config.get('security') == 'sae').lower()};\n"
-    save(LOCAL / "config.rs", source)
-    print("Private firmware configuration generated; Wi-Fi " + ("enabled." if config else "unconfigured."))
+def command(config):
+    validate(config)
+    auth = 'WPA3' if config.get('security') == 'sae' else 'WPA2'
+    return f'WIFI CONFIG {auth} {config["ssid"].encode().hex()} {config["password"].encode().hex()}'
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("setup", "generate"))
+    parser.add_argument("action", choices=("setup",))
     action = parser.parse_args().action
     try:
-        {"setup": setup, "generate": generate}[action]()
+        {"setup": setup}[action]()
     except (ValueError, OSError, KeyError, IndexError) as error:
         # Do not print exception contents: parsers may include secret input.
         raise SystemExit(f"Wi-Fi {action} failed ({type(error).__name__}); check private config and NetworkManager access.") from None

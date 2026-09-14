@@ -33,3 +33,15 @@ pub mod harness;
 
 #[cfg(feature = "cycling")]
 pub mod sdk_runtime;
+
+pub mod connectivity;
+
+pub mod bulk;
+
+pub mod sound;
+
+pub mod companion_sensors;
+
+pub mod position_control;
+
+pub mod peripheral_commands;

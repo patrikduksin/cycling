@@ -88,6 +88,16 @@ pub trait Positioning {
     fn snapshot(&self, now_ms: u64) -> Option<crate::positioning::Snapshot>;
 }
 pub trait Ble {
+    fn request(&mut self, _operation: crate::ble_transport::Operation) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+    fn control(&self) -> crate::connectivity::ControlStatus {
+        crate::connectivity::ControlStatus::new()
+    }
+    fn discoveries(&self) -> [Option<crate::ble_transport::Discovery>; 8] {
+        [None; 8]
+    }
+
     fn availability(&self) -> Availability;
     fn snapshot(&self) -> crate::ble_transport::Snapshot;
     fn take_packet(&mut self) -> Option<crate::ble_transport::Packet>;
@@ -138,6 +148,16 @@ pub trait Console {
 /// promise DHCP/link/internet readiness; compare generations around awaited IO.
 #[cfg(feature = "network-stack")]
 pub trait Network {
+    fn request(&mut self, _operation: crate::connectivity::WifiOperation) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+    fn control(&self) -> crate::connectivity::ControlStatus {
+        crate::connectivity::ControlStatus::new()
+    }
+    fn discoveries(&self) -> [Option<crate::connectivity::NetworkDiscovery>; 8] {
+        [None; 8]
+    }
+
     fn online(&self) -> bool;
     fn state(&self) -> u8;
     fn stats(&self) -> (u32, u32, u32, u8);
@@ -236,6 +256,14 @@ impl Edges {
         self.len -= 1;
         value
     }
+}
+
+/// Optional physical sensor observations; motion remains explicitly unscaled
+/// until fitted hardware and axes are established.
+pub trait Sensors {
+    fn snapshot(&self, now: u64) -> crate::companion_sensors::Snapshot;
+    fn identity_status(&self) -> &'static str;
+    fn query_identity(&mut self, now: u64) -> Result<(), Error>;
 }
 
 #[cfg(test)]

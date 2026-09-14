@@ -161,7 +161,7 @@ impl<T: cycling_os::capabilities::Console> Terminal<T> {
                                     "malformed command"
                                 }
                                 cycling_os::terminal_protocol::Error::Overlong => {
-                                    "line exceeds 128 bytes"
+                                    "line exceeds 256 bytes"
                                 }
                             },
                             now,
@@ -188,7 +188,10 @@ pub fn execute<
     now: u64,
     ant: &mut impl cycling_os::capabilities::Ant,
     ble: &mut impl cycling_os::capabilities::Ble,
-    _position: &impl cycling_os::capabilities::Positioning,
+    position: &mut (impl cycling_os::capabilities::Positioning + cycling_os::position_control::Control),
+    bulk: &mut impl cycling_os::bulk::Read,
+    sound: &mut impl cycling_os::sound::Sound,
+    sensors: &mut impl cycling_os::capabilities::Sensors,
     network: &mut impl cycling_os::capabilities::Network,
     input: &impl cycling_os::capabilities::InputObservation,
     diagnostics: &impl Diagnostics,
@@ -209,11 +212,11 @@ pub fn execute<
         ) {
             let _ = write!(
                 output,
-                " ordinary=HELP,INFO,STATUS,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,STORAGE,DISPLAY,RESTART,TEST"
+                " ordinary=HELP,INFO,STATUS,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
             );
             #[cfg(feature = "cycling")]
             {
-                let _ = write!(output, ",RIDE,EXPORT,RADAR");
+                let _ = write!(output, ",RIDE,EXPORT,RADAR,FOUNDATION");
             }
         }
         match request.command {
@@ -229,6 +232,17 @@ pub fn execute<
         return;
     }
     match request.command {
+        Command::Peripheral(command) => {
+            status = cycling_os::peripheral_commands::execute(
+                command,
+                now,
+                bulk,
+                sound,
+                position,
+                sensors,
+                &mut output,
+            );
+        }
         #[cfg(feature = "cycling")]
         Command::Domain { bytes, length } => {
             status = sdk.command(
@@ -309,7 +323,11 @@ pub fn execute<
         Command::Help => {
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [RECONNECT]|BLE [RECONNECT]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "MMC [READ sector offset length|CLOCK hz|RECOVER]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
+            );
+            let _ = write!(
+                output,
+                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|FOUNDATION LOG START 300..600/STOP/STATUS/INFO (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {
@@ -320,7 +338,7 @@ pub fn execute<
             crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board={} commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=128 log_slots=8 log_bytes=384",
+                "board={} commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
                 diagnostics.board(),
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                 cfg!(feature = "debug-harness"),
@@ -400,30 +418,176 @@ pub fn execute<
         Command::Wifi => {
             let _ = write!(
                 output,
-                "state={} online={} stats={:?}",
+                "state={} online={} stats={:?} saved={} operation={} sequence={} error={}",
                 network.state(),
                 network.online(),
-                network.stats()
+                network.stats(),
+                system.settings.wifi.is_some(),
+                network.control().operation.name(),
+                network.control().sequence,
+                network.control().error
             );
         }
         Command::WifiReconnect => {
-            status = cycling_os::terminal_protocol::request_status(network.reconnect());
+            status = cycling_os::terminal_protocol::request_status(
+                network.request(cycling_os::connectivity::WifiOperation::Connect),
+            );
+        }
+        Command::WifiScan => {
+            status = cycling_os::terminal_protocol::request_status(
+                network.request(cycling_os::connectivity::WifiOperation::Scan),
+            )
+        }
+        Command::WifiDisconnect => {
+            status = cycling_os::terminal_protocol::request_status(
+                network.request(cycling_os::connectivity::WifiOperation::Disconnect),
+            )
+        }
+        Command::WifiConfigure(_) | Command::WifiForget => {
+            let configuration = if let Command::WifiConfigure(value) = request.command {
+                Some(value)
+            } else {
+                None
+            };
+            if network.control().operation == cycling_os::connectivity::Operation::Pending {
+                status = "UNAVAILABLE";
+            } else {
+                let previous = system.settings;
+                system.settings.wifi = configuration;
+                if !system.save_connectivity() {
+                    system.settings = previous;
+                    status = "FAILED";
+                } else {
+                    status = cycling_os::terminal_protocol::request_status(network.request(
+                        cycling_os::connectivity::WifiOperation::Configure(configuration),
+                    ));
+                }
+            }
+        }
+        Command::WifiNetworks => {
+            for (index, network) in network.discoveries().iter().enumerate() {
+                if let Some(network) = network {
+                    let _ = write!(output, "index={} ssid_hex=", index);
+                    for b in network.ssid.bytes() {
+                        let _ = write!(output, "{:02x}", b);
+                    }
+                    let _ = write!(output, " rssi={} ", network.rssi);
+                }
+            }
         }
         Command::Ble => {
             let s = ble.snapshot();
             let _ = write!(
                 output,
-                "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={}",
+                "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={} saved={} profile={} operation={} sequence={} error={}",
                 s.link.name(),
                 s.connections,
                 s.disconnections,
                 s.notifications,
                 s.dropped,
-                s.scan_reports
+                s.scan_reports,
+                system.settings.ble.is_some(),
+                system.settings.ble_profile,
+                ble.control().operation.name(),
+                ble.control().sequence,
+                ble.control().error
             );
         }
         Command::BleReconnect => {
-            status = cycling_os::terminal_protocol::request_status(ble.reconnect());
+            status = cycling_os::terminal_protocol::request_status(
+                ble.request(cycling_os::ble_transport::Operation::Connect),
+            );
+        }
+        Command::BleScan => {
+            status = cycling_os::terminal_protocol::request_status(
+                ble.request(cycling_os::ble_transport::Operation::Scan),
+            )
+        }
+        Command::BleDisconnect => {
+            status = cycling_os::terminal_protocol::request_status(
+                ble.request(cycling_os::ble_transport::Operation::Disconnect),
+            )
+        }
+        Command::BleEcho => {
+            status = cycling_os::terminal_protocol::request_status(
+                ble.request(cycling_os::ble_transport::Operation::Echo),
+            )
+        }
+        Command::BleForget => {
+            if ble.control().operation == cycling_os::connectivity::Operation::Pending {
+                status = "UNAVAILABLE";
+            } else {
+                let previous = system.settings;
+                system.settings.ble = None;
+                system.settings.ble_profile = 0;
+                if !system.save_connectivity() {
+                    system.settings = previous;
+                    status = "FAILED";
+                } else {
+                    #[cfg(feature = "cycling")]
+                    sdk.select_profile(
+                        cycling_os::sdk::ble_sensor::Profile::Echo,
+                        ble.snapshot().connections,
+                    );
+                    status = cycling_os::terminal_protocol::request_status(
+                        ble.request(cycling_os::ble_transport::Operation::Select(None)),
+                    );
+                }
+            }
+        }
+        Command::BleSelect(_, _) => {
+            #[cfg(not(feature = "cycling"))]
+            {
+                status = "UNSUPPORTED";
+            }
+            #[cfg(feature = "cycling")]
+            {
+                if ble.control().operation == cycling_os::connectivity::Operation::Pending {
+                    status = "UNAVAILABLE";
+                } else {
+                    let (selection, profile) =
+                        if let Command::BleSelect(peer, profile) = request.command {
+                            let profile = cycling_os::sdk::ble_sensor::Profile::from_u8(profile);
+                            (
+                                cycling_os::sdk::ble::selection(
+                                    profile,
+                                    peer.name.bytes(),
+                                    peer.address,
+                                ),
+                                profile,
+                            )
+                        } else {
+                            (None, cycling_os::sdk::ble_sensor::Profile::Echo)
+                        };
+                    let previous = system.settings;
+                    system.settings.ble = selection;
+                    system.settings.ble_profile = profile as u8;
+                    if !system.save_connectivity() {
+                        system.settings = previous;
+                        status = "FAILED";
+                    } else {
+                        sdk.select_profile(profile, ble.snapshot().connections);
+                        status = cycling_os::terminal_protocol::request_status(
+                            ble.request(cycling_os::ble_transport::Operation::Select(selection)),
+                        );
+                    }
+                }
+            }
+        }
+        Command::BlePeers => {
+            for (index, peer) in ble.discoveries().iter().enumerate() {
+                if let Some(peer) = peer {
+                    let _ = write!(output, "index={} name_hex=", index);
+                    for b in peer.name.bytes() {
+                        let _ = write!(output, "{:02x}", b);
+                    }
+                    let _ = write!(output, " address_le=");
+                    for b in peer.address {
+                        let _ = write!(output, "{:02x}", b);
+                    }
+                    let _ = write!(output, " random={} rssi={} ", peer.random, peer.rssi);
+                }
+            }
         }
         Command::Storage => {
             let _ = write!(output, "{:?}", system.store.data().geometry());

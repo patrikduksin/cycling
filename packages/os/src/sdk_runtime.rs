@@ -14,11 +14,38 @@ use crate::{
 };
 use core::fmt::Write;
 
+/// Reserve two local samples per second and, when selected, three ANT slots per
+/// second. This is a bounded planning allowance, not a guarantee at arbitrary RF rates.
+fn foundation_reservation(seconds: u32, ant_selected: bool) -> Option<usize> {
+    if !(300..=600).contains(&seconds) {
+        return None;
+    }
+    Some(seconds as usize * if ant_selected { 5 } else { 2 } + 8)
+}
+
+fn foundation_expired(
+    now: u64,
+    status: crate::sdk::ant_capture::Status,
+    seconds: Option<u32>,
+    deadline: &mut Option<u64>,
+) -> bool {
+    use crate::sdk::ant_capture::Status;
+    if !matches!(status, Status::Ready | Status::Recording) {
+        return false;
+    }
+    let Some(seconds) = seconds else {
+        return false;
+    };
+    now >= *deadline.get_or_insert_with(|| now.saturating_add(u64::from(seconds) * 1000))
+}
+
 pub struct Runtime {
     pub clock: Option<fn() -> u64>,
     radar: crate::sdk::radar::Radar,
     capture: crate::sdk::ant_capture::Capturer,
     capture_started: Option<u64>,
+    capture_seconds: Option<u32>,
+    capture_deadline: Option<u64>,
     next_display: u64,
     next_position: u64,
     next_reconnect: [u64; 3],
@@ -40,6 +67,8 @@ impl Runtime {
             radar: crate::sdk::radar::Radar::new(),
             capture: crate::sdk::ant_capture::Capturer::new(),
             capture_started: None,
+            capture_seconds: None,
+            capture_deadline: None,
             next_display: 0,
             next_position: 0,
             next_reconnect: [0; 3],
@@ -55,8 +84,29 @@ impl Runtime {
         }
     }
 
+    pub fn select_profile(&mut self, profile: Profile, previous_connection: u32) {
+        self.sensors.select_profile(profile, previous_connection);
+    }
+
     pub fn recording(&self) -> bool {
-        self.capture.snapshot().recording || self.recorder.status() == ride_log::Status::Recording
+        // INFO protects all accepted work, including acquisition preflight and
+        // final flushes, from host-triggered restart. Durable sample counters
+        // remain separate in LOG STATUS.
+        self.pending.is_some()
+            || matches!(
+                self.capture.snapshot().status,
+                crate::sdk::ant_capture::Status::Scanning
+                    | crate::sdk::ant_capture::Status::Ready
+                    | crate::sdk::ant_capture::Status::Recording
+                    | crate::sdk::ant_capture::Status::Stopping
+            )
+            || matches!(
+                self.recorder.status(),
+                ride_log::Status::Recording
+                    | ride_log::Status::Paused
+                    | ride_log::Status::Formatting
+                    | ride_log::Status::Clearing
+            )
     }
 
     pub fn radar(&self, now: u64) -> crate::sdk::radar::Snapshot {
@@ -147,7 +197,6 @@ impl Runtime {
         output: &mut impl Write,
         ant: &impl crate::capabilities::Ant,
     ) -> &'static str {
-        use crate::sdk::ant_capture::Status as CaptureStatus;
         if operation.is_none() && argument.is_none() && bound.is_none() {
             let _ = write!(output, "{:?}", self.radar(now));
             return "OK";
@@ -161,6 +210,30 @@ impl Runtime {
         if operation != Some("LOG") {
             return "INVALID";
         }
+        let channels = ant.channels(now);
+        let sensors_ready = channels
+            .iter()
+            .flatten()
+            .any(|s| s.selected.is_some_and(|peer| peer.device_type == 40))
+            && !channels
+                .iter()
+                .flatten()
+                .any(|s| s.link != crate::ant::LinkState::Connected || s.stale);
+        self.capture_command(argument, bound, store, now, output, sensors_ready, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_command(
+        &mut self,
+        argument: Option<&str>,
+        bound: Option<&str>,
+        store: &mut impl crate::sdk::storage::RideStorage,
+        now: u64,
+        output: &mut impl Write,
+        sensors_ready: bool,
+        foundation: Option<(u32, usize)>,
+    ) -> &'static str {
+        use crate::sdk::ant_capture::Status as CaptureStatus;
         match (argument, bound) {
             (Some("START"), None) => {
                 if self.capture_started.is_some()
@@ -170,22 +243,18 @@ impl Runtime {
                 {
                     return "BUSY";
                 }
-                let channels = ant.channels(now);
-                if !channels
-                    .iter()
-                    .flatten()
-                    .any(|s| s.selected.is_some_and(|peer| peer.device_type == 40))
-                    || channels
-                        .iter()
-                        .flatten()
-                        .any(|s| s.link != crate::ant::LinkState::Connected || s.stale)
-                {
+                if !sensors_ready {
                     return "SENSORS_NOT_READY";
                 }
-                if !self.capture.start() {
+                let required =
+                    foundation.map_or(crate::sdk::ant_capture::REQUIRED_SLOTS, |(_, slots)| slots);
+                if !self.capture.start(required) {
                     return "STATE";
                 }
                 self.capture_started = Some(now);
+                self.capture_seconds = foundation.map(|(seconds, _)| seconds);
+                self.capture_deadline = None;
+                self.next_position = now;
                 "ACCEPTED"
             }
             (Some("STOP"), None) => {
@@ -193,7 +262,21 @@ impl Runtime {
                 "ACCEPTED"
             }
             (Some("STATUS"), None) => {
-                let _ = write!(output, "{:?}", self.capture.snapshot());
+                let active = matches!(
+                    self.capture.snapshot().status,
+                    CaptureStatus::Ready | CaptureStatus::Recording
+                );
+                let remaining = self
+                    .capture_deadline
+                    .filter(|_| active)
+                    .map(|deadline| deadline.saturating_sub(now).div_ceil(1000));
+                let _ = write!(
+                    output,
+                    "{:?} requested_seconds={:?} remaining_seconds={:?}",
+                    self.capture.snapshot(),
+                    self.capture_seconds,
+                    remaining
+                );
                 "OK"
             }
             (Some("INFO"), None) | (Some("READ"), Some(_)) => {
@@ -256,9 +339,19 @@ impl Runtime {
         position: &impl crate::capabilities::Positioning,
         network_online: bool,
         input: &impl crate::capabilities::InputObservation,
+        physical: crate::companion_sensors::Snapshot,
     ) {
         let channels = ant.channels(now);
-        let capture_status = self.capture.snapshot().status;
+        let mut capture_status = self.capture.snapshot().status;
+        if foundation_expired(
+            now,
+            capture_status,
+            self.capture_seconds,
+            &mut self.capture_deadline,
+        ) {
+            self.capture.stop();
+            capture_status = self.capture.snapshot().status;
+        }
         for (index, channel) in channels.iter().enumerate() {
             let Some(channel_state) = channel else {
                 continue;
@@ -415,6 +508,12 @@ impl Runtime {
                     .and_then(|s| s.gps.age_ms)
                     .and_then(|age| now.checked_sub(age));
                 self.capture
+                    .environment(crate::sdk::ant_capture::EnvironmentRecord::sample(
+                        now,
+                        physical,
+                        input.snapshot(now),
+                    ));
+                self.capture
                     .position(crate::sdk::ant_capture::PositionRecord {
                         now,
                         observed_ms,
@@ -454,6 +553,34 @@ impl Runtime {
         }
         if domain == Some("RADAR") {
             return self.radar_command(operation, argument, bound, store, now, output, ant);
+        }
+        if domain == Some("FOUNDATION") {
+            if operation != Some("LOG") {
+                return "INVALID";
+            }
+            if argument == Some("START") {
+                let Some(seconds) = bound.and_then(|value| value.parse::<u32>().ok()) else {
+                    return "INVALID";
+                };
+                let selected = ant
+                    .channels(now)
+                    .iter()
+                    .flatten()
+                    .any(|channel| channel.selected.is_some());
+                let Some(required) = foundation_reservation(seconds, selected) else {
+                    return "INVALID";
+                };
+                return self.capture_command(
+                    argument,
+                    None,
+                    store,
+                    now,
+                    output,
+                    true,
+                    Some((seconds, required)),
+                );
+            }
+            return self.capture_command(argument, bound, store, now, output, true, None);
         }
         // Capture appends to the same owned reservation. The ride catalog is
         // intentionally frozen until restart/rescan, so it cannot overwrite it.
@@ -629,5 +756,68 @@ impl Runtime {
             }
             _ => "INVALID",
         }
+    }
+}
+
+#[cfg(test)]
+mod foundation_tests {
+    use super::*;
+    use crate::sdk::ant_capture::Status;
+
+    #[test]
+    fn duration_reservation_rejects_unbounded_runs_and_accounts_for_selected_ant() {
+        assert_eq!(foundation_reservation(300, false), Some(608));
+        assert_eq!(foundation_reservation(360, false), Some(728));
+        assert_eq!(foundation_reservation(600, false), Some(1208));
+        assert_eq!(foundation_reservation(300, true), Some(1508));
+        assert_eq!(foundation_reservation(600, true), Some(3008));
+        for seconds in [0, 299, 601, u32::MAX] {
+            assert_eq!(foundation_reservation(seconds, false), None);
+        }
+    }
+
+    #[test]
+    fn deadline_begins_after_scan_and_expires_without_usb_or_peer() {
+        let mut deadline = None;
+        assert!(!foundation_expired(
+            1_000,
+            Status::Scanning,
+            Some(300),
+            &mut deadline
+        ));
+        assert_eq!(deadline, None);
+        assert!(!foundation_expired(
+            9_000,
+            Status::Ready,
+            Some(300),
+            &mut deadline
+        ));
+        assert_eq!(deadline, Some(309_000));
+        assert!(!foundation_expired(
+            308_999,
+            Status::Recording,
+            Some(300),
+            &mut deadline
+        ));
+        assert!(foundation_expired(
+            309_000,
+            Status::Recording,
+            Some(300),
+            &mut deadline
+        ));
+        assert!(!foundation_expired(
+            310_000,
+            Status::Stopping,
+            Some(300),
+            &mut deadline
+        ));
+        let mut radar = None;
+        assert!(!foundation_expired(
+            1_000_000,
+            Status::Recording,
+            None,
+            &mut radar
+        ));
+        assert_eq!(radar, None);
     }
 }

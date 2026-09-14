@@ -8,6 +8,11 @@ It also interprets ANT radar, heart-rate and power reports and provides a sensor
 test screen and capture. A full graphical application and live speed/distance
 are not implemented.
 
+C606 foundation commands also expose fixed buzzer patterns, bounded GNSS stream
+pause/resume, raw motion, compensated pressure and read-only MMC access.
+[Morning validation](docs/c606-morning.md) covers the remaining physical checks
+and a capacity-checked capture using the existing owned journal.
+
 See [architecture and ownership](docs/architecture.md) for the device capability
 and shell boundaries, and [#75](https://github.com/patrikduksin/cycling/issues/75)
 for implementation tracking.
@@ -41,10 +46,10 @@ startup in its device module. Compose those handles with the shared shell in a
 device entry point. Add the composition to the mise/CI checks and validate its
 hardware behavior. Shell code must not need device imports or board-name branches.
 
-Wi-Fi is unconfigured by default. Before building, `mise run wifi-setup` can
-copy the connected NetworkManager personal-network profile into ignored
-`.local/wifi/`. Credentials are compiled into the image; keep configured firmware
-images private as well as the configuration.
+Wi-Fi is unconfigured until provisioned over USB. `mise run wifi-setup` copies
+the connected NetworkManager personal-network profile into ignored `.local/wifi/`.
+Use the [runtime connectivity commands and harness](docs/runtime-connectivity.md)
+to apply it without rebuilding. Firmware images contain no provisioned credentials.
 
 Before connecting or flashing, read the [C606 workflow](.agents/skills/c606/SKILL.md).
 It preserves stock firmware and existing data. Firmware lives in `packages/os`;

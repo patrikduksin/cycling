@@ -16,10 +16,10 @@
 | Touch | I2C0, SDA21, SCL12; `0x5a`, packed coordinates at `0xd000` | Rust touch and visual alignment confirmed; exact part ID pending |
 | Buttons / power | UART2 RX41 at 115200; all three short-click IDs mapped | Three buttons and brightness shortcuts physically confirmed; power control pending |
 | Battery / charge | Companion streams voltage, percentage and power status | Percentage and USB power transition physically confirmed; calibration pending |
-| Sound | Companion buzzer control; main audio-resource management | Buzzer lead; speaker/codec unconfirmed |
-| GNSS | UART0 RX0 at 921600; live GN NMEA | Verified receive path; exact receiver and control effect pending |
-| Motion | Companion `icm42607` and `qma6100` ID checks | Variant candidates |
-| Pressure | Companion `spl0601`, `spl06001`, `spa06003` diagnostic names | Variant candidates; spelling preserved |
+| Sound | Four finite companion patterns and stop | Actual tones and shortened playback recorded; fixed level, timing limits in foundation-research.md |
+| GNSS | UART0 RX0 at 921600; live GN NMEA | Receive and bounded stream pause/resume verified; receiver and electrical power unknown |
+| Motion | Two signed raw triplets in companion reports; `icm42607` and `qma6100` candidates | Stationary acquisition verified; fitted part, units and axes unresolved |
+| Pressure | Compensated pressure/temperature reports; `spl0601`, `spl06001`, `spa06003` candidates | Stationary acquisition verified; identity and absolute calibration unresolved |
 | Resource storage | SD/MMC, FAT, `/sdcard` mount | MMC/eMMC identification and one-bit reads verified; see storage.md |
 
 ## Display wiring
@@ -56,26 +56,33 @@ sentences before the custom firmware sent any control command. The indoor unit
 reported quality 0, zero satellites and no position. The exact receiver model,
 antenna state and any adaptive baud behavior remain unknown.
 
-Stock analysis recovered UART2 TX42/RX41 at 115200 and one complete 16-byte
-companion command used by its GPS open path. The custom firmware sends that
-candidate once at startup. The live NMEA stream existed before the command, and
-no acknowledgment or change in acquisition state was observed after it. This
-confirms only that the candidate frame was sent. It does not verify power or
-enable semantics. The custom firmware does not send the recovered close or
-reset-like commands and does not change unverified GPIOs.
+Stock analysis recovered UART2 TX42/RX41 at 115200 and the companion's GPS
+open/close frames. The initial startup-only send did not establish an effect:
+the live stream already existed. Later [PR #47](https://github.com/patrikduksin/cycling/pull/47)
+recorded a four-second stream pause followed by resumed reception using the
+recovered close/open pair. This establishes stream control, not electrical power
+or receiver identity. The foundation control wraps that same pair in a bounded
+2–10 second pause lease with automatic resume and observed parser progress.
+Unverified reset commands and GPIO transitions remain unused.
 
 Current acquisition uses UART0/UHCI DMA and an independent Embassy task, with
 resynchronization after reported transport loss. The parser distinguishes no data,
 no fix, fresh and stale fixes and matches satellite data to the coordinate epoch.
 The owning code is [gps_uart.rs](../../os/src/device/gps_uart.rs),
-[positioning.rs](../../os/src/services/positioning.rs) and [gps.rs](../../os/src/gps.rs).
+[positioning.rs](../../os/src/device/services/positioning.rs) and [gps.rs](../../os/src/gps.rs).
 
 Early display-coupled reception suffered UART losses during network and UI work.
 That implementation is retired. [#34](https://github.com/patrikduksin/cycling/issues/34)
 contains the subsequent investigation and user-confirmed outdoor functionality.
 [PR #71 evidence](https://github.com/patrikduksin/cycling/pull/71#issuecomment-5647388096)
 records indoor parser progress and recovery after deliberate executor starvation.
-Neither establishes receiver identity, electrical enable semantics or measured
+[PR #74](https://github.com/patrikduksin/cycling/pull/74) adds the owner's outdoor
+capture with three ANT sensors. The foundation's base `740b36c83e76` repeated
+three four-second stream pauses with automatic resume, continued companion
+progress and no new parser or transport errors. Previous bounded `PAIR020` and
+`PDTINFO` identification attempts produced no recognized identity reply; command
+family support is not a fitted-part identity. These observations establish neither
+receiver identity, electrical enable semantics nor measured
 outdoor accuracy. Raw NMEA and coordinates remain private.
 
 ## PSRAM
@@ -110,7 +117,7 @@ byte 2 and the low nibble of byte 3 for Y. Low nibble 6 of byte 0 means pressed.
 The format agrees with the [Hynitron CST3240 application manual](https://www.buydisplay.com/download/ic/CST3240_Application_Manual.pdf),
 but CST3240 remains a controller candidate, not a verified fitted part.
 
-The current [input service](../../os/src/services/io.rs) polls independently of
+The current [input service](../../os/src/device/services/io.rs) polls independently of
 display submissions. It validates one-finger coordinates and leaves controller
 firmware, calibration and reset alone. Brightness preferences are now persisted;
 the former slider and per-frame polling are retired.

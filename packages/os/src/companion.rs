@@ -43,6 +43,23 @@ impl Frame {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
+    /// Checksum-validated report payload, including variable-length identity pages.
+    pub fn report_payload(&self) -> Option<(u8, &[u8])> {
+        if self.bytes[4] != 4 {
+            return None;
+        }
+        Some((self.bytes[5], &self.bytes[6..self.len - 2]))
+    }
+    /// Only the read-only identity query's response envelope. It is separate
+    /// from periodic class-four reports and cannot be routed as an ANT page.
+    pub fn identity_reply(&self) -> Option<&[u8]> {
+        (self.len == 18
+            && self.bytes[4] == 5
+            && self.bytes[5] == 1
+            && self.bytes[6] == 1
+            && self.bytes[7] == 1)
+            .then_some(&self.bytes[6..16])
+    }
     pub fn report(&self) -> Option<(u8, [u8; 8])> {
         if self.len != 16 || self.bytes[4] != 4 {
             return None;

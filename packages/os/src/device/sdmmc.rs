@@ -1,4 +1,4 @@
-//! Bounded, read-only ESP32-S3 SD/MMC identification probe.
+//! Bounded, read-only ESP32-S3 SD/MMC backend.
 //!
 //! The low-level host sequence is adapted from the Apache-2.0 OR MIT licensed
 //! `esp-hal` 1.2.1 SDMMC driver. The project remains pinned to HAL 1.1.2, so
@@ -8,7 +8,7 @@
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use cycling_os::sdmmc_probe::{
-    ProtocolError, check_app_command, check_r1, check_r6, response_u128, sd_sector_count,
+    ProtocolError, check_app_command, check_r1, check_r6, sd_sector_count,
 };
 
 use esp_hal::{
@@ -47,15 +47,6 @@ pub enum Kind {
     Mmc,
 }
 
-impl Kind {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Sd => "sd",
-            Self::Mmc => "mmc",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Timeout,
@@ -71,6 +62,7 @@ pub enum Error {
     Protocol(ProtocolError),
     InterfaceCondition,
     InitializationTimeout,
+    Readback,
 }
 
 impl From<ProtocolError> for Error {
@@ -80,20 +72,11 @@ impl From<ProtocolError> for Error {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Report {
-    pub kind: Kind,
-    pub high_capacity: bool,
-    pub rca: u16,
-    pub cid: [u32; 4],
-    pub csd: [u32; 4],
-    pub sectors: u64,
-    pub sector_size: u16,
-    pub product: [u8; 6],
-    pub reads: u8,
-    pub repeated_equal: bool,
-    pub first_hash: u32,
-    pub second_hash: u32,
-    pub last_hash: u32,
+struct Report {
+    kind: Kind,
+    high_capacity: bool,
+    cid: [u32; 4],
+    sectors: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -132,6 +115,11 @@ impl<'d> Host<'d> {
         let mut host = Self {
             _peripheral: peripheral,
         };
+        host.initialize()?;
+        Ok(host)
+    }
+
+    fn initialize(&mut self) -> Result<(), Error> {
         let system = unsafe { &*esp32s3::SYSTEM::ptr() };
         system
             .perip_clk_en1()
@@ -175,11 +163,14 @@ impl<'d> Host<'d> {
         r.idinten().write(|w| unsafe { w.bits(0) });
         r.ctrl().modify(|_, w| w.int_enable().clear_bit());
 
-        host.set_bus_1bit_400khz()?;
-        Ok(host)
+        self.set_bus_1bit_400khz()
     }
 
     fn set_bus_1bit_400khz(&mut self) -> Result<(), Error> {
+        self.set_clock(100)
+    }
+
+    fn set_clock(&mut self, divider: u8) -> Result<(), Error> {
         let r = registers();
         r.ctype().modify(|rd, w| unsafe {
             w.card_width4().bits(rd.card_width4().bits() & !(1 << SLOT));
@@ -194,9 +185,9 @@ impl<'d> Host<'d> {
             value |= 1 << 2;
             w.clksrc().bits(value)
         });
-        // card_clk = 80 MHz / (2 * 100) = 400 kHz.
+        // card_clk = 80 MHz / (2 * divider). No card register changes.
         r.clkdiv()
-            .modify(|_, w| unsafe { w.clk_divider1().bits(100) });
+            .modify(|_, w| unsafe { w.clk_divider1().bits(divider) });
         r.clkena().modify(|rd, w| unsafe {
             w.cclk_enable().bits(rd.cclk_enable().bits() | (1 << SLOT));
             w.lp_enable().bits(rd.lp_enable().bits() | (1 << SLOT))
@@ -306,7 +297,7 @@ impl Drop for Host<'_> {
     }
 }
 
-pub fn probe<'d>(
+pub fn open<'d>(
     peripheral: SDHOST<'d>,
     clk: impl Pin + 'd,
     cmd: impl Pin + 'd,
@@ -314,7 +305,7 @@ pub fn probe<'d>(
     data1: impl Pin + 'd,
     data2: impl Pin + 'd,
     data3: impl Pin + 'd,
-) -> Result<Report, Error> {
+) -> Result<Reader<'d>, Error> {
     let mut pins = Pins {
         clk: Flex::new(clk),
         cmd: Flex::new(cmd),
@@ -355,8 +346,105 @@ pub fn probe<'d>(
             identify_mmc(&mut host)
         }
     };
-    let _ = host.reset_card();
-    report
+    let report = report?;
+    Ok(Reader {
+        host,
+        _pins: pins,
+        report,
+        failed: false,
+        reads: 0,
+        failures: 0,
+        last_read_us: 0,
+        clock_hz: 400_000,
+    })
+}
+
+/// Host and pin tokens remain owned for the complete media lifetime. All DMA
+/// buffers are stack-allocated internal RAM, never caller-owned external RAM.
+pub struct Reader<'d> {
+    host: Host<'d>,
+    _pins: Pins<'d>,
+    report: Report,
+    failed: bool,
+    reads: u32,
+    failures: u32,
+    last_read_us: u64,
+    clock_hz: u32,
+}
+impl cycling_os::bulk::Read for Reader<'_> {
+    fn info(&self) -> Result<cycling_os::bulk::Info, cycling_os::bulk::Error> {
+        if self.failed {
+            return Err(cycling_os::bulk::Error::Failed);
+        }
+        Ok(cycling_os::bulk::Info {
+            sectors: self.report.sectors,
+            sector_size: 512,
+            clock_hz: self.clock_hz,
+            bus_width: 1,
+            reads: self.reads,
+            failures: self.failures,
+            last_read_us: self.last_read_us,
+        })
+    }
+    fn read(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<(), cycling_os::bulk::Error> {
+        let address =
+            cycling_os::bulk::address(sector, self.report.sectors, self.report.high_capacity)?;
+        if self.failed {
+            return Err(cycling_os::bulk::Error::Failed);
+        }
+        let mut buffer = Sector([0; 512]);
+        let started = Instant::now();
+        let result = self.host.read_sector(address, &mut buffer);
+        self.last_read_us = started.elapsed().as_micros();
+        if let Err(error) = result {
+            self.failed = true;
+            self.failures = self.failures.saturating_add(1);
+            log::warn!(target: "mmc", "read failed error={:?}; recover before another read", error);
+            return Err(cycling_os::bulk::Error::Failed);
+        }
+        output.copy_from_slice(&buffer.0);
+        self.reads = self.reads.saturating_add(1);
+        Ok(())
+    }
+    fn clock(&mut self, hz: u32) -> Result<(), cycling_os::bulk::Error> {
+        let divider = match hz {
+            400_000 => 100,
+            4_000_000 => 10,
+            20_000_000 => 2,
+            _ => return Err(cycling_os::bulk::Error::Range),
+        };
+        if self.failed {
+            return Err(cycling_os::bulk::Error::Failed);
+        }
+        if self.host.set_clock(divider).is_err() {
+            self.failed = true;
+            self.failures = self.failures.saturating_add(1);
+            return Err(cycling_os::bulk::Error::Failed);
+        }
+        self.clock_hz = hz;
+        Ok(())
+    }
+    fn recover(&mut self) -> Result<(), cycling_os::bulk::Error> {
+        self.failed = true;
+        let result = (|| {
+            self.host.initialize()?;
+            self.host.init_clocks()?;
+            self.host.reset_card()?;
+            match self.report.kind {
+                Kind::Mmc => identify_mmc(&mut self.host),
+                Kind::Sd => identify_sd(&mut self.host)?.ok_or(Error::InterfaceCondition),
+            }
+        })();
+        let report = result.map_err(|_| cycling_os::bulk::Error::Failed)?;
+        // A changed medium cannot silently replace the one selected at boot.
+        if report.cid != self.report.cid || report.sectors != self.report.sectors {
+            return Err(cycling_os::bulk::Error::Failed);
+        }
+        self.report = report;
+        self.clock_hz = 400_000;
+        self.failed = false;
+        Ok(())
+    }
 }
 
 impl Drop for Pins<'_> {
@@ -623,9 +711,9 @@ fn read_report(
     host: &mut Host<'_>,
     kind: Kind,
     high_capacity: bool,
-    rca: u16,
+    _rca: u16,
     cid: [u32; 4],
-    csd: [u32; 4],
+    _csd: [u32; 4],
     sectors: u64,
 ) -> Result<Report, Error> {
     if sectors == 0 || sectors > u64::from(u32::MAX) {
@@ -647,46 +735,15 @@ fn read_report(
     host.read_sector(address(0)?, &mut first)?;
     host.read_sector(address(0)?, &mut repeated)?;
     host.read_sector(address(sectors - 1)?, &mut last)?;
-    let product = product_name(kind, cid);
+    if first.0 != repeated.0 {
+        return Err(Error::Readback);
+    }
     Ok(Report {
         kind,
         high_capacity,
-        rca,
         cid,
-        csd,
         sectors,
-        sector_size: 512,
-        product,
-        reads: 3,
-        repeated_equal: first.0 == repeated.0,
-        first_hash: hash(&first.0),
-        second_hash: hash(&repeated.0),
-        last_hash: hash(&last.0),
     })
-}
-
-fn product_name(kind: Kind, cid: [u32; 4]) -> [u8; 6] {
-    let bytes = response_u128(cid).to_be_bytes();
-    let mut product = [b' '; 6];
-    match kind {
-        Kind::Sd => product[..5].copy_from_slice(&bytes[3..8]),
-        Kind::Mmc => product.copy_from_slice(&bytes[3..9]),
-    }
-    for byte in &mut product {
-        if !byte.is_ascii_graphic() {
-            *byte = b'?';
-        }
-    }
-    product
-}
-
-fn hash(bytes: &[u8]) -> u32 {
-    let mut value = 0x811c_9dc5u32;
-    for &byte in bytes {
-        value ^= u32::from(byte);
-        value = value.wrapping_mul(0x0100_0193);
-    }
-    value
 }
 
 fn registers() -> &'static esp32s3::sdhost::RegisterBlock {

@@ -30,6 +30,7 @@ static BACKLIGHT_TIMER: StaticCell<timer::Timer<'static, LowSpeed>> = StaticCell
 struct Resources {
     pub reset: cycling_os::crash::Reset,
     pub crash: cycling_os::crash::Marker,
+    pub bulk: Option<sdmmc::Reader<'static>>,
     pub flash: esp_hal::peripherals::FLASH<'static>,
     pub wifi: esp_hal::peripherals::WIFI<'static>,
     pub bluetooth: esp_hal::peripherals::BT<'static>,
@@ -81,49 +82,25 @@ fn init() -> Resources {
         psram.allocator_probe,
         psram.allocator_alignment
     );
-    if option_env!("CYCLING_SDMMC_PROBE") == Some("1") {
-        println!(
-            "CYCLING_SDMMC probe=start mode=native-read-only slot=1 width=1 clock_hz=400000 pins=13,14,16"
-        );
-        match sdmmc::probe(
-            p.SDHOST, p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15,
-        ) {
-            Ok(report) => {
-                let model = core::str::from_utf8(&report.product).unwrap_or("??????");
-                println!(
-                    "CYCLING_SDMMC ready kind={} model={} high_capacity={} capacity_bytes={} sector_size={} reads={} repeated_equal={}",
-                    report.kind.name(),
-                    model,
-                    report.high_capacity,
-                    report.sectors * u64::from(report.sector_size),
-                    report.sector_size,
-                    report.reads,
-                    report.repeated_equal
-                );
-                println!(
-                    "CYCLING_SDMMC_PRIVATE rca={:04x} cid={:08x},{:08x},{:08x},{:08x} csd={:08x},{:08x},{:08x},{:08x} first_hash={:08x} second_hash={:08x} last_hash={:08x}",
-                    report.rca,
-                    report.cid[0],
-                    report.cid[1],
-                    report.cid[2],
-                    report.cid[3],
-                    report.csd[0],
-                    report.csd[1],
-                    report.csd[2],
-                    report.csd[3],
-                    report.first_hash,
-                    report.second_hash,
-                    report.last_hash
-                );
-            }
-            Err(error) => println!("CYCLING_SDMMC probe_failed error={:?}", error),
+    // Ordinary read-only access. No mount, card register writes or implicit
+    // application namespace: vendor data remains owned by stock.
+    let bulk = match sdmmc::open(
+        p.SDHOST, p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15,
+    ) {
+        Ok(reader) => {
+            use cycling_os::bulk::Read;
+            let info = reader.info().unwrap();
+            println!(
+                "CYCLING_SDMMC ready mode=read-only sectors={} sector_size={} width={} clock_hz={}",
+                info.sectors, info.sector_size, info.bus_width, info.clock_hz
+            );
+            Some(reader)
         }
-    } else {
-        // Own the recovered storage pins even in ordinary builds so later
-        // changes cannot silently assign them to another peripheral.
-        let _sdhost = p.SDHOST;
-        let _storage_pins = (p.GPIO13, p.GPIO14, p.GPIO16, p.GPIO17, p.GPIO18, p.GPIO15);
-    }
+        Err(error) => {
+            println!("CYCLING_SDMMC initialization_failed error={:?}", error);
+            None
+        }
+    };
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
     let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);
@@ -209,6 +186,7 @@ fn init() -> Resources {
         screen,
         touch,
         touch_available,
+        bulk,
         gps_receiver,
         backlight,
         _lcd_read: _rd,
@@ -283,15 +261,15 @@ pub struct Parts {
     pub positioning: Positioning,
     pub network: Network,
     pub power: Power,
+    pub sensors: Sensors,
+    pub sound: Sound,
+    pub bulk: Bulk,
     pub storage: super::storage::Backend<'static>,
     pub terminal: super::usb::Usb,
     pub reset: cycling_os::crash::Reset,
     pub crash: cycling_os::crash::Marker,
 }
-pub async fn start(
-    spawner: embassy_executor::Spawner,
-    selection: Option<cycling_os::ble_transport::Selection>,
-) -> Parts {
+pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
     let board = init();
     spawner.spawn(super::services::positioning::run(board.gps_receiver).unwrap());
     spawner.spawn(super::services::io::run(board.touch, board.touch_available).unwrap());
@@ -299,7 +277,7 @@ pub async fn start(
     if let Some(stack) = stack {
         spawner.spawn(super::wifi::time_sync(stack).unwrap());
     }
-    spawner.spawn(super::bluetooth::start(board.bluetooth, selection).unwrap());
+    spawner.spawn(super::bluetooth::start(board.bluetooth).unwrap());
     // Output intentionally remains asserted for the device lifetime.
     core::mem::forget(board._lcd_read);
     Parts {
@@ -311,6 +289,9 @@ pub async fn start(
         positioning: Positioning,
         network: Network(stack),
         power: Power(board.backlight),
+        sensors: Sensors,
+        sound: Sound,
+        bulk: Bulk(board.bulk),
         storage: super::storage::Backend::new(board.flash),
         terminal: super::usb::Usb::new(board.usb),
         reset: board.reset,
@@ -335,12 +316,19 @@ impl cycling_os::capabilities::Ble for Ble {
         super::bluetooth::take_packet()
     }
     fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
-        self.availability().require_ready()?;
-        if super::bluetooth::request_reconnect() {
-            Ok(())
-        } else {
-            Err(cycling_os::capabilities::Error::Unsupported)
-        }
+        super::bluetooth::request(cycling_os::ble_transport::Operation::Connect)
+    }
+    fn request(
+        &mut self,
+        operation: cycling_os::ble_transport::Operation,
+    ) -> Result<(), cycling_os::capabilities::Error> {
+        super::bluetooth::request(operation)
+    }
+    fn control(&self) -> cycling_os::connectivity::ControlStatus {
+        super::bluetooth::control()
+    }
+    fn discoveries(&self) -> [Option<cycling_os::ble_transport::Discovery>; 8] {
+        super::bluetooth::discoveries()
     }
 }
 pub struct Ant;
@@ -398,8 +386,89 @@ impl cycling_os::capabilities::Network for Network {
         super::wifi::connection_generation()
     }
     fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
-        self.availability().require_ready()?;
-        super::wifi::reconnect();
-        Ok(())
+        super::wifi::request(cycling_os::connectivity::WifiOperation::Connect)
+    }
+    fn request(
+        &mut self,
+        operation: cycling_os::connectivity::WifiOperation,
+    ) -> Result<(), cycling_os::capabilities::Error> {
+        super::wifi::request(operation)
+    }
+    fn control(&self) -> cycling_os::connectivity::ControlStatus {
+        super::wifi::control()
+    }
+    fn discoveries(&self) -> [Option<cycling_os::connectivity::NetworkDiscovery>; 8] {
+        super::wifi::discoveries()
+    }
+}
+
+/// A missing medium remains explicitly unavailable. It never falls through to
+/// the owned boot-flash journals.
+pub struct Bulk(Option<sdmmc::Reader<'static>>);
+impl cycling_os::bulk::Read for Bulk {
+    fn info(&self) -> Result<cycling_os::bulk::Info, cycling_os::bulk::Error> {
+        self.0
+            .as_ref()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .info()
+    }
+    fn read(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<(), cycling_os::bulk::Error> {
+        self.0
+            .as_mut()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .read(sector, output)
+    }
+    fn clock(&mut self, hz: u32) -> Result<(), cycling_os::bulk::Error> {
+        self.0
+            .as_mut()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .clock(hz)
+    }
+    fn recover(&mut self) -> Result<(), cycling_os::bulk::Error> {
+        self.0
+            .as_mut()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .recover()
+    }
+}
+
+pub struct Sound;
+impl cycling_os::sound::Sound for Sound {
+    fn patterns(&self) -> &'static [cycling_os::sound::Pattern] {
+        super::sound_protocol::PATTERNS
+    }
+    fn snapshot(&self) -> cycling_os::sound::Snapshot {
+        super::services::sound::snapshot()
+    }
+    fn play(&mut self, id: u8, now: u64) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::sound::play(id, now)
+    }
+    fn stop(&mut self, now: u64) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::sound::stop(now)
+    }
+}
+
+pub struct Sensors;
+impl cycling_os::capabilities::Sensors for Sensors {
+    fn snapshot(&self, now: u64) -> cycling_os::companion_sensors::Snapshot {
+        super::services::sensors::snapshot(now)
+    }
+    fn identity_status(&self) -> &'static str {
+        super::services::sensors::query_status()
+    }
+    fn query_identity(&mut self, now: u64) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::sensors::query(now)
+    }
+}
+
+impl cycling_os::position_control::Control for Positioning {
+    fn control(&self) -> cycling_os::position_control::Snapshot {
+        super::services::position_control::snapshot()
+    }
+    fn pause(&mut self, ms: u32, now: u64) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::position_control::pause(ms, now)
+    }
+    fn resume(&mut self, now: u64) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::position_control::resume(now)
     }
 }

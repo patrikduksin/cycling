@@ -4,6 +4,11 @@ use cycling_os::positioning::{Acquisition, Snapshot};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_time::{Instant, Timer};
 
+static INVALIDATE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub fn invalidate() {
+    INVALIDATE.store(true, core::sync::atomic::Ordering::Release);
+}
+
 static LATEST: Mutex<CriticalSectionRawMutex, RefCell<Option<Acquisition>>> =
     Mutex::new(RefCell::new(None));
 
@@ -21,6 +26,10 @@ pub async fn run(mut receiver: crate::device::gps_uart::Receiver) {
     let mut previous = state.snapshot(Instant::now().as_millis());
     loop {
         let now = Instant::now().as_millis();
+        if INVALIDATE.swap(false, core::sync::atomic::Ordering::AcqRel) {
+            state.control_boundary();
+            LATEST.lock(|latest| *latest.borrow_mut() = Some(state.clone()));
+        }
         let mut bytes = [0u8; 2048];
         let (count, dma_losses, uart_errors) = receiver.drain(&mut bytes);
         if state.ingest(now, &bytes[..count], dma_losses, uart_errors) {

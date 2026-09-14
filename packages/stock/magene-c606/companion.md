@@ -11,8 +11,11 @@ Stock's logical UART 1 maps to ESP32-S3 UART2, TX42/RX41. Initialization at
 `0x42009d74` supplies 115200 baud to the wrapper at `0x4203b1e8`.
 The configuration is 8 data bits, no parity, one stop bit, no flow control.
 
-Custom firmware receives on GPIO41 and sends the stock-derived GPS-open candidate
-once on TX42. The stream predates that command; its control effect is unverified. The companion streams reports while our application runs, including
+Custom firmware receives on GPIO41 and transmits on TX42. The initial GPS-open
+send alone established no control effect; subsequent close/open testing in
+[PR #47](https://github.com/patrikduksin/cycling/pull/47) observed stream pause and
+resume, without establishing electrical power semantics. The companion streams
+reports while our application runs, including
 buttons, battery, power status, time and other sensor pages. This demonstrates
 communication with the installed companion, not its exact chip or firmware ID.
 
@@ -33,7 +36,7 @@ frames. Stock framing and checksum checks are at `0x4204b140` and `0x4204b227`;
 checksum entry points are `0x42218090` and `0x422a2a1c`.
 
 The [decoder](../../os/src/companion.rs) owns validation and resynchronization.
-The [input service](../../os/src/services/io.rs) owns freshness and loss reporting.
+The [input service](../../os/src/device/services/io.rs) owns freshness and loss reporting.
 
 ## Reports implemented
 

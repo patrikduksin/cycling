@@ -34,6 +34,17 @@ def metadata():
     return bytes(data)
 
 
+class OwnedSnapshotTests(unittest.TestCase):
+    def test_flash_snapshot_reads_current_journals_in_a_new_file(self):
+        target=object.__new__(device.Device)
+        target.read=Mock(return_value=(b'', ''))
+        with patch('device.time.time_ns',return_value=123):
+            address,path=target.snapshot_owned()
+        self.assertEqual(address,device.SLOTS[1]+device.APP_SIZE)
+        self.assertEqual(path.name,'owned-before-123.bin')
+        target.read.assert_called_once_with(address,device.SETTINGS_SIZE+device.RIDE_SIZE,path.name)
+
+
 class Formats(unittest.TestCase):
     def test_reboot_uses_watchdog_to_leave_usb_download_mode(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(device, "LOCAL", Path(temp)):

@@ -19,27 +19,17 @@ class WifiConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 wifi.validate(config)
 
-    def test_generated_source_is_private_and_escapes_all_input(self):
+    def test_profile_is_private_and_runtime_command_encodes_input(self):
         with tempfile.TemporaryDirectory() as directory:
             local = Path(directory)
             with patch.object(wifi, 'LOCAL', local), patch.object(wifi, 'CONFIG', local / 'config.json'):
                 config = self.config()
                 wifi.save(wifi.CONFIG, json.dumps(config))
-                wifi.generate()
-                result = (local / 'config.rs').read_text()
-                self.assertNotIn(config['password'], result)
-                self.assertIn('pub const SSID: &str = ' + wifi.rust_string(config['ssid']), result)
-                self.assertEqual((local / 'config.rs').stat().st_mode & 0o777, 0o600)
+                command = wifi.command(config)
+                self.assertNotIn(config['password'], command)
+                self.assertEqual(command.split()[3:], [config['ssid'].encode().hex(), config['password'].encode().hex()])
                 self.assertEqual(wifi.CONFIG.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(local.stat().st_mode & 0o777, 0o700)
-
-    def test_missing_config_builds_without_a_network(self):
-        with tempfile.TemporaryDirectory() as directory:
-            local = Path(directory)
-            with patch.object(wifi, 'LOCAL', local), patch.object(wifi, 'CONFIG', local / 'missing.json'):
-                wifi.generate()
-                source = (local / 'config.rs').read_text()
-                self.assertIn('pub const SSID: &str = "";', source)
 
 
 if __name__ == '__main__':

@@ -43,6 +43,10 @@ pub struct Acquisition {
     failed: bool,
 }
 impl Acquisition {
+    pub fn control_boundary(&mut self) {
+        self.parser.control_boundary();
+        self.sequence = self.sequence.wrapping_add(1);
+    }
     /// Reset framing before bytes following a reported DMA/UART loss. Exactly
     /// the existing parser's loss, epoch and validity rules remain in force.
     pub fn ingest(&mut self, now: u64, bytes: &[u8], dma_losses: u32, uart_errors: u32) -> bool {

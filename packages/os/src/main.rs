@@ -17,11 +17,7 @@ type FirmwareShell = cycling_os::shell::Shell<
 
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) -> ! {
-    #[cfg(feature = "cycling")]
-    let (selection, profile) = configured();
-    #[cfg(not(feature = "cycling"))]
-    let selection = None;
-    let board = device::c606::start(spawner, selection).await;
+    let board = device::c606::start(spawner).await;
     let boot = esp_hal::rng::Rng::new().random();
     logging::init(boot);
     logging::metadata(false);
@@ -52,6 +48,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     system.reset = board.reset;
     system.crash = board.crash;
     system.heap_min_sampled = esp_alloc::HEAP.free();
+    #[cfg(feature = "cycling")]
+    let profile = cycling_os::sdk::ble_sensor::Profile::from_u8(system.settings.ble_profile);
     spawner.spawn(
         console(
             board.terminal,
@@ -59,6 +57,9 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             board.ant,
             board.ble,
             board.positioning,
+            board.bulk,
+            board.sound,
+            board.sensors,
             board.network,
             board.input_observation,
             #[cfg(feature = "cycling")]
@@ -74,7 +75,10 @@ async fn console(
     mut system: FirmwareShell,
     mut ant: device::c606::Ant,
     mut ble: device::c606::Ble,
-    position: device::c606::Positioning,
+    mut position: device::c606::Positioning,
+    mut bulk: device::c606::Bulk,
+    mut sound: device::c606::Sound,
+    mut sensors: device::c606::Sensors,
     mut network: device::c606::Network,
     input: device::c606::Input,
     #[cfg(feature = "cycling")] profile: cycling_os::sdk::ble_sensor::Profile,
@@ -86,6 +90,50 @@ async fn console(
     #[cfg(feature = "cycling")]
     {
         sdk.clock = Some(|| embassy_time::Instant::now().as_millis());
+    }
+    #[cfg(feature = "cycling")]
+    use cycling_os::capabilities::Ble as _;
+    use cycling_os::capabilities::Network as _;
+    if let Some(configuration) = system.settings.wifi {
+        if network
+            .request(cycling_os::connectivity::WifiOperation::Configure(Some(
+                configuration,
+            )))
+            .is_ok()
+        {
+            let _ = embassy_time::with_timeout(embassy_time::Duration::from_secs(3), async {
+                while network.control().operation == cycling_os::connectivity::Operation::Pending {
+                    embassy_time::Timer::after_millis(10).await;
+                }
+            })
+            .await;
+            if network.control().operation == cycling_os::connectivity::Operation::Completed {
+                let _ = network.request(cycling_os::connectivity::WifiOperation::Connect);
+            }
+        }
+    }
+    #[cfg(feature = "cycling")]
+    if let Some(selection) = system.settings.ble.and_then(|saved| {
+        cycling_os::sdk::ble::selection(
+            cycling_os::sdk::ble_sensor::Profile::from_u8(system.settings.ble_profile),
+            saved.name.bytes(),
+            saved.address,
+        )
+    }) {
+        if ble
+            .request(cycling_os::ble_transport::Operation::Select(Some(
+                selection,
+            )))
+            .is_ok()
+        {
+            let _ = embassy_time::with_timeout(embassy_time::Duration::from_secs(3), async {
+                while ble.control().operation == cycling_os::connectivity::Operation::Pending {
+                    embassy_time::Timer::after_millis(10).await;
+                }
+            })
+            .await;
+            let _ = ble.request(cycling_os::ble_transport::Operation::Connect);
+        }
     }
     let started = embassy_time::Instant::now();
     system.present();
@@ -107,6 +155,7 @@ async fn console(
             &position,
             cycling_os::capabilities::Network::online(&network),
             &input,
+            cycling_os::capabilities::Sensors::snapshot(&sensors, now),
         );
         #[cfg(feature = "cycling")]
         sdk.test_display(&mut system, now, &ant, &position);
@@ -120,7 +169,10 @@ async fn console(
                 now,
                 &mut ant,
                 &mut ble,
-                &position,
+                &mut position,
+                &mut bulk,
+                &mut sound,
+                &mut sensors,
                 &mut network,
                 &input,
                 &FirmwareDiagnostics,
@@ -166,19 +218,4 @@ impl terminal::Diagnostics for FirmwareDiagnostics {
     fn stall(&self) {
         esp_hal::delay::Delay::new().delay_millis(6000);
     }
-}
-
-#[cfg(feature = "cycling")]
-pub fn configured() -> (
-    Option<cycling_os::ble_transport::Selection>,
-    cycling_os::sdk::ble_sensor::Profile,
-) {
-    mod config {
-        include!(env!("CYCLING_BLE_CONFIG"));
-    }
-    let profile = cycling_os::sdk::ble_sensor::Profile::from_u8(config::PROFILE);
-    (
-        cycling_os::sdk::ble::selection(profile, config::TARGET_NAME, config::TARGET_ADDRESS),
-        profile,
-    )
 }

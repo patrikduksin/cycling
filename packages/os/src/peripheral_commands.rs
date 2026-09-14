@@ -240,12 +240,14 @@ pub fn execute(
             let s = sensors.snapshot(now);
             let _ = write!(
                 out,
-                "query={} identity={:?} fitted_model=unknown installed_version=unverified reports={} invalid={} losses={}",
+                "query={} identity={:?} fitted_model=unknown installed_version=unverified reports={} invalid={} losses={} startup={} startup_reason={:?}",
                 sensors.identity_status(),
                 s.identity,
                 s.reports,
                 s.invalid_reports,
-                s.losses
+                s.losses,
+                sensors.startup_status(),
+                sensors.startup_reason()
             );
         }
         Command::CompanionQuery => status = request_status(sensors.query_identity(now)),

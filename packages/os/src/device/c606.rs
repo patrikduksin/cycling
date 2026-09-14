@@ -151,6 +151,7 @@ fn init() -> Resources {
         Ok(count) => println!("CYCLING_GPS companion_open_short bytes={}", count),
         Err(()) => println!("CYCLING_GPS companion_open_failed"),
     }
+    super::services::sensors::startup_begin(embassy_time::Instant::now().as_millis());
     println!("CYCLING_COMPANION listening uart=2 tx=42 rx=41 baud=115200 buffer=2048");
     let gps_receiver = gps_uart::init(p.UART0, p.GPIO0, p.UHCI0, p.DMA_CH1);
     println!(
@@ -450,6 +451,12 @@ impl cycling_os::sound::Sound for Sound {
 
 pub struct Sensors;
 impl cycling_os::capabilities::Sensors for Sensors {
+    fn startup_status(&self) -> &'static str {
+        super::services::sensors::startup_status()
+    }
+    fn startup_reason(&self) -> Option<u8> {
+        super::services::sensors::startup_reason()
+    }
     fn snapshot(&self, now: u64) -> cycling_os::companion_sensors::Snapshot {
         super::services::sensors::snapshot(now)
     }

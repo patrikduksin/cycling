@@ -6,15 +6,29 @@ use cycling_os::{
 };
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 struct Shared {
+    startup: super::super::companion_startup::Startup,
     state: Option<State>,
     query: &'static str,
     at: u64,
 }
 static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
+    startup: super::super::companion_startup::Startup::new(),
     state: None,
     query: "idle",
     at: 0,
 }));
+pub fn startup_begin(now: u64) {
+    SHARED.lock(|s| s.borrow_mut().startup.begin(now));
+}
+pub fn startup_status() -> &'static str {
+    SHARED.lock(|s| s.borrow().startup.status())
+}
+pub fn startup_reason() -> Option<u8> {
+    SHARED.lock(|s| s.borrow().startup.reason())
+}
+pub fn ant_allowed() -> bool {
+    SHARED.lock(|s| s.borrow().startup.ant_allowed())
+}
 pub fn snapshot(now: u64) -> Snapshot {
     SHARED.lock(|s| s.borrow().state.unwrap_or_default().snapshot(now, 5000))
 }
@@ -35,6 +49,7 @@ pub fn query(now: u64) -> Result<(), Error> {
 pub fn receive(group: u8, payload: &[u8], now: u64) {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
+        s.startup.report(group, payload, now);
         s.state.get_or_insert_default().receive(group, payload, now);
     })
 }
@@ -60,8 +75,29 @@ pub fn loss() {
     });
 }
 pub fn tick(now: u64) {
+    use cycling_os::capabilities::Observation;
+    let bridge = super::io::snapshot(now);
+    let bridge_fresh = bridge.is_some_and(|s| {
+        matches!(s.battery, Observation::Fresh { .. })
+            && matches!(s.power, Observation::Fresh { .. })
+    });
+    let transport_clean = bridge.is_none_or(|s| s.uart_errors == 0 && s.companion_bad_crc == 0);
+    let radio_seen = super::ant::startup_activity();
+    let acknowledge = SHARED.lock(|s| {
+        let mut s = s.borrow_mut();
+        let sample = s.state.unwrap_or_default().snapshot(now, 5000);
+        let transport_clean = transport_clean && sample.losses == 0;
+        s.startup
+            .probe(sample, now, bridge_fresh, transport_clean, radio_seen)
+    });
+    if acknowledge {
+        let result = super::super::companion_uart::send(&super::super::companion_startup::frame());
+        SHARED.lock(|s| s.borrow_mut().startup.submitted(result.map(|()| 16), now));
+    }
     let send = SHARED.lock(|s| {
         let mut s = s.borrow_mut();
+        let sample = s.state.unwrap_or_default().snapshot(now, 5000);
+        s.startup.observe(sample, now);
         if matches!(s.query, "queued" | "waiting") && now.saturating_sub(s.at) > 2000 {
             s.query = "timeout";
         }

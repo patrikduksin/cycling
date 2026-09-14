@@ -261,6 +261,12 @@ impl Edges {
 /// Optional physical sensor observations; motion remains explicitly unscaled
 /// until fitted hardware and axes are established.
 pub trait Sensors {
+    fn startup_status(&self) -> &'static str {
+        "unsupported"
+    }
+    fn startup_reason(&self) -> Option<u8> {
+        None
+    }
     fn snapshot(&self, now: u64) -> crate::companion_sensors::Snapshot;
     fn identity_status(&self) -> &'static str;
     fn query_identity(&mut self, now: u64) -> Result<(), Error>;

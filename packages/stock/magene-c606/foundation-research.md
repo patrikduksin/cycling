@@ -77,6 +77,60 @@ command API. Neither candidate establishes silicon identity.
 
 ## Buttons, battery and power
 
+### Main startup acknowledgment and acquisition recovery
+
+The owner-guided 2026-09-14 bench exposed a startup dependency. After a
+lower-button combination and physical recovery, the main CPU, display, battery
+and GNSS worked, but pressure and both motion reports stopped. Software restart
+and reflashing did not restore them. The former startup code sent only GNSS-open.
+
+N21's startup state machine sends the exact power-on acknowledgment below after
+detecting companion application mode, then waits for a power-reason event. N22
+consumes this acknowledgment through a one-shot RAM flag. Charging startup emits
+reason 4 without initializing sensors. A subsequent normal top-left hold can
+enter sensor initialization and emit reason 5; the other startup path emits
+reason 6. These are state-machine observations, not electrical power measurements.
+The report is class 4, group 16, with eight payload bytes
+`e2 02 00 00 ff <reason> 00 ff`. Reasons and identity replies alone do not prove
+acquisition readiness.
+
+A controlled base/harness build sending that acknowledgment once received an
+identity reply but still had no sensors while charging. A subsequent owner-held
+top-left button with USB connected produced the stock-like startup sound and
+restored fresh, independently advancing pressure and both motion streams.
+Six owner-held orientations then produced opposite dominant signs for all three
+components of the first motion triplet. This supports functional orientation
+response; scaling, exact fitted identity and the second triplet's sensor function
+remain unverified. Lifting retained fresh pressure, without an independent height
+or pressure reference.
+
+The firmware observes three seconds of companion traffic before considering this
+acknowledgment. Any motion/pressure report, including malformed known pages, or
+ANT traffic suppresses it. Healthy advancing sensors report `already_running`;
+partial activity reports `running_degraded`. This preserves operating companion
+state across main-only restarts. Only absent sensor/radio traffic with fresh
+battery/power and intact transport permits one fixed acknowledgment. It is never
+retried after uncertain submission or timeout. `COMPANION` exposes startup state
+and the raw reason. Reason 4 remains `charging` until a later operating reason;
+reasons 5/6 start a bounded wait for all three sensor timestamps to advance.
+
+This passive test is a recovery inference, not proof that every radio channel is
+idle. The normal-mode acknowledgment consumer submits ANT close requests after
+its reason/identity reports. Post-reason sensor progress does not prove every
+asynchronous close completed, and the installed bridge retains known scanning
+and identity-routing limitations. ANT admission waits through the startup
+decision and acknowledgment-triggered acquisition; skipping the acknowledgment
+for degraded running sensors does not itself disable ANT. No raw runtime power
+command interface or general shutdown/sleep implementation is added.
+
+The acknowledgment reaches the companion's existing sensor initialization.
+Pressure coefficients are read into RAM. The motion branches configure sampling
+and thresholds; QMA initialization uses soft reset and loads existing NVM into
+working registers, without the documented NVM-program unlock. No settings-save,
+calibration-programming or vendor-filesystem operation was found in the traced
+startup path. This does not establish fitted-part identity or independently
+measure calibration preservation. Existing firmware/dumps remain private.
+
 N22 `0x15ba8` forwards button events 1, 2, 4 and 5 through `0x15b68`. That encoder
 adds `8000` to the event and places the word at payload bytes 6–7, with button ID
 at byte 1. This confirms the existing event-word decoding. It does not establish

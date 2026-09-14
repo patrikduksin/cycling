@@ -4,14 +4,19 @@ use cycling_os::ant::{Channels, Discovery, Packet, Request, Snapshot};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 struct Shared {
+    startup_activity: bool,
     state: Channels,
     pending: Option<Request>,
 }
 static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
+    startup_activity: false,
     state: Channels::new(),
     pending: None,
 }));
 
+pub fn startup_activity() -> bool {
+    SHARED.lock(|s| s.borrow().startup_activity)
+}
 pub fn snapshots(now: u64) -> [Option<Snapshot>; cycling_os::ant::CHANNEL_CAPACITY] {
     SHARED.lock(|s| s.borrow().state.snapshots(now))
 }
@@ -27,6 +32,11 @@ pub fn take_packet() -> Option<Packet> {
 
 pub use cycling_os::capabilities::AntOperation as Operation;
 pub fn request(operation: Operation, now: u64) -> &'static str {
+    if matches!(operation, Operation::Scan(_) | Operation::Connect(_))
+        && !super::sensors::ant_allowed()
+    {
+        return "BUSY";
+    }
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         if s.pending.is_some() {
@@ -54,6 +64,7 @@ pub fn receive(group: u8, payload: [u8; 8], now: u64) {
     if let Some(event) = crate::device::ant_protocol::decode(group, payload) {
         SHARED.lock(|s| {
             let mut shared = s.borrow_mut();
+            shared.startup_activity = true;
             let selected = match event {
                 cycling_os::ant::Event::Connected(peer)
                 | cycling_os::ant::Event::Disconnected(peer)

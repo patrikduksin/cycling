@@ -123,9 +123,9 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
                 }
             },
         );
+        super::sensors::tick(now);
         super::ant::tick(now);
         super::sound::tick(now);
-        super::sensors::tick(now);
         super::position_control::tick(now);
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;

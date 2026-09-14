@@ -7,6 +7,89 @@ use cycling_os::{
 use transition::{Gate, Transition};
 
 #[test]
+fn delayed_shutdown_waits_without_spending_the_preparation_budget() {
+    let mut t = Transition::new();
+    t.request_after(Operation::Shutdown, 30_000, 100).unwrap();
+    assert_eq!(t.status().prepare_at_ms, Some(30_100));
+    assert!(!t.status().ready);
+    let accepted = t.status();
+    assert_eq!(
+        t.request_after(Operation::Shutdown, 1, 200),
+        Err(Error::Unavailable)
+    );
+    assert_eq!(t.status(), accepted);
+    t.tick(30_099);
+    t.quiescing(30_099);
+    assert_eq!(t.status().state, State::Requested);
+    t.submitted(Ok(()), 30_099);
+    assert_eq!(t.status().state, State::Requested);
+    t.tick(30_100);
+    t.quiescing(30_100);
+    assert_eq!(t.status().state, State::Quiescing);
+    t.tick(60_099);
+    assert_eq!(t.status().state, State::Quiescing);
+    t.submitted(Ok(()), 60_099);
+    let submitted = t.status();
+    t.submitted(Ok(()), 60_100);
+    assert_eq!(t.status(), submitted);
+    t.tick(60_099 + transition::OBSERVE_MS);
+    assert_eq!(t.status().state, State::Uncertain);
+    assert!(!t.status().ready);
+}
+
+#[test]
+fn delayed_request_still_bounds_waiting_for_accepted_io() {
+    let mut t = Transition::new();
+    t.request_after(Operation::Shutdown, 30_000, 100).unwrap();
+    t.tick(60_099);
+    assert_eq!(t.status().state, State::Requested);
+    t.tick(60_100);
+    assert_eq!(t.status().state, State::Recovering);
+    assert_eq!(t.status().failure, Some(Failure::PreparationTimeout));
+}
+
+#[test]
+fn delayed_shutdown_validates_before_mutating_the_transition() {
+    let mut t = Transition::new();
+    for (operation, delay) in [
+        (Operation::Shutdown, 30_001),
+        (Operation::Sleep, 1),
+        (Operation::Wake, 1),
+    ] {
+        assert_eq!(t.request_after(operation, delay, 100), Err(Error::Invalid));
+        assert_eq!(t.status(), cycling_os::power::Status::IDLE);
+    }
+    t.request_after(Operation::Shutdown, 0, 100).unwrap();
+    t.quiescing(100);
+    assert_eq!(t.status().state, State::Quiescing);
+}
+
+#[test]
+fn terminal_shutdown_delay_is_bounded_and_has_no_extra_arguments() {
+    use cycling_os::terminal_protocol::{Command, parse};
+    for delay in [0, 1, 30_000] {
+        assert_eq!(
+            parse(format!("CMD 1 POWER SHUTDOWN AFTER {delay}").as_bytes())
+                .unwrap()
+                .command,
+            Command::PowerShutdownAfter(delay)
+        );
+    }
+    for command in [
+        "CMD 1 POWER SHUTDOWN AFTER",
+        "CMD 1 POWER SHUTDOWN AFTER -1",
+        "CMD 1 POWER SHUTDOWN AFTER 30001",
+        "CMD 1 POWER SHUTDOWN AFTER 4294967296",
+        "CMD 1 POWER SHUTDOWN AFTER 1000 extra",
+        "CMD 1 POWER SHUTDOWN 1000",
+        "CMD 1 POWER SLEEP AFTER 1000",
+        "CMD 1 POWER WAKE AFTER 1000",
+    ] {
+        assert!(parse(command.as_bytes()).is_err(), "{command}");
+    }
+}
+
+#[test]
 fn accepted_io_must_finish_and_new_io_is_rejected_through_uncertainty() {
     let gate = Gate::new();
     let write = gate.enter().unwrap();
@@ -47,9 +130,8 @@ fn gate_closure_cannot_miss_a_racing_entrant() {
 }
 
 #[test]
-fn unsupported_sleep_and_duplicate_request_do_not_change_shutdown() {
+fn duplicate_request_does_not_change_shutdown() {
     let mut t = Transition::new();
-    assert_eq!(t.request(Operation::Sleep, 0), Err(Error::Unsupported));
     assert_eq!(t.status().state, State::Idle);
     t.request(Operation::Shutdown, 1).unwrap();
     let before = t.status();
@@ -240,7 +322,7 @@ fn charging_startup_stays_quiet_until_an_explicit_wake() {
     t.begin_charging(4);
     assert_eq!(t.status(), charging);
     assert_eq!(t.request(Operation::Shutdown, 5), Err(Error::Unavailable));
-    assert_eq!(t.request(Operation::Sleep, 5), Err(Error::Unsupported));
+    assert_eq!(t.request(Operation::Sleep, 5), Err(Error::Unavailable));
     t.request(Operation::Wake, 6).unwrap();
     assert_eq!(t.status().sequence, 1);
     assert_eq!(t.status().operation, Some(Operation::Wake));
@@ -294,4 +376,39 @@ fn wake_recovery_timeout_cannot_report_completion_or_reopen_admission() {
     assert_eq!(t.status().state, State::Failed);
     assert!(!t.status().ready);
     assert_eq!(t.request(Operation::Wake, 50_000), Err(Error::Unavailable));
+}
+
+#[test]
+fn sleep_requires_observed_wake_and_recovery() {
+    for slept in [true, false] {
+        let mut t = Transition::new();
+        t.request(Operation::Sleep, 0).unwrap();
+        t.quiescing(1);
+        t.sleeping(2);
+        assert_eq!(t.status().state, State::Sleeping);
+        t.sleep_returned(slept, 3);
+        assert!(!t.status().ready);
+        t.recovered();
+        assert!(t.status().ready);
+        assert_eq!(
+            t.status().state,
+            if slept {
+                State::Completed
+            } else {
+                State::Failed
+            }
+        );
+    }
+}
+#[test]
+fn uncertain_sleep_stays_gated() {
+    let mut t = Transition::new();
+    t.request(Operation::Sleep, 0).unwrap();
+    t.quiescing(1);
+    t.sleeping(2);
+    t.sleep_uncertain(3);
+    t.sleep_returned(true, 4);
+    t.recovered();
+    assert_eq!(t.status().state, State::Uncertain);
+    assert!(!t.status().ready);
 }

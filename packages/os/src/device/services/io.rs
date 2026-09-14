@@ -2,6 +2,7 @@
 //! or injected-input policy belongs here. Single-consumer edges have a 16-entry
 //! queue with explicit cancellation after loss; status is latest-value only.
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use cycling_os::{
     capabilities::{self, Edge, Edges, Input},
     companion::{self, Decoder, Event, Status},
@@ -14,6 +15,7 @@ static EDGES: Mutex<CriticalSectionRawMutex, RefCell<Edges>> =
     Mutex::new(RefCell::new(Edges::new()));
 static LATEST: Mutex<CriticalSectionRawMutex, RefCell<Option<State>>> =
     Mutex::new(RefCell::new(None));
+static SLEEP_BOUNDARY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 struct State {
@@ -62,6 +64,26 @@ pub fn power_boundary(now: u64) {
     });
 }
 
+/// MCU uptime excludes sleep. Invalidate cached observations explicitly rather
+/// than allowing pre-sleep readings to appear fresh after a long RTC interval.
+pub fn sleep_boundary(now: u64) {
+    crate::device::companion_uart::sleep_boundary(|frame| {
+        super::power::companion_report(frame, now)
+    });
+    SLEEP_BOUNDARY.store(true, Ordering::Release);
+    LATEST.lock(|latest| {
+        if let Some(state) = latest.borrow_mut().as_mut() {
+            state.battery = None;
+            state.power = None;
+        }
+    });
+    super::sensors::loss();
+    // ANT has already confirmed channel closure, which invalidates its samples.
+    // A deliberate boundary must preserve that closure and reconnect identity.
+    super::positioning::sleep_boundary();
+    power_boundary(now);
+}
+
 #[embassy_executor::task]
 pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_available: bool) {
     let mut state = State {
@@ -81,6 +103,13 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
     log::info!(target: "input", "acquisition started poll_ms=10 edges=16");
     loop {
         let now = Instant::now().as_millis();
+        if SLEEP_BOUNDARY.swap(false, Ordering::AcqRel) {
+            decoder.reset();
+            state.battery = None;
+            state.power = None;
+            point = None;
+            last_rx = now;
+        }
         if now.saturating_sub(last_rx) > 250 {
             decoder.reset();
         }
@@ -108,6 +137,8 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
                     point = None;
                     return;
                 };
+                let bytes = frame.as_bytes();
+                super::power::companion_report(bytes, now);
                 if let Some(payload) = frame.identity_reply() {
                     super::sensors::identity_reply(payload, now);
                 }

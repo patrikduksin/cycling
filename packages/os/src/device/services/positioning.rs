@@ -5,6 +5,16 @@ use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_time::{Instant, Timer};
 
 static INVALIDATE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static SLEEP_BOUNDARY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub fn sleep_boundary() {
+    SLEEP_BOUNDARY.store(true, core::sync::atomic::Ordering::Release);
+    LATEST.lock(|latest| {
+        if let Some(state) = latest.borrow_mut().as_mut() {
+            state.control_boundary();
+        }
+    });
+    invalidate();
+}
 pub fn invalidate() {
     INVALIDATE.store(true, core::sync::atomic::Ordering::Release);
 }
@@ -26,6 +36,9 @@ pub async fn run(mut receiver: crate::device::gps_uart::Receiver) {
     let mut previous = state.snapshot(Instant::now().as_millis());
     loop {
         let now = Instant::now().as_millis();
+        if SLEEP_BOUNDARY.swap(false, core::sync::atomic::Ordering::AcqRel) {
+            receiver.sleep_boundary();
+        }
         if INVALIDATE.swap(false, core::sync::atomic::Ordering::AcqRel) {
             state.control_boundary();
             LATEST.lock(|latest| *latest.borrow_mut() = Some(state.clone()));

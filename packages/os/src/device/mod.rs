@@ -19,4 +19,6 @@ pub mod wifi;
 
 pub mod sound_protocol;
 
+pub mod companion_sleep;
 pub mod power_transition;
+pub mod sleep;

@@ -48,6 +48,9 @@ pub fn init(
 }
 
 impl Receiver {
+    pub fn sleep_boundary(&mut self) {
+        self.restart(true);
+    }
     /// Copy currently available bytes without waiting. Hardware UART or DMA
     /// faults restart reception and make the parser discard a partial sentence.
     pub fn drain(&mut self, output: &mut [u8]) -> (usize, u32, u32) {

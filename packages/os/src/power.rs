@@ -1,4 +1,6 @@
 //! Hardware power contracts. Timeouts, gestures and recording policy belong to callers.
+pub const MAX_DELAY_MS: u32 = 30_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Support {
     Unsupported,
@@ -52,6 +54,7 @@ pub enum State {
     Requested,
     Quiescing,
     Submitted,
+    Sleeping,
     Recovering,
     Completed,
     Failed,
@@ -69,6 +72,7 @@ pub enum Failure {
     Gnss,
     Sound,
     Companion,
+    Sleep,
     PreparationTimeout,
     Submission,
     CompletionUnobservable,
@@ -81,6 +85,8 @@ pub struct Status {
     pub operation: Option<Operation>,
     pub state: State,
     pub at_ms: u64,
+    /// Earliest preparation time for an accepted shutdown, in monotonic milliseconds.
+    pub prepare_at_ms: Option<u64>,
     pub failure: Option<Failure>,
     /// False while work is gated, including after an uncertain power command.
     pub ready: bool,
@@ -91,6 +97,7 @@ impl Status {
         operation: None,
         state: State::Idle,
         at_ms: 0,
+        prepare_at_ms: None,
         failure: None,
         ready: true,
     };
@@ -112,4 +119,19 @@ pub trait Control {
     /// Acceptance is not completion. Callers finish their durable domain work
     /// before requesting; the device separately protects accepted hardware IO.
     fn request(&mut self, operation: Operation) -> Result<(), crate::capabilities::Error>;
+    /// Close hardware IO admission immediately, then wait before preparation.
+    /// Only shutdown permits a delay, bounded by MAX_DELAY_MS.
+    fn request_after(
+        &mut self,
+        operation: Operation,
+        delay_ms: u32,
+    ) -> Result<(), crate::capabilities::Error> {
+        if delay_ms == 0 {
+            self.request(operation)
+        } else if delay_ms > MAX_DELAY_MS || operation != Operation::Shutdown {
+            Err(crate::capabilities::Error::Invalid)
+        } else {
+            Err(crate::capabilities::Error::Unsupported)
+        }
+    }
 }

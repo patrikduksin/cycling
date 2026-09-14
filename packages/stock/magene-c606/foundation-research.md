@@ -432,3 +432,58 @@ failure without an unintended restart. All four base/SDK and harness build
 combinations passed. Battery-only shutdown, broader wake-source coverage,
 whole-device sleep and electrical current measurements remain unverified in this
 session. Charging standby and radio quiescence are not electrical-off claims.
+
+### MCU light-sleep implementation sources
+
+The repository's esp-hal 1.1.2 supports ESP32-S3 light sleep with an RTC timer.
+Its `rtc_cntl/sleep/mod.rs` also supplies `GpioWakeupSource` for any GPIO at a
+selected high or low level. This permits a wake experiment using the existing
+companion RX line, GPIO41, without adding or assuming another wire. UART-specific
+wake sources cover UART0 and UART1 only; the companion currently uses UART2.
+GPIO41 can instead wake on a low RX level. Any companion traffic can trigger
+that source, not just a button, and the first report may be incomplete.
+Keep a bounded RTC timer fallback and invalidate transport/acquisition state
+across the transition. Configure wake through the existing input owner without
+changing its UART input matrix routing.
+
+The S3 default `RtcSleepConfig` leaves CPU, digital peripheral, memory and
+VDD_SDIO power-down flags clear. Retain those defaults for the first experiment;
+do not introduce flash/PSRAM power-down. The caller still must stop DMA and
+accepted storage IO, finish UART transmission, quiet display and radios, and
+prevent another task from beginning hardware work during entry.
+
+Two limitations in esp-hal 1.1.2 affect the completion contract. S3 `start_sleep`
+sets the sleep request, then `finish_sleep` immediately clears wake/reject raw
+status. It does not contain the wait-for-wake-or-reject loop in Espressif's
+`components/esp_hw_support/port/esp32s3/rtc_sleep.c` at local ESP-IDF revision
+`f5c3654a1c2d`. Also, HAL `wakeup_cause()` returns undefined unless the reset
+reason is deep sleep. A light-sleep implementation must account for these
+differences instead of treating the API return as proof of entry or rejection.
+Record RTC elapsed time and the S3 latched wake-cause register. A short or
+ambiguous return cannot complete a claimed sleep operation.
+
+HAL `time::Instant` explicitly excludes time spent asleep, and esp-rtos 0.3.0
+uses that time source. RTC elapsed time therefore remains a separate observation;
+ordinary monotonic timestamps alone cannot measure sleep duration. Clear stale
+readiness on recovery even when the monotonic clock barely advances.
+
+### Companion suspend recovery experiment
+
+For N22 state three, a received button event runs `0x14a4c`, selects retained
+subtype one through `0x17468`, and enters state seven. That subtype calls
+`0x14bac` without emitting operating reason five or six. The common initialization
+re-enables all six control outputs and GPIO23/GPIO13, then restores service IO
+and pressure acquisition. It skips the extra motion-driver initialization
+at `0x1acc4` or `0x1ad94` used by full initialization `0x14b94`. Teardown had
+stopped those drivers, so motion recovery after a physical button must be
+observed, not inferred from the common initialization or a power reason.
+
+A first bounded experiment can prepare peripherals, send companion state three
+once, establish its generic acknowledgment and quiet acquisition, enter short
+RTC-timed MCU light sleep, then request state seven once. Without an intervening
+button, the retained normal subtype zero or two selects full initialization
+and operating reason six or five. Verify independently advancing pressure and
+both motion streams before restoring radios and reporting readiness. GPIO41
+and physical-button wake form a subsequent test, with the subtype-one recovery
+limit above. These are proposed experiments derived from code, not new hardware
+observations or measured electrical savings.

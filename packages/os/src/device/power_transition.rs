@@ -22,8 +22,18 @@ impl Transition {
         self.status
     }
     pub fn request(&mut self, operation: Operation, now: u64) -> Result<(), Error> {
-        if operation == Operation::Sleep {
-            return Err(Error::Unsupported);
+        self.request_after(operation, 0, now)
+    }
+    pub fn request_after(
+        &mut self,
+        operation: Operation,
+        delay_ms: u32,
+        now: u64,
+    ) -> Result<(), Error> {
+        if delay_ms > cycling_os::power::MAX_DELAY_MS
+            || (delay_ms != 0 && operation != Operation::Shutdown)
+        {
+            return Err(Error::Invalid);
         }
         if operation == Operation::Wake {
             return self.wake(now);
@@ -36,6 +46,7 @@ impl Transition {
             operation: Some(operation),
             state: State::Requested,
             at_ms: now,
+            prepare_at_ms: Some(now.saturating_add(u64::from(delay_ms))),
             failure: None,
             ready: false,
         };
@@ -66,6 +77,7 @@ impl Transition {
             operation: Some(Operation::Wake),
             state: State::Recovering,
             at_ms: now,
+            prepare_at_ms: None,
             failure: None,
             ready: false,
         };
@@ -86,7 +98,9 @@ impl Transition {
         }
     }
     pub fn quiescing(&mut self, now: u64) {
-        if self.status.state == State::Requested {
+        if self.status.state == State::Requested
+            && self.status.prepare_at_ms.is_some_and(|at| now >= at)
+        {
             self.status.state = State::Quiescing;
             self.status.at_ms = now;
         }
@@ -114,9 +128,34 @@ impl Transition {
             self.status.at_ms = now;
         }
     }
+    pub fn sleeping(&mut self, now: u64) {
+        if self.status.state == State::Quiescing && self.status.operation == Some(Operation::Sleep)
+        {
+            self.status.state = State::Sleeping;
+            self.status.at_ms = now;
+        }
+    }
+    pub fn sleep_returned(&mut self, slept: bool, now: u64) {
+        if self.status.state == State::Sleeping {
+            self.status.state = State::Recovering;
+            self.status.failure = if slept { None } else { Some(Failure::Sleep) };
+            self.status.at_ms = now;
+        }
+    }
+    pub fn sleep_uncertain(&mut self, now: u64) {
+        if self.status.state == State::Sleeping {
+            self.status.state = State::Uncertain;
+            self.status.failure = Some(Failure::Sleep);
+            self.status.at_ms = now;
+        }
+    }
     pub fn recovered(&mut self) {
         if self.status.state == State::Recovering {
-            self.status.state = if self.status.operation == Some(Operation::Wake) {
+            self.status.state = if matches!(
+                self.status.operation,
+                Some(Operation::Wake | Operation::Sleep)
+            ) && self.status.failure.is_none()
+            {
                 State::Completed
             } else {
                 State::Failed
@@ -134,7 +173,15 @@ impl Transition {
     pub fn tick(&mut self, now: u64) {
         let elapsed = now.saturating_sub(self.status.at_ms);
         match self.status.state {
-            State::Requested | State::Quiescing if elapsed >= PREPARE_MS => {
+            State::Requested
+                if self
+                    .status
+                    .prepare_at_ms
+                    .is_some_and(|at| now >= at.saturating_add(PREPARE_MS)) =>
+            {
+                self.abort(Failure::PreparationTimeout, now);
+            }
+            State::Quiescing if elapsed >= PREPARE_MS => {
                 self.abort(Failure::PreparationTimeout, now);
             }
             State::Recovering if elapsed >= RECOVER_MS => self.recovery_failed(),

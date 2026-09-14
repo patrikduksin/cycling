@@ -48,6 +48,7 @@ struct Resources {
 /// Backlight starts off; composition applies the persisted brightness after load.
 fn init() -> Resources {
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
+    super::sleep::initialize(p.LPWR);
     let reset = crash_rtc::reset();
     let crash = crash_rtc::take();
     println!(
@@ -513,5 +514,16 @@ impl cycling_os::power::Control for Power {
         operation: cycling_os::power::Operation,
     ) -> Result<(), cycling_os::capabilities::Error> {
         super::services::power::request(operation, embassy_time::Instant::now().as_millis())
+    }
+    fn request_after(
+        &mut self,
+        operation: cycling_os::power::Operation,
+        delay_ms: u32,
+    ) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::power::request_after(
+            operation,
+            delay_ms,
+            embassy_time::Instant::now().as_millis(),
+        )
     }
 }

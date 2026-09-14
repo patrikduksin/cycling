@@ -62,6 +62,7 @@ pub struct Runtime {
     menu: crate::sdk::ant_menu::Menu,
     menu_open: bool,
     gps_fix_ms: Option<u64>,
+    startup_status: &'static str,
     preview_seconds: Option<u32>,
     next_reconnect: [u64; 3],
     capture_link: [Option<(u8, crate::ant::LinkState, u32)>; 3],
@@ -88,11 +89,12 @@ impl Runtime {
             next_position: 0,
             next_capture_link: 0,
             sampled_packets: [None; 3],
-            foundation_screen: false,
+            foundation_screen: true,
             menu: crate::sdk::ant_menu::Menu::new(),
-            menu_open: false,
+            menu_open: true,
             gps_fix_ms: None,
-            preview_seconds: None,
+            startup_status: "unknown",
+            preview_seconds: Some(420),
             next_reconnect: [0; 3],
             capture_link: [None; 3],
             ant_epochs: [None; 3],
@@ -150,7 +152,7 @@ impl Runtime {
         if system.foreground == crate::shell::Screen::Blank {
             return;
         }
-        if self.capture_started.is_none() && !self.foundation_screen {
+        if !self.foundation_screen {
             return;
         }
         if now < self.next_display {
@@ -270,6 +272,23 @@ impl Runtime {
         );
     }
 
+    pub fn set_startup_status(&mut self, status: &'static str) {
+        if self.startup_status != status {
+            self.startup_status = status;
+            if status == "charging" {
+                self.menu.set_message(b"HOLD TOP LEFT 2S TO WAKE");
+            } else {
+                self.menu.set_message(b"SCAN THEN PICK SENSOR");
+            }
+            self.next_display = 0;
+        }
+    }
+
+    pub fn suspend_display(&mut self) {
+        self.foundation_screen = false;
+        self.menu_open = false;
+    }
+
     pub fn input_active(&self) -> bool {
         self.foundation_screen
     }
@@ -354,7 +373,8 @@ impl Runtime {
         };
         self.menu.set_message(match result {
             "ACCEPTED" => b"REQUEST SENT",
-            "BUSY" => b"BUSY WAIT THEN RETRY",
+            "BUSY" if self.startup_status == "charging" => b"HOLD TOP LEFT 2S TO WAKE",
+            "BUSY" => b"RADIO BUSY WAIT THEN RETRY",
             "OK" => b"OK",
             _ => b"REQUEST NOT ACCEPTED",
         });
@@ -822,6 +842,17 @@ impl Runtime {
             return self.radar_command(operation, argument, bound, store, now, output, ant);
         }
         if domain == Some("FOUNDATION") {
+            if operation == Some("MENU") && argument == Some("STATUS") && bound.is_none() {
+                let _ = write!(
+                    output,
+                    "open={} active={} startup={} {:?}",
+                    self.menu_open,
+                    self.foundation_screen,
+                    self.startup_status,
+                    self.menu.diagnostics()
+                );
+                return "OK";
+            }
             if matches!(operation, Some("SCREEN" | "MENU")) && bound.is_none() {
                 self.preview_seconds = match argument {
                     None => None,

@@ -224,6 +224,8 @@ pub fn execute<
                 system.storage_max_ms = system.storage_max_ms.max(started.elapsed().as_millis())
             }
             Command::Display(_) => {
+                #[cfg(feature = "cycling")]
+                sdk.suspend_display();
                 system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis())
             }
             _ => {}

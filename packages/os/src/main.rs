@@ -135,6 +135,8 @@ async fn console(
             let _ = ble.request(cycling_os::ble_transport::Operation::Connect);
         }
     }
+    #[cfg(feature = "cycling")]
+    system.set_app_active(sdk.input_active());
     let started = embassy_time::Instant::now();
     system.present();
     system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
@@ -142,7 +144,10 @@ async fn console(
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         #[cfg(feature = "cycling")]
-        system.set_app_active(sdk.input_active());
+        {
+            sdk.set_startup_status(cycling_os::capabilities::Sensors::startup_status(&sensors));
+            system.set_app_active(sdk.input_active());
+        }
         system.tick(now);
         #[cfg(feature = "cycling")]
         for _ in 0..16 {

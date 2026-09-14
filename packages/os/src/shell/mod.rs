@@ -302,10 +302,20 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
                 color
             } else if screen == Screen::Blank {
                 0
-            } else if x < geometry.width / 8 || y < geometry.height / 8 {
-                0x07e0
             } else {
-                0
+                // Keep layout independent of native panel geometry.
+                let x = x * 240 / geometry.width;
+                let y = y * 320 / geometry.height;
+                let text = crate::ui_text::text;
+                if text(x, y, 36, 42, 4, b"CYCLING")
+                    || text(x, y, 60, 104, 2, b"BASE READY")
+                    || text(x, y, 48, 186, 2, b"USB COMMANDS")
+                    || text(x, y, 30, 268, 2, b"TOP LEFT SCREEN")
+                {
+                    0xffff
+                } else {
+                    0
+                }
             }
         });
         self.dirty = self.display_error;

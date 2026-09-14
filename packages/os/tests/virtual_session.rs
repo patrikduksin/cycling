@@ -718,3 +718,14 @@ fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
     shell.set_app_active(true);
     assert!(shell.take_app_input().is_none());
 }
+
+#[cfg(feature = "cycling")]
+#[test]
+fn sdk_boot_exposes_physical_menu_without_a_usb_command() {
+    let t = Temp::new();
+    let s = Session::new(&t.0, 32, 24).unwrap();
+    assert!(
+        s.sdk.input_active(),
+        "SDK boot must accept physical menu input before any USB command"
+    );
+}

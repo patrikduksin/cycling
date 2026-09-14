@@ -342,6 +342,10 @@ impl Session {
         if let Some(status) =
             crate::shell::commands::execute(request.command, &mut self.shell, self.now, out)
         {
+            #[cfg(feature = "cycling")]
+            if matches!(request.command, Command::Display(_)) {
+                self.sdk.suspend_display();
+            }
             if matches!(
                 request.command,
                 Command::Harness(crate::harness::Command {

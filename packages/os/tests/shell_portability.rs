@@ -17,7 +17,19 @@ mod tests {
                 Shell::new(display.clone(), input.clone(), power, Memory::default(), 0).unwrap();
             shell.settings.dim_timeout_secs = 1;
             shell.present();
-            assert_eq!(display.0.borrow().pixels[0], 0x07e0);
+            assert_eq!(display.0.borrow().pixels[0], 0);
+            assert!(
+                display.0.borrow().pixels.contains(&0xffff),
+                "status text must be visible at either geometry"
+            );
+            assert!(
+                display
+                    .0
+                    .borrow()
+                    .pixels
+                    .iter()
+                    .all(|pixel| matches!(*pixel, 0 | 0xffff))
+            );
             shell.tick(1000);
             assert!(shell.dimmed());
             input.push(1000, Input::Touch(Point { x: 1, y: 1 }));

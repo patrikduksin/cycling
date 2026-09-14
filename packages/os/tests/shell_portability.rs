@@ -51,6 +51,19 @@ mod tests {
             assert_eq!(shell.foreground, Screen::Blank);
             assert!(display.0.borrow().pixels.iter().all(|v| *v == 0));
             assert_eq!(display.0.borrow().submissions, 2);
+            assert_eq!(shell.effective(), 0);
+            shell.tick(10_000);
+            assert_eq!(shell.effective(), 0);
+            input.push(
+                10_001,
+                Input::Button {
+                    button: buttons[0],
+                    code: 1,
+                },
+            );
+            shell.tick(10_001);
+            assert_eq!(shell.foreground, Screen::Status);
+            assert_eq!(shell.effective(), shell.settings.brightness);
         }
     }
     #[test]

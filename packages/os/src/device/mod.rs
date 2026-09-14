@@ -1,6 +1,8 @@
 //! C606 hardware ownership. Protocol and application services remain separate.
 
 pub mod ant_protocol;
+#[cfg(feature = "bulk-maintenance")]
+pub mod bulk_maintenance;
 pub mod c606;
 pub mod companion_startup;
 pub mod companion_uart;

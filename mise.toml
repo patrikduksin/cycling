@@ -115,6 +115,10 @@ run = ["python scripts/harness.py run shared --backend virtual", "python scripts
 description = "Read bounded MMC layout and root metadata into private local evidence"
 run = "python scripts/mmc.py"
 
+[tasks.mmc-maintenance]
+description = "Back up or explicitly write MMC using the dedicated maintenance image"
+run = "python scripts/mmc_maintenance.py"
+
 [tasks.foundation-bench]
 description = "Guide and privately capture the owner's 150-second C606 physical bench sequence"
 run = "python scripts/bench.py"

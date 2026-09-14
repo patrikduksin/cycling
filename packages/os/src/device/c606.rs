@@ -419,6 +419,12 @@ impl cycling_os::capabilities::Network for Network {
 /// A missing medium remains explicitly unavailable. It never falls through to
 /// the owned boot-flash journals.
 pub struct Bulk(Option<sdmmc::Reader<'static>>);
+#[cfg(feature = "bulk-maintenance")]
+impl Bulk {
+    pub(super) fn maintenance_reader(self) -> Option<sdmmc::Reader<'static>> {
+        self.0
+    }
+}
 impl cycling_os::bulk::Read for Bulk {
     fn info(&self) -> Result<cycling_os::bulk::Info, cycling_os::bulk::Error> {
         self.0
@@ -452,6 +458,44 @@ impl cycling_os::bulk::Read for Bulk {
             .as_mut()
             .ok_or(cycling_os::bulk::Error::Unavailable)?
             .recover()
+    }
+}
+
+impl cycling_os::bulk::ReadWrite for Bulk {
+    fn owned_info(&mut self) -> Result<cycling_os::bulk::OwnedInfo, cycling_os::bulk::Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| cycling_os::bulk::Error::Unavailable)?;
+        self.0
+            .as_mut()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .owned_info()
+    }
+    fn owned_read(
+        &mut self,
+        sector: u64,
+        output: &mut [u8; 512],
+    ) -> Result<(), cycling_os::bulk::Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| cycling_os::bulk::Error::Unavailable)?;
+        self.0
+            .as_mut()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .owned_read(sector, output)
+    }
+    fn owned_write(
+        &mut self,
+        sector: u64,
+        input: &[u8; 512],
+    ) -> Result<(), cycling_os::bulk::Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| cycling_os::bulk::Error::Unavailable)?;
+        self.0
+            .as_mut()
+            .ok_or(cycling_os::bulk::Error::Unavailable)?
+            .owned_write(sector, input)
     }
 }
 

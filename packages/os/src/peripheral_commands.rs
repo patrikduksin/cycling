@@ -11,6 +11,18 @@ pub enum Command {
     },
     MmcClock(u32),
     MmcRecover,
+    MmcOwned,
+    MmcOwnedRead {
+        sector: u64,
+        offset: u16,
+        length: u16,
+    },
+    #[cfg(feature = "debug-harness")]
+    MmcOwnedTest {
+        sector: u64,
+        expected_crc: u32,
+        fill: u8,
+    },
     Sound,
     SoundPatterns,
     SoundPlay(u8),
@@ -38,6 +50,27 @@ pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Opt
                     length,
                 }
             }
+            Some("OWNED") => match words.next() {
+                None | Some("STATUS") => Command::MmcOwned,
+                Some("READ") => {
+                    let sector = words.next()?.parse().ok()?;
+                    let offset = words.next()?.parse().ok()?;
+                    let length = words.next()?.parse().ok()?;
+                    bulk::chunk(usize::from(offset), usize::from(length)).ok()?;
+                    Command::MmcOwnedRead {
+                        sector,
+                        offset,
+                        length,
+                    }
+                }
+                #[cfg(feature = "debug-harness")]
+                Some("TEST") => Command::MmcOwnedTest {
+                    sector: words.next()?.parse().ok()?,
+                    expected_crc: u32::from_str_radix(words.next()?, 16).ok()?,
+                    fill: u8::from_str_radix(words.next()?, 16).ok()?,
+                },
+                _ => return None,
+            },
             Some("CLOCK") => {
                 let hz = words.next()?.parse().ok()?;
                 if !matches!(hz, 400_000 | 4_000_000 | 20_000_000) {
@@ -80,7 +113,7 @@ pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Opt
 pub fn execute(
     command: Command,
     now: u64,
-    media: &mut impl bulk::Read,
+    media: &mut (impl bulk::Read + bulk::ReadWrite),
     sound: &mut impl sound::Sound,
     gnss: &mut impl position_control::Control,
     sensors: &mut impl capabilities::Sensors,
@@ -130,6 +163,69 @@ pub fn execute(
                     for byte in bytes {
                         let _ = write!(out, "{:02x}", byte);
                     }
+                }
+                Err(e) => status = media_error(e),
+            }
+        }
+        Command::MmcOwned => match media.owned_info() {
+            Ok(info) => {
+                let _ = write!(
+                    out,
+                    "start_sector={} sectors={} sector_size={} access=read-write-relative",
+                    info.start_sector, info.sectors, info.sector_size
+                );
+            }
+            Err(e) => status = media_error(e),
+        },
+        Command::MmcOwnedRead {
+            sector,
+            offset,
+            length,
+        } => {
+            let Ok(range) = bulk::chunk(usize::from(offset), usize::from(length)) else {
+                return "INVALID";
+            };
+            let mut bytes = [0u8; 512];
+            match media.owned_read(sector, &mut bytes) {
+                Ok(()) => {
+                    let bytes = &bytes[range];
+                    let _ = write!(
+                        out,
+                        "sector={} offset={} length={} crc32={:08x} data=",
+                        sector,
+                        offset,
+                        length,
+                        crate::harness::crc32(bytes)
+                    );
+                    for byte in bytes {
+                        let _ = write!(out, "{:02x}", byte);
+                    }
+                }
+                Err(e) => status = media_error(e),
+            }
+        }
+        #[cfg(feature = "debug-harness")]
+        Command::MmcOwnedTest {
+            sector,
+            expected_crc,
+            fill,
+        } => {
+            let mut bytes = [0u8; 512];
+            if let Err(e) = media.owned_read(sector, &mut bytes) {
+                return media_error(e);
+            }
+            if crate::harness::crc32(&bytes) != expected_crc {
+                return "CONFLICT";
+            }
+            bytes.fill(fill);
+            match media.owned_write(sector, &bytes) {
+                Ok(()) => {
+                    let _ = write!(
+                        out,
+                        "sector={} length=512 crc32={:08x} verified=true",
+                        sector,
+                        crate::harness::crc32(&bytes)
+                    );
                 }
                 Err(e) => status = media_error(e),
             }

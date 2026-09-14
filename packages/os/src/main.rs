@@ -50,6 +50,19 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     system.heap_min_sampled = esp_alloc::HEAP.free();
     #[cfg(feature = "cycling")]
     let profile = cycling_os::sdk::ble_sensor::Profile::from_u8(system.settings.ble_profile);
+    #[cfg(feature = "bulk-maintenance")]
+    {
+        for _ in 0..300 {
+            if cycling_os::power::Control::status(&board.power_control).ready {
+                break;
+            }
+            embassy_time::Timer::after_millis(10).await;
+        }
+        system.tick(embassy_time::Instant::now().as_millis());
+        system.present();
+        spawner.spawn(device::bulk_maintenance::run(board.terminal, board.bulk).unwrap());
+    }
+    #[cfg(not(feature = "bulk-maintenance"))]
     spawner.spawn(
         console(
             board.terminal,

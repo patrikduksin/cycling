@@ -4,6 +4,16 @@ pub struct Usb {
     tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Blocking>,
 }
 impl Usb {
+    #[cfg(feature = "bulk-maintenance")]
+    pub fn tx_ready(&self) -> bool {
+        // Observe completion without writing WR_DONE again for an empty FIFO.
+        unsafe { &*esp32s3::USB_DEVICE::ptr() }
+            .ep1_conf()
+            .read()
+            .serial_in_ep_data_free()
+            .bit_is_set()
+    }
+
     pub fn new(usb: esp_hal::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>) -> Self {
         let (rx, tx) = usb.split();
         Self { rx, tx }

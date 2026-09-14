@@ -22,6 +22,7 @@ pub enum CaptureState {
     Recording,
     Stopping,
     Stopped,
+    Full,
     Error,
 }
 
@@ -29,6 +30,7 @@ pub enum CaptureState {
 pub struct Screen {
     pub state: CaptureState,
     pub remaining_secs: Option<u32>,
+    pub stop_confirm: bool,
     pub free_slots: Option<u32>,
     pub saved_environment: u32,
     pub power_watts: Option<u16>,
@@ -63,7 +65,7 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
     if text(x, y, 39, 8, 3, b"RIDE TEST") {
         return WHITE;
     }
-    let (label, color) = match if state.error {
+    let (label, color) = match if state.error && state.state != CaptureState::Full {
         CaptureState::Error
     } else {
         state.state
@@ -74,6 +76,7 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
         CaptureState::Recording => (b"RECORDING".as_slice(), GREEN),
         CaptureState::Stopping => (b"STOPPING".as_slice(), YELLOW),
         CaptureState::Stopped => (b"STOPPED".as_slice(), WHITE),
+        CaptureState::Full => (b"STORAGE FULL".as_slice(), RED),
         CaptureState::Error => (b"ERROR".as_slice(), RED),
     };
     if text(x, y, (240 - label.len() * 12) / 2, 36, 2, label) {
@@ -82,8 +85,12 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
     if (y == 58 || y == 208) && (8..232).contains(&x) {
         return WHITE;
     }
-    if text(x, y, 8, 68, 2, b"TIME LEFT")
-        || optional_number(x, y, 144, 68, 2, state.remaining_secs, 5)
+    let (time_label, seconds) = match state.remaining_secs {
+        Some(remaining) => (b"TIME LEFT".as_slice(), remaining),
+        None => (b"ELAPSED".as_slice(), state.elapsed_secs),
+    };
+    if text(x, y, 8, 68, 2, time_label)
+        || number(x, y, 144, 68, 2, seconds, 5)
         || text(x, y, 208, 68, 2, b"S")
     {
         return WHITE;
@@ -144,8 +151,29 @@ pub fn pixel(x: usize, y: usize, state: Screen) -> u16 {
             };
         }
     }
-    if state.sampled && text(x, y, 66, 302, 2, b"SAMPLE 2S") {
+    let footer: &[u8] = if state.remaining_secs.is_none() {
+        match state.state {
+            CaptureState::Stopped | CaptureState::Full => b"STOPPED",
+            CaptureState::Recording | CaptureState::Preparing if state.stop_confirm => {
+                b"BR CONFIRM"
+            }
+            CaptureState::Recording | CaptureState::Preparing => b"BR STOP",
+            _ => b"",
+        }
+    } else if state.sampled {
+        b"SAMPLE 2S"
+    } else {
+        b""
+    };
+    if state.remaining_secs.is_none() && state.sampled && text(x, y, 93, 294, 1, b"SAMPLE 2S") {
         return YELLOW;
+    }
+    if text(x, y, (240 - footer.len() * 12) / 2, 302, 2, footer) {
+        return if state.state == CaptureState::Stopped {
+            WHITE
+        } else {
+            YELLOW
+        };
     }
     BLACK
 }
@@ -235,6 +263,70 @@ mod tests {
                 }
             }
             assert!(lit > 100);
+        }
+    }
+
+    #[test]
+    fn manual_capture_shows_elapsed_and_only_applicable_stop_instruction() {
+        for (capture, confirm, footer) in [
+            (CaptureState::Recording, false, b"BR STOP".as_slice()),
+            (CaptureState::Preparing, false, b"BR STOP".as_slice()),
+            (CaptureState::Recording, true, b"BR CONFIRM".as_slice()),
+            (CaptureState::Stopped, true, b"STOPPED".as_slice()),
+            (CaptureState::Stopping, true, b"".as_slice()),
+        ] {
+            let state = Screen {
+                state: capture,
+                stop_confirm: confirm,
+                elapsed_secs: 123,
+                sampled: true,
+                ..Screen::default()
+            };
+            for y in 68..82 {
+                for x in 0..240 {
+                    let expected = text(x, y, 8, 68, 2, b"ELAPSED")
+                        || number(x, y, 144, 68, 2, 123, 5)
+                        || text(x, y, 208, 68, 2, b"S");
+                    assert_eq!(pixel(x, y, state) != BLACK, expected);
+                }
+            }
+            for y in 302..316 {
+                for x in 0..240 {
+                    assert_eq!(
+                        pixel(x, y, state) != BLACK,
+                        text(x, y, (240 - footer.len() * 12) / 2, 302, 2, footer)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_storage_remains_explicit_when_error_flag_is_set() {
+        for error in [false, true] {
+            let state = Screen {
+                state: CaptureState::Full,
+                error,
+                ..Screen::default()
+            };
+            for y in 36..50 {
+                for x in 0..240 {
+                    let expected = if text(x, y, 48, 36, 2, b"STORAGE FULL") {
+                        RED
+                    } else {
+                        BLACK
+                    };
+                    assert_eq!(pixel(x, y, state), expected);
+                }
+            }
+            for y in 302..316 {
+                for x in 0..240 {
+                    assert_eq!(
+                        pixel(x, y, state) != BLACK,
+                        text(x, y, 78, 302, 2, b"STOPPED")
+                    );
+                }
+            }
         }
     }
 

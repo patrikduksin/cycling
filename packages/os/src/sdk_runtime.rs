@@ -54,6 +54,9 @@ pub struct Runtime {
     capture_started: Option<u64>,
     capture_seconds: Option<u32>,
     capture_deadline: Option<u64>,
+    recording_since: Option<u64>,
+    recording_ended: Option<u64>,
+    stop_armed: Option<u64>,
     next_display: u64,
     next_position: u64,
     next_capture_link: u64,
@@ -85,6 +88,9 @@ impl Runtime {
             capture_started: None,
             capture_seconds: None,
             capture_deadline: None,
+            recording_since: None,
+            recording_ended: None,
+            stop_armed: None,
             next_display: 0,
             next_position: 0,
             next_capture_link: 0,
@@ -94,7 +100,7 @@ impl Runtime {
             menu_open: true,
             gps_fix_ms: None,
             startup_status: "unknown",
-            preview_seconds: Some(420),
+            preview_seconds: None,
             next_reconnect: [0; 3],
             capture_link: [None; 3],
             ant_epochs: [None; 3],
@@ -181,29 +187,32 @@ impl Runtime {
             Status::Recording => CaptureState::Recording,
             Status::Stopping => CaptureState::Stopping,
             Status::Stopped => CaptureState::Stopped,
-            Status::Full | Status::Error => CaptureState::Error,
+            Status::Full => CaptureState::Full,
+            Status::Error => CaptureState::Error,
         };
-        let remaining_secs = if matches!(
-            capture.status,
-            Status::Stopped | Status::Full | Status::Error
-        ) {
-            Some(0)
-        } else {
-            self.capture_deadline
-                .map(|at| at.saturating_sub(now).div_ceil(1000) as u32)
-                .or(self.capture_seconds)
-                .or(self.preview_seconds)
-        };
+        let remaining_secs = self.capture_seconds.map(|seconds| {
+            if matches!(
+                capture.status,
+                Status::Stopped | Status::Full | Status::Error
+            ) {
+                0
+            } else {
+                self.capture_deadline
+                    .map_or(seconds, |at| at.saturating_sub(now).div_ceil(1000) as u32)
+            }
+        });
         let elapsed_secs = self
-            .capture_deadline
-            .zip(self.capture_seconds)
-            .map_or(0, |(deadline, seconds)| {
-                now.saturating_sub(deadline.saturating_sub(u64::from(seconds) * 1000)) / 1000
+            .recording_since
+            .map_or(0, |at| {
+                self.recording_ended.unwrap_or(now).saturating_sub(at) / 1000
             })
             .min(u64::from(u32::MAX)) as u32;
         let screen = crate::sdk::radar_screen::Screen {
             state,
             remaining_secs,
+            stop_confirm: self
+                .stop_armed
+                .is_some_and(|at| now.saturating_sub(at) <= 5000),
             free_slots: if self.capture_started.is_some() {
                 (capture.scanned == ride_log::SECTORS).then_some(capture.remaining_slots as u32)
             } else {
@@ -301,7 +310,31 @@ impl Runtime {
         _store: &mut impl crate::sdk::storage::RideStorage,
     ) {
         use crate::sdk::ant_menu::Action;
-        if !self.foundation_screen || self.capture_started.is_some() {
+        if !self.foundation_screen {
+            return;
+        }
+        if self.capture_started.is_some() {
+            if matches!(
+                self.capture.snapshot().status,
+                crate::sdk::ant_capture::Status::Scanning
+                    | crate::sdk::ant_capture::Status::Ready
+                    | crate::sdk::ant_capture::Status::Recording
+            ) {
+                self.next_display = now;
+                match input {
+                    crate::capabilities::Input::Button {
+                        button: crate::capabilities::Button::BottomRight,
+                        code: 1,
+                    } => match self.stop_armed {
+                        Some(at) if (350..=5000).contains(&now.saturating_sub(at)) => {
+                            self.stop_capture()
+                        }
+                        Some(at) if now.saturating_sub(at) < 350 => {}
+                        _ => self.stop_armed = Some(now),
+                    },
+                    _ => self.stop_armed = None,
+                }
+            }
             return;
         }
         if !self.menu_open {
@@ -354,8 +387,7 @@ impl Runtime {
                     self.menu.set_message(b"WAIT FOR GPS OUTSIDE");
                     return;
                 }
-                let seconds = self.preview_seconds.unwrap_or(420);
-                let required = sampled_reservation(seconds).unwrap_or(764);
+                let required = 8;
                 if !self.recorder.exportable() {
                     self.menu.set_message(b"WAIT STORAGE SCAN");
                     return;
@@ -364,7 +396,7 @@ impl Runtime {
                     self.menu.set_message(b"NOT ENOUGH STORAGE");
                     return;
                 }
-                let result = self.start_capture(now, true, Some((seconds, required, true)));
+                let result = self.start_capture(now, true, Some((0, required, true)));
                 if result == "ACCEPTED" {
                     self.menu_open = false;
                 }
@@ -417,6 +449,16 @@ impl Runtime {
         self.capture_command(argument, bound, store, now, output, sensors_ready, None)
     }
 
+    fn stop_capture(&mut self) {
+        for packet in &mut self.sampled_packets {
+            if packet.take().is_some() {
+                self.capture.sampled_out_packet();
+            }
+        }
+        self.capture.stop();
+        self.stop_armed = None;
+    }
+
     fn start_capture(
         &mut self,
         now: u64,
@@ -446,7 +488,12 @@ impl Runtime {
             return "STATE";
         }
         self.capture_started = Some(now);
-        self.capture_seconds = foundation.map(|(seconds, _, _)| seconds);
+        self.capture_seconds = foundation
+            .map(|(seconds, _, _)| seconds)
+            .filter(|seconds| *seconds != 0);
+        self.recording_since = None;
+        self.recording_ended = None;
+        self.stop_armed = None;
         self.capture_deadline = None;
         self.next_position = now;
         self.next_capture_link = now;
@@ -470,12 +517,7 @@ impl Runtime {
         match (argument, bound) {
             (Some("START"), None) => self.start_capture(now, sensors_ready, foundation),
             (Some("STOP"), None) => {
-                for packet in &mut self.sampled_packets {
-                    if packet.take().is_some() {
-                        self.capture.sampled_out_packet();
-                    }
-                }
-                self.capture.stop();
+                self.stop_capture();
                 "ACCEPTED"
             }
             (Some("STATUS"), None) => {
@@ -581,6 +623,22 @@ impl Runtime {
         let channels = ant.channels(now);
         let mut capture_status = self.capture.snapshot().status;
         let sampled = self.capture.snapshot().sampled;
+        if matches!(
+            capture_status,
+            crate::sdk::ant_capture::Status::Ready | crate::sdk::ant_capture::Status::Recording
+        ) {
+            self.recording_since.get_or_insert(now);
+        } else if self.recording_since.is_some()
+            && matches!(
+                capture_status,
+                crate::sdk::ant_capture::Status::Stopped
+                    | crate::sdk::ant_capture::Status::Full
+                    | crate::sdk::ant_capture::Status::Error
+            )
+        {
+            self.recording_ended.get_or_insert(now);
+        }
+
         if foundation_expired(
             now,
             capture_status,
@@ -871,6 +929,9 @@ impl Runtime {
             }
             if operation != Some("LOG") {
                 return "INVALID";
+            }
+            if argument == Some("MANUAL") && bound.is_none() {
+                return self.start_capture(now, true, Some((0, 8, true)));
             }
             if matches!(argument, Some("START" | "SAMPLED")) {
                 let Some(seconds) = bound.and_then(|value| value.parse::<u32>().ok()) else {

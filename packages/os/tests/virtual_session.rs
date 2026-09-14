@@ -550,7 +550,7 @@ fn physical_menu_selects_exact_peer_and_gates_capture_start() {
     for scenario in ["absent", "stale", "gps", "gps_expired", "space", "ready"] {
         let t = Temp::new();
         let mut s = Session::new(&t.0, 32, 24).unwrap();
-        let occupied = if scenario == "space" { 3500 } else { 3090 };
+        let occupied = if scenario == "space" { 4089 } else { 3090 };
         let path = t.0.join("data.bin");
         let mut media = std::fs::read(&path).unwrap();
         media[..occupied * 256].fill(0x5a);
@@ -653,12 +653,7 @@ fn physical_menu_selects_exact_peer_and_gates_capture_start() {
             "Start itself must not erase/write"
         );
         if scenario == "ready" {
-            for button in [
-                Button::TopLeft,
-                Button::BottomLeft,
-                Button::BottomRight,
-                Button::BottomRight,
-            ] {
+            for button in [Button::TopLeft, Button::BottomLeft, Button::BottomRight] {
                 press(&mut s, &mut ant, button);
             }
             assert_eq!(
@@ -728,4 +723,101 @@ fn sdk_boot_exposes_physical_menu_without_a_usb_command() {
         s.sdk.input_active(),
         "SDK boot must accept physical menu input before any USB command"
     );
+}
+
+#[cfg(feature = "cycling")]
+#[test]
+fn manual_capture_outlives_ten_minutes_and_physical_stop_requires_confirmation() {
+    use cycling_os::{
+        capabilities::{Button, Input},
+        sdk::ride_log,
+        simulator::session::NoAnt,
+    };
+    fn input(s: &mut Session, delta: u64, button: Button, code: u16) {
+        s.now += delta;
+        s.sdk.input(
+            Input::Button { button, code },
+            s.now,
+            &mut NoAnt,
+            &mut s.shell.store.data(),
+        );
+    }
+    fn recording(s: &mut Session) {
+        let status = command(s, "FOUNDATION LOG STATUS").1;
+        assert!(status.contains("status: Recording"), "{status}");
+    }
+    let t = Temp::new();
+    let mut s = Session::new(&t.0, 32, 24).unwrap();
+    let path = t.0.join("data.bin");
+    let mut media = std::fs::read(&path).unwrap();
+    media[..3090 * 256].fill(0x5a);
+    let prefix = media[..3090 * 256].to_vec();
+    std::fs::write(&path, media).unwrap();
+    s.advance(3000).unwrap();
+    assert_eq!(command(&mut s, "FOUNDATION LOG MANUAL").0, "ACCEPTED");
+    s.advance(4000).unwrap();
+    recording(&mut s);
+    for _ in 0..5 {
+        s.advance(120_000).unwrap();
+    }
+    s.advance(20_000).unwrap();
+    recording(&mut s);
+    let status = command(&mut s, "FOUNDATION LOG STATUS").1;
+    assert!(status.contains("required_slots: 8"), "{status}");
+    assert!(status.contains("requested_seconds=None"), "{status}");
+    assert!(status.contains("remaining_seconds=None"), "{status}");
+    // Holds cannot stop recording.
+    input(&mut s, 400, Button::BottomRight, 4);
+    input(&mut s, 400, Button::BottomRight, 5);
+    recording(&mut s);
+    // Holds cancel an armed confirmation, so release/click cannot finish it.
+    input(&mut s, 400, Button::BottomRight, 1);
+    input(&mut s, 400, Button::BottomRight, 4);
+    input(&mut s, 400, Button::BottomRight, 1);
+    recording(&mut s);
+    s.sdk
+        .input(Input::Cancel, s.now, &mut NoAnt, &mut s.shell.store.data());
+    // A duplicate click inside350ms cannot confirm.
+    input(&mut s, 400, Button::BottomRight, 1);
+    input(&mut s, 100, Button::BottomRight, 1);
+    recording(&mut s);
+    // Another button cancels the pending confirmation.
+    input(&mut s, 400, Button::BottomLeft, 1);
+    input(&mut s, 400, Button::BottomRight, 1);
+    recording(&mut s);
+    // An expired second click must not stop; it can only arm a new confirmation.
+    input(&mut s, 5001, Button::BottomRight, 1);
+    recording(&mut s);
+    input(&mut s, 400, Button::TopLeft, 1);
+    input(&mut s, 400, Button::BottomRight, 1);
+    recording(&mut s);
+    input(&mut s, 350, Button::BottomRight, 1);
+    s.advance(2000).unwrap();
+    let stopped = command(&mut s, "FOUNDATION LOG STATUS").1;
+    assert!(stopped.contains("status: Stopped"), "{stopped}");
+    assert!(stopped.contains("error: None"), "{stopped}");
+    let info = command(&mut s, "FOUNDATION LOG INFO");
+    let upper: usize = info.1.split_whitespace().nth(3).unwrap().parse().unwrap();
+    let after = std::fs::read(&path).unwrap();
+    assert_eq!(&after[..prefix.len()], prefix.as_slice());
+    let records = after[prefix.len()..upper * 256].as_chunks::<256>().0;
+    assert!(
+        records.len() > 610,
+        "manual capture continued past ten minutes"
+    );
+    assert!(records.len() < 1006);
+    for record in records {
+        assert_eq!(record[7], 1);
+        assert_eq!(&record[252..], &ride_log::commit_word().0);
+        assert_eq!(
+            u32::from_le_bytes(record[248..252].try_into().unwrap()),
+            ride_log::transport_checksum(&record[..248])
+        );
+    }
+    assert_eq!(records.iter().filter(|r| r[5] == 2).count(), 1);
+    assert_eq!(records.last().unwrap()[5], 2);
+    input(&mut s, 400, Button::BottomRight, 1);
+    input(&mut s, 400, Button::BottomRight, 1);
+    s.advance(5000).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), after);
 }

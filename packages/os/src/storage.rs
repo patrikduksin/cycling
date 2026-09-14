@@ -498,6 +498,7 @@ pub struct Geometry {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccessError<E> {
+    Unavailable,
     OutOfBounds,
     Unaligned,
     Device(E),

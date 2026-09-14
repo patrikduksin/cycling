@@ -18,3 +18,6 @@ pub mod usb;
 pub mod wifi;
 
 pub mod sound_protocol;
+
+pub mod power_transition;
+pub mod sleep;

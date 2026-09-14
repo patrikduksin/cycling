@@ -312,6 +312,7 @@ fn charging_allows_one_wake_then_requires_new_operating_reason_and_sample_progre
     for reason in [5, 6] {
         let empty = State::default().snapshot(0, 5000);
         let mut startup = charging_startup();
+        startup.request_wake().unwrap();
         assert!(!startup.wake(empty, false, true, false));
         assert_eq!(startup.status(), "charging");
         assert!(startup.wake(empty, true, true, false));
@@ -345,6 +346,7 @@ fn wake_missing_reason_or_partial_submission_never_retries_or_claims_ready() {
     let empty = State::default().snapshot(0, 5000);
     for result in [Err(()), Ok(0), Ok(15), Ok(16)] {
         let mut startup = charging_startup();
+        startup.request_wake().unwrap();
         assert!(startup.wake(empty, true, true, false));
         startup.wake_submitted(result, 3500);
         // Repeated completion calls cannot restart or repair a failed submission.
@@ -375,6 +377,7 @@ fn existing_sensor_or_radio_activity_and_transport_loss_suppress_wake() {
     let empty = State::default().snapshot(0, 5000);
     for source in 0..5 {
         let mut startup = charging_startup();
+        startup.request_wake().unwrap();
         let mut observation = empty;
         match source {
             0 => observation.pressure = sample(3210).pressure,
@@ -401,6 +404,15 @@ fn sensor_activity_while_waiting_for_ack_suppresses_later_wake() {
     prepare(&mut startup, Ok(16));
     startup.report(16, &[0xf1, 2], 3150);
     report(&mut startup, 4, 3200);
+    startup.request_wake().unwrap();
     assert!(!startup.wake(State::default().snapshot(3201, 5000), true, true, false));
     assert_eq!(startup.status(), "running_degraded");
+}
+
+#[test]
+fn charging_standby_does_not_automatically_return_to_normal_operation() {
+    let mut startup = charging_startup();
+    let empty = State::default().snapshot(3201, 5000);
+    assert!(!startup.wake(empty, true, true, false));
+    assert_eq!(startup.status(), "charging");
 }

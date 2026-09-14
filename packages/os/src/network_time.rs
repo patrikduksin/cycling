@@ -131,6 +131,23 @@ pub fn set_syncing(syncing: bool) {
     SYNCING.store(syncing, Ordering::Relaxed);
 }
 
+/// Notify the clock owner after a device interval that stopped monotonic time.
+///
+/// An RTC duration is evidence of missing elapsed time, not a new network time
+/// synchronization. Invalidate the old anchor instead of publishing UTC that is
+/// behind by the sleep interval. A later validated SNTP response restores UTC.
+/// Call once before readmitting consumers and serialize with `update`, as for
+/// other anchor writes on the device's single executor.
+pub fn sleep_elapsed(rtc_elapsed_us: u64, uptime_elapsed_us: u64) {
+    if rtc_elapsed_us <= uptime_elapsed_us {
+        return;
+    }
+    SEQUENCE.fetch_add(1, Ordering::AcqRel);
+    AVAILABLE.store(false, Ordering::Relaxed);
+    SYNCING.store(false, Ordering::Relaxed);
+    SEQUENCE.fetch_add(1, Ordering::Release);
+}
+
 pub fn update(timestamp: Timestamp, now_ms: u64) {
     SEQUENCE.fetch_add(1, Ordering::AcqRel);
     UTC_SECONDS.store(timestamp.unix_seconds, Ordering::Relaxed);
@@ -209,6 +226,8 @@ pub fn snapshot(now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static CLOCK_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn response(origin: [u8; 8]) -> [u8; 48] {
         let mut packet = [0; 48];
@@ -309,6 +328,7 @@ mod tests {
 
     #[test]
     fn advances_utc_offline_and_marks_old_anchor_stale() {
+        let _guard = CLOCK_TEST.lock().unwrap();
         update(
             Timestamp {
                 unix_seconds: 1_700_000_000,
@@ -327,5 +347,60 @@ mod tests {
             Status::Stale
         );
         assert_eq!(snapshot(9_899, 0, true).age_ms, Some(0));
+    }
+
+    #[test]
+    fn sleep_gap_invalidates_utc_until_a_new_validated_anchor() {
+        let _guard = CLOCK_TEST.lock().unwrap();
+        let timestamp = Timestamp {
+            unix_seconds: 1_700_000_000,
+            millis: 250,
+            stratum: 2,
+        };
+        update(timestamp, 1_000);
+        set_syncing(true);
+        sleep_elapsed(10_000_000, 500);
+        for online in [false, true] {
+            let clock = snapshot(1_001, 0, online);
+            assert_eq!(clock.status, Status::Unavailable);
+            assert_eq!(clock.unix_seconds, None);
+            assert_eq!(clock.local_minutes, None);
+            assert_eq!(clock.age_ms, None);
+        }
+        // Connectivity alone cannot make the old UTC anchor valid again.
+        set_syncing(true);
+        assert_eq!(snapshot(2_000, 0, true).status, Status::Syncing);
+        update(
+            Timestamp {
+                unix_seconds: timestamp.unix_seconds + 10,
+                ..timestamp
+            },
+            2_000,
+        );
+        let clock = snapshot(3_000, 0, true);
+        assert_eq!(clock.status, Status::Fresh);
+        assert_eq!(clock.unix_seconds, Some(1_700_000_011));
+        assert_eq!(clock.millis, 250);
+        assert_eq!(clock.age_ms, Some(1_000));
+    }
+
+    #[test]
+    fn entry_without_a_missing_uptime_interval_keeps_the_anchor() {
+        let _guard = CLOCK_TEST.lock().unwrap();
+        update(
+            Timestamp {
+                unix_seconds: 100,
+                millis: 0,
+                stratum: 2,
+            },
+            5_000,
+        );
+        for (rtc, uptime) in [(0, 0), (500, 500), (400, 500)] {
+            sleep_elapsed(rtc, uptime);
+            let clock = snapshot(6_000, 0, true);
+            assert_eq!(clock.unix_seconds, Some(101));
+            assert_eq!(clock.age_ms, Some(1_000));
+            assert_eq!(clock.status, Status::Fresh);
+        }
     }
 }

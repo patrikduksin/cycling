@@ -20,3 +20,5 @@ overflow-checks = true
 
 [patch.crates-io]
 trouble-host = { path = "packages/os/vendor/trouble-host" }
+
+esp-hal = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "0cf3835559c18f03d75190b332316ba85b68b8ed" }

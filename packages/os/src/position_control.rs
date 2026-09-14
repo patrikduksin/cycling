@@ -73,6 +73,18 @@ impl Controller {
         self.status.generation = self.status.generation.wrapping_add(1);
         Ok(())
     }
+    /// Device power coordination owns the restoring transition. Unlike a
+    /// diagnostic pause this has no lease that can reopen GNSS during shutdown.
+    pub fn suspend(&mut self, now: u64) -> Result<(), crate::capabilities::Error> {
+        if matches!(self.status.state, State::PauseQueued | State::ResumeQueued) {
+            return Err(crate::capabilities::Error::Unavailable);
+        }
+        self.status.state = State::PauseQueued;
+        self.status.at_ms = now;
+        self.status.resume_at_ms = None;
+        self.status.generation = self.status.generation.wrapping_add(1);
+        Ok(())
+    }
     /// One attempt per transition. The deadline always queues the restoring open,
     /// including after an uncertain close. No terminal connection is needed.
     pub fn tick(

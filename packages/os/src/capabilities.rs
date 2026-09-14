@@ -81,6 +81,8 @@ pub trait InputSource {
 pub trait Power {
     fn availability(&self) -> Availability;
     fn battery(&self) -> Option<(u8, u16, u64)>;
+    /// Accept a brightness target. A device task may apply it asynchronously;
+    /// subsequent driver failure must be exposed through availability.
     fn brightness(&mut self, percent: u8) -> Result<(), Error>;
 }
 pub trait Positioning {

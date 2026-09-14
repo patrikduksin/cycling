@@ -62,6 +62,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             board.sensors,
             board.network,
             board.input_observation,
+            board.power_control,
             #[cfg(feature = "cycling")]
             profile,
         )
@@ -81,6 +82,7 @@ async fn console(
     mut sensors: device::c606::Sensors,
     mut network: device::c606::Network,
     input: device::c606::Input,
+    mut power: device::c606::Power,
     #[cfg(feature = "cycling")] profile: cycling_os::sdk::ble_sensor::Profile,
 ) {
     let mut terminal = terminal::Terminal::new(usb);
@@ -143,36 +145,40 @@ async fn console(
     loop {
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
-        #[cfg(feature = "cycling")]
-        {
-            sdk.set_startup_status(cycling_os::capabilities::Sensors::startup_status(&sensors));
-            system.set_app_active(sdk.input_active());
+        // Diagnostic power requests enter only with no active domain work.
+        // Keep USB observations alive while device owners complete the transition.
+        if cycling_os::power::Control::status(&power).ready {
+            #[cfg(feature = "cycling")]
+            {
+                sdk.set_startup_status(cycling_os::capabilities::Sensors::startup_status(&sensors));
+                system.set_app_active(sdk.input_active());
+            }
+            system.tick(now);
+            #[cfg(feature = "cycling")]
+            for _ in 0..16 {
+                let Some(edge) = system.take_app_input() else {
+                    break;
+                };
+                sdk.input(edge.input, now, &mut ant, &mut system.store.data());
+            }
+            system.observe_position(&position, now);
+            let started = embassy_time::Instant::now();
+            system.present();
+            system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
+            #[cfg(feature = "cycling")]
+            sdk.tick(
+                &mut system.store.data(),
+                now,
+                &mut ant,
+                &mut ble,
+                &position,
+                cycling_os::capabilities::Network::online(&network),
+                &input,
+                cycling_os::capabilities::Sensors::snapshot(&sensors, now),
+            );
+            #[cfg(feature = "cycling")]
+            sdk.test_display(&mut system, now, &ant, &position);
         }
-        system.tick(now);
-        #[cfg(feature = "cycling")]
-        for _ in 0..16 {
-            let Some(edge) = system.take_app_input() else {
-                break;
-            };
-            sdk.input(edge.input, now, &mut ant, &mut system.store.data());
-        }
-        system.observe_position(&position, now);
-        let started = embassy_time::Instant::now();
-        system.present();
-        system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
-        #[cfg(feature = "cycling")]
-        sdk.tick(
-            &mut system.store.data(),
-            now,
-            &mut ant,
-            &mut ble,
-            &position,
-            cycling_os::capabilities::Network::online(&network),
-            &input,
-            cycling_os::capabilities::Sensors::snapshot(&sensors, now),
-        );
-        #[cfg(feature = "cycling")]
-        sdk.test_display(&mut system, now, &ant, &position);
         terminal.pump();
         terminal.finish_reboot(now, &FirmwareDiagnostics);
         if let Some(request) = terminal.request(now) {
@@ -189,6 +195,7 @@ async fn console(
                 &mut sensors,
                 &mut network,
                 &input,
+                &mut power,
                 &FirmwareDiagnostics,
                 #[cfg(feature = "cycling")]
                 &mut sdk,

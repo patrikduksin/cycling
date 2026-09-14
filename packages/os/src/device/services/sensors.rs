@@ -21,7 +21,17 @@ pub fn startup_begin(now: u64) {
     SHARED.lock(|s| s.borrow_mut().startup.begin(now));
 }
 pub fn startup_status() -> &'static str {
+    let phase = startup_phase();
+    if super::power::ACCESS.closed() && matches!(phase, "ready" | "already_running") {
+        return "power_transition";
+    }
+    phase
+}
+pub fn startup_phase() -> &'static str {
     SHARED.lock(|s| s.borrow().startup.status())
+}
+pub fn power_request_wake() -> Result<(), Error> {
+    SHARED.lock(|s| s.borrow_mut().startup.request_wake())
 }
 pub fn startup_reason() -> Option<u8> {
     SHARED.lock(|s| s.borrow().startup.reason())
@@ -36,6 +46,7 @@ pub fn query_status() -> &'static str {
     SHARED.lock(|s| s.borrow().query)
 }
 pub fn query(now: u64) -> Result<(), Error> {
+    let _access = super::power::ACCESS.enter()?;
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         if matches!(s.query, "queued" | "waiting") {
@@ -75,6 +86,9 @@ pub fn loss() {
     });
 }
 pub fn tick(now: u64) {
+    // Ordinary recovery/query writers stop during a power transition. Explicit
+    // charging wake and passive physical-startup observations still progress.
+    let blocked = super::power::ACCESS.closed();
     use cycling_os::capabilities::Observation;
     let bridge = super::io::snapshot(now);
     let bridge_fresh = bridge.is_some_and(|s| {
@@ -83,13 +97,14 @@ pub fn tick(now: u64) {
     });
     let transport_clean = bridge.is_none_or(|s| s.uart_errors == 0 && s.companion_bad_crc == 0);
     let radio_seen = super::ant::startup_activity();
-    let acknowledge = SHARED.lock(|s| {
-        let mut s = s.borrow_mut();
-        let sample = s.state.unwrap_or_default().snapshot(now, 5000);
-        let transport_clean = transport_clean && sample.losses == 0;
-        s.startup
-            .probe(sample, now, bridge_fresh, transport_clean, radio_seen)
-    });
+    let acknowledge = !blocked
+        && SHARED.lock(|s| {
+            let mut s = s.borrow_mut();
+            let sample = s.state.unwrap_or_default().snapshot(now, 5000);
+            let transport_clean = transport_clean && sample.losses == 0;
+            s.startup
+                .probe(sample, now, bridge_fresh, transport_clean, radio_seen)
+        });
     if acknowledge {
         let result = super::super::companion_uart::send(&super::super::companion_startup::frame());
         SHARED.lock(|s| s.borrow_mut().startup.submitted(result.map(|()| 16), now));
@@ -117,6 +132,9 @@ pub fn tick(now: u64) {
         let mut s = s.borrow_mut();
         let sample = s.state.unwrap_or_default().snapshot(now, 5000);
         s.startup.observe(sample, now);
+        if blocked {
+            return false;
+        }
         if matches!(s.query, "queued" | "waiting") && now.saturating_sub(s.at) > 2000 {
             s.query = "timeout";
         }

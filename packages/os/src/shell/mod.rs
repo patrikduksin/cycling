@@ -213,8 +213,15 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
                 .then_some(u64::from(self.settings.dim_timeout_secs) * 1000),
             dim_level: self.settings.dim_brightness,
         };
-        self.idle.tick(now, config);
-        let effective = self.idle.effective(self.settings.brightness, config);
+        let screen_off = !self.app_active && self.foreground == Screen::Blank;
+        let effective = if screen_off {
+            // Manual screen-off persists until the next screen toggle. Do not
+            // let idle dimming consume that first press when returning.
+            0
+        } else {
+            self.idle.tick(now, config);
+            self.idle.effective(self.settings.brightness, config)
+        };
         self.power_error = self.power.availability() == Availability::Failed;
         if self.power.availability() == Availability::Ready && self.effective != effective {
             match self.power.brightness(effective) {

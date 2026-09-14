@@ -140,17 +140,19 @@ press, hold, repeat or release timing. The three event-1 short-click mappings
 remain the physical baseline in [companion.md](companion.md).
 
 The same callback independently calls `0x16354`. Button 0 with event 4, or any
-button event while a companion mode accessor returns 3, enters a restart-timer
-path through `0x167c0` with argument 100. A main-MCU implementation cannot assume
-that ignoring a button report prevents the companion from acting. The timeout's
-physical effect and units remain unverified. Do not perform unattended holds to
-infer them.
+button event while a companion mode accessor returns 3, reconfigures the periodic
+state-machine timer through `0x167c0` with argument 100. This is timer restart,
+not evidence of a processor reset. Timer registration at `0x1a6ec` selects
+callback `0x1a7b8`, which queues worker `0x1a68c` and its state dispatcher
+`0x15f1e`. A main-MCU implementation cannot assume that ignoring a button report
+prevents the companion from acting. Physical timing remains unverified. Do not
+perform unattended holds to infer it.
 
 | Stock operation | Main entry point | Recovered envelope and payload |
 |---|---|---|
 | Power off | `0x42052094` | Class 2, group `10`, `e2 02 00 00 00 00 00 00` |
-| Power on | `0x420520e8` | Class 2, group `10`, `e2 02 00 00 00 01 00 00` |
-| Check power-on reason | `0x42052140` | Class 1, group `10`, `e2 02 00 00 00 03 00 00` |
+| Power-on acknowledgment | `0x420520e8` | Class 2, group `10`, `e2 02 00 00 00 01 00 00` |
+| Check power-on reason | `0x42052140` | Class 1, group `10`, `e2 02 00 00 00 01 00 00`; the receiver ignores the value byte |
 
 These names come from stock callers. UART submission, a matching reply, USB
 removal and a dark display do not establish electrical shutdown. No power-off or
@@ -158,6 +160,60 @@ sleep request was exercised for this research. A complete transition needs owned
 storage durability, peripheral sequencing, loss of readiness, bounded completion
 and a tested recovery path. Functional shutdown/wake tests require the owner
 present if physical recovery may be needed.
+
+### Shutdown receiver and completion limits
+
+A further static trace on 2026-09-14 used the same N21 release 1.956 and N22
+release 1.902 artifacts. N22 remains a supporting update image, not a readback
+of the installed companion. No new device access accompanied this trace.
+
+N22 receiver `0x178a4` accepts the fixed shutdown envelope above through
+`0x178fa`, calling state setter `0x173a8(0)`. The setter clears the startup
+acknowledgment and a pending button event, calls teardown `0x161b8`, enables
+button-event handling through `0x15d1c(1)`, and enters state zero.
+
+Teardown first calls `0x174dc`. This stops acquisition/service timers and sensor
+bus activity, takes the selected motion-driver teardown branch, requests ANT
+closure through `0x131fc(0)`, and disables companion GPIO controls at indices two
+and three through `0x145c8`. It also drives companion GPIO23 and GPIO13 low.
+The outer `0x161b8` then disables control indices one, five and zero, in that
+order. Table `0x23b00` maps these five control indices to companion GPIO10,
+GPIO11, GPIO12, GPIO7 and GPIO6 respectively. The control setter `0x1601c`
+skips writes when its cached state already matches. These are companion pin
+numbers, not ESP32 pins; rail names and their electrical effects remain
+unverified. The traced teardown contains no identified flash erase,
+vendor-filesystem write or calibration-program operation. That does not prove
+all asynchronous radio work has completed.
+
+Only after the setter returns does `0x17a14` construct the generic eight-byte
+response `e2 02 01 00 00 00 00 00`. GPIO transitions precede this response, so
+the main CPU may lose operation before receiving it. Other accepted setters
+share this response shape. A correlated reply establishes receiver return,
+not system power-off completion; no distinct shutdown-complete event was
+identified. Missing replies, a dark panel and transport loss must retain
+uncertain completion. A timeout must not trigger command replay.
+
+State zero dispatches through `0x149b0`, which observes the companion's charging
+input and consumes button events. The charging path `0x1613c` accepts top-left
+event four and selects initialization state seven with subtype two. The other
+path `0x161e0` has battery and button guards before selecting initialization.
+The existing startup acknowledgment is a one-shot RAM flag, not an unconditional
+remote wake command. Do not automatically send initialization value seven to
+recover from a deliberate shutdown. If USB leaves the main CPU operating, keep
+the transition uncertain until explicit recovery evidence arrives. Recovery
+after a new boot must still establish fresh acquisition, as described above.
+
+### Sleep remains a separate operation
+
+Setter value three shares peripheral teardown but omits the outer shutdown
+control sequence. Its state dispatch calls `0x14a4c`, consumes pending events
+from all three buttons, and selects initialization state seven on a nonzero
+event. This supports a companion suspend/resume candidate. It does not establish
+a supported whole-device sleep operation, main-CPU low-power entry, USB wake or
+electrical savings. N21's function named `MidSendSleepToLCD` at `0x4202ace4`
+sets a software flag; that name alone supplies no panel command or timing
+contract. Keep sleep and selectable wake sources unverified until their full
+sequencing and physical recovery are established.
 
 Battery decoding remains unchanged. N21 treats power-status zero as charging;
 other values remain raw. Existing percentage and USB-transition observations do
@@ -281,7 +337,7 @@ private logger, with one USB owner. Save logs before changing USB or power state
 Installed part identification, physical motion/hold/wake observations, independent
 voltage/pressure calibration and new ANT operation end-to-end evidence remain open.
 
-## Automatic initialization after charging startup
+## Charging initialization and explicit wake
 
 The recovered N22 class-2/group-16 receiver accepts page `e2/02`, operation index
 zero, value seven as its normal initialization transition. Receiver `0x178a4`
@@ -294,8 +350,8 @@ is receiver-supported behavior, not a recovered N21 sender constant or a promise
 of success for every retained state.
 
 The device uses the fixed payload `e2 02 00 00 00 07 00 00` only once after an
-explicit charging reason four, with a fresh, clean bridge and no observed sensor
-or radio activity. A short/failed submission is uncertain and is never replayed.
+explicit charging reason four and an explicit wake request, with a fresh, clean
+bridge and no observed sensor or radio activity. A short/failed submission is uncertain and is never replayed.
 Readiness requires a subsequent normal-start reason and independently advancing
 fresh motion and pressure timestamps; timeout is a failure. The audited branches
 contain no identified flash erase, vendor-filesystem write or calibration-program
@@ -309,3 +365,193 @@ three seconds of clean passive observation. The charging initialization transiti
 still requires a fresh bridge. Live validation of source `382c85cadeb1` reached ready with reason
 six and independently advancing sensors after charging startup, with zero button
 reports after boot. This observation does not establish every power-cycle path.
+
+### Main screen suspension is not verified CPU sleep
+
+A further bounded trace of N21 1.956 follows `MidSendSleepToLCD` at
+`0x4202ace4` through getter `0x4202ad54` and `0x42165664`. The touch reader at
+`0x4202add0` uses the flag to suppress touch polling. Button routing at
+`0x420531c5` consumes event one to invoke `ScreenOffWakeUpHandle` at
+`0x42165a88`. These are screen/input mechanisms.
+
+Screen-off dispatch at `0x420eb668` dims the backlight, sets that flag, calls
+empty function `0x4229df40`, and conditionally invokes panel reinitialization at
+`0x4202acfc`. Its companion payload uses control index three/value two, not
+power-state value three. The corresponding wake-side function `0x4229df48` is
+also empty. This traced path establishes neither ESP CPU sleep nor a UART/GPIO
+wake configuration.
+
+The companion power-state value-three constant exists in N21 at `0x3c375f89`,
+but this analysis did not recover a sender call chain. Receiver support alone
+remains insufficient to expose whole-device sleep. The class-one reason getter
+instead references the shared value-one payload at `0x3c375f81`; the table above
+corrects its previously reported value-three byte. The receiver's class-one
+branch reads the reason without interpreting that byte.
+
+### Shutdown and charging standby observations on 2026-09-14
+
+The first coordinated shutdown build, `811c8749f46f`, accepted one shutdown request,
+entered preparation and lost USB. The owner observed the screen turn off and then
+return automatically. The next attachment reported a power reset and normal
+acquisition. The existing automatic value-seven path made charging startup return
+to normal operation; a focused startup regression reproduced that unwanted
+request before the fix.
+
+Source `84e49e0ad61c` requires an explicit wake request for value seven and retains
+physical operating-reason recovery. A subsequent shutdown on USB returned in
+`Charging` with normal work disabled. It remained there through uptime 47,929 ms;
+charging preparation had completed at 6,324 ms. The owner confirmed that the
+screen remained off. An explicit wake request at 47,975 ms reported completed
+recovery at 49,026 ms. Pressure and both motion streams were fresh, GNSS was
+receiving, Wi-Fi was associated and BLE was advertising. The owner confirmed
+that the screen returned with that request.
+
+This is functional shutdown-to-charging-standby and wake evidence. It does not
+establish electrical power-off, current savings or whole-device sleep. Charging
+presentation belongs to the shell; the device capability reports the charging
+state without adding an animation. Source `1fbfd1f` additionally handles physical
+wake during charging preparation and keeps failed charging preparation from
+silently resuming radios. Raw captures remain private under `.local/power/`.
+
+Final base/harness firmware `a7248d6f7ba2`, with code identical to `1fbfd1f`,
+completed another USB shutdown-to-charging cycle. Saving the current settings
+succeeded before the request; a save submitted after shutdown acceptance returned
+`BUSY`. The new boot reached charging standby, and the owner confirmed standby
+followed by normal screen return after a two-second top-left hold. Recovery
+reported completion with operating reason five, fresh pressure and both motion
+streams, GNSS reception, verified Wi-Fi connectivity and BLE advertising. The
+four saved display/time preferences matched after the power transition, and a
+bounded read of MMC sector zero succeeded. No synthetic button events supplied
+this evidence. The device was left in normal operation on that base/harness
+firmware, with no collector running.
+
+Host tests cover admission during active IO, refused new writes, ambiguous
+submission, transition/recovery deadlines, sound-stop recovery, ANT close
+completion, physical wake during charging preparation and charging preparation
+failure without an unintended restart. All four base/SDK and harness build
+combinations passed. Battery-only shutdown, broader wake-source coverage,
+whole-device sleep and electrical current measurements remain unverified in this
+session. Charging standby and radio quiescence are not electrical-off claims.
+
+### MCU light-sleep implementation sources
+
+The repository's esp-hal 1.1.2 supports ESP32-S3 light sleep with an RTC timer.
+Its `rtc_cntl/sleep/mod.rs` also supplies `GpioWakeupSource` for any GPIO at a
+selected high or low level. This permits a wake experiment using the existing
+companion RX line, GPIO41, without adding or assuming another wire. UART-specific
+wake sources cover UART0 and UART1 only; the companion currently uses UART2.
+GPIO41 can instead wake on a low RX level. Any companion traffic can trigger
+that source, not just a button, and the first report may be incomplete.
+Keep a bounded RTC timer fallback and invalidate transport/acquisition state
+across the transition. Configure wake through the existing input owner without
+changing its UART input matrix routing.
+
+The S3 default `RtcSleepConfig` leaves CPU, digital peripheral, memory and
+VDD_SDIO power-down flags clear. Retain those defaults for the first experiment;
+do not introduce flash/PSRAM power-down. The caller still must stop DMA and
+accepted storage IO, finish UART transmission, quiet display and radios, and
+prevent another task from beginning hardware work during entry.
+
+Two limitations in esp-hal 1.1.2 affect the completion contract. S3 `start_sleep`
+sets the sleep request, then `finish_sleep` immediately clears wake/reject raw
+status. It does not contain the wait-for-wake-or-reject loop in Espressif's
+`components/esp_hw_support/port/esp32s3/rtc_sleep.c` at local ESP-IDF revision
+`f5c3654a1c2d`. Also, HAL `wakeup_cause()` returns undefined unless the reset
+reason is deep sleep. A light-sleep implementation must account for these
+differences instead of treating the API return as proof of entry or rejection.
+Record RTC elapsed time and the S3 latched wake-cause register. A short or
+ambiguous return cannot complete a claimed sleep operation.
+
+HAL `time::Instant` explicitly excludes time spent asleep, and esp-rtos 0.3.0
+uses that time source. RTC elapsed time therefore remains a separate observation;
+ordinary monotonic timestamps alone cannot measure sleep duration. Clear stale
+readiness on recovery even when the monotonic clock barely advances.
+
+### Companion suspend recovery experiment
+
+For N22 state three, a received button event runs `0x14a4c`, selects retained
+subtype one through `0x17468`, and enters state seven. That subtype calls
+`0x14bac` without emitting operating reason five or six. The common initialization
+re-enables all six control outputs and GPIO23/GPIO13, then restores service IO
+and pressure acquisition. It skips the extra motion-driver initialization
+at `0x1acc4` or `0x1ad94` used by full initialization `0x14b94`. Teardown had
+stopped those drivers, so motion recovery after a physical button must be
+observed, not inferred from the common initialization or a power reason.
+
+The initially proposed state-three acknowledgment followed by timer wake and
+remote state seven is not viable. Additional N22 tracing establishes that teardown
+`0x174dc` first calls `0x1c8ec`, which disables the service UART through `0x18f8c`
+and clears its active flag. Both UART driver alternatives, `0x200b0` and
+`0x203a0`, write zero to the peripheral enable register. The receiver constructs
+its generic response only after this teardown. Response enqueue `0x166d0` uses
+callback `0x17a54`, whose sender `0x1c854` returns immediately when that same
+active flag is clear. The acknowledgment therefore cannot establish suspension,
+and a later UART state-seven request cannot be assumed reachable.
+
+This explains the parent device owner's observation on source `13f6f15`: all
+companion UART traffic stopped after the single state-three submission, without
+reported UART errors; no acknowledgment or traffic followed the single attempted
+state-seven recovery. MCU light sleep was never entered. These observations do
+not establish companion CPU sleep or electrical current reduction. State three
+retains the periodic state dispatcher and physical-button route `0x14a4c` into
+subtype-one initialization. The traced low-power primitive `0x1e860` is generic
+idle using a supervisor call or WFE; no state-three-specific STOP/WFI entry was
+identified.
+
+After the owner's physical button press, companion frame progress resumed from
+675 to 1411 without UART errors. The screen stayed dark because the failed power
+transition still held admission closed. A subsequent accepted main restart was
+used for recovery. This establishes that the physical action restored companion
+communication, not complete motion acquisition or successful coordinated wake.
+
+The next bounded MCU experiment must leave the companion running, quiesce owned
+radios and GNSS, and use the ESP RTC timer directly. Continued companion UART
+traffic during MCU sleep entails an intentional receive gap. Discard partial
+frames and pre-sleep samples, then require independently advancing fresh pressure
+and both motion streams before restoring readiness. Companion suspension remains
+dependent on separately verified physical-button recovery; it must not be paired
+with a presumed remote state-seven wake. No current reduction is yet measured.
+
+
+### Battery shutdown and bounded MCU sleep observations
+
+On 2026-09-14, the owner confirmed battery-only shutdown with the delayed
+shutdown implementation subsequently committed in `13f6f15`. A base/harness
+development build accepted `POWER SHUTDOWN AFTER 30000` at uptime 64,094 ms,
+with preparation scheduled at 94,094 ms. The owner removed USB, observed the
+device remain off for ten seconds, then held the top-left button and confirmed
+normal startup before reconnecting USB. Post-boot telemetry reported ready
+companion startup with reason six. This establishes functional battery shutdown
+and button startup, without a current measurement or a USB-insertion wake test.
+
+Base/harness `bbd444e` implements MCU light sleep while leaving the companion
+running. It deliberately discards companion bytes across sleep before interrupts
+resume, resets GNSS UART/DMA acquisition through its owner, preserves confirmed
+ANT closure, and requires fresh post-boundary pressure and both motion streams
+before completing recovery. The capability reports a fixed 10,000 ms timer;
+button/USB wake from this mode remain unknown. This is not companion suspend or
+an indefinite whole-device low-power mode.
+
+The first MCU-only test accepted sleep at uptime 30,665 ms. Hardware reported
+wake bit eight, no rejection, and 10,000,744 microseconds of RTC elapsed time.
+Uptime also advanced by 10,023,885 microseconds with these retained clock domains;
+do not assume that the HAL documentation's general sleep-time exclusion describes
+this configuration. Recovery completed at uptime 42,595 ms. The owner confirmed
+the screen went dark and returned automatically after about ten seconds.
+Subsequent reads showed fresh pressure and both motion streams, two intentional
+sensor invalidations, GNSS reception, fresh UTC and a successful bounded MMC read.
+RTC elapsed and wake status establish the bounded hardware sleep/wake event;
+no current-saving or fully powered-down radio claim follows from them.
+
+A second MCU sleep cycle on final base/harness `2a8e56317005` accepted at uptime
+16,196 ms and reported timer wake after 10,000,743 microseconds RTC time, with
+10,011,270 microseconds uptime and no rejection. Recovery completed at 28,097 ms.
+Final observations confirmed fresh motion/pressure, GNSS reception, verified
+Wi-Fi state, zero UART/CRC errors and successful bounded MMC access. The device
+remained ready in normal operation, with all collectors stopped. The first cycle
+has the owner's physical screen confirmation; the repeat has telemetry evidence.
+
+`mise run test`, `mise run check` and all four base/SDK × harness firmware builds
+passed for the delivered implementation. Independent review covered the final
+MCU-only sequencing, receive boundaries, recovery and capability limits. The
+existing Trouble Host patch and its minimum-MTU regression remain intact.

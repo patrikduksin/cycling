@@ -9,3 +9,4 @@ pub mod sound;
 pub mod sensors;
 
 pub mod position_control;
+pub mod power;

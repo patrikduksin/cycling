@@ -7,9 +7,17 @@ pub fn snapshot() -> cycling_os::position_control::Snapshot {
     CONTROL.lock(|c| c.borrow().snapshot())
 }
 pub fn pause(ms: u32, now: u64) -> Result<(), Error> {
+    let _access = super::power::ACCESS.enter()?;
     CONTROL.lock(|c| c.borrow_mut().pause(ms, now))
 }
 pub fn resume(now: u64) -> Result<(), Error> {
+    let _access = super::power::ACCESS.enter()?;
+    CONTROL.lock(|c| c.borrow_mut().resume(now))
+}
+pub fn power_suspend(now: u64) -> Result<(), Error> {
+    CONTROL.lock(|c| c.borrow_mut().suspend(now))
+}
+pub fn power_resume(now: u64) -> Result<(), Error> {
     CONTROL.lock(|c| c.borrow_mut().resume(now))
 }
 pub fn tick(now: u64) {

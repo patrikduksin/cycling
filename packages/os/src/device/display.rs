@@ -80,6 +80,7 @@ impl DisplayCapability for Display<'_> {
         }
     }
     fn submit(&mut self, pixel: impl Fn(usize, usize) -> u16) -> Result<(), Error> {
+        let _access = super::services::power::ACCESS.enter()?;
         // Eight physical rows per DMA transfer; unchanged strip timing.
         let mut strip = [0u8; PANEL_WIDTH * 8 * 2];
         for top in (0..PANEL_HEIGHT).step_by(8) {

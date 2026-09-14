@@ -21,6 +21,53 @@ use critical_section::Mutex;
 use cycling_os::connectivity::{
     ControlStatus, NetworkDiscovery, Operation, Text, WifiConfig, WifiOperation,
 };
+use cycling_os::power::PeripheralState;
+
+struct PowerControl {
+    suspended: bool,
+    state: PeripheralState,
+}
+static POWER: Mutex<RefCell<PowerControl>> = Mutex::new(RefCell::new(PowerControl {
+    suspended: false,
+    state: PeripheralState::Running,
+}));
+// Public driver APIs cannot cancel an in-flight scan or association after timeout.
+static RADIO_UNCERTAIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn power_status() -> PeripheralState {
+    critical_section::with(|cs| POWER.borrow_ref(cs).state)
+}
+fn suspended() -> bool {
+    critical_section::with(|cs| POWER.borrow_ref(cs).suspended)
+}
+pub fn power_request(suspend: bool) -> Result<(), cycling_os::capabilities::Error> {
+    critical_section::with(|cs| {
+        let mut power = POWER.borrow_ref_mut(cs);
+        if !READY.load(Ordering::Acquire)
+            || (suspend
+                && (CONTROL.borrow_ref(cs).operation == Operation::Pending
+                    || COMMAND.borrow_ref(cs).is_some()))
+        {
+            return Err(cycling_os::capabilities::Error::Unavailable);
+        }
+        if power.suspended != suspend {
+            power.suspended = suspend;
+            power.state = PeripheralState::Pending;
+            REQUEST.store(0, Ordering::Release);
+            GENERATION.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(())
+    })
+}
+fn power_complete(suspend: bool, state: PeripheralState) {
+    critical_section::with(|cs| {
+        let mut power = POWER.borrow_ref_mut(cs);
+        if power.suspended == suspend {
+            power.state = state;
+        }
+    });
+}
+
 static CONFIGURATION: Mutex<RefCell<Option<WifiConfig>>> = Mutex::new(RefCell::new(None));
 static READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static CONTROL: Mutex<RefCell<ControlStatus>> = Mutex::new(RefCell::new(ControlStatus::new()));
@@ -39,7 +86,11 @@ pub fn request(operation: WifiOperation) -> Result<(), cycling_os::capabilities:
     }
     critical_section::with(|cs| {
         let mut status = CONTROL.borrow_ref_mut(cs);
-        if status.operation == Operation::Pending || COMMAND.borrow_ref(cs).is_some() {
+        if POWER.borrow_ref(cs).suspended
+            || !matches!(POWER.borrow_ref(cs).state, PeripheralState::Running)
+            || status.operation == Operation::Pending
+            || COMMAND.borrow_ref(cs).is_some()
+        {
             return Err(cycling_os::capabilities::Error::Unavailable);
         }
         status.sequence = status.sequence.wrapping_add(1);
@@ -115,7 +166,7 @@ pub fn stats() -> (u32, u32, u32, u8) {
 }
 
 pub fn online() -> bool {
-    LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
+    !suspended() && LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
 }
 
 /// Initialize the station and return Embassy's actual DNS/TCP/UDP capability.
@@ -170,22 +221,26 @@ pub fn connection_generation() -> u32 {
     GENERATION.load(Ordering::Acquire)
 }
 
-async fn next_command() -> (WifiOperation, bool) {
+async fn next_command() -> Option<(WifiOperation, bool)> {
     loop {
+        if suspended() || matches!(power_status(), PeripheralState::Pending) {
+            return None;
+        }
         if let Some(operation) = critical_section::with(|cs| COMMAND.borrow_ref_mut(cs).take()) {
-            return (operation, false);
+            return Some((operation, false));
         }
         if REQUEST.swap(0, Ordering::AcqRel) == REQUEST_RECOVERY
             && RECOVERY_GENERATION.load(Ordering::Acquire) == GENERATION.load(Ordering::Acquire)
         {
-            return (WifiOperation::Connect, true);
+            return Some((WifiOperation::Connect, true));
         }
         Timer::after_millis(50).await;
     }
 }
 
 fn request_recovery(generation: u32) {
-    if generation == GENERATION.load(Ordering::Acquire)
+    if !suspended()
+        && generation == GENERATION.load(Ordering::Acquire)
         && LINK.load(Ordering::Relaxed) == LINK_ASSOCIATED
     {
         RECOVERY_GENERATION.store(generation, Ordering::Release);
@@ -197,10 +252,64 @@ fn request_recovery(generation: u32) {
 async fn connection(mut controller: WifiController<'static>) {
     let mut retry = cycling_os::connectivity::Reconnect::default();
     loop {
+        if suspended() {
+            if matches!(power_status(), PeripheralState::Pending) {
+                GENERATION.fetch_add(1, Ordering::AcqRel);
+                PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+                let disconnected = if controller.is_connected() {
+                    matches!(
+                        with_timeout(Duration::from_secs(5), controller.disconnect_async()).await,
+                        Ok(Ok(_))
+                    )
+                } else {
+                    true
+                };
+                if !disconnected {
+                    RADIO_UNCERTAIN.store(true, Ordering::Release);
+                }
+                let quiet = disconnected
+                    && !controller.is_connected()
+                    && !RADIO_UNCERTAIN.load(Ordering::Acquire);
+                LINK.store(
+                    if quiet {
+                        LINK_UNCONFIGURED
+                    } else {
+                        LINK_FAILED
+                    },
+                    Ordering::Relaxed,
+                );
+                // esp-radio exposes no public stop API. This confirms station inactivity,
+                // not that the Wi-Fi controller or RF domain has been powered off.
+                power_complete(
+                    true,
+                    if quiet {
+                        PeripheralState::Quiescent
+                    } else {
+                        PeripheralState::Failed
+                    },
+                );
+            }
+            Timer::after_millis(50).await;
+            continue;
+        }
+        if matches!(power_status(), PeripheralState::Pending) {
+            power_complete(
+                false,
+                if RADIO_UNCERTAIN.load(Ordering::Acquire) {
+                    PeripheralState::Failed
+                } else {
+                    PeripheralState::Running
+                },
+            );
+        }
+        if matches!(power_status(), PeripheralState::Failed) {
+            Timer::after_millis(50).await;
+            continue;
+        }
         // Controller events are authoritative here. Embassy's link flag is updated by
         // another task and can remain true after the disconnect event; polling an
         // already-disconnected controller against that stale flag would never yield.
-        let (command, automatic) = if controller.is_connected() {
+        let next = if controller.is_connected() {
             match select(controller.wait_for_disconnect_async(), next_command()).await {
                 Either::First(_) => {
                     GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -217,11 +326,18 @@ async fn connection(mut controller: WifiController<'static>) {
         } else if retry.requested() {
             match select(next_command(), Timer::after_secs(retry.delay())).await {
                 Either::First(command) => command,
-                Either::Second(()) => (WifiOperation::Connect, true),
+                Either::Second(()) => Some((WifiOperation::Connect, true)),
             }
         } else {
             next_command().await
         };
+        let Some((command, automatic)) = next else {
+            continue;
+        };
+        // A suspend request may arrive while an automatic operation is waiting.
+        if suspended() {
+            continue;
+        }
         match command {
             WifiOperation::Connect if !automatic => retry.connect(),
             WifiOperation::Configure(_) | WifiOperation::Disconnect => retry.disconnect(),
@@ -254,7 +370,11 @@ async fn connection(mut controller: WifiController<'static>) {
                     });
                     finish(None);
                 }
-                _ => finish(Some("scan_failed")),
+                Err(_) => {
+                    RADIO_UNCERTAIN.store(true, Ordering::Release);
+                    finish(Some("scan_timeout"));
+                }
+                Ok(Err(_)) => finish(Some("scan_failed")),
             }
             continue;
         }
@@ -266,6 +386,7 @@ async fn connection(mut controller: WifiController<'static>) {
                 with_timeout(Duration::from_secs(5), controller.disconnect_async()).await,
                 Ok(Ok(_))
             ) {
+                RADIO_UNCERTAIN.store(true, Ordering::Release);
                 LINK.store(LINK_FAILED, Ordering::Relaxed);
                 finish(Some("disconnect_failed"));
                 continue;
@@ -308,9 +429,20 @@ async fn connection(mut controller: WifiController<'static>) {
                         finish(None);
                     }
                     result => {
-                        // A timed-out driver may associate late. Stop that attempt before reporting failure.
-                        let _ = with_timeout(Duration::from_secs(5), controller.disconnect_async())
-                            .await;
+                        // disconnect_async refuses a connecting station, so a timeout
+                        // cannot prove that the attempt has stopped. Keep power blocked.
+                        if result.is_err() {
+                            RADIO_UNCERTAIN.store(true, Ordering::Release);
+                        }
+                        if controller.is_connected()
+                            && !matches!(
+                                with_timeout(Duration::from_secs(5), controller.disconnect_async())
+                                    .await,
+                                Ok(Ok(_))
+                            )
+                        {
+                            RADIO_UNCERTAIN.store(true, Ordering::Release);
+                        }
                         LINK.store(LINK_FAILED, Ordering::Relaxed);
                         finish(Some(if result.is_err() {
                             "connect_timeout"
@@ -364,12 +496,16 @@ async fn verify(stack: Stack<'static>) {
             }
             continue;
         }
+        if !online() {
+            continue;
+        }
         dhcp_failures = 0;
         let generation = GENERATION.load(Ordering::Relaxed);
         PROBE.store(PROBE_READY, Ordering::Relaxed);
         log::info!(target: "wifi", "CYCLING_WIFI dhcp_ready");
         let result = with_timeout(Duration::from_secs(15), probe(stack)).await;
-        if generation != GENERATION.load(Ordering::Relaxed)
+        if suspended()
+            || generation != GENERATION.load(Ordering::Relaxed)
             || LINK.load(Ordering::Relaxed) != LINK_ASSOCIATED
             || !stack.is_config_up()
         {
@@ -462,6 +598,10 @@ pub async fn time_sync(stack: Stack<'static>) {
         stack.wait_config_up().await;
         let mut failures = 0u8;
         while stack.is_config_up() {
+            if suspended() {
+                Timer::after_millis(50).await;
+                continue;
+            }
             let now = Instant::now().as_millis();
             if now < retry_not_before {
                 if matches!(
@@ -479,7 +619,8 @@ pub async fn time_sync(stack: Stack<'static>) {
             cycling_os::network_time::set_syncing(true);
             let generation = connection_generation();
             let result = with_timeout(Duration::from_secs(10), sync_time(stack)).await;
-            let current = generation == connection_generation() && stack.is_config_up();
+            let current =
+                !suspended() && generation == connection_generation() && stack.is_config_up();
             match result {
                 Ok(Ok((timestamp, rtt_ms))) if current => {
                     let now = Instant::now().as_millis();

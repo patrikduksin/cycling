@@ -194,12 +194,34 @@ pub fn execute<
     sensors: &mut impl cycling_os::capabilities::Sensors,
     network: &mut impl cycling_os::capabilities::Network,
     input: &impl cycling_os::capabilities::InputObservation,
+    power: &mut impl cycling_os::power::Control,
     diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut crate::sdk_runtime::Runtime,
 ) {
     let mut output = Text::new();
     let mut status = "OK";
     let started = embassy_time::Instant::now();
+    if !power.status().ready
+        && !matches!(
+            request.command,
+            Command::Power(_)
+                | Command::PowerShutdownAfter(_)
+                | Command::Info
+                | Command::Status
+                | Command::Input
+                | Command::Battery
+                | Command::Position
+                | Command::Peripheral(_)
+                | Command::Wifi
+                | Command::Ble
+                | Command::Ant
+                | Command::Restart
+                | Command::Help
+        )
+    {
+        terminal.reply(request.id, "BUSY", "power transition", now);
+        return;
+    }
     if let Some(status) =
         cycling_os::shell::commands::execute(request.command, system, now, &mut output)
     {
@@ -212,7 +234,7 @@ pub fn execute<
         ) {
             let _ = write!(
                 output,
-                " ordinary=HELP,INFO,STATUS,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
+                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
             );
             #[cfg(feature = "cycling")]
             {
@@ -234,6 +256,31 @@ pub fn execute<
         return;
     }
     match request.command {
+        Command::Power(_) | Command::PowerShutdownAfter(_) => {
+            let (operation, delay_ms) = match request.command {
+                Command::Power(operation) => (operation, 0),
+                Command::PowerShutdownAfter(delay_ms) => {
+                    (Some(cycling_os::power::Operation::Shutdown), delay_ms)
+                }
+                _ => unreachable!(),
+            };
+            if let Some(operation) = operation {
+                #[cfg(feature = "cycling")]
+                if sdk.recording() {
+                    terminal.reply(request.id, "BUSY", "active work", now);
+                    return;
+                }
+                status = cycling_os::terminal_protocol::request_status(
+                    power.request_after(operation, delay_ms),
+                );
+            }
+            let _ = write!(
+                output,
+                "capabilities={:?} status={:?}",
+                power.capabilities(),
+                power.status()
+            );
+        }
         Command::Peripheral(command) => {
             status = cycling_os::peripheral_commands::execute(
                 command,
@@ -329,7 +376,7 @@ pub fn execute<
             );
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|FOUNDATION SCREEN/MENU [300..600]|FOUNDATION LOG MANUAL/START/SAMPLED 300..600/STOP/STATUS/INFO (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|FOUNDATION SCREEN/MENU [300..600]|FOUNDATION LOG MANUAL/START/SAMPLED 300..600/STOP/STATUS/INFO (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {

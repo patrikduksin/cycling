@@ -54,7 +54,7 @@ pub fn initialize(peripheral: LPWR<'static>) {
 /// This blocks until wake/rejection or the RTC deadline. A successful function
 /// return supplies observations; only `Outcome::TimerWake` confirms the expected
 /// hardware cycle. Peripheral recovery must complete separately.
-pub fn enter() -> Result<Observation, Error> {
+pub fn enter(after_wake: impl FnOnce()) -> Result<Observation, Error> {
     critical_section::with(|cs| {
         let mut owner = RTC.borrow_ref_mut(cs);
         let rtc = owner.as_mut().ok_or(Error::Unavailable)?;
@@ -65,6 +65,7 @@ pub fn enter() -> Result<Observation, Error> {
         let status =
             rtc.sleep_light_with_status(&[&timer], Duration::from_secs(ENTRY_DEADLINE_SECONDS));
         let uptime_elapsed_us = uptime_before.elapsed().as_micros();
+        after_wake();
         let outcome = if status.timed_out {
             Outcome::TimedOut
         } else if status.rejected {

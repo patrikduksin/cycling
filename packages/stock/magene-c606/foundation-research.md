@@ -478,12 +478,36 @@ at `0x1acc4` or `0x1ad94` used by full initialization `0x14b94`. Teardown had
 stopped those drivers, so motion recovery after a physical button must be
 observed, not inferred from the common initialization or a power reason.
 
-A first bounded experiment can prepare peripherals, send companion state three
-once, establish its generic acknowledgment and quiet acquisition, enter short
-RTC-timed MCU light sleep, then request state seven once. Without an intervening
-button, the retained normal subtype zero or two selects full initialization
-and operating reason six or five. Verify independently advancing pressure and
-both motion streams before restoring radios and reporting readiness. GPIO41
-and physical-button wake form a subsequent test, with the subtype-one recovery
-limit above. These are proposed experiments derived from code, not new hardware
-observations or measured electrical savings.
+The initially proposed state-three acknowledgment followed by timer wake and
+remote state seven is not viable. Additional N22 tracing establishes that teardown
+`0x174dc` first calls `0x1c8ec`, which disables the service UART through `0x18f8c`
+and clears its active flag. Both UART driver alternatives, `0x200b0` and
+`0x203a0`, write zero to the peripheral enable register. The receiver constructs
+its generic response only after this teardown. Response enqueue `0x166d0` uses
+callback `0x17a54`, whose sender `0x1c854` returns immediately when that same
+active flag is clear. The acknowledgment therefore cannot establish suspension,
+and a later UART state-seven request cannot be assumed reachable.
+
+This explains the parent device owner's observation on source `13f6f15`: all
+companion UART traffic stopped after the single state-three submission, without
+reported UART errors; no acknowledgment or traffic followed the single attempted
+state-seven recovery. MCU light sleep was never entered. These observations do
+not establish companion CPU sleep or electrical current reduction. State three
+retains the periodic state dispatcher and physical-button route `0x14a4c` into
+subtype-one initialization. The traced low-power primitive `0x1e860` is generic
+idle using a supervisor call or WFE; no state-three-specific STOP/WFI entry was
+identified.
+
+After the owner's physical button press, companion frame progress resumed from
+675 to 1411 without UART errors. The screen stayed dark because the failed power
+transition still held admission closed. A subsequent accepted main restart was
+used for recovery. This establishes that the physical action restored companion
+communication, not complete motion acquisition or successful coordinated wake.
+
+The next bounded MCU experiment must leave the companion running, quiesce owned
+radios and GNSS, and use the ESP RTC timer directly. Continued companion UART
+traffic during MCU sleep entails an intentional receive gap. Discard partial
+frames and pre-sleep samples, then require independently advancing fresh pressure
+and both motion streams before restoring readiness. Companion suspension remains
+dependent on separately verified physical-button recovery; it must not be paired
+with a presumed remote state-seven wake. No current reduction is yet measured.

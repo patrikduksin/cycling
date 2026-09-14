@@ -67,9 +67,7 @@ pub fn power_boundary(now: u64) {
 /// MCU uptime excludes sleep. Invalidate cached observations explicitly rather
 /// than allowing pre-sleep readings to appear fresh after a long RTC interval.
 pub fn sleep_boundary(now: u64) {
-    crate::device::companion_uart::sleep_boundary(|frame| {
-        super::power::companion_report(frame, now)
-    });
+    crate::device::companion_uart::sleep_boundary();
     SLEEP_BOUNDARY.store(true, Ordering::Release);
     LATEST.lock(|latest| {
         if let Some(state) = latest.borrow_mut().as_mut() {
@@ -137,8 +135,6 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
                     point = None;
                     return;
                 };
-                let bytes = frame.as_bytes();
-                super::power::companion_report(bytes, now);
                 if let Some(payload) = frame.identity_reply() {
                     super::sensors::identity_reply(payload, now);
                 }

@@ -412,3 +412,25 @@ fn uncertain_sleep_stays_gated() {
     assert_eq!(t.status().state, State::Uncertain);
     assert!(!t.status().ready);
 }
+
+#[test]
+fn sleep_recovery_requires_each_sensor_to_advance_after_the_boundary() {
+    let mut sensors = cycling_os::companion_sensors::State::default();
+    let motion = |kind| [0xf1, kind, 0, 0, 0, 0, 0, 0];
+    let pressure = [0xf1, 3, 0, 0, 0x80, 0x96, 0x98, 0];
+    sensors.receive(16, &pressure, 100);
+    sensors.receive(16, &motion(1), 100);
+    sensors.receive(16, &motion(2), 100);
+    assert!(!transition::sensors_after(sensors.snapshot(100, 5000), 100));
+    sensors.receive(16, &pressure, 101);
+    sensors.receive(16, &motion(1), 101);
+    assert!(!transition::sensors_after(sensors.snapshot(101, 5000), 100));
+    sensors.receive(16, &motion(2), 101);
+    assert!(transition::sensors_after(sensors.snapshot(101, 5000), 100));
+    assert!(!transition::sensors_after(
+        sensors.snapshot(6000, 5000),
+        100
+    ));
+    sensors.loss();
+    assert!(!transition::sensors_after(sensors.snapshot(101, 5000), 100));
+}

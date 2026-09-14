@@ -242,6 +242,14 @@ pub fn shutdown_frame() -> [u8; 16] {
     cycling_os::companion::command(16, [0xe2, 2, 0, 0, 0, 0, 0, 0])
 }
 
+pub fn sensors_after(sample: cycling_os::companion_sensors::Snapshot, boundary: u64) -> bool {
+    use cycling_os::capabilities::Observation;
+    fn after<T>(sample: Observation<T>, boundary: u64) -> bool {
+        matches!(sample, Observation::Fresh { received_ms, .. } if received_ms > boundary)
+    }
+    after(sample.pressure, boundary) && sample.motion.into_iter().all(|s| after(s, boundary))
+}
+
 pub fn recovery_status(
     radios: [Option<cycling_os::power::PeripheralState>; 3],
     gnss: Option<cycling_os::position_control::State>,

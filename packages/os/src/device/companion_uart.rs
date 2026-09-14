@@ -104,38 +104,15 @@ pub fn drain(output: &mut [u8]) -> (usize, Counters) {
 
 /// Drop bytes straddling a sleep boundary. The acquisition owner separately
 /// resets its decoder and observations before accepting post-wake reports.
-pub fn sleep_boundary(mut lifecycle: impl FnMut(&[u8])) {
+pub fn sleep_boundary() {
     critical_section::with(|cs| {
         let mut state = STATE.borrow_ref_mut(cs);
-        let mut decoder = cycling_os::companion::Decoder::default();
-        let mut bytes = [0u8; 128];
-        // Preserve complete lifecycle reports before dropping sensor samples.
-        // A partial/lost button report is additionally covered by the passive
-        // post-wake sensor observation window before any resume command.
-        for _ in 0..16 {
-            let count = state.ring.drain(&mut bytes);
-            for &byte in &bytes[..count] {
-                if let Some(frame) = decoder.push_frame(byte) {
-                    lifecycle(frame.as_bytes());
-                }
-            }
-            if count == 0 {
-                break;
-            }
-        }
         state.ring.discard_partial();
         if let Some(uart) = state.uart.as_mut() {
+            let mut bytes = [0u8; 128];
             for _ in 0..16 {
-                match uart.read_buffered(&mut bytes) {
-                    Ok(0) => break,
-                    Ok(count) => {
-                        for &byte in &bytes[..count] {
-                            if let Some(frame) = decoder.push_frame(byte) {
-                                lifecycle(frame.as_bytes());
-                            }
-                        }
-                    }
-                    Err(_) => decoder.reset(),
+                if matches!(uart.read_buffered(&mut bytes), Ok(0)) {
+                    break;
                 }
             }
             let pending = uart.interrupts();

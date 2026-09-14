@@ -20,21 +20,6 @@ use esp_hal::ledc::{
 pub static ACCESS: Gate = Gate::new();
 static TRANSITION: Mutex<CriticalSectionRawMutex, RefCell<Transition>> =
     Mutex::new(RefCell::new(Transition::new()));
-static COMPANION_SLEEP: Mutex<
-    CriticalSectionRawMutex,
-    RefCell<crate::device::companion_sleep::Sleep>,
-> = Mutex::new(RefCell::new(crate::device::companion_sleep::Sleep::new()));
-
-pub fn companion_report(frame: &[u8], now: u64) {
-    COMPANION_SLEEP.lock(|s| s.borrow_mut().receive(frame, now));
-}
-fn companion_action(now: u64) {
-    let action = COMPANION_SLEEP.lock(|s| s.borrow_mut().take_action());
-    if let Some(action) = action {
-        let result = crate::device::companion_uart::send(&action.frame());
-        COMPANION_SLEEP.lock(|s| s.borrow_mut().submitted(action, result, now));
-    }
-}
 struct Backlight {
     channel: Channel<'static, LowSpeed>,
     percent: u8,
@@ -150,9 +135,7 @@ struct Work {
     restoring: bool,
     restore_failed: bool,
     uart: Option<(u32, u32)>,
-    companion: bool,
-    companion_restoring: bool,
-    resume_at: u64,
+    sleep_boundary: Option<u64>,
 }
 fn begin(started: &mut bool, request: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
     if !*started {
@@ -205,8 +188,6 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
             State::Requested => {
                 work = Work::default();
                 if status().prepare_at_ms.is_some_and(|at| now >= at) && ACCESS.drained() {
-                    COMPANION_SLEEP
-                        .lock(|s| *s.borrow_mut() = crate::device::companion_sleep::Sleep::new());
                     work.uart =
                         super::io::snapshot(now).map(|s| (s.uart_errors, s.companion_bad_crc));
                     super::io::power_boundary(now);
@@ -316,62 +297,37 @@ fn prepare(work: &mut Work, light: &mut Backlight, now: u64) {
         return;
     }
     if status().operation == Some(Operation::Sleep) {
-        use crate::device::companion_sleep::State as C;
-        let sample = super::sensors::snapshot(now);
-        if !work.companion {
-            work.companion = COMPANION_SLEEP.lock(|s| s.borrow_mut().begin(sample, now, true));
-            if !work.companion {
-                abort(Failure::Companion, now);
-                return;
-            }
-            companion_action(now);
-            return;
-        }
-        let state = COMPANION_SLEEP.lock(|s| {
-            let mut s = s.borrow_mut();
-            s.observe(sample, now, true);
-            s.state()
+        super::io::sleep_boundary(now);
+        TRANSITION.lock(|t| t.borrow_mut().sleeping(now));
+        log::info!(target: "power", "sleep entering timer_seconds=10 companion=running");
+        let observed = crate::device::sleep::enter(|| {
+            // Discard the intentional UART gap before pending interrupts run.
+            super::io::sleep_boundary(Instant::now().as_millis());
         });
-        match state {
-            C::Failed | C::Uncertain => abort(Failure::Companion, now),
-            C::Suspended => {
-                super::io::sleep_boundary(now);
-                if COMPANION_SLEEP.lock(|s| s.borrow().state()) != C::Suspended {
-                    abort(Failure::Companion, now);
-                    return;
-                }
-                TRANSITION.lock(|t| t.borrow_mut().sleeping(now));
-                log::info!(target: "power", "sleep entering timer_seconds=10");
-                let observed = crate::device::sleep::enter();
-                if let Ok(observed) = observed {
-                    cycling_os::network_time::sleep_elapsed(
-                        observed.rtc_elapsed_us,
-                        observed.uptime_elapsed_us,
-                    );
-                }
-                log::info!(target: "power", "sleep returned {:?}", observed);
-                let now = Instant::now().as_millis();
-                work.resume_at = now.saturating_add(2_000);
-                super::io::sleep_boundary(now);
-                let slept =
-                    observed.is_ok_and(|o| o.outcome == crate::device::sleep::Outcome::TimerWake);
-                let uncertain = observed.is_ok_and(|o| {
-                    matches!(
-                        o.outcome,
-                        crate::device::sleep::Outcome::TimedOut
-                            | crate::device::sleep::Outcome::UnexpectedWake
-                    )
-                });
-                TRANSITION.lock(|t| {
-                    if uncertain {
-                        t.borrow_mut().sleep_uncertain(now);
-                    } else {
-                        t.borrow_mut().sleep_returned(slept, now);
-                    }
-                });
-            }
-            _ => {}
+        if let Ok(observed) = observed {
+            cycling_os::network_time::sleep_elapsed(
+                observed.rtc_elapsed_us,
+                observed.uptime_elapsed_us,
+            );
         }
+        log::info!(target: "power", "sleep returned {:?}", observed);
+        let now = Instant::now().as_millis();
+        work.sleep_boundary = Some(now);
+        let slept = observed.is_ok_and(|o| o.outcome == crate::device::sleep::Outcome::TimerWake);
+        let uncertain = observed.is_ok_and(|o| {
+            matches!(
+                o.outcome,
+                crate::device::sleep::Outcome::TimedOut
+                    | crate::device::sleep::Outcome::UnexpectedWake
+            )
+        });
+        TRANSITION.lock(|t| {
+            if uncertain {
+                t.borrow_mut().sleep_uncertain(now);
+            } else {
+                t.borrow_mut().sleep_returned(slept, now);
+            }
+        });
         return;
     }
     super::sensors::loss();
@@ -388,35 +344,6 @@ fn recover(work: &mut Work, light: &mut Backlight, now: u64) {
     if work.charging && status().operation != Some(Operation::Wake) {
         TRANSITION.lock(|t| t.borrow_mut().standby_failed());
         return;
-    }
-    if work.companion {
-        if now < work.resume_at {
-            return;
-        }
-        let clean =
-            work.uart == super::io::snapshot(now).map(|s| (s.uart_errors, s.companion_bad_crc));
-        let sample = super::sensors::snapshot(now);
-        if !work.companion_restoring {
-            work.companion_restoring = true;
-            if !COMPANION_SLEEP.lock(|s| s.borrow_mut().request_resume(sample, now, clean)) {
-                TRANSITION.lock(|t| t.borrow_mut().recovery_failed());
-                return;
-            }
-            companion_action(now);
-        }
-        let state = COMPANION_SLEEP.lock(|s| {
-            let mut s = s.borrow_mut();
-            s.observe(sample, now, clean);
-            s.state()
-        });
-        use crate::device::companion_sleep::State as C;
-        if state == C::Failed || !clean {
-            TRANSITION.lock(|t| t.borrow_mut().recovery_failed());
-            return;
-        }
-        if state != C::Ready {
-            return;
-        }
     }
     if !work.restoring {
         work.restoring = true;
@@ -438,6 +365,9 @@ fn recover(work: &mut Work, light: &mut Backlight, now: u64) {
     if work.restore_failed || recovery == PeripheralState::Failed {
         TRANSITION.lock(|t| t.borrow_mut().recovery_failed());
     } else if recovery == PeripheralState::Running
+        && work.sleep_boundary.is_none_or(|at| {
+            crate::device::power_transition::sensors_after(super::sensors::snapshot(now), at)
+        })
         && (!work.charging
             || matches!(super::sensors::startup_phase(), "ready" | "already_running"))
     {

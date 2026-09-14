@@ -25,12 +25,21 @@ impl Link {
 }
 /// Match the supplied name and optional address, or an address alone with an
 /// empty name. A client selection with neither is rejected. UUIDs are 16-bit.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Selection {
-    pub name: &'static [u8],
+    pub name: crate::connectivity::Text<32>,
     pub address: Option<[u8; 6]>,
     pub service: u16,
     pub characteristic: u16,
+}
+impl core::fmt::Debug for Selection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Selection")
+            .field("peer", &"<private>")
+            .field("service", &self.service)
+            .field("characteristic", &self.characteristic)
+            .finish()
+    }
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Snapshot {
@@ -59,4 +68,20 @@ impl Packet {
     pub fn data(&self) -> Option<&[u8]> {
         self.bytes.get(..usize::from(self.length))
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Operation {
+    Scan,
+    Select(Option<Selection>),
+    Connect,
+    Disconnect,
+    Echo,
+}
+#[derive(Clone, Copy)]
+pub struct Discovery {
+    pub name: crate::connectivity::Text<32>,
+    pub address: [u8; 6],
+    pub random: bool,
+    pub rssi: i8,
 }

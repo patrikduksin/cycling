@@ -145,3 +145,51 @@ fn same_media_cannot_be_owned_twice_and_malformed_fixture_does_not_mutate() {
     drop(s);
     assert!(Session::new(&t.0, 32, 24).is_ok());
 }
+
+#[test]
+fn connectivity_updates_preserve_persisted_preferences_and_existing_data() {
+    let t = Temp::new();
+    let mut s = Session::new(&t.0, 32, 24).unwrap();
+    let existing = vec![0x5a; 1024 * 1024];
+    std::fs::write(t.0.join("data.bin"), &existing).unwrap();
+    command(&mut s, "BRIGHTNESS 61");
+    command(&mut s, "SAVE");
+    command(&mut s, "BRIGHTNESS 42");
+    assert_eq!(
+        command(&mut s, "WIFI CONFIG WPA2 54657374 70617373776f7264").0,
+        "ACCEPTED"
+    );
+    assert!(command(&mut s, "WIFI").1.contains("saved=true"));
+    assert!(command(&mut s, "SETTINGS").1.contains("brightness=42"));
+    s.restart().unwrap();
+    assert!(command(&mut s, "SETTINGS").1.contains("brightness=61"));
+    assert!(command(&mut s, "WIFI").1.contains("saved=true"));
+    assert_eq!(s.shell.settings.wifi.unwrap().ssid.text(), "Test");
+    fixture(&mut s, "FIXTURE STORAGE_FAIL 1 12");
+    assert_eq!(command(&mut s, "WIFI FORGET").0, "FAILED");
+    s.restart().unwrap();
+    assert!(command(&mut s, "WIFI").1.contains("saved=true"));
+    assert_eq!(command(&mut s, "WIFI FORGET").0, "ACCEPTED");
+    s.restart().unwrap();
+    assert!(command(&mut s, "WIFI").1.contains("saved=false"));
+    assert_eq!(std::fs::read(t.0.join("data.bin")).unwrap(), existing);
+}
+
+#[cfg(feature = "cycling")]
+#[test]
+fn runtime_sensor_change_clears_old_readings_and_survives_restart() {
+    let t = Temp::new();
+    let mut s = Session::new(&t.0, 32, 24).unwrap();
+    assert_eq!(command(&mut s, "BLE SELECT HRS 54657374 -").0, "ACCEPTED");
+    fixture(&mut s, "FIXTURE BLE CONNECT");
+    fixture(&mut s, "FIXTURE BLE HEART 88");
+    assert!(command(&mut s, "RIDE SENSORS").1.contains("heart=Some(88)"));
+    assert_eq!(command(&mut s, "BLE SELECT CSC 54657374 -").0, "ACCEPTED");
+    assert!(command(&mut s, "RIDE SENSORS").1.contains("heart=None"));
+    s.restart().unwrap();
+    assert!(command(&mut s, "BLE").1.contains("profile=2"));
+    assert_eq!(s.shell.settings.ble.unwrap().service, 0x1816);
+    assert_eq!(command(&mut s, "BLE FORGET").0, "ACCEPTED");
+    s.restart().unwrap();
+    assert!(command(&mut s, "BLE").1.contains("saved=false"));
+}

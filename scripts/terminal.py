@@ -14,8 +14,8 @@ def exchange(connection, command):
         request = f'CMD {connection.request_id + 1} {command}'.encode('ascii')
     except UnicodeEncodeError:
         raise ValueError('commands must be ASCII') from None
-    if len(request) > 128 or any(byte in request for byte in (0, 10, 13)):
-        raise ValueError('command exceeds the 128-byte line bound or contains a line break')
+    if len(request) > 256 or any(byte in request for byte in (0, 10, 13)):
+        raise ValueError('command exceeds the 256-byte line bound or contains a line break')
     reply = connection.terminal_command(command)
     print(json.dumps(reply))
     return reply['status'] in ('OK', 'ACCEPTED')

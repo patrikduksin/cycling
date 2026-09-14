@@ -93,8 +93,17 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
             |frame| {
                 let Ok(frame) = frame else {
                     super::ant::loss(now);
+                    super::sensors::loss();
+                    edge(now, Input::Cancel);
+                    point = None;
                     return;
                 };
+                if let Some(payload) = frame.identity_reply() {
+                    super::sensors::identity_reply(payload, now);
+                }
+                if let Some((group, payload)) = frame.report_payload() {
+                    super::sensors::receive(group, payload, now);
+                }
                 if let Some((group, payload)) = frame.report() {
                     super::ant::receive(group, payload, now);
                 }
@@ -106,12 +115,18 @@ pub async fn run(mut touch: crate::device::touch::Touch<'static>, touch_availabl
                             millivolts,
                         } => state.battery = Some(((percent, millivolts), now)),
                         Event::Power { status } => state.power = Some((status, now)),
-                        Event::Button { button, code } => edge(now, Input::Button { button, code }),
+                        Event::Button { button, code } => {
+                            log::info!(target: "button", "id={} code={}", button.index(), code);
+                            edge(now, Input::Button { button, code });
+                        }
                     }
                 }
             },
         );
         super::ant::tick(now);
+        super::sound::tick(now);
+        super::sensors::tick(now);
+        super::position_control::tick(now);
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;

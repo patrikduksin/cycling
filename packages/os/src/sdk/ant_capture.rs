@@ -2,7 +2,7 @@
 //!
 //! Each 256-byte slot is independently exportable, little-endian throughout:
 //! 0..4 `ANT1`, 4 version=1, 5 kind (1 packets, 2 stopped, 3 full, 4 legacy link,
-//! 5 typed link, 6 position), 6 count
+//! 5 typed link, 6 position, 7 environment), 6 count
 //! (0..8), 7 reserved=0, 8..12 capture ID (first slot index), 12..16 sequence,
 //! 16..24 batch preparation uptime in ms. Eight 28-byte packet records begin at
 //! 24: type u8, transmission type u8, device number u16, received uptime u64,
@@ -20,7 +20,15 @@
 //! are zero. Terminal records add `GPS1` at32 and dropped positions u32 at36;
 //! older terminal records have FF here. GPS records do not count as ANT packets.
 //! Counters after the last link/terminal record may be lost on power failure.
-//! Header count is1 for link records; they do not contribute to packet counts.
+//! Kind 7 has flags at24: pressure, motion1, motion2, battery, raw power in bits0..4.
+//! Bytes25..28 are zero; sample uptime u64 at28, sensor losses/invalid/dropped u32
+//! at36/40/44. Pressure timestamp u64 at48, centi-Pa u32 at56, centi-C i16 at60.
+//! Motion timestamps u64 at64/80 and three signed raw i16 axes at72/88.
+//! Battery timestamp u64 at96, percent u8 at104, interpreted millivolts u16 at106.
+//! Raw-power timestamp u64 at108 and status u8 at116. UART/CRC counters u32 at120/124.
+//! Reserved bytes and absent fields through127 are zero, remaining bytes FF.
+//! Terminal records append ENV1 at40 and dropped environmental count u32 at44.
+//! Header count is1 for environmental and link records; they do not contribute to packet counts.
 //! 248..252 CRC32/ISO-HDLC over bytes 0..248; 252..256 is the separately written
 //! ride_log COMT commit word. Only committed CRC-valid slots are records. Power
 //! loss may leave occupied invalid slots; the next capture scans past all of them.
@@ -36,9 +44,9 @@ use crate::ant::{LinkState, Packet};
 
 pub const PACKETS_PER_SLOT: usize = 8;
 // Preflight allowance for roughly 20 packets/s over ten minutes, with room for
-// link records, partial batches and 600 one-second GPS observations. Actual duration depends on incoming traffic
-// and flush cadence; callers must report the remaining append-only tail.
-pub const REQUIRED_SLOTS: usize = 2400;
+// link records, partial batches, 600 GPS and 600 environmental observations.
+// Actual duration depends on incoming traffic and flush cadence; callers must report the remaining append-only tail.
+pub const REQUIRED_SLOTS: usize = 3000;
 const BUFFERED_PACKETS: usize = 16;
 const FLUSH_MS: u64 = 1_000;
 
@@ -90,8 +98,12 @@ pub struct Snapshot {
     pub dropped_links: u32,
     pub saved_positions: u32,
     pub dropped_positions: u32,
+    pub saved_environment: u32,
+    pub dropped_environment: u32,
+    pub remaining_slots: usize,
+    pub required_slots: usize,
     pub error: Option<Error>,
-    /// True only after a packet batch has been committed and read back.
+    /// True only after a sample or packet batch has been committed and read back.
     pub recording: bool,
     pub last_commit_ms: Option<u64>,
 }
@@ -124,8 +136,52 @@ pub struct PositionRecord {
     pub longitude_e7: Option<i32>,
 }
 
+/// Fresh physical observations only; absence includes unknown, stale and lost data.
+/// Motion retains companion wire order and has no established scale or chip ID.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EnvironmentRecord {
+    pub now: u64,
+    pub pressure: Option<(crate::companion_sensors::Pressure, u64)>,
+    pub motion: [Option<(crate::companion_sensors::Motion, u64)>; 2],
+    pub battery: Option<((u8, u16), u64)>,
+    pub power: Option<(u8, u64)>,
+    pub sensor_losses: u32,
+    pub invalid_sensor_reports: u32,
+    pub uart_errors: u32,
+    pub bad_crc: u32,
+}
+
+impl EnvironmentRecord {
+    pub fn sample(
+        now: u64,
+        sensors: crate::companion_sensors::Snapshot,
+        input: Option<crate::capabilities::InputSnapshot>,
+    ) -> Self {
+        fn fresh<T: Copy>(value: crate::capabilities::Observation<T>) -> Option<(T, u64)> {
+            match value {
+                crate::capabilities::Observation::Fresh { value, received_ms } => {
+                    Some((value, received_ms))
+                }
+                _ => None,
+            }
+        }
+        Self {
+            now,
+            pressure: fresh(sensors.pressure),
+            motion: sensors.motion.map(fresh),
+            battery: input.and_then(|input| fresh(input.battery)),
+            power: input.and_then(|input| fresh(input.power)),
+            sensor_losses: sensors.losses,
+            invalid_sensor_reports: sensors.invalid_reports,
+            uart_errors: input.map_or(0, |input| input.uart_errors),
+            bad_crc: input.map_or(0, |input| input.companion_bad_crc),
+        }
+    }
+}
+
 pub struct Capturer {
     status: Status,
+    required_slots: usize,
     scanned: usize,
     first_slot: Option<usize>,
     next_slot: usize,
@@ -136,6 +192,9 @@ pub struct Capturer {
     saved_positions: u32,
     dropped_positions: u32,
     position: Option<PositionRecord>,
+    environment: Option<EnvironmentRecord>,
+    saved_environment: u32,
+    dropped_environment: u32,
     next_source: usize,
     links: [Option<LinkRecord>; 16],
     link_count: usize,
@@ -158,6 +217,7 @@ impl Capturer {
     pub const fn new() -> Self {
         Self {
             status: Status::Idle,
+            required_slots: REQUIRED_SLOTS,
             scanned: 0,
             first_slot: None,
             next_slot: 0,
@@ -168,6 +228,9 @@ impl Capturer {
             saved_positions: 0,
             dropped_positions: 0,
             position: None,
+            environment: None,
+            saved_environment: 0,
+            dropped_environment: 0,
             next_source: 0,
             links: [None; 16],
             link_count: 0,
@@ -181,12 +244,15 @@ impl Capturer {
         }
     }
 
-    pub fn start(&mut self) -> bool {
+    pub fn start(&mut self, required_slots: usize) -> bool {
         // An uncertain media failure requires a new instance and full rescan.
-        if !matches!(self.status, Status::Idle | Status::Stopped | Status::Full) {
+        if !(1..=ride_log::SLOTS).contains(&required_slots)
+            || !matches!(self.status, Status::Idle | Status::Stopped | Status::Full)
+        {
             return false;
         }
         *self = Self::new();
+        self.required_slots = required_slots;
         self.status = Status::Scanning;
         true
     }
@@ -252,6 +318,16 @@ impl Capturer {
         }
     }
 
+    /// One pending sample, with explicit replacement loss and bounded memory.
+    pub fn environment(&mut self, environment: EnvironmentRecord) {
+        if self.status == Status::Scanning
+            || (matches!(self.status, Status::Ready | Status::Recording)
+                && self.environment.replace(environment).is_some())
+        {
+            self.dropped_environment = self.dropped_environment.saturating_add(1);
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             status: self.status,
@@ -264,8 +340,13 @@ impl Capturer {
             dropped_links: self.dropped_links,
             saved_positions: self.saved_positions,
             dropped_positions: self.dropped_positions,
+            saved_environment: self.saved_environment,
+            dropped_environment: self.dropped_environment,
+            remaining_slots: ride_log::SLOTS.saturating_sub(self.next_slot),
+            required_slots: self.required_slots,
             error: self.error,
-            recording: self.status == Status::Recording && self.packets != 0,
+            recording: self.status == Status::Recording
+                && (self.packets != 0 || self.saved_positions != 0 || self.saved_environment != 0),
             last_commit_ms: self.last_commit_ms,
         }
     }
@@ -292,7 +373,7 @@ impl Capturer {
             self.scanned += 1;
             if self.scanned == ride_log::SECTORS {
                 self.first_slot = Some(self.next_slot);
-                self.status = if ride_log::SLOTS - self.next_slot < REQUIRED_SLOTS {
+                self.status = if ride_log::SLOTS - self.next_slot < self.required_slots {
                     Status::Full
                 } else {
                     Status::Ready
@@ -315,6 +396,7 @@ impl Capturer {
                 self.links.fill(None);
                 self.link_count = 0;
                 self.discard_position();
+                self.discard_environment();
                 self.prepare(3, now);
             } else {
                 let packets_ready = self.count != 0
@@ -324,14 +406,19 @@ impl Capturer {
                             now.saturating_sub(packet.received_ms) >= FLUSH_MS
                         }));
                 // Round-robin ready sources so link churn cannot starve packets
-                // or GPS, and a sustained packet stream cannot starve GPS.
-                let ready = [self.link_count != 0, packets_ready, self.position.is_some()];
-                if let Some(source) = (0..3)
-                    .map(|offset| (self.next_source + offset) % 3)
+                // or physical samples, and sustained packet traffic cannot starve them.
+                let ready = [
+                    self.link_count != 0,
+                    packets_ready,
+                    self.position.is_some(),
+                    self.environment.is_some(),
+                ];
+                if let Some(source) = (0..4)
+                    .map(|offset| (self.next_source + offset) % 4)
                     .find(|&source| ready[source])
                 {
-                    self.next_source = (source + 1) % 3;
-                    self.prepare([5, 1, 6][source], now);
+                    self.next_source = (source + 1) % 4;
+                    self.prepare([5, 1, 6, 7][source], now);
                 } else if self.stopping {
                     self.prepare(2, now);
                 } else {
@@ -391,13 +478,21 @@ impl Capturer {
                 if self.pending.0[5] == 6 {
                     self.saved_positions = self.saved_positions.saturating_add(1);
                 }
+                if self.pending.0[5] == 7 {
+                    self.saved_environment = self.saved_environment.saturating_add(1);
+                }
                 self.last_commit_ms = Some(now);
                 self.step = Step::Idle;
                 self.status = match self.pending.0[5] {
                     2 => Status::Stopped,
                     3 => Status::Full,
                     _ if self.stopping => Status::Stopping,
-                    _ if self.packets != 0 => Status::Recording,
+                    _ if self.packets != 0
+                        || self.saved_positions != 0
+                        || self.saved_environment != 0 =>
+                    {
+                        Status::Recording
+                    }
                     _ => Status::Ready,
                 };
             }
@@ -412,7 +507,7 @@ impl Capturer {
         bytes[5] = kind;
         bytes[6] = match kind {
             1 => self.count.min(PACKETS_PER_SLOT) as u8,
-            5 | 6 => 1,
+            5..=7 => 1,
             _ => 0,
         };
         bytes[7] = 0;
@@ -452,11 +547,51 @@ impl Capturer {
             bytes[44..48].copy_from_slice(&latitude.to_le_bytes());
             bytes[48..52].copy_from_slice(&longitude.to_le_bytes());
             bytes[52..56].copy_from_slice(&self.dropped_positions.to_le_bytes());
+        } else if kind == 7 {
+            let sample = self.environment.take().unwrap();
+            bytes[24..128].fill(0);
+            bytes[24] = u8::from(sample.pressure.is_some())
+                | (u8::from(sample.motion[0].is_some()) << 1)
+                | (u8::from(sample.motion[1].is_some()) << 2)
+                | (u8::from(sample.battery.is_some()) << 3)
+                | (u8::from(sample.power.is_some()) << 4);
+            bytes[28..36].copy_from_slice(&sample.now.to_le_bytes());
+            bytes[36..40].copy_from_slice(&sample.sensor_losses.to_le_bytes());
+            bytes[40..44].copy_from_slice(&sample.invalid_sensor_reports.to_le_bytes());
+            bytes[44..48].copy_from_slice(&self.dropped_environment.to_le_bytes());
+            if let Some((value, observed)) = sample.pressure {
+                bytes[48..56].copy_from_slice(&observed.to_le_bytes());
+                bytes[56..60].copy_from_slice(&value.pressure_centi_pa.to_le_bytes());
+                bytes[60..62].copy_from_slice(&value.temperature_centi_c.to_le_bytes());
+            }
+            for (index, value) in sample.motion.iter().enumerate() {
+                if let Some((value, observed)) = value {
+                    let at = 64 + index * 16;
+                    bytes[at..at + 8].copy_from_slice(&observed.to_le_bytes());
+                    for (axis, value) in value.axes.iter().enumerate() {
+                        bytes[at + 8 + axis * 2..at + 10 + axis * 2]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+            }
+            if let Some(((percent, millivolts), observed)) = sample.battery {
+                bytes[96..104].copy_from_slice(&observed.to_le_bytes());
+                bytes[104] = percent;
+                bytes[106..108].copy_from_slice(&millivolts.to_le_bytes());
+            }
+            if let Some((status, observed)) = sample.power {
+                bytes[108..116].copy_from_slice(&observed.to_le_bytes());
+                bytes[116] = status;
+            }
+            bytes[120..124].copy_from_slice(&sample.uart_errors.to_le_bytes());
+            bytes[124..128].copy_from_slice(&sample.bad_crc.to_le_bytes());
         } else if matches!(kind, 2 | 3) {
             bytes[24..28].copy_from_slice(&self.dropped.to_le_bytes());
             bytes[28..32].copy_from_slice(&self.dropped_links.to_le_bytes());
             bytes[32..36].copy_from_slice(b"GPS1");
             bytes[36..40].copy_from_slice(&self.dropped_positions.to_le_bytes());
+            bytes[40..44].copy_from_slice(b"ENV1");
+            bytes[44..48].copy_from_slice(&self.dropped_environment.to_le_bytes());
         }
         for (index, packet) in self.buffered[..if kind == 1 {
             self.count.min(PACKETS_PER_SLOT)
@@ -499,17 +634,25 @@ impl Capturer {
         }
     }
 
+    fn discard_environment(&mut self) {
+        if self.environment.take().is_some() {
+            self.dropped_environment = self.dropped_environment.saturating_add(1);
+        }
+    }
+
     fn fail(&mut self, error: Error) {
         if self.step != Step::Idle {
             match self.pending.0[5] {
                 1 => self.dropped = self.dropped.saturating_add(u32::from(self.pending.0[6])),
                 5 => self.dropped_links = self.dropped_links.saturating_add(1),
                 6 => self.dropped_positions = self.dropped_positions.saturating_add(1),
+                7 => self.dropped_environment = self.dropped_environment.saturating_add(1),
                 _ => {}
             }
         }
         self.discard_buffer();
         self.discard_position();
+        self.discard_environment();
         self.dropped_links = self.dropped_links.saturating_add(self.link_count as u32);
         self.links.fill(None);
         self.link_count = 0;
@@ -603,7 +746,7 @@ mod tests {
         }
     }
     fn scan(capture: &mut Capturer, media: &mut Memory) {
-        assert!(capture.start());
+        assert!(capture.start(REQUIRED_SLOTS));
         for _ in 0..ride_log::SECTORS {
             let before = media.calls;
             capture.service(media, 0);
@@ -669,7 +812,7 @@ mod tests {
             capture.packet(packet(1));
             flush(&mut capture, &mut media);
             assert_eq!(capture.snapshot().status, Status::Error);
-            assert!(!capture.start());
+            assert!(!capture.start(REQUIRED_SLOTS));
             assert_eq!(capture.snapshot().committed, 0);
             assert!(ride_log::erased(&media.bytes[252..256]));
             let calls = media.calls;
@@ -774,7 +917,7 @@ mod tests {
         capture.service(&mut media, 200);
         assert_eq!(capture.snapshot().saved_positions, 1);
         assert_eq!(capture.snapshot().packets, 0);
-        assert!(!capture.snapshot().recording);
+        assert!(capture.snapshot().recording);
         assert_eq!(&media.bytes[5..7], &[6, 1]);
         assert_eq!(media.bytes[24], 3);
         assert_eq!(
@@ -890,6 +1033,161 @@ mod tests {
         assert_eq!(capture.snapshot().packets, 1);
         assert!(capture.snapshot().recording);
     }
+    fn environment(now: u64) -> EnvironmentRecord {
+        EnvironmentRecord {
+            now,
+            pressure: Some((
+                crate::companion_sensors::Pressure {
+                    pressure_centi_pa: 10_132_501,
+                    temperature_centi_c: -1234,
+                },
+                now - 10,
+            )),
+            motion: [
+                Some((
+                    crate::companion_sensors::Motion {
+                        axes: [-32768, 32767, -1],
+                    },
+                    now - 5,
+                )),
+                None,
+            ],
+            battery: Some(((73, 4000), now - 20)),
+            power: Some((7, now - 20)),
+            sensor_losses: 3,
+            invalid_sensor_reports: 4,
+            uart_errors: 5,
+            bad_crc: 6,
+        }
+    }
+
+    #[test]
+    fn requested_reservation_fits_short_foundation_without_reclaiming_occupied_tail() {
+        for (required, expected) in [
+            (608, Status::Ready),
+            (728, Status::Ready),
+            (1208, Status::Full),
+        ] {
+            let mut media = Memory::new();
+            let occupied = ride_log::SLOTS - 1019;
+            media.bytes[(occupied - 1) * 256] = 0;
+            let prefix = media.bytes[..occupied * 256].to_vec();
+            let mut capture = Capturer::new();
+            assert!(capture.start(required));
+            for _ in 0..ride_log::SECTORS {
+                capture.service(&mut media, 0);
+            }
+            assert_eq!(capture.snapshot().status, expected);
+            assert_eq!(capture.snapshot().required_slots, required);
+            assert_eq!(capture.snapshot().remaining_slots, 1019);
+            assert_eq!(media.writes, 0);
+            assert_eq!(&media.bytes[..prefix.len()], &prefix);
+        }
+        let mut capture = Capturer::new();
+        assert!(!capture.start(0));
+        assert!(!capture.start(ride_log::SLOTS + 1));
+        assert_eq!(capture.snapshot().status, Status::Idle);
+    }
+
+    #[test]
+    fn environmental_capture_without_ant_verifies_and_preserves_occupied_prefix() {
+        let mut media = Memory::new();
+        media.bytes[..4].copy_from_slice(b"RIDE");
+        let prefix = media.bytes[..256].to_vec();
+        let mut capture = Capturer::new();
+        scan(&mut capture, &mut media);
+        capture.environment(environment(100));
+        capture.environment(environment(200));
+        for _ in 0..3 {
+            capture.service(&mut media, 200);
+            assert!(!capture.snapshot().recording);
+        }
+        capture.service(&mut media, 200);
+        assert!(capture.snapshot().recording);
+        assert_eq!(capture.snapshot().saved_environment, 1);
+        assert_eq!(capture.snapshot().packets, 0);
+        assert_eq!(capture.snapshot().dropped_environment, 1);
+        assert_eq!(&media.bytes[..256], &prefix);
+        let bytes = &media.bytes[256..512];
+        assert_eq!(&bytes[..8], b"ANT1\x01\x07\x01\x00");
+        assert_eq!(bytes[24], 27);
+        assert_eq!(
+            u32::from_le_bytes(bytes[56..60].try_into().unwrap()),
+            10_132_501
+        );
+        assert_eq!(i16::from_le_bytes(bytes[60..62].try_into().unwrap()), -1234);
+        assert_eq!(&bytes[80..96], &[0; 16]);
+        assert_eq!(bytes[116], 7);
+        capture.stop();
+        flush(&mut capture, &mut media);
+        assert_eq!(capture.snapshot().status, Status::Stopped);
+        assert_eq!(&media.bytes[512 + 40..512 + 44], b"ENV1");
+        assert_eq!(
+            u32::from_le_bytes(media.bytes[512 + 44..512 + 48].try_into().unwrap()),
+            1
+        );
+    }
+
+    #[test]
+    fn interrupted_environment_commit_retains_occupied_slot_and_counts_loss() {
+        let mut media = Memory::new();
+        let mut capture = Capturer::new();
+        scan(&mut capture, &mut media);
+        capture.environment(environment(100));
+        media.fail_commit = true;
+        flush(&mut capture, &mut media);
+        assert_eq!(capture.snapshot().status, Status::Error);
+        assert_eq!(capture.snapshot().dropped_environment, 1);
+        assert_eq!(capture.snapshot().saved_environment, 0);
+        let prefix = media.bytes[..256].to_vec();
+        media.fail_commit = false;
+        let mut resumed = Capturer::new();
+        scan(&mut resumed, &mut media);
+        assert_eq!(resumed.snapshot().first_slot, Some(1));
+        resumed.environment(environment(200));
+        flush(&mut resumed, &mut media);
+        assert_eq!(&media.bytes[..256], &prefix);
+        assert_eq!(resumed.snapshot().saved_environment, 1);
+    }
+
+    #[test]
+    fn environment_sampling_marks_stale_missing_and_four_sources_make_progress() {
+        let sensors = crate::companion_sensors::State::default().snapshot(100, 10);
+        let mut sample = EnvironmentRecord::sample(100, sensors, None);
+        assert_eq!(sample.pressure, None);
+        assert_eq!(sample.motion, [None; 2]);
+        assert_eq!(sample.battery, None);
+        let mut stale = sensors;
+        stale.pressure = crate::capabilities::Observation::Stale {
+            value: environment(100).pressure.unwrap().0,
+            received_ms: 10,
+        };
+        sample = EnvironmentRecord::sample(100, stale, None);
+        assert_eq!(sample.pressure, None);
+        let mut media = Memory::new();
+        let mut capture = Capturer::new();
+        scan(&mut capture, &mut media);
+        capture.observe_link(40, LinkState::Connected, 1, 100);
+        capture.packet(packet(1));
+        capture.position(position(100));
+        capture.environment(sample);
+        for _ in 0..4 {
+            flush(&mut capture, &mut media);
+        }
+        assert_eq!(
+            [
+                media.bytes[5],
+                media.bytes[261],
+                media.bytes[517],
+                media.bytes[773]
+            ],
+            [5, 1, 6, 7]
+        );
+        assert_eq!(media.bytes[768 + 24], 0);
+        assert_eq!(&media.bytes[768 + 48..768 + 120], &[0; 72]);
+        assert_eq!(capture.snapshot().saved_environment, 1);
+    }
+
     #[test]
     fn idle_never_accesses_media_or_counts_packets_and_scan_keeps_link_events() {
         let mut media = Memory::new();
@@ -898,7 +1196,7 @@ mod tests {
         capture.service(&mut media, 100);
         assert_eq!(media.calls, 0);
         assert_eq!(capture.snapshot().dropped, 0);
-        assert!(capture.start());
+        assert!(capture.start(REQUIRED_SLOTS));
         capture.observe_link(40, LinkState::Connected, 1, 100);
         capture.packet(packet(1));
         for _ in 0..ride_log::SECTORS {

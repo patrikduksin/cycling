@@ -178,6 +178,14 @@ class Device:
         require(sha(boot) == manifest["bootloader_region_sha256"], "Bootloader changed since backup")
         self.verify(SLOTS[0], LOCAL / "stock.bin")
 
+    def snapshot_owned(self):
+        # A fresh read for this flash, never the original stock baseline. Both
+        # journals stay byte-identical until the verified application boots.
+        address = SLOTS[1] + APP_SIZE
+        name = f"owned-before-{time.time_ns()}.bin"
+        self.read(address, SETTINGS_SIZE + RIDE_SIZE, name)
+        return address, LOCAL / name
+
     def select(self, metadata, slot):
         valid = records(metadata)
         latest, newest_offset = max(valid)
@@ -236,10 +244,12 @@ def main():
         return
     device.baseline(identity, metadata)
     if args.action == "flash":
-        print("Writing slot B; stock slot A is preserved.", flush=True)
+        owned_address, owned_before = device.snapshot_owned()
+        print("Writing slot B; stock slot A and current journals are preserved.", flush=True)
         device.write(SLOTS[1], candidate)
         device.verify(SLOTS[1], candidate)
         device.verify(SLOTS[0], LOCAL / "stock.bin")
+        device.verify(owned_address, owned_before)
     device.select(metadata, 1 if args.action == "flash" else 0)
 
 

@@ -142,6 +142,16 @@ impl Parser {
         }
         self.overflows = self.overflows.saturating_add(count);
     }
+    /// Explicit stream control invalidates a previously fresh fix immediately.
+    pub fn control_boundary(&mut self) {
+        self.data_loss();
+        self.current_fix = false;
+        self.last_fix = None;
+        self.satellites = None;
+        self.satellites_at = None;
+        self.satellites_epoch = None;
+        self.current_epoch = None;
+    }
     pub fn data_loss(&mut self) {
         self.len = 0;
         self.discarding = true;

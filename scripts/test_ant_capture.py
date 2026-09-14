@@ -1,4 +1,11 @@
 import struct
+import contextlib
+import io
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import ant_capture
 import unittest
 import zlib
 
@@ -86,6 +93,105 @@ class AntCaptureTests(unittest.TestCase):
         terminal[32:36] = b'GPS1'
         struct.pack_into('<I', terminal, 36, 3)
         self.assertEqual(decode_slot(commit(terminal))['dropped_positions'], 3)
+
+    def environmental(self, flags=31):
+        data = slot(7, 1)
+        data[24:128] = bytes(104)
+        data[24] = flags
+        struct.pack_into('<QIII', data, 28, 1000, 3, 4, 5)
+        if flags & 1:
+            struct.pack_into('<QIh', data, 48, 900, 10_132_501, -1234)
+        if flags & 2:
+            struct.pack_into('<Qhhh', data, 64, 990, -32768, 32767, -1)
+        if flags & 4:
+            struct.pack_into('<Qhhh', data, 80, 980, 1, 2, 3)
+        if flags & 8:
+            struct.pack_into('<QBxH', data, 96, 800, 73, 4000)
+        if flags & 16:
+            struct.pack_into('<QB', data, 108, 800, 7)
+        struct.pack_into('<II', data, 120, 6, 7)
+        return commit(data)
+
+    def test_environmental_units_signed_motion_missing_and_terminal_counts(self):
+        record = decode_slot(self.environmental())
+        self.assertEqual(record['pressure'], dict(received_ms=900, source_age_ms=100,
+                                                pressure_centi_pa=10_132_501, temperature_centi_c=-1234))
+        self.assertEqual(record['motion_1']['raw_axes'], [-32768, 32767, -1])
+        self.assertEqual(record['power']['raw_status'], 7)
+        self.assertEqual(record['battery']['interpreted_millivolts'], 4000)
+        self.assertEqual(record['dropped_environment'], 5)
+        missing = decode_slot(self.environmental(0))
+        for source in ('pressure', 'motion_1', 'motion_2', 'battery', 'power'):
+            self.assertIsNone(missing[source])
+        for offset, value in [(24, 32), (25, 1), (62, 1), (78, 1), (94, 1),
+                              (105, 1), (117, 1), (128, 0), (48, 1)]:
+            data = self.environmental(0)
+            data[offset] = value
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                decode_slot(commit(data))
+        data = self.environmental()
+        struct.pack_into('<Q', data, 48, 1001)
+        with self.assertRaises(ValueError):
+            decode_slot(commit(data))
+        data = slot(2, 0)
+        data[40:44] = b'ENV1'
+        struct.pack_into('<I', data, 44, 17)
+        self.assertEqual(decode_slot(commit(data))['dropped_environment'], 17)
+
+    def test_export_preserves_torn_unknown_records_and_sequence_gaps(self):
+        first = self.environmental()
+        struct.pack_into('<II', first, 8, 0, 0)
+        first = commit(first)
+        torn = self.environmental()
+        torn[252:] = b'\xff' * 4
+        third = self.environmental(0)
+        struct.pack_into('<II', third, 8, 0, 2)
+        third = commit(third)
+        unknown = slot(99, 0)
+        media = [first, torn, third, unknown]
+        commands = []
+        class Connection:
+            def __init__(self, *args): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def terminal_command(self, command):
+                commands.append(command)
+                if command == 'FOUNDATION LOG INFO':
+                    data = 'INFO 1 256 4 stopped'
+                else:
+                    index = int(command.split()[-1])
+                    blob = media[index]
+                    data = f'SLOT {index} {zlib.crc32(blob):08x} {blob.hex()}'
+                return dict(status='OK', data=data)
+        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
+            output = Path(directory) / 'capture'
+            with contextlib.redirect_stdout(io.StringIO()):
+                manifest = ant_capture.export('fake', output, 'FOUNDATION')
+            self.assertEqual((output / 'prefix.bin').read_bytes(), b''.join(media))
+            self.assertEqual(manifest['environmental_samples'], 2)
+            self.assertEqual(len(manifest['invalid_ant_slots']), 2)
+            self.assertEqual(len(manifest['sequence_gaps']), 1)
+            self.assertTrue(all(command.startswith('FOUNDATION LOG ') for command in commands))
+
+    def test_interrupted_export_retains_partial_and_never_claims_manifest(self):
+        blob = self.environmental()
+        class Connection:
+            def __init__(self, *args): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def terminal_command(self, command):
+                if command.endswith('INFO'):
+                    return dict(status='OK', data='INFO 1 256 2 stopped')
+                if command.endswith('READ 0'):
+                    return dict(status='OK', data=f'SLOT 0 {zlib.crc32(blob):08x} {blob.hex()}')
+                raise TimeoutError('synthetic disconnect')
+        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
+            output = Path(directory) / 'capture'
+            with self.assertRaises(TimeoutError):
+                ant_capture.export('fake', output, 'FOUNDATION')
+            self.assertEqual((output / 'prefix.partial').read_bytes(), blob)
+            self.assertFalse((output / 'prefix.bin').exists())
+            self.assertFalse((output / 'manifest.json').exists())
 
     def test_link_terminal_and_foreign_records(self):
         data = slot(4, 1)

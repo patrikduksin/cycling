@@ -225,6 +225,8 @@ pub struct Session {
     pub boot: u32,
     pub position: PositionFixture,
     pub ble: BleFixture,
+    wifi_control: crate::connectivity::ControlStatus,
+    ble_control: crate::connectivity::ControlStatus,
     media: FileFlash,
     display: DisplayDevice,
     #[cfg(feature = "cycling")]
@@ -276,16 +278,24 @@ impl Session {
         }
         shell.boot_id = boot;
         shell.present();
+        #[cfg(feature = "cycling")]
+        let profile = if shell.settings.ble.is_some() {
+            crate::sdk::ble_sensor::Profile::from_u8(shell.settings.ble_profile)
+        } else {
+            crate::sdk::ble_sensor::Profile::HeartRate
+        };
         Ok(Self {
             shell,
             now: 0,
             boot,
             position: PositionFixture::default(),
             ble: BleFixture::default(),
+            wifi_control: crate::connectivity::ControlStatus::new(),
+            ble_control: crate::connectivity::ControlStatus::new(),
             media,
             display,
             #[cfg(feature = "cycling")]
-            sdk: crate::sdk_runtime::Runtime::new(crate::sdk::ble_sensor::Profile::HeartRate),
+            sdk: crate::sdk_runtime::Runtime::new(profile),
         })
     }
     pub fn tick(&mut self) {
@@ -301,6 +311,7 @@ impl Session {
             &self.position,
             false,
             &NoInputObservation,
+            crate::companion_sensors::State::default().snapshot(self.now, 5_000),
         );
     }
     pub fn advance(&mut self, ms: u64) -> Result<(), Error> {
@@ -326,7 +337,7 @@ impl Session {
                     ..
                 })
             ) {
-                out.push_str(" ordinary=HELP,INFO,STATUS,POSITION,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,STORAGE,DISPLAY,BLE,RESTART");
+                out.push_str(" ordinary=HELP,INFO,STATUS,POSITION,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,STORAGE,DISPLAY,WIFI,BLE,RESTART");
                 #[cfg(feature = "cycling")]
                 out.push_str(",RIDE,EXPORT,RADAR");
             }
@@ -350,17 +361,85 @@ impl Session {
             Command::Storage => {
                 let _ = write!(out, "{:?}", self.shell.store.data().geometry());
             }
+            Command::Wifi => {
+                let _ = write!(
+                    out,
+                    "state=0 online=false saved={} operation={} sequence={} error={} radio=unsupported fixture=true",
+                    self.shell.settings.wifi.is_some(),
+                    self.wifi_control.operation.name(),
+                    self.wifi_control.sequence,
+                    self.wifi_control.error
+                );
+            }
+            Command::WifiConfigure(_) | Command::WifiForget => {
+                let previous = self.shell.settings;
+                self.shell.settings.wifi = if let Command::WifiConfigure(config) = request.command {
+                    Some(config)
+                } else {
+                    None
+                };
+                if !self.shell.save_connectivity() {
+                    self.shell.settings = previous;
+                    return "FAILED";
+                }
+                self.wifi_control.sequence = self.wifi_control.sequence.wrapping_add(1);
+                self.wifi_control.operation = crate::connectivity::Operation::Completed;
+                return "ACCEPTED";
+            }
+            Command::BleForget => {
+                let previous = self.shell.settings;
+                self.shell.settings.ble = None;
+                self.shell.settings.ble_profile = 0;
+                if !self.shell.save_connectivity() {
+                    self.shell.settings = previous;
+                    return "FAILED";
+                }
+                self.ble.packets.clear();
+                self.ble.snapshot.link = crate::ble_transport::Link::Off;
+                self.ble_control.sequence = self.ble_control.sequence.wrapping_add(1);
+                self.ble_control.operation = crate::connectivity::Operation::Completed;
+                #[cfg(feature = "cycling")]
+                self.sdk.select_profile(
+                    crate::sdk::ble_sensor::Profile::Echo,
+                    self.ble.snapshot.connections,
+                );
+                return "ACCEPTED";
+            }
+            #[cfg(feature = "cycling")]
+            Command::BleSelect(peer, profile) => {
+                let profile = crate::sdk::ble_sensor::Profile::from_u8(profile);
+                let previous = self.shell.settings;
+                self.shell.settings.ble =
+                    crate::sdk::ble::selection(profile, peer.name.bytes(), peer.address);
+                self.shell.settings.ble_profile = profile as u8;
+                if !self.shell.save_connectivity() {
+                    self.shell.settings = previous;
+                    return "FAILED";
+                }
+                self.ble.packets.clear();
+                self.ble.snapshot.link = crate::ble_transport::Link::Off;
+                self.sdk
+                    .select_profile(profile, self.ble.snapshot.connections);
+                self.ble_control.sequence = self.ble_control.sequence.wrapping_add(1);
+                self.ble_control.operation = crate::connectivity::Operation::Completed;
+                return "ACCEPTED";
+            }
             Command::Ble => {
                 let s = self.ble.snapshot();
                 let _ = write!(
                     out,
-                    "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={} fixture=true",
+                    "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={} saved={} profile={} operation={} sequence={} error={} radio=unsupported fixture=true",
                     s.link.name(),
                     s.connections,
                     s.disconnections,
                     s.notifications,
                     s.dropped,
-                    s.scan_reports
+                    s.scan_reports,
+                    self.shell.settings.ble.is_some(),
+                    self.shell.settings.ble_profile,
+                    self.ble_control.operation.name(),
+                    self.ble_control.sequence,
+                    self.ble_control.error
                 );
             }
             #[cfg(feature = "cycling")]

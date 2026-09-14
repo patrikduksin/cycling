@@ -16,8 +16,49 @@ use esp_radio::wifi::{
 };
 use static_cell::StaticCell;
 
-mod config {
-    include!(env!("CYCLING_WIFI_CONFIG"));
+use core::cell::RefCell;
+use critical_section::Mutex;
+use cycling_os::connectivity::{
+    ControlStatus, NetworkDiscovery, Operation, Text, WifiConfig, WifiOperation,
+};
+static CONFIGURATION: Mutex<RefCell<Option<WifiConfig>>> = Mutex::new(RefCell::new(None));
+static READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CONTROL: Mutex<RefCell<ControlStatus>> = Mutex::new(RefCell::new(ControlStatus::new()));
+static COMMAND: Mutex<RefCell<Option<WifiOperation>>> = Mutex::new(RefCell::new(None));
+static DISCOVERIES: Mutex<RefCell<[Option<NetworkDiscovery>; 8]>> =
+    Mutex::new(RefCell::new([None; 8]));
+pub fn control() -> ControlStatus {
+    critical_section::with(|cs| *CONTROL.borrow_ref(cs))
+}
+pub fn discoveries() -> [Option<NetworkDiscovery>; 8] {
+    critical_section::with(|cs| *DISCOVERIES.borrow_ref(cs))
+}
+pub fn request(operation: WifiOperation) -> Result<(), cycling_os::capabilities::Error> {
+    if !READY.load(Ordering::Acquire) {
+        return Err(cycling_os::capabilities::Error::Unavailable);
+    }
+    critical_section::with(|cs| {
+        let mut status = CONTROL.borrow_ref_mut(cs);
+        if status.operation == Operation::Pending || COMMAND.borrow_ref(cs).is_some() {
+            return Err(cycling_os::capabilities::Error::Unavailable);
+        }
+        status.sequence = status.sequence.wrapping_add(1);
+        status.operation = Operation::Pending;
+        status.error = "none";
+        *COMMAND.borrow_ref_mut(cs) = Some(operation);
+        Ok(())
+    })
+}
+fn complete(error: Option<&'static str>) {
+    critical_section::with(|cs| {
+        let mut s = CONTROL.borrow_ref_mut(cs);
+        s.operation = if error.is_some() {
+            Operation::Failed
+        } else {
+            Operation::Completed
+        };
+        s.error = error.unwrap_or("none");
+    });
 }
 
 const LINK_UNCONFIGURED: u8 = 0;
@@ -29,7 +70,6 @@ const PROBE_WAITING: u8 = 0;
 const PROBE_READY: u8 = 1;
 const PROBE_OK: u8 = 2;
 const PROBE_FAILED: u8 = 3;
-const REQUEST_MANUAL: u8 = 1;
 const REQUEST_RECOVERY: u8 = 2;
 
 static LINK: AtomicU8 = AtomicU8::new(LINK_UNCONFIGURED);
@@ -60,9 +100,6 @@ fn public_state() -> u8 {
 
 pub fn state() -> u8 {
     public_state()
-}
-pub fn reconnect() {
-    REQUEST.store(REQUEST_MANUAL, Ordering::Release);
 }
 #[cfg(feature = "debug-harness")]
 pub fn set_fault(fault: u8) {
@@ -96,20 +133,7 @@ pub fn online() -> bool {
 /// additional consumers must coordinate socket use rather than assume capacity.
 /// Consuming WIFI prevents a second initialization through the safe interface.
 pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<Stack<'static>> {
-    if config::SSID.is_empty() {
-        log::info!(target: "wifi", "CYCLING_WIFI unconfigured");
-        return None;
-    }
-    LINK.store(LINK_CONNECTING, Ordering::Relaxed);
-    let auth = if config::WPA3 {
-        AuthenticationMethod::Wpa3Personal
-    } else {
-        AuthenticationMethod::Wpa2Personal
-    };
-    let station = StationConfig::default()
-        .with_ssid(config::SSID)
-        .with_password(config::PASSWORD.into())
-        .with_auth_method(auth);
+    let station = StationConfig::default();
     let controller = match WifiController::new(
         peripheral,
         ControllerConfig::default().with_initial_config(Config::Station(station)),
@@ -133,6 +157,7 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         RESOURCES.init(StackResources::new()),
         seed,
     );
+    READY.store(true, Ordering::Release);
     spawner.spawn(connection(controller, stack).unwrap());
     spawner.spawn(network(runner).unwrap());
     spawner.spawn(verify(stack).unwrap());
@@ -145,17 +170,17 @@ pub fn connection_generation() -> u32 {
     GENERATION.load(Ordering::Acquire)
 }
 
-async fn reconnect_requested() -> u8 {
+async fn next_command() -> (WifiOperation, bool) {
     loop {
-        let request = REQUEST.swap(0, Ordering::AcqRel);
-        if request == REQUEST_MANUAL
-            || (request == REQUEST_RECOVERY
-                && RECOVERY_GENERATION.load(Ordering::Acquire)
-                    == GENERATION.load(Ordering::Acquire))
-        {
-            return request;
+        if let Some(operation) = critical_section::with(|cs| COMMAND.borrow_ref_mut(cs).take()) {
+            return (operation, false);
         }
-        Timer::after_millis(250).await;
+        if REQUEST.swap(0, Ordering::AcqRel) == REQUEST_RECOVERY
+            && RECOVERY_GENERATION.load(Ordering::Acquire) == GENERATION.load(Ordering::Acquire)
+        {
+            return (WifiOperation::Connect, true);
+        }
+        Timer::after_millis(50).await;
     }
 }
 
@@ -168,109 +193,131 @@ fn request_recovery(generation: u32) {
     }
 }
 
-async fn retry_or_late_connection(stack: Stack<'_>, seconds: u64) -> bool {
-    for _ in 0..seconds * 4 {
-        if stack.is_link_up() {
-            log::info!(target: "wifi", "CYCLING_WIFI associated_late");
-            return true;
-        }
-        Timer::after_millis(250).await;
-    }
-    stack.is_link_up()
-}
-
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
-    // Optional discovery must not delay terminal, backlight or BLE startup.
-    match with_timeout(
-        Duration::from_secs(15),
-        controller.scan_async(&ScanConfig::default().with_ssid(config::SSID).with_max(8)),
-    )
-    .await
-    {
-        Ok(Ok(aps)) => {
-            log::info!(target: "wifi", "CYCLING_WIFI scan configured_network_matches={}", aps.len())
-        }
-        _ => log::warn!(target: "wifi", "CYCLING_WIFI scan_failed"),
-    }
-    let mut failures = 0u8;
+    let mut retry = cycling_os::connectivity::Reconnect::default();
     loop {
-        LINK.store(LINK_CONNECTING, Ordering::Relaxed);
-        PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-        log::info!(target: "wifi",
-            "CYCLING_WIFI connecting attempt={}",
-            u16::from(failures) + 1
-        );
-        let connected = if stack.is_link_up() {
-            true
+        let (command, automatic) = if stack.is_link_up() {
+            match select(controller.wait_for_disconnect_async(), next_command()).await {
+                Either::First(_) => {
+                    GENERATION.fetch_add(1, Ordering::AcqRel);
+                    LINK.store(LINK_FAILED, Ordering::Relaxed);
+                    PROBE.store(PROBE_WAITING, Ordering::Relaxed);
+                    if critical_section::with(|cs| COMMAND.borrow_ref(cs).is_none()) {
+                        complete(Some("link_lost"));
+                    }
+                    continue;
+                }
+                Either::Second(operation) => operation,
+            }
+        } else if retry.requested() {
+            match select(next_command(), Timer::after_secs(retry.delay())).await {
+                Either::First(command) => command,
+                Either::Second(()) => (WifiOperation::Connect, true),
+            }
         } else {
-            match with_timeout(Duration::from_secs(20), controller.connect_async()).await {
-                Ok(Ok(_)) => true,
-                Ok(Err(_)) => {
-                    log::warn!(target: "wifi", "CYCLING_WIFI connect_failed kind=driver");
-                    false
-                }
-                Err(_) => {
-                    log::warn!(target: "wifi", "CYCLING_WIFI connect_failed kind=timeout");
-                    false
-                }
+            next_command().await
+        };
+        match command {
+            WifiOperation::Connect if !automatic => retry.connect(),
+            WifiOperation::Configure(_) | WifiOperation::Disconnect => retry.disconnect(),
+            _ => {}
+        }
+        let finish = |error| {
+            if !automatic && critical_section::with(|cs| COMMAND.borrow_ref(cs).is_none()) {
+                complete(error);
             }
         };
-        let connected = if connected {
-            true
-        } else {
-            LINK.store(LINK_RETRYING, Ordering::Relaxed);
-            let delay = cycling_os::network::retry_delay_secs(failures);
-            failures = failures.saturating_add(1);
-            log::info!(target: "wifi", "CYCLING_WIFI retry_in_s={}", delay);
-            retry_or_late_connection(stack, delay).await
-        };
-        if !connected {
+        if matches!(command, WifiOperation::Scan) {
+            critical_section::with(|cs| *DISCOVERIES.borrow_ref_mut(cs) = [None; 8]);
+            match with_timeout(
+                Duration::from_secs(15),
+                controller.scan_async(&ScanConfig::default().with_max(8)),
+            )
+            .await
+            {
+                Ok(Ok(aps)) => {
+                    critical_section::with(|cs| {
+                        let mut found = DISCOVERIES.borrow_ref_mut(cs);
+                        for (slot, ap) in found.iter_mut().zip(aps.iter()) {
+                            if let Some(ssid) = Text::new(ap.ssid.as_str().as_bytes()) {
+                                *slot = Some(NetworkDiscovery {
+                                    ssid,
+                                    rssi: ap.signal_strength,
+                                });
+                            }
+                        }
+                    });
+                    finish(None);
+                }
+                _ => finish(Some("scan_failed")),
+            }
             continue;
         }
-
-        failures = 0;
-        GENERATION.fetch_add(1, Ordering::Relaxed);
-        ASSOCIATIONS.fetch_add(1, Ordering::Relaxed);
-        LINK.store(LINK_ASSOCIATED, Ordering::Relaxed);
+        GENERATION.fetch_add(1, Ordering::AcqRel);
         PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-        log::info!(target: "wifi", "CYCLING_WIFI associated");
-        match select(
-            controller.wait_for_disconnect_async(),
-            reconnect_requested(),
-        )
-        .await
-        {
-            Either::First(_) => log::info!(target: "wifi", "CYCLING_WIFI disconnected"),
-            Either::Second(reason) => {
-                GENERATION.fetch_add(1, Ordering::Relaxed);
-                LINK.store(LINK_RETRYING, Ordering::Relaxed);
-                PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-                log::info!(target: "wifi",
-                    "CYCLING_WIFI disconnecting reason={}",
-                    if reason == REQUEST_MANUAL {
-                        "test"
-                    } else {
-                        "recovery"
+        if stack.is_link_up() {
+            LINK.store(LINK_RETRYING, Ordering::Relaxed);
+            if !matches!(
+                with_timeout(Duration::from_secs(5), controller.disconnect_async()).await,
+                Ok(Ok(_))
+            ) {
+                LINK.store(LINK_FAILED, Ordering::Relaxed);
+                finish(Some("disconnect_failed"));
+                continue;
+            }
+        }
+        LINK.store(LINK_UNCONFIGURED, Ordering::Relaxed);
+        match command {
+            WifiOperation::Configure(config) => {
+                if let Some(config) = config {
+                    let station = StationConfig::default()
+                        .with_ssid(config.ssid.text())
+                        .with_password(config.password.text().into())
+                        .with_auth_method(if config.wpa3 {
+                            AuthenticationMethod::Wpa3Personal
+                        } else {
+                            AuthenticationMethod::Wpa2Personal
+                        });
+                    if controller.set_config(&Config::Station(station)).is_err() {
+                        finish(Some("configuration_failed"));
+                        continue;
                     }
-                );
-                match with_timeout(Duration::from_secs(5), controller.disconnect_async()).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(_)) => {
-                        log::warn!(target: "wifi", "CYCLING_WIFI disconnect_failed kind=driver")
+                }
+                critical_section::with(|cs| *CONFIGURATION.borrow_ref_mut(cs) = config);
+                finish(None);
+            }
+            WifiOperation::Disconnect => finish(None),
+            WifiOperation::Connect => {
+                if critical_section::with(|cs| CONFIGURATION.borrow_ref(cs).is_none()) {
+                    retry.disconnect();
+                    finish(Some("unconfigured"));
+                    continue;
+                }
+                LINK.store(LINK_CONNECTING, Ordering::Relaxed);
+                match with_timeout(Duration::from_secs(20), controller.connect_async()).await {
+                    Ok(Ok(_)) => {
+                        retry.recovered();
+                        ASSOCIATIONS.fetch_add(1, Ordering::Relaxed);
+                        GENERATION.fetch_add(1, Ordering::AcqRel);
+                        LINK.store(LINK_ASSOCIATED, Ordering::Relaxed);
+                        finish(None);
                     }
-                    Err(_) => {
-                        log::warn!(target: "wifi", "CYCLING_WIFI disconnect_failed kind=timeout")
+                    result => {
+                        // A timed-out driver may associate late. Stop that attempt before reporting failure.
+                        let _ = with_timeout(Duration::from_secs(5), controller.disconnect_async())
+                            .await;
+                        LINK.store(LINK_FAILED, Ordering::Relaxed);
+                        finish(Some(if result.is_err() {
+                            "connect_timeout"
+                        } else {
+                            "connect_failed"
+                        }));
                     }
                 }
             }
+            WifiOperation::Scan => unreachable!(),
         }
-        if LINK.load(Ordering::Relaxed) != LINK_RETRYING {
-            GENERATION.fetch_add(1, Ordering::Relaxed);
-            LINK.store(LINK_RETRYING, Ordering::Relaxed);
-            PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-        }
-        Timer::after_secs(1).await;
     }
 }
 

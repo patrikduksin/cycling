@@ -95,7 +95,7 @@ class UsbConnection:
             reply = terminal_reply(self.pending, data, self.request_id, self.boot)
             if reply is not None:
                 return reply
-        raise TimeoutError(f'no terminal response for {command}')
+        raise TimeoutError('terminal response timed out; command outcome may be uncertain')
 
 
 def terminal_reply(pending, data, expected_id, boot=None):

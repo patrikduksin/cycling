@@ -4,18 +4,14 @@ use super::ble_sensor::{self, CadenceReading, CscMeasurement, HeartRate, Profile
 use crate::ble_transport::{self, Packet, Selection};
 
 /// Explicit profile selection, with no discovery of an arbitrary nearby sensor.
-pub fn selection(
-    profile: Profile,
-    name: &'static [u8],
-    address: Option<[u8; 6]>,
-) -> Option<Selection> {
+pub fn selection(profile: Profile, name: &[u8], address: Option<[u8; 6]>) -> Option<Selection> {
     let (service, characteristic) = match profile {
         Profile::Echo => return None,
         Profile::HeartRate => (0x180d, 0x2a37),
         Profile::Cadence => (0x1816, 0x2a5b),
     };
     Some(Selection {
-        name,
+        name: crate::connectivity::Text::new(name)?,
         address,
         service,
         characteristic,
@@ -24,6 +20,7 @@ pub fn selection(
 
 pub struct Client {
     profile: Profile,
+    after_connection: Option<u32>,
     transport: ble_transport::Snapshot,
     heart: Option<(u16, u64)>,
     cadence: CadenceReading,
@@ -36,6 +33,7 @@ impl Client {
     pub fn new(profile: Profile) -> Self {
         Self {
             profile,
+            after_connection: None,
             transport: ble_transport::Snapshot::default(),
             heart: None,
             cadence: CadenceReading::default(),
@@ -45,6 +43,11 @@ impl Client {
             rr_dropped: 0,
         }
     }
+    /// A selection change cannot interpret queued bytes from the previous peer/profile.
+    pub fn select_profile(&mut self, profile: Profile, previous_connection: u32) {
+        *self = Self::new(profile);
+        self.after_connection = Some(previous_connection);
+    }
     fn reset_readings(&mut self) {
         self.heart = None;
         self.cadence.disconnected();
@@ -52,7 +55,14 @@ impl Client {
     }
     /// Call with the current transport state before draining its packet queue.
     /// Lost packets or a new/disconnected link invalidate measurement continuity.
-    pub fn update(&mut self, transport: ble_transport::Snapshot) {
+    pub fn update(&mut self, mut transport: ble_transport::Snapshot) {
+        if let Some(previous) = self.after_connection {
+            if transport.connections > previous {
+                self.after_connection = None;
+            } else if transport.link == ble_transport::Link::Connected {
+                transport.link = ble_transport::Link::Off;
+            }
+        }
         if transport.connections != self.transport.connections
             || transport.link != ble_transport::Link::Connected
             || transport.dropped != self.dropped
@@ -204,6 +214,34 @@ mod tests {
         client.update(state(2, 0));
         client.packet(packet(2, 6, 0, 6000, &[2, 6, 0, 0, 24]));
         assert_eq!(client.snapshot(6000).cadence_tenths, None);
+    }
+    #[test]
+    fn csc_to_heart_selection_rejects_queued_old_generation_until_new_connection() {
+        let mut client = Client::new(Profile::Cadence);
+        client.update(state(4, 0));
+        client.select_profile(Profile::HeartRate, 4);
+        client.update(state(4, 0));
+        // A two-byte old notification is also a valid HRS value; generation must reject it.
+        client.packet(packet(4, 8, 0, 100, &[0, 99]));
+        assert_eq!(client.snapshot(100).heart_bpm, None);
+        client.update(state(5, 0));
+        client.packet(packet(4, 9, 0, 101, &[0, 99]));
+        assert_eq!(client.snapshot(101).heart_bpm, None);
+        client.packet(packet(5, 10, 0, 102, &[0, 77]));
+        assert_eq!(client.snapshot(102).heart_bpm, Some(77));
+    }
+    #[test]
+    fn same_profile_peer_change_rejects_previous_peer_bytes() {
+        let mut client = Client::new(Profile::HeartRate);
+        client.update(state(7, 0));
+        client.packet(packet(7, 1, 0, 100, &[0, 88]));
+        client.select_profile(Profile::HeartRate, 7);
+        client.update(state(7, 0));
+        client.packet(packet(7, 2, 0, 101, &[0, 88]));
+        assert_eq!(client.snapshot(101).heart_bpm, None);
+        client.update(state(8, 0));
+        client.packet(packet(8, 3, 0, 102, &[0, 77]));
+        assert_eq!(client.snapshot(102).heart_bpm, Some(77));
     }
     #[test]
     fn profile_selection_is_explicit_and_preserves_uuid_pairs() {

@@ -15,3 +15,5 @@ pub mod bluetooth;
 pub mod services;
 pub mod usb;
 pub mod wifi;
+
+pub mod sound_protocol;

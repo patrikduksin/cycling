@@ -74,6 +74,18 @@ impl<B: OwnedFlash> Store<B> {
         }
     }
 
+    /// Connectivity provisioning must not accidentally persist temporary display preferences.
+    pub fn save_connectivity(
+        &mut self,
+        current: crate::shell::preferences::Settings,
+    ) -> Result<Record, Error<B::Error>> {
+        let mut settings = self.load()?.settings;
+        settings.wifi = current.wifi;
+        settings.ble = current.ble;
+        settings.ble_profile = current.ble_profile;
+        self.save(settings)
+    }
+
     pub fn data(&mut self) -> RegionAccess<'_, B> {
         RegionAccess::new(self.journal.flash_mut(), Region::Data)
     }
@@ -87,7 +99,7 @@ mod tests {
     fn unsupported_and_malformed_settings_are_readable_but_cannot_be_overwritten() {
         use crate::shell::preferences::{Settings, Source};
         for (payload, source) in [
-            (b"cycling\x05".as_slice(), Source::Unsupported),
+            (b"cycling\x06".as_slice(), Source::Unsupported),
             (b"unrecognized".as_slice(), Source::Malformed),
             (b"cycling\x04".as_slice(), Source::Malformed),
         ] {
@@ -106,6 +118,31 @@ mod tests {
             // Two scan reads plus a verified load; no mutation operation.
             assert_eq!(store.journal.flash.operations - operations, 3);
         }
+    }
+
+    #[test]
+    fn migration_and_connectivity_save_keep_preferences() {
+        use crate::shell::preferences::{Settings, Source};
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
+        let old = [
+            b'c', b'y', b'c', b'l', b'i', b'n', b'g', 4, 75, 30, 0, 10, 0, 0, 0,
+        ];
+        journal.save(&old).unwrap();
+        let mut store = Store { journal };
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.source, Source::Migrated);
+        assert_eq!(loaded.settings.brightness, 75);
+        let mut settings = loaded.settings;
+        settings.wifi = Some(
+            crate::connectivity::WifiConfig::new(b"Owned test", b"test-password", false).unwrap(),
+        );
+        store.save(settings).unwrap();
+        assert_eq!(store.load().unwrap().settings, settings);
+        let update = settings.with_timezone(330).unwrap();
+        store.save(update).unwrap();
+        assert_eq!(store.load().unwrap().settings.wifi, settings.wifi);
+        assert_eq!(store.load().unwrap().settings.brightness, 75);
+        let _ = Settings::default();
     }
 
     #[test]

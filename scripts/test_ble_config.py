@@ -24,11 +24,14 @@ class BleConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ble_config.configuration("authorized-heart", record)
 
-    def test_generated_source_uses_numeric_name_bytes(self):
-        source = ble_config.render(1, b"private", [1, 2, 3, 4, 5, 6])
-        self.assertIn("PROFILE: u8 = 1", source)
-        self.assertIn("TARGET_NAME: &[u8] = &[112, 114", source)
-        self.assertIn("Some([1, 2, 3, 4, 5, 6])", source)
+    def test_invalid_private_address_is_not_repeated_in_errors(self):
+        with self.assertRaises(ValueError) as raised:
+            ble_config.address_bytes("private:23:45:67:89:AB")
+        self.assertNotIn("private", str(raised.exception))
+
+    def test_runtime_command_uses_bounded_hex_fields(self):
+        self.assertEqual(ble_config.command("sim-heart"), "BLE SELECT HRS 4379636c696e672053696d -")
+        self.assertEqual(ble_config.command("echo"), "BLE FORGET")
 
 
 if __name__ == "__main__":

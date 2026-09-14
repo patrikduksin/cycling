@@ -293,6 +293,15 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
         });
         self.dirty = self.display_error;
     }
+    pub fn save_connectivity(&mut self) -> bool {
+        let result = self.store.save_connectivity(self.settings);
+        self.operations = self.operations.saturating_add(1);
+        self.settings_error = result.is_err();
+        if result.is_ok() {
+            self.settings_source = "current";
+        }
+        result.is_ok()
+    }
     pub fn save(&mut self) -> bool {
         let result = self.store.save(self.settings);
         self.operations = self.operations.saturating_add(1);

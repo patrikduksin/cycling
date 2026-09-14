@@ -13,6 +13,9 @@ import sys
 import time
 import zlib
 
+import wifi
+import ble_config
+
 from harness_av import Capture, discover
 from harness_transport import ManualAction, Real, Virtual, usb_node
 from usb import ROOT
@@ -104,7 +107,7 @@ RECIPES['acceptance'] = {'captures': [
         {'op': 'recover', 'mode': 'restart'},
 ]}
 READ_ONLY = {'HELP', 'INFO', 'STATUS', 'POSITION', 'INPUT', 'BATTERY', 'TIME', 'SETTINGS',
-             'ACTIVITY', 'WIFI', 'BLE', 'STORAGE', 'ANT'}
+             'ACTIVITY', 'WIFI', 'BLE', 'STORAGE', 'ANT', 'MMC', 'SOUND', 'GNSS', 'PRESSURE', 'MOTION', 'COMPANION'}
 
 
 def fields(text):
@@ -213,11 +216,108 @@ def events_for(step):
     return events
 
 
+def connectivity_command(radio, step):
+    action = step.get('action')
+    permitted = {'wifi': {'scan', 'configure', 'connect', 'disconnect', 'forget'},
+                 'ble': {'scan', 'select', 'connect', 'disconnect', 'forget', 'echo'}}
+    if radio not in permitted or action not in permitted[radio]:
+        raise ValueError('unsupported typed connectivity operation')
+    if action == 'configure':
+        config = json.loads(private(step['profile']).read_text())
+        if step.get('invalid_password') is True:
+            config['password'] = 'invalid-owned-fixture-password'
+        return wifi.command(config)
+    if action == 'select':
+        mode = step['mode']
+        record = json.loads(private(step.get('authorization', str(ble_config.AUTHORIZED))).read_text()) if mode == 'authorized-heart' else None
+        return ble_config.command(mode, record)
+    return radio.upper() + ' ' + action.upper()
+
+
+def connectivity_restore_steps(radio, original):
+    if not isinstance(original, dict) or type(original.get('connected')) is not bool:
+        raise ValueError('connectivity restoration requires explicit original connection intent')
+    if radio == 'wifi':
+        configured = original.get('profile') is not None
+        steps = [dict(action='configure', profile=original['profile'])] if configured else [dict(action='forget')]
+    else:
+        mode = original.get('mode')
+        if mode not in ('none', 'echo', 'authorized-heart', 'sim-heart', 'sim-csc'):
+            raise ValueError('restoration requires the original BLE mode')
+        configured = mode not in ('none', 'echo')
+        steps = [dict(action='select', **{k: v for k, v in original.items() if k in ('mode', 'authorization')})] if configured else [dict(action='forget')]
+        if mode == 'echo':
+            steps.append(dict(action='echo'))
+    if radio == 'ble' and original.get('echo_after') is True:
+        if original['connected']:
+            raise ValueError('echo restoration cannot also connect a sensor')
+        steps.append(dict(action='echo'))
+    if original['connected']:
+        if not configured:
+            raise ValueError('cannot reconnect an unconfigured original selection')
+        steps.append(dict(action='connect'))
+    return steps
+
+
+def peripheral_command(step):
+    op, action = step['op'], step.get('action')
+    if op == 'sound':
+        if action == 'stop': return 'SOUND STOP'
+        if action == 'play' and type(step.get('pattern')) is int and step['pattern'] in (0, 10, 21, 22):
+            return f'SOUND PLAY {step["pattern"]}'
+    elif op == 'gnss':
+        if action == 'resume': return 'GNSS RESUME'
+        if action == 'pause' and type(step.get('duration_ms')) is int and 2000 <= step['duration_ms'] <= 10000:
+            return f'GNSS PAUSE {step["duration_ms"]}'
+    elif op == 'mmc':
+        if action == 'recover': return 'MMC RECOVER'
+        if action == 'clock' and type(step.get('hz')) is int and step['hz'] in (400000, 4000000, 20000000):
+            return f'MMC CLOCK {step["hz"]}'
+        if action == 'read' and type(step.get('sector')) is int and 0 <= step['sector'] < 2**32:
+            offset, length = step.get('offset', 0), step.get('length', 256)
+            if type(offset) is int and type(length) is int and 0 <= offset < 512 and 1 <= length <= 256 and offset + length <= 512:
+                return f'MMC READ {step["sector"]} {offset} {length}'
+    elif op == 'companion' and action == 'query': return 'COMPANION QUERY'
+    raise ValueError('unsupported bounded peripheral operation')
+
+
+def foundation_command(step):
+    action = step.get('action')
+    if not 0 < float(step.get('timeout_s', 30)) <= 120:
+        raise ValueError('foundation wait must be 0..120 seconds')
+    allowed = {'op', 'action', 'timeout_s'}
+    if action == 'start':
+        allowed.add('duration_seconds')
+        seconds = step.get('duration_seconds')
+        if type(seconds) is not int or not 300 <= seconds <= 600:
+            raise ValueError('foundation duration must be an integer from 300 to 600 seconds')
+        command = f'FOUNDATION LOG START {seconds}'
+    elif action == 'stop':
+        command = 'FOUNDATION LOG STOP'
+    else:
+        raise ValueError('foundation action must be start or stop')
+    if set(step) - allowed:
+        raise ValueError('unexpected typed foundation fields')
+    return command
+
+
+def foundation_fields(text):
+    # Runtime currently emits a Rust Debug snapshot followed by key=value fields.
+    result = fields(text)
+    result.update(dict(re.findall(r'\b(\w+):\s*([^,\s}]+)', text)))
+    if result.get('status') not in ('Idle', 'Scanning', 'Ready', 'Recording', 'Stopping', 'Stopped', 'Full', 'Error'):
+        raise ValueError('unknown foundation capture state')
+    if result.get('recording') not in ('true', 'false'):
+        raise ValueError('foundation capture lacks recording state')
+    return result
+
+
 def preflight(scenario):
     steps = scenario.get('steps')
     if not isinstance(steps, list) or not 1 <= len(steps) <= 256:
         raise ValueError('scenario requires 1..256 steps')
     baselines = {}
+    foundation_started = foundation_stopped = False
     for step in steps:
         op = step.get('op')
         if 'progress_from' in step and baselines.get(step['progress_from']) != step.get('command'):
@@ -227,13 +327,35 @@ def preflight(scenario):
         if op in ('command', 'wait'):
             command = step['command']
             words = command.split()
-            permitted = len(words) == 1 and words[0] in READ_ONLY
+            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in ('RIDE SENSORS', 'RADAR SENSORS', 'FOUNDATION LOG STATUS', 'FOUNDATION LOG INFO')
+            permitted = read_only
             permitted |= bool(re.fullmatch(r'DISPLAY [0-9a-fA-F]{1,4}', command))
             permitted |= bool(re.fullmatch(r'BRIGHTNESS (?:100|[0-9]{1,2})', command))
-            if not permitted or (op == 'wait' and len(words) != 1):
+            if not permitted or (op == 'wait' and not read_only):
                 raise ValueError('scenario command is not a supported read or temporary display/brightness operation; persistence mutations require dedicated protected workflows')
             if op == 'wait' and not 0 < float(step.get('timeout_s', 10)) <= 120:
                 raise ValueError('wait timeout must be 0..120 seconds')
+        elif op == 'foundation':
+            foundation_command(step)
+            if step['action'] == 'start':
+                if foundation_started:
+                    raise ValueError('one foundation capture start is allowed per run')
+                foundation_started = True
+            else:
+                if not foundation_started or foundation_stopped:
+                    raise ValueError("foundation stop requires this run's preceding start")
+                foundation_stopped = True
+        elif op in ('sound', 'gnss', 'mmc', 'companion'):
+            peripheral_command(step)
+        elif op in ('wifi', 'ble'):
+            connectivity_command(op, step)
+            if step.get('completion', 'completed') not in ('completed', 'error'):
+                raise ValueError('connectivity completion must be completed or error')
+            if not 0 < float(step.get('timeout_s', 55)) <= 90:
+                raise ValueError('connectivity timeout must be 0..90 seconds')
+            original = scenario.get('connectivity_restore', {}).get(op)
+            for restore in connectivity_restore_steps(op, original):
+                connectivity_command(op, restore)
         elif op in ('fixture', 'virtual-command'):
             text = step['command']
             if not isinstance(text, str) or not text or len(text) > 100 or any(c in text for c in '\n\r\x00'):
@@ -276,23 +398,26 @@ class Runner:
         self.caps = {}
         self.last_lease = time.monotonic()
         self.observations = {}
+        self.foundation_eligible = False
+        self.foundation_start_may_apply = False
+        self.foundation_stop_sent = False
 
     def command(self, command, statuses=('OK',), timeout=30):
         request = f'CMD {self.transport.request_id + 1} {command}'
-        if len(request.encode('ascii')) > 128 or any(c in command for c in '\n\r\x00'):
+        if len(request.encode('ascii')) > 256 or any(c in command for c in '\n\r\x00'):
             raise ValueError('invalid command framing')
         if self.session and not command.startswith('HARNESS ') and time.monotonic() - self.last_lease > 30:
             self.operation('PING')
         started = time.monotonic()
         self.commands += 1
         reply = self.transport.terminal_command(command, timeout=timeout)
-        self.trace.write(json.dumps({'host_start_s': started, 'host_end_s': time.monotonic(), 'command': command, 'reply': reply}) + '\n')
+        self.trace.write(json.dumps({'host_start_s': started, 'host_end_s': time.monotonic(), 'command': (command.split()[0] + ' <private configuration>' if command.startswith(('WIFI CONFIG ', 'BLE SELECT ')) else command), 'reply': reply}) + '\n')
         self.trace.flush()
         if reply['status'] not in statuses:
             if reply['status'] in ('UNSUPPORTED', 'UNAVAILABLE'):
                 raise Unsupported(reply['status'])
             raise RuntimeError(f'{command.split()[0]} returned {reply["status"]}')
-        return fields(reply['data'])
+        return foundation_fields(reply['data']) if command == 'FOUNDATION LOG STATUS' else fields(reply['data'])
 
     def operation(self, command, statuses=('OK',)):
         result = self.command(f'HARNESS {self.session} {command}', statuses)
@@ -379,8 +504,102 @@ class Runner:
                 'transfer_bytes': sum(int(frame['bytes']) for frame in results if 'path' in frame),
                 'physical_panel_verified': False}
 
+    def connectivity(self, radio, step):
+        command = connectivity_command(radio, step)
+        before = self.command(radio.upper())
+        if before.get('operation') == 'pending':
+            deadline = time.monotonic() + 90
+            sequence = before['sequence']
+            while before.get('operation') == 'pending':
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('pending radio operation remains uncertain before restoration')
+                self.delay(.05)
+                before = self.command(radio.upper())
+                if before.get('sequence') != sequence:
+                    raise RuntimeError('radio operation changed unexpectedly before restoration')
+            if before.get('operation') not in ('completed', 'error'):
+                raise RuntimeError('radio operation has no inspectable terminal state')
+        self.command(command, ('ACCEPTED',))
+        sequence = str((int(before['sequence']) + 1) % (1 << 32))
+        result = self.wait(radio.upper(), {'sequence': sequence, 'operation': step.get('completion', 'completed')}, float(step.get('timeout_s', 55)))
+        for key, value in step.get('expect', {}).items():
+            if result.get(key) != str(value):
+                raise AssertionError('connectivity completion assertion failed for ' + key)
+        if step['action'] == 'scan':
+            self.command('WIFI NETWORKS' if radio == 'wifi' else 'BLE PEERS')
+        return result
+
+    def foundation_idle(self, build):
+        if build.get('recording') != 'false' or build.get('cycling') != 'true':
+            raise ValueError('foundation capture requires original idle SDK firmware')
+        original = self.command('FOUNDATION LOG STATUS')
+        if original['status'] != 'Idle' or original['recording'] != 'false':
+            raise ValueError('foundation capture requires original Idle state')
+        return original
+
+    def wait_foundation(self, wanted, timeout):
+        deadline = time.monotonic() + timeout
+        for _ in range(2401):
+            state = self.command('FOUNDATION LOG STATUS')
+            if state['status'] in wanted and state['recording'] == ('true' if state['status'] == 'Recording' else 'false'):
+                return state
+            if state['status'] in ('Full', 'Error', 'Stopped', 'Idle'):
+                raise RuntimeError('foundation capture reached an unexpected terminal state')
+            if time.monotonic() >= deadline:
+                break
+            self.delay(.05)
+        raise TimeoutError('foundation capture state remains uncertain')
+
+    def stop_foundation(self, timeout=30):
+        if not self.foundation_start_may_apply:
+            raise ValueError('cannot stop a foundation capture not started by this run')
+        state = self.command('FOUNDATION LOG STATUS')
+        if state['status'] in ('Full', 'Error'):
+            raise RuntimeError('foundation capture failed; preserve data for inspection')
+        if state['status'] not in ('Stopped', 'Idle', 'Stopping'):
+            if self.foundation_stop_sent:
+                raise RuntimeError('previous foundation stop remains uncertain; not replayed')
+            self.foundation_stop_sent = True
+            self.command('FOUNDATION LOG STOP', ('ACCEPTED',))
+        state = self.wait_foundation(('Stopped', 'Idle'), timeout)
+        self.foundation_start_may_apply = False
+        return state
+
+    def foundation(self, step):
+        command = foundation_command(step)
+        timeout = float(step.get('timeout_s', 30))
+        if step['action'] == 'stop':
+            return self.stop_foundation(timeout)
+        if not self.foundation_eligible or self.foundation_start_may_apply:
+            raise ValueError('foundation capture lacks verified original idle ownership')
+        self.foundation_idle(self.command('INFO'))
+        self.foundation_eligible = False
+        # Set before submission: a lost reply cannot establish that START did not act.
+        self.foundation_start_may_apply = True
+        self.command(command, ('ACCEPTED',))
+        return self.wait_foundation(('Recording',), timeout)
+
     def step(self, step, index):
         op = step['op']
+        if op == 'foundation':
+            return self.foundation(step)
+        if op in ('wifi', 'ble'):
+            return self.connectivity(op, step)
+        if op in ('sound', 'gnss', 'mmc', 'companion'):
+            result = self.command(peripheral_command(step), ('OK',) if op == 'mmc' else ('ACCEPTED',))
+            if op == 'sound' and step.get('wait', True):
+                result = self.wait('SOUND', {'state': 'Elapsed'}, 2)
+            elif op == 'gnss':
+                if step['action'] == 'pause':
+                    result = {'paused': self.wait('GNSS', {'state': 'SilenceObserved'}, step['duration_ms'] / 1000)}
+                    if step.get('wait', True): result['resumed'] = self.wait('GNSS', {'state': 'Receiving'}, step['duration_ms'] / 1000 + 6)
+                else: result = self.wait('GNSS', {'state': 'Receiving'}, 6)
+            elif op == 'companion': result = self.wait('COMPANION', {'query': 'reply_observed'}, 3)
+            elif op == 'mmc' and step['action'] == 'read':
+                data = bytes.fromhex(result['data'])
+                if len(data) != int(result['length']) or zlib.crc32(data) != int(result['crc32'], 16):
+                    raise ValueError('MMC chunk checksum/length mismatch')
+            return result
         if op == 'command':
             result = self.command(step['command'])
             for key, expected in step.get('expect', {}).items():
@@ -418,6 +637,9 @@ class Runner:
         if op == 'manual':
             raise ManualAction(step['action'])
         if op == 'recover':
+            if not self.transport.virtual and step.get('mode', 'terminal') in ('restart', 'usb-reset'):
+                if self.command('INFO').get('recording') != 'false':
+                    raise ValueError('real recovery requires fresh verified idle recording state')
             previous = self.boot
             if self.session:
                 self.operation('CLOSE')
@@ -456,6 +678,9 @@ def execute(args, scenario, output):
     runner = transport = None
     captures, active_captures = [], []
     original = None
+    connectivity_touched = set()
+    peripheral_touched = set()
+    original_mmc_clock = None
     try:
         preflight(scenario)
         if args.backend != 'virtual' and any(step['op'] in ('fixture', 'virtual-command') for step in scenario['steps']):
@@ -475,12 +700,22 @@ def execute(args, scenario, output):
         transport.__enter__()
         runner = Runner(transport, output)
         report['build'] = runner.command('INFO')
+        if any(step['op'] == 'foundation' for step in scenario['steps']):
+            report['initial_foundation'] = runner.foundation_idle(report['build'])
+            runner.foundation_eligible = True
         if not transport.virtual and any(step['op'] == 'recover' and step.get('mode') in ('restart', 'usb-reset') for step in scenario['steps']):
-            if report['build'].get('cycling') != 'false' or report['build'].get('recording') != 'false':
-                raise ValueError('real restart recipes require base firmware with no recording consumer; preserve active SDK work')
+            if report['build'].get('recording') != 'false':
+                raise ValueError('real restart recipes require verified idle recording state; preserve active SDK work')
         original = runner.command('SETTINGS')
         report['initial_settings'] = original
         report['initial_status'] = runner.command('STATUS')
+        peripheral_ops = {step['op'] for step in scenario['steps']}
+        if 'sound' in peripheral_ops and runner.command('SOUND')['state'] not in ('Idle', 'Elapsed'):
+            raise ValueError('sound operation requires idle original playback')
+        if 'gnss' in peripheral_ops and runner.command('GNSS')['state'] != 'Receiving':
+            raise ValueError('GNSS operation requires original receiving stream')
+        if 'mmc' in peripheral_ops:
+            original_mmc_clock = int(runner.command('MMC')['clock_hz'])
         report['capabilities'] = caps = runner.command('HARNESS CAPS')
         runner.boot = caps.get('boot')
         needed = {step['op'] for step in scenario['steps']} & {'input', 'capture'}
@@ -511,6 +746,10 @@ def execute(args, scenario, output):
             report['steps'].append(entry)
             atomic_json(output / 'report.json', report)
             try:
+                if step['op'] in ('wifi', 'ble'):
+                    connectivity_touched.add(step['op'])
+                if step['op'] in ('sound', 'gnss', 'mmc'):
+                    peripheral_touched.add(step['op'])
                 entry['result'] = runner.step(step, index)
                 entry['status'] = 'pass'
             except BaseException as error:
@@ -543,11 +782,43 @@ def execute(args, scenario, output):
                         cleanup['cancel_error'] = str(error)
                         runner.session = None  # Inspect preferences without renewing an uncertain session.
                         report['status'] = 'inconclusive'
-                if original:
+                def restore_one(name, action):
+                    try:
+                        action()
+                    except (Exception, KeyboardInterrupt) as error:
+                        cleanup[name] = 'uncertain; inspect before retrying mutation'
+                        cleanup[name + '_error'] = str(error)
+                        report['status'] = 'inconclusive'
+
+                def restore_sound():
+                    state = runner.command('SOUND')['state']
+                    if state not in ('Idle', 'Elapsed', 'StopSubmitted', 'StopQueued'):
+                        runner.command('SOUND STOP', ('ACCEPTED',))
+                    if state not in ('Idle', 'Elapsed'): runner.wait('SOUND', {'state': 'Elapsed'}, 2)
+                    cleanup['sound'] = 'finite playback elapsed or stop sent; no acoustic acknowledgment'
+
+                def restore_gnss():
+                    state = runner.command('GNSS')['state']
+                    if state not in ('Receiving', 'ResumeQueued', 'ResumeSubmitted'):
+                        runner.command('GNSS RESUME', ('ACCEPTED',))
+                    runner.wait('GNSS', {'state': 'Receiving'}, 6)
+                    cleanup['gnss'] = 'resumed parser progress verified'
+
+                def restore_mmc():
+                    runner.command(f'MMC CLOCK {original_mmc_clock}')
+                    if int(runner.command('MMC')['clock_hz']) != original_mmc_clock:
+                        raise RuntimeError('MMC clock restoration mismatch')
+                    cleanup['mmc'] = 'original controller clock restored'
+
+                def restore_radio(radio):
+                    for restore in connectivity_restore_steps(radio, scenario['connectivity_restore'][radio]):
+                        runner.connectivity(radio, restore)
+                    cleanup[radio] = 'restored configuration and connection intent; completion verified'
+
+                def restore_preferences():
                     actual = runner.command('SETTINGS')
                     if actual.get('brightness') != original.get('brightness'):
                         runner.command(f'BRIGHTNESS {original["brightness"]}')
-                        actual = runner.command('SETTINGS')
                     if actual.get('timezone') != original.get('timezone'):
                         runner.command(f'TIMEZONE {original["timezone"]}')
                     if any(actual.get(key) != original.get(key) for key in ('dim_timeout', 'dim_brightness')):
@@ -557,6 +828,19 @@ def execute(args, scenario, output):
                         if actual.get(key) != original.get(key):
                             raise RuntimeError(f'preference restoration mismatch: {key}')
                     cleanup['preferences'] = 'verified'
+
+                def restore_foundation():
+                    state = runner.stop_foundation()
+                    cleanup['foundation'] = 'verified ' + state['status'] + '; appended records preserved'
+
+                if runner.foundation_start_may_apply:
+                    restore_one('foundation', restore_foundation)
+                if 'sound' in peripheral_touched: restore_one('sound', restore_sound)
+                if 'gnss' in peripheral_touched: restore_one('gnss', restore_gnss)
+                if 'mmc' in peripheral_touched and original_mmc_clock is not None: restore_one('mmc', restore_mmc)
+                for radio in sorted(connectivity_touched):
+                    restore_one(radio, lambda radio=radio: restore_radio(radio))
+                if original: restore_one('preferences', restore_preferences)
             except (Exception, KeyboardInterrupt) as error:
                 cleanup['error'] = str(error)
                 cleanup['preferences'] = 'uncertain; inspect before retrying mutation'

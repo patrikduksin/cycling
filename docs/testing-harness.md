@@ -15,7 +15,7 @@ mise run harness -- run virtual-sdk --backend virtual --sdk
 The `acceptance` recipe uses the laptop camera and microphone, plays a known
 speaker fixture, checks acquisition progress during input/capture, and exercises
 terminal reopen, a targeted Linux USB bus reset and firmware restart. It requires
-base firmware and access to the selected USB device node. `av` collects a shorter
+an idle recording state and access to the selected USB device node. `av` collects a shorter
 camera/microphone fixture with screenshots. Inspect the recorded camera frames to
 assess physical output. A successful camera capture alone does not assess the panel.
 The audio fixture verifies laptop capture, not the C606 buzzer. Buzzer acceptance
@@ -29,8 +29,8 @@ verified backup must not be overwritten. Build modes are `CYCLING_SDK=0|1` and
 `HARNESS CAPS` reports supported commands, input controls, geometry and transfer
 limits before the runner opens a session. Harness-disabled builds retain ordinary
 commands, logs and recovery. They report injection and capture as unsupported.
-Real restart/bus-reset recipes reject SDK firmware to avoid interrupting an existing
-ride or capture. Default recipes never save preferences or write ride/capture data.
+Real restart/bus-reset recipes require an explicitly idle recording state to avoid
+interrupting an existing ride or capture. Default recipes never save preferences or write ride/capture data.
 Temporary brightness and all original runtime preferences are restored without
 `SAVE`, including unsaved preferences reloaded by a restart.
 
@@ -190,3 +190,13 @@ with deterministic fixture time and file-backed test media locked against concur
 access. It exercises restart persistence, torn writes and production export rules;
 it does not emulate C606 chips, radio wiring, DMA or physical timing. `mise run test`
 and CI run these regressions and both original shell geometries.
+
+
+## Runtime connectivity
+
+Typed `wifi` and `ble` operations validate bounded commands and wait for their
+specific operation sequence to complete or fail. Every scenario using these steps
+supplies `connectivity_restore` with the original private profile and connection
+intent. Cleanup restores that configuration through ordinary commands and checks
+completion. See [runtime connectivity](runtime-connectivity.md) for commands,
+scenario generation, private profile paths and radio evidence limits.

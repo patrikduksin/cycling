@@ -42,8 +42,20 @@ mise run terminal
 In the terminal, inspect `INFO`, `STATUS`, `MOTION`, `PRESSURE`, `BATTERY` and
 `POSITION`. Confirm the intended firmware revision and SDK/harness modes.
 
-ANT peers are optional. If the existing SR mini radar, Polar H10 or Magene
-PES P515 are awake, scan before starting capture:
+Before selecting any ANT peer, have the coordinator establish the measured free
+append tail after the storage scan. Do not use the total partition size as free
+capacity. Five minutes requires 608 slots with no selected ANT channels; six
+minutes requires 728 and ten minutes requires 1,208. Any selected ANT channel
+raises the five-minute reservation to 1,508 slots (six minutes: 1,808; ten minutes:
+3,008), even when that sensor is asleep. These are reservations, not a claim about
+the device's current free tail. If fewer than 608 slots remain, stop preparation
+and preserve the existing data.
+
+ANT peers are optional. Select them only if the measured tail supports their
+larger reservation for the chosen duration. Otherwise leave all ANT channels
+unselected and capture GPS, pressure, raw motion and battery alone. If capacity
+allows and the existing SR mini radar, Polar H10 or Magene PES P515 are awake,
+scan before starting capture:
 
 ```text
 ANT SCAN 10
@@ -91,7 +103,11 @@ SDK automatically stops at its deadline. `requested_seconds` and
 The capture appends after every occupied slot and never erases. Existing rides,
 old captures and invalid occupied slots remain preserved. While it owns storage,
 ordinary ride recording and competing storage operations stay excluded until
-restart/rescan. `Full` or `Error` is not an active recording state.
+restart/rescan. `Full` or `Error` is not an active recording state. A failed
+capacity preflight also retains storage ownership: do not immediately retry START.
+Inspect the failure, restart safely while capture is inactive, let scanning finish,
+and reassess the smaller duration or unselected-ANT reservation. Restarting does
+not reclaim any slots, and there is no erase step in this procedure.
 
 ## Short outdoor session and USB transition
 

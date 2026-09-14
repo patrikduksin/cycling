@@ -110,3 +110,11 @@ run = "python scripts/harness.py"
 [tasks.harness-virtual]
 description = "Run shared deterministic input, capture and restart scenarios"
 run = ["python scripts/harness.py run shared --backend virtual", "python scripts/harness.py run virtual-foundation --backend virtual", "python scripts/harness.py run virtual-sdk --backend virtual --sdk"]
+
+[tasks.mmc-inspect]
+description = "Read bounded MMC layout and root metadata into private local evidence"
+run = "python scripts/mmc.py"
+
+[tasks.foundation-bench]
+description = "Guide and privately capture the owner's 150-second C606 physical bench sequence"
+run = "python scripts/bench.py"

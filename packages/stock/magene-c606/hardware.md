@@ -16,10 +16,10 @@
 | Touch | I2C0, SDA21, SCL12; `0x5a`, packed coordinates at `0xd000` | Rust touch and visual alignment confirmed; exact part ID pending |
 | Buttons / power | UART2 RX41 at 115200; all three short-click IDs mapped | Three buttons and brightness shortcuts physically confirmed; power control pending |
 | Battery / charge | Companion streams voltage, percentage and power status | Percentage and USB power transition physically confirmed; calibration pending |
-| Sound | Companion buzzer control; main audio-resource management | Buzzer lead; speaker/codec unconfirmed |
-| GNSS | UART0 RX0 at 921600; live GN NMEA | Verified receive path; exact receiver and control effect pending |
-| Motion | Companion `icm42607` and `qma6100` ID checks | Variant candidates |
-| Pressure | Companion `spl0601`, `spl06001`, `spa06003` diagnostic names | Variant candidates; spelling preserved |
+| Sound | Four finite companion patterns and stop | Actual tones and shortened playback recorded; fixed level, timing limits in foundation-research.md |
+| GNSS | UART0 RX0 at 921600; live GN NMEA | Receive and bounded stream pause/resume verified; receiver and electrical power unknown |
+| Motion | Two signed raw triplets in companion reports; `icm42607` and `qma6100` candidates | Stationary acquisition verified; fitted part, units and axes unresolved |
+| Pressure | Compensated pressure/temperature reports; `spl0601`, `spl06001`, `spa06003` candidates | Stationary acquisition verified; identity and absolute calibration unresolved |
 | Resource storage | SD/MMC, FAT, `/sdcard` mount | MMC/eMMC identification and one-bit reads verified; see storage.md |
 
 ## Display wiring
@@ -76,7 +76,13 @@ That implementation is retired. [#34](https://github.com/patrikduksin/cycling/is
 contains the subsequent investigation and user-confirmed outdoor functionality.
 [PR #71 evidence](https://github.com/patrikduksin/cycling/pull/71#issuecomment-5647388096)
 records indoor parser progress and recovery after deliberate executor starvation.
-Neither establishes receiver identity, electrical enable semantics or measured
+[PR #74](https://github.com/patrikduksin/cycling/pull/74) adds the owner's outdoor
+capture with three ANT sensors. The foundation's base `740b36c83e76` repeated
+three four-second stream pauses with automatic resume, continued companion
+progress and no new parser or transport errors. Previous bounded `PAIR020` and
+`PDTINFO` identification attempts produced no recognized identity reply; command
+family support is not a fitted-part identity. These observations establish neither
+receiver identity, electrical enable semantics nor measured
 outdoor accuracy. Raw NMEA and coordinates remain private.
 
 ## PSRAM

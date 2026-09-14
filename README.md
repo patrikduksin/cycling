@@ -8,6 +8,11 @@ It also interprets ANT radar, heart-rate and power reports and provides a sensor
 test screen and capture. A full graphical application and live speed/distance
 are not implemented.
 
+C606 foundation commands also expose fixed buzzer patterns, bounded GNSS stream
+pause/resume, raw motion, compensated pressure and read-only MMC access.
+[Morning validation](docs/c606-morning.md) covers the remaining physical checks
+and a capacity-checked capture using the existing owned journal.
+
 See [architecture and ownership](docs/architecture.md) for the device capability
 and shell boundaries, and [#75](https://github.com/patrikduksin/cycling/issues/75)
 for implementation tracking.

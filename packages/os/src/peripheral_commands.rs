@@ -160,7 +160,10 @@ pub fn execute(
                     p.id, p.frequency_hz, p.nominal_ms
                 );
             }
-            let _ = write!(out, "level=fixed duration=fixed");
+            let _ = write!(
+                out,
+                "level=fixed duration=fixed timing=nominal_table_values acoustic_timing=unverified"
+            );
         }
         Command::SoundPlay(id) => status = request_status(sound.play(id, now)),
         Command::SoundStop => status = request_status(sound.stop(now)),

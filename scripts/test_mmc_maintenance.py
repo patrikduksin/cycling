@@ -356,6 +356,41 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(medium.reads, 1)
         self.assertTrue(result['complete'] and result['verified'])
 
+    def test_single_read_copy_exception_is_explicit_complete_and_distinct(self):
+        image = self.local / 'single.img'
+        image.write_bytes(b'a' * 1024)
+        copy = self.root / 'external-copy.img'
+        copy.write_bytes(image.read_bytes())
+        manifest = Path(str(image) + '.json')
+        metadata = {'version': 1, 'image': str(image), 'total_sectors': 2,
+                    'sector_size': 512, 'complete': True, 'verified': False,
+                    'sha256': mm.digest_file(image)}
+        manifest.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):
+            mm.validate_backup(manifest, 2)
+        self.assertEqual(mm.validate_backup(manifest, 2, single_read_copy=copy),
+                         'single_media_read_with_matching_copy')
+        self.assertFalse(json.loads(manifest.read_text())['verified'])
+        link = self.root / 'hardlink.img'
+        link.hardlink_to(image)
+        for same in (image, link):
+            with self.assertRaisesRegex(ValueError, 'different inode'):
+                mm.validate_backup(manifest, 2, single_read_copy=same)
+        for data in (b'z' * 1024, b'a' * 512):
+            copy.write_bytes(data)
+            with self.assertRaises(ValueError):
+                mm.validate_backup(manifest, 2, single_read_copy=copy)
+        copy.write_bytes(image.read_bytes())
+        metadata['complete'] = False
+        manifest.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):
+            mm.validate_backup(manifest, 2, single_read_copy=copy)
+        metadata['complete'] = True
+        manifest.write_text(json.dumps(metadata))
+        image.write_bytes(b'a' * 512)
+        with self.assertRaises(ValueError):
+            mm.validate_backup(manifest, 2, single_read_copy=copy)
+
     def test_write_requires_verified_backup_and_exact_source_hash(self):
         medium = Medium(b'a' * 1536)
         original = self.local / 'backup.img'
@@ -374,6 +409,24 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mm.write_image(medium, source, 1, mm.digest_file(source), manifest)
         self.assertEqual(medium.calls, [])
+
+    def test_full_restore_from_single_capture_requires_explicit_distinct_copy(self):
+        medium = Medium(b'x' * 1536)
+        image = self.local / 'original.img'
+        image.write_bytes(b'a' * 1536)
+        copy = self.root / 'recovery.img'
+        copy.write_bytes(image.read_bytes())
+        manifest = Path(str(image) + '.json')
+        metadata = dict(version=1, image=str(image), total_sectors=3, sector_size=512,
+                        complete=True, verified=False, sha256=mm.digest_file(image))
+        manifest.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):
+            mm.write_image(medium, image, 0, metadata['sha256'], manifest)
+        self.assertEqual(medium.calls, [])
+        mm.write_image(medium, image, 0, metadata['sha256'], manifest, single_read_copy=copy)
+        self.assertEqual(medium.calls[0], ('arm', 0, 3))
+        self.assertEqual([c[1] for c in medium.calls[1:]], [0, 1, 2])
+        self.assertFalse(json.loads(manifest.read_text())['verified'])
 
     def test_uncertain_write_stops_at_first_sector(self):
         medium = Medium(b'a' * 1536)

@@ -161,14 +161,16 @@ stock boot, and test custom read/write behavior only against an explicitly owned
 range. This investigation did not run the formatting branch or establish that
 all stock code paths honor the mounted volume boundary.
 
-## Authorized partition plan and bulk backend
+## Partition layout and bulk backend
 
 On 2026-09-14 the owner explicitly authorized repartitioning, vendor-filesystem
 writes, data erasure and device experiments, provided backups and a recovery path
 are preserved. This overrides the earlier filesystem-write restriction for this
 work. The bootloader, internal flash partition table and eFuses remain protected.
-The following layout and tooling describe the implementation under test, not a
-completed hardware conversion or stock compatibility result.
+The following partition layout has been written and checked as described below.
+The owner confirmed normal stock UI startup after conversion. Subsequent SDK
+checks found the MBR and ownership marker unchanged; this does not establish
+every stock resource, update or format-recovery path.
 
 | Region | Start sector | Sectors | Bytes |
 | --- | ---: | ---: | ---: |
@@ -206,10 +208,17 @@ byte. Explicit `backup IMAGE --resume` can continue an unverified whole-sector
 prefix after an interrupted read, including sparse zero sectors. It never
 overwrites a verified baseline and still requires full independent verification.
 Keep a separately verified copy outside the repository before conversion.
+The planner and executor also accept explicit `--single-read-copy COPY` for an
+owner-authorized exception: one complete capture plus a separate regular file
+with a different inode, identical size and matching SHA256. That copy may be
+outside the repository and is read-only input. The exception leaves the backup
+manifest's `verified` flag false; matching copies do not establish independent
+device readback. Without this flag, the independent-read requirement remains.
 
 `verify` compares an existing full image against the medium; `read` captures a
 specified range. `write` requires the exact source SHA256 and a verified full
-backup manifest before arming its range. Each sector is read back; timeout or
+backup manifest, or the explicit single-read-copy exception, before arming its range.
+Each sector is read back; timeout or
 disconnect stops the invocation without reconnecting or replaying the mutation.
 `recover` attempts controller recovery, not data restoration.
 
@@ -228,29 +237,80 @@ stock extents first, the marker next, and the MBR last. It leaves all other sect
 untouched and performs no device I/O. Review the plan and its CLI help before use.
 
 The [partition executor](../../../scripts/mmc_partition_apply.py) defaults to
-offline validation with `--plan PLAN`. It checks the fixed C606 layout, verified
+offline validation with `--plan PLAN`. It checks the fixed C606 layout, authorized
 baseline, target hashes and every extent, including gaps between changed sectors.
 `--execute --journal NEW_PATH` enables one attempt and requires a new private,
-fsynced journal. It writes stock extents, verifies the entire first partition,
-then writes and verifies the marker before committing and verifying the MBR last.
-No writes or stock boots may intervene between the verified baseline and execution;
+fsynced journal. Default `--verification full` verifies the entire first partition
+after writing its extents. Explicit `--verification written` instead retains each
+sector's write/readback check and samples boot sectors, FSInfo, FAT boundaries,
+root-directory boundaries and the partition's last sector. Both modes check
+untouched boundaries before writing and verifying the marker, then committing
+and verifying the MBR last. The journal records the selected verification method;
+sampled verification does not claim a full partition readback hash.
+No writes or stock boots may intervene between the captured baseline and execution;
 the executor's live sentinel reads do not replace that provenance. A failure stops
 without retry, automatic rollback or stock boot. Use its `--help` for current syntax.
 
 A full MMC restoration uses the saved MMC image through maintenance mode. The
-internal 16 MiB `flash.bin` backup cannot restore this separate 4 GB medium.
-After hardware tests, restore a harness-enabled base image and record the observed
-stock screen, partition boundaries and read/write results separately from these
-implementation details.
+`write` command also accepts the explicit `--single-read-copy` policy when the
+saved baseline has one complete device capture and a distinct matching copy.
+The internal 16 MiB `flash.bin` backup cannot restore this separate 4 GB medium.
+For this session the owner requested an SDK-enabled image for an immediate first
+ride, overriding the usual return to harness-enabled base. SDK installation and
+the resulting recording state are recorded below. Existing ride recording still
+uses its internal flash reservation, not the new bulk partition.
 
-## Maintenance observations before conversion
+## Partition conversion and maintenance observations
+
+On 2026-09-14 a complete 3,959,422,976-byte MMC capture and a distinct matching
+copy were retained. The owner explicitly stopped the second full read to proceed
+faster. The backup remains `complete=true, verified=false`; its separate copy
+matches its SHA256, but independent full device-read verification was not completed.
+
+The final stock FAT32 image contains 49 files totaling 19,670,744 bytes, retaining
+fonts and small settings. At the owner's request, map, log, FIT and staged-update
+files were omitted while their directories were retained. The image started from
+the baseline bytes at the new partition's location before formatting and copying
+the retained files, so unallocated bytes were not cleared. `fsck` passed with
+4,873 of 243,742 clusters allocated. This is filesystem preparation, not secure
+erasure of the omitted files.
+
+The conversion completed using 87 extents covering 38,650 sectors, or 19,788,800
+bytes. Every written sector received device readback verification. Stock metadata
+and boundary samples matched, untouched boundaries matched the baseline, and the
+ownership marker and final MBR matched exactly. This used the explicit single-read
+copy and written-sector verification policies, not a full readback of the new
+stock partition. The owner then confirmed that stock booted normally on the
+physical screen. Afterward, SDK readback found the MBR and ownership marker still
+matching the completed plan exactly.
+
+With `CYCLING_SDK=1` and `CYCLING_HARNESS=1` installed, normal owned-region tests
+wrote a `0xA5` pattern to relative sector 0 at 400 kHz and relative sector
+5,777,406 at 20 MHz. Both reads matched, and both sectors were restored and read
+back successfully. An incorrect expected CRC refused the write without changing
+data; out-of-range reads and writes returned `INVALID`. The MBR and marker stayed
+unchanged. USB-inclusive write commands took 96.96 ms at 400 kHz and 24.90 ms at
+20 MHz, including ownership validation and reads around the write. These are
+command timings, not raw media throughput.
+
+The internal ride journal initially reported `needs_init` with 665 occupied slots.
+Under the owner's explicit permission to discard that data, `RIDE INIT` completed,
+then `RIDE START` completed. Four samples committed with zero reported drops.
+The device was left running SDK firmware with the live ride recording, ready to
+continue after USB disconnection. This ride uses internal flash; recording onto
+the new bulk partition still requires the separate work in #105.
+
+A preliminary single-sector pattern write in one-bit mode at 20 MHz took 3.192 ms
+including its USB acknowledgment. Readback after recovery matched the pattern;
+the original sector was restored and matched again after recovery. This is one
+bounded write/restoration observation, not a sustained-write throughput result.
 
 On 2026-09-14 explicit four-bit mode read sectors 0, 1,310, 16,384 and 7,733,241
 with results matching earlier one-bit reads. Another 24 randomly selected
 locations in the captured prefix matched across two recovery cycles. These
 observations establish successful reads using D1 through D3 and successful
 re-entry into four-bit mode after recovery; they do not establish long-duration
-reliability or successful sector writes.
+reliability. The write observations above used one-bit mode.
 
 A 1 MiB nonuniform transfer over the binary USB protocol took 3.30 seconds.
 During a mostly free portion of the backup, observed progress was about 2.3 MB/s
@@ -258,14 +318,6 @@ in four-bit mode versus about 1.28 MB/s in one-bit mode. These are workload samp
 not a controlled sustained-throughput benchmark. Uniform-sector compression
 reduces USB traffic during the mostly free portions, so those rates are effective
 image progress rather than raw USB payload throughput.
-
-An offline stock-partition image was prepared with 430 files totaling 208,787,154
-bytes. Every file hash matched the preview recovered from the captured allocated
-area. The prepared FAT32 image passed `fsck` and had 192,382 free 4,096-byte
-clusters, or 787,996,672 bytes free. This validates that offline image, not stock
-operation on a partitioned device. At this checkpoint the full backup was still
-running, no partition conversion had been applied, and full independent backup
-verification remained pending.
 
 ## Owned application storage
 

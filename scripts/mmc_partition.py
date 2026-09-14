@@ -171,16 +171,19 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
     return extents, target_records
 
 
-def prepare(backup_manifest, stock, output, layout=Layout()):
+def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):
     layout.validate()
-    validate_backup(backup_manifest, layout.total)
+    method = validate_backup(backup_manifest, layout.total, single_read_copy=single_read_copy)
     baseline_manifest = json.loads(backup_manifest.read_text())
     baseline = private_path(baseline_manifest['image'])
     geometry = stock_geometry(stock, layout)
     output.mkdir(mode=0o700)  # A failed plan remains private and is never reused.
     manifest = {'version': 1, 'complete': False, 'layout': asdict(layout),
                 'baseline_manifest': str(backup_manifest), 'baseline_image': str(baseline),
-                'baseline_sha256': baseline_manifest['sha256'], 'fat32_geometry': geometry}
+                'baseline_sha256': baseline_manifest['sha256'], 'fat32_geometry': geometry,
+                'backup_verification_method': method}
+    if single_read_copy is not None:
+        manifest['single_read_copy'] = str(Path(single_read_copy).resolve())
     save_manifest(output / 'plan.json', manifest)
     mbr = make_mbr(layout)
     write_new(output / 'mbr.bin', mbr)
@@ -238,8 +241,10 @@ def main():
     parser.add_argument('--backup-manifest', type=private_path, required=True)
     parser.add_argument('--stock-image', type=private_path, required=True)
     parser.add_argument('--output', type=private_path, required=True)
+    parser.add_argument('--single-read-copy', type=Path,
+                        help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified')
     args = parser.parse_args()
-    plan = prepare(args.backup_manifest, args.stock_image, args.output)
+    plan = prepare(args.backup_manifest, args.stock_image, args.output, single_read_copy=args.single_read_copy)
     print(f"Prepared {len(plan['extents'])} extents, {plan['changed_sectors']} sectors, {plan['write_bytes']} bytes; MBR commit last.")
 
 

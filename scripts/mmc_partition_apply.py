@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+from pathlib import Path
+import struct
 import sys
 import time
 
@@ -12,6 +14,7 @@ from mmc_maintenance import (Connection, Progress, SECTOR, digest_file, private_
 from mmc_partition import Layout, make_marker, make_mbr, stock_geometry, verified_extents
 
 CHUNK = 1024 * 1024
+WRITTEN_VERIFICATION = 'per-written-sector-readback-plus-metadata-samples'
 
 
 def exact_read(source, offset, size):
@@ -29,7 +32,7 @@ def compare_ranges(left, left_offset, right, right_offset, size):
             raise ValueError('plan extents do not reconstruct the exact target from the verified baseline')
 
 
-def preflight(plan_path):
+def preflight(plan_path, single_read_copy=None):
     # Materialize this iterator: its whole validation must finish before USB opens.
     extents = list(verified_extents(plan_path))
     plan = json.loads(plan_path.read_text())
@@ -37,7 +40,8 @@ def preflight(plan_path):
     if layout != Layout():
         raise ValueError('executor accepts only the reviewed C606 geometry')
     backup_manifest = private_path(plan['baseline_manifest'])
-    validate_backup(backup_manifest, layout.total)
+    method = validate_backup(backup_manifest, layout.total, single_read_copy=single_read_copy)
+    plan['backup_verification_method'] = method
     backup = json.loads(backup_manifest.read_text())
     baseline = private_path(backup['image'])
     if baseline != private_path(plan['baseline_image']) or backup['sha256'] != plan['baseline_sha256']:
@@ -149,13 +153,57 @@ def verify_target(connection, target, journal):
     journal.record('target_verified', phase=target['phase'], bytes=completed, sha256=digest.hexdigest())
 
 
-def apply(plan_path, journal_path, port):
-    plan, layout, baseline, targets, extents = preflight(plan_path)
+def stock_sample_sectors(target):
+    with target['path'].open('rb') as source:
+        boot = exact_read(source, 0, SECTOR)
+    reserved = struct.unpack_from('<H', boot, 14)[0]
+    fats, spc = boot[16], boot[13]
+    fat_size = struct.unpack_from('<I', boot, 36)[0]
+    root = struct.unpack_from('<I', boot, 44)[0] & 0x0fffffff
+    fsinfo, backup_boot = struct.unpack_from('<HH', boot, 48)
+    root_start = reserved + fats * fat_size + (root - 2) * spc
+    samples = {0, backup_boot, fsinfo, root_start, root_start + spc - 1, target['count'] - 1}
+    if backup_boot + fsinfo < reserved:
+        samples.add(backup_boot + fsinfo)
+    for index in range(fats):
+        samples.update((reserved + index * fat_size, reserved + (index + 1) * fat_size - 1))
+    if not samples or any(sector < 0 or sector >= target['count'] for sector in samples):
+        raise ValueError('stock metadata samples exceed target partition')
+    return sorted(samples)
+
+
+def verify_stock_samples(connection, target, journal):
+    samples = stock_sample_sectors(target)
+    journal.record('target_sample_verify_begin', phase='stock', method=WRITTEN_VERIFICATION, sectors=samples)
+    with target['path'].open('rb') as desired:
+        for relative in samples:
+            data = b''.join(connection.read(target['start'] + relative, 1))
+            if data != exact_read(desired, relative * SECTOR, SECTOR):
+                raise ValueError(f'stock metadata sample differs at relative sector {relative}')
+    journal.record('target_samples_verified', phase='stock', method=WRITTEN_VERIFICATION, sectors=samples)
+
+
+def verify_unmodified_boundaries(connection, baseline, layout, journal):
+    samples = (layout.stock_start - 1, layout.custom_start, layout.total - 1)
+    with baseline.open('rb') as original:
+        for sector in samples:
+            if b''.join(connection.read(sector, 1)) != exact_read(original, sector * SECTOR, SECTOR):
+                raise ValueError('unchanged boundary differs before marker and MBR commit')
+    journal.record('unchanged_boundaries_verified', sectors=samples)
+
+
+def apply(plan_path, journal_path, port, single_read_copy=None, verification='full'):
+    if verification not in ('full', 'written'):
+        raise ValueError('unknown stock verification policy')
+    plan, layout, baseline, targets, extents = preflight(plan_path, single_read_copy=single_read_copy)
     journal = Journal(journal_path)
     try:
         journal.record('preflight_verified', plan=str(plan_path), plan_sha256=digest_file(plan_path),
                        baseline_sha256=plan['baseline_sha256'], total_sectors=layout.total,
-                       changed_sectors=plan['changed_sectors'])
+                       changed_sectors=plan['changed_sectors'],
+                       backup_verification_method=plan.get('backup_verification_method', 'independent_full_media_read'),
+                       stock_verification=verification,
+                       single_read_copy=str(Path(single_read_copy).resolve()) if single_read_copy is not None else None)
         with Connection(port) as connection:
             info = connection.info()
             if info['total_sectors'] != layout.total:
@@ -172,13 +220,20 @@ def apply(plan_path, journal_path, port):
             progress = Progress('partition writes verified', plan['changed_sectors'] * SECTOR)
             for extent in (e for e in extents if e['phase'] == 'stock'):
                 write_extent(connection, extent, targets['stock'], journal, progress)
-            # Mandatory full P1 verification BEFORE exposing ownership or MBR.
-            verify_target(connection, targets['stock'], journal)
+            # Full verification remains the default. The explicit written mode
+            # keeps per-write device readback and checks metadata/boundaries; it
+            # does not establish the complete target's device-side SHA256.
+            if verification == 'full':
+                verify_target(connection, targets['stock'], journal)
+            else:
+                verify_stock_samples(connection, targets['stock'], journal)
+            verify_unmodified_boundaries(connection, baseline, layout, journal)
             for phase in ('marker', 'mbr_commit'):
                 extent = next(e for e in extents if e['phase'] == phase)
                 write_extent(connection, extent, targets[phase], journal, progress)
                 verify_target(connection, targets[phase], journal)
-            journal.record('complete', stock_sha256=targets['stock']['sha256'],
+            journal.record('complete', stock_target_sha256=targets['stock']['sha256'],
+                           stock_verification='full_target_readback' if verification == 'full' else WRITTEN_VERIFICATION,
                            marker_sha256=targets['marker']['sha256'], mbr_sha256=targets['mbr_commit']['sha256'])
     except BaseException as error:
         # Never recover, replay, roll back or boot stock automatically. Failure
@@ -198,16 +253,20 @@ def main():
     parser.add_argument('--journal', type=private_path)
     parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
     parser.add_argument('--execute', action='store_true', help='perform the validated one-shot conversion; no retries')
+    parser.add_argument('--single-read-copy', type=Path,
+                        help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified')
+    parser.add_argument('--verification', choices=('full', 'written'), default='full',
+                        help='stock verification: full readback, or explicit per-write readback plus metadata samples')
     args = parser.parse_args()
     os.umask(0o077)
     if not args.execute:
-        plan, _, _, _, extents = preflight(args.plan)
+        plan, _, _, _, extents = preflight(args.plan, single_read_copy=args.single_read_copy)
         print(f"Validated offline: {len(extents)} extents, {plan['changed_sectors']} changed sectors. No device opened.")
         return
     if args.journal is None:
         parser.error('--execute requires a new --journal path')
-    apply(args.plan, args.journal, args.port)
-    print('Conversion completed and verified; stock has not been booted.')
+    apply(args.plan, args.journal, args.port, single_read_copy=args.single_read_copy, verification=args.verification)
+    print(f'Conversion completed with stock verification={args.verification}; stock has not been booted.')
 
 
 if __name__ == '__main__':

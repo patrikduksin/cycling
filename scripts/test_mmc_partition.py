@@ -1,5 +1,6 @@
 """Offline partition layout, marker, and exact changed-sector planning checks."""
 import json
+import shutil
 from pathlib import Path
 import struct
 import tempfile
@@ -202,6 +203,12 @@ class PartitionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 part.prepare(manifest, stock, destination, layout)
             self.assertFalse(destination.exists())
+            separate_copy = self.root / 'external-copy.img'
+            shutil.copyfile(baseline, separate_copy)
+            single = part.prepare(manifest, stock, local / 'single-read-plan', layout,
+                                  single_read_copy=separate_copy)
+            self.assertEqual(single['backup_verification_method'], 'single_media_read_with_matching_copy')
+            self.assertFalse(json.loads(manifest.read_text())['verified'])
             metadata['verified'] = True
             manifest.write_text(json.dumps(metadata))
             result = part.prepare(manifest, stock, destination, layout)

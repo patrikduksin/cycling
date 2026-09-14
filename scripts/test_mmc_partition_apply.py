@@ -1,5 +1,6 @@
 """Offline executor safety tests; fake Connection never opens USB."""
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -36,6 +37,8 @@ class ApplyPartitionTests(unittest.TestCase):
             instances = []
             fail_write = None
             corrupt_stock_verify = False
+            corrupt_stock_sample = False
+            corrupt_boundary = False
 
             def __init__(self, port):
                 self.data = bytearray(baseline.read_bytes())
@@ -67,6 +70,10 @@ class ApplyPartitionTests(unittest.TestCase):
                 data = bytes(self.data[start * 512:(start + count) * 512])
                 if self.corrupt_stock_verify and (start, count) == (2, 4):
                     data = b'X' + data[1:]
+                if self.corrupt_stock_sample and (start, count) == (2, 1):
+                    data = b'X' + data[1:]
+                if self.corrupt_boundary and self.writes and (start, count) == (1, 1):
+                    data = b'X' + data[1:]
                 yield data
 
             def recover(self):
@@ -74,10 +81,11 @@ class ApplyPartitionTests(unittest.TestCase):
 
         self.fake = FakeConnection
 
-    def run_fake(self):
+    def run_fake(self, **kwargs):
         with patch.object(executor, 'preflight', return_value=self.preflight_result), \
+                patch.object(executor, 'stock_sample_sectors', return_value=[0, 3]), \
                 patch.object(executor, 'Connection', self.fake):
-            executor.apply(self.plan_path, self.journal, 'FAKE-ONLY')
+            executor.apply(self.plan_path, self.journal, 'FAKE-ONLY', **kwargs)
 
     def events(self):
         return [json.loads(line) for line in self.journal.read_text().splitlines()]
@@ -87,7 +95,7 @@ class ApplyPartitionTests(unittest.TestCase):
         connection = self.fake.instances[-1]
         self.assertEqual(connection.writes, [2, 3, 4, 5, 6, 0])
         self.assertEqual(connection.arms, [(2, 4), (6, 1), (0, 1)])
-        self.assertEqual(connection.reads[-3:], [(2, 4), (6, 1), (0, 1)])
+        self.assertEqual(connection.reads[-6:], [(2, 4), (1, 1), (6, 1), (11, 1), (6, 1), (0, 1)])
         events = self.events()
         order = [(e['event'], e.get('phase')) for e in events]
         self.assertLess(order.index(('target_verified', 'stock')), order.index(('arm_intent', 'marker')))
@@ -152,6 +160,55 @@ class ApplyPartitionTests(unittest.TestCase):
                 executor.apply(self.plan_path, self.journal, 'MUST-NOT-OPEN')
             connection.assert_not_called()
         self.assertFalse(self.journal.exists())
+
+    def test_written_mode_samples_before_marker_and_does_not_claim_full_stock_hash(self):
+        self.run_fake(verification='written')
+        connection = self.fake.instances[-1]
+        self.assertEqual(connection.writes, [2, 3, 4, 5, 6, 0])
+        self.assertNotIn((2, 4), connection.reads)
+        self.assertIn((2, 1), connection.reads)
+        self.assertIn((5, 1), connection.reads)
+        events = self.events()
+        order = [(e['event'], e.get('phase')) for e in events]
+        self.assertLess(order.index(('target_samples_verified', 'stock')), order.index(('arm_intent', 'marker')))
+        self.assertFalse(any(e['event'] == 'target_verified' and e.get('phase') == 'stock' for e in events))
+        self.assertEqual(events[-1]['stock_verification'], executor.WRITTEN_VERIFICATION)
+        self.assertNotIn('stock_sha256', events[-1])
+
+    def test_written_metadata_or_boundary_failure_blocks_marker_and_mbr(self):
+        for attribute in ('corrupt_stock_sample', 'corrupt_boundary'):
+            with self.subTest(attribute=attribute):
+                setattr(self.fake, attribute, True)
+                self.journal = self.root / (attribute + '.jsonl')
+                with self.assertRaises(ValueError):
+                    self.run_fake(verification='written')
+                connection = self.fake.instances[-1]
+                self.assertEqual(connection.writes, [2, 3, 4, 5])
+                self.assertEqual(connection.arms, [(2, 4)])
+                self.assertEqual(self.events()[-1]['event'], 'stopped_uncertain')
+                setattr(self.fake, attribute, False)
+
+    def test_stock_samples_include_boot_fsinfo_fat_edges_root_and_end(self):
+        boot = bytearray(512)
+        boot[13], boot[16] = 8, 2
+        struct.pack_into('<H', boot, 14, 32)
+        struct.pack_into('<I', boot, 36, 10)
+        struct.pack_into('<I', boot, 44, 2)
+        struct.pack_into('<HH', boot, 48, 1, 6)
+        path = self.root / 'sample-boot.bin'
+        path.write_bytes(boot)
+        samples = executor.stock_sample_sectors({'path': path, 'count': 1000})
+        self.assertEqual(samples, [0, 1, 6, 7, 32, 41, 42, 51, 52, 59, 999])
+
+    def test_single_read_exception_method_is_recorded_without_promoting_backup(self):
+        plan = self.preflight_result[0]
+        plan['backup_verification_method'] = 'single_media_read_with_matching_copy'
+        copy = self.root / 'separate-copy.bin'
+        copy.write_bytes(self.baseline.read_bytes())
+        self.run_fake(single_read_copy=copy, verification='written')
+        event = self.events()[0]
+        self.assertEqual(event['backup_verification_method'], 'single_media_read_with_matching_copy')
+        self.assertEqual(event['single_read_copy'], str(copy.resolve()))
 
 
 if __name__ == '__main__':

@@ -305,19 +305,31 @@ def backup(connection, path, resume=False):
     return manifest
 
 
-def validate_backup(path, total):
+def validate_backup(path, total, single_read_copy=None):
     manifest = json.loads(path.read_text())
     if (manifest.get('version') != 1 or manifest.get('complete') is not True
-            or manifest.get('verified') is not True or manifest.get('total_sectors') != total
+            or manifest.get('total_sectors') != total
             or manifest.get('sector_size') != SECTOR):
         raise ValueError('requires a completed independently verified whole-medium backup')
+    if manifest.get('verified') is not True and (manifest.get('verified') is not False or single_read_copy is None):
+        raise ValueError('requires independent full verification or an explicit single-read copy exception')
     image = private_path(manifest['image'])
     if image.stat().st_size != total * SECTOR or digest_file(image) != manifest.get('sha256'):
         raise ValueError('backup image no longer matches verified manifest')
+    if manifest['verified']:
+        return 'independent_full_media_read'
+    # Explicit owner-authorized exception. A matching separate copy protects
+    # capture durability; it does not independently verify the source medium.
+    copy = Path(single_read_copy).resolve()
+    if not copy.is_file() or os.path.samefile(image, copy):
+        raise ValueError('single-read copy must be a separate regular file with a different inode')
+    if copy.stat().st_size != total * SECTOR or digest_file(copy) != manifest['sha256']:
+        raise ValueError('single-read copy size or SHA256 does not match the complete backup')
+    return 'single_media_read_with_matching_copy'
 
 
-def write_image(connection, image, start, expected_sha256, manifest):
-    validate_backup(manifest, connection.total)
+def write_image(connection, image, start, expected_sha256, manifest, single_read_copy=None):
+    validate_backup(manifest, connection.total, single_read_copy=single_read_copy)
     size = image.stat().st_size
     if size == 0 or size % SECTOR:
         raise ValueError('write image must contain whole sectors')
@@ -361,6 +373,8 @@ def main():
     write.add_argument('--start', type=int, required=True)
     write.add_argument('--confirm-sha256', required=True)
     write.add_argument('--backup-manifest', type=private_path, required=True)
+    write.add_argument('--single-read-copy', type=Path,
+                       help='explicitly restore using one complete capture and a separate matching copy')
     args = parser.parse_args()
     with Connection(args.port) as connection:
         if args.command == 'recover':
@@ -382,7 +396,8 @@ def main():
         elif args.command == 'read':
             capture(connection, args.image, args.start, args.count)
         elif args.command == 'write':
-            write_image(connection, args.image, args.start, args.confirm_sha256, args.backup_manifest)
+            write_image(connection, args.image, args.start, args.confirm_sha256, args.backup_manifest,
+                        single_read_copy=args.single_read_copy)
 
 
 if __name__ == '__main__':

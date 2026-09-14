@@ -81,12 +81,15 @@ firmware has a text status screen. A coordinator can reopen the menu without sel
 FOUNDATION MENU
 ```
 
-If the companion is in charging startup, the menu says `HOLD TOP LEFT 2S TO WAKE`.
-That physical hold is handled by the companion; synthetic UI events cannot change
-its electrical power state. ANT scan/connect stays blocked until startup permits
-it. Software restart returns to the menu but does not pretend charging is normal
-acquisition. `FOUNDATION MENU STATUS` exposes menu selection and startup state for
-diagnosis. The harness can exercise scan/selection through the same input route.
+Startup waits for the companion bridge even when its first reports are delayed.
+An idle charging companion receives one bounded normal-initialization operation
+after its charging acknowledgment. Existing sensor/radio activity suppresses
+reinitialization. The menu shows `STARTING SENSORS`; scanning is enabled only after
+startup observation permits it. A successful write is not readiness: the automatic
+path requires a normal-start reason and independently advancing sensor streams.
+Failures remain visible as `STARTUP FAILED`, with no automatic command replay.
+`FOUNDATION MENU STATUS` exposes menu selection and startup state for diagnosis.
+The harness can exercise scan/selection through the same input route.
 
 The lower-left button moves the selection; lower-right chooses it. Top-left returns
 to the first row, then to ride status. From idle ride status, top-left opens the

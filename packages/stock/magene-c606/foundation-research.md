@@ -278,3 +278,29 @@ private logger, with one USB owner. Save logs before changing USB or power state
 
 Installed part identification, physical motion/hold/wake observations, independent
 voltage/pressure calibration and new ANT operation end-to-end evidence remain open.
+
+## Automatic initialization after charging startup
+
+The recovered N22 class-2/group-16 receiver accepts page `e2/02`, operation index
+zero, value seven as its normal initialization transition. Receiver `0x178a4`
+reaches `0x173a8(7)` through `0x178fa`; setter seven changes RAM state, without the
+shutdown branches used by values zero and three. State seven dispatches through
+`0x1751e`. Retained boot subtype zero or two runs the same ordinary initialization
+subtree and emits reason six or five. Subtype one performs partial initialization
+without that reason; other retained values can complete without acquisition. This
+is receiver-supported behavior, not a recovered N21 sender constant or a promise
+of success for every retained state.
+
+The device uses the fixed payload `e2 02 00 00 00 07 00 00` only once after an
+explicit charging reason four, with a fresh, clean bridge and no observed sensor
+or radio activity. A short/failed submission is uncertain and is never replayed.
+Readiness requires a subsequent normal-start reason and independently advancing
+fresh motion and pressure timestamps; timeout is a failure. The audited branches
+contain no identified flash erase, vendor-filesystem write or calibration-program
+path; the existing stock motion initialization retains its opaque internal limits.
+
+Absence of the first battery/power reports at three seconds now keeps passive
+probing active instead of permanently disabling ANT. Transport loss remains a
+distinct failure. Live validation of source `382c85cadeb1` reached ready with reason
+six and independently advancing sensors after charging startup, with zero button
+reports after boot. This observation does not establish every power-cycle path.

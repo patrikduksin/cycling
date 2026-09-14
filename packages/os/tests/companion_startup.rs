@@ -236,14 +236,19 @@ fn partial_invalid_sensor_or_radio_traffic_suppresses_ack() {
 }
 
 #[test]
-fn delayed_bridge_is_not_a_permanent_startup_failure() {
+fn cold_silent_companion_gets_one_ack_without_waiting_for_battery_reports() {
     let mut startup = startup::Startup::new();
     let empty = State::default().snapshot(0, 5000);
     startup.begin(0);
-    assert!(!startup.probe(empty, 3000, false, true, false));
-    assert_eq!(startup.status(), "probing");
-    assert!(startup.probe(empty, 6000, true, true, false));
+    assert!(!startup.probe(empty, 2999, false, true, false));
+    // A cold companion can withhold battery/power reports until this acknowledgment.
+    assert!(startup.probe(empty, 3000, false, true, false));
+    assert_eq!(startup.status(), "pending");
+    assert!(!startup.probe(empty, 3001, false, true, false));
+    startup.submitted(Ok(16), 3001);
+    assert!(!startup.probe(empty, 6000, false, true, false));
     assert!(!startup.probe(empty, 6001, true, true, false));
+    assert_eq!(startup.status(), "waiting");
 }
 
 #[test]

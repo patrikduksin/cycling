@@ -54,7 +54,7 @@ impl Startup {
         &mut self,
         sample: cycling_os::companion_sensors::Snapshot,
         now: u64,
-        bridge_fresh: bool,
+        _bridge_fresh: bool,
         transport_clean: bool,
         radio_seen: bool,
     ) -> bool {
@@ -83,11 +83,9 @@ impl Startup {
             } else {
                 "running_degraded"
             };
-        } else if !bridge_fresh {
-            // A late battery/power report is not a transport failure. Keep
-            // observing without transmitting until the bridge is established.
-            return false;
         } else {
+            // Battery startup waits for this ACK before periodic battery/power
+            // reports begin. Waiting for those reports here deadlocks boot.
             self.status = "pending";
             self.first = None;
             return true;

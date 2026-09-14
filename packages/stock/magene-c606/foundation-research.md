@@ -108,8 +108,10 @@ The firmware observes three seconds of companion traffic before considering this
 acknowledgment. Any motion/pressure report, including malformed known pages, or
 ANT traffic suppresses it. Healthy advancing sensors report `already_running`;
 partial activity reports `running_degraded`. This preserves operating companion
-state across main-only restarts. Only absent sensor/radio traffic with fresh
-battery/power and intact transport permits one fixed acknowledgment. It is never
+state across main-only restarts. Absent sensor/radio traffic with intact transport permits one fixed
+acknowledgment after three seconds. Battery startup does not emit periodic
+battery/power reports until this acknowledgment; requiring those reports first
+deadlocks startup and allows the companion acknowledgment timeout to shut down. It is never
 retried after uncertain submission or timeout. `COMPANION` exposes startup state
 and the raw reason. Reason 4 remains `charging` until a later operating reason;
 reasons 5/6 start a bounded wait for all three sensor timestamps to advance.

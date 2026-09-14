@@ -5,13 +5,13 @@ use serde::Serialize;
 
 const BYTES: usize = 1536;
 struct Text {
-    bytes: [u8; 1024],
+    bytes: [u8; 1280],
     len: usize,
 }
 impl Text {
     fn new() -> Self {
         Self {
-            bytes: [0; 1024],
+            bytes: [0; 1280],
             len: 0,
         }
     }
@@ -189,7 +189,7 @@ pub fn execute<
     ant: &mut impl cycling_os::capabilities::Ant,
     ble: &mut impl cycling_os::capabilities::Ble,
     position: &mut (impl cycling_os::capabilities::Positioning + cycling_os::position_control::Control),
-    bulk: &mut impl cycling_os::bulk::Read,
+    bulk: &mut (impl cycling_os::bulk::Read + cycling_os::bulk::ReadWrite),
     sound: &mut impl cycling_os::sound::Sound,
     sensors: &mut impl cycling_os::capabilities::Sensors,
     network: &mut impl cycling_os::capabilities::Network,
@@ -370,9 +370,14 @@ pub fn execute<
             );
         }
         Command::Help => {
+            #[cfg(feature = "debug-harness")]
             let _ = write!(
                 output,
-                "MMC [READ sector offset length|CLOCK hz|RECOVER]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
+                "MMC OWNED TEST relative_sector expected_crc_hex fill_hex; "
+            );
+            let _ = write!(
+                output,
+                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
             );
             let _ = write!(
                 output,

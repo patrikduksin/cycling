@@ -16,13 +16,13 @@ is overwritten with these GPIO numbers immediately before the mount call:
 | D3 | 15 |
 
 Card-detect and write-protect are disabled in that configuration. A bounded native
-one-bit probe has now verified slot 1 with CLK, CMD and D0 on GPIO13, GPIO14 and
-GPIO16, and identified the fitted device as high-capacity MMC/eMMC. D1 through D3
-remain stock-derived candidates because the probe leaves them in pulled-up input
-mode. EXT_CSD reports 3,959,422,976 bytes in 512-byte sectors. The raw CID, CSD, sector hashes and read
-traces remain private.
+one-bit probe verified slot 1 with CLK, CMD and D0 on GPIO13, GPIO14 and GPIO16,
+and identified the fitted device as high-capacity MMC/eMMC. That probe left D1
+through D3 in pulled-up input mode; later four-bit read evidence is recorded below.
+EXT_CSD reports 3,959,422,976 bytes in 512-byte sectors. The raw CID, CSD, sector
+hashes and read traces remain private.
 
-The original optional probe used `CYCLING_SDMMC_PROBE=1`. The current bounded
+The original optional probe used `CYCLING_SDMMC_PROBE=1`. The bounded raw
 read-only backend is available through ordinary `MMC` commands; its implementation
 is in [sdmmc.rs](../../os/src/device/sdmmc.rs).
 
@@ -74,12 +74,10 @@ two CRC-checked chunks, limits distinct reads to 128, and bounds FAT root traver
 It stores findings only in a new ignored `.local/` directory. It does not recurse
 through the vendor tree or issue filesystem writes.
 
-Read success does not grant write ownership. Empty sectors or gaps would not prove
-that stock ignores them. Settings and rides remain in their existing explicit
-`ota_1` reservations. A future bulk backend must extend the bounded stock-use and allocation audit
-and obtain an
-explicitly owned namespace or region with bounded and recoverable writes. Until
-then, no cycling code writes this MMC device.
+Those investigations issued no MMC writes. Read success and apparently empty
+sectors did not establish write ownership. The subsequently authorized partition
+plan and guarded bulk backend are described below; settings and rides remain in
+their existing explicit `ota_1` reservations.
 
 ## Stock resource and update use
 
@@ -118,8 +116,156 @@ These traces establish specific resource, mutable download-state and update-sour
 roles. They do not enumerate every path, prove the installed stock version uses
 every branch, map all live allocations, or establish any unused namespace. In
 particular, absence of a directory or an apparently empty FAT cluster does not
-make it application-owned. The whole-medium FAT geometry and these stock uses
-leave no established writable bulk backend for cycling.
+make it application-owned. At the time of this investigation, the whole-medium
+FAT geometry left no established writable bulk region for cycling.
+
+## Stock partition selection and automatic formatting
+
+A static trace of N21 release 1.956 on 2026-09-14 found explicit MBR support in
+the stock FatFs mount path. This is evidence from the recovered release image;
+the trace alone does not establish a successful boot with a partitioned MMC.
+
+`MidVFSMount` at `0x4200b0e8` calls `esp_vfs_fat_sdmmc_mount` at
+`0x42214da4`. The mount configuration has 17 open files and a 16,384-byte
+allocation unit. Startup passes argument 1 at `0x42009d8c`; the wrapper uses
+that argument to enable `format_if_mount_failed` at `0x4200b141`.
+
+The FatFs logical-to-physical mapping at `0x3c682b2f` maps logical drive zero
+to physical drive zero with partition selector zero. In `mount_volume` at
+`0x4221554c`, that selector means automatic discovery. The code checks sector
+zero first with `check_fs` at `0x422151b4`. If it is an MBR rather than a FAT
+boot sector, the code at `0x42215605` reads the four primary partition start
+LBAs from byte offsets 454, 470, 486 and 502. It tries nonzero starts in entry
+order and accepts the first recognized FAT volume. The recovered scan uses
+the boot-sector contents, not the MBR partition type, to recognize a filesystem.
+
+A conventional MBR with stock FAT32 as the first primary partition, aligned at
+LBA 2,048, is therefore a supported candidate for hardware testing. The stock
+filesystem must remain valid and fit entirely inside its partition. A second
+FAT filesystem is not protected by its position or a different MBR type: if the
+first volume stops being recognized, automatic discovery can mount the second.
+
+There is also a whole-medium recovery hazard. The mount helper at `0x42214bec`
+handles FatFs errors 13 and 2 by checking the format flag, allocating a work
+buffer, and calling `f_fdisk` at `0x42217bd4` with a partition size list of
+`{100, 0, 0, 0}`. It then calls `f_mkfs` at `0x422174fc` and retries the mount.
+The corresponding call sites are `0x42214c43`, `0x42214c78` and `0x42214c8d`.
+This fallback can replace an experimental partition table with one partition
+using the medium, destroying the custom allocation boundary. Partitioning alone
+does not isolate custom data from stock's format-on-failure behavior.
+
+Before a stock boot after conversion, validate the first partition's filesystem
+and preserve a verified full MMC image. Keep any second partition disposable
+through compatibility tests, inspect the MBR and both partition boundaries after
+stock boot, and test custom read/write behavior only against an explicitly owned
+range. This investigation did not run the formatting branch or establish that
+all stock code paths honor the mounted volume boundary.
+
+## Authorized partition plan and bulk backend
+
+On 2026-09-14 the owner explicitly authorized repartitioning, vendor-filesystem
+writes, data erasure and device experiments, provided backups and a recovery path
+are preserved. This overrides the earlier filesystem-write restriction for this
+work. The bootloader, internal flash partition table and eFuses remain protected.
+The following layout and tooling describe the implementation under test, not a
+completed hardware conversion or stock compatibility result.
+
+| Region | Start sector | Sectors | Bytes |
+| --- | ---: | ---: | ---: |
+| MBR and alignment reservation | 0 | 2,048 | 1,048,576 |
+| Stock FAT32, primary partition 1, type `0x0C` | 2,048 | 1,953,792 | 1,000,341,504 |
+| Custom reservation, primary partition 2, type `0xDA` | 1,955,840 | 5,777,408 | 2,958,032,896 |
+
+The custom partition begins with one 512-byte ownership marker. Application data
+starts at sector 1,955,841 and excludes that marker. The schema and parser in
+[bulk.rs](../../os/src/bulk.rs) bind `CYCLING-BULK`, version 1, sector size, both
+partition extents and total capacity to the complete MBR's CRC32, with a separate
+marker CRC32. The backend checks ownership before writes and rejects a changed
+MBR binding until reboot. Writes with the eMMC cache enabled are unsupported.
+The marker is a guard for cycling software; it cannot prevent stock's automatic
+repartitioning and formatting described above.
+
+Normal raw `MMC` access remains read-only. `MMC OWNED STATUS` and `MMC OWNED READ`
+address the marked application region. Harness-only `MMC OWNED TEST` accepts a
+relative sector, its expected current CRC32 and a fill byte, then writes one
+512-byte pattern and verifies readback. Use terminal `HELP` for operative syntax.
+There is no ride migration in this change; long recordings on bulk storage remain
+separate work in [#105](https://github.com/patrikduksin/cycling/issues/105).
+
+## Backup, offline planning and maintenance
+
+`CYCLING_BULK_MAINTENANCE=1` selects a dedicated image whose binary USB protocol
+replaces the normal console. Install it through the existing protected
+`mise run flash` workflow. The host [mmc_maintenance.py](../../../scripts/mmc_maintenance.py)
+uses the shared USB lock and opens without reset. `mise run mmc-maintenance --help`
+and subcommand help own the current CLI syntax.
+
+`backup IMAGE` creates a new full MMC image and manifest under ignored `.local/`.
+It marks the backup verified only after a second full device read matches every
+byte. Explicit `backup IMAGE --resume` can continue an unverified whole-sector
+prefix after an interrupted read, including sparse zero sectors. It never
+overwrites a verified baseline and still requires full independent verification.
+Keep a separately verified copy outside the repository before conversion.
+
+`verify` compares an existing full image against the medium; `read` captures a
+specified range. `write` requires the exact source SHA256 and a verified full
+backup manifest before arming its range. Each sector is read back; timeout or
+disconnect stops the invocation without reconnecting or replaying the mutation.
+`recover` attempts controller recovery, not data restoration.
+
+Explicit `wide` selects four-bit SDR in maintenance mode. It first selects the
+card-advertised `POWER_CLASS` for the existing 3.3 V rail and clock range, then
+changes `BUS_WIDTH`. Both settings are volatile; it changes neither the voltage
+rail nor persistent boot configuration. `INFO` and `READ` never enable this mode
+automatically. `recover` uses CMD0 and restores one-bit operation, so widening
+after recovery requires another explicit `wide` command. The operation disarms
+writes, and a failed switch blocks media access until recovery.
+
+The offline [mmc_partition.py](../../../scripts/mmc_partition.py) takes that backup
+manifest and a prepared stock FAT32 image. It validates filesystem geometry and
+produces hashed changed-sector extents in a new private plan directory. Apply the
+stock extents first, the marker next, and the MBR last. It leaves all other sectors
+untouched and performs no device I/O. Review the plan and its CLI help before use.
+
+The [partition executor](../../../scripts/mmc_partition_apply.py) defaults to
+offline validation with `--plan PLAN`. It checks the fixed C606 layout, verified
+baseline, target hashes and every extent, including gaps between changed sectors.
+`--execute --journal NEW_PATH` enables one attempt and requires a new private,
+fsynced journal. It writes stock extents, verifies the entire first partition,
+then writes and verifies the marker before committing and verifying the MBR last.
+No writes or stock boots may intervene between the verified baseline and execution;
+the executor's live sentinel reads do not replace that provenance. A failure stops
+without retry, automatic rollback or stock boot. Use its `--help` for current syntax.
+
+A full MMC restoration uses the saved MMC image through maintenance mode. The
+internal 16 MiB `flash.bin` backup cannot restore this separate 4 GB medium.
+After hardware tests, restore a harness-enabled base image and record the observed
+stock screen, partition boundaries and read/write results separately from these
+implementation details.
+
+## Maintenance observations before conversion
+
+On 2026-09-14 explicit four-bit mode read sectors 0, 1,310, 16,384 and 7,733,241
+with results matching earlier one-bit reads. Another 24 randomly selected
+locations in the captured prefix matched across two recovery cycles. These
+observations establish successful reads using D1 through D3 and successful
+re-entry into four-bit mode after recovery; they do not establish long-duration
+reliability or successful sector writes.
+
+A 1 MiB nonuniform transfer over the binary USB protocol took 3.30 seconds.
+During a mostly free portion of the backup, observed progress was about 2.3 MB/s
+in four-bit mode versus about 1.28 MB/s in one-bit mode. These are workload samples,
+not a controlled sustained-throughput benchmark. Uniform-sector compression
+reduces USB traffic during the mostly free portions, so those rates are effective
+image progress rather than raw USB payload throughput.
+
+An offline stock-partition image was prepared with 430 files totaling 208,787,154
+bytes. Every file hash matched the preview recovered from the captured allocated
+area. The prepared FAT32 image passed `fsck` and had 192,382 free 4,096-byte
+clusters, or 787,996,672 bytes free. This validates that offline image, not stock
+operation on a partitioned device. At this checkpoint the full backup was still
+running, no partition conversion had been applied, and full independent backup
+verification remained pending.
 
 ## Owned application storage
 

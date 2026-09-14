@@ -42,6 +42,8 @@ pub struct Shell<D, I, P, B> {
     power: P,
     display: D,
     input: I,
+    app_input: crate::capabilities::Edges,
+    app_active: bool,
     pub foreground: Screen,
     pub routed_events: u32,
     pub display_error: bool,
@@ -121,6 +123,8 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
             power,
             display,
             input,
+            app_input: crate::capabilities::Edges::new(),
+            app_active: false,
             foreground: Screen::Status,
             routed_events: 0,
             display_error: false,
@@ -136,6 +140,15 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
     }
     pub fn activity(&mut self, now: u64) {
         self.idle.button(now);
+    }
+    pub fn set_app_active(&mut self, active: bool) {
+        if self.app_active != active {
+            self.app_input = crate::capabilities::Edges::new();
+            self.app_active = active;
+        }
+    }
+    pub fn take_app_input(&mut self) -> Option<crate::capabilities::Edge> {
+        self.app_input.pop()
     }
     pub fn effective(&self) -> u8 {
         self.effective
@@ -225,6 +238,10 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
         };
         if gate == Gate::Forward {
             self.routed_events = self.routed_events.saturating_add(1);
+            if self.app_active {
+                self.app_input.push(now, input);
+                return;
+            }
             if matches!(input, Input::Button { button, code: 1 } if Some(button) == self.next_button)
             {
                 self.fill_color = None;
@@ -274,7 +291,7 @@ impl<D: Display, I: InputSource, P: Power, B: crate::storage::OwnedFlash> Shell<
     }
 
     pub fn present(&mut self) {
-        if !self.dirty {
+        if self.app_active || !self.dirty {
             return;
         }
         let geometry = self.display.geometry();

@@ -141,7 +141,16 @@ async fn console(
     loop {
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
+        #[cfg(feature = "cycling")]
+        system.set_app_active(sdk.input_active());
         system.tick(now);
+        #[cfg(feature = "cycling")]
+        for _ in 0..16 {
+            let Some(edge) = system.take_app_input() else {
+                break;
+            };
+            sdk.input(edge.input, now, &mut ant, &mut system.store.data());
+        }
         system.observe_position(&position, now);
         let started = embassy_time::Instant::now();
         system.present();

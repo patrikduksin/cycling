@@ -300,13 +300,25 @@ impl Session {
     }
     pub fn tick(&mut self) {
         self.shell.observe_position(&self.position, self.now);
+        #[cfg(feature = "cycling")]
+        self.shell.set_app_active(self.sdk.input_active());
         self.shell.tick(self.now);
+        #[cfg(feature = "cycling")]
+        let mut ant = NoAnt;
+        #[cfg(feature = "cycling")]
+        for _ in 0..16 {
+            let Some(edge) = self.shell.take_app_input() else {
+                break;
+            };
+            self.sdk
+                .input(edge.input, self.now, &mut ant, &mut self.shell.store.data());
+        }
         self.shell.present();
         #[cfg(feature = "cycling")]
         self.sdk.tick(
             &mut self.shell.store.data(),
             self.now,
-            &mut NoAnt,
+            &mut ant,
             &mut self.ble,
             &self.position,
             false,

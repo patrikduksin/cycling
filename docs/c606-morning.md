@@ -72,37 +72,64 @@ completed five-second device capture reported `INFO 1 256 3090 stopped`, leaving
 is `INFO 1 256 3090 idle`. Recheck before departure because another capture reduces
 that tail. Existing rides, captures and occupied invalid slots remain preserved.
 
-The prepared session requests **420 seconds, seven minutes, with no selected ANT
-peers**. Its reservation is `2 × 420 + 8 = 848` slots, which fits the measured
-1,006-slot tail with 158 slots beyond the reservation. If the newly measured tail
-is below 848, do not start this duration. Five minutes without ANT requires 608
-slots, six requires 728 and ten requires 1,208.
-
-Keep ANT peers unselected for this session. Any selected ANT channel raises the
-seven-minute reservation to 2,108 slots; even five minutes with a selected peer
-requires 1,508, which exceeds the current tail. Sleeping sensors still count as
-selected. Inspect `ANT` and have the coordinator close any selected channel before
-starting; do not scan or connect a sensor during this capture.
-
-Start the seven-minute capture:
+For an owner-requested radar/power ride, open the physical ANT menu over USB
+before departure, without selecting peers or starting recording:
 
 ```text
-FOUNDATION LOG START 420
+FOUNDATION MENU 420
+```
+
+The lower-left button moves the selection; lower-right chooses it. Top-left returns
+to the first row, then to ride status. From idle ride status, top-left opens the
+menu. The first press after dimming wakes the screen and is consumed. Use short
+clicks, not holds. Choose Scan sensors near the bike, then select each owned radar
+and power meter by its device number. The menu shows connection progress and
+fresh/stale status. It never connects merely because a peer appears in a scan.
+Use a selected channel's DROP row to disconnect before choosing a replacement.
+
+Choose Start ride test only when ready outside. Start requires fresh radar/power
+channels, a current GPS fix and enough scanned storage. It starts the configured
+sampled duration, seven minutes here. Buttons cannot change peers or restart a
+capture after starting; the test stops automatically. Keep the device powered
+while walking to the bike; idle preparation consumes no recording time. Selection
+is volatile and does not modify saved preferences. `FOUNDATION SCREEN 420` opens
+only the ride-status preview, also without recording.
+
+The screen shows idle/preparing/recording/stopping/stopped/error, seconds left,
+fresh GPS fix, radar packet age, fresh decoded power in watts, verified environment
+and GPS record counts, measured free slots and drops. `WAIT SAVE` means the writer
+has not committed recently. Unknown free capacity is `--`. `RADAR ON` means fresh
+packets, not a vehicle detection or a safety alert. The screen refreshes once per
+second. Do not operate it while moving.
+
+```text
+FOUNDATION LOG SAMPLED 420
 FOUNDATION LOG STATUS
 ```
 
-`ACCEPTED` means scanning was queued. Poll `FOUNDATION LOG STATUS` until it reports
-`Recording`, then confirm `saved_environment` and `saved_positions` increase on
-successive checks. Check `remaining_slots`, `required_slots` and error/drop counts
-in the same reply. Use these counters to confirm the foundation capture. The
-coordinator must establish the available duration from the measured free tail
-before departure; this document does not assume unused capacity. The preflight
-reserves two slots per second for GPS/environment, an additional three ANT slots
-per second if any peer is selected, and eight margin slots. Select peers before
-starting; this allowance does not guarantee a duration at arbitrary packet rates.
-The countdown begins after the full storage scan reaches ready state, and the
-SDK automatically stops at its deadline. `requested_seconds` and
-`remaining_seconds` accompany capture status.
+Sampled mode reserves `3 × ceil(seconds / 2) + 3 × ceil(seconds / 10) + 8`
+slots. Seven minutes requires 764 slots, fitting a freshly verified 1,006-slot
+tail. It saves environment, GPS and the latest packet for each selected radar, heart
+rate or power type every two seconds, with changed link snapshots at most every ten seconds. Live sensor
+decoding continues at full received rate. Intermediate packets and link transitions
+are intentionally omitted; this is not a complete RF capture or page sequence.
+Other ANT device types are omitted. Link-transition omissions are not counted. `sampled_out_packets`
+is separate from loss/drop counters. Each record carries the sampled flag, and
+exports retain source timestamps, the two-second interval and omission counts
+where recorded. A missing terminal record remains incomplete evidence.
+
+`ACCEPTED` means scanning was queued. Confirm `Recording`, increasing
+`saved_environment` and `saved_positions`, fresh selected peers and zero errors or
+drops before departure. The countdown starts when the storage scan reaches ready,
+so preparation after that scan consumes part of the requested duration. Recording stops at the
+deadline. Check the actual free tail before starting; never erase old records to
+make room.
+
+The original full-rate `FOUNDATION LOG START 420` remains available. With no
+selected ANT peers it reserves 848 slots; with any selected peer it reserves
+2,108 slots and does not fit a 1,006-slot tail. Sleeping selected peers still count.
+Its allowance is not a guarantee at arbitrary RF rates. Use sampled mode for the
+capacity-limited radar/power session, and retain its sampling limitation in analysis.
 
 The capture appends after every occupied slot and never erases. Existing rides,
 old captures and invalid occupied slots remain preserved. While it owns storage,

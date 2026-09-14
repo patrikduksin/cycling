@@ -29,6 +29,34 @@ def commit(data):
 
 
 class AntCaptureTests(unittest.TestCase):
+    def test_sampled_mode_survives_missing_terminal_and_preserves_raw_fields(self):
+        for original in (slot(), self.environmental(), slot(2, 0), slot(3, 0)):
+            raw = decode_slot(original)
+            self.assertNotIn('capture_mode', raw)
+            data = bytearray(original)
+            data[7] = 1
+            sampled = decode_slot(commit(data))
+            self.assertEqual(sampled.pop('capture_mode'), 'sampled')
+            self.assertEqual(sampled.pop('sample_interval_ms'), 2000)
+            self.assertEqual(sampled.pop('link_interval_ms'), 10000)
+            self.assertEqual(sampled, raw)
+            if data[5] in (2, 3, 7):
+                offset = 128 if data[5] == 7 else 48
+                data[offset:offset + 4] = b'SMP1'
+                struct.pack_into('<I', data, offset + 4, 123)
+                decoded = decode_slot(commit(data))
+                self.assertEqual(decoded['sampled_out_packets'], 123)
+                data[offset + 4] ^= 1
+                with self.assertRaisesRegex(ValueError, 'CRC'):
+                    decode_slot(data)
+
+    def test_unknown_capture_flags_are_rejected_even_with_valid_crc(self):
+        for flag in (2, 3, 128, 255):
+            data = slot()
+            data[7] = flag
+            with self.assertRaises(ValueError):
+                decode_slot(commit(data))
+
     def test_packet_fields_and_corrupt_or_uncommitted_slots(self):
         data = slot()
         packet = decode_slot(data)['packets'][0]

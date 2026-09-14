@@ -13,6 +13,10 @@ After restart, let the ride scanner finish before requesting the export.
 The capture never erases or overwrites occupied slots. No automatic capture
 resumes after restart. Environmental values absent on the wire remain missing;
 raw motion is unscaled, battery millivolts are not independently calibrated.
+Sampled flag 1 means environment/GPS/latest ANT per selected radar/HR/power type every 2000 ms
+and changed link snapshots at most every 10000 ms. Intermediate link transitions
+are omitted without a counter. SMP1 counters track deliberate ANT packet omissions
+separately from drops. Every record retains this mode even without a terminal.
 """
 import argparse
 import hashlib
@@ -51,7 +55,7 @@ def decode_slot(data):
         raise ValueError('short slot')
     if data[:4] != b'ANT1':
         return None
-    if data[4] != 1 or data[7] != 0 or data[252:] != b'TMOC':
+    if data[4] != 1 or data[7] not in (0, 1) or data[252:] != b'TMOC':
         raise ValueError('unsupported or uncommitted ANT slot')
     if zlib.crc32(data[:248]) != int.from_bytes(data[248:252], 'little'):
         raise ValueError('ANT slot CRC mismatch')
@@ -62,6 +66,8 @@ def decode_slot(data):
                   capture_id=int.from_bytes(data[8:12], 'little'),
                   sequence=int.from_bytes(data[12:16], 'little'),
                   prepared_ms=int.from_bytes(data[16:24], 'little'))
+    if data[7] == 1:
+        record.update(capture_mode="sampled", sample_interval_ms=2000, link_interval_ms=10000)
     if kind == 1:
         records = []
         for i in range(count):
@@ -98,7 +104,13 @@ def decode_slot(data):
         now, losses, invalid, dropped = struct.unpack_from('<QIII', data, 28)
         if (flags & ~31 or any(data[25:28]) or any(data[62:64])
                 or any(data[78:80]) or any(data[94:96]) or data[105]
-                or any(data[117:120]) or data[128:248] != b'\xff' * 120):
+                or any(data[117:120])):
+            raise ValueError('invalid environmental flags/reserved bytes')
+        tail = 128
+        if data[7] == 1 and data[128:132] == b'SMP1':
+            record['sampled_out_packets'] = int.from_bytes(data[132:136], 'little')
+            tail = 136
+        if data[tail:248] != b'\xff' * (248 - tail):
             raise ValueError('invalid environmental flags/reserved bytes')
         blocks = [(1, 48, 62), (2, 64, 78), (4, 80, 94), (8, 96, 108), (16, 108, 117)]
         for mask, begin, end in blocks:
@@ -132,6 +144,8 @@ def decode_slot(data):
             record['dropped_positions'] = int.from_bytes(data[36:40], 'little')
         if data[40:44] == b'ENV1':
             record['dropped_environment'] = int.from_bytes(data[44:48], 'little')
+        if data[7] == 1 and data[48:52] == b'SMP1':
+            record['sampled_out_packets'] = int.from_bytes(data[52:56], 'little')
     return record
 
 

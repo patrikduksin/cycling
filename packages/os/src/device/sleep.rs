@@ -60,7 +60,7 @@ pub fn enter(after_wake: impl FnOnce()) -> Result<Observation, Error> {
         let rtc = owner.as_mut().ok_or(Error::Unavailable)?;
         let timer = TimerWakeupSource::new(core::time::Duration::from_secs(SLEEP_SECONDS));
         let uptime_before = Instant::now();
-        // The vendored HAL keeps CPU/digital/RAM/flash/PSRAM domains and XTAL/PLL
+        // The patched HAL keeps CPU/digital/RAM/flash/PSRAM domains and XTAL/PLL
         // powered. Neither cache suspension nor a CPU clock change is performed.
         let status =
             rtc.sleep_light_with_status(&[&timer], Duration::from_secs(ENTRY_DEADLINE_SECONDS));

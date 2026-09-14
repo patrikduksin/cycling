@@ -764,6 +764,7 @@ dependencies = [
 [[package]]
 name = "esp-hal"
 version = "1.1.2"
+source = "git+https://github.com/patrikduksin/esp-hal.git?rev=0cf3835559c18f03d75190b332316ba85b68b8ed#0cf3835559c18f03d75190b332316ba85b68b8ed"
 dependencies = [
  "bitfield",
  "bitflags 2.13.2",

@@ -1,14 +1,8 @@
-# Local esp-hal patch
+# esp-hal sleep patch
 
-This directory contains the published esp-hal 1.1.2 crate from crates.io,
-upstream commit `210eac8d035a991d452179464a684f853ff4be78`, under its original
-Apache-2.0 OR MIT license. The crates.io archive omitted the repository-root
-license files, so `LICENSE-APACHE` and `LICENSE-MIT` were copied byte-for-byte
-from that exact upstream commit. Their Git blob hashes are respectively
-`15c1d15b3a1ca9fbf1d24820fc487b998a6d2461` and
-`b815dcb7b55a8561c29179dc4f7fc63d9984b47b`. The commit is the full 40-character
-SHA recorded in the archive's `.cargo_vcs_info.json` and resolves unchanged in
-the upstream repository.
+Cargo's root `[patch.crates-io]` uses [this pinned fork commit](https://github.com/patrikduksin/esp-hal/commit/0cf3835559c18f03d75190b332316ba85b68b8ed) of esp-hal 1.1.2, based on upstream commit `210eac8d035a991d452179464a684f853ff4be78`.
+Upstream MIT/Apache-2.0 licenses remain in the fork. The fork keeps the published
+registry dependencies instead of pulling sibling crates from its Git checkout.
 
 The ESP32-S3-only `Rtc::sleep_light_with_status` entry clears stale RTC sleep
 interrupts before requesting sleep, waits for wake or rejection under an RTC
@@ -28,6 +22,7 @@ armed sources, but reports timeout rather than claiming entry or safe recovery.
 The device keeps work gated for that outcome. Only hardware validation can
 establish successful entry, wake and recovery on C606.
 
-The local changes are confined to `src/rtc_cntl/mod.rs` and
-`src/rtc_cntl/sleep/esp32s3.rs`. `cycling-sleep.patch` records the diff against
-the published source for review and removal when upstream provides an equivalent.
+The hardware implementation changes only `esp-hal/src/rtc_cntl/mod.rs` and
+`esp-hal/src/rtc_cntl/sleep/esp32s3.rs`. All HAL sources, linker files, build script
+and configuration match the previously vendored and hardware-tested copy.
+Remove the override when an upstream release supplies the required behavior.

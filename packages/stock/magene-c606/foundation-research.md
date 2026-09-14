@@ -337,7 +337,7 @@ private logger, with one USB owner. Save logs before changing USB or power state
 Installed part identification, physical motion/hold/wake observations, independent
 voltage/pressure calibration and new ANT operation end-to-end evidence remain open.
 
-## Automatic initialization after charging startup
+## Charging initialization and explicit wake
 
 The recovered N22 class-2/group-16 receiver accepts page `e2/02`, operation index
 zero, value seven as its normal initialization transition. Receiver `0x178a4`
@@ -350,8 +350,8 @@ is receiver-supported behavior, not a recovered N21 sender constant or a promise
 of success for every retained state.
 
 The device uses the fixed payload `e2 02 00 00 00 07 00 00` only once after an
-explicit charging reason four, with a fresh, clean bridge and no observed sensor
-or radio activity. A short/failed submission is uncertain and is never replayed.
+explicit charging reason four and an explicit wake request, with a fresh, clean
+bridge and no observed sensor or radio activity. A short/failed submission is uncertain and is never replayed.
 Readiness requires a subsequent normal-start reason and independently advancing
 fresh motion and pressure timestamps; timeout is a failure. The audited branches
 contain no identified flash erase, vendor-filesystem write or calibration-program
@@ -387,3 +387,28 @@ remains insufficient to expose whole-device sleep. The class-one reason getter
 instead references the shared value-one payload at `0x3c375f81`; the table above
 corrects its previously reported value-three byte. The receiver's class-one
 branch reads the reason without interpreting that byte.
+
+### Shutdown and charging standby observations on 2026-09-14
+
+The first coordinated shutdown build, `811c8749f46f`, accepted one shutdown request,
+entered preparation and lost USB. The owner observed the screen turn off and then
+return automatically. The next attachment reported a power reset and normal
+acquisition. The existing automatic value-seven path made charging startup return
+to normal operation; a focused startup regression reproduced that unwanted
+request before the fix.
+
+Source `84e49e0ad61c` requires an explicit wake request for value seven and retains
+physical operating-reason recovery. A subsequent shutdown on USB returned in
+`Charging` with normal work disabled. It remained there through uptime 47,929 ms;
+charging preparation had completed at 6,324 ms. The owner confirmed that the
+screen remained off. An explicit wake request at 47,975 ms reported completed
+recovery at 49,026 ms. Pressure and both motion streams were fresh, GNSS was
+receiving, Wi-Fi was associated and BLE was advertising. The owner confirmed
+that the screen returned with that request.
+
+This is functional shutdown-to-charging-standby and wake evidence. It does not
+establish electrical power-off, current savings or whole-device sleep. Charging
+presentation belongs to the shell; the device capability reports the charging
+state without adding an animation. Source `1fbfd1f` additionally handles physical
+wake during charging preparation and keeps failed charging preparation from
+silently resuming radios. Raw captures remain private under `.local/power/`.

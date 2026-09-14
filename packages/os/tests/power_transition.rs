@@ -192,6 +192,33 @@ fn terminal_power_operations_are_bounded_and_reject_extra_arguments() {
 }
 
 #[test]
+fn physical_wake_during_charging_preparation_starts_observed_recovery() {
+    let mut t = Transition::new();
+    t.begin_charging(1);
+    t.physical_wake(2);
+    assert_eq!(t.status().operation, Some(Operation::Wake));
+    assert_eq!(t.status().state, State::Recovering);
+    assert!(!t.status().ready);
+    t.charging(3);
+    t.submitted(Ok(()), 4);
+    assert_eq!(t.status().state, State::Recovering);
+    t.recovered();
+    assert_eq!(t.status().state, State::Completed);
+}
+
+#[test]
+fn failed_charging_preparation_stays_failed_without_active_rollback() {
+    let mut t = Transition::new();
+    t.begin_charging(1);
+    t.abort(Failure::Sound, 2);
+    t.standby_failed();
+    t.recovered();
+    assert_eq!(t.status().state, State::Failed);
+    assert_eq!(t.status().failure, Some(Failure::Sound));
+    assert!(!t.status().ready);
+}
+
+#[test]
 fn charging_startup_stays_quiet_until_an_explicit_wake() {
     let mut t = Transition::new();
     assert_eq!(t.request(Operation::Wake, 0), Err(Error::Unavailable));

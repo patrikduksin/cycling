@@ -158,12 +158,13 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
             };
             TRANSITION.lock(|t| t.borrow_mut().begin_charging(now));
         }
-        if status().state == State::Charging
+        if work.charging
+            && matches!(status().state, State::Charging | State::Quiescing)
             && matches!(super::sensors::startup_reason(), Some(5 | 6))
         {
             // The companion itself owns this physical button transition. Do not
             // send a second initialization command in response to its report.
-            let _ = TRANSITION.lock(|t| t.borrow_mut().wake(now));
+            TRANSITION.lock(|t| t.borrow_mut().physical_wake(now));
         }
         if status().ready && !ACCESS.closed() && light.percent != BRIGHTNESS.load(Ordering::Acquire)
         {
@@ -291,6 +292,12 @@ fn prepare(work: &mut Work, light: &mut Backlight, now: u64) {
 }
 
 fn recover(work: &mut Work, light: &mut Backlight, now: u64) {
+    // Failed charging preparation must not silently turn radios/GNSS back on.
+    // Only an operating-reason report or accepted Wake requests active recovery.
+    if work.charging && status().operation != Some(Operation::Wake) {
+        TRANSITION.lock(|t| t.borrow_mut().standby_failed());
+        return;
+    }
     if !work.restoring {
         work.restoring = true;
         work.restore_failed |= work.dark && backlight(light, false).is_err();

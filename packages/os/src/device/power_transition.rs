@@ -71,6 +71,20 @@ impl Transition {
         };
         Ok(())
     }
+    /// A physical operating-reason report can precede the end of charging
+    /// preparation. Preserve accepted work and switch to its restoring path.
+    pub fn physical_wake(&mut self, now: u64) {
+        if self.status.state == State::Quiescing && self.status.operation.is_none() {
+            self.status.state = State::Charging;
+        }
+        let _ = self.wake(now);
+    }
+    pub fn standby_failed(&mut self) {
+        if self.status.state == State::Recovering && self.status.operation.is_none() {
+            self.status.state = State::Failed;
+            self.status.ready = false;
+        }
+    }
     pub fn quiescing(&mut self, now: u64) {
         if self.status.state == State::Requested {
             self.status.state = State::Quiescing;

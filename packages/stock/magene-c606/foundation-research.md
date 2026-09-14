@@ -152,7 +152,7 @@ perform unattended holds to infer it.
 |---|---|---|
 | Power off | `0x42052094` | Class 2, group `10`, `e2 02 00 00 00 00 00 00` |
 | Power-on acknowledgment | `0x420520e8` | Class 2, group `10`, `e2 02 00 00 00 01 00 00` |
-| Check power-on reason | `0x42052140` | Class 1, group `10`, `e2 02 00 00 00 03 00 00` |
+| Check power-on reason | `0x42052140` | Class 1, group `10`, `e2 02 00 00 00 01 00 00`; the receiver ignores the value byte |
 
 These names come from stock callers. UART submission, a matching reply, USB
 removal and a dark display do not establish electrical shutdown. No power-off or
@@ -365,3 +365,25 @@ three seconds of clean passive observation. The charging initialization transiti
 still requires a fresh bridge. Live validation of source `382c85cadeb1` reached ready with reason
 six and independently advancing sensors after charging startup, with zero button
 reports after boot. This observation does not establish every power-cycle path.
+
+### Main screen suspension is not verified CPU sleep
+
+A further bounded trace of N21 1.956 follows `MidSendSleepToLCD` at
+`0x4202ace4` through getter `0x4202ad54` and `0x42165664`. The touch reader at
+`0x4202add0` uses the flag to suppress touch polling. Button routing at
+`0x420531c5` consumes event one to invoke `ScreenOffWakeUpHandle` at
+`0x42165a88`. These are screen/input mechanisms.
+
+Screen-off dispatch at `0x420eb668` dims the backlight, sets that flag, calls
+empty function `0x4229df40`, and conditionally invokes panel reinitialization at
+`0x4202acfc`. Its companion payload uses control index three/value two, not
+power-state value three. The corresponding wake-side function `0x4229df48` is
+also empty. This traced path establishes neither ESP CPU sleep nor a UART/GPIO
+wake configuration.
+
+The companion power-state value-three constant exists in N21 at `0x3c375f89`,
+but this analysis did not recover a sender call chain. Receiver support alone
+remains insufficient to expose whole-device sleep. The class-one reason getter
+instead references the shared value-one payload at `0x3c375f81`; the table above
+corrects its previously reported value-three byte. The receiver's class-one
+branch reads the reason without interpreting that byte.

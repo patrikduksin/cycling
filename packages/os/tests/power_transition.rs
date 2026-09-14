@@ -190,3 +190,81 @@ fn terminal_power_operations_are_bounded_and_reject_extra_arguments() {
         assert!(parse(command).is_err());
     }
 }
+
+#[test]
+fn charging_startup_stays_quiet_until_an_explicit_wake() {
+    let mut t = Transition::new();
+    assert_eq!(t.request(Operation::Wake, 0), Err(Error::Unavailable));
+    t.begin_charging(1);
+    assert_eq!(t.status().state, State::Quiescing);
+    assert_eq!(t.status().operation, None);
+    assert!(!t.status().ready);
+    let preparing = t.status();
+    t.submitted(Ok(()), 2);
+    assert_eq!(t.status(), preparing);
+    assert_eq!(t.request(Operation::Wake, 2), Err(Error::Unavailable));
+    t.charging(3);
+    let charging = t.status();
+    assert_eq!(charging.state, State::Charging);
+    assert_eq!(charging.operation, None);
+    assert!(!charging.ready);
+    t.tick(u64::MAX);
+    t.recovered();
+    t.begin_charging(4);
+    assert_eq!(t.status(), charging);
+    assert_eq!(t.request(Operation::Shutdown, 5), Err(Error::Unavailable));
+    assert_eq!(t.request(Operation::Sleep, 5), Err(Error::Unsupported));
+    t.request(Operation::Wake, 6).unwrap();
+    assert_eq!(t.status().sequence, 1);
+    assert_eq!(t.status().operation, Some(Operation::Wake));
+    assert_eq!(t.status().state, State::Recovering);
+    assert_eq!(t.status().at_ms, 6);
+    assert_eq!(t.status().failure, None);
+    assert!(!t.status().ready);
+    assert_eq!(t.wake(7), Err(Error::Unavailable));
+    t.tick(7);
+    assert_eq!(t.status().state, State::Recovering);
+    assert!(!t.status().ready);
+    t.recovered();
+    assert_eq!(t.status().state, State::Completed);
+    assert!(t.status().ready);
+}
+
+#[test]
+fn submitted_shutdown_cannot_become_charging_or_wake_itself() {
+    for result in [Ok(()), Err(())] {
+        let mut t = Transition::new();
+        t.request(Operation::Shutdown, 0).unwrap();
+        t.quiescing(1);
+        t.charging(2);
+        assert_eq!(t.status().state, State::Quiescing);
+        t.submitted(result, 3);
+        let submitted = t.status();
+        t.begin_charging(4);
+        t.charging(4);
+        assert_eq!(t.wake(4), Err(Error::Unavailable));
+        assert_eq!(t.request(Operation::Wake, 4), Err(Error::Unavailable));
+        t.recovered();
+        assert_eq!(t.status(), submitted);
+        t.tick(3 + transition::OBSERVE_MS);
+        assert_eq!(t.status().state, State::Uncertain);
+        assert_eq!(t.wake(10_000), Err(Error::Unavailable));
+        assert!(!t.status().ready);
+    }
+}
+
+#[test]
+fn wake_recovery_timeout_cannot_report_completion_or_reopen_admission() {
+    let mut t = Transition::new();
+    t.begin_charging(0);
+    t.charging(1);
+    t.wake(2).unwrap();
+    t.tick(2 + transition::RECOVER_MS);
+    assert_eq!(t.status().state, State::Failed);
+    assert_eq!(t.status().failure, Some(Failure::Recovery));
+    assert!(!t.status().ready);
+    t.recovered();
+    assert_eq!(t.status().state, State::Failed);
+    assert!(!t.status().ready);
+    assert_eq!(t.request(Operation::Wake, 50_000), Err(Error::Unavailable));
+}

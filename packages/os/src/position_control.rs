@@ -76,7 +76,7 @@ impl Controller {
     /// Device power coordination owns the restoring transition. Unlike a
     /// diagnostic pause this has no lease that can reopen GNSS during shutdown.
     pub fn suspend(&mut self, now: u64) -> Result<(), crate::capabilities::Error> {
-        if self.status.state != State::Receiving {
+        if matches!(self.status.state, State::PauseQueued | State::ResumeQueued) {
             return Err(crate::capabilities::Error::Unavailable);
         }
         self.status.state = State::PauseQueued;

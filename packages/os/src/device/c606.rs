@@ -322,6 +322,7 @@ impl cycling_os::capabilities::Ble for Ble {
         super::bluetooth::take_packet()
     }
     fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        let _access = super::services::power::ACCESS.enter()?;
         super::bluetooth::request(cycling_os::ble_transport::Operation::Connect)
     }
     fn request(
@@ -396,6 +397,7 @@ impl cycling_os::capabilities::Network for Network {
         super::wifi::connection_generation()
     }
     fn reconnect(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        let _access = super::services::power::ACCESS.enter()?;
         super::wifi::request(cycling_os::connectivity::WifiOperation::Connect)
     }
     fn request(

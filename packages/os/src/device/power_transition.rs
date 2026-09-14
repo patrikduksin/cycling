@@ -25,6 +25,9 @@ impl Transition {
         if operation == Operation::Sleep {
             return Err(Error::Unsupported);
         }
+        if operation == Operation::Wake {
+            return self.wake(now);
+        }
         if !self.status.ready {
             return Err(Error::Unavailable);
         }
@@ -32,6 +35,36 @@ impl Transition {
             sequence: self.status.sequence.wrapping_add(1),
             operation: Some(operation),
             state: State::Requested,
+            at_ms: now,
+            failure: None,
+            ready: false,
+        };
+        Ok(())
+    }
+    /// Charging startup prepares hardware without issuing a shutdown command.
+    pub fn begin_charging(&mut self, now: u64) {
+        if self.status.state == State::Idle {
+            self.status.state = State::Quiescing;
+            self.status.operation = None;
+            self.status.failure = None;
+            self.status.ready = false;
+            self.status.at_ms = now;
+        }
+    }
+    pub fn charging(&mut self, now: u64) {
+        if self.status.state == State::Quiescing && self.status.operation.is_none() {
+            self.status.state = State::Charging;
+            self.status.at_ms = now;
+        }
+    }
+    pub fn wake(&mut self, now: u64) -> Result<(), Error> {
+        if self.status.state != State::Charging {
+            return Err(Error::Unavailable);
+        }
+        self.status = Status {
+            sequence: self.status.sequence.wrapping_add(1),
+            operation: Some(Operation::Wake),
+            state: State::Recovering,
             at_ms: now,
             failure: None,
             ready: false,
@@ -47,7 +80,9 @@ impl Transition {
     /// The command might have reached hardware even on a short/failed write.
     /// Neither result establishes shutdown, and neither permits an automatic retry.
     pub fn submitted(&mut self, result: Result<(), ()>, now: u64) {
-        if self.status.state != State::Quiescing {
+        if self.status.state != State::Quiescing
+            || self.status.operation != Some(Operation::Shutdown)
+        {
             return;
         }
         self.status.state = if result.is_ok() {
@@ -67,7 +102,11 @@ impl Transition {
     }
     pub fn recovered(&mut self) {
         if self.status.state == State::Recovering {
-            self.status.state = State::Failed;
+            self.status.state = if self.status.operation == Some(Operation::Wake) {
+                State::Completed
+            } else {
+                State::Failed
+            };
             self.status.ready = true;
         }
     }

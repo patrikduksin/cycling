@@ -66,16 +66,34 @@ pub fn capabilities() -> Capabilities {
     Capabilities {
         shutdown: Support::Supported,
         sleep: Support::Unknown,
+        wake: Support::Supported,
         shutdown_wake: unknown,
         sleep_wake: unknown,
     }
 }
 pub fn status() -> Status {
-    TRANSITION.lock(|t| t.borrow().status())
+    let mut status = TRANSITION.lock(|t| t.borrow().status());
+    if status.state == State::Idle
+        && !matches!(
+            super::sensors::startup_phase(),
+            "ready" | "already_running" | "running_degraded"
+        )
+    {
+        status.state = State::Initializing;
+        status.ready = false;
+    }
+    status
 }
 pub fn request(operation: Operation, now: u64) -> Result<(), Error> {
     if operation == Operation::Sleep {
         return Err(Error::Unsupported);
+    }
+    if operation == Operation::Wake {
+        if status().state != State::Charging {
+            return Err(Error::Unavailable);
+        }
+        super::sensors::power_request_wake()?;
+        return TRANSITION.lock(|t| t.borrow_mut().wake(now));
     }
     if !matches!(
         super::sensors::startup_status(),
@@ -95,6 +113,7 @@ fn abort(failure: Failure, now: u64) {
 
 #[derive(Default)]
 struct Work {
+    charging: bool,
     wifi: bool,
     ble: bool,
     ant: bool,
@@ -128,7 +147,26 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
     let mut previous = State::Idle;
     loop {
         let now = Instant::now().as_millis();
-        if !ACCESS.closed() && light.percent != BRIGHTNESS.load(Ordering::Acquire) {
+        let phase = super::sensors::startup_phase();
+        if TRANSITION.lock(|t| t.borrow().status().state) == State::Idle && phase == "charging" {
+            ACCESS.close();
+            super::io::power_boundary(now);
+            work = Work {
+                charging: true,
+                uart: super::io::snapshot(now).map(|s| (s.uart_errors, s.companion_bad_crc)),
+                ..Work::default()
+            };
+            TRANSITION.lock(|t| t.borrow_mut().begin_charging(now));
+        }
+        if status().state == State::Charging
+            && matches!(super::sensors::startup_reason(), Some(5 | 6))
+        {
+            // The companion itself owns this physical button transition. Do not
+            // send a second initialization command in response to its report.
+            let _ = TRANSITION.lock(|t| t.borrow_mut().wake(now));
+        }
+        if status().ready && !ACCESS.closed() && light.percent != BRIGHTNESS.load(Ordering::Acquire)
+        {
             let _ = backlight(&mut light, false);
         }
         TRANSITION.lock(|t| t.borrow_mut().tick(now));
@@ -240,6 +278,10 @@ fn prepare(work: &mut Work, light: &mut Backlight, now: u64) {
         abort(Failure::Display, now);
         return;
     }
+    if work.charging {
+        TRANSITION.lock(|t| t.borrow_mut().charging(now));
+        return;
+    }
     super::sensors::loss();
     super::ant::loss(now);
     super::positioning::invalidate();
@@ -268,7 +310,10 @@ fn recover(work: &mut Work, light: &mut Backlight, now: u64) {
     );
     if work.restore_failed || recovery == PeripheralState::Failed {
         TRANSITION.lock(|t| t.borrow_mut().recovery_failed());
-    } else if recovery == PeripheralState::Running {
+    } else if recovery == PeripheralState::Running
+        && (!work.charging
+            || matches!(super::sensors::startup_phase(), "ready" | "already_running"))
+    {
         TRANSITION.lock(|t| t.borrow_mut().recovered());
         super::io::power_boundary(now);
         ACCESS.open();

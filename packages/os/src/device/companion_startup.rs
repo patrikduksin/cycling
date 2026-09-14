@@ -19,6 +19,7 @@ pub struct Startup {
     activity: bool,
     transport_lost: bool,
     wake_requested: bool,
+    wake_authorized: bool,
 }
 
 impl Startup {
@@ -31,6 +32,7 @@ impl Startup {
             activity: false,
             transport_lost: false,
             wake_requested: false,
+            wake_authorized: false,
         }
     }
 
@@ -93,7 +95,15 @@ impl Startup {
         false
     }
 
-    /// A charging boot needs the receiver's normal initialization transition.
+    pub fn request_wake(&mut self) -> Result<(), cycling_os::capabilities::Error> {
+        if self.status != "charging" || self.wake_requested || self.wake_authorized {
+            return Err(cycling_os::capabilities::Error::Unavailable);
+        }
+        self.wake_authorized = true;
+        Ok(())
+    }
+
+    /// Charging standby is stable until an explicit request or physical startup.
     /// Never reinitialize a companion that has shown sensor or radio activity.
     pub fn wake(
         &mut self,
@@ -102,7 +112,11 @@ impl Startup {
         transport_clean: bool,
         radio_seen: bool,
     ) -> bool {
-        if self.status != "charging" || self.reason != Some(4) || self.wake_requested {
+        if !self.wake_authorized
+            || self.status != "charging"
+            || self.reason != Some(4)
+            || self.wake_requested
+        {
             return false;
         }
         self.activity |= radio_seen

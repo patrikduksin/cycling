@@ -209,6 +209,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             None | Some("STATUS") => None,
             Some("SHUTDOWN") => Some(crate::power::Operation::Shutdown),
             Some("SLEEP") => Some(crate::power::Operation::Sleep),
+            Some("WAKE") => Some(crate::power::Operation::Wake),
             _ => return Err(Error::Invalid),
         }),
         "HELP" => Command::Help,

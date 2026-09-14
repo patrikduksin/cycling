@@ -16,6 +16,8 @@ pub struct WakeSources {
 pub struct Capabilities {
     pub shutdown: Support,
     pub sleep: Support,
+    /// Explicitly resume from charging mode; this does not describe USB insertion.
+    pub wake: Support,
     pub shutdown_wake: WakeSources,
     pub sleep_wake: WakeSources,
 }
@@ -23,6 +25,7 @@ impl Capabilities {
     pub const UNSUPPORTED: Self = Self {
         shutdown: Support::Unsupported,
         sleep: Support::Unsupported,
+        wake: Support::Unsupported,
         shutdown_wake: WakeSources {
             button: Support::Unsupported,
             usb: Support::Unsupported,
@@ -38,11 +41,14 @@ impl Capabilities {
 pub enum Operation {
     Shutdown,
     Sleep,
+    Wake,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
+    Initializing,
     Idle,
+    Charging,
     Requested,
     Quiescing,
     Submitted,

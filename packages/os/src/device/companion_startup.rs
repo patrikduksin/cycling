@@ -1,8 +1,14 @@
-//! Fixed stock-main startup acknowledgment. No runtime power-command interface.
+//! Fixed companion startup operations. No runtime power-command interface.
 use cycling_os::capabilities::Observation;
 
 pub fn frame() -> [u8; 16] {
     cycling_os::companion::command(16, [0xe2, 2, 0, 0, 0, 1, 0, 0])
+}
+
+/// Recovered N22 operation 0/value 7 enters the normal initialization dispatcher.
+/// Only used once after an explicit charging acknowledgment with no acquisition.
+pub fn wake_frame() -> [u8; 16] {
+    cycling_os::companion::command(16, [0xe2, 2, 0, 0, 0, 7, 0, 0])
 }
 
 pub struct Startup {
@@ -12,6 +18,7 @@ pub struct Startup {
     reason: Option<u8>,
     activity: bool,
     transport_lost: bool,
+    wake_requested: bool,
 }
 
 impl Startup {
@@ -23,6 +30,7 @@ impl Startup {
             reason: None,
             activity: false,
             transport_lost: false,
+            wake_requested: false,
         }
     }
 
@@ -67,7 +75,7 @@ impl Startup {
         if now.saturating_sub(self.started_ms) < 3000 {
             return false;
         }
-        if !bridge_fresh || self.transport_lost {
+        if self.transport_lost {
             self.status = "unavailable";
         } else if self.activity {
             self.status = if advancing {
@@ -75,12 +83,60 @@ impl Startup {
             } else {
                 "running_degraded"
             };
+        } else if !bridge_fresh {
+            // A late battery/power report is not a transport failure. Keep
+            // observing without transmitting until the bridge is established.
+            return false;
         } else {
             self.status = "pending";
             self.first = None;
             return true;
         }
         false
+    }
+
+    /// A charging boot needs the receiver's normal initialization transition.
+    /// Never reinitialize a companion that has shown sensor or radio activity.
+    pub fn wake(
+        &mut self,
+        sample: cycling_os::companion_sensors::Snapshot,
+        bridge_fresh: bool,
+        transport_clean: bool,
+        radio_seen: bool,
+    ) -> bool {
+        if self.status != "charging" || self.reason != Some(4) || self.wake_requested {
+            return false;
+        }
+        self.activity |= radio_seen
+            || !matches!(sample.pressure, Observation::Unavailable)
+            || sample
+                .motion
+                .iter()
+                .any(|value| !matches!(value, Observation::Unavailable));
+        self.transport_lost |= !transport_clean;
+        if self.activity {
+            self.status = "running_degraded";
+        } else if self.transport_lost {
+            self.status = "unavailable";
+        } else if bridge_fresh {
+            self.wake_requested = true;
+            self.status = "wake_pending";
+            return true;
+        }
+        false
+    }
+
+    pub fn wake_submitted(&mut self, result: Result<usize, ()>, now: u64) {
+        if self.status != "wake_pending" {
+            return;
+        }
+        self.started_ms = now;
+        self.first = None;
+        self.status = if result == Ok(16) {
+            "waiting"
+        } else {
+            "uncertain"
+        };
     }
 
     /// A short FIFO write may have reached the companion. Never retry it.
@@ -113,7 +169,7 @@ impl Startup {
     /// The caller validates the frame class and CRC. Charging acknowledgment
     /// does not start acquisition; a later manual-on report may do so.
     pub fn report(&mut self, group: u8, payload: &[u8], now: u64) {
-        if self.status == "probing" && group == 16 && matches!(payload, [0xf1, 1..=3, ..]) {
+        if group == 16 && matches!(payload, [0xf1, 1..=3, ..]) {
             self.activity = true;
         }
         self.expire(now);

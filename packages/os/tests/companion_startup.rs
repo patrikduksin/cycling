@@ -236,17 +236,25 @@ fn partial_invalid_sensor_or_radio_traffic_suppresses_ack() {
 }
 
 #[test]
-fn bridge_failure_and_transient_transport_loss_forbid_ack() {
-    for loss in [false, true] {
-        let mut startup = startup::Startup::new();
-        startup.begin(100);
-        let empty = State::default().snapshot(200, 5000);
-        assert!(!startup.probe(empty, 200, false, !loss, false));
-        assert!(!startup.probe(empty, 3100, loss, true, false));
-        assert_eq!(startup.status(), "unavailable");
-        assert!(!startup.ant_allowed());
-        assert!(!startup.probe(empty, 3200, true, true, false));
-    }
+fn delayed_bridge_is_not_a_permanent_startup_failure() {
+    let mut startup = startup::Startup::new();
+    let empty = State::default().snapshot(0, 5000);
+    startup.begin(0);
+    assert!(!startup.probe(empty, 3000, false, true, false));
+    assert_eq!(startup.status(), "probing");
+    assert!(startup.probe(empty, 6000, true, true, false));
+    assert!(!startup.probe(empty, 6001, true, true, false));
+}
+
+#[test]
+fn transient_transport_loss_forbids_ack() {
+    let mut startup = startup::Startup::new();
+    let empty = State::default().snapshot(0, 5000);
+    startup.begin(0);
+    assert!(!startup.probe(empty, 100, false, false, false));
+    assert!(!startup.probe(empty, 3000, true, true, false));
+    assert_eq!(startup.status(), "unavailable");
+    assert!(!startup.probe(empty, 6000, true, true, false));
 }
 
 #[test]
@@ -271,4 +279,123 @@ fn silent_sensors_allow_exactly_one_guarded_recovery_dispatch() {
     startup.observe(sample(60_002), 60_002);
     assert_eq!(startup.status(), "ready");
     assert!(startup.ant_allowed());
+}
+
+fn charging_startup() -> startup::Startup {
+    let mut startup = startup::Startup::new();
+    prepare(&mut startup, Ok(16));
+    report(&mut startup, 4, 3200);
+    assert_eq!(startup.status(), "charging");
+    startup
+}
+
+#[test]
+fn wake_frame_is_fixed_operation_zero_value_seven_with_valid_crc() {
+    let frame = startup::wake_frame();
+    assert_eq!(
+        &frame[..14],
+        &[0xa5, 12, 0x6f, 0xf1, 2, 16, 0xe2, 2, 0, 0, 0, 7, 0, 0]
+    );
+    assert_eq!(
+        u16::from_le_bytes(frame[14..].try_into().unwrap()),
+        cycling_os::companion::crc16(&frame[..14])
+    );
+}
+
+#[test]
+fn charging_allows_one_wake_then_requires_new_operating_reason_and_sample_progress() {
+    for reason in [5, 6] {
+        let empty = State::default().snapshot(0, 5000);
+        let mut startup = charging_startup();
+        assert!(!startup.wake(empty, false, true, false));
+        assert_eq!(startup.status(), "charging");
+        assert!(startup.wake(empty, true, true, false));
+        assert_eq!(startup.status(), "wake_pending");
+        assert!(!startup.ant_allowed());
+        assert!(!startup.wake(empty, true, true, false));
+        startup.wake_submitted(Ok(16), 3500);
+        startup.observe(sample(3510), 3510);
+        startup.observe(sample(3520), 3520);
+        assert_eq!(
+            startup.status(),
+            "waiting",
+            "sensor progress alone is not an operating reason"
+        );
+        report(&mut startup, reason, 3600);
+        startup.observe(sample(3600), 3600);
+        startup.observe(sample(3610), 3610);
+        let mut partial = sample(3620);
+        partial.motion[1] = sample(3610).motion[1];
+        startup.observe(partial, 3620);
+        assert_eq!(startup.status(), "waiting");
+        startup.observe(sample(3630), 3630);
+        assert_eq!(startup.status(), "ready");
+        assert!(startup.ant_allowed());
+        assert!(!startup.wake(empty, true, true, false));
+    }
+}
+
+#[test]
+fn wake_missing_reason_or_partial_submission_never_retries_or_claims_ready() {
+    let empty = State::default().snapshot(0, 5000);
+    for result in [Err(()), Ok(0), Ok(15), Ok(16)] {
+        let mut startup = charging_startup();
+        assert!(startup.wake(empty, true, true, false));
+        startup.wake_submitted(result, 3500);
+        // Repeated completion calls cannot restart or repair a failed submission.
+        startup.wake_submitted(Ok(16), 4000);
+        report(&mut startup, 4, 5000);
+        startup.observe(sample(5010), 5010);
+        startup.observe(sample(5020), 5020);
+        startup.observe(sample(13500), 13500);
+        assert_eq!(
+            startup.status(),
+            if result == Ok(16) {
+                "timed_out"
+            } else {
+                "uncertain"
+            }
+        );
+        assert!(!startup.ant_allowed());
+        assert!(!startup.wake(empty, true, true, false));
+        report(&mut startup, 5, 14000);
+        startup.observe(sample(14010), 14010);
+        startup.observe(sample(14020), 14020);
+        assert_ne!(startup.status(), "ready");
+    }
+}
+
+#[test]
+fn existing_sensor_or_radio_activity_and_transport_loss_suppress_wake() {
+    let empty = State::default().snapshot(0, 5000);
+    for source in 0..5 {
+        let mut startup = charging_startup();
+        let mut observation = empty;
+        match source {
+            0 => observation.pressure = sample(3210).pressure,
+            1 => observation.motion[0] = sample(3210).motion[0],
+            2 => startup.report(16, &[0xf1, 3], 3210),
+            _ => {}
+        }
+        assert!(!startup.wake(observation, true, source != 4, source == 3));
+        assert_eq!(
+            startup.status(),
+            if source == 4 {
+                "unavailable"
+            } else {
+                "running_degraded"
+            }
+        );
+        assert!(!startup.wake(empty, true, true, false));
+    }
+}
+
+#[test]
+fn sensor_activity_while_waiting_for_ack_suppresses_later_wake() {
+    let mut startup = startup::Startup::new();
+    prepare(&mut startup, Ok(16));
+    startup.report(16, &[0xf1, 2], 3150);
+    report(&mut startup, 4, 3200);
+    assert!(!startup.wake(State::default().snapshot(3201, 5000), true, true, false));
+    assert_eq!(startup.status(), "running_degraded");
 }

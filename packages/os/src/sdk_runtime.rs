@@ -284,11 +284,12 @@ impl Runtime {
     pub fn set_startup_status(&mut self, status: &'static str) {
         if self.startup_status != status {
             self.startup_status = status;
-            if status == "charging" {
-                self.menu.set_message(b"HOLD TOP LEFT 2S TO WAKE");
-            } else {
-                self.menu.set_message(b"SCAN THEN PICK SENSOR");
-            }
+            self.menu.set_message(match status {
+                "charging" | "wake_pending" | "waiting" => b"STARTING SENSORS",
+                "probing" | "pending" => b"WAITING FOR COMPANION",
+                "unavailable" | "uncertain" | "timed_out" => b"STARTUP FAILED",
+                _ => b"SCAN THEN PICK SENSOR",
+            });
             self.next_display = 0;
         }
     }
@@ -405,7 +406,20 @@ impl Runtime {
         };
         self.menu.set_message(match result {
             "ACCEPTED" => b"REQUEST SENT",
-            "BUSY" if self.startup_status == "charging" => b"HOLD TOP LEFT 2S TO WAKE",
+            "BUSY" if matches!(self.startup_status, "charging" | "wake_pending" | "waiting") => {
+                b"STARTING SENSORS"
+            }
+            "BUSY" if matches!(self.startup_status, "probing" | "pending") => {
+                b"WAITING FOR COMPANION"
+            }
+            "BUSY"
+                if matches!(
+                    self.startup_status,
+                    "unavailable" | "uncertain" | "timed_out"
+                ) =>
+            {
+                b"STARTUP FAILED"
+            }
             "BUSY" => b"RADIO BUSY WAIT THEN RETRY",
             "OK" => b"OK",
             _ => b"REQUEST NOT ACCEPTED",

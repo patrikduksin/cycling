@@ -3,8 +3,8 @@
 //! Call only after device work and DMA have quiesced. The C606 starts one CPU;
 //! the critical section below prevents that CPU's scheduler and interrupt tasks
 //! from touching peripherals during entry. This is not a second-core parking API.
-//! HAL/Embassy uptime excludes sleep. Callers must invalidate acquisition stamps
-//! and use `rtc_elapsed_us` when accounting for the real elapsed interval.
+//! Callers must invalidate acquisition stamps across the receive gap. Compare
+//! RTC and uptime intervals rather than assuming which retained clocks advance.
 use core::cell::RefCell;
 use critical_section::Mutex;
 use cycling_os::capabilities::Error;
@@ -38,7 +38,7 @@ pub enum Outcome {
 pub struct Observation {
     pub outcome: Outcome,
     pub rtc_elapsed_us: u64,
-    /// Uptime spent across the call, which excludes the sleep interval.
+    /// Observed uptime across the call; retention determines whether it advances.
     pub uptime_elapsed_us: u64,
     pub wake_bits: u32,
     pub rejected: bool,

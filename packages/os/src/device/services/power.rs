@@ -59,19 +59,21 @@ fn backlight(light: &mut Backlight, suspend: bool) -> Result<(), Error> {
 pub fn capabilities() -> Capabilities {
     // Stock establishes the fixed shutdown operation. Electrical effects and
     // selectable wake sources remain unknown until physical validation.
-    let unknown = WakeSources {
-        button: Support::Unknown,
-        usb: Support::Unknown,
-    };
     Capabilities {
         shutdown: Support::Supported,
-        sleep: Support::Unknown,
+        sleep: Support::Supported,
+        sleep_timer_ms: Some(10_000),
         wake: Support::Supported,
         shutdown_wake: WakeSources {
             button: Support::Supported,
             usb: Support::Unknown,
+            timer: Support::Unsupported,
         },
-        sleep_wake: unknown,
+        sleep_wake: WakeSources {
+            button: Support::Unknown,
+            usb: Support::Unknown,
+            timer: Support::Supported,
+        },
     }
 }
 pub fn status() -> Status {

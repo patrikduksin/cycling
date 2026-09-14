@@ -511,3 +511,34 @@ frames and pre-sleep samples, then require independently advancing fresh pressur
 and both motion streams before restoring readiness. Companion suspension remains
 dependent on separately verified physical-button recovery; it must not be paired
 with a presumed remote state-seven wake. No current reduction is yet measured.
+
+
+### Battery shutdown and bounded MCU sleep observations
+
+On 2026-09-14, the owner confirmed battery-only shutdown with the delayed
+shutdown implementation subsequently committed in `13f6f15`. A base/harness
+development build accepted `POWER SHUTDOWN AFTER 30000` at uptime 64,094 ms,
+with preparation scheduled at 94,094 ms. The owner removed USB, observed the
+device remain off for ten seconds, then held the top-left button and confirmed
+normal startup before reconnecting USB. Post-boot telemetry reported ready
+companion startup with reason six. This establishes functional battery shutdown
+and button startup, without a current measurement or a USB-insertion wake test.
+
+Base/harness `bbd444e` implements MCU light sleep while leaving the companion
+running. It deliberately discards companion bytes across sleep before interrupts
+resume, resets GNSS UART/DMA acquisition through its owner, preserves confirmed
+ANT closure, and requires fresh post-boundary pressure and both motion streams
+before completing recovery. The capability reports a fixed 10,000 ms timer;
+button/USB wake from this mode remain unknown. This is not companion suspend or
+an indefinite whole-device low-power mode.
+
+The first MCU-only test accepted sleep at uptime 30,665 ms. Hardware reported
+wake bit eight, no rejection, and 10,000,744 microseconds of RTC elapsed time.
+Uptime also advanced by 10,023,885 microseconds with these retained clock domains;
+do not assume that the HAL documentation's general sleep-time exclusion describes
+this configuration. Recovery completed at uptime 42,595 ms. The owner confirmed
+the screen went dark and returned automatically after about ten seconds.
+Subsequent reads showed fresh pressure and both motion streams, two intentional
+sensor invalidations, GNSS reception, fresh UTC and a successful bounded MMC read.
+RTC elapsed and wake status establish the bounded hardware sleep/wake event;
+no current-saving or fully powered-down radio claim follows from them.

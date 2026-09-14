@@ -12,12 +12,15 @@ pub enum Support {
 pub struct WakeSources {
     pub button: Support,
     pub usb: Support,
+    pub timer: Support,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub shutdown: Support,
     pub sleep: Support,
+    /// Fixed device wake timer, if sleep is currently bounded to this duration.
+    pub sleep_timer_ms: Option<u32>,
     /// Explicitly resume from charging mode; this does not describe USB insertion.
     pub wake: Support,
     pub shutdown_wake: WakeSources,
@@ -27,14 +30,17 @@ impl Capabilities {
     pub const UNSUPPORTED: Self = Self {
         shutdown: Support::Unsupported,
         sleep: Support::Unsupported,
+        sleep_timer_ms: None,
         wake: Support::Unsupported,
         shutdown_wake: WakeSources {
             button: Support::Unsupported,
             usb: Support::Unsupported,
+            timer: Support::Unsupported,
         },
         sleep_wake: WakeSources {
             button: Support::Unsupported,
             usb: Support::Unsupported,
+            timer: Support::Unsupported,
         },
     };
 }

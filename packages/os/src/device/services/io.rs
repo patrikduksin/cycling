@@ -64,8 +64,8 @@ pub fn power_boundary(now: u64) {
     });
 }
 
-/// MCU uptime excludes sleep. Invalidate cached observations explicitly rather
-/// than allowing pre-sleep readings to appear fresh after a long RTC interval.
+/// Invalidate cached observations across intentional receive loss, including
+/// configurations where MCU uptime does not count the sleep interval.
 pub fn sleep_boundary(now: u64) {
     crate::device::companion_uart::sleep_boundary();
     SLEEP_BOUNDARY.store(true, Ordering::Release);

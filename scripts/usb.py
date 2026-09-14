@@ -77,9 +77,22 @@ class UsbConnection:
         """Send once. The caller decides how to handle an uncertain mutation."""
         self.request_id += 1
         request = f'CMD {self.request_id} {command}\n'.encode()
-        if os.write(self.fd, request) != len(request):
-            raise RuntimeError('short USB command write; outcome may be uncertain')
         deadline = time.monotonic() + timeout
+        while True:
+            try:
+                written = os.write(self.fd, request)
+                break
+            except BlockingIOError:
+                # A re-enumerated tty may exist before it accepts output.
+                # EAGAIN accepted no bytes; this is still the first submission.
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('USB not writable; command was not submitted') from None
+                select.select([], [self.fd], [], min(.2, remaining))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('USB not writable; command was not submitted') from None
+        if written != len(request):
+            raise RuntimeError('short USB command write; outcome may be uncertain')
         while time.monotonic() < deadline:
             if not select.select([self.fd], [], [], min(.2, max(0, deadline - time.monotonic())))[0]:
                 continue

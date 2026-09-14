@@ -412,3 +412,23 @@ presentation belongs to the shell; the device capability reports the charging
 state without adding an animation. Source `1fbfd1f` additionally handles physical
 wake during charging preparation and keeps failed charging preparation from
 silently resuming radios. Raw captures remain private under `.local/power/`.
+
+Final base/harness firmware `a7248d6f7ba2`, with code identical to `1fbfd1f`,
+completed another USB shutdown-to-charging cycle. Saving the current settings
+succeeded before the request; a save submitted after shutdown acceptance returned
+`BUSY`. The new boot reached charging standby, and the owner confirmed standby
+followed by normal screen return after a two-second top-left hold. Recovery
+reported completion with operating reason five, fresh pressure and both motion
+streams, GNSS reception, verified Wi-Fi connectivity and BLE advertising. The
+four saved display/time preferences matched after the power transition, and a
+bounded read of MMC sector zero succeeded. No synthetic button events supplied
+this evidence. The device was left in normal operation on that base/harness
+firmware, with no collector running.
+
+Host tests cover admission during active IO, refused new writes, ambiguous
+submission, transition/recovery deadlines, sound-stop recovery, ANT close
+completion, physical wake during charging preparation and charging preparation
+failure without an unintended restart. All four base/SDK and harness build
+combinations passed. Battery-only shutdown, broader wake-source coverage,
+whole-device sleep and electrical current measurements remain unverified in this
+session. Charging standby and radio quiescence are not electrical-off claims.

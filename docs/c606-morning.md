@@ -81,7 +81,9 @@ firmware has a text status screen. A coordinator can reopen the menu without sel
 FOUNDATION MENU
 ```
 
-Startup waits for the companion bridge even when its first reports are delayed.
+Startup sends its one-shot acknowledgment after three seconds of clean passive
+observation without requiring battery/power reports, which battery boot sends
+only after acknowledgment. The separate charging initialization waits for a fresh bridge.
 An idle charging companion receives one bounded normal-initialization operation
 after its charging acknowledgment. Existing sensor/radio activity suppresses
 reinitialization. The menu shows `STARTING SENSORS`; scanning is enabled only after

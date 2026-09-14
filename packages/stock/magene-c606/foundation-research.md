@@ -301,8 +301,11 @@ fresh motion and pressure timestamps; timeout is a failure. The audited branches
 contain no identified flash erase, vendor-filesystem write or calibration-program
 path; the existing stock motion initialization retains its opaque internal limits.
 
-Absence of the first battery/power reports at three seconds now keeps passive
-probing active instead of permanently disabling ANT. Transport loss remains a
-distinct failure. Live validation of source `382c85cadeb1` reached ready with reason
+Source `382c85cadeb1` kept probing when battery/power reports were absent. This
+was insufficient for battery startup, which waits for the acknowledgment before
+periodic reports and shuts down after its acknowledgment timeout. Source
+`271749ae53ac` removes that prerequisite for the one-shot acknowledgment after
+three seconds of clean passive observation. The charging initialization transition
+still requires a fresh bridge. Live validation of source `382c85cadeb1` reached ready with reason
 six and independently advancing sensors after charging startup, with zero button
 reports after boot. This observation does not establish every power-cycle path.

@@ -158,7 +158,7 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         seed,
     );
     READY.store(true, Ordering::Release);
-    spawner.spawn(connection(controller, stack).unwrap());
+    spawner.spawn(connection(controller).unwrap());
     spawner.spawn(network(runner).unwrap());
     spawner.spawn(verify(stack).unwrap());
     Some(stack)
@@ -194,10 +194,13 @@ fn request_recovery(generation: u32) {
 }
 
 #[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
+async fn connection(mut controller: WifiController<'static>) {
     let mut retry = cycling_os::connectivity::Reconnect::default();
     loop {
-        let (command, automatic) = if stack.is_link_up() {
+        // Controller events are authoritative here. Embassy's link flag is updated by
+        // another task and can remain true after the disconnect event; polling an
+        // already-disconnected controller against that stale flag would never yield.
+        let (command, automatic) = if controller.is_connected() {
             match select(controller.wait_for_disconnect_async(), next_command()).await {
                 Either::First(_) => {
                     GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -206,6 +209,7 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
                     if critical_section::with(|cs| COMMAND.borrow_ref(cs).is_none()) {
                         complete(Some("link_lost"));
                     }
+                    Timer::after_millis(1).await;
                     continue;
                 }
                 Either::Second(operation) => operation,
@@ -256,7 +260,7 @@ async fn connection(mut controller: WifiController<'static>, stack: Stack<'stati
         }
         GENERATION.fetch_add(1, Ordering::AcqRel);
         PROBE.store(PROBE_WAITING, Ordering::Relaxed);
-        if stack.is_link_up() {
+        if controller.is_connected() {
             LINK.store(LINK_RETRYING, Ordering::Relaxed);
             if !matches!(
                 with_timeout(Duration::from_secs(5), controller.disconnect_async()).await,
@@ -332,6 +336,13 @@ async fn verify(stack: Stack<'static>) {
     let mut probe_failures = 0u8;
     let mut dhcp_failures = 0u8;
     loop {
+        // Do not spin on a stale DHCP snapshot after the radio has disconnected.
+        // The network runner needs executor time to publish configuration-down.
+        if !online() {
+            Timer::after_millis(50).await;
+            continue;
+        }
+
         if with_timeout(Duration::from_secs(20), stack.wait_config_up())
             .await
             .is_err()

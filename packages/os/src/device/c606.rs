@@ -212,10 +212,14 @@ impl cycling_os::capabilities::InputSource for Input {
         super::services::io::take_edge()
     }
 }
-pub struct Power(channel::Channel<'static, LowSpeed>);
+pub struct Power;
 impl cycling_os::capabilities::Power for Power {
     fn availability(&self) -> cycling_os::capabilities::Availability {
-        cycling_os::capabilities::Availability::Ready
+        if super::services::power::light_available() {
+            cycling_os::capabilities::Availability::Ready
+        } else {
+            cycling_os::capabilities::Availability::Failed
+        }
     }
     fn battery(&self) -> Option<(u8, u16, u64)> {
         use cycling_os::capabilities::Observation;
@@ -237,9 +241,7 @@ impl cycling_os::capabilities::Power for Power {
         if percent > 100 {
             return Err(cycling_os::capabilities::Error::Invalid);
         }
-        self.0
-            .set_duty(percent)
-            .map_err(|_| cycling_os::capabilities::Error::Failed)
+        super::services::power::brightness(percent)
     }
 }
 pub struct Positioning;
@@ -262,6 +264,7 @@ pub struct Parts {
     pub positioning: Positioning,
     pub network: Network,
     pub power: Power,
+    pub power_control: Power,
     pub sensors: Sensors,
     pub sound: Sound,
     pub bulk: Bulk,
@@ -272,6 +275,7 @@ pub struct Parts {
 }
 pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
     let board = init();
+    spawner.spawn(super::services::power::run(board.backlight).unwrap());
     spawner.spawn(super::services::positioning::run(board.gps_receiver).unwrap());
     spawner.spawn(super::services::io::run(board.touch, board.touch_available).unwrap());
     let stack = super::wifi::initialize(board.wifi, spawner).await;
@@ -289,7 +293,8 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         ble: Ble,
         positioning: Positioning,
         network: Network(stack),
-        power: Power(board.backlight),
+        power: Power,
+        power_control: Power,
         sensors: Sensors,
         sound: Sound,
         bulk: Bulk(board.bulk),
@@ -323,6 +328,7 @@ impl cycling_os::capabilities::Ble for Ble {
         &mut self,
         operation: cycling_os::ble_transport::Operation,
     ) -> Result<(), cycling_os::capabilities::Error> {
+        let _access = super::services::power::ACCESS.enter()?;
         super::bluetooth::request(operation)
     }
     fn control(&self) -> cycling_os::connectivity::ControlStatus {
@@ -357,6 +363,9 @@ impl cycling_os::capabilities::Ant for Ant {
         operation: cycling_os::capabilities::AntOperation,
         now_ms: u64,
     ) -> &'static str {
+        let Ok(_access) = super::services::power::ACCESS.enter() else {
+            return "BUSY";
+        };
         super::services::ant::request(operation, now_ms)
     }
 }
@@ -393,6 +402,7 @@ impl cycling_os::capabilities::Network for Network {
         &mut self,
         operation: cycling_os::connectivity::WifiOperation,
     ) -> Result<(), cycling_os::capabilities::Error> {
+        let _access = super::services::power::ACCESS.enter()?;
         super::wifi::request(operation)
     }
     fn control(&self) -> cycling_os::connectivity::ControlStatus {
@@ -414,18 +424,27 @@ impl cycling_os::bulk::Read for Bulk {
             .info()
     }
     fn read(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<(), cycling_os::bulk::Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| cycling_os::bulk::Error::Unavailable)?;
         self.0
             .as_mut()
             .ok_or(cycling_os::bulk::Error::Unavailable)?
             .read(sector, output)
     }
     fn clock(&mut self, hz: u32) -> Result<(), cycling_os::bulk::Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| cycling_os::bulk::Error::Unavailable)?;
         self.0
             .as_mut()
             .ok_or(cycling_os::bulk::Error::Unavailable)?
             .clock(hz)
     }
     fn recover(&mut self) -> Result<(), cycling_os::bulk::Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| cycling_os::bulk::Error::Unavailable)?;
         self.0
             .as_mut()
             .ok_or(cycling_os::bulk::Error::Unavailable)?
@@ -477,5 +496,20 @@ impl cycling_os::position_control::Control for Positioning {
     }
     fn resume(&mut self, now: u64) -> Result<(), cycling_os::capabilities::Error> {
         super::services::position_control::resume(now)
+    }
+}
+
+impl cycling_os::power::Control for Power {
+    fn capabilities(&self) -> cycling_os::power::Capabilities {
+        super::services::power::capabilities()
+    }
+    fn status(&self) -> cycling_os::power::Status {
+        super::services::power::status()
+    }
+    fn request(
+        &mut self,
+        operation: cycling_os::power::Operation,
+    ) -> Result<(), cycling_os::capabilities::Error> {
+        super::services::power::request(operation, embassy_time::Instant::now().as_millis())
     }
 }

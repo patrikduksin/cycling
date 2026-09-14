@@ -16,6 +16,7 @@ pub const MAX_LINE: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
+    Power(Option<crate::power::Operation>),
     Peripheral(crate::peripheral_commands::Command),
     Harness(crate::harness::Command),
     #[cfg(feature = "cycling")]
@@ -204,6 +205,12 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
                 crate::peripheral_commands::parse(name, &mut words).ok_or(Error::Invalid)?,
             )
         }
+        "POWER" => Command::Power(match words.next() {
+            None | Some("STATUS") => None,
+            Some("SHUTDOWN") => Some(crate::power::Operation::Shutdown),
+            Some("SLEEP") => Some(crate::power::Operation::Sleep),
+            _ => return Err(Error::Invalid),
+        }),
         "HELP" => Command::Help,
         "INFO" => Command::Info,
         "STATUS" => Command::Status,

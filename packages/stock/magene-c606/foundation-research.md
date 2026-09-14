@@ -140,16 +140,18 @@ press, hold, repeat or release timing. The three event-1 short-click mappings
 remain the physical baseline in [companion.md](companion.md).
 
 The same callback independently calls `0x16354`. Button 0 with event 4, or any
-button event while a companion mode accessor returns 3, enters a restart-timer
-path through `0x167c0` with argument 100. A main-MCU implementation cannot assume
-that ignoring a button report prevents the companion from acting. The timeout's
-physical effect and units remain unverified. Do not perform unattended holds to
-infer them.
+button event while a companion mode accessor returns 3, reconfigures the periodic
+state-machine timer through `0x167c0` with argument 100. This is timer restart,
+not evidence of a processor reset. Timer registration at `0x1a6ec` selects
+callback `0x1a7b8`, which queues worker `0x1a68c` and its state dispatcher
+`0x15f1e`. A main-MCU implementation cannot assume that ignoring a button report
+prevents the companion from acting. Physical timing remains unverified. Do not
+perform unattended holds to infer it.
 
 | Stock operation | Main entry point | Recovered envelope and payload |
 |---|---|---|
 | Power off | `0x42052094` | Class 2, group `10`, `e2 02 00 00 00 00 00 00` |
-| Power on | `0x420520e8` | Class 2, group `10`, `e2 02 00 00 00 01 00 00` |
+| Power-on acknowledgment | `0x420520e8` | Class 2, group `10`, `e2 02 00 00 00 01 00 00` |
 | Check power-on reason | `0x42052140` | Class 1, group `10`, `e2 02 00 00 00 03 00 00` |
 
 These names come from stock callers. UART submission, a matching reply, USB
@@ -158,6 +160,60 @@ sleep request was exercised for this research. A complete transition needs owned
 storage durability, peripheral sequencing, loss of readiness, bounded completion
 and a tested recovery path. Functional shutdown/wake tests require the owner
 present if physical recovery may be needed.
+
+### Shutdown receiver and completion limits
+
+A further static trace on 2026-09-14 used the same N21 release 1.956 and N22
+release 1.902 artifacts. N22 remains a supporting update image, not a readback
+of the installed companion. No new device access accompanied this trace.
+
+N22 receiver `0x178a4` accepts the fixed shutdown envelope above through
+`0x178fa`, calling state setter `0x173a8(0)`. The setter clears the startup
+acknowledgment and a pending button event, calls teardown `0x161b8`, enables
+button-event handling through `0x15d1c(1)`, and enters state zero.
+
+Teardown first calls `0x174dc`. This stops acquisition/service timers and sensor
+bus activity, takes the selected motion-driver teardown branch, requests ANT
+closure through `0x131fc(0)`, and disables companion GPIO controls at indices two
+and three through `0x145c8`. It also drives companion GPIO23 and GPIO13 low.
+The outer `0x161b8` then disables control indices one, five and zero, in that
+order. Table `0x23b00` maps these five control indices to companion GPIO10,
+GPIO11, GPIO12, GPIO7 and GPIO6 respectively. The control setter `0x1601c`
+skips writes when its cached state already matches. These are companion pin
+numbers, not ESP32 pins; rail names and their electrical effects remain
+unverified. The traced teardown contains no identified flash erase,
+vendor-filesystem write or calibration-program operation. That does not prove
+all asynchronous radio work has completed.
+
+Only after the setter returns does `0x17a14` construct the generic eight-byte
+response `e2 02 01 00 00 00 00 00`. GPIO transitions precede this response, so
+the main CPU may lose operation before receiving it. Other accepted setters
+share this response shape. A correlated reply establishes receiver return,
+not system power-off completion; no distinct shutdown-complete event was
+identified. Missing replies, a dark panel and transport loss must retain
+uncertain completion. A timeout must not trigger command replay.
+
+State zero dispatches through `0x149b0`, which observes the companion's charging
+input and consumes button events. The charging path `0x1613c` accepts top-left
+event four and selects initialization state seven with subtype two. The other
+path `0x161e0` has battery and button guards before selecting initialization.
+The existing startup acknowledgment is a one-shot RAM flag, not an unconditional
+remote wake command. Do not automatically send initialization value seven to
+recover from a deliberate shutdown. If USB leaves the main CPU operating, keep
+the transition uncertain until explicit recovery evidence arrives. Recovery
+after a new boot must still establish fresh acquisition, as described above.
+
+### Sleep remains a separate operation
+
+Setter value three shares peripheral teardown but omits the outer shutdown
+control sequence. Its state dispatch calls `0x14a4c`, consumes pending events
+from all three buttons, and selects initialization state seven on a nonzero
+event. This supports a companion suspend/resume candidate. It does not establish
+a supported whole-device sleep operation, main-CPU low-power entry, USB wake or
+electrical savings. N21's function named `MidSendSleepToLCD` at `0x4202ace4`
+sets a software flag; that name alone supplies no panel command or timing
+contract. Keep sleep and selectable wake sources unverified until their full
+sequencing and physical recovery are established.
 
 Battery decoding remains unchanged. N21 treats power-status zero as charging;
 other values remain raw. Existing percentage and USB-transition observations do

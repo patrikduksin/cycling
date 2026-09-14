@@ -42,6 +42,13 @@ impl<'d> Backend<'d> {
 
 impl OwnedFlash for Backend<'_> {
     type Error = Error;
+    fn availability(&self, _region: Region) -> cycling_os::capabilities::Availability {
+        if super::services::power::ACCESS.closed() {
+            cycling_os::capabilities::Availability::Initializing
+        } else {
+            cycling_os::capabilities::Availability::Ready
+        }
+    }
     fn geometry(&self, region: Region) -> Geometry {
         Geometry {
             capacity: Self::region(region).1,
@@ -50,6 +57,9 @@ impl OwnedFlash for Backend<'_> {
         }
     }
     fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| AccessError::Unavailable)?;
         let (base, capacity) = Self::region(region);
         let address = Self::address(base, capacity, offset, output.len(), 1)?;
         // Adapt arbitrary byte reads to the physical four-byte read granularity.
@@ -89,6 +99,9 @@ impl OwnedFlash for Backend<'_> {
         Ok(())
     }
     fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| AccessError::Unavailable)?;
         let (base, capacity) = Self::region(region);
         let address = Self::address(
             base,
@@ -102,6 +115,9 @@ impl OwnedFlash for Backend<'_> {
             .map_err(AccessError::Device)
     }
     fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), Error> {
+        let _access = super::services::power::ACCESS
+            .enter()
+            .map_err(|_| AccessError::Unavailable)?;
         let (base, capacity) = Self::region(region);
         let address = Self::address(base, capacity, offset, length, FlashStorage::ERASE_SIZE)?;
         self.flash

@@ -194,12 +194,33 @@ pub fn execute<
     sensors: &mut impl cycling_os::capabilities::Sensors,
     network: &mut impl cycling_os::capabilities::Network,
     input: &impl cycling_os::capabilities::InputObservation,
+    power: &mut impl cycling_os::power::Control,
     diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut crate::sdk_runtime::Runtime,
 ) {
     let mut output = Text::new();
     let mut status = "OK";
     let started = embassy_time::Instant::now();
+    if !power.status().ready
+        && !matches!(
+            request.command,
+            Command::Power(_)
+                | Command::Info
+                | Command::Status
+                | Command::Input
+                | Command::Battery
+                | Command::Position
+                | Command::Peripheral(_)
+                | Command::Wifi
+                | Command::Ble
+                | Command::Ant
+                | Command::Restart
+                | Command::Help
+        )
+    {
+        terminal.reply(request.id, "BUSY", "power transition", now);
+        return;
+    }
     if let Some(status) =
         cycling_os::shell::commands::execute(request.command, system, now, &mut output)
     {
@@ -234,6 +255,22 @@ pub fn execute<
         return;
     }
     match request.command {
+        Command::Power(operation) => {
+            if let Some(operation) = operation {
+                #[cfg(feature = "cycling")]
+                if sdk.recording() {
+                    terminal.reply(request.id, "BUSY", "active work", now);
+                    return;
+                }
+                status = cycling_os::terminal_protocol::request_status(power.request(operation));
+            }
+            let _ = write!(
+                output,
+                "capabilities={:?} status={:?}",
+                power.capabilities(),
+                power.status()
+            );
+        }
         Command::Peripheral(command) => {
             status = cycling_os::peripheral_commands::execute(
                 command,

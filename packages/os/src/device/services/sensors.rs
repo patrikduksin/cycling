@@ -21,6 +21,9 @@ pub fn startup_begin(now: u64) {
     SHARED.lock(|s| s.borrow_mut().startup.begin(now));
 }
 pub fn startup_status() -> &'static str {
+    if super::power::ACCESS.closed() {
+        return "power_transition";
+    }
     SHARED.lock(|s| s.borrow().startup.status())
 }
 pub fn startup_reason() -> Option<u8> {
@@ -36,6 +39,7 @@ pub fn query_status() -> &'static str {
     SHARED.lock(|s| s.borrow().query)
 }
 pub fn query(now: u64) -> Result<(), Error> {
+    let _access = super::power::ACCESS.enter()?;
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         if matches!(s.query, "queued" | "waiting") {
@@ -75,6 +79,11 @@ pub fn loss() {
     });
 }
 pub fn tick(now: u64) {
+    // A deliberate transition must not trigger the startup recovery writer.
+    // Passive receive remains alive for physical observations and diagnostics.
+    if super::power::ACCESS.closed() {
+        return;
+    }
     use cycling_os::capabilities::Observation;
     let bridge = super::io::snapshot(now);
     let bridge_fresh = bridge.is_some_and(|s| {

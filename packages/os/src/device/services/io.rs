@@ -49,7 +49,17 @@ pub fn take_edge() -> Option<Edge> {
     EDGES.lock(|edges| edges.borrow_mut().pop())
 }
 fn edge(now: u64, input: Input) {
+    if super::power::ACCESS.closed() {
+        return;
+    }
     EDGES.lock(|edges| edges.borrow_mut().push(now, input));
+}
+pub fn power_boundary(now: u64) {
+    EDGES.lock(|edges| {
+        let mut edges = edges.borrow_mut();
+        while edges.pop().is_some() {}
+        edges.push(now, Input::Cancel);
+    });
 }
 
 #[embassy_executor::task]

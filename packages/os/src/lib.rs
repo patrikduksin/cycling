@@ -44,6 +44,8 @@ pub mod companion_sensors;
 
 pub mod position_control;
 
+pub mod power;
+
 pub mod peripheral_commands;
 
 mod ui_text;

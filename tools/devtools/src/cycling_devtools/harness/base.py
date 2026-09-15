@@ -19,6 +19,21 @@ def expect(connection, command, status):
     return reply
 
 
+def check_overlong(connection, build):
+    """Exercise the advertised framing limit without sending an unbounded probe."""
+    advertised = build.get('max_line')
+    if not isinstance(advertised, str) or not re.fullmatch(r'[0-9]{1,4}', advertised):
+        raise ValueError('INFO must advertise a bounded max_line')
+    limit = int(advertised)
+    if not 16 <= limit <= 4096:
+        raise ValueError('INFO max_line must be between 16 and 4096 bytes')
+    # The payload alone exceeds the limit, regardless of the CMD/id prefix.
+    # The suffix must be discarded with the rejected line, never executed.
+    reply = expect(connection, 'INVALID ' + 'x' * (limit + 1) + ' RESTART', 'INVALID')
+    if reply['data'] != f'line exceeds {limit} bytes':
+        raise AssertionError(f'expected explicit overlong rejection for {limit} bytes')
+
+
 def reopen(port, directory, label, deadline=20):
     """Retry only opening a new read-only session, never replay a prior command."""
     stop = time.monotonic() + deadline
@@ -132,9 +147,7 @@ def run(args):
         for command in ('BRIGHTNESS 101', 'TIMEZONE 841', 'IDLE 3601 20', 'SAVE extra'):
             expect(connection, command, 'INVALID')
         # Malformed/overlong commands must not execute a suffix or reset the board.
-        overlong = expect(connection, 'INVALID ' + 'x' * 128 + ' RESTART', 'INVALID')
-        if '128' not in overlong['data']:
-            raise AssertionError('expected explicit overlong rejection')
+        check_overlong(connection, build)
         read(connection, 'STATUS')
         position = read(connection, 'POSITION')
         inputs = read(connection, 'INPUT')

@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from cycling_devtools.harness.base import apply, expect, preserved, wifi_failures, transport_recovery
+from cycling_devtools.harness.base import apply, expect, preserved, wifi_failures, transport_recovery, check_overlong
 
 class Connection:
     def __init__(self, status='OK'):
@@ -35,6 +35,40 @@ class BaseTests(unittest.TestCase):
 
     def test_wifi_failure_counter_is_not_association_count(self):
         self.assertEqual(wifi_failures(Connection()), 4)
+
+class FramingTests(unittest.TestCase):
+    def test_probe_exceeds_real_256_byte_limit_and_preserves_suffix_test(self):
+        class FramingConnection(Connection):
+            def terminal_command(self, command):
+                self.commands.append(command)
+                # The production receiver advertises 256, not the old probe's 128.
+                frame = f'CMD 0 {command}'.encode('ascii')
+                return dict(status='INVALID', data='line exceeds 256 bytes'
+                            if len(frame) > 256 else 'malformed command')
+        connection = FramingConnection()
+        check_overlong(connection, {'max_line': '256'})
+        self.assertEqual(len(connection.commands), 1)
+        self.assertGreater(len(connection.commands[0].encode('ascii')), 256)
+        self.assertTrue(connection.commands[0].endswith(' RESTART'))
+        self.assertNotIn('\n', connection.commands[0])
+        self.assertEqual(connection.request_id, -1)
+
+    def test_invalid_or_unbounded_advertisement_never_sends_a_probe(self):
+        for value in (None, '', 'bad', '-1', '0', '15', '4097', '1000000000', 256, True):
+            connection = Connection()
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                check_overlong(connection, {'max_line': value})
+            self.assertEqual(connection.commands, [])
+
+    def test_generic_invalid_and_wrong_limit_replies_do_not_pass(self):
+        from unittest.mock import Mock
+        for message in ('malformed command', 'line exceeds 128 bytes'):
+            connection = Mock()
+            connection.terminal_command.return_value = dict(status='INVALID', data=message)
+            with self.subTest(message=message), self.assertRaises(AssertionError):
+                check_overlong(connection, {'max_line': '256'})
+            connection.terminal_command.assert_called_once()
+
 
 class StallConnection:
     def __init__(self, timeout=False):

@@ -72,6 +72,21 @@ class RideExportTests(unittest.TestCase):
                 slot(3, 2, 7, 2, 2000), slot(4, 2, 7, 3, 2000),
                 slot(2, 2, 7, 4, 3000, [later]), slot(6, 2, 7, 5, 3000)]
 
+    def test_workout_optional_fields_preserve_legacy_samples(self):
+        data = bytearray(slot(2, 2, 1, 1, 1000, [{'active_ms': 1000}]))
+        data[48:52] = (0x1c0).to_bytes(4, 'little')
+        data[70:72] = (215).to_bytes(2, 'little')
+        data[72:76] = (12345).to_bytes(4, 'little')
+        data[76:78] = (-37).to_bytes(2, 'little', signed=True)
+        data[28:32] = bytes(4)
+        data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
+        sample = decode_slot(bytes(data))['samples'][0]
+        self.assertEqual((sample['speed_mm_s'], sample['power_watts'], sample['gradient_tenths']), (12345, 215, -37))
+        old = decode_slot(self.fixture()[1])['samples'][0]
+        self.assertIsNone(old['speed_mm_s'])
+        self.assertIsNone(old['power_watts'])
+        self.assertIsNone(old['gradient_tenths'])
+
     def test_known_fixture_decodes_values_and_segments(self):
         rides, invalid = rides_from_slots(self.fixture())
         self.assertEqual(invalid, [])

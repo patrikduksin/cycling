@@ -21,9 +21,10 @@ pub struct Diagnostics {
 }
 
 pub struct Menu {
+    workout: bool,
     discoveries: [Option<Discovery>; 8],
     present: [bool; 8],
-    channels: [Option<Snapshot>; 3],
+    channels: [Option<Snapshot>; crate::ant::CHANNEL_CAPACITY],
     cursor: usize,
     visible_rows: [usize; 7],
     visible_count: usize,
@@ -40,17 +41,22 @@ impl Default for Menu {
 impl Menu {
     pub const fn new() -> Self {
         Self {
+            workout: false,
             discoveries: [None; 8],
             present: [false; 8],
-            channels: [None; 3],
+            channels: [None; crate::ant::CHANNEL_CAPACITY],
             cursor: 0,
-            visible_rows: [0, 12, 13, 0, 0, 0, 0],
+            visible_rows: [0, 13, 14, 0, 0, 0, 0],
             visible_count: 3,
             last_press: None,
             scanning: false,
             needs_navigation: false,
             message: b"SCAN THEN PICK SENSOR",
         }
+    }
+    pub fn workout(&mut self) {
+        self.workout = true;
+        self.layout();
     }
     pub fn diagnostics(&self) -> Diagnostics {
         Diagnostics {
@@ -61,10 +67,10 @@ impl Menu {
         }
     }
     fn layout(&mut self) {
-        let mut rows = [0; 14];
+        let mut rows = [0; 15];
         let mut count = 0;
         let mut selected: usize = 0;
-        for row in 0..14 {
+        for row in 0..15 {
             if self.visible(row) {
                 if row == self.cursor {
                     selected = count;
@@ -73,8 +79,9 @@ impl Menu {
                 count += 1;
             }
         }
-        let first = selected.saturating_sub(6);
-        self.visible_count = (count - first).min(7);
+        let capacity = if self.workout { 5 } else { 7 };
+        let first = selected.saturating_sub(capacity - 1);
+        self.visible_count = (count - first).min(capacity);
         self.visible_rows[..self.visible_count]
             .copy_from_slice(&rows[first..first + self.visible_count]);
     }
@@ -84,7 +91,7 @@ impl Menu {
     pub fn refresh(
         &mut self,
         discoveries: [Option<Discovery>; 8],
-        channels: [Option<Snapshot>; 3],
+        channels: [Option<Snapshot>; crate::ant::CHANNEL_CAPACITY],
         scanning: bool,
         _now: u64,
     ) {
@@ -142,7 +149,7 @@ impl Menu {
             Button::BottomLeft => {
                 self.needs_navigation = false;
                 loop {
-                    self.cursor = (self.cursor + 1) % 14;
+                    self.cursor = (self.cursor + 1) % 15;
                     if self.visible(self.cursor) {
                         break;
                     }
@@ -169,24 +176,28 @@ impl Menu {
                     }
                     self.discoveries[slot].map(|peer| Action::Connect(peer.identity))
                 }
-                9..=11 => self.channels[self.cursor - 9]
+                9..=12 => self.channels[self.cursor - 9]
                     .and_then(|channel| channel.selected)
                     .map(|peer| Action::Disconnect(peer.device_type)),
-                12 => Some(Action::Start),
-                13 => Some(Action::Ride),
+                13 => Some(Action::Start),
+                14 => Some(Action::Ride),
                 _ => None,
             },
         }
     }
     fn visible(&self, row: usize) -> bool {
         match row {
-            0 | 12 | 13 => true,
+            0 => true,
+            13 | 14 => !self.workout,
             1..=8 => self.discoveries[row - 1].is_some(),
-            9..=11 => self.channels[row - 9].is_some_and(|s| s.selected.is_some()),
+            9..=12 => self.channels[row - 9].is_some_and(|s| s.selected.is_some()),
             _ => false,
         }
     }
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
+        if self.workout {
+            return self.workout_pixel(x, y);
+        }
         const WHITE: u16 = 0xffff;
         const GREEN: u16 = 0x07e0;
         const YELLOW: u16 = 0xffe0;
@@ -218,8 +229,8 @@ impl Menu {
                         b"SCAN SENSORS"
                     }
                 }
-                12 => b"START RIDE TEST",
-                13 => b"RIDE STATUS",
+                13 => b"START RIDE TEST",
+                14 => b"RIDE STATUS",
                 _ => b"",
             };
             if text(x, y, 20, top, 2, label) {
@@ -270,7 +281,7 @@ impl Menu {
                     return if self.present[row - 1] { color } else { YELLOW };
                 }
             }
-            if (9..=11).contains(&row) {
+            if (9..=12).contains(&row) {
                 let channel = self.channels[row - 9].unwrap();
                 let peer = channel.selected.unwrap();
                 let status: &[u8] = match channel.link {
@@ -300,6 +311,89 @@ impl Menu {
         }
         0
     }
+    fn workout_pixel(&self, x: usize, y: usize) -> u16 {
+        let cyan = 0x07ff;
+        let white = 0xffff;
+        if (39..249).contains(&y) {
+            let index = (y - 39) / 42;
+            if index >= self.visible_count {
+                return 0;
+            }
+            let row = self.visible_rows[index];
+            let top = 39 + index * 42;
+            let color = if row == self.cursor { cyan } else { white };
+            if row == self.cursor && text(x, y, 3, top, 2, b">") {
+                return cyan;
+            }
+            if row == 0
+                && text(
+                    x,
+                    y,
+                    22,
+                    top,
+                    2,
+                    if self.scanning {
+                        b"SCANNING..."
+                    } else {
+                        b"SCAN SENSORS"
+                    },
+                )
+            {
+                return color;
+            }
+            if (1..=8).contains(&row) {
+                let peer = self.discoveries[row - 1].unwrap();
+                if text(x, y, 22, top, 2, kind(peer.identity.device_type))
+                    || number(x, y, 108, top, 2, u32::from(peer.identity.device_number), 5)
+                    || text(
+                        x,
+                        y,
+                        22,
+                        top + 20,
+                        1,
+                        if self.present[row - 1] {
+                            b"SELECT TO CONNECT"
+                        } else {
+                            b"NOT SEEN - SCAN AGAIN"
+                        },
+                    )
+                {
+                    return color;
+                }
+            }
+            if (9..=12).contains(&row) {
+                let channel = self.channels[row - 9].unwrap();
+                let peer = channel.selected.unwrap();
+                if text(x, y, 22, top, 2, kind(peer.device_type))
+                    || text(x, y, 108, top, 2, b"DROP")
+                    || text(
+                        x,
+                        y,
+                        22,
+                        top + 20,
+                        1,
+                        if channel.link == LinkState::Connected && !channel.stale {
+                            b"CONNECTED"
+                        } else {
+                            b"WAITING"
+                        },
+                    )
+                {
+                    return color;
+                }
+            }
+        }
+        if text(x, y, 8, 260, 2, &self.message[..self.message.len().min(19)]) {
+            return 0xffe0;
+        }
+        if text(x, y, 8, 300, 2, b"NEXT") || text(x, y, 156, 300, 2, b"SELECT") {
+            return white;
+        }
+        if text(x, y, 8, 283, 1, b"TOP LEFT BACK") {
+            return white;
+        }
+        0
+    }
     #[cfg(test)]
     fn reference_pixel(&self, x: usize, y: usize) -> u16 {
         const WHITE: u16 = 0xffff;
@@ -314,10 +408,10 @@ impl Menu {
         if text(x, y, 8, 31, 1, b"PICK THE NUMBER ON YOUR SENSOR") {
             return WHITE;
         }
-        let mut rows = [0usize; 14];
+        let mut rows = [0usize; 15];
         let mut count = 0;
         let mut selected = 0;
-        for row in 0..14 {
+        for row in 0..15 {
             if self.visible(row) {
                 if row == self.cursor {
                     selected = count;
@@ -341,8 +435,8 @@ impl Menu {
                         b"SCAN SENSORS"
                     }
                 }
-                12 => b"START RIDE TEST",
-                13 => b"RIDE STATUS",
+                13 => b"START RIDE TEST",
+                14 => b"RIDE STATUS",
                 _ => b"",
             };
             if text(x, y, 20, top, 2, label) {
@@ -393,7 +487,7 @@ impl Menu {
                     return if self.present[row - 1] { color } else { YELLOW };
                 }
             }
-            if (9..=11).contains(&row) {
+            if (9..=12).contains(&row) {
                 let channel = self.channels[row - 9].unwrap();
                 let peer = channel.selected.unwrap();
                 let status: &[u8] = match channel.link {
@@ -429,6 +523,7 @@ fn kind(device_type: u8) -> &'static [u8] {
         40 => b"RADAR",
         11 => b"POWER",
         120 => b"HEART",
+        121 | 123 => b"SPEED",
         _ => b"SENSOR",
     }
 }
@@ -469,11 +564,11 @@ mod tests {
             })
         });
         menu.refresh(peers, channels, false, 0);
-        for index in 0..14 {
+        for index in 0..15 {
             assert_same_pixels(&menu);
             menu.input(press(Button::BottomLeft), index * 500);
         }
-        menu.refresh([None; 8], [None; 3], true, 8000);
+        menu.refresh([None; 8], [None; crate::ant::CHANNEL_CAPACITY], true, 8000);
         assert_same_pixels(&menu);
         menu.input(Input::Cancel, 8500);
         assert_same_pixels(&menu);
@@ -524,7 +619,7 @@ mod tests {
                 None,
                 None,
             ],
-            [None; 3],
+            [None; crate::ant::CHANNEL_CAPACITY],
             false,
             0,
         );
@@ -540,7 +635,7 @@ mod tests {
                 None,
                 None,
             ],
-            [None; 3],
+            [None; crate::ant::CHANNEL_CAPACITY],
             false,
             400,
         );
@@ -550,7 +645,7 @@ mod tests {
         );
         menu.refresh(
             [Some(peer(20)), None, None, None, None, None, None, None],
-            [None; 3],
+            [None; crate::ant::CHANNEL_CAPACITY],
             false,
             800,
         );

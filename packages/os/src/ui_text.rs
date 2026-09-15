@@ -51,6 +51,12 @@ fn dot(character: u8, x: usize, y: usize) -> bool {
     }
     // Each row uses five low bits, with the leftmost dot in bit four.
     let rows = match character {
+        b':' => [0, 6, 6, 0, 6, 6, 0],
+        b'/' => [1, 1, 2, 4, 8, 16, 16],
+        b'+' => [0, 4, 4, 31, 4, 4, 0],
+        b'%' => [25, 26, 2, 4, 8, 11, 19],
+        b'Z' => [31, 1, 2, 4, 8, 16, 31],
+        b'J' => [7, 2, 2, 2, 18, 18, 12],
         b'.' => [0, 0, 0, 0, 0, 6, 6],
         b'Q' => [14, 17, 17, 17, 21, 18, 13],
         b'B' => [30, 17, 17, 30, 17, 17, 30],

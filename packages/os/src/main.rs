@@ -105,6 +105,9 @@ async fn console(
     #[cfg(feature = "cycling")]
     {
         sdk.clock = Some(|| embassy_time::Instant::now().as_millis());
+        let view =
+            cycling_os::sdk::workout::View::new(cycling_os::sdk::workout::Page::Boot, false, None);
+        system.draw_scaled(240, 320, |x, y| view.pixel(x, y));
     }
     #[cfg(feature = "cycling")]
     use cycling_os::capabilities::Ble as _;
@@ -191,6 +194,8 @@ async fn console(
             );
             #[cfg(feature = "cycling")]
             sdk.test_display(&mut system, now, &ant, &position);
+            #[cfg(feature = "cycling")]
+            sdk.alert(&mut sound, now);
         }
         terminal.pump();
         terminal.finish_reboot(now, &FirmwareDiagnostics);

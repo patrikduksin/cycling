@@ -264,3 +264,44 @@ mod tests {
         }
     }
 }
+
+/// Alert on a close/rapidly closing target, at most once every five seconds.
+#[derive(Default)]
+pub struct Alert {
+    last: Option<u64>,
+}
+pub fn close(target: Target) -> bool {
+    target.closing_speed_cm_s > 0
+        && (target.range_mm <= 40_000
+            || target.range_mm <= u32::from(target.closing_speed_cm_s) * 60)
+}
+impl Alert {
+    pub fn update(&mut self, snapshot: Snapshot, now: u64) -> bool {
+        if snapshot.targets.into_iter().flatten().any(close)
+            && self.last.is_none_or(|at| now.saturating_sub(at) >= 5000)
+        {
+            self.last = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::*;
+    #[test]
+    fn approaching_targets_alert_without_stale_or_repeated_beeps() {
+        let mut radar = Radar::new();
+        let mut alert = Alert::default();
+        radar.receive([0x30, 1, 0, 30, 0, 0, 1, 0], 0);
+        assert!(!alert.update(radar.snapshot(0), 0));
+        radar.receive([0x30, 1, 0, 10, 0, 0, 1, 0], 1000);
+        assert!(alert.update(radar.snapshot(1000), 1000));
+        assert!(!alert.update(radar.snapshot(1100), 1100));
+        assert!(!alert.update(radar.snapshot(7000), 7000));
+        radar.receive([0x30, 2, 0, 30, 0, 0, 10, 0], 7001);
+        assert!(alert.update(radar.snapshot(7001), 7001));
+    }
+}

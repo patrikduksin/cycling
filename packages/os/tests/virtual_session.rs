@@ -514,7 +514,7 @@ fn physical_menu_selects_exact_peer_and_gates_capture_start() {
     };
     struct MenuAnt {
         found: [Option<Discovery>; 8],
-        selected: [Option<Snapshot>; 3],
+        selected: [Option<Snapshot>; cycling_os::ant::CHANNEL_CAPACITY],
         requests: Vec<AntOperation>,
     }
     impl Ant for MenuAnt {
@@ -527,7 +527,7 @@ fn physical_menu_selects_exact_peer_and_gates_capture_start() {
         fn discoveries(&self) -> [Option<Discovery>; 8] {
             self.found
         }
-        fn channels(&self, _: u64) -> [Option<Snapshot>; 3] {
+        fn channels(&self, _: u64) -> [Option<Snapshot>; cycling_os::ant::CHANNEL_CAPACITY] {
             self.selected
         }
         fn take_packet(&mut self) -> Option<Packet> {
@@ -560,7 +560,7 @@ fn physical_menu_selects_exact_peer_and_gates_capture_start() {
         assert!(s.sdk.input_active());
         let mut ant = MenuAnt {
             found: [None; 8],
-            selected: [None; 3],
+            selected: [None; cycling_os::ant::CHANNEL_CAPACITY],
             requests: Vec::new(),
         };
         press(&mut s, &mut ant, Button::BottomRight);

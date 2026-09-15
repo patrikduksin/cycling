@@ -10,4 +10,6 @@ pub mod recorder;
 pub mod ride;
 pub mod ride_log;
 pub mod ride_reclaim;
+pub mod scan;
 pub mod storage;
+pub mod workout;

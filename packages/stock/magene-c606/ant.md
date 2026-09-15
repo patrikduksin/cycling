@@ -8,11 +8,11 @@ Exact companion chip and installed firmware version remain unverified.
 ## Scope and ownership
 
 Device code translates the C606 companion protocol. Core owns bounded discovery,
-up to three explicitly selected receive channels, one per device type, lifecycle and packet delivery. The cycling
+up to four explicitly selected receive channels, one per device type, lifecycle and packet delivery. The cycling
 SDK interprets radar pages. There is no radar-specific channel setup in core.
 
 The bridge forwards a device type and eight data bytes, without a device number
-or channel index. This implementation therefore selects up to three sensors of different device types.
+or channel index. This implementation therefore selects up to four sensors of different device types.
 It cannot prove the sender of a data page independently of the matching connection
 report. Additional profile decoders can consume `ant::Packet` through the same
 queue. The SDK composition is its sole consumer when enabled; the base console
@@ -155,7 +155,7 @@ the device powered on and confirm CONNECTED plus LOG SAVING before riding.
 
 ## Multiple sensor types
 
-The core keeps three independent channel lifecycles and packet queues, with at
+The core keeps four independent channel lifecycles and packet queues, with at
 most one selected peer for each device type. Packet draining rotates between
 channels. A disconnect or command failure for one type does not reset the others;
 a shared UART/CRC loss invalidates all channels. Scanning requires closing live

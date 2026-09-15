@@ -56,6 +56,7 @@ pub struct Shell<D, I, P, B> {
     next_button: Option<Button>,
     dirty: bool,
     fill_color: Option<u16>,
+    dev_frame: u8,
 }
 impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> Shell<D, I, P, B> {
     pub fn new(display: D, input: I, power: P, backend: B, now: u64) -> Result<Self, Error> {
@@ -138,6 +139,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             next_button,
             dirty: true,
             fill_color: None,
+            dev_frame: 0,
         })
     }
     /// Borrow application-owned bytes without exposing the preferences journal.
@@ -241,6 +243,17 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 }
             }
         }
+        let frame = if self.idle.dimmed() {
+            0
+        } else {
+            crate::rendering::dev::frame(now)
+        };
+        if self.dev_frame != frame {
+            self.dev_frame = frame;
+            if !self.app_active && self.foreground == Screen::Status && self.fill_color.is_none() {
+                self.dirty = true;
+            }
+        }
         // Foreground owns display submission. Background acquisition never waits
         // on this owner or on terminal attachment.
     }
@@ -311,6 +324,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         let geometry = self.display.geometry();
         let screen = self.foreground;
         let fill = self.fill_color;
+        let frame = self.dev_frame;
         self.draw_pixels(|x, y| {
             if let Some(color) = fill {
                 color
@@ -320,16 +334,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 // Keep layout independent of native panel geometry.
                 let x = x * 240 / geometry.width;
                 let y = y * 320 / geometry.height;
-                let text = crate::rendering::text::text;
-                if text(x, y, 36, 42, 4, b"CYCLING")
-                    || text(x, y, 60, 104, 2, b"BASE READY")
-                    || text(x, y, 48, 186, 2, b"USB COMMANDS")
-                    || text(x, y, 30, 268, 2, b"TOP LEFT SCREEN")
-                {
-                    0xffff
-                } else {
-                    0
-                }
+                crate::rendering::dev::pixel(x, y, frame)
             }
         });
         self.dirty = self.display_error;

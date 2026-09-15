@@ -22,19 +22,13 @@ mod tests {
                 Shell::new(display.clone(), input.clone(), power, Memory::default(), 0).unwrap();
             shell.settings.dim_timeout_secs = 1;
             shell.present();
-            assert_eq!(display.0.borrow().pixels[0], 0);
-            assert!(
-                display.0.borrow().pixels.contains(&0xffff),
-                "status text must be visible at either geometry"
-            );
-            assert!(
-                display
-                    .0
-                    .borrow()
-                    .pixels
-                    .iter()
-                    .all(|pixel| matches!(*pixel, 0 | 0xffff))
-            );
+            assert_eq!(display.0.borrow().pixels[0], 0x0843);
+            for color in [0xffb9, 0x07ff, 0xf84e, 0xff60] {
+                assert!(
+                    display.0.borrow().pixels.contains(&color),
+                    "development identity must remain visible at either geometry"
+                );
+            }
             shell.tick(1000);
             assert!(shell.dimmed());
             input.push(1000, Input::Touch(Point { x: 1, y: 1 }));
@@ -70,6 +64,67 @@ mod tests {
             assert_eq!(shell.foreground, Screen::Status);
             assert_eq!(shell.effective(), shell.settings.brightness);
         }
+    }
+    #[test]
+    fn dev_animation_holds_and_respects_dim_blank_and_application() {
+        let display = DisplayDevice::new(240, 320);
+        let input = InputDevice::new(&[Button::Center], Availability::Ready);
+        let mut shell = Shell::new(
+            display.clone(),
+            input.clone(),
+            PowerDevice::new(Availability::Ready),
+            Memory::default(),
+            0,
+        )
+        .unwrap();
+        shell.settings.dim_timeout_secs = 0;
+        shell.tick(0);
+        shell.present();
+        let still = display.0.borrow().pixels.clone();
+        for now in [100, 1000, 3599] {
+            shell.tick(now);
+            shell.present();
+        }
+        assert_eq!(shell.display_submissions, 1);
+        for now in [3600, 3800, 4000] {
+            shell.tick(now);
+            shell.present();
+            assert_ne!(display.0.borrow().pixels, still);
+        }
+        shell.tick(4200);
+        shell.present();
+        assert_eq!(display.0.borrow().pixels, still);
+        assert_eq!(shell.display_submissions, 5);
+        shell.settings.dim_timeout_secs = 1;
+        shell.tick(8400);
+        shell.present();
+        assert!(shell.dimmed());
+        assert_eq!(shell.display_submissions, 5);
+        shell.settings.dim_timeout_secs = 0;
+        shell.set_app_active(true);
+        for now in [8600, 8800, 9000] {
+            shell.tick(now);
+            shell.present();
+        }
+        assert_eq!(shell.display_submissions, 5);
+        shell.set_app_active(false);
+        input.push(
+            9000,
+            Input::Button {
+                button: Button::Center,
+                code: 1,
+            },
+        );
+        shell.tick(9200);
+        shell.present();
+        assert_eq!(shell.foreground, Screen::Blank);
+        let submissions = shell.display_submissions;
+        for now in [13200, 13400, 13600, 13800] {
+            shell.tick(now);
+            shell.present();
+        }
+        assert_eq!(shell.display_submissions, submissions);
+        assert!(display.0.borrow().pixels.iter().all(|pixel| *pixel == 0));
     }
     #[test]
     fn lost_input_cancels_hold_optional_absence_and_failures_remain_visible() {

@@ -1,6 +1,7 @@
 [workspace]
-members = ["packages/os"]
-exclude = ["packages/os/vendor/trouble-host"]
+members = ["packages/device-api", "packages/services", "packages/shell", "packages/console", "apps/vana", "devices/c606", "tools/simulator"]
+default-members = ["packages/device-api", "packages/services", "packages/shell", "packages/console", "apps/vana", "tools/simulator"]
+exclude = ["vendor/trouble-host"]
 resolver = "3"
 
 [workspace.package]
@@ -19,6 +20,6 @@ panic = "abort"
 overflow-checks = true
 
 [patch.crates-io]
-trouble-host = { path = "packages/os/vendor/trouble-host" }
+trouble-host = { path = "vendor/trouble-host" }
 
 esp-hal = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "0cf3835559c18f03d75190b332316ba85b68b8ed" }

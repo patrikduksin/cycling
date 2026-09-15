@@ -1,0 +1,10 @@
+[project]
+name = "cycling-devtools"
+version = "0.1.0"
+description = "Host tools for cycling firmware development"
+requires-python = ">=3.12"
+dependencies = ["esptool==5.4.0"]
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13"]
+build-backend = "uv_build"

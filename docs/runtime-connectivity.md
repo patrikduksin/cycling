@@ -67,21 +67,21 @@ the selection from the current record, not every historical journal byte.
 ## Harness validation
 
 `mise run wifi-setup` saves the current authorized NetworkManager profile privately.
-`scripts/connectivity_scenarios.py` generates Wi-Fi and BLE scenarios from the
+`tools/devtools/src/cycling_devtools/harness/connectivity.py` generates Wi-Fi and BLE scenarios from the
 captured original idle base state. It does not access the device.
 
 ```sh
-export CYCLING_PORT="$(python scripts/device_port.py)"
-python scripts/connectivity_scenarios.py
+export CYCLING_PORT="$(mise run device-port)"
+mise exec -- python -m cycling_devtools.harness.connectivity
 mise run harness -- run .local/foundation/scenarios/connectivity-wifi.json
 # Start the existing owned host fixture before the BLE SDK scenario:
-/usr/bin/python3 scripts/ble_sensor_sim.py --profile both
+mise run ble-simulator -- --profile both
 mise run harness -- run .local/foundation/scenarios/connectivity-ble.json
 ```
 
 The port helper reads sysfs and requires exactly one VID/PID and identity match
 to the private backup manifest; it does not open USB. Stop if discovery fails.
-Repeat `export CYCLING_PORT="$(python scripts/device_port.py)"` after flashing,
+Repeat `export CYCLING_PORT="$(mise run device-port)"` after flashing,
 reconnection or any port renumbering before running the next terminal or harness.
 `mise run device-port` also prints the verified path.
 

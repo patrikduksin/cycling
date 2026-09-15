@@ -1,6 +1,6 @@
 # Ride recording and export
 
-Ride workflows belong to the optional cycling SDK, selected with `CYCLING_SDK=1`.
+Ride workflows belong to the optional VANA application, selected with `CYCLING_SDK=1`.
 Both diagnostic harness modes support them through the ordinary USB terminal.
 Base firmware leaves existing rides untouched. Use device `HELP` for commands
 and the [C606 skill](../.agents/skills/c606/SKILL.md) for safe access and capture.
@@ -12,15 +12,15 @@ and writes run independently of terminal requests, one bounded media step at a
 time. There is no automatic deletion or reuse when full.
 
 Persisted compatibility and recovery invariants live beside
-[ride_log](../packages/os/src/sdk/ride_log.rs) and
-[recorder](../packages/os/src/sdk/recorder.rs). Existing demo records stay readable;
+[ride_log](../apps/vana/src/ride/log.rs) and
+[recorder](../apps/vana/src/ride/recorder.rs). Existing demo records stay readable;
 new terminal rides use live observations. Delayed service can reduce sampling,
 and reset can lose an uncommitted batch.
 
 Location-free rides are valid. Export does not invent coordinates, satellite
 metadata, speed or distance. Battery percentage has no recorded age and may be
 stale. BLE transport loss or stale/disconnected measurements invalidate usable
-sensor values; the SDK currently selects one HRS or CSC profile at a time.
+sensor values; VANA currently selects one HRS or CSC profile at a time.
 
 ## Export
 

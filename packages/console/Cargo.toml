@@ -1,0 +1,20 @@
+[package]
+name = "firmware-console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+cycling = []
+debug-harness = ["firmware-shell/debug-harness"]
+
+[dependencies]
+firmware-services = { path = "../services" }
+device-api = { path = "../device-api" }
+firmware-shell = { path = "../shell" }
+serde = { version = "=1.0.229", default-features = false, features = ["derive"] }
+serde-json-core = { version = "=0.6.0", default-features = false }

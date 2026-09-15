@@ -1,15 +1,20 @@
 # cycling
 
-Code owns implementation; GitHub issues and PRs own requirements, decisions and history.
-Keep firmware in `packages/os` and device research in `packages/stock/<device>`.
-Shells consume small device capability interfaces. Device implementations hide
-wiring/HAL/quirks; shells and domain libraries own UI, preferences and domain
-policy. Shared mechanisms belong in focused reusable libraries.
-Read [architecture](docs/architecture.md) when changing those ownership boundaries.
+Read [architecture](docs/architecture.md) when changing ownership or interfaces.
+Code and tools own implementation and verification mechanics; GitHub issues and
+PRs own requirements, decisions and history.
+
+Look in `apps/vana` for cycling behavior and screens, `devices/c606` for hardware
+and firmware composition, `packages/device-api` for capability contracts,
+`packages/shell` for shared UI policy, `packages/services` for portable mechanisms,
+and `packages/console` for device command sessions. Host simulation lives in
+`tools/simulator`, host device workflows in `tools/devtools`, and sanitized C606
+research in `devices/c606/research`. Keep package interfaces small and internals
+private. Split packages by meaningful ownership, not file count.
 
 Use mise tasks and commit Cargo.lock. For firmware changes run `mise run test`,
-`mise run check` and `mise run build`; the host tasks check both base and cycling SDK.
-For feature-boundary changes build base and SDK with both harness modes.
+`mise run check` and `mise run build`; host tasks cover base and cycling builds.
+For feature-boundary changes build base and cycling with both harness modes.
 Preserve the licensed Trouble Host patch and its minimum-MTU regression coverage.
 
 Read [c606](.agents/skills/c606/SKILL.md) before flashing, serial access or device tests.

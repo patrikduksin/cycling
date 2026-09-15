@@ -1,7 +1,7 @@
 /target/
-/packages/os/vendor/trouble-host/target/
+/vendor/trouble-host/target/
 /.local/
-/packages/stock/magene-c606/.local/
+**/.local/
 .env
 .env.*
 !.env.example
@@ -14,3 +14,11 @@ __pycache__/
 *.log
 *.pem
 *.key
+
+/tools/devtools/.venv/
+# Private stock sources and analysis outputs belong in ignored local storage.
+**/stock-sources/
+**/disassembly/
+*.pcap
+*.pcapng
+*.core

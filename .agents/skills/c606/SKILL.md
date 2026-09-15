@@ -5,7 +5,7 @@ description: Flash, access serial, debug or measure the connected Magene C606 sa
 
 # C606
 
-Use [device.py](../../../scripts/device.py) through `mise run backup`,
+Use [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py) through `mise run backup`,
 `mise run flash` and `mise run stock`, also available as `mise run boot-stock`.
 The recovered layout assumes secure boot
 and flash encryption are disabled. Generic flashing tools can replace protected
@@ -94,4 +94,4 @@ State what was observed and leave unobserved requirements unresolved. Keep raw
 coordinates, readings, identifiers, credentials and captures private; publish
 sanitized findings with commit-specific provenance in GitHub issues/PRs.
 For hardware identity and protocol facts, read the relevant
-[C606 research](../../../packages/stock/magene-c606) and preserve fitted-part uncertainty.
+[C606 research](../../../devices/c606/research) and preserve fitted-part uncertainty.

@@ -222,6 +222,11 @@ battery. No replacement percentage curve or vendor calibration write is justifie
 
 ## ANT capability matrix
 
+Historical baseline: the matrix below predates the four-sensor workout. See the
+[2026-09-15 investigation](ant-investigation/README.md) for newer identity,
+capacity, scan and transmit findings. Its read-only query confirms the reported
+application version; capacity and concurrent scanning still need live validation.
+
 The installed baseline is documented in [ant.md](ant.md). A recovered N22 command
 path is evidence about that update, not proof it executes on the installed unit.
 

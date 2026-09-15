@@ -7,6 +7,7 @@ python = "3.14.7"
 uv = "0.12.10"
 "github:esp-rs/espup" = "0.17.1"
 "github:esp-rs/espflash" = "4.5.0"
+bun = "latest"
 
 [tasks.setup]
 description = "Install the pinned Xtensa Rust toolchain"

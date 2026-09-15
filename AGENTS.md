@@ -27,3 +27,20 @@ Publish code, tools and sanitized findings; keep vendor firmware, disassembly,
 flash dumps, credentials, identifiers and raw captures in ignored `.local/`.
 
 For autonomous issue or queue delivery, read [deliver](.agents/skills/deliver/SKILL.md).
+
+## Agent skills
+
+### Issue tracker
+
+Use GitHub Issues for tracked work. Read `docs/agents/issue-tracker.md`
+before issue tracker operations.
+
+### Triage labels
+
+Use the five default triage labels. Read `docs/agents/triage-labels.md`
+before assigning triage status.
+
+### Domain docs
+
+Use a single-context layout. Read `docs/agents/domain.md` before
+exploring domain concepts or proposing domain changes.

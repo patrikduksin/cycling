@@ -2,7 +2,7 @@
 
 Open-source Rust firmware for the Magene C606 bike computer. The `no_std` base
 provides positioning, physical input, display, settings, networking, BLE and ANT
-transport through an ordinary USB terminal. The optional cycling SDK provides
+transport through an ordinary USB terminal. The optional VANA application provides
 VANA's workout screens, four concurrent ANT sensors, proximity radar alerts,
 and ride recording, recovery and export. It displays wheel speed, power, heart
 rate, active time, approximate gradient and training zones. One selected BLE
@@ -15,7 +15,21 @@ and timestamp requirements. Historical raw ANT captures can be decoded offline.
 
 See [architecture and ownership](docs/architecture.md) for the device capability
 and shell boundaries, and [#75](https://github.com/patrikduksin/cycling/issues/75)
-for implementation tracking.
+for the original capability-boundary work.
+
+## Repository map
+
+- `apps/vana`: cycling behavior, workout screens, sensors and ride recording.
+- `devices/c606`: hardware implementation, firmware composition and sanitized research.
+- `packages/device-api`: independent device capability contracts.
+- `packages/shell`: foreground presentation, input routing and shared UI policy.
+- `packages/services`: portable acquisition, transport and storage mechanisms.
+- `packages/console`: device command sessions and bounded output.
+- `tools/simulator`: host simulation and fake device implementations.
+- `tools/devtools`: host tools for device access, exports and test workflows.
+- `vendor/trouble-host`: the licensed local dependency patch.
+
+## Development
 
 ```sh
 mise install
@@ -26,7 +40,7 @@ mise run simulate                    # Shared shell with deterministic host devi
 mise run harness-virtual             # Shared command/input/capture/persistence scenarios
 mise run harness -- run input-screen # Real C606 input and screenshots
 mise run build                       # Base, development harness enabled
-CYCLING_SDK=1 mise run build          # Add the cycling SDK
+CYCLING_SDK=1 mise run build          # Add VANA cycling behavior
 mise run terminal -- STATUS          # Query an already-running device
 mise run boot-stock                  # Verify, select and boot preserved stock
 ```
@@ -42,7 +56,7 @@ radio coexistence or power sequencing.
 
 To add a device, select its compatible HAL/runtime, implement the capabilities
 required by the shell, and keep wiring, drivers, memory constraints and task
-startup in its device module. Compose those handles with the shared shell in a
+startup in its device package. Compose those handles with the shared shell in a
 device entry point. Add the composition to the mise/CI checks and validate its
 hardware behavior. Shell code must not need device imports or board-name branches.
 
@@ -52,13 +66,13 @@ Use the [runtime connectivity commands and harness](docs/runtime-connectivity.md
 to apply it without rebuilding. Firmware images contain no provisioned credentials.
 
 Before connecting or flashing, read the [C606 workflow](.agents/skills/c606/SKILL.md).
-It preserves stock firmware and existing data. Firmware lives in `packages/os`;
+It preserves stock firmware and existing data. Device firmware lives in `devices/<device>`;
 vendor artifacts, credentials and raw evidence stay in ignored `.local/`.
 
 - [Architecture and ownership](docs/architecture.md)
 - [Testing harness and recipes](docs/testing-harness.md)
 - [Ride recording and export](docs/ride-recording.md)
-- [C606 hardware research](packages/stock/magene-c606)
+- [C606 hardware research](devices/c606/research)
 - [Requirements and history](https://github.com/patrikduksin/cycling/issues)
 - [Agent delivery workflow](.agents/skills/deliver/SKILL.md)
 

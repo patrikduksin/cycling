@@ -1,0 +1,17 @@
+[package]
+name = "vana"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+device-api = { path = "../../packages/device-api" }
+firmware-shell = { path = "../../packages/shell" }
+firmware-services = { path = "../../packages/services" }
+log = { version = "=0.4.34", default-features = false }

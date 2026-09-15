@@ -1,0 +1,18 @@
+[package]
+name = "firmware-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+debug-harness = []
+std = []
+
+[dependencies]
+device-api = { path = "../device-api" }
+firmware-services = { path = "../services" }
+log = { version = "=0.4.34", default-features = false }

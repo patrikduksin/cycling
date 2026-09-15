@@ -1,5 +1,10 @@
 # ANT+ companion support
 
+The [2026-09-15 investigation](ant-investigation/README.md) adds the observed
+companion version, recovered 12-channel configuration, separate discovery
+channels and outgoing-message findings. It distinguishes those findings from
+the current four-channel implementation and verified hardware behavior.
+
 Custom firmware uses the installed companion's sensor bridge. It does not replace
 companion firmware or configure an ANT network key. The stock N21 1.956 wrappers
 establish the protocol below; installed companion behavior is validated separately.

@@ -33,6 +33,13 @@ pub enum Command {
     AntChannel(u8),
     AntDevices,
     AntRead,
+    AntCapabilities,
+    AntOperation(u32),
+    AntSend {
+        identity: device_api::ant::Identity,
+        generation: u32,
+        data: [u8; 8],
+    },
     Help,
     Info,
     Status,
@@ -170,6 +177,47 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             Some("STOP") => Command::AntStop,
             Some("DEVICES") => Command::AntDevices,
             Some("READ") => Command::AntRead,
+            Some("CAPABILITIES") => Command::AntCapabilities,
+            Some("OPERATION") => Command::AntOperation(
+                words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?,
+            ),
+            Some("SEND") => {
+                let identity = device_api::ant::Identity {
+                    device_type: words
+                        .next()
+                        .ok_or(Error::Invalid)?
+                        .parse()
+                        .map_err(|_| Error::Invalid)?,
+                    device_number: words
+                        .next()
+                        .ok_or(Error::Invalid)?
+                        .parse()
+                        .map_err(|_| Error::Invalid)?,
+                    transmission_type: words
+                        .next()
+                        .ok_or(Error::Invalid)?
+                        .parse()
+                        .map_err(|_| Error::Invalid)?,
+                };
+                let generation = words
+                    .next()
+                    .ok_or(Error::Invalid)?
+                    .parse()
+                    .map_err(|_| Error::Invalid)?;
+                let mut data = [0; 8];
+                if decode_hex(words.next().ok_or(Error::Invalid)?, &mut data)? != 8 {
+                    return Err(Error::Invalid);
+                }
+                Command::AntSend {
+                    identity,
+                    generation,
+                    data,
+                }
+            }
             Some("DISCONNECT") => Command::AntDisconnect(
                 words
                     .next()
@@ -382,6 +430,32 @@ mod tests {
             b"CMD 1 ANT CONNECT 256 1234 5",
         ] {
             assert_eq!(parse(input), Err(Error::Invalid));
+        }
+    }
+    #[test]
+    fn ant_send_requires_explicit_identity_generation_and_exact_page() {
+        assert_eq!(
+            parse(b"CMD 7 ANT SEND 120 1234 1 9 0102030405060708")
+                .unwrap()
+                .command,
+            Command::AntSend {
+                identity: device_api::ant::Identity {
+                    device_type: 120,
+                    device_number: 1234,
+                    transmission_type: 1
+                },
+                generation: 9,
+                data: [1, 2, 3, 4, 5, 6, 7, 8]
+            }
+        );
+        for line in [
+            b"CMD 7 ANT SEND 120 1234 1 0102030405060708".as_slice(),
+            b"CMD 7 ANT SEND 120 1234 1 9 01020304050607",
+            b"CMD 7 ANT SEND 120 1234 1 9 010203040506070809",
+            b"CMD 7 ANT SEND 120 1234 1 9 010203040506070x",
+            b"CMD 7 ANT SEND 120 1234 1 9 0102030405060708 extra",
+        ] {
+            assert_eq!(parse(line), Err(Error::Invalid));
         }
     }
     #[test]

@@ -66,6 +66,13 @@ impl Frame {
         }
         Some((self.bytes[5], self.bytes[6..14].try_into().ok()?))
     }
+    /// Fixed-size command replies, separate from class-four sensor reports.
+    pub fn reply(&self) -> Option<(u8, [u8; 8])> {
+        if self.len != 16 || self.bytes[4] != 5 {
+            return None;
+        }
+        Some((self.bytes[5], self.bytes[6..14].try_into().ok()?))
+    }
     pub fn input(&self) -> Option<Event> {
         decode(self.as_bytes())
     }

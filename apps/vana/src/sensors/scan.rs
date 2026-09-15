@@ -1,7 +1,9 @@
 //! Foreground scan transaction: close selected channels, discover, restore selections.
+use device_api::ant::Admission;
 use device_api::ant::Ant;
 use device_api::ant::AntOperation;
 use device_api::ant::CHANNEL_CAPACITY;
+use device_api::ant::Error;
 use device_api::ant::Identity;
 use device_api::ant::LinkState;
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -74,19 +76,19 @@ impl Scan {
                     }
                     if !self.sent[i] {
                         match ant.request(AntOperation::Disconnect(peer.device_type), now) {
-                            "ACCEPTED" => self.sent[i] = true,
-                            "BUSY" => {}
+                            Ok(Admission::Accepted) => self.sent[i] = true,
+                            Err(Error::Busy) => {}
                             _ => self.phase = Phase::Failed,
                         }
                     }
                     return;
                 }
                 match ant.request(AntOperation::Scan(10000), now) {
-                    "ACCEPTED" => {
+                    Ok(Admission::Accepted) => {
                         self.phase = Phase::Scanning;
                         self.deadline = now + 15000;
                     }
-                    "BUSY" => {}
+                    Err(Error::Busy) => {}
                     _ => self.phase = Phase::Failed,
                 }
             }
@@ -104,8 +106,8 @@ impl Scan {
                         continue;
                     }
                     match ant.request(AntOperation::Connect(*peer), now) {
-                        "ACCEPTED" => self.sent[i] = true,
-                        "BUSY" => {}
+                        Ok(Admission::Accepted) => self.sent[i] = true,
+                        Err(Error::Busy) => {}
                         _ => self.phase = Phase::Failed,
                     }
                     return;

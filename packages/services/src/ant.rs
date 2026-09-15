@@ -10,6 +10,9 @@ pub struct State {
     generation: u32,
     queue: [Option<Packet>; PACKET_CAPACITY],
     queue_len: usize,
+    diagnostics: [Option<Packet>; PACKET_CAPACITY],
+    diagnostics_len: usize,
+    diagnostic_losses: u32,
     last_packet: Option<u64>,
     packets: u32,
     dropped_packets: u32,
@@ -36,6 +39,9 @@ impl State {
             generation: 0,
             queue: [None; PACKET_CAPACITY],
             queue_len: 0,
+            diagnostics: [None; PACKET_CAPACITY],
+            diagnostics_len: 0,
+            diagnostic_losses: 0,
             last_packet: None,
             packets: 0,
             dropped_packets: 0,
@@ -117,6 +123,8 @@ impl State {
         self.generation = self.generation.wrapping_add(1);
         self.queue.fill(None);
         self.queue_len = 0;
+        self.diagnostics.fill(None);
+        self.diagnostics_len = 0;
         self.last_packet = None;
     }
 
@@ -208,6 +216,14 @@ impl State {
             loss_count: self.dropped_packets.saturating_add(self.transport_losses),
         });
         self.queue_len += 1;
+        if self.diagnostics_len == PACKET_CAPACITY {
+            self.pop_diagnostic_packet();
+            self.diagnostic_losses = self.diagnostic_losses.saturating_add(1);
+        }
+        let mut diagnostic = self.queue[self.queue_len - 1].unwrap();
+        diagnostic.loss_count = diagnostic.loss_count.saturating_add(self.diagnostic_losses);
+        self.diagnostics[self.diagnostics_len] = Some(diagnostic);
+        self.diagnostics_len += 1;
     }
 
     pub fn transport_loss(&mut self, _now: u64) {
@@ -232,10 +248,27 @@ impl State {
         if self.queue_len == 0 {
             return None;
         }
-        let packet = self.queue[0];
+        let packet = self.queue[0].map(|mut packet| {
+            packet.loss_count = self.dropped_packets.saturating_add(self.transport_losses);
+            packet
+        });
         self.queue.rotate_left(1);
         self.queue_len -= 1;
         self.queue[self.queue_len] = None;
+        packet
+    }
+
+    pub fn pop_diagnostic_packet(&mut self) -> Option<Packet> {
+        if self.diagnostics_len == 0 {
+            return None;
+        }
+        let packet = self.diagnostics[0].map(|mut packet| {
+            packet.loss_count = self.diagnostic_losses.saturating_add(self.transport_losses);
+            packet
+        });
+        self.diagnostics.rotate_left(1);
+        self.diagnostics_len -= 1;
+        self.diagnostics[self.diagnostics_len] = None;
         packet
     }
 
@@ -263,6 +296,13 @@ pub struct Channels {
     discovery: State,
     channels: [State; CHANNEL_CAPACITY],
     next_packet: usize,
+    next_diagnostic: usize,
+    capacity: usize,
+    scan_state: ScanState,
+    scan_generation: u32,
+    send: Option<PendingSend>,
+    next_send_id: u32,
+    used_send_keys: [Option<(u8, [u8; 2])>; SEND_HISTORY_CAPACITY],
 }
 
 impl Default for Channels {
@@ -277,6 +317,13 @@ impl Channels {
             discovery: State::new(),
             channels: [const { State::new() }; CHANNEL_CAPACITY],
             next_packet: 0,
+            next_diagnostic: 0,
+            capacity: CHANNEL_CAPACITY,
+            scan_state: ScanState::Idle,
+            scan_generation: 0,
+            send: None,
+            next_send_id: 0,
+            used_send_keys: [None; SEND_HISTORY_CAPACITY],
         }
     }
 
@@ -284,16 +331,24 @@ impl Channels {
         if self.channels.iter().any(|channel| {
             matches!(
                 channel.link,
-                LinkState::Connecting | LinkState::Connected | LinkState::Disconnecting
+                LinkState::Connecting | LinkState::Disconnecting
             )
         }) {
             return Err(Error::Busy);
         }
-        self.discovery.begin_scan(now, duration_ms)
+        if self.scan_state == ScanState::Uncertain {
+            return Err(Error::Uncertain);
+        }
+        let request = self.discovery.begin_scan(now, duration_ms)?;
+        self.scan_state = ScanState::Starting;
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        Ok(request)
     }
 
     pub fn stop_scan(&mut self, now: u64) -> Result<Request, Error> {
-        self.discovery.stop_scan(now)
+        let request = self.discovery.stop_scan(now)?;
+        self.scan_state = ScanState::Stopping;
+        Ok(request)
     }
 
     pub fn scanning(&self) -> bool {
@@ -315,26 +370,30 @@ impl Channels {
         {
             return Err(Error::InvalidIdentity);
         }
-        if self.scanning() {
+        if self.scanning() || self.scan_state == ScanState::Uncertain {
             return Err(Error::Busy);
         }
         let slot = self
             .index(identity.device_type)
             .or_else(|| {
-                self.channels
+                self.channels[..self.capacity]
                     .iter()
                     .position(|channel| channel.selected.is_none())
             })
             .or_else(|| {
-                self.channels
+                self.channels[..self.capacity]
                     .iter()
                     .position(|channel| channel.link == LinkState::Disconnected)
             })
-            .ok_or(Error::Busy)?;
+            .ok_or(Error::Capacity)?;
         self.channels[slot].connect(identity, now)
     }
 
     pub fn disconnect(&mut self, device_type: u8, now: u64) -> Option<Request> {
+        if self.scanning() || self.scan_state == ScanState::Uncertain {
+            return None;
+        }
+        self.cancel_send(Some(device_type));
         let slot = self.index(device_type)?;
         self.channels[slot].disconnect(now)
     }
@@ -343,6 +402,14 @@ impl Channels {
         self.tick(now);
         let device_type = match event {
             Event::Discovery { .. } | Event::ScanEnded => {
+                if matches!(event, Event::ScanEnded) {
+                    return;
+                }
+                if matches!(event, Event::Discovery { .. })
+                    && self.scan_state == ScanState::Starting
+                {
+                    self.scan_state = ScanState::Active;
+                }
                 self.discovery.receive(event, now);
                 return;
             }
@@ -354,16 +421,43 @@ impl Channels {
         if let Some(slot) = self.index(device_type) {
             self.channels[slot].receive(event, now);
         }
+        self.tick(now);
     }
 
     pub fn tick(&mut self, now: u64) {
+        let scanning = self.scanning();
         self.discovery.tick(now);
+        if scanning && !self.scanning() {
+            self.scan_state = ScanState::Idle;
+        }
+        if self.send.is_some_and(|send| {
+            send.observation.stage == SendStage::UartSubmitted && now >= send.deadline
+        }) {
+            self.send.as_mut().unwrap().observation.stage = SendStage::Uncertain;
+        }
         for channel in &mut self.channels {
             channel.tick(now);
+        }
+        if let Some(send) = self.send {
+            let target = send.observation.target;
+            if self
+                .channel(target.identity.device_type, now)
+                .is_none_or(|channel| {
+                    channel.link != LinkState::Connected
+                        || channel.generation != target.generation
+                        || channel.selected != Some(target.identity)
+                })
+            {
+                self.cancel_send(Some(target.identity.device_type));
+            }
         }
     }
 
     pub fn transport_loss(&mut self, now: u64) {
+        self.cancel_send(None);
+        if self.scanning() {
+            self.scan_state = ScanState::Uncertain;
+        }
         self.discovery.transport_loss(now);
         for channel in &mut self.channels {
             if channel.selected.is_some() {
@@ -374,6 +468,10 @@ impl Channels {
 
     /// Use when the failed command is unknown or the shared transport failed.
     pub fn tx_failed(&mut self, now: u64) {
+        self.cancel_send(None);
+        if self.scanning() {
+            self.scan_state = ScanState::Uncertain;
+        }
         self.discovery.tx_failed(now);
         for channel in &mut self.channels {
             if channel.selected.is_some() {
@@ -385,8 +483,12 @@ impl Channels {
     /// A command-specific failure invalidates only the channel it addressed.
     pub fn request_failed(&mut self, request: Request, now: u64) {
         match request {
-            Request::Scan { .. } | Request::StopScan => self.discovery.tx_failed(now),
+            Request::Scan { .. } | Request::StopScan => {
+                self.scan_state = ScanState::Uncertain;
+                self.discovery.tx_failed(now);
+            }
             Request::Connect { identity } | Request::Disconnect { identity } => {
+                self.cancel_send(Some(identity.device_type));
                 if let Some(slot) = self.index(identity.device_type)
                     && self.channels[slot].selected == Some(identity)
                 {
@@ -424,6 +526,165 @@ impl Channels {
             let slot = (self.next_packet + offset) % CHANNEL_CAPACITY;
             if let Some(packet) = self.channels[slot].pop_packet() {
                 self.next_packet = (slot + 1) % CHANNEL_CAPACITY;
+                return Some(packet);
+            }
+        }
+        None
+    }
+}
+
+/// The bridge echoes only the type and first two bytes. Each key is used once
+/// until a confirmed companion restart, so a late or duplicate reply is harmless.
+pub const SEND_HISTORY_CAPACITY: usize = 8;
+
+#[derive(Clone, Copy)]
+struct PendingSend {
+    observation: SendObservation,
+    data: [u8; 8],
+    deadline: u64,
+}
+
+impl Channels {
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut channels = Self::new();
+        channels.capacity = capacity.min(CHANNEL_CAPACITY);
+        channels
+    }
+
+    pub fn scan(&self) -> ScanSnapshot {
+        ScanSnapshot {
+            state: self.scan_state,
+            generation: self.scan_generation,
+            discovery_overflows: self.discovery.discovery_overflows,
+        }
+    }
+
+    pub fn queue_send(
+        &mut self,
+        target: Target,
+        data: [u8; 8],
+        now: u64,
+    ) -> Result<OperationId, Error> {
+        self.tick(now);
+        let channel = self
+            .channel(target.identity.device_type, now)
+            .ok_or(Error::Disconnected)?;
+        if channel.selected != Some(target.identity) || channel.generation != target.generation {
+            return Err(Error::StaleGeneration);
+        }
+        if channel.link != LinkState::Connected {
+            return Err(Error::Disconnected);
+        }
+        if self.send.is_some_and(|send| {
+            matches!(
+                send.observation.stage,
+                SendStage::Queued | SendStage::UartSubmitted
+            )
+        }) {
+            return Err(Error::Busy);
+        }
+        let key = (target.identity.device_type, [data[0], data[1]]);
+        if self.used_send_keys.contains(&Some(key)) {
+            return Err(Error::Uncertain);
+        }
+        let slot = self
+            .used_send_keys
+            .iter()
+            .position(Option::is_none)
+            .ok_or(Error::Capacity)?;
+        self.next_send_id = self.next_send_id.checked_add(1).ok_or(Error::Capacity)?;
+        let id = OperationId(self.next_send_id);
+        self.used_send_keys[slot] = Some(key);
+        self.send = Some(PendingSend {
+            observation: SendObservation {
+                id,
+                target,
+                stage: SendStage::Queued,
+            },
+            data,
+            deadline: 0,
+        });
+        Ok(id)
+    }
+
+    pub fn send_pending(&self) -> bool {
+        self.send.is_some_and(|send| {
+            matches!(
+                send.observation.stage,
+                SendStage::Queued | SendStage::UartSubmitted
+            )
+        })
+    }
+
+    pub fn pending_send(&self) -> Option<(OperationId, Target, [u8; 8])> {
+        let send = self.send?;
+        (send.observation.stage == SendStage::Queued).then_some((
+            send.observation.id,
+            send.observation.target,
+            send.data,
+        ))
+    }
+
+    pub fn send_submitted(&mut self, id: OperationId, now: u64) {
+        if let Some(send) = &mut self.send
+            && send.observation.id == id
+            && send.observation.stage == SendStage::Queued
+        {
+            send.observation.stage = SendStage::UartSubmitted;
+            send.deadline = now.saturating_add(SEND_TIMEOUT_MS);
+        }
+    }
+
+    pub fn send_failed(&mut self, id: OperationId) {
+        if let Some(send) = &mut self.send
+            && send.observation.id == id
+        {
+            send.observation.stage = SendStage::Uncertain;
+        }
+    }
+
+    pub fn send_reply(&mut self, device_type: u8, echoed: [u8; 2], accepted: bool, now: u64) {
+        self.tick(now);
+        if let Some(send) = &mut self.send
+            && send.observation.stage == SendStage::UartSubmitted
+            && send.observation.target.identity.device_type == device_type
+            && send.data[..2] == echoed
+        {
+            send.observation.stage = SendStage::BridgeReplied { accepted };
+        }
+    }
+
+    pub fn send_status(&self, id: OperationId) -> Option<SendObservation> {
+        self.send
+            .map(|send| send.observation)
+            .filter(|observation| observation.id == id)
+    }
+
+    pub fn cancel_send(&mut self, device_type: Option<u8>) {
+        if let Some(send) = &mut self.send
+            && device_type.is_none_or(|kind| kind == send.observation.target.identity.device_type)
+        {
+            send.observation.stage = match send.observation.stage {
+                SendStage::Queued => SendStage::Cancelled,
+                SendStage::UartSubmitted => SendStage::Uncertain,
+                stage => stage,
+            };
+        }
+    }
+
+    /// Only call after a confirmed companion restart that purges old replies.
+    /// A UART framing reset, reconnect, wake or transport loss is insufficient.
+    pub fn companion_restarted(&mut self, now: u64) {
+        self.transport_loss(now);
+        self.used_send_keys.fill(None);
+        self.scan_state = ScanState::Idle;
+    }
+
+    pub fn pop_diagnostic_packet(&mut self) -> Option<Packet> {
+        for offset in 0..CHANNEL_CAPACITY {
+            let slot = (self.next_diagnostic + offset) % CHANNEL_CAPACITY;
+            if let Some(packet) = self.channels[slot].pop_diagnostic_packet() {
+                self.next_diagnostic = (slot + 1) % CHANNEL_CAPACITY;
                 return Some(packet);
             }
         }
@@ -531,6 +792,7 @@ mod tests {
     #[test]
     fn slots_and_same_type_replacement_require_confirmed_cleanup() {
         let mut channels = three_channels();
+        channels.capacity = 4;
         let speed = Identity {
             device_type: 123,
             ..PEER
@@ -546,7 +808,7 @@ mod tests {
             ..PEER
         };
         assert_eq!(channels.connect(replacement, 2), Err(Error::Busy));
-        assert_eq!(channels.connect(fourth, 2), Err(Error::Busy));
+        assert_eq!(channels.connect(fourth, 2), Err(Error::Capacity));
         channels.disconnect(40, 3);
         channels.tick(CONNECT_TIMEOUT_MS + 3);
         assert_eq!(
@@ -555,7 +817,7 @@ mod tests {
         );
         assert_eq!(
             channels.connect(fourth, CONNECT_TIMEOUT_MS + 4),
-            Err(Error::Busy)
+            Err(Error::Capacity)
         );
         channels.receive(Event::Disconnected(replacement), CONNECT_TIMEOUT_MS + 5);
         assert_eq!(
@@ -579,79 +841,115 @@ mod tests {
     }
 
     #[test]
-    fn scan_stop_holds_ownership_until_completion() {
-        let mut channels = Channels::new();
-        channels.begin_scan(0, 100).unwrap();
-        channels.stop_scan(1).unwrap();
-        assert!(channels.scanning());
-        assert_eq!(channels.begin_scan(2, 100), Err(Error::Busy));
-        assert_eq!(channels.connect(HR, 2), Err(Error::Busy));
-        channels.receive(Event::ScanEnded, 3);
-        channels.begin_scan(4, 100).unwrap();
+    fn discovery_and_diagnostics_preserve_production_reception() {
+        let mut channels = three_channels();
+        channels.begin_scan(2, 100).unwrap();
+        assert_eq!(channels.scan().state, ScanState::Starting);
         channels.receive(
             Event::Discovery {
                 identity: HR,
                 rssi: -50,
             },
-            5,
+            3,
         );
+        assert_eq!(channels.scan().state, ScanState::Active);
+        page(&mut channels, PEER, 9, 4);
+        let diagnostic = channels.pop_diagnostic_packet().unwrap();
+        assert_eq!(channels.pop_packet(), Some(diagnostic));
+        assert_eq!(channels.disconnect(40, 5), None);
+        channels.stop_scan(6).unwrap();
+        channels.receive(Event::ScanEnded, 7);
+        assert_eq!(channels.channel(40, 7).unwrap().link, LinkState::Connected);
+        assert_eq!(channels.scan().state, ScanState::Stopping);
+        channels.tick(SCAN_STOP_TIMEOUT_MS + 6);
+        channels.begin_scan(SCAN_STOP_TIMEOUT_MS + 7, 100).unwrap();
+        channels.receive(Event::ScanEnded, SCAN_STOP_TIMEOUT_MS + 8);
         assert!(channels.scanning());
-        assert_eq!(channels.discoveries().iter().flatten().count(), 1);
     }
 
     #[test]
-    fn scan_stop_timeout_is_bounded_and_duplicate_stops_are_rejected() {
+    fn ten_receivers_drain_fairly_with_independent_diagnostic_overflow() {
         let mut channels = Channels::new();
-        channels.begin_scan(0, 100).unwrap();
-        channels.stop_scan(1).unwrap();
-        assert_eq!(channels.stop_scan(2), Err(Error::Busy));
-        channels.tick(100);
-        assert!(channels.scanning()); // Original scan deadline must not release a pending stop.
-        channels.receive(
-            Event::Discovery {
-                identity: HR,
-                rssi: -50,
-            },
-            101,
-        );
-        assert_eq!(channels.discoveries().iter().flatten().count(), 0);
-        channels.tick(SCAN_STOP_TIMEOUT_MS);
-        assert!(channels.scanning());
-        channels.tick(SCAN_STOP_TIMEOUT_MS + 1);
-        assert!(!channels.scanning());
-        channels.begin_scan(SCAN_STOP_TIMEOUT_MS + 2, 100).unwrap();
-        channels.stop_scan(SCAN_STOP_TIMEOUT_MS + 3).unwrap();
-        channels.transport_loss(SCAN_STOP_TIMEOUT_MS + 4);
-        assert!(!channels.scanning());
-    }
-
-    #[test]
-    fn scan_is_global_and_cannot_run_alongside_live_channels() {
-        let mut channels = Channels::new();
-        channels.begin_scan(0, 100).unwrap();
-        for peer in [PEER, HR, POWER] {
-            channels.receive(
-                Event::Discovery {
-                    identity: peer,
-                    rssi: -50,
+        let types = [40, 120, 11, 122, 123, 121, 34, 17, 128, 35];
+        for device_type in types {
+            let identity = Identity {
+                device_type,
+                ..PEER
+            };
+            channels.connect(identity, 0).unwrap();
+            channels.receive(Event::Connected(identity), 1);
+            page(&mut channels, identity, device_type, 2);
+        }
+        assert_eq!(
+            channels.connect(
+                Identity {
+                    device_type: 99,
+                    ..PEER
                 },
-                1,
+                3
+            ),
+            Err(Error::Capacity)
+        );
+        for device_type in types {
+            assert_eq!(
+                channels.pop_packet().unwrap().identity.device_type,
+                device_type
             );
         }
-        assert_eq!(channels.discoveries().iter().flatten().count(), 3);
-        assert_eq!(channels.connect(HR, 2), Err(Error::Busy));
-        channels.stop_scan(2).unwrap();
-        channels.receive(Event::ScanEnded, 3);
-        channels.connect(HR, 3).unwrap();
-        assert_eq!(channels.begin_scan(4, 100), Err(Error::Busy));
-        channels.receive(Event::Connected(HR), 5);
-        assert_eq!(channels.begin_scan(6, 100), Err(Error::Busy));
-        channels.disconnect(120, 7);
-        assert_eq!(channels.begin_scan(8, 100), Err(Error::Busy));
-        channels.receive(Event::Disconnected(HR), 9);
-        channels.begin_scan(10, 100).unwrap();
-        channels.tick(110);
-        assert!(!channels.scanning());
+        // A console that falls behind cannot remove production pages.
+        for value in 0..6 {
+            page(&mut channels, PEER, value, 4);
+            assert_eq!(channels.pop_packet().unwrap().data, [value; 8]);
+        }
+        let diagnostic = channels.pop_diagnostic_packet().unwrap();
+        assert_eq!(diagnostic.data, [2; 8]);
+        assert!(diagnostic.loss_count > 0);
+        channels.disconnect(40, 5).unwrap();
+        while let Some(packet) = channels.pop_diagnostic_packet() {
+            assert_ne!(packet.identity.device_type, 40);
+        }
+    }
+
+    #[test]
+    fn sends_report_bridge_evidence_and_reject_reused_reply_keys() {
+        let mut channels = three_channels();
+        let target = Target {
+            identity: PEER,
+            generation: channels.channel(40, 2).unwrap().generation,
+        };
+        let id = channels.queue_send(target, [1; 8], 2).unwrap();
+        assert_eq!(channels.pending_send(), Some((id, target, [1; 8])));
+        channels.send_submitted(id, 3);
+        channels.send_reply(40, [1, 1], true, 4);
+        assert_eq!(
+            channels.send_status(id).unwrap().stage,
+            SendStage::BridgeReplied { accepted: true }
+        );
+        assert_eq!(
+            channels.queue_send(target, [1; 8], 5),
+            Err(Error::Uncertain)
+        );
+        let next = channels.queue_send(target, [2; 8], 6).unwrap();
+        channels.send_submitted(next, 7);
+        channels.send_reply(40, [1, 1], true, 8);
+        assert_eq!(
+            channels.send_status(next).unwrap().stage,
+            SendStage::UartSubmitted
+        );
+        channels.tick(SEND_TIMEOUT_MS + 7);
+        assert_eq!(
+            channels.send_status(next).unwrap().stage,
+            SendStage::Uncertain
+        );
+        assert_eq!(
+            channels.channel(40, SEND_TIMEOUT_MS + 7).unwrap().link,
+            LinkState::Connected
+        );
+        channels.disconnect(40, SEND_TIMEOUT_MS + 8).unwrap();
+        assert_eq!(
+            channels.queue_send(target, [3; 8], SEND_TIMEOUT_MS + 9),
+            Err(Error::StaleGeneration)
+        );
     }
 
     #[test]

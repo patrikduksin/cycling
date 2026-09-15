@@ -48,7 +48,8 @@ impl Runtime {
                 && !self.dropped_ant.contains(&Some(peer.device_type))
                 && channel.link == device_api::ant::LinkState::Disconnected
                 && now >= self.next_reconnect[index]
-                && ant.request(device_api::ant::AntOperation::Connect(peer), now) == "ACCEPTED"
+                && ant.request(device_api::ant::AntOperation::Connect(peer), now)
+                    == Ok(device_api::ant::Admission::Accepted)
             {
                 self.next_reconnect[index] = now.saturating_add(5000);
             }

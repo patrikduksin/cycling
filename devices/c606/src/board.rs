@@ -351,33 +351,7 @@ impl device_api::ble_transport::Ble for Ble {
         crate::drivers::bluetooth::discoveries()
     }
 }
-pub struct Ant;
-impl device_api::ant::Ant for Ant {
-    fn availability(&self) -> device_api::observation::Availability {
-        device_api::observation::Availability::Ready
-    }
-    fn channels(
-        &self,
-        now_ms: u64,
-    ) -> [Option<device_api::ant::Snapshot>; device_api::ant::CHANNEL_CAPACITY] {
-        crate::capabilities::ant::snapshots(now_ms)
-    }
-    fn take_packet(&mut self) -> Option<device_api::ant::Packet> {
-        crate::capabilities::ant::take_packet()
-    }
-    fn scanning(&self) -> bool {
-        crate::capabilities::ant::scanning()
-    }
-    fn discoveries(&self) -> [Option<device_api::ant::Discovery>; 8] {
-        crate::capabilities::ant::discoveries()
-    }
-    fn request(&mut self, operation: device_api::ant::AntOperation, now_ms: u64) -> &'static str {
-        let Ok(_access) = crate::capabilities::power::ACCESS.enter() else {
-            return "BUSY";
-        };
-        crate::capabilities::ant::request(operation, now_ms)
-    }
-}
+pub use crate::capabilities::ant::Ant;
 pub struct Network(Option<embassy_net::Stack<'static>>);
 impl device_api::network::Network for Network {
     fn availability(&self) -> device_api::observation::Availability {

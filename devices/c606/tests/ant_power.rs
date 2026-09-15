@@ -46,6 +46,16 @@ pub mod drivers {
     }
 }
 
+pub mod power {
+    pub struct Access;
+    pub static ACCESS: Access = Access;
+    impl Access {
+        pub fn enter(&self) -> Result<(), device_api::ant::Error> {
+            Ok(())
+        }
+    }
+}
+
 pub mod sensors {
     pub fn ant_allowed() -> bool {
         true
@@ -57,7 +67,7 @@ pub mod sensors {
 mod adapter;
 
 #[test]
-fn failed_uart_close_keeps_power_failed_without_replay() {
+fn consumer_receive_send_and_failed_power_close_do_not_steal_or_replay() {
     use device_api::ant::AntOperation;
     use device_api::ant::Identity;
     use device_api::power::PeripheralState;
@@ -66,17 +76,47 @@ fn failed_uart_close_keeps_power_failed_without_replay() {
         device_number: 123,
         transmission_type: 1,
     };
-    assert_eq!(adapter::request(AntOperation::Connect(peer), 0), "ACCEPTED");
+    assert_eq!(
+        adapter::request(AntOperation::Connect(peer), 0),
+        Ok(device_api::ant::Admission::Accepted)
+    );
     adapter::tick(1);
     adapter::receive(1, [0x17, 120, 123, 0, 1, 3, 0, 0], 2);
+    use device_api::ant::{Admission, Ant as _, AntOperation::Send, SendStage, Target};
+    let mut ant = adapter::Ant;
+    adapter::receive(120, [1; 8], 2);
+    let observed = ant.take_diagnostic_packet().unwrap();
+    assert_eq!(ant.take_packet(), Some(observed));
+    let target = Target {
+        identity: peer,
+        generation: observed.generation,
+    };
+    let Ok(Admission::SendQueued(id)) = ant.request(
+        Send {
+            target,
+            data: [2; 8],
+        },
+        2,
+    ) else {
+        panic!("send rejected")
+    };
+    assert_eq!(ant.send_status(id).unwrap().stage, SendStage::Queued);
+    adapter::tick(2);
+    assert_eq!(ant.send_status(id).unwrap().stage, SendStage::UartSubmitted);
+    adapter::reply(120, [2, 2, 1, 0, 0, 0, 0, 0], 2);
+    assert_eq!(
+        ant.send_status(id).unwrap().stage,
+        SendStage::BridgeReplied { accepted: true }
+    );
+    assert_eq!(ant.take_packet(), None); // A bridge reply is not a sensor page.
     adapter::power_request(true, 3).unwrap();
     *drivers::companion_uart::FAIL_NEXT.lock().unwrap() = true;
     adapter::tick(4);
     assert_eq!(adapter::power_status(), PeripheralState::Failed);
-    assert_eq!(drivers::companion_uart::SENT.lock().unwrap().len(), 2);
+    assert_eq!(drivers::companion_uart::SENT.lock().unwrap().len(), 3);
     adapter::tick(20_000);
     adapter::power_request(false, 20_001).unwrap();
     adapter::tick(20_002);
     assert_eq!(adapter::power_status(), PeripheralState::Failed);
-    assert_eq!(drivers::companion_uart::SENT.lock().unwrap().len(), 2);
+    assert_eq!(drivers::companion_uart::SENT.lock().unwrap().len(), 3);
 }

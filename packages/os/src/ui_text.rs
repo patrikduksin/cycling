@@ -98,3 +98,34 @@ fn dot(character: u8, x: usize, y: usize) -> bool {
     };
     rows[y] & (1 << (4 - x)) != 0
 }
+
+#[cfg(all(test, feature = "cycling"))]
+mod tests {
+    use super::number;
+
+    #[test]
+    fn numeric_fields_keep_zero_and_saturated_maximum_inside_bounds() {
+        for (left, scale, digits) in [(144, 2, 5), (120, 3, 5), (152, 2, 6)] {
+            for value in [0, 600, u32::MAX] {
+                let mut lit = 0;
+                for y in 0..14 * scale {
+                    for x in 0..260 {
+                        let visible = number(x, y, left, 0, scale, value, digits);
+                        if visible {
+                            assert!((left..left + digits * 6 * scale).contains(&x));
+                            assert!(y < 7 * scale);
+                            lit += 1;
+                        }
+                        if value == u32::MAX {
+                            assert_eq!(
+                                visible,
+                                number(x, y, left, 0, scale, 10_u32.pow(digits as u32) - 1, digits)
+                            );
+                        }
+                    }
+                }
+                assert!(lit > 0);
+            }
+        }
+    }
+}

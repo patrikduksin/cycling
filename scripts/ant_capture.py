@@ -1,22 +1,11 @@
-"""Export stopped ANT/GPS/environment captures, preserving the occupied prefix.
+"""Decode historical ANT/GPS/environment captures from a full raw journal prefix.
 
-Morning SDK capture needs no ANT peer: send FOUNDATION LOG START 300, then poll
-FOUNDATION LOG STATUS until Recording and saved_environment/saved_positions
-advance. ACCEPTED and Scanning do not establish durable capture. Status reports
-remaining_slots, required_slots and the requested/remaining seconds. The explicit
-300..600 second deadline starts after scanning and stops automatically. Full/Error
-cannot start a reliable session.
-After the physical session send FOUNDATION LOG STOP and wait for Stopped.
-Export to a new private directory with:
-    mise run ant-export -- .local/foundation-morning --domain FOUNDATION
-After restart, let the ride scanner finish before requesting the export.
-The capture never erases or overwrites occupied slots. No automatic capture
-resumes after restart. Environmental values absent on the wire remain missing;
-raw motion is unscaled, battery millivolts are not independently calibrated.
-Sampled flag 1 means environment/GPS/latest ANT per selected radar/HR/power type every 2000 ms
-and changed link snapshots at most every 10000 ms. Intermediate link transitions
-are omitted without a counter. SMP1 counters track deliberate ANT packet omissions
-separately from drops. Every record retains this mode even without a terminal.
+Input can be prefix.bin from an archived capture or ride-slots.bin from ride-export.
+The source remains untouched, including torn, unknown and foreign records. Output
+contains a raw copy, decoded records and an integrity manifest in a new directory.
+Environmental values absent on the wire remain missing; raw motion is unscaled.
+Sampled flag 1 identifies 2000 ms samples and link snapshots at most every 10000 ms.
+SMP1 counters track deliberate ANT packet omissions separately from drops.
 """
 import argparse
 import hashlib
@@ -26,28 +15,9 @@ from pathlib import Path
 import struct
 import zlib
 
-from usb import UsbConnection
-
 SLOT_SIZE = 256
 MAX_SLOTS = 4096
 LINKS = ('idle', 'connecting', 'connected', 'disconnecting', 'disconnected', 'timed_out', 'transport_lost')
-
-
-def command(connection, text, domain='RADAR'):
-    reply = connection.terminal_command(f'{domain} LOG {text}')
-    if reply['status'] != 'OK':
-        raise RuntimeError(f'capture export rejected: {reply["status"]}')
-    return reply['data'].split()
-
-
-def info(connection, domain='RADAR'):
-    fields = command(connection, 'INFO', domain)
-    if len(fields) != 5 or fields[:3] != ['INFO', '1', '256']:
-        raise ValueError('unsupported capture export info')
-    upper = int(fields[3])
-    if not 0 <= upper <= MAX_SLOTS:
-        raise ValueError('invalid capture prefix bound')
-    return {'upper': upper, 'status': fields[4]}
 
 
 def decode_slot(data):
@@ -149,40 +119,33 @@ def decode_slot(data):
     return record
 
 
-def export(port, output, domain='RADAR', start_slot=0):
-    if domain not in ('RADAR', 'FOUNDATION'):
-        raise ValueError('unsupported capture domain')
+def export(source, output, start_slot=0):
     if type(start_slot) is not int or not 0 <= start_slot <= MAX_SLOTS:
         raise ValueError('invalid capture range lower bound')
+    data = source.read_bytes()
+    if len(data) % SLOT_SIZE or len(data) > MAX_SLOTS * SLOT_SIZE:
+        raise ValueError('input must be a complete raw journal prefix of at most 4096 slots')
+    upper = len(data) // SLOT_SIZE
+    if start_slot > upper:
+        raise ValueError('capture range starts beyond input prefix')
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     artifact = 'range' if start_slot else 'prefix'
     partial = output / f'{artifact}.partial'
+    selected = data[start_slot * SLOT_SIZE:]
+    with partial.open('wb') as raw:
+        raw.write(selected)
+        raw.flush()
+        os.fsync(raw.fileno())
     records, invalid = [], []
-    with UsbConnection(port, output / 'usb.log') as connection:
-        before = info(connection, domain)
-        if start_slot > before['upper']:
-            raise ValueError('capture range starts beyond occupied prefix')
-        with partial.open('wb') as raw:
-            for index in range(start_slot, before['upper']):
-                fields = command(connection, f'READ {index}', domain)
-                if len(fields) != 4 or fields[0] != 'SLOT' or int(fields[1]) != index:
-                    raise ValueError('wrong capture slot reply')
-                data = bytes.fromhex(fields[3])
-                if len(data) != SLOT_SIZE or zlib.crc32(data) != int(fields[2], 16):
-                    raise ValueError('corrupt capture transport')
-                raw.write(data)
-                try:
-                    record = decode_slot(data)
-                except ValueError as error:
-                    invalid.append({'slot': index, 'error': str(error)})
-                    continue
-                if record is not None:
-                    record['slot'] = index
-                    records.append(record)
-            raw.flush()
-            os.fsync(raw.fileno())
-        if info(connection, domain) != before:
-            raise ValueError('capture prefix changed during export')
+    for index in range(start_slot, upper):
+        try:
+            record = decode_slot(data[index * SLOT_SIZE:(index + 1) * SLOT_SIZE])
+        except ValueError as error:
+            invalid.append({'slot': index, 'error': str(error)})
+            continue
+        if record is not None:
+            record['slot'] = index
+            records.append(record)
     raw_path = output / f'{artifact}.bin'
     partial.rename(raw_path)
     sequences = {}
@@ -193,26 +156,26 @@ def export(port, output, domain='RADAR', start_slot=0):
         if record['sequence'] != expected or capture > record['slot']:
             gaps.append({'slot': record['slot'], 'capture_id': capture, 'expected_sequence': expected})
         sequences[capture] = record['sequence'] + 1
-    manifest = dict(version=1, slot_size=SLOT_SIZE, lower=start_slot, **before,
-                    sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+    manifest = dict(version=1, slot_size=SLOT_SIZE, lower=start_slot, upper=upper,
+                    sha256=hashlib.sha256(selected).hexdigest(),
+                    source_sha256=hashlib.sha256(data).hexdigest(),
                     positions=sum(r['kind'] == 'position' for r in records),
                     environmental_samples=sum(r['kind'] == 'environment' for r in records),
                     ant_records=len(records), packets=sum(len(r.get('packets', [])) for r in records),
                     invalid_ant_slots=invalid, sequence_gaps=gaps)
     (output / 'records.json').write_text(json.dumps(records, indent=2))
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2))
-    print(f'Exported {manifest["packets"]} ANT packets and {manifest["positions"]} GPS samples plus {manifest["environmental_samples"]} environmental samples to {output}; invalid ANT slots={len(invalid)}, sequence gaps={len(gaps)}')
+    print(f'Decoded {manifest["packets"]} ANT packets and {manifest["positions"]} GPS samples plus {manifest["environmental_samples"]} environmental samples to {output}; invalid ANT slots={len(invalid)}, sequence gaps={len(gaps)}')
     return manifest
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
-    parser.add_argument('--domain', choices=('RADAR', 'FOUNDATION'), default='RADAR')
-    parser.add_argument('--start-slot', type=int, default=0, help='export from this absolute slot through the occupied upper bound; default preserves the full prefix')
+    parser.add_argument('--input', type=Path, required=True, help='full raw journal prefix starting at slot zero')
+    parser.add_argument('--start-slot', type=int, default=0, help='decode from this absolute slot through the input upper bound; default preserves the full prefix')
     args = parser.parse_args()
-    export(args.port, args.output, args.domain, args.start_slot)
+    export(args.input, args.output, args.start_slot)
 
 
 if __name__ == '__main__':

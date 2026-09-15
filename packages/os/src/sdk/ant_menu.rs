@@ -1,14 +1,13 @@
 //! Physical-button ANT selection. Discovery order stays stable until an explicit scan.
-use super::radar_screen::{number, text};
 use crate::ant::{Discovery, Identity, LinkState, Snapshot};
 use crate::capabilities::{Button, Input};
+use crate::ui_text::{number, text};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     Scan,
     Connect(Identity),
     Disconnect(u8),
-    Start,
     Ride,
 }
 
@@ -21,12 +20,11 @@ pub struct Diagnostics {
 }
 
 pub struct Menu {
-    workout: bool,
     discoveries: [Option<Discovery>; 8],
     present: [bool; 8],
     channels: [Option<Snapshot>; crate::ant::CHANNEL_CAPACITY],
     cursor: usize,
-    visible_rows: [usize; 7],
+    visible_rows: [usize; 5],
     visible_count: usize,
     last_press: Option<u64>,
     scanning: bool,
@@ -41,22 +39,17 @@ impl Default for Menu {
 impl Menu {
     pub const fn new() -> Self {
         Self {
-            workout: false,
             discoveries: [None; 8],
             present: [false; 8],
             channels: [None; crate::ant::CHANNEL_CAPACITY],
             cursor: 0,
-            visible_rows: [0, 13, 14, 0, 0, 0, 0],
-            visible_count: 3,
+            visible_rows: [0; 5],
+            visible_count: 1,
             last_press: None,
             scanning: false,
             needs_navigation: false,
             message: b"SCAN THEN PICK SENSOR",
         }
-    }
-    pub fn workout(&mut self) {
-        self.workout = true;
-        self.layout();
     }
     pub fn diagnostics(&self) -> Diagnostics {
         Diagnostics {
@@ -67,10 +60,10 @@ impl Menu {
         }
     }
     fn layout(&mut self) {
-        let mut rows = [0; 15];
+        let mut rows = [0; 13];
         let mut count = 0;
         let mut selected: usize = 0;
-        for row in 0..15 {
+        for row in 0..13 {
             if self.visible(row) {
                 if row == self.cursor {
                     selected = count;
@@ -79,7 +72,7 @@ impl Menu {
                 count += 1;
             }
         }
-        let capacity = if self.workout { 5 } else { 7 };
+        let capacity = self.visible_rows.len();
         let first = selected.saturating_sub(capacity - 1);
         self.visible_count = (count - first).min(capacity);
         self.visible_rows[..self.visible_count]
@@ -149,7 +142,7 @@ impl Menu {
             Button::BottomLeft => {
                 self.needs_navigation = false;
                 loop {
-                    self.cursor = (self.cursor + 1) % 15;
+                    self.cursor = (self.cursor + 1) % 13;
                     if self.visible(self.cursor) {
                         break;
                     }
@@ -179,8 +172,6 @@ impl Menu {
                 9..=12 => self.channels[self.cursor - 9]
                     .and_then(|channel| channel.selected)
                     .map(|peer| Action::Disconnect(peer.device_type)),
-                13 => Some(Action::Start),
-                14 => Some(Action::Ride),
                 _ => None,
             },
         }
@@ -188,130 +179,15 @@ impl Menu {
     fn visible(&self, row: usize) -> bool {
         match row {
             0 => true,
-            13 | 14 => !self.workout,
             1..=8 => self.discoveries[row - 1].is_some(),
             9..=12 => self.channels[row - 9].is_some_and(|s| s.selected.is_some()),
             _ => false,
         }
     }
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
-        if self.workout {
-            return self.workout_pixel(x, y);
-        }
-        const WHITE: u16 = 0xffff;
-        const GREEN: u16 = 0x07e0;
-        const YELLOW: u16 = 0xffe0;
         if x >= 240 || y >= 320 {
             return 0;
         }
-        if text(x, y, 24, 8, 2, b"ANT SENSOR MENU") {
-            return WHITE;
-        }
-        if text(x, y, 8, 31, 1, b"PICK THE NUMBER ON YOUR SENSOR") {
-            return WHITE;
-        }
-        if (49..252).contains(&y) {
-            let index = (y - 49) / 29;
-            if index >= self.visible_count {
-                return 0;
-            }
-            let row = self.visible_rows[index];
-            let top = 49 + index * 29;
-            if row == self.cursor && text(x, y, 4, top, 2, b">") {
-                return GREEN;
-            }
-            let color = if row == self.cursor { GREEN } else { WHITE };
-            let label: &[u8] = match row {
-                0 => {
-                    if self.scanning {
-                        b"SCANNING..."
-                    } else {
-                        b"SCAN SENSORS"
-                    }
-                }
-                13 => b"START RIDE TEST",
-                14 => b"RIDE STATUS",
-                _ => b"",
-            };
-            if text(x, y, 20, top, 2, label) {
-                return color;
-            }
-            if (1..=8).contains(&row) {
-                let peer = self.discoveries[row - 1].unwrap();
-                let age_label: &[u8] = if self.present[row - 1] {
-                    b"RSSI"
-                } else {
-                    b"GONE"
-                };
-                if text(x, y, 20, top, 1, kind(peer.identity.device_type))
-                    || number(x, y, 80, top, 1, u32::from(peer.identity.device_number), 5)
-                    || text(x, y, 116, top, 1, b"TX")
-                    || number(
-                        x,
-                        y,
-                        134,
-                        top,
-                        1,
-                        u32::from(peer.identity.transmission_type),
-                        3,
-                    )
-                    || text(x, y, 164, top, 1, b"T")
-                    || number(x, y, 176, top, 1, u32::from(peer.identity.device_type), 3)
-                    || text(x, y, 20, top + 12, 1, age_label)
-                    || (self.present[row - 1]
-                        && text(
-                            x,
-                            y,
-                            56,
-                            top + 12,
-                            1,
-                            if peer.rssi < 0 { b"-" } else { b"" },
-                        ))
-                    || (self.present[row - 1]
-                        && number(
-                            x,
-                            y,
-                            62,
-                            top + 12,
-                            1,
-                            u32::from(peer.rssi.unsigned_abs()),
-                            3,
-                        ))
-                {
-                    return if self.present[row - 1] { color } else { YELLOW };
-                }
-            }
-            if (9..=12).contains(&row) {
-                let channel = self.channels[row - 9].unwrap();
-                let peer = channel.selected.unwrap();
-                let status: &[u8] = match channel.link {
-                    LinkState::Connecting => b"CONNECTING",
-                    LinkState::Connected if channel.stale || channel.age_ms.is_none() => b"STALE",
-                    LinkState::Connected => b"FRESH",
-                    LinkState::Disconnecting => b"STOPPING",
-                    _ => b"OFF",
-                };
-                if text(x, y, 20, top, 1, b"DROP")
-                    || text(x, y, 50, top, 1, kind(peer.device_type))
-                    || number(x, y, 110, top, 1, u32::from(peer.device_number), 5)
-                    || text(x, y, 20, top + 12, 1, status)
-                {
-                    return color;
-                }
-            }
-        }
-        if text(x, y, 8, 261, 1, &self.message[..self.message.len().min(37)]) {
-            return YELLOW;
-        }
-        if text(x, y, 8, 282, 1, b"BOTTOM LEFT NEXT")
-            || text(x, y, 8, 294, 1, b"BOTTOM RIGHT CHOOSE")
-            || text(x, y, 8, 306, 1, b"TOP LEFT BACK")
-        {
-            return WHITE;
-        }
-        0
-    }
-    fn workout_pixel(&self, x: usize, y: usize) -> u16 {
         let cyan = 0x07ff;
         let white = 0xffff;
         if (39..249).contains(&y) {
@@ -394,129 +270,6 @@ impl Menu {
         }
         0
     }
-    #[cfg(test)]
-    fn reference_pixel(&self, x: usize, y: usize) -> u16 {
-        const WHITE: u16 = 0xffff;
-        const GREEN: u16 = 0x07e0;
-        const YELLOW: u16 = 0xffe0;
-        if x >= 240 || y >= 320 {
-            return 0;
-        }
-        if text(x, y, 24, 8, 2, b"ANT SENSOR MENU") {
-            return WHITE;
-        }
-        if text(x, y, 8, 31, 1, b"PICK THE NUMBER ON YOUR SENSOR") {
-            return WHITE;
-        }
-        let mut rows = [0usize; 15];
-        let mut count = 0;
-        let mut selected = 0;
-        for row in 0..15 {
-            if self.visible(row) {
-                if row == self.cursor {
-                    selected = count;
-                }
-                rows[count] = row;
-                count += 1;
-            }
-        }
-        let first = selected.saturating_sub(6);
-        for (index, &row) in rows[first..count.min(first + 7)].iter().enumerate() {
-            let top = 49 + index * 29;
-            if row == self.cursor && text(x, y, 4, top, 2, b">") {
-                return GREEN;
-            }
-            let color = if row == self.cursor { GREEN } else { WHITE };
-            let label: &[u8] = match row {
-                0 => {
-                    if self.scanning {
-                        b"SCANNING..."
-                    } else {
-                        b"SCAN SENSORS"
-                    }
-                }
-                13 => b"START RIDE TEST",
-                14 => b"RIDE STATUS",
-                _ => b"",
-            };
-            if text(x, y, 20, top, 2, label) {
-                return color;
-            }
-            if (1..=8).contains(&row) {
-                let peer = self.discoveries[row - 1].unwrap();
-                let age_label: &[u8] = if self.present[row - 1] {
-                    b"RSSI"
-                } else {
-                    b"GONE"
-                };
-                if text(x, y, 20, top, 1, kind(peer.identity.device_type))
-                    || number(x, y, 80, top, 1, u32::from(peer.identity.device_number), 5)
-                    || text(x, y, 116, top, 1, b"TX")
-                    || number(
-                        x,
-                        y,
-                        134,
-                        top,
-                        1,
-                        u32::from(peer.identity.transmission_type),
-                        3,
-                    )
-                    || text(x, y, 164, top, 1, b"T")
-                    || number(x, y, 176, top, 1, u32::from(peer.identity.device_type), 3)
-                    || text(x, y, 20, top + 12, 1, age_label)
-                    || (self.present[row - 1]
-                        && text(
-                            x,
-                            y,
-                            56,
-                            top + 12,
-                            1,
-                            if peer.rssi < 0 { b"-" } else { b"" },
-                        ))
-                    || (self.present[row - 1]
-                        && number(
-                            x,
-                            y,
-                            62,
-                            top + 12,
-                            1,
-                            u32::from(peer.rssi.unsigned_abs()),
-                            3,
-                        ))
-                {
-                    return if self.present[row - 1] { color } else { YELLOW };
-                }
-            }
-            if (9..=12).contains(&row) {
-                let channel = self.channels[row - 9].unwrap();
-                let peer = channel.selected.unwrap();
-                let status: &[u8] = match channel.link {
-                    LinkState::Connecting => b"CONNECTING",
-                    LinkState::Connected if channel.stale || channel.age_ms.is_none() => b"STALE",
-                    LinkState::Connected => b"FRESH",
-                    LinkState::Disconnecting => b"STOPPING",
-                    _ => b"OFF",
-                };
-                if text(x, y, 20, top, 1, b"DROP")
-                    || text(x, y, 50, top, 1, kind(peer.device_type))
-                    || number(x, y, 110, top, 1, u32::from(peer.device_number), 5)
-                    || text(x, y, 20, top + 12, 1, status)
-                {
-                    return color;
-                }
-            }
-        }
-        if text(x, y, 8, 261, 1, &self.message[..self.message.len().min(37)]) {
-            return YELLOW;
-        }
-        if text(x, y, 8, 282, 1, b"BOTTOM LEFT NEXT")
-            || text(x, y, 8, 294, 1, b"BOTTOM RIGHT CHOOSE")
-            || text(x, y, 8, 306, 1, b"TOP LEFT BACK")
-        {
-            return WHITE;
-        }
-        0
-    }
 }
 fn kind(device_type: u8) -> &'static [u8] {
     match device_type {
@@ -531,53 +284,6 @@ fn kind(device_type: u8) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn assert_same_pixels(menu: &Menu) {
-        for y in 0..=320 {
-            for x in 0..=240 {
-                assert_eq!(
-                    menu.pixel(x, y),
-                    menu.reference_pixel(x, y),
-                    "cursor={} x={x} y={y}",
-                    menu.cursor
-                );
-            }
-        }
-    }
-    #[test]
-    fn cached_layout_is_pixel_identical_to_original_renderer() {
-        let mut menu = Menu::new();
-        assert_same_pixels(&menu);
-        let peers = core::array::from_fn(|index| Some(peer(index as u16 + 100)));
-        let channels = core::array::from_fn(|index| {
-            Some(Snapshot {
-                scanning: false,
-                link: LinkState::Connected,
-                selected: Some(peer(index as u16 + 100).identity),
-                generation: 1,
-                packets: 1,
-                dropped_packets: 0,
-                discovery_overflows: 0,
-                transport_losses: 0,
-                tx_failures: 0,
-                age_ms: Some(0),
-                stale: false,
-            })
-        });
-        menu.refresh(peers, channels, false, 0);
-        for index in 0..15 {
-            assert_same_pixels(&menu);
-            menu.input(press(Button::BottomLeft), index * 500);
-        }
-        menu.refresh([None; 8], [None; crate::ant::CHANNEL_CAPACITY], true, 8000);
-        assert_same_pixels(&menu);
-        menu.input(Input::Cancel, 8500);
-        assert_same_pixels(&menu);
-        let diagnostics = menu.diagnostics();
-        assert_eq!(diagnostics.cursor, 0);
-        assert_eq!(diagnostics.last_press, Some(8500));
-        assert!(diagnostics.needs_nav);
-        assert_eq!(diagnostics.message, b"INPUT LOST - SELECT AGAIN");
-    }
     #[test]
     fn cancelled_navigation_cannot_choose_until_a_new_navigation_press() {
         let mut menu = Menu::new();
@@ -587,7 +293,7 @@ mod tests {
         assert_eq!(menu.input(press(Button::BottomLeft), 2400), None);
         assert_eq!(
             menu.input(press(Button::BottomRight), 2800),
-            Some(Action::Start)
+            Some(Action::Scan)
         );
     }
 
@@ -654,6 +360,12 @@ mod tests {
     #[test]
     fn holds_and_debounce_do_not_navigate_or_select() {
         let mut menu = Menu::new();
+        menu.refresh(
+            [Some(peer(10)), None, None, None, None, None, None, None],
+            [None; crate::ant::CHANNEL_CAPACITY],
+            false,
+            0,
+        );
         for code in [4, 5] {
             assert_eq!(
                 menu.input(
@@ -670,7 +382,7 @@ mod tests {
         assert_eq!(menu.input(press(Button::BottomRight), 349), None);
         assert_eq!(
             menu.input(press(Button::BottomRight), 350),
-            Some(Action::Start)
+            Some(Action::Connect(peer(10).identity))
         );
         assert_eq!(menu.input(press(Button::TopLeft), 700), None);
         assert_eq!(menu.input(press(Button::TopLeft), 1050), Some(Action::Ride));

@@ -299,43 +299,11 @@ def ant_command(step):
     return command
 
 
-def foundation_command(step):
-    action = step.get('action')
-    if not 0 < float(step.get('timeout_s', 30)) <= 120:
-        raise ValueError('foundation wait must be 0..120 seconds')
-    allowed = {'op', 'action', 'timeout_s'}
-    if action == 'start':
-        allowed.add('duration_seconds')
-        seconds = step.get('duration_seconds')
-        if type(seconds) is not int or not 300 <= seconds <= 600:
-            raise ValueError('foundation duration must be an integer from 300 to 600 seconds')
-        command = f'FOUNDATION LOG START {seconds}'
-    elif action == 'stop':
-        command = 'FOUNDATION LOG STOP'
-    else:
-        raise ValueError('foundation action must be start or stop')
-    if set(step) - allowed:
-        raise ValueError('unexpected typed foundation fields')
-    return command
-
-
-def foundation_fields(text):
-    # Runtime currently emits a Rust Debug snapshot followed by key=value fields.
-    result = fields(text)
-    result.update(dict(re.findall(r'\b(\w+):\s*([^,\s}]+)', text)))
-    if result.get('status') not in ('Idle', 'Scanning', 'Ready', 'Recording', 'Stopping', 'Stopped', 'Full', 'Error'):
-        raise ValueError('unknown foundation capture state')
-    if result.get('recording') not in ('true', 'false'):
-        raise ValueError('foundation capture lacks recording state')
-    return result
-
-
 def preflight(scenario):
     steps = scenario.get('steps')
     if not isinstance(steps, list) or not 1 <= len(steps) <= 256:
         raise ValueError('scenario requires 1..256 steps')
     baselines = {}
-    foundation_started = foundation_stopped = False
     ant_started = ant_stopped = False
     for step in steps:
         op = step.get('op')
@@ -346,7 +314,7 @@ def preflight(scenario):
         if op in ('command', 'wait'):
             command = step['command']
             words = command.split()
-            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in ('RIDE SENSORS', 'RADAR SENSORS', 'FOUNDATION LOG STATUS', 'FOUNDATION LOG INFO', 'ANT DEVICES')
+            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in ('RIDE SENSORS', 'RADAR SENSORS', 'ANT DEVICES')
             permitted = read_only
             permitted |= bool(re.fullmatch(r'DISPLAY [0-9a-fA-F]{1,4}', command))
             permitted |= bool(re.fullmatch(r'BRIGHTNESS (?:100|[0-9]{1,2})', command))
@@ -364,16 +332,6 @@ def preflight(scenario):
                 if not ant_started or ant_stopped:
                     raise ValueError('ANT stop requires this run preceding scan')
                 ant_stopped = True
-        elif op == 'foundation':
-            foundation_command(step)
-            if step['action'] == 'start':
-                if foundation_started:
-                    raise ValueError('one foundation capture start is allowed per run')
-                foundation_started = True
-            else:
-                if not foundation_started or foundation_stopped:
-                    raise ValueError("foundation stop requires this run's preceding start")
-                foundation_stopped = True
         elif op in ('sound', 'gnss', 'mmc', 'companion'):
             peripheral_command(step)
         elif op in ('wifi', 'ble'):
@@ -431,9 +389,6 @@ class Runner:
         self.ant_scan_may_apply = False
         self.ant_scan_observed = False
         self.ant_stop_sent = False
-        self.foundation_eligible = False
-        self.foundation_start_may_apply = False
-        self.foundation_stop_sent = False
 
     def command(self, command, statuses=('OK',), timeout=30):
         request = f'CMD {self.transport.request_id + 1} {command}'
@@ -450,7 +405,7 @@ class Runner:
             if reply['status'] in ('UNSUPPORTED', 'UNAVAILABLE'):
                 raise Unsupported(reply['status'])
             raise RuntimeError(f'{command.split()[0]} returned {reply["status"]}')
-        return foundation_fields(reply['data']) if command == 'FOUNDATION LOG STATUS' else fields(reply['data'])
+        return fields(reply['data'])
 
     def operation(self, command, statuses=('OK',)):
         result = self.command(f'HARNESS {self.session} {command}', statuses)
@@ -623,62 +578,10 @@ class Runner:
         self.ant_scan_may_apply = False
         return result
 
-    def foundation_idle(self, build):
-        if build.get('recording') != 'false' or build.get('cycling') != 'true':
-            raise ValueError('foundation capture requires original idle SDK firmware')
-        original = self.command('FOUNDATION LOG STATUS')
-        if original['status'] != 'Idle' or original['recording'] != 'false':
-            raise ValueError('foundation capture requires original Idle state')
-        return original
-
-    def wait_foundation(self, wanted, timeout):
-        deadline = time.monotonic() + timeout
-        for _ in range(2401):
-            state = self.command('FOUNDATION LOG STATUS')
-            if state['status'] in wanted and state['recording'] == ('true' if state['status'] == 'Recording' else 'false'):
-                return state
-            if state['status'] in ('Full', 'Error', 'Stopped', 'Idle'):
-                raise RuntimeError('foundation capture reached an unexpected terminal state')
-            if time.monotonic() >= deadline:
-                break
-            self.delay(.05)
-        raise TimeoutError('foundation capture state remains uncertain')
-
-    def stop_foundation(self, timeout=30):
-        if not self.foundation_start_may_apply:
-            raise ValueError('cannot stop a foundation capture not started by this run')
-        state = self.command('FOUNDATION LOG STATUS')
-        if state['status'] in ('Full', 'Error'):
-            raise RuntimeError('foundation capture failed; preserve data for inspection')
-        if state['status'] not in ('Stopped', 'Idle', 'Stopping'):
-            if self.foundation_stop_sent:
-                raise RuntimeError('previous foundation stop remains uncertain; not replayed')
-            self.foundation_stop_sent = True
-            self.command('FOUNDATION LOG STOP', ('ACCEPTED',))
-        state = self.wait_foundation(('Stopped', 'Idle'), timeout)
-        self.foundation_start_may_apply = False
-        return state
-
-    def foundation(self, step):
-        command = foundation_command(step)
-        timeout = float(step.get('timeout_s', 30))
-        if step['action'] == 'stop':
-            return self.stop_foundation(timeout)
-        if not self.foundation_eligible or self.foundation_start_may_apply:
-            raise ValueError('foundation capture lacks verified original idle ownership')
-        self.foundation_idle(self.command('INFO'))
-        self.foundation_eligible = False
-        # Set before submission: a lost reply cannot establish that START did not act.
-        self.foundation_start_may_apply = True
-        self.command(command, ('ACCEPTED',))
-        return self.wait_foundation(('Recording',), timeout)
-
     def step(self, step, index):
         op = step['op']
         if op == 'ant':
             return self.ant(step)
-        if op == 'foundation':
-            return self.foundation(step)
         if op in ('wifi', 'ble'):
             return self.connectivity(op, step)
         if op in ('sound', 'gnss', 'mmc', 'companion'):
@@ -799,9 +702,6 @@ def execute(args, scenario, output):
         if any(step['op'] == 'ant' for step in scenario['steps']):
             report['initial_ant'] = runner.ant_idle()
             runner.ant_eligible = True
-        if any(step['op'] == 'foundation' for step in scenario['steps']):
-            report['initial_foundation'] = runner.foundation_idle(report['build'])
-            runner.foundation_eligible = True
         if not transport.virtual and any(step['op'] == 'recover' and step.get('mode') in ('restart', 'usb-reset') for step in scenario['steps']):
             if report['build'].get('recording') != 'false':
                 raise ValueError('real restart recipes require verified idle recording state; preserve active SDK work')
@@ -928,17 +828,11 @@ def execute(args, scenario, output):
                             raise RuntimeError(f'preference restoration mismatch: {key}')
                     cleanup['preferences'] = 'verified'
 
-                def restore_foundation():
-                    state = runner.stop_foundation()
-                    cleanup['foundation'] = 'verified ' + state['status'] + '; appended records preserved'
-
                 if runner.ant_scan_may_apply:
                     def restore_ant():
                         runner.stop_ant()
                         cleanup['ant'] = 'scan idle verified; selected channels unchanged'
                     restore_one('ant', restore_ant)
-                if runner.foundation_start_may_apply:
-                    restore_one('foundation', restore_foundation)
                 if 'sound' in peripheral_touched: restore_one('sound', restore_sound)
                 if 'gnss' in peripheral_touched: restore_one('gnss', restore_gnss)
                 if 'mmc' in peripheral_touched and original_mmc_clock is not None: restore_one('mmc', restore_mmc)

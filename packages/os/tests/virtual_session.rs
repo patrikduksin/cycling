@@ -194,478 +194,6 @@ fn runtime_sensor_change_clears_old_readings_and_survives_restart() {
     assert!(command(&mut s, "BLE").1.contains("saved=false"));
 }
 
-#[cfg(feature = "cycling")]
-#[test]
-fn foundation_runtime_deadline_commits_stop_without_peers_and_preserves_existing_prefix() {
-    use cycling_os::sdk::ride_log::{self, Entry, Kind, Slot, Source};
-    let t = Temp::new();
-    let mut s = Session::new(&t.0, 32, 24).unwrap();
-    let data_path = t.0.join("data.bin");
-    let mut bytes = std::fs::read(&data_path).unwrap();
-    // A real committed ride and an occupied unknown slot must survive the whole capture.
-    for (index, kind) in [Kind::Start, Kind::Finish].into_iter().enumerate() {
-        let mut slot = ride_log::encode(&Entry::event(
-            kind,
-            Source::Live,
-            7,
-            index as u32,
-            1000 * index as u64,
-        ));
-        slot.0[252..].copy_from_slice(&ride_log::commit_word().0);
-        assert!(ride_log::decode(&slot).is_some());
-        bytes[index * 256..(index + 1) * 256].copy_from_slice(&slot.0);
-    }
-    bytes[512..768].fill(0x5a);
-    let original_prefix = bytes[..768].to_vec();
-    std::fs::write(&data_path, bytes).unwrap();
-    s.advance(3000).unwrap();
-    assert!(command(&mut s, "RIDE STATUS").1.contains("rides=1"));
-    assert_eq!(
-        command(&mut s, "FOUNDATION LOG INFO"),
-        ("OK", "INFO 1 256 3 idle".into())
-    );
-    assert_eq!(command(&mut s, "FOUNDATION LOG START 300").0, "ACCEPTED");
-    assert!(s.sdk.recording());
-    // This uses the production runtime's scan, deadline, acquisition and writer.
-    for _ in 0..600 {
-        if command(&mut s, "FOUNDATION LOG STATUS")
-            .1
-            .contains("status: Recording")
-        {
-            break;
-        }
-        s.advance(10).unwrap();
-    }
-    let recording = command(&mut s, "FOUNDATION LOG STATUS").1;
-    assert!(recording.contains("status: Recording"), "{recording}");
-    assert!(recording.contains("required_slots: 608"), "{recording}");
-    assert!(
-        recording.contains("requested_seconds=Some(300)"),
-        "{recording}"
-    );
-    let first_recording_ms = s.now;
-    for delta in [120_000, 120_000, 59_000] {
-        s.advance(delta).unwrap();
-    }
-    assert!(
-        command(&mut s, "FOUNDATION LOG STATUS")
-            .1
-            .contains("status: Recording")
-    );
-    // No STOP command is sent. Crossing the production deadline must flush a stop record.
-    s.advance(2000).unwrap();
-    let stopped = command(&mut s, "FOUNDATION LOG STATUS").1;
-    assert!(stopped.contains("status: Stopped"), "{stopped}");
-    assert!(stopped.contains("error: None"), "{stopped}");
-    assert!(!s.sdk.recording());
-    let info = command(&mut s, "FOUNDATION LOG INFO");
-    assert_eq!(info.0, "OK");
-    let upper: usize = info.1.split_whitespace().nth(3).unwrap().parse().unwrap();
-    let after = std::fs::read(&data_path).unwrap();
-    assert_eq!(&after[..original_prefix.len()], original_prefix.as_slice());
-    let appended = after[768..upper * 256].as_chunks::<256>().0;
-    assert!(
-        appended.len() > 590,
-        "five minutes must retain GPS/environment progress"
-    );
-    assert!(
-        appended.len() <= 608,
-        "no-peer capture must fit its reservation"
-    );
-    for slot in appended {
-        assert_eq!(&slot[..4], b"ANT1");
-        assert_eq!(&slot[252..], &ride_log::commit_word().0);
-        assert_eq!(
-            u32::from_le_bytes(slot[248..252].try_into().unwrap()),
-            ride_log::transport_checksum(&slot[..248])
-        );
-        assert!(
-            matches!(slot[5], 2 | 6 | 7),
-            "no ANT packets or links without selected peers"
-        );
-    }
-    assert_eq!(appended.iter().filter(|slot| slot[5] == 2).count(), 1);
-    let stop = appended.last().unwrap();
-    assert_eq!(stop[5], 2);
-    let stop_ms = u64::from_le_bytes(stop[16..24].try_into().unwrap());
-    assert!((299_900..=300_100).contains(&stop_ms.saturating_sub(first_recording_ms)));
-    assert!(after[upper * 256..].iter().all(|byte| *byte == 0xff));
-    // No later tick can keep appending after automatic stop, and restart preserves export.
-    s.advance(5000).unwrap();
-    assert_eq!(std::fs::read(&data_path).unwrap(), after);
-    s.restart().unwrap();
-    s.advance(3000).unwrap();
-    assert_eq!(
-        command(&mut s, "FOUNDATION LOG INFO").1,
-        format!("INFO 1 256 {upper} idle")
-    );
-    assert_eq!(std::fs::read(&data_path).unwrap(), after);
-    assert!(ride_log::decode(&Slot(after[..256].try_into().unwrap())).is_some());
-}
-
-#[cfg(feature = "cycling")]
-#[test]
-fn sampled_seven_minute_capture_preserves_full_prefix_under_high_rate_ant() {
-    use cycling_os::{
-        ant::{CHANNEL_CAPACITY, Discovery, Identity, LinkState, Packet, Snapshot},
-        capabilities::{Ant, AntOperation, Availability},
-        sdk::ride_log,
-        simulator::session::NoInputObservation,
-    };
-    use std::collections::VecDeque;
-    struct OwnedAnt {
-        peers: [Identity; 3],
-        queue: VecDeque<Packet>,
-        supplied: u32,
-    }
-    impl Ant for OwnedAnt {
-        fn availability(&self) -> Availability {
-            Availability::Ready
-        }
-        fn scanning(&self) -> bool {
-            false
-        }
-        fn discoveries(&self) -> [Option<Discovery>; 8] {
-            [None; 8]
-        }
-        fn request(&mut self, _: AntOperation, _: u64) -> &'static str {
-            "UNSUPPORTED"
-        }
-        fn channels(&self, now: u64) -> [Option<Snapshot>; CHANNEL_CAPACITY] {
-            core::array::from_fn(|index| {
-                self.peers.get(index).map(|peer| Snapshot {
-                    scanning: false,
-                    link: LinkState::Connected,
-                    selected: Some(*peer),
-                    generation: (now / 1000) as u32,
-                    packets: self.supplied / 3,
-                    dropped_packets: 0,
-                    discovery_overflows: 0,
-                    transport_losses: 0,
-                    tx_failures: 0,
-                    age_ms: Some(0),
-                    stale: false,
-                })
-            })
-        }
-        fn take_packet(&mut self) -> Option<Packet> {
-            self.queue.pop_front()
-        }
-    }
-    fn tick(s: &mut Session, ant: &mut OwnedAnt) {
-        s.sdk.tick(
-            &mut s.shell.store.data(),
-            s.now,
-            ant,
-            &mut s.ble,
-            &s.position,
-            false,
-            &NoInputObservation,
-            cycling_os::companion_sensors::State::default().snapshot(s.now, 5000),
-        );
-    }
-    fn sdk_command(s: &mut Session, ant: &OwnedAnt, text: &str) -> (&'static str, String) {
-        let mut out = String::new();
-        let status = s
-            .sdk
-            .command(text, &mut s.shell.store.data(), s.now, &mut out, ant);
-        (status, out)
-    }
-    let t = Temp::new();
-    let mut s = Session::new(&t.0, 32, 24).unwrap();
-    let path = t.0.join("data.bin");
-    let mut bytes = std::fs::read(&path).unwrap();
-    for (index, slot) in bytes[..3090 * 256].chunks_mut(256).enumerate() {
-        // Unknown occupied records exercise preservation without inventing rides.
-        slot.fill((index % 251) as u8);
-    }
-    let prefix = bytes[..3090 * 256].to_vec();
-    std::fs::write(&path, bytes).unwrap();
-    let mut ant = OwnedAnt {
-        peers: [40, 120, 11].map(|device_type| Identity {
-            device_type,
-            transmission_type: 1,
-            device_number: 1000 + u16::from(device_type),
-        }),
-        queue: VecDeque::new(),
-        supplied: 0,
-    };
-    for _ in 0..300 {
-        s.now += 10;
-        tick(&mut s, &mut ant);
-    }
-    assert_eq!(
-        sdk_command(&mut s, &ant, "FOUNDATION LOG INFO"),
-        ("OK", "INFO 1 256 3090 idle".into())
-    );
-    let start = sdk_command(&mut s, &ant, "FOUNDATION LOG SAMPLED 420");
-    assert_eq!(start.0, "ACCEPTED", "{start:?}");
-    let mut recording_ms = None;
-    for _ in 0..43_000 {
-        s.now += 10;
-        if s.now.is_multiple_of(100) {
-            for peer in ant.peers {
-                // Ten wire pages per second per peer, thirty total, exceeds retained rate.
-                ant.queue.push_back(Packet {
-                    identity: peer,
-                    data: [0; 8],
-                    received_ms: s.now,
-                    generation: (s.now / 1000) as u32,
-                    loss_count: 0,
-                });
-                ant.supplied += 1;
-            }
-        }
-        tick(&mut s, &mut ant);
-        if s.now.is_multiple_of(100) {
-            let status = sdk_command(&mut s, &ant, "FOUNDATION LOG STATUS").1;
-            if status.contains("status: Recording") {
-                recording_ms.get_or_insert(s.now);
-            }
-            if status.contains("status: Stopped") {
-                break;
-            }
-        }
-    }
-    let stopped = sdk_command(&mut s, &ant, "FOUNDATION LOG STATUS").1;
-    assert!(stopped.contains("status: Stopped"), "{stopped}");
-    assert!(stopped.contains("required_slots: 764"), "{stopped}");
-    assert!(stopped.contains("sampled: true"), "{stopped}");
-    assert!(stopped.contains("error: None"), "{stopped}");
-    let info = sdk_command(&mut s, &ant, "FOUNDATION LOG INFO");
-    let upper: usize = info.1.split_whitespace().nth(3).unwrap().parse().unwrap();
-    let after = std::fs::read(&path).unwrap();
-    assert_eq!(&after[..prefix.len()], prefix.as_slice());
-    let records = after[prefix.len()..upper * 256].as_chunks::<256>().0;
-    assert!(
-        records.len() <= 764,
-        "{} records exceeded reservation",
-        records.len()
-    );
-    let mut packets = 0u32;
-    let mut counts = [0usize; 8];
-    for (sequence, record) in records.iter().enumerate() {
-        assert_eq!(&record[..4], b"ANT1");
-        assert_eq!(record[7], 1);
-        assert_eq!(&record[252..], &ride_log::commit_word().0);
-        assert_eq!(
-            u32::from_le_bytes(record[248..252].try_into().unwrap()),
-            ride_log::transport_checksum(&record[..248])
-        );
-        assert_eq!(u32::from_le_bytes(record[8..12].try_into().unwrap()), 3090);
-        assert_eq!(
-            u32::from_le_bytes(record[12..16].try_into().unwrap()),
-            sequence as u32
-        );
-        counts[record[5] as usize] += 1;
-        if record[5] == 1 {
-            packets += u32::from(record[6]);
-            for index in 0..usize::from(record[6]) {
-                let at = 24 + index * 28;
-                assert!(matches!(record[at], 40 | 120 | 11));
-                assert_eq!(
-                    u16::from_le_bytes(record[at + 2..at + 4].try_into().unwrap()),
-                    1000 + u16::from(record[at])
-                );
-                assert_eq!(
-                    u32::from_le_bytes(record[at + 16..at + 20].try_into().unwrap()),
-                    0
-                );
-            }
-        }
-    }
-    assert!(counts[6] >= 209 && counts[7] >= 209, "{counts:?}");
-    assert!((600..=630).contains(&packets), "retained packets={packets}");
-    assert!(
-        counts[5] >= 120,
-        "three changing links must exercise reservation: {counts:?}"
-    );
-    assert_eq!(counts[2], 1);
-    let terminal = records.last().unwrap();
-    assert_eq!(terminal[5], 2);
-    assert_eq!(
-        &terminal[24..32],
-        &[0; 8],
-        "intentional omission must not become drops"
-    );
-    assert_eq!(&terminal[48..52], b"SMP1");
-    let omissions = u32::from_le_bytes(terminal[52..56].try_into().unwrap());
-    assert!(omissions > 7500, "omissions={omissions}");
-    // A few pages can arrive after deadline while the terminal itself is committing.
-    assert!(ant.supplied >= packets + omissions);
-    assert!(ant.supplied - packets - omissions <= 12);
-    let stop_ms = u64::from_le_bytes(terminal[16..24].try_into().unwrap());
-    assert!((419_800..=420_100).contains(&stop_ms.saturating_sub(recording_ms.unwrap())));
-    assert!(after[upper * 256..].iter().all(|byte| *byte == 0xff));
-    for _ in 0..500 {
-        s.now += 10;
-        tick(&mut s, &mut ant);
-    }
-    assert_eq!(std::fs::read(&path).unwrap(), after);
-}
-
-#[cfg(feature = "cycling")]
-#[test]
-fn physical_menu_selects_exact_peer_and_gates_capture_start() {
-    use cycling_os::{
-        ant::{Discovery, Identity, LinkState, Packet, Snapshot},
-        capabilities::{Ant, AntOperation, Availability, Button, Input},
-        simulator::session::NoInputObservation,
-    };
-    struct MenuAnt {
-        found: [Option<Discovery>; 8],
-        selected: [Option<Snapshot>; cycling_os::ant::CHANNEL_CAPACITY],
-        requests: Vec<AntOperation>,
-    }
-    impl Ant for MenuAnt {
-        fn availability(&self) -> Availability {
-            Availability::Ready
-        }
-        fn scanning(&self) -> bool {
-            false
-        }
-        fn discoveries(&self) -> [Option<Discovery>; 8] {
-            self.found
-        }
-        fn channels(&self, _: u64) -> [Option<Snapshot>; cycling_os::ant::CHANNEL_CAPACITY] {
-            self.selected
-        }
-        fn take_packet(&mut self) -> Option<Packet> {
-            None
-        }
-        fn request(&mut self, op: AntOperation, _: u64) -> &'static str {
-            self.requests.push(op);
-            "ACCEPTED"
-        }
-    }
-    fn press(s: &mut Session, ant: &mut MenuAnt, button: Button) {
-        s.now += 400;
-        s.sdk.input(
-            Input::Button { button, code: 1 },
-            s.now,
-            ant,
-            &mut s.shell.store.data(),
-        );
-    }
-    for scenario in ["absent", "stale", "gps", "gps_expired", "space", "ready"] {
-        let t = Temp::new();
-        let mut s = Session::new(&t.0, 32, 24).unwrap();
-        let occupied = if scenario == "space" { 4089 } else { 3090 };
-        let path = t.0.join("data.bin");
-        let mut media = std::fs::read(&path).unwrap();
-        media[..occupied * 256].fill(0x5a);
-        std::fs::write(&path, &media).unwrap();
-        s.advance(3000).unwrap();
-        assert_eq!(command(&mut s, "FOUNDATION MENU 420").0, "OK");
-        assert!(s.sdk.input_active());
-        let mut ant = MenuAnt {
-            found: [None; 8],
-            selected: [None; cycling_os::ant::CHANNEL_CAPACITY],
-            requests: Vec::new(),
-        };
-        press(&mut s, &mut ant, Button::BottomRight);
-        assert!(matches!(
-            ant.requests.as_slice(),
-            [AntOperation::Scan(10_000)]
-        ));
-        let radar = Identity {
-            device_type: 40,
-            device_number: 4321,
-            transmission_type: 7,
-        };
-        ant.found[0] = Some(Discovery {
-            identity: radar,
-            rssi: -41,
-            seen_ms: s.now,
-        });
-        // Discovering a peer must not connect it. Only the explicit row selection does.
-        assert_eq!(ant.requests.len(), 1);
-        press(&mut s, &mut ant, Button::BottomLeft);
-        assert_eq!(ant.requests.len(), 1);
-        press(&mut s, &mut ant, Button::BottomRight);
-        assert!(matches!(ant.requests[1], AntOperation::Connect(peer) if peer == radar));
-        if scenario != "absent" {
-            for (index, peer) in [
-                radar,
-                Identity {
-                    device_type: 11,
-                    device_number: 8765,
-                    transmission_type: 3,
-                },
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                ant.selected[index] = Some(Snapshot {
-                    scanning: false,
-                    link: LinkState::Connected,
-                    selected: Some(peer),
-                    generation: 1,
-                    packets: 5,
-                    dropped_packets: 0,
-                    discovery_overflows: 0,
-                    transport_losses: 0,
-                    tx_failures: 0,
-                    age_ms: Some(if scenario == "stale" { 6000 } else { 0 }),
-                    stale: scenario == "stale",
-                });
-            }
-        }
-        press(&mut s, &mut ant, Button::TopLeft);
-        // Scan, discovery, selected-peer rows, then Start.
-        for _ in 0..(2 + ant.selected.iter().flatten().count()) {
-            press(&mut s, &mut ant, Button::BottomLeft);
-        }
-        if scenario != "gps" {
-            fixture(
-                &mut s,
-                "FIXTURE POSITION NMEA $GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A",
-            );
-        }
-        s.sdk.tick(
-            &mut s.shell.store.data(),
-            s.now,
-            &mut ant,
-            &mut s.ble,
-            &s.position,
-            false,
-            &NoInputObservation,
-            cycling_os::companion_sensors::State::default().snapshot(s.now, 5000),
-        );
-        if scenario == "gps_expired" {
-            // Input can arrive before another runtime tick refreshes cached GPS state.
-            s.now += cycling_os::gps::STALE_MS + 1;
-        }
-        press(&mut s, &mut ant, Button::BottomRight);
-        assert_eq!(
-            s.sdk.recording(),
-            scenario == "ready",
-            "scenario={scenario}"
-        );
-        assert_eq!(
-            ant.requests.len(),
-            2,
-            "Start must not implicitly connect peers"
-        );
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            media,
-            "Start itself must not erase/write"
-        );
-        if scenario == "ready" {
-            for button in [Button::TopLeft, Button::BottomLeft, Button::BottomRight] {
-                press(&mut s, &mut ant, button);
-            }
-            assert_eq!(
-                ant.requests.len(),
-                2,
-                "capture ignores scan/connect/disconnect gestures"
-            );
-            assert!(s.sdk.recording());
-        }
-    }
-}
-
 #[test]
 fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
     use cycling_os::{
@@ -724,100 +252,93 @@ fn sdk_boot_exposes_physical_menu_without_a_usb_command() {
         "SDK boot must accept physical menu input before any USB command"
     );
 }
-
 #[cfg(feature = "cycling")]
 #[test]
-fn manual_capture_outlives_ten_minutes_and_physical_stop_requires_confirmation() {
+fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     use cycling_os::{
         capabilities::{Button, Input},
-        sdk::ride_log,
+        sdk::ride_log::{self, Kind},
         simulator::session::NoAnt,
     };
-    fn input(s: &mut Session, delta: u64, button: Button, code: u16) {
-        s.now += delta;
-        s.sdk.input(
-            Input::Button { button, code },
-            s.now,
-            &mut NoAnt,
-            &mut s.shell.store.data(),
-        );
+    fn present(s: &mut Session) {
+        s.sdk.present(&mut s.shell, s.now, &NoAnt, &s.position);
     }
-    fn recording(s: &mut Session) {
-        let status = command(s, "FOUNDATION LOG STATUS").1;
-        assert!(status.contains("status: Recording"), "{status}");
+    fn press(s: &mut Session, button: Button) {
+        s.advance(400).unwrap();
+        s.sdk
+            .input(Input::Button { button, code: 1 }, s.now, &mut NoAnt);
+        s.advance(100).unwrap();
+    }
+    fn state(s: &mut Session, expected: &str) -> String {
+        let (status, data) = command(s, "RIDE STATUS");
+        assert_eq!(status, "OK");
+        assert!(data.contains(&format!("state={expected}")), "{data}");
+        data
+    }
+    fn active(data: &str) -> u64 {
+        data.split_whitespace()
+            .find_map(|p| p.strip_prefix("active_ms="))
+            .unwrap()
+            .parse()
+            .unwrap()
     }
     let t = Temp::new();
-    let mut s = Session::new(&t.0, 32, 24).unwrap();
-    let path = t.0.join("data.bin");
-    let mut media = std::fs::read(&path).unwrap();
-    media[..3090 * 256].fill(0x5a);
-    let prefix = media[..3090 * 256].to_vec();
-    std::fs::write(&path, media).unwrap();
-    s.advance(3000).unwrap();
-    assert_eq!(command(&mut s, "FOUNDATION LOG MANUAL").0, "ACCEPTED");
-    s.advance(4000).unwrap();
-    recording(&mut s);
-    for _ in 0..5 {
-        s.advance(120_000).unwrap();
-    }
-    s.advance(20_000).unwrap();
-    recording(&mut s);
-    let status = command(&mut s, "FOUNDATION LOG STATUS").1;
-    assert!(status.contains("required_slots: 8"), "{status}");
-    assert!(status.contains("requested_seconds=None"), "{status}");
-    assert!(status.contains("remaining_seconds=None"), "{status}");
-    // Holds cannot stop recording.
-    input(&mut s, 400, Button::BottomRight, 4);
-    input(&mut s, 400, Button::BottomRight, 5);
-    recording(&mut s);
-    // Holds cancel an armed confirmation, so release/click cannot finish it.
-    input(&mut s, 400, Button::BottomRight, 1);
-    input(&mut s, 400, Button::BottomRight, 4);
-    input(&mut s, 400, Button::BottomRight, 1);
-    recording(&mut s);
-    s.sdk
-        .input(Input::Cancel, s.now, &mut NoAnt, &mut s.shell.store.data());
-    // A duplicate click inside350ms cannot confirm.
-    input(&mut s, 400, Button::BottomRight, 1);
-    input(&mut s, 100, Button::BottomRight, 1);
-    recording(&mut s);
-    // Another button cancels the pending confirmation.
-    input(&mut s, 400, Button::BottomLeft, 1);
-    input(&mut s, 400, Button::BottomRight, 1);
-    recording(&mut s);
-    // An expired second click must not stop; it can only arm a new confirmation.
-    input(&mut s, 5001, Button::BottomRight, 1);
-    recording(&mut s);
-    input(&mut s, 400, Button::TopLeft, 1);
-    input(&mut s, 400, Button::BottomRight, 1);
-    recording(&mut s);
-    input(&mut s, 350, Button::BottomRight, 1);
-    s.advance(2000).unwrap();
-    let stopped = command(&mut s, "FOUNDATION LOG STATUS").1;
-    assert!(stopped.contains("status: Stopped"), "{stopped}");
-    assert!(stopped.contains("error: None"), "{stopped}");
-    let info = command(&mut s, "FOUNDATION LOG INFO");
-    let upper: usize = info.1.split_whitespace().nth(3).unwrap().parse().unwrap();
-    let after = std::fs::read(&path).unwrap();
-    assert_eq!(&after[..prefix.len()], prefix.as_slice());
-    let records = after[prefix.len()..upper * 256].as_chunks::<256>().0;
-    assert!(
-        records.len() > 610,
-        "manual capture continued past ten minutes"
-    );
-    assert!(records.len() < 1006);
-    for record in records {
-        assert_eq!(record[7], 1);
-        assert_eq!(&record[252..], &ride_log::commit_word().0);
-        assert_eq!(
-            u32::from_le_bytes(record[248..252].try_into().unwrap()),
-            ride_log::transport_checksum(&record[..248])
-        );
-    }
-    assert_eq!(records.iter().filter(|r| r[5] == 2).count(), 1);
-    assert_eq!(records.last().unwrap()[5], 2);
-    input(&mut s, 400, Button::BottomRight, 1);
-    input(&mut s, 400, Button::BottomRight, 1);
+    let mut s = Session::new(&t.0, 240, 320).unwrap();
+    s.advance(7000).unwrap();
+    present(&mut s); // Splash completes into the TRAIN/SENSORS menu.
+    state(&mut s, "ready");
+    press(&mut s, Button::BottomRight); // TRAIN -> preflight.
+    s.advance(2600).unwrap();
+    present(&mut s); // Preflight -> ready workout.
+    assert!(!s.sdk.recording());
+    press(&mut s, Button::BottomLeft);
+    state(&mut s, "recording");
+    s.advance(5200).unwrap();
+    press(&mut s, Button::BottomLeft);
+    let paused = active(&state(&mut s, "paused"));
     s.advance(5000).unwrap();
-    assert_eq!(std::fs::read(&path).unwrap(), after);
+    assert_eq!(active(&state(&mut s, "paused")), paused);
+    press(&mut s, Button::BottomLeft);
+    s.advance(2100).unwrap();
+    assert!(active(&state(&mut s, "recording")) > paused);
+    press(&mut s, Button::BottomRight); // Arm stop; a single press must not save.
+    state(&mut s, "recording");
+    press(&mut s, Button::BottomRight);
+    let saved_duration = active(&state(&mut s, "saved"));
+    assert!(!s.sdk.recording());
+    let saved = std::fs::read(t.0.join("data.bin")).unwrap();
+    let info = command(&mut s, "EXPORT INFO");
+    assert_eq!(info.0, "OK");
+    let upper: usize = info.1.split_whitespace().nth(3).unwrap().parse().unwrap();
+    let prefix = &saved[..upper * ride_log::SLOT_SIZE];
+    let entries: Vec<_> = prefix
+        .as_chunks::<{ ride_log::SLOT_SIZE }>()
+        .0
+        .iter()
+        .map(|bytes| ride_log::decode(&ride_log::Slot(*bytes)).unwrap())
+        .collect();
+    assert_eq!(entries.first().unwrap().kind, Kind::Start);
+    assert!(entries.iter().any(|e| e.kind == Kind::Pause));
+    assert!(entries.iter().any(|e| e.kind == Kind::Resume));
+    assert!(entries.iter().any(|e| e.kind == Kind::Samples));
+    assert_eq!(entries.last().unwrap().kind, Kind::Finish);
+    assert_eq!(entries.last().unwrap().active_ms, saved_duration);
+
+    // A later workout appends after the completed one, including across restart.
+    press(&mut s, Button::BottomLeft);
+    s.advance(1500).unwrap();
+    press(&mut s, Button::BottomRight);
+    press(&mut s, Button::BottomRight);
+    state(&mut s, "saved");
+    assert_eq!(
+        &std::fs::read(t.0.join("data.bin")).unwrap()[..prefix.len()],
+        prefix
+    );
+    s.restart().unwrap();
+    s.advance(5000).unwrap();
+    assert!(command(&mut s, "RIDE HISTORY").1.starts_with("count=2"));
+    assert_eq!(
+        &std::fs::read(t.0.join("data.bin")).unwrap()[..prefix.len()],
+        prefix
+    );
 }

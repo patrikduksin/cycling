@@ -358,7 +358,7 @@ impl State {
 
 /// The adapter identifies received pages by type, so only one peer of each type
 /// can be selected. Slots with uncertain radio ownership are never reassigned.
-pub const CHANNEL_CAPACITY: usize = 3;
+pub const CHANNEL_CAPACITY: usize = 4;
 
 pub struct Channels {
     discovery: State,
@@ -632,6 +632,12 @@ mod tests {
     #[test]
     fn slots_and_same_type_replacement_require_confirmed_cleanup() {
         let mut channels = three_channels();
+        let speed = Identity {
+            device_type: 123,
+            ..PEER
+        };
+        channels.connect(speed, 1).unwrap();
+        channels.receive(Event::Connected(speed), 1);
         let replacement = Identity {
             device_number: 124,
             ..PEER

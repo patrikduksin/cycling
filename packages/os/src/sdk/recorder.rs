@@ -157,7 +157,9 @@ impl Recorder {
             }
             Action::Pause => self.status == Status::Recording,
             Action::Resume => self.status == Status::Paused,
-            Action::Finish => self.open_ride && self.status == Status::Paused,
+            Action::Finish => {
+                self.open_ride && matches!(self.status, Status::Recording | Status::Paused)
+            }
         };
         if allowed {
             let source = if action == Action::Start {
@@ -709,6 +711,38 @@ mod tests {
         scan(&mut reopened, &mut media);
         assert_eq!(reopened.status(), Status::Recovered);
         reopened.service(&mut media, 3_000, Sample::default(), &|| 3_000);
+        assert_eq!(reopened.completed(), 1);
+        assert!(reopened.exportable());
+    }
+    #[test]
+    fn finish_running_flushes_and_freezes_duration() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        assert!(recorder.take_result().unwrap().ok);
+        recorder.service(
+            &mut media,
+            1100,
+            Sample {
+                power_watts: Some(215),
+                speed_mm_s: Some(8000),
+                ..Sample::default()
+            },
+            &|| 1100,
+        );
+        assert!(recorder.request(Action::Finish, Source::Live, 2100, 2));
+        assert_eq!(recorder.active_ms(9000), 2000);
+        for _ in 0..3 {
+            recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert_eq!(recorder.status(), Status::Saved);
+        assert_eq!(recorder.active_ms(10000), 2000);
+        assert_eq!(recorder.written_samples(), 1);
+        let mut reopened = Recorder::default();
+        scan(&mut reopened, &mut media);
         assert_eq!(reopened.completed(), 1);
         assert!(reopened.exportable());
     }

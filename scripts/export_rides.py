@@ -83,7 +83,7 @@ def decode_slot(data):
     for index in range(count):
         value = data[32 + index * 48:80 + index * 48]
         flags = u32(value, 16)
-        if flags & ~0x8000003f or flags & 4 and not flags & 0x80000000:
+        if flags & ~0x800001ff or flags & 4 and not flags & 0x80000000:
             raise ValueError('invalid sample flags')
         battery = value[36] if flags & 32 else None
         if battery is not None and battery > 100:
@@ -97,6 +97,9 @@ def decode_slot(data):
             'demo_speed_mm_s': u32(value, 28) if flags & 4 else None,
             'heart_bpm': u16(value, 32) if flags & 8 else None,
             'cadence_tenths': u16(value, 34) if flags & 16 else None,
+            'speed_mm_s': u32(value, 40) if flags & 64 else None,
+            'power_watts': u16(value, 38) if flags & 128 else None,
+            'gradient_tenths': int.from_bytes(value[44:46], 'little', signed=True) if flags & 256 else None,
             'battery_percent': battery,
         })
     active_ms = u64(data, 16)

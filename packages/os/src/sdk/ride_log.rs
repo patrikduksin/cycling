@@ -135,6 +135,9 @@ pub struct Sample {
     pub heart_bpm: Option<u16>,
     pub cadence_tenths: Option<u16>,
     pub battery_percent: Option<u8>,
+    pub speed_mm_s: Option<u32>,
+    pub power_watts: Option<u16>,
+    pub gradient_tenths: Option<i16>,
 }
 
 impl Sample {
@@ -179,6 +182,9 @@ impl Entry {
                 heart_bpm: None,
                 cadence_tenths: None,
                 battery_percent: None,
+                speed_mm_s: None,
+                power_watts: None,
+                gradient_tenths: None,
             }; SAMPLES_PER_BATCH],
             count: 0,
         }
@@ -544,12 +550,24 @@ fn encode_sample(sample: &Sample, bytes: &mut [u8]) {
         flags |= 32;
         bytes[36] = value;
     }
+    if let Some(value) = sample.speed_mm_s {
+        flags |= 64;
+        put_u32(bytes, 40, value);
+    }
+    if let Some(value) = sample.power_watts {
+        flags |= 128;
+        put_u16(bytes, 38, value);
+    }
+    if let Some(value) = sample.gradient_tenths {
+        flags |= 256;
+        put_u16(bytes, 44, value as u16);
+    }
     put_u32(bytes, 16, flags);
 }
 
 fn decode_sample(bytes: &[u8]) -> Option<Sample> {
     let flags = get_u32(bytes, 16);
-    if flags & !(0x8000_003f) != 0 || flags & 4 != 0 && flags & 0x8000_0000 == 0 {
+    if flags & !(0x8000_01ff) != 0 || flags & 4 != 0 && flags & 0x8000_0000 == 0 {
         return None;
     }
     let battery = (flags & 32 != 0).then_some(bytes[36]);
@@ -565,6 +583,9 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
         heart_bpm: (flags & 8 != 0).then(|| get_u16(bytes, 32)),
         cadence_tenths: (flags & 16 != 0).then(|| get_u16(bytes, 34)),
         battery_percent: battery,
+        speed_mm_s: (flags & 64 != 0).then(|| get_u32(bytes, 40)),
+        power_watts: (flags & 128 != 0).then(|| get_u16(bytes, 38)),
+        gradient_tenths: (flags & 256 != 0).then(|| get_u16(bytes, 44) as i16),
     })
 }
 
@@ -613,6 +634,9 @@ mod tests {
             location_e7: Some((-333_646_900, -705_155_800)),
             demo_speed_mm_s: Some(5_000),
             battery_percent: Some(87),
+            speed_mm_s: Some(12345),
+            power_watts: Some(215),
+            gradient_tenths: Some(-37),
             ..Sample::default()
         }
     }

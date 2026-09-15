@@ -98,7 +98,7 @@ fn terminal_diagnostics_preserve_application_pages_and_bind_send_generation() {
     );
     assert_eq!(data, [1, 2, 3, 4, 5, 6, 7, 8]);
     ant.0.send_submitted(id, 4);
-    ant.0.send_reply(120, [1, 2], true, 5);
+    ant.0.send_reply(id, true, 5);
     output.clear();
     let lookup = format!("CMD 4 ANT OPERATION {}", id.0);
     assert_eq!(

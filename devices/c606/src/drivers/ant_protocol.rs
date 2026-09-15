@@ -8,11 +8,10 @@ use device_api::ant::Identity;
 use device_api::ant::Request;
 
 /// Categories accepted by the installed bridge, not implemented ANT+ profiles.
+pub const SUPPORTED_TYPES: &[u8] = &[40, 120, 11, 122, 123, 121, 34, 17, 128, 35];
+
 pub fn supports_type(device_type: u8) -> bool {
-    matches!(
-        device_type,
-        40 | 120 | 11 | 122 | 123 | 121 | 34 | 17 | 128 | 35
-    )
+    SUPPORTED_TYPES.contains(&device_type)
 }
 
 /// Encode one acknowledged-message request. Its reply cannot prove radio delivery.

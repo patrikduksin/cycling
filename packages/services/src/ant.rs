@@ -302,7 +302,6 @@ pub struct Channels {
     scan_generation: u32,
     send: Option<PendingSend>,
     next_send_id: u32,
-    used_send_keys: [Option<(u8, [u8; 2])>; SEND_HISTORY_CAPACITY],
 }
 
 impl Default for Channels {
@@ -323,7 +322,6 @@ impl Channels {
             scan_generation: 0,
             send: None,
             next_send_id: 0,
-            used_send_keys: [None; SEND_HISTORY_CAPACITY],
         }
     }
 
@@ -533,10 +531,6 @@ impl Channels {
     }
 }
 
-/// The bridge echoes only the type and first two bytes. Each key is used once
-/// until a confirmed companion restart, so a late or duplicate reply is harmless.
-pub const SEND_HISTORY_CAPACITY: usize = 8;
-
 #[derive(Clone, Copy)]
 struct PendingSend {
     observation: SendObservation,
@@ -583,18 +577,8 @@ impl Channels {
         }) {
             return Err(Error::Busy);
         }
-        let key = (target.identity.device_type, [data[0], data[1]]);
-        if self.used_send_keys.contains(&Some(key)) {
-            return Err(Error::Uncertain);
-        }
-        let slot = self
-            .used_send_keys
-            .iter()
-            .position(Option::is_none)
-            .ok_or(Error::Capacity)?;
         self.next_send_id = self.next_send_id.checked_add(1).ok_or(Error::Capacity)?;
         let id = OperationId(self.next_send_id);
-        self.used_send_keys[slot] = Some(key);
         self.send = Some(PendingSend {
             observation: SendObservation {
                 id,
@@ -643,12 +627,12 @@ impl Channels {
         }
     }
 
-    pub fn send_reply(&mut self, device_type: u8, echoed: [u8; 2], accepted: bool, now: u64) {
+    /// The device adapter correlates its wire reply before identifying a local operation.
+    pub fn send_reply(&mut self, id: OperationId, accepted: bool, now: u64) {
         self.tick(now);
         if let Some(send) = &mut self.send
             && send.observation.stage == SendStage::UartSubmitted
-            && send.observation.target.identity.device_type == device_type
-            && send.data[..2] == echoed
+            && send.observation.id == id
         {
             send.observation.stage = SendStage::BridgeReplied { accepted };
         }
@@ -672,11 +656,10 @@ impl Channels {
         }
     }
 
-    /// Only call after a confirmed companion restart that purges old replies.
-    /// A UART framing reset, reconnect, wake or transport loss is insufficient.
+    /// Only call after a confirmed companion restart. A framing reset,
+    /// reconnect or wake does not establish physical discovery cleanup.
     pub fn companion_restarted(&mut self, now: u64) {
         self.transport_loss(now);
-        self.used_send_keys.fill(None);
         self.scan_state = ScanState::Idle;
     }
 
@@ -911,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn sends_report_bridge_evidence_and_reject_reused_reply_keys() {
+    fn sends_report_bridge_evidence_with_bounded_work_and_local_ids() {
         let mut channels = three_channels();
         let target = Target {
             identity: PEER,
@@ -919,19 +902,16 @@ mod tests {
         };
         let id = channels.queue_send(target, [1; 8], 2).unwrap();
         assert_eq!(channels.pending_send(), Some((id, target, [1; 8])));
+        assert_eq!(channels.queue_send(target, [2; 8], 2), Err(Error::Busy));
         channels.send_submitted(id, 3);
-        channels.send_reply(40, [1, 1], true, 4);
+        channels.send_reply(id, true, 4);
         assert_eq!(
             channels.send_status(id).unwrap().stage,
             SendStage::BridgeReplied { accepted: true }
         );
-        assert_eq!(
-            channels.queue_send(target, [1; 8], 5),
-            Err(Error::Uncertain)
-        );
         let next = channels.queue_send(target, [2; 8], 6).unwrap();
         channels.send_submitted(next, 7);
-        channels.send_reply(40, [1, 1], true, 8);
+        channels.send_reply(id, true, 8);
         assert_eq!(
             channels.send_status(next).unwrap().stage,
             SendStage::UartSubmitted

@@ -20,6 +20,7 @@ fn send_admission_status(result: Result<Admission, Error>) -> &'static str {
         Err(Error::Capacity) => "CAPACITY",
         Err(Error::Unavailable) => "UNAVAILABLE",
         Err(Error::Disconnected) => "DISCONNECTED",
+        Err(Error::InvalidState) => "STATE",
         Err(Error::StaleGeneration) => "STALE",
         Err(Error::Uncertain) => "UNCERTAIN",
         Err(Error::InvalidIdentity | Error::InvalidDuration) => "INVALID",

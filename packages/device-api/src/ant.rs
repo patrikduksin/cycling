@@ -42,6 +42,7 @@ pub enum Error {
     Busy,
     InvalidIdentity,
     InvalidDuration,
+    InvalidState,
     UnsupportedType,
     Capacity,
     Unavailable,
@@ -119,8 +120,8 @@ pub struct Capabilities {
     pub acknowledged_send: bool,
     pub radio_delivery_feedback: bool,
     pub burst: bool,
-    /// Distinct type plus first-two-byte send keys permitted per companion restart.
-    pub send_key_capacity: u8,
+    /// Maximum admitted sends before the device requires a companion restart.
+    pub max_sends_per_restart: u8,
 }
 
 impl Capabilities {
@@ -132,7 +133,7 @@ impl Capabilities {
         acknowledged_send: false,
         radio_delivery_feedback: false,
         burst: false,
-        send_key_capacity: 0,
+        max_sends_per_restart: 0,
     };
 }
 

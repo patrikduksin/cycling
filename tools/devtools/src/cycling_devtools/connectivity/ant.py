@@ -84,6 +84,26 @@ def capture(connection, output, types, seconds, scan_seconds, send=None):
                 raise RuntimeError(f'{text.split()[0:2]} returned {reply["status"]}')
             return reply
 
+        def stop_scan():
+            nonlocal stop_attempted
+            before = command('ANT')
+            if before['data'].startswith('scanning=false '):
+                stop_attempted = True
+                report['scan_stop'] = 'local window ended; physical completion unknown'
+                command('ANT CAPABILITIES')
+                return
+            if not before['data'].startswith('scanning=true '):
+                raise RuntimeError('unknown discovery state')
+            stop_attempted = True
+            reply = command('ANT STOP', ('ACCEPTED', 'STATE', 'BUSY'))
+            report['scan_stop'] = 'stop submitted; physical completion unknown'
+            if reply['status'] != 'ACCEPTED':
+                after = command('ANT')
+                if not after['data'].startswith('scanning=false '):
+                    raise RuntimeError('stop rejected while discovery remains locally active')
+                report['scan_stop'] = 'local window ended before stop admission; physical completion unknown'
+            command('ANT CAPABILITIES')
+
         def window(duration):
             deadline = time.monotonic() + duration
             while True:
@@ -112,14 +132,11 @@ def capture(connection, output, types, seconds, scan_seconds, send=None):
                 window(scan_seconds)
                 command('ANT DEVICES')
                 phase = 'post_stop'
-                # The firmware duration is bounded. Explicit STOP provides an observation
-                # boundary even when it has already expired; STATE means it was idle.
-                stop_attempted = True
-                command('ANT STOP', ('ACCEPTED', 'STATE'))
+                stop_scan()
                 window(seconds)
                 final_scan = command('ANT')
                 if not final_scan['data'].startswith('scanning=false '):
-                    raise RuntimeError('discovery stop remains unconfirmed')
+                    raise RuntimeError('discovery remains locally active')
             if send:
                 phase = 'send'
                 result = command(send, ('ACCEPTED',))
@@ -139,9 +156,8 @@ def capture(connection, output, types, seconds, scan_seconds, send=None):
         finally:
             if scan_attempted and not stop_attempted:
                 phase = 'cleanup'
-                stop_attempted = True
                 try:
-                    command('ANT STOP', ('ACCEPTED', 'STATE'))
+                    stop_scan()
                 except Exception as error:
                     report['cleanup_error'] = str(error)
             report['measurements'] = summarize(samples)

@@ -63,7 +63,10 @@ The tool uses the existing exclusive USB lock, captures baseline, discovery and
 post-stop windows, and calculates per-peer counter rates and loss deltas. It
 records source revision, dirty state, packet timestamps, generations and final
 observations. Rate windows reflect USB polling boundaries; inspect discovery
-state observations before attributing a rate change to scanning. Counts establish
+state observations before attributing a rate change to scanning. When the local
+window has ended, the tool skips STOP and records physical completion as unknown.
+A rejected STOP is accepted only when readback shows the local window inactive.
+Counts establish
 only the fixtures actually observed.
 
 An optional `--send 'type number transmission generation hex16'` issues one

@@ -8,16 +8,20 @@ from cycling_devtools.connectivity.ant import capture, send_command
 
 
 class Terminal:
-    def __init__(self, fail_send=False):
+    def __init__(self, fail_send=False, active_at_stop=False, stop_busy=False, end_on_stop=True):
         self.commands = []
         self.fail_send = fail_send
         self.packets = 0
+        self.active_at_stop = active_at_stop
+        self.stop_busy = stop_busy
+        self.end_on_stop = end_on_stop
+        self.scanning = False
 
     def terminal_command(self, command):
         self.commands.append(command)
         status, data = 'OK', ''
         if command == 'ANT':
-            data = 'scanning=false '
+            data = f'scanning={str(self.scanning).lower()} '
         elif command.startswith('ANT CHANNEL'):
             self.packets += 1
             data = ('Snapshot { selected: Some(Identity { device_type: 120, device_number: 1234, '
@@ -25,7 +29,12 @@ class Terminal:
                     ', dropped_packets: 0, transport_losses: 0, tx_failures: 0 }')
         elif command == 'ANT READ':
             status = 'EMPTY'
-        elif command.startswith(('ANT SCAN ', 'ANT STOP', 'ANT SEND ')):
+        elif command == 'ANT STOP':
+            status = 'BUSY' if self.stop_busy else 'ACCEPTED'
+            self.scanning = not self.end_on_stop
+        elif command.startswith(('ANT SCAN ', 'ANT SEND ')):
+            if command.startswith('ANT SCAN '):
+                self.scanning = self.active_at_stop
             if command.startswith('ANT SEND ') and self.fail_send:
                 raise TimeoutError('uncertain')
             status, data = 'ACCEPTED', 'operation=3 stage=queued delivery=unknown'
@@ -52,9 +61,21 @@ class AntDiagnosticsTests(unittest.TestCase):
         report = self.run_capture(terminal)
         self.assertEqual(sum(command.startswith('ANT SEND ') for command in terminal.commands), 1)
         self.assertIn('ANT OPERATION 3', terminal.commands)
-        self.assertEqual(terminal.commands.count('ANT STOP'), 1)
+        self.assertEqual(terminal.commands.count('ANT STOP'), 0)
+        self.assertIn('physical completion unknown', report['scan_stop'])
         self.assertEqual(report['send_delivery'], 'unknown')
         self.assertTrue({'baseline', 'discovery', 'post_stop'} <= {row['phase'] for row in report['measurements']})
+
+    def test_stop_race_accepts_busy_only_after_inactive_readback(self):
+        terminal = Terminal(active_at_stop=True, stop_busy=True)
+        report = self.run_capture(terminal)
+        self.assertEqual(terminal.commands.count('ANT STOP'), 1)
+        self.assertIn('before stop admission', report['scan_stop'])
+        terminal = Terminal(active_at_stop=True, stop_busy=True, end_on_stop=False)
+        with self.assertRaisesRegex(RuntimeError, 'stop rejected'):
+            self.run_capture(terminal)
+        self.assertEqual(terminal.commands.count('ANT STOP'), 1)
+        self.assertFalse(any(command.startswith('ANT SEND ') for command in terminal.commands))
 
     def test_uncertain_send_is_never_replayed(self):
         terminal = Terminal(fail_send=True)

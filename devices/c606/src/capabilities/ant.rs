@@ -15,10 +15,14 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use firmware_services::ant::Channels;
 
+const SEND_HISTORY_CAPACITY: usize = 8;
+
 struct Shared {
     startup_activity: bool,
     state: Channels,
     pending: Option<Request>,
+    send_keys: [Option<(u8, [u8; 2])>; SEND_HISTORY_CAPACITY],
+    wire_send: Option<(OperationId, u8, [u8; 2])>,
     scan: ScanOwnership,
     power: PeripheralState,
     suspending: bool,
@@ -31,6 +35,8 @@ static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefC
     startup_activity: false,
     state: Channels::new(),
     pending: None,
+    send_keys: [None; SEND_HISTORY_CAPACITY],
+    wire_send: None,
     scan: ScanOwnership::Idle,
     power: PeripheralState::Running,
     suspending: false,
@@ -45,13 +51,34 @@ static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefC
 enum ScanOwnership {
     Idle,
     Active(u64),
-    Stopping(u64),
+    Stopping(u64, u8),
     Uncertain,
 }
 impl ScanOwnership {
     fn tick(&mut self, now: u64) {
-        if matches!(*self, Self::Active(deadline) | Self::Stopping(deadline) if now >= deadline) {
+        if matches!(*self, Self::Active(deadline) | Self::Stopping(deadline, _) if now >= deadline)
+        {
             *self = Self::Uncertain;
+        }
+    }
+    fn ended(&mut self, now: u64) {
+        match *self {
+            ScanOwnership::Active(deadline)
+                if now >= deadline.saturating_sub(device_api::ant::SCAN_STOP_TIMEOUT_MS)
+                    && now < deadline =>
+            {
+                *self = ScanOwnership::Idle
+            }
+            ScanOwnership::Stopping(deadline, remaining) if now < deadline => {
+                // Explicit stop does not cancel the companion's timer.
+                // Both replies must drain before a later scan can own it.
+                if remaining > 1 {
+                    *self = ScanOwnership::Stopping(deadline, remaining - 1);
+                } else if now >= deadline.saturating_sub(device_api::ant::SCAN_STOP_TIMEOUT_MS) {
+                    *self = ScanOwnership::Idle;
+                }
+            }
+            _ => {}
         }
     }
     fn idle(self) -> bool {
@@ -103,17 +130,19 @@ impl Shared {
         let mut failed = false;
         if self.suspending {
             match self.scan {
+                ScanOwnership::Active(_) if !self.state.scanning() => waiting = true,
                 ScanOwnership::Active(_) => match self.state.stop_scan(now) {
                     Ok(request) => {
-                        self.scan = ScanOwnership::Stopping(
-                            now.saturating_add(device_api::ant::SCAN_STOP_TIMEOUT_MS),
-                        );
+                        let ScanOwnership::Active(deadline) = self.scan else {
+                            unreachable!()
+                        };
+                        self.scan = ScanOwnership::Stopping(deadline, 2);
                         self.pending = Some(request);
                         return;
                     }
                     Err(_) => failed = true,
                 },
-                ScanOwnership::Stopping(_) => waiting = true,
+                ScanOwnership::Stopping(..) => waiting = true,
                 ScanOwnership::Uncertain => failed = true,
                 ScanOwnership::Idle => {}
             }
@@ -137,7 +166,7 @@ impl Shared {
             }
         } else {
             // A submitted scan stop must settle even when preparation is aborted.
-            waiting |= matches!(self.scan, ScanOwnership::Stopping(_));
+            waiting |= matches!(self.scan, ScanOwnership::Stopping(..));
             failed |= matches!(self.scan, ScanOwnership::Uncertain);
             for index in 0..self.restore.len() {
                 let Some(identity) = self.restore[index] else {
@@ -219,7 +248,12 @@ pub fn request(operation: Operation, now: u64) -> Result<Admission, AntError> {
             return Err(AntError::Busy);
         }
         let result = match operation {
-            Operation::Scan(ms) => s.state.begin_scan(now, ms),
+            Operation::Scan(ms) => {
+                if ms == 0 || ms > 60_000 {
+                    return Err(AntError::InvalidDuration);
+                }
+                s.state.begin_scan(now, ms)
+            }
             Operation::StopScan => s.state.stop_scan(now),
             Operation::Connect(peer) => {
                 if !crate::drivers::ant_protocol::supports_type(peer.device_type) {
@@ -231,10 +265,19 @@ pub fn request(operation: Operation, now: u64) -> Result<Admission, AntError> {
                 if !crate::drivers::ant_protocol::supports_type(target.identity.device_type) {
                     return Err(AntError::UnsupportedType);
                 }
-                return s
-                    .state
-                    .queue_send(target, data, now)
-                    .map(Admission::SendQueued);
+                let key = (target.identity.device_type, [data[0], data[1]]);
+                if s.send_keys.contains(&Some(key)) {
+                    return Err(AntError::Uncertain);
+                }
+                let slot = s
+                    .send_keys
+                    .iter()
+                    .position(Option::is_none)
+                    .ok_or(AntError::Capacity)?;
+                let id = s.state.queue_send(target, data, now)?;
+                s.send_keys[slot] = Some(key);
+                s.wire_send = Some((id, key.0, key.1));
+                return Ok(Admission::SendQueued(id));
             }
             Operation::Disconnect(kind) => match s.state.disconnect(kind, now) {
                 Some(request) => Ok(request),
@@ -247,20 +290,24 @@ pub fn request(operation: Operation, now: u64) -> Result<Admission, AntError> {
                     Request::Scan { duration_ms } => {
                         // Allow the bounded report transit interval after the local window.
                         s.scan = ScanOwnership::Active(
-                            now.saturating_add(u64::from(duration_ms))
-                                .saturating_add(device_api::ant::SCAN_STOP_TIMEOUT_MS),
+                            now.saturating_add(
+                                u64::from(duration_ms.div_ceil(1000).max(5) + 1) * 1000,
+                            )
+                            .saturating_add(device_api::ant::SCAN_STOP_TIMEOUT_MS),
                         )
                     }
                     Request::StopScan => {
-                        s.scan = ScanOwnership::Stopping(
-                            now.saturating_add(device_api::ant::SCAN_STOP_TIMEOUT_MS),
-                        )
+                        let ScanOwnership::Active(deadline) = s.scan else {
+                            return Err(AntError::Busy);
+                        };
+                        s.scan = ScanOwnership::Stopping(deadline, 2)
                     }
                     _ => {}
                 }
                 s.pending = Some(request);
                 Ok(Admission::Accepted)
             }
+            Err(AntError::Busy) => Err(AntError::InvalidState),
             Err(error) => Err(error),
         }
     })
@@ -284,19 +331,7 @@ pub fn receive(group: u8, payload: [u8; 8], now: u64) {
                 // Only one physical scan may be outstanding. A timed-out or lost
                 // session cannot be recovered by an untagged late observation.
                 // Ignore early endings during a newer natural-duration scan.
-                match shared.scan {
-                    ScanOwnership::Active(deadline)
-                        if now
-                            >= deadline.saturating_sub(device_api::ant::SCAN_STOP_TIMEOUT_MS)
-                            && now < deadline =>
-                    {
-                        shared.scan = ScanOwnership::Idle
-                    }
-                    ScanOwnership::Stopping(deadline) if now < deadline => {
-                        shared.scan = ScanOwnership::Idle
-                    }
-                    _ => {}
-                }
+                shared.scan.ended(now);
             }
             shared.state.receive(event, now);
             shared.progress_power(now);
@@ -351,9 +386,13 @@ pub fn tick(now: u64) {
 pub fn reply(group: u8, payload: [u8; 8], now: u64) {
     if let Some(reply) = crate::drivers::ant_protocol::decode_send_reply(group, payload) {
         SHARED.lock(|s| {
-            s.borrow_mut()
-                .state
-                .send_reply(reply.device_type, reply.echoed, reply.accepted, now)
+            let mut s = s.borrow_mut();
+            if let Some((id, kind, echoed)) = s.wire_send
+                && kind == reply.device_type
+                && echoed == reply.echoed
+            {
+                s.state.send_reply(id, reply.accepted, now);
+            }
         });
     }
 }
@@ -369,18 +408,27 @@ impl device_api::ant::Ant for Ant {
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            supported_types: &[40, 120, 11, 122, 123, 121, 34, 17, 128, 35],
+            supported_types: crate::drivers::ant_protocol::SUPPORTED_TYPES,
             connection_capacity: 10,
             one_peer_per_type: true,
             concurrent_scan: true,
             acknowledged_send: true,
             radio_delivery_feedback: false,
             burst: false,
-            send_key_capacity: firmware_services::ant::SEND_HISTORY_CAPACITY as u8,
+            max_sends_per_restart: SEND_HISTORY_CAPACITY as u8,
         }
     }
     fn scan(&self) -> ScanSnapshot {
-        SHARED.lock(|s| s.borrow().state.scan())
+        SHARED.lock(|s| {
+            let s = s.borrow();
+            let mut snapshot = s.state.scan();
+            if matches!(s.scan, ScanOwnership::Uncertain) {
+                snapshot.state = device_api::ant::ScanState::Uncertain;
+            } else if !s.scan.idle() && snapshot.state == device_api::ant::ScanState::Idle {
+                snapshot.state = device_api::ant::ScanState::Stopping;
+            }
+            snapshot
+        })
     }
     fn channels(&self, now: u64) -> [Option<Snapshot>; device_api::ant::CHANNEL_CAPACITY] {
         snapshots(now)
@@ -424,6 +472,8 @@ mod power_tests {
             startup_activity: false,
             state: Channels::new(),
             pending: None,
+            send_keys: [None; SEND_HISTORY_CAPACITY],
+            wire_send: None,
             scan: ScanOwnership::Idle,
             power: PeripheralState::Pending,
             suspending: true,
@@ -449,15 +499,18 @@ mod power_tests {
     fn scan_stop_waits_for_observation_without_replaying() {
         let mut s = shared();
         s.state.begin_scan(0, 100).unwrap();
-        s.scan = ScanOwnership::Active(100);
+        s.scan = ScanOwnership::Active(8_000);
         s.progress_power(1);
         assert_eq!(s.pending.take(), Some(Request::StopScan));
         s.progress_power(100);
         assert_eq!(s.power, PeripheralState::Pending);
         assert!(s.pending.is_none());
-        s.state.receive(Event::ScanEnded, 101);
-        s.scan = ScanOwnership::Idle;
+        s.scan.ended(101);
         s.progress_power(101);
+        assert_eq!(s.power, PeripheralState::Pending);
+        s.state.tick(6_000);
+        s.scan.ended(6_000);
+        s.progress_power(6_000);
         assert_eq!(s.power, PeripheralState::Quiescent);
     }
 

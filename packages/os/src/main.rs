@@ -175,7 +175,7 @@ async fn console(
                 let Some(edge) = system.take_app_input() else {
                     break;
                 };
-                sdk.input(edge.input, now, &mut ant, &mut system.store.data());
+                sdk.input(edge.input, now, &mut ant);
             }
             system.observe_position(&position, now);
             let started = embassy_time::Instant::now();
@@ -193,7 +193,7 @@ async fn console(
                 cycling_os::capabilities::Sensors::snapshot(&sensors, now),
             );
             #[cfg(feature = "cycling")]
-            sdk.test_display(&mut system, now, &ant, &position);
+            sdk.present(&mut system, now, &ant, &position);
             #[cfg(feature = "cycling")]
             sdk.alert(&mut sound, now);
         }

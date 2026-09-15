@@ -5,7 +5,6 @@ import contextlib
 import io
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import ant_capture
 import unittest
@@ -179,49 +178,17 @@ class AntCaptureTests(unittest.TestCase):
         third = commit(third)
         unknown = slot(99, 0)
         media = [first, torn, third, unknown]
-        commands = []
-        class Connection:
-            def __init__(self, *args): pass
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def terminal_command(self, command):
-                commands.append(command)
-                if command == 'FOUNDATION LOG INFO':
-                    data = 'INFO 1 256 4 stopped'
-                else:
-                    index = int(command.split()[-1])
-                    blob = media[index]
-                    data = f'SLOT {index} {zlib.crc32(blob):08x} {blob.hex()}'
-                return dict(status='OK', data=data)
-        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'ride-slots.bin'
+            source.write_bytes(b''.join(media))
             output = Path(directory) / 'capture'
             with contextlib.redirect_stdout(io.StringIO()):
-                manifest = ant_capture.export('fake', output, 'FOUNDATION')
-            self.assertEqual((output / 'prefix.bin').read_bytes(), b''.join(media))
+                manifest = ant_capture.export(source, output)
+            self.assertEqual((output / 'prefix.bin').read_bytes(), source.read_bytes())
+            self.assertEqual(manifest['source_sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
             self.assertEqual(manifest['environmental_samples'], 2)
             self.assertEqual(len(manifest['invalid_ant_slots']), 2)
             self.assertEqual(len(manifest['sequence_gaps']), 1)
-            self.assertTrue(all(command.startswith('FOUNDATION LOG ') for command in commands))
-
-    def test_interrupted_export_retains_partial_and_never_claims_manifest(self):
-        blob = self.environmental()
-        class Connection:
-            def __init__(self, *args): pass
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def terminal_command(self, command):
-                if command.endswith('INFO'):
-                    return dict(status='OK', data='INFO 1 256 2 stopped')
-                if command.endswith('READ 0'):
-                    return dict(status='OK', data=f'SLOT 0 {zlib.crc32(blob):08x} {blob.hex()}')
-                raise TimeoutError('synthetic disconnect')
-        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
-            output = Path(directory) / 'capture'
-            with self.assertRaises(TimeoutError):
-                ant_capture.export('fake', output, 'FOUNDATION')
-            self.assertEqual((output / 'prefix.partial').read_bytes(), blob)
-            self.assertFalse((output / 'prefix.bin').exists())
-            self.assertFalse((output / 'manifest.json').exists())
 
     def test_range_keeps_absolute_slots_initial_gap_and_hash(self):
         media = []
@@ -229,22 +196,12 @@ class AntCaptureTests(unittest.TestCase):
             blob = self.environmental()
             struct.pack_into('<II', blob, 8, 0, sequence)
             media.append(commit(blob))
-        commands = []
-        class Connection:
-            def __init__(self, *args): pass
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def terminal_command(self, command):
-                commands.append(command)
-                if command.endswith('INFO'):
-                    return dict(status='OK', data='INFO 1 256 3 stopped')
-                index = int(command.split()[-1])
-                blob = media[index]
-                return dict(status='OK', data=f'SLOT {index} {zlib.crc32(blob):08x} {blob.hex()}')
-        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'prefix.bin'
+            source.write_bytes(b''.join(media))
             output = Path(directory) / 'range'
             with contextlib.redirect_stdout(io.StringIO()):
-                manifest = ant_capture.export('fake', output, 'FOUNDATION', start_slot=1)
+                manifest = ant_capture.export(source, output, start_slot=1)
             raw = bytes(media[1] + media[2])
             self.assertEqual((output / 'range.bin').read_bytes(), raw)
             self.assertFalse((output / 'prefix.bin').exists())
@@ -253,46 +210,36 @@ class AntCaptureTests(unittest.TestCase):
             records = json.loads((output / 'records.json').read_text())
             self.assertEqual([(r['slot'], r['capture_id'], r['sequence']) for r in records], [(1, 0, 1), (2, 0, 2)])
             self.assertEqual(manifest['sequence_gaps'], [dict(slot=1, capture_id=0, expected_sequence=0)])
-            self.assertEqual(commands, ['FOUNDATION LOG INFO', 'FOUNDATION LOG READ 1', 'FOUNDATION LOG READ 2', 'FOUNDATION LOG INFO'])
+            self.assertEqual(source.read_bytes(), b''.join(media))
 
-    def test_range_bounds_integrity_and_changed_info_never_finalize(self):
-        blob = self.environmental()
-        commands = []
-        class Connection:
-            mode = 'bounds'
-            def __init__(self, *args): self.infos = 0
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def terminal_command(self, command):
-                commands.append(command)
-                if command.endswith('INFO'):
-                    self.infos += 1
-                    upper = 3 if self.mode == 'changed' and self.infos == 2 else 2
-                    return dict(status='OK', data=f'INFO 1 256 {upper} stopped')
-                crc = zlib.crc32(blob) ^ (self.mode == 'corrupt')
-                return dict(status='OK', data=f'SLOT 1 {crc:08x} {blob.hex()}')
-        with tempfile.TemporaryDirectory() as directory, patch.object(ant_capture, 'UsbConnection', Connection):
-            for lower in (-1, True, 4097, '1'):
+    def test_input_bounds_and_partial_slots_rejected_before_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'prefix.bin'
+            source.write_bytes(self.environmental())
+            output = Path(directory) / 'decoded'
+            for lower in (-1, True, 4097, '1', 2):
                 with self.assertRaises(ValueError):
-                    ant_capture.export('fake', Path(directory) / str(lower), start_slot=lower)
-            self.assertEqual(commands, [])
-            with self.assertRaises(ValueError):
-                ant_capture.export('fake', Path(directory) / 'bounds', start_slot=3)
-            self.assertEqual(commands, ['RADAR LOG INFO'])
-            for mode in ('corrupt', 'changed'):
-                Connection.mode = mode
-                output = Path(directory) / mode
-                with self.assertRaises(ValueError):
-                    ant_capture.export('fake', output, start_slot=1)
-                self.assertEqual((output / 'range.partial').read_bytes(), b'' if mode == 'corrupt' else blob)
-                self.assertFalse((output / 'range.bin').exists())
-                self.assertFalse((output / 'manifest.json').exists())
-            Connection.mode = 'bounds'
+                    ant_capture.export(source, output, start_slot=lower)
+                self.assertFalse(output.exists())
+            for size in (255, 257, 4097 * 256):
+                source.write_bytes(bytes(size))
+                with self.assertRaisesRegex(ValueError, 'complete raw journal prefix'):
+                    ant_capture.export(source, output)
+                self.assertFalse(output.exists())
+
+    def test_empty_range_and_existing_output_preserve_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'prefix.bin'
+            source.write_bytes(self.environmental())
+            original = source.read_bytes()
             output = Path(directory) / 'empty'
             with contextlib.redirect_stdout(io.StringIO()):
-                manifest = ant_capture.export('fake', output, start_slot=2)
+                manifest = ant_capture.export(source, output, start_slot=1)
             self.assertEqual((output / 'range.bin').read_bytes(), b'')
-            self.assertEqual((manifest['lower'], manifest['upper']), (2, 2))
+            self.assertEqual((manifest['lower'], manifest['upper']), (1, 1))
+            with self.assertRaises(FileExistsError):
+                ant_capture.export(source, output)
+            self.assertEqual(source.read_bytes(), original)
 
     def test_link_terminal_and_foreign_records(self):
         data = slot(4, 1)

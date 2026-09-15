@@ -238,7 +238,7 @@ pub fn execute<
             );
             #[cfg(feature = "cycling")]
             {
-                let _ = write!(output, ",RIDE,EXPORT,RADAR,FOUNDATION");
+                let _ = write!(output, ",RIDE,EXPORT,RADAR");
             }
         }
         match request.command {
@@ -299,7 +299,6 @@ pub fn execute<
                 &mut system.store.data(),
                 now,
                 &mut output,
-                ant,
             );
         }
         Command::Ant => {
@@ -381,7 +380,7 @@ pub fn execute<
             );
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR SDK|FOUNDATION SCREEN/MENU [300..600]|FOUNDATION LOG MANUAL/START/SAMPLED 300..600/STOP/STATUS/INFO (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR [SENSORS] (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {

@@ -96,7 +96,7 @@ description = "Verify controlled panic, software reboot and one-shot marker thro
 run = "python scripts/base_test.py .local/tests/crash-$(date +%s) --panic"
 
 [tasks.ant-export]
-description = "Export stopped ANT sensor test captures to a private directory"
+description = "Decode historical ANT captures from a raw journal file into a private directory"
 run = "python scripts/ant_capture.py"
 
 [tasks.simulate]
@@ -118,10 +118,6 @@ run = "python scripts/mmc.py"
 [tasks.mmc-maintenance]
 description = "Back up or explicitly write MMC using the dedicated maintenance image"
 run = "python scripts/mmc_maintenance.py"
-
-[tasks.foundation-bench]
-description = "Guide and privately capture the owner's 150-second C606 physical bench sequence"
-run = "python scripts/bench.py"
 
 [tasks.device-port]
 description = "Resolve the backed-up C606's current USB port without opening it"

@@ -54,11 +54,17 @@ workflow. A power interruption can leave part of the old journal intact. After
 failure or timeout, restart, wait for scanning, inspect status and export again
 before deciding whether to clear. Never automatically resend clear.
 
-The [ANT outdoor diagnostic capture](../packages/stock/magene-c606/ant.md) appends
-its own committed records to unused tail slots in this reservation without erasing.
-It excludes ordinary ride writes for the rest of that boot. Restart rescans the
-occupied prefix. Raw exports preserve these records; use `mise run ant-export` to
-decode ANT captures. Existing rides and their record format remain unchanged.
+Historical ANT diagnostic records remain recognized as occupied slots. Recovery
+and raw exports preserve them alongside ordinary rides. The on-device diagnostic
+recorder has been removed. Decode an existing full raw journal prefix offline:
+
+```sh
+mise run ant-export -- .local/ant-decoded --input .local/ride-export/ride-slots.bin
+```
+
+Use `--start-slot N` to decode only the tail of a full prefix. The decoder reports
+invalid ANT records and sequence gaps and preserves the selected raw bytes. Keep
+these files private because sensor identifiers and positions appear in them.
 
 ## VANA workout build
 

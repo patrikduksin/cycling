@@ -14,43 +14,9 @@ use crate::{
 };
 use core::fmt::Write;
 
-/// Reserve two local samples per second and, when selected, three ANT slots per
-/// second. This is a bounded planning allowance, not a guarantee at arbitrary RF rates.
-fn foundation_reservation(seconds: u32, ant_selected: bool) -> Option<usize> {
-    if !(300..=600).contains(&seconds) {
-        return None;
-    }
-    Some(seconds as usize * if ant_selected { 5 } else { 2 } + 8)
-}
-
-fn sampled_reservation(seconds: u32) -> Option<usize> {
-    (300..=600).contains(&seconds).then(|| {
-        // One environment, one position and at most one three-peer packet batch
-        // every two seconds; at most three link snapshots every ten seconds.
-        seconds.div_ceil(2) as usize * 3 + seconds.div_ceil(10) as usize * 3 + 8
-    })
-}
-
-fn foundation_expired(
-    now: u64,
-    status: crate::sdk::ant_capture::Status,
-    seconds: Option<u32>,
-    deadline: &mut Option<u64>,
-) -> bool {
-    use crate::sdk::ant_capture::Status;
-    if !matches!(status, Status::Ready | Status::Recording) {
-        return false;
-    }
-    let Some(seconds) = seconds else {
-        return false;
-    };
-    now >= *deadline.get_or_insert_with(|| now.saturating_add(u64::from(seconds) * 1000))
-}
-
 pub struct Runtime {
     pub clock: Option<fn() -> u64>,
     page: crate::sdk::workout::Page,
-    workout_ui: bool,
     home_cursor: bool,
     scan: crate::sdk::scan::Scan,
     dropped_ant: [Option<u8>; crate::ant::CHANNEL_CAPACITY],
@@ -64,25 +30,12 @@ pub struct Runtime {
     ui_message: &'static str,
     radar: crate::sdk::radar::Radar,
     radar_alert: crate::sdk::radar::Alert,
-    capture: crate::sdk::ant_capture::Capturer,
-    capture_started: Option<u64>,
-    capture_seconds: Option<u32>,
-    capture_deadline: Option<u64>,
-    recording_since: Option<u64>,
-    recording_ended: Option<u64>,
     stop_armed: Option<u64>,
     next_display: u64,
-    next_position: u64,
-    next_capture_link: u64,
-    sampled_packets: [Option<crate::ant::Packet>; 3],
-    foundation_screen: bool,
+    display_active: bool,
     menu: crate::sdk::ant_menu::Menu,
-    menu_open: bool,
-    gps_fix_ms: Option<u64>,
     startup_status: &'static str,
-    preview_seconds: Option<u32>,
     next_reconnect: [u64; crate::ant::CHANNEL_CAPACITY],
-    capture_link: [Option<(u8, crate::ant::LinkState, u32)>; crate::ant::CHANNEL_CAPACITY],
     ant_epochs: [Option<(u32, u32)>; 3],
     heart: Option<(crate::sdk::ant_sensors::HeartRate, u64)>,
     power: Option<(crate::sdk::ant_sensors::Power, u64)>,
@@ -98,7 +51,6 @@ impl Runtime {
         Self {
             clock: None,
             page: crate::sdk::workout::Page::Boot,
-            workout_ui: true,
             home_cursor: false,
             scan: crate::sdk::scan::Scan::default(),
             dropped_ant: [None; crate::ant::CHANNEL_CAPACITY],
@@ -112,25 +64,12 @@ impl Runtime {
             ui_message: "READY",
             radar: crate::sdk::radar::Radar::new(),
             radar_alert: crate::sdk::radar::Alert::default(),
-            capture: crate::sdk::ant_capture::Capturer::new(),
-            capture_started: None,
-            capture_seconds: None,
-            capture_deadline: None,
-            recording_since: None,
-            recording_ended: None,
             stop_armed: None,
             next_display: 0,
-            next_position: 0,
-            next_capture_link: 0,
-            sampled_packets: [None; 3],
-            foundation_screen: true,
+            display_active: true,
             menu: crate::sdk::ant_menu::Menu::new(),
-            menu_open: true,
-            gps_fix_ms: None,
             startup_status: "unknown",
-            preview_seconds: None,
             next_reconnect: [0; crate::ant::CHANNEL_CAPACITY],
-            capture_link: [None; crate::ant::CHANNEL_CAPACITY],
             ant_epochs: [None; 3],
             heart: None,
             power: None,
@@ -252,7 +191,6 @@ impl Runtime {
             Page::Sensors => match button {
                 Button::TopLeft | Button::BottomLeft => self.page = Page::Home,
                 Button::BottomRight => {
-                    self.menu.workout();
                     self.page = Page::Scan;
                 }
                 _ => {}
@@ -511,17 +449,8 @@ impl Runtime {
     }
 
     pub fn recording(&self) -> bool {
-        // INFO protects all accepted work, including acquisition preflight and
-        // final flushes, from host-triggered restart. Durable sample counters
-        // remain separate in LOG STATUS.
+        // Protect accepted writes and active/paused rides from host-triggered restart.
         self.pending.is_some()
-            || matches!(
-                self.capture.snapshot().status,
-                crate::sdk::ant_capture::Status::Scanning
-                    | crate::sdk::ant_capture::Status::Ready
-                    | crate::sdk::ant_capture::Status::Recording
-                    | crate::sdk::ant_capture::Status::Stopping
-            )
             || matches!(
                 self.recorder.status(),
                 ride_log::Status::Recording
@@ -535,7 +464,7 @@ impl Runtime {
         self.radar.snapshot(now)
     }
 
-    pub fn test_display<
+    pub fn present<
         D: crate::capabilities::Display,
         I: crate::capabilities::InputSource,
         P: crate::capabilities::Power,
@@ -550,7 +479,7 @@ impl Runtime {
         if system.foreground == crate::shell::Screen::Blank {
             return;
         }
-        if !self.foundation_screen {
+        if !self.display_active {
             return;
         }
         if now < self.next_display {
@@ -565,124 +494,7 @@ impl Runtime {
                 1000
             },
         );
-        if self.workout_ui && self.capture_started.is_none() {
-            self.workout_display(system, now, ant, position);
-            return;
-        }
-        if self.menu_open && self.capture_started.is_none() {
-            self.menu
-                .refresh(ant.discoveries(), ant.channels(now), ant.scanning(), now);
-            let started = self.clock.map_or(now, |clock| clock());
-            system.draw_scaled(240, 320, |x, y| self.menu.pixel(x, y));
-            system.display_max_ms = system.display_max_ms.max(
-                self.clock
-                    .map_or(now, |clock| clock())
-                    .saturating_sub(started),
-            );
-            return;
-        }
-        let channels = ant.channels(now);
-        let capture = self.capture.snapshot();
-        use crate::sdk::{ant_capture::Status, radar_screen::CaptureState};
-        let state = match capture.status {
-            Status::Idle if !self.recorder.exportable() => CaptureState::Preparing,
-            Status::Idle => CaptureState::Idle,
-            Status::Scanning | Status::Ready => CaptureState::Preparing,
-            Status::Recording => CaptureState::Recording,
-            Status::Stopping => CaptureState::Stopping,
-            Status::Stopped => CaptureState::Stopped,
-            Status::Full => CaptureState::Full,
-            Status::Error => CaptureState::Error,
-        };
-        let remaining_secs = self.capture_seconds.map(|seconds| {
-            if matches!(
-                capture.status,
-                Status::Stopped | Status::Full | Status::Error
-            ) {
-                0
-            } else {
-                self.capture_deadline
-                    .map_or(seconds, |at| at.saturating_sub(now).div_ceil(1000) as u32)
-            }
-        });
-        let elapsed_secs = self
-            .recording_since
-            .map_or(0, |at| {
-                self.recording_ended.unwrap_or(now).saturating_sub(at) / 1000
-            })
-            .min(u64::from(u32::MAX)) as u32;
-        let screen = crate::sdk::radar_screen::Screen {
-            state,
-            remaining_secs,
-            stop_confirm: self
-                .stop_armed
-                .is_some_and(|at| now.saturating_sub(at) <= 5000),
-            free_slots: if self.capture_started.is_some() {
-                (capture.scanned == ride_log::SECTORS).then_some(capture.remaining_slots as u32)
-            } else {
-                self.recorder
-                    .exportable()
-                    .then_some((ride_log::SLOTS - self.recorder.next_slot()) as u32)
-            },
-            saved_environment: capture.saved_environment,
-            power_watts: self
-                .power
-                .filter(|(power, at)| now.saturating_sub(*at) <= 3000 && power.watts != u16::MAX)
-                .map(|(power, _)| power.watts),
-            radar_age_secs: ant
-                .channel(40, now)
-                .and_then(|s| s.age_ms)
-                .map(|age| (age / 1000).min(u64::from(u32::MAX)) as u32),
-            power_age_secs: self
-                .power
-                .map(|(_, at)| (now.saturating_sub(at) / 1000).min(u64::from(u32::MAX)) as u32),
-            sampled: capture.sampled || (self.capture_started.is_none() && self.foundation_screen),
-            sensors: [40, 120, 11].map(|kind| {
-                use crate::sdk::radar_screen::SensorState;
-                match ant.channel(kind, now) {
-                    None => SensorState::Off,
-                    Some(s) if s.link == crate::ant::LinkState::Connected && !s.stale => {
-                        SensorState::On
-                    }
-                    _ => SensorState::Wait,
-                }
-            }),
-            logging: capture.recording
-                && capture
-                    .last_commit_ms
-                    .is_some_and(|at| now.saturating_sub(at) < 5000),
-            gps_fix: position.snapshot(now).is_some_and(|s| {
-                s.gps.state == FixState::Fresh
-                    && s.gps.latitude_e7.is_some()
-                    && s.gps.longitude_e7.is_some()
-            }),
-            saved_positions: capture.saved_positions,
-            saved_packets: capture.packets,
-            dropped: capture
-                .dropped
-                .saturating_add(capture.dropped_links)
-                .saturating_add(capture.dropped_positions)
-                .saturating_add(capture.dropped_environment)
-                .saturating_add(
-                    channels
-                        .iter()
-                        .flatten()
-                        .fold(0u32, |sum, s| sum.saturating_add(s.dropped_packets)),
-                ),
-            elapsed_secs,
-            error: capture.error.is_some()
-                || capture.status == crate::sdk::ant_capture::Status::Full,
-        };
-        system.activity(now);
-        let started = self.clock.map_or(now, |clock| clock());
-        system.draw_scaled(240, 320, |x, y| {
-            crate::sdk::radar_screen::pixel(x, y, screen)
-        });
-        system.display_max_ms = system.display_max_ms.max(
-            self.clock
-                .map_or(now, |clock| clock())
-                .saturating_sub(started),
-        );
+        self.workout_display(system, now, ant, position);
     }
 
     pub fn set_startup_status(&mut self, status: &'static str) {
@@ -699,12 +511,11 @@ impl Runtime {
     }
 
     pub fn suspend_display(&mut self) {
-        self.foundation_screen = false;
-        self.menu_open = false;
+        self.display_active = false;
     }
 
     pub fn input_active(&self) -> bool {
-        self.foundation_screen
+        self.display_active
     }
 
     pub fn input(
@@ -712,312 +523,28 @@ impl Runtime {
         input: crate::capabilities::Input,
         now: u64,
         ant: &mut impl crate::capabilities::Ant,
-        _store: &mut impl crate::sdk::storage::RideStorage,
     ) {
-        use crate::sdk::ant_menu::Action;
-        if !self.foundation_screen {
-            return;
-        }
-        if self.workout_ui && self.capture_started.is_none() {
+        if self.display_active {
             self.workout_input(input, now, ant);
-            return;
         }
-        if self.capture_started.is_some() {
-            if matches!(
-                self.capture.snapshot().status,
-                crate::sdk::ant_capture::Status::Scanning
-                    | crate::sdk::ant_capture::Status::Ready
-                    | crate::sdk::ant_capture::Status::Recording
-            ) {
-                self.next_display = now;
-                match input {
-                    crate::capabilities::Input::Button {
-                        button: crate::capabilities::Button::BottomRight,
-                        code: 1,
-                    } => match self.stop_armed {
-                        Some(at) if (350..=5000).contains(&now.saturating_sub(at)) => {
-                            self.stop_capture()
-                        }
-                        Some(at) if now.saturating_sub(at) < 350 => {}
-                        _ => self.stop_armed = Some(now),
-                    },
-                    _ => self.stop_armed = None,
-                }
-            }
-            return;
-        }
-        if !self.menu_open {
-            if matches!(
-                input,
-                crate::capabilities::Input::Button {
-                    button: crate::capabilities::Button::TopLeft,
-                    code: 1
-                }
-            ) {
-                self.menu_open = true;
-                self.next_display = now;
-            }
-            return;
-        }
-        self.menu
-            .refresh(ant.discoveries(), ant.channels(now), ant.scanning(), now);
-        self.next_display = now;
-        let Some(action) = self.menu.input(input, now) else {
-            return;
-        };
-        let result = match action {
-            Action::Scan => ant.request(crate::capabilities::AntOperation::Scan(10_000), now),
-            Action::Connect(peer) => {
-                ant.request(crate::capabilities::AntOperation::Connect(peer), now)
-            }
-            Action::Disconnect(kind) => {
-                ant.request(crate::capabilities::AntOperation::Disconnect(kind), now)
-            }
-            Action::Ride => {
-                self.menu_open = false;
-                return;
-            }
-            Action::Start => {
-                let ready = [40, 11].into_iter().all(|kind| {
-                    ant.channel(kind, now).is_some_and(|s| {
-                        s.selected.is_some()
-                            && s.link == crate::ant::LinkState::Connected
-                            && !s.stale
-                    })
-                });
-                if !ready {
-                    self.menu.set_message(b"WAKE RADAR AND POWER");
-                    return;
-                }
-                if !self
-                    .gps_fix_ms
-                    .is_some_and(|at| now >= at && now - at <= crate::gps::STALE_MS)
-                {
-                    self.menu.set_message(b"WAIT FOR GPS OUTSIDE");
-                    return;
-                }
-                let required = 8;
-                if !self.recorder.exportable() {
-                    self.menu.set_message(b"WAIT STORAGE SCAN");
-                    return;
-                }
-                if ride_log::SLOTS - self.recorder.next_slot() < required {
-                    self.menu.set_message(b"NOT ENOUGH STORAGE");
-                    return;
-                }
-                let result = self.start_capture(now, true, Some((0, required, true)));
-                if result == "ACCEPTED" {
-                    self.menu_open = false;
-                }
-                result
-            }
-        };
-        self.menu.set_message(match result {
-            "ACCEPTED" => b"REQUEST SENT",
-            "BUSY" if matches!(self.startup_status, "charging" | "wake_pending" | "waiting") => {
-                b"STARTING SENSORS"
-            }
-            "BUSY" if matches!(self.startup_status, "probing" | "pending") => {
-                b"WAITING FOR COMPANION"
-            }
-            "BUSY"
-                if matches!(
-                    self.startup_status,
-                    "unavailable" | "uncertain" | "timed_out"
-                ) =>
-            {
-                b"STARTUP FAILED"
-            }
-            "BUSY" => b"RADIO BUSY WAIT THEN RETRY",
-            "OK" => b"OK",
-            _ => b"REQUEST NOT ACCEPTED",
-        });
-        self.next_display = now;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn radar_command(
-        &mut self,
+        &self,
         operation: Option<&str>,
-        argument: Option<&str>,
-        bound: Option<&str>,
-        store: &mut impl crate::sdk::storage::RideStorage,
         now: u64,
         output: &mut impl Write,
-        ant: &impl crate::capabilities::Ant,
     ) -> &'static str {
-        if operation.is_none() && argument.is_none() && bound.is_none() {
-            let _ = write!(output, "{:?}", self.radar(now));
-            return "OK";
-        }
-        if operation == Some("SENSORS") && argument.is_none() && bound.is_none() {
-            let heart = self.heart.filter(|(_, at)| now.saturating_sub(*at) < 3000);
-            let power = self.power.filter(|(_, at)| now.saturating_sub(*at) < 3000);
-            let _ = write!(output, "heart={:?} power={:?}", heart, power);
-            return "OK";
-        }
-        if operation != Some("LOG") {
-            return "INVALID";
-        }
-        let channels = ant.channels(now);
-        let sensors_ready = channels
-            .iter()
-            .flatten()
-            .any(|s| s.selected.is_some_and(|peer| peer.device_type == 40))
-            && !channels
-                .iter()
-                .flatten()
-                .any(|s| s.link != crate::ant::LinkState::Connected || s.stale);
-        self.capture_command(argument, bound, store, now, output, sensors_ready, None)
-    }
-
-    fn stop_capture(&mut self) {
-        for packet in &mut self.sampled_packets {
-            if packet.take().is_some() {
-                self.capture.sampled_out_packet();
+        let result = match operation {
+            None => write!(output, "{:?}", self.radar(now)),
+            Some("SENSORS") => {
+                let heart = self.heart.filter(|(_, at)| now.saturating_sub(*at) < 3000);
+                let power = self.power.filter(|(_, at)| now.saturating_sub(*at) < 3000);
+                write!(output, "heart={:?} power={:?}", heart, power)
             }
-        }
-        self.capture.stop();
-        self.stop_armed = None;
-    }
-
-    fn start_capture(
-        &mut self,
-        now: u64,
-        sensors_ready: bool,
-        foundation: Option<(u32, usize, bool)>,
-    ) -> &'static str {
-        if self.capture_started.is_some()
-            || self.pending.is_some()
-            || self.completion.is_some()
-            || !self.recorder.exportable()
-        {
-            return "BUSY";
-        }
-        if !sensors_ready {
-            return "SENSORS_NOT_READY";
-        }
-        let required = foundation
-            .map_or(crate::sdk::ant_capture::REQUIRED_SLOTS, |(_, slots, _)| {
-                slots
-            });
-        let sampled = foundation.is_some_and(|(_, _, sampled)| sampled);
-        if !(if sampled {
-            self.capture.start_sampled(required)
-        } else {
-            self.capture.start(required)
-        }) {
-            return "STATE";
-        }
-        self.capture_started = Some(now);
-        self.capture_seconds = foundation
-            .map(|(seconds, _, _)| seconds)
-            .filter(|seconds| *seconds != 0);
-        self.recording_since = None;
-        self.recording_ended = None;
-        self.stop_armed = None;
-        self.capture_deadline = None;
-        self.next_position = now;
-        self.next_capture_link = now;
-        self.sampled_packets = [None; 3];
-        self.foundation_screen = true;
-        "ACCEPTED"
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn capture_command(
-        &mut self,
-        argument: Option<&str>,
-        bound: Option<&str>,
-        store: &mut impl crate::sdk::storage::RideStorage,
-        now: u64,
-        output: &mut impl Write,
-        sensors_ready: bool,
-        foundation: Option<(u32, usize, bool)>,
-    ) -> &'static str {
-        use crate::sdk::ant_capture::Status as CaptureStatus;
-        match (argument, bound) {
-            (Some("START"), None) => self.start_capture(now, sensors_ready, foundation),
-            (Some("STOP"), None) => {
-                self.stop_capture();
-                "ACCEPTED"
-            }
-            (Some("STATUS"), None) => {
-                let active = matches!(
-                    self.capture.snapshot().status,
-                    CaptureStatus::Ready | CaptureStatus::Recording
-                );
-                let remaining = self
-                    .capture_deadline
-                    .filter(|_| active)
-                    .map(|deadline| deadline.saturating_sub(now).div_ceil(1000));
-                let _ = write!(
-                    output,
-                    "{:?} requested_seconds={:?} remaining_seconds={:?} sample_interval_ms={} link_interval_ms={}",
-                    self.capture.snapshot(),
-                    self.capture_seconds,
-                    remaining,
-                    if self.capture.snapshot().sampled {
-                        2000
-                    } else {
-                        1000
-                    },
-                    if self.capture.snapshot().sampled {
-                        10000
-                    } else {
-                        0
-                    }
-                );
-                "OK"
-            }
-            (Some("INFO"), None) | (Some("READ"), Some(_)) => {
-                let capture = self.capture.snapshot();
-                if matches!(
-                    capture.status,
-                    CaptureStatus::Scanning
-                        | CaptureStatus::Ready
-                        | CaptureStatus::Recording
-                        | CaptureStatus::Stopping
-                ) || (self.capture_started.is_none() && !self.recorder.exportable())
-                {
-                    return "BUSY";
-                }
-                let upper = if self.capture_started.is_some() {
-                    if capture.error.is_some() || capture.scanned < ride_log::SECTORS {
-                        ride_log::SLOTS
-                    } else {
-                        capture.next_slot
-                    }
-                } else {
-                    self.recorder.next_slot()
-                };
-                if argument == Some("INFO") {
-                    let _ = write!(output, "INFO 1 256 {} {}", upper, capture.status.name());
-                } else {
-                    let Some(index) = bound.and_then(|v| v.parse::<usize>().ok()) else {
-                        return "INVALID";
-                    };
-                    if index >= upper {
-                        return "BOUNDS";
-                    }
-                    let mut slot = Slot::default();
-                    if store.ride_read_slot(index, &mut slot).is_err() {
-                        return "READ";
-                    }
-                    let _ = write!(
-                        output,
-                        "SLOT {} {:08x} ",
-                        index,
-                        ride_log::transport_checksum(&slot.0)
-                    );
-                    for byte in slot.0 {
-                        let _ = write!(output, "{byte:02x}");
-                    }
-                }
-                "OK"
-            }
-            _ => "INVALID",
-        }
+            _ => return "INVALID",
+        };
+        if result.is_ok() { "OK" } else { "OUTPUT" }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1032,115 +559,25 @@ impl Runtime {
         input: &impl crate::capabilities::InputObservation,
         physical: crate::companion_sensors::Snapshot,
     ) {
-        self.gps_fix_ms = position.snapshot(now).and_then(|s| {
-            if s.gps.state == FixState::Fresh
-                && s.gps.latitude_e7.is_some()
-                && s.gps.longitude_e7.is_some()
-            {
-                now.checked_sub(s.gps.age_ms?)
-            } else {
-                None
-            }
-        });
         let was_scanning = self.scan.active();
         self.scan.tick(ant, now);
         if was_scanning || self.scan.active() {
             self.menu.set_message(self.scan.message());
         }
         let channels = ant.channels(now);
-        let mut capture_status = self.capture.snapshot().status;
-        let sampled = self.capture.snapshot().sampled;
-        if matches!(
-            capture_status,
-            crate::sdk::ant_capture::Status::Ready | crate::sdk::ant_capture::Status::Recording
-        ) {
-            self.recording_since.get_or_insert(now);
-        } else if self.recording_since.is_some()
-            && matches!(
-                capture_status,
-                crate::sdk::ant_capture::Status::Stopped
-                    | crate::sdk::ant_capture::Status::Full
-                    | crate::sdk::ant_capture::Status::Error
-            )
-        {
-            self.recording_ended.get_or_insert(now);
-        }
-
-        if foundation_expired(
-            now,
-            capture_status,
-            self.capture_seconds,
-            &mut self.capture_deadline,
-        ) {
-            for packet in &mut self.sampled_packets {
-                if packet.take().is_some() {
-                    self.capture.sampled_out_packet();
-                }
-            }
-            self.capture.stop();
-            capture_status = self.capture.snapshot().status;
-        }
-        let link_due = !sampled || now >= self.next_capture_link;
-        if sampled
-            && link_due
-            && matches!(
-                capture_status,
-                crate::sdk::ant_capture::Status::Ready | crate::sdk::ant_capture::Status::Recording
-            )
-        {
-            self.next_capture_link = now.saturating_add(10_000);
-        }
         for (index, channel) in channels.iter().enumerate() {
-            let Some(channel_state) = channel else {
+            let Some(channel) = channel else { continue };
+            let Some(peer) = channel.selected else {
                 continue;
             };
-            let Some(peer) = channel_state.selected else {
-                continue;
-            };
-            if self.capture_started.is_some() || self.foundation_screen {
-                if self.capture_started.is_some()
-                    && matches!(
-                        capture_status,
-                        crate::sdk::ant_capture::Status::Ready
-                            | crate::sdk::ant_capture::Status::Recording
-                    )
-                    && link_due
-                    && self.capture_link[index]
-                        != Some((
-                            peer.device_type,
-                            channel_state.link,
-                            channel_state.generation,
-                        ))
-                {
-                    self.capture.observe_link(
-                        peer.device_type,
-                        channel_state.link,
-                        channel_state.generation,
-                        now,
-                    );
-                    self.capture_link[index] = Some((
-                        peer.device_type,
-                        channel_state.link,
-                        channel_state.generation,
-                    ));
-                }
-                if (self.capture_started.is_none()
-                    || matches!(
-                        capture_status,
-                        crate::sdk::ant_capture::Status::Scanning
-                            | crate::sdk::ant_capture::Status::Ready
-                            | crate::sdk::ant_capture::Status::Recording
-                    ))
-                    && !self.scan.active()
-                    && !self.dropped_ant.contains(&Some(peer.device_type))
-                    && channel_state.link == crate::ant::LinkState::Disconnected
-                    && now >= self.next_reconnect[index]
-                {
-                    let result = ant.request(crate::capabilities::AntOperation::Connect(peer), now);
-                    if result == "ACCEPTED" {
-                        self.next_reconnect[index] = now.saturating_add(5000);
-                    }
-                }
+            if self.display_active
+                && !self.scan.active()
+                && !self.dropped_ant.contains(&Some(peer.device_type))
+                && channel.link == crate::ant::LinkState::Disconnected
+                && now >= self.next_reconnect[index]
+                && ant.request(crate::capabilities::AntOperation::Connect(peer), now) == "ACCEPTED"
+            {
+                self.next_reconnect[index] = now.saturating_add(5000);
             }
         }
         for (index, kind) in [40, 120, 11].iter().enumerate() {
@@ -1150,9 +587,6 @@ impl Runtime {
                     || self.ant_epochs[index]
                         .is_some_and(|(generation, _)| generation != s.generation)
             }) {
-                if self.sampled_packets[index].take().is_some() {
-                    self.capture.sampled_out_packet();
-                }
                 match index {
                     0 => self.radar.reset(),
                     1 => self.heart = None,
@@ -1167,37 +601,14 @@ impl Runtime {
             };
             if matches!(packet.identity.device_type, 123 | 121) {
                 self.speed.receive(packet);
-                if self.capture_started.is_some() {
-                    self.capture.packet(packet);
-                }
                 continue;
             }
             let Some(index) = [40, 120, 11]
                 .iter()
                 .position(|kind| *kind == packet.identity.device_type)
             else {
-                if sampled {
-                    self.capture.sampled_out_packet();
-                } else {
-                    self.capture.packet(packet);
-                }
                 continue;
             };
-            if sampled {
-                if matches!(
-                    capture_status,
-                    crate::sdk::ant_capture::Status::Ready
-                        | crate::sdk::ant_capture::Status::Recording
-                ) {
-                    if self.sampled_packets[index].replace(packet).is_some() {
-                        self.capture.sampled_out_packet();
-                    }
-                } else if capture_status == crate::sdk::ant_capture::Status::Scanning {
-                    self.capture.sampled_out_packet();
-                }
-            } else {
-                self.capture.packet(packet);
-            }
             let epoch = (packet.generation, packet.loss_count);
             if self.ant_epochs[index] != Some(epoch) {
                 match index {
@@ -1320,48 +731,9 @@ impl Runtime {
             gradient_tenths: self.live.gradient_tenths,
         };
         self.live = sample;
-        if self.capture_started.is_some() {
-            if matches!(
-                capture_status,
-                crate::sdk::ant_capture::Status::Ready | crate::sdk::ant_capture::Status::Recording
-            ) && now >= self.next_position
-            {
-                self.next_position = now.saturating_add(if sampled { 2000 } else { 1000 });
-                if sampled {
-                    for packet in &mut self.sampled_packets {
-                        if let Some(packet) = packet.take() {
-                            if now.saturating_sub(packet.received_ms) <= 5000 {
-                                self.capture.packet(packet);
-                            } else {
-                                self.capture.sampled_out_packet();
-                            }
-                        }
-                    }
-                }
-                let observed_ms = position
-                    .snapshot(now)
-                    .and_then(|s| s.gps.age_ms)
-                    .and_then(|age| now.checked_sub(age));
-                self.capture
-                    .environment(crate::sdk::ant_capture::EnvironmentRecord::sample(
-                        now,
-                        physical,
-                        input.snapshot(now),
-                    ));
-                self.capture
-                    .position(crate::sdk::ant_capture::PositionRecord {
-                        now,
-                        observed_ms,
-                        latitude_e7: location_e7.map(|p| p.0),
-                        longitude_e7: location_e7.map(|p| p.1),
-                    });
-            }
-            self.capture.service(store, now);
-        } else {
-            let clock = self.clock;
-            self.recorder
-                .service(store, now, sample, &|| clock.map_or(now, |clock| clock()));
-        }
+        let clock = self.clock;
+        self.recorder
+            .service(store, now, sample, &|| clock.map_or(now, |clock| clock()));
         if let Some(result) = self.recorder.take_result() {
             self.pending = None;
             self.completion = Some(result);
@@ -1376,7 +748,6 @@ impl Runtime {
         store: &mut impl crate::sdk::storage::RideStorage,
         now: u64,
         output: &mut impl Write,
-        ant: &impl crate::capabilities::Ant,
     ) -> &'static str {
         let mut words = words.split_ascii_whitespace();
         let domain = words.next();
@@ -1387,76 +758,10 @@ impl Runtime {
             return "INVALID";
         }
         if domain == Some("RADAR") {
-            return self.radar_command(operation, argument, bound, store, now, output, ant);
-        }
-        if domain == Some("FOUNDATION") {
-            if operation == Some("MENU") && argument == Some("STATUS") && bound.is_none() {
-                let _ = write!(
-                    output,
-                    "open={} active={} startup={} {:?}",
-                    self.menu_open,
-                    self.foundation_screen,
-                    self.startup_status,
-                    self.menu.diagnostics()
-                );
-                return "OK";
-            }
-            if matches!(operation, Some("SCREEN" | "MENU")) && bound.is_none() {
-                self.workout_ui = false;
-                self.preview_seconds = match argument {
-                    None => None,
-                    Some(value) => match value
-                        .parse::<u32>()
-                        .ok()
-                        .filter(|s| sampled_reservation(*s).is_some())
-                    {
-                        Some(seconds) => Some(seconds),
-                        None => return "INVALID",
-                    },
-                };
-                self.foundation_screen = true;
-                self.menu_open = operation == Some("MENU") && self.capture_started.is_none();
-                return "OK";
-            }
-            if operation != Some("LOG") {
+            if argument.is_some() || bound.is_some() {
                 return "INVALID";
             }
-            if argument == Some("MANUAL") && bound.is_none() {
-                return self.start_capture(now, true, Some((0, 8, true)));
-            }
-            if matches!(argument, Some("START" | "SAMPLED")) {
-                let Some(seconds) = bound.and_then(|value| value.parse::<u32>().ok()) else {
-                    return "INVALID";
-                };
-                let selected = ant
-                    .channels(now)
-                    .iter()
-                    .flatten()
-                    .any(|channel| channel.selected.is_some());
-                let sampled = argument == Some("SAMPLED");
-                let Some(required) = (if sampled {
-                    sampled_reservation(seconds)
-                } else {
-                    foundation_reservation(seconds, selected)
-                }) else {
-                    return "INVALID";
-                };
-                return self.capture_command(
-                    Some("START"),
-                    None,
-                    store,
-                    now,
-                    output,
-                    true,
-                    Some((seconds, required, sampled)),
-                );
-            }
-            return self.capture_command(argument, bound, store, now, output, true, None);
-        }
-        // Capture appends to the same owned reservation. The ride catalog is
-        // intentionally frozen until restart/rescan, so it cannot overwrite it.
-        if self.capture_started.is_some() {
-            return "CAPTURE_OWNS_STORAGE_RESTART_TO_RESCAN";
+            return self.radar_command(operation, now, output);
         }
         if (domain, operation, argument) == (Some("RIDE"), Some("CLEAR"), Some("CONFIRM")) {
             let Some(bound) = bound.and_then(|value| value.parse::<usize>().ok()) else {
@@ -1631,9 +936,8 @@ impl Runtime {
 }
 
 #[cfg(test)]
-mod foundation_tests {
+mod tests {
     use super::*;
-    use crate::sdk::ant_capture::Status;
 
     #[test]
     fn workout_scan_closes_existing_channels_before_scanning() {
@@ -1781,7 +1085,7 @@ mod foundation_tests {
         );
         radio.channels.receive(crate::ant::Event::ScanEnded, 24100);
         runtime.menu = crate::sdk::ant_menu::Menu::new();
-        runtime.menu.workout();
+
         runtime.workout_input(
             Input::Button {
                 button: Button::BottomLeft,
@@ -1803,61 +1107,5 @@ mod foundation_tests {
             radio.channels.channel(120, 25000).unwrap().link,
             crate::ant::LinkState::Connected
         );
-    }
-    #[test]
-    fn duration_reservation_rejects_unbounded_runs_and_accounts_for_selected_ant() {
-        assert_eq!(foundation_reservation(300, false), Some(608));
-        assert_eq!(foundation_reservation(360, false), Some(728));
-        assert_eq!(foundation_reservation(600, false), Some(1208));
-        assert_eq!(foundation_reservation(300, true), Some(1508));
-        assert_eq!(foundation_reservation(600, true), Some(3008));
-        for seconds in [0, 299, 601, u32::MAX] {
-            assert_eq!(foundation_reservation(seconds, false), None);
-        }
-    }
-
-    #[test]
-    fn deadline_begins_after_scan_and_expires_without_usb_or_peer() {
-        let mut deadline = None;
-        assert!(!foundation_expired(
-            1_000,
-            Status::Scanning,
-            Some(300),
-            &mut deadline
-        ));
-        assert_eq!(deadline, None);
-        assert!(!foundation_expired(
-            9_000,
-            Status::Ready,
-            Some(300),
-            &mut deadline
-        ));
-        assert_eq!(deadline, Some(309_000));
-        assert!(!foundation_expired(
-            308_999,
-            Status::Recording,
-            Some(300),
-            &mut deadline
-        ));
-        assert!(foundation_expired(
-            309_000,
-            Status::Recording,
-            Some(300),
-            &mut deadline
-        ));
-        assert!(!foundation_expired(
-            310_000,
-            Status::Stopping,
-            Some(300),
-            &mut deadline
-        ));
-        let mut radar = None;
-        assert!(!foundation_expired(
-            1_000_000,
-            Status::Recording,
-            None,
-            &mut radar
-        ));
-        assert_eq!(radar, None);
     }
 }

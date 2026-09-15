@@ -2,16 +2,16 @@
 
 Open-source Rust firmware for the Magene C606 bike computer. The `no_std` base
 provides positioning, physical input, display, settings, networking, BLE and ANT
-transport through an ordinary USB terminal. The optional cycling SDK adds one
-selected BLE Heart Rate or Cadence sensor, ride recording, recovery and export.
-It also interprets ANT radar, heart-rate and power reports and provides a sensor
-test screen and capture. A full graphical application and live speed/distance
-are not implemented.
+transport through an ordinary USB terminal. The optional cycling SDK provides
+VANA's workout screens, four concurrent ANT sensors, proximity radar alerts,
+and ride recording, recovery and export. It displays wheel speed, power, heart
+rate, active time, approximate gradient and training zones. One selected BLE
+Heart Rate or Cadence sensor is also supported.
 
-C606 foundation commands also expose fixed buzzer patterns, bounded GNSS stream
-pause/resume, raw motion, compensated pressure and read-only MMC access.
-[Morning validation](docs/c606-morning.md) covers the remaining physical checks
-and a capacity-checked capture using the existing owned journal.
+Device commands expose fixed buzzer patterns, bounded GNSS stream pause/resume,
+raw motion, compensated pressure and owned MMC maintenance. See
+[ride recording](docs/ride-recording.md) for workout controls, storage limits
+and timestamp requirements. Historical raw ANT captures can be decoded offline.
 
 See [architecture and ownership](docs/architecture.md) for the device capability
 and shell boundaries, and [#75](https://github.com/patrikduksin/cycling/issues/75)

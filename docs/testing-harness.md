@@ -211,12 +211,5 @@ an on-device resume deadline. Cleanup checks sound settling, resumed GNSS progre
 the original MMC clock and completed ANT scanning independently of preference
 and radio restoration.
 
-An SDK scenario can append a short capture with
-`{"op":"foundation","action":"start","duration_seconds":300}` and stop it
-with `{"op":"foundation","action":"stop"}`. The runner requires idle recording
-and capture owners, waits for actual recording, and stops only its own possibly
-applied start during cleanup. An uncertain stop is inspected rather than replayed.
-This writes new owned journal slots and never reclaims old ones. Disruptive real
-recovery rechecks idle recording immediately before restart/reset; terminal reopen
-remains available during acquisition. See [morning checks](c606-morning.md) for
-capacity requirements, physical actions and export.
+Disruptive real recovery rechecks idle recording immediately before restart or
+reset. Terminal reopen remains available during acquisition.

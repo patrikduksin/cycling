@@ -310,8 +310,7 @@ impl Session {
             let Some(edge) = self.shell.take_app_input() else {
                 break;
             };
-            self.sdk
-                .input(edge.input, self.now, &mut ant, &mut self.shell.store.data());
+            self.sdk.input(edge.input, self.now, &mut ant);
         }
         self.shell.present();
         #[cfg(feature = "cycling")]
@@ -465,7 +464,6 @@ impl Session {
                     &mut self.shell.store.data(),
                     self.now,
                     out,
-                    &NoAnt,
                 );
             }
             Command::Restart => return "ACCEPTED",

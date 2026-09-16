@@ -12,6 +12,7 @@ mod commands;
 mod input;
 mod presentation;
 mod recording;
+mod sensor_requests;
 #[cfg(test)]
 mod tests;
 
@@ -19,7 +20,10 @@ pub struct Runtime {
     clock: Option<fn() -> u64>,
     page: crate::screens::workout::Page,
     home_cursor: bool,
+    search_requested: bool,
+    discovery_generation: u32,
     scan: crate::sensors::scan::Scan,
+    sensor_requests: [Option<sensor_requests::Pending>; device_api::ant::CHANNEL_CAPACITY],
     dropped_ant: [Option<u8>; device_api::ant::CHANNEL_CAPACITY],
     page_since: u64,
     last_press: u64,
@@ -53,7 +57,10 @@ impl Runtime {
             clock: None,
             page: crate::screens::workout::Page::Boot,
             home_cursor: false,
+            search_requested: false,
+            discovery_generation: 0,
             scan: crate::sensors::scan::Scan::default(),
+            sensor_requests: [None; device_api::ant::CHANNEL_CAPACITY],
             dropped_ant: [None; device_api::ant::CHANNEL_CAPACITY],
             page_since: 0,
             last_press: 0,

@@ -722,3 +722,55 @@ fn radio_wide_connection_failure_is_visible_on_the_page() {
     choose_sensor(&mut runtime, &mut radio, peer);
     assert_eq!(runtime.menu.diagnostics().message, b"RADIO UNAVAILABLE");
 }
+
+#[test]
+fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
+    let mut radio = Radio {
+        channels: firmware_services::ant::Channels::new(),
+        requests: std::vec::Vec::new(),
+        reject: None,
+        settling: false,
+        observe_requests: false,
+    };
+    radio.channels.begin_scan(0, 1).unwrap();
+    for number in 1..=8 {
+        radio.channels.receive(
+            device_api::ant::Event::Discovery {
+                identity: device_api::ant::Identity {
+                    device_type: 120,
+                    device_number: number,
+                    transmission_type: 1,
+                },
+                rssi: -40,
+            },
+            0,
+        );
+    }
+    radio.channels.tick(1);
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    runtime.page = crate::screens::workout::Page::Sensors;
+    runtime.home_cursor = true;
+    let press = |button| Input::Button { button, code: 1 };
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    runtime.input(press(Button::TopLeft), 1400, &mut radio);
+    radio.reject = Some(device_api::ant::Error::Busy);
+    runtime.input(press(Button::BottomRight), 1800, &mut radio);
+    runtime.input(press(Button::BottomLeft), 2200, &mut radio);
+    radio.reject = None;
+    advance(&mut runtime, &mut radio, 2300);
+    let fresh = device_api::ant::Identity {
+        device_type: 17,
+        device_number: 99,
+        transmission_type: 1,
+    };
+    radio.channels.receive(
+        device_api::ant::Event::Discovery {
+            identity: fresh,
+            rssi: -40,
+        },
+        2400,
+    );
+    runtime.input(press(Button::BottomLeft), 2700, &mut radio);
+    runtime.input(press(Button::BottomRight), 3100, &mut radio);
+    assert_eq!(runtime.menu.selected_identity(17), Some(fresh));
+}

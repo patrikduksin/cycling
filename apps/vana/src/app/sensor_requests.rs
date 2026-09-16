@@ -15,9 +15,17 @@ impl Runtime {
     pub(super) fn start_sensor_search(&mut self, ant: &mut impl Ant, now: u64) {
         if self.search_requested && self.sensor_requests.iter().all(Option::is_none) {
             self.search_requested = false;
-            self.menu.search_started();
             self.scan.start(ant, now);
+            self.refresh_discovery_session(ant);
             self.menu.set_message(self.scan.message());
+        }
+    }
+
+    pub(super) fn refresh_discovery_session(&mut self, ant: &impl Ant) {
+        let generation = ant.scan().generation;
+        if self.discovery_generation != generation {
+            self.discovery_generation = generation;
+            self.menu.search_started();
         }
     }
 

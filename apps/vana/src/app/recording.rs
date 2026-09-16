@@ -34,6 +34,7 @@ impl Runtime {
     ) {
         let was_scanning = self.scan.active();
         self.scan.tick(ant, now);
+        self.refresh_discovery_session(ant);
         if was_scanning || self.scan.active() {
             self.menu.set_message(self.scan.message());
         }

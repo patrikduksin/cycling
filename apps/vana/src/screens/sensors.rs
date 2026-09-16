@@ -1,9 +1,11 @@
 //! Sensor selection and physical-button navigation, independent of radio scheduling.
+mod icons;
+
 use device_api::ant::{
     CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity, LinkState, Snapshot,
 };
 use device_api::input::{Button, Input};
-use firmware_shell::rendering::text::{number, text};
+use firmware_shell::rendering::text::text;
 
 const AVAILABLE: usize = 1 + CHANNEL_CAPACITY;
 const ITEMS: usize = AVAILABLE + DISCOVERY_CAPACITY;
@@ -12,6 +14,9 @@ const CYAN: u16 = 0x07ff;
 const MUTED: u16 = 0x9cf3;
 const GREEN: u16 = 0x5fe9;
 const AMBER: u16 = 0xfd20;
+const FOCUS_FILL: u16 = 0x0945;
+const BORDER: u16 = 0x3186;
+const DIVIDER: u16 = 0x39e7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -109,23 +114,70 @@ enum View {
     Detail(usize),
     Replace(Identity),
 }
+#[derive(Clone, Copy)]
+struct Label {
+    bytes: [u8; 18],
+    len: usize,
+}
+impl Label {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; 18],
+            len: 0,
+        }
+    }
+    fn push(&mut self, value: &[u8]) {
+        let count = value.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + count].copy_from_slice(&value[..count]);
+        self.len += count;
+    }
+    fn number(&mut self, value: u16) {
+        let mut digits = [0; 5];
+        let mut remaining = value;
+        let mut first = 4;
+        loop {
+            digits[first] = b'0' + (remaining % 10) as u8;
+            remaining /= 10;
+            if remaining == 0 {
+                break;
+            }
+            first -= 1;
+        }
+        self.push(&digits[first..]);
+    }
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
 struct Layout {
     selected_slots: [usize; CHANNEL_CAPACITY],
     selected_count: usize,
-    available_slots: [usize; 2],
+    available_slots: [usize; DISCOVERY_CAPACITY],
     available_count: usize,
-    available_total: usize,
-    heading: usize,
+    title: &'static [u8],
+    status: Label,
+    identity: Label,
+    replacement_numbers: [Label; 2],
+    replacement_transmissions: [Label; 2],
+    show_identity: bool,
+    color: u16,
+    action: &'static [u8],
 }
 impl Layout {
     const fn new() -> Self {
         Self {
             selected_slots: [0; CHANNEL_CAPACITY],
             selected_count: 0,
-            available_slots: [0; 2],
+            available_slots: [0; DISCOVERY_CAPACITY],
             available_count: 0,
-            available_total: 0,
-            heading: 100,
+            title: b"SCAN",
+            status: Label::new(),
+            identity: Label::new(),
+            replacement_numbers: [Label::new(); 2],
+            replacement_transmissions: [Label::new(); 2],
+            show_identity: false,
+            color: MUTED,
+            action: b"SEARCH",
         }
     }
 }
@@ -173,6 +225,7 @@ impl Menu {
     }
     pub fn set_message(&mut self, message: &'static [u8]) {
         self.message = message;
+        self.prepare_layout();
     }
     /// Begin a genuinely new bounded search without moving selected-sensor focus.
     pub fn search_started(&mut self) {
@@ -221,6 +274,7 @@ impl Menu {
         {
             pending.admitted = true;
         }
+        self.prepare_layout();
     }
     pub fn request_failed(&mut self, identity: Identity, message: &'static [u8]) {
         if let Some(s) = self
@@ -235,6 +289,7 @@ impl Menu {
             s.pending = None;
             s.failure = Some(message);
         }
+        self.prepare_layout();
     }
     pub fn refresh(
         &mut self,
@@ -452,24 +507,113 @@ impl Menu {
                 layout.selected_count += 1;
             }
         }
-        let rows = layout.selected_count.div_ceil(5);
-        layout.heading = 47 + rows.max(1) * 49 + 4;
-        let mut available = [0; DISCOVERY_CAPACITY];
-        let mut focused = 0;
         for item in AVAILABLE..ITEMS {
             if self.visible(item) {
-                if item == self.cursor {
-                    focused = layout.available_total;
-                }
-                available[layout.available_total] = item;
-                layout.available_total += 1;
+                layout.available_slots[layout.available_count] = item;
+                layout.available_count += 1;
             }
         }
-        let capacity = if rows > 1 { 1 } else { 2 };
-        let first = focused.saturating_sub(capacity - 1);
-        layout.available_count = (layout.available_total - first).min(capacity);
-        layout.available_slots[..layout.available_count]
-            .copy_from_slice(&available[first..first + layout.available_count]);
+        let focused = if self.cursor == 0 {
+            None
+        } else if self.cursor < AVAILABLE {
+            self.selected[self.cursor - 1].map(|selected| selected.identity)
+        } else {
+            self.discoveries[self.cursor - AVAILABLE].map(|peer| peer.identity)
+        };
+        if let Some(identity) = focused {
+            layout.title = kind(identity.device_type);
+            layout.identity = self.identity_label(identity);
+            layout.show_identity = self.duplicate_kind(identity);
+            if self.cursor < AVAILABLE {
+                let selected = self.selected[self.cursor - 1].unwrap();
+                layout.color = selected.color();
+                layout.action = b"OPEN";
+                if layout.show_identity {
+                    layout.status.push(if layout.color == GREEN {
+                        b"LIVE / "
+                    } else if layout.color == CYAN {
+                        b"WAIT / "
+                    } else if selected.failure.is_some()
+                        || selected.observed.is_some_and(|snapshot| {
+                            matches!(
+                                snapshot.link,
+                                LinkState::TimedOut | LinkState::TransportLost
+                            )
+                        })
+                    {
+                        b"FAILED / "
+                    } else if selected.retry() {
+                        b"OFF / "
+                    } else {
+                        b"CHECK / "
+                    });
+                } else {
+                    layout.status.push(if layout.color == GREEN {
+                        b"LIVE DATA"
+                    } else {
+                        selected.status()
+                    });
+                }
+            } else {
+                layout.color = MUTED;
+                layout.action = if self.selected_identity(identity.device_type).is_some() {
+                    b"REPLACE"
+                } else {
+                    b"CONNECT"
+                };
+                if layout.show_identity {
+                    layout
+                        .status
+                        .push(if self.present[self.cursor - AVAILABLE] {
+                            b"SENSOR / "
+                        } else {
+                            b"GONE / "
+                        });
+                } else if !self.present[self.cursor - AVAILABLE] {
+                    layout.status.push(b"NOT SEEN");
+                } else if identity.device_type == 40 {
+                    layout.status.push(b"VEHICLES BEHIND");
+                } else {
+                    layout.status.push(b"READY TO CONNECT");
+                }
+            }
+            if layout.show_identity {
+                layout.status.push(layout.identity.as_bytes());
+            }
+        } else {
+            layout.status.push(if self.scanning {
+                b"SEARCHING..."
+            } else {
+                b"FIND NEARBY"
+            });
+            layout.color = if self.scanning { CYAN } else { MUTED };
+        }
+        if !self.message.is_empty() {
+            layout.status = Label::new();
+            layout.status.push(match self.message {
+                b"WAIT FOR CURRENT REQUEST" => b"REQUEST PENDING",
+                b"ALL TEN SENSOR SLOTS ARE IN USE" => b"SENSOR SLOTS FULL",
+                b"INPUT LOST - PRESS NEXT" => b"PRESS NEXT AGAIN",
+                message => message,
+            });
+            layout.color = AMBER;
+        }
+        if let View::Replace(identity) = self.view {
+            layout.identity = self.identity_label(identity);
+            for (index, peer) in [self.selected_identity(identity.device_type), Some(identity)]
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(peer) = peer {
+                    layout.replacement_numbers[index].number(peer.device_number);
+                    if self.identity_label(peer).as_bytes().contains(&b'.') {
+                        layout.replacement_transmissions[index].push(b"T");
+                        layout.replacement_transmissions[index]
+                            .number(u16::from(peer.transmission_type));
+                    }
+                }
+            }
+        }
         self.layout = layout;
     }
     fn visible(&self, item: usize) -> bool {
@@ -498,17 +642,7 @@ impl Menu {
                 .flatten()
                 .any(|s| s.identity.device_type == identity.device_type && s.identity != identity)
     }
-    fn suffix_pixel(
-        &self,
-        x: usize,
-        y: usize,
-        left: usize,
-        top: usize,
-        identity: Identity,
-    ) -> bool {
-        if x < left || x >= left + 54 || y < top || y >= top + 7 {
-            return false;
-        }
+    fn identity_label(&self, identity: Identity) -> Label {
         let same_number = |other: Identity| {
             other != identity
                 && other.device_type == identity.device_type
@@ -524,31 +658,33 @@ impl Menu {
                 .iter()
                 .flatten()
                 .any(|s| same_number(s.identity));
-        number(x, y, left, top, 1, u32::from(identity.device_number), 5)
-            || transmission
-                && (text(x, y, left + 30, top, 1, b".")
-                    || number(
-                        x,
-                        y,
-                        left + 36,
-                        top,
-                        1,
-                        u32::from(identity.transmission_type),
-                        3,
-                    ))
+        let mut label = Label::new();
+        label.number(identity.device_number);
+        if transmission {
+            label.push(b".");
+            label.number(u16::from(identity.transmission_type));
+        }
+        label
     }
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
         if x >= 240 || y >= 320 {
             return 0;
         }
-        if text(x, y, 8, 300, 2, b"NEXT") || text(x, y, 156, 300, 2, b"SELECT") {
-            return WHITE;
+        if y == 290 {
+            return DIVIDER;
         }
-        if text(x, y, 8, 285, 1, b"TOP LEFT: BACK") {
-            return MUTED;
-        }
-        if text(x, y, 8, 270, 1, &self.message[..self.message.len().min(37)]) {
-            return AMBER;
+        if y >= 300 {
+            let action = if matches!(self.view, View::Tiles) {
+                self.layout.action
+            } else {
+                b"SELECT"
+            };
+            if text(x, y, 12, 300, 2, b"NEXT")
+                || text(x, y, 228 - action.len() * 12, 300, 2, action)
+            {
+                return WHITE;
+            }
+            return 0;
         }
         match self.view {
             View::Tiles => self.tiles_pixel(x, y),
@@ -557,234 +693,253 @@ impl Menu {
         }
     }
     fn tiles_pixel(&self, x: usize, y: usize) -> u16 {
-        let selected_count = self.layout.selected_count;
-        if text(x, y, 8, 34, 1, b"MY SENSORS") {
-            return MUTED;
+        if text(x, y, 12, 36, 2, b"MY SENSORS") || text(x, y, 12, 138, 2, b"NEARBY") {
+            return WHITE;
         }
-        if selected_count == 0 && text(x, y, 8, 52, 1, b"CHOOSE A SENSOR BELOW") {
-            return MUTED;
+        if self.scanning && text(x, y, 96, 138, 2, b"SEARCHING") {
+            return CYAN;
         }
-        if x >= 5 && (47..145).contains(&y) {
-            let n = (y - 47) / 49 * 5 + (x - 5) / 47;
-            if n < selected_count {
+        if (208..232).contains(&x) && (130..154).contains(&y) {
+            if self.cursor == 0 && border(x, y, 208, 130, 24, 24, 2) {
+                return CYAN;
+            }
+            if icons::refresh_pixel(x - 208, y - 130) {
+                return if self.scanning { CYAN } else { WHITE };
+            }
+            return if self.cursor == 0 { FOCUS_FILL } else { 0 };
+        }
+        if x >= 8 && (56..126).contains(&y) {
+            let n = (y - 56) / 38 * 5 + (x - 8) / 46;
+            if n < self.layout.selected_count {
                 let slot = self.layout.selected_slots[n];
                 let selected = self.selected[slot].unwrap();
-                let left = 5 + n % 5 * 47;
-                let top = 47 + n / 5 * 49;
-                let focused = self.cursor == slot + 1;
-                if border(x, y, left, top, 43, 44, if focused { 2 } else { 1 }) {
-                    return if focused { CYAN } else { 0x3186 };
-                }
-                if icon(x, y, left + 10, top + 5, selected.identity.device_type) {
-                    return WHITE;
-                }
-                if text(
-                    x,
-                    y,
-                    left + 5,
-                    top + 29,
-                    1,
-                    short_kind(selected.identity.device_type),
-                ) {
-                    return WHITE;
-                }
-                if (left + 33..left + 38).contains(&x) && (top + 5..top + 10).contains(&y) {
-                    return selected.color();
+                let left = 8 + n % 5 * 46;
+                let top = 56 + n / 5 * 38;
+                if (left..left + 40).contains(&x) && (top..top + 32).contains(&y) {
+                    let focused = self.cursor == slot + 1;
+                    if border(x, y, left, top, 40, 32, if focused { 2 } else { 1 }) {
+                        return if focused { CYAN } else { BORDER };
+                    }
+                    if icon(x, y, left + 9, top + 6, selected.identity.device_type) {
+                        return WHITE;
+                    }
+                    if (left + 30..left + 37).contains(&x)
+                        && (top + 3..top + 10).contains(&y)
+                        && indicator(x - left - 30, y - top - 3, selected.color())
+                    {
+                        return selected.color();
+                    }
+                    return if focused { FOCUS_FILL } else { 0 };
                 }
             }
         }
-        let heading = self.layout.heading;
-        if text(
-            x,
-            y,
-            8,
-            heading,
-            1,
-            if self.scanning {
-                b"AVAILABLE - SEARCHING..."
-            } else {
-                b"AVAILABLE"
-            },
-        ) {
-            return MUTED;
-        }
-        let available_top = heading + 15;
-        if y >= available_top {
-            let n = (y - available_top) / 48;
+        if x >= 11 && (156..224).contains(&y) {
+            let n = (y - 156) / 36 * 4 + (x - 11) / 56;
             if n < self.layout.available_count {
                 let item = self.layout.available_slots[n];
-                let top = available_top + n * 48;
-                let peer = self.discoveries[item - AVAILABLE].unwrap();
-                let focus = item == self.cursor;
-                if border(x, y, 5, top, 230, 44, if focus { 2 } else { 1 }) {
-                    return if focus { CYAN } else { 0x3186 };
-                }
-                if icon(x, y, 14, top + 10, peer.identity.device_type) {
-                    return WHITE;
-                }
-                if text(x, y, 44, top + 7, 1, kind(peer.identity.device_type)) {
-                    return WHITE;
-                }
-                if (174..228).contains(&x)
-                    && (top + 7..top + 14).contains(&y)
-                    && self.duplicate_kind(peer.identity)
-                    && self.suffix_pixel(x, y, 174, top + 7, peer.identity)
-                {
-                    return MUTED;
-                }
-                if text(
-                    x,
-                    y,
-                    44,
-                    top + 24,
-                    1,
-                    if !self.present[item - AVAILABLE] {
-                        b"NOT SEEN"
-                    } else if focus {
-                        b"SELECT TO CONNECT"
-                    } else if peer.identity.device_type == 40 {
-                        b"VEHICLES BEHIND YOU"
-                    } else {
-                        b"AVAILABLE TO CONNECT"
-                    },
-                ) {
-                    return if focus { CYAN } else { MUTED };
+                let identity = self.discoveries[item - AVAILABLE].unwrap().identity;
+                let left = 11 + n % 4 * 56;
+                let top = 156 + n / 4 * 36;
+                if (left..left + 50).contains(&x) && (top..top + 32).contains(&y) {
+                    let focused = self.cursor == item;
+                    if border(x, y, left, top, 50, 32, if focused { 2 } else { 1 }) {
+                        return if focused { CYAN } else { BORDER };
+                    }
+                    if icon(x, y, left + 14, top + 6, identity.device_type) {
+                        return WHITE;
+                    }
+                    return if focused { FOCUS_FILL } else { 0 };
                 }
             }
         }
-        if self.layout.available_total == 0
+        if self.layout.selected_count == 0 && text(x, y, 12, 68, 2, b"NONE SELECTED") {
+            return MUTED;
+        }
+        if self.layout.available_count == 0
             && text(
                 x,
                 y,
-                8,
-                heading + 22,
-                1,
+                12,
+                168,
+                2,
                 if self.scanning {
-                    b"LOOKING FOR NEARBY SENSORS"
+                    b"LOOKING NEARBY..."
                 } else {
-                    b"NO NEW SENSORS FOUND"
+                    b"NO SENSORS FOUND"
                 },
             )
         {
             return MUTED;
         }
-        if border(x, y, 5, 239, 230, 24, if self.cursor == 0 { 2 } else { 1 }) {
-            return if self.cursor == 0 { CYAN } else { 0x3186 };
+        if y == 226 && (12..228).contains(&x) {
+            return DIVIDER;
         }
-        if text(
-            x,
-            y,
-            16,
-            247,
-            1,
-            if self.scanning {
-                b"SEARCHING..."
-            } else {
-                b"SEARCH AGAIN"
-            },
-        ) {
-            return if self.cursor == 0 { CYAN } else { WHITE };
+        if text(x, y, 12, 238, 3, self.layout.title) {
+            return WHITE;
+        }
+        if text(x, y, 12, 267, 2, self.layout.status.as_bytes()) {
+            return self.layout.color;
         }
         0
     }
     fn detail_pixel(&self, x: usize, y: usize, selected: Selected) -> u16 {
-        if icon(x, y, 109, 51, selected.identity.device_type) {
+        if scaled_icon(x, y, 98, 52, selected.identity.device_type) {
             return WHITE;
         }
-        if text(x, y, 12, 87, 2, kind(selected.identity.device_type)) {
+        let title = kind(selected.identity.device_type);
+        if text(x, y, (240 - title.len() * 18) / 2, 111, 3, title) {
             return WHITE;
         }
-        if text(x, y, 12, 114, 1, selected.status()) {
-            return selected.color();
-        }
-        if (130..137).contains(&y)
-            && self.duplicate_kind(selected.identity)
-            && (text(x, y, 12, 130, 1, b"SENSOR")
-                || self.suffix_pixel(x, y, 60, 130, selected.identity))
-        {
-            return MUTED;
-        }
-        if text(x, y, 12, 145, 1, b"GREEN: LIVE DATA")
-            || text(x, y, 12, 160, 1, b"BLUE: CONNECTING")
-            || text(x, y, 12, 175, 1, b"AMBER: NEEDS ATTENTION")
-        {
-            return MUTED;
-        }
-        for action in 0..if selected.pending.is_some() { 1 } else { 2 } {
-            let top = 203 + action * 31;
-            let focused = self.detail_action == action;
-            if border(x, y, 6, top, 228, 26, if focused { 2 } else { 1 }) {
-                return if focused { CYAN } else { 0x3186 };
+        if selected.color() == GREEN {
+            if text(x, y, 60, 149, 2, b"LIVE DATA") || live_check(x, y, 38, 150) {
+                return GREEN;
             }
-            let label: &[u8] = if selected.pending.is_some() {
-                b"BACK TO SENSORS"
-            } else if action == 0 {
-                if selected.failed_disconnect {
-                    b"RETRY DISCONNECT"
-                } else if selected.retry() {
-                    b"RETRY CONNECTION"
-                } else {
+        } else {
+            let status = selected.status();
+            if text(
+                x,
+                y,
+                (240 - status.len().min(18) * 12) / 2,
+                149,
+                2,
+                &status[..status.len().min(18)],
+            ) {
+                return selected.color();
+            }
+        }
+        {
+            let width = (7 + self.layout.identity.len) * 12;
+            let left = (240 - width) / 2;
+            if text(x, y, left, 179, 2, b"SENSOR ")
+                || text(x, y, left + 84, 179, 2, self.layout.identity.as_bytes())
+            {
+                return MUTED;
+            }
+        }
+        let first: &[u8] = if selected.pending.is_some() {
+            b"BACK"
+        } else if selected.failed_disconnect {
+            b"RETRY DISCONNECT"
+        } else if selected.retry() {
+            b"RETRY"
+        } else {
+            b"DISCONNECT"
+        };
+        if let Some(color) = action_pixel(x, y, 220, 34, self.detail_action == 0, first) {
+            return color;
+        }
+        if selected.pending.is_none() {
+            let second: &[u8] =
+                if selected.retry() && selected.can_disconnect() && !selected.failed_disconnect {
                     b"DISCONNECT"
-                }
-            } else if selected.retry() && selected.can_disconnect() && !selected.failed_disconnect {
-                b"DISCONNECT"
-            } else {
-                b"BACK TO SENSORS"
-            };
-            if text(x, y, 16, top + 9, 1, label) {
-                return WHITE;
+                } else {
+                    b"BACK"
+                };
+            if let Some(color) = action_pixel(x, y, 262, 28, self.detail_action == 1, second) {
+                return color;
             }
         }
         0
     }
     fn replace_pixel(&self, x: usize, y: usize, identity: Identity) -> u16 {
-        if text(x, y, 12, 50, 2, b"REPLACE SENSOR?")
-            || text(x, y, 12, 83, 1, kind(identity.device_type))
+        if scaled_icon(x, y, 98, 43, identity.device_type) {
+            return WHITE;
+        }
+        let title = kind(identity.device_type);
+        if text(x, y, (240 - title.len() * 18) / 2, 94, 3, title)
+            || text(x, y, 30, 129, 2, b"REPLACE SENSOR")
         {
             return WHITE;
         }
-        if text(x, y, 12, 111, 1, b"THIS WILL REPLACE YOUR")
-            || text(x, y, 12, 127, 1, b"CURRENT SENSOR OF THIS TYPE.")
-            || text(x, y, 12, 151, 1, b"NEW SENSOR")
-            || number(x, y, 90, 151, 1, u32::from(identity.device_number), 5)
-        {
-            return MUTED;
-        }
-        for action in 0..2 {
-            let top = 200 + action * 34;
-            if border(
-                x,
-                y,
-                6,
-                top,
-                228,
-                27,
-                if self.detail_action == action { 2 } else { 1 },
-            ) {
-                return if self.detail_action == action {
-                    CYAN
-                } else {
-                    0x3186
-                };
-            }
+        if (160..191).contains(&y) {
+            let index = usize::from(x >= 120);
+            let center = if index == 0 { 54 } else { 180 };
+            let number = &self.layout.replacement_numbers[index];
+            let transmission = &self.layout.replacement_transmissions[index];
+            let scale = if transmission.len == 0 { 3 } else { 2 };
             if text(
                 x,
                 y,
-                16,
-                top + 9,
-                1,
-                if action == 0 {
-                    b"REPLACE AND CONNECT"
-                } else {
-                    b"KEEP CURRENT SENSOR"
-                },
+                center - number.len * 3 * scale,
+                160,
+                scale,
+                number.as_bytes(),
+            ) || text(
+                x,
+                y,
+                center - transmission.len * 6,
+                177,
+                2,
+                transmission.as_bytes(),
             ) {
                 return WHITE;
             }
         }
+        if ((103..130).contains(&x) && (171..173).contains(&y))
+            || ((121..131).contains(&x) && ((y as isize - 172).unsigned_abs() == 130 - x))
+        {
+            return CYAN;
+        }
+        if text(x, y, 12, 191, 2, b"CURRENT") || text(x, y, 174, 191, 2, b"NEW") {
+            return MUTED;
+        }
+        if let Some(color) = action_pixel(x, y, 216, 34, self.detail_action == 0, b"REPLACE") {
+            return color;
+        }
+        if let Some(color) = action_pixel(x, y, 258, 32, self.detail_action == 1, b"KEEP CURRENT") {
+            return color;
+        }
         0
     }
 }
+fn action_pixel(
+    x: usize,
+    y: usize,
+    top: usize,
+    height: usize,
+    focused: bool,
+    label: &[u8],
+) -> Option<u16> {
+    if !(12..228).contains(&x) || !(top..top + height).contains(&y) {
+        return None;
+    }
+    if border(x, y, 12, top, 216, height, if focused { 2 } else { 1 }) {
+        return Some(if focused { CYAN } else { BORDER });
+    }
+    if text(
+        x,
+        y,
+        (240 - label.len() * 12) / 2,
+        top + (height - 14) / 2,
+        2,
+        label,
+    ) {
+        return Some(WHITE);
+    }
+    Some(if focused { FOCUS_FILL } else { 0 })
+}
+fn live_check(x: usize, y: usize, left: usize, top: usize) -> bool {
+    if !(left..left + 11).contains(&x) || !(top..top + 12).contains(&y) {
+        return false;
+    }
+    let x = x - left;
+    let y = y - top;
+    ((1..=4).contains(&x) && (y == x + 4 || y + 1 == x + 4))
+        || ((4..=10).contains(&x) && (x + y == 12 || x + y == 11))
+}
+fn indicator(x: usize, y: usize, color: u16) -> bool {
+    if color == GREEN {
+        (x <= 2 && (y == x + 3 || y == x + 2)) || (x >= 2 && (y + x == 7 || y + x == 6))
+    } else if color == CYAN {
+        ((x == 1 || x == 5) && (1..6).contains(&y)) || ((y == 1 || y == 5) && (1..6).contains(&x))
+    } else {
+        (x == 3 && (1..4).contains(&y)) || (x == 3 && y == 5)
+    }
+}
+fn scaled_icon(x: usize, y: usize, left: usize, top: usize, kind: u8) -> bool {
+    x >= left && y >= top && icons::pixel(kind, (x - left) / 2, (y - top) / 2)
+}
+
 fn border(
     x: usize,
     y: usize,
@@ -804,55 +959,7 @@ fn border(
             || y >= top + height - stroke)
 }
 fn icon(x: usize, y: usize, left: usize, top: usize, kind: u8) -> bool {
-    if x < left || y < top || x >= left + 22 || y >= top + 20 {
-        return false;
-    }
-    let x = x - left;
-    let y = y - top;
-    match kind {
-        120 => {
-            // Heart, filled lobes tapering to a point.
-            let dx = x as i32 - 11;
-            ((2..9).contains(&y)
-                && ((x as i32 - 6).pow(2) + (y as i32 - 6).pow(2) <= 25
-                    || (x as i32 - 15).pow(2) + (y as i32 - 6).pow(2) <= 25))
-                || ((8..19).contains(&y) && dx.abs() <= 19 - y as i32)
-        }
-        11 => {
-            (y < 11 && x >= 11 - y / 2 && x <= 16 - y / 2)
-                || (y >= 9 && x >= 14 - y / 2 && x <= 19 - y / 2)
-        }
-        40 => {
-            let dx = x as i32 - 10;
-            let dy = y as i32 - 18;
-            let r = dx * dx + dy * dy;
-            (y <= 16 && ((45..65).contains(&r) || (180..210).contains(&r)))
-                || ((9..=12).contains(&x) && y >= 16)
-        }
-        121..=123 => {
-            let dx = x as i32 - 10;
-            let dy = y as i32 - 10;
-            let r = dx * dx + dy * dy;
-            (65..100).contains(&r) || ((x == 10 || y == 10) && r < 90)
-        }
-        34 | 128 => {
-            let dx = x as i32 - 10;
-            let dy = y as i32 - 10;
-            let r = dx * dx + dy * dy;
-            (36..65).contains(&r)
-                || ((x == 10 || y == 10 || x == y || x + y == 20) && (21..100).contains(&r))
-        }
-        17 => {
-            border(x, y, 3, 3, 16, 10, 2)
-                || (y >= 13 && (x == 7 || x == 14))
-                || (y == 18 && (4..18).contains(&x))
-        }
-        35 => {
-            border(x, y, 2, 5, 10, 12, 2)
-                || ((14..22).contains(&x) && (y == 5 || y == 10 || y == 16))
-        }
-        _ => border(x, y, 3, 2, 16, 16, 2) || (9..13).contains(&x) && (6..14).contains(&y),
-    }
+    x >= left && y >= top && icons::pixel(kind, x - left, y - top)
 }
 pub(crate) fn connection_status(channel: Snapshot) -> &'static str {
     match channel.link {
@@ -872,27 +979,13 @@ fn kind(device_type: u8) -> &'static [u8] {
         40 => b"RADAR",
         11 => b"POWER METER",
         120 => b"HEART RATE",
-        121 => b"SPEED / CADENCE",
-        122 => b"CADENCE SENSOR",
+        121 => b"SPEED/CAD",
+        122 => b"CADENCE",
         123 => b"SPEED SENSOR",
         34 | 128 => b"SHIFTING",
-        17 => b"FITNESS EQUIPMENT",
+        17 => b"FITNESS",
         35 => b"BIKE LIGHTS",
         _ => b"ANT SENSOR",
-    }
-}
-fn short_kind(device_type: u8) -> &'static [u8] {
-    match device_type {
-        40 => b"RADAR",
-        11 => b"POWER",
-        120 => b"HEART",
-        121 => b"SPD/C",
-        122 => b"CAD",
-        123 => b"SPEED",
-        34 | 128 => b"GEARS",
-        17 => b"FIT",
-        35 => b"LIGHT",
-        _ => b"ANT",
     }
 }
 #[cfg(test)]
@@ -900,6 +993,9 @@ mod tests {
     use super::*;
     fn press(button: Button) -> Input {
         Input::Button { button, code: 1 }
+    }
+    fn indicator_has_color(menu: &Menu, color: u16) -> bool {
+        (59..66).any(|y| (38..45).any(|x| menu.pixel(x, y) == color))
     }
     fn peer(number: u16) -> Discovery {
         Discovery {
@@ -911,6 +1007,73 @@ mod tests {
             rssi: -40,
             seen_ms: 0,
         }
+    }
+    #[test]
+    fn replacement_disambiguates_maximum_identity_without_overlapping_numbers() {
+        let current = Identity {
+            device_type: 11,
+            device_number: u16::MAX,
+            transmission_type: 254,
+        };
+        let replacement = Identity {
+            transmission_type: 255,
+            ..current
+        };
+        let mut menu = Menu::new();
+        menu.request_pending(current);
+        menu.request_failed(current, b"CONNECT FAILED");
+        let mut discovery = peer(u16::MAX);
+        discovery.identity = replacement;
+        menu.refresh(
+            [Some(discovery), None, None, None, None, None, None, None],
+            [None; CHANNEL_CAPACITY],
+            false,
+            0,
+        );
+        menu.input(press(Button::BottomLeft), 0);
+        assert_eq!(menu.input(press(Button::BottomRight), 400), None);
+        for y in 0..320 {
+            for x in 0..240 {
+                let _ = menu.pixel(x, y);
+            }
+        }
+        // Each side reserves a 14px number line and a separate transmission line.
+        for y in 160..191 {
+            for x in 12..100 {
+                assert_eq!(
+                    menu.pixel(x, y) == WHITE,
+                    text(x, y, 24, 160, 2, b"65535") || text(x, y, 30, 177, 2, b"T254"),
+                    "{x},{y}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn paper_grid_shows_ten_selected_and_eight_nearby_without_scrolling() {
+        let mut channels = firmware_services::ant::Channels::new();
+        for kind in 1..=10 {
+            channels
+                .connect(
+                    Identity {
+                        device_type: kind,
+                        ..peer(u16::from(kind)).identity
+                    },
+                    0,
+                )
+                .unwrap();
+        }
+        let mut menu = Menu::new();
+        menu.refresh(
+            core::array::from_fn(|n| Some(peer(100 + n as u16))),
+            channels.snapshots(0),
+            false,
+            0,
+        );
+        assert_eq!(menu.pixel(231, 125), 0x3186);
+        assert_eq!(menu.pixel(228, 223), 0x3186);
+        menu.input(press(Button::BottomLeft), 0);
+        assert_eq!(menu.pixel(8, 56), CYAN);
+        assert_eq!(menu.pixel(10, 58), 0x0945);
     }
     #[test]
     fn new_search_reclaims_discovery_slots_and_preserves_selected_focus() {
@@ -958,9 +1121,15 @@ mod tests {
             false,
             0,
         );
-        assert!((0..7).any(|dy| {
-            (170..234).any(|x| (menu.pixel(x, 122 + dy) != 0) != (menu.pixel(x, 170 + dy) != 0))
-        }));
+        menu.input(press(Button::BottomLeft), 0);
+        let mut first_status = [0; 216 * 14];
+        for y in 0..14 {
+            for x in 0..216 {
+                first_status[y * 216 + x] = menu.pixel(12 + x, 267 + y);
+            }
+        }
+        menu.input(press(Button::BottomLeft), 400);
+        assert!((0..14).any(|y| (0..216).any(|x| first_status[y * 216 + x] != menu.pixel(12 + x, 267 + y))));
     }
     #[test]
     fn admitted_connecting_sensor_keeps_the_pending_indicator() {
@@ -970,7 +1139,7 @@ mod tests {
         menu.request_pending(peer(10).identity);
         menu.request_accepted(peer(10).identity);
         menu.refresh([None; DISCOVERY_CAPACITY], channels.snapshots(0), false, 0);
-        assert_eq!(menu.pixel(39, 53), CYAN);
+        assert!(indicator_has_color(&menu, CYAN));
     }
     #[test]
     fn rejected_unadmitted_peer_offers_back_instead_of_disconnect() {
@@ -1101,7 +1270,7 @@ mod tests {
     fn connection_indicator_requires_observed_fresh_data_and_failure_is_recoverable() {
         let mut menu = Menu::new();
         menu.request_pending(peer(10).identity);
-        assert_eq!(menu.pixel(39, 53), CYAN);
+        assert!(indicator_has_color(&menu, CYAN));
         let mut channels = firmware_services::ant::Channels::new();
         channels.connect(peer(10).identity, 0).unwrap();
         let mut snapshots = channels.snapshots(0);
@@ -1111,13 +1280,13 @@ mod tests {
         snapshot.age_ms = Some(0);
         // A stale observation before admission cannot acknowledge new intent.
         menu.refresh([None; DISCOVERY_CAPACITY], snapshots, false, 0);
-        assert_eq!(menu.pixel(39, 53), CYAN);
+        assert!(indicator_has_color(&menu, CYAN));
         menu.request_accepted(peer(10).identity);
         menu.refresh([None; DISCOVERY_CAPACITY], snapshots, false, 400);
-        assert_eq!(menu.pixel(39, 53), GREEN);
+        assert!(indicator_has_color(&menu, GREEN));
         snapshots[0].as_mut().unwrap().link = LinkState::TimedOut;
         menu.refresh([None; DISCOVERY_CAPACITY], snapshots, false, 800);
-        assert_eq!(menu.pixel(39, 53), AMBER);
+        assert!(indicator_has_color(&menu, AMBER));
         menu.input(press(Button::BottomRight), 800);
         assert_eq!(
             menu.input(press(Button::BottomRight), 1200),

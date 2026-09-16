@@ -27,11 +27,21 @@ pub struct Diagnostics {
     pub needs_nav: bool,
     pub message: &'static [u8],
 }
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Operation {
+    Connect,
+    Disconnect,
+}
+#[derive(Clone, Copy)]
+struct Pending {
+    operation: Operation,
+    admitted: bool,
+}
 #[derive(Clone, Copy)]
 struct Selected {
     identity: Identity,
     observed: Option<Snapshot>,
-    pending: Option<(bool, bool)>, // disconnect, admitted
+    pending: Option<Pending>,
     failure: Option<&'static [u8]>,
     failed_disconnect: bool,
 }
@@ -40,11 +50,11 @@ impl Selected {
         if let Some(failure) = self.failure {
             return failure;
         }
-        if let Some((_, false)) = self.pending {
+        if self.pending.is_some_and(|pending| !pending.admitted) {
             return b"WAITING FOR RADIO";
         }
-        if let Some((disconnect, _)) = self.pending {
-            return if disconnect {
+        if let Some(pending) = self.pending {
+            return if pending.operation == Operation::Disconnect {
                 b"DISCONNECTING"
             } else {
                 b"CONNECTING"
@@ -142,6 +152,14 @@ impl Menu {
     pub fn set_message(&mut self, message: &'static [u8]) {
         self.message = message;
     }
+    /// Begin a genuinely new bounded search without moving selected-sensor focus.
+    pub fn search_started(&mut self) {
+        self.discoveries = [None; DISCOVERY_CAPACITY];
+        self.present = [false; DISCOVERY_CAPACITY];
+        if self.cursor >= AVAILABLE {
+            self.cursor = 0;
+        }
+    }
     pub fn selected_identity(&self, kind: u8) -> Option<Identity> {
         self.selected
             .iter()
@@ -159,7 +177,10 @@ impl Menu {
             self.selected[slot] = Some(Selected {
                 identity,
                 observed: None,
-                pending: Some((false, false)),
+                pending: Some(Pending {
+                    operation: Operation::Connect,
+                    admitted: false,
+                }),
                 failure: None,
                 failed_disconnect: false,
             });
@@ -172,9 +193,9 @@ impl Menu {
             .iter_mut()
             .flatten()
             .find(|s| s.identity == identity)
-            && let Some((_, admitted)) = &mut s.pending
+            && let Some(pending) = &mut s.pending
         {
-            *admitted = true;
+            pending.admitted = true;
         }
     }
     pub fn request_failed(&mut self, identity: Identity, message: &'static [u8]) {
@@ -184,7 +205,9 @@ impl Menu {
             .flatten()
             .find(|s| s.identity == identity)
         {
-            s.failed_disconnect = s.pending.is_some_and(|(disconnect, _)| disconnect);
+            s.failed_disconnect = s
+                .pending
+                .is_some_and(|pending| pending.operation == Operation::Disconnect);
             s.pending = None;
             s.failure = Some(message);
         }
@@ -221,8 +244,12 @@ impl Menu {
                 match &mut self.selected[slot] {
                     Some(selected) if selected.identity == identity => {
                         selected.observed = Some(snapshot);
-                        if let Some((disconnect, true)) = selected.pending {
-                            let observed = if disconnect {
+                        if let Some(Pending {
+                            operation,
+                            admitted: true,
+                        }) = selected.pending
+                        {
+                            let observed = if operation == Operation::Disconnect {
                                 matches!(
                                     snapshot.link,
                                     LinkState::Disconnecting
@@ -328,7 +355,10 @@ impl Menu {
                     self.request_pending(selected.identity);
                     Some(Action::Connect(selected.identity))
                 } else {
-                    selected.pending = Some((true, false));
+                    selected.pending = Some(Pending {
+                        operation: Operation::Disconnect,
+                        admitted: false,
+                    });
                     selected.failure = None;
                     self.selected[slot] = Some(selected);
                     Some(Action::Disconnect(selected.identity.device_type))
@@ -346,8 +376,6 @@ impl Menu {
                 if self.scanning {
                     return None;
                 }
-                self.discoveries = [None; DISCOVERY_CAPACITY];
-                self.present = [false; DISCOVERY_CAPACITY];
                 self.message = b"";
                 Some(Action::Scan)
             }
@@ -829,6 +857,32 @@ mod tests {
             rssi: -40,
             seen_ms: 0,
         }
+    }
+    #[test]
+    fn new_search_reclaims_discovery_slots_and_preserves_selected_focus() {
+        let mut menu = Menu::new();
+        let selected = Identity {
+            device_type: 40,
+            ..peer(90).identity
+        };
+        menu.request_pending(selected);
+        let old = core::array::from_fn(|index| Some(peer(index as u16 + 1)));
+        menu.refresh(old, [None; CHANNEL_CAPACITY], false, 0);
+        let selected_focus = menu.diagnostics().cursor;
+        menu.search_started();
+        menu.refresh(
+            [Some(peer(99)), None, None, None, None, None, None, None],
+            [None; CHANNEL_CAPACITY],
+            true,
+            400,
+        );
+        assert_eq!(menu.selected_identity(40), Some(selected));
+        assert_eq!(menu.diagnostics().cursor, selected_focus);
+        menu.input(press(Button::BottomLeft), 400);
+        assert_eq!(
+            menu.input(press(Button::BottomRight), 800),
+            Some(Action::Connect(peer(99).identity))
+        );
     }
     #[test]
     fn identities_with_equal_device_numbers_have_distinct_available_suffixes() {

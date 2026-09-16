@@ -15,6 +15,7 @@ impl Runtime {
     pub(super) fn start_sensor_search(&mut self, ant: &mut impl Ant, now: u64) {
         if self.search_requested && self.sensor_requests.iter().all(Option::is_none) {
             self.search_requested = false;
+            self.menu.search_started();
             self.scan.start(ant, now);
             self.menu.set_message(self.scan.message());
         }
@@ -78,6 +79,8 @@ impl Runtime {
             };
             let result = if now >= pending.deadline {
                 Err(Error::Busy)
+            } else if ant.scan().state == device_api::ant::ScanState::Uncertain {
+                Err(Error::Uncertain)
             } else if self.scan.busy(ant) {
                 continue;
             } else {
@@ -129,6 +132,7 @@ impl Runtime {
             self.sensor_requests[index] = None;
             if result == Ok(Admission::Accepted) {
                 self.menu.request_accepted(pending.peer);
+                self.menu.set_message(self.scan.message());
                 if !pending.disconnect {
                     for dropped in &mut self.dropped_ant {
                         if *dropped == Some(pending.peer.device_type) {
@@ -137,16 +141,17 @@ impl Runtime {
                     }
                 }
             } else {
-                self.menu.request_failed(
-                    pending.peer,
-                    match result {
-                        Err(Error::Busy) => b"BUSY - RETRY",
-                        Err(Error::Unavailable) => b"RADIO UNAVAILABLE",
-                        Err(Error::Uncertain) => b"RADIO LOST - REBOOT",
-                        Err(Error::UnsupportedType) => b"TYPE UNSUPPORTED",
-                        _ => b"REQUEST FAILED",
-                    },
-                );
+                let message: &'static [u8] = match result {
+                    Err(Error::Busy) => b"BUSY - RETRY",
+                    Err(Error::Unavailable) => b"RADIO UNAVAILABLE",
+                    Err(Error::Uncertain) => b"RADIO LOST - REBOOT",
+                    Err(Error::UnsupportedType) => b"TYPE UNSUPPORTED",
+                    _ => b"REQUEST FAILED",
+                };
+                if matches!(result, Err(Error::Unavailable | Error::Uncertain)) {
+                    self.menu.set_message(message);
+                }
+                self.menu.request_failed(pending.peer, message);
             }
             self.next_display = 0;
         }

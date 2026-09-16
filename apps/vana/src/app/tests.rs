@@ -484,7 +484,15 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
     };
     choose_sensor(&mut runtime, &mut radio, peer);
     assert!(radio.channel(120, 1000).is_none());
-    runtime.page = crate::screens::workout::Page::Home;
+    runtime.input(
+        Input::Button {
+            button: Button::TopLeft,
+            code: 1,
+        },
+        1400,
+        &mut radio,
+    );
+    assert!(runtime.page == crate::screens::workout::Page::Home);
     radio.reject = None;
     advance(&mut runtime, &mut radio, 1400);
     assert_eq!(radio.channel(120, 1400).unwrap().selected, Some(peer));
@@ -578,7 +586,14 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
         transmission_type: 1,
     };
     choose_sensor(&mut runtime, &mut radio, peer);
-    runtime.page = crate::screens::workout::Page::Home;
+    runtime.input(
+        Input::Button {
+            button: Button::TopLeft,
+            code: 1,
+        },
+        1400,
+        &mut radio,
+    );
     runtime.home_cursor = true;
     radio.reject = None;
     runtime.input(
@@ -586,7 +601,7 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
             button: Button::BottomRight,
             code: 1,
         },
-        1400,
+        1800,
         &mut radio,
     );
     assert!(
@@ -687,4 +702,23 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
     if selected > 0 {
         runtime.input(press(Button::BottomRight), now + 400, radio);
     }
+}
+
+#[test]
+fn radio_wide_connection_failure_is_visible_on_the_page() {
+    let mut radio = Radio {
+        channels: firmware_services::ant::Channels::new(),
+        requests: std::vec::Vec::new(),
+        reject: Some(device_api::ant::Error::Unavailable),
+        settling: false,
+        observe_requests: false,
+    };
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let peer = device_api::ant::Identity {
+        device_type: 120,
+        device_number: 42,
+        transmission_type: 1,
+    };
+    choose_sensor(&mut runtime, &mut radio, peer);
+    assert_eq!(runtime.menu.diagnostics().message, b"RADIO UNAVAILABLE");
 }

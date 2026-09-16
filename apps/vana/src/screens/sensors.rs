@@ -155,6 +155,7 @@ struct Layout {
     available_slots: [usize; DISCOVERY_CAPACITY],
     available_count: usize,
     title: &'static [u8],
+    page_feedback: Label,
     status: Label,
     identity: Label,
     replacement_numbers: [Label; 2],
@@ -171,6 +172,7 @@ impl Layout {
             available_slots: [0; DISCOVERY_CAPACITY],
             available_count: 0,
             title: b"SCAN",
+            page_feedback: Label::new(),
             status: Label::new(),
             identity: Label::new(),
             replacement_numbers: [Label::new(); 2],
@@ -589,14 +591,28 @@ impl Menu {
             layout.color = if self.scanning { CYAN } else { MUTED };
         }
         if !self.message.is_empty() {
-            layout.status = Label::new();
-            layout.status.push(match self.message {
-                b"WAIT FOR CURRENT REQUEST" => b"REQUEST PENDING",
+            let message = match self.message {
+                b"WAIT FOR CURRENT REQUEST" => b"REQUEST PENDING".as_slice(),
                 b"ALL TEN SENSOR SLOTS ARE IN USE" => b"SENSOR SLOTS FULL",
                 b"INPUT LOST - PRESS NEXT" => b"PRESS NEXT AGAIN",
+                b"WAITING FOR COMPANION" => b"WAITING FOR RADIO",
+                b"SCAN THEN PICK SENSOR" => b"FIND NEARBY",
                 message => message,
-            });
-            layout.color = AMBER;
+            };
+            let routine = routine_scan_message(self.message);
+            if !routine {
+                layout.page_feedback.push(message);
+            }
+            // Page feedback never replaces the focused peer's state or identity.
+            if self.cursor == 0 {
+                layout.status = Label::new();
+                layout.status.push(message);
+                layout.color = if routine {
+                    if self.scanning { CYAN } else { MUTED }
+                } else {
+                    AMBER
+                };
+            }
         }
         if let View::Replace(identity) = self.view {
             layout.identity = self.identity_label(identity);
@@ -693,7 +709,25 @@ impl Menu {
         }
     }
     fn tiles_pixel(&self, x: usize, y: usize) -> u16 {
-        if text(x, y, 12, 36, 2, b"MY SENSORS") || text(x, y, 12, 138, 2, b"NEARBY") {
+        if text(
+            x,
+            y,
+            12,
+            36,
+            2,
+            if self.layout.page_feedback.len == 0 {
+                b"MY SENSORS"
+            } else {
+                self.layout.page_feedback.as_bytes()
+            },
+        ) {
+            return if self.layout.page_feedback.len == 0 {
+                WHITE
+            } else {
+                AMBER
+            };
+        }
+        if text(x, y, 12, 138, 2, b"NEARBY") {
             return WHITE;
         }
         if self.scanning && text(x, y, 96, 138, 2, b"SEARCHING") {
@@ -892,6 +926,22 @@ impl Menu {
         0
     }
 }
+fn routine_scan_message(message: &[u8]) -> bool {
+    matches!(
+        message,
+        b"PICK SENSOR"
+            | b"SEARCH PENDING"
+            | b"STARTING SCAN"
+            | b"SCANNING..."
+            | b"STOPPING SCAN"
+            | b"SCAN CANCELLED"
+            | b"FINISHING SCAN"
+            | b"SCAN DONE - PICK"
+            | b"STARTING SENSORS"
+            | b"WAITING FOR COMPANION"
+            | b"SCAN THEN PICK SENSOR"
+    )
+}
 fn action_pixel(
     x: usize,
     y: usize,
@@ -1006,6 +1056,80 @@ mod tests {
             },
             rssi: -40,
             seen_ms: 0,
+        }
+    }
+    #[test]
+    fn runtime_scan_messages_preserve_focused_identity_and_connection_feedback() {
+        let mut menu = Menu::new();
+        menu.refresh(
+            [
+                Some(peer(10)),
+                Some(peer(20)),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            [None; CHANNEL_CAPACITY],
+            true,
+            0,
+        );
+        menu.input(press(Button::BottomLeft), 0);
+        let mut baseline = [0; 216 * 44];
+        for y in 0..44 {
+            for x in 0..216 {
+                baseline[y * 216 + x] = menu.pixel(12 + x, 238 + y);
+            }
+        }
+        for message in [
+            b"SCANNING...".as_slice(),
+            b"SCAN DONE - PICK",
+            b"SCAN CANCELLED",
+            b"STARTING SCAN",
+            b"SEARCH PENDING",
+            b"STOPPING SCAN",
+            b"FINISHING SCAN",
+        ] {
+            menu.set_message(message);
+            for y in 0..44 {
+                for x in 0..216 {
+                    assert_eq!(
+                        menu.pixel(12 + x, 238 + y),
+                        baseline[y * 216 + x],
+                        "{message:?} at {x},{y}"
+                    );
+                }
+            }
+        }
+        menu.input(press(Button::BottomRight), 400);
+        menu.set_message(b"SCAN CANCELLED");
+        // Pending belongs to the selected peer, not to the cancelled discovery.
+        for y in 267..281 {
+            for x in 12..228 {
+                assert_eq!(
+                    menu.pixel(x, y) == CYAN,
+                    text(x, y, 12, 267, 2, b"WAIT / 10")
+                );
+            }
+        }
+        menu.set_message(b"RADIO UNAVAILABLE");
+        for y in 267..281 {
+            for x in 12..228 {
+                assert_eq!(
+                    menu.pixel(x, y) == CYAN,
+                    text(x, y, 12, 267, 2, b"WAIT / 10")
+                );
+            }
+        }
+        for y in 36..50 {
+            for x in 12..228 {
+                assert_eq!(
+                    menu.pixel(x, y) == AMBER,
+                    text(x, y, 12, 36, 2, b"RADIO UNAVAILABLE")
+                );
+            }
         }
     }
     #[test]

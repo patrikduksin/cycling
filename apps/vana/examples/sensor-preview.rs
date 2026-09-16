@@ -43,6 +43,7 @@ fn main() {
             snapshots[3..].fill(None);
         }
         menu.refresh(discoveries, snapshots, true, 0);
+        menu.set_message(b"SCANNING...");
         menu.input(
             Input::Button {
                 button: Button::BottomLeft,
@@ -54,6 +55,7 @@ fn main() {
     }
     let mut menu = Menu::new();
     menu.refresh(discoveries, channels.snapshots(0), false, 0);
+    menu.set_message(b"SCAN DONE - PICK");
     let mut now = 0;
     focus(&mut menu, 1, &mut now);
     render(&menu, &output, "focused-heart");

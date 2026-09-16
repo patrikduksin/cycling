@@ -12,7 +12,7 @@ pub(super) fn pixel(device_type: u8, x: usize, y: usize) -> bool {
         40 => 3,
         122 => 4,
         121 => 5,
-        34 => 6,
+        34 | 128 => 6,
         17 => 7,
         35 => 8,
         _ => 9,

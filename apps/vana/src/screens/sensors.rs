@@ -1,5 +1,10 @@
 //! Physical-button ANT selection. Discovery order stays stable until an explicit scan.
 use device_api::ant::Discovery;
+use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY};
+
+const FIRST_CHANNEL: usize = 1 + DISCOVERY_CAPACITY;
+const ROW_COUNT: usize = FIRST_CHANNEL + CHANNEL_CAPACITY;
+const LAST_CHANNEL: usize = ROW_COUNT - 1;
 use device_api::ant::Identity;
 use device_api::ant::LinkState;
 use device_api::ant::Snapshot;
@@ -35,6 +40,7 @@ pub struct Menu {
     scanning: bool,
     needs_navigation: bool,
     message: &'static [u8],
+    feedback: Option<u8>,
 }
 impl Default for Menu {
     fn default() -> Self {
@@ -54,6 +60,7 @@ impl Menu {
             scanning: false,
             needs_navigation: false,
             message: b"SCAN THEN PICK SENSOR",
+            feedback: None,
         }
     }
     pub fn diagnostics(&self) -> Diagnostics {
@@ -65,10 +72,10 @@ impl Menu {
         }
     }
     fn layout(&mut self) {
-        let mut rows = [0; 13];
+        let mut rows = [0; ROW_COUNT];
         let mut count = 0;
         let mut selected: usize = 0;
-        for row in 0..13 {
+        for row in 0..ROW_COUNT {
             if self.visible(row) {
                 if row == self.cursor {
                     selected = count;
@@ -85,6 +92,10 @@ impl Menu {
     }
     pub fn set_message(&mut self, message: &'static [u8]) {
         self.message = message;
+        self.feedback = None;
+    }
+    pub fn follow_channel(&mut self, kind: u8) {
+        self.feedback = Some(kind);
     }
     pub fn refresh(
         &mut self,
@@ -106,6 +117,15 @@ impl Menu {
             }
         }
         self.channels = channels;
+        if let Some(channel) = self.feedback.and_then(|kind| {
+            channels.iter().flatten().find(|channel| {
+                channel
+                    .selected
+                    .is_some_and(|peer| peer.device_type == kind)
+            })
+        }) {
+            self.message = connection_status(*channel).as_bytes();
+        }
         self.scanning = scanning;
         if !self.visible(self.cursor) {
             self.cursor = 0;
@@ -147,7 +167,7 @@ impl Menu {
             Button::BottomLeft => {
                 self.needs_navigation = false;
                 loop {
-                    self.cursor = (self.cursor + 1) % 13;
+                    self.cursor = (self.cursor + 1) % ROW_COUNT;
                     if self.visible(self.cursor) {
                         break;
                     }
@@ -174,7 +194,7 @@ impl Menu {
                     }
                     self.discoveries[slot].map(|peer| Action::Connect(peer.identity))
                 }
-                9..=12 => self.channels[self.cursor - 9]
+                FIRST_CHANNEL..=LAST_CHANNEL => self.channels[self.cursor - FIRST_CHANNEL]
                     .and_then(|channel| channel.selected)
                     .map(|peer| Action::Disconnect(peer.device_type)),
                 _ => None,
@@ -185,7 +205,9 @@ impl Menu {
         match row {
             0 => true,
             1..=8 => self.discoveries[row - 1].is_some(),
-            9..=12 => self.channels[row - 9].is_some_and(|s| s.selected.is_some()),
+            FIRST_CHANNEL..=LAST_CHANNEL => {
+                self.channels[row - FIRST_CHANNEL].is_some_and(|s| s.selected.is_some())
+            }
             _ => false,
         }
     }
@@ -225,6 +247,8 @@ impl Menu {
             if (1..=8).contains(&row) {
                 let peer = self.discoveries[row - 1].unwrap();
                 if text(x, y, 22, top, 2, kind(peer.identity.device_type))
+                    || (kind(peer.identity.device_type) == b"ANT"
+                        && number(x, y, 64, top, 2, u32::from(peer.identity.device_type), 3))
                     || number(x, y, 108, top, 2, u32::from(peer.identity.device_number), 5)
                     || text(
                         x,
@@ -242,23 +266,15 @@ impl Menu {
                     return color;
                 }
             }
-            if (9..=12).contains(&row) {
-                let channel = self.channels[row - 9].unwrap();
+            if (FIRST_CHANNEL..=LAST_CHANNEL).contains(&row) {
+                let channel = self.channels[row - FIRST_CHANNEL].unwrap();
                 let peer = channel.selected.unwrap();
                 if text(x, y, 22, top, 2, kind(peer.device_type))
-                    || text(x, y, 108, top, 2, b"DROP")
-                    || text(
-                        x,
-                        y,
-                        22,
-                        top + 20,
-                        1,
-                        if channel.link == LinkState::Connected && !channel.stale {
-                            b"CONNECTED"
-                        } else {
-                            b"WAITING"
-                        },
-                    )
+                    || (kind(peer.device_type) == b"ANT"
+                        && number(x, y, 64, top, 2, u32::from(peer.device_type), 3))
+                    || number(x, y, 108, top, 2, u32::from(peer.device_number), 5)
+                    || text(x, y, 190, top + 20, 1, b"DROP")
+                    || text(x, y, 22, top + 20, 1, connection_status(channel).as_bytes())
                 {
                     return color;
                 }
@@ -276,13 +292,27 @@ impl Menu {
         0
     }
 }
+pub(crate) fn connection_status(channel: Snapshot) -> &'static str {
+    match channel.link {
+        LinkState::Idle => "NOT CONNECTED",
+        LinkState::Connecting => "CONNECTING",
+        LinkState::Connected if channel.age_ms.is_none() => "WAITING FOR DATA",
+        LinkState::Connected if channel.stale => "DATA LOST",
+        LinkState::Connected => "CONNECTED",
+        LinkState::Disconnecting => "DISCONNECTING",
+        LinkState::Disconnected => "DISCONNECTED",
+        LinkState::TimedOut => "CONNECT FAILED",
+        LinkState::TransportLost => "RADIO UNAVAILABLE",
+    }
+}
+
 fn kind(device_type: u8) -> &'static [u8] {
     match device_type {
         40 => b"RADAR",
         11 => b"POWER",
         120 => b"HEART",
         121 | 123 => b"SPEED",
-        _ => b"SENSOR",
+        _ => b"ANT",
     }
 }
 
@@ -300,6 +330,72 @@ mod tests {
             menu.input(press(Button::BottomRight), 2800),
             Some(Action::Scan)
         );
+    }
+
+    #[test]
+    fn last_selected_channel_is_reachable_and_can_be_disconnected() {
+        let mut channels = firmware_services::ant::Channels::new();
+        for kind in 1..=10 {
+            let identity = Identity {
+                device_type: kind,
+                device_number: 100 + u16::from(kind),
+                transmission_type: 1,
+            };
+            channels.connect(identity, 0).unwrap();
+            channels.receive(device_api::ant::Event::Connected(identity), 0);
+        }
+        let mut menu = Menu::new();
+        menu.refresh([None; 8], channels.snapshots(0), false, 0);
+        for i in 1..=10 {
+            menu.input(press(Button::BottomLeft), i * 400);
+        }
+        assert_eq!(
+            menu.input(press(Button::BottomRight), 4400),
+            Some(Action::Disconnect(10))
+        );
+    }
+
+    #[test]
+    fn selected_sensor_renders_identity_and_observed_connection_state() {
+        let identity = peer(42).identity;
+        let mut channels = firmware_services::ant::Channels::new();
+        channels.connect(identity, 0).unwrap();
+        let initial = channels.channel(11, 0).unwrap();
+        for (link, stale, age_ms, expected) in [
+            (LinkState::Connecting, true, None, b"CONNECTING".as_slice()),
+            (LinkState::Connected, false, Some(0), b"CONNECTED"),
+            (LinkState::Connected, true, Some(5000), b"DATA LOST"),
+            (LinkState::Connected, true, None, b"WAITING FOR DATA"),
+            (LinkState::Disconnected, true, None, b"DISCONNECTED"),
+            (LinkState::Disconnecting, true, None, b"DISCONNECTING"),
+            (LinkState::TimedOut, true, None, b"CONNECT FAILED"),
+            (LinkState::TransportLost, true, None, b"RADIO UNAVAILABLE"),
+        ] {
+            let mut snapshots = [None; CHANNEL_CAPACITY];
+            snapshots[0] = Some(Snapshot {
+                link,
+                stale,
+                age_ms,
+                ..initial
+            });
+            let mut menu = Menu::new();
+            menu.refresh([None; 8], snapshots, false, 0);
+            // Selected channel is the second visible row, below the scan action.
+            for y in 101..109 {
+                for x in 22..150 {
+                    assert_eq!(
+                        menu.pixel(x, y) != 0,
+                        text(x, y, 22, 101, 1, expected),
+                        "{link:?} at {x},{y}"
+                    );
+                }
+            }
+            for y in 81..95 {
+                for x in 108..170 {
+                    assert_eq!(menu.pixel(x, y) != 0, number(x, y, 108, 81, 2, 42, 5));
+                }
+            }
+        }
     }
 
     fn press(button: Button) -> Input {

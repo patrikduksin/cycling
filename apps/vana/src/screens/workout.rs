@@ -135,7 +135,14 @@ impl View {
                     y,
                     10,
                     36 + i * 27,
-                    if i == 0 { 1 } else { 2 },
+                    if i == 0
+                        || (matches!(self.page, Page::Sensors | Page::Preflight)
+                            && (2..=5).contains(&i))
+                    {
+                        1
+                    } else {
+                        2
+                    },
                     line.as_bytes(),
                 ) {
                     return if i == 0 { CYAN } else { WHITE };

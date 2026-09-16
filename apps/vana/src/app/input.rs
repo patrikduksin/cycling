@@ -13,9 +13,6 @@ impl Runtime {
         use device_api::input::Button;
         use device_api::input::Input;
         if self.page == Page::Scan {
-            if self.scan.active() {
-                return;
-            }
             if matches!(
                 input,
                 Input::Button {
@@ -23,17 +20,23 @@ impl Runtime {
                     code: 1
                 }
             ) {
+                self.scan.cancel(ant, now);
+                self.menu.set_message(self.scan.message());
                 self.page = Page::Sensors;
                 self.next_display = 0;
                 return;
             }
-            self.menu
-                .refresh(ant.discoveries(), ant.channels(now), ant.scanning(), now);
+            self.menu.refresh(
+                ant.discoveries(),
+                ant.channels(now),
+                self.scan.busy(ant),
+                now,
+            );
             if let Some(action) = self.menu.input(input, now) {
                 use crate::screens::sensors::Action;
                 let result = match action {
                     Action::Scan => {
-                        self.scan.start(ant, now, &self.dropped_ant);
+                        self.scan.start(ant, now);
                         self.menu.set_message(self.scan.message());
                         self.next_display = 0;
                         return;
@@ -47,7 +50,7 @@ impl Runtime {
                                 }
                             }
                         }
-                        result == Ok(device_api::ant::Admission::Accepted)
+                        result
                     }
                     Action::Disconnect(kind) => {
                         let result =
@@ -74,18 +77,33 @@ impl Runtime {
                                 *slot = Some(kind);
                             }
                         }
-                        result == Ok(device_api::ant::Admission::Accepted)
+                        result
                     }
                     _ => {
                         self.page = Page::Sensors;
-                        false
+                        return;
                     }
                 };
-                self.menu.set_message(if result {
-                    b"REQUEST SENT"
-                } else {
-                    b"WAIT THEN RETRY"
+                use device_api::ant::{Admission, Error};
+                self.menu.set_message(match result {
+                    Ok(Admission::Accepted) => match action {
+                        Action::Connect(_) => b"CONNECTING...",
+                        Action::Disconnect(_) => b"DISCONNECTING...",
+                        _ => b"PICK SENSOR",
+                    },
+                    Err(Error::Busy) => b"BUSY - TRY AGAIN",
+                    Err(Error::Unavailable) => b"RADIO UNAVAILABLE",
+                    Err(Error::Uncertain) => b"RADIO LOST - REBOOT",
+                    Err(Error::UnsupportedType) => b"TYPE UNSUPPORTED",
+                    _ => b"FAILED - TRY AGAIN",
                 });
+                if result == Ok(Admission::Accepted) {
+                    match action {
+                        Action::Connect(peer) => self.menu.follow_channel(peer.device_type),
+                        Action::Disconnect(kind) => self.menu.follow_channel(kind),
+                        _ => {}
+                    }
+                }
             }
             self.next_display = 0;
             return;

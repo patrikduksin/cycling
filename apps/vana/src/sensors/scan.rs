@@ -1,120 +1,124 @@
-//! Foreground scan transaction: close selected channels, discover, restore selections.
-use device_api::ant::Admission;
-use device_api::ant::Ant;
-use device_api::ant::AntOperation;
-use device_api::ant::CHANNEL_CAPACITY;
-use device_api::ant::Error;
-use device_api::ant::Identity;
-use device_api::ant::LinkState;
+//! Foreground discovery observes the transport without disturbing selected peers.
+use device_api::ant::{Admission, Ant, AntOperation, Error, ScanState};
+
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     #[default]
     Idle,
-    Closing,
+    Starting,
     Scanning,
-    Restoring,
+    Complete,
+    Finishing,
+    Cancelling,
+    Stopping,
+    Cancelled,
     Failed,
+    Unavailable,
+    Uncertain,
 }
 #[derive(Default)]
 pub struct Scan {
     phase: Phase,
-    peers: [Option<Identity>; CHANNEL_CAPACITY],
-    sent: [bool; CHANNEL_CAPACITY],
-    deadline: u64,
-    next: u64,
+    cancel_deadline: u64,
 }
 impl Scan {
     pub fn active(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Closing | Phase::Scanning | Phase::Restoring
+            Phase::Starting
+                | Phase::Scanning
+                | Phase::Finishing
+                | Phase::Cancelling
+                | Phase::Stopping
         )
+    }
+    pub fn busy(&self, ant: &impl Ant) -> bool {
+        self.active()
+            || matches!(
+                ant.scan().state,
+                ScanState::Starting | ScanState::Active | ScanState::Stopping
+            )
+    }
+    pub fn overview_message(&self) -> Option<&'static [u8]> {
+        (self.phase != Phase::Idle).then(|| self.message())
     }
     pub fn message(&self) -> &'static [u8] {
         match self.phase {
             Phase::Idle => b"PICK SENSOR",
-            Phase::Closing => b"PAUSING SENSORS",
+            Phase::Starting => b"STARTING SCAN",
             Phase::Scanning => b"SCANNING...",
-            Phase::Restoring => b"RECONNECTING",
-            Phase::Failed => b"SCAN FAILED - BACK",
+            Phase::Cancelling | Phase::Stopping => b"STOPPING SCAN",
+            Phase::Cancelled => b"SCAN CANCELLED",
+            Phase::Finishing => b"FINISHING SCAN",
+            Phase::Complete => b"SCAN DONE - PICK",
+            Phase::Failed => b"SCAN FAILED - RETRY",
+            Phase::Uncertain => b"RADIO LOST - REBOOT",
+            Phase::Unavailable => b"SCAN UNAVAILABLE",
         }
     }
-    pub fn start(&mut self, ant: &mut impl Ant, now: u64, dropped: &[Option<u8>]) {
-        if self.active() {
+    pub fn start(&mut self, ant: &mut impl Ant, now: u64) {
+        if ant.scan().state == ScanState::Uncertain {
+            self.phase = Phase::Uncertain;
             return;
         }
-        self.peers = ant.channels(now).map(|s| {
-            s.and_then(|s| s.selected)
-                .filter(|peer| !dropped.contains(&Some(peer.device_type)))
-        });
-        self.sent.fill(false);
-        self.phase = Phase::Closing;
-        self.deadline = now + 15000;
-        self.next = now;
-        self.tick(ant, now);
+        if self.active() || ant.scan().state != ScanState::Idle {
+            return;
+        }
+        if ant.availability() != device_api::observation::Availability::Ready
+            || (!ant.capabilities().concurrent_scan
+                && ant.channels(now).iter().flatten().any(|s| {
+                    matches!(
+                        s.link,
+                        device_api::ant::LinkState::Connected
+                            | device_api::ant::LinkState::Connecting
+                    )
+                }))
+        {
+            self.phase = Phase::Unavailable;
+            return;
+        }
+        self.phase = match ant.request(AntOperation::Scan(10000), now) {
+            Ok(Admission::Accepted) => Phase::Starting,
+            Err(Error::Unavailable) => Phase::Unavailable,
+            Err(Error::Uncertain) => Phase::Uncertain,
+            _ => Phase::Failed,
+        };
+    }
+    pub fn cancel(&mut self, ant: &mut impl Ant, now: u64) {
+        if matches!(self.phase, Phase::Cancelling | Phase::Stopping) {
+            return;
+        }
+        if matches!(ant.scan().state, ScanState::Starting | ScanState::Active) {
+            self.phase = Phase::Cancelling;
+            self.cancel_deadline = now.saturating_add(2000);
+            self.tick(ant, now);
+        }
     }
     pub fn tick(&mut self, ant: &mut impl Ant, now: u64) {
-        if !self.active() || now < self.next {
+        if !self.active() {
             return;
         }
-        self.next = now + 100;
-        if now >= self.deadline {
-            self.phase = Phase::Failed;
-            return;
-        }
-        match self.phase {
-            Phase::Closing => {
-                for (i, peer) in self.peers.iter().enumerate() {
-                    let Some(peer) = peer else {
-                        continue;
-                    };
-                    let channel = ant.channel(peer.device_type, now);
-                    if channel
-                        .is_none_or(|s| matches!(s.link, LinkState::Disconnected | LinkState::Idle))
-                    {
-                        continue;
-                    }
-                    if !self.sent[i] {
-                        match ant.request(AntOperation::Disconnect(peer.device_type), now) {
-                            Ok(Admission::Accepted) => self.sent[i] = true,
-                            Err(Error::Busy) => {}
-                            _ => self.phase = Phase::Failed,
-                        }
-                    }
-                    return;
-                }
-                match ant.request(AntOperation::Scan(10000), now) {
-                    Ok(Admission::Accepted) => {
-                        self.phase = Phase::Scanning;
-                        self.deadline = now + 15000;
-                    }
-                    Err(Error::Busy) => {}
-                    _ => self.phase = Phase::Failed,
-                }
-            }
-            Phase::Scanning if !ant.scanning() => {
-                self.phase = Phase::Restoring;
-                self.sent.fill(false);
-                self.deadline = now + 15000;
-            }
-            Phase::Restoring => {
-                for (i, peer) in self.peers.iter().enumerate() {
-                    let Some(peer) = peer else {
-                        continue;
-                    };
-                    if self.sent[i] {
-                        continue;
-                    }
-                    match ant.request(AntOperation::Connect(*peer), now) {
-                        Ok(Admission::Accepted) => self.sent[i] = true,
-                        Err(Error::Busy) => {}
-                        _ => self.phase = Phase::Failed,
-                    }
-                    return;
-                }
-                self.phase = Phase::Idle;
-            }
-            _ => {}
+        let state = ant.scan().state;
+        if state == ScanState::Uncertain {
+            self.phase = Phase::Uncertain;
+        } else if state == ScanState::Idle {
+            self.phase = if matches!(self.phase, Phase::Cancelling | Phase::Stopping) {
+                Phase::Cancelled
+            } else {
+                Phase::Complete
+            };
+        } else if self.phase == Phase::Cancelling {
+            self.phase = match ant.request(AntOperation::StopScan, now) {
+                Ok(Admission::Accepted) => Phase::Stopping,
+                Err(Error::Busy) if now < self.cancel_deadline => Phase::Cancelling,
+                _ => Phase::Failed,
+            };
+        } else if self.phase != Phase::Stopping {
+            self.phase = match state {
+                ScanState::Starting => Phase::Starting,
+                ScanState::Stopping => Phase::Finishing,
+                _ => Phase::Scanning,
+            };
         }
     }
 }

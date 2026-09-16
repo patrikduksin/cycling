@@ -83,13 +83,7 @@ impl Runtime {
                             "{} {} {}",
                             label,
                             id,
-                            if channel.link == device_api::ant::LinkState::Connected
-                                && !channel.stale
-                            {
-                                "OK"
-                            } else {
-                                "WAIT"
-                            }
+                            crate::screens::sensors::connection_status(channel)
                         );
                     } else {
                         let _ = write!(view.lines[i + 2], "{} --", label);
@@ -97,7 +91,12 @@ impl Runtime {
                 }
                 let _ = write!(view.lines[6], "GPS {}", gps_status);
                 let _ = write!(view.lines[7], "STORAGE {}", self.recorder.status().name());
-                let _ = write!(view.lines[8], "RADIO {:?}", ant.availability());
+                if let Some(message) = self.scan.overview_message() {
+                    let _ = view.lines[8]
+                        .push_str(core::str::from_utf8(message).unwrap_or("SCAN FAILED"));
+                } else {
+                    let _ = write!(view.lines[8], "RADIO {:?}", ant.availability());
+                }
             }
             Page::Ride => {
                 let _ = write!(view.lines[0], "> {}", self.recorder.status().name());
@@ -174,8 +173,12 @@ impl Runtime {
             _ => {}
         }
         if self.page == Page::Scan {
-            self.menu
-                .refresh(ant.discoveries(), ant.channels(now), ant.scanning(), now);
+            self.menu.refresh(
+                ant.discoveries(),
+                ant.channels(now),
+                self.scan.busy(ant),
+                now,
+            );
         }
         view.prepare();
         system.draw_scaled(240, 320, |x, y| {

@@ -121,6 +121,29 @@ pub fn power_request(suspend: bool, now: u64) -> Result<(), Error> {
 }
 
 impl Shared {
+    fn release_settled_send(&mut self) {
+        if let Some((id, kind, echoed)) = self.wire_send
+            && self.state.send_status(id).is_some_and(|status| {
+                matches!(
+                    status.stage,
+                    device_api::ant::SendStage::BridgeReplied { .. }
+                        | device_api::ant::SendStage::Cancelled
+                )
+            })
+        {
+            // The examined bridge emits exactly one class-five reply per send.
+            // A consumed reply settles that key; uncertain submissions retain it.
+            if let Some(slot) = self
+                .send_keys
+                .iter_mut()
+                .find(|key| **key == Some((kind, echoed)))
+            {
+                *slot = None;
+            }
+            self.wire_send = None;
+        }
+    }
+
     fn progress_power(&mut self, now: u64) {
         self.scan.tick(now);
         if !self.power_active || self.pending.is_some() {
@@ -237,6 +260,7 @@ pub fn request(operation: Operation, now: u64) -> Result<Admission, AntError> {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         s.scan.tick(now);
+        s.release_settled_send();
         if s.power != PeripheralState::Running
             || s.pending.is_some()
             || s.state.send_pending()
@@ -392,6 +416,7 @@ pub fn reply(group: u8, payload: [u8; 8], now: u64) {
                 && echoed == reply.echoed
             {
                 s.state.send_reply(id, reply.accepted, now);
+                s.release_settled_send();
             }
         });
     }
@@ -415,7 +440,7 @@ impl device_api::ant::Ant for Ant {
             acknowledged_send: true,
             radio_delivery_feedback: false,
             burst: false,
-            max_sends_per_restart: SEND_HISTORY_CAPACITY as u8,
+            max_pending_sends: 1,
         }
     }
     fn scan(&self) -> ScanSnapshot {

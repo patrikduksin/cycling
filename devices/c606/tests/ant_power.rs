@@ -137,7 +137,12 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
         SendStage::BridgeReplied { accepted: true }
     );
     assert_eq!(ant.take_packet(), None); // A bridge reply is not a sensor response.
-    assert_eq!(ant.request(send(2), 14_007), Err(Error::Uncertain));
+    assert!(matches!(
+        ant.request(send(2), 14_007),
+        Ok(Admission::SendQueued(_))
+    ));
+    adapter::tick(14_007);
+    adapter::reply(120, [2, 2, 1, 0, 0, 0, 0, 0], 14_007);
     for value in 3..=8 {
         let Ok(Admission::SendQueued(_)) = ant.request(send(value), 14_008) else {
             panic!("send rejected")
@@ -165,17 +170,21 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
         identity: peer,
         generation: ant.channel(120, 14_018).unwrap().generation,
     };
-    assert_eq!(
-        ant.request(
-            AntOperation::Send {
-                target: resumed,
-                data: [10; 8]
-            },
-            14_018
-        ),
-        Err(Error::Capacity)
-    );
+    let Ok(Admission::SendQueued(inflight)) = ant.request(
+        AntOperation::Send {
+            target: resumed,
+            data: [10; 8],
+        },
+        14_018,
+    ) else {
+        panic!("send rejected")
+    };
+    adapter::tick(14_018);
     adapter::power_request(true, 14_019).unwrap();
+    assert_eq!(
+        ant.send_status(inflight).unwrap().stage,
+        SendStage::Uncertain
+    );
     *drivers::companion_uart::FAIL_NEXT.lock().unwrap() = true;
     adapter::tick(14_020);
     assert_eq!(adapter::power_status(), PeripheralState::Failed);
@@ -187,5 +196,47 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
     assert_eq!(
         drivers::companion_uart::SENT.lock().unwrap().len(),
         submitted
+    );
+    // A confirmed late close allows explicit recovery, never an automatic replay.
+    adapter::receive(1, [0x17, 120, 123, 0, 1, 4, 0, 0], 30_003);
+    adapter::power_request(false, 30_004).unwrap();
+    adapter::tick(30_005);
+    adapter::receive(1, [0x17, 120, 123, 0, 1, 3, 0, 0], 30_006);
+    let recovered = Target {
+        identity: peer,
+        generation: ant.channel(120, 30_007).unwrap().generation,
+    };
+    // The in-flight cancellation already retained one key. Seven timeouts fill
+    // the remaining uncertain-reply slots without pretending the peer is lost.
+    for value in 20..27 {
+        let now = 31_000 + u64::from(value - 20) * 3_000;
+        let Ok(Admission::SendQueued(id)) = ant.request(
+            AntOperation::Send {
+                target: recovered,
+                data: [value; 8],
+            },
+            now,
+        ) else {
+            panic!("send rejected")
+        };
+        adapter::tick(now + 1);
+        adapter::tick(now + 2_001);
+        assert_eq!(ant.send_status(id).unwrap().stage, SendStage::Uncertain);
+        adapter::reply(120, [value, value, 1, 0, 0, 0, 0, 0], now + 2_002);
+        assert_eq!(ant.send_status(id).unwrap().stage, SendStage::Uncertain);
+    }
+    assert_eq!(
+        ant.request(
+            AntOperation::Send {
+                target: recovered,
+                data: [30; 8]
+            },
+            53_000
+        ),
+        Err(Error::Capacity)
+    );
+    assert_eq!(
+        ant.channel(120, 53_000).unwrap().link,
+        device_api::ant::LinkState::Connected
     );
 }

@@ -120,8 +120,9 @@ pub struct Capabilities {
     pub acknowledged_send: bool,
     pub radio_delivery_feedback: bool,
     pub burst: bool,
-    /// Maximum admitted sends before the device requires a companion restart.
-    pub max_sends_per_restart: u8,
+    /// Maximum operations awaiting UART submission or bridge reply.
+    /// Unresolved outcomes may exhaust device bookkeeping until restart.
+    pub max_pending_sends: u8,
 }
 
 impl Capabilities {
@@ -133,7 +134,7 @@ impl Capabilities {
         acknowledged_send: false,
         radio_delivery_feedback: false,
         burst: false,
-        max_sends_per_restart: 0,
+        max_pending_sends: 0,
     };
 }
 

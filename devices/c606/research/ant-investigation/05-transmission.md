@@ -83,3 +83,18 @@ profile support: channel configuration, timing, response interpretation and sens
 support still matter. ANT-FS/file transfers and burst operations need additional
 transport functionality. Repeated acknowledged pages are not a replacement for
 burst sequencing.
+
+## Reply ownership
+
+The examined N22 dispatcher at `0x17c30` calls the sensor handler once and emits
+one class-five reply at `0x17c64` before returning. The handler at `0x13640`
+calls the wrapper at `0x135cc` once. No delayed reply, retry or timer path was
+found for this command; the radio completion events described above emit none.
+Unlike discovery stop, this send path has no second scheduled reply to drain.
+
+The C606 adapter therefore releases a reply key after consuming its timely
+matching bridge reply. Normal consumers can repeat the same command. A timeout,
+partial write, transport loss or cancellation after UART submission retains the
+key, so an unresolved old reply cannot complete a later request. Cancellation
+before submission releases it. This relies on the examined firmware's one-reply
+behavior; it does not promise protection from arbitrarily duplicated UART frames.

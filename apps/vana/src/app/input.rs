@@ -12,20 +12,7 @@ impl Runtime {
         use crate::screens::workout::Page;
         use device_api::input::Button;
         use device_api::input::Input;
-        if self.page == Page::Scan {
-            if matches!(
-                input,
-                Input::Button {
-                    button: Button::TopLeft,
-                    code: 1
-                }
-            ) {
-                self.scan.cancel(ant, now);
-                self.menu.set_message(self.scan.message());
-                self.page = Page::Sensors;
-                self.next_display = 0;
-                return;
-            }
+        if self.page == Page::Sensors {
             self.menu.refresh(
                 ant.discoveries(),
                 ant.channels(now),
@@ -34,74 +21,18 @@ impl Runtime {
             );
             if let Some(action) = self.menu.input(input, now) {
                 use crate::screens::sensors::Action;
-                let result = match action {
+                match action {
                     Action::Scan => {
-                        self.scan.start(ant, now);
-                        self.menu.set_message(self.scan.message());
-                        self.next_display = 0;
-                        return;
+                        self.search_requested = true;
+                        self.start_sensor_search(ant, now);
                     }
-                    Action::Connect(peer) => {
-                        let result = ant.request(device_api::ant::AntOperation::Connect(peer), now);
-                        if result == Ok(device_api::ant::Admission::Accepted) {
-                            for kind in &mut self.dropped_ant {
-                                if *kind == Some(peer.device_type) {
-                                    *kind = None;
-                                }
-                            }
-                        }
-                        result
+                    Action::Connect(_) | Action::Disconnect(_) => {
+                        self.request_sensor(action, ant, now)
                     }
-                    Action::Disconnect(kind) => {
-                        let result =
-                            ant.request(device_api::ant::AntOperation::Disconnect(kind), now);
-                        if result == Ok(device_api::ant::Admission::Accepted)
-                            && !self.dropped_ant.contains(&Some(kind))
-                        {
-                            // Only selected channels can be dropped; retire entries whose slot
-                            // has since been reused by another device type.
-                            let channels = ant.channels(now);
-                            for dropped in &mut self.dropped_ant {
-                                if dropped.is_some_and(|kind| {
-                                    !channels
-                                        .iter()
-                                        .flatten()
-                                        .any(|s| s.selected.is_some_and(|p| p.device_type == kind))
-                                }) {
-                                    *dropped = None;
-                                }
-                            }
-                            if let Some(slot) =
-                                self.dropped_ant.iter_mut().find(|slot| slot.is_none())
-                            {
-                                *slot = Some(kind);
-                            }
-                        }
-                        result
-                    }
-                    _ => {
-                        self.page = Page::Sensors;
-                        return;
-                    }
-                };
-                use device_api::ant::{Admission, Error};
-                self.menu.set_message(match result {
-                    Ok(Admission::Accepted) => match action {
-                        Action::Connect(_) => b"CONNECTING...",
-                        Action::Disconnect(_) => b"DISCONNECTING...",
-                        _ => b"PICK SENSOR",
-                    },
-                    Err(Error::Busy) => b"BUSY - TRY AGAIN",
-                    Err(Error::Unavailable) => b"RADIO UNAVAILABLE",
-                    Err(Error::Uncertain) => b"RADIO LOST - REBOOT",
-                    Err(Error::UnsupportedType) => b"TYPE UNSUPPORTED",
-                    _ => b"FAILED - TRY AGAIN",
-                });
-                if result == Ok(Admission::Accepted) {
-                    match action {
-                        Action::Connect(peer) => self.menu.follow_channel(peer.device_type),
-                        Action::Disconnect(kind) => self.menu.follow_channel(kind),
-                        _ => {}
+                    Action::Ride => {
+                        self.search_requested = false;
+                        self.scan.cancel(ant, now);
+                        self.page = Page::Home;
                     }
                 }
             }
@@ -127,16 +58,14 @@ impl Runtime {
                         Page::Preflight
                     };
                     self.page_since = now;
+                    if self.page == Page::Sensors {
+                        self.search_requested = true;
+                        self.start_sensor_search(ant, now);
+                    }
                 }
                 _ => {}
             },
-            Page::Sensors => match button {
-                Button::TopLeft | Button::BottomLeft => self.page = Page::Home,
-                Button::BottomRight => {
-                    self.page = Page::Scan;
-                }
-                _ => {}
-            },
+            Page::Sensors => {}
             Page::Preflight => {}
             Page::Ride => {
                 if self.pending.is_some() {
@@ -193,7 +122,6 @@ impl Runtime {
                     }
                 }
             }
-            Page::Scan => {}
         }
     }
 

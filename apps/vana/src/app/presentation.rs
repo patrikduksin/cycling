@@ -61,7 +61,7 @@ impl Runtime {
                     _ => write!(view.lines[0], "> STORAGE {}", self.recorder.status().name()),
                 };
             }
-            Page::Sensors | Page::Preflight => {
+            Page::Preflight => {
                 let _ = view.lines[0].push_str(if self.page == Page::Preflight {
                     "> TRAIN / CONNECTION CHECK"
                 } else {
@@ -172,7 +172,7 @@ impl Runtime {
             }
             _ => {}
         }
-        if self.page == Page::Scan {
+        if self.page == Page::Sensors {
             self.menu.refresh(
                 ant.discoveries(),
                 ant.channels(now),
@@ -182,7 +182,7 @@ impl Runtime {
         }
         view.prepare();
         system.draw_scaled(240, 320, |x, y| {
-            if self.page == Page::Scan && y >= 25 {
+            if self.page == Page::Sensors && y >= 25 {
                 self.menu.pixel(x, y)
             } else {
                 view.pixel(x, y)

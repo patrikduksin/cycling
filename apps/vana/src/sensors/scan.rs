@@ -20,9 +20,13 @@ enum Phase {
 pub struct Scan {
     phase: Phase,
     cancel_deadline: u64,
+    pending_start: Option<u64>,
 }
 impl Scan {
     pub fn active(&self) -> bool {
+        self.pending_start.is_some() || self.running()
+    }
+    fn running(&self) -> bool {
         matches!(
             self.phase,
             Phase::Starting
@@ -43,6 +47,9 @@ impl Scan {
         (self.phase != Phase::Idle).then(|| self.message())
     }
     pub fn message(&self) -> &'static [u8] {
+        if self.pending_start.is_some() && !self.running() {
+            return b"SEARCH PENDING";
+        }
         match self.phase {
             Phase::Idle => b"PICK SENSOR",
             Phase::Starting => b"STARTING SCAN",
@@ -61,7 +68,27 @@ impl Scan {
             self.phase = Phase::Uncertain;
             return;
         }
-        if self.active() || ant.scan().state != ScanState::Idle {
+        if matches!(self.phase, Phase::Starting | Phase::Scanning) {
+            return;
+        }
+        self.pending_start.get_or_insert(now.saturating_add(15000));
+        self.try_start(ant, now);
+    }
+    fn try_start(&mut self, ant: &mut impl Ant, now: u64) {
+        let Some(deadline) = self.pending_start else {
+            return;
+        };
+        if now >= deadline {
+            self.pending_start = None;
+            if !self.running() {
+                self.phase = Phase::Failed;
+            }
+            return;
+        }
+        if self.running() || ant.scan().state != ScanState::Idle {
+            return;
+        }
+        if ant.availability() == device_api::observation::Availability::Initializing {
             return;
         }
         if ant.availability() != device_api::observation::Availability::Ready
@@ -75,9 +102,15 @@ impl Scan {
                 }))
         {
             self.phase = Phase::Unavailable;
+            self.pending_start = None;
             return;
         }
-        self.phase = match ant.request(AntOperation::Scan(10000), now) {
+        let result = ant.request(AntOperation::Scan(10000), now);
+        if result == Err(Error::Busy) {
+            return;
+        }
+        self.pending_start = None;
+        self.phase = match result {
             Ok(Admission::Accepted) => Phase::Starting,
             Err(Error::Unavailable) => Phase::Unavailable,
             Err(Error::Uncertain) => Phase::Uncertain,
@@ -85,6 +118,7 @@ impl Scan {
         };
     }
     pub fn cancel(&mut self, ant: &mut impl Ant, now: u64) {
+        self.pending_start = None;
         if matches!(self.phase, Phase::Cancelling | Phase::Stopping) {
             return;
         }
@@ -95,7 +129,15 @@ impl Scan {
         }
     }
     pub fn tick(&mut self, ant: &mut impl Ant, now: u64) {
-        if !self.active() {
+        self.advance(ant, now);
+        if ant.scan().state == ScanState::Uncertain {
+            self.pending_start = None;
+        } else {
+            self.try_start(ant, now);
+        }
+    }
+    fn advance(&mut self, ant: &mut impl Ant, now: u64) {
+        if !self.running() {
             return;
         }
         let state = ant.scan().state;

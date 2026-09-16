@@ -8,7 +8,6 @@ pub enum Page {
     Boot,
     Home,
     Sensors,
-    Scan,
     Preflight,
     Ride,
 }

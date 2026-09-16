@@ -37,6 +37,8 @@ impl Runtime {
         if was_scanning || self.scan.active() {
             self.menu.set_message(self.scan.message());
         }
+        self.tick_sensor_requests(ant, now);
+        self.start_sensor_search(ant, now);
         let channels = ant.channels(now);
         for (index, channel) in channels.iter().enumerate() {
             let Some(channel) = channel else { continue };

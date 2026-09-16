@@ -78,6 +78,11 @@ pub fn execute<
                 | Command::Wifi
                 | Command::Ble
                 | Command::Ant
+                | Command::AntCapabilities
+                | Command::AntOperation(_)
+                | Command::AntChannel(_)
+                | Command::AntDevices
+                | Command::AntRead
                 | Command::Restart
                 | Command::Help
         )
@@ -164,69 +169,19 @@ pub fn execute<
                 &mut output,
             );
         }
-        Command::Ant => {
-            let _ = write!(output, "scanning={} ", ant.scanning());
-            for channel in ant.channels(now).iter().flatten() {
-                if let Some(peer) = channel.selected {
-                    let _ = write!(
-                        output,
-                        "type={} link={} packets={} dropped={} stale={}; ",
-                        peer.device_type,
-                        channel.link.name(),
-                        channel.packets,
-                        channel.dropped_packets,
-                        channel.stale
-                    );
-                }
-            }
-        }
-        Command::AntChannel(kind) => {
-            if let Some(channel) = ant.channel(kind, now) {
-                let _ = write!(output, "{:?}", channel);
-            } else {
-                status = "UNAVAILABLE";
-            }
-        }
-        Command::AntDevices => {
-            for device in ant.discoveries().iter().flatten() {
-                let p = device.identity;
-                let _ = write!(
-                    output,
-                    "type={} number={} transmission={} rssi={} age_ms={}; ",
-                    p.device_type,
-                    p.device_number,
-                    p.transmission_type,
-                    device.rssi,
-                    now.saturating_sub(device.seen_ms)
-                );
-            }
-        }
-        Command::AntRead => {
-            #[cfg(feature = "cycling")]
-            {
-                status = "SDK_OWNS_QUEUE";
-            }
-            #[cfg(not(feature = "cycling"))]
-            if let Some(packet) = ant.take_packet() {
-                let _ = write!(output, "{:?}", packet);
-            } else {
-                status = "EMPTY";
-            }
-        }
-        Command::AntScan(seconds) => {
-            status = ant.request(
-                device_api::ant::AntOperation::Scan(u32::from(seconds) * 1000),
-                now,
-            );
-        }
-        Command::AntStop => {
-            status = ant.request(device_api::ant::AntOperation::StopScan, now);
-        }
-        Command::AntConnect(peer) => {
-            status = ant.request(device_api::ant::AntOperation::Connect(peer), now);
-        }
-        Command::AntDisconnect(kind) => {
-            status = ant.request(device_api::ant::AntOperation::Disconnect(kind), now);
+        command @ (Command::Ant
+        | Command::AntChannel(_)
+        | Command::AntDevices
+        | Command::AntRead
+        | Command::AntScan(_)
+        | Command::AntStop
+        | Command::AntConnect(_)
+        | Command::AntDisconnect(_)
+        | Command::AntCapabilities
+        | Command::AntOperation(_)
+        | Command::AntSend { .. }) => {
+            status =
+                firmware_console::commands::ant::execute(command, ant, now, &mut output).unwrap();
         }
         Command::Help => {
             #[cfg(feature = "debug-harness")]
@@ -240,7 +195,7 @@ pub fn execute<
             );
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ]|RADAR [SENSORS] (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
             );
         }
         Command::Info => {

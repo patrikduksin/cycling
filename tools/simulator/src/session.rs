@@ -71,8 +71,12 @@ impl Ant for NoAnt {
     fn discoveries(&self) -> [Option<device_api::ant::Discovery>; 8] {
         [None; 8]
     }
-    fn request(&mut self, _: AntOperation, _: u64) -> &'static str {
-        "UNSUPPORTED"
+    fn request(
+        &mut self,
+        _: AntOperation,
+        _: u64,
+    ) -> Result<device_api::ant::Admission, device_api::ant::Error> {
+        Err(device_api::ant::Error::Unavailable)
     }
     fn channels(
         &self,
@@ -205,6 +209,11 @@ impl Session {
         Ok(())
     }
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
+        if let Some(status) =
+            firmware_console::commands::ant::execute(request.command, &mut NoAnt, self.now, out)
+        {
+            return status;
+        }
         self.tick();
         if let Some(status) = firmware_console::commands::shell::execute(
             request.command,

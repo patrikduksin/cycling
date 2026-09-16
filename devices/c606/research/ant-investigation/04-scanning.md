@@ -52,3 +52,41 @@ the current receive baseline, start one bounded scan, and compare per-sensor
 packet timing, losses, discovery results and stop behavior. Do not equate continued
 UART activity with uninterrupted sensor reception. No such scan was sent during
 this research session.
+
+## Follow-up: explicit stop leaves the timer scheduled
+
+Offline inspection for [#118](https://github.com/patrikduksin/cycling/issues/118)
+found a second source of scan-ended reports. In N22 1.902, a zero-duration request
+reaches `0x13344` and calls `0x13530` directly. That stop routine clears the scan
+flags, closes channels 0 and 10, and emits a scan-ended report unconditionally.
+It does not call the timer-stop routine at `0x18f3c`. Already-cleared flags do not
+suppress another report.
+
+Initialization at `0x1bb94` creates the timer with callback `0x13531` and mode zero.
+The timer-start implementation at `0x18ee4` supplies a zero repeat interval for
+this mode, establishing a single-shot timer. Scan start clamps the requested
+seconds to at least five, then passes that value plus one to `0x13570`. The latter
+converts seconds to timer ticks. Timer initialization at `0x18e88` selects RTC
+prescaler one through `0x21c64`, giving 16,384 ticks per second under Nordic's
+[RTC prescaler definition](https://docs.nordicsemi.com/r/bundle/ps_nrf52810/page/rtc.html).
+
+A function-level Unicorn check executed the recovered timer conversion with
+inputs 6, 11 and 61 seconds. The intercepted timer-start calls received 98,304,
+180,224 and 999,424 ticks respectively. A separate stop-routine check with scan
+flags already zero observed both channel-close calls and one serialized end
+report. Radio calls and serialization were intercepted; no physical radio or
+live timer scheduler ran. The reproduction tools and firmware remain private in
+ignored `.local/` storage.
+
+The recovered paths therefore permit an explicit-stop report followed by a timer
+report for the same scan. They also permit the old timer to close discovery
+channels belonging to a newer scan if the host starts it too early. The timer
+setup's conditional cancellation checks a flag that explicit stop clears; it is
+not evidence that a subsequent scan reliably cancels the old timer.
+
+Keep ownership of the old scan until its outstanding stop and timer reports have
+settled. An early explicit-stop report alone does not establish that its timer is
+finished. Timeout or UART loss cannot establish quiescence either. Actual
+installed timer scheduling, duplicate report timing and UART delay remain
+unverified on hardware; the recovered timer interval is not a measured delivery
+bound.

@@ -1,11 +1,43 @@
 //! ANT messages of the installed C606 companion firmware.
 //!
 //! Timeout fields are inferred to be seconds from stock callers. Data reports
-//! carry only the device type, so the core exposes up to three selected receive channels, one per device type.
+//! carry only the device type. The bridge has ten fixed sensor slots, one per type.
 
 use device_api::ant::Event;
 use device_api::ant::Identity;
 use device_api::ant::Request;
+
+/// Categories accepted by the installed bridge, not implemented ANT+ profiles.
+pub const SUPPORTED_TYPES: &[u8] = &[40, 120, 11, 122, 123, 121, 34, 17, 128, 35];
+
+pub fn supports_type(device_type: u8) -> bool {
+    SUPPORTED_TYPES.contains(&device_type)
+}
+
+/// Encode one acknowledged-message request. Its reply cannot prove radio delivery.
+pub fn encode_send(device_type: u8, data: [u8; 8]) -> Option<[u8; 16]> {
+    supports_type(device_type).then(|| crate::drivers::companion::command(device_type, data))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SendReply {
+    pub device_type: u8,
+    pub echoed: [u8; 2],
+    /// Only the bridge wrapper's result. Radio acceptance and delivery are unknown.
+    pub accepted: bool,
+}
+
+/// Decode only complete class-five payloads validated by the companion decoder.
+pub fn decode_send_reply(group: u8, data: [u8; 8]) -> Option<SendReply> {
+    if !supports_type(group) || data[2] > 1 {
+        return None;
+    }
+    Some(SendReply {
+        device_type: group,
+        echoed: [data[0], data[1]],
+        accepted: data[2] == 1,
+    })
+}
 
 /// Decode only complete class-4 reports validated by the companion decoder.
 pub fn decode(group: u8, data: [u8; 8]) -> Option<Event> {

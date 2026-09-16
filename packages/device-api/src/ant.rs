@@ -42,6 +42,13 @@ pub enum Error {
     Busy,
     InvalidIdentity,
     InvalidDuration,
+    InvalidState,
+    UnsupportedType,
+    Capacity,
+    Unavailable,
+    Disconnected,
+    StaleGeneration,
+    Uncertain,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,19 +107,123 @@ pub struct Snapshot {
     pub stale: bool,
 }
 
-pub const CHANNEL_CAPACITY: usize = 4;
+pub const CHANNEL_CAPACITY: usize = 10;
+pub const SEND_TIMEOUT_MS: u64 = 2_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Capabilities {
+    pub supported_types: &'static [u8],
+    /// Configured host bound, not measured simultaneous RF connections.
+    pub connection_capacity: u8,
+    pub one_peer_per_type: bool,
+    pub concurrent_scan: bool,
+    pub acknowledged_send: bool,
+    pub radio_delivery_feedback: bool,
+    pub burst: bool,
+    /// Maximum operations awaiting UART submission or bridge reply.
+    /// Unresolved outcomes may exhaust device bookkeeping until restart.
+    pub max_pending_sends: u8,
+}
+
+impl Capabilities {
+    pub const UNAVAILABLE: Self = Self {
+        supported_types: &[],
+        connection_capacity: 0,
+        one_peer_per_type: true,
+        concurrent_scan: false,
+        acknowledged_send: false,
+        radio_delivery_feedback: false,
+        burst: false,
+        max_pending_sends: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Target {
+    /// Host-selected identity; received data does not establish sender identity.
+    pub identity: Identity,
+    pub generation: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Admission {
+    Accepted,
+    SendQueued(OperationId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendStage {
+    Queued,
+    /// All bytes reached the UART driver, not necessarily the radio.
+    UartSubmitted,
+    /// The bridge wrapper replied; radio acceptance and delivery remain unknown.
+    BridgeReplied {
+        accepted: bool,
+    },
+    /// A partial write, timeout or invalidated session makes delivery unknown.
+    Uncertain,
+    /// Cancelled before the UART owner took the operation.
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SendObservation {
+    pub id: OperationId,
+    pub target: Target,
+    pub stage: SendStage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Local discovery observation window, not proof of physical radio ownership.
+/// Untagged scan-end reports never complete or clear an uncertain window.
+pub enum ScanState {
+    Idle,
+    Starting,
+    Active,
+    Stopping,
+    Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScanSnapshot {
+    pub state: ScanState,
+    pub generation: u32,
+    pub discovery_overflows: u32,
+}
 
 pub enum AntOperation {
     Scan(u32),
     StopScan,
     Connect(crate::ant::Identity),
     Disconnect(u8),
+    Send { target: Target, data: [u8; 8] },
 }
 
 pub trait Ant {
     fn scanning(&self) -> bool;
     fn discoveries(&self) -> [Option<crate::ant::Discovery>; 8];
-    fn request(&mut self, operation: AntOperation, now_ms: u64) -> &'static str;
+    fn request(&mut self, operation: AntOperation, now_ms: u64) -> Result<Admission, Error>;
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::UNAVAILABLE
+    }
+    fn scan(&self) -> ScanSnapshot {
+        ScanSnapshot {
+            state: ScanState::Idle,
+            generation: 0,
+            discovery_overflows: 0,
+        }
+    }
+    /// One outstanding send and one retained observation. Local IDs never correlate wire replies.
+    fn send_status(&self, _id: OperationId) -> Option<SendObservation> {
+        None
+    }
+    /// Independent bounded diagnostic stream; never consumes the production stream.
+    fn take_diagnostic_packet(&mut self) -> Option<Packet> {
+        None
+    }
     fn channel(&self, kind: u8, now_ms: u64) -> Option<crate::ant::Snapshot> {
         self.channels(now_ms)
             .into_iter()
@@ -122,5 +233,6 @@ pub trait Ant {
     fn availability(&self) -> Availability;
     fn channels(&self, now_ms: u64)
     -> [Option<crate::ant::Snapshot>; crate::ant::CHANNEL_CAPACITY];
+    /// The production consumer owns this destructive receive stream.
     fn take_packet(&mut self) -> Option<crate::ant::Packet>;
 }

@@ -30,30 +30,31 @@ fn workout_scan_closes_existing_channels_before_scanning() {
         fn take_packet(&mut self) -> Option<device_api::ant::Packet> {
             None
         }
-        fn request(&mut self, op: AntOperation, now: u64) -> &'static str {
+        fn request(
+            &mut self,
+            op: AntOperation,
+            now: u64,
+        ) -> Result<device_api::ant::Admission, device_api::ant::Error> {
             self.requests.push(op);
             match self.requests.last().unwrap() {
-                AntOperation::Scan(ms) => {
-                    if self.channels.begin_scan(now, *ms).is_ok() {
-                        "ACCEPTED"
-                    } else {
-                        "STATE"
-                    }
-                }
+                AntOperation::Scan(ms) => self
+                    .channels
+                    .begin_scan(now, *ms)
+                    .map(|_| device_api::ant::Admission::Accepted),
                 AntOperation::Disconnect(kind) => {
                     let peer = self.channels.channel(*kind, now).unwrap().selected.unwrap();
                     self.channels.disconnect(*kind, now).unwrap();
                     self.channels
                         .receive(device_api::ant::Event::Disconnected(peer), now);
-                    "ACCEPTED"
+                    Ok(device_api::ant::Admission::Accepted)
                 }
                 AntOperation::Connect(peer) => {
-                    self.channels.connect(*peer, now).unwrap();
+                    self.channels.connect(*peer, now)?;
                     self.channels
                         .receive(device_api::ant::Event::Connected(*peer), now);
-                    "ACCEPTED"
+                    Ok(device_api::ant::Admission::Accepted)
                 }
-                _ => "ACCEPTED",
+                _ => Ok(device_api::ant::Admission::Accepted),
             }
         }
     }
@@ -148,9 +149,7 @@ fn workout_scan_closes_existing_channels_before_scanning() {
         },
         24000,
     );
-    radio
-        .channels
-        .receive(device_api::ant::Event::ScanEnded, 24100);
+    radio.channels.tick(24900);
     runtime.menu = crate::screens::sensors::Menu::new();
 
     runtime.workout_input(

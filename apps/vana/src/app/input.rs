@@ -40,19 +40,21 @@ impl Runtime {
                     }
                     Action::Connect(peer) => {
                         let result = ant.request(device_api::ant::AntOperation::Connect(peer), now);
-                        if result == "ACCEPTED" {
+                        if result == Ok(device_api::ant::Admission::Accepted) {
                             for kind in &mut self.dropped_ant {
                                 if *kind == Some(peer.device_type) {
                                     *kind = None;
                                 }
                             }
                         }
-                        result
+                        result == Ok(device_api::ant::Admission::Accepted)
                     }
                     Action::Disconnect(kind) => {
                         let result =
                             ant.request(device_api::ant::AntOperation::Disconnect(kind), now);
-                        if result == "ACCEPTED" && !self.dropped_ant.contains(&Some(kind)) {
+                        if result == Ok(device_api::ant::Admission::Accepted)
+                            && !self.dropped_ant.contains(&Some(kind))
+                        {
                             // Only selected channels can be dropped; retire entries whose slot
                             // has since been reused by another device type.
                             let channels = ant.channels(now);
@@ -72,14 +74,14 @@ impl Runtime {
                                 *slot = Some(kind);
                             }
                         }
-                        result
+                        result == Ok(device_api::ant::Admission::Accepted)
                     }
                     _ => {
                         self.page = Page::Sensors;
-                        "OK"
+                        false
                     }
                 };
-                self.menu.set_message(if result == "ACCEPTED" {
+                self.menu.set_message(if result {
                     b"REQUEST SENT"
                 } else {
                     b"WAIT THEN RETRY"

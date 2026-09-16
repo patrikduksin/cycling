@@ -151,6 +151,9 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                 if let Some((group, payload)) = frame.report() {
                     super::ant::receive(group, payload, now);
                 }
+                if let Some((group, payload)) = frame.reply() {
+                    super::ant::reply(group, payload, now);
+                }
                 if let Some(event) = frame.input() {
                     state.status.update(event);
                     match event {

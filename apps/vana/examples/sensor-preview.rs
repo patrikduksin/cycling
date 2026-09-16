@@ -65,6 +65,7 @@ fn main() {
             },
             400,
         );
+        let started = std::time::Instant::now();
         let mut bytes = b"P6\n240 320\n255\n".to_vec();
         for y in 0..320 {
             for x in 0..240 {
@@ -76,6 +77,11 @@ fn main() {
                 bytes[n - 1] = ((p & 31) as u32 * 255 / 31) as u8;
             }
         }
+        println!(
+            "{} slots: {} us",
+            if full { 10 } else { 3 },
+            started.elapsed().as_micros()
+        );
         std::fs::write(
             format!(
                 "{output}/sensors-{}.ppm",

@@ -109,11 +109,32 @@ enum View {
     Detail(usize),
     Replace(Identity),
 }
+struct Layout {
+    selected_slots: [usize; CHANNEL_CAPACITY],
+    selected_count: usize,
+    available_slots: [usize; 2],
+    available_count: usize,
+    available_total: usize,
+    heading: usize,
+}
+impl Layout {
+    const fn new() -> Self {
+        Self {
+            selected_slots: [0; CHANNEL_CAPACITY],
+            selected_count: 0,
+            available_slots: [0; 2],
+            available_count: 0,
+            available_total: 0,
+            heading: 100,
+        }
+    }
+}
 pub struct Menu {
     discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
     present: [bool; DISCOVERY_CAPACITY],
     selected: [Option<Selected>; CHANNEL_CAPACITY],
     cursor: usize,
+    layout: Layout,
     view: View,
     detail_action: usize,
     last_press: Option<u64>,
@@ -133,6 +154,7 @@ impl Menu {
             present: [false; DISCOVERY_CAPACITY],
             selected: [None; CHANNEL_CAPACITY],
             cursor: 0,
+            layout: Layout::new(),
             view: View::Tiles,
             detail_action: 0,
             last_press: None,
@@ -159,6 +181,7 @@ impl Menu {
         if self.cursor >= AVAILABLE {
             self.cursor = 0;
         }
+        self.prepare_layout();
     }
     pub fn selected_identity(&self, kind: u8) -> Option<Identity> {
         self.selected
@@ -186,6 +209,7 @@ impl Menu {
             });
             self.cursor = 1 + slot;
         }
+        self.prepare_layout();
     }
     pub fn request_accepted(&mut self, identity: Identity) {
         if let Some(s) = self
@@ -287,8 +311,14 @@ impl Menu {
         if !self.visible(self.cursor) {
             self.cursor = 0;
         }
+        self.prepare_layout();
     }
     pub fn input(&mut self, input: Input, now: u64) -> Option<Action> {
+        let action = self.handle_input(input, now);
+        self.prepare_layout();
+        action
+    }
+    fn handle_input(&mut self, input: Input, now: u64) -> Option<Action> {
         if input == Input::Cancel {
             self.needs_navigation = true;
             self.last_press = Some(now);
@@ -414,6 +444,34 @@ impl Menu {
             }
         }
     }
+    fn prepare_layout(&mut self) {
+        let mut layout = Layout::new();
+        for (slot, selected) in self.selected.iter().enumerate() {
+            if selected.is_some() {
+                layout.selected_slots[layout.selected_count] = slot;
+                layout.selected_count += 1;
+            }
+        }
+        let rows = layout.selected_count.div_ceil(5);
+        layout.heading = 47 + rows.max(1) * 49 + 4;
+        let mut available = [0; DISCOVERY_CAPACITY];
+        let mut focused = 0;
+        for item in AVAILABLE..ITEMS {
+            if self.visible(item) {
+                if item == self.cursor {
+                    focused = layout.available_total;
+                }
+                available[layout.available_total] = item;
+                layout.available_total += 1;
+            }
+        }
+        let capacity = if rows > 1 { 1 } else { 2 };
+        let first = focused.saturating_sub(capacity - 1);
+        layout.available_count = (layout.available_total - first).min(capacity);
+        layout.available_slots[..layout.available_count]
+            .copy_from_slice(&available[first..first + layout.available_count]);
+        self.layout = layout;
+    }
     fn visible(&self, item: usize) -> bool {
         if item == 0 {
             true
@@ -448,6 +506,9 @@ impl Menu {
         top: usize,
         identity: Identity,
     ) -> bool {
+        if x < left || x >= left + 54 || y < top || y >= top + 7 {
+            return false;
+        }
         let same_number = |other: Identity| {
             other != identity
                 && other.device_type == identity.device_type
@@ -496,44 +557,43 @@ impl Menu {
         }
     }
     fn tiles_pixel(&self, x: usize, y: usize) -> u16 {
-        let selected_count = self.selected.iter().flatten().count();
-        let rows = selected_count.div_ceil(5);
+        let selected_count = self.layout.selected_count;
         if text(x, y, 8, 34, 1, b"MY SENSORS") {
             return MUTED;
         }
         if selected_count == 0 && text(x, y, 8, 52, 1, b"CHOOSE A SENSOR BELOW") {
             return MUTED;
         }
-        let mut n = 0;
-        for (slot, selected) in self.selected.iter().enumerate() {
-            let Some(selected) = selected else {
-                continue;
-            };
-            let left = 5 + n % 5 * 47;
-            let top = 47 + n / 5 * 49;
-            n += 1;
-            let focused = self.cursor == slot + 1;
-            if border(x, y, left, top, 43, 44, if focused { 2 } else { 1 }) {
-                return if focused { CYAN } else { 0x3186 };
-            }
-            if icon(x, y, left + 10, top + 5, selected.identity.device_type) {
-                return WHITE;
-            }
-            if text(
-                x,
-                y,
-                left + 5,
-                top + 29,
-                1,
-                short_kind(selected.identity.device_type),
-            ) {
-                return WHITE;
-            }
-            if (left + 33..left + 38).contains(&x) && (top + 5..top + 10).contains(&y) {
-                return selected.color();
+        if x >= 5 && (47..145).contains(&y) {
+            let n = (y - 47) / 49 * 5 + (x - 5) / 47;
+            if n < selected_count {
+                let slot = self.layout.selected_slots[n];
+                let selected = self.selected[slot].unwrap();
+                let left = 5 + n % 5 * 47;
+                let top = 47 + n / 5 * 49;
+                let focused = self.cursor == slot + 1;
+                if border(x, y, left, top, 43, 44, if focused { 2 } else { 1 }) {
+                    return if focused { CYAN } else { 0x3186 };
+                }
+                if icon(x, y, left + 10, top + 5, selected.identity.device_type) {
+                    return WHITE;
+                }
+                if text(
+                    x,
+                    y,
+                    left + 5,
+                    top + 29,
+                    1,
+                    short_kind(selected.identity.device_type),
+                ) {
+                    return WHITE;
+                }
+                if (left + 33..left + 38).contains(&x) && (top + 5..top + 10).contains(&y) {
+                    return selected.color();
+                }
             }
         }
-        let heading = 47 + rows.max(1) * 49 + 4;
+        let heading = self.layout.heading;
         if text(
             x,
             y,
@@ -548,58 +608,51 @@ impl Menu {
         ) {
             return MUTED;
         }
-        let mut available = [0; DISCOVERY_CAPACITY];
-        let mut count = 0;
-        let mut focused = 0;
-        for item in AVAILABLE..ITEMS {
-            if self.visible(item) {
-                if item == self.cursor {
-                    focused = count;
+        let available_top = heading + 15;
+        if y >= available_top {
+            let n = (y - available_top) / 48;
+            if n < self.layout.available_count {
+                let item = self.layout.available_slots[n];
+                let top = available_top + n * 48;
+                let peer = self.discoveries[item - AVAILABLE].unwrap();
+                let focus = item == self.cursor;
+                if border(x, y, 5, top, 230, 44, if focus { 2 } else { 1 }) {
+                    return if focus { CYAN } else { 0x3186 };
                 }
-                available[count] = item;
-                count += 1;
+                if icon(x, y, 14, top + 10, peer.identity.device_type) {
+                    return WHITE;
+                }
+                if text(x, y, 44, top + 7, 1, kind(peer.identity.device_type)) {
+                    return WHITE;
+                }
+                if (174..228).contains(&x)
+                    && (top + 7..top + 14).contains(&y)
+                    && self.duplicate_kind(peer.identity)
+                    && self.suffix_pixel(x, y, 174, top + 7, peer.identity)
+                {
+                    return MUTED;
+                }
+                if text(
+                    x,
+                    y,
+                    44,
+                    top + 24,
+                    1,
+                    if !self.present[item - AVAILABLE] {
+                        b"NOT SEEN"
+                    } else if focus {
+                        b"SELECT TO CONNECT"
+                    } else if peer.identity.device_type == 40 {
+                        b"VEHICLES BEHIND YOU"
+                    } else {
+                        b"AVAILABLE TO CONNECT"
+                    },
+                ) {
+                    return if focus { CYAN } else { MUTED };
+                }
             }
         }
-        let capacity = if rows > 1 { 1 } else { 2 };
-        let first = focused.saturating_sub(capacity - 1);
-        for (n, item) in available[first..count].iter().take(capacity).enumerate() {
-            let top = heading + 15 + n * 48;
-            let peer = self.discoveries[*item - AVAILABLE].unwrap();
-            let focus = *item == self.cursor;
-            if border(x, y, 5, top, 230, 44, if focus { 2 } else { 1 }) {
-                return if focus { CYAN } else { 0x3186 };
-            }
-            if icon(x, y, 14, top + 10, peer.identity.device_type) {
-                return WHITE;
-            }
-            if text(x, y, 44, top + 7, 1, kind(peer.identity.device_type)) {
-                return WHITE;
-            }
-            if self.duplicate_kind(peer.identity)
-                && self.suffix_pixel(x, y, 174, top + 7, peer.identity)
-            {
-                return MUTED;
-            }
-            if text(
-                x,
-                y,
-                44,
-                top + 24,
-                1,
-                if !self.present[*item - AVAILABLE] {
-                    b"NOT SEEN"
-                } else if focus {
-                    b"SELECT TO CONNECT"
-                } else if peer.identity.device_type == 40 {
-                    b"VEHICLES BEHIND YOU"
-                } else {
-                    b"AVAILABLE TO CONNECT"
-                },
-            ) {
-                return if focus { CYAN } else { MUTED };
-            }
-        }
-        if count == 0
+        if self.layout.available_total == 0
             && text(
                 x,
                 y,
@@ -644,7 +697,8 @@ impl Menu {
         if text(x, y, 12, 114, 1, selected.status()) {
             return selected.color();
         }
-        if self.duplicate_kind(selected.identity)
+        if (130..137).contains(&y)
+            && self.duplicate_kind(selected.identity)
             && (text(x, y, 12, 130, 1, b"SENSOR")
                 || self.suffix_pixel(x, y, 60, 130, selected.identity))
         {

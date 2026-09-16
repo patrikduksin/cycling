@@ -105,6 +105,16 @@ impl Scan {
             self.pending_start = None;
             return;
         }
+        // The transport admits concurrent receive, but cannot scan while a
+        // channel control operation is completing. Wait without resubmitting.
+        if ant.channels(now).iter().flatten().any(|s| {
+            matches!(
+                s.link,
+                device_api::ant::LinkState::Connecting | device_api::ant::LinkState::Disconnecting
+            )
+        }) {
+            return;
+        }
         let result = ant.request(AntOperation::Scan(10000), now);
         if result == Err(Error::Busy) {
             return;

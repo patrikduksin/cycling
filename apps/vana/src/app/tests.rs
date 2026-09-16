@@ -774,3 +774,37 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
     runtime.input(press(Button::BottomRight), 3100, &mut radio);
     assert_eq!(runtime.menu.selected_identity(17), Some(fresh));
 }
+
+#[test]
+fn entry_waits_for_an_admitted_connection_before_starting_discovery() {
+    let mut radio = Radio {
+        channels: firmware_services::ant::Channels::new(),
+        requests: std::vec::Vec::new(),
+        reject: None,
+        settling: false,
+        observe_requests: false,
+    };
+    let peer = device_api::ant::Identity {
+        device_type: 40,
+        device_number: 42,
+        transmission_type: 1,
+    };
+    radio.channels.connect(peer, 0).unwrap();
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    runtime.page = crate::screens::workout::Page::Home;
+    let press = |button| Input::Button { button, code: 1 };
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    assert!(
+        radio.requests.is_empty(),
+        "Do not submit a scan while the channel is connecting"
+    );
+    radio
+        .channels
+        .receive(device_api::ant::Event::Connected(peer), 1800);
+    advance(&mut runtime, &mut radio, 1800);
+    assert!(matches!(
+        radio.requests.as_slice(),
+        [AntOperation::Scan(10000)]
+    ));
+}

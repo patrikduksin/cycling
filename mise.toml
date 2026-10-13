@@ -1,5 +1,10 @@
 [env]
-PYTHONPATH = "{{config_root}}/tools/devtools/src"
+# Never let an ambient or parent-config PYTHONPATH shadow the locked uv environment.
+PYTHONPATH = false
+
+[vars]
+# Every host Python tool runs in the locked tools/devtools uv environment.
+devtools = "uv run --project tools/devtools --locked"
 
 [tools]
 rust = { version = "1.98.1", components = ["rustfmt", "clippy"] }
@@ -19,89 +24,94 @@ run = "bash devices/c606/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling", "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked", "python -m unittest discover -s tools/devtools/tests -p 'test_*.py'"]
+run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling", "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked", "{{vars.devtools}} pytest tools/devtools"]
 
 [tasks.fmt]
-description = "Format Rust code"
-run = "cargo fmt --all"
+description = "Format Rust and Python code"
+run = ["cargo fmt --all", "{{vars.devtools}} ruff format tools/devtools"]
 
 [tasks.check]
 description = "Check formatting and lint host code"
-run = ["python tools/check-boundaries.py", "cargo check -p device-api --locked --features network-stack", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling -- -D warnings", "cargo fmt --all -- --check"]
+run = ["uv run --script tools/check-boundaries.py", "{{vars.devtools}} ruff format --check tools/devtools", "{{vars.devtools}} ruff check tools/devtools", "cargo check -p device-api --locked --features network-stack", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling -- -D warnings", "cargo fmt --all -- --check"]
 
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"
-run = "uv run --project tools/devtools --locked python -m cycling_devtools.device.firmware backup"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware backup"
 
 [tasks.flash]
 description = "Verify stock, flash cycling to slot B, and boot it"
 depends = ["build"]
-run = "uv run --project tools/devtools --locked python -m cycling_devtools.device.firmware flash"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware flash"
 
 [tasks.stock]
 alias = "boot-stock"
 description = "Verify and boot preserved stock firmware"
-run = "uv run --project tools/devtools --locked python -m cycling_devtools.device.firmware stock"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware stock"
 
 [tasks.monitor]
 description = "Read USB logs without resetting the device"
-run = "uv run --project tools/devtools --locked python -m cycling_devtools.device.firmware monitor"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware monitor"
 
 [tasks.wifi-setup]
 description = "Save current NetworkManager Wi-Fi credentials privately"
-run = "python -m cycling_devtools.connectivity.wifi setup"
+run = "{{vars.devtools}} python -m cycling_devtools.connectivity.wifi setup"
 
 [tasks.ride-export]
 description = "Export the complete read-only ride prefix as private raw, JSON and GPX files"
-run = "python -m cycling_devtools.rides.export"
+run = "{{vars.devtools}} python -m cycling_devtools.rides.export"
 
 [tasks.ride-clear]
 description = "Clear the owned ride journal after verifying a named complete export"
-run = "python -m cycling_devtools.rides.clear"
+run = "{{vars.devtools}} python -m cycling_devtools.rides.clear"
 
 [tasks.gps-stress]
 description = "Check GNSS progress and transport counters under repeated USB state replies"
-run = "python -m cycling_devtools.harness.stress gps .local/tests/gps-stress-$(date +%s)"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.stress gps .local/tests/gps-stress-$(date +%s)"
 
 [tasks.companion-stress]
 description = "Check companion progress and transport counters under repeated USB state replies"
-run = "python -m cycling_devtools.harness.stress companion .local/tests/companion-stress-$(date +%s)"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.stress companion .local/tests/companion-stress-$(date +%s)"
 
 [tasks.bluetooth-echo]
 description = "Verify C606 BLE echo notifications, reads and reconnect with this laptop"
+# BlueZ tools need the distribution's D-Bus and GLib bindings, which only the
+# system Python provides; they use the source tree instead of the uv environment.
+env = { PYTHONPATH = "{{config_root}}/tools/devtools/src" }
 run = "/usr/bin/python3 -m cycling_devtools.connectivity.bluetooth"
 
 [tasks.ble-simulator]
 description = "Advertise deterministic HRS and CSC fixtures from this laptop"
+# System Python for D-Bus and GLib bindings; see bluetooth-echo.
+env = { PYTHONPATH = "{{config_root}}/tools/devtools/src" }
 run = "/usr/bin/python3 -m cycling_devtools.connectivity.ble_sensor_sim"
 
 [tasks.logs]
 description = "Capture private JSON logs without resetting; send optional commands once"
-run = "python -m cycling_devtools.terminal.logs"
+run = "{{vars.devtools}} python -m cycling_devtools.terminal.logs"
 
 [tasks.terminal]
 description = "Run a command or open the interactive no-reset USB terminal"
-run = "python -m cycling_devtools.terminal.cli"
+run = "{{vars.devtools}} python -m cycling_devtools.terminal.cli"
 
 [tasks.e2e]
 description = "Verify terminal framing, repeated no-reset opens and independent acquisition"
-run = "python -m cycling_devtools.harness.base .local/tests/base-$(date +%s)"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.base .local/tests/base-$(date +%s)"
 
 [tasks.persistence-test]
 description = "Save a temporary brightness, restart, verify and restore original preferences"
-run = "python -m cycling_devtools.harness.base .local/tests/persistence-$(date +%s) --write-settings --restart"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.base .local/tests/persistence-$(date +%s) --write-settings --restart"
 
 [tasks.regression]
 description = "Run a 60-second no-render terminal and acquisition regression"
-run = "python -m cycling_devtools.harness.base .local/tests/regression-$(date +%s) --seconds 60"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.base .local/tests/regression-$(date +%s) --seconds 60"
 
 [tasks.crash-test]
 description = "Verify controlled panic, software reboot and one-shot marker through ordinary terminal"
-run = "python -m cycling_devtools.harness.base .local/tests/crash-$(date +%s) --panic"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.base .local/tests/crash-$(date +%s) --panic"
 
 [tasks.ant-export]
 description = "Decode historical ANT captures from a raw journal file into a private directory"
-run = "python -m cycling_devtools.rides.ant_capture"
+run = "{{vars.devtools}} python -m cycling_devtools.rides.ant_capture"
 
 [tasks.simulate]
 description = "Run the portable shell against deterministic display and input devices"
@@ -109,20 +119,20 @@ run = "cargo run -p shell-simulator --locked --no-default-features --bin shell-s
 
 [tasks.harness]
 description = "Run a named or structured C606/virtual harness scenario and return compact JSON"
-run = "python -m cycling_devtools.harness.runner"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.runner"
 
 [tasks.harness-virtual]
 description = "Run shared deterministic input, capture and restart scenarios"
-run = ["python -m cycling_devtools.harness.runner run shared --backend virtual", "python -m cycling_devtools.harness.runner run virtual-foundation --backend virtual", "python -m cycling_devtools.harness.runner run virtual-sdk --backend virtual --sdk"]
+run = ["{{vars.devtools}} python -m cycling_devtools.harness.runner run shared --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-foundation --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-sdk --backend virtual --sdk"]
 
 [tasks.mmc-inspect]
 description = "Read bounded MMC layout and root metadata into private local evidence"
-run = "python -m cycling_devtools.device.mmc"
+run = "{{vars.devtools}} python -m cycling_devtools.device.mmc"
 
 [tasks.mmc-maintenance]
 description = "Back up or explicitly write MMC using the dedicated maintenance image"
-run = "python -m cycling_devtools.device.mmc_maintenance"
+run = "{{vars.devtools}} python -m cycling_devtools.device.mmc_maintenance"
 
 [tasks.device-port]
 description = "Resolve the backed-up C606's current USB port without opening it"
-run = "python -m cycling_devtools.device.port"
+run = "{{vars.devtools}} python -m cycling_devtools.device.port"

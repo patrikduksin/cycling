@@ -1,10 +1,15 @@
 # Device development tools
 
 This Python package owns host access to firmware, private captures, and scenario
-execution. Use the root `mise` tasks for routine operations. `mise` supplies the
-source package path, so ordinary tools need no installation. Flash and backup
-commands use the locked `uv` project to provide esptool. Bluetooth tools use the
-system Python for the distribution's D-Bus and GLib bindings.
+execution. Use the root `mise` tasks for routine operations. Every tool runs in
+this package's locked `uv` environment (`uv run --project tools/devtools
+--locked`), which also provides esptool, pytest and ruff. Bluetooth tools are the
+exception: they use the system Python for the distribution's D-Bus and GLib
+bindings, with the source tree on `PYTHONPATH`.
+
+Device commands select a port in one order: `--port`, then `CYCLING_PORT`, then
+the single connected C606 matching the private backup manifest. Missing or
+ambiguous devices fail instead of falling back to a guessed tty.
 
 ## Where behavior lives
 
@@ -15,7 +20,8 @@ system Python for the distribution's D-Bus and GLib bindings.
 - `harness/` owns scenarios, real and virtual transports, camera and audio capture,
   and acquisition regression checks.
 - `connectivity/` owns host Wi-Fi setup and Bluetooth test peers.
-- `workspace.py` locates the checkout for commands and ignored private evidence.
+- `workspace.py` locates the checkout and owns the rule that private evidence
+  stays inside the ignored `.local/`.
 
 Imports name the owning module. Package initializers do not re-export symbols.
 Keep private outputs under the checkout's `.local/`; moving a tool must not change
@@ -28,8 +34,10 @@ From the repository root:
 ```sh
 mise run terminal -- --help
 mise run harness -- recipes
-mise exec -- python -m cycling_devtools.harness.connectivity --help
-mise exec -- python -m unittest discover -s tools/devtools/tests -p 'test_*.py'
+uv run --project tools/devtools --locked python -m cycling_devtools.harness.connectivity --help
+mise run test     # includes pytest for these tools
+mise run check    # includes ruff format --check and ruff check
+mise run fmt      # applies ruff format
 ```
 
 The tests use fake transports and temporary files. They preserve coverage for
@@ -53,8 +61,8 @@ operation observation is retained. There is no automatic retry.
 Connect owned peers explicitly before a capture, then run:
 
 ```sh
-mise exec -- python -m cycling_devtools.connectivity.ant \
-  --port /dev/ttyACM0 --output .local/ant-check-001 \
+uv run --project tools/devtools --locked python -m cycling_devtools.connectivity.ant \
+  --output .local/ant-check-001 \
   --types 120 121 --seconds 10 --scan-seconds 5 \
   --fixture-notes 'Record board revision, companion version, build modes, sensor categories and active traffic'
 ```

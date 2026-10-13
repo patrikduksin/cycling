@@ -1,5 +1,7 @@
 //! DMA-fed UART0 receiver for the C606's verified NMEA stream.
 
+use embassy_time::Duration;
+use embassy_time::Instant;
 use esp_hal::Blocking;
 use esp_hal::dma::DmaRxStreamBuf;
 use esp_hal::dma_rx_stream_buffer;
@@ -13,15 +15,36 @@ use esp_hal::uart::Uart;
 use esp_hal::uart::uhci;
 use esp_hal::uart::uhci::Uhci;
 use esp_hal::uart::uhci::UhciDmaRxTransfer;
+use esp_hal::uart::uhci::UhciRx;
 
 const CAPACITY: usize = 8192;
 const CHUNK: usize = 256;
+const RETRY_MIN: Duration = Duration::from_millis(100);
+const RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Either the DMA owns the buffer through a running transfer, or reception is
+/// stopped and the driver holds both halves until a restart succeeds.
+enum Transport {
+    Running(UhciDmaRxTransfer<'static, Blocking, DmaRxStreamBuf>),
+    Stopped {
+        receiver: UhciRx<'static, Blocking>,
+        buffer: DmaRxStreamBuf,
+        retry_at: Instant,
+        backoff: Duration,
+    },
+}
 
 /// Continuous DMA ownership for UART0. DMA_CH1 is separate from LCD DMA_CH0.
+///
+/// A failed DMA (re)start does not panic: reception stops, the failure counts
+/// as a DMA loss so positioning reports a failed transport, and the restart is
+/// retried with exponential backoff from `drain`.
 pub struct Receiver {
-    transfer: Option<UhciDmaRxTransfer<'static, Blocking, DmaRxStreamBuf>>,
+    /// Always Some outside `start`, which moves the transport by value.
+    transport: Option<Transport>,
     dma_losses: u32,
     uart_errors: u32,
+    restart_failures: u32,
 }
 
 pub fn init(
@@ -33,30 +56,39 @@ pub fn init(
     let config = Config::default()
         .with_baudrate(921600)
         .with_rx(RxConfig::default().with_fifo_full_threshold(32));
-    let uart = Uart::new(uart, config).unwrap().with_rx(rx);
-    let mut receiver = Uhci::new(uart, uhci, dma);
-    receiver
-        .apply_rx_config(&uhci::RxConfig::default().with_chunk_limit(CHUNK as u16))
-        .unwrap();
-    let (receiver, _unused_tx) = receiver.split();
+    let uart = Uart::new(uart, config)
+        .expect("constant UART0 configuration is valid")
+        .with_rx(rx);
+    let mut uhci = Uhci::new(uart, uhci, dma);
+    uhci.apply_rx_config(&uhci::RxConfig::default().with_chunk_limit(CHUNK as u16))
+        .expect("constant UHCI chunk limit is valid");
+    let (receiver, _unused_tx) = uhci.split();
     let buffer = dma_rx_stream_buffer!(CAPACITY, CHUNK);
-    let transfer = receiver
-        .read(buffer)
-        .unwrap_or_else(|_| panic!("GPS DMA start failed"));
-    Receiver {
-        transfer: Some(transfer),
+    let mut result = Receiver {
+        transport: None,
         dma_losses: 0,
         uart_errors: 0,
-    }
+        restart_failures: 0,
+    };
+    result.start(receiver, buffer, RETRY_MIN);
+    result
 }
 
 impl Receiver {
     pub fn sleep_boundary(&mut self) {
         self.restart(true);
     }
+
     /// Copy currently available bytes without waiting. Hardware UART or DMA
     /// faults restart reception and make the parser discard a partial sentence.
     pub fn drain(&mut self, output: &mut [u8]) -> (usize, u32, u32) {
+        if let Some(Transport::Stopped { retry_at, .. }) = &self.transport {
+            if Instant::now() >= *retry_at {
+                self.restart(true);
+            }
+            return (0, self.dma_losses, self.uart_errors);
+        }
+
         let uart = esp_hal::peripherals::UART0::regs();
         let uart_raw = uart.int_raw().read();
         let uart_error = uart_raw.rxfifo_ovf().bit_is_set()
@@ -73,6 +105,9 @@ impl Receiver {
             });
         }
 
+        // SAFETY: DMA::ptr() is the fixed GDMA register block. This receiver
+        // owns DMA_CH1 for its lifetime, and only channel 1 registers are
+        // accessed; other channels belong to their own drivers.
         let dma = unsafe { &*esp32s3::DMA::ptr() };
         let dma_raw = dma.ch(1).in_int().raw().read();
         let dma_error = dma_raw.in_dscr_empty().bit_is_set()
@@ -91,15 +126,18 @@ impl Receiver {
             return (0, self.dma_losses, self.uart_errors);
         }
 
+        let Some(Transport::Running(transfer)) = self.transport.as_mut() else {
+            return (0, self.dma_losses, self.uart_errors);
+        };
         let mut count = 0;
         while count < output.len() {
-            let available = self.transfer.as_ref().unwrap().peek();
+            let available = transfer.peek();
             if available.is_empty() {
                 break;
             }
             let copied = available.len().min(output.len() - count);
             output[count..count + copied].copy_from_slice(&available[..copied]);
-            let consumed = self.transfer.as_mut().unwrap().consume(copied);
+            let consumed = transfer.consume(copied);
             debug_assert_eq!(consumed, copied);
             count += copied;
         }
@@ -107,16 +145,51 @@ impl Receiver {
     }
 
     fn restart(&mut self, reset_fifo: bool) {
-        let (receiver, buffer) = self.transfer.take().unwrap().cancel();
+        let (receiver, buffer, backoff) = match self.transport.take() {
+            // cancel() stops the channel before returning the buffer.
+            Some(Transport::Running(transfer)) => {
+                let (receiver, buffer) = transfer.cancel();
+                (receiver, buffer, RETRY_MIN)
+            }
+            Some(Transport::Stopped {
+                receiver,
+                buffer,
+                backoff,
+                ..
+            }) => (receiver, buffer, backoff),
+            None => return,
+        };
         if reset_fifo {
             let uart = esp_hal::peripherals::UART0::regs();
             uart.conf0().modify(|_, w| w.rxfifo_rst().set_bit());
             uart.conf0().modify(|_, w| w.rxfifo_rst().clear_bit());
         }
-        self.transfer = Some(
-            receiver
-                .read(buffer)
-                .unwrap_or_else(|_| panic!("GPS DMA restart failed")),
-        );
+        self.start(receiver, buffer, backoff);
+    }
+
+    fn start(
+        &mut self,
+        receiver: UhciRx<'static, Blocking>,
+        buffer: DmaRxStreamBuf,
+        backoff: Duration,
+    ) {
+        self.transport = Some(match receiver.read(buffer) {
+            Ok(transfer) => Transport::Running(transfer),
+            Err((error, receiver, buffer)) => {
+                // The transfer never started, so the buffer is back in our
+                // ownership. Report a loss and retry later instead of halting.
+                self.dma_losses = self.dma_losses.saturating_add(1);
+                self.restart_failures = self.restart_failures.saturating_add(1);
+                log::warn!(target: "position",
+                    "gps_dma_start_failed error={:?} failures={} retry_ms={}",
+                    error, self.restart_failures, backoff.as_millis());
+                Transport::Stopped {
+                    receiver,
+                    buffer,
+                    retry_at: Instant::now() + backoff,
+                    backoff: (backoff * 2).min(RETRY_MAX),
+                }
+            }
+        });
     }
 }

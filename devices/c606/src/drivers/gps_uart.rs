@@ -156,7 +156,13 @@ impl Receiver {
                 buffer,
                 backoff,
                 ..
-            }) => (receiver, buffer, backoff),
+            }) => {
+                // drain() does not inspect errors while stopped, and the failed
+                // start left its own DMA error bits. Clear the stale bits so
+                // the first drain after a successful restart sees only new ones.
+                clear_rx_errors();
+                (receiver, buffer, backoff)
+            }
             None => return,
         };
         if reset_fifo {
@@ -176,8 +182,11 @@ impl Receiver {
         self.transport = Some(match receiver.read(buffer) {
             Ok(transfer) => Transport::Running(transfer),
             Err((error, receiver, buffer)) => {
-                // The transfer never started, so the buffer is back in our
-                // ownership. Report a loss and retry later instead of halting.
+                // esp-hal 1.1.2 starts the RX link before it reports a
+                // descriptor error, so stop it explicitly: the buffer is back in
+                // our ownership and the DMA must no longer write into it.
+                stop_rx_channel();
+                // Report a loss and retry later instead of halting.
                 self.dma_losses = self.dma_losses.saturating_add(1);
                 self.restart_failures = self.restart_failures.saturating_add(1);
                 log::warn!(target: "position",
@@ -192,4 +201,32 @@ impl Receiver {
             }
         });
     }
+}
+
+/// Clear the UART0 RX error and DMA channel 1 RX error interrupt bits that
+/// `drain` inspects, using the same write-1-to-clear writes as its error path.
+fn clear_rx_errors() {
+    esp_hal::peripherals::UART0::regs().int_clr().write(|w| {
+        w.rxfifo_ovf().clear_bit_by_one();
+        w.glitch_det().clear_bit_by_one();
+        w.frm_err().clear_bit_by_one();
+        w.parity_err().clear_bit_by_one()
+    });
+    // SAFETY: DMA::ptr() is the fixed GDMA register block. The Receiver owns
+    // DMA_CH1, and only channel 1's write-1-to-clear interrupt bits are written.
+    let dma = unsafe { &*esp32s3::DMA::ptr() };
+    dma.ch(1).in_int().clr().write(|w| {
+        w.in_dscr_empty().clear_bit_by_one();
+        w.in_dscr_err().clear_bit_by_one();
+        w.in_err_eof().clear_bit_by_one()
+    });
+}
+
+/// Stop DMA channel 1's RX link, as esp-hal's own `stop_transfer` does.
+fn stop_rx_channel() {
+    // SAFETY: DMA::ptr() is the fixed GDMA register block. The Receiver owns
+    // DMA_CH1 and the HAL handle for it is idle (its read() just failed), so
+    // setting channel 1's INLINK_STOP cannot disturb another driver.
+    let dma = unsafe { &*esp32s3::DMA::ptr() };
+    dma.ch(1).in_link().modify(|_, w| w.inlink_stop().set_bit());
 }

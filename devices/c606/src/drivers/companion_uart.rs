@@ -64,11 +64,9 @@ pub fn init(uart: UART2<'static>, rx: GPIO41<'static>, tx: GPIO42<'static>) -> R
         .map_err(|_| ())?
         .with_rx(rx)
         .with_tx(tx);
-    const GPS_OPEN: [u8; 16] = [
-        0xa5, 0x0c, 0x6f, 0xf1, 0x02, 0x10, 0xe2, 0x02, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x89,
-        0xe5,
-    ];
-    let written = uart.write(&GPS_OPEN).map_err(|_| ());
+    let written = uart
+        .write(&crate::drivers::companion::gnss_power(true))
+        .map_err(|_| ());
     uart.set_interrupt_handler(interrupt_handler);
     critical_section::with(|cs| {
         let mut state = STATE.borrow_ref_mut(cs);

@@ -2,32 +2,32 @@
 use crate::drivers::companion_sensors::State;
 use core::cell::RefCell;
 use device_api::observation::Error;
-use device_api::sensors::Snapshot;
+use device_api::sensors::{IdentityQuery, Snapshot, Startup};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 struct Shared {
     startup: crate::drivers::companion_startup::Startup,
     state: Option<State>,
-    query: &'static str,
+    query: IdentityQuery,
     at: u64,
 }
 static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
     startup: crate::drivers::companion_startup::Startup::new(),
     state: None,
-    query: "idle",
+    query: IdentityQuery::Idle,
     at: 0,
 }));
 pub fn startup_begin(now: u64) {
     SHARED.lock(|s| s.borrow_mut().startup.begin(now));
 }
-pub fn startup_status() -> &'static str {
+pub fn startup_status() -> Startup {
     let phase = startup_phase();
-    if super::power::ACCESS.closed() && matches!(phase, "ready" | "already_running") {
-        return "power_transition";
+    if super::power::ACCESS.closed() && matches!(phase, Startup::Ready | Startup::AlreadyRunning) {
+        return Startup::PowerTransition;
     }
     phase
 }
-pub fn startup_phase() -> &'static str {
+pub fn startup_phase() -> Startup {
     SHARED.lock(|s| s.borrow().startup.status())
 }
 pub fn power_request_wake() -> Result<(), Error> {
@@ -42,17 +42,17 @@ pub fn ant_allowed() -> bool {
 pub fn snapshot(now: u64) -> Snapshot {
     SHARED.lock(|s| s.borrow().state.unwrap_or_default().snapshot(now, 5000))
 }
-pub fn query_status() -> &'static str {
+pub fn query_status() -> IdentityQuery {
     SHARED.lock(|s| s.borrow().query)
 }
 pub fn query(now: u64) -> Result<(), Error> {
     let _access = super::power::ACCESS.enter()?;
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
-        if matches!(s.query, "queued" | "waiting") {
+        if s.query.outstanding() {
             return Err(Error::Unavailable);
         }
-        s.query = "queued";
+        s.query = IdentityQuery::Queued;
         s.at = now;
         Ok(())
     })
@@ -69,9 +69,9 @@ pub fn receive(group: u8, payload: &[u8], now: u64) {
 pub fn identity_reply(payload: &[u8], now: u64) {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
-        if s.query == "waiting" && now.saturating_sub(s.at) <= 2000 {
+        if s.query == IdentityQuery::Waiting && now.saturating_sub(s.at) <= 2000 {
             s.state.get_or_insert_default().receive(1, payload, now);
-            s.query = "reply_observed";
+            s.query = IdentityQuery::ReplyObserved;
         }
     });
 }
@@ -80,8 +80,8 @@ pub fn loss() {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         s.state.get_or_insert_default().loss();
-        if matches!(s.query, "queued" | "waiting") {
-            s.query = "failed";
+        if s.query.outstanding() {
+            s.query = IdentityQuery::Failed;
         }
     });
 }
@@ -136,11 +136,11 @@ pub fn tick(now: u64) {
         if blocked {
             return false;
         }
-        if matches!(s.query, "queued" | "waiting") && now.saturating_sub(s.at) > 2000 {
-            s.query = "timeout";
+        if s.query.outstanding() && now.saturating_sub(s.at) > 2000 {
+            s.query = IdentityQuery::Timeout;
         }
-        if s.query == "queued" {
-            s.query = "waiting";
+        if s.query == IdentityQuery::Queued {
+            s.query = IdentityQuery::Waiting;
             true
         } else {
             false
@@ -151,7 +151,7 @@ pub fn tick(now: u64) {
         // mode, reset, flash, network or calibration command is reachable here.
         let frame = crate::drivers::companion::command(1, [1, 0, 0, 0, 0, 0, 0, 0]);
         if crate::drivers::companion_uart::send(&frame).is_err() {
-            SHARED.lock(|s| s.borrow_mut().query = "failed");
+            SHARED.lock(|s| s.borrow_mut().query = IdentityQuery::Failed);
         }
     }
 }

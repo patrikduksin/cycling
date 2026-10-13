@@ -116,7 +116,7 @@ pub fn execute(
     now: u64,
     media: &mut (impl device_api::bulk::Read + device_api::bulk::ReadWrite),
     sound: &mut impl device_api::sound::Sound,
-    gnss: &mut impl device_api::position_control::Control,
+    gnss: &mut impl device_api::position_control::PositionControl,
     sensors: &mut impl device_api::sensors::Sensors,
     out: &mut impl Write,
 ) -> &'static str {
@@ -153,7 +153,7 @@ pub fn execute(
             match media.read(sector, &mut data) {
                 Ok(()) => {
                     let bytes = &data[range];
-                    let crc = firmware_shell::harness::crc32(bytes);
+                    let crc = firmware_services::checksum::crc32(bytes);
                     let _ = write!(
                         out,
                         "sector={} offset={} length={} crc32={:08x} read_us={} data=",
@@ -200,7 +200,7 @@ pub fn execute(
                         sector,
                         offset,
                         length,
-                        firmware_shell::harness::crc32(bytes)
+                        firmware_services::checksum::crc32(bytes)
                     );
                     for byte in bytes {
                         let _ = write!(out, "{:02x}", byte);
@@ -219,7 +219,7 @@ pub fn execute(
             if let Err(e) = media.owned_read(sector, &mut bytes) {
                 return media_error(e);
             }
-            if firmware_shell::harness::crc32(&bytes) != expected_crc {
+            if firmware_services::checksum::crc32(&bytes) != expected_crc {
                 return "CONFLICT";
             }
             bytes.fill(fill);
@@ -229,7 +229,7 @@ pub fn execute(
                         out,
                         "sector={} length=512 crc32={:08x} verified=true",
                         sector,
-                        firmware_shell::harness::crc32(&bytes)
+                        firmware_services::checksum::crc32(&bytes)
                     );
                 }
                 Err(e) => status = media_error(e),
@@ -345,12 +345,12 @@ pub fn execute(
             let _ = write!(
                 out,
                 "query={} identity={:?} fitted_model=unknown installed_version=unverified reports={} invalid={} losses={} startup={} startup_reason={:?}",
-                sensors.identity_status(),
+                sensors.identity_status().name(),
                 s.identity,
                 s.reports,
                 s.invalid_reports,
                 s.losses,
-                sensors.startup_status(),
+                sensors.startup_status().name(),
                 sensors.startup_reason()
             );
         }

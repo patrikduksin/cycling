@@ -1,97 +1,73 @@
 use device_api::ant::*;
+use heapless::Deque;
 
-pub struct State {
-    scan_until: Option<u64>,
-    scan_stopping: bool,
-    discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
+/// Zero is a wildcard on the wire; a selected channel must be explicit.
+fn explicit(identity: Identity) -> bool {
+    identity.device_type != 0 && identity.device_number != 0 && identity.transmission_type != 0
+}
+
+/// Retain the most recent pages; consumers detect gaps from loss_count.
+/// Returns whether the oldest page was displaced.
+fn push_latest(queue: &mut Deque<Packet, PACKET_CAPACITY>, packet: Packet) -> bool {
+    let displaced = queue.is_full() && queue.pop_front().is_some();
+    // Cannot fail: a full queue just released a slot.
+    let _ = queue.push_back(packet);
+    displaced
+}
+
+/// One receive channel for a single selected peer. Data has no sender
+/// identifier, so pages are admitted only while the matching link is open.
+pub struct Channel {
     selected: Option<Identity>,
     link: LinkState,
     connect_until: u64,
     generation: u32,
-    queue: [Option<Packet>; PACKET_CAPACITY],
-    queue_len: usize,
-    diagnostics: [Option<Packet>; PACKET_CAPACITY],
-    diagnostics_len: usize,
+    queue: Deque<Packet, PACKET_CAPACITY>,
+    diagnostics: Deque<Packet, PACKET_CAPACITY>,
     diagnostic_losses: u32,
     last_packet: Option<u64>,
     packets: u32,
     dropped_packets: u32,
-    discovery_overflows: u32,
     transport_losses: u32,
     tx_failures: u32,
 }
 
-impl Default for State {
+impl Default for Channel {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl State {
+impl Channel {
     pub const fn new() -> Self {
         Self {
-            scan_until: None,
-            scan_stopping: false,
-            discoveries: [None; DISCOVERY_CAPACITY],
             selected: None,
             link: LinkState::Idle,
             connect_until: 0,
             generation: 0,
-            queue: [None; PACKET_CAPACITY],
-            queue_len: 0,
-            diagnostics: [None; PACKET_CAPACITY],
-            diagnostics_len: 0,
+            queue: Deque::new(),
+            diagnostics: Deque::new(),
             diagnostic_losses: 0,
             last_packet: None,
             packets: 0,
             dropped_packets: 0,
-            discovery_overflows: 0,
             transport_losses: 0,
             tx_failures: 0,
         }
     }
 
-    pub fn begin_scan(&mut self, now: u64, duration_ms: u32) -> Result<Request, Error> {
-        if duration_ms == 0 {
-            return Err(Error::InvalidDuration);
-        }
-        if self.scan_until.is_some()
-            || matches!(
-                self.link,
-                LinkState::Connecting | LinkState::Connected | LinkState::Disconnecting
-            )
-        {
-            return Err(Error::Busy);
-        }
-        self.discoveries.fill(None);
-        self.scan_until = Some(now.saturating_add(u64::from(duration_ms)));
-        Ok(Request::Scan { duration_ms })
-    }
-
-    /// Keep discovery ownership while the untagged stop acknowledgment is pending.
-    pub fn stop_scan(&mut self, now: u64) -> Result<Request, Error> {
-        if self.scan_until.is_none() || self.scan_stopping {
-            return Err(Error::Busy);
-        }
-        self.scan_stopping = true;
-        self.scan_until = Some(now.saturating_add(SCAN_STOP_TIMEOUT_MS));
-        Ok(Request::StopScan)
+    fn busy(&self) -> bool {
+        matches!(
+            self.link,
+            LinkState::Connecting | LinkState::Connected | LinkState::Disconnecting
+        )
     }
 
     pub fn connect(&mut self, identity: Identity, now: u64) -> Result<Request, Error> {
-        // Zero is a wildcard on the wire; a selected channel must be explicit.
-        if identity.device_type == 0
-            || identity.device_number == 0
-            || identity.transmission_type == 0
-        {
+        if !explicit(identity) {
             return Err(Error::InvalidIdentity);
         }
-        if self.scan_until.is_some()
-            || matches!(
-                self.link,
-                LinkState::Connecting | LinkState::Connected | LinkState::Disconnecting
-            )
-        {
+        if self.busy() {
             return Err(Error::Busy);
         }
         // A failed or timed-out command may still own a radio channel. Do not
@@ -121,18 +97,12 @@ impl State {
 
     fn invalidate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
-        self.queue.fill(None);
-        self.queue_len = 0;
-        self.diagnostics.fill(None);
-        self.diagnostics_len = 0;
+        self.queue.clear();
+        self.diagnostics.clear();
         self.last_packet = None;
     }
 
     pub fn tick(&mut self, now: u64) {
-        if self.scan_until.is_some_and(|deadline| now >= deadline) {
-            self.scan_until = None;
-            self.scan_stopping = false;
-        }
         if matches!(self.link, LinkState::Connecting | LinkState::Disconnecting)
             && now >= self.connect_until
         {
@@ -142,59 +112,36 @@ impl State {
     }
 
     /// Receive a normalized radio observation, never raw UART bytes.
+    /// Discovery events belong to the scanner and are ignored here.
     pub fn receive(&mut self, event: Event, now: u64) {
         self.tick(now);
-        let (device_type, data) = match event {
-            Event::Discovery { identity, rssi } => {
-                if self.scan_until.is_none() || self.scan_stopping {
-                    return;
-                }
-                let slot = self
-                    .discoveries
-                    .iter()
-                    .position(|entry| entry.is_some_and(|d| d.identity == identity))
-                    .or_else(|| self.discoveries.iter().position(Option::is_none));
-                if let Some(slot) = slot {
-                    self.discoveries[slot] = Some(Discovery {
-                        identity,
-                        rssi,
-                        seen_ms: now,
-                    });
-                } else {
-                    self.discovery_overflows = self.discovery_overflows.saturating_add(1);
-                }
-                return;
-            }
-            Event::ScanEnded => {
-                self.scan_until = None;
-                self.scan_stopping = false;
-                return;
-            }
+        match event {
+            Event::Discovery { .. } | Event::ScanEnded => {}
             Event::Connected(identity) => {
                 if self.selected == Some(identity) && self.link == LinkState::Connecting {
                     self.link = LinkState::Connected;
                 }
-                return;
             }
             Event::Disconnected(identity) | Event::Timeout(identity) => {
-                if self.selected == Some(identity)
-                    && (matches!(
-                        self.link,
-                        LinkState::Connecting | LinkState::Connected | LinkState::Disconnecting
-                    ) || matches!(event, Event::Disconnected(_))
-                        && matches!(self.link, LinkState::TimedOut | LinkState::TransportLost))
-                {
+                let closed = matches!(event, Event::Disconnected(_));
+                // A late close still confirms cleanup after loss; a late timeout does not.
+                let pending = self.busy()
+                    || closed
+                        && matches!(self.link, LinkState::TimedOut | LinkState::TransportLost);
+                if self.selected == Some(identity) && pending {
                     self.invalidate();
-                    self.link = if matches!(event, Event::Disconnected(_)) {
+                    self.link = if closed {
                         LinkState::Disconnected
                     } else {
                         LinkState::TimedOut
                     };
                 }
-                return;
             }
-            Event::Data { device_type, data } => (device_type, data),
-        };
+            Event::Data { device_type, data } => self.data(device_type, data, now),
+        }
+    }
+
+    fn data(&mut self, device_type: u8, data: [u8; 8], now: u64) {
         let Some(identity) = self.selected else {
             return;
         };
@@ -203,33 +150,24 @@ impl State {
         }
         self.packets = self.packets.saturating_add(1);
         self.last_packet = Some(now);
-        // Retain the most recent pages; consumers detect gaps from loss_count.
-        if self.queue_len == PACKET_CAPACITY {
-            self.pop_packet();
-            self.dropped_packets = self.dropped_packets.saturating_add(1);
-        }
-        self.queue[self.queue_len] = Some(Packet {
+        let packet = Packet {
             identity,
             data,
             received_ms: now,
             generation: self.generation,
-            loss_count: self.dropped_packets.saturating_add(self.transport_losses),
-        });
-        self.queue_len += 1;
-        if self.diagnostics_len == PACKET_CAPACITY {
-            self.pop_diagnostic_packet();
+            // Recomputed when popped from either stream.
+            loss_count: 0,
+        };
+        if push_latest(&mut self.queue, packet) {
+            self.dropped_packets = self.dropped_packets.saturating_add(1);
+        }
+        if push_latest(&mut self.diagnostics, packet) {
             self.diagnostic_losses = self.diagnostic_losses.saturating_add(1);
         }
-        let mut diagnostic = self.queue[self.queue_len - 1].unwrap();
-        diagnostic.loss_count = diagnostic.loss_count.saturating_add(self.diagnostic_losses);
-        self.diagnostics[self.diagnostics_len] = Some(diagnostic);
-        self.diagnostics_len += 1;
     }
 
     pub fn transport_loss(&mut self, _now: u64) {
         self.transport_losses = self.transport_losses.saturating_add(1);
-        self.scan_until = None;
-        self.scan_stopping = false;
         self.invalidate();
         self.link = LinkState::TransportLost;
     }
@@ -240,48 +178,28 @@ impl State {
         self.transport_loss(now);
     }
 
-    pub fn discoveries(&self) -> &[Option<Discovery>; DISCOVERY_CAPACITY] {
-        &self.discoveries
-    }
-
     pub fn pop_packet(&mut self) -> Option<Packet> {
-        if self.queue_len == 0 {
-            return None;
-        }
-        let packet = self.queue[0].map(|mut packet| {
-            packet.loss_count = self.dropped_packets.saturating_add(self.transport_losses);
-            packet
-        });
-        self.queue.rotate_left(1);
-        self.queue_len -= 1;
-        self.queue[self.queue_len] = None;
-        packet
+        let mut packet = self.queue.pop_front()?;
+        packet.loss_count = self.dropped_packets.saturating_add(self.transport_losses);
+        Some(packet)
     }
 
     pub fn pop_diagnostic_packet(&mut self) -> Option<Packet> {
-        if self.diagnostics_len == 0 {
-            return None;
-        }
-        let packet = self.diagnostics[0].map(|mut packet| {
-            packet.loss_count = self.diagnostic_losses.saturating_add(self.transport_losses);
-            packet
-        });
-        self.diagnostics.rotate_left(1);
-        self.diagnostics_len -= 1;
-        self.diagnostics[self.diagnostics_len] = None;
-        packet
+        let mut packet = self.diagnostics.pop_front()?;
+        packet.loss_count = self.diagnostic_losses.saturating_add(self.transport_losses);
+        Some(packet)
     }
 
     pub fn snapshot(&self, now: u64) -> Snapshot {
         let age_ms = self.last_packet.map(|time| now.saturating_sub(time));
         Snapshot {
-            scanning: self.scan_until.is_some(),
+            scanning: false,
             link: self.link,
             selected: self.selected,
             generation: self.generation,
             packets: self.packets,
             dropped_packets: self.dropped_packets,
-            discovery_overflows: self.discovery_overflows,
+            discovery_overflows: 0,
             transport_losses: self.transport_losses,
             tx_failures: self.tx_failures,
             age_ms,
@@ -290,11 +208,105 @@ impl State {
     }
 }
 
+/// The local discovery window and its bounded, deduplicated results.
+struct Scanner {
+    until: Option<u64>,
+    stopping: bool,
+    discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
+    overflows: u32,
+}
+
+impl Scanner {
+    const fn new() -> Self {
+        Self {
+            until: None,
+            stopping: false,
+            discoveries: [None; DISCOVERY_CAPACITY],
+            overflows: 0,
+        }
+    }
+
+    fn active(&self) -> bool {
+        self.until.is_some()
+    }
+
+    fn begin(&mut self, now: u64, duration_ms: u32) -> Result<Request, Error> {
+        if duration_ms == 0 {
+            return Err(Error::InvalidDuration);
+        }
+        if self.active() {
+            return Err(Error::Busy);
+        }
+        self.discoveries.fill(None);
+        self.until = Some(now.saturating_add(u64::from(duration_ms)));
+        Ok(Request::Scan { duration_ms })
+    }
+
+    /// Keep discovery ownership while the untagged stop acknowledgment is pending.
+    fn stop(&mut self, now: u64) -> Result<Request, Error> {
+        if !self.active() || self.stopping {
+            return Err(Error::Busy);
+        }
+        self.stopping = true;
+        self.until = Some(now.saturating_add(SCAN_STOP_TIMEOUT_MS));
+        Ok(Request::StopScan)
+    }
+
+    fn tick(&mut self, now: u64) {
+        if self.until.is_some_and(|deadline| now >= deadline) {
+            self.end();
+        }
+    }
+
+    /// Close the local window; physical radio cleanup remains the caller's concern.
+    fn end(&mut self) {
+        self.until = None;
+        self.stopping = false;
+    }
+
+    fn discover(&mut self, identity: Identity, rssi: i8, now: u64) {
+        if !self.active() || self.stopping {
+            return;
+        }
+        let slot = self
+            .discoveries
+            .iter()
+            .position(|entry| entry.is_some_and(|d| d.identity == identity))
+            .or_else(|| self.discoveries.iter().position(Option::is_none));
+        match slot {
+            Some(slot) => {
+                self.discoveries[slot] = Some(Discovery {
+                    identity,
+                    rssi,
+                    seen_ms: now,
+                });
+            }
+            None => self.overflows = self.overflows.saturating_add(1),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PendingSend {
+    observation: SendObservation,
+    data: [u8; 8],
+    deadline: u64,
+}
+
+impl PendingSend {
+    fn outstanding(&self) -> bool {
+        matches!(
+            self.observation.stage,
+            SendStage::Queued | SendStage::UartSubmitted
+        )
+    }
+}
+
 /// The adapter identifies received pages by type, so only one peer of each type
 /// can be selected. Slots with uncertain radio ownership are never reassigned.
 pub struct Channels {
-    discovery: State,
-    channels: [State; CHANNEL_CAPACITY],
+    scanner: Scanner,
+    channels: [Channel; CHANNEL_CAPACITY],
     next_packet: usize,
     next_diagnostic: usize,
     capacity: usize,
@@ -313,8 +325,8 @@ impl Default for Channels {
 impl Channels {
     pub const fn new() -> Self {
         Self {
-            discovery: State::new(),
-            channels: [const { State::new() }; CHANNEL_CAPACITY],
+            scanner: Scanner::new(),
+            channels: [const { Channel::new() }; CHANNEL_CAPACITY],
             next_packet: 0,
             next_diagnostic: 0,
             capacity: CHANNEL_CAPACITY,
@@ -323,6 +335,12 @@ impl Channels {
             send: None,
             next_send_id: 0,
         }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut channels = Self::new();
+        channels.capacity = capacity.min(CHANNEL_CAPACITY);
+        channels
     }
 
     pub fn begin_scan(&mut self, now: u64, duration_ms: u32) -> Result<Request, Error> {
@@ -337,20 +355,32 @@ impl Channels {
         if self.scan_state == ScanState::Uncertain {
             return Err(Error::Uncertain);
         }
-        let request = self.discovery.begin_scan(now, duration_ms)?;
+        let request = self.scanner.begin(now, duration_ms)?;
         self.scan_state = ScanState::Starting;
         self.scan_generation = self.scan_generation.wrapping_add(1);
         Ok(request)
     }
 
     pub fn stop_scan(&mut self, now: u64) -> Result<Request, Error> {
-        let request = self.discovery.stop_scan(now)?;
+        let request = self.scanner.stop(now)?;
         self.scan_state = ScanState::Stopping;
         Ok(request)
     }
 
     pub fn scanning(&self) -> bool {
-        self.discovery.scan_until.is_some()
+        self.scanner.active()
+    }
+
+    pub fn scan(&self) -> ScanSnapshot {
+        ScanSnapshot {
+            state: self.scan_state,
+            generation: self.scan_generation,
+            discovery_overflows: self.scanner.overflows,
+        }
+    }
+
+    pub fn discoveries(&self) -> &[Option<Discovery>; DISCOVERY_CAPACITY] {
+        &self.scanner.discoveries
     }
 
     fn index(&self, device_type: u8) -> Option<usize> {
@@ -362,24 +392,18 @@ impl Channels {
     }
 
     pub fn connect(&mut self, identity: Identity, now: u64) -> Result<Request, Error> {
-        if identity.device_type == 0
-            || identity.device_number == 0
-            || identity.transmission_type == 0
-        {
+        if !explicit(identity) {
             return Err(Error::InvalidIdentity);
         }
         if self.scanning() || self.scan_state == ScanState::Uncertain {
             return Err(Error::Busy);
         }
+        let usable = &self.channels[..self.capacity];
         let slot = self
             .index(identity.device_type)
+            .or_else(|| usable.iter().position(|channel| channel.selected.is_none()))
             .or_else(|| {
-                self.channels[..self.capacity]
-                    .iter()
-                    .position(|channel| channel.selected.is_none())
-            })
-            .or_else(|| {
-                self.channels[..self.capacity]
+                usable
                     .iter()
                     .position(|channel| channel.link == LinkState::Disconnected)
             })
@@ -399,16 +423,13 @@ impl Channels {
     pub fn receive(&mut self, event: Event, now: u64) {
         self.tick(now);
         let device_type = match event {
-            Event::Discovery { .. } | Event::ScanEnded => {
-                if matches!(event, Event::ScanEnded) {
-                    return;
-                }
-                if matches!(event, Event::Discovery { .. })
-                    && self.scan_state == ScanState::Starting
-                {
+            // Untagged scan-end reports never complete or clear a window.
+            Event::ScanEnded => return,
+            Event::Discovery { identity, rssi } => {
+                if self.scan_state == ScanState::Starting {
                     self.scan_state = ScanState::Active;
                 }
-                self.discovery.receive(event, now);
+                self.scanner.discover(identity, rssi, now);
                 return;
             }
             Event::Connected(identity)
@@ -424,14 +445,15 @@ impl Channels {
 
     pub fn tick(&mut self, now: u64) {
         let scanning = self.scanning();
-        self.discovery.tick(now);
+        self.scanner.tick(now);
         if scanning && !self.scanning() {
             self.scan_state = ScanState::Idle;
         }
-        if self.send.is_some_and(|send| {
-            send.observation.stage == SendStage::UartSubmitted && now >= send.deadline
-        }) {
-            self.send.as_mut().unwrap().observation.stage = SendStage::Uncertain;
+        if let Some(send) = &mut self.send
+            && send.observation.stage == SendStage::UartSubmitted
+            && now >= send.deadline
+        {
+            send.observation.stage = SendStage::Uncertain;
         }
         for channel in &mut self.channels {
             channel.tick(now);
@@ -451,31 +473,27 @@ impl Channels {
         }
     }
 
-    pub fn transport_loss(&mut self, now: u64) {
+    /// Invalidate everything that shares the failed transport.
+    fn lose_transport(&mut self, now: u64, lose: fn(&mut Channel, u64)) {
         self.cancel_send(None);
         if self.scanning() {
             self.scan_state = ScanState::Uncertain;
         }
-        self.discovery.transport_loss(now);
+        self.scanner.end();
         for channel in &mut self.channels {
             if channel.selected.is_some() {
-                channel.transport_loss(now);
+                lose(channel, now);
             }
         }
     }
 
+    pub fn transport_loss(&mut self, now: u64) {
+        self.lose_transport(now, Channel::transport_loss);
+    }
+
     /// Use when the failed command is unknown or the shared transport failed.
     pub fn tx_failed(&mut self, now: u64) {
-        self.cancel_send(None);
-        if self.scanning() {
-            self.scan_state = ScanState::Uncertain;
-        }
-        self.discovery.tx_failed(now);
-        for channel in &mut self.channels {
-            if channel.selected.is_some() {
-                channel.tx_failed(now);
-            }
-        }
+        self.lose_transport(now, Channel::tx_failed);
     }
 
     /// A command-specific failure invalidates only the channel it addressed.
@@ -483,7 +501,7 @@ impl Channels {
         match request {
             Request::Scan { .. } | Request::StopScan => {
                 self.scan_state = ScanState::Uncertain;
-                self.discovery.tx_failed(now);
+                self.scanner.end();
             }
             Request::Connect { identity } | Request::Disconnect { identity } => {
                 self.cancel_send(Some(identity.device_type));
@@ -496,13 +514,11 @@ impl Channels {
         }
     }
 
-    pub fn discoveries(&self) -> &[Option<Discovery>; DISCOVERY_CAPACITY] {
-        self.discovery.discoveries()
-    }
-
-    /// Global discovery and transport diagnostics; per-peer state is in channel().
-    pub fn snapshot(&self, now: u64) -> Snapshot {
-        self.discovery.snapshot(now)
+    /// Only call after a confirmed companion restart. A framing reset,
+    /// reconnect or wake does not establish physical discovery cleanup.
+    pub fn companion_restarted(&mut self, now: u64) {
+        self.transport_loss(now);
+        self.scan_state = ScanState::Idle;
     }
 
     pub fn channel(&self, device_type: u8, now: u64) -> Option<Snapshot> {
@@ -511,46 +527,41 @@ impl Channels {
     }
 
     pub fn snapshots(&self, now: u64) -> [Option<Snapshot>; CHANNEL_CAPACITY] {
-        core::array::from_fn(|slot| {
-            self.channels[slot]
-                .selected
-                .map(|_| self.channels[slot].snapshot(now))
-        })
+        self.channels
+            .each_ref()
+            .map(|channel| channel.selected.map(|_| channel.snapshot(now)))
     }
 
     /// Round-robin draining keeps a busy sensor from starving the other queues.
-    pub fn pop_packet(&mut self) -> Option<Packet> {
+    fn pop_fair(
+        channels: &mut [Channel; CHANNEL_CAPACITY],
+        next: &mut usize,
+        pop: fn(&mut Channel) -> Option<Packet>,
+    ) -> Option<Packet> {
         for offset in 0..CHANNEL_CAPACITY {
-            let slot = (self.next_packet + offset) % CHANNEL_CAPACITY;
-            if let Some(packet) = self.channels[slot].pop_packet() {
-                self.next_packet = (slot + 1) % CHANNEL_CAPACITY;
+            let slot = (*next + offset) % CHANNEL_CAPACITY;
+            if let Some(packet) = pop(&mut channels[slot]) {
+                *next = (slot + 1) % CHANNEL_CAPACITY;
                 return Some(packet);
             }
         }
         None
     }
-}
 
-#[derive(Clone, Copy)]
-struct PendingSend {
-    observation: SendObservation,
-    data: [u8; 8],
-    deadline: u64,
-}
-
-impl Channels {
-    pub fn with_capacity(capacity: usize) -> Self {
-        let mut channels = Self::new();
-        channels.capacity = capacity.min(CHANNEL_CAPACITY);
-        channels
+    pub fn pop_packet(&mut self) -> Option<Packet> {
+        Self::pop_fair(
+            &mut self.channels,
+            &mut self.next_packet,
+            Channel::pop_packet,
+        )
     }
 
-    pub fn scan(&self) -> ScanSnapshot {
-        ScanSnapshot {
-            state: self.scan_state,
-            generation: self.scan_generation,
-            discovery_overflows: self.discovery.discovery_overflows,
-        }
+    pub fn pop_diagnostic_packet(&mut self) -> Option<Packet> {
+        Self::pop_fair(
+            &mut self.channels,
+            &mut self.next_diagnostic,
+            Channel::pop_diagnostic_packet,
+        )
     }
 
     pub fn queue_send(
@@ -569,12 +580,7 @@ impl Channels {
         if channel.link != LinkState::Connected {
             return Err(Error::Disconnected);
         }
-        if self.send.is_some_and(|send| {
-            matches!(
-                send.observation.stage,
-                SendStage::Queued | SendStage::UartSubmitted
-            )
-        }) {
+        if self.send_pending() {
             return Err(Error::Busy);
         }
         self.next_send_id = self.next_send_id.checked_add(1).ok_or(Error::Capacity)?;
@@ -592,12 +598,7 @@ impl Channels {
     }
 
     pub fn send_pending(&self) -> bool {
-        self.send.is_some_and(|send| {
-            matches!(
-                send.observation.stage,
-                SendStage::Queued | SendStage::UartSubmitted
-            )
-        })
+        self.send.is_some_and(|send| send.outstanding())
     }
 
     pub fn pending_send(&self) -> Option<(OperationId, Target, [u8; 8])> {
@@ -655,24 +656,6 @@ impl Channels {
             };
         }
     }
-
-    /// Only call after a confirmed companion restart. A framing reset,
-    /// reconnect or wake does not establish physical discovery cleanup.
-    pub fn companion_restarted(&mut self, now: u64) {
-        self.transport_loss(now);
-        self.scan_state = ScanState::Idle;
-    }
-
-    pub fn pop_diagnostic_packet(&mut self) -> Option<Packet> {
-        for offset in 0..CHANNEL_CAPACITY {
-            let slot = (self.next_diagnostic + offset) % CHANNEL_CAPACITY;
-            if let Some(packet) = self.channels[slot].pop_diagnostic_packet() {
-                self.next_diagnostic = (slot + 1) % CHANNEL_CAPACITY;
-                return Some(packet);
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -683,7 +666,7 @@ mod tests {
         device_number: 123,
         transmission_type: 5,
     };
-    fn connected(state: &mut State) {
+    fn connected(state: &mut Channel) {
         state.connect(PEER, 0).unwrap();
         state.receive(Event::Connected(PEER), 1);
     }
@@ -851,6 +834,43 @@ mod tests {
     }
 
     #[test]
+    fn scan_failures_leave_discovery_uncertain_until_companion_restart() {
+        let mut channels = three_channels();
+        channels.begin_scan(2, 1_000).unwrap();
+        channels.receive(
+            Event::Discovery {
+                identity: HR,
+                rssi: -50,
+            },
+            3,
+        );
+        channels.request_failed(Request::StopScan, 4);
+        assert!(!channels.scanning());
+        assert_eq!(channels.scan().state, ScanState::Uncertain);
+        assert_eq!(channels.begin_scan(5, 100), Err(Error::Uncertain));
+        assert_eq!(channels.connect(HR, 5), Err(Error::Busy));
+        assert_eq!(channels.channel(40, 5).unwrap().link, LinkState::Connected);
+        // Discoveries stay visible, and late reports cannot reopen the window.
+        assert_eq!(channels.discoveries()[0].unwrap().identity, HR);
+        channels.receive(
+            Event::Discovery {
+                identity: POWER,
+                rssi: -40,
+            },
+            6,
+        );
+        assert!(channels.discoveries()[1].is_none());
+        channels.companion_restarted(7);
+        assert_eq!(channels.scan().state, ScanState::Idle);
+        for snapshot in channels.snapshots(7).into_iter().flatten() {
+            assert!(!snapshot.scanning);
+            assert_eq!(snapshot.link, LinkState::TransportLost);
+        }
+        channels.begin_scan(8, 100).unwrap();
+        assert!(channels.scanning());
+    }
+
+    #[test]
     fn ten_receivers_drain_fairly_with_independent_diagnostic_overflow() {
         let mut channels = Channels::new();
         let types = [40, 120, 11, 122, 123, 121, 34, 17, 128, 35];
@@ -967,7 +987,7 @@ mod tests {
 
     #[test]
     fn requires_selected_connection_and_filters_other_types() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         state.connect(PEER, 0).unwrap();
         state.receive(
             Event::Data {
@@ -1008,7 +1028,7 @@ mod tests {
 
     #[test]
     fn scan_is_bounded_deduplicates_and_ends() {
-        let mut state = State::new();
+        let mut state = Channels::new();
         state.begin_scan(0, 100).unwrap();
         for number in 1..=9 {
             state.receive(
@@ -1033,18 +1053,23 @@ mod tests {
             2,
         );
         assert_eq!(state.discoveries()[0].unwrap().rssi, -66);
-        assert_eq!(state.snapshot(2).discovery_overflows, 1);
+        assert_eq!(state.scan().discovery_overflows, 1);
         assert_eq!(state.connect(PEER, 2), Err(Error::Busy));
+        // Untagged scan-end reports never close the window; its deadline does.
         state.receive(Event::ScanEnded, 3);
-        assert!(!state.snapshot(3).scanning);
-        state.begin_scan(4, 10).unwrap();
-        state.tick(14);
-        assert!(!state.snapshot(14).scanning);
+        assert!(state.scanning());
+        state.tick(100);
+        assert!(!state.scanning());
+        assert_eq!(state.scan().state, ScanState::Idle);
+        state.begin_scan(101, 10).unwrap();
+        assert!(state.discoveries().iter().all(Option::is_none));
+        state.tick(111);
+        assert!(!state.scanning());
     }
 
     #[test]
     fn packet_overflow_exposes_loss_and_retains_latest() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         connected(&mut state);
         for value in 0..6 {
             state.receive(
@@ -1068,7 +1093,7 @@ mod tests {
 
     #[test]
     fn transport_loss_invalidates_pages_and_late_events() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         connected(&mut state);
         state.receive(
             Event::Data {
@@ -1097,7 +1122,7 @@ mod tests {
 
     #[test]
     fn timeout_and_disconnect_never_replay_or_accept_late_data() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         state.connect(PEER, 0).unwrap();
         state.tick(CONNECT_TIMEOUT_MS);
         state.receive(Event::Connected(PEER), CONNECT_TIMEOUT_MS + 1);
@@ -1123,7 +1148,7 @@ mod tests {
     }
     #[test]
     fn switching_peer_requires_confirmed_close() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         let other = Identity {
             device_number: 124,
             ..PEER
@@ -1153,7 +1178,7 @@ mod tests {
     }
     #[test]
     fn late_close_after_loss_confirms_cleanup_but_late_open_does_not() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         connected(&mut state);
         state.transport_loss(2);
         state.receive(Event::Connected(PEER), 3);
@@ -1171,7 +1196,7 @@ mod tests {
 
     #[test]
     fn repeated_disconnect_does_not_send_or_extend_pending_close() {
-        let mut state = State::new();
+        let mut state = Channel::new();
         connected(&mut state);
         assert_eq!(
             state.disconnect(2),

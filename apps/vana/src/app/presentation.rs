@@ -242,13 +242,14 @@ impl Runtime {
         self.workout_display(system, now, ant, position);
     }
 
-    pub fn set_startup_status(&mut self, status: &'static str) {
-        if self.startup_status != status {
-            self.startup_status = status;
+    pub fn set_startup_status(&mut self, status: device_api::sensors::Startup) {
+        use device_api::sensors::Startup;
+        if self.startup_status != status.name() {
+            self.startup_status = status.name();
             self.menu.set_message(match status {
-                "charging" | "wake_pending" | "waiting" => b"STARTING SENSORS",
-                "probing" | "pending" => b"WAITING FOR COMPANION",
-                "unavailable" | "uncertain" | "timed_out" => b"STARTUP FAILED",
+                Startup::Charging | Startup::WakePending | Startup::Waiting => b"STARTING SENSORS",
+                Startup::Probing | Startup::Pending => b"WAITING FOR COMPANION",
+                Startup::Unavailable | Startup::Uncertain | Startup::TimedOut => b"STARTUP FAILED",
                 _ => b"SCAN THEN PICK SENSOR",
             });
             self.next_display = 0;

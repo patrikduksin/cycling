@@ -498,7 +498,7 @@ impl device_api::sound::Sound for Sound {
 
 pub struct Sensors;
 impl device_api::sensors::Sensors for Sensors {
-    fn startup_status(&self) -> &'static str {
+    fn startup_status(&self) -> device_api::sensors::Startup {
         crate::capabilities::sensors::startup_status()
     }
     fn startup_reason(&self) -> Option<u8> {
@@ -507,7 +507,7 @@ impl device_api::sensors::Sensors for Sensors {
     fn snapshot(&self, now: u64) -> device_api::sensors::Snapshot {
         crate::capabilities::sensors::snapshot(now)
     }
-    fn identity_status(&self) -> &'static str {
+    fn identity_status(&self) -> device_api::sensors::IdentityQuery {
         crate::capabilities::sensors::query_status()
     }
     fn query_identity(&mut self, now: u64) -> Result<(), device_api::observation::Error> {
@@ -515,7 +515,7 @@ impl device_api::sensors::Sensors for Sensors {
     }
 }
 
-impl device_api::position_control::Control for Positioning {
+impl device_api::position_control::PositionControl for Positioning {
     fn control(&self) -> device_api::position_control::Snapshot {
         crate::capabilities::position_control::snapshot()
     }
@@ -527,7 +527,7 @@ impl device_api::position_control::Control for Positioning {
     }
 }
 
-impl device_api::power::Control for Power {
+impl device_api::power::PowerControl for Power {
     fn capabilities(&self) -> device_api::power::Capabilities {
         crate::capabilities::power::capabilities()
     }

@@ -16,7 +16,7 @@ pub struct Snapshot {
     pub resume_at_ms: Option<u64>,
     pub generation: u32,
 }
-pub trait Control {
+pub trait PositionControl {
     fn control(&self) -> Snapshot;
     fn pause(&mut self, duration_ms: u32, now: u64) -> Result<(), crate::observation::Error>;
     fn resume(&mut self, now: u64) -> Result<(), crate::observation::Error>;

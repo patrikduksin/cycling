@@ -1,5 +1,6 @@
 //! Fixed companion startup operations. No runtime power-command interface.
 use device_api::observation::Observation;
+use device_api::sensors::Startup as Phase;
 
 pub fn frame() -> [u8; 16] {
     crate::drivers::companion::command(16, [0xe2, 2, 0, 0, 0, 1, 0, 0])
@@ -12,7 +13,7 @@ pub fn wake_frame() -> [u8; 16] {
 }
 
 pub struct Startup {
-    status: &'static str,
+    status: Phase,
     started_ms: u64,
     first: Option<[u64; 3]>,
     reason: Option<u8>,
@@ -30,7 +31,7 @@ impl Default for Startup {
 impl Startup {
     pub const fn new() -> Self {
         Self {
-            status: "not_submitted",
+            status: Phase::NotSubmitted,
             started_ms: 0,
             first: None,
             reason: None,
@@ -42,8 +43,8 @@ impl Startup {
     }
 
     pub fn begin(&mut self, now: u64) {
-        if self.status == "not_submitted" {
-            self.status = "probing";
+        if self.status == Phase::NotSubmitted {
+            self.status = Phase::Probing;
             self.started_ms = now;
         }
     }
@@ -51,7 +52,7 @@ impl Startup {
     pub fn ant_allowed(&self) -> bool {
         matches!(
             self.status,
-            "already_running" | "running_degraded" | "ready"
+            Phase::AlreadyRunning | Phase::RunningDegraded | Phase::Ready
         )
     }
 
@@ -65,7 +66,7 @@ impl Startup {
         transport_clean: bool,
         radio_seen: bool,
     ) -> bool {
-        if self.status != "probing" {
+        if self.status != Phase::Probing {
             return false;
         }
         self.activity |= radio_seen;
@@ -83,17 +84,17 @@ impl Startup {
             return false;
         }
         if self.transport_lost {
-            self.status = "unavailable";
+            self.status = Phase::Unavailable;
         } else if self.activity {
             self.status = if advancing {
-                "already_running"
+                Phase::AlreadyRunning
             } else {
-                "running_degraded"
+                Phase::RunningDegraded
             };
         } else {
             // Battery startup waits for this ACK before periodic battery/power
             // reports begin. Waiting for those reports here deadlocks boot.
-            self.status = "pending";
+            self.status = Phase::Pending;
             self.first = None;
             return true;
         }
@@ -101,7 +102,7 @@ impl Startup {
     }
 
     pub fn request_wake(&mut self) -> Result<(), device_api::observation::Error> {
-        if self.status != "charging" || self.wake_requested || self.wake_authorized {
+        if self.status != Phase::Charging || self.wake_requested || self.wake_authorized {
             return Err(device_api::observation::Error::Unavailable);
         }
         self.wake_authorized = true;
@@ -118,7 +119,7 @@ impl Startup {
         radio_seen: bool,
     ) -> bool {
         if !self.wake_authorized
-            || self.status != "charging"
+            || self.status != Phase::Charging
             || self.reason != Some(4)
             || self.wake_requested
         {
@@ -132,44 +133,44 @@ impl Startup {
                 .any(|value| !matches!(value, Observation::Unavailable));
         self.transport_lost |= !transport_clean;
         if self.activity {
-            self.status = "running_degraded";
+            self.status = Phase::RunningDegraded;
         } else if self.transport_lost {
-            self.status = "unavailable";
+            self.status = Phase::Unavailable;
         } else if bridge_fresh {
             self.wake_requested = true;
-            self.status = "wake_pending";
+            self.status = Phase::WakePending;
             return true;
         }
         false
     }
 
     pub fn wake_submitted(&mut self, result: Result<usize, ()>, now: u64) {
-        if self.status != "wake_pending" {
+        if self.status != Phase::WakePending {
             return;
         }
         self.started_ms = now;
         self.first = None;
         self.status = if result == Ok(16) {
-            "waiting"
+            Phase::Waiting
         } else {
-            "uncertain"
+            Phase::Uncertain
         };
     }
 
     /// A short FIFO write may have reached the companion. Never retry it.
     pub fn submitted(&mut self, result: Result<usize, ()>, now: u64) {
-        if self.status != "pending" {
+        if self.status != Phase::Pending {
             return;
         }
         self.started_ms = now;
         self.status = if result == Ok(16) {
-            "waiting"
+            Phase::Waiting
         } else {
-            "uncertain"
+            Phase::Uncertain
         };
     }
 
-    pub fn status(&self) -> &'static str {
+    pub fn status(&self) -> Phase {
         self.status
     }
 
@@ -178,8 +179,8 @@ impl Startup {
     }
 
     fn expire(&mut self, now: u64) {
-        if self.status == "waiting" && now.saturating_sub(self.started_ms) >= 10_000 {
-            self.status = "timed_out";
+        if self.status == Phase::Waiting && now.saturating_sub(self.started_ms) >= 10_000 {
+            self.status = Phase::TimedOut;
         }
     }
 
@@ -190,7 +191,7 @@ impl Startup {
             self.activity = true;
         }
         self.expire(now);
-        if !matches!(self.status, "waiting" | "charging") || group != 16 {
+        if !matches!(self.status, Phase::Waiting | Phase::Charging) || group != 16 {
             return;
         }
         let [0xe2, 2, 0, 0, 0xff, reason @ (4..=6), 0, 0xff] = payload else {
@@ -204,9 +205,9 @@ impl Startup {
         self.reason = Some(*reason);
         self.first = None;
         if *reason == 4 {
-            self.status = "charging";
+            self.status = Phase::Charging;
         } else {
-            self.status = "waiting";
+            self.status = Phase::Waiting;
             self.started_ms = now;
         }
     }
@@ -215,11 +216,11 @@ impl Startup {
     /// power-reason reply and a successful UART write cannot establish readiness.
     pub fn observe(&mut self, sample: device_api::sensors::Snapshot, now: u64) {
         self.expire(now);
-        if self.status != "waiting" || !matches!(self.reason, Some(5 | 6)) {
+        if self.status != Phase::Waiting || !matches!(self.reason, Some(5 | 6)) {
             return;
         }
         if self.advancing(sample, now) {
-            self.status = "ready";
+            self.status = Phase::Ready;
         }
     }
 

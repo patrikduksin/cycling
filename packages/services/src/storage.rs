@@ -1,4 +1,6 @@
 //! A two-sector, power-loss-tolerant journal for small records.
+use crate::checksum::Crc32;
+use crate::le::{get_u16, get_u32, put_u16, put_u32};
 use device_api::storage::*;
 
 pub const SECTOR_SIZE: usize = 4096;
@@ -179,35 +181,11 @@ fn newer(candidate: u32, current: u32) -> bool {
 }
 
 fn checksum(sequence: u32, payload: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffff;
-    for byte in sequence
-        .to_le_bytes()
-        .into_iter()
-        .chain((payload.len() as u32).to_le_bytes())
-        .chain(payload.iter().copied())
-    {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
-        }
-    }
-    !crc
-}
-
-fn get_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
-}
-
-fn get_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
-}
-
-fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
-
-fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    Crc32::new()
+        .update(&sequence.to_le_bytes())
+        .update(&(payload.len() as u32).to_le_bytes())
+        .update(payload)
+        .finish()
 }
 
 /// An exclusive borrow of one reservation. Journals and domain adapters can

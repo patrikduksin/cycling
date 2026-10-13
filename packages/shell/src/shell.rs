@@ -197,7 +197,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             self.input_events = self.input_events.saturating_add(1);
             #[cfg(feature = "debug-harness")]
             if edge.input == Input::Cancel {
-                self.harness.stop_input("physical_loss");
+                self.harness
+                    .stop_input(crate::harness::InputState::PhysicalLoss);
             }
             self.consume(edge.input, now);
         }

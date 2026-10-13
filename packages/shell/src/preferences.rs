@@ -1,4 +1,5 @@
 //! Versioned user preferences and wear-conscious save scheduling.
+use firmware_services::le::{get_u16, put_u16};
 
 pub const DEFAULT_BRIGHTNESS: u8 = 50;
 pub const DEFAULT_DIM_TIMEOUT_SECS: u16 = 30;
@@ -8,7 +9,36 @@ pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
 const VERSION: u8 = 5;
-const LENGTH: usize = 159;
+const LENGTH: usize = layout::BLE_CHARACTERISTIC + 2;
+
+/// Byte offsets of the persisted settings record. Older versions are prefixes
+/// of this layout; text fields are length-prefixed and zero-padded, and every
+/// unused byte must stay zero. Multi-byte fields are little-endian.
+mod layout {
+    pub const VERSION_BYTE: usize = 7;
+    pub const BRIGHTNESS: usize = 8;
+    pub const DIM_TIMEOUT: usize = 9;
+    pub const DIM_BRIGHTNESS: usize = 11;
+    pub const TIMEZONE: usize = 12;
+    /// Always zero; terminates version 4 records.
+    pub const RESERVED: usize = 14;
+    pub const WIFI: usize = 15;
+    pub const SSID_LEN: usize = 16;
+    pub const SSID: usize = 17;
+    pub const PASSWORD_LEN: usize = SSID + 32;
+    pub const PASSWORD: usize = PASSWORD_LEN + 1;
+    pub const BLE: usize = PASSWORD + 63;
+    pub const BLE_PROFILE: usize = BLE + 1;
+    pub const BLE_NAME_LEN: usize = BLE_PROFILE + 1;
+    pub const BLE_NAME: usize = BLE_NAME_LEN + 1;
+    pub const BLE_ADDRESS_KIND: usize = BLE_NAME + 32;
+    pub const BLE_ADDRESS: usize = BLE_ADDRESS_KIND + 1;
+    pub const BLE_SERVICE: usize = BLE_ADDRESS + 6;
+    pub const BLE_CHARACTERISTIC: usize = BLE_SERVICE + 2;
+}
+const V2_LENGTH: usize = 10;
+const V3_LENGTH: usize = 13;
+const V4_LENGTH: usize = layout::RESERVED + 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
@@ -117,31 +147,29 @@ impl Settings {
     }
 
     pub fn encode(self) -> [u8; LENGTH] {
+        use layout::*;
         let mut output = [0; LENGTH];
         output[..PREFIX.len()].copy_from_slice(PREFIX);
-        output[7] = VERSION;
-        output[8] = self.brightness;
-        output[9..11].copy_from_slice(&self.dim_timeout_secs.to_le_bytes());
-        output[11] = self.dim_brightness;
-        output[12..14].copy_from_slice(&self.timezone_minutes.to_le_bytes());
+        output[VERSION_BYTE] = VERSION;
+        output[BRIGHTNESS] = self.brightness;
+        put_u16(&mut output, DIM_TIMEOUT, self.dim_timeout_secs);
+        output[DIM_BRIGHTNESS] = self.dim_brightness;
+        put_u16(&mut output, TIMEZONE, self.timezone_minutes as u16);
         if let Some(wifi) = self.wifi {
-            output[15] = if wifi.wpa3 { 2 } else { 1 };
-            output[16] = wifi.ssid.bytes().len() as u8;
-            output[17..17 + wifi.ssid.bytes().len()].copy_from_slice(wifi.ssid.bytes());
-            output[49] = wifi.password.bytes().len() as u8;
-            output[50..50 + wifi.password.bytes().len()].copy_from_slice(wifi.password.bytes());
+            output[WIFI] = if wifi.wpa3 { 2 } else { 1 };
+            put_text(&mut output, SSID_LEN, wifi.ssid.bytes());
+            put_text(&mut output, PASSWORD_LEN, wifi.password.bytes());
         }
         if let Some(ble) = self.ble {
-            output[113] = 1;
-            output[114] = self.ble_profile;
-            output[115] = ble.name.bytes().len() as u8;
-            output[116..116 + ble.name.bytes().len()].copy_from_slice(ble.name.bytes());
+            output[BLE] = 1;
+            output[BLE_PROFILE] = self.ble_profile;
+            put_text(&mut output, BLE_NAME_LEN, ble.name.bytes());
             if let Some(address) = ble.address {
-                output[148] = 1;
-                output[149..155].copy_from_slice(&address);
+                output[BLE_ADDRESS_KIND] = 1;
+                output[BLE_ADDRESS..BLE_SERVICE].copy_from_slice(&address);
             }
-            output[155..157].copy_from_slice(&ble.service.to_le_bytes());
-            output[157..159].copy_from_slice(&ble.characteristic.to_le_bytes());
+            put_u16(&mut output, BLE_SERVICE, ble.service);
+            put_u16(&mut output, BLE_CHARACTERISTIC, ble.characteristic);
         }
         output
     }
@@ -158,6 +186,7 @@ pub enum Source {
 }
 
 pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
+    use layout::*;
     let Some(payload) = payload else {
         return (Settings::default(), Source::Missing);
     };
@@ -167,33 +196,35 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
     if !payload.starts_with(PREFIX) || payload.len() < 8 {
         return (Settings::default(), Source::Malformed);
     }
-    let settings = match payload[7] {
-        2 if payload.len() == 10 && payload[9] == 0 => {
-            return match Settings::new(payload[8]) {
+    let version = payload[VERSION_BYTE];
+    let length = payload.len();
+    let settings = match version {
+        2 if length == V2_LENGTH && payload[V2_LENGTH - 1] == 0 => {
+            return match Settings::new(payload[BRIGHTNESS]) {
                 Some(settings) => (settings, Source::Migrated),
                 None => (Settings::default(), Source::Malformed),
             };
         }
-        3 if payload.len() == 13 && payload[12] == 0 => {
+        3 if length == V3_LENGTH && payload[V3_LENGTH - 1] == 0 => {
             return match Settings::with_idle(
-                payload[8],
-                u16::from_le_bytes([payload[9], payload[10]]),
-                payload[11],
+                payload[BRIGHTNESS],
+                get_u16(payload, DIM_TIMEOUT),
+                payload[DIM_BRIGHTNESS],
             ) {
                 Some(settings) => (settings, Source::Migrated),
                 None => (Settings::default(), Source::Malformed),
             };
         }
         4 | VERSION
-            if ((payload[7] == 4 && payload.len() == 15)
-                || (payload[7] == VERSION && payload.len() == LENGTH))
-                && payload[14] == 0 =>
+            if ((version == 4 && length == V4_LENGTH)
+                || (version == VERSION && length == LENGTH))
+                && payload[RESERVED] == 0 =>
         {
             Settings::with_values(
-                payload[8],
-                u16::from_le_bytes([payload[9], payload[10]]),
-                payload[11],
-                i16::from_le_bytes([payload[12], payload[13]]),
+                payload[BRIGHTNESS],
+                get_u16(payload, DIM_TIMEOUT),
+                payload[DIM_BRIGHTNESS],
+                get_u16(payload, TIMEZONE) as i16,
             )
         }
         4 | VERSION => None,
@@ -201,70 +232,60 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
     };
     match settings {
         Some(mut settings) => {
-            if payload[7] == 4 {
+            if version == 4 {
                 return (settings, Source::Migrated);
             }
             let malformed = || (Settings::default(), Source::Malformed);
-            match payload[15] {
+            match payload[WIFI] {
                 0 => {
-                    if payload[16..113].iter().any(|b| *b != 0) {
+                    if payload[SSID_LEN..BLE].iter().any(|b| *b != 0) {
                         return malformed();
                     }
                 }
-                1 | 2 => {
-                    let n = usize::from(payload[16]);
-                    let m = usize::from(payload[49]);
-                    if n > 32
-                        || m > 63
-                        || payload[17 + n..49]
-                            .iter()
-                            .chain(payload[50 + m..113].iter())
-                            .any(|b| *b != 0)
-                    {
+                kind @ (1 | 2) => {
+                    let (Some(ssid), Some(password)) = (
+                        text(payload, SSID_LEN, PASSWORD_LEN),
+                        text(payload, PASSWORD_LEN, BLE),
+                    ) else {
                         return malformed();
-                    }
-                    settings.wifi = device_api::connectivity::WifiConfig::new(
-                        &payload[17..17 + n],
-                        &payload[50..50 + m],
-                        payload[15] == 2,
-                    );
+                    };
+                    settings.wifi =
+                        device_api::connectivity::WifiConfig::new(ssid, password, kind == 2);
                     if settings.wifi.is_none() {
                         return malformed();
                     }
                 }
                 _ => return malformed(),
             }
-            match payload[113] {
+            match payload[BLE] {
                 0 => {
-                    if payload[114..].iter().any(|b| *b != 0) {
+                    if payload[BLE_PROFILE..].iter().any(|b| *b != 0) {
                         return malformed();
                     }
                 }
                 1 => {
-                    let n = usize::from(payload[115]);
-                    if n > 32
-                        || payload[148] > 1
-                        || payload[116 + n..148].iter().any(|b| *b != 0)
-                        || (payload[148] == 0 && payload[149..155].iter().any(|b| *b != 0))
-                    {
-                        return malformed();
-                    }
-                    let Some(name) = device_api::connectivity::Text::new(&payload[116..116 + n])
+                    let mut address = [0; 6];
+                    address.copy_from_slice(&payload[BLE_ADDRESS..BLE_SERVICE]);
+                    let address = match payload[BLE_ADDRESS_KIND] {
+                        0 if address == [0; 6] => None,
+                        1 => Some(address),
+                        _ => return malformed(),
+                    };
+                    let Some(name) = text(payload, BLE_NAME_LEN, BLE_ADDRESS_KIND)
+                        .and_then(device_api::connectivity::Text::new)
                     else {
                         return malformed();
                     };
-                    let address =
-                        (payload[148] == 1).then(|| payload[149..155].try_into().unwrap());
                     if name.is_empty() && address.is_none() {
                         return malformed();
                     }
                     settings.ble = Some(device_api::ble_transport::Selection {
                         name,
                         address,
-                        service: u16::from_le_bytes([payload[155], payload[156]]),
-                        characteristic: u16::from_le_bytes([payload[157], payload[158]]),
+                        service: get_u16(payload, BLE_SERVICE),
+                        characteristic: get_u16(payload, BLE_CHARACTERISTIC),
                     });
-                    settings.ble_profile = payload[114];
+                    settings.ble_profile = payload[BLE_PROFILE];
                 }
                 _ => return malformed(),
             }
@@ -272,6 +293,18 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
         }
         None => (Settings::default(), Source::Malformed),
     }
+}
+
+/// A length byte at `at`, then text that must fit before `end` with zero padding.
+fn text(payload: &[u8], at: usize, end: usize) -> Option<&[u8]> {
+    let field = &payload[at + 1..end];
+    let length = usize::from(payload[at]);
+    (length <= field.len() && field[length..].iter().all(|b| *b == 0)).then(|| &field[..length])
+}
+
+fn put_text(output: &mut [u8], at: usize, value: &[u8]) {
+    output[at] = value.len() as u8;
+    output[at + 1..at + 1 + value.len()].copy_from_slice(value);
 }
 
 pub struct Saver {
@@ -303,10 +336,13 @@ impl Saver {
             self.pending = None;
             return false;
         }
-        if self.pending.map(|(value, _)| value) != Some(current) {
-            self.pending = Some((current, now));
-        }
-        let (_, changed_at) = self.pending.unwrap();
+        let changed_at = match self.pending {
+            Some((value, changed_at)) if value == current => changed_at,
+            _ => {
+                self.pending = Some((current, now));
+                now
+            }
+        };
         now >= changed_at + DEBOUNCE_MS && now >= self.retry_at
     }
 
@@ -398,6 +434,58 @@ mod tests {
             payload[index] = 255;
             assert_eq!(decode(Some(&payload)).1, Source::Malformed);
         }
+    }
+
+    #[test]
+    fn version_five_layout_is_pinned_and_padding_must_be_zero() {
+        let mut settings = Settings::with_values(77, 0x0102, 12, -180).unwrap();
+        settings.wifi =
+            Some(device_api::connectivity::WifiConfig::new(b"ssid", b"password", false).unwrap());
+        settings.ble = Some(device_api::ble_transport::Selection {
+            name: device_api::connectivity::Text::new(b"hr").unwrap(),
+            address: Some([1, 2, 3, 4, 5, 6]),
+            service: 0x180d,
+            characteristic: 0x2a37,
+        });
+        settings.ble_profile = 3;
+        let mut expected = [0u8; 159];
+        expected[..8].copy_from_slice(b"cycling\x05");
+        expected[8] = 77;
+        expected[9..11].copy_from_slice(&[2, 1]);
+        expected[11] = 12;
+        expected[12..14].copy_from_slice(&(-180i16).to_le_bytes());
+        expected[15] = 1;
+        expected[16] = 4;
+        expected[17..21].copy_from_slice(b"ssid");
+        expected[49] = 8;
+        expected[50..58].copy_from_slice(b"password");
+        expected[113] = 1;
+        expected[114] = 3;
+        expected[115] = 2;
+        expected[116..118].copy_from_slice(b"hr");
+        expected[148] = 1;
+        expected[149..155].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+        expected[155..157].copy_from_slice(&[0x0d, 0x18]);
+        expected[157..159].copy_from_slice(&[0x37, 0x2a]);
+        assert_eq!(settings.encode(), expected);
+        assert_eq!(decode(Some(&expected)), (settings, Source::Current));
+        for (index, value) in [(14, 1), (21, 1), (58, 1), (118, 1), (148, 2)] {
+            let mut payload = expected;
+            payload[index] = value;
+            assert_eq!(decode(Some(&payload)).1, Source::Malformed, "{index}");
+        }
+        let mut anonymous = expected;
+        anonymous[148] = 0;
+        assert_eq!(decode(Some(&anonymous)).1, Source::Malformed);
+        anonymous[149..155].fill(0);
+        assert_eq!(decode(Some(&anonymous)).0.ble.unwrap().address, None);
+        let mut unnamed = expected;
+        unnamed[115] = 0;
+        unnamed[116..118].fill(0);
+        assert_eq!(decode(Some(&unnamed)).1, Source::Current);
+        unnamed[148] = 0;
+        unnamed[149..155].fill(0);
+        assert_eq!(decode(Some(&unnamed)).1, Source::Malformed);
     }
 
     #[test]

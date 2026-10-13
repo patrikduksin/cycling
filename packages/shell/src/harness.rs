@@ -6,6 +6,7 @@ use device_api::input::Controls;
 use device_api::input::Input;
 use device_api::input::Point;
 use device_api::observation::Availability;
+use firmware_services::checksum::crc32;
 
 pub const EVENTS: usize = 64;
 pub const FRAMES: usize = 4;
@@ -150,15 +151,55 @@ pub fn parse(words: &mut core::str::SplitAsciiWhitespace<'_>) -> Option<Command>
     };
     Some(Command { session, operation })
 }
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb88320u32.wrapping_mul(crc & 1));
+/// Synthetic input sequence progress; stopped states name their reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputState {
+    Idle,
+    Queued,
+    Running,
+    Completed,
+    Cancelled,
+    Expired,
+    Overflow,
+    PhysicalLoss,
+}
+impl InputState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+            Self::Overflow => "overflow",
+            Self::PhysicalLoss => "physical_loss",
         }
     }
-    !crc
+    const fn active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaptureState {
+    Idle,
+    Running,
+    Completed,
+    Cancelled,
+    Expired,
+    Unavailable,
+}
+impl CaptureState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 #[derive(Clone, Copy)]
 struct Scheduled {
@@ -184,12 +225,11 @@ pub struct State {
     generation: u32,
     lease: u32,
     deadline: u64,
-    events: [Option<Scheduled>; EVENTS],
-    accepted: usize,
+    events: heapless::Vec<Scheduled, EVENTS>,
     delivered: usize,
     sequence: u32,
     sequence_high: u32,
-    input_state: &'static str,
+    input_state: InputState,
     started: u64,
     ended: u64,
     held: bool,
@@ -202,7 +242,7 @@ pub struct State {
     frames: [Frame; FRAMES],
     count: usize,
     requested: usize,
-    capture_state: &'static str,
+    capture_state: CaptureState,
     interval: u32,
     next_frame: u64,
     frame_high: u32,
@@ -226,12 +266,11 @@ impl State {
             generation: 0,
             lease: 0,
             deadline: 0,
-            events: [None; EVENTS],
-            accepted: 0,
+            events: heapless::Vec::new(),
             delivered: 0,
             sequence: 0,
             sequence_high: 0,
-            input_state: "idle",
+            input_state: InputState::Idle,
             started: 0,
             ended: 0,
             held: false,
@@ -244,7 +283,7 @@ impl State {
             frames: [Frame::default(); FRAMES],
             count: 0,
             requested: 0,
-            capture_state: "idle",
+            capture_state: CaptureState::Idle,
             interval: 0,
             next_frame: 0,
             frame_high: 0,
@@ -259,13 +298,13 @@ impl State {
     pub fn time(&self) -> u64 {
         self.clock.map_or(self.now, |clock| clock())
     }
-    pub fn stop_input(&mut self, reason: &'static str) {
+    pub fn stop_input(&mut self, reason: InputState) {
         if self.held {
             self.cancel_pending = true;
             self.held = false;
             self.cancelled = self.cancelled.saturating_add(1);
         }
-        if matches!(self.input_state, "running" | "queued") {
+        if self.input_state.active() {
             self.input_state = reason;
             self.ended = self.now;
         }
@@ -273,8 +312,8 @@ impl State {
     pub fn expire(&mut self, now: u64) {
         self.now = now;
         if self.session != 0 && now >= self.deadline {
-            self.stop_input("expired");
-            self.capture_state = "expired";
+            self.stop_input(InputState::Expired);
+            self.capture_state = CaptureState::Expired;
             self.session = 0;
         }
     }
@@ -286,10 +325,10 @@ impl State {
         if self.take_cancel() {
             return Some(Input::Cancel);
         }
-        if self.input_state != "running" {
+        if self.input_state != InputState::Running {
             return None;
         }
-        let scheduled = self.events[self.delivered]?;
+        let scheduled = *self.events.get(self.delivered)?;
         let due = self.started + u64::from(scheduled.offset);
         if now < due {
             return None;
@@ -314,14 +353,14 @@ impl State {
                 Input::Cancel
             }
         };
-        if self.delivered == self.accepted {
-            self.input_state = "completed";
+        if self.delivered == self.events.len() {
+            self.input_state = InputState::Completed;
             self.ended = now;
         }
         Some(event)
     }
     pub fn capture_due(&self, now: u64) -> bool {
-        self.capture_state == "running" && now >= self.next_frame
+        self.capture_state == CaptureState::Running && now >= self.next_frame
     }
     pub fn begin_frame(&mut self, g: Geometry) -> bool {
         let now = self.time();
@@ -339,7 +378,7 @@ impl State {
             .as_ref()
             .is_none_or(|b| offset > b.len() || bytes > b.len() - offset)
         {
-            self.capture_state = "unavailable";
+            self.capture_state = CaptureState::Unavailable;
             return false;
         }
         self.skipped = self
@@ -365,12 +404,15 @@ impl State {
         if !self.writing {
             return;
         }
+        let Some(buffer) = self.buffer.as_mut() else {
+            return;
+        };
         let f = self.frames[self.count];
         let index = y * f.width + x;
         self.ordered &= x < f.width && y < f.height && index == self.written;
         if x < f.width && y < f.height {
             let base = f.offset + index * 2;
-            self.buffer.as_mut().unwrap()[base..base + 2].copy_from_slice(&value.to_le_bytes());
+            buffer[base..base + 2].copy_from_slice(&value.to_le_bytes());
         }
         self.written += 1;
     }
@@ -384,13 +426,14 @@ impl State {
         f.ended = ended;
         f.submitted = submitted;
         f.complete = self.ordered && self.written == f.width * f.height;
-        if f.complete {
-            let base = f.offset;
-            f.crc = crc32(&self.buffer.as_ref().unwrap()[base..base + f.bytes]);
+        if f.complete
+            && let Some(buffer) = self.buffer.as_ref()
+        {
+            f.crc = crc32(&buffer[f.offset..f.offset + f.bytes]);
         }
         self.count += 1;
         if self.count == self.requested {
-            self.capture_state = "completed";
+            self.capture_state = CaptureState::Completed;
         }
     }
     pub fn command(
@@ -416,11 +459,11 @@ impl State {
                 self.generation += 1;
                 self.sequence_high = 0;
                 self.sequence = 0;
-                self.input_state = "idle";
-                self.accepted = 0;
+                self.input_state = InputState::Idle;
+                self.events.clear();
                 self.delivered = 0;
                 self.count = 0;
-                self.capture_state = "idle";
+                self.capture_state = CaptureState::Idle;
                 self.session = (u64::from(self.boot) << 32) | u64::from(self.generation);
                 self.lease = lease;
                 self.deadline = now + u64::from(lease);
@@ -481,14 +524,14 @@ impl State {
         match op {
             Operation::Ping => {}
             Operation::Close | Operation::Cancel => {
-                self.stop_input("cancelled");
-                self.capture_state = "cancelled";
+                self.stop_input(InputState::Cancelled);
+                self.capture_state = CaptureState::Cancelled;
                 if op == Operation::Close {
                     self.session = 0;
                 }
             }
             Operation::InputBegin(sequence) => {
-                if matches!(self.input_state, "running" | "queued") || self.held {
+                if self.input_state.active() || self.held {
                     return "BUSY";
                 }
                 if sequence <= self.sequence_high {
@@ -496,30 +539,27 @@ impl State {
                 }
                 self.sequence_high = sequence;
                 self.sequence = sequence;
-                self.accepted = 0;
+                self.events.clear();
                 self.delivered = 0;
-                self.events.fill(None);
                 self.planned_held = false;
                 self.max_late = 0;
                 self.losses = 0;
-                self.input_state = "queued";
+                self.input_state = InputState::Queued;
             }
             Operation::InputAdd {
                 sequence,
                 offset,
                 event,
             } => {
-                if sequence != self.sequence || self.input_state != "queued" {
+                if sequence != self.sequence || self.input_state != InputState::Queued {
                     return "STALE_OPERATION";
                 }
-                if self.accepted == EVENTS {
+                if self.events.is_full() {
                     self.losses += 1;
-                    self.stop_input("overflow");
+                    self.stop_input(InputState::Overflow);
                     return "OVERFLOW";
                 }
-                if offset > 30000
-                    || self.accepted > 0 && offset < self.events[self.accepted - 1].unwrap().offset
-                {
+                if offset > 30000 || self.events.last().is_some_and(|last| offset < last.offset) {
                     return "INVALID";
                 }
                 match event {
@@ -548,25 +588,26 @@ impl State {
                     }
                     Event::Cancel => self.planned_held = false,
                 }
-                self.events[self.accepted] = Some(Scheduled { offset, event });
-                self.accepted += 1;
+                // Cannot fail: fullness was rejected above.
+                let _ = self.events.push(Scheduled { offset, event });
                 let _ = write!(
                     out,
                     "sequence={} accepted={} ",
-                    self.sequence, self.accepted
+                    self.sequence,
+                    self.events.len()
                 );
                 return "ACCEPTED";
             }
             Operation::InputRun(sequence) => {
-                if sequence != self.sequence || self.input_state != "queued" {
+                if sequence != self.sequence || self.input_state != InputState::Queued {
                     return "STALE_OPERATION";
                 }
-                if self.accepted == 0 || self.planned_held {
+                if self.events.is_empty() || self.planned_held {
                     return "INVALID";
                 }
                 self.started = now;
                 self.ended = 0;
-                self.input_state = "running";
+                self.input_state = InputState::Running;
                 let _ = write!(out, "sequence={} started_ms={} ", sequence, now);
                 return "ACCEPTED";
             }
@@ -575,8 +616,8 @@ impl State {
                     out,
                     "sequence={} state={} accepted={} delivered={} losses={} cancelled={} started_ms={} ended_ms={} max_late_ms={} synthetic=true held={} ",
                     self.sequence,
-                    self.input_state,
-                    self.accepted,
+                    self.input_state.as_str(),
+                    self.events.len(),
                     self.delivered,
                     self.losses,
                     self.cancelled,
@@ -590,7 +631,7 @@ impl State {
                 if self.frame_high > u32::MAX - u32::from(count) {
                     return "UNAVAILABLE";
                 }
-                if self.capture_state == "running" {
+                if self.capture_state == CaptureState::Running {
                     return "BUSY";
                 }
                 if !(1..=FRAMES as u8).contains(&count)
@@ -612,19 +653,23 @@ impl State {
                 self.next_frame = now;
                 self.skipped = 0;
                 self.frames.fill(Frame::default());
-                self.capture_state = "running";
+                self.capture_state = CaptureState::Running;
                 return "ACCEPTED";
             }
             Operation::CaptureStop => {
-                if self.capture_state == "running" {
-                    self.capture_state = "cancelled";
+                if self.capture_state == CaptureState::Running {
+                    self.capture_state = CaptureState::Cancelled;
                 }
             }
             Operation::CaptureStatus => {
                 let _ = write!(
                     out,
                     "state={} requested={} captured={} skipped={} interval_ms={} frames=",
-                    self.capture_state, self.requested, self.count, self.skipped, self.interval
+                    self.capture_state.as_str(),
+                    self.requested,
+                    self.count,
+                    self.skipped,
+                    self.interval
                 );
                 for f in &self.frames[..self.count] {
                     let _ = write!(out, "{},", f.id);
@@ -651,8 +696,10 @@ impl State {
                     if !f.complete {
                         return "INCOMPLETE";
                     }
-                    let bytes = &self.buffer.as_ref().unwrap()
-                        [f.offset + offset..f.offset + offset + length];
+                    let Some(buffer) = self.buffer.as_ref() else {
+                        return "UNAVAILABLE";
+                    };
+                    let bytes = &buffer[f.offset + offset..f.offset + offset + length];
                     let mut encoded = [0; ENCODED_BYTES];
                     let (encoding, decoded_length, encoded_length) =
                         encode_chunk(bytes, &mut encoded);

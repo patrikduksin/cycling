@@ -11,6 +11,10 @@ rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/patrikduksin/cycling"
 
+[workspace.dependencies]
+# Match the version Embassy and the radio stacks already pull in.
+heapless = { version = "=0.9.3", default-features = false }
+
 [profile.release]
 opt-level = "s"
 lto = "fat"

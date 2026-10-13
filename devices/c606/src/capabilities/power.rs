@@ -14,6 +14,7 @@ use device_api::power::State;
 use device_api::power::Status;
 use device_api::power::Support;
 use device_api::power::WakeSources;
+use device_api::sensors::Startup;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Instant;
@@ -86,7 +87,7 @@ pub fn status() -> Status {
     if status.state == State::Idle
         && !matches!(
             super::sensors::startup_phase(),
-            "ready" | "already_running" | "running_degraded"
+            Startup::Ready | Startup::AlreadyRunning | Startup::RunningDegraded
         )
     {
         status.state = State::Initializing;
@@ -112,7 +113,7 @@ pub fn request_after(operation: Operation, delay_ms: u32, now: u64) -> Result<()
     }
     if !matches!(
         super::sensors::startup_status(),
-        "ready" | "already_running"
+        Startup::Ready | Startup::AlreadyRunning
     ) {
         return Err(Error::Unavailable);
     }
@@ -168,7 +169,9 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
     loop {
         let now = Instant::now().as_millis();
         let phase = super::sensors::startup_phase();
-        if TRANSITION.lock(|t| t.borrow().status().state) == State::Idle && phase == "charging" {
+        if TRANSITION.lock(|t| t.borrow().status().state) == State::Idle
+            && phase == Startup::Charging
+        {
             ACCESS.close();
             super::io::power_boundary(now);
             work = Work {
@@ -376,7 +379,10 @@ fn recover(work: &mut Work, light: &mut Backlight, now: u64) {
             crate::drivers::power_transition::sensors_after(super::sensors::snapshot(now), at)
         })
         && (!work.charging
-            || matches!(super::sensors::startup_phase(), "ready" | "already_running"))
+            || matches!(
+                super::sensors::startup_phase(),
+                Startup::Ready | Startup::AlreadyRunning
+            ))
     {
         TRANSITION.lock(|t| t.borrow_mut().recovered());
         super::io::power_boundary(now);

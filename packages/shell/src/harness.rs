@@ -6,6 +6,7 @@ use device_api::input::Controls;
 use device_api::input::Input;
 use device_api::input::Point;
 use device_api::observation::Availability;
+use firmware_services::checksum::crc32;
 
 pub const EVENTS: usize = 64;
 pub const FRAMES: usize = 4;
@@ -149,16 +150,6 @@ pub fn parse(words: &mut core::str::SplitAsciiWhitespace<'_>) -> Option<Command>
         _ => return None,
     };
     Some(Command { session, operation })
-}
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb88320u32.wrapping_mul(crc & 1));
-        }
-    }
-    !crc
 }
 #[derive(Clone, Copy)]
 struct Scheduled {

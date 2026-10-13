@@ -1,3 +1,5 @@
+use crate::checksum::crc32;
+use crate::le::{get_u32, get_u64};
 use device_api::bulk::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,25 +12,6 @@ pub struct Layout {
 }
 
 pub const OWNED_MAGIC: &[u8; 16] = b"CYCLING-BULK\0\0\0\0";
-
-fn u32_at(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
-}
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
-
-/// IEEE CRC32, shared by the on-media ownership marker and maintenance tools.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = u32::MAX;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb88320 & 0u32.wrapping_sub(crc & 1));
-        }
-    }
-    !crc
-}
 
 /// Accept only the agreed two-primary-partition layout: FAT32 followed by an
 /// application reservation (0xDA). MBR, unused entries and marker stay outside
@@ -48,10 +31,10 @@ pub fn parse_mbr(mbr: &[u8; SECTOR_SIZE], total: u64) -> Result<Layout, Error> {
     }
     let layout = Layout {
         total,
-        stock_start: u64::from(u32_at(stock, 8)),
-        stock_sectors: u64::from(u32_at(stock, 12)),
-        custom_start: u64::from(u32_at(custom, 8)),
-        custom_sectors: u64::from(u32_at(custom, 12)),
+        stock_start: u64::from(get_u32(stock, 8)),
+        stock_sectors: u64::from(get_u32(stock, 12)),
+        custom_start: u64::from(get_u32(custom, 8)),
+        custom_sectors: u64::from(get_u32(custom, 12)),
     };
     if layout.stock_start == 0
         || layout.stock_sectors == 0
@@ -97,16 +80,16 @@ pub fn parse_owned(
 ) -> Result<OwnedInfo, Error> {
     let layout = parse_mbr(mbr, total)?;
     if marker[..16] != OWNED_MAGIC[..]
-        || u32_at(marker, 16) != 1
-        || u32_at(marker, 20) != SECTOR_SIZE as u32
-        || u64_at(marker, 24) != layout.total
-        || u64_at(marker, 32) != layout.stock_start
-        || u64_at(marker, 40) != layout.stock_sectors
-        || u64_at(marker, 48) != layout.custom_start
-        || u64_at(marker, 56) != layout.custom_sectors
-        || u32_at(marker, 64) != crc32(mbr)
+        || get_u32(marker, 16) != 1
+        || get_u32(marker, 20) != SECTOR_SIZE as u32
+        || get_u64(marker, 24) != layout.total
+        || get_u64(marker, 32) != layout.stock_start
+        || get_u64(marker, 40) != layout.stock_sectors
+        || get_u64(marker, 48) != layout.custom_start
+        || get_u64(marker, 56) != layout.custom_sectors
+        || get_u32(marker, 64) != crc32(mbr)
         || marker[68..508].iter().any(|v| *v != 0)
-        || u32_at(marker, 508) != crc32(&marker[..508])
+        || get_u32(marker, 508) != crc32(&marker[..508])
     {
         return Err(Error::Unsupported);
     }

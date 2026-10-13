@@ -5,9 +5,11 @@ extern crate std;
 
 pub mod ant;
 pub mod bulk;
+pub mod checksum;
 pub mod connectivity;
 pub mod gps;
 pub mod input;
+pub mod le;
 pub mod network;
 pub mod network_time;
 pub mod position_control;

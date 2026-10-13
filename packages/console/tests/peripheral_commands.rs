@@ -261,7 +261,7 @@ fn owned_status_and_read_use_only_relative_capability() {
         output,
         format!(
             "sector=1 offset=510 length=2 crc32={:08x} data=2222",
-            firmware_services::bulk::crc32(&[0x22; 2])
+            firmware_services::checksum::crc32(&[0x22; 2])
         )
     );
     assert_eq!(media.reads, [1]);
@@ -350,7 +350,7 @@ fn owned_commands_parse_and_test_requires_harness() {
 fn owned_test_conflict_never_writes() {
     let mut media = OwnedMedia::new();
     let before = media.sectors;
-    let expected_crc = firmware_services::bulk::crc32(&media.sectors[1]) ^ 1;
+    let expected_crc = firmware_services::checksum::crc32(&media.sectors[1]) ^ 1;
     let mut output = String::new();
     assert_eq!(
         run(
@@ -375,7 +375,7 @@ fn owned_test_conflict_never_writes() {
 fn owned_test_writes_one_requested_relative_sector_with_requested_fill() {
     let mut media = OwnedMedia::new();
     let before = media.sectors;
-    let expected_crc = firmware_services::bulk::crc32(&media.sectors[1]);
+    let expected_crc = firmware_services::checksum::crc32(&media.sectors[1]);
     let mut output = String::new();
     assert_eq!(
         run(
@@ -396,7 +396,7 @@ fn owned_test_writes_one_requested_relative_sector_with_requested_fill() {
         output,
         format!(
             "sector=1 length=512 crc32={:08x} verified=true",
-            firmware_services::bulk::crc32(&[0xa5; 512])
+            firmware_services::checksum::crc32(&[0xa5; 512])
         )
     );
 }
@@ -407,7 +407,7 @@ fn owned_test_failed_read_cannot_mutate() {
     let mut media = OwnedMedia::new();
     let before = media.sectors;
     media.fail_read = true;
-    let expected_crc = firmware_services::bulk::crc32(&media.sectors[1]);
+    let expected_crc = firmware_services::checksum::crc32(&media.sectors[1]);
     let mut output = String::from("existing reply prefix ");
     assert_eq!(
         run(
@@ -432,7 +432,7 @@ fn owned_test_failed_read_cannot_mutate() {
 fn owned_test_ambiguous_write_is_not_retried_or_reported_successful() {
     let mut media = OwnedMedia::new();
     media.fail_write = true;
-    let expected_crc = firmware_services::bulk::crc32(&media.sectors[1]);
+    let expected_crc = firmware_services::checksum::crc32(&media.sectors[1]);
     let mut output = String::from("existing reply prefix ");
     assert_eq!(
         run(

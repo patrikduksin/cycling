@@ -578,7 +578,7 @@ impl Reader<'_> {
         let mut marker = [0; 512];
         self.read(layout.custom_start, &mut marker)?;
         let info = firmware_services::bulk::parse_owned(&mbr, &marker, total)?;
-        let binding = firmware_services::bulk::crc32(&mbr);
+        let binding = firmware_services::checksum::crc32(&mbr);
         if self
             .owned_binding
             .is_some_and(|previous| previous != binding)

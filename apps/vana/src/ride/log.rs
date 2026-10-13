@@ -10,6 +10,9 @@
 //! space. Scanning recovers an open ride at its last committed active duration,
 //! excluding downtime. The final slot is reserved for a terminal record.
 
+use firmware_services::checksum::crc32;
+use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
+
 pub const REGION_SIZE: usize = 1024 * 1024;
 pub const SECTOR_SIZE: usize = 4096;
 pub const SLOT_SIZE: usize = 256;
@@ -226,7 +229,7 @@ pub fn encode(entry: &Entry) -> Slot {
             &mut slot.0[HEADER_SIZE + index * SAMPLE_SIZE..][..SAMPLE_SIZE],
         );
     }
-    let crc = checksum(&slot.0[..COMMIT_OFFSET]);
+    let crc = crc32(&slot.0[..COMMIT_OFFSET]);
     put_u32(&mut slot.0, 28, crc);
     slot
 }
@@ -245,7 +248,7 @@ pub fn decode(slot: &Slot) -> Option<Entry> {
     let stored_checksum = get_u32(&slot.0, 28);
     let mut checked = slot.clone();
     checked.0[28..32].fill(0);
-    if checksum(&checked.0[..COMMIT_OFFSET]) != stored_checksum {
+    if crc32(&checked.0[..COMMIT_OFFSET]) != stored_checksum {
         return None;
     }
     let kind = match slot.0[5] {
@@ -589,38 +592,8 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
     })
 }
 
-fn checksum(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
-        }
-    }
-    !crc
-}
-
 pub fn transport_checksum(bytes: &[u8]) -> u32 {
-    checksum(bytes)
-}
-
-fn get_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
-}
-fn get_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
-}
-fn get_u64(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
-fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
-fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
-fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
-    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    crc32(bytes)
 }
 
 #[cfg(test)]

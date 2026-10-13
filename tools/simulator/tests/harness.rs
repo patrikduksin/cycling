@@ -320,7 +320,7 @@ fn captures_exact_once_submitted_pixels_crc_geometry_and_failure() {
         assert!(meta.contains("complete=true submitted=true physical=false"));
         assert!(meta.contains(&format!(
             "crc32={:08x}",
-            firmware_shell::harness::crc32(&expected)
+            firmware_services::checksum::crc32(&expected)
         )));
         let chunk = call(
             &mut s,
@@ -383,7 +383,7 @@ fn captures_exact_once_submitted_pixels_crc_geometry_and_failure() {
             "STALE_FRAME"
         );
     }
-    assert_eq!(firmware_shell::harness::crc32(b"123456789"), 0xcbf43926);
+    assert_eq!(firmware_services::checksum::crc32(b"123456789"), 0xcbf43926);
 }
 #[test]
 fn sequence_records_achieved_time_skips_and_remains_bounded_without_host() {
@@ -450,7 +450,7 @@ fn bounded_rle_transfer_round_trips_runs_raw_fallback_and_pixel_boundaries() {
         let length = fields["length"].parse::<usize>().unwrap();
         assert_eq!(bytes.len(), length);
         assert_eq!(
-            firmware_shell::harness::crc32(&bytes),
+            firmware_services::checksum::crc32(&bytes),
             u32::from_str_radix(fields["crc32"], 16).unwrap()
         );
         (fields["encoding"].to_owned(), length, bytes, encoded.len())

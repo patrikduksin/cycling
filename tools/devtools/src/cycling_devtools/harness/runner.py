@@ -18,96 +18,17 @@ import cycling_devtools.connectivity.ble_config as ble_config
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.av import Capture, discover
+from cycling_devtools.harness.recipes import RECIPES
 from cycling_devtools.harness.transport import ManualAction, Real, Virtual, usb_node
 from cycling_devtools.terminal.usb import reply_fields
 from cycling_devtools.workspace import ROOT, private_path
+
 
 class Unsupported(RuntimeError):
     pass
 
 
 VERSION = 1
-RECIPES = {
-    'input-screen': {'steps': [
-        {'op': 'command', 'command': 'INPUT'},
-        {'op': 'input', 'gesture': 'tap', 'x': 30, 'y': 30},
-        {'op': 'input', 'gesture': 'hold', 'x': 40, 'y': 40, 'duration_ms': 500},
-        {'op': 'input', 'gesture': 'swipe', 'x': 20, 'y': 20, 'to_x': 100, 'to_y': 120},
-        {'op': 'input', 'gesture': 'button', 'button': 0, 'repeat': 2},
-        {'op': 'capture', 'count': 1}, {'op': 'command', 'command': 'INPUT'}]},
-    'frames': {'steps': [{'op': 'capture', 'count': 4, 'interval_ms': 250}]},
-    'recovery': {'steps': [{'op': 'command', 'command': 'POSITION'},
-        {'op': 'recover', 'mode': 'terminal', 'seconds': 2},
-        {'op': 'command', 'command': 'POSITION'}, {'op': 'recover', 'mode': 'restart'},
-        {'op': 'command', 'command': 'INPUT'}]},
-    'shared': {'steps': [{'op': 'command', 'command': 'INFO'},
-        {'op': 'command', 'command': 'SETTINGS'}, {'op': 'input', 'gesture': 'tap', 'x': 30, 'y': 30},
-        {'op': 'capture', 'count': 2, 'interval_ms': 250}, {'op': 'recover', 'mode': 'restart'},
-        {'op': 'command', 'command': 'SETTINGS'}]},
-    'av': {'captures': [{'kind': 'camera', 'seconds': 5}, {'kind': 'microphone', 'seconds': 5, 'fixture': True, 'floor_db': -60, 'margin_db': 8}],
-        'steps': [{'op': 'capture', 'count': 2, 'interval_ms': 500}]},
-}
-RECIPES['virtual-foundation'] = {'steps': [
-    {'op': 'virtual-command', 'command': 'BRIGHTNESS 61'},
-    {'op': 'virtual-command', 'command': 'SAVE'},
-    {'op': 'recover', 'mode': 'restart'},
-    {'op': 'command', 'command': 'SETTINGS', 'expect': {'brightness': '61'}},
-    {'op': 'fixture', 'command': 'STORAGE_FAIL 1 12'},
-    {'op': 'virtual-command', 'command': 'BRIGHTNESS 42'},
-    {'op': 'virtual-command', 'command': 'SAVE', 'status': 'FAILED'},
-    {'op': 'recover', 'mode': 'restart'},
-    {'op': 'command', 'command': 'SETTINGS', 'expect': {'brightness': '61'}},
-    {'op': 'fixture', 'command': 'POSITION NMEA $GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A'},
-    {'op': 'command', 'command': 'POSITION', 'expect': {'transport': 'receiving'}},
-    {'op': 'delay', 'seconds': 4},
-    {'op': 'command', 'command': 'POSITION', 'expect': {'transport': 'silent'}},
-    {'op': 'fixture', 'command': 'POSITION LOSS'},
-    {'op': 'command', 'command': 'POSITION', 'expect': {'transport': 'failed'}},
-    {'op': 'fixture', 'command': 'BLE CONNECT'},
-    {'op': 'fixture', 'command': 'BLE LOSS'},
-    {'op': 'fixture', 'command': 'BLE DISCONNECT'},
-]}
-RECIPES['virtual-sdk'] = {'steps': [
-    {'op': 'delay', 'seconds': 3},
-    {'op': 'virtual-command', 'command': 'RIDE STATUS', 'expect': {'state': 'ready'}},
-    {'op': 'virtual-command', 'command': 'RIDE START', 'status': 'ACCEPTED'},
-    {'op': 'delay', 'seconds': 1},
-    {'op': 'fixture', 'command': 'BLE CONNECT'},
-    {'op': 'fixture', 'command': 'BLE HEART 88'},
-    {'op': 'virtual-command', 'command': 'RIDE SENSORS', 'expect': {'heart': 'Some(88)'}},
-    {'op': 'delay', 'seconds': 1.2},
-    {'op': 'recover', 'mode': 'restart'},
-    {'op': 'delay', 'seconds': 5},
-    {'op': 'virtual-command', 'command': 'RIDE STATUS', 'expect': {'rides': '1'}},
-    {'op': 'virtual-command', 'command': 'EXPORT INFO'},
-]}
-RECIPES['acceptance'] = {'captures': [
-    {'kind': 'camera', 'seconds': 10, 'samples_s': [1.5, 2.5, 3.5, 4.5, 9.5]},
-    {'kind': 'microphone', 'seconds': 5, 'fixture': True, 'floor_db': -60, 'margin_db': 8,
-     'position': 'Laptop microphone and laptop speaker fixture; document unchanged physical placement in evidence.'}],
-    'steps': [
-        {'op': 'delay', 'seconds': 2},
-        {'op': 'command', 'command': 'BRIGHTNESS 100'},
-        {'op': 'command', 'command': 'DISPLAY f800'}, {'op': 'delay', 'seconds': 1},
-        {'op': 'command', 'command': 'DISPLAY 07e0'}, {'op': 'delay', 'seconds': 1},
-        {'op': 'command', 'command': 'BRIGHTNESS 20'}, {'op': 'delay', 'seconds': 1},
-        {'op': 'command', 'command': 'BRIGHTNESS 100'},
-        {'op': 'command', 'command': 'POSITION', 'baseline': 'gnss'},
-        {'op': 'command', 'command': 'INPUT', 'baseline': 'companion'},
-        {'op': 'command', 'command': 'WIFI'}, {'op': 'command', 'command': 'BLE'},
-        {'op': 'input', 'gesture': 'tap', 'x': 30, 'y': 30},
-        {'op': 'input', 'gesture': 'hold', 'x': 40, 'y': 40, 'duration_ms': 500},
-        {'op': 'input', 'gesture': 'drag', 'x': 20, 'y': 20, 'to_x': 100, 'to_y': 120},
-        {'op': 'input', 'gesture': 'button', 'button': 0, 'repeat': 2},
-        {'op': 'capture', 'count': 1}, {'op': 'capture', 'count': 4, 'interval_ms': 250},
-        {'op': 'command', 'command': 'POSITION', 'progress_from': 'gnss', 'counters': ['bytes', 'valid'],
-         'unchanged': ['checksum_errors', 'parse_errors', 'dma_losses', 'line_overflows', 'uart_errors']},
-        {'op': 'command', 'command': 'INPUT', 'progress_from': 'companion', 'counters': ['companion_valid'],
-         'unchanged': ['bad_crc', 'uart_errors', 'touch_errors', 'input_lost']},
-        {'op': 'recover', 'mode': 'terminal', 'seconds': 1},
-        {'op': 'recover', 'mode': 'usb-reset', 'seconds': 1},
-        {'op': 'recover', 'mode': 'restart'},
-]}
 READ_ONLY = {'HELP', 'INFO', 'STATUS', 'POSITION', 'INPUT', 'BATTERY', 'TIME', 'SETTINGS',
              'ACTIVITY', 'WIFI', 'BLE', 'STORAGE', 'ANT', 'MMC', 'SOUND', 'GNSS', 'PRESSURE', 'MOTION', 'COMPANION'}
 
@@ -256,22 +177,27 @@ def connectivity_restore_steps(radio, original):
 def peripheral_command(step):
     op, action = step['op'], step.get('action')
     if op == 'sound':
-        if action == 'stop': return 'SOUND STOP'
+        if action == 'stop':
+            return 'SOUND STOP'
         if action == 'play' and type(step.get('pattern')) is int and step['pattern'] in (0, 10, 21, 22):
             return f'SOUND PLAY {step["pattern"]}'
     elif op == 'gnss':
-        if action == 'resume': return 'GNSS RESUME'
+        if action == 'resume':
+            return 'GNSS RESUME'
         if action == 'pause' and type(step.get('duration_ms')) is int and 2000 <= step['duration_ms'] <= 10000:
             return f'GNSS PAUSE {step["duration_ms"]}'
     elif op == 'mmc':
-        if action == 'recover': return 'MMC RECOVER'
+        if action == 'recover':
+            return 'MMC RECOVER'
         if action == 'clock' and type(step.get('hz')) is int and step['hz'] in (400000, 4000000, 20000000):
             return f'MMC CLOCK {step["hz"]}'
         if action == 'read' and type(step.get('sector')) is int and 0 <= step['sector'] < 2**32:
             offset, length = step.get('offset', 0), step.get('length', 256)
-            if type(offset) is int and type(length) is int and 0 <= offset < 512 and 1 <= length <= 256 and offset + length <= 512:
+            if (type(offset) is int and type(length) is int and 0 <= offset < 512
+                    and 1 <= length <= 256 and offset + length <= 512):
                 return f'MMC READ {step["sector"]} {offset} {length}'
-    elif op == 'companion' and action == 'query': return 'COMPANION QUERY'
+    elif op == 'companion' and action == 'query':
+        return 'COMPANION QUERY'
     raise ValueError('unsupported bounded peripheral operation')
 
 
@@ -573,80 +499,125 @@ class Runner:
         return result
 
     def step(self, step, index):
+        handler = STEP_HANDLERS.get(step['op'])
+        if handler is None:
+            raise ValueError('unknown operation')
+        return getattr(self, handler)(step, index)
+
+    def run_ant(self, step, _index):
+        return self.ant(step)
+
+    def run_connectivity(self, step, _index):
+        return self.connectivity(step['op'], step)
+
+    def run_peripheral(self, step, _index):
         op = step['op']
-        if op == 'ant':
-            return self.ant(step)
-        if op in ('wifi', 'ble'):
-            return self.connectivity(op, step)
-        if op in ('sound', 'gnss', 'mmc', 'companion'):
-            result = self.command(peripheral_command(step), ('OK',) if op == 'mmc' else ('ACCEPTED',))
-            if op == 'sound' and step.get('wait', True):
+        result = self.command(peripheral_command(step), ('OK',) if op == 'mmc' else ('ACCEPTED',))
+        if op == 'sound':
+            if step.get('wait', True):
                 result = self.wait('SOUND', {'state': 'Elapsed'}, 2)
-            elif op == 'gnss':
-                if step['action'] == 'pause':
-                    result = {'paused': self.wait('GNSS', {'state': 'SilenceObserved'}, step['duration_ms'] / 1000)}
-                    if step.get('wait', True): result['resumed'] = self.wait('GNSS', {'state': 'Receiving'}, step['duration_ms'] / 1000 + 6)
-                else: result = self.wait('GNSS', {'state': 'Receiving'}, 6)
-            elif op == 'companion': result = self.wait('COMPANION', {'query': 'reply_observed'}, 3)
-            elif op == 'mmc' and step['action'] == 'read':
-                data = bytes.fromhex(result['data'])
-                if len(data) != int(result['length']) or zlib.crc32(data) != int(result['crc32'], 16):
-                    raise ValueError('MMC chunk checksum/length mismatch')
-            return result
-        if op == 'command':
-            result = self.command(step['command'])
-            for key, expected in step.get('expect', {}).items():
-                if result.get(key) != str(expected):
-                    raise AssertionError(f'command assertion failed for {key}')
-            if 'progress_from' in step:
-                baseline = self.observations[step['progress_from']]
-                delta = {key: int(result[key]) - int(baseline[key]) for key in step.get('counters', []) + step.get('unchanged', [])}
-                if any(delta[key] <= 0 for key in step.get('counters', [])) or any(delta[key] != 0 for key in step.get('unchanged', [])):
-                    raise AssertionError('acquisition failed progress/loss assertions')
-                result['delta'] = delta
-            if 'baseline' in step:
-                self.observations[step['baseline']] = result
-            return result
-        if op == 'wait':
-            return self.wait(step['command'], step['equals'], float(step.get('timeout_s', 10)))
-        if op == 'fixture':
-            result = self.transport.fixture(step['command'])
-            if result['status'] != step.get('status', 'OK'):
-                raise RuntimeError('fixture returned ' + result['status'])
-            return result
-        if op == 'virtual-command':
-            result = self.command(step['command'], (step.get('status', 'OK'),))
-            for key, expected in step.get('expect', {}).items():
-                if result.get(key) != str(expected):
-                    raise AssertionError(f'virtual command assertion failed for {key}')
-            return result
-        if op == 'input':
-            return self.inject(step)
-        if op == 'capture':
-            return self.capture(step, index)
-        if op == 'delay':
-            self.delay(float(step['seconds']))
-            return {}
-        if op == 'manual':
-            raise ManualAction(step['action'])
-        if op == 'recover':
-            if not self.transport.virtual and step.get('mode', 'terminal') in ('restart', 'usb-reset'):
-                if self.command('INFO').get('recording') != 'false':
-                    raise ValueError('real recovery requires fresh verified idle recording state')
-            previous = self.boot
-            if self.session:
-                self.operation('CLOSE')
-                self.session = None
-            result = self.transport.recover(step.get('mode', 'terminal'), float(step.get('seconds', 1)))
-            caps = self.command('HARNESS CAPS')
-            self.boot = caps.get('boot')
-            if caps.get('input') == 'supported':
-                self.open_session()
-            changed = previous != self.boot
-            if changed != (step.get('mode', 'terminal') == 'restart'):
-                raise RuntimeError('observed boot identity does not match requested disruption')
-            return {**result, 'boot_changed': changed, 'previous_boot': previous, 'boot': self.boot}
-        raise ValueError('unknown operation')
+        elif op == 'gnss':
+            result = self.gnss_completion(step)
+        elif op == 'companion':
+            result = self.wait('COMPANION', {'query': 'reply_observed'}, 3)
+        elif op == 'mmc' and step['action'] == 'read':
+            data = bytes.fromhex(result['data'])
+            if len(data) != int(result['length']) or zlib.crc32(data) != int(result['crc32'], 16):
+                raise ValueError('MMC chunk checksum/length mismatch')
+        return result
+
+    def gnss_completion(self, step):
+        if step['action'] != 'pause':
+            return self.wait('GNSS', {'state': 'Receiving'}, 6)
+        seconds = step['duration_ms'] / 1000
+        result = {'paused': self.wait('GNSS', {'state': 'SilenceObserved'}, seconds)}
+        if step.get('wait', True):
+            result['resumed'] = self.wait('GNSS', {'state': 'Receiving'}, seconds + 6)
+        return result
+
+    def run_command(self, step, _index):
+        result = self.command(step['command'])
+        for key, expected in step.get('expect', {}).items():
+            if result.get(key) != str(expected):
+                raise AssertionError(f'command assertion failed for {key}')
+        if 'progress_from' in step:
+            baseline = self.observations[step['progress_from']]
+            counters, unchanged = step.get('counters', []), step.get('unchanged', [])
+            delta = {key: int(result[key]) - int(baseline[key]) for key in counters + unchanged}
+            if any(delta[key] <= 0 for key in counters) or any(delta[key] != 0 for key in unchanged):
+                raise AssertionError('acquisition failed progress/loss assertions')
+            result['delta'] = delta
+        if 'baseline' in step:
+            self.observations[step['baseline']] = result
+        return result
+
+    def run_wait(self, step, _index):
+        return self.wait(step['command'], step['equals'], float(step.get('timeout_s', 10)))
+
+    def run_fixture(self, step, _index):
+        result = self.transport.fixture(step['command'])
+        if result['status'] != step.get('status', 'OK'):
+            raise RuntimeError('fixture returned ' + result['status'])
+        return result
+
+    def run_virtual_command(self, step, _index):
+        result = self.command(step['command'], (step.get('status', 'OK'),))
+        for key, expected in step.get('expect', {}).items():
+            if result.get(key) != str(expected):
+                raise AssertionError(f'virtual command assertion failed for {key}')
+        return result
+
+    def run_input(self, step, _index):
+        return self.inject(step)
+
+    def run_capture(self, step, index):
+        return self.capture(step, index)
+
+    def run_delay(self, step, _index):
+        self.delay(float(step['seconds']))
+        return {}
+
+    def run_manual(self, step, _index):
+        raise ManualAction(step['action'])
+
+    def run_recover(self, step, _index):
+        mode = step.get('mode', 'terminal')
+        if not self.transport.virtual and mode in ('restart', 'usb-reset'):
+            if self.command('INFO').get('recording') != 'false':
+                raise ValueError('real recovery requires fresh verified idle recording state')
+        previous = self.boot
+        if self.session:
+            self.operation('CLOSE')
+            self.session = None
+        result = self.transport.recover(mode, float(step.get('seconds', 1)))
+        caps = self.command('HARNESS CAPS')
+        self.boot = caps.get('boot')
+        if caps.get('input') == 'supported':
+            self.open_session()
+        changed = previous != self.boot
+        if changed != (mode == 'restart'):
+            raise RuntimeError('observed boot identity does not match requested disruption')
+        return {**result, 'boot_changed': changed, 'previous_boot': previous, 'boot': self.boot}
+
+
+STEP_HANDLERS = {
+    'ant': 'run_ant',
+    'wifi': 'run_connectivity',
+    'ble': 'run_connectivity',
+    'sound': 'run_peripheral',
+    'gnss': 'run_peripheral',
+    'mmc': 'run_peripheral',
+    'companion': 'run_peripheral',
+    'command': 'run_command',
+    'wait': 'run_wait',
+    'fixture': 'run_fixture',
+    'virtual-command': 'run_virtual_command',
+    'input': 'run_input',
+    'capture': 'run_capture',
+    'delay': 'run_delay',
+    'manual': 'run_manual',
+    'recover': 'run_recover',
+}
 
 
 def compact(report):
@@ -656,204 +627,316 @@ def compact(report):
                       for step in report.get('steps', [])]}
 
 
+class RunState:
+    """Device ownership acquired by execute and released by its cleanup."""
+
+    def __init__(self):
+        self.runner = self.transport = None
+        self.captures, self.active_captures = [], []
+        self.original_settings = None
+        self.original_mmc_clock = None
+        self.connectivity_touched, self.peripheral_touched = set(), set()
+
+
+def git_output(*args):
+    return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def initial_report(args, scenario, output):
+    return {
+        'version': VERSION, 'run_id': args.run_id or output.name, 'status': 'running', 'steps': [],
+        'host_invocations': 1, 'agent_tool_calls': args.agent_tool_calls,
+        'report': str(output / 'report.json'), 'host_started_unix_s': time.time(),
+        'scenario': scenario,
+        'host_revision': git_output('rev-parse', 'HEAD'),
+        'host_dirty': bool(git_output('status', '--porcelain')),
+        'clock_correlation': 'Device reply ms is sampled at loop start and may predate host send by loop work. '
+                             'Host send/receive times are retained; exact device/AV alignment is unmeasured, '
+                             'including AV startup/buffering.',
+        'limits': ['Synthetic input does not verify physical sensing.', 'Submitted pixels do not verify the panel.',
+                   'USB recovery does not remove VBUS.', 'Virtual runs do not establish hardware timing.'],
+    }
+
+
+def check_backend(args, scenario):
+    """Reject scenarios the selected backend cannot run before any device opens."""
+    steps = scenario['steps']
+    if args.backend != 'virtual' and any(step['op'] in ('fixture', 'virtual-command') for step in steps):
+        raise ValueError('fixture and test-media commands are virtual-only; real data is preserved')
+    if any(step['op'] == 'recover' and step.get('mode') == 'usb-reset' for step in steps):
+        if args.backend == 'virtual':
+            raise Unsupported('UNSUPPORTED')
+        node = usb_node(args.port)
+        path = f'/dev/bus/usb/{int((node / "busnum").read_text()):03}/{int((node / "devnum").read_text()):03}'
+        if not os.access(path, os.W_OK):
+            raise ValueError('USB bus reset requires write access to the selected device node')
+
+
+def open_transport(args, output):
+    if args.backend == 'virtual':
+        return Virtual(output, args.state_dir, args.sdk, not args.no_harness)
+    return Real(args.port, output / 'usb.log')
+
+
+def record_originals(state, scenario, report):
+    """Snapshot everything cleanup restores, and refuse unsafe starting states."""
+    runner, steps = state.runner, scenario['steps']
+    report['build'] = runner.command('INFO')
+    if any(step['op'] == 'ant' for step in steps):
+        report['initial_ant'] = runner.ant_idle()
+        runner.ant_eligible = True
+    disruptive = any(step['op'] == 'recover' and step.get('mode') in ('restart', 'usb-reset') for step in steps)
+    if not state.transport.virtual and disruptive and report['build'].get('recording') != 'false':
+        raise ValueError('real restart recipes require verified idle recording state; preserve active SDK work')
+    state.original_settings = runner.command('SETTINGS')
+    report['initial_settings'] = state.original_settings
+    report['initial_status'] = runner.command('STATUS')
+    ops = {step['op'] for step in steps}
+    if 'sound' in ops and runner.command('SOUND')['state'] not in ('Idle', 'Elapsed'):
+        raise ValueError('sound operation requires idle original playback')
+    if 'gnss' in ops and runner.command('GNSS')['state'] != 'Receiving':
+        raise ValueError('GNSS operation requires original receiving stream')
+    if 'mmc' in ops:
+        state.original_mmc_clock = int(runner.command('MMC')['clock_hz'])
+
+
+def check_capabilities(runner, scenario, report):
+    """Return the session-requiring capabilities after checking every step against them."""
+    report['capabilities'] = caps = runner.command('HARNESS CAPS')
+    runner.boot = caps.get('boot')
+    needed = {step['op'] for step in scenario['steps']} & {'input', 'capture'}
+    for capability in needed:
+        if caps.get(capability) != 'supported':
+            report['status'] = 'unsupported'
+            raise ValueError(f'{capability} is {caps.get(capability, "unsupported")} in this build/device')
+    for step in scenario['steps']:
+        if step['op'] in ('command', 'wait', 'virtual-command') and caps.get('ordinary'):
+            if step['command'].split()[0] not in caps['ordinary'].split(','):
+                report['status'] = 'unsupported'
+                raise ValueError('scenario uses a command unsupported by this backend')
+        if step['op'] == 'input':
+            for event in events_for(step):
+                check_event_capability(event, caps)
+    return needed
+
+
+def check_event_capability(event, caps):
+    words = event['event'].split()
+    if words[0] in ('DOWN', 'MOVE') and (int(words[1]) >= int(caps['width']) or int(words[2]) >= int(caps['height'])
+                                         or caps['touch'] != 'supported'):
+        raise ValueError('input coordinate/touch capability unavailable')
+    if words[0] == 'BUTTON' and words[1] not in caps['buttons'].split(','):
+        raise ValueError('button is not advertised by device')
+
+
+def run_steps(state, scenario, output, report):
+    for index, step in enumerate(scenario['steps']):
+        entry = {'index': index, 'op': step['op'], 'status': 'running', 'host_started_s': time.monotonic()}
+        report['steps'].append(entry)
+        atomic_json(output / 'report.json', report)
+        try:
+            # Mark before running: a failed or interrupted step may already have applied.
+            if step['op'] in ('wifi', 'ble'):
+                state.connectivity_touched.add(step['op'])
+            if step['op'] in ('sound', 'gnss', 'mmc'):
+                state.peripheral_touched.add(step['op'])
+            entry['result'] = state.runner.step(step, index)
+            entry['status'] = 'pass'
+        except BaseException as error:
+            # Record every outcome, including interrupts, then let execute classify it.
+            if isinstance(error, ManualAction):
+                entry['status'] = 'needs-manual-action'
+            elif isinstance(error, Unsupported):
+                entry['status'] = 'unsupported'
+            else:
+                entry['status'] = 'fail'
+            entry['error'] = str(error)
+            raise
+        finally:
+            entry['elapsed_s'] = time.monotonic() - entry['host_started_s']
+
+
+def run_scenario(args, scenario, output, report, state):
+    preflight(scenario)
+    check_backend(args, scenario)
+    for config in scenario.get('captures', []):
+        capture = Capture(config['kind'], config, output / config['kind'])
+        capture.preflight()
+        state.captures.append(capture)
+    state.transport = open_transport(args, output)
+    state.transport.__enter__()
+    state.runner = Runner(state.transport, output)
+    record_originals(state, scenario, report)
+    needed = check_capabilities(state.runner, scenario, report)
+    if needed or report['capabilities'].get('input') == 'supported':
+        state.runner.open_session()
+    report['boot'], report['session'] = state.runner.boot, state.runner.session
+    for capture in state.captures:
+        state.active_captures.append(capture)
+        capture.start()
+    run_steps(state, scenario, output, report)
+    report['final_status'] = state.runner.command('STATUS')
+    report['status'] = 'pass'
+
+
+# Cleanup restores device state that a failed or interrupted run may have
+# changed. Each restoration catches everything, including KeyboardInterrupt
+# (SIGTERM from cancel arrives as one), so a later restoration still runs. A
+# failed restoration is reported as uncertain and is never retried blindly.
+
+def close_session(runner, report, cleanup):
+    try:
+        runner.operation('CLOSE')
+        runner.session = None
+        cleanup['input_capture'] = 'closed'
+    except (Exception, KeyboardInterrupt) as error:
+        cleanup['input_capture'] = 'uncertain; device lease expiry cancels held input'
+        cleanup['cancel_error'] = str(error)
+        runner.session = None  # Inspect preferences without renewing an uncertain session.
+        report['status'] = 'inconclusive'
+
+
+def restore_ant(runner, _state, _scenario):
+    runner.stop_ant()
+    return 'scan idle verified; selected channels unchanged'
+
+
+def restore_sound(runner, _state, _scenario):
+    state = runner.command('SOUND')['state']
+    if state not in ('Idle', 'Elapsed', 'StopSubmitted', 'StopQueued'):
+        runner.command('SOUND STOP', ('ACCEPTED',))
+    if state not in ('Idle', 'Elapsed'):
+        runner.wait('SOUND', {'state': 'Elapsed'}, 2)
+    return 'finite playback elapsed or stop sent; no acoustic acknowledgment'
+
+
+def restore_gnss(runner, _state, _scenario):
+    state = runner.command('GNSS')['state']
+    if state not in ('Receiving', 'ResumeQueued', 'ResumeSubmitted'):
+        runner.command('GNSS RESUME', ('ACCEPTED',))
+    runner.wait('GNSS', {'state': 'Receiving'}, 6)
+    return 'resumed parser progress verified'
+
+
+def restore_mmc(runner, state, _scenario):
+    runner.command(f'MMC CLOCK {state.original_mmc_clock}')
+    if int(runner.command('MMC')['clock_hz']) != state.original_mmc_clock:
+        raise RuntimeError('MMC clock restoration mismatch')
+    return 'original controller clock restored'
+
+
+def radio_restorer(radio):
+    def restore(runner, _state, scenario):
+        for step in connectivity_restore_steps(radio, scenario['connectivity_restore'][radio]):
+            runner.connectivity(radio, step)
+        return 'restored configuration and connection intent; completion verified'
+    return restore
+
+
+def restore_preferences(runner, state, _scenario):
+    original = state.original_settings
+    actual = runner.command('SETTINGS')
+    if actual.get('brightness') != original.get('brightness'):
+        runner.command(f'BRIGHTNESS {original["brightness"]}')
+    if actual.get('timezone') != original.get('timezone'):
+        runner.command(f'TIMEZONE {original["timezone"]}')
+    if any(actual.get(key) != original.get(key) for key in ('dim_timeout', 'dim_brightness')):
+        runner.command(f'IDLE {original["dim_timeout"]} {original["dim_brightness"]}')
+    actual = runner.command('SETTINGS')
+    for key in ('brightness', 'timezone', 'dim_timeout', 'dim_brightness'):
+        if actual.get(key) != original.get(key):
+            raise RuntimeError(f'preference restoration mismatch: {key}')
+    return 'verified'
+
+
+def restorations(state):
+    """Ordered restorations for what this run touched; preferences always last."""
+    runner = state.runner
+    plan = []
+    if runner.ant_scan_may_apply:
+        plan.append(('ant', restore_ant))
+    if 'sound' in state.peripheral_touched:
+        plan.append(('sound', restore_sound))
+    if 'gnss' in state.peripheral_touched:
+        plan.append(('gnss', restore_gnss))
+    if 'mmc' in state.peripheral_touched and state.original_mmc_clock is not None:
+        plan.append(('mmc', restore_mmc))
+    plan.extend((radio, radio_restorer(radio)) for radio in sorted(state.connectivity_touched))
+    if state.original_settings:
+        plan.append(('preferences', restore_preferences))
+    return plan
+
+
+def restore_device(state, scenario, report, cleanup):
+    runner = state.runner
+    try:
+        if runner.session:
+            close_session(runner, report, cleanup)
+        for name, restore in restorations(state):
+            try:
+                cleanup[name] = restore(runner, state, scenario)
+            except (Exception, KeyboardInterrupt) as error:
+                cleanup[name] = 'uncertain; inspect before retrying mutation'
+                cleanup[name + '_error'] = str(error)
+                report['status'] = 'inconclusive'
+    except (Exception, KeyboardInterrupt) as error:
+        cleanup['error'] = str(error)
+        cleanup['preferences'] = 'uncertain; inspect before retrying mutation'
+        report['status'] = 'inconclusive'
+    finally:
+        runner.trace.close()
+        report['command_requests'] = getattr(state.transport, 'request_count', runner.commands)
+        report['fixture_requests'] = getattr(state.transport, 'fixture_count', 0)
+        report['protocol_requests'] = report['command_requests'] + report['fixture_requests']
+
+
+def finish_captures(state, report):
+    report['captures'] = []
+    for capture in state.active_captures:
+        try:
+            result = capture.finish(cancel=report['status'] != 'pass')
+            report['captures'].append(result)
+            if result['status'] != 'pass' and report['status'] == 'pass':
+                report['status'] = result['status']
+        except (Exception, KeyboardInterrupt) as error:
+            report['captures'].append({'status': 'fail', 'error': str(error)})
+            report['status'] = 'fail'
+
+
+def exit_code(status):
+    if status == 'pass':
+        return 0
+    if status in ('unsupported', 'needs-manual-action', 'inconclusive'):
+        return 2
+    return 1
+
+
 def execute(args, scenario, output):
     started = time.monotonic()
-    report = {'version': VERSION, 'run_id': args.run_id or output.name, 'status': 'running', 'steps': [],
-              'host_invocations': 1, 'agent_tool_calls': args.agent_tool_calls,
-              'report': str(output / 'report.json'), 'host_started_unix_s': time.time(),
-              'scenario': scenario,
-              'host_revision': subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip(),
-              'host_dirty': bool(subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()),
-              'clock_correlation': 'Device reply ms is sampled at loop start and may predate host send by loop work. Host send/receive times are retained; exact device/AV alignment is unmeasured, including AV startup/buffering.',
-              'limits': ['Synthetic input does not verify physical sensing.', 'Submitted pixels do not verify the panel.',
-                         'USB recovery does not remove VBUS.', 'Virtual runs do not establish hardware timing.']}
+    report = initial_report(args, scenario, output)
     atomic_json(output / 'report.json', report)
-    runner = transport = None
-    captures, active_captures = [], []
-    original = None
-    connectivity_touched = set()
-    peripheral_touched = set()
-    original_mmc_clock = None
+    state = RunState()
     try:
-        preflight(scenario)
-        if args.backend != 'virtual' and any(step['op'] in ('fixture', 'virtual-command') for step in scenario['steps']):
-            raise ValueError('fixture and test-media commands are virtual-only; real data is preserved')
-        if any(step['op'] == 'recover' and step.get('mode') == 'usb-reset' for step in scenario['steps']):
-            if args.backend == 'virtual':
-                raise Unsupported('UNSUPPORTED')
-            node = usb_node(args.port)
-            path = f'/dev/bus/usb/{int((node / "busnum").read_text()):03}/{int((node / "devnum").read_text()):03}'
-            if not os.access(path, os.W_OK):
-                raise ValueError('USB bus reset requires write access to the selected device node')
-        for config in scenario.get('captures', []):
-            capture = Capture(config['kind'], config, output / config['kind'])
-            capture.preflight()
-            captures.append(capture)
-        transport = Virtual(output, args.state_dir, args.sdk, not args.no_harness) if args.backend == 'virtual' else Real(args.port, output / 'usb.log')
-        transport.__enter__()
-        runner = Runner(transport, output)
-        report['build'] = runner.command('INFO')
-        if any(step['op'] == 'ant' for step in scenario['steps']):
-            report['initial_ant'] = runner.ant_idle()
-            runner.ant_eligible = True
-        if not transport.virtual and any(step['op'] == 'recover' and step.get('mode') in ('restart', 'usb-reset') for step in scenario['steps']):
-            if report['build'].get('recording') != 'false':
-                raise ValueError('real restart recipes require verified idle recording state; preserve active SDK work')
-        original = runner.command('SETTINGS')
-        report['initial_settings'] = original
-        report['initial_status'] = runner.command('STATUS')
-        peripheral_ops = {step['op'] for step in scenario['steps']}
-        if 'sound' in peripheral_ops and runner.command('SOUND')['state'] not in ('Idle', 'Elapsed'):
-            raise ValueError('sound operation requires idle original playback')
-        if 'gnss' in peripheral_ops and runner.command('GNSS')['state'] != 'Receiving':
-            raise ValueError('GNSS operation requires original receiving stream')
-        if 'mmc' in peripheral_ops:
-            original_mmc_clock = int(runner.command('MMC')['clock_hz'])
-        report['capabilities'] = caps = runner.command('HARNESS CAPS')
-        runner.boot = caps.get('boot')
-        needed = {step['op'] for step in scenario['steps']} & {'input', 'capture'}
-        for capability in needed:
-            if caps.get(capability) != 'supported':
-                report['status'] = 'unsupported'
-                raise ValueError(f'{capability} is {caps.get(capability, "unsupported")} in this build/device')
-        for step in scenario['steps']:
-            if step['op'] in ('command', 'wait', 'virtual-command') and caps.get('ordinary'):
-                if step['command'].split()[0] not in caps['ordinary'].split(','):
-                    report['status'] = 'unsupported'
-                    raise ValueError('scenario uses a command unsupported by this backend')
-            if step['op'] == 'input':
-                for event in events_for(step):
-                    words = event['event'].split()
-                    if words[0] in ('DOWN', 'MOVE') and (int(words[1]) >= int(caps['width']) or int(words[2]) >= int(caps['height']) or caps['touch'] != 'supported'):
-                        raise ValueError('input coordinate/touch capability unavailable')
-                    if words[0] == 'BUTTON' and words[1] not in caps['buttons'].split(','):
-                        raise ValueError('button is not advertised by device')
-        if needed or caps.get('input') == 'supported':
-            runner.open_session()
-        report['boot'], report['session'] = runner.boot, runner.session
-        for capture in captures:
-            active_captures.append(capture)
-            capture.start()
-        for index, step in enumerate(scenario['steps']):
-            entry = {'index': index, 'op': step['op'], 'status': 'running', 'host_started_s': time.monotonic()}
-            report['steps'].append(entry)
-            atomic_json(output / 'report.json', report)
-            try:
-                if step['op'] in ('wifi', 'ble'):
-                    connectivity_touched.add(step['op'])
-                if step['op'] in ('sound', 'gnss', 'mmc'):
-                    peripheral_touched.add(step['op'])
-                entry['result'] = runner.step(step, index)
-                entry['status'] = 'pass'
-            except BaseException as error:
-                entry['status'] = 'needs-manual-action' if isinstance(error, ManualAction) else 'unsupported' if isinstance(error, Unsupported) else 'fail'
-                entry['error'] = str(error)
-                raise
-            finally:
-                entry['elapsed_s'] = time.monotonic() - entry['host_started_s']
-        report['final_status'] = runner.command('STATUS')
-        report['status'] = 'pass'
+        run_scenario(args, scenario, output, report, state)
     except Unsupported as error:
         report.update(status='unsupported' if str(error) == 'UNSUPPORTED' else 'inconclusive', error=str(error))
     except ManualAction as error:
         report.update(status='needs-manual-action', manual_action=str(error))
     except (Exception, KeyboardInterrupt) as error:
+        # The worker's top level: an interrupt or cancel becomes a failed report
+        # after cleanup, so wait/cancel callers always observe a final status.
         if report['status'] == 'running':
             report['status'] = 'fail'
         report['error'] = str(error) or 'interrupted; cleanup attempted'
     finally:
+        # Order matters: restore the device through the open session, stop
+        # captures, release USB, then write the final report.
         cleanup = {'input_capture': 'not-started', 'preferences': 'unchanged', 'readers': 'closed'}
-        if runner:
-            try:
-                if runner.session:
-                    try:
-                        runner.operation('CLOSE')
-                        runner.session = None
-                        cleanup['input_capture'] = 'closed'
-                    except (Exception, KeyboardInterrupt) as error:
-                        cleanup['input_capture'] = 'uncertain; device lease expiry cancels held input'
-                        cleanup['cancel_error'] = str(error)
-                        runner.session = None  # Inspect preferences without renewing an uncertain session.
-                        report['status'] = 'inconclusive'
-                def restore_one(name, action):
-                    try:
-                        action()
-                    except (Exception, KeyboardInterrupt) as error:
-                        cleanup[name] = 'uncertain; inspect before retrying mutation'
-                        cleanup[name + '_error'] = str(error)
-                        report['status'] = 'inconclusive'
-
-                def restore_sound():
-                    state = runner.command('SOUND')['state']
-                    if state not in ('Idle', 'Elapsed', 'StopSubmitted', 'StopQueued'):
-                        runner.command('SOUND STOP', ('ACCEPTED',))
-                    if state not in ('Idle', 'Elapsed'): runner.wait('SOUND', {'state': 'Elapsed'}, 2)
-                    cleanup['sound'] = 'finite playback elapsed or stop sent; no acoustic acknowledgment'
-
-                def restore_gnss():
-                    state = runner.command('GNSS')['state']
-                    if state not in ('Receiving', 'ResumeQueued', 'ResumeSubmitted'):
-                        runner.command('GNSS RESUME', ('ACCEPTED',))
-                    runner.wait('GNSS', {'state': 'Receiving'}, 6)
-                    cleanup['gnss'] = 'resumed parser progress verified'
-
-                def restore_mmc():
-                    runner.command(f'MMC CLOCK {original_mmc_clock}')
-                    if int(runner.command('MMC')['clock_hz']) != original_mmc_clock:
-                        raise RuntimeError('MMC clock restoration mismatch')
-                    cleanup['mmc'] = 'original controller clock restored'
-
-                def restore_radio(radio):
-                    for restore in connectivity_restore_steps(radio, scenario['connectivity_restore'][radio]):
-                        runner.connectivity(radio, restore)
-                    cleanup[radio] = 'restored configuration and connection intent; completion verified'
-
-                def restore_preferences():
-                    actual = runner.command('SETTINGS')
-                    if actual.get('brightness') != original.get('brightness'):
-                        runner.command(f'BRIGHTNESS {original["brightness"]}')
-                    if actual.get('timezone') != original.get('timezone'):
-                        runner.command(f'TIMEZONE {original["timezone"]}')
-                    if any(actual.get(key) != original.get(key) for key in ('dim_timeout', 'dim_brightness')):
-                        runner.command(f'IDLE {original["dim_timeout"]} {original["dim_brightness"]}')
-                    actual = runner.command('SETTINGS')
-                    for key in ('brightness', 'timezone', 'dim_timeout', 'dim_brightness'):
-                        if actual.get(key) != original.get(key):
-                            raise RuntimeError(f'preference restoration mismatch: {key}')
-                    cleanup['preferences'] = 'verified'
-
-                if runner.ant_scan_may_apply:
-                    def restore_ant():
-                        runner.stop_ant()
-                        cleanup['ant'] = 'scan idle verified; selected channels unchanged'
-                    restore_one('ant', restore_ant)
-                if 'sound' in peripheral_touched: restore_one('sound', restore_sound)
-                if 'gnss' in peripheral_touched: restore_one('gnss', restore_gnss)
-                if 'mmc' in peripheral_touched and original_mmc_clock is not None: restore_one('mmc', restore_mmc)
-                for radio in sorted(connectivity_touched):
-                    restore_one(radio, lambda radio=radio: restore_radio(radio))
-                if original: restore_one('preferences', restore_preferences)
-            except (Exception, KeyboardInterrupt) as error:
-                cleanup['error'] = str(error)
-                cleanup['preferences'] = 'uncertain; inspect before retrying mutation'
-                report['status'] = 'inconclusive'
-            finally:
-                runner.trace.close()
-                report['command_requests'] = getattr(transport, 'request_count', runner.commands)
-                report['fixture_requests'] = getattr(transport, 'fixture_count', 0)
-                report['protocol_requests'] = report['command_requests'] + report['fixture_requests']
-        report['captures'] = []
-        for capture in active_captures:
-            try:
-                result = capture.finish(cancel=report['status'] != 'pass')
-                report['captures'].append(result)
-                if result['status'] != 'pass' and report['status'] == 'pass':
-                    report['status'] = result['status']
-            except (Exception, KeyboardInterrupt) as error:
-                report['captures'].append({'status': 'fail', 'error': str(error)})
-                report['status'] = 'fail'
-        if transport:
-            transport.__exit__(None, None, None)
+        if state.runner:
+            restore_device(state, scenario, report, cleanup)
+        finish_captures(state, report)
+        if state.transport:
+            state.transport.__exit__(None, None, None)
         for index in range(len(report['steps']), len(scenario.get('steps', []))):
             report['steps'].append({'index': index, 'op': scenario['steps'][index]['op'], 'status': 'skipped'})
         report['cleanup'] = cleanup
@@ -861,7 +944,7 @@ def execute(args, scenario, output):
         report['elapsed_s'] = time.monotonic() - started
         atomic_json(output / 'report.json', report)
     print(json.dumps(compact(report)), flush=True)
-    return 0 if report['status'] == 'pass' else 2 if report['status'] in ('unsupported', 'needs-manual-action', 'inconclusive') else 1
+    return exit_code(report['status'])
 
 
 def main():

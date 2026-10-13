@@ -406,6 +406,33 @@ class HarnessTests(unittest.TestCase):
                 self.assertFalse(runner.ant_scan_may_apply)
             finally: runner.trace.close()
 
+class StructureTests(unittest.TestCase):
+    def test_every_preflight_operation_has_a_step_handler(self):
+        from cycling_devtools.harness import runner
+        operations = {'ant', 'wifi', 'ble', 'sound', 'gnss', 'mmc', 'companion', 'command', 'wait', 'fixture',
+                      'virtual-command', 'input', 'capture', 'delay', 'manual', 'recover'}
+        self.assertEqual(set(runner.STEP_HANDLERS), operations)
+        for handler in runner.STEP_HANDLERS.values():
+            self.assertTrue(callable(getattr(Runner, handler)))
+        with self.assertRaisesRegex(ValueError, 'unknown operation'):
+            Runner.step(SimpleNamespace(), {'op': 'reflash'}, 0)
+
+    def test_cleanup_restores_in_fixed_order_with_preferences_last(self):
+        from cycling_devtools.harness import runner
+        state = runner.RunState()
+        state.runner = SimpleNamespace(ant_scan_may_apply=True)
+        state.peripheral_touched = {'mmc', 'gnss', 'sound'}
+        state.connectivity_touched = {'wifi', 'ble'}
+        state.original_mmc_clock = 400000
+        state.original_settings = {'brightness': '50'}
+        names = [name for name, _ in runner.restorations(state)]
+        self.assertEqual(names, ['ant', 'sound', 'gnss', 'mmc', 'ble', 'wifi', 'preferences'])
+        state.runner.ant_scan_may_apply = False
+        state.original_mmc_clock = None
+        state.original_settings = {}
+        self.assertEqual([name for name, _ in runner.restorations(state)], ['sound', 'gnss', 'ble', 'wifi'])
+
+
 class WorkerIdentityTests(unittest.TestCase):
     def test_cancel_accepts_module_worker_and_rejects_reused_pid(self):
         from cycling_devtools.harness import runner

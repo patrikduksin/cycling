@@ -4,6 +4,13 @@
 //! `esp-hal` 1.2.1 SDMMC driver. The project remains pinned to HAL 1.1.2, so
 //! this module uses the already-matched ESP32-S3 PAC directly while retaining
 //! ownership of the HAL peripheral and recovered GPIO tokens.
+//!
+//! Every wait here busy-polls on the calling task and blocks the executor:
+//! up to COMMAND_TIMEOUT per command phase, BUSY_TIMEOUT for programming and
+//! CMD13 readiness, INIT_TIMEOUT for card identification and 20 ms after CMD0.
+//! The `device_api::bulk` contract is synchronous, so these waits cannot yield
+//! without making that contract and its console and VANA callers async. Keep
+//! command sequencing and DMA buffer lifetimes unchanged if that happens.
 
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;

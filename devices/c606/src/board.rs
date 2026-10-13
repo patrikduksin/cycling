@@ -515,7 +515,7 @@ impl device_api::sensors::Sensors for Sensors {
     }
 }
 
-impl device_api::position_control::Control for Positioning {
+impl device_api::position_control::PositionControl for Positioning {
     fn control(&self) -> device_api::position_control::Snapshot {
         crate::capabilities::position_control::snapshot()
     }
@@ -527,7 +527,7 @@ impl device_api::position_control::Control for Positioning {
     }
 }
 
-impl device_api::power::Control for Power {
+impl device_api::power::PowerControl for Power {
     fn capabilities(&self) -> device_api::power::Capabilities {
         crate::capabilities::power::capabilities()
     }

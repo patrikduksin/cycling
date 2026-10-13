@@ -17,7 +17,7 @@ impl device_api::sound::Sound for Untouched {
         panic!("sound accessed")
     }
 }
-impl device_api::position_control::Control for Untouched {
+impl device_api::position_control::PositionControl for Untouched {
     fn control(&self) -> device_api::position_control::Snapshot {
         panic!("GNSS accessed")
     }

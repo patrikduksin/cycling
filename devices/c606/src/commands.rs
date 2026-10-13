@@ -51,13 +51,15 @@ pub fn execute<
     now: u64,
     ant: &mut impl device_api::ant::Ant,
     ble: &mut impl device_api::ble_transport::Ble,
-    position: &mut (impl device_api::positioning::Positioning + device_api::position_control::Control),
+    position: &mut (
+             impl device_api::positioning::Positioning + device_api::position_control::PositionControl
+         ),
     bulk: &mut (impl device_api::bulk::Read + device_api::bulk::ReadWrite),
     sound: &mut impl device_api::sound::Sound,
     sensors: &mut impl device_api::sensors::Sensors,
     network: &mut impl device_api::network::Network,
     input: &impl device_api::input::InputObservation,
-    power: &mut impl device_api::power::Control,
+    power: &mut impl device_api::power::PowerControl,
     diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut vana::app::Runtime,
 ) {

@@ -120,7 +120,7 @@ pub enum PeripheralState {
     Failed,
 }
 
-pub trait Control {
+pub trait PowerControl {
     fn capabilities(&self) -> Capabilities;
     fn status(&self) -> Status;
     /// Acceptance is not completion. Callers finish their durable domain work

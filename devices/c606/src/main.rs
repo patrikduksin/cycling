@@ -53,7 +53,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     #[cfg(feature = "bulk-maintenance")]
     {
         for _ in 0..300 {
-            if device_api::power::Control::status(&board.power_control).ready {
+            if device_api::power::PowerControl::status(&board.power_control).ready {
                 break;
             }
             embassy_time::Timer::after_millis(10).await;
@@ -163,7 +163,7 @@ async fn console(
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         // Diagnostic power requests enter only with no active domain work.
         // Keep USB observations alive while device owners complete the transition.
-        if device_api::power::Control::status(&power).ready {
+        if device_api::power::PowerControl::status(&power).ready {
             #[cfg(feature = "cycling")]
             {
                 sdk.set_startup_status(device_api::sensors::Sensors::startup_status(&sensors));

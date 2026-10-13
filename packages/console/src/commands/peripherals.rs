@@ -116,7 +116,7 @@ pub fn execute(
     now: u64,
     media: &mut (impl device_api::bulk::Read + device_api::bulk::ReadWrite),
     sound: &mut impl device_api::sound::Sound,
-    gnss: &mut impl device_api::position_control::Control,
+    gnss: &mut impl device_api::position_control::PositionControl,
     sensors: &mut impl device_api::sensors::Sensors,
     out: &mut impl Write,
 ) -> &'static str {

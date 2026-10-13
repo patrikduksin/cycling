@@ -10,6 +10,7 @@ import zlib
 
 from cycling_devtools.harness.runner import Runner, decode_chunk, events_for, png_rgb565, preflight, execute
 from cycling_devtools.harness.transport import Real
+from workspace_fixture import private_root
 
 
 class CleanupTransport:
@@ -416,7 +417,7 @@ class WorkerIdentityTests(unittest.TestCase):
             (output / 'report.json').write_text(json.dumps({'status': 'pass'}))
             command = b'\0'.join([b'python', b'-m', b'cycling_devtools.harness.runner',
                                   b'run', b'--output', str(output / 'result').encode()])
-            with (patch.object(runner, 'ROOT', root),
+            with (patch.object(runner, 'ROOT', root), private_root(root),
                   patch('sys.argv', ['harness', 'cancel', 'test', '--seconds', '0']),
                   patch.object(Path, 'read_bytes', return_value=command) as cmdline,
                   patch.object(runner.os, 'kill') as kill,

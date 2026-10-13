@@ -1,12 +1,11 @@
 """Bounded ordinary-terminal progress checks, valid with either harness mode."""
 import argparse
-import os
 import json
-import re
 import time
-from pathlib import Path
 
-from cycling_devtools.terminal.usb import ROOT, UsbConnection
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.terminal.usb import UsbConnection, reply_fields
+from cycling_devtools.workspace import private_directory
 
 FAULTS = {
     'POSITION': ('checksum_errors', 'parse_errors', 'dma_losses', 'line_overflows', 'uart_errors'),
@@ -19,7 +18,7 @@ PREFERENCES = ('brightness', 'dim_timeout', 'dim_brightness', 'timezone')
 def fields(reply):
     if reply.get('status') != 'OK':
         raise AssertionError(f"terminal rejected request: {reply.get('status')}")
-    result = dict(re.findall(r'(\w+)=([^\s]+)', reply['data']))
+    result = reply_fields(reply['data'])
     result['ms'] = reply['ms']
     return result
 
@@ -38,14 +37,6 @@ def validate(command, before, after, allow_loss=False):
     if not allow_loss and any(delta[key] for key in FAULTS[command]):
         raise AssertionError(f'{command} faults advanced: {delta}')
     return delta
-
-
-def private_directory(directory):
-    directory = Path(directory).resolve()
-    if not directory.is_relative_to((ROOT / '.local').resolve()):
-        raise ValueError('evidence must stay in ignored .local/')
-    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-    return directory
 
 
 def run(port, directory, seconds=20, command='POSITION', interval=.05, allow_loss=False):
@@ -109,13 +100,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('service', choices=('gps', 'companion'))
     parser.add_argument('directory')
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     parser.add_argument('--seconds', type=float, default=20)
     parser.add_argument('--interval', type=float, default=.05)
     parser.add_argument('--allow-loss', action='store_true')
     args = parser.parse_args()
     command = {'gps': 'POSITION', 'companion': 'INPUT'}[args.service]
-    print(json.dumps(run(args.port, args.directory, args.seconds, command,
+    port = selected_port(parser, args.port)
+    print(json.dumps(run(port, args.directory, args.seconds, command,
                          args.interval, args.allow_loss), indent=2))
 
 

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import cycling_devtools.harness.runner as harness
 from cycling_devtools.harness.connectivity import scenarios
+from workspace_fixture import private_root
 
 
 class ControlTransport:
@@ -48,7 +49,7 @@ class ConnectivityTests(unittest.TestCase):
             profile = local / 'profile.json'
             config = {'ssid': 'Owned test', 'password': 'private-test-password', 'security': 'wpa-psk'}
             profile.write_text(json.dumps(config))
-            with patch.object(harness, 'ROOT', root):
+            with private_root(root):
                 transport = ControlTransport()
                 runner = harness.Runner(transport, local)
                 try:

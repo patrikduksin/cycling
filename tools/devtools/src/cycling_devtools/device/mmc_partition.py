@@ -9,7 +9,8 @@ import struct
 import sys
 
 import cycling_devtools.device.mmc as mmc
-from cycling_devtools.device.mmc_maintenance import crc, digest_file, private_path, save_manifest, validate_backup
+from cycling_devtools.device.mmc_maintenance import crc, digest_file, save_manifest, validate_backup
+from cycling_devtools.workspace import private_path
 
 SECTOR = 512
 MAX_EXTENT_SECTORS = 2048

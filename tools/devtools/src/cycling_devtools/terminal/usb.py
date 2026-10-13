@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import select
 import termios
 import time
@@ -156,3 +157,12 @@ def terminal_reply(pending, data, expected_id, boot=None):
     if len(pending) > 4096:
         raise ValueError('oversized USB terminal line')
     return None
+
+
+def reply_fields(text, unique=False):
+    """Parse the key=value tokens of a terminal reply's data; values may be empty."""
+    pairs = re.findall(r'(\w+)=(\S*)', text)
+    result = dict(pairs)
+    if unique and len(result) != len(pairs):
+        raise ValueError('duplicate terminal reply field')
+    return result

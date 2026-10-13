@@ -10,7 +10,9 @@ import re
 import subprocess
 import time
 
-from cycling_devtools.terminal.usb import ROOT, UsbConnection
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.workspace import ROOT, private_directory
 
 
 def send_command(value):
@@ -167,7 +169,7 @@ def capture(connection, output, types, seconds, scan_seconds, send=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', required=True)
+    add_port_argument(parser)
     parser.add_argument('--output', type=Path, required=True, help='new directory under repository .local/')
     parser.add_argument('--types', type=int, nargs='+', required=True, help='already selected owned sensor types')
     parser.add_argument('--seconds', type=int, default=10, help='baseline and post-stop seconds, 1..60')
@@ -175,20 +177,21 @@ def main():
     parser.add_argument('--send', type=send_command, help='single owned-sensor information request: "type number transmission generation hex16"')
     parser.add_argument('--fixture-notes', required=True, help='device revision, build modes, fixtures and active coexistence traffic')
     args = parser.parse_args()
-    output = args.output.resolve()
-    if not output.is_relative_to((ROOT / '.local').resolve()) or output == (ROOT / '.local').resolve():
-        parser.error('output must be a new directory under .local/')
     if not 1 <= args.seconds <= 60 or not 0 <= args.scan_seconds <= 60:
         parser.error('duration out of bounds')
     if not 1 <= len(args.types) <= 10 or len(set(args.types)) != len(args.types) or any(not 0 < kind <= 255 for kind in args.types):
         parser.error('supply one to ten distinct sensor types, each 1..255')
-    output.mkdir(parents=True, exist_ok=False, mode=0o700)
+    port = selected_port(parser, args.port)
+    try:
+        output = private_directory(args.output)
+    except (OSError, ValueError) as error:
+        parser.error(f'output must be a new directory under ignored .local/: {error}')
     metadata = dict(source_revision=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                     source_dirty=bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT)),
                     fixture_notes=args.fixture_notes, types=args.types, seconds=args.seconds,
                     scan_seconds=args.scan_seconds, send=args.send)
     (output / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
-    with UsbConnection(args.port, output / 'usb.bin') as connection:
+    with UsbConnection(port, output / 'usb.bin') as connection:
         capture(connection, output, args.types, args.seconds, args.scan_seconds, args.send)
     print(f'Private evidence: {output}')
 

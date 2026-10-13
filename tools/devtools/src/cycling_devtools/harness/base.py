@@ -5,8 +5,10 @@ import re
 import time
 from pathlib import Path
 
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.harness.stress import PREFERENCES, read, validate
 from cycling_devtools.terminal.usb import UsbConnection
-from cycling_devtools.harness.stress import PREFERENCES, private_directory, read, validate
+from cycling_devtools.workspace import private_directory
 
 
 def expect(connection, command, status):
@@ -261,7 +263,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--port', default='/dev/ttyACM0')
+    add_port_argument(parser)
     parser.add_argument('--seconds', type=float, default=5)
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--write-settings', action='store_true')
@@ -272,6 +274,7 @@ def main():
     args = parser.parse_args()
     if not 2 <= args.seconds <= 120:
         parser.error('--seconds must be 2..120')
+    args.port = selected_port(parser, args.port)
     print(json.dumps(run(args), indent=2))
 
 if __name__ == '__main__':

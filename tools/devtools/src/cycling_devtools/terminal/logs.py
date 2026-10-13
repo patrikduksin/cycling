@@ -7,7 +7,10 @@ from pathlib import Path
 import select
 import time
 
-from cycling_devtools.terminal.usb import ROOT, acquire_lock, open_no_reset
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.terminal.usb import acquire_lock, open_no_reset
+from cycling_devtools.workspace import ROOT, private_directory
+
 MAX_LINE = 4096
 
 
@@ -84,11 +87,7 @@ def private_file(path, mode):
 
 
 def collect(port, directory, seconds=None, commands=()):
-    directory = directory.resolve()
-    if not directory.is_relative_to((ROOT / '.local').resolve()):
-        raise ValueError('Capture output must be inside ignored .local/')
-    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-    (ROOT / '.local').mkdir(exist_ok=True)
+    directory = private_directory(directory)
     with acquire_lock():
         with private_file(directory / 'raw.bin', 'wb') as raw, \
                 private_file(directory / 'records.jsonl', 'w') as decoded:
@@ -156,7 +155,7 @@ def collect(port, directory, seconds=None, commands=()):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(p)
     p.add_argument('--output', type=Path)
     p.add_argument('--seconds', type=float)
     p.add_argument('--command', action='append', default=[], help='Send once as CMD <id> <text>; never replay after reconnect')
@@ -177,7 +176,8 @@ def main():
     for cmd in args.command:
         if not cmd or len(cmd) > 160 or not cmd.isascii() or any(ord(c) < 32 for c in cmd):
             p.error('commands must be 1..160 printable ASCII characters')
-    print(collect(args.port, args.output or ROOT / '.local/logs' / str(time.time_ns()),
+    port = selected_port(p, args.port)
+    print(collect(port, args.output or ROOT / '.local/logs' / str(time.time_ns()),
                   args.seconds, args.command))
 
 

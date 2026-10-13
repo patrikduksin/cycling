@@ -1,5 +1,10 @@
-"""Resolve the backed-up C606's current Linux tty through read-only sysfs metadata."""
+"""Select the C606 tty: explicit --port, then CYCLING_PORT, then verified discovery.
+
+Discovery reads only sysfs metadata and the private backup manifest; it never
+opens a port, and it fails instead of choosing a missing or ambiguous device.
+"""
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -51,6 +56,31 @@ def resolve_port(sysfs=Path('/sys/class/tty'), manifest=ROOT / '.local/device/ma
     if len(matches) != 1:
         raise DiscoveryError('expected exactly one C606 matching the private backup manifest')
     return matches[0]
+
+
+def select_port(explicit=None, environ=None, resolve=None):
+    """Apply the shared precedence; an empty CYCLING_PORT counts as unset."""
+    if explicit:
+        return str(explicit)
+    configured = (os.environ if environ is None else environ).get('CYCLING_PORT')
+    if configured:
+        return configured
+    return str((resolve or resolve_port)())
+
+
+def add_port_argument(parser):
+    parser.add_argument(
+        '--port',
+        help='C606 tty; defaults to CYCLING_PORT, then the one verified backed-up device',
+    )
+
+
+def selected_port(parser, explicit):
+    """Resolve after parsing, so --help and offline actions never inspect devices."""
+    try:
+        return select_port(explicit)
+    except DiscoveryError as error:
+        parser.error(f'device port discovery failed: {error}; pass --port or set CYCLING_PORT')
 
 
 def main():

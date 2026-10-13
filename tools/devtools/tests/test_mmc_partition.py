@@ -10,6 +10,7 @@ from unittest.mock import patch
 import cycling_devtools.device.mmc_partition as part
 import cycling_devtools.device.mmc_maintenance as maintenance
 from cycling_devtools.device.mmc_maintenance import crc
+from workspace_fixture import private_root
 
 
 def fat32_file(path, layout):
@@ -199,7 +200,7 @@ class PartitionTests(unittest.TestCase):
                     'sha256': maintenance.digest_file(baseline)}
         manifest.write_text(json.dumps(metadata))
         destination = local / 'plan'
-        with patch.object(maintenance, 'ROOT', self.root):
+        with private_root(self.root):
             with self.assertRaises(ValueError):
                 part.prepare(manifest, stock, destination, layout)
             self.assertFalse(destination.exists())

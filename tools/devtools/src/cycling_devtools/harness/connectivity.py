@@ -3,8 +3,9 @@ import argparse
 import json
 from pathlib import Path
 
-from cycling_devtools.harness.runner import atomic_json, fields, preflight, private
-from cycling_devtools.terminal.usb import ROOT
+from cycling_devtools.harness.runner import atomic_json, preflight
+from cycling_devtools.terminal.usb import reply_fields
+from cycling_devtools.workspace import ROOT, private_path
 
 
 def scenarios(wifi_profile, original_wifi_connected=True):
@@ -59,14 +60,14 @@ def main():
     parser.add_argument('--baseline', default=str(ROOT / '.local/foundation/original/state.json'))
     parser.add_argument('--output', default=str(ROOT / '.local/foundation/scenarios'))
     args = parser.parse_args()
-    baseline = json.loads(private(args.baseline).read_text())
-    original_ble = fields(baseline['BLE']['data'])
-    if original_ble.get('link') != 'advertising' or fields(baseline['INFO']['data']).get('cycling') != 'false':
+    baseline = json.loads(private_path(args.baseline).read_text())
+    original_ble = reply_fields(baseline['BLE']['data'])
+    if original_ble.get('link') != 'advertising' or reply_fields(baseline['INFO']['data']).get('cycling') != 'false':
         raise ValueError('generator requires the captured original idle base echo composition; supply a deliberate restoration plan for other originals')
-    original_wifi = fields(baseline['WIFI']['data'])
-    output = private(args.output)
+    original_wifi = reply_fields(baseline['WIFI']['data'])
+    output = private_path(args.output)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name, scenario in scenarios(private(args.wifi_profile), original_wifi.get('online') == 'true').items():
+    for name, scenario in scenarios(private_path(args.wifi_profile), original_wifi.get('online') == 'true').items():
         preflight(scenario)
         atomic_json(output / (name + '.json'), scenario)
     print('Wrote connectivity-wifi.json and connectivity-ble.json in the private scenario directory.')

@@ -8,7 +8,8 @@ import select
 import subprocess
 import time
 
-from cycling_devtools.terminal.usb import ROOT, UsbConnection, open_no_reset, terminal_reply
+from cycling_devtools.terminal.usb import UsbConnection, open_no_reset, terminal_reply
+from cycling_devtools.workspace import ROOT
 
 
 class ManualAction(RuntimeError):

@@ -11,8 +11,10 @@ import sys
 import time
 import zlib
 
-from cycling_devtools.workspace import ROOT
+from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import acquire_lock
+from cycling_devtools.workspace import ROOT
+
 LOCAL = ROOT / ".local/device"
 FLASH_SIZE = 0x1000000
 SLOT_SIZE = 0x73A000
@@ -222,13 +224,14 @@ def monitor(port, seconds, output=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["backup", "flash", "stock", "monitor"])
-    parser.add_argument("--port", default=os.environ.get("CYCLING_PORT", "/dev/ttyACM0"))
+    add_port_argument(parser)
     parser.add_argument("--seconds", type=int, default=15)
     args = parser.parse_args()
+    port = selected_port(parser, args.port)
     if args.action == "monitor":
-        monitor(args.port, args.seconds)
+        monitor(port, args.seconds)
         return
-    device = Device(args.port)
+    device = Device(port)
     # Validate the candidate before interrupting stock firmware.
     candidate = ROOT / ".local/cycling.bin"
     if args.action == "flash":

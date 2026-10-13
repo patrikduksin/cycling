@@ -3,13 +3,15 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
 import zlib
 
-from cycling_devtools.terminal.usb import ROOT, UsbConnection
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.little_endian import u16, u32, u64
+from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.workspace import ROOT
 
 SLOT_SIZE = 256
 COMMIT = 0x434F4D54
@@ -52,18 +54,6 @@ def download_prefix(connection, partial, upper):
         for index in range(upper):
             raw.write(read_slot(connection, index))
             raw.flush()
-
-
-def u16(data, at):
-    return int.from_bytes(data[at:at + 2], 'little')
-
-
-def u32(data, at):
-    return int.from_bytes(data[at:at + 4], 'little')
-
-
-def u64(data, at):
-    return int.from_bytes(data[at:at + 8], 'little')
 
 
 def decode_slot(data):
@@ -267,10 +257,10 @@ def export(port, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     parser.add_argument('--output', type=Path, default=ROOT / '.local/exports' / str(time.time_ns()))
     args = parser.parse_args()
-    manifest = export(args.port, args.output)
+    manifest = export(selected_port(parser, args.port), args.output)
     print(json.dumps(manifest, indent=2))
     print(f'Private export: {args.output}')
 

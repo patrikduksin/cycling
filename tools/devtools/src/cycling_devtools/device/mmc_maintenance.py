@@ -11,7 +11,9 @@ import sys
 import time
 import zlib
 
-from cycling_devtools.terminal.usb import ROOT, acquire_lock, open_no_reset
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.terminal.usb import acquire_lock, open_no_reset
+from cycling_devtools.workspace import private_path
 
 HEADER = struct.Struct('<4s7I')
 SECTOR = 512
@@ -20,13 +22,6 @@ TIMEOUT = 10
 
 def crc(data):
     return zlib.crc32(data) & 0xffffffff
-
-
-def private_path(value):
-    path = Path(value).resolve()
-    if not path.is_relative_to((ROOT / '.local').resolve()):
-        raise ValueError('images and evidence must stay under ignored .local/')
-    return path
 
 
 def digest_file(path):
@@ -354,7 +349,7 @@ def write_image(connection, image, start, expected_sha256, manifest, single_read
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('info')
     commands.add_parser('recover')
@@ -376,7 +371,8 @@ def main():
     write.add_argument('--single-read-copy', type=Path,
                        help='explicitly restore using one complete capture and a separate matching copy')
     args = parser.parse_args()
-    with Connection(args.port) as connection:
+    port = selected_port(parser, args.port)
+    with Connection(port) as connection:
         if args.command == 'recover':
             connection.recover()
             print('MMC recovery acknowledged.')

@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import cycling_devtools.device.mmc_maintenance as mm
+from workspace_fixture import private_root
 
 
 def frame(ident=1, start=0, count=1, encoding=0, data=None, status=0, checksum=None):
@@ -201,11 +202,9 @@ class BackupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.local = self.root / '.local'
-        self.local.mkdir()
-        self.root_patch = patch.object(mm, 'ROOT', self.root)
-        self.root_patch.start()
-        self.addCleanup(self.root_patch.stop)
+        root = private_root(self.root)
+        self.local = root.__enter__()
+        self.addCleanup(root.__exit__, None, None, None)
         self.addCleanup(self.temp.cleanup)
 
     def test_two_pass_backup_and_preserved_existing_image(self):

@@ -5,8 +5,10 @@ import json
 import time
 from pathlib import Path
 
+from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.rides.export import info, read_slot
-from cycling_devtools.terminal.usb import ROOT, UsbConnection
+from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.workspace import ROOT
 
 
 def verified_manifest(directory):
@@ -96,11 +98,12 @@ def clear(port, export_directory, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('export_directory', type=Path)
-    parser.add_argument('--port', default='/dev/ttyACM0')
+    add_port_argument(parser)
     parser.add_argument('--output', type=Path,
                         default=ROOT / '.local/tests' / f'ride-clear-{time.time_ns()}')
     args = parser.parse_args()
-    print(json.dumps(clear(args.port, args.export_directory, args.output), indent=2))
+    port = selected_port(parser, args.port)
+    print(json.dumps(clear(port, args.export_directory, args.output), indent=2))
 
 
 if __name__ == '__main__':

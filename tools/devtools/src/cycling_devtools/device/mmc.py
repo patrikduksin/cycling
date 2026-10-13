@@ -2,33 +2,20 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import re
-import struct
-import subprocess
 import zlib
 
-from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.little_endian import u16, u32, u64
+from cycling_devtools.terminal.usb import UsbConnection, reply_fields
+from cycling_devtools.workspace import private_directory
 
-from cycling_devtools.workspace import ROOT
 SECTOR_SIZE = 512
 MAX_SECTORS = 128
 
 
 class LimitReached(ValueError):
     pass
-
-
-def u16(data, offset):
-    return struct.unpack_from('<H', data, offset)[0]
-
-
-def u32(data, offset):
-    return struct.unpack_from('<I', data, offset)[0]
-
-
-def u64(data, offset):
-    return struct.unpack_from('<Q', data, offset)[0]
 
 
 def checked_range(start, length, total):
@@ -42,11 +29,7 @@ def fields(reply):
     text = reply.get('data')
     if not isinstance(text, str):
         raise ValueError('invalid MMC reply')
-    pairs = re.findall(r'(\w+)=([^\s]+)', text)
-    result = dict(pairs)
-    if len(result) != len(pairs):
-        raise ValueError('duplicate MMC reply field')
-    return result
+    return reply_fields(text, unique=True)
 
 
 def read_sector(connection, sector):
@@ -320,19 +303,6 @@ def investigate(media):
     return result
 
 
-def private_output(value):
-    path = Path(value).resolve()
-    local = (ROOT / '.local').resolve()
-    if local not in path.parents:
-        raise ValueError('output must be inside repository .local')
-    relative = path.relative_to(ROOT)
-    if subprocess.run(['git', 'check-ignore', '-q', '--', str(relative)], cwd=ROOT).returncode:
-        raise ValueError('output must be git-ignored')
-    path.mkdir(parents=True, mode=0o700, exist_ok=False)
-    path.chmod(0o700)
-    return path
-
-
 def save(path, data):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'wb') as stream:
@@ -342,18 +312,19 @@ def save(path, data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', help='new ignored directory under .local')
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     parser.add_argument('--max-sectors', type=int, default=MAX_SECTORS)
     args = parser.parse_args()
+    port = selected_port(parser, args.port)
     output = None
     try:
         if not 1 <= args.max_sectors <= MAX_SECTORS:
             raise ValueError('invalid read cap')
-        output = private_output(args.output)
+        output = private_directory(args.output)
         sectors_dir = output / 'sectors'
         sectors_dir.mkdir(mode=0o700)
         save(output / 'usb.log', b'')
-        with UsbConnection(args.port, output / 'usb.log') as connection:
+        with UsbConnection(port, output / 'usb.log') as connection:
             status = connection.terminal_command('MMC')
             save(output / 'status.json', json.dumps(status, indent=2).encode())
             capacity = fields(status).get('sectors', '')

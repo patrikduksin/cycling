@@ -1,10 +1,11 @@
+import argparse
 import contextlib
 import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cycling_devtools.device.port as device_port
 
@@ -86,6 +87,39 @@ class DevicePortTests(unittest.TestCase):
         with patch.object(device_port, 'resolve_port', return_value=Path('/dev/ttyACM7')), contextlib.redirect_stdout(output):
             self.assertEqual(device_port.main(), 0)
         self.assertEqual(output.getvalue(), '/dev/ttyACM7\n')
+
+
+class PortSelectionTests(unittest.TestCase):
+    def test_explicit_then_environment_then_verified_discovery(self):
+        discovered = Path('/dev/ttyACM7')
+        resolve = Mock(return_value=discovered)
+        environ = {'CYCLING_PORT': '/dev/ttyACM3'}
+        self.assertEqual(device_port.select_port('/dev/ttyACM1', environ, resolve), '/dev/ttyACM1')
+        self.assertEqual(device_port.select_port(None, environ, resolve), '/dev/ttyACM3')
+        resolve.assert_not_called()
+        for unset in ({}, {'CYCLING_PORT': ''}):
+            self.assertEqual(device_port.select_port(None, unset, resolve), str(discovered))
+
+    def test_missing_or_ambiguous_discovery_fails_the_command_clearly(self):
+        parser = argparse.ArgumentParser()
+        device_port.add_port_argument(parser)
+        args = parser.parse_args([])
+        errors = io.StringIO()
+        failure = device_port.DiscoveryError('expected exactly one C606 matching the private backup manifest')
+        with (patch.dict('os.environ', {}, clear=True),
+              patch.object(device_port, 'resolve_port', side_effect=failure),
+              contextlib.redirect_stderr(errors),
+              self.assertRaises(SystemExit) as caught):
+            device_port.selected_port(parser, args.port)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn('expected exactly one C606', errors.getvalue())
+        self.assertIn('--port or set CYCLING_PORT', errors.getvalue())
+
+    def test_no_tool_hard_codes_a_default_tty(self):
+        package = Path(device_port.__file__).resolve().parents[1]
+        offenders = [path.name for path in package.rglob('*.py') if "'/dev/ttyACM" in path.read_text()
+                     or '"/dev/ttyACM' in path.read_text()]
+        self.assertEqual(offenders, [])
 
 
 if __name__ == '__main__':

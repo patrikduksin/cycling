@@ -9,9 +9,10 @@ import struct
 import sys
 import time
 
-from cycling_devtools.device.mmc_maintenance import (Connection, Progress, SECTOR, digest_file, private_path,
-                             validate_backup)
+from cycling_devtools.device.mmc_maintenance import Connection, Progress, SECTOR, digest_file, validate_backup
 from cycling_devtools.device.mmc_partition import Layout, make_marker, make_mbr, stock_geometry, verified_extents
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.workspace import private_path
 
 CHUNK = 1024 * 1024
 WRITTEN_VERIFICATION = 'per-written-sector-readback-plus-metadata-samples'
@@ -251,7 +252,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=private_path, required=True)
     parser.add_argument('--journal', type=private_path)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     parser.add_argument('--execute', action='store_true', help='perform the validated one-shot conversion; no retries')
     parser.add_argument('--single-read-copy', type=Path,
                         help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified')
@@ -265,7 +266,8 @@ def main():
         return
     if args.journal is None:
         parser.error('--execute requires a new --journal path')
-    apply(args.plan, args.journal, args.port, single_read_copy=args.single_read_copy, verification=args.verification)
+    port = selected_port(parser, args.port)
+    apply(args.plan, args.journal, port, single_read_copy=args.single_read_copy, verification=args.verification)
     print(f'Conversion completed with stock verification={args.verification}; stock has not been booted.')
 
 

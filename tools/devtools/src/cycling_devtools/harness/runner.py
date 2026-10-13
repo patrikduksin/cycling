@@ -16,9 +16,11 @@ import zlib
 import cycling_devtools.connectivity.wifi as wifi
 import cycling_devtools.connectivity.ble_config as ble_config
 
+from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.av import Capture, discover
 from cycling_devtools.harness.transport import ManualAction, Real, Virtual, usb_node
-from cycling_devtools.terminal.usb import ROOT
+from cycling_devtools.terminal.usb import reply_fields
+from cycling_devtools.workspace import ROOT, private_path
 
 class Unsupported(RuntimeError):
     pass
@@ -108,17 +110,6 @@ RECIPES['acceptance'] = {'captures': [
 ]}
 READ_ONLY = {'HELP', 'INFO', 'STATUS', 'POSITION', 'INPUT', 'BATTERY', 'TIME', 'SETTINGS',
              'ACTIVITY', 'WIFI', 'BLE', 'STORAGE', 'ANT', 'MMC', 'SOUND', 'GNSS', 'PRESSURE', 'MOTION', 'COMPANION'}
-
-
-def fields(text):
-    return dict(re.findall(r'(\w+)=([^\s]*)', text))
-
-
-def private(path):
-    path = Path(path).resolve()
-    if not path.is_relative_to((ROOT / '.local').resolve()):
-        raise ValueError('evidence and run state must be inside ignored .local/')
-    return path
 
 
 def atomic_json(path, value):
@@ -223,13 +214,16 @@ def connectivity_command(radio, step):
     if radio not in permitted or action not in permitted[radio]:
         raise ValueError('unsupported typed connectivity operation')
     if action == 'configure':
-        config = json.loads(private(step['profile']).read_text())
+        config = json.loads(private_path(step['profile']).read_text())
         if step.get('invalid_password') is True:
             config['password'] = 'invalid-owned-fixture-password'
         return wifi.command(config)
     if action == 'select':
         mode = step['mode']
-        record = json.loads(private(step.get('authorization', str(ble_config.AUTHORIZED))).read_text()) if mode == 'authorized-heart' else None
+        record = None
+        if mode == 'authorized-heart':
+            authorization = private_path(step.get('authorization', str(ble_config.AUTHORIZED)))
+            record = json.loads(authorization.read_text())
         return ble_config.command(mode, record)
     return radio.upper() + ' ' + action.upper()
 
@@ -405,7 +399,7 @@ class Runner:
             if reply['status'] in ('UNSUPPORTED', 'UNAVAILABLE'):
                 raise Unsupported(reply['status'])
             raise RuntimeError(f'{command.split()[0]} returned {reply["status"]}')
-        return fields(reply['data'])
+        return reply_fields(reply['data'])
 
     def operation(self, command, statuses=('OK',)):
         result = self.command(f'HARNESS {self.session} {command}', statuses)
@@ -878,7 +872,7 @@ def main():
     parser.add_argument('--run-id', help=argparse.SUPPRESS)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--backend', choices=['real', 'virtual'], default='real')
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--sdk', action='store_true')
     parser.add_argument('--no-harness', action='store_true')
@@ -892,7 +886,7 @@ def main():
         print(json.dumps(discover()))
         return 0
     if args.action in ('wait', 'cancel'):
-        output = private(args.output or ROOT / '.local/harness/runs' / (args.name or ''))
+        output = private_path(args.output or ROOT / '.local/harness/runs' / (args.name or ''))
         if args.action == 'cancel':
             pid = int((output / 'pid').read_text())
             command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
@@ -914,16 +908,21 @@ def main():
     if scenario is None:
         raise ValueError('unknown recipe; use recipes')
     preflight(scenario)
-    output = private(args.output or ROOT / '.local/harness/runs' / f'{time.time_ns()}-{secrets.token_hex(3)}')
+    output = private_path(args.output or ROOT / '.local/harness/runs' / f'{time.time_ns()}-{secrets.token_hex(3)}')
     if args.state_dir:
-        args.state_dir = private(args.state_dir)
+        args.state_dir = private_path(args.state_dir)
+    if args.backend == 'real':
+        # Resolve once; a started worker receives this exact verified port.
+        args.port = selected_port(parser, args.port)
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     if args.action == 'start':
         scenario_path = output / 'scenario.json'
         atomic_json(scenario_path, scenario)
         worker_output = output / 'result'
         cmd = [sys.executable, '-m', 'cycling_devtools.harness.runner', 'run', '--scenario', str(scenario_path),
-               '--output', str(worker_output), '--run-id', output.name, '--backend', args.backend, '--port', args.port]
+               '--output', str(worker_output), '--run-id', output.name, '--backend', args.backend]
+        if args.port:
+            cmd += ['--port', args.port]
         for flag in ('sdk', 'no_harness'):
             if getattr(args, flag):
                 cmd.append('--' + flag.replace('_', '-'))

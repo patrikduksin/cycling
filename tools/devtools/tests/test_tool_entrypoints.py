@@ -6,6 +6,8 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
+# -S skips site-packages, including the editable install; name the source directly.
+SOURCE = ROOT / 'tools/devtools/src'
 
 
 class EntrypointTests(unittest.TestCase):
@@ -17,7 +19,7 @@ class EntrypointTests(unittest.TestCase):
             for args in (['-c', f'import {module}'], ['-m', module, '--help']):
                 result = subprocess.run([sys.executable, '-S', *args], cwd=ROOT,
                                         capture_output=True, text=True,
-                                        env=dict(os.environ, CYCLING_SIM_PROFILE='invalid'))
+                                        env=dict(os.environ, CYCLING_SIM_PROFILE='invalid', PYTHONPATH=str(SOURCE)))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if '--help' in args:
                     self.assertIn('usage:', result.stdout)

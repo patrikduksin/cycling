@@ -72,7 +72,7 @@ captured original idle base state. It does not access the device.
 
 ```sh
 export CYCLING_PORT="$(mise run device-port)"
-mise exec -- python -m cycling_devtools.harness.connectivity
+mise exec -- uv run --project tools/devtools --locked python -m cycling_devtools.harness.connectivity
 mise run harness -- run .local/foundation/scenarios/connectivity-wifi.json
 # Start the existing owned host fixture before the BLE SDK scenario:
 mise run ble-simulator -- --profile both

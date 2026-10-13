@@ -1,4 +1,5 @@
 use super::*;
+use crate::screens::sensors::MenuMessage;
 
 use device_api::ant::Ant;
 use device_api::ant::AntOperation;
@@ -259,7 +260,7 @@ fn back_cancels_starting_scan_and_rescan_waits_for_stop_completion() {
     );
     radio.channels.tick(3400);
     runtime.scan.tick(&mut radio, 3400);
-    assert_eq!(runtime.scan.message(), b"SCAN CANCELLED");
+    assert_eq!(runtime.scan.message(), MenuMessage::ScanCancelled);
     runtime.input(press(Button::BottomRight), 3800, &mut radio);
     assert_eq!(
         radio
@@ -284,20 +285,26 @@ fn scan_failure_reports_recovery_and_keeps_back_usable() {
     runtime.page = crate::screens::workout::Page::Sensors;
     let press = |button| Input::Button { button, code: 1 };
     runtime.input(press(Button::BottomRight), 1000, &mut radio);
-    assert_eq!(runtime.menu.diagnostics().message, b"SCAN UNAVAILABLE");
+    assert_eq!(
+        runtime.menu.diagnostics().message,
+        Some(MenuMessage::ScanUnavailable)
+    );
     radio.reject = None;
     runtime.input(press(Button::BottomRight), 1400, &mut radio);
     radio
         .channels
         .request_failed(device_api::ant::Request::Scan { duration_ms: 10000 }, 1500);
     runtime.scan.tick(&mut radio, 1500);
-    assert_eq!(runtime.scan.message(), b"RADIO LOST - REBOOT");
+    assert_eq!(runtime.scan.message(), MenuMessage::RadioLost);
     runtime.input(press(Button::TopLeft), 1800, &mut radio);
     assert!(runtime.page == crate::screens::workout::Page::Home);
     runtime.page = crate::screens::workout::Page::Sensors;
     runtime.input(press(Button::BottomRight), 2200, &mut radio);
     assert_eq!(radio.requests.len(), 2);
-    assert_eq!(runtime.menu.diagnostics().message, b"RADIO LOST - REBOOT");
+    assert_eq!(
+        runtime.menu.diagnostics().message,
+        Some(MenuMessage::RadioLost)
+    );
 }
 
 #[test]
@@ -330,11 +337,11 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
         1100,
     );
     runtime.scan.tick(&mut radio, 1100);
-    assert_eq!(runtime.scan.message(), b"SCANNING...");
+    assert_eq!(runtime.scan.message(), MenuMessage::Scanning);
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.input(press(Button::TopLeft), 1400, &mut radio);
     assert!(runtime.page == crate::screens::workout::Page::Home);
-    assert_eq!(runtime.scan.message(), b"STOPPING SCAN");
+    assert_eq!(runtime.scan.message(), MenuMessage::StoppingScan);
     radio.reject = None;
     runtime.scan.tick(&mut radio, 1500);
     let requests = radio.requests.len();
@@ -350,7 +357,7 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
     assert!(!radio.channel(120, 1700).unwrap().stale);
     radio.channels.tick(3500);
     runtime.scan.tick(&mut radio, 3500);
-    assert_eq!(runtime.scan.message(), b"SCAN CANCELLED");
+    assert_eq!(runtime.scan.message(), MenuMessage::ScanCancelled);
     assert!(
         !radio
             .requests
@@ -383,7 +390,7 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
     runtime.scan.tick(&mut radio, 11000);
     radio.settling = false;
     runtime.scan.tick(&mut radio, 12000);
-    assert_eq!(runtime.scan.message(), b"SCAN DONE - PICK");
+    assert_eq!(runtime.scan.message(), MenuMessage::ScanDone);
 }
 
 #[test]
@@ -720,7 +727,10 @@ fn radio_wide_connection_failure_is_visible_on_the_page() {
         transmission_type: 1,
     };
     choose_sensor(&mut runtime, &mut radio, peer);
-    assert_eq!(runtime.menu.diagnostics().message, b"RADIO UNAVAILABLE");
+    assert_eq!(
+        runtime.menu.diagnostics().message,
+        Some(MenuMessage::RadioUnavailable)
+    );
 }
 
 #[test]

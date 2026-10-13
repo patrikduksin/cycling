@@ -2173,6 +2173,7 @@ dependencies = [
  "device-api",
  "firmware-services",
  "firmware-shell",
+ "heapless 0.9.3",
  "log",
 ]
 

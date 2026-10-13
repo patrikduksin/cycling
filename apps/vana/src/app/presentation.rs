@@ -1,5 +1,6 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
+use crate::screens::sensors::MenuMessage;
 use core::fmt::Write;
 use device_api::gps::FixState;
 
@@ -92,8 +93,7 @@ impl Runtime {
                 let _ = write!(view.lines[6], "GPS {}", gps_status);
                 let _ = write!(view.lines[7], "STORAGE {}", self.recorder.status().name());
                 if let Some(message) = self.scan.overview_message() {
-                    let _ = view.lines[8]
-                        .push_str(core::str::from_utf8(message).unwrap_or("SCAN FAILED"));
+                    let _ = view.lines[8].push_str(message.text());
                 } else {
                     let _ = write!(view.lines[8], "RADIO {:?}", ant.availability());
                 }
@@ -247,10 +247,14 @@ impl Runtime {
         if self.startup_status != status.name() {
             self.startup_status = status.name();
             self.menu.set_message(match status {
-                Startup::Charging | Startup::WakePending | Startup::Waiting => b"STARTING SENSORS",
-                Startup::Probing | Startup::Pending => b"WAITING FOR COMPANION",
-                Startup::Unavailable | Startup::Uncertain | Startup::TimedOut => b"STARTUP FAILED",
-                _ => b"SCAN THEN PICK SENSOR",
+                Startup::Charging | Startup::WakePending | Startup::Waiting => {
+                    MenuMessage::StartingSensors
+                }
+                Startup::Probing | Startup::Pending => MenuMessage::WaitingForCompanion,
+                Startup::Unavailable | Startup::Uncertain | Startup::TimedOut => {
+                    MenuMessage::StartupFailed
+                }
+                _ => MenuMessage::ScanThenPick,
             });
             self.next_display = 0;
         }

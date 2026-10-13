@@ -1,4 +1,5 @@
 //! Foreground discovery observes the transport without disturbing selected peers.
+use crate::screens::sensors::MenuMessage;
 use device_api::ant::{Admission, Ant, AntOperation, Error, ScanState};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -43,24 +44,24 @@ impl Scan {
                 ScanState::Starting | ScanState::Active | ScanState::Stopping
             )
     }
-    pub fn overview_message(&self) -> Option<&'static [u8]> {
+    pub fn overview_message(&self) -> Option<MenuMessage> {
         (self.phase != Phase::Idle).then(|| self.message())
     }
-    pub fn message(&self) -> &'static [u8] {
+    pub fn message(&self) -> MenuMessage {
         if self.pending_start.is_some() && !self.running() {
-            return b"SEARCH PENDING";
+            return MenuMessage::SearchPending;
         }
         match self.phase {
-            Phase::Idle => b"PICK SENSOR",
-            Phase::Starting => b"STARTING SCAN",
-            Phase::Scanning => b"SCANNING...",
-            Phase::Cancelling | Phase::Stopping => b"STOPPING SCAN",
-            Phase::Cancelled => b"SCAN CANCELLED",
-            Phase::Finishing => b"FINISHING SCAN",
-            Phase::Complete => b"SCAN DONE - PICK",
-            Phase::Failed => b"SCAN FAILED - RETRY",
-            Phase::Uncertain => b"RADIO LOST - REBOOT",
-            Phase::Unavailable => b"SCAN UNAVAILABLE",
+            Phase::Idle => MenuMessage::PickSensor,
+            Phase::Starting => MenuMessage::StartingScan,
+            Phase::Scanning => MenuMessage::Scanning,
+            Phase::Cancelling | Phase::Stopping => MenuMessage::StoppingScan,
+            Phase::Cancelled => MenuMessage::ScanCancelled,
+            Phase::Finishing => MenuMessage::FinishingScan,
+            Phase::Complete => MenuMessage::ScanDone,
+            Phase::Failed => MenuMessage::ScanFailed,
+            Phase::Uncertain => MenuMessage::RadioLost,
+            Phase::Unavailable => MenuMessage::ScanUnavailable,
         }
     }
     pub fn start(&mut self, ant: &mut impl Ant, now: u64) {

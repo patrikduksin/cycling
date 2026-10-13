@@ -1,6 +1,6 @@
 //! Bounded rider intents survive page changes and wait for radio admission.
 use super::Runtime;
-use crate::screens::sensors::Action;
+use crate::screens::sensors::{Action, MenuMessage};
 use device_api::ant::{Admission, Ant, AntOperation, Error, Identity, LinkState};
 
 #[derive(Clone, Copy)]
@@ -49,7 +49,7 @@ impl Runtime {
             return;
         }
         let Some(slot) = self.sensor_requests.iter_mut().find(|p| p.is_none()) else {
-            self.menu.request_failed(peer, b"TOO MANY REQUESTS");
+            self.menu.request_failed(peer, MenuMessage::TooManyRequests);
             return;
         };
         *slot = Some(Pending {
@@ -149,12 +149,12 @@ impl Runtime {
                     }
                 }
             } else {
-                let message: &'static [u8] = match result {
-                    Err(Error::Busy) => b"BUSY - RETRY",
-                    Err(Error::Unavailable) => b"RADIO UNAVAILABLE",
-                    Err(Error::Uncertain) => b"RADIO LOST - REBOOT",
-                    Err(Error::UnsupportedType) => b"TYPE UNSUPPORTED",
-                    _ => b"REQUEST FAILED",
+                let message = match result {
+                    Err(Error::Busy) => MenuMessage::Busy,
+                    Err(Error::Unavailable) => MenuMessage::RadioUnavailable,
+                    Err(Error::Uncertain) => MenuMessage::RadioLost,
+                    Err(Error::UnsupportedType) => MenuMessage::TypeUnsupported,
+                    _ => MenuMessage::RequestFailed,
                 };
                 if matches!(result, Err(Error::Unavailable | Error::Uncertain)) {
                     self.menu.set_message(message);

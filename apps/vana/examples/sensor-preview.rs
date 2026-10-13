@@ -1,7 +1,7 @@
 //! Render the sensor page with deterministic fixtures into PPM previews.
 use device_api::ant::{Discovery, Event, Identity};
 use device_api::input::{Button, Input};
-use vana::screens::sensors::Menu;
+use vana::screens::sensors::{Menu, MenuMessage};
 fn main() {
     let output = std::env::args().nth(1).expect("output directory");
     std::fs::create_dir_all(&output).unwrap();
@@ -43,7 +43,7 @@ fn main() {
             snapshots[3..].fill(None);
         }
         menu.refresh(discoveries, snapshots, true, 0);
-        menu.set_message(b"SCANNING...");
+        menu.set_message(MenuMessage::Scanning);
         menu.input(
             Input::Button {
                 button: Button::BottomLeft,
@@ -55,7 +55,7 @@ fn main() {
     }
     let mut menu = Menu::new();
     menu.refresh(discoveries, channels.snapshots(0), false, 0);
-    menu.set_message(b"SCAN DONE - PICK");
+    menu.set_message(MenuMessage::ScanDone);
     let mut now = 0;
     focus(&mut menu, 1, &mut now);
     render(&menu, &output, "focused-heart");
@@ -80,7 +80,7 @@ fn main() {
     };
     menu.request_pending(pending);
     render(&menu, &output, "pending");
-    menu.request_failed(pending, b"RADIO UNAVAILABLE");
+    menu.request_failed(pending, MenuMessage::RadioUnavailable);
     render(&menu, &output, "failed");
     press(&mut menu, Button::BottomRight, &mut now);
     render(&menu, &output, "failed-detail");
@@ -93,7 +93,7 @@ fn main() {
     render(&empty, &output, "searching");
     empty.refresh([None; 8], [None; 10], false, 0);
     render(&empty, &output, "empty");
-    empty.set_message(b"RADIO UNAVAILABLE");
+    empty.set_message(MenuMessage::RadioUnavailable);
     render(&empty, &output, "unavailable");
 }
 

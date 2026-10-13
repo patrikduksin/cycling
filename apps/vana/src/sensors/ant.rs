@@ -8,6 +8,21 @@
 //! <https://forums.garmin.com/cfs-file/__key/communityserver-discussions-components-files/402/D00001086_5F00_ANT_2B005F00_Device_5F00_Profile_5F002D005F00_Bicycle_5F00_Power_5F00_Rev_5F00_5.1.pdf>.
 //! These decoders do not implement the complete device profiles.
 
+/// ANT+ device types VANA recognizes.
+pub mod device_type {
+    pub const POWER: u8 = 11;
+    pub const FITNESS_EQUIPMENT: u8 = 17;
+    pub const SHIFTING: u8 = 34;
+    pub const BIKE_LIGHTS: u8 = 35;
+    pub const RADAR: u8 = 40;
+    pub const HEART_RATE: u8 = 120;
+    pub const SPEED_CADENCE: u8 = 121;
+    pub const CADENCE: u8 = 122;
+    pub const SPEED: u8 = 123;
+    /// Shimano Di2 shifting.
+    pub const SHIFTING_DI2: u8 = 128;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeartRate {
     /// Last beat time, in 1/1024-second units, wrapping at 65536.

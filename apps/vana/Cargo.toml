@@ -14,4 +14,5 @@ default = []
 device-api = { path = "../../packages/device-api" }
 firmware-shell = { path = "../../packages/shell" }
 firmware-services = { path = "../../packages/services" }
+heapless = { version = "=0.9.3", default-features = false }
 log = { version = "=0.4.34", default-features = false }

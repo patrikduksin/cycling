@@ -1,4 +1,5 @@
 """One-shot or interactive C606 terminal through the shared no-reset USB owner."""
+
 import argparse
 import json
 from pathlib import Path
@@ -48,8 +49,7 @@ def run(port, output, command):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_port_argument(parser)
-    parser.add_argument('--output', type=Path,
-                        default=ROOT / '.local/terminal' / str(time.time_ns()))
+    parser.add_argument('--output', type=Path, default=ROOT / '.local/terminal' / str(time.time_ns()))
     parser.add_argument('command', nargs='*', help='ordinary command, for example STATUS')
     args = parser.parse_args()
     port = selected_port(parser, args.port)

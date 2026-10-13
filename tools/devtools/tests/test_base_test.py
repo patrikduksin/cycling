@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 from cycling_devtools.harness.base import apply, expect, preserved, wifi_failures, transport_recovery, check_overlong
 
+
 class Connection:
     def __init__(self, status='OK'):
         self.request_id = 5
@@ -14,6 +15,7 @@ class Connection:
             raise TimeoutError('completion unknown')
         return dict(status=self.status, data='stats=(2, 3, 4, 0)')
 
+
 class BaseTests(unittest.TestCase):
     def test_ambiguous_save_is_not_replayed(self):
         connection = Connection()
@@ -25,7 +27,7 @@ class BaseTests(unittest.TestCase):
     def test_invalid_parser_reply_uses_reserved_id_zero(self):
         connection = Connection('INVALID')
         expect(connection, 'SAVE extra', 'INVALID')
-        self.assertEqual(connection.request_id, -1) # Client increments before transmission.
+        self.assertEqual(connection.request_id, -1)  # Client increments before transmission.
 
     def test_restore_checks_every_persisted_preference(self):
         original = dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='-180')
@@ -36,6 +38,7 @@ class BaseTests(unittest.TestCase):
     def test_wifi_failure_counter_is_not_association_count(self):
         self.assertEqual(wifi_failures(Connection()), 4)
 
+
 class FramingTests(unittest.TestCase):
     def test_probe_exceeds_real_256_byte_limit_and_preserves_suffix_test(self):
         class FramingConnection(Connection):
@@ -43,8 +46,10 @@ class FramingTests(unittest.TestCase):
                 self.commands.append(command)
                 # The production receiver advertises 256, not the old probe's 128.
                 frame = f'CMD 0 {command}'.encode('ascii')
-                return dict(status='INVALID', data='line exceeds 256 bytes'
-                            if len(frame) > 256 else 'malformed command')
+                return dict(
+                    status='INVALID', data='line exceeds 256 bytes' if len(frame) > 256 else 'malformed command'
+                )
+
         connection = FramingConnection()
         check_overlong(connection, {'max_line': '256'})
         self.assertEqual(len(connection.commands), 1)
@@ -62,6 +67,7 @@ class FramingTests(unittest.TestCase):
 
     def test_generic_invalid_and_wrong_limit_replies_do_not_pass(self):
         from unittest.mock import Mock
+
         for message in ('malformed command', 'line exceeds 128 bytes'):
             connection = Mock()
             connection.terminal_command.return_value = dict(status='INVALID', data=message)
@@ -81,6 +87,7 @@ class StallConnection:
             raise TimeoutError('stall completion unknown')
         return dict(status='ACCEPTED', ms=100, data='')
 
+
 class TransportRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.calls = 0
@@ -90,12 +97,27 @@ class TransportRecoveryTests(unittest.TestCase):
         now = self.calls * 500
         stalled = bool(connection.commands)
         if command == 'POSITION':
-            return dict(ms=now, transport='receiving', fix='no_fix', bytes=str(now),
-                        valid=str(self.calls), checksum_errors='0', parse_errors='0',
-                        dma_losses=str(int(stalled)), line_overflows='0', uart_errors='0')
+            return dict(
+                ms=now,
+                transport='receiving',
+                fix='no_fix',
+                bytes=str(now),
+                valid=str(self.calls),
+                checksum_errors='0',
+                parse_errors='0',
+                dma_losses=str(int(stalled)),
+                line_overflows='0',
+                uart_errors='0',
+            )
         if command == 'INPUT':
-            return dict(ms=now, companion_valid=str(self.calls), bad_crc='0',
-                        uart_errors=str(int(stalled)), touch_errors='0', input_lost='0')
+            return dict(
+                ms=now,
+                companion_valid=str(self.calls),
+                bad_crc='0',
+                uart_errors=str(int(stalled)),
+                touch_errors='0',
+                input_lost='0',
+            )
         if command == 'SETTINGS':
             return dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='-180')
         return dict(ms=now, storage_ops='0')
@@ -103,7 +125,10 @@ class TransportRecoveryTests(unittest.TestCase):
     def test_stalls_once_and_records_loss_without_requiring_an_indoor_fix(self):
         connection = StallConnection()
         report = {}
-        with patch('cycling_devtools.harness.base.read', side_effect=self.read), patch('cycling_devtools.harness.base.time.sleep'):
+        with (
+            patch('cycling_devtools.harness.base.read', side_effect=self.read),
+            patch('cycling_devtools.harness.base.time.sleep'),
+        ):
             transport_recovery(connection, dict(cycling='false', harness='true'), report)
         self.assertEqual(connection.commands, [('TEST 20', 12)])
         self.assertTrue(report['recovered'])
@@ -132,11 +157,16 @@ class TransportRecoveryTests(unittest.TestCase):
             if command == 'POSITION':
                 result['transport'] = 'failed'
             return result
+
         report = {}
-        with patch('cycling_devtools.harness.base.read', side_effect=failed), \
-                patch('cycling_devtools.harness.base.time.monotonic', side_effect=[0, 16]), self.assertRaises(TimeoutError):
+        with (
+            patch('cycling_devtools.harness.base.read', side_effect=failed),
+            patch('cycling_devtools.harness.base.time.monotonic', side_effect=[0, 16]),
+            self.assertRaises(TimeoutError),
+        ):
             transport_recovery(StallConnection(), dict(cycling='false', harness='true'), report)
         self.assertFalse(report['recovered'])
+
 
 if __name__ == '__main__':
     unittest.main()

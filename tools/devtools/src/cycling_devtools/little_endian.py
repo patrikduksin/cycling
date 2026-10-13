@@ -1,4 +1,5 @@
 """Bounds-checked little-endian integer fields shared by binary decoders."""
+
 import struct
 
 _U16 = struct.Struct('<H')

@@ -24,9 +24,12 @@ class Terminal:
             data = f'scanning={str(self.scanning).lower()} '
         elif command.startswith('ANT CHANNEL'):
             self.packets += 1
-            data = ('Snapshot { selected: Some(Identity { device_type: 120, device_number: 1234, '
-                    'transmission_type: 1 }), generation: 2, packets: ' + str(self.packets) +
-                    ', dropped_packets: 0, transport_losses: 0, tx_failures: 0 }')
+            data = (
+                'Snapshot { selected: Some(Identity { device_type: 120, device_number: 1234, '
+                'transmission_type: 1 }), generation: 2, packets: '
+                + str(self.packets)
+                + ', dropped_packets: 0, transport_losses: 0, tx_failures: 0 }'
+            )
         elif command == 'ANT READ':
             status = 'EMPTY'
         elif command == 'ANT STOP':
@@ -44,12 +47,15 @@ class Terminal:
 class AntDiagnosticsTests(unittest.TestCase):
     def run_capture(self, terminal):
         with tempfile.TemporaryDirectory() as directory:
-            ticks = iter(i * .5 for i in range(10000))
-            with patch('cycling_devtools.connectivity.ant.time.monotonic', side_effect=lambda: next(ticks)), \
-                 patch('cycling_devtools.connectivity.ant.time.sleep'):
+            ticks = iter(i * 0.5 for i in range(10000))
+            with (
+                patch('cycling_devtools.connectivity.ant.time.monotonic', side_effect=lambda: next(ticks)),
+                patch('cycling_devtools.connectivity.ant.time.sleep'),
+            ):
                 try:
-                    report = capture(terminal, Path(directory), [120], 2, 2,
-                                     send_command('120 1234 1 2 0102030405060708'))
+                    report = capture(
+                        terminal, Path(directory), [120], 2, 2, send_command('120 1234 1 2 0102030405060708')
+                    )
                 finally:
                     self.assertTrue((Path(directory) / 'report.json').exists())
                     for line in (Path(directory) / 'observations.jsonl').read_text().splitlines():

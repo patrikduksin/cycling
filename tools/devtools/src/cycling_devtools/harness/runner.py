@@ -1,4 +1,5 @@
 """Non-interactive C606/virtual scenarios. Results and raw evidence stay in .local/."""
+
 import argparse
 import hashlib
 import json
@@ -29,8 +30,27 @@ class Unsupported(RuntimeError):
 
 
 VERSION = 1
-READ_ONLY = {'HELP', 'INFO', 'STATUS', 'POSITION', 'INPUT', 'BATTERY', 'TIME', 'SETTINGS',
-             'ACTIVITY', 'WIFI', 'BLE', 'STORAGE', 'ANT', 'MMC', 'SOUND', 'GNSS', 'PRESSURE', 'MOTION', 'COMPANION'}
+READ_ONLY = {
+    'HELP',
+    'INFO',
+    'STATUS',
+    'POSITION',
+    'INPUT',
+    'BATTERY',
+    'TIME',
+    'SETTINGS',
+    'ACTIVITY',
+    'WIFI',
+    'BLE',
+    'STORAGE',
+    'ANT',
+    'MMC',
+    'SOUND',
+    'GNSS',
+    'PRESSURE',
+    'MOTION',
+    'COMPANION',
+}
 
 
 def atomic_json(path, value):
@@ -73,10 +93,16 @@ def png_rgb565(path, payload, width, height):
         for x in range(width):
             value = struct.unpack_from('<H', payload, (y * width + x) * 2)[0]
             raw.extend(((value >> 11) * 255 // 31, ((value >> 5) & 63) * 255 // 63, (value & 31) * 255 // 31))
+
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
-    path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
-                     + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+    path.write_bytes(
+        b'\x89PNG\r\n\x1a\n'
+        + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+        + chunk(b'IDAT', zlib.compress(raw))
+        + chunk(b'IEND', b'')
+    )
 
 
 def events_for(step):
@@ -87,14 +113,19 @@ def events_for(step):
         duration = int(step.get('duration_ms', 300 if gesture in ('swipe', 'drag') else 100))
         x, y = int(step.get('x', 0)), int(step.get('y', 0))
         if gesture == 'button':
-            events = [{'at_ms': index * duration, 'event': f'BUTTON {int(step.get("button", 0))}'}
-                      for index in range(int(step.get('repeat', 1)))]
+            events = [
+                {'at_ms': index * duration, 'event': f'BUTTON {int(step.get("button", 0))}'}
+                for index in range(int(step.get('repeat', 1)))
+            ]
         elif gesture in ('tap', 'hold'):
             events = [{'at_ms': 0, 'event': f'DOWN {x} {y}'}, {'at_ms': duration, 'event': 'UP'}]
         elif gesture in ('swipe', 'drag'):
             tx, ty = int(step['to_x']), int(step['to_y'])
             events = [{'at_ms': 0, 'event': f'DOWN {x} {y}'}]
-            events += [{'at_ms': duration * i // 8, 'event': f'MOVE {x + (tx-x)*i//8} {y + (ty-y)*i//8}'} for i in range(1, 9)]
+            events += [
+                {'at_ms': duration * i // 8, 'event': f'MOVE {x + (tx - x) * i // 8} {y + (ty - y) * i // 8}'}
+                for i in range(1, 9)
+            ]
             events.append({'at_ms': duration + 10, 'event': 'UP'})
         else:
             raise ValueError('unknown gesture; button holds are unsupported by physical event evidence')
@@ -130,8 +161,10 @@ def events_for(step):
 
 def connectivity_command(radio, step):
     action = step.get('action')
-    permitted = {'wifi': {'scan', 'configure', 'connect', 'disconnect', 'forget'},
-                 'ble': {'scan', 'select', 'connect', 'disconnect', 'forget', 'echo'}}
+    permitted = {
+        'wifi': {'scan', 'configure', 'connect', 'disconnect', 'forget'},
+        'ble': {'scan', 'select', 'connect', 'disconnect', 'forget', 'echo'},
+    }
     if radio not in permitted or action not in permitted[radio]:
         raise ValueError('unsupported typed connectivity operation')
     if action == 'configure':
@@ -160,7 +193,11 @@ def connectivity_restore_steps(radio, original):
         if mode not in ('none', 'echo', 'authorized-heart', 'sim-heart', 'sim-csc'):
             raise ValueError('restoration requires the original BLE mode')
         configured = mode not in ('none', 'echo')
-        steps = [dict(action='select', **{k: v for k, v in original.items() if k in ('mode', 'authorization')})] if configured else [dict(action='forget')]
+        steps = (
+            [dict(action='select', **{k: v for k, v in original.items() if k in ('mode', 'authorization')})]
+            if configured
+            else [dict(action='forget')]
+        )
         if mode == 'echo':
             steps.append(dict(action='echo'))
     if radio == 'ble' and original.get('echo_after') is True:
@@ -193,8 +230,13 @@ def peripheral_command(step):
             return f'MMC CLOCK {step["hz"]}'
         if action == 'read' and type(step.get('sector')) is int and 0 <= step['sector'] < 2**32:
             offset, length = step.get('offset', 0), step.get('length', 256)
-            if (type(offset) is int and type(length) is int and 0 <= offset < 512
-                    and 1 <= length <= 256 and offset + length <= 512):
+            if (
+                type(offset) is int
+                and type(length) is int
+                and 0 <= offset < 512
+                and 1 <= length <= 256
+                and offset + length <= 512
+            ):
                 return f'MMC READ {step["sector"]} {offset} {length}'
     elif op == 'companion' and action == 'query':
         return 'COMPANION QUERY'
@@ -234,12 +276,18 @@ def preflight(scenario):
         if op in ('command', 'wait'):
             command = step['command']
             words = command.split()
-            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in ('RIDE SENSORS', 'RADAR SENSORS', 'ANT DEVICES')
+            read_only = (len(words) == 1 and words[0] in READ_ONLY) or command in (
+                'RIDE SENSORS',
+                'RADAR SENSORS',
+                'ANT DEVICES',
+            )
             permitted = read_only
             permitted |= bool(re.fullmatch(r'DISPLAY [0-9a-fA-F]{1,4}', command))
             permitted |= bool(re.fullmatch(r'BRIGHTNESS (?:100|[0-9]{1,2})', command))
             if not permitted or (op == 'wait' and not read_only):
-                raise ValueError('scenario command is not a supported read or temporary display/brightness operation; persistence mutations require dedicated protected workflows')
+                raise ValueError(
+                    'scenario command is not a supported read or temporary display/brightness operation; persistence mutations require dedicated protected workflows'
+                )
             if op == 'wait' and not 0 < float(step.get('timeout_s', 10)) <= 120:
                 raise ValueError('wait timeout must be 0..120 seconds')
         elif op == 'ant':
@@ -267,9 +315,23 @@ def preflight(scenario):
             text = step['command']
             if not isinstance(text, str) or not text or len(text) > 100 or any(c in text for c in '\n\r\x00'):
                 raise ValueError('invalid virtual command framing')
-            if op == 'fixture' and text.split()[0] not in ('ADVANCE', 'POSITION', 'BLE', 'STORAGE_FAIL', 'DISPLAY_FAIL'):
+            if op == 'fixture' and text.split()[0] not in (
+                'ADVANCE',
+                'POSITION',
+                'BLE',
+                'STORAGE_FAIL',
+                'DISPLAY_FAIL',
+            ):
                 raise ValueError('unknown virtual fixture')
-            if op == 'virtual-command' and text.split()[0] not in READ_ONLY | {'RIDE', 'EXPORT', 'RADAR', 'SAVE', 'BRIGHTNESS', 'TIMEZONE', 'IDLE'}:
+            if op == 'virtual-command' and text.split()[0] not in READ_ONLY | {
+                'RIDE',
+                'EXPORT',
+                'RADAR',
+                'SAVE',
+                'BRIGHTNESS',
+                'TIMEZONE',
+                'IDLE',
+            }:
                 raise ValueError('unsupported virtual test-media command')
         elif op == 'input':
             events_for(step)
@@ -278,7 +340,9 @@ def preflight(scenario):
                 raise ValueError('capture requires 1..4 frames at 100..10000 ms intervals')
         elif op == 'recover':
             if step.get('mode', 'terminal') not in ('terminal', 'restart', 'usb-reset'):
-                raise ValueError('host detach and VBUS removal are unsupported; recovery modes are terminal/restart/usb-reset')
+                raise ValueError(
+                    'host detach and VBUS removal are unsupported; recovery modes are terminal/restart/usb-reset'
+                )
             if not 0 <= float(step.get('seconds', 1)) <= 60:
                 raise ValueError('missing-host interval must be 0..60 seconds')
         elif op == 'delay':
@@ -319,7 +383,21 @@ class Runner:
         started = time.monotonic()
         self.commands += 1
         reply = self.transport.terminal_command(command, timeout=timeout)
-        self.trace.write(json.dumps({'host_start_s': started, 'host_end_s': time.monotonic(), 'command': (command.split()[0] + ' <private configuration>' if command.startswith(('WIFI CONFIG ', 'BLE SELECT ')) else command), 'reply': reply}) + '\n')
+        self.trace.write(
+            json.dumps(
+                {
+                    'host_start_s': started,
+                    'host_end_s': time.monotonic(),
+                    'command': (
+                        command.split()[0] + ' <private configuration>'
+                        if command.startswith(('WIFI CONFIG ', 'BLE SELECT '))
+                        else command
+                    ),
+                    'reply': reply,
+                }
+            )
+            + '\n'
+        )
         self.trace.flush()
         if reply['status'] not in statuses:
             if reply['status'] in ('UNSUPPORTED', 'UNAVAILABLE'):
@@ -355,12 +433,14 @@ class Runner:
         stop = time.monotonic() + timeout
         for _ in range(2401):
             result = self.operation(command) if harness else self.command(command)
-            if all(result.get(key) == str(value).lower() if isinstance(value, bool) else result.get(key) == str(value)
-                   for key, value in condition.items()):
+            if all(
+                result.get(key) == str(value).lower() if isinstance(value, bool) else result.get(key) == str(value)
+                for key, value in condition.items()
+            ):
                 return result
             if time.monotonic() >= stop:
                 break
-            self.delay(.05)
+            self.delay(0.05)
         raise TimeoutError('condition did not complete within bounded wait')
 
     def inject(self, step):
@@ -408,9 +488,13 @@ class Runner:
             results.append({**meta, 'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
             if mismatch:
                 raise AssertionError(f'captured checksum differs; actual image retained at {path}')
-        return {**status, 'frames': results, 'elapsed_s': time.monotonic() - started,
-                'transfer_bytes': sum(int(frame['bytes']) for frame in results if 'path' in frame),
-                'physical_panel_verified': False}
+        return {
+            **status,
+            'frames': results,
+            'elapsed_s': time.monotonic() - started,
+            'transfer_bytes': sum(int(frame['bytes']) for frame in results if 'path' in frame),
+            'physical_panel_verified': False,
+        }
 
     def connectivity(self, radio, step):
         command = connectivity_command(radio, step)
@@ -421,7 +505,7 @@ class Runner:
             while before.get('operation') == 'pending':
                 if time.monotonic() >= deadline:
                     raise TimeoutError('pending radio operation remains uncertain before restoration')
-                self.delay(.05)
+                self.delay(0.05)
                 before = self.command(radio.upper())
                 if before.get('sequence') != sequence:
                     raise RuntimeError('radio operation changed unexpectedly before restoration')
@@ -437,17 +521,27 @@ class Runner:
             if result.get('sequence') == sequence and operation in ('completed', 'error'):
                 if operation != expected:
                     # Only firmware's fixed control codes may enter a public error.
-                    known_errors = {'none', 'configuration_failed', 'connect_failed',
-                                    'connect_timeout', 'disconnect_failed', 'disconnect_timeout',
-                                    'scan_failed', 'unconfigured', 'peer_not_found',
-                                    'connection_ended', 'gatt_failed', 'runner_stopped'}
+                    known_errors = {
+                        'none',
+                        'configuration_failed',
+                        'connect_failed',
+                        'connect_timeout',
+                        'disconnect_failed',
+                        'disconnect_timeout',
+                        'scan_failed',
+                        'unconfigured',
+                        'peer_not_found',
+                        'connection_ended',
+                        'gatt_failed',
+                        'runner_stopped',
+                    }
                     error = result.get('error')
                     error = error if error in known_errors else 'unknown'
                     raise RuntimeError(f'{radio.upper()} operation {operation} (error={error}); expected {expected}')
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError('condition did not complete within bounded wait')
-            self.delay(.05)
+            self.delay(0.05)
         else:
             raise TimeoutError('condition did not complete within bounded wait')
         for key, value in step.get('expect', {}).items():
@@ -621,10 +715,28 @@ STEP_HANDLERS = {
 
 
 def compact(report):
-    return {key: report[key] for key in ('version', 'run_id', 'status', 'elapsed_s', 'host_invocations',
-            'agent_tool_calls', 'protocol_requests', 'report', 'manual_action', 'error', 'cleanup') if key in report} | {
-            'steps': [{key: step[key] for key in ('index', 'op', 'status', 'elapsed_s', 'error') if key in step}
-                      for step in report.get('steps', [])]}
+    return {
+        key: report[key]
+        for key in (
+            'version',
+            'run_id',
+            'status',
+            'elapsed_s',
+            'host_invocations',
+            'agent_tool_calls',
+            'protocol_requests',
+            'report',
+            'manual_action',
+            'error',
+            'cleanup',
+        )
+        if key in report
+    } | {
+        'steps': [
+            {key: step[key] for key in ('index', 'op', 'status', 'elapsed_s', 'error') if key in step}
+            for step in report.get('steps', [])
+        ]
+    }
 
 
 class RunState:
@@ -644,17 +756,26 @@ def git_output(*args):
 
 def initial_report(args, scenario, output):
     return {
-        'version': VERSION, 'run_id': args.run_id or output.name, 'status': 'running', 'steps': [],
-        'host_invocations': 1, 'agent_tool_calls': args.agent_tool_calls,
-        'report': str(output / 'report.json'), 'host_started_unix_s': time.time(),
+        'version': VERSION,
+        'run_id': args.run_id or output.name,
+        'status': 'running',
+        'steps': [],
+        'host_invocations': 1,
+        'agent_tool_calls': args.agent_tool_calls,
+        'report': str(output / 'report.json'),
+        'host_started_unix_s': time.time(),
         'scenario': scenario,
         'host_revision': git_output('rev-parse', 'HEAD'),
         'host_dirty': bool(git_output('status', '--porcelain')),
         'clock_correlation': 'Device reply ms is sampled at loop start and may predate host send by loop work. '
-                             'Host send/receive times are retained; exact device/AV alignment is unmeasured, '
-                             'including AV startup/buffering.',
-        'limits': ['Synthetic input does not verify physical sensing.', 'Submitted pixels do not verify the panel.',
-                   'USB recovery does not remove VBUS.', 'Virtual runs do not establish hardware timing.'],
+        'Host send/receive times are retained; exact device/AV alignment is unmeasured, '
+        'including AV startup/buffering.',
+        'limits': [
+            'Synthetic input does not verify physical sensing.',
+            'Submitted pixels do not verify the panel.',
+            'USB recovery does not remove VBUS.',
+            'Virtual runs do not establish hardware timing.',
+        ],
     }
 
 
@@ -722,8 +843,9 @@ def check_capabilities(runner, scenario, report):
 
 def check_event_capability(event, caps):
     words = event['event'].split()
-    if words[0] in ('DOWN', 'MOVE') and (int(words[1]) >= int(caps['width']) or int(words[2]) >= int(caps['height'])
-                                         or caps['touch'] != 'supported'):
+    if words[0] in ('DOWN', 'MOVE') and (
+        int(words[1]) >= int(caps['width']) or int(words[2]) >= int(caps['height']) or caps['touch'] != 'supported'
+    ):
         raise ValueError('input coordinate/touch capability unavailable')
     if words[0] == 'BUTTON' and words[1] not in caps['buttons'].split(','):
         raise ValueError('button is not advertised by device')
@@ -784,6 +906,7 @@ def run_scenario(args, scenario, output, report, state):
 # (SIGTERM from cancel arrives as one), so a later restoration still runs. A
 # failed restoration is reported as uncertain and is never retried blindly.
 
+
 def close_session(runner, report, cleanup):
     try:
         runner.operation('CLOSE')
@@ -830,6 +953,7 @@ def radio_restorer(radio):
         for step in connectivity_restore_steps(radio, scenario['connectivity_restore'][radio]):
             runner.connectivity(radio, step)
         return 'restored configuration and connection intent; completion verified'
+
     return restore
 
 
@@ -960,7 +1084,9 @@ def main():
     parser.add_argument('--sdk', action='store_true')
     parser.add_argument('--no-harness', action='store_true')
     parser.add_argument('--seconds', type=float, default=30, help='bounded wait duration, at most 60 seconds')
-    parser.add_argument('--agent-tool-calls', type=int, help='operator-recorded actual calls for this invocation; omitted if unknown')
+    parser.add_argument(
+        '--agent-tool-calls', type=int, help='operator-recorded actual calls for this invocation; omitted if unknown'
+    )
     args = parser.parse_args()
     if args.action == 'recipes':
         print(json.dumps({'version': VERSION, 'recipes': RECIPES}))
@@ -973,8 +1099,7 @@ def main():
         if args.action == 'cancel':
             pid = int((output / 'pid').read_text())
             command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-            if (str(output / 'result').encode() not in command
-                    or b'cycling_devtools.harness.runner' not in command):
+            if str(output / 'result').encode() not in command or b'cycling_devtools.harness.runner' not in command:
                 raise ValueError('worker identity mismatch; refusing to signal reused PID')
             os.kill(pid, signal.SIGTERM)
         stop = time.monotonic() + min(60, max(0, args.seconds))
@@ -986,7 +1111,7 @@ def main():
             if report['status'] != 'running' or time.monotonic() >= stop:
                 print(json.dumps(compact(report)))
                 return 0 if report['status'] in ('pass', 'running') else 2
-            time.sleep(.2)
+            time.sleep(0.2)
     scenario = json.loads(args.scenario.read_text()) if args.scenario else RECIPES.get(args.name or 'shared')
     if scenario is None:
         raise ValueError('unknown recipe; use recipes')
@@ -1002,8 +1127,20 @@ def main():
         scenario_path = output / 'scenario.json'
         atomic_json(scenario_path, scenario)
         worker_output = output / 'result'
-        cmd = [sys.executable, '-m', 'cycling_devtools.harness.runner', 'run', '--scenario', str(scenario_path),
-               '--output', str(worker_output), '--run-id', output.name, '--backend', args.backend]
+        cmd = [
+            sys.executable,
+            '-m',
+            'cycling_devtools.harness.runner',
+            'run',
+            '--scenario',
+            str(scenario_path),
+            '--output',
+            str(worker_output),
+            '--run-id',
+            output.name,
+            '--backend',
+            args.backend,
+        ]
         if args.port:
             cmd += ['--port', args.port]
         for flag in ('sdk', 'no_harness'):
@@ -1017,7 +1154,7 @@ def main():
             process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         ready = time.monotonic() + 3
         while not (worker_output / 'report.json').exists() and process.poll() is None and time.monotonic() < ready:
-            time.sleep(.02)
+            time.sleep(0.02)
         if not (worker_output / 'report.json').exists():
             if process.poll() is None:
                 process.terminate()
@@ -1026,11 +1163,22 @@ def main():
         (output / 'pid').write_text(str(process.pid))
         # wait/cancel operates on the stable parent path, report links to worker result.
         (output / 'report.json').symlink_to(worker_output / 'report.json')
-        print(json.dumps({'version': VERSION, 'run_id': output.name, 'status': 'running', 'path': str(output),
-                          'wait': f'mise run harness -- wait {output.name} --seconds 30'}))
+        print(
+            json.dumps(
+                {
+                    'version': VERSION,
+                    'run_id': output.name,
+                    'status': 'running',
+                    'path': str(output),
+                    'wait': f'mise run harness -- wait {output.name} --seconds 30',
+                }
+            )
+        )
         return 0
+
     def interrupted(*_):
         raise KeyboardInterrupt()
+
     signal.signal(signal.SIGTERM, interrupted)
     return execute(args, scenario, output)
 

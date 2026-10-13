@@ -1,17 +1,18 @@
 #!/usr/bin/python3
 """Verify owned C606 BLE echo notifications, readback and reconnects."""
+
 import argparse
 import json
 import time
 
 
-BLUEZ = "org.bluez"
-DEVICE = "org.bluez.Device1"
-CHAR = "org.bluez.GattCharacteristic1"
-PROPS = "org.freedesktop.DBus.Properties"
-MANAGER = "org.freedesktop.DBus.ObjectManager"
-SERVICE_UUID = "7e570001-2a6f-4d75-9f6a-5afbf0f50c06"
-CHAR_UUID = "7e570002-2a6f-4d75-9f6a-5afbf0f50c06"
+BLUEZ = 'org.bluez'
+DEVICE = 'org.bluez.Device1'
+CHAR = 'org.bluez.GattCharacteristic1'
+PROPS = 'org.freedesktop.DBus.Properties'
+MANAGER = 'org.freedesktop.DBus.ObjectManager'
+SERVICE_UUID = '7e570001-2a6f-4d75-9f6a-5afbf0f50c06'
+CHAR_UUID = '7e570002-2a6f-4d75-9f6a-5afbf0f50c06'
 
 
 def objects():
@@ -22,19 +23,17 @@ def owned_device():
     matches = []
     for path, interfaces in objects().items():
         values = interfaces.get(DEVICE)
-        if values and "Cycling Echo" in (str(values.get("Name", "")), str(values.get("Alias", ""))):
+        if values and 'Cycling Echo' in (str(values.get('Name', '')), str(values.get('Alias', ''))):
             matches.append(path)
     if len(matches) != 1:
-        raise RuntimeError(f"expected one owned device, found {len(matches)}")
+        raise RuntimeError(f'expected one owned device, found {len(matches)}')
     return matches[0]
 
 
 def discover_owned():
-    adapter_path = next(
-        path for path, interfaces in objects().items() if "org.bluez.Adapter1" in interfaces
-    )
-    adapter = dbus.Interface(bus.get_object(BLUEZ, adapter_path), "org.bluez.Adapter1")
-    adapter.SetDiscoveryFilter(dbus.Dictionary({"Transport": "le"}, signature="sv"))
+    adapter_path = next(path for path, interfaces in objects().items() if 'org.bluez.Adapter1' in interfaces)
+    adapter = dbus.Interface(bus.get_object(BLUEZ, adapter_path), 'org.bluez.Adapter1')
+    adapter.SetDiscoveryFilter(dbus.Dictionary({'Transport': 'le'}, signature='sv'))
     adapter.StartDiscovery()
     try:
         deadline = time.monotonic() + 10
@@ -42,8 +41,8 @@ def discover_owned():
             try:
                 return owned_device()
             except RuntimeError:
-                time.sleep(.1)
-        raise TimeoutError("owned advertisement not found")
+                time.sleep(0.1)
+        raise TimeoutError('owned advertisement not found')
     finally:
         adapter.StopDiscovery()
 
@@ -52,23 +51,23 @@ def wait_resolved(device_path, seconds=10):
     props = dbus.Interface(bus.get_object(BLUEZ, device_path), PROPS)
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if bool(props.Get(DEVICE, "ServicesResolved")):
+        if bool(props.Get(DEVICE, 'ServicesResolved')):
             return
-        time.sleep(.1)
-    raise TimeoutError("services did not resolve")
+        time.sleep(0.1)
+    raise TimeoutError('services did not resolve')
 
 
 def characteristic(device_path):
     matches = []
     for path, interfaces in objects().items():
         values = interfaces.get(CHAR)
-        if values and str(values.get("UUID", "")).lower() == CHAR_UUID and path.startswith(device_path):
-            service_path = str(values.get("Service", ""))
-            service = objects().get(service_path, {}).get("org.bluez.GattService1", {})
-            if str(service.get("UUID", "")).lower() == SERVICE_UUID:
+        if values and str(values.get('UUID', '')).lower() == CHAR_UUID and path.startswith(device_path):
+            service_path = str(values.get('Service', ''))
+            service = objects().get(service_path, {}).get('org.bluez.GattService1', {})
+            if str(service.get('UUID', '')).lower() == SERVICE_UUID:
                 matches.append(path)
     if len(matches) != 1:
-        raise RuntimeError(f"expected one echo characteristic, found {len(matches)}")
+        raise RuntimeError(f'expected one echo characteristic, found {len(matches)}')
     return matches[0]
 
 
@@ -98,49 +97,52 @@ def exchange(device_path, round_number, payload):
     notified = []
 
     def changed(interface, values, invalidated):
-        if str(interface) == CHAR and "Value" in values:
-            notified.append(bytes(values["Value"]))
+        if str(interface) == CHAR and 'Value' in values:
+            notified.append(bytes(values['Value']))
 
     try:
         char_path = characteristic(device_path)
         echo = dbus.Interface(bus.get_object(BLUEZ, char_path), CHAR)
-        mtu = int(dbus.Interface(bus.get_object(BLUEZ, char_path), PROPS).Get(CHAR, "MTU"))
+        mtu = int(dbus.Interface(bus.get_object(BLUEZ, char_path), PROPS).Get(CHAR, 'MTU'))
         receiver = bus.add_signal_receiver(
             changed,
-            signal_name="PropertiesChanged",
+            signal_name='PropertiesChanged',
             dbus_interface=PROPS,
             path=char_path,
         )
         echo.StartNotify()
         notifying = True
-        echo.WriteValue(dbus.Array(payload, signature="y"), dbus.Dictionary({}, signature="sv"))
+        echo.WriteValue(dbus.Array(payload, signature='y'), dbus.Dictionary({}, signature='sv'))
         deadline = time.monotonic() + 5
         context = GLib.MainContext.default()
         while payload not in notified and time.monotonic() < deadline:
             while context.pending():
                 context.iteration(False)
-            time.sleep(.01)
+            time.sleep(0.01)
         if payload not in notified:
-            raise TimeoutError("exact notification missing")
-        readback = bytes(echo.ReadValue(dbus.Dictionary({}, signature="sv")))
+            raise TimeoutError('exact notification missing')
+        readback = bytes(echo.ReadValue(dbus.Dictionary({}, signature='sv')))
         if readback != payload:
-            raise AssertionError("readback mismatch")
+            raise AssertionError('readback mismatch')
         try:
-            echo.WriteValue(dbus.Array([0x99], signature="y"), dbus.Dictionary({}, signature="sv"))
+            echo.WriteValue(dbus.Array([0x99], signature='y'), dbus.Dictionary({}, signature='sv'))
         except dbus.DBusException:
             short_rejected = True
         else:
             short_rejected = False
         if not short_rejected:
-            raise AssertionError("short write was accepted")
-        if bytes(echo.ReadValue(dbus.Dictionary({}, signature="sv"))) != payload:
-            raise AssertionError("rejected write changed readback")
+            raise AssertionError('short write was accepted')
+        if bytes(echo.ReadValue(dbus.Dictionary({}, signature='sv'))) != payload:
+            raise AssertionError('rejected write changed readback')
         echo.StopNotify()
         notifying = False
         device.Disconnect()
-        time.sleep(.5)
-        print(json.dumps({"round": round_number, "notification": True, "readback": True,
-                          "short_rejected": True, "mtu": mtu}))
+        time.sleep(0.5)
+        print(
+            json.dumps(
+                {'round': round_number, 'notification': True, 'readback': True, 'short_rejected': True, 'mtu': mtu}
+            )
+        )
     finally:
         if notifying and echo is not None:
             try:
@@ -165,9 +167,9 @@ def main():
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
-    manager = dbus.Interface(bus.get_object(BLUEZ, "/"), MANAGER)
+    manager = dbus.Interface(bus.get_object(BLUEZ, '/'), MANAGER)
     device_path = discover_owned()
-    exchange(device_path, 1, bytes([1, 0x43, 0x36, 0x30, 0x36, 0xaa, 0x55, 0x7e]))
+    exchange(device_path, 1, bytes([1, 0x43, 0x36, 0x30, 0x36, 0xAA, 0x55, 0x7E]))
     exchange(device_path, 2, bytes([2, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70]))
 
 

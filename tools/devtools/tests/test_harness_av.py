@@ -18,11 +18,11 @@ class AudioTests(unittest.TestCase):
             result = analyze_audio(path)
             self.assertEqual(result['status'], 'pass')
             self.assertEqual(result['repetitions'], 2)
-            for event, onset in zip(result['events'], (.7, 1.6)):
+            for event, onset in zip(result['events'], (0.7, 1.6)):
                 self.assertAlmostEqual(event['onset_s'], onset, places=2)
-                self.assertAlmostEqual(event['duration_s'], .4, places=2)
+                self.assertAlmostEqual(event['duration_s'], 0.4, places=2)
                 self.assertAlmostEqual(event['dominant_hz'], 1000, delta=4)
-                self.assertAlmostEqual(event['rms_dbfs'], 20 * math.log10(.15 / math.sqrt(2)), delta=.1)
+                self.assertAlmostEqual(event['rms_dbfs'], 20 * math.log10(0.15 / math.sqrt(2)), delta=0.1)
             tone_fixture(path, amplitude=1)
             self.assertGreater(analyze_audio(path)['clipped_samples'], 0)
             self.assertEqual(analyze_audio(path)['status'], 'inconclusive')
@@ -41,6 +41,7 @@ class CaptureTests(unittest.TestCase):
                 path.mkdir()
                 (path / 'name').write_text('apple-isp\n')
             calls = []
+
             def command(args):
                 calls.append(args)
                 if args[-1] == '--get-fmt-video':
@@ -50,9 +51,15 @@ class CaptureTests(unittest.TestCase):
                 self.assertEqual(args[-1], '--all')
                 card = 'FaceTime HD Camera' if args[2] == '/dev/video0' else 'Apple ISP Auxiliary'
                 return f'Driver name : apple-isp\nCard type : {card}\nDevice Caps : Video Capture\n'
-            with patch('cycling_devtools.harness.av.Path.glob', return_value=paths), \
-                 patch('cycling_devtools.harness.av.command', side_effect=command), \
-                 patch('cycling_devtools.harness.av.shutil.which', side_effect=lambda name: '/fake/ffmpeg' if name == 'ffmpeg' else None):
+
+            with (
+                patch('cycling_devtools.harness.av.Path.glob', return_value=paths),
+                patch('cycling_devtools.harness.av.command', side_effect=command),
+                patch(
+                    'cycling_devtools.harness.av.shutil.which',
+                    side_effect=lambda name: '/fake/ffmpeg' if name == 'ffmpeg' else None,
+                ),
+            ):
                 inventory = discover()
                 self.assertEqual(inventory['cameras'][0]['name'], 'FaceTime HD Camera')
                 self.assertTrue(inventory['cameras'][0]['video_capture'])
@@ -74,7 +81,7 @@ class CaptureTests(unittest.TestCase):
                 if sys.byteorder != 'little':
                     samples.byteswap()
                 for i in range(round(2.3 * parameters.framerate), round(2.7 * parameters.framerate)):
-                    samples[i] = round(32767 * .1 * math.sin(2 * math.pi * frequency * i / parameters.framerate))
+                    samples[i] = round(32767 * 0.1 * math.sin(2 * math.pi * frequency * i / parameters.framerate))
                 if sys.byteorder != 'little':
                     samples.byteswap()
                 with wave.open(str(capture.path), 'wb') as stream:
@@ -97,15 +104,28 @@ class CaptureTests(unittest.TestCase):
                 capture.process.wait.assert_called_once()
                 capture.fixture.wait.assert_called_once()
 
-
     def test_camera_format_restored_after_exit_including_failed_and_partial_start(self):
         before = "Width/Height : 1280/720\nPixel Format : 'NV12'\n"
         changed = "Width/Height : 640/480\nPixel Format : 'YUYV'\n"
-        for mode in ('unchanged', 'changed', 'capture-failed', 'partial-start', 'write-failed', 'readback-mismatch', 'lost-write-reply'):
+        for mode in (
+            'unchanged',
+            'changed',
+            'capture-failed',
+            'partial-start',
+            'write-failed',
+            'readback-mismatch',
+            'lost-write-reply',
+        ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 capture = Capture('camera', {'samples_s': []}, Path(directory))
-                inventory = {'ffmpeg': True, 'cameras': [{'path': '/dev/fake', 'name': 'Camera', 'video_capture': True}]}
-                with patch('cycling_devtools.harness.av.discover', return_value=inventory), patch('cycling_devtools.harness.av.command', side_effect=['controls', before]):
+                inventory = {
+                    'ffmpeg': True,
+                    'cameras': [{'path': '/dev/fake', 'name': 'Camera', 'video_capture': True}],
+                }
+                with (
+                    patch('cycling_devtools.harness.av.discover', return_value=inventory),
+                    patch('cycling_devtools.harness.av.command', side_effect=['controls', before]),
+                ):
                     capture.preflight()
                 capture.started, capture.log = 0, io.BytesIO()
                 if mode != 'partial-start':
@@ -113,6 +133,7 @@ class CaptureTests(unittest.TestCase):
                     capture.process.poll.return_value = capture.process.returncode
                 current = before if mode == 'unchanged' else changed
                 calls = []
+
                 def command(args):
                     nonlocal current
                     calls.append(args)
@@ -128,11 +149,18 @@ class CaptureTests(unittest.TestCase):
                     if mode == 'lost-write-reply':
                         raise TimeoutError('write completed but reply lost')
                     return ''
-                with patch('cycling_devtools.harness.av.command', side_effect=command), patch('cycling_devtools.harness.av.time.monotonic', return_value=0):
+
+                with (
+                    patch('cycling_devtools.harness.av.command', side_effect=command),
+                    patch('cycling_devtools.harness.av.time.monotonic', return_value=0),
+                ):
                     result = capture.finish()
                 uncertain = mode in ('write-failed', 'readback-mismatch')
                 restoration = result['format_restoration']
-                self.assertEqual(restoration['status'], 'uncertain' if uncertain else 'unchanged' if mode == 'unchanged' else 'verified')
+                self.assertEqual(
+                    restoration['status'],
+                    'uncertain' if uncertain else 'unchanged' if mode == 'unchanged' else 'verified',
+                )
                 self.assertIsNone(result['settings_changed'])
                 if uncertain:
                     self.assertEqual(result['status'], 'inconclusive')
@@ -147,7 +175,10 @@ class CaptureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             capture = Capture('camera', {}, Path(directory))
             inventory = {'ffmpeg': True, 'cameras': [{'path': '/dev/fake', 'name': 'Camera', 'video_capture': True}]}
-            with patch('cycling_devtools.harness.av.discover', return_value=inventory), patch('cycling_devtools.harness.av.command', side_effect=['controls', 'unrecognized format']):
+            with (
+                patch('cycling_devtools.harness.av.discover', return_value=inventory),
+                patch('cycling_devtools.harness.av.command', side_effect=['controls', 'unrecognized format']),
+            ):
                 with self.assertRaisesRegex(ValueError, 'cannot snapshot camera'):
                     capture.preflight()
             self.assertIsNone(capture.started)

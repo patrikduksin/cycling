@@ -1,4 +1,5 @@
 """Read a bounded eMMC layout and root-directory sample into ignored private files."""
+
 import argparse
 import json
 import os
@@ -19,7 +20,14 @@ class LimitReached(ValueError):
 
 
 def checked_range(start, length, total):
-    if type(start) is not int or type(length) is not int or start < 0 or length <= 0 or start >= total or length > total - start:
+    if (
+        type(start) is not int
+        or type(length) is not int
+        or start < 0
+        or length <= 0
+        or start >= total
+        or length > total - start
+    ):
         raise ValueError('media range exceeds reported capacity')
 
 
@@ -42,7 +50,9 @@ def read_sector(connection, sector):
         for name, expected in [('sector', sector), ('offset', offset), ('length', 256)]:
             if reply.get(name) != str(expected):
                 raise ValueError('MMC read reply range mismatch')
-        if not re.fullmatch(r'[0-9a-fA-F]{512}', reply.get('data', '')) or not re.fullmatch(r'[0-9a-fA-F]{8}', reply.get('crc32', '')):
+        if not re.fullmatch(r'[0-9a-fA-F]{512}', reply.get('data', '')) or not re.fullmatch(
+            r'[0-9a-fA-F]{8}', reply.get('crc32', '')
+        ):
             raise ValueError('invalid MMC read encoding')
         data = bytes.fromhex(reply['data'])
         if zlib.crc32(data) != int(reply['crc32'], 16):
@@ -53,6 +63,7 @@ def read_sector(connection, sector):
 
 class Media:
     """One cached reader with a hard cap across partition and filesystem probes."""
+
     def __init__(self, sectors, reader, max_sectors=MAX_SECTORS, save=None):
         if type(sectors) is not int or sectors <= 0 or sectors > 2**64 - 1:
             raise ValueError('invalid media capacity')
@@ -111,14 +122,21 @@ def gpt(media):
         raise ValueError('GPT entry table CRC mismatch')
     partitions = []
     for i in range(count):
-        entry = table[i * entry_size:(i + 1) * entry_size]
+        entry = table[i * entry_size : (i + 1) * entry_size]
         if entry[:16] == b'\0' * 16:
             continue
         begin, end = u64(entry, 32), u64(entry, 40)
         if begin < first or end < begin or end > last:
             raise ValueError('GPT partition exceeds usable range')
-        partitions.append(dict(index=i + 1, start=begin, sectors=end - begin + 1,
-                               type_guid=entry[:16].hex(), name=entry[56:128].decode('utf-16-le', 'replace').rstrip('\0')))
+        partitions.append(
+            dict(
+                index=i + 1,
+                start=begin,
+                sectors=end - begin + 1,
+                type_guid=entry[:16].hex(),
+                name=entry[56:128].decode('utf-16-le', 'replace').rstrip('\0'),
+            )
+        )
     return nonoverlapping(partitions)
 
 
@@ -128,11 +146,11 @@ def partitions(media):
         return 'unknown', []
     # A FAT boot jump and supported sector size distinguish superfloppy BPBs
     # before interpreting overlapping boot code as an MBR partition table.
-    if boot[0] in (0xeb, 0xe9) and u16(boot, 11) == 512:
+    if boot[0] in (0xEB, 0xE9) and u16(boot, 11) == 512:
         return 'superfloppy', [dict(index=0, start=0, sectors=media.sectors)]
     result = []
     for index in range(4):
-        row = boot[446 + index * 16:462 + index * 16]
+        row = boot[446 + index * 16 : 462 + index * 16]
         kind, start, size = row[4], u32(row, 8), u32(row, 12)
         if not kind and not start and not size:
             continue
@@ -140,7 +158,7 @@ def partitions(media):
             raise ValueError('invalid MBR partition')
         checked_range(start, size, media.sectors)
         result.append(dict(index=index + 1, start=start, sectors=size, type=kind))
-    if any(row['type'] == 0xee for row in result):
+    if any(row['type'] == 0xEE for row in result):
         if len(result) != 1:
             raise ValueError('hybrid MBR not supported')
         return 'gpt', gpt(media)
@@ -150,7 +168,7 @@ def partitions(media):
 def fat_geometry(media, partition):
     start, capacity = partition['start'], partition['sectors']
     boot = media.read(start)
-    if boot[510:] != b'\x55\xaa' or boot[0] not in (0xeb, 0xe9):
+    if boot[510:] != b'\x55\xaa' or boot[0] not in (0xEB, 0xE9):
         return None
     bps, spc, reserved, fats, roots = u16(boot, 11), boot[13], u16(boot, 14), boot[16], u16(boot, 17)
     total = u16(boot, 19) or u32(boot, 32)
@@ -178,19 +196,27 @@ def fat_geometry(media, partition):
             active_fat = flags & 15
             if active_fat >= fats:
                 raise ValueError('invalid active FAT')
-        root_cluster = u32(boot, 44) & 0x0fffffff
+        root_cluster = u32(boot, 44) & 0x0FFFFFFF
         if not 2 <= root_cluster < clusters + 2:
             raise ValueError('invalid FAT32 root cluster')
     else:
         if not roots or not u16(boot, 22):
             raise ValueError('invalid FAT12/16 root fields')
         root_cluster = None
-    return dict(kind=f'fat{bits}', bits=bits, start=start, sectors=total,
-                sectors_per_cluster=spc, clusters=clusters,
-                fat_start=start + reserved + active_fat * fat_size,
-                fat_sectors=fat_size, data_start=start + metadata,
-                root_start=start + reserved + fats * fat_size,
-                root_sectors=root_sectors, root_cluster=root_cluster)
+    return dict(
+        kind=f'fat{bits}',
+        bits=bits,
+        start=start,
+        sectors=total,
+        sectors_per_cluster=spc,
+        clusters=clusters,
+        fat_start=start + reserved + active_fat * fat_size,
+        fat_sectors=fat_size,
+        data_start=start + metadata,
+        root_start=start + reserved + fats * fat_size,
+        root_sectors=root_sectors,
+        root_cluster=root_cluster,
+    )
 
 
 def directory_sectors(media, geometry, cap=32):
@@ -215,10 +241,10 @@ def directory_sectors(media, geometry, cap=32):
             yield media.read(base + offset)
         fat_offset = cluster * 4
         entry = media.read(geometry['fat_start'] + fat_offset // 512)
-        cluster = u32(entry, fat_offset % 512) & 0x0fffffff
-        if cluster >= 0x0ffffff8:
+        cluster = u32(entry, fat_offset % 512) & 0x0FFFFFFF
+        if cluster >= 0x0FFFFFF8:
             return
-        if cluster == 0x0ffffff7 or cluster >= 0x0ffffff0:
+        if cluster == 0x0FFFFFF7 or cluster >= 0x0FFFFFF0:
             raise ValueError('bad or reserved FAT root chain cluster')
 
 
@@ -230,18 +256,24 @@ def root_directory(media, geometry):
     try:
         for sector in directory_sectors(media, geometry):
             for offset in range(0, 512, 32):
-                row = sector[offset:offset + 32]
+                row = sector[offset : offset + 32]
                 if row[0] == 0:
                     return dict(entries=entries, complete=True)
-                if row[0] == 0xe5:
+                if row[0] == 0xE5:
                     fragments, expected, checksum = {}, 0, None
                     continue
-                if row[11] == 0x0f:
-                    order = row[0] & 0x1f
+                if row[11] == 0x0F:
+                    order = row[0] & 0x1F
                     if row[0] & 0x40:
                         fragments, expected, checksum = {}, order, row[13]
-                    if (not 1 <= order <= 20 or row[0] & 0xa0 or order != expected
-                            or checksum != row[13] or row[12] or u16(row, 26)):
+                    if (
+                        not 1 <= order <= 20
+                        or row[0] & 0xA0
+                        or order != expected
+                        or checksum != row[13]
+                        or row[12]
+                        or u16(row, 26)
+                    ):
                         fragments, expected, checksum = {}, 0, None
                     else:
                         fragments[order] = row[1:11] + row[14:26] + row[28:32]
@@ -255,17 +287,22 @@ def root_directory(media, geometry):
                 cluster = u16(row, 26)
                 if geometry['bits'] == 32:
                     cluster |= u16(row, 20) << 16
-                entry = dict(short_name=name, short_name_hex=row[:11].hex(),
-                             attributes=row[11], cluster=cluster, size=u32(row, 28))
+                entry = dict(
+                    short_name=name,
+                    short_name_hex=row[:11].hex(),
+                    attributes=row[11],
+                    cluster=cluster,
+                    size=u32(row, 28),
+                )
                 actual_checksum = 0
                 for byte in row[:11]:
                     actual_checksum = (((actual_checksum & 1) << 7) + (actual_checksum >> 1) + byte) & 255
                 if fragments and expected == 0 and checksum == actual_checksum:
                     raw = b''.join(fragments[i] for i in range(1, len(fragments) + 1))
-                    units = [raw[i:i + 2] for i in range(0, len(raw), 2)]
+                    units = [raw[i : i + 2] for i in range(0, len(raw), 2)]
                     if b'\0\0' in units:
                         end = units.index(b'\0\0')
-                        valid_padding = all(unit == b'\xff\xff' for unit in units[end + 1:])
+                        valid_padding = all(unit == b'\xff\xff' for unit in units[end + 1 :])
                         units = units[:end]
                     else:
                         valid_padding = True
@@ -330,12 +367,18 @@ def main():
             capacity = fields(status).get('sectors', '')
             if not re.fullmatch(r'[0-9]+', capacity):
                 raise ValueError('MMC status lacks sector capacity')
-            media = Media(int(capacity), lambda sector: read_sector(connection, sector), args.max_sectors,
-                          lambda sector, data: save(sectors_dir / f'{sector:016x}.bin', data))
+            media = Media(
+                int(capacity),
+                lambda sector: read_sector(connection, sector),
+                args.max_sectors,
+                lambda sector, data: save(sectors_dir / f'{sector:016x}.bin', data),
+            )
             result = investigate(media)
         save(output / 'layout.json', json.dumps(result, indent=2).encode())
         kinds = ','.join(row['kind'] for row in result['filesystems']) or 'none'
-        print(f"MMC read-only: layout={result['scheme']} partitions={len(result['partitions'])} filesystems={kinds} sectors_read={result['sectors_read']} cap={args.max_sectors}")
+        print(
+            f'MMC read-only: layout={result["scheme"]} partitions={len(result["partitions"])} filesystems={kinds} sectors_read={result["sectors_read"]} cap={args.max_sectors}'
+        )
     except (ValueError, OSError, RuntimeError, TimeoutError, KeyError) as error:
         if output is not None:
             try:

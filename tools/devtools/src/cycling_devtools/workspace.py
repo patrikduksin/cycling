@@ -1,4 +1,5 @@
 """Repository paths and the private-evidence rule shared by host tools."""
+
 from pathlib import Path
 import subprocess
 
@@ -19,12 +20,15 @@ def private_path(value):
         raise ValueError('private evidence must stay inside ignored .local/')
     relative = Path('.local') / path.relative_to(local)
     try:
-        ignored = subprocess.run(
-            ['git', 'check-ignore', '-q', '--', str(relative)],
-            cwd=ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode == 0
+        ignored = (
+            subprocess.run(
+                ['git', 'check-ignore', '-q', '--', str(relative)],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
     except OSError:
         ignored = False
     if not ignored:

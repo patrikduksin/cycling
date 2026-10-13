@@ -1,4 +1,5 @@
 """Offline executor safety tests; fake Connection never opens USB."""
+
 import json
 import struct
 from pathlib import Path
@@ -7,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import cycling_devtools.device.mmc_partition_apply as executor
+
 
 class ApplyPartitionTests(unittest.TestCase):
     def setUp(self):
@@ -17,15 +19,18 @@ class ApplyPartitionTests(unittest.TestCase):
         self.baseline.write_bytes(bytes(12 * 512))
         self.plan_path = self.root / 'plan.json'
         self.plan_path.write_text('{}')
-        layout = executor.Layout(total=12, stock_start=2, stock_sectors=4,
-                                 custom_start=6, custom_sectors=6)
+        layout = executor.Layout(total=12, stock_start=2, stock_sectors=4, custom_start=6, custom_sectors=6)
         targets, extents = {}, []
-        for phase, start, payload in [('stock', 2, b'S' * 2048),
-                                      ('marker', 6, b'K' * 512), ('mbr_commit', 0, b'M' * 512)]:
+        for phase, start, payload in [
+            ('stock', 2, b'S' * 2048),
+            ('marker', 6, b'K' * 512),
+            ('mbr_commit', 0, b'M' * 512),
+        ]:
             path = self.root / (phase + '.bin')
             path.write_bytes(payload)
-            record = dict(phase=phase, start=start, count=len(payload) // 512,
-                          path=path, sha256=executor.digest_file(path))
+            record = dict(
+                phase=phase, start=start, count=len(payload) // 512, path=path, sha256=executor.digest_file(path)
+            )
             targets[phase] = record
             extents.append(record)
         plan = {'baseline_sha256': executor.digest_file(self.baseline), 'changed_sectors': 6}
@@ -60,14 +65,14 @@ class ApplyPartitionTests(unittest.TestCase):
 
             def write_sector(self, start, payload):
                 self.writes.append(start)
-                self.data[start * 512:(start + 1) * 512] = payload
+                self.data[start * 512 : (start + 1) * 512] = payload
                 if start == self.fail_write:
                     # Model physical completion followed by a lost ACK.
                     raise TimeoutError('completion uncertain')
 
             def read(self, start, count):
                 self.reads.append((start, count))
-                data = bytes(self.data[start * 512:(start + count) * 512])
+                data = bytes(self.data[start * 512 : (start + count) * 512])
                 if self.corrupt_stock_verify and (start, count) == (2, 4):
                     data = b'X' + data[1:]
                 if self.corrupt_stock_sample and (start, count) == (2, 1):
@@ -82,9 +87,11 @@ class ApplyPartitionTests(unittest.TestCase):
         self.fake = FakeConnection
 
     def run_fake(self, **kwargs):
-        with patch.object(executor, 'preflight', return_value=self.preflight_result), \
-                patch.object(executor, 'stock_sample_sectors', return_value=[0, 3]), \
-                patch.object(executor, 'Connection', self.fake):
+        with (
+            patch.object(executor, 'preflight', return_value=self.preflight_result),
+            patch.object(executor, 'stock_sample_sectors', return_value=[0, 3]),
+            patch.object(executor, 'Connection', self.fake),
+        ):
             executor.apply(self.plan_path, self.journal, 'FAKE-ONLY', **kwargs)
 
     def events(self):
@@ -111,7 +118,7 @@ class ApplyPartitionTests(unittest.TestCase):
         self.assertEqual(connection.writes, [2, 3, 4, 5])
         self.assertEqual(connection.arms, [(2, 4)])
         self.assertEqual(connection.data[:512], bytes(512))
-        self.assertEqual(connection.data[6 * 512:7 * 512], bytes(512))
+        self.assertEqual(connection.data[6 * 512 : 7 * 512], bytes(512))
         self.assertEqual(self.events()[-1]['event'], 'stopped_uncertain')
         self.assertFalse(any(e['event'] == 'complete' for e in self.events()))
 
@@ -121,7 +128,7 @@ class ApplyPartitionTests(unittest.TestCase):
             self.run_fake()
         connection = self.fake.instances[-1]
         self.assertEqual(connection.writes, [2, 3])
-        self.assertEqual(connection.data[3 * 512:4 * 512], b'S' * 512)
+        self.assertEqual(connection.data[3 * 512 : 4 * 512], b'S' * 512)
         self.assertTrue(connection.closed)
         self.assertTrue(any(e['event'] == 'write_intent' and e['sector'] == 3 for e in self.events()))
         self.assertFalse(any(e['event'] == 'write_verified' and e['sector'] == 3 for e in self.events()))
@@ -134,6 +141,7 @@ class ApplyPartitionTests(unittest.TestCase):
             connection.writes.append(start)
             if start == 3:
                 raise KeyboardInterrupt
+
         with patch.object(self.fake, 'write_sector', interrupted), self.assertRaises(KeyboardInterrupt):
             self.run_fake()
         self.assertEqual(self.fake.instances[-1].writes, [2, 3])
@@ -148,18 +156,27 @@ class ApplyPartitionTests(unittest.TestCase):
             if event == 'stopped_uncertain':
                 raise OSError('journal disk full')
             return original(journal, event, **fields)
-        with patch.object(executor.Journal, 'record', record), \
-                self.assertRaisesRegex(TimeoutError, 'completion uncertain'):
+
+        with (
+            patch.object(executor.Journal, 'record', record),
+            self.assertRaisesRegex(TimeoutError, 'completion uncertain'),
+        ):
             self.run_fake()
 
     def test_invalid_extent_hash_fails_real_preflight_without_opening_usb(self):
         extent = self.root / 'bad-extent.bin'
         extent.write_bytes(bytes(512))
-        self.plan_path.write_text(json.dumps({
-            'version': 1, 'complete': True,
-            'layout': executor.Layout().__dict__, 'changed_sectors': 1,
-            'extents': [{'phase': 'stock', 'start': 2048, 'count': 1,
-                         'file': extent.name, 'sha256': '0' * 64}]}))
+        self.plan_path.write_text(
+            json.dumps(
+                {
+                    'version': 1,
+                    'complete': True,
+                    'layout': executor.Layout().__dict__,
+                    'changed_sectors': 1,
+                    'extents': [{'phase': 'stock', 'start': 2048, 'count': 1, 'file': extent.name, 'sha256': '0' * 64}],
+                }
+            )
+        )
         with patch.object(executor, 'Connection') as connection:
             with self.assertRaisesRegex(ValueError, 'SHA256 differs'):
                 executor.apply(self.plan_path, self.journal, 'MUST-NOT-OPEN')
@@ -168,18 +185,27 @@ class ApplyPartitionTests(unittest.TestCase):
 
     def test_existing_journal_prevents_another_connection(self):
         self.journal.write_text('previous attempt must be preserved\n')
-        with patch.object(executor, 'preflight', return_value=self.preflight_result), \
-                patch.object(executor, 'Connection') as connection:
+        with (
+            patch.object(executor, 'preflight', return_value=self.preflight_result),
+            patch.object(executor, 'Connection') as connection,
+        ):
             with self.assertRaises(FileExistsError):
                 executor.apply(self.plan_path, self.journal, 'MUST-NOT-OPEN')
             connection.assert_not_called()
         self.assertEqual(self.journal.read_text(), 'previous attempt must be preserved\n')
 
     def test_other_geometry_fails_preflight_before_journal_or_connection(self):
-        self.plan_path.write_text(json.dumps({
-            'version': 1, 'complete': True,
-            'layout': self.preflight_result[1].__dict__,
-            'changed_sectors': 0, 'extents': []}))
+        self.plan_path.write_text(
+            json.dumps(
+                {
+                    'version': 1,
+                    'complete': True,
+                    'layout': self.preflight_result[1].__dict__,
+                    'changed_sectors': 0,
+                    'extents': [],
+                }
+            )
+        )
         with patch.object(executor, 'Connection') as connection:
             with self.assertRaisesRegex(ValueError, 'only the reviewed C606 geometry'):
                 executor.apply(self.plan_path, self.journal, 'MUST-NOT-OPEN')

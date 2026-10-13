@@ -1,4 +1,5 @@
 """Private, reconnecting C606 JSON Lines capture through the single USB owner."""
+
 import argparse
 from collections import Counter
 import json
@@ -54,7 +55,7 @@ class Decoder:
             return
         try:
             record = json.loads(raw)
-        except (ValueError, UnicodeDecodeError):
+        except ValueError, UnicodeDecodeError:
             # Preserve panic, ROM and legacy text in raw.bin; mark invalid JSON.
             self.host('unstructured', bytes=len(raw))
             return
@@ -63,16 +64,21 @@ class Decoder:
             return
         if record['type'] == 'log':
             boot, seq = record.get('boot'), record.get('seq')
-            if (type(boot) is not int or not 0 <= boot <= 0xffffffff
-                    or type(seq) is not int or not 0 <= seq <= 0xffffffff):
+            if (
+                type(boot) is not int
+                or not 0 <= boot <= 0xFFFFFFFF
+                or type(seq) is not int
+                or not 0 <= seq <= 0xFFFFFFFF
+            ):
                 self.host('malformed_log')
                 return
             if boot != self.boot:
                 self.host('boot_boundary', boot=boot, initial=self.boot is None)
                 self.boot, self.seq = boot, None
-            if self.seq is not None and seq != (self.seq + 1) & 0xffffffff:
-                self.host('sequence_gap', boot=boot, previous=self.seq, current=seq,
-                          missing=(seq - self.seq - 1) & 0xffffffff)
+            if self.seq is not None and seq != (self.seq + 1) & 0xFFFFFFFF:
+                self.host(
+                    'sequence_gap', boot=boot, previous=self.seq, current=seq, missing=(seq - self.seq - 1) & 0xFFFFFFFF
+                )
             self.seq = seq
             self.counts['logs'] += 1
             if record.get('level') in ('ERROR', 'WARN'):
@@ -89,16 +95,20 @@ def private_file(path, mode):
 def collect(port, directory, seconds=None, commands=()):
     directory = private_directory(directory)
     with acquire_lock():
-        with private_file(directory / 'raw.bin', 'wb') as raw, \
-                private_file(directory / 'records.jsonl', 'w') as decoded:
+        with (
+            private_file(directory / 'raw.bin', 'wb') as raw,
+            private_file(directory / 'records.jsonl', 'w') as decoded,
+        ):
+
             def emit(record):
                 decoded.write(json.dumps(record, separators=(',', ':')) + '\n')
                 decoded.flush()
+
             decoder = Decoder(emit)
             decoder.host('session_start', port=port, commands=list(commands))
             deadline = None if seconds is None else time.monotonic() + seconds
             fd = None
-            retry = .1
+            retry = 0.1
             outgoing = b''
             first_connection = True
             try:
@@ -109,21 +119,22 @@ def collect(port, directory, seconds=None, commands=()):
                         except OSError as error:
                             decoder.host('open_retry', errno=error.errno, delay=retry)
                             time.sleep(retry)
-                            retry = min(2., retry * 2)
+                            retry = min(2.0, retry * 2)
                             continue
                         decoder.boundary('connected')
-                        retry = .1
-                        outgoing = b"CMD 0 INFO\n"
+                        retry = 0.1
+                        outgoing = b'CMD 0 INFO\n'
                         # Commands execute once only. Reconnect must never replay mutations.
                         if first_connection:
-                            outgoing += b''.join(f'CMD {i} {cmd}\n'.encode('ascii')
-                                                for i, cmd in enumerate(commands, 1))
+                            outgoing += b''.join(
+                                f'CMD {i} {cmd}\n'.encode('ascii') for i, cmd in enumerate(commands, 1)
+                            )
                             first_connection = False
                     try:
-                        ready, writable, _ = select.select([fd], [fd] if outgoing else [], [], .1)
+                        ready, writable, _ = select.select([fd], [fd] if outgoing else [], [], 0.1)
                         if writable:
                             try:
-                                outgoing = outgoing[os.write(fd, outgoing):]
+                                outgoing = outgoing[os.write(fd, outgoing) :]
                             except BlockingIOError:
                                 pass
                         data = os.read(fd, 16384) if ready else None
@@ -158,7 +169,9 @@ def main():
     add_port_argument(p)
     p.add_argument('--output', type=Path)
     p.add_argument('--seconds', type=float)
-    p.add_argument('--command', action='append', default=[], help='Send once as CMD <id> <text>; never replay after reconnect')
+    p.add_argument(
+        '--command', action='append', default=[], help='Send once as CMD <id> <text>; never replay after reconnect'
+    )
     p.add_argument('--filter', type=Path, help='Read saved records instead of opening USB')
     p.add_argument('--component')
     p.add_argument('--level')
@@ -167,8 +180,9 @@ def main():
         with args.filter.open() as records:
             for line in records:
                 r = json.loads(line)
-                if ((not args.component or r.get('component') == args.component)
-                        and (not args.level or r.get('level') == args.level)):
+                if (not args.component or r.get('component') == args.component) and (
+                    not args.level or r.get('level') == args.level
+                ):
                     print(json.dumps(r))
         return
     if args.seconds is not None and args.seconds <= 0:
@@ -177,8 +191,7 @@ def main():
         if not cmd or len(cmd) > 160 or not cmd.isascii() or any(ord(c) < 32 for c in cmd):
             p.error('commands must be 1..160 printable ASCII characters')
     port = selected_port(p, args.port)
-    print(collect(port, args.output or ROOT / '.local/logs' / str(time.time_ns()),
-                  args.seconds, args.command))
+    print(collect(port, args.output or ROOT / '.local/logs' / str(time.time_ns()), args.seconds, args.command))
 
 
 if __name__ == '__main__':

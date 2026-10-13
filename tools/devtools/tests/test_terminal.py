@@ -22,7 +22,10 @@ class TerminalTests(unittest.TestCase):
         connection = self.connection('ACCEPTED')
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
-            with patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection), contextlib.redirect_stdout(output):
+            with (
+                patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection),
+                contextlib.redirect_stdout(output),
+            ):
                 result = run('/dev/test', Path(directory) / 'log', ['RIDE', 'START'])
             self.assertEqual(result, 0)
             self.assertEqual(json.loads(output.getvalue())['status'], 'ACCEPTED')
@@ -32,9 +35,12 @@ class TerminalTests(unittest.TestCase):
     def test_interactive_initial_info_single_owner_and_eof_release(self):
         connection = self.connection()
         with tempfile.TemporaryDirectory() as directory:
-            with (patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection) as factory,
-                  patch('builtins.input', side_effect=['STATUS', EOFError()]),
-                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())):
+            with (
+                patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection) as factory,
+                patch('builtins.input', side_effect=['STATUS', EOFError()]),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 self.assertEqual(run('/dev/test', Path(directory) / 'log', []), 0)
             factory.assert_called_once()
             self.assertEqual([call.args[0] for call in connection.terminal_command.call_args_list], ['INFO', 'STATUS'])
@@ -49,12 +55,16 @@ class TerminalTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
-            with (patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection),
-                  patch('builtins.input', side_effect=['BOGUS', 'STATUS', EOFError()]),
-                  contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO())):
+            with (
+                patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection),
+                patch('builtins.input', side_effect=['BOGUS', 'STATUS', EOFError()]),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 self.assertEqual(run('/dev/test', Path(directory) / 'log', []), 0)
-            self.assertEqual([json.loads(line)['status'] for line in output.getvalue().splitlines()],
-                             ['OK', 'INVALID', 'OK'])
+            self.assertEqual(
+                [json.loads(line)['status'] for line in output.getvalue().splitlines()], ['OK', 'INVALID', 'OK']
+            )
             self.assertEqual(connection.terminal_command.call_count, 3)
 
     def test_local_line_validation_precedes_transport(self):
@@ -67,7 +77,10 @@ class TerminalTests(unittest.TestCase):
     def test_firmware_rejection_is_nonzero_and_transport_error_is_not_retried(self):
         connection = self.connection('STATE')
         with tempfile.TemporaryDirectory() as directory:
-            with patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection), contextlib.redirect_stdout(io.StringIO()):
+            with (
+                patch('cycling_devtools.terminal.cli.UsbConnection', return_value=connection),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
                 self.assertEqual(run('/dev/test', Path(directory) / 'rejected', ['RIDE', 'START']), 1)
                 connection.terminal_command.side_effect = TimeoutError('uncertain')
                 with self.assertRaises(TimeoutError):

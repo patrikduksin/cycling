@@ -1,4 +1,5 @@
 """The single .local guard and shared reply/byte helpers."""
+
 from pathlib import Path
 import stat
 import subprocess
@@ -50,8 +51,10 @@ class PrivatePathTests(unittest.TestCase):
             workspace.private_path(self.local / 'published')
 
     def test_fails_closed_without_git(self):
-        with patch.object(subprocess, 'run', side_effect=FileNotFoundError('git')), \
-                self.assertRaisesRegex(ValueError, 'git-ignored'):
+        with (
+            patch.object(subprocess, 'run', side_effect=FileNotFoundError('git')),
+            self.assertRaisesRegex(ValueError, 'git-ignored'),
+        ):
             workspace.private_path(self.local / 'evidence')
 
     def test_private_directory_is_new_and_owner_only(self):

@@ -3,6 +3,7 @@
 Discovery reads only sysfs metadata and the private backup manifest; it never
 opens a port, and it fails instead of choosing a missing or ambiguous device.
 """
+
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,7 @@ def normalize_identity(value):
 def resolve_port(sysfs=Path('/sys/class/tty'), manifest=ROOT / '.local/device/manifest.json'):
     try:
         original = normalize_identity(json.loads(Path(manifest).read_text())['identity'])
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError, ValueError, KeyError, TypeError:
         raise DiscoveryError('private backup manifest is unavailable or invalid') from None
     matches = []
     try:
@@ -50,7 +51,7 @@ def resolve_port(sysfs=Path('/sys/class/tty'), manifest=ROOT / '.local/device/ma
                     if serial == original:
                         matches.append(Path('/dev') / tty.name)
                 break
-        except (OSError, ValueError, RuntimeError):
+        except OSError, ValueError, RuntimeError:
             # A disappeared or incomplete device cannot count as a verified match.
             continue
     if len(matches) != 1:

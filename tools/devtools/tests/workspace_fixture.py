@@ -1,4 +1,5 @@
 """A temporary git checkout whose ignored .local/ satisfies the private-path guard."""
+
 import contextlib
 from pathlib import Path
 import subprocess

@@ -1,4 +1,5 @@
 """Tool discovery must not initialize optional hardware integrations."""
+
 import os
 from pathlib import Path
 import subprocess
@@ -17,9 +18,13 @@ class EntrypointTests(unittest.TestCase):
         for name in ('bluetooth', 'ble_sensor_sim'):
             module = f'cycling_devtools.connectivity.{name}'
             for args in (['-c', f'import {module}'], ['-m', module, '--help']):
-                result = subprocess.run([sys.executable, '-S', *args], cwd=ROOT,
-                                        capture_output=True, text=True,
-                                        env=dict(os.environ, CYCLING_SIM_PROFILE='invalid', PYTHONPATH=str(SOURCE)))
+                result = subprocess.run(
+                    [sys.executable, '-S', *args],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    env=dict(os.environ, CYCLING_SIM_PROFILE='invalid', PYTHONPATH=str(SOURCE)),
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if '--help' in args:
                     self.assertIn('usage:', result.stdout)

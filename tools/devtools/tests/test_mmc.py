@@ -1,4 +1,5 @@
 """Synthetic media checks for bounded read-only eMMC investigation."""
+
 import struct
 import unittest
 import zlib
@@ -31,7 +32,7 @@ def mbr(entries):
 
 def fat32():
     boot = bytearray(512)
-    boot[0] = 0xeb
+    boot[0] = 0xEB
     boot[510:] = b'\x55\xaa'
     put16(boot, 11, 512)
     boot[13] = 1
@@ -61,7 +62,7 @@ def gpt_sectors():
     put32(header, 84, 128)
     put32(header, 88, zlib.crc32(table))
     put32(header, 16, zlib.crc32(header[:92]))
-    return {0: mbr([(0xee, 1, 99)]), 1: bytes(header), 2: bytes(table)}
+    return {0: mbr([(0xEE, 1, 99)]), 1: bytes(header), 2: bytes(table)}
 
 
 class ChunkConnection:
@@ -73,8 +74,9 @@ class ChunkConnection:
         self.commands.append(command)
         _, _, sector, offset, length = command.split()
         data = bytes(range(256))
-        values = dict(sector=sector, offset=offset, length=length,
-                      data=data.hex(), crc32=f'{zlib.crc32(data):08x}', read_us='12')
+        values = dict(
+            sector=sector, offset=offset, length=length, data=data.hex(), crc32=f'{zlib.crc32(data):08x}', read_us='12'
+        )
         if self.mutate:
             self.mutate(values)
         return dict(status='OK', data=' '.join(f'{k}={v}' for k, v in values.items()))
@@ -83,17 +85,24 @@ class ChunkConnection:
 class MmcTests(unittest.TestCase):
     def media(self, data, sectors=100, cap=128):
         self.reads = []
+
         def read(sector):
             self.reads.append(sector)
             return bytes(data.get(sector, bytes(512)))
+
         return mmc.Media(sectors, read, cap)
 
     def test_sector_requires_both_ranges_and_independent_crc(self):
         connection = ChunkConnection()
         self.assertEqual(mmc.read_sector(connection, 7), bytes(range(256)) * 2)
         self.assertEqual(connection.commands, ['MMC READ 7 0 256', 'MMC READ 7 256 256'])
-        for key, value in [('sector', '8'), ('offset', '128'), ('length', '255'),
-                           ('crc32', '00000000'), ('data', '00')]:
+        for key, value in [
+            ('sector', '8'),
+            ('offset', '128'),
+            ('length', '255'),
+            ('crc32', '00000000'),
+            ('data', '00'),
+        ]:
             connection = ChunkConnection(lambda row: row.update({key: value}))
             with self.subTest(key=key), self.assertRaises(ValueError):
                 mmc.read_sector(connection, 7)
@@ -111,8 +120,12 @@ class MmcTests(unittest.TestCase):
         self.assertEqual(self.reads, [0, 1])
 
     def test_mbr_rejects_overflow_and_overlap_before_partition_reads(self):
-        for entries in [[(0x0b, 90, 20)], [(0x0b, 2**32 - 1, 2**32 - 1)],
-                        [(0x0b, 1, 50), (0x0b, 40, 30)], [(0x0b, 0, 20)]]:
+        for entries in [
+            [(0x0B, 90, 20)],
+            [(0x0B, 2**32 - 1, 2**32 - 1)],
+            [(0x0B, 1, 50), (0x0B, 40, 30)],
+            [(0x0B, 0, 20)],
+        ]:
             with self.subTest(entries=entries), self.assertRaises(ValueError):
                 mmc.partitions(self.media({0: mbr(entries)}))
             self.assertEqual(self.reads, [0])
@@ -141,7 +154,7 @@ class MmcTests(unittest.TestCase):
         put32(header, 80, 100000)
         put32(header, 16, 0)
         put32(header, 16, zlib.crc32(header[:92]))
-        media = self.media({0: mbr([(0xee, 1, 999999)]), 1: header}, sectors=1000000)
+        media = self.media({0: mbr([(0xEE, 1, 999999)]), 1: header}, sectors=1000000)
         with self.assertRaises(mmc.LimitReached):
             mmc.partitions(media)
         self.assertEqual(self.reads, [0, 1])
@@ -162,10 +175,10 @@ class MmcTests(unittest.TestCase):
         self.assertEqual(self.reads, [0, 582])
 
     def test_cyclic_and_invalid_fat_root_chain_are_not_followed(self):
-        for next_cluster in [2, 0, 0x0ffffff7, 69999]:
+        for next_cluster in [2, 0, 0x0FFFFFF7, 69999]:
             fat = bytearray(512)
             put32(fat, 8, next_cluster)
-            deleted = bytes([0xe5]) * 512
+            deleted = bytes([0xE5]) * 512
             media = self.media({0: fat32(), 582: deleted, 32: fat}, sectors=70000)
             geometry = mmc.fat_geometry(media, dict(start=0, sectors=70000))
             with self.subTest(next_cluster=next_cluster), self.assertRaises(ValueError):
@@ -180,9 +193,8 @@ class MmcTests(unittest.TestCase):
                 mmc.fat_geometry(self.media({0: boot}, sectors=70000), dict(start=0, sectors=70000))
 
     def test_root_cap_is_explicitly_incomplete(self):
-        media = self.media({582: bytes([0xe5]) * 512}, sectors=70000, cap=1)
-        geometry = dict(bits=32, root_cluster=2, clusters=69000, sectors_per_cluster=1,
-                        data_start=582, fat_start=32)
+        media = self.media({582: bytes([0xE5]) * 512}, sectors=70000, cap=1)
+        geometry = dict(bits=32, root_cluster=2, clusters=69000, sectors_per_cluster=1, data_start=582, fat_start=32)
         self.assertEqual(mmc.root_directory(media, geometry), dict(entries=[], complete=False))
         self.assertEqual(self.reads, [582])
 
@@ -194,7 +206,7 @@ class MmcTests(unittest.TestCase):
         for byte in short[:11]:
             checksum = (((checksum & 1) << 7) + (checksum >> 1) + byte) & 255
         lfn = bytearray(32)
-        lfn[0], lfn[11], lfn[13] = 0x41, 0x0f, checksum
+        lfn[0], lfn[11], lfn[13] = 0x41, 0x0F, checksum
         raw = 'resource.bin'.encode('utf-16-le') + b'\0\0'
         lfn[1:11], lfn[14:26], lfn[28:32] = raw[:10], raw[10:22], raw[22:26]
         geometry = dict(bits=16, root_sectors=1, root_start=1)

@@ -13,9 +13,11 @@ class UsbTests(unittest.TestCase):
         connection.fd, connection.log = 123, io.BytesIO()
         request = b'CMD 1 SAVE\n'
         response = b'{"type":"reply","id":1,"status":"OK","data":""}\n'
-        with (patch('cycling_devtools.terminal.usb.os.write', side_effect=[BlockingIOError(), len(request)]) as write,
-              patch('cycling_devtools.terminal.usb.select.select', return_value=([123], [123], [])),
-              patch('cycling_devtools.terminal.usb.os.read', return_value=response)):
+        with (
+            patch('cycling_devtools.terminal.usb.os.write', side_effect=[BlockingIOError(), len(request)]) as write,
+            patch('cycling_devtools.terminal.usb.select.select', return_value=([123], [123], [])),
+            patch('cycling_devtools.terminal.usb.os.read', return_value=response),
+        ):
             self.assertEqual(connection.terminal_command('SAVE')['status'], 'OK')
             self.assertEqual(write.call_count, 2)
 
@@ -38,9 +40,13 @@ class UsbTests(unittest.TestCase):
     def test_wait_expiring_cannot_submit_a_mutation_after_its_deadline(self):
         connection = UsbConnection('/dev/test', 'unused')
         connection.fd, connection.log = 123, io.BytesIO()
-        with (patch('cycling_devtools.terminal.usb.os.write', side_effect=[BlockingIOError(), len(b'CMD 1 SAVE\n')]) as write,
-              patch('cycling_devtools.terminal.usb.time.monotonic', side_effect=[0, .5, 1.1]),
-              patch('cycling_devtools.terminal.usb.select.select', return_value=([], [123], []))):
+        with (
+            patch(
+                'cycling_devtools.terminal.usb.os.write', side_effect=[BlockingIOError(), len(b'CMD 1 SAVE\n')]
+            ) as write,
+            patch('cycling_devtools.terminal.usb.time.monotonic', side_effect=[0, 0.5, 1.1]),
+            patch('cycling_devtools.terminal.usb.select.select', return_value=([], [123], [])),
+        ):
             with self.assertRaisesRegex(TimeoutError, 'not submitted'):
                 connection.terminal_command('SAVE', timeout=1)
             write.assert_called_once()
@@ -57,9 +63,11 @@ class UsbTests(unittest.TestCase):
         for data in (b'', b'CYCLING_BOOT version=test\n'):
             connection = UsbConnection('/dev/test', 'unused')
             connection.fd, connection.log = 123, io.BytesIO()
-            with (patch('cycling_devtools.terminal.usb.os.write', return_value=len(b'CMD 1 SAVE\n')) as write,
-                  patch('cycling_devtools.terminal.usb.select.select', return_value=([123], [], [])),
-                  patch('cycling_devtools.terminal.usb.os.read', return_value=data)):
+            with (
+                patch('cycling_devtools.terminal.usb.os.write', return_value=len(b'CMD 1 SAVE\n')) as write,
+                patch('cycling_devtools.terminal.usb.select.select', return_value=([123], [], [])),
+                patch('cycling_devtools.terminal.usb.os.read', return_value=data),
+            ):
                 with self.assertRaises(RuntimeError):
                     connection.terminal_command('SAVE')
                 write.assert_called_once_with(123, b'CMD 1 SAVE\n')

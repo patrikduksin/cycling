@@ -41,7 +41,7 @@ class AntCaptureTests(unittest.TestCase):
             self.assertEqual(sampled, raw)
             if data[5] in (2, 3, 7):
                 offset = 128 if data[5] == 7 else 48
-                data[offset:offset + 4] = b'SMP1'
+                data[offset : offset + 4] = b'SMP1'
                 struct.pack_into('<I', data, offset + 4, 123)
                 decoded = decode_slot(commit(data))
                 self.assertEqual(decoded['sampled_out_packets'], 123)
@@ -92,16 +92,13 @@ class AntCaptureTests(unittest.TestCase):
         data = slot(1, 3)
         identities = [(40, 5, 1234), (120, 1, 5678), (11, 2, 9012)]
         for index, identity in enumerate(identities):
-            struct.pack_into('<BBHQII8s', data, 24 + 28 * index,
-                             *identity, 990, index, 0, bytes([index] * 8))
+            struct.pack_into('<BBHQII8s', data, 24 + 28 * index, *identity, 990, index, 0, bytes([index] * 8))
         packets = decode_slot(commit(data))['packets']
-        self.assertEqual([(p['device_type'], p['transmission_type'], p['device_number'])
-                          for p in packets], identities)
+        self.assertEqual([(p['device_type'], p['transmission_type'], p['device_number']) for p in packets], identities)
         self.assertEqual([p['received_ms'] for p in packets], [990] * 3)
 
     def test_positions_with_fix_stale_and_no_source(self):
-        for flags, observed, latitude, longitude in (
-                (3, 900, -334567890, -706543210), (1, 100, 0, 0), (0, 0, 0, 0)):
+        for flags, observed, latitude, longitude in ((3, 900, -334567890, -706543210), (1, 100, 0, 0), (0, 0, 0, 0)):
             data = slot(6, 1)
             data[24:28] = bytes([flags, 0, 0, 0])
             struct.pack_into('<QQiiI', data, 28, 1000, observed, latitude, longitude, 2)
@@ -143,8 +140,10 @@ class AntCaptureTests(unittest.TestCase):
 
     def test_environmental_units_signed_motion_missing_and_terminal_counts(self):
         record = decode_slot(self.environmental())
-        self.assertEqual(record['pressure'], dict(received_ms=900, source_age_ms=100,
-                                                pressure_centi_pa=10_132_501, temperature_centi_c=-1234))
+        self.assertEqual(
+            record['pressure'],
+            dict(received_ms=900, source_age_ms=100, pressure_centi_pa=10_132_501, temperature_centi_c=-1234),
+        )
         self.assertEqual(record['motion_1']['raw_axes'], [-32768, 32767, -1])
         self.assertEqual(record['power']['raw_status'], 7)
         self.assertEqual(record['battery']['interpreted_millivolts'], 4000)
@@ -152,8 +151,7 @@ class AntCaptureTests(unittest.TestCase):
         missing = decode_slot(self.environmental(0))
         for source in ('pressure', 'motion_1', 'motion_2', 'battery', 'power'):
             self.assertIsNone(missing[source])
-        for offset, value in [(24, 32), (25, 1), (62, 1), (78, 1), (94, 1),
-                              (105, 1), (117, 1), (128, 0), (48, 1)]:
+        for offset, value in [(24, 32), (25, 1), (62, 1), (78, 1), (94, 1), (105, 1), (117, 1), (128, 0), (48, 1)]:
             data = self.environmental(0)
             data[offset] = value
             with self.subTest(offset=offset), self.assertRaises(ValueError):

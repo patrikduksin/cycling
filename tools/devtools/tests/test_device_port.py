@@ -71,7 +71,11 @@ class DevicePortTests(unittest.TestCase):
             self.resolve()
         self.assertNotIn('broken', str(caught.exception))
         output, errors = io.StringIO(), io.StringIO()
-        with patch.object(device_port, 'resolve_port', side_effect=caught.exception), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        with (
+            patch.object(device_port, 'resolve_port', side_effect=caught.exception),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(errors),
+        ):
             self.assertEqual(device_port.main(), 1)
         self.assertEqual(output.getvalue(), '')
         self.assertNotIn('broken', errors.getvalue())
@@ -84,7 +88,10 @@ class DevicePortTests(unittest.TestCase):
 
     def test_cli_prints_only_verified_port(self):
         output = io.StringIO()
-        with patch.object(device_port, 'resolve_port', return_value=Path('/dev/ttyACM7')), contextlib.redirect_stdout(output):
+        with (
+            patch.object(device_port, 'resolve_port', return_value=Path('/dev/ttyACM7')),
+            contextlib.redirect_stdout(output),
+        ):
             self.assertEqual(device_port.main(), 0)
         self.assertEqual(output.getvalue(), '/dev/ttyACM7\n')
 
@@ -106,10 +113,12 @@ class PortSelectionTests(unittest.TestCase):
         args = parser.parse_args([])
         errors = io.StringIO()
         failure = device_port.DiscoveryError('expected exactly one C606 matching the private backup manifest')
-        with (patch.dict('os.environ', {}, clear=True),
-              patch.object(device_port, 'resolve_port', side_effect=failure),
-              contextlib.redirect_stderr(errors),
-              self.assertRaises(SystemExit) as caught):
+        with (
+            patch.dict('os.environ', {}, clear=True),
+            patch.object(device_port, 'resolve_port', side_effect=failure),
+            contextlib.redirect_stderr(errors),
+            self.assertRaises(SystemExit) as caught,
+        ):
             device_port.selected_port(parser, args.port)
         self.assertEqual(caught.exception.code, 2)
         self.assertIn('expected exactly one C606', errors.getvalue())
@@ -117,8 +126,11 @@ class PortSelectionTests(unittest.TestCase):
 
     def test_no_tool_hard_codes_a_default_tty(self):
         package = Path(device_port.__file__).resolve().parents[1]
-        offenders = [path.name for path in package.rglob('*.py') if "'/dev/ttyACM" in path.read_text()
-                     or '"/dev/ttyACM' in path.read_text()]
+        offenders = [
+            path.name
+            for path in package.rglob('*.py')
+            if "'/dev/ttyACM" in path.read_text() or '"/dev/ttyACM' in path.read_text()
+        ]
         self.assertEqual(offenders, [])
 
 

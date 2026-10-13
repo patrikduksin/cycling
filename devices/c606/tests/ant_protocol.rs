@@ -6,7 +6,7 @@ fn crc_loss_invalidates_channel_before_recovered_sensor_data() {
     use device_api::ant::Event;
     use device_api::ant::Identity;
     use device_api::ant::LinkState;
-    use firmware_services::ant::State;
+    use firmware_services::ant::Channel;
 
     use c606_firmware::drivers::companion::Decoder;
     let peer = Identity {
@@ -14,7 +14,7 @@ fn crc_loss_invalidates_channel_before_recovered_sensor_data() {
         device_number: 0x1234,
         transmission_type: 5,
     };
-    let mut state = State::new();
+    let mut state = Channel::new();
     state.connect(peer, 0).unwrap();
     state.receive(Event::Connected(peer), 1);
     let report = |payload| {

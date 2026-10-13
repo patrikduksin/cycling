@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 device-api = { path = "../device-api" }
+heapless.workspace = true

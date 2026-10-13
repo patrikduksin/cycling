@@ -144,17 +144,17 @@ impl<'d> Host<'d> {
     }
 
     fn initialize(&mut self) -> Result<(), Error> {
-        // SAFETY: SYSTEM is a fixed register block. Only the SDIO host clock and reset bits change, from thread mode; no interrupt handler touches PERIP_CLK_EN1/RST_EN1.
-        let system = unsafe { &*esp32s3::SYSTEM::ptr() };
-        system
-            .perip_clk_en1()
-            .modify(|_, w| w.sdio_host_clk_en().set_bit());
-        system
-            .perip_rst_en1()
-            .modify(|_, w| w.sdio_host_rst().set_bit());
-        system
-            .perip_rst_en1()
-            .modify(|_, w| w.sdio_host_rst().clear_bit());
+        sdio_host_gate(|system| {
+            system
+                .perip_clk_en1()
+                .modify(|_, w| w.sdio_host_clk_en().set_bit());
+            system
+                .perip_rst_en1()
+                .modify(|_, w| w.sdio_host_rst().set_bit());
+            system
+                .perip_rst_en1()
+                .modify(|_, w| w.sdio_host_rst().clear_bit());
+        });
 
         let r = registers();
         // 160 MHz PLL / 2 = 80 MHz host module clock, matching esp-hal 1.2.1.
@@ -351,14 +351,14 @@ impl Drop for Host<'_> {
             w.lp_enable().bits(rd.lp_enable().bits() & !(1 << SLOT))
         });
         let _ = self.update_clock();
-        // SAFETY: SYSTEM is a fixed register block. Only the SDIO host clock and reset bits change, from thread mode; no interrupt handler touches PERIP_CLK_EN1/RST_EN1.
-        let system = unsafe { &*esp32s3::SYSTEM::ptr() };
-        system
-            .perip_rst_en1()
-            .modify(|_, w| w.sdio_host_rst().set_bit());
-        system
-            .perip_clk_en1()
-            .modify(|_, w| w.sdio_host_clk_en().clear_bit());
+        sdio_host_gate(|system| {
+            system
+                .perip_rst_en1()
+                .modify(|_, w| w.sdio_host_rst().set_bit());
+            system
+                .perip_clk_en1()
+                .modify(|_, w| w.sdio_host_clk_en().clear_bit());
+        });
     }
 }
 
@@ -1174,6 +1174,20 @@ fn read_report(
     })
 }
 
+/// Read-modify-write the SDIO host clock/reset bits in SYSTEM.
+///
+/// PERIP_CLK_EN1/PERIP_RST_EN1 are shared with peripherals esp-hal gates under
+/// its own interrupt-disabling lock. Holding a critical section keeps that code
+/// (and any interrupt) from interleaving with these updates on this core.
+fn sdio_host_gate(update: impl FnOnce(&esp32s3::system::RegisterBlock)) {
+    critical_section::with(|_| {
+        // SAFETY: SYSTEM is a fixed register block. The caller changes only the
+        // SDIO host bits, and the critical section serializes the
+        // read-modify-write against other writers of these shared registers.
+        update(unsafe { &*esp32s3::SYSTEM::ptr() })
+    });
+}
+
 fn registers() -> &'static esp32s3::sdhost::RegisterBlock {
     // SAFETY: SDHOST is a fixed register block. Host owns the SDHOST token for the media lifetime, so this module is its only user.
     unsafe { &*esp32s3::SDHOST::ptr() }
@@ -1276,10 +1290,11 @@ fn stop_dma() -> Result<(), Error> {
         Err(error) => {
             // A module reset is the final fail-closed barrier before a
             // stack-backed descriptor or buffer can leave scope.
-            // SAFETY: SYSTEM is a fixed register block. Only the SDIO host clock and reset bits change, from thread mode; no interrupt handler touches PERIP_CLK_EN1/RST_EN1.
-            unsafe { &*esp32s3::SYSTEM::ptr() }
-                .perip_rst_en1()
-                .modify(|_, w| w.sdio_host_rst().set_bit());
+            sdio_host_gate(|system| {
+                system
+                    .perip_rst_en1()
+                    .modify(|_, w| w.sdio_host_rst().set_bit());
+            });
             Err(error)
         }
     }

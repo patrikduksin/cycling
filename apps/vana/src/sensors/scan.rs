@@ -1,6 +1,7 @@
 //! Foreground discovery observes the transport without disturbing selected peers.
 use crate::screens::sensors::MenuMessage;
-use device_api::ant::{Admission, Ant, AntOperation, Error, ScanState};
+use device_api::ant::{Admission, Ant, AntOperation, Error, LinkState, ScanState};
+use device_api::observation::Availability;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -89,18 +90,16 @@ impl Scan {
         if self.running() || ant.scan().state != ScanState::Idle {
             return;
         }
-        if ant.availability() == device_api::observation::Availability::Initializing {
+        if ant.availability() == Availability::Initializing {
             return;
         }
-        if ant.availability() != device_api::observation::Availability::Ready
+        if ant.availability() != Availability::Ready
             || (!ant.capabilities().concurrent_scan
-                && ant.channels(now).iter().flatten().any(|s| {
-                    matches!(
-                        s.link,
-                        device_api::ant::LinkState::Connected
-                            | device_api::ant::LinkState::Connecting
-                    )
-                }))
+                && ant
+                    .channels(now)
+                    .iter()
+                    .flatten()
+                    .any(|s| matches!(s.link, LinkState::Connected | LinkState::Connecting)))
         {
             self.phase = Phase::Unavailable;
             self.pending_start = None;
@@ -108,12 +107,12 @@ impl Scan {
         }
         // The transport admits concurrent receive, but cannot scan while a
         // channel control operation is completing. Wait without resubmitting.
-        if ant.channels(now).iter().flatten().any(|s| {
-            matches!(
-                s.link,
-                device_api::ant::LinkState::Connecting | device_api::ant::LinkState::Disconnecting
-            )
-        }) {
+        if ant
+            .channels(now)
+            .iter()
+            .flatten()
+            .any(|s| matches!(s.link, LinkState::Connecting | LinkState::Disconnecting))
+        {
             return;
         }
         let result = ant.request(AntOperation::Scan(10000), now);

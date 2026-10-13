@@ -1,5 +1,7 @@
 //! VANA workout rendering.
+use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::{heart_zone, power_zone};
+use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
 
@@ -14,10 +16,10 @@ pub enum Page {
 
 pub struct View {
     pub now_ms: u64,
-    pub sample: crate::ride::log::Sample,
+    pub sample: Sample,
     pub active_secs: u64,
-    pub state: crate::ride::log::Status,
-    pub radar: crate::sensors::radar::Snapshot,
+    pub state: Status,
+    pub radar: radar::Snapshot,
     pub gps_fix: bool,
     pub stop_confirm: bool,
     values: [Text<12>; 7],
@@ -45,10 +47,10 @@ impl View {
         }
         Self {
             now_ms: 0,
-            sample: crate::ride::log::Sample::default(),
+            sample: Sample::default(),
             active_secs: 0,
-            state: crate::ride::log::Status::Ready,
-            radar: crate::sensors::radar::Snapshot::default(),
+            state: Status::Ready,
+            radar: radar::Snapshot::default(),
             gps_fix: false,
             stop_confirm: false,
             values: core::array::from_fn(|_| Text::new()),
@@ -212,18 +214,13 @@ impl View {
                 let dx = x as i32 - 12;
                 let dy = y as i32 - cy;
                 if dx * dx + dy * dy <= 25 {
-                    return if crate::sensors::radar::close(target) {
-                        0xf800
-                    } else {
-                        0xffe0
-                    };
+                    return if close(target) { 0xf800 } else { 0xffe0 };
                 }
             }
             if (11..=13).contains(&x) && (58..=272).contains(&y) {
                 return match status {
-                    crate::sensors::radar::Status::Ready => CYAN,
-                    crate::sensors::radar::Status::Error
-                    | crate::sensors::radar::Status::ReservedThreat => 0xf800,
+                    radar::Status::Ready => CYAN,
+                    radar::Status::Error | radar::Status::ReservedThreat => 0xf800,
                     _ => DIM,
                 };
             }
@@ -298,11 +295,11 @@ impl View {
             b"STOP TO SAVE"
         } else {
             match self.state {
-                crate::ride::log::Status::Recording => b"RECORDING",
-                crate::ride::log::Status::Paused => b"PAUSED",
-                crate::ride::log::Status::Saved => b"SAVED",
-                crate::ride::log::Status::Error => b"STORAGE ERROR",
-                crate::ride::log::Status::Full => b"STORAGE FULL",
+                Status::Recording => b"RECORDING",
+                Status::Paused => b"PAUSED",
+                Status::Saved => b"SAVED",
+                Status::Error => b"STORAGE ERROR",
+                Status::Full => b"STORAGE FULL",
                 _ => b"READY",
             }
         };
@@ -310,8 +307,8 @@ impl View {
             return if self.stop_confirm { 0xffe0 } else { CYAN };
         }
         let left: &[u8] = match self.state {
-            crate::ride::log::Status::Recording => b"PAUSE",
-            crate::ride::log::Status::Paused => b"RESUME",
+            Status::Recording => b"PAUSE",
+            Status::Paused => b"RESUME",
             _ => b"START",
         };
         if text(x, y, 8, 300, 2, left) || text(x, y, 180, 300, 2, b"STOP") {
@@ -361,7 +358,6 @@ impl<const N: usize> core::fmt::Write for Text<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::log::{Sample, Status};
 
     const WHITE: u16 = 0xffff;
     const CYAN: u16 = 0x07ff;

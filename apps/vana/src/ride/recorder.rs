@@ -274,8 +274,9 @@ impl Recorder {
             self.next_sample = now + 1_000;
         }
 
-        if self.status == Status::Recovered && self.catalog.recovery.is_some() {
-            let recovery = self.catalog.recovery.unwrap();
+        if self.status == Status::Recovered
+            && let Some(recovery) = self.catalog.recovery
+        {
             let entry = Entry::event(
                 Kind::Recovered,
                 recovery.source,

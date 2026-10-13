@@ -23,6 +23,23 @@ pub mod device_type {
     pub const SHIFTING_DI2: u8 = 128;
 }
 
+/// A channel session and its loss count. A packet from a different epoch is
+/// not continuous with earlier packets, so derived state must restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Epoch {
+    pub generation: u32,
+    pub loss_count: u32,
+}
+
+impl Epoch {
+    pub const fn of(packet: &device_api::ant::Packet) -> Self {
+        Self {
+            generation: packet.generation,
+            loss_count: packet.loss_count,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeartRate {
     /// Last beat time, in 1/1024-second units, wrapping at 65536.

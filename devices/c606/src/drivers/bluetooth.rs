@@ -606,9 +606,9 @@ where
     }
 }
 
-async fn advertise_and_echo<'server, C>(
+async fn advertise_and_echo<C>(
     peripheral: &mut Peripheral<'_, C, DefaultPacketPool>,
-    server: &'server Server<'_>,
+    server: &Server<'_>,
 ) -> Result<(), BleHostError<C::Error>>
 where
     C: Controller,

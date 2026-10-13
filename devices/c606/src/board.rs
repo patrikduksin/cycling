@@ -48,8 +48,10 @@ struct Resources {
     pub touch_available: bool,
     pub gps_receiver: gps_uart::Receiver,
     pub backlight: channel::Channel<'static, LowSpeed>,
-    // Keep the LCD read strobe driven high throughout the board's lifetime.
-    pub _lcd_read: Output<'static>,
+    /// LCD read strobe (GPIO39), driven high so the panel never sees a read.
+    /// Held here only to keep ownership until `start` leaks it for the device
+    /// lifetime; no code reads or toggles it.
+    pub lcd_read_strobe: Output<'static>,
 }
 
 /// Claim the board once. A second call is rejected by esp_hal's singleton guard.
@@ -113,7 +115,7 @@ fn init() -> Resources {
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
     let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);
-    let _rd = Output::new(p.GPIO39, Level::High, OutputConfig::default());
+    let lcd_read_strobe = Output::new(p.GPIO39, Level::High, OutputConfig::default());
     let lcd = LcdCam::new(p.LCD_CAM);
     let bus = I8080::new(
         lcd.lcd,
@@ -199,7 +201,7 @@ fn init() -> Resources {
         bulk,
         gps_receiver,
         backlight,
-        _lcd_read: _rd,
+        lcd_read_strobe,
     }
 }
 
@@ -295,8 +297,10 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         spawner.spawn(crate::drivers::wifi::time_sync(stack).unwrap());
     }
     spawner.spawn(crate::drivers::bluetooth::start(board.bluetooth).unwrap());
-    // Output intentionally remains asserted for the device lifetime.
-    core::mem::forget(board._lcd_read);
+    // Output intentionally remains asserted for the device lifetime. Today
+    // Output has no drop glue, but forgetting keeps that true if the HAL adds one.
+    #[allow(clippy::forget_non_drop)]
+    core::mem::forget(board.lcd_read_strobe);
     Parts {
         display: board.screen,
         input: Input,

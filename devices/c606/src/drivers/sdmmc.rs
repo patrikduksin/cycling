@@ -381,7 +381,7 @@ pub fn open<'d>(
     let report = report?;
     Ok(Reader {
         host,
-        _pins: pins,
+        pins,
         report,
         failed: false,
         reads: 0,
@@ -397,7 +397,9 @@ pub fn open<'d>(
 /// buffers are stack-allocated internal RAM, never caller-owned external RAM.
 pub struct Reader<'d> {
     host: Host<'d>,
-    _pins: Pins<'d>,
+    /// Owns the routed GPIOs for the media lifetime; dropping it detaches
+    /// them. Also switched between one- and four-bit data lanes.
+    pins: Pins<'d>,
     report: Report,
     failed: bool,
     reads: u32,
@@ -466,7 +468,7 @@ impl Reader<'_> {
                     .command(6, 0x03b7_0101, ResponseLen::Short, true, true, true)?[0],
             )?;
             self.ready()?;
-            self._pins.connect_four_bit();
+            self.pins.connect_four_bit();
             self.host.set_bus_width(true);
             self.host.read_sector_command(8, 0, &mut ext_csd)?;
             if ext_csd.0[187] != power_class
@@ -597,7 +599,7 @@ impl Reader<'_> {
         if self.failed {
             return Err(Error::Failed);
         }
-        if bytes == 0 || bytes % 512 != 0 || bytes > MAX_READ_SECTORS * 512 {
+        if bytes == 0 || !bytes.is_multiple_of(512) || bytes > MAX_READ_SECTORS * 512 {
             return Err(Error::Range);
         }
         let last = start
@@ -729,7 +731,7 @@ impl device_api::bulk::Read for Reader<'_> {
         self.failed = true;
         // CMD0 uses CMD only and resets the card's volatile bus width. Release
         // extra data outputs even when a previous CMD6 completion was uncertain.
-        self._pins.idle_extra_data();
+        self.pins.idle_extra_data();
         let result = (|| {
             self.host.initialize()?;
             self.host.init_clocks()?;
@@ -903,7 +905,7 @@ fn identify_sd(host: &mut Host<'_>) -> Result<Option<Report>, Error> {
     if !high_capacity {
         check_r1(host.command(16, 512, ResponseLen::Short, true, true, false)?[0])?;
     }
-    read_report(host, Kind::Sd, high_capacity, rca, cid, csd, sectors, false).map(Some)
+    read_report(host, Kind::Sd, high_capacity, rca, cid, sectors, false).map(Some)
 }
 
 fn identify_mmc(host: &mut Host<'_>) -> Result<Report, Error> {
@@ -930,7 +932,9 @@ fn identify_mmc(host: &mut Host<'_>) -> Result<Report, Error> {
             false,
         )?[0],
     )?;
-    let csd = host.command(
+    // CMD9 stays in the identification sequence (stand-by state, before CMD7);
+    // MMC capacity comes from EXT_CSD, so the CSD itself is not needed.
+    host.command(
         9,
         u32::from(rca) << 16,
         ResponseLen::Long,
@@ -963,7 +967,6 @@ fn identify_mmc(host: &mut Host<'_>) -> Result<Report, Error> {
         ocr & (1 << 30) != 0,
         rca,
         cid,
-        csd,
         sectors,
         ext_csd.0[33] != 0,
     )
@@ -1093,7 +1096,6 @@ fn read_report(
     high_capacity: bool,
     rca: u16,
     cid: [u32; 4],
-    _csd: [u32; 4],
     sectors: u64,
     cache_enabled: bool,
 ) -> Result<Report, Error> {

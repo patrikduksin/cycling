@@ -2,12 +2,13 @@
 use device_api::display::Display as DisplayCapability;
 use device_api::display::Geometry;
 use device_api::observation::Error;
-const PANEL_WIDTH: usize = 240;
-const PANEL_HEIGHT: usize = 320;
 use esp_hal::Blocking;
 use esp_hal::delay::Delay;
 use esp_hal::dma::DmaTxBuf;
 use esp_hal::lcd_cam::lcd::i8080::I8080;
+
+const PANEL_WIDTH: usize = 240;
+const PANEL_HEIGHT: usize = 320;
 
 pub struct Display<'d> {
     resources: Option<(I8080<'d, Blocking>, DmaTxBuf)>,
@@ -21,7 +22,12 @@ impl<'d> Display<'d> {
     }
 
     fn send(&mut self, command: u8, bytes: &[u8], pixels: bool) -> Result<(), Error> {
-        let (bus, mut buffer) = self.resources.take().unwrap();
+        // Every path below puts the bus and buffer back before returning, and
+        // `send` is not re-entrant, so the resources are always present here.
+        let (bus, mut buffer) = self
+            .resources
+            .take()
+            .expect("display bus and buffer are returned after each transfer");
         buffer.fill(bytes);
         let transfer = if pixels {
             bus.send(command as u16, 0, buffer)
@@ -36,11 +42,15 @@ impl<'d> Display<'d> {
         result.map_err(|_| Error::Failed)
     }
 
+    /// Boot-time panel bring-up. A bus failure here panics: there is no
+    /// working display to degrade to this early in boot.
     pub fn init(&mut self) {
         let delay = Delay::new();
-        self.send(0x01, &[], false).unwrap();
+        self.send(0x01, &[], false)
+            .expect("panel software reset at startup");
         delay.delay_millis(150);
-        self.send(0x11, &[], false).unwrap();
+        self.send(0x11, &[], false)
+            .expect("panel sleep-out at startup");
         delay.delay_millis(120);
         // Controller configuration recovered from stock, validated by the C demo.
         const INIT: &[(u8, &[u8])] = &[
@@ -72,7 +82,8 @@ impl<'d> Display<'d> {
             (0x29, &[]),
         ];
         for &(command, data) in INIT {
-            self.send(command, data, false).unwrap();
+            self.send(command, data, false)
+                .expect("panel configuration at startup");
             delay.delay_millis(2);
         }
     }
@@ -96,7 +107,7 @@ impl DisplayCapability for Display<'_> {
                     strip[offset..offset + 2].copy_from_slice(&color);
                 }
             }
-            self.send(0x2a, &[0, 0, 0, 239], false)?;
+            self.send(0x2a, &[0, 0, 0, (PANEL_WIDTH - 1) as u8], false)?;
             self.send(
                 0x2b,
                 &[

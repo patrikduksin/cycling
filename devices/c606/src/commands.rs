@@ -1,6 +1,11 @@
 //! Single bounded USB owner for ordinary commands and JSON logs.
+use c606_firmware as device;
 use core::fmt;
 use core::fmt::Write;
+use device_api::ble_transport::Ble as _;
+use device_api::input::InputObservation as _;
+use device_api::network::Network as _;
+use device_api::power::PowerControl as _;
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use firmware_console::session::Terminal;
@@ -38,31 +43,39 @@ pub trait Diagnostics {
     fn set_fault(&self, fault: u8);
     fn stall(&self);
 }
-#[allow(clippy::too_many_arguments)]
-pub fn execute<
-    D: device_api::display::Display,
-    I: device_api::input::InputSource,
-    P: device_api::power::Power,
-    B: device_api::storage::OwnedFlash,
->(
+/// Capability handles owned by the console task and shared with the terminal.
+pub struct Devices {
+    pub ant: device::board::Ant,
+    pub ble: device::board::Ble,
+    pub position: device::board::Positioning,
+    pub bulk: device::board::Bulk,
+    pub sound: device::board::Sound,
+    pub sensors: device::board::Sensors,
+    pub network: device::board::Network,
+    pub input: device::board::Input,
+    pub power: device::board::Power,
+}
+
+pub fn execute(
     terminal: &mut Terminal<impl device_api::console::Console>,
     request: Request,
-    system: &mut firmware_shell::shell::Shell<D, I, P, B>,
+    system: &mut crate::FirmwareShell,
     now: u64,
-    ant: &mut impl device_api::ant::Ant,
-    ble: &mut impl device_api::ble_transport::Ble,
-    position: &mut (
-             impl device_api::positioning::Positioning + device_api::position_control::PositionControl
-         ),
-    bulk: &mut (impl device_api::bulk::Read + device_api::bulk::ReadWrite),
-    sound: &mut impl device_api::sound::Sound,
-    sensors: &mut impl device_api::sensors::Sensors,
-    network: &mut impl device_api::network::Network,
-    input: &impl device_api::input::InputObservation,
-    power: &mut impl device_api::power::PowerControl,
+    devices: &mut Devices,
     diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut vana::app::Runtime,
 ) {
+    let Devices {
+        ant,
+        ble,
+        position,
+        bulk,
+        sound,
+        sensors,
+        network,
+        input,
+        power,
+    } = devices;
     let mut output = Text::new();
     let mut status = "OK";
     let started = embassy_time::Instant::now();
@@ -182,8 +195,9 @@ pub fn execute<
         | Command::AntCapabilities
         | Command::AntOperation(_)
         | Command::AntSend { .. }) => {
-            status =
-                firmware_console::commands::ant::execute(command, ant, now, &mut output).unwrap();
+            status = firmware_console::commands::ant::execute(command, ant, now, &mut output)
+                // Only ANT commands reach this arm; the console handles all of them.
+                .unwrap_or("UNSUPPORTED");
         }
         Command::Help => {
             #[cfg(feature = "debug-harness")]

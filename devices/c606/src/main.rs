@@ -67,15 +67,17 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         console(
             board.terminal,
             system,
-            board.ant,
-            board.ble,
-            board.positioning,
-            board.bulk,
-            board.sound,
-            board.sensors,
-            board.network,
-            board.input_observation,
-            board.power_control,
+            commands::Devices {
+                ant: board.ant,
+                ble: board.ble,
+                position: board.positioning,
+                bulk: board.bulk,
+                sound: board.sound,
+                sensors: board.sensors,
+                network: board.network,
+                input: board.input_observation,
+                power: board.power_control,
+            },
             #[cfg(feature = "cycling")]
             profile,
         )
@@ -87,15 +89,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 async fn console(
     usb: device::drivers::usb::Usb,
     mut system: FirmwareShell,
-    mut ant: device::board::Ant,
-    mut ble: device::board::Ble,
-    mut position: device::board::Positioning,
-    mut bulk: device::board::Bulk,
-    mut sound: device::board::Sound,
-    mut sensors: device::board::Sensors,
-    mut network: device::board::Network,
-    input: device::board::Input,
-    mut power: device::board::Power,
+    mut devices: commands::Devices,
     #[cfg(feature = "cycling")] profile: vana::sensors::ble_profile::Profile,
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
@@ -113,20 +107,26 @@ async fn console(
     use device_api::ble_transport::Ble as _;
     use device_api::network::Network as _;
     if let Some(configuration) = system.settings.wifi {
-        if network
+        if devices
+            .network
             .request(device_api::connectivity::WifiOperation::Configure(Some(
                 configuration,
             )))
             .is_ok()
         {
             let _ = embassy_time::with_timeout(embassy_time::Duration::from_secs(3), async {
-                while network.control().operation == device_api::connectivity::Operation::Pending {
+                while devices.network.control().operation
+                    == device_api::connectivity::Operation::Pending
+                {
                     embassy_time::Timer::after_millis(10).await;
                 }
             })
             .await;
-            if network.control().operation == device_api::connectivity::Operation::Completed {
-                let _ = network.request(device_api::connectivity::WifiOperation::Connect);
+            if devices.network.control().operation == device_api::connectivity::Operation::Completed
+            {
+                let _ = devices
+                    .network
+                    .request(device_api::connectivity::WifiOperation::Connect);
             }
         }
     }
@@ -138,19 +138,24 @@ async fn console(
             saved.address,
         )
     }) {
-        if ble
+        if devices
+            .ble
             .request(device_api::ble_transport::Operation::Select(Some(
                 selection,
             )))
             .is_ok()
         {
             let _ = embassy_time::with_timeout(embassy_time::Duration::from_secs(3), async {
-                while ble.control().operation == device_api::connectivity::Operation::Pending {
+                while devices.ble.control().operation
+                    == device_api::connectivity::Operation::Pending
+                {
                     embassy_time::Timer::after_millis(10).await;
                 }
             })
             .await;
-            let _ = ble.request(device_api::ble_transport::Operation::Connect);
+            let _ = devices
+                .ble
+                .request(device_api::ble_transport::Operation::Connect);
         }
     }
     #[cfg(feature = "cycling")]
@@ -163,10 +168,12 @@ async fn console(
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         // Diagnostic power requests enter only with no active domain work.
         // Keep USB observations alive while device owners complete the transition.
-        if device_api::power::PowerControl::status(&power).ready {
+        if device_api::power::PowerControl::status(&devices.power).ready {
             #[cfg(feature = "cycling")]
             {
-                sdk.set_startup_status(device_api::sensors::Sensors::startup_status(&sensors));
+                sdk.set_startup_status(device_api::sensors::Sensors::startup_status(
+                    &devices.sensors,
+                ));
                 system.set_app_active(sdk.input_active());
             }
             system.tick(now);
@@ -175,9 +182,9 @@ async fn console(
                 let Some(edge) = system.take_app_input() else {
                     break;
                 };
-                sdk.input(edge.input, now, &mut ant);
+                sdk.input(edge.input, now, &mut devices.ant);
             }
-            system.observe_position(&position, now);
+            system.observe_position(&devices.position, now);
             let started = embassy_time::Instant::now();
             system.present();
             system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
@@ -185,17 +192,17 @@ async fn console(
             sdk.tick(
                 &mut system.data_storage(),
                 now,
-                &mut ant,
-                &mut ble,
-                &position,
-                device_api::network::Network::online(&network),
-                &input,
-                device_api::sensors::Sensors::snapshot(&sensors, now),
+                &mut devices.ant,
+                &mut devices.ble,
+                &devices.position,
+                device_api::network::Network::online(&devices.network),
+                &devices.input,
+                device_api::sensors::Sensors::snapshot(&devices.sensors, now),
             );
             #[cfg(feature = "cycling")]
-            sdk.present(&mut system, now, &ant, &position);
+            sdk.present(&mut system, now, &devices.ant, &devices.position);
             #[cfg(feature = "cycling")]
-            sdk.alert(&mut sound, now);
+            sdk.alert(&mut devices.sound, now);
         }
         terminal.pump(logging::take, || embassy_time::Instant::now().as_micros());
         if let Some(panic) = terminal.reboot_due(now) {
@@ -207,15 +214,7 @@ async fn console(
                 request,
                 &mut system,
                 now,
-                &mut ant,
-                &mut ble,
-                &mut position,
-                &mut bulk,
-                &mut sound,
-                &mut sensors,
-                &mut network,
-                &input,
-                &mut power,
+                &mut devices,
                 &FirmwareDiagnostics,
                 #[cfg(feature = "cycling")]
                 &mut sdk,
@@ -225,8 +224,22 @@ async fn console(
             next_health = now + 5_000;
             let position = device::capabilities::positioning::snapshot(now);
             let inputs = device::capabilities::io::snapshot(now);
-            log::info!(target:"progress","gps_valid={} gps_dma={} gps_uart={} companion={} input_uart={}",position.map(|s|s.gps.valid_sentences).unwrap_or(0),position.map(|s|s.gps.overflows).unwrap_or(0),position.map(|s|s.gps.uart_errors).unwrap_or(0),inputs.map(|s|s.companion_valid).unwrap_or(0),inputs.map(|s|s.uart_errors).unwrap_or(0));
-            log::info!(target:"health","uptime_ms={} heap_free={} heap_min_sampled={} terminal_sent={}",now,esp_alloc::HEAP.free(),system.heap_min_sampled,terminal.sent());
+            let gps = position.map(|s| s.gps);
+            log::info!(target: "progress",
+                "gps_valid={} gps_dma={} gps_uart={} companion={} input_uart={}",
+                gps.map_or(0, |gps| gps.valid_sentences),
+                gps.map_or(0, |gps| gps.overflows),
+                gps.map_or(0, |gps| gps.uart_errors),
+                inputs.map_or(0, |s| s.companion_valid),
+                inputs.map_or(0, |s| s.uart_errors)
+            );
+            log::info!(target: "health",
+                "uptime_ms={} heap_free={} heap_min_sampled={} terminal_sent={}",
+                now,
+                esp_alloc::HEAP.free(),
+                system.heap_min_sampled,
+                terminal.sent()
+            );
         }
         embassy_time::Timer::after_millis(5).await;
     }

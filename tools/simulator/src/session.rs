@@ -184,16 +184,18 @@ impl Session {
             self.now,
             &mut ant,
             &mut self.ble,
-            &self.position,
-            false,
-            &NoInputObservation,
-            device_api::sensors::Snapshot {
-                pressure: device_api::observation::Observation::Unavailable,
-                motion: [device_api::observation::Observation::Unavailable; 2],
-                identity: device_api::observation::Observation::Unavailable,
-                reports: 0,
-                invalid_reports: 0,
-                losses: 0,
+            vana::app::Observations {
+                position: &self.position,
+                network_online: false,
+                input: &NoInputObservation,
+                physical: device_api::sensors::Snapshot {
+                    pressure: device_api::observation::Observation::Unavailable,
+                    motion: [device_api::observation::Observation::Unavailable; 2],
+                    identity: device_api::observation::Observation::Unavailable,
+                    reports: 0,
+                    invalid_reports: 0,
+                    losses: 0,
+                },
             },
         );
     }

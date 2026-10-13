@@ -7,8 +7,8 @@ library boundaries.
 Start with `src/app.rs`. Its `Runtime` handles input, advances recording and sensor
 state, presents screens through the shell, and handles application commands.
 Firmware and simulator composition call it directly. The private `src/app/`
-modules group navigation, recording, presentation and command handling; they
-implement the same runtime without exposing its state.
+modules group input, sensor links, sensor readings, recording, presentation and
+command handling; they implement the same runtime without exposing its state.
 
 - `src/ride/` owns journal records, metrics, recording, recovery and explicit reclaim.
 - `src/sensors/` owns BLE and ANT profile interpretation, selection and radar behavior.

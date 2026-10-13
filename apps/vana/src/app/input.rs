@@ -1,142 +1,114 @@
 //! Physical controls and workout navigation.
 use super::Runtime;
-use crate::ride::log::Source;
+use super::recording::{Request, RideMessage};
+use crate::ride::control::Action as RideAction;
+use crate::ride::log::{Source, Status};
+use crate::screens::sensors::Action;
+use crate::screens::workout::Page;
+use device_api::ant::Ant;
+use device_api::input::{Button, Input};
+
+const DEBOUNCE_MS: u64 = 350;
 
 impl Runtime {
-    pub(super) fn workout_input(
-        &mut self,
-        input: device_api::input::Input,
-        now: u64,
-        ant: &mut impl device_api::ant::Ant,
-    ) {
-        use crate::screens::workout::Page;
-        use device_api::input::Button;
-        use device_api::input::Input;
-        if self.page == Page::Sensors {
-            self.menu.refresh(
-                ant.discoveries(),
-                ant.channels(now),
-                self.scan.busy(ant),
-                now,
-            );
-            if let Some(action) = self.menu.input(input, now) {
-                use crate::screens::sensors::Action;
-                match action {
-                    Action::Scan => {
-                        self.search_requested = true;
-                        self.start_sensor_search(ant, now);
-                    }
-                    Action::Connect(_) | Action::Disconnect(_) => {
-                        self.request_sensor(action, ant, now)
-                    }
-                    Action::Ride => {
-                        self.search_requested = false;
-                        self.scan.cancel(ant, now);
-                        self.page = Page::Home;
-                    }
-                }
-            }
-            self.next_display = 0;
+    pub fn input_active(&self) -> bool {
+        self.display.is_active()
+    }
+
+    pub fn input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
+        if !self.display.is_active() {
+            return;
+        }
+        if self.navigation.page == Page::Sensors {
+            self.sensors_input(input, now, ant);
             return;
         }
         let Input::Button { button, code: 1 } = input else {
             return;
         };
-        if now.saturating_sub(self.last_press) < 350 {
+        if now.saturating_sub(self.navigation.last_press) < DEBOUNCE_MS {
             return;
         }
-        self.last_press = now;
-        self.next_display = 0;
-        match self.page {
-            Page::Boot => {}
-            Page::Home => match button {
-                Button::BottomLeft => self.home_cursor = !self.home_cursor,
-                Button::BottomRight => {
-                    self.page = if self.home_cursor {
-                        Page::Sensors
-                    } else {
-                        Page::Preflight
-                    };
-                    self.page_since = now;
-                    if self.page == Page::Sensors {
-                        self.search_requested = true;
-                        self.start_sensor_search(ant, now);
-                    }
-                }
-                _ => {}
-            },
-            Page::Sensors => {}
-            Page::Preflight => {}
-            Page::Ride => {
-                if self.pending.is_some() {
-                    return;
-                }
-                let action = match button {
-                    Button::BottomLeft => match self.recorder.status() {
-                        crate::ride::log::Status::Recording => {
-                            Some(crate::ride::control::Action::Pause)
-                        }
-                        crate::ride::log::Status::Paused => {
-                            Some(crate::ride::control::Action::Resume)
-                        }
-                        crate::ride::log::Status::Ready
-                        | crate::ride::log::Status::Saved
-                        | crate::ride::log::Status::Recovered => {
-                            Some(crate::ride::control::Action::Start)
-                        }
-                        _ => None,
-                    },
-                    Button::BottomRight
-                        if matches!(
-                            self.recorder.status(),
-                            crate::ride::log::Status::Recording | crate::ride::log::Status::Paused
-                        ) =>
-                    {
-                        if self
-                            .stop_armed
-                            .is_some_and(|at| now.saturating_sub(at) <= 5000)
-                        {
-                            Some(crate::ride::control::Action::Finish)
-                        } else {
-                            self.stop_armed = Some(now);
-                            self.ui_message = "PRESS STOP AGAIN TO SAVE";
-                            None
-                        }
-                    }
-                    Button::TopLeft if !self.recording() => {
-                        self.page = Page::Home;
-                        None
-                    }
-                    _ => None,
-                };
-                if let Some(action) = action {
-                    self.completion = None;
-                    let token = self.next_token;
-                    if self.recorder.request(action, Source::Live, now, token) {
-                        self.pending = Some(token);
-                        self.next_token = self.next_token.wrapping_add(1).max(1);
-                        self.ui_message = "READY";
-                        self.stop_armed = None;
-                    } else {
-                        self.ui_message = "STORAGE NOT READY";
-                    }
-                }
-            }
+        self.navigation.last_press = now;
+        self.display.redraw();
+        match self.navigation.page {
+            Page::Home => self.home_input(button, now, ant),
+            Page::Ride => self.ride_input(button, now),
+            Page::Boot | Page::Sensors | Page::Preflight => {}
         }
     }
 
-    pub fn input_active(&self) -> bool {
-        self.display_active
+    fn sensors_input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
+        self.menu.refresh(
+            ant.discoveries(),
+            ant.channels(now),
+            self.discovery.scan.busy(ant),
+            now,
+        );
+        match self.menu.input(input, now) {
+            Some(Action::Scan) => self.request_search(ant, now),
+            Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
+                self.request_sensor(action, ant, now)
+            }
+            Some(Action::Ride) => {
+                self.cancel_search(ant, now);
+                self.navigation.page = Page::Home;
+            }
+            None => {}
+        }
+        self.display.redraw();
     }
 
-    pub fn input(
-        &mut self,
-        input: device_api::input::Input,
-        now: u64,
-        ant: &mut impl device_api::ant::Ant,
-    ) {
-        if self.display_active {
-            self.workout_input(input, now, ant);
+    fn home_input(&mut self, button: Button, now: u64, ant: &mut impl Ant) {
+        match button {
+            Button::BottomLeft => self.navigation.home_cursor = !self.navigation.home_cursor,
+            Button::BottomRight => {
+                self.navigation.page_since = now;
+                if self.navigation.home_cursor {
+                    self.navigation.page = Page::Sensors;
+                    self.request_search(ant, now);
+                } else {
+                    self.navigation.page = Page::Preflight;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn ride_input(&mut self, button: Button, now: u64) {
+        if self.ride.pending() {
+            return;
+        }
+        let status = self.ride.recorder.status();
+        let action = match button {
+            Button::BottomLeft => match status {
+                Status::Recording => RideAction::Pause,
+                Status::Paused => RideAction::Resume,
+                Status::Ready | Status::Saved | Status::Recovered => RideAction::Start,
+                _ => return,
+            },
+            Button::BottomRight if matches!(status, Status::Recording | Status::Paused) => {
+                if !self.ride.stop_confirming(now) {
+                    self.ride.arm_stop(now);
+                    return;
+                }
+                RideAction::Finish
+            }
+            Button::TopLeft if !self.recording() => {
+                self.navigation.page = Page::Home;
+                return;
+            }
+            _ => return,
+        };
+        self.ride.request = Request::Idle;
+        if self
+            .ride
+            .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
+        {
+            self.ride.message = RideMessage::Ready;
+            self.ride.disarm_stop();
+        } else {
+            self.ride.message = RideMessage::StorageNotReady;
         }
     }
 }

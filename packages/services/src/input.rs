@@ -1,13 +1,12 @@
 //! Bounded physical input delivery with explicit cancellation on overflow.
 use device_api::input::Edge;
 use device_api::input::Input;
+use heapless::Deque;
 /// Single-consumer bounded edge queue. On overflow discard queued history and
 /// enqueue Cancel before the newest event, so consumers cannot retain old holds.
 /// Acquisition never waits for a consumer. `lost` counts discarded input edges.
 pub struct Edges {
-    values: [Option<Edge>; 16],
-    head: usize,
-    len: usize,
+    values: Deque<Edge, 16>,
     sequence: u32,
     pub lost: u32,
 }
@@ -19,40 +18,30 @@ impl Default for Edges {
 impl Edges {
     pub const fn new() -> Self {
         Self {
-            values: [None; 16],
-            head: 0,
-            len: 0,
+            values: Deque::new(),
             sequence: 0,
             lost: 0,
         }
     }
     pub fn push(&mut self, received_ms: u64, input: Input) {
-        if self.len == self.values.len() {
-            self.lost = self.lost.saturating_add(self.len as u32);
-            self.head = 0;
-            self.len = 0;
+        if self.values.is_full() {
+            self.lost = self.lost.saturating_add(self.values.len() as u32);
+            self.values.clear();
             self.insert(received_ms, Input::Cancel);
         }
         self.insert(received_ms, input);
     }
     fn insert(&mut self, received_ms: u64, input: Input) {
         self.sequence = self.sequence.wrapping_add(1);
-        let index = (self.head + self.len) % self.values.len();
-        self.values[index] = Some(Edge {
+        // Cannot fail: push clears a full queue first.
+        let _ = self.values.push_back(Edge {
             sequence: self.sequence,
             received_ms,
             input,
         });
-        self.len += 1;
     }
     pub fn pop(&mut self) -> Option<Edge> {
-        if self.len == 0 {
-            return None;
-        }
-        let value = self.values[self.head].take();
-        self.head = (self.head + 1) % self.values.len();
-        self.len -= 1;
-        value
+        self.values.pop_front()
     }
 }
 

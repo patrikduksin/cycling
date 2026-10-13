@@ -1141,6 +1141,7 @@ version = "0.1.0"
 dependencies = [
  "device-api",
  "firmware-services",
+ "heapless 0.9.3",
  "log",
 ]
 

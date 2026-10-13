@@ -101,8 +101,8 @@ impl Label {
 }
 
 pub(super) struct Layout {
-    /// Visible selected tiles in slot order, with their cursor slot.
-    pub(super) selected: Vec<(usize, Selected), CHANNEL_CAPACITY>,
+    /// Occupied selection slots, in tile order.
+    pub(super) selected: Vec<usize, CHANNEL_CAPACITY>,
     /// Visible nearby tiles in discovery order, with their cursor position.
     pub(super) nearby: Vec<(usize, Identity), DISCOVERY_CAPACITY>,
     pub(super) title: &'static [u8],
@@ -144,7 +144,8 @@ impl Menu {
             .selected
             .iter()
             .enumerate()
-            .filter_map(|(slot, selected)| selected.map(|selected| (slot, selected)))
+            .filter(|(_, selected)| selected.is_some())
+            .map(|(slot, _)| slot)
             .collect();
         layout.nearby = (AVAILABLE..AVAILABLE + DISCOVERY_CAPACITY)
             .filter(|&cursor| self.visible(cursor))

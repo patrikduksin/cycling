@@ -18,7 +18,7 @@ const READING_FRESH_MS: u64 = 3000;
 const BLE_PACKETS_PER_TICK: usize = 2;
 
 /// A decoded value and when its packet arrived.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub(super) struct Timed<T> {
     pub(super) value: T,
     pub(super) received_ms: u64,

@@ -99,7 +99,8 @@ impl Menu {
             return color;
         }
         if let Some((index, left, top)) = SELECTED_GRID.tile(x, y)
-            && let Some(&(slot, selected)) = self.layout.selected.get(index)
+            && let Some(&slot) = self.layout.selected.get(index)
+            && let Some(selected) = self.selected[slot]
         {
             return self.selected_tile_pixel(x, y, left, top, slot, selected);
         }

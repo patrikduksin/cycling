@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.14"
+# dependencies = []
+# ///
 """Enforce package ownership, including code disabled by the active Cargo features.
 
 Cargo checks types; this check restricts dependency directions and source routing.

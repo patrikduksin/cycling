@@ -3,12 +3,22 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from cycling_devtools.harness.stress import fields, validate, run
+
+from cycling_devtools.harness.stress import fields, run, validate
+
 
 class ServiceStressTests(unittest.TestCase):
     def position(self, ms=1, **changes):
-        result = dict(ms=ms, bytes='10', valid='1', checksum_errors='0', parse_errors='0',
-                      dma_losses='0', line_overflows='0', uart_errors='0')
+        result = dict(
+            ms=ms,
+            bytes='10',
+            valid='1',
+            checksum_errors='0',
+            parse_errors='0',
+            dma_losses='0',
+            line_overflows='0',
+            uart_errors='0',
+        )
         result.update(changes)
         return result
 
@@ -22,17 +32,20 @@ class ServiceStressTests(unittest.TestCase):
             validate('POSITION', before, after)
 
     def test_no_fix_is_allowed_when_transport_and_parser_progress(self):
-        delta = validate('POSITION', self.position(fix='no_fix'),
-                         self.position(ms=2000, bytes='100', valid='5', fix='no_fix'))
+        delta = validate(
+            'POSITION', self.position(fix='no_fix'), self.position(ms=2000, bytes='100', valid='5', fix='no_fix')
+        )
         self.assertEqual(delta['valid'], 4)
 
     def test_loss_reset_and_absent_progress_fail(self):
-        for after in (self.position(ms=2), self.position(ms=2, bytes='1'),
-                      self.position(ms=2, bytes='20', valid='2', line_overflows='1')):
+        for after in (
+            self.position(ms=2),
+            self.position(ms=2, bytes='1'),
+            self.position(ms=2, bytes='20', valid='2', line_overflows='1'),
+        ):
             with self.assertRaises(AssertionError):
                 validate('POSITION', self.position(), after)
-        delta = validate('POSITION', self.position(),
-                         self.position(ms=2, bytes='20', valid='2', dma_losses='1'), True)
+        delta = validate('POSITION', self.position(), self.position(ms=2, bytes='20', valid='2', dma_losses='1'), True)
         self.assertEqual(delta['dma_losses'], 1)
 
     def test_input_overflow_is_reported_even_when_uart_is_clean(self):
@@ -50,13 +63,17 @@ class ServiceStressTests(unittest.TestCase):
             directory = Path(temporary)
             raw = directory / 'raw.bin'
             raw.write_bytes(b'private capture remains')
-            with patch('cycling_devtools.harness.stress.private_directory', return_value=directory), \
-                    patch('cycling_devtools.harness.stress.UsbConnection'), \
-                    patch('cycling_devtools.harness.stress.read', side_effect=[
-                        dict(cycling='false'), settings, system, before, after, settings, system]), \
-                    patch('cycling_devtools.harness.stress.time.monotonic', side_effect=[0, 0, 0, 3]), \
-                    patch('cycling_devtools.harness.stress.time.sleep'), \
-                    self.assertRaisesRegex(AssertionError, 'faults advanced'):
+            with (
+                patch('cycling_devtools.harness.stress.private_directory', return_value=directory),
+                patch('cycling_devtools.harness.stress.UsbConnection'),
+                patch(
+                    'cycling_devtools.harness.stress.read',
+                    side_effect=[dict(cycling='false'), settings, system, before, after, settings, system],
+                ),
+                patch('cycling_devtools.harness.stress.time.monotonic', side_effect=[0, 0, 0, 3]),
+                patch('cycling_devtools.harness.stress.time.sleep'),
+                self.assertRaisesRegex(AssertionError, 'faults advanced'),
+            ):
                 run('/dev/fake', directory, seconds=2)
             result = json.loads((directory / 'summary.json').read_text())
             self.assertFalse(result['ok'])
@@ -65,6 +82,7 @@ class ServiceStressTests(unittest.TestCase):
             self.assertEqual(result['delta']['dma_losses'], 1)
             self.assertEqual(result['error']['type'], 'AssertionError')
             self.assertEqual(raw.read_bytes(), b'private capture remains')
+
 
 if __name__ == '__main__':
     unittest.main()

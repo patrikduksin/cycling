@@ -1,11 +1,14 @@
 """Tool discovery must not initialize optional hardware integrations."""
+
 import os
-from pathlib import Path
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+# -S skips site-packages, including the editable install; name the source directly.
+SOURCE = ROOT / 'tools/devtools/src'
 
 
 class EntrypointTests(unittest.TestCase):
@@ -15,9 +18,13 @@ class EntrypointTests(unittest.TestCase):
         for name in ('bluetooth', 'ble_sensor_sim'):
             module = f'cycling_devtools.connectivity.{name}'
             for args in (['-c', f'import {module}'], ['-m', module, '--help']):
-                result = subprocess.run([sys.executable, '-S', *args], cwd=ROOT,
-                                        capture_output=True, text=True,
-                                        env=dict(os.environ, CYCLING_SIM_PROFILE='invalid'))
+                result = subprocess.run(
+                    [sys.executable, '-S', *args],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    env=dict(os.environ, CYCLING_SIM_PROFILE='invalid', PYTHONPATH=str(SOURCE)),
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if '--help' in args:
                     self.assertIn('usage:', result.stdout)

@@ -11,8 +11,12 @@ from cycling_devtools.rides.clear import clear, mutate_once, verified_manifest
 class ClearRidesTests(unittest.TestCase):
     def fixture(self, root, raw=b'x' * 512):
         (root / 'ride-slots.bin').write_bytes(raw)
-        manifest = {'raw_file': 'ride-slots.bin', 'upper_bound': len(raw) // 256,
-                    'slot_size': 256, 'raw_sha256': hashlib.sha256(raw).hexdigest()}
+        manifest = {
+            'raw_file': 'ride-slots.bin',
+            'upper_bound': len(raw) // 256,
+            'slot_size': 256,
+            'raw_sha256': hashlib.sha256(raw).hexdigest(),
+        }
         (root / 'manifest.json').write_text(json.dumps(manifest))
         return manifest
 
@@ -36,11 +40,15 @@ class ClearRidesTests(unittest.TestCase):
             {'status': 'OK', 'data': 'state=clearing slot=2 pending=7'},
             {'status': 'OK', 'data': 'state=ready slot=0 pending=0 completed=7 result=OK'},
         ]
-        with (patch('cycling_devtools.rides.clear.UsbConnection', return_value=context) as factory,
-              patch('cycling_devtools.rides.clear.info', side_effect=infos),
-              patch('cycling_devtools.rides.clear.read_slot', side_effect=[raw[i:i + 256]
-                                                          for i in range(0, len(raw), 256)]),
-              patch('cycling_devtools.rides.clear.time.sleep')):
+        with (
+            patch('cycling_devtools.rides.clear.UsbConnection', return_value=context) as factory,
+            patch('cycling_devtools.rides.clear.info', side_effect=infos),
+            patch(
+                'cycling_devtools.rides.clear.read_slot',
+                side_effect=[raw[i : i + 256] for i in range(0, len(raw), 256)],
+            ),
+            patch('cycling_devtools.rides.clear.time.sleep'),
+        ):
             self.connection, self.factory, self.context = connection, factory, context
             return clear('/dev/test', export, output)
 

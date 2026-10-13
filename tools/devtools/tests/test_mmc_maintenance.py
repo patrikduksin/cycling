@@ -1,13 +1,15 @@
 """Protocol corruption, interrupted backup, and write authorization checks."""
+
 import hashlib
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cycling_devtools.device.mmc_maintenance as mm
+from workspace_fixture import private_root
 
 
 def frame(ident=1, start=0, count=1, encoding=0, data=None, status=0, checksum=None):
@@ -56,11 +58,11 @@ class Medium:
 
     def read(self, start, count):
         self.reads += 1
-        data = self.data[start * 512:(start + count) * 512]
+        data = self.data[start * 512 : (start + count) * 512]
         if self.fail_second and self.reads == 2:
             data = b'!' + data[1:]
         for offset in range(0, len(data), 1024):
-            yield data[offset:offset + 1024]
+            yield data[offset : offset + 1024]
 
     def arm(self, start, count):
         self.calls.append(('arm', start, count))
@@ -86,17 +88,14 @@ class ProtocolTests(unittest.TestCase):
 
     def test_wrong_id_header_crc_and_payload_crc(self):
         for incoming in (frame(ident=2), bytes([0]) + frame()[1:], frame(checksum=42)):
-            with self.subTest(incoming=incoming[:12]):
-                with self.assertRaises(ValueError):
-                    list(Wire(incoming).read(0, 1))
+            with self.subTest(incoming=incoming[:12]), self.assertRaises(ValueError):
+                list(Wire(incoming).read(0, 1))
 
     def test_missing_overlapping_and_excess_read_ranges(self):
-        for incoming in (frame(start=1), frame(count=2), frame(encoding=3),
-                         frame() + frame(start=0)):
+        for incoming in (frame(start=1), frame(count=2), frame(encoding=3), frame() + frame(start=0)):
             wire = Wire(incoming)
-            with self.subTest(incoming=incoming[:28]):
-                with self.assertRaises(ValueError):
-                    list(wire.read(0, 2 if len(incoming) > 1056 else 1))
+            with self.subTest(incoming=incoming[:28]), self.assertRaises(ValueError):
+                list(wire.read(0, 2 if len(incoming) > 1056 else 1))
 
     def test_frame_limit_and_unknown_encoding(self):
         for incoming in (frame(count=8), frame(encoding=4)):
@@ -123,8 +122,11 @@ class ProtocolTests(unittest.TestCase):
 
     def test_initial_info_skips_boot_text_and_stale_reply(self):
         data = struct.pack('<QII', 20, 512, 123)
-        wire = Wire(b'boot started\r\n' + frame(ident=100, count=0, encoding=2, data=data)
-                    + frame(count=0, encoding=2, data=data))
+        wire = Wire(
+            b'boot started\r\n'
+            + frame(ident=100, count=0, encoding=2, data=data)
+            + frame(count=0, encoding=2, data=data)
+        )
         self.assertEqual(wire.info()['total_sectors'], 20)
         self.assertEqual(len(wire.outgoing), 1)
 
@@ -146,8 +148,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_wide_is_explicit_zero_range_opcode_with_fresh_id(self):
         data = struct.pack('<QII', 20, 512, 123)
-        wire = Wire(frame(count=0, encoding=2, data=data)
-                    + frame(ident=2, count=0, encoding=3))
+        wire = Wire(frame(count=0, encoding=2, data=data) + frame(ident=2, count=0, encoding=3))
         wire.info()
         self.assertEqual(len(wire.outgoing), 1)
         wire.wide()
@@ -163,9 +164,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(wire.outgoing, [])
 
     def test_wide_failure_or_invalid_ack_stops_without_retry(self):
-        for incoming in (frame(status=7, count=0, encoding=3),
-                         frame(start=1, count=0, encoding=3),
-                         frame(ident=2, count=0, encoding=3), b''):
+        for incoming in (
+            frame(status=7, count=0, encoding=3),
+            frame(start=1, count=0, encoding=3),
+            frame(ident=2, count=0, encoding=3),
+            b'',
+        ):
             wire = Wire(incoming)
             with self.assertRaises((ValueError, RuntimeError, ConnectionError)):
                 wire.wide()
@@ -182,30 +186,36 @@ class ProtocolTests(unittest.TestCase):
         connection = mm.Connection('unused')
         connection.fd = 10
         writes = []
+
         def partial(fd, data):
             writes.append(data)
             return min(3, len(data))
-        with patch.object(mm.select, 'select', return_value=([], [10], [])), patch.object(mm.os, 'write', side_effect=partial):
+
+        with (
+            patch.object(mm.select, 'select', return_value=([], [10], [])),
+            patch.object(mm.os, 'write', side_effect=partial),
+        ):
             connection.send(b'abcdefgh')
         self.assertEqual(writes, [b'abcdefgh', b'defgh', b'gh'])
 
     def test_disconnect_does_not_reopen_or_resend(self):
         connection = mm.Connection('unused')
         connection.fd = 10
-        with patch.object(mm.select, 'select', return_value=([10], [], [])), patch.object(mm.os, 'read', return_value=b''):
-            with self.assertRaises(ConnectionError):
-                connection.receive(32)
+        with (
+            patch.object(mm.select, 'select', return_value=([10], [], [])),
+            patch.object(mm.os, 'read', return_value=b''),
+            self.assertRaises(ConnectionError),
+        ):
+            connection.receive(32)
 
 
 class BackupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.local = self.root / '.local'
-        self.local.mkdir()
-        self.root_patch = patch.object(mm, 'ROOT', self.root)
-        self.root_patch.start()
-        self.addCleanup(self.root_patch.stop)
+        root = private_root(self.root)
+        self.local = root.__enter__()
+        self.addCleanup(root.__exit__, None, None, None)
         self.addCleanup(self.temp.cleanup)
 
     def test_two_pass_backup_and_preserved_existing_image(self):
@@ -235,9 +245,11 @@ class BackupTests(unittest.TestCase):
 
     def test_interrupted_first_read_never_marks_complete(self):
         medium = Medium(b'a' * 1024)
+
         def interrupted(*args):
             yield b'a' * 512
             raise ConnectionError('interrupted')
+
         medium.read = interrupted
         image = self.local / 'backup.img'
         with self.assertRaises(ConnectionError):
@@ -248,9 +260,11 @@ class BackupTests(unittest.TestCase):
 
     def interrupted_backup(self, data, prefix, image_name='resume.img'):
         medium = Medium(data)
+
         def interrupted(start, count):
             yield prefix
             raise ConnectionError('interrupted after complete frame')
+
         medium.read = interrupted
         image = self.local / image_name
         with self.assertRaises(ConnectionError):
@@ -265,9 +279,11 @@ class BackupTests(unittest.TestCase):
         medium = Medium(data)
         requests = []
         read = medium.read
+
         def recorded(start, count):
             requests.append((start, count))
             yield from read(start, count)
+
         medium.read = recorded
         result = mm.backup(medium, image, resume=True)
         self.assertEqual(requests, [(2, 2), (0, 4)])
@@ -278,10 +294,12 @@ class BackupTests(unittest.TestCase):
         data = b'a' * 512 + b'\0' * 1536
         image = self.interrupted_backup(data, data[:512])
         medium = Medium(data)
+
         def interrupted(start, count):
             self.assertEqual((start, count), (1, 3))
             yield b'\0' * 1024
             raise TimeoutError('next response timed out')
+
         medium.read = interrupted
         with self.assertRaises(TimeoutError):
             mm.backup(medium, image, resume=True)
@@ -362,14 +380,19 @@ class BackupTests(unittest.TestCase):
         copy = self.root / 'external-copy.img'
         copy.write_bytes(image.read_bytes())
         manifest = Path(str(image) + '.json')
-        metadata = {'version': 1, 'image': str(image), 'total_sectors': 2,
-                    'sector_size': 512, 'complete': True, 'verified': False,
-                    'sha256': mm.digest_file(image)}
+        metadata = {
+            'version': 1,
+            'image': str(image),
+            'total_sectors': 2,
+            'sector_size': 512,
+            'complete': True,
+            'verified': False,
+            'sha256': mm.digest_file(image),
+        }
         manifest.write_text(json.dumps(metadata))
         with self.assertRaises(ValueError):
             mm.validate_backup(manifest, 2)
-        self.assertEqual(mm.validate_backup(manifest, 2, single_read_copy=copy),
-                         'single_media_read_with_matching_copy')
+        self.assertEqual(mm.validate_backup(manifest, 2, single_read_copy=copy), 'single_media_read_with_matching_copy')
         self.assertFalse(json.loads(manifest.read_text())['verified'])
         link = self.root / 'hardlink.img'
         link.hardlink_to(image)
@@ -417,8 +440,15 @@ class BackupTests(unittest.TestCase):
         copy = self.root / 'recovery.img'
         copy.write_bytes(image.read_bytes())
         manifest = Path(str(image) + '.json')
-        metadata = dict(version=1, image=str(image), total_sectors=3, sector_size=512,
-                        complete=True, verified=False, sha256=mm.digest_file(image))
+        metadata = dict(
+            version=1,
+            image=str(image),
+            total_sectors=3,
+            sector_size=512,
+            complete=True,
+            verified=False,
+            sha256=mm.digest_file(image),
+        )
         manifest.write_text(json.dumps(metadata))
         with self.assertRaises(ValueError):
             mm.write_image(medium, image, 0, metadata['sha256'], manifest)
@@ -432,9 +462,11 @@ class BackupTests(unittest.TestCase):
         medium = Medium(b'a' * 1536)
         original = self.local / 'backup.img'
         mm.backup(medium, original)
+
         def failed(start, data):
             medium.calls.append(('write', start))
             raise TimeoutError('uncertain')
+
         medium.write_sector = failed
         source = self.local / 'new.img'
         source.write_bytes(b'x' * 1024)

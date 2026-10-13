@@ -1,12 +1,14 @@
 """One-shot or interactive C606 terminal through the shared no-reset USB owner."""
+
 import argparse
 import json
-import os
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
-from cycling_devtools.terminal.usb import ROOT, UsbConnection
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.workspace import ROOT
 
 
 def exchange(connection, command):
@@ -46,13 +48,13 @@ def run(port, output, command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
-    parser.add_argument('--output', type=Path,
-                        default=ROOT / '.local/terminal' / str(time.time_ns()))
+    add_port_argument(parser)
+    parser.add_argument('--output', type=Path, default=ROOT / '.local/terminal' / str(time.time_ns()))
     parser.add_argument('command', nargs='*', help='ordinary command, for example STATUS')
     args = parser.parse_args()
+    port = selected_port(parser, args.port)
     try:
-        return run(args.port, args.output, args.command)
+        return run(port, args.output, args.command)
     except KeyboardInterrupt:
         print('\nInterrupted.', file=sys.stderr)
         return 130

@@ -1,12 +1,15 @@
 """Check the ordinary terminal; mutation/restart checks require explicit flags."""
+
 import argparse
 import json
 import re
 import time
 from pathlib import Path
 
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.harness.stress import PREFERENCES, read, validate
 from cycling_devtools.terminal.usb import UsbConnection
-from cycling_devtools.harness.stress import PREFERENCES, private_directory, read, validate
+from cycling_devtools.workspace import private_directory
 
 
 def expect(connection, command, status):
@@ -47,12 +50,12 @@ def reopen(port, directory, label, deadline=20):
             entered = True
             read(connection, 'INFO')
             return connection
-        except (OSError, RuntimeError, TimeoutError):
+        except OSError, RuntimeError, TimeoutError:
             if entered:
                 connection.__exit__(None, None, None)
             if time.monotonic() >= stop:
                 raise
-            time.sleep(.25)
+            time.sleep(0.25)
 
 
 def wifi_failures(connection):
@@ -90,8 +93,7 @@ def transport_recovery(connection, build, result):
     before_input = read(connection, 'INPUT')
     settings = read(connection, 'SETTINGS')
     system = read(connection, 'STATUS')
-    result.update(before_position=before_position, before_input=before_input,
-                  before_status=system)
+    result.update(before_position=before_position, before_input=before_input, before_status=system)
     # Firmware replies after its six-second stall. The larger deadline is for
     # this single command only; a timeout never causes another stall request.
     ack = connection.terminal_command('TEST 20', timeout=12)
@@ -105,13 +107,15 @@ def transport_recovery(connection, build, result):
         position = read(connection, 'POSITION')
         inputs = read(connection, 'INPUT')
         result.update(after_position=position, after_input=inputs)
-        if (position.get('transport') == 'receiving'
-                and int(position['valid']) > int(before_position['valid'])
-                and int(inputs['companion_valid']) > int(before_input['companion_valid'])):
+        if (
+            position.get('transport') == 'receiving'
+            and int(position['valid']) > int(before_position['valid'])
+            and int(inputs['companion_valid']) > int(before_input['companion_valid'])
+        ):
             break
         if time.monotonic() >= deadline:
             raise TimeoutError('transport/parser acquisition did not recover after stall')
-        time.sleep(.25)
+        time.sleep(0.25)
     # Observe another receive window instead of accepting a single transient
     # recovery snapshot. An indoor no-fix report is valid transport progression.
     time.sleep(2)
@@ -187,7 +191,7 @@ def run(args):
                     while wifi_failures(connection) <= failures_before:
                         if time.monotonic() >= deadline:
                             raise TimeoutError('injected Wi-Fi failure was not observed')
-                        time.sleep(.5)
+                        time.sleep(0.5)
                 finally:
                     expect(connection, 'TEST 0', 'ACCEPTED')
                 expect(connection, 'WIFI RECONNECT', 'ACCEPTED')
@@ -195,7 +199,7 @@ def run(args):
                 while read(connection, 'WIFI')['state'] != '4':
                     if time.monotonic() >= deadline:
                         raise TimeoutError('Wi-Fi public probe did not recover')
-                    time.sleep(.5)
+                    time.sleep(0.5)
         if args.panic:
             if build.get('harness') != 'true':
                 expect(connection, 'TEST 11', 'UNSUPPORTED')
@@ -261,18 +265,23 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--port', default='/dev/ttyACM0')
+    add_port_argument(parser)
     parser.add_argument('--seconds', type=float, default=5)
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--write-settings', action='store_true')
     parser.add_argument('--wifi-recovery', action='store_true')
     parser.add_argument('--panic', action='store_true')
-    parser.add_argument('--transport-recovery', action='store_true',
-                        help='Base firmware only: one six-second executor stall and bounded recovery check')
+    parser.add_argument(
+        '--transport-recovery',
+        action='store_true',
+        help='Base firmware only: one six-second executor stall and bounded recovery check',
+    )
     args = parser.parse_args()
     if not 2 <= args.seconds <= 120:
         parser.error('--seconds must be 2..120')
+    args.port = selected_port(parser, args.port)
     print(json.dumps(run(args), indent=2))
+
 
 if __name__ == '__main__':
     main()

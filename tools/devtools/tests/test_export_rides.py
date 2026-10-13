@@ -1,14 +1,21 @@
-import tempfile
 import json
+import tempfile
 import unittest
-from pathlib import Path
 import xml.etree.ElementTree as ET
 import zlib
+from pathlib import Path
 
-from cycling_devtools.rides.export import (COMMIT, SLOT_SIZE, decode_slot, download_prefix,
-                          read_slot, rides_from_slots, write_gpx)
-
+from cycling_devtools.rides.export import (
+    COMMIT,
+    SLOT_SIZE,
+    decode_slot,
+    download_prefix,
+    read_slot,
+    rides_from_slots,
+    write_gpx,
+)
 from cycling_devtools.terminal.usb import terminal_reply
+
 
 def slot(kind, source, ride_id, sequence, active_ms, samples=()):
     data = bytearray(b'\xff' * SLOT_SIZE)
@@ -21,29 +28,29 @@ def slot(kind, source, ride_id, sequence, active_ms, samples=()):
     data[26:32] = b'\0' * 6
     for index, sample in enumerate(samples):
         at = 32 + index * 48
-        data[at:at + 8] = sample['active_ms'].to_bytes(8, 'little')
+        data[at : at + 8] = sample['active_ms'].to_bytes(8, 'little')
         flags = 0
         if sample.get('utc_ms') is not None:
             flags |= 1
-            data[at + 8:at + 16] = sample['utc_ms'].to_bytes(8, 'little')
+            data[at + 8 : at + 16] = sample['utc_ms'].to_bytes(8, 'little')
         if sample.get('location') is not None:
             flags |= 2
             lat, lon = sample['location']
-            data[at + 20:at + 24] = lat.to_bytes(4, 'little', signed=True)
-            data[at + 24:at + 28] = lon.to_bytes(4, 'little', signed=True)
+            data[at + 20 : at + 24] = lat.to_bytes(4, 'little', signed=True)
+            data[at + 24 : at + 28] = lon.to_bytes(4, 'little', signed=True)
         if sample.get('speed') is not None:
             flags |= 4 | 0x80000000
-            data[at + 28:at + 32] = sample['speed'].to_bytes(4, 'little')
+            data[at + 28 : at + 32] = sample['speed'].to_bytes(4, 'little')
         if sample.get('heart') is not None:
             flags |= 8
-            data[at + 32:at + 34] = sample['heart'].to_bytes(2, 'little')
+            data[at + 32 : at + 34] = sample['heart'].to_bytes(2, 'little')
         if sample.get('cadence') is not None:
             flags |= 16
-            data[at + 34:at + 36] = sample['cadence'].to_bytes(2, 'little')
+            data[at + 34 : at + 36] = sample['cadence'].to_bytes(2, 'little')
         if sample.get('battery') is not None:
             flags |= 32
             data[at + 36] = sample['battery']
-        data[at + 16:at + 20] = flags.to_bytes(4, 'little')
+        data[at + 16 : at + 20] = flags.to_bytes(4, 'little')
     data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
     data[252:256] = COMMIT.to_bytes(4, 'little')
     return bytes(data)
@@ -63,18 +70,27 @@ class FakeConnection:
 
 class RideExportTests(unittest.TestCase):
     def fixture(self):
-        first = {'active_ms': 1000, 'utc_ms': 1_700_000_001_000,
-                 'location': (100000000, 1800000000), 'heart': 72, 'battery': 90}
+        first = {
+            'active_ms': 1000,
+            'utc_ms': 1_700_000_001_000,
+            'location': (100000000, 1800000000),
+            'heart': 72,
+            'battery': 90,
+        }
         missing = {'active_ms': 2000, 'utc_ms': None, 'location': None}
-        later = {'active_ms': 3000, 'utc_ms': 1_699_999_999_000,
-                 'location': (100000010, 200000010), 'cadence': 615}
-        return [slot(1, 2, 7, 0, 0), slot(2, 2, 7, 1, 2000, [first, missing]),
-                slot(3, 2, 7, 2, 2000), slot(4, 2, 7, 3, 2000),
-                slot(2, 2, 7, 4, 3000, [later]), slot(6, 2, 7, 5, 3000)]
+        later = {'active_ms': 3000, 'utc_ms': 1_699_999_999_000, 'location': (100000010, 200000010), 'cadence': 615}
+        return [
+            slot(1, 2, 7, 0, 0),
+            slot(2, 2, 7, 1, 2000, [first, missing]),
+            slot(3, 2, 7, 2, 2000),
+            slot(4, 2, 7, 3, 2000),
+            slot(2, 2, 7, 4, 3000, [later]),
+            slot(6, 2, 7, 5, 3000),
+        ]
 
     def test_workout_optional_fields_preserve_legacy_samples(self):
         data = bytearray(slot(2, 2, 1, 1, 1000, [{'active_ms': 1000}]))
-        data[48:52] = (0x1c0).to_bytes(4, 'little')
+        data[48:52] = (0x1C0).to_bytes(4, 'little')
         data[70:72] = (215).to_bytes(2, 'little')
         data[72:76] = (12345).to_bytes(4, 'little')
         data[76:78] = (-37).to_bytes(2, 'little', signed=True)
@@ -99,19 +115,20 @@ class RideExportTests(unittest.TestCase):
         self.assertEqual([len(segment) for segment in ride['segments']], [1, 1])
 
     def test_corrupt_unsupported_duplicate_and_location_free_are_explicit(self):
-        damaged = bytearray(self.fixture()[1]); damaged[40] ^= 1
+        damaged = bytearray(self.fixture()[1])
+        damaged[40] ^= 1
         rides, invalid = rides_from_slots([self.fixture()[0], bytes(damaged), self.fixture()[-1]])
         self.assertEqual(invalid, [1])
         self.assertTrue(rides[0]['gap'])
-        unsupported = bytearray(self.fixture()[0]); unsupported[4] = 2
+        unsupported = bytearray(self.fixture()[0])
+        unsupported[4] = 2
         with self.assertRaises(ValueError):
             decode_slot(bytes(unsupported))
         with self.assertRaises(ValueError):
             rides_from_slots([self.fixture()[0], self.fixture()[0]])
         with tempfile.TemporaryDirectory() as directory:
             no_location = {'ride_id': 1, 'source': 'demo', 'segments': []}
-            self.assertEqual(write_gpx(no_location, Path(directory) / 'none.gpx'),
-                             'no valid location samples')
+            self.assertEqual(write_gpx(no_location, Path(directory) / 'none.gpx'), 'no valid location samples')
 
     def test_gpx_11_normalizes_positive_180_and_preserves_time(self):
         ride = rides_from_slots(self.fixture())[0][0]
@@ -137,15 +154,22 @@ class RideExportTests(unittest.TestCase):
 
     def test_forward_gap_keeps_later_records_and_splits_unknown_source(self):
         sample = {'active_ms': 3000, 'utc_ms': 100, 'location': (1, 2)}
-        slots = [slot(1, 2, 1, 0, 0), slot(2, 1, 9, 1, 3000, [sample]),
-                 slot(2, 2, 1, 3, 3000, [sample]), slot(5, 2, 1, 4, 3000)]
+        slots = [
+            slot(1, 2, 1, 0, 0),
+            slot(2, 1, 9, 1, 3000, [sample]),
+            slot(2, 2, 1, 3, 3000, [sample]),
+            slot(5, 2, 1, 4, 3000),
+        ]
         ride = rides_from_slots(slots)[0][0]
         self.assertTrue(ride['gap'])
         self.assertEqual(ride['terminal'], 'saved')
         self.assertEqual(len(ride['samples']), 1)
 
     def test_parser_fragmentation_ids_index_and_crc_are_strict(self):
-        reply = b'noise\n' + b''.join(json.dumps(dict(type='reply', id=index, status='OK', data='INFO 1 256 2 ready')).encode() + b'\n' for index in [3, 4])
+        reply = b'noise\n' + b''.join(
+            json.dumps(dict(type='reply', id=index, status='OK', data='INFO 1 256 2 ready')).encode() + b'\n'
+            for index in [3, 4]
+        )
         for split in range(len(reply) + 1):
             pending = bytearray()
             first = terminal_reply(pending, reply[:split], 4)
@@ -154,26 +178,36 @@ class RideExportTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             terminal_reply(bytearray(), b'CYCLING_BOOT version=x\n', 1)
         raw = self.fixture()[0]
+
         class Reply:
             def __init__(self, index=0, crc=None):
                 self.index, self.crc = index, crc
+
             def terminal_command(self, _):
-                return dict(id=1, status='OK', data=f'SLOT {self.index} {(zlib.crc32(raw) if self.crc is None else self.crc):08x} {raw.hex()}')
+                return dict(
+                    id=1,
+                    status='OK',
+                    data=f'SLOT {self.index} {(zlib.crc32(raw) if self.crc is None else self.crc):08x} {raw.hex()}',
+                )
+
         with self.assertRaises(ValueError):
             read_slot(Reply(index=1), 0)
         with self.assertRaises(ValueError):
             read_slot(Reply(crc=0), 0)
+
         class Short(Reply):
             def terminal_command(self, _):
                 reply = super().terminal_command(_)
                 reply['data'] = reply['data'][:-2]
                 return reply
+
         with self.assertRaises(ValueError):
             read_slot(Short(), 0)
 
     def test_terminal_json_is_bounded_correlated_and_detects_reboots(self):
         def line(**values):
             return json.dumps(values).encode() + b'\n'
+
         pending = bytearray()
         data = line(type='reply', id=9, status='OK', data='wrong') + line(type='reply', id=10, status='BUSY', data='')
         self.assertEqual(terminal_reply(pending, data, 10)['status'], 'BUSY')
@@ -195,6 +229,7 @@ class RideExportTests(unittest.TestCase):
     def test_delayed_same_boot_startup_log_does_not_reject_next_reply(self):
         def line(**values):
             return json.dumps(values).encode() + b'\n'
+
         first = line(type='log', boot=12, component='build', ms=1334)
         first += line(type='reply', id=1, status='OK', data='metadata', ms=1923)
         second = line(type='log', boot=12, component='boot', ms=1334)
@@ -217,6 +252,7 @@ class RideExportTests(unittest.TestCase):
     def test_first_clean_boot_token_establishes_identity_after_ansi_startup(self):
         def line(**values):
             return json.dumps(values).encode() + b'\n'
+
         first = b'\x1b[31m' + line(type='log', boot=12, component='build')
         first += line(type='reply', id=1, status='OK', data='metadata')
         second = line(type='log', boot=12, component='boot', message='crash=controlled')
@@ -258,14 +294,12 @@ class RideExportTests(unittest.TestCase):
             {'active_ms': 2000, 'utc_ms': None, 'location': (2, 3)},
             {'active_ms': 3000, 'utc_ms': 90, 'location': (3, 4)},
         ]
-        slots = [slot(1, 2, 1, 0, 0), slot(2, 2, 1, 1, 3000, points),
-                 slot(5, 2, 1, 2, 3000)]
+        slots = [slot(1, 2, 1, 0, 0), slot(2, 2, 1, 1, 3000, points), slot(5, 2, 1, 2, 3000)]
         ride = rides_from_slots(slots)[0][0]
         self.assertEqual([len(segment) for segment in ride['segments']], [2, 1])
         ride['segments'][0][0]['utc_ms'] = (1 << 64) - 1
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(write_gpx(ride, Path(directory) / 'bad.gpx'),
-                             'UTC timestamp outside GPX host range')
+            self.assertEqual(write_gpx(ride, Path(directory) / 'bad.gpx'), 'UTC timestamp outside GPX host range')
 
 
 if __name__ == '__main__':

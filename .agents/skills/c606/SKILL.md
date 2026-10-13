@@ -16,7 +16,8 @@ settings reservations, bootloader, partition table and eFuses. No vendor
 filesystem writes.
 
 The one-time full-flash backup is private under `.local/device`; keep a separate
-copy. Existing baseline backups must not be overwritten. An interrupted operation
+copy. Port discovery relies on its manifest, so the first backup needs an explicit
+`--port` or `CYCLING_PORT`. Existing baseline backups must not be overwritten. An interrupted operation
 can leave download mode active; inspect the private logs, reconnect and use the
 stock task with the verified backup. Reset completion alone does not prove boot.
 The helper uses a watchdog reset. RTS hard-reset left this device in ROM download

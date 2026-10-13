@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Reviewed C606 partition executor. Offline validation is the default."""
+
 import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import struct
 import sys
 import time
+from pathlib import Path
 
-from cycling_devtools.device.mmc_maintenance import (Connection, Progress, SECTOR, digest_file, private_path,
-                             validate_backup)
+from cycling_devtools.device.mmc_maintenance import SECTOR, Connection, Progress, digest_file, validate_backup
 from cycling_devtools.device.mmc_partition import Layout, make_marker, make_mbr, stock_geometry, verified_extents
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.workspace import private_path
 
 CHUNK = 1024 * 1024
 WRITTEN_VERIFICATION = 'per-written-sector-readback-plus-metadata-samples'
@@ -46,8 +48,11 @@ def preflight(plan_path, single_read_copy=None):
     baseline = private_path(backup['image'])
     if baseline != private_path(plan['baseline_image']) or backup['sha256'] != plan['baseline_sha256']:
         raise ValueError('plan is not bound to this independently verified baseline')
-    expected_ranges = {'stock': (layout.stock_start, layout.stock_sectors),
-                       'marker': (layout.custom_start, 1), 'mbr_commit': (0, 1)}
+    expected_ranges = {
+        'stock': (layout.stock_start, layout.stock_sectors),
+        'marker': (layout.custom_start, 1),
+        'mbr_commit': (0, 1),
+    }
     records = plan['targets']
     if len(records) != 3 or [r['phase'] for r in records] != list(expected_ranges):
         raise ValueError('plan must contain stock, marker and final MBR targets in order')
@@ -80,15 +85,17 @@ def preflight(plan_path, single_read_copy=None):
             with target['path'].open('rb') as desired:
                 for extent in (e for e in extents if e['phase'] == phase):
                     gap = extent['start'] - cursor
-                    compare_ranges(original, cursor * SECTOR, desired,
-                                   (cursor - target['start']) * SECTOR, gap * SECTOR)
+                    compare_ranges(
+                        original, cursor * SECTOR, desired, (cursor - target['start']) * SECTOR, gap * SECTOR
+                    )
                     with extent['path'].open('rb') as delta:
-                        compare_ranges(delta, 0, desired,
-                                       (extent['start'] - target['start']) * SECTOR,
-                                       extent['count'] * SECTOR)
+                        compare_ranges(
+                            delta, 0, desired, (extent['start'] - target['start']) * SECTOR, extent['count'] * SECTOR
+                        )
                     cursor = extent['start'] + extent['count']
-                compare_ranges(original, cursor * SECTOR, desired,
-                               (cursor - target['start']) * SECTOR, (end - cursor) * SECTOR)
+                compare_ranges(
+                    original, cursor * SECTOR, desired, (cursor - target['start']) * SECTOR, (end - cursor) * SECTOR
+                )
     return plan, layout, baseline, targets, extents
 
 
@@ -125,7 +132,7 @@ def write_extent(connection, extent, target, journal, progress):
     journal.record('armed', phase=extent['phase'], start=extent['start'], count=extent['count'])
     for index in range(extent['count']):
         sector = extent['start'] + index
-        payload = data[index * SECTOR:(index + 1) * SECTOR]
+        payload = data[index * SECTOR : (index + 1) * SECTOR]
         journal.record('write_intent', phase=extent['phase'], sector=sector)
         # Exactly one submission. The device acknowledges only after programming
         # completion, CMD13 and byte-for-byte readback. Any exception propagates.
@@ -144,7 +151,7 @@ def verify_target(connection, target, journal):
             if not data or len(data) % SECTOR or completed + len(data) > target['count'] * SECTOR:
                 raise ValueError('invalid target verification frame')
             if desired.read(len(data)) != data:
-                raise ValueError(f"device readback differs from {target['phase']} at relative byte {completed}")
+                raise ValueError(f'device readback differs from {target["phase"]} at relative byte {completed}')
             digest.update(data)
             completed += len(data)
             progress.add(len(data))
@@ -159,7 +166,7 @@ def stock_sample_sectors(target):
     reserved = struct.unpack_from('<H', boot, 14)[0]
     fats, spc = boot[16], boot[13]
     fat_size = struct.unpack_from('<I', boot, 36)[0]
-    root = struct.unpack_from('<I', boot, 44)[0] & 0x0fffffff
+    root = struct.unpack_from('<I', boot, 44)[0] & 0x0FFFFFFF
     fsinfo, backup_boot = struct.unpack_from('<HH', boot, 48)
     root_start = reserved + fats * fat_size + (root - 2) * spc
     samples = {0, backup_boot, fsinfo, root_start, root_start + spc - 1, target['count'] - 1}
@@ -198,12 +205,17 @@ def apply(plan_path, journal_path, port, single_read_copy=None, verification='fu
     plan, layout, baseline, targets, extents = preflight(plan_path, single_read_copy=single_read_copy)
     journal = Journal(journal_path)
     try:
-        journal.record('preflight_verified', plan=str(plan_path), plan_sha256=digest_file(plan_path),
-                       baseline_sha256=plan['baseline_sha256'], total_sectors=layout.total,
-                       changed_sectors=plan['changed_sectors'],
-                       backup_verification_method=plan.get('backup_verification_method', 'independent_full_media_read'),
-                       stock_verification=verification,
-                       single_read_copy=str(Path(single_read_copy).resolve()) if single_read_copy is not None else None)
+        journal.record(
+            'preflight_verified',
+            plan=str(plan_path),
+            plan_sha256=digest_file(plan_path),
+            baseline_sha256=plan['baseline_sha256'],
+            total_sectors=layout.total,
+            changed_sectors=plan['changed_sectors'],
+            backup_verification_method=plan.get('backup_verification_method', 'independent_full_media_read'),
+            stock_verification=verification,
+            single_read_copy=str(Path(single_read_copy).resolve()) if single_read_copy is not None else None,
+        )
         with Connection(port) as connection:
             info = connection.info()
             if info['total_sectors'] != layout.total:
@@ -232,15 +244,22 @@ def apply(plan_path, journal_path, port, single_read_copy=None, verification='fu
                 extent = next(e for e in extents if e['phase'] == phase)
                 write_extent(connection, extent, targets[phase], journal, progress)
                 verify_target(connection, targets[phase], journal)
-            journal.record('complete', stock_target_sha256=targets['stock']['sha256'],
-                           stock_verification='full_target_readback' if verification == 'full' else WRITTEN_VERIFICATION,
-                           marker_sha256=targets['marker']['sha256'], mbr_sha256=targets['mbr_commit']['sha256'])
+            journal.record(
+                'complete',
+                stock_target_sha256=targets['stock']['sha256'],
+                stock_verification='full_target_readback' if verification == 'full' else WRITTEN_VERIFICATION,
+                marker_sha256=targets['marker']['sha256'],
+                mbr_sha256=targets['mbr_commit']['sha256'],
+            )
     except BaseException as error:
-        # Never recover, replay, roll back or boot stock automatically. Failure
-        # can mean a completed write with a lost response; journal intent matters.
+        # Never recover, replay, roll back or boot stock automatically. Failure,
+        # including an interrupt, can mean a completed write with a lost
+        # response; journal that intent, then always re-raise.
         try:
             journal.record('stopped_uncertain', error=type(error).__name__, detail=str(error))
-        except BaseException:
+        except Exception:
+            # A failed journal write must not mask the original stop. A second
+            # interrupt still propagates, chained to the original error.
             pass
         raise
     finally:
@@ -251,21 +270,31 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=private_path, required=True)
     parser.add_argument('--journal', type=private_path)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     parser.add_argument('--execute', action='store_true', help='perform the validated one-shot conversion; no retries')
-    parser.add_argument('--single-read-copy', type=Path,
-                        help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified')
-    parser.add_argument('--verification', choices=('full', 'written'), default='full',
-                        help='stock verification: full readback, or explicit per-write readback plus metadata samples')
+    parser.add_argument(
+        '--single-read-copy',
+        type=Path,
+        help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified',
+    )
+    parser.add_argument(
+        '--verification',
+        choices=('full', 'written'),
+        default='full',
+        help='stock verification: full readback, or explicit per-write readback plus metadata samples',
+    )
     args = parser.parse_args()
     os.umask(0o077)
     if not args.execute:
         plan, _, _, _, extents = preflight(args.plan, single_read_copy=args.single_read_copy)
-        print(f"Validated offline: {len(extents)} extents, {plan['changed_sectors']} changed sectors. No device opened.")
+        print(
+            f'Validated offline: {len(extents)} extents, {plan["changed_sectors"]} changed sectors. No device opened.'
+        )
         return
     if args.journal is None:
         parser.error('--execute requires a new --journal path')
-    apply(args.plan, args.journal, args.port, single_read_copy=args.single_read_copy, verification=args.verification)
+    port = selected_port(parser, args.port)
+    apply(args.plan, args.journal, port, single_read_copy=args.single_read_copy, verification=args.verification)
     print(f'Conversion completed with stock verification={args.verification}; stock has not been booted.')
 
 
@@ -274,4 +303,4 @@ if __name__ == '__main__':
         main()
     except (OSError, ValueError, RuntimeError) as error:
         print(f'Stopped without retry: {error}', file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

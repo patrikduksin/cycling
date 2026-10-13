@@ -1,15 +1,18 @@
 """Prepare an offline, reviewable C606 partition conversion; no device access."""
+
 import argparse
-from dataclasses import asdict, dataclass
 import hashlib
+import itertools
 import json
 import os
-from pathlib import Path
 import struct
 import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import cycling_devtools.device.mmc as mmc
-from cycling_devtools.device.mmc_maintenance import crc, digest_file, private_path, save_manifest, validate_backup
+from cycling_devtools.device.mmc_maintenance import crc, digest_file, save_manifest, validate_backup
+from cycling_devtools.workspace import private_path
 
 SECTOR = 512
 MAX_EXTENT_SECTORS = 2048
@@ -25,7 +28,7 @@ class Layout:
 
     def validate(self):
         values = asdict(self)
-        if any(type(value) is not int or value <= 0 or value > 0xffffffff for value in values.values()):
+        if any(type(value) is not int or value <= 0 or value > 0xFFFFFFFF for value in values.values()):
             raise ValueError('layout values must be positive 32-bit sector counts')
         if self.stock_start + self.stock_sectors > self.custom_start:
             raise ValueError('stock and custom partitions overlap')
@@ -36,13 +39,14 @@ class Layout:
 def make_mbr(layout):
     layout.validate()
     result = bytearray(SECTOR)
-    for index, (kind, start, count) in enumerate(((0x0c, layout.stock_start, layout.stock_sectors),
-                                                (0xda, layout.custom_start, layout.custom_sectors))):
+    for index, (kind, start, count) in enumerate(
+        ((0x0C, layout.stock_start, layout.stock_sectors), (0xDA, layout.custom_start, layout.custom_sectors))
+    ):
         offset = 446 + index * 16
         # LBA entries with saturated CHS coordinates; neither partition is active.
-        result[offset + 1:offset + 4] = b'\xfe\xff\xff'
+        result[offset + 1 : offset + 4] = b'\xfe\xff\xff'
         result[offset + 4] = kind
-        result[offset + 5:offset + 8] = b'\xfe\xff\xff'
+        result[offset + 5 : offset + 8] = b'\xfe\xff\xff'
         struct.pack_into('<II', result, offset + 8, start, count)
     result[510:] = b'\x55\xaa'
     return bytes(result)
@@ -53,8 +57,19 @@ def make_marker(layout, mbr):
         raise ValueError('marker requires the exact planned MBR')
     result = bytearray(SECTOR)
     result[:16] = b'CYCLING-BULK\0\0\0\0'
-    struct.pack_into('<II5QI', result, 16, 1, SECTOR, layout.total, layout.stock_start,
-                     layout.stock_sectors, layout.custom_start, layout.custom_sectors, crc(mbr))
+    struct.pack_into(
+        '<II5QI',
+        result,
+        16,
+        1,
+        SECTOR,
+        layout.total,
+        layout.stock_start,
+        layout.stock_sectors,
+        layout.custom_start,
+        layout.custom_sectors,
+        crc(mbr),
+    )
     struct.pack_into('<I', result, 508, crc(result[:508]))
     return bytes(result)
 
@@ -64,9 +79,11 @@ def stock_geometry(path, layout):
     if path.stat().st_size != layout.stock_sectors * SECTOR:
         raise ValueError('stock image must exactly fill planned first partition')
     with path.open('rb') as source:
+
         def sector(index):
             source.seek(index * SECTOR)
             return source.read(SECTOR)
+
         media = mmc.Media(layout.stock_sectors, sector)
         geometry = mmc.fat_geometry(media, {'start': 0, 'sectors': layout.stock_sectors})
         if geometry is None or geometry['bits'] != 32 or geometry['sectors'] != layout.stock_sectors:
@@ -81,13 +98,12 @@ def stock_geometry(path, layout):
         if media.read(boot_backup) != boot:
             raise ValueError('FAT32 backup boot sector differs from primary')
         info = media.read(fsinfo)
-        if (info[:4] != b'RRaA' or info[484:488] != b'rrAa'
-                or info[508:512] != b'\0\0\x55\xaa'):
+        if info[:4] != b'RRaA' or info[484:488] != b'rrAa' or info[508:512] != b'\0\0\x55\xaa':
             raise ValueError('invalid FAT32 FSInfo signatures')
         free, next_free = struct.unpack_from('<II', info, 488)
-        if free != 0xffffffff and free > geometry['clusters']:
+        if free != 0xFFFFFFFF and free > geometry['clusters']:
             raise ValueError('invalid FAT32 free-cluster count')
-        if next_free != 0xffffffff and not 2 <= next_free < geometry['clusters'] + 2:
+        if next_free != 0xFFFFFFFF and not 2 <= next_free < geometry['clusters'] + 2:
             raise ValueError('invalid FAT32 next-free cluster')
     return geometry
 
@@ -118,7 +134,7 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
             raise ValueError('target range is invalid or outside medium')
         ranges.append((start, start + size // SECTOR))
     ordered = sorted(ranges)
-    if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])):
+    if any(left[1] > right[0] for left, right in itertools.pairwise(ordered)):
         raise ValueError('target ranges overlap')
     extents, target_records = [], []
     with baseline.open('rb') as original:
@@ -128,16 +144,24 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
             digest = hashlib.sha256()
             run = bytearray()
             run_start = None
+
             def flush():
                 nonlocal run, run_start
                 if not run:
                     return
                 name = f'extent-{len(extents):06d}-{run_start:08d}.bin'
                 write_new(output / name, run)
-                extents.append({'phase': target['phase'], 'start': run_start,
-                                'count': len(run) // SECTOR, 'file': name,
-                                'sha256': hashlib.sha256(run).hexdigest()})
+                extents.append(
+                    {
+                        'phase': target['phase'],  # noqa: B023 - flush runs within this iteration
+                        'start': run_start,
+                        'count': len(run) // SECTOR,
+                        'file': name,
+                        'sha256': hashlib.sha256(run).hexdigest(),
+                    }
+                )
                 run, run_start = bytearray(), None
+
             original.seek(start * SECTOR)
             with path.open('rb') as desired:
                 current = start
@@ -152,8 +176,8 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
                         raise ValueError('baseline shortened during planning')
                     digest.update(data)
                     for offset in range(0, len(data), SECTOR):
-                        sector = data[offset:offset + SECTOR]
-                        if sector == old[offset:offset + SECTOR]:
+                        sector = data[offset : offset + SECTOR]
+                        if sector == old[offset : offset + SECTOR]:
                             flush()
                         else:
                             if run_start is None:
@@ -163,37 +187,52 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
                                 flush()
                         current += 1
                 flush()
-                if (current - start != expected_count
-                        or path.stat().st_size != expected_count * SECTOR):
+                if current - start != expected_count or path.stat().st_size != expected_count * SECTOR:
                     raise ValueError('target size changed during planning')
-            target_records.append({'phase': target['phase'], 'path': str(path), 'start': start,
-                                   'count': current - start, 'sha256': digest.hexdigest()})
+            target_records.append(
+                {
+                    'phase': target['phase'],
+                    'path': str(path),
+                    'start': start,
+                    'count': current - start,
+                    'sha256': digest.hexdigest(),
+                }
+            )
     return extents, target_records
 
 
-def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):
+def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):  # noqa: B008 - frozen
     layout.validate()
     method = validate_backup(backup_manifest, layout.total, single_read_copy=single_read_copy)
     baseline_manifest = json.loads(backup_manifest.read_text())
     baseline = private_path(baseline_manifest['image'])
     geometry = stock_geometry(stock, layout)
     output.mkdir(mode=0o700)  # A failed plan remains private and is never reused.
-    manifest = {'version': 1, 'complete': False, 'layout': asdict(layout),
-                'baseline_manifest': str(backup_manifest), 'baseline_image': str(baseline),
-                'baseline_sha256': baseline_manifest['sha256'], 'fat32_geometry': geometry,
-                'backup_verification_method': method}
+    manifest = {
+        'version': 1,
+        'complete': False,
+        'layout': asdict(layout),
+        'baseline_manifest': str(backup_manifest),
+        'baseline_image': str(baseline),
+        'baseline_sha256': baseline_manifest['sha256'],
+        'fat32_geometry': geometry,
+        'backup_verification_method': method,
+    }
     if single_read_copy is not None:
         manifest['single_read_copy'] = str(Path(single_read_copy).resolve())
     save_manifest(output / 'plan.json', manifest)
     mbr = make_mbr(layout)
     write_new(output / 'mbr.bin', mbr)
     write_new(output / 'marker.bin', make_marker(layout, mbr))
-    targets = [{'phase': 'stock', 'start': layout.stock_start, 'path': stock},
-               {'phase': 'marker', 'start': layout.custom_start, 'path': output / 'marker.bin'},
-               {'phase': 'mbr_commit', 'start': 0, 'path': output / 'mbr.bin'}]
+    targets = [
+        {'phase': 'stock', 'start': layout.stock_start, 'path': stock},
+        {'phase': 'marker', 'start': layout.custom_start, 'path': output / 'marker.bin'},
+        {'phase': 'mbr_commit', 'start': 0, 'path': output / 'mbr.bin'},
+    ]
     extents, records = plan_differences(baseline, targets, output, layout.total)
-    manifest.update(complete=True, targets=records, extents=extents,
-                    changed_sectors=sum(extent['count'] for extent in extents))
+    manifest.update(
+        complete=True, targets=records, extents=extents, changed_sectors=sum(extent['count'] for extent in extents)
+    )
     manifest['write_bytes'] = manifest['changed_sectors'] * SECTOR
     save_manifest(output / 'plan.json', manifest)
     return manifest
@@ -217,8 +256,11 @@ def verified_extents(plan_path):
     for extent in plan['extents']:
         phase, start, count = extent['phase'], extent['start'], extent['count']
         index = phases.get(phase, -1)
-        ranges = {'stock': (layout.stock_start, layout.stock_sectors),
-                  'marker': (layout.custom_start, 1), 'mbr_commit': (0, 1)}
+        ranges = {
+            'stock': (layout.stock_start, layout.stock_sectors),
+            'marker': (layout.custom_start, 1),
+            'mbr_commit': (0, 1),
+        }
         if index < 0 or index < prior_phase or not 1 <= count <= MAX_EXTENT_SECTORS:
             raise ValueError('invalid write phase or extent size')
         begin, length = ranges[phase]
@@ -241,11 +283,16 @@ def main():
     parser.add_argument('--backup-manifest', type=private_path, required=True)
     parser.add_argument('--stock-image', type=private_path, required=True)
     parser.add_argument('--output', type=private_path, required=True)
-    parser.add_argument('--single-read-copy', type=Path,
-                        help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified')
+    parser.add_argument(
+        '--single-read-copy',
+        type=Path,
+        help='explicitly accept one complete media read with a separate matching copy; does not mark backup verified',
+    )
     args = parser.parse_args()
     plan = prepare(args.backup_manifest, args.stock_image, args.output, single_read_copy=args.single_read_copy)
-    print(f"Prepared {len(plan['extents'])} extents, {plan['changed_sectors']} sectors, {plan['write_bytes']} bytes; MBR commit last.")
+    print(
+        f'Prepared {len(plan["extents"])} extents, {plan["changed_sectors"]} sectors, {plan["write_bytes"]} bytes; MBR commit last.'
+    )
 
 
 if __name__ == '__main__':

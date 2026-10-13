@@ -1,17 +1,20 @@
 """Private, exclusive C606 MMC backup and explicitly armed maintenance transfers."""
+
 import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
-import select
 import secrets
+import select
 import struct
 import sys
 import time
 import zlib
+from pathlib import Path
 
-from cycling_devtools.terminal.usb import ROOT, acquire_lock, open_no_reset
+from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.terminal.usb import acquire_lock, open_no_reset
+from cycling_devtools.workspace import private_path
 
 HEADER = struct.Struct('<4s7I')
 SECTOR = 512
@@ -19,14 +22,7 @@ TIMEOUT = 10
 
 
 def crc(data):
-    return zlib.crc32(data) & 0xffffffff
-
-
-def private_path(value):
-    path = Path(value).resolve()
-    if not path.is_relative_to((ROOT / '.local').resolve()):
-        raise ValueError('images and evidence must stay under ignored .local/')
-    return path
+    return zlib.crc32(data) & 0xFFFFFFFF
 
 
 def digest_file(path):
@@ -41,7 +37,7 @@ class Connection:
     def __init__(self, port):
         self.port = port
         self.fd = self.lock = None
-        self.sequence = secrets.randbelow(0x7fffffff) + 1
+        self.sequence = secrets.randbelow(0x7FFFFFFF) + 1
         self.total = self.token = None
 
     def __enter__(self):
@@ -144,7 +140,7 @@ class Connection:
         if encoding != 2 or start != 0 or count != 0:
             raise ValueError('invalid INFO response')
         total, sector_size, token = struct.unpack('<QII', data)
-        if not 0 < total <= 0xffffffff or sector_size != SECTOR or not token:
+        if not 0 < total <= 0xFFFFFFFF or sector_size != SECTOR or not token:
             raise ValueError('unsupported INFO geometry or session token')
         self.total, self.token = total, token
         return {'total_sectors': total, 'sector_size': sector_size, 'bytes': total * SECTOR}
@@ -273,11 +269,14 @@ def backup(connection, path, resume=False):
     manifest_path = Path(str(path) + '.json')
     if resume:
         manifest = json.loads(manifest_path.read_text())
-        if (manifest.get('version') != 1 or manifest.get('verified') is not False
-                or type(manifest.get('complete')) is not bool
-                or manifest.get('total_sectors') != connection.total
-                or manifest.get('sector_size') != SECTOR
-                or private_path(manifest['image']) != path.resolve()):
+        if (
+            manifest.get('version') != 1
+            or manifest.get('verified') is not False
+            or type(manifest.get('complete')) is not bool
+            or manifest.get('total_sectors') != connection.total
+            or manifest.get('sector_size') != SECTOR
+            or private_path(manifest['image']) != path.resolve()
+        ):
             raise ValueError('resume requires an unverified manifest with this exact image and geometry')
         size = path.stat().st_size
         if size % SECTOR or size > connection.total * SECTOR:
@@ -291,8 +290,14 @@ def backup(connection, path, resume=False):
     else:
         if path.exists() or manifest_path.exists():
             raise ValueError('backup image and manifest must be new; use explicit --resume for an unverified backup')
-        manifest = {'version': 1, 'image': str(path), 'total_sectors': connection.total,
-                    'sector_size': SECTOR, 'complete': False, 'verified': False}
+        manifest = {
+            'version': 1,
+            'image': str(path),
+            'total_sectors': connection.total,
+            'sector_size': SECTOR,
+            'complete': False,
+            'verified': False,
+        }
         save_manifest(manifest_path, manifest)
         digest = capture(connection, path, 0, connection.total)
     if not manifest['complete']:
@@ -307,9 +312,12 @@ def backup(connection, path, resume=False):
 
 def validate_backup(path, total, single_read_copy=None):
     manifest = json.loads(path.read_text())
-    if (manifest.get('version') != 1 or manifest.get('complete') is not True
-            or manifest.get('total_sectors') != total
-            or manifest.get('sector_size') != SECTOR):
+    if (
+        manifest.get('version') != 1
+        or manifest.get('complete') is not True
+        or manifest.get('total_sectors') != total
+        or manifest.get('sector_size') != SECTOR
+    ):
         raise ValueError('requires a completed independently verified whole-medium backup')
     if manifest.get('verified') is not True and (manifest.get('verified') is not False or single_read_copy is None):
         raise ValueError('requires independent full verification or an explicit single-read copy exception')
@@ -354,15 +362,16 @@ def write_image(connection, image, start, expected_sha256, manifest, single_read
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', default=os.environ.get('CYCLING_PORT', '/dev/ttyACM0'))
+    add_port_argument(parser)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('info')
     commands.add_parser('recover')
     commands.add_parser('wide', help='explicitly switch to four-bit reads and disarm writes')
     backup_parser = commands.add_parser('backup')
     backup_parser.add_argument('image', type=private_path)
-    backup_parser.add_argument('--resume', action='store_true',
-                               help='explicitly continue an existing unverified backup after inspection')
+    backup_parser.add_argument(
+        '--resume', action='store_true', help='explicitly continue an existing unverified backup after inspection'
+    )
     commands.add_parser('verify').add_argument('image', type=private_path)
     read = commands.add_parser('read')
     read.add_argument('image', type=private_path)
@@ -373,10 +382,14 @@ def main():
     write.add_argument('--start', type=int, required=True)
     write.add_argument('--confirm-sha256', required=True)
     write.add_argument('--backup-manifest', type=private_path, required=True)
-    write.add_argument('--single-read-copy', type=Path,
-                       help='explicitly restore using one complete capture and a separate matching copy')
+    write.add_argument(
+        '--single-read-copy',
+        type=Path,
+        help='explicitly restore using one complete capture and a separate matching copy',
+    )
     args = parser.parse_args()
-    with Connection(args.port) as connection:
+    port = selected_port(parser, args.port)
+    with Connection(port) as connection:
         if args.command == 'recover':
             connection.recover()
             print('MMC recovery acknowledged.')
@@ -396,8 +409,14 @@ def main():
         elif args.command == 'read':
             capture(connection, args.image, args.start, args.count)
         elif args.command == 'write':
-            write_image(connection, args.image, args.start, args.confirm_sha256, args.backup_manifest,
-                        single_read_copy=args.single_read_copy)
+            write_image(
+                connection,
+                args.image,
+                args.start,
+                args.confirm_sha256,
+                args.backup_manifest,
+                single_read_copy=args.single_read_copy,
+            )
 
 
 if __name__ == '__main__':

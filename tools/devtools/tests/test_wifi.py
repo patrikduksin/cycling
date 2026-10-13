@@ -1,9 +1,11 @@
 """Wi-Fi credentials must be validated, escaped, and stored privately."""
+
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
 import cycling_devtools.connectivity.wifi as wifi
 
 
@@ -12,8 +14,12 @@ class WifiConfigTests(unittest.TestCase):
         return dict(ssid='Test "network"\\name', password='test-password', security='wpa-psk')
 
     def test_rejects_invalid_credentials(self):
-        for field, value in [('ssid', 'é' * 17), ('password', '<hidden>'), ('password', 'short'),
-                             ('security', 'wpa-eap')]:
+        for field, value in [
+            ('ssid', 'é' * 17),
+            ('password', '<hidden>'),
+            ('password', 'short'),
+            ('security', 'wpa-eap'),
+        ]:
             config = self.config()
             config[field] = value
             with self.assertRaises(ValueError):
@@ -27,7 +33,9 @@ class WifiConfigTests(unittest.TestCase):
                 wifi.save(wifi.CONFIG, json.dumps(config))
                 command = wifi.command(config)
                 self.assertNotIn(config['password'], command)
-                self.assertEqual(command.split()[3:], [config['ssid'].encode().hex(), config['password'].encode().hex()])
+                self.assertEqual(
+                    command.split()[3:], [config['ssid'].encode().hex(), config['password'].encode().hex()]
+                )
                 self.assertEqual(wifi.CONFIG.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(local.stat().st_mode & 0o777, 0o700)
 

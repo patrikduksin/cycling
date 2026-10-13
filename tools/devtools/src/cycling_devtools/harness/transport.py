@@ -1,14 +1,16 @@
 """Harness transports retain one owner across close/reopen and firmware restart."""
-import json
+
 import fcntl
+import json
 import os
-from pathlib import Path
 import secrets
 import select
 import subprocess
 import time
+from pathlib import Path
 
-from cycling_devtools.terminal.usb import ROOT, UsbConnection, open_no_reset, terminal_reply
+from cycling_devtools.terminal.usb import UsbConnection, open_no_reset, terminal_reply
+from cycling_devtools.workspace import ROOT
 
 
 class ManualAction(RuntimeError):
@@ -53,7 +55,7 @@ def rediscover(identity):
         try:
             if usb_identity(port) == identity:
                 matches.append(port)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             continue
     if len(matches) == 1:
         return matches[0]
@@ -78,18 +80,22 @@ class Real(UsbConnection):
             try:
                 if self.terminal_command('INFO', timeout=2)['status'] == 'OK':
                     return self
-            except (OSError, RuntimeError, TimeoutError):
+            except OSError, RuntimeError, TimeoutError:
                 self.boot = [None]
-            time.sleep(.1)
+            time.sleep(0.1)
         self.__exit__(None, None, None)
-        raise ManualAction('C606 terminal did not become ready. Check its screen and reconnect its cable; then rerun read-only inspection.')
+        raise ManualAction(
+            'C606 terminal did not become ready. Check its screen and reconnect its cable; then rerun read-only inspection.'
+        )
 
     def delay(self, seconds):
         time.sleep(seconds)
 
     def recover(self, mode, missing_seconds=1, timeout=25):
         if mode not in ('terminal', 'restart', 'usb-reset'):
-            raise ValueError('supported recovery modes: terminal, restart, usb-reset; VBUS removal requires physical action')
+            raise ValueError(
+                'supported recovery modes: terminal, restart, usb-reset; VBUS removal requires physical action'
+            )
         previous_boot = self.boot[0]
         started = time.monotonic()
         uncertain = False
@@ -98,7 +104,7 @@ class Real(UsbConnection):
                 reply = self.terminal_command('RESTART')
                 if reply['status'] != 'OK' and reply['status'] != 'ACCEPTED':
                     raise ValueError('firmware rejected restart')
-            except (OSError, RuntimeError, TimeoutError):
+            except OSError, RuntimeError, TimeoutError:
                 uncertain = True  # Inspect after reconnect. Never resend RESTART.
         os.close(self.fd)
         self.fd = None
@@ -112,20 +118,27 @@ class Real(UsbConnection):
                 self.port = rediscover(self.identity)
                 self.fd = open_no_reset(self.port)
                 self.boot = [None]
-                reply = self.terminal_command('INFO', timeout=min(3, max(.1, stop - time.monotonic())))
+                reply = self.terminal_command('INFO', timeout=min(3, max(0.1, stop - time.monotonic())))
                 if reply['status'] != 'OK':
                     raise RuntimeError('INFO not ready')
                 # The session layer additionally verifies the boot token via CAPS.
-                return {'mode': mode, 'elapsed_s': time.monotonic() - started,
-                        'restart_reply_uncertain': uncertain, 'previous_log_boot': previous_boot,
-                        'vbus_removed': False, 'info': reply}
-            except (OSError, RuntimeError, TimeoutError):
+                return {
+                    'mode': mode,
+                    'elapsed_s': time.monotonic() - started,
+                    'restart_reply_uncertain': uncertain,
+                    'previous_log_boot': previous_boot,
+                    'vbus_removed': False,
+                    'info': reply,
+                }
+            except OSError, RuntimeError, TimeoutError:
                 if self.fd is not None:
                     os.close(self.fd)
                     self.fd = None
                 self.pending.clear()
-                time.sleep(.2)
-        raise ManualAction('Reconnect the C606 cable, press its power button if needed, then run a new read-only inspection. No mutation was replayed.')
+                time.sleep(0.2)
+        raise ManualAction(
+            'Reconnect the C606 cable, press its power button if needed, then run a new read-only inspection. No mutation was replayed.'
+        )
 
 
 class Virtual:
@@ -143,10 +156,30 @@ class Virtual:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.log = (self.directory / 'virtual.log').open('ab')
         self.errors = (self.directory / 'virtual-stderr.log').open('ab')
-        self.process = subprocess.Popen(['cargo', 'run', '-p', 'shell-simulator', '--quiet', '--locked', '--no-default-features',
-            '--features', self.features, '--bin', 'shell-simulator', '--', '--terminal',
-            '--state-dir', str(self.state_dir)], cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=self.errors, bufsize=0)
+        self.process = subprocess.Popen(
+            [
+                'cargo',
+                'run',
+                '-p',
+                'shell-simulator',
+                '--quiet',
+                '--locked',
+                '--no-default-features',
+                '--features',
+                self.features,
+                '--bin',
+                'shell-simulator',
+                '--',
+                '--terminal',
+                '--state-dir',
+                str(self.state_dir),
+            ],
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self.errors,
+            bufsize=0,
+        )
         return self
 
     def __exit__(self, *_):
@@ -173,7 +206,7 @@ class Virtual:
         self.process.stdin.write(f'CMD {self.request_id} {command}\n'.encode('ascii'))
         stop = time.monotonic() + timeout
         while time.monotonic() < stop:
-            if not select.select([self.process.stdout], [], [], min(.2, max(0, stop - time.monotonic())))[0]:
+            if not select.select([self.process.stdout], [], [], min(0.2, max(0, stop - time.monotonic())))[0]:
                 continue
             data = os.read(self.process.stdout.fileno(), 65536)
             if not data:
@@ -201,7 +234,7 @@ class Virtual:
                 result = json.loads(line)
                 if result.get('type') == 'fixture':
                     return result
-            if not select.select([self.process.stdout], [], [], .2)[0]:
+            if not select.select([self.process.stdout], [], [], 0.2)[0]:
                 continue
             data = os.read(self.process.stdout.fileno(), 65536)
             if not data:
@@ -224,5 +257,10 @@ class Virtual:
         else:
             self.delay(missing_seconds)
         self.boot = [None]
-        return {'mode': mode, 'elapsed_s': time.monotonic() - start, 'vbus_removed': False,
-                'virtual': True, 'info': self.terminal_command('INFO')}
+        return {
+            'mode': mode,
+            'elapsed_s': time.monotonic() - start,
+            'vbus_removed': False,
+            'virtual': True,
+            'info': self.terminal_command('INFO'),
+        }

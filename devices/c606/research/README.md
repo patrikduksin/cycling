@@ -13,7 +13,7 @@ analysis tools are public; vendor firmware, disassembly and device dumps stay pr
 Supply your own update file to the read-only [unpacker](unpack.py):
 
 ```sh
-mise exec -- python devices/c606/research/unpack.py /path/to/N21_update.bin --output .local/stock
+mise exec -- uv run --script devices/c606/research/unpack.py /path/to/N21_update.bin --output .local/stock
 ```
 
 It reconstructs images and ELF load segments, not original symbols or source.

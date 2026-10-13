@@ -1,8 +1,9 @@
 import json
+import termios
 import unittest
 from unittest.mock import patch
-import termios
-from cycling_devtools.terminal.logs import Decoder, MAX_LINE
+
+from cycling_devtools.terminal.logs import MAX_LINE, Decoder
 from cycling_devtools.terminal.usb import open_no_reset
 
 
@@ -19,8 +20,9 @@ class LogsTests(unittest.TestCase):
         return [r.get('event') for r in self.records if r['type'] == 'host']
 
     def test_partial_boot_gap_and_wrap(self):
-        data = log(seq=0xffffffff)
-        self.d.feed(data[:10]); self.assertFalse(self.records)
+        data = log(seq=0xFFFFFFFF)
+        self.d.feed(data[:10])
+        self.assertFalse(self.records)
         self.d.feed(data[10:] + log(seq=0) + log(seq=3) + log(boot=2))
         self.assertEqual(self.events(), ['boot_boundary', 'sequence_gap', 'boot_boundary'])
         self.assertEqual(self.records[3]['missing'], 2)
@@ -43,10 +45,10 @@ class LogsTests(unittest.TestCase):
         self.assertEqual(self.d.counts['logs'], 1)
 
     def test_receipt_time_preserves_device_time(self):
-        with patch("cycling_devtools.terminal.logs.time.time_ns", return_value=123456):
+        with patch('cycling_devtools.terminal.logs.time.time_ns', return_value=123456):
             self.d.feed(log(ms=789))
-        self.assertEqual(self.records[-1]["host_ns"], 123456)
-        self.assertEqual(self.records[-1]["ms"], 789)
+        self.assertEqual(self.records[-1]['host_ns'], 123456)
+        self.assertEqual(self.records[-1]['ms'], 789)
 
     def test_bad_schema_is_rejected(self):
         self.d.feed(log(seq=True) + log(boot='private') + b'[]\n')
@@ -55,8 +57,12 @@ class LogsTests(unittest.TestCase):
 
     def test_open_no_flush_or_modem_calls(self):
         attrs = [0, 0, termios.HUPCL, 0, 0, 0, [b'\0'] * 32]
-        with patch('cycling_devtools.terminal.usb.os.open', return_value=5), patch('cycling_devtools.terminal.usb.termios.tcgetattr', return_value=attrs), \
-                patch('cycling_devtools.terminal.usb.termios.tcsetattr') as setter, patch('cycling_devtools.terminal.usb.tty.cfmakeraw') as raw:
+        with (
+            patch('cycling_devtools.terminal.usb.os.open', return_value=5),
+            patch('cycling_devtools.terminal.usb.termios.tcgetattr', return_value=attrs),
+            patch('cycling_devtools.terminal.usb.termios.tcsetattr') as setter,
+            patch('cycling_devtools.terminal.usb.tty.cfmakeraw') as raw,
+        ):
             self.assertEqual(open_no_reset('/dev/fake'), 5)
             raw.assert_called_once_with(attrs)
             setter.assert_called_once_with(5, termios.TCSANOW, attrs)

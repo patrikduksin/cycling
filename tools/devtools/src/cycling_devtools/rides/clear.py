@@ -1,12 +1,15 @@
 """Clear the owned ride journal only after verifying a complete local export."""
+
 import argparse
 import hashlib
 import json
 import time
 from pathlib import Path
 
+from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.rides.export import info, read_slot
-from cycling_devtools.terminal.usb import ROOT, UsbConnection
+from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.workspace import ROOT
 
 
 def verified_manifest(directory):
@@ -40,9 +43,9 @@ def mutate_once(connection, command, timeout=90):
     try:
         accepted = dict(field.split('=', 1) for field in reply['data'].split())
         token = int(accepted['token'])
-        if not 1 <= token <= 0xffffffff:
+        if not 1 <= token <= 0xFFFFFFFF:
             raise ValueError()
-    except (KeyError, ValueError):
+    except KeyError, ValueError:
         raise RuntimeError('mutation accepted with an invalid token; outcome is uncertain') from None
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
@@ -57,7 +60,7 @@ def mutate_once(connection, command, timeout=90):
             return result
         if result.get('pending') != str(token):
             raise RuntimeError('mutation completion is missing; outcome is uncertain')
-        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
     raise TimeoutError('ride mutation completion deadline expired')
 
 
@@ -80,15 +83,19 @@ def clear(port, export_directory, output):
             result = mutate_once(connection, f'RIDE CLEAR CONFIRM {manifest["upper_bound"]}')
         except TimeoutError:
             raise RuntimeError(
-                'clear outcome is uncertain; inspect RIDE STATUS after reboot and do not retry '
-                'until scanning completes') from None
+                'clear outcome is uncertain; inspect RIDE STATUS after reboot and do not retry until scanning completes'
+            ) from None
         if result.get('state') != 'ready' or result.get('slot') != '0':
             raise RuntimeError('clear completed without an empty ready journal')
         after = info(connection)
         if after['upper_bound'] != 0 or after['status'] != 'ready':
             raise RuntimeError('clear readback did not report an empty ready journal')
-    summary = {'export': str(export_directory), 'raw_sha256': manifest['raw_sha256'],
-               'cleared_upper_bound': manifest['upper_bound'], 'result': result}
+    summary = {
+        'export': str(export_directory),
+        'raw_sha256': manifest['raw_sha256'],
+        'cleared_upper_bound': manifest['upper_bound'],
+        'result': result,
+    }
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     return summary
 
@@ -96,11 +103,11 @@ def clear(port, export_directory, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('export_directory', type=Path)
-    parser.add_argument('--port', default='/dev/ttyACM0')
-    parser.add_argument('--output', type=Path,
-                        default=ROOT / '.local/tests' / f'ride-clear-{time.time_ns()}')
+    add_port_argument(parser)
+    parser.add_argument('--output', type=Path, default=ROOT / '.local/tests' / f'ride-clear-{time.time_ns()}')
     args = parser.parse_args()
-    print(json.dumps(clear(args.port, args.export_directory, args.output), indent=2))
+    port = selected_port(parser, args.port)
+    print(json.dumps(clear(port, args.export_directory, args.output), indent=2))
 
 
 if __name__ == '__main__':

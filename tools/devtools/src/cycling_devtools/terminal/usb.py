@@ -3,14 +3,16 @@
 A command is sent once. Reboots, disconnects and timeouts leave mutations uncertain;
 callers must inspect state instead of replaying them. Log decoding stays in logs.py.
 """
+
 import fcntl
 import json
 import os
-from pathlib import Path
+import re
 import select
 import termios
 import time
 import tty
+from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 
@@ -88,13 +90,13 @@ class UsbConnection:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError('USB not writable; command was not submitted') from None
-                select.select([], [self.fd], [], min(.2, remaining))
+                select.select([], [self.fd], [], min(0.2, remaining))
                 if time.monotonic() >= deadline:
                     raise TimeoutError('USB not writable; command was not submitted') from None
         if written != len(request):
             raise RuntimeError('short USB command write; outcome may be uncertain')
         while time.monotonic() < deadline:
-            if not select.select([self.fd], [], [], min(.2, max(0, deadline - time.monotonic())))[0]:
+            if not select.select([self.fd], [], [], min(0.2, max(0, deadline - time.monotonic())))[0]:
                 continue
             try:
                 data = os.read(self.fd, 65536)
@@ -122,7 +124,7 @@ def terminal_reply(pending, data, expected_id, boot=None):
             raise RuntimeError('device rebooted during command')
         try:
             reply = json.loads(line)
-        except (UnicodeDecodeError, ValueError):
+        except UnicodeDecodeError, ValueError:
             continue
         if not isinstance(reply, dict):
             continue
@@ -144,15 +146,27 @@ def terminal_reply(pending, data, expected_id, boot=None):
         # permits only one outstanding command, so its documented id-zero parse
         # rejection belongs to that command. Never accept id-zero success or an
         # unrelated numbered reply as its completion.
-        parse_rejection = (type(reply.get('id')) is int and reply['id'] == 0
-                           and reply.get('status') in ('INVALID', 'OVERLONG'))
+        parse_rejection = (
+            type(reply.get('id')) is int and reply['id'] == 0 and reply.get('status') in ('INVALID', 'OVERLONG')
+        )
         if reply.get('id') != expected_id and not parse_rejection:
             continue
-        if (type(reply.get('id')) is not int
-                or not isinstance(reply.get('status'), str)
-                or not isinstance(reply.get('data'), str)):
+        if (
+            type(reply.get('id')) is not int
+            or not isinstance(reply.get('status'), str)
+            or not isinstance(reply.get('data'), str)
+        ):
             raise ValueError('malformed terminal reply')
         return reply
     if len(pending) > 4096:
         raise ValueError('oversized USB terminal line')
     return None
+
+
+def reply_fields(text, unique=False):
+    """Parse the key=value tokens of a terminal reply's data; values may be empty."""
+    pairs = re.findall(r'(\w+)=(\S*)', text)
+    result = dict(pairs)
+    if unique and len(result) != len(pairs):
+        raise ValueError('duplicate terminal reply field')
+    return result

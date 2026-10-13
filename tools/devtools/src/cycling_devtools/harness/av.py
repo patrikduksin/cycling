@@ -293,10 +293,10 @@ class Capture:
                     except subprocess.TimeoutExpired:
                         self.process.kill()
                         self.process.wait(timeout=2)
-            except OSError, subprocess.SubprocessError, KeyboardInterrupt:
-                # Deliberately absorb an interrupt: the log close and camera
+            except Exception, KeyboardInterrupt:
+                # Deliberately absorb everything: the log close and camera
                 # restoration below must still run, and the report exposes a
-                # still-running camera. Unexpected errors now propagate.
+                # still-running camera.
                 pass
             if self.log is not None:
                 self.log.close()

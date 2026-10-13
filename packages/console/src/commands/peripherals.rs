@@ -345,12 +345,12 @@ pub fn execute(
             let _ = write!(
                 out,
                 "query={} identity={:?} fitted_model=unknown installed_version=unverified reports={} invalid={} losses={} startup={} startup_reason={:?}",
-                sensors.identity_status(),
+                sensors.identity_status().name(),
                 s.identity,
                 s.reports,
                 s.invalid_reports,
                 s.losses,
-                sensors.startup_status(),
+                sensors.startup_status().name(),
                 sensors.startup_reason()
             );
         }

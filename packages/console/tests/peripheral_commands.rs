@@ -32,7 +32,7 @@ impl device_api::sensors::Sensors for Untouched {
     fn snapshot(&self, _: u64) -> device_api::sensors::Snapshot {
         panic!("sensors accessed")
     }
-    fn identity_status(&self) -> &'static str {
+    fn identity_status(&self) -> device_api::sensors::IdentityQuery {
         panic!("sensors accessed")
     }
     fn query_identity(&mut self, _: u64) -> Result<(), device_api::observation::Error> {

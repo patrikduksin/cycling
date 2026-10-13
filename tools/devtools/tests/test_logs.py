@@ -1,8 +1,9 @@
 import json
+import termios
 import unittest
 from unittest.mock import patch
-import termios
-from cycling_devtools.terminal.logs import Decoder, MAX_LINE
+
+from cycling_devtools.terminal.logs import MAX_LINE, Decoder
 from cycling_devtools.terminal.usb import open_no_reset
 
 

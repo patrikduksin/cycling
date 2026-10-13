@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
-from cycling_devtools.harness.base import apply, expect, preserved, wifi_failures, transport_recovery, check_overlong
+
+from cycling_devtools.harness.base import apply, check_overlong, expect, preserved, transport_recovery, wifi_failures
 
 
 class Connection:

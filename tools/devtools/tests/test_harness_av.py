@@ -2,11 +2,12 @@ import array
 import io
 import math
 import sys
-import wave
-from pathlib import Path
 import tempfile
 import unittest
+import wave
+from pathlib import Path
 from unittest.mock import Mock, patch
+
 from cycling_devtools.harness.av import Capture, analyze_audio, discover, fft, tone_fixture
 
 
@@ -18,7 +19,7 @@ class AudioTests(unittest.TestCase):
             result = analyze_audio(path)
             self.assertEqual(result['status'], 'pass')
             self.assertEqual(result['repetitions'], 2)
-            for event, onset in zip(result['events'], (0.7, 1.6)):
+            for event, onset in zip(result['events'], (0.7, 1.6), strict=True):
                 self.assertAlmostEqual(event['onset_s'], onset, places=2)
                 self.assertAlmostEqual(event['duration_s'], 0.4, places=2)
                 self.assertAlmostEqual(event['dominant_hz'], 1000, delta=4)

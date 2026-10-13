@@ -5,12 +5,12 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import struct
 import sys
 import time
+from pathlib import Path
 
-from cycling_devtools.device.mmc_maintenance import Connection, Progress, SECTOR, digest_file, validate_backup
+from cycling_devtools.device.mmc_maintenance import SECTOR, Connection, Progress, digest_file, validate_backup
 from cycling_devtools.device.mmc_partition import Layout, make_marker, make_mbr, stock_geometry, verified_extents
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.workspace import private_path
@@ -303,4 +303,4 @@ if __name__ == '__main__':
         main()
     except (OSError, ValueError, RuntimeError) as error:
         print(f'Stopped without retry: {error}', file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

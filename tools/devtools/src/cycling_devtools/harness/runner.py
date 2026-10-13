@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import signal
@@ -13,10 +12,10 @@ import subprocess
 import sys
 import time
 import zlib
+from pathlib import Path
 
-import cycling_devtools.connectivity.wifi as wifi
 import cycling_devtools.connectivity.ble_config as ble_config
-
+import cycling_devtools.connectivity.wifi as wifi
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.av import Capture, discover
 from cycling_devtools.harness.recipes import RECIPES
@@ -676,9 +675,12 @@ class Runner:
 
     def run_recover(self, step, _index):
         mode = step.get('mode', 'terminal')
-        if not self.transport.virtual and mode in ('restart', 'usb-reset'):
-            if self.command('INFO').get('recording') != 'false':
-                raise ValueError('real recovery requires fresh verified idle recording state')
+        if (
+            not self.transport.virtual
+            and mode in ('restart', 'usb-reset')
+            and self.command('INFO').get('recording') != 'false'
+        ):
+            raise ValueError('real recovery requires fresh verified idle recording state')
         previous = self.boot
         if self.session:
             self.operation('CLOSE')
@@ -831,10 +833,10 @@ def check_capabilities(runner, scenario, report):
             report['status'] = 'unsupported'
             raise ValueError(f'{capability} is {caps.get(capability, "unsupported")} in this build/device')
     for step in scenario['steps']:
-        if step['op'] in ('command', 'wait', 'virtual-command') and caps.get('ordinary'):
-            if step['command'].split()[0] not in caps['ordinary'].split(','):
-                report['status'] = 'unsupported'
-                raise ValueError('scenario uses a command unsupported by this backend')
+        ordinary = step['op'] in ('command', 'wait', 'virtual-command') and caps.get('ordinary')
+        if ordinary and step['command'].split()[0] not in caps['ordinary'].split(','):
+            report['status'] = 'unsupported'
+            raise ValueError('scenario uses a command unsupported by this backend')
         if step['op'] == 'input':
             for event in events_for(step):
                 check_event_capability(event, caps)
@@ -1188,4 +1190,4 @@ if __name__ == '__main__':
         raise SystemExit(main())
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'version': VERSION, 'status': 'fail', 'error': str(error)}))
-        raise SystemExit(1)
+        raise SystemExit(1) from None

@@ -2,7 +2,6 @@
 
 import argparse
 import json
-from pathlib import Path
 
 from cycling_devtools.harness.runner import atomic_json, preflight
 from cycling_devtools.terminal.usb import reply_fields

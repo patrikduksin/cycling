@@ -1,14 +1,14 @@
 import io
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
-from types import SimpleNamespace
 import zlib
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from cycling_devtools.harness.runner import Runner, decode_chunk, events_for, png_rgb565, preflight, execute
+from cycling_devtools.harness.runner import Runner, decode_chunk, events_for, execute, png_rgb565, preflight
 from cycling_devtools.harness.transport import Real
 from workspace_fixture import private_root
 

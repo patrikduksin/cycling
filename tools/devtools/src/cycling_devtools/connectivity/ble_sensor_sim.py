@@ -5,7 +5,6 @@ import argparse
 import os
 import signal
 
-
 BLUEZ = 'org.bluez'
 OM = 'org.freedesktop.DBus.ObjectManager'
 PROPS = 'org.freedesktop.DBus.Properties'
@@ -189,7 +188,8 @@ def run(profile):
     )
     gatt = dbus.Interface(bus.get_object(BLUEZ, adapter), GATT_MANAGER)
     advertising = dbus.Interface(bus.get_object(BLUEZ, adapter), ADV_MANAGER)
-    application = Application(bus)
+    # Keep the exported D-Bus objects referenced while the main loop runs.
+    _application = Application(bus)
     advertisement = Advertisement(bus)
     loop = GLib.MainLoop()
     registered = {'gatt': False, 'advertisement': False}

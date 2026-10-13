@@ -1,6 +1,7 @@
 """Read a bounded eMMC layout and root-directory sample into ignored private files."""
 
 import argparse
+import itertools
 import json
 import os
 import re
@@ -88,7 +89,7 @@ class Media:
 
 def nonoverlapping(partitions):
     ordered = sorted(partitions, key=lambda p: p['start'])
-    for left, right in zip(ordered, ordered[1:]):
+    for left, right in itertools.pairwise(ordered):
         if left['start'] + left['sectors'] > right['start']:
             raise ValueError('overlapping partitions')
     return partitions

@@ -7,12 +7,12 @@ callers must inspect state instead of replaying them. Log decoding stays in logs
 import fcntl
 import json
 import os
-from pathlib import Path
 import re
 import select
 import termios
 import time
 import tty
+from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 

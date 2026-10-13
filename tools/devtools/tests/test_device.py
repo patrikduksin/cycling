@@ -4,12 +4,13 @@ import contextlib
 import hashlib
 import io
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
 import zlib
+from pathlib import Path
+from unittest.mock import Mock, patch
+
 import cycling_devtools.device.firmware as device
 
 
@@ -337,8 +338,8 @@ class SharedUsbLockTests(unittest.TestCase):
             self.assertTrue((Path(directory) / '.local/usb.lock').is_file())
 
     def test_firmware_excludes_terminal_mmc_logs_and_releases_after_failure(self):
-        from cycling_devtools.terminal import usb, logs
         from cycling_devtools.device import mmc_maintenance
+        from cycling_devtools.terminal import logs, usb
 
         with tempfile.TemporaryDirectory() as directory, patch.object(usb, 'ROOT', Path(directory)):
 

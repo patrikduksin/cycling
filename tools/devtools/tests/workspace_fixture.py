@@ -1,8 +1,8 @@
 """A temporary git checkout whose ignored .local/ satisfies the private-path guard."""
 
 import contextlib
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 from cycling_devtools import workspace

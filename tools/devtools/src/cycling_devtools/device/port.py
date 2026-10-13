@@ -6,9 +6,9 @@ opens a port, and it fails instead of choosing a missing or ambiguous device.
 
 import json
 import os
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 

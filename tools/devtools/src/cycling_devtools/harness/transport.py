@@ -1,13 +1,13 @@
 """Harness transports retain one owner across close/reopen and firmware restart."""
 
-import json
 import fcntl
+import json
 import os
-from pathlib import Path
 import secrets
 import select
 import subprocess
 import time
+from pathlib import Path
 
 from cycling_devtools.terminal.usb import UsbConnection, open_no_reset, terminal_reply
 from cycling_devtools.workspace import ROOT

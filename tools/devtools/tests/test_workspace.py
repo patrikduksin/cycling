@@ -1,14 +1,14 @@
 """The single .local guard and shared reply/byte helpers."""
 
-from pathlib import Path
 import stat
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from cycling_devtools import workspace
-from cycling_devtools.little_endian import u16, u32, u64
+from cycling_devtools.little_endian import i16, i32, u16, u32, u64
 from cycling_devtools.terminal.usb import reply_fields
 from workspace_fixture import private_root
 
@@ -79,7 +79,9 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(u16(data, 6), 0x0807)
         self.assertEqual(u32(data, 0), 0x04030201)
         self.assertEqual(u64(data, 0), 0x0807060504030201)
-        for reader, offset in ((u16, 7), (u32, 5), (u64, 1), (u16, -1)):
+        self.assertEqual(i16(b'\xfe\xff', 0), -2)
+        self.assertEqual(i32(b'\x00\x00\x00\x80', 0), -(2**31))
+        for reader, offset in ((u16, 7), (u32, 5), (u64, 1), (u16, -1), (i16, 7), (i32, 5)):
             with self.subTest(reader=reader.__name__, offset=offset), self.assertRaises(ValueError):
                 reader(data, offset)
 

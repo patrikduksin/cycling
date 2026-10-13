@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import subprocess
 
 from cycling_devtools.workspace import ROOT

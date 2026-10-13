@@ -1,13 +1,14 @@
 """Prepare an offline, reviewable C606 partition conversion; no device access."""
 
 import argparse
-from dataclasses import asdict, dataclass
 import hashlib
+import itertools
 import json
 import os
-from pathlib import Path
 import struct
 import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import cycling_devtools.device.mmc as mmc
 from cycling_devtools.device.mmc_maintenance import crc, digest_file, save_manifest, validate_backup
@@ -133,7 +134,7 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
             raise ValueError('target range is invalid or outside medium')
         ranges.append((start, start + size // SECTOR))
     ordered = sorted(ranges)
-    if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])):
+    if any(left[1] > right[0] for left, right in itertools.pairwise(ordered)):
         raise ValueError('target ranges overlap')
     extents, target_records = [], []
     with baseline.open('rb') as original:
@@ -152,7 +153,7 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
                 write_new(output / name, run)
                 extents.append(
                     {
-                        'phase': target['phase'],
+                        'phase': target['phase'],  # noqa: B023 - flush runs within this iteration
                         'start': run_start,
                         'count': len(run) // SECTOR,
                         'file': name,
@@ -200,7 +201,7 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
     return extents, target_records
 
 
-def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):
+def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):  # noqa: B008 - frozen
     layout.validate()
     method = validate_backup(backup_manifest, layout.total, single_read_copy=single_read_copy)
     baseline_manifest = json.loads(backup_manifest.read_text())

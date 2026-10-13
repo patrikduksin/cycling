@@ -4,13 +4,13 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
-import select
 import secrets
+import select
 import struct
 import sys
 import time
 import zlib
+from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import acquire_lock, open_no_reset

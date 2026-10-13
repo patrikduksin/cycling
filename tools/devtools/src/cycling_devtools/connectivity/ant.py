@@ -6,10 +6,10 @@ The operator connects owned peers first; this tool never replaces their selectio
 
 import argparse
 import json
-from pathlib import Path
 import re
 import subprocess
 import time
+from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import UsbConnection

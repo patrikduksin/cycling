@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Validate private runtime BLE selections for the USB harness."""
 
-from pathlib import Path
-
 from cycling_devtools.workspace import ROOT
 
 AUTHORIZED = ROOT / '.local/overnight/authorized-heart-sensor.json'

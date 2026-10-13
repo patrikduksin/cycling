@@ -1,9 +1,9 @@
-import tempfile
 import json
+import tempfile
 import unittest
-from pathlib import Path
 import xml.etree.ElementTree as ET
 import zlib
+from pathlib import Path
 
 from cycling_devtools.rides.export import (
     COMMIT,
@@ -14,7 +14,6 @@ from cycling_devtools.rides.export import (
     rides_from_slots,
     write_gpx,
 )
-
 from cycling_devtools.terminal.usb import terminal_reply
 
 

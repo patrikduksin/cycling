@@ -2,10 +2,10 @@
 
 import hashlib
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cycling_devtools.device.mmc_maintenance as mm
@@ -88,16 +88,14 @@ class ProtocolTests(unittest.TestCase):
 
     def test_wrong_id_header_crc_and_payload_crc(self):
         for incoming in (frame(ident=2), bytes([0]) + frame()[1:], frame(checksum=42)):
-            with self.subTest(incoming=incoming[:12]):
-                with self.assertRaises(ValueError):
-                    list(Wire(incoming).read(0, 1))
+            with self.subTest(incoming=incoming[:12]), self.assertRaises(ValueError):
+                list(Wire(incoming).read(0, 1))
 
     def test_missing_overlapping_and_excess_read_ranges(self):
         for incoming in (frame(start=1), frame(count=2), frame(encoding=3), frame() + frame(start=0)):
             wire = Wire(incoming)
-            with self.subTest(incoming=incoming[:28]):
-                with self.assertRaises(ValueError):
-                    list(wire.read(0, 2 if len(incoming) > 1056 else 1))
+            with self.subTest(incoming=incoming[:28]), self.assertRaises(ValueError):
+                list(wire.read(0, 2 if len(incoming) > 1056 else 1))
 
     def test_frame_limit_and_unknown_encoding(self):
         for incoming in (frame(count=8), frame(encoding=4)):
@@ -206,9 +204,9 @@ class ProtocolTests(unittest.TestCase):
         with (
             patch.object(mm.select, 'select', return_value=([10], [], [])),
             patch.object(mm.os, 'read', return_value=b''),
+            self.assertRaises(ConnectionError),
         ):
-            with self.assertRaises(ConnectionError):
-                connection.receive(32)
+            connection.receive(32)
 
 
 class BackupTests(unittest.TestCase):

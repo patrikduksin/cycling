@@ -4,13 +4,13 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
 import zlib
+from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
-from cycling_devtools.little_endian import u16, u32, u64
+from cycling_devtools.little_endian import i16, i32, u16, u32, u64
 from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT
 
@@ -81,24 +81,23 @@ def decode_slot(data):
     for index in range(count):
         value = data[32 + index * 48 : 80 + index * 48]
         flags = u32(value, 16)
-        if flags & ~0x800001FF or flags & 4 and not flags & 0x80000000:
+        if flags & ~0x800001FF or (flags & 4 and not flags & 0x80000000):
             raise ValueError('invalid sample flags')
         battery = value[36] if flags & 32 else None
         if battery is not None and battery > 100:
             raise ValueError('invalid battery value')
-        signed = lambda at: int.from_bytes(value[at : at + 4], 'little', signed=True)
         samples.append(
             {
                 'active_ms': u64(value, 0),
                 'utc_ms': u64(value, 8) if flags & 1 else None,
-                'latitude_e7': signed(20) if flags & 2 else None,
-                'longitude_e7': signed(24) if flags & 2 else None,
+                'latitude_e7': i32(value, 20) if flags & 2 else None,
+                'longitude_e7': i32(value, 24) if flags & 2 else None,
                 'demo_speed_mm_s': u32(value, 28) if flags & 4 else None,
                 'heart_bpm': u16(value, 32) if flags & 8 else None,
                 'cadence_tenths': u16(value, 34) if flags & 16 else None,
                 'speed_mm_s': u32(value, 40) if flags & 64 else None,
                 'power_watts': u16(value, 38) if flags & 128 else None,
-                'gradient_tenths': int.from_bytes(value[44:46], 'little', signed=True) if flags & 256 else None,
+                'gradient_tenths': i16(value, 44) if flags & 256 else None,
                 'battery_percent': battery,
             }
         )

@@ -12,9 +12,9 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import struct
 import zlib
+from pathlib import Path
 
 SLOT_SIZE = 256
 MAX_SLOTS = 4096

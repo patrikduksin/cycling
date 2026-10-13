@@ -1,15 +1,14 @@
-import struct
-import hashlib
-import json
 import contextlib
+import hashlib
 import io
+import json
+import struct
 import tempfile
+import unittest
+import zlib
 from pathlib import Path
 
 import cycling_devtools.rides.ant_capture as ant_capture
-import unittest
-import zlib
-
 from cycling_devtools.rides.ant_capture import decode_slot
 
 

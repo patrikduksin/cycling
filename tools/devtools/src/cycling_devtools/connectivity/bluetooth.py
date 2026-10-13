@@ -5,7 +5,6 @@ import argparse
 import json
 import time
 
-
 BLUEZ = 'org.bluez'
 DEVICE = 'org.bluez.Device1'
 CHAR = 'org.bluez.GattCharacteristic1'

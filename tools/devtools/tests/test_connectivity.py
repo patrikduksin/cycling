@@ -1,8 +1,7 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
 import cycling_devtools.harness.runner as harness
 from cycling_devtools.harness.connectivity import scenarios

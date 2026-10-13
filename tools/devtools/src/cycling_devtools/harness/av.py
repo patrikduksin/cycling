@@ -6,11 +6,11 @@ import hashlib
 import json
 import math
 import re
-from pathlib import Path
 import shutil
 import subprocess
 import time
 import wave
+from pathlib import Path
 
 
 def command(args):
@@ -83,7 +83,7 @@ def analyze_audio(path, noise_seconds=0.4, margin_db=12, floor_db=-45):
     background = noise[len(noise) // 2]
     threshold = max(10 ** (floor_db / 20), background * 10 ** (margin_db / 20))
     spans, start = [], None
-    for i, level in enumerate(rms + [0]):
+    for i, level in enumerate([*rms, 0]):
         if level >= threshold and start is None:
             start = i
         elif level < threshold and start is not None:

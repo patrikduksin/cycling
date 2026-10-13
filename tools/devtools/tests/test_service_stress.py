@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from cycling_devtools.harness.stress import fields, validate, run
+
+from cycling_devtools.harness.stress import fields, run, validate
 
 
 class ServiceStressTests(unittest.TestCase):

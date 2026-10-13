@@ -2,9 +2,9 @@ import argparse
 import contextlib
 import io
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cycling_devtools.device.port as device_port

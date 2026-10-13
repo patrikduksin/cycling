@@ -1,10 +1,11 @@
 """Wi-Fi credentials must be validated, escaped, and stored privately."""
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
 import cycling_devtools.connectivity.wifi as wifi
 
 

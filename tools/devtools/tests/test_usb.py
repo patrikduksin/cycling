@@ -53,9 +53,8 @@ class UsbTests(unittest.TestCase):
 
     def test_lock_excludes_other_owners_and_releases_after_close(self):
         with tempfile.TemporaryDirectory() as directory, patch('cycling_devtools.terminal.usb.ROOT', Path(directory)):
-            with acquire_lock():
-                with self.assertRaises(BlockingIOError):
-                    acquire_lock()
+            with acquire_lock(), self.assertRaises(BlockingIOError):
+                acquire_lock()
             with acquire_lock():
                 pass
 

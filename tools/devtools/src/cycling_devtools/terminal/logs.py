@@ -1,12 +1,12 @@
 """Private, reconnecting C606 JSON Lines capture through the single USB owner."""
 
 import argparse
-from collections import Counter
 import json
 import os
-from pathlib import Path
 import select
 import time
+from collections import Counter
+from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import acquire_lock, open_no_reset
@@ -94,73 +94,71 @@ def private_file(path, mode):
 
 def collect(port, directory, seconds=None, commands=()):
     directory = private_directory(directory)
-    with acquire_lock():
-        with (
-            private_file(directory / 'raw.bin', 'wb') as raw,
-            private_file(directory / 'records.jsonl', 'w') as decoded,
-        ):
+    with (
+        acquire_lock(),
+        private_file(directory / 'raw.bin', 'wb') as raw,
+        private_file(directory / 'records.jsonl', 'w') as decoded,
+    ):
 
-            def emit(record):
-                decoded.write(json.dumps(record, separators=(',', ':')) + '\n')
-                decoded.flush()
+        def emit(record):
+            decoded.write(json.dumps(record, separators=(',', ':')) + '\n')
+            decoded.flush()
 
-            decoder = Decoder(emit)
-            decoder.host('session_start', port=port, commands=list(commands))
-            deadline = None if seconds is None else time.monotonic() + seconds
-            fd = None
-            retry = 0.1
-            outgoing = b''
-            first_connection = True
-            try:
-                while deadline is None or time.monotonic() < deadline:
-                    if fd is None:
-                        try:
-                            fd = open_no_reset(port)
-                        except OSError as error:
-                            decoder.host('open_retry', errno=error.errno, delay=retry)
-                            time.sleep(retry)
-                            retry = min(2.0, retry * 2)
-                            continue
-                        decoder.boundary('connected')
-                        retry = 0.1
-                        outgoing = b'CMD 0 INFO\n'
-                        # Commands execute once only. Reconnect must never replay mutations.
-                        if first_connection:
-                            outgoing += b''.join(
-                                f'CMD {i} {cmd}\n'.encode('ascii') for i, cmd in enumerate(commands, 1)
-                            )
-                            first_connection = False
+        decoder = Decoder(emit)
+        decoder.host('session_start', port=port, commands=list(commands))
+        deadline = None if seconds is None else time.monotonic() + seconds
+        fd = None
+        retry = 0.1
+        outgoing = b''
+        first_connection = True
+        try:
+            while deadline is None or time.monotonic() < deadline:
+                if fd is None:
                     try:
-                        ready, writable, _ = select.select([fd], [fd] if outgoing else [], [], 0.1)
-                        if writable:
-                            try:
-                                outgoing = outgoing[os.write(fd, outgoing) :]
-                            except BlockingIOError:
-                                pass
-                        data = os.read(fd, 16384) if ready else None
-                        if data == b'':
-                            raise OSError('USB disconnected')
-                    except BlockingIOError:
-                        continue
+                        fd = open_no_reset(port)
                     except OSError as error:
-                        decoder.boundary('disconnected', error=str(error), unsent_bytes=len(outgoing))
-                        outgoing = b''
-                        os.close(fd)
-                        fd = None
+                        decoder.host('open_retry', errno=error.errno, delay=retry)
+                        time.sleep(retry)
+                        retry = min(2.0, retry * 2)
                         continue
-                    if data:
-                        # Disk failures propagate; never masquerade as a serial retry.
-                        raw.write(data)
-                        raw.flush()
-                        decoder.feed(data)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                if fd is not None:
+                    decoder.boundary('connected')
+                    retry = 0.1
+                    outgoing = b'CMD 0 INFO\n'
+                    # Commands execute once only. Reconnect must never replay mutations.
+                    if first_connection:
+                        outgoing += b''.join(f'CMD {i} {cmd}\n'.encode('ascii') for i, cmd in enumerate(commands, 1))
+                        first_connection = False
+                try:
+                    ready, writable, _ = select.select([fd], [fd] if outgoing else [], [], 0.1)
+                    if writable:
+                        try:
+                            outgoing = outgoing[os.write(fd, outgoing) :]
+                        except BlockingIOError:
+                            pass
+                    data = os.read(fd, 16384) if ready else None
+                    if data == b'':
+                        raise OSError('USB disconnected')
+                except BlockingIOError:
+                    continue
+                except OSError as error:
+                    decoder.boundary('disconnected', error=str(error), unsent_bytes=len(outgoing))
+                    outgoing = b''
                     os.close(fd)
-                decoder.boundary('session_end')
-                with private_file(directory / 'summary.json', 'w') as report:
-                    json.dump(dict(decoder.counts), report, indent=2)
+                    fd = None
+                    continue
+                if data:
+                    # Disk failures propagate; never masquerade as a serial retry.
+                    raw.write(data)
+                    raw.flush()
+                    decoder.feed(data)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if fd is not None:
+                os.close(fd)
+            decoder.boundary('session_end')
+            with private_file(directory / 'summary.json', 'w') as report:
+                json.dump(dict(decoder.counts), report, indent=2)
     return directory
 
 

@@ -2,14 +2,13 @@
 
 import json
 import shutil
-from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
-import cycling_devtools.device.mmc_partition as part
 import cycling_devtools.device.mmc_maintenance as maintenance
+import cycling_devtools.device.mmc_partition as part
 from cycling_devtools.device.mmc_maintenance import crc
 from workspace_fixture import private_root
 
@@ -74,9 +73,8 @@ class PartitionTests(unittest.TestCase):
             part.Layout(total=7733247),
             part.Layout(total=2**32),
         ):
-            with self.subTest(layout=layout):
-                with self.assertRaises(ValueError):
-                    part.make_mbr(layout)
+            with self.subTest(layout=layout), self.assertRaises(ValueError):
+                part.make_mbr(layout)
         with self.assertRaises(ValueError):
             part.make_marker(part.Layout(), b'\0' * 512)
 

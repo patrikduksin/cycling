@@ -26,6 +26,17 @@ quote-style = "single"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    # The formatter owns wrapping; long operator-facing messages stay greppable.
+    "E501",
+    # Explicit try/except keeps a comment beside each deliberately absorbed error.
+    "SIM105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests nest context managers for readability, define fakes called within the
+# same loop iteration, and share recorded state through fake class attributes.
+"tests/*" = ["SIM117", "B023", "RUF012"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["cycling_devtools", "workspace_fixture"]

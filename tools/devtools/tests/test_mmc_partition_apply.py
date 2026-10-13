@@ -2,9 +2,9 @@
 
 import json
 import struct
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cycling_devtools.device.mmc_partition_apply as executor

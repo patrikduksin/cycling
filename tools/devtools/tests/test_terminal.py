@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.terminal.cli import exchange, run
+from cycling_devtools.terminal.usb import UsbConnection
 
 
 class TerminalTests(unittest.TestCase):

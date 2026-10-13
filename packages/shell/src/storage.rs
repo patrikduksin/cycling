@@ -60,15 +60,12 @@ impl<B: OwnedFlash> Store<B> {
         match self.journal.save(&settings.encode()) {
             Ok(record) => Ok(record),
             Err(error) => match self.load() {
-                Ok(loaded)
-                    if loaded.source == crate::preferences::Source::Current
-                        && loaded.settings == settings =>
-                {
-                    Ok(Record {
-                        sequence: loaded.sequence.unwrap(),
-                        length: loaded.length,
-                    })
-                }
+                Ok(Loaded {
+                    settings: stored,
+                    source: crate::preferences::Source::Current,
+                    sequence: Some(sequence),
+                    length,
+                }) if stored == settings => Ok(Record { sequence, length }),
                 _ => Err(error.into()),
             },
         }

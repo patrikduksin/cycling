@@ -336,10 +336,13 @@ impl Saver {
             self.pending = None;
             return false;
         }
-        if self.pending.map(|(value, _)| value) != Some(current) {
-            self.pending = Some((current, now));
-        }
-        let (_, changed_at) = self.pending.unwrap();
+        let changed_at = match self.pending {
+            Some((value, changed_at)) if value == current => changed_at,
+            _ => {
+                self.pending = Some((current, now));
+                now
+            }
+        };
         now >= changed_at + DEBOUNCE_MS && now >= self.retry_at
     }
 

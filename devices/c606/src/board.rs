@@ -357,7 +357,8 @@ impl device_api::network::Network for Network {
     fn availability(&self) -> device_api::observation::Availability {
         if self.0.is_some() {
             device_api::observation::Availability::Ready
-        } else if crate::drivers::wifi::state() == 0 {
+        } else if crate::drivers::wifi::state() == device_api::connectivity::WifiState::Unconfigured
+        {
             device_api::observation::Availability::Unconfigured
         } else {
             device_api::observation::Availability::Failed
@@ -369,10 +370,10 @@ impl device_api::network::Network for Network {
     fn online(&self) -> bool {
         crate::drivers::wifi::online()
     }
-    fn state(&self) -> u8 {
+    fn state(&self) -> device_api::connectivity::WifiState {
         crate::drivers::wifi::state()
     }
-    fn stats(&self) -> (u32, u32, u32, u8) {
+    fn stats(&self) -> device_api::connectivity::WifiStats {
         crate::drivers::wifi::stats()
     }
     fn connection_generation(&self) -> u32 {

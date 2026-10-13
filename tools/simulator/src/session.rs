@@ -265,7 +265,7 @@ impl Session {
                     self.shell.settings.wifi.is_some(),
                     self.wifi_control.operation.name(),
                     self.wifi_control.sequence,
-                    self.wifi_control.error
+                    self.wifi_control.error_name()
                 );
             }
             Command::WifiConfigure(_) | Command::WifiForget => {
@@ -336,7 +336,7 @@ impl Session {
                     self.shell.settings.ble_profile,
                     self.ble_control.operation.name(),
                     self.ble_control.sequence,
-                    self.ble_control.error
+                    self.ble_control.error_name()
                 );
             }
             #[cfg(feature = "cycling")]

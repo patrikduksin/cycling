@@ -17,52 +17,47 @@ use embassy_time::Duration;
 use embassy_time::Timer;
 use esp_hal::peripherals::BT;
 use esp_radio::ble::controller::BleConnector;
+use firmware_services::connectivity::Reconnect;
 use trouble_host::prelude::*;
 
+use crate::drivers::radio_control::DISCOVERIES;
+use crate::drivers::radio_control::Shared;
+use device_api::ble_transport::Discovery;
 use device_api::ble_transport::Link;
+use device_api::ble_transport::Operation as BleOperation;
 use device_api::ble_transport::Packet;
 use device_api::ble_transport::Selection;
 use device_api::ble_transport::Snapshot;
+use device_api::connectivity::ControlError;
+use device_api::connectivity::ControlStatus;
+use device_api::connectivity::Text;
+use device_api::observation::Availability;
+use device_api::observation::Error;
 use device_api::power::PeripheralState;
-struct PowerControl {
-    suspended: bool,
-    state: PeripheralState,
-}
-static POWER: Mutex<RefCell<PowerControl>> = Mutex::new(RefCell::new(PowerControl {
-    suspended: false,
-    state: PeripheralState::Running,
-}));
-static RADIO_UNCERTAIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+type BleController = ExternalController<BleConnector<'static>, 10>;
+type BleStack<'s> = Stack<'s, BleController, DefaultPacketPool>;
+type BleCentral<'s> = Central<'s, BleController, DefaultPacketPool>;
+type BlePeripheral<'s> = Peripheral<'s, BleController, DefaultPacketPool>;
+
+/// Power, command admission and discoveries. Cancelled connects and failed
+/// disconnects mark it uncertain for the rest of the boot; see `radio_control`.
+static CONTROL: Shared<BleOperation, Discovery> = Shared::new();
+
 pub fn power_status() -> PeripheralState {
-    critical_section::with(|cs| POWER.borrow_ref(cs).state)
+    CONTROL.power()
 }
-fn suspended() -> bool {
-    critical_section::with(|cs| POWER.borrow_ref(cs).suspended)
+pub fn power_request(suspend: bool) -> Result<(), Error> {
+    CONTROL.power_request(suspend, || {})
 }
-pub fn power_request(suspend: bool) -> Result<(), device_api::observation::Error> {
-    critical_section::with(|cs| {
-        let mut power = POWER.borrow_ref_mut(cs);
-        if !READY.load(Ordering::Acquire)
-            || (suspend
-                && (CONTROL.borrow_ref(cs).operation == Operation::Pending
-                    || COMMAND.borrow_ref(cs).is_some()))
-        {
-            return Err(device_api::observation::Error::Unavailable);
-        }
-        if power.suspended != suspend {
-            power.suspended = suspend;
-            power.state = PeripheralState::Pending;
-        }
-        Ok(())
-    })
+pub fn control() -> ControlStatus {
+    CONTROL.status()
 }
-fn power_complete(suspend: bool, state: PeripheralState) {
-    critical_section::with(|cs| {
-        let mut power = POWER.borrow_ref_mut(cs);
-        if power.suspended == suspend {
-            power.state = state;
-        }
-    });
+pub fn discoveries() -> [Option<Discovery>; DISCOVERIES] {
+    CONTROL.discoveries()
+}
+pub fn request(operation: BleOperation) -> Result<(), Error> {
+    CONTROL.request(operation)
 }
 
 static SELECTION: Mutex<RefCell<Option<Selection>>> = Mutex::new(RefCell::new(None));
@@ -75,68 +70,10 @@ const CONNECTIONS: usize = 1;
 const CHANNELS: usize = 2;
 const ECHO_NAME: &[u8] = b"Cycling Echo";
 static SCAN_REPORTS: AtomicU32 = AtomicU32::new(0);
+/// Signal range of the current scan only; reset when each scan starts.
 static SCAN_RSSI_MIN: AtomicI32 = AtomicI32::new(i32::MAX);
 static SCAN_RSSI_MAX: AtomicI32 = AtomicI32::new(i32::MIN);
 static TARGET: Mutex<RefCell<Option<Address>>> = Mutex::new(RefCell::new(None));
-use device_api::ble_transport::Discovery;
-use device_api::ble_transport::Operation as BleOperation;
-use device_api::connectivity::ControlStatus;
-use device_api::connectivity::Operation;
-use device_api::connectivity::Text;
-static READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static CONTROL: Mutex<RefCell<ControlStatus>> = Mutex::new(RefCell::new(ControlStatus::new()));
-static COMMAND: Mutex<RefCell<Option<BleOperation>>> = Mutex::new(RefCell::new(None));
-static DISCOVERIES: Mutex<RefCell<[Option<Discovery>; 8]>> = Mutex::new(RefCell::new([None; 8]));
-pub fn control() -> ControlStatus {
-    critical_section::with(|cs| *CONTROL.borrow_ref(cs))
-}
-pub fn discoveries() -> [Option<Discovery>; 8] {
-    critical_section::with(|cs| *DISCOVERIES.borrow_ref(cs))
-}
-pub fn request(operation: BleOperation) -> Result<(), device_api::observation::Error> {
-    if !READY.load(Ordering::Acquire) {
-        return Err(device_api::observation::Error::Unavailable);
-    }
-    critical_section::with(|cs| {
-        let mut status = CONTROL.borrow_ref_mut(cs);
-        if POWER.borrow_ref(cs).suspended
-            || !matches!(POWER.borrow_ref(cs).state, PeripheralState::Running)
-            || status.operation == Operation::Pending
-            || COMMAND.borrow_ref(cs).is_some()
-        {
-            return Err(device_api::observation::Error::Unavailable);
-        }
-        status.sequence = status.sequence.wrapping_add(1);
-        status.operation = Operation::Pending;
-        status.error = "none";
-        *COMMAND.borrow_ref_mut(cs) = Some(operation);
-        Ok(())
-    })
-}
-fn complete(error: Option<&'static str>) {
-    critical_section::with(|cs| {
-        let mut s = CONTROL.borrow_ref_mut(cs);
-        s.operation = if error.is_some() {
-            Operation::Failed
-        } else {
-            Operation::Completed
-        };
-        s.error = error.unwrap_or("none");
-    });
-}
-async fn power_pending() {
-    while !suspended() {
-        Timer::after_millis(50).await;
-    }
-}
-async fn command_pending() {
-    loop {
-        if suspended() || critical_section::with(|cs| COMMAND.borrow_ref(cs).is_some()) {
-            return;
-        }
-        Timer::after_millis(50).await;
-    }
-}
 
 static STATE: Mutex<RefCell<Snapshot>> = Mutex::new(RefCell::new(Snapshot {
     link: Link::Off,
@@ -181,22 +118,23 @@ impl EventHandler for ScanCounter {
                     _ => None,
                 })
                 .unwrap_or(Text::empty());
-            let address: [u8; 6] = report.addr.raw().try_into().unwrap();
-            critical_section::with(|cs| {
-                let mut discoveries = DISCOVERIES.borrow_ref_mut(cs);
-                let slot = discoveries
-                    .iter()
-                    .position(|item| item.is_some_and(|item| item.address == address))
-                    .or_else(|| discoveries.iter().position(Option::is_none));
-                if let Some(slot) = slot {
-                    discoveries[slot] = Some(Discovery {
-                        name,
-                        address,
-                        random: report.addr_kind != AddrKind::PUBLIC,
-                        rssi: report.rssi,
-                    });
-                }
-            });
+            // BdAddr is always six bytes; the conversion cannot fail.
+            if let Ok(address) = <[u8; 6]>::try_from(report.addr.raw()) {
+                CONTROL.update_discoveries(|discoveries| {
+                    let slot = discoveries
+                        .iter()
+                        .position(|item| item.is_some_and(|item| item.address == address))
+                        .or_else(|| discoveries.iter().position(Option::is_none));
+                    if let Some(slot) = slot {
+                        discoveries[slot] = Some(Discovery {
+                            name,
+                            address,
+                            random: report.addr_kind != AddrKind::PUBLIC,
+                            rssi: report.rssi,
+                        });
+                    }
+                });
+            }
             let Some(selection) = critical_section::with(|cs| *SELECTION.borrow_ref(cs)) else {
                 continue;
             };
@@ -252,14 +190,14 @@ pub async fn start(bt: BT<'static>) {
             return;
         }
     };
-    let controller: ExternalController<_, 10> = ExternalController::new(connector);
+    let controller: BleController = ExternalController::new(connector);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS, CHANNELS> =
         HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
         .set_random_address(Address::random([0x15, 0xc6, 0x06, 0x00, 0x00, 0xc0]));
     let Host {
-        mut central,
-        mut peripheral,
+        central,
+        peripheral,
         mut runner,
         ..
     } = stack.build();
@@ -282,190 +220,215 @@ pub async fn start(bt: BT<'static>) {
         esp_alloc::HEAP.free()
     );
 
-    READY.store(true, Ordering::Release);
-    let app = async {
-        let mut echo = true;
-        let mut retry = firmware_services::connectivity::Reconnect::default();
-        loop {
-            if !READY.load(Ordering::Acquire) {
-                return;
-            }
-            if suspended() {
-                if matches!(power_status(), PeripheralState::Pending) {
-                    // Dropping an advertiser/scan session only queues cancellation.
-                    // Wait for actual controller acknowledgements with the runner alive.
-                    let result = embassy_time::with_timeout(Duration::from_secs(5), async {
-                        stack.command(LeSetScanEnable::new(false, false)).await?;
-                        stack.command(LeSetAdvEnable::new(false)).await
-                    })
-                    .await;
-                    let mut quiet = matches!(result, Ok(Ok(_)));
-                    if !quiet {
-                        RADIO_UNCERTAIN.store(true, Ordering::Release);
-                    }
-                    // A peer can connect just before the advertising disable. Drain
-                    // that accepted controller connection before claiming inactivity.
-                    while let Some(connection) = peripheral.try_accept() {
-                        connection.disconnect();
-                        quiet &= wait_disconnected(&connection).await;
-                    }
-                    quiet &=
-                        !RADIO_UNCERTAIN.load(Ordering::Acquire) && READY.load(Ordering::Acquire);
-                    while PACKETS.try_receive().is_ok() {}
-                    set_link(if quiet { Link::Off } else { Link::Failed });
-                    power_complete(
-                        true,
-                        if quiet {
-                            PeripheralState::Quiescent
-                        } else {
-                            PeripheralState::Failed
-                        },
-                    );
-                }
-                Timer::after_millis(50).await;
-                continue;
-            }
-            if matches!(power_status(), PeripheralState::Pending) {
-                // Keep echo, selection and reconnect intent unchanged across power
-                // preparation. Fresh transport work resumes below.
-                power_complete(
-                    false,
-                    if RADIO_UNCERTAIN.load(Ordering::Acquire) {
-                        PeripheralState::Failed
-                    } else {
-                        PeripheralState::Running
-                    },
-                );
-            }
-            if matches!(power_status(), PeripheralState::Failed) {
-                Timer::after_millis(50).await;
-                continue;
-            }
-            let requested = critical_section::with(|cs| COMMAND.borrow_ref_mut(cs).take());
-            let automatic = requested.is_none() && retry.requested();
-            let operation = if automatic {
-                Some(BleOperation::Connect)
-            } else {
-                requested
-            };
-            let finish = |error| {
-                if !automatic && critical_section::with(|cs| COMMAND.borrow_ref(cs).is_none()) {
-                    complete(error);
-                }
-            };
-            match operation {
-                Some(BleOperation::Select(selection)) => {
-                    retry.disconnect();
-                    critical_section::with(|cs| *SELECTION.borrow_ref_mut(cs) = selection);
-                    while PACKETS.try_receive().is_ok() {}
-                    echo = false;
-                    set_link(Link::Off);
-                    finish(None);
-                }
-                Some(BleOperation::Disconnect) => {
-                    retry.disconnect();
-                    echo = false;
-                    set_link(Link::Off);
-                    finish(None);
-                }
-                Some(BleOperation::Echo) => {
-                    retry.disconnect();
-                    echo = true;
-                    finish(None);
-                }
-                Some(BleOperation::Scan) => {
-                    retry.disconnect();
-                    echo = false;
-                    critical_section::with(|cs| *DISCOVERIES.borrow_ref_mut(cs) = [None; 8]);
-                    let (returned, _, success) = scan_target(central).await;
-                    central = returned;
-                    set_link(Link::Off);
-                    finish(if success { None } else { Some("scan_failed") });
-                }
-                Some(BleOperation::Connect) => {
-                    if !automatic {
-                        retry.connect();
-                    }
-                    echo = false;
-                    let selection = critical_section::with(|cs| *SELECTION.borrow_ref(cs));
-                    if let Some(selection) = selection {
-                        let (returned, target, _) = scan_target(central).await;
-                        central = returned;
-                        if suspended()
-                            || (automatic
-                                && critical_section::with(|cs| COMMAND.borrow_ref(cs).is_some()))
-                        {
-                            continue;
-                        }
-                        if let Some(target) = target {
-                            set_link(Link::Connecting);
-                            let before = snapshot().connections;
-                            let result =
-                                client_attempt(&stack, &mut central, target, selection, !automatic)
-                                    .await;
-                            if snapshot().connections != before {
-                                retry.recovered();
-                                disconnected();
-                            }
-                            match result {
-                                Ok(())
-                                    if critical_section::with(|cs| {
-                                        COMMAND.borrow_ref(cs).is_some()
-                                    }) =>
-                                {
-                                    set_link(Link::Off);
-                                }
-                                result => {
-                                    set_link(Link::Failed);
-                                    finish(Some(result.err().unwrap_or("connection_ended")));
-                                }
-                            }
-                        } else {
-                            set_link(Link::Failed);
-                            finish(Some("peer_not_found"));
-                        }
-                    } else {
-                        set_link(Link::Off);
-                        retry.disconnect();
-                        finish(Some("unconfigured"));
-                    }
-                }
-                None => {}
-            }
-            if !READY.load(Ordering::Acquire) {
-                return;
-            }
-            if suspended() {
-                continue;
-            }
-            if echo {
-                if advertise_and_echo(&mut peripheral, &server).await.is_err() {
-                    // A GATT error can drop a live connection and only queue its
-                    // disconnect. Do not claim power quiescence without completion.
-                    RADIO_UNCERTAIN.store(true, Ordering::Release);
-                    let _ = select(command_pending(), Timer::after_secs(1)).await;
-                }
-            } else if retry.requested() {
-                let _ = select(command_pending(), Timer::after_secs(retry.delay())).await;
-            } else {
-                command_pending().await;
-            }
-        }
-    };
-    let outcome = select(runner.run_with_handler(&ScanCounter), app).await;
-    READY.store(false, Ordering::Release);
-    critical_section::with(|cs| POWER.borrow_ref_mut(cs).state = PeripheralState::Failed);
-    critical_section::with(|cs| *COMMAND.borrow_ref_mut(cs) = None);
-    complete(Some("runner_stopped"));
-    update_state(|state| {
-        state.link = Link::Failed;
-    });
+    CONTROL.set_ready();
+    let outcome = select(
+        runner.run_with_handler(&ScanCounter),
+        application(&stack, central, peripheral, &server),
+    )
+    .await;
+    CONTROL.stop(ControlError::RunnerStopped);
+    set_link(Link::Failed);
     match outcome {
         Either::First(Ok(())) => log::info!(target: "ble", "CYCLING_BLE runner_stopped result=ok"),
         Either::First(Err(_)) => {
             log::info!(target: "ble", "CYCLING_BLE runner_stopped result=error")
         }
         Either::Second(()) => log::info!(target: "ble", "CYCLING_BLE application_stopped"),
+    }
+}
+
+/// Transport intent that survives individual operations and power cycles.
+struct Session {
+    echo: bool,
+    retry: Reconnect,
+}
+
+/// Owner loop: power transitions first, then one command or automatic
+/// reconnect, then the idle activity until new work arrives.
+async fn application<'s>(
+    stack: &'s BleStack<'s>,
+    mut central: BleCentral<'s>,
+    mut peripheral: BlePeripheral<'s>,
+    server: &Server<'_>,
+) {
+    let mut session = Session {
+        echo: true,
+        retry: Reconnect::default(),
+    };
+    loop {
+        if !CONTROL.ready() {
+            return;
+        }
+        if CONTROL.suspended() {
+            if CONTROL.power() == PeripheralState::Pending {
+                quiesce(stack, &mut peripheral).await;
+            }
+            CONTROL.changed().await;
+            continue;
+        }
+        // Keep echo, selection and reconnect intent unchanged across power
+        // preparation. Fresh transport work resumes below.
+        if CONTROL.complete_resume() == PeripheralState::Failed {
+            CONTROL.changed().await;
+            continue;
+        }
+        let requested = CONTROL.take_command();
+        let automatic = requested.is_none() && session.retry.requested();
+        let operation = if automatic {
+            Some(BleOperation::Connect)
+        } else {
+            requested
+        };
+        if let Some(operation) = operation {
+            central = perform(operation, automatic, &mut session, stack, central).await;
+        }
+        if !CONTROL.ready() {
+            return;
+        }
+        if CONTROL.suspended() {
+            continue;
+        }
+        idle(&mut session, &mut peripheral, server).await;
+    }
+}
+
+/// Stop scanning and advertising with the runner alive, and report whether the
+/// controller acknowledged inactivity.
+async fn quiesce(stack: &BleStack<'_>, peripheral: &mut BlePeripheral<'_>) {
+    // Dropping an advertiser/scan session only queues cancellation.
+    // Wait for actual controller acknowledgements with the runner alive.
+    let result = embassy_time::with_timeout(Duration::from_secs(5), async {
+        stack.command(LeSetScanEnable::new(false, false)).await?;
+        stack.command(LeSetAdvEnable::new(false)).await
+    })
+    .await;
+    let mut quiet = matches!(result, Ok(Ok(_)));
+    if !quiet {
+        CONTROL.mark_uncertain();
+    }
+    // A peer can connect just before the advertising disable. Drain
+    // that accepted controller connection before claiming inactivity.
+    while let Some(connection) = peripheral.try_accept() {
+        connection.disconnect();
+        quiet &= wait_disconnected(&connection).await;
+    }
+    while PACKETS.try_receive().is_ok() {}
+    let state = CONTROL.suspend_outcome(quiet);
+    set_link(if state == PeripheralState::Quiescent {
+        Link::Off
+    } else {
+        Link::Failed
+    });
+    CONTROL.power_complete(true, state);
+}
+
+async fn perform<'s>(
+    operation: BleOperation,
+    automatic: bool,
+    session: &mut Session,
+    stack: &'s BleStack<'s>,
+    central: BleCentral<'s>,
+) -> BleCentral<'s> {
+    match operation {
+        BleOperation::Select(selection) => {
+            session.retry.disconnect();
+            critical_section::with(|cs| *SELECTION.borrow_ref_mut(cs) = selection);
+            while PACKETS.try_receive().is_ok() {}
+            session.echo = false;
+            set_link(Link::Off);
+            CONTROL.finish(automatic, None);
+            central
+        }
+        BleOperation::Disconnect => {
+            session.retry.disconnect();
+            session.echo = false;
+            set_link(Link::Off);
+            CONTROL.finish(automatic, None);
+            central
+        }
+        BleOperation::Echo => {
+            session.retry.disconnect();
+            session.echo = true;
+            CONTROL.finish(automatic, None);
+            central
+        }
+        BleOperation::Scan => {
+            session.retry.disconnect();
+            session.echo = false;
+            CONTROL.clear_discoveries();
+            let (central, _, success) = scan_target(central).await;
+            set_link(Link::Off);
+            CONTROL.finish(automatic, (!success).then_some(ControlError::ScanFailed));
+            central
+        }
+        BleOperation::Connect => connect(automatic, session, stack, central).await,
+    }
+}
+
+async fn connect<'s>(
+    automatic: bool,
+    session: &mut Session,
+    stack: &'s BleStack<'s>,
+    central: BleCentral<'s>,
+) -> BleCentral<'s> {
+    if !automatic {
+        session.retry.connect();
+    }
+    session.echo = false;
+    let Some(selection) = critical_section::with(|cs| *SELECTION.borrow_ref(cs)) else {
+        set_link(Link::Off);
+        session.retry.disconnect();
+        CONTROL.finish(automatic, Some(ControlError::Unconfigured));
+        return central;
+    };
+    let (mut central, target, _) = scan_target(central).await;
+    // A suspend, or a user command overriding an automatic retry, wins.
+    if CONTROL.suspended() || (automatic && CONTROL.has_command()) {
+        return central;
+    }
+    let Some(target) = target else {
+        set_link(Link::Failed);
+        CONTROL.finish(automatic, Some(ControlError::PeerNotFound));
+        return central;
+    };
+    set_link(Link::Connecting);
+    let before = snapshot().connections;
+    let result = client_attempt(stack, &mut central, target, selection, !automatic).await;
+    if snapshot().connections != before {
+        session.retry.recovered();
+        disconnected();
+    }
+    match result {
+        Ok(()) if CONTROL.has_command() => set_link(Link::Off),
+        result => {
+            set_link(Link::Failed);
+            CONTROL.finish(
+                automatic,
+                Some(result.err().unwrap_or(ControlError::ConnectionEnded)),
+            );
+        }
+    }
+    central
+}
+
+/// Background activity between operations: echo advertising, a reconnect
+/// backoff, or simply waiting for the next command or power request.
+async fn idle(session: &mut Session, peripheral: &mut BlePeripheral<'_>, server: &Server<'_>) {
+    if session.echo {
+        if advertise_and_echo(peripheral, server).await.is_err() {
+            // A GATT error can drop a live connection and only queue its
+            // disconnect. Do not claim power quiescence without completion.
+            CONTROL.mark_uncertain();
+            let _ = select(CONTROL.work_pending(), Timer::after_secs(1)).await;
+        }
+    } else if session.retry.requested() {
+        let _ = select(
+            CONTROL.work_pending(),
+            Timer::after_secs(session.retry.delay()),
+        )
+        .await;
+    } else {
+        CONTROL.work_pending().await;
     }
 }
 
@@ -477,6 +440,9 @@ where
 {
     critical_section::with(|cs| *TARGET.borrow_ref_mut(cs) = None);
     set_link(Link::Scanning);
+    let reports_before = SCAN_REPORTS.load(Ordering::Relaxed);
+    SCAN_RSSI_MIN.store(i32::MAX, Ordering::Relaxed);
+    SCAN_RSSI_MAX.store(i32::MIN, Ordering::Relaxed);
     let mut scanner = Scanner::new(central);
     let scan_config = ScanConfig {
         active: true,
@@ -487,7 +453,7 @@ where
     };
     let success = match scanner.scan(&scan_config).await {
         Ok(session) => {
-            let _ = select(Timer::after_secs(10), power_pending()).await;
+            let _ = select(Timer::after_secs(10), CONTROL.wait_until(|c| c.suspended())).await;
             drop(session);
             Timer::after_millis(100).await;
             true
@@ -496,19 +462,20 @@ where
     };
     let target = critical_section::with(|cs| TARGET.borrow_ref_mut(cs).take());
     let reports = SCAN_REPORTS.load(Ordering::Relaxed);
+    let observed = reports != reports_before;
     log::info!(target: "ble",
         "CYCLING_BLE scan_done found={} reports={} rssi_min={} rssi_max={}",
         target.is_some(),
         reports,
-        if reports == 0 {
-            0
-        } else {
+        if observed {
             SCAN_RSSI_MIN.load(Ordering::Relaxed)
-        },
-        if reports == 0 {
-            0
         } else {
+            0
+        },
+        if observed {
             SCAN_RSSI_MAX.load(Ordering::Relaxed)
+        } else {
+            0
         }
     );
     (scanner.into_inner(), target, success)
@@ -520,7 +487,7 @@ async fn client_attempt<'stack, C>(
     target: Address,
     selection: Selection,
     report_completion: bool,
-) -> Result<(), &'static str>
+) -> Result<(), ControlError>
 where
     C: Controller,
 {
@@ -539,10 +506,10 @@ where
             .map_err(|_| {
                 // Cancellation can race a controller connection-complete event.
                 // The public host API cannot prove that late connection absent.
-                RADIO_UNCERTAIN.store(true, Ordering::Release);
-                "connect_timeout"
+                CONTROL.mark_uncertain();
+                ControlError::ConnectTimeout
             })?
-            .map_err(|_| "connect_failed")?;
+            .map_err(|_| ControlError::ConnectFailed)?;
     update_state(|state| state.connections = state.connections.saturating_add(1));
     log::info!(target: "ble", "CYCLING_BLE transport_connected");
     let exchange = async {
@@ -563,13 +530,13 @@ where
             Either::Second(result) => result,
         }
     };
-    let result = match select(exchange, command_pending()).await {
-        Either::First(result) => result.map_err(|_| "gatt_failed"),
+    let result = match select(exchange, CONTROL.work_pending()).await {
+        Either::First(result) => result.map_err(|_| ControlError::GattFailed),
         Either::Second(()) => Ok(()),
     };
     connection.disconnect();
     if !wait_disconnected(&connection).await {
-        return Err("disconnect_timeout");
+        return Err(ControlError::DisconnectTimeout);
     }
     result
 }
@@ -606,7 +573,7 @@ where
     .map_err(|_| ())?;
     set_link(Link::Connected);
     if report_completion {
-        complete(None);
+        CONTROL.complete(None);
     }
     loop {
         let Ok(notification) =
@@ -667,7 +634,7 @@ where
             },
         )
         .await?;
-    let connection = match select(advertiser.accept(), command_pending()).await {
+    let connection = match select(advertiser.accept(), CONTROL.work_pending()).await {
         Either::First(result) => result?.with_attribute_server(server)?,
         Either::Second(()) => return Ok(()),
     };
@@ -675,7 +642,7 @@ where
     set_link(Link::Connected);
     log::info!(target: "ble", "CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
     loop {
-        let event = match select(connection.next(), command_pending()).await {
+        let event = match select(connection.next(), CONTROL.work_pending()).await {
             Either::First(event) => event,
             Either::Second(()) => {
                 connection.raw().disconnect();
@@ -723,15 +690,15 @@ where
     }
 }
 
-pub fn availability() -> device_api::observation::Availability {
-    use device_api::observation::Availability;
+pub fn availability() -> Availability {
     match snapshot().link {
-        Link::Off => Availability::Ready,
         Link::Failed => Availability::Failed,
         _ => Availability::Ready,
     }
 }
 
+/// Wait for a disconnect the host only queued. A timeout means the controller
+/// may still hold the link: stop serving requests and fail closed.
 async fn wait_disconnected(connection: &Connection<'_, DefaultPacketPool>) -> bool {
     if embassy_time::with_timeout(Duration::from_secs(5), async {
         while connection.is_connected() {
@@ -741,12 +708,9 @@ async fn wait_disconnected(connection: &Connection<'_, DefaultPacketPool>) -> bo
     .await
     .is_err()
     {
-        READY.store(false, Ordering::Release);
-        RADIO_UNCERTAIN.store(true, Ordering::Release);
-        critical_section::with(|cs| POWER.borrow_ref_mut(cs).state = PeripheralState::Failed);
-        critical_section::with(|cs| *COMMAND.borrow_ref_mut(cs) = None);
+        CONTROL.mark_uncertain();
         set_link(Link::Failed);
-        complete(Some("disconnect_timeout"));
+        CONTROL.stop(ControlError::DisconnectTimeout);
         false
     } else {
         true

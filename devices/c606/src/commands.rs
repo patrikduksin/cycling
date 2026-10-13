@@ -289,13 +289,13 @@ pub fn execute<
             let _ = write!(
                 output,
                 "state={} online={} stats={:?} saved={} operation={} sequence={} error={}",
-                network.state(),
+                network.state().code(),
                 network.online(),
                 network.stats(),
                 system.settings.wifi.is_some(),
                 network.control().operation.name(),
                 network.control().sequence,
-                network.control().error
+                network.control().error_name()
             );
         }
         Command::WifiReconnect => {
@@ -360,7 +360,7 @@ pub fn execute<
                 system.settings.ble_profile,
                 ble.control().operation.name(),
                 ble.control().sequence,
-                ble.control().error
+                ble.control().error_name()
             );
         }
         Command::BleReconnect => {

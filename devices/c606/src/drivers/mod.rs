@@ -18,6 +18,7 @@ pub mod input;
 pub mod power_transition;
 #[cfg(feature = "hardware")]
 pub mod psram;
+pub mod radio_control;
 #[cfg(feature = "hardware")]
 pub mod sdmmc;
 pub mod sdmmc_probe;

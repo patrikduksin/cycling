@@ -237,11 +237,14 @@ def apply(plan_path, journal_path, port, single_read_copy=None, verification='fu
                            stock_verification='full_target_readback' if verification == 'full' else WRITTEN_VERIFICATION,
                            marker_sha256=targets['marker']['sha256'], mbr_sha256=targets['mbr_commit']['sha256'])
     except BaseException as error:
-        # Never recover, replay, roll back or boot stock automatically. Failure
-        # can mean a completed write with a lost response; journal intent matters.
+        # Never recover, replay, roll back or boot stock automatically. Failure,
+        # including an interrupt, can mean a completed write with a lost
+        # response; journal that intent, then always re-raise.
         try:
             journal.record('stopped_uncertain', error=type(error).__name__, detail=str(error))
-        except BaseException:
+        except Exception:
+            # A failed journal write must not mask the original stop. A second
+            # interrupt still propagates, chained to the original error.
             pass
         raise
     finally:

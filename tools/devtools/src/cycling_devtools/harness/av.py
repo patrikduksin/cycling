@@ -207,6 +207,8 @@ class Capture:
                 raise RuntimeError('camera format restoration readback differs from snapshot')
             result['status'] = 'verified'
         except (Exception, KeyboardInterrupt) as error:
+            # Cleanup path: report uncertainty instead of aborting the caller's
+            # remaining restorations; an interrupt is recorded, not re-raised.
             result['error'] = str(error) or 'interrupted format inspection'
         return result
 
@@ -214,6 +216,8 @@ class Capture:
         try:
             result = self.finish_capture(cancel)
         except (Exception, KeyboardInterrupt) as error:
+            # An interrupted or failed capture is inconclusive evidence; process
+            # release and camera restoration below must still run.
             result = {'status': 'inconclusive', 'error': str(error) or 'interrupted capture cleanup'}
         finally:
             # Also release a process when wait/analysis failed before normal cleanup.
@@ -225,8 +229,11 @@ class Capture:
                     except subprocess.TimeoutExpired:
                         self.process.kill()
                         self.process.wait(timeout=2)
-            except (Exception, KeyboardInterrupt):
-                pass  # The restoration report below must expose a still-running camera.
+            except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
+                # Deliberately absorb an interrupt: the log close and camera
+                # restoration below must still run, and the report exposes a
+                # still-running camera. Unexpected errors now propagate.
+                pass
             if self.log is not None:
                 self.log.close()
         if self.kind == 'camera':

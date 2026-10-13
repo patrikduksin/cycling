@@ -127,6 +127,31 @@ class ApplyPartitionTests(unittest.TestCase):
         self.assertFalse(any(e['event'] == 'write_verified' and e['sector'] == 3 for e in self.events()))
         self.assertEqual(self.events()[-1]['event'], 'stopped_uncertain')
 
+    def test_interrupt_is_journaled_uncertain_and_re_raised_without_replay(self):
+        self.fake.fail_write = 3
+
+        def interrupted(connection, start, payload):
+            connection.writes.append(start)
+            if start == 3:
+                raise KeyboardInterrupt
+        with patch.object(self.fake, 'write_sector', interrupted), self.assertRaises(KeyboardInterrupt):
+            self.run_fake()
+        self.assertEqual(self.fake.instances[-1].writes, [2, 3])
+        self.assertEqual(self.events()[-1]['event'], 'stopped_uncertain')
+        self.assertEqual(self.events()[-1]['error'], 'KeyboardInterrupt')
+
+    def test_failed_uncertainty_journal_does_not_mask_the_original_stop(self):
+        self.fake.fail_write = 3
+        original = executor.Journal.record
+
+        def record(journal, event, **fields):
+            if event == 'stopped_uncertain':
+                raise OSError('journal disk full')
+            return original(journal, event, **fields)
+        with patch.object(executor.Journal, 'record', record), \
+                self.assertRaisesRegex(TimeoutError, 'completion uncertain'):
+            self.run_fake()
+
     def test_invalid_extent_hash_fails_real_preflight_without_opening_usb(self):
         extent = self.root / 'bad-extent.bin'
         extent.write_bytes(bytes(512))

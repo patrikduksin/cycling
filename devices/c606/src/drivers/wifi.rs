@@ -256,8 +256,9 @@ async fn connection(mut controller: WifiController<'static>) {
         if suspended() {
             if power_status() == PeripheralState::Pending {
                 quiesce(&mut controller).await;
+            } else {
+                CONTROL.changed().await;
             }
-            CONTROL.changed().await;
             continue;
         }
         if CONTROL.complete_resume() == PeripheralState::Failed {

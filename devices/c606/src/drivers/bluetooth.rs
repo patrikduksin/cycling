@@ -260,10 +260,13 @@ async fn application<'s>(
             return;
         }
         if CONTROL.suspended() {
+            // Re-check from the top after quiescing: a disconnect timeout can
+            // stop the owner, and then nothing would ever signal it again.
             if CONTROL.power() == PeripheralState::Pending {
                 quiesce(stack, &mut peripheral).await;
+            } else {
+                CONTROL.changed().await;
             }
-            CONTROL.changed().await;
             continue;
         }
         // Keep echo, selection and reconnect intent unchanged across power

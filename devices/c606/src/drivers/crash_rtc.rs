@@ -22,8 +22,13 @@ pub fn take() -> Marker {
     let mut words = [0; device_api::crash::WORDS];
     let source = addr_of!(PANIC_RECORD).cast::<u32>();
     for (index, word) in words.iter_mut().enumerate() {
+        // SAFETY: index < WORDS, so the pointer stays inside PANIC_RECORD. Boot
+        // runs this once before any task or the panic hook can write the record.
         *word = unsafe { read_volatile(source.add(index)) };
     }
+    // SAFETY: every offset is below WORDS, inside PANIC_RECORD. The panic hook
+    // is the only other writer and boot has not started any task yet; the
+    // validity word is cleared first so a partial clear never looks valid.
     unsafe {
         let target = addr_of_mut!(PANIC_RECORD).cast::<u32>();
         write_volatile(target.add(device_api::crash::WORDS - 1), 0);
@@ -61,6 +66,8 @@ pub fn controlled_panic() -> ! {
     panic!("controlled crash test")
 }
 
+// SAFETY: esp-backtrace's `custom-pre-backtrace` feature declares this symbol
+// with exactly this signature, and no other item exports the name.
 #[unsafe(export_name = "custom_pre_backtrace")]
 pub extern "Rust" fn custom_pre_backtrace() {
     if HOOK_ENTERED.swap(true, Ordering::AcqRel) {
@@ -73,10 +80,16 @@ pub extern "Rust" fn custom_pre_backtrace() {
     };
     let words = device_api::crash::encode(kind, env!("CARGO_PKG_VERSION"));
     let target = addr_of_mut!(PANIC_RECORD).cast::<u32>();
+    // HOOK_ENTERED admits one panic-hook entry, the only runtime writer. The
+    // validity word is cleared first and written last, so a reset mid-write
+    // leaves an invalid rather than a torn record.
+    // SAFETY: WORDS - 1 is inside PANIC_RECORD; single writer as above.
     unsafe { write_volatile(target.add(device_api::crash::WORDS - 1), 0) };
     for (index, word) in words[..device_api::crash::WORDS - 1].iter().enumerate() {
+        // SAFETY: index < WORDS - 1 is inside PANIC_RECORD; single writer.
         unsafe { write_volatile(target.add(index), *word) };
     }
+    // SAFETY: WORDS - 1 is inside PANIC_RECORD; single writer.
     unsafe {
         write_volatile(
             target.add(device_api::crash::WORDS - 1),
@@ -85,6 +98,8 @@ pub extern "Rust" fn custom_pre_backtrace() {
     };
 }
 
+// SAFETY: esp-backtrace's `custom-halt` feature declares this symbol with
+// exactly this signature, and no other item exports the name.
 #[unsafe(export_name = "custom_halt")]
 pub extern "Rust" fn custom_halt() -> ! {
     esp_hal::system::software_reset()

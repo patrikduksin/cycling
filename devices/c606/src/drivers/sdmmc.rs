@@ -137,6 +137,7 @@ impl<'d> Host<'d> {
     }
 
     fn initialize(&mut self) -> Result<(), Error> {
+        // SAFETY: SYSTEM is a fixed register block. Only the SDIO host clock and reset bits change, from thread mode; no interrupt handler touches PERIP_CLK_EN1/RST_EN1.
         let system = unsafe { &*esp32s3::SYSTEM::ptr() };
         system
             .perip_clk_en1()
@@ -150,6 +151,7 @@ impl<'d> Host<'d> {
 
         let r = registers();
         // 160 MHz PLL / 2 = 80 MHz host module clock, matching esp-hal 1.2.1.
+        // SAFETY: edge and phase selections from esp-hal 1.2.1, each within its field width.
         r.clk_edge_sel().write(|w| unsafe {
             w.cclkin_edge_drv_sel().bits(1);
             w.cclkin_edge_sam_sel().bits(0);
@@ -170,13 +172,18 @@ impl<'d> Host<'d> {
                 && !value.fifo_reset().bit_is_set()
                 && !value.dma_reset().bit_is_set()
         })?;
+        // SAFETY: maximum response (8-bit) and data (24-bit) timeouts fit their fields.
         r.tmout().write(|w| unsafe {
             w.response_timeout().bits(0xff);
             w.data_timeout().bits(0xff_ffff)
         });
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(u32::MAX) });
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.idsts().write(|w| unsafe { w.bits(u32::MAX) });
+        // SAFETY: zero masks every interrupt source; this driver polls status.
         r.intmask().write(|w| unsafe { w.bits(0) });
+        // SAFETY: zero masks every interrupt source; this driver polls status.
         r.idinten().write(|w| unsafe { w.bits(0) });
         r.ctrl().modify(|_, w| w.int_enable().clear_bit());
 
@@ -189,6 +196,7 @@ impl<'d> Host<'d> {
     }
 
     fn set_bus_width(&mut self, four: bool) {
+        // SAFETY: only slot 1's bit changes; other slots' bits are written back unchanged.
         registers().ctype().modify(|rd, w| unsafe {
             let width4 = rd.card_width4().bits() & !(1 << SLOT);
             w.card_width4()
@@ -199,10 +207,12 @@ impl<'d> Host<'d> {
 
     fn set_clock(&mut self, divider: u8) -> Result<(), Error> {
         let r = registers();
+        // SAFETY: only slot 1's bit changes; other slots' bits are written back unchanged.
         r.clkena().modify(|rd, w| unsafe {
             w.cclk_enable().bits(rd.cclk_enable().bits() & !(1 << SLOT))
         });
         self.update_clock()?;
+        // SAFETY: selects clock source 1 for slot 1 only; other bits are preserved.
         r.clksrc().modify(|rd, w| unsafe {
             let mut value = rd.clksrc().bits() & !0b1100;
             value |= 1 << 2;
@@ -210,7 +220,9 @@ impl<'d> Host<'d> {
         });
         // card_clk = 80 MHz / (2 * divider). No card register changes.
         r.clkdiv()
+            // SAFETY: divider is 100, 10 or 2 (see bulk clock), within the 8-bit field.
             .modify(|_, w| unsafe { w.clk_divider1().bits(divider) });
+        // SAFETY: only slot 1's bit changes; other slots' bits are written back unchanged.
         r.clkena().modify(|rd, w| unsafe {
             w.cclk_enable().bits(rd.cclk_enable().bits() | (1 << SLOT));
             w.lp_enable().bits(rd.lp_enable().bits() | (1 << SLOT))
@@ -220,7 +232,9 @@ impl<'d> Host<'d> {
 
     fn update_clock(&mut self) -> Result<(), Error> {
         let r = registers();
+        // SAFETY: CMDARG holds an arbitrary 32-bit command argument.
         r.cmdarg().write(|w| unsafe { w.bits(0) });
+        // SAFETY: CMD fields get a command index below 64 and slot 1; start_cmd hands it to the CIU.
         r.cmd().write(|w| unsafe {
             w.update_clock_registers_only().set_bit();
             w.wait_prvdata_complete().set_bit();
@@ -232,8 +246,11 @@ impl<'d> Host<'d> {
 
     fn init_clocks(&mut self) -> Result<(), Error> {
         let r = registers();
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(EVT_CMD_DONE) });
+        // SAFETY: CMDARG holds an arbitrary 32-bit command argument.
         r.cmdarg().write(|w| unsafe { w.bits(0) });
+        // SAFETY: CMD fields get a command index below 64 and slot 1; start_cmd hands it to the CIU.
         r.cmd().write(|w| unsafe {
             w.send_initialization().set_bit();
             w.wait_prvdata_complete().set_bit();
@@ -244,6 +261,7 @@ impl<'d> Host<'d> {
         poll(COMMAND_TIMEOUT, || {
             r.rintsts().read().bits() & EVT_CMD_DONE != 0
         })?;
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(EVT_CMD_DONE) });
         Ok(())
     }
@@ -264,8 +282,11 @@ impl<'d> Host<'d> {
             r.status().read().command_fsm_states().bits() == 0
         })?;
         let consume = EVT_CMD_DONE | EVT_RTO | EVT_RCRC | EVT_RESP_ERR | EVT_HLE;
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(consume) });
+        // SAFETY: CMDARG holds an arbitrary 32-bit command argument.
         r.cmdarg().write(|w| unsafe { w.bits(argument) });
+        // SAFETY: CMD fields get a command index below 64 and slot 1; start_cmd hands it to the CIU.
         r.cmd().write(|w| unsafe {
             w.index().bits(index);
             w.stop_abort_cmd().bit(index == 12);
@@ -288,6 +309,7 @@ impl<'d> Host<'d> {
         })?;
         map_status(status)?;
         let result = read_response(response);
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(consume) });
         if busy {
             poll(BUSY_TIMEOUT, || !r.status().read().data_busy().bit_is_set())?;
@@ -312,13 +334,17 @@ impl Drop for Host<'_> {
     fn drop(&mut self) {
         let r = registers();
         let _ = stop_dma();
+        // SAFETY: zero masks every interrupt source; this driver polls status.
         r.intmask().write(|w| unsafe { w.bits(0) });
+        // SAFETY: zero masks every interrupt source; this driver polls status.
         r.idinten().write(|w| unsafe { w.bits(0) });
+        // SAFETY: only slot 1's bit changes; other slots' bits are written back unchanged.
         r.clkena().modify(|rd, w| unsafe {
             w.cclk_enable().bits(rd.cclk_enable().bits() & !(1 << SLOT));
             w.lp_enable().bits(rd.lp_enable().bits() & !(1 << SLOT))
         });
         let _ = self.update_clock();
+        // SAFETY: SYSTEM is a fixed register block. Only the SDIO host clock and reset bits change, from thread mode; no interrupt handler touches PERIP_CLK_EN1/RST_EN1.
         let system = unsafe { &*esp32s3::SYSTEM::ptr() };
         system
             .perip_rst_en1()
@@ -1004,9 +1030,13 @@ impl Host<'_> {
         poll(COMMAND_TIMEOUT, || {
             !r.ctrl().read().fifo_reset().bit_is_set()
         })?;
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(u32::MAX) });
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.idsts().write(|w| unsafe { w.bits(u32::MAX) });
+        // SAFETY: 512-byte blocks, the only size this driver transfers.
         r.blksiz().write(|w| unsafe { w.bits(512) });
+        // SAFETY: callers bound buffer.len() to MAX_READ_SECTORS * 512 bytes.
         r.bytcnt().write(|w| unsafe { w.bits(buffer.len() as u32) });
         let mut descriptor = Descriptor {
             flags: DESC_OWN | DESC_CHAINED | DESC_FIRST | DESC_LAST,
@@ -1016,9 +1046,12 @@ impl Host<'_> {
         };
         compiler_fence(Ordering::SeqCst);
         enable_dma(&mut descriptor as *mut Descriptor as u32);
+        // SAFETY: any write asks the IDMAC to re-read the descriptor it now owns.
         r.pldmnd().write(|w| unsafe { w.bits(1) });
         let result = (|| {
+            // SAFETY: CMDARG holds an arbitrary 32-bit command argument.
             r.cmdarg().write(|w| unsafe { w.bits(argument) });
+            // SAFETY: CMD fields get a command index below 64 and slot 1; start_cmd hands it to the CIU.
             r.cmd().write(|w| unsafe {
                 w.index().bits(index);
                 w.response_expect().set_bit();
@@ -1066,6 +1099,7 @@ impl Host<'_> {
             }
             // DATA_OVER is a card-side event. Wait for IDMAC to release the
             // descriptor before resetting DMA or exposing the received bytes.
+            // SAFETY: descriptor is a live local for this whole function; a volatile read observes the IDMAC clearing DESC_OWN.
             poll(COMMAND_TIMEOUT, || unsafe {
                 core::ptr::read_volatile(core::ptr::addr_of!(descriptor.flags)) & DESC_OWN == 0
             })?;
@@ -1073,7 +1107,9 @@ impl Host<'_> {
         })();
         let cleanup = stop_dma();
         compiler_fence(Ordering::SeqCst);
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.rintsts().write(|w| unsafe { w.bits(u32::MAX) });
+        // SAFETY: write-1-to-clear status register; set bits only clear pending events.
         r.idsts().write(|w| unsafe { w.bits(u32::MAX) });
         cleanup?;
         // Open-ended CMD18 requires an explicit stop, even after a data error.
@@ -1132,6 +1168,7 @@ fn read_report(
 }
 
 fn registers() -> &'static esp32s3::sdhost::RegisterBlock {
+    // SAFETY: SDHOST is a fixed register block. Host owns the SDHOST token for the media lifetime, so this module is its only user.
     unsafe { &*esp32s3::SDHOST::ptr() }
 }
 
@@ -1150,6 +1187,7 @@ fn wait_command_accepted() -> Result<(), Error> {
     let start = Instant::now();
     while r.cmd().read().start_cmd().bit_is_set() {
         if r.rintsts().read().bits() & EVT_HLE != 0 {
+            // SAFETY: write-1-to-clear status register; set bits only clear pending events.
             r.rintsts().write(|w| unsafe { w.bits(EVT_HLE) });
             return Err(Error::HardwareLocked);
         }
@@ -1199,9 +1237,12 @@ fn read_response(response: ResponseLen) -> [u32; 4] {
 fn enable_dma(descriptor: u32) {
     let r = registers();
     r.ctrl()
+        // SAFETY: sets the documented DMA enable bits; all other CTRL bits are preserved.
         .modify(|rd, w| unsafe { w.bits(rd.bits() | CTRL_DMA_ENABLE | CTRL_USE_INTERNAL_DMA) });
     r.bmod().modify(|_, w| w.swr().set_bit());
+    // SAFETY: zero masks every interrupt source; this driver polls status.
     r.idinten().write(|w| unsafe { w.bits(0) });
+    // SAFETY: descriptor points at a stack descriptor that data_command keeps alive until stop_dma (or a module reset) releases the IDMAC.
     r.dbaddr().write(|w| unsafe { w.bits(descriptor) });
     r.bmod().modify(|_, w| {
         w.de().set_bit();
@@ -1211,12 +1252,14 @@ fn enable_dma(descriptor: u32) {
 
 fn stop_dma() -> Result<(), Error> {
     let r = registers();
+    // SAFETY: zero masks every interrupt source; this driver polls status.
     r.idinten().write(|w| unsafe { w.bits(0) });
     r.bmod().modify(|_, w| {
         w.de().clear_bit();
         w.fb().clear_bit()
     });
     r.ctrl()
+        // SAFETY: clears the documented internal-DMA bit; all other CTRL bits are preserved.
         .modify(|rd, w| unsafe { w.bits(rd.bits() & !CTRL_USE_INTERNAL_DMA) });
     r.ctrl().modify(|_, w| w.dma_reset().set_bit());
     match poll(COMMAND_TIMEOUT, || {
@@ -1226,6 +1269,7 @@ fn stop_dma() -> Result<(), Error> {
         Err(error) => {
             // A module reset is the final fail-closed barrier before a
             // stack-backed descriptor or buffer can leave scope.
+            // SAFETY: SYSTEM is a fixed register block. Only the SDIO host clock and reset bits change, from thread mode; no interrupt handler touches PERIP_CLK_EN1/RST_EN1.
             unsafe { &*esp32s3::SYSTEM::ptr() }
                 .perip_rst_en1()
                 .modify(|_, w| w.sdio_host_rst().set_bit());

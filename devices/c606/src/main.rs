@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(clippy::undocumented_unsafe_blocks)]
 #![no_main]
 use c606_firmware as device;
 mod commands;
@@ -36,12 +37,18 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         let layout =
             core::alloc::Layout::from_size_align(firmware_shell::harness::CAPTURE_BYTES, 4)
                 .unwrap();
+        // SAFETY: the layout has a non-zero size; the block is never freed.
         let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
         if !pointer.is_null() {
-            system.harness.buffer =
-                Some(firmware_shell::harness::CaptureBuffer::Borrowed(unsafe {
-                    core::slice::from_raw_parts_mut(pointer, layout.size())
-                }));
+            // SAFETY: the allocator returned `layout.size()` writable bytes at
+            // `pointer`, aligned for u8. Zeroing initializes them before a
+            // slice is formed. The block is never deallocated and this is its
+            // only reference, so a 'static exclusive slice is sound.
+            let capture = unsafe {
+                core::ptr::write_bytes(pointer, 0, layout.size());
+                core::slice::from_raw_parts_mut(pointer, layout.size())
+            };
+            system.harness.buffer = Some(firmware_shell::harness::CaptureBuffer::Borrowed(capture));
         }
     }
     system.boot_id = boot;

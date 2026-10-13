@@ -64,6 +64,9 @@ pub fn init(peripheral: PSRAM<'static>) -> Report {
         panic!("unexpected PSRAM mapping");
     }
 
+    // SAFETY: esp-hal mapped `capacity` bytes at the word-aligned `start`
+    // (checked above), and nothing else references PSRAM before the external
+    // heap is created below.
     if let Err(failure) = unsafe { integrity_test(start, capacity) } {
         esp_println::println!(
             "CYCLING_PSRAM failed offset={} expected={:08x} actual={:08x}",
@@ -74,6 +77,8 @@ pub fn init(peripheral: PSRAM<'static>) -> Report {
         panic!("PSRAM integrity test failed");
     }
 
+    // SAFETY: the mapped region is valid for the program lifetime, is added
+    // exactly once (init consumes the PSRAM token) and overlaps no other heap.
     unsafe {
         EXTERNAL_HEAP.add_region(HeapRegion::new(
             start,
@@ -83,19 +88,29 @@ pub fn init(peripheral: PSRAM<'static>) -> Report {
     }
     let probe_layout = Layout::from_size_align(ALLOCATOR_PROBE_BYTES, ALLOCATOR_PROBE_ALIGNMENT)
         .expect("valid PSRAM allocator probe layout");
+    // SAFETY: the probe layout has a non-zero size.
     let probe = unsafe { allocate_external(probe_layout) };
     if probe.is_null() || !(probe as usize).is_multiple_of(ALLOCATOR_PROBE_ALIGNMENT) {
         panic!("PSRAM allocator probe failed");
     }
+    // SAFETY: probe is a live, non-null allocation of ALLOCATOR_PROBE_BYTES;
+    // both offsets are inside it and no other reference to it exists.
     unsafe {
         ptr::write_volatile(probe, 0x5a);
         ptr::write_volatile(probe.add(ALLOCATOR_PROBE_BYTES - 1), 0xa5);
     }
-    if unsafe { ptr::read_volatile(probe) } != 0x5a
-        || unsafe { ptr::read_volatile(probe.add(ALLOCATOR_PROBE_BYTES - 1)) } != 0xa5
-    {
+    // SAFETY: same live allocation and offsets; both bytes were written above.
+    let (first, last) = unsafe {
+        (
+            ptr::read_volatile(probe),
+            ptr::read_volatile(probe.add(ALLOCATOR_PROBE_BYTES - 1)),
+        )
+    };
+    if first != 0x5a || last != 0xa5 {
         panic!("PSRAM allocator probe data mismatch");
     }
+    // SAFETY: probe came from allocate_external with this exact layout and is
+    // not used afterwards.
     unsafe { deallocate_external(probe, probe_layout) };
     let internal_after = internal_free();
     Report {
@@ -115,13 +130,25 @@ pub fn external_free() -> usize {
 }
 
 /// Allocate PSRAM explicitly. Callers own the returned block and must preserve
-/// its layout for `deallocate_external`.
+/// its layout for `deallocate_external`. A null pointer means exhaustion.
+///
+/// # Safety
+///
+/// `layout` must have a non-zero size, as for [`GlobalAlloc::alloc`]. The
+/// returned memory is uninitialized.
 pub unsafe fn allocate_external(layout: Layout) -> *mut u8 {
+    // SAFETY: the caller upholds GlobalAlloc::alloc's non-zero size contract.
     unsafe { EXTERNAL_HEAP.alloc(layout) }
 }
 
 /// Return a block obtained from `allocate_external`.
+///
+/// # Safety
+///
+/// `pointer` must come from `allocate_external` with this same `layout`, must
+/// not have been freed already, and must not be used afterwards.
 pub unsafe fn deallocate_external(pointer: *mut u8, layout: Layout) {
+    // SAFETY: the caller upholds GlobalAlloc::dealloc's contract.
     unsafe { EXTERNAL_HEAP.dealloc(pointer, layout) }
 }
 
@@ -137,16 +164,33 @@ fn pattern(word: usize, inverted: bool) -> u32 {
     if inverted { !value } else { value }
 }
 
+/// Write and verify every mapped word, then walk each data bit.
+///
+/// Limitation: accesses go through the data cache, and `compiler_fence` only
+/// orders the compiler, not the cache. Each 2 MiB pass evicts all but the most
+/// recently written lines of the much smaller data cache, so nearly every
+/// read-back comes from PSRAM, but up to one cache's worth of the final words
+/// (and the sparse bit-walk words) can be served from cache. A correct
+/// write-back/invalidate needs the ROM cache routines that esp-hal 1.1.2 keeps
+/// private (`soc::cache_writeback_addr`), so this test does not claim to
+/// exercise those last lines on the external bus.
+///
+/// # Safety
+///
+/// `start` must be word-aligned and valid for reads and writes of `capacity`
+/// bytes, with no other live references into that range.
 unsafe fn integrity_test(start: *mut u8, capacity: usize) -> Result<(), Failure> {
     let words = capacity / WORD_BYTES;
     let memory = start.cast::<u32>();
     for inverted in [false, true] {
         for word in 0..words {
+            // SAFETY: word < capacity / 4, inside the caller's valid range.
             unsafe { ptr::write_volatile(memory.add(word), pattern(word, inverted)) };
         }
         compiler_fence(Ordering::SeqCst);
         for word in 0..words {
             let expected = pattern(word, inverted);
+            // SAFETY: word < capacity / 4, inside the caller's valid range.
             let actual = unsafe { ptr::read_volatile(memory.add(word)) };
             if actual != expected {
                 return Err(Failure {
@@ -161,12 +205,14 @@ unsafe fn integrity_test(start: *mut u8, capacity: usize) -> Result<(), Failure>
     // Exercise every data bit at addresses spread across the mapped device.
     for bit in 0..u32::BITS as usize {
         let word = bit * (words - 1) / (u32::BITS as usize - 1);
+        // SAFETY: word <= words - 1, inside the caller's valid range.
         unsafe { ptr::write_volatile(memory.add(word), 1u32 << bit) };
     }
     compiler_fence(Ordering::SeqCst);
     for bit in 0..u32::BITS as usize {
         let word = bit * (words - 1) / (u32::BITS as usize - 1);
         let expected = 1u32 << bit;
+        // SAFETY: word <= words - 1, inside the caller's valid range.
         let actual = unsafe { ptr::read_volatile(memory.add(word)) };
         if actual != expected {
             return Err(Failure {

@@ -194,24 +194,24 @@ pub fn heart_zone(b: u16) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn packet(time: u16, rev: u16, at: u64, loss: u32) -> device_api::ant::Packet {
+        let mut data = [0; 8];
+        data[4..6].copy_from_slice(&time.to_le_bytes());
+        data[6..8].copy_from_slice(&rev.to_le_bytes());
+        device_api::ant::Packet {
+            identity: device_api::ant::Identity {
+                device_type: 123,
+                device_number: 1,
+                transmission_type: 1,
+            },
+            data,
+            received_ms: at,
+            generation: 1,
+            loss_count: loss,
+        }
+    }
     #[test]
     fn speed_wrap_stop_and_loss() {
-        fn packet(time: u16, rev: u16, at: u64, loss: u32) -> device_api::ant::Packet {
-            let mut data = [0; 8];
-            data[4..6].copy_from_slice(&time.to_le_bytes());
-            data[6..8].copy_from_slice(&rev.to_le_bytes());
-            device_api::ant::Packet {
-                identity: device_api::ant::Identity {
-                    device_type: 123,
-                    device_number: 1,
-                    transmission_type: 1,
-                },
-                data,
-                received_ms: at,
-                generation: 1,
-                loss_count: loss,
-            }
-        }
         let mut speed = Speed::default();
         speed.receive(packet(65000, 65535, 100, 0));
         assert_eq!(speed.value(100), None);
@@ -222,6 +222,75 @@ mod tests {
         assert_eq!(speed.value(8300), None);
         speed.receive(packet(1512, 1, 8500, 1));
         assert_eq!(speed.value(8500), None);
+    }
+    #[test]
+    fn speed_rejects_implausible_and_expired_revolutions() {
+        let mut speed = Speed::default();
+        speed.receive(packet(0, 0, 0, 0));
+        // 20 revolutions in one second is about 154 km/h.
+        speed.receive(packet(1024, 20, 1000, 0));
+        assert_eq!(speed.value(1000), None);
+        speed.receive(packet(2048, 22, 2000, 0));
+        assert_eq!(speed.value(2000), Some(2 * WHEEL_MM));
+        // A revolution after more than a minute has no usable reference.
+        speed.receive(packet(3072, 23, 63_000, 0));
+        assert_eq!(speed.value(63_000), None);
+        speed.receive(packet(4096, 24, 64_000, 0));
+        assert_eq!(speed.value(64_000), Some(WHEEL_MM));
+    }
+    #[test]
+    fn odometer_integrates_speed_once_per_second_and_bounds_gaps() {
+        let mut odometer = Odometer::default();
+        assert!(!odometer.step(999, Some(10_000)));
+        assert!(odometer.step(1000, Some(10_000)));
+        assert_eq!(odometer.distance_mm(), 10_000);
+        assert!(!odometer.step(1999, Some(10_000)));
+        assert!(odometer.step(2500, Some(10_000)));
+        assert_eq!(odometer.distance_mm(), 25_000);
+        // A ten-second stall counts as three seconds of travel.
+        assert!(odometer.step(12_500, Some(10_000)));
+        assert_eq!(odometer.distance_mm(), 55_000);
+        assert!(odometer.step(13_500, None));
+        assert_eq!(odometer.distance_mm(), 55_000);
+    }
+    #[test]
+    fn gradient_needs_thirty_metres_of_moving_baseline() {
+        const SEA_LEVEL: u32 = 10_130_000;
+        // About 60.8 Pa less pressure over 100 m is a 5.0% climb.
+        const CLIMB: u32 = 6080;
+        let mut gradient = Gradient::default();
+        gradient.update(Some(SEA_LEVEL), 0, Some(5000));
+        gradient.update(Some(SEA_LEVEL - 3000), 29_999, Some(5000));
+        assert_eq!(gradient.tenths(), None);
+        gradient.update(Some(SEA_LEVEL - CLIMB), 100_000, Some(5000));
+        assert_eq!(gradient.tenths(), Some(50));
+        // The baseline moved, so returning to the old pressure is a descent.
+        gradient.update(Some(SEA_LEVEL), 200_000, Some(5000));
+        assert_eq!(gradient.tenths(), Some(-50));
+        // Short of the next baseline, the last grade remains.
+        gradient.update(Some(SEA_LEVEL - 100), 210_000, Some(5000));
+        assert_eq!(gradient.tenths(), Some(-50));
+    }
+    #[test]
+    fn gradient_resets_when_slow_unpressurised_or_implausible() {
+        const SEA_LEVEL: u32 = 10_130_000;
+        let mut gradient = Gradient::default();
+        gradient.update(Some(SEA_LEVEL), 0, Some(5000));
+        gradient.update(Some(SEA_LEVEL - 6080), 100_000, Some(5000));
+        assert_eq!(gradient.tenths(), Some(50));
+        gradient.update(Some(SEA_LEVEL - 6080), 101_000, Some(999));
+        assert_eq!(gradient.tenths(), None);
+        // The slow step also discarded the baseline.
+        gradient.update(Some(SEA_LEVEL), 200_000, Some(5000));
+        assert_eq!(gradient.tenths(), None);
+        gradient.update(Some(SEA_LEVEL - 6080), 300_000, Some(5000));
+        assert_eq!(gradient.tenths(), Some(50));
+        gradient.update(None, 310_000, Some(5000));
+        assert_eq!(gradient.tenths(), None);
+        // A 49.9% reading is a measurement fault, not a road.
+        gradient.update(Some(SEA_LEVEL), 400_000, Some(5000));
+        gradient.update(Some(SEA_LEVEL - 60_000), 500_000, Some(5000));
+        assert_eq!(gradient.tenths(), None);
     }
     #[test]
     fn zones_cover_boundaries() {

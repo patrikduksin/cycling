@@ -23,8 +23,8 @@ loop's order and serves the terminal backend. The world and its observers:
 
 Scenarios live in `tests/ride_scenarios.rs`; run them with `mise run sim`.
 `mise run simulate` runs the base demonstration and `mise run harness-virtual`
-the shared terminal scenarios. Terminal mode requires an explicit disposable
-state directory; consult the task and CLI definitions for options.
+the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit
+disposable `--state-dir`.
 
 Simulation checks presentation, input routing, sensor and ride behaviour, command
 compatibility and recovery from storage faults and power loss. Its companion

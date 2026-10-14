@@ -28,7 +28,7 @@ original debug symbols, partition table or full recovery environment.
 The tested ESP32-S3 reports secure boot and flash encryption disabled. Its original
 bootloader is at `0x0`, partition table at `0x8000`, OTA selection at `0xd000` and
 `0xe000`. The two application slots are `0x20000` and `0x760000`, each `0x73a000` bytes.
-See [partitions.csv](partitions.csv) for the complete layout.
+See [partitions.csv](../partitions.csv) for the complete layout.
 
 OTA records store sequence at offset 0, state at 24 and CRC32 at 28. CRC is calculated
 with initial value `0xffffffff` over the four sequence bytes. For two slots, a valid

@@ -1,8 +1,13 @@
 //! Headless backend: production parser, shell handlers, journals and SDK runtime.
+use crate::ant::SimulatedAnt;
+use crate::devices::Battery;
 use crate::devices::DisplayDevice;
 use crate::devices::InputDevice;
 use crate::devices::PowerDevice;
+use crate::devices::Speaker;
+use crate::gps::Receiver;
 use crate::storage::{Fault, FileFlash};
+use crate::world::World;
 use device_api::ant::Ant;
 use device_api::ant::AntOperation;
 use device_api::ble_transport::Ble;
@@ -13,6 +18,7 @@ use device_api::input::InputSnapshot;
 use device_api::observation::Availability;
 use device_api::observation::Error;
 use device_api::positioning::Positioning;
+use device_api::sensors::Startup;
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use std::fmt::Write as _;
@@ -94,18 +100,32 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
+/// Uptime before a powered-on companion reports ready.
+const COMPANION_BOOT_MS: u64 = 1_500;
 pub type VirtualShell =
     firmware_shell::shell::Shell<DisplayDevice, InputDevice, PowerDevice, FileFlash>;
+/// The simulated device and the world it observes, composed like C606 firmware.
 pub struct Session {
     pub shell: VirtualShell,
+    /// Device uptime; it restarts from zero with the device.
     pub now: u64,
     pub boot: u32,
     pub position: PositionFixture,
     pub ble: BleFixture,
+    pub ant: SimulatedAnt,
+    pub world: World,
+    pub gps: Option<Receiver>,
+    pub speaker: Speaker,
+    pub battery: Battery,
+    pub startup: Startup,
+    /// Uptime at which a starting companion runs, and the ANT availability then.
+    companion_boot_ms: Option<(u64, Availability)>,
+    pub input: InputDevice,
+    pub power: PowerDevice,
+    pub display: DisplayDevice,
     wifi_control: device_api::connectivity::ControlStatus,
     ble_control: device_api::connectivity::ControlStatus,
-    media: FileFlash,
-    display: DisplayDevice,
+    pub media: FileFlash,
     #[cfg(feature = "cycling")]
     pub sdk: vana::app::Runtime,
 }
@@ -119,6 +139,25 @@ impl Session {
         }
         Self::with_media(FileFlash::open(root)?, width, height)
     }
+    /// A C606-sized device on memory media whose companion and ANT radio
+    /// start shortly after boot.
+    pub fn device() -> io::Result<Self> {
+        let mut session = Self::with_media(FileFlash::memory(), 240, 320)?;
+        session.companion_starting(Availability::Ready);
+        Ok(session)
+    }
+    /// The companion is probing after power-on; ANT admits nothing until it runs.
+    fn companion_starting(&mut self, ant: Availability) {
+        self.startup = Startup::Probing;
+        self.ant.availability = Availability::Initializing;
+        self.companion_boot_ms = Some((COMPANION_BOOT_MS, ant));
+    }
+    fn ant_ready_availability(&self) -> Availability {
+        match self.companion_boot_ms {
+            Some((_, ant)) => ant,
+            None => self.ant.availability,
+        }
+    }
     fn with_media(media: FileFlash, width: usize, height: usize) -> io::Result<Self> {
         let boot = media.begin_boot()?;
         let display = DisplayDevice::new(width, height);
@@ -126,10 +165,11 @@ impl Session {
             &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
             Availability::Ready,
         );
+        let power = PowerDevice::new(Availability::Ready);
         let mut shell = firmware_shell::shell::Shell::new(
             display.clone(),
-            input,
-            PowerDevice::new(Availability::Ready),
+            input.clone(),
+            power.clone(),
             media.clone(),
             0,
         )
@@ -149,70 +189,125 @@ impl Session {
         } else {
             vana::sensors::ble_profile::Profile::HeartRate
         };
+        #[cfg(feature = "cycling")]
+        {
+            let view =
+                vana::screens::workout::View::new(vana::screens::workout::Page::Boot, false, None);
+            shell.draw_scaled(240, 320, |x, y| view.pixel(x, y));
+        }
         Ok(Self {
             shell,
             now: 0,
             boot,
             position: PositionFixture::default(),
             ble: BleFixture::default(),
+            ant: SimulatedAnt::new(Availability::Unsupported),
+            world: World::default(),
+            gps: None,
+            speaker: Speaker::default(),
+            battery: Battery::default(),
+            startup: Startup::Unsupported,
+            companion_boot_ms: None,
+            input,
+            power,
+            display,
             wifi_control: device_api::connectivity::ControlStatus::new(),
             ble_control: device_api::connectivity::ControlStatus::new(),
             media,
-            display,
             #[cfg(feature = "cycling")]
             sdk: vana::app::Runtime::new(profile),
         })
     }
+    /// One pass of the firmware loop, in the order C606 composition runs it.
     pub fn tick(&mut self) {
-        self.shell.observe_position(&self.position, self.now);
+        if let Some((at, ant)) = self.companion_boot_ms
+            && self.now >= at
+        {
+            self.companion_boot_ms = None;
+            self.startup = Startup::Ready;
+            self.ant.availability = ant;
+        }
+        self.ant.tick(&self.world, self.now);
+        if let Some(gps) = &mut self.gps {
+            gps.tick(&self.world, self.now, &mut self.position.acquisition);
+        }
+        self.power.0.borrow_mut().battery = self
+            .battery
+            .level
+            .map(|(percent, mv)| (percent, mv, self.now));
+        self.speaker.tick(self.now);
         #[cfg(feature = "cycling")]
-        self.shell.set_app_active(self.sdk.input_active());
+        {
+            self.sdk.set_startup_status(self.startup);
+            self.shell.set_app_active(self.sdk.input_active());
+        }
         self.shell.tick(self.now);
-        #[cfg(feature = "cycling")]
-        let mut ant = NoAnt;
         #[cfg(feature = "cycling")]
         for _ in 0..16 {
             let Some(edge) = self.shell.take_app_input() else {
                 break;
             };
-            self.sdk.input(edge.input, self.now, &mut ant);
+            self.sdk.input(edge.input, self.now, &mut self.ant);
         }
+        self.shell.observe_position(&self.position, self.now);
         self.shell.present();
         #[cfg(feature = "cycling")]
-        self.sdk.tick(
-            &mut self.shell.data_storage(),
-            self.now,
-            &mut ant,
-            &mut self.ble,
-            vana::app::Observations {
-                position: &self.position,
-                network_online: false,
-                input: &NoInputObservation,
-                physical: device_api::sensors::Snapshot {
-                    pressure: device_api::observation::Observation::Unavailable,
-                    motion: [device_api::observation::Observation::Unavailable; 2],
-                    identity: device_api::observation::Observation::Unavailable,
-                    reports: 0,
-                    invalid_reports: 0,
-                    losses: 0,
+        {
+            let pressure = match self.world.pressure_centi_pa() {
+                Some(pressure_centi_pa) => device_api::observation::Observation::Fresh {
+                    value: device_api::sensors::Pressure {
+                        pressure_centi_pa,
+                        temperature_centi_c: 2000,
+                    },
+                    received_ms: self.now,
                 },
-            },
-        );
+                None => device_api::observation::Observation::Unavailable,
+            };
+            self.sdk.tick(
+                &mut self.shell.data_storage(),
+                self.now,
+                &mut self.ant,
+                &mut self.ble,
+                vana::app::Observations {
+                    position: &self.position,
+                    network_online: false,
+                    input: &self.battery,
+                    physical: device_api::sensors::Snapshot {
+                        pressure,
+                        motion: [device_api::observation::Observation::Unavailable; 2],
+                        identity: device_api::observation::Observation::Unavailable,
+                        reports: 0,
+                        invalid_reports: 0,
+                        losses: 0,
+                    },
+                },
+            );
+            self.sdk
+                .present(&mut self.shell, self.now, &self.ant, &self.position);
+            self.sdk.alert(&mut self.speaker, self.now);
+        }
+    }
+    /// Advance device and world time together in 10 ms firmware passes.
+    pub fn step(&mut self, ms: u64) {
+        let end = self.now + ms;
+        while self.now < end {
+            let step = (end - self.now).min(10);
+            self.now += step;
+            self.world.advance(step);
+            self.tick();
+        }
     }
     pub fn advance(&mut self, ms: u64) -> Result<(), Error> {
         if ms > 120000 {
             return Err(Error::Invalid);
         }
-        let end = self.now.checked_add(ms).ok_or(Error::Invalid)?;
-        while self.now < end {
-            self.now = (self.now + 10).min(end);
-            self.tick();
-        }
+        self.now.checked_add(ms).ok_or(Error::Invalid)?;
+        self.step(ms);
         Ok(())
     }
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
         if let Some(status) =
-            firmware_console::commands::ant::execute(request.command, &mut NoAnt, self.now, out)
+            firmware_console::commands::ant::execute(request.command, &mut self.ant, self.now, out)
         {
             return status;
         }
@@ -491,9 +586,50 @@ impl Session {
         let _ = write!(out, "now_ms={} boot={} fixture=true", self.now, self.boot);
         "OK"
     }
+    /// A main-CPU restart, as the terminal `RESTART` requests. The companion
+    /// keeps running with its channels; see `power_cycle` for a full loss.
     pub fn restart(&mut self) -> io::Result<()> {
+        self.reboot(false)
+    }
+    /// Power lost and restored: the companion boots again too.
+    pub fn power_cycle(&mut self) -> io::Result<()> {
+        self.reboot(true)
+    }
+    /// Reboot on the same media. The world, sensors and receiver presence
+    /// persist; everything held in device memory starts over.
+    fn reboot(&mut self, power: bool) -> io::Result<()> {
         let g = self.display.geometry();
-        *self = Self::with_media(self.media.clone(), g.width, g.height)?;
+        let mut next = Self::with_media(self.media.clone(), g.width, g.height)?;
+        next.world = core::mem::take(&mut self.world);
+        // Read before the swap: afterwards `self.ant` is the fresh radio.
+        let ready = self.ant_ready_availability();
+        core::mem::swap(&mut next.ant, &mut self.ant);
+        if power {
+            next.ant.power_cycled();
+            if self.companion_boot_ms.is_some() || self.startup == Startup::Ready {
+                next.companion_starting(ready);
+            }
+        } else {
+            next.ant.host_restarted();
+            next.startup = if self.startup == Startup::Ready {
+                Startup::AlreadyRunning
+            } else {
+                self.startup
+            };
+            // A CPU reset does not stop a companion that is still booting;
+            // the new uptime starts at zero, so carry what is left.
+            next.companion_boot_ms = self
+                .companion_boot_ms
+                .map(|(at, ant)| (at.saturating_sub(self.now), ant));
+        }
+        next.gps = self.gps.take().map(|mut gps| {
+            gps.reset();
+            gps
+        });
+        next.position.missing = self.position.missing;
+        next.battery = self.battery;
+        next.speaker.played = core::mem::take(&mut self.speaker.played);
+        *self = next;
         Ok(())
     }
 }

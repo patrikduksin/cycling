@@ -1,4 +1,5 @@
-//! File-backed reservations with exclusive ownership and injectable torn writes.
+//! File- or memory-backed reservations with exclusive ownership and injectable
+//! torn writes. Memory media outlives a simulated power loss like flash does.
 use device_api::observation::{Availability, Error};
 use device_api::storage::{OwnedFlash, Region};
 use std::{
@@ -15,16 +16,36 @@ pub struct Fault {
     pub partial: usize,
 }
 #[derive(Clone)]
+enum Backing {
+    Files { root: PathBuf, _lock: Rc<fs::File> },
+    Memory(Rc<RefCell<MemoryMedia>>),
+}
+struct MemoryMedia {
+    boot: u32,
+    configuration: Vec<u8>,
+    data: Vec<u8>,
+}
+#[derive(Clone)]
 pub struct FileFlash {
-    root: PathBuf,
-    _lock: Rc<fs::File>,
+    backing: Backing,
     pub fault: Rc<RefCell<Fault>>,
 }
 impl FileFlash {
     /// Reset injected faults and advance the persisted session generation.
     pub(crate) fn begin_boot(&self) -> io::Result<u32> {
         *self.fault.borrow_mut() = Fault::default();
-        let boot_path = self.root.join("boot");
+        let root = match &self.backing {
+            Backing::Files { root, .. } => root,
+            Backing::Memory(media) => {
+                let mut media = media.borrow_mut();
+                media.boot = media
+                    .boot
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("boot counter exhausted"))?;
+                return Ok(media.boot);
+            }
+        };
+        let boot_path = root.join("boot");
         let previous = match fs::read_to_string(&boot_path) {
             Ok(s) => s.trim().parse::<u32>().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid virtual boot counter")
@@ -68,13 +89,32 @@ impl FileFlash {
             }
         }
         Ok(Self {
-            root: root.to_path_buf(),
-            _lock: Rc::new(lock),
+            backing: Backing::Files {
+                root: root.to_path_buf(),
+                _lock: Rc::new(lock),
+            },
             fault: Rc::default(),
         })
     }
-    fn path(&self, r: Region) -> PathBuf {
-        self.root.join(if r == Region::Configuration {
+    /// Erased media that lives as long as any clone, for fast scenarios.
+    pub fn memory() -> Self {
+        Self {
+            backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
+                boot: 0,
+                configuration: vec![0xff; 8192],
+                data: vec![0xff; DATA_BYTES],
+            }))),
+            fault: Rc::default(),
+        }
+    }
+    /// A copy of a region's bytes, for inspection after a scenario.
+    pub fn contents(&mut self, r: Region) -> Vec<u8> {
+        let mut bytes = vec![0; self.geometry(r).capacity];
+        let _ = self.read(r, 0, &mut bytes);
+        bytes
+    }
+    fn path(root: &Path, r: Region) -> PathBuf {
+        root.join(if r == Region::Configuration {
             "configuration.bin"
         } else {
             "data.bin"
@@ -117,10 +157,25 @@ impl FileFlash {
             fault.after = None;
         }
         drop(fault);
+        let root = match &self.backing {
+            Backing::Files { root, .. } => root,
+            Backing::Memory(media) => {
+                let mut media = media.borrow_mut();
+                let region = if r == Region::Configuration {
+                    &mut media.configuration
+                } else {
+                    &mut media.data
+                };
+                for (dst, src) in region[offset..offset + count].iter_mut().zip(bytes) {
+                    *dst = if erase { *src } else { *dst & *src };
+                }
+                return if failed { Err(Error::Failed) } else { Ok(()) };
+            }
+        };
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(self.path(r))
+            .open(Self::path(root, r))
             .map_err(|_| Error::Failed)?;
         let mut result = vec![0; count];
         file.seek(SeekFrom::Start(offset as u64))
@@ -155,7 +210,20 @@ impl OwnedFlash for FileFlash {
     }
     fn read(&mut self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         self.check(r, offset, out.len(), 1)?;
-        let mut f = fs::File::open(self.path(r)).map_err(|_| Error::Failed)?;
+        let root = match &self.backing {
+            Backing::Files { root, .. } => root,
+            Backing::Memory(media) => {
+                let media = media.borrow();
+                let region = if r == Region::Configuration {
+                    &media.configuration
+                } else {
+                    &media.data
+                };
+                out.copy_from_slice(&region[offset..offset + out.len()]);
+                return Ok(());
+            }
+        };
+        let mut f = fs::File::open(Self::path(root, r)).map_err(|_| Error::Failed)?;
         f.seek(SeekFrom::Start(offset as u64))
             .and_then(|_| f.read_exact(out))
             .map_err(|_| Error::Failed)

@@ -154,6 +154,7 @@ impl Sim {
                 name,
                 self.device.world.time_ms,
                 &self.device.display.0.borrow().pixels,
+                self.notes.len(),
             );
         }
     }
@@ -207,6 +208,17 @@ impl Sim {
     pub fn wait_for(&mut self, needle: &str, timeout_ms: u64) -> Result<u64, String> {
         self.wait_until(timeout_ms, |screen| screen.contains(needle))
             .map_err(|text| format!("{needle:?} not shown within {timeout_ms} ms; screen:\n{text}"))
+    }
+
+    /// Advance until the field under `label` reads `value`; panics on timeout.
+    #[track_caller]
+    pub fn wait_for_field(&mut self, label: &str, value: &str, timeout_ms: u64) {
+        if let Err(text) = self.wait_until(timeout_ms, |screen| {
+            screen.field(label).as_deref() == Some(value)
+        }) {
+            panic!("{label} did not show {value} within {timeout_ms} ms; screen:\n{text}");
+        }
+        self.note(NoteKind::Check, format!("{label} shows {value}"));
     }
 
     /// Advance until `needle` is gone from the screen.
@@ -320,6 +332,33 @@ impl Sim {
         self.device.world.route = Some(route);
         self.device.world.distance_m = 0.0;
         self.device.gps.get_or_insert_with(Default::default);
+    }
+
+    /// Store a BLE heart-rate strap as the selected peer, as the companion
+    /// app does; the client then scans for it and connects.
+    #[cfg(feature = "cycling")]
+    pub fn select_ble_heart_strap(&mut self) {
+        self.note(NoteKind::Input, "select BLE heart strap");
+        // "STRAP" in hex, matched by name.
+        let (status, out) = self.command("BLE SELECT HRS 5354524150 -");
+        assert_eq!(status, "ACCEPTED", "BLE SELECT: {out}");
+    }
+
+    /// A BLE heart-rate strap worn by the rider, in range or not. It only
+    /// connects once selected.
+    pub fn ble_heart_strap(&mut self, present: bool) {
+        self.note(
+            NoteKind::World,
+            if present {
+                "BLE heart strap in range"
+            } else {
+                "BLE heart strap out of range"
+            },
+        );
+        self.device
+            .ble_strap
+            .get_or_insert_with(crate::session::BleStrap::new)
+            .present = present;
     }
 
     pub fn set_gps_fix(&mut self, fix: bool) {

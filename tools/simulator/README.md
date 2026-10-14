@@ -10,8 +10,8 @@ reservations, exclusive access and injected write failures. `tests/` covers port
 virtual sessions and diagnostic controls.
 
 Run `mise run simulate` for the host demonstration or `mise run harness-virtual`
-for shared scenarios. Terminal mode requires an explicit disposable state
-directory; consult the task and CLI definitions for options.
+for shared scenarios. Terminal mode (`--terminal`) requires an explicit disposable
+`--state-dir`.
 
 Simulation checks presentation, input routing, command compatibility and recovery
 from controlled storage failures. It does not model DMA timing, radio coexistence,

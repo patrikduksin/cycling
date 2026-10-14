@@ -13,10 +13,11 @@ The application runtime remains in VANA. Composition coordinates it with the
 shell; there is no generic application framework. Keep device imports and cycling
 profile interpretation out of this crate.
 
-The existing settings format includes the BLE profile selector for compatibility.
-Retain its bytes and migration behavior even though VANA interprets the selection.
-Public settings and diagnostic fields remain integration points; prefer operations
-that keep their invariants with the shell when changing those interfaces.
+The settings format includes the BLE profile selector for compatibility. Retain
+its bytes and migration behavior even though VANA interprets the selection; moving
+it requires an explicit format migration. Public settings and diagnostic fields
+remain integration points; prefer operations that keep their invariants with the
+shell when changing those interfaces.
 
 Run `mise run test` for host checks. The simulator exercises the same shell with
 multiple display sizes, scripted input and storage failures. It cannot validate

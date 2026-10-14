@@ -7,16 +7,12 @@ Use a single-context layout:
 
 ## Before exploring domain concepts
 
-Read `CONTEXT.md` and ADRs relevant to the work.
-Read `docs/architecture.md` when changing ownership or interfaces.
+Read `CONTEXT.md` and ADRs relevant to the work. If they are absent,
+proceed silently; the domain-modeling skill creates them when terms or
+decisions are resolved.
 
-If context files or ADRs are absent, proceed silently.
-The domain-modeling skill creates them when terms or decisions
-are resolved.
-
-GitHub issues and PRs remain authoritative for decisions and history.
-Any ADR should link to the relevant issue or PR and summarize the
-decision for domain readers.
+GitHub issues and PRs stay authoritative for decisions. An ADR links to
+the relevant issue or PR and summarizes the decision for domain readers.
 
 ## Vocabulary and conflicts
 

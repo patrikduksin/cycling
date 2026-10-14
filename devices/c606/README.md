@@ -16,11 +16,12 @@ binary can depend on applications; that does not make application imports suitab
 inside drivers. Preserve DMA ownership, interrupt behavior, memory placement and
 power sequencing when changing hardware code.
 
-Use root mise tasks for builds and device access. Read the
-[C606 workflow](../../.agents/skills/c606/SKILL.md) before opening serial ports,
-flashing or testing hardware. Host tests do not establish physical timing or
-hardware behavior; record only observations actually made on a device.
+`build.sh` (run by `mise run build`) selects features from `CYCLING_SDK`,
+`CYCLING_HARNESS` and `CYCLING_BULK_MAINTENANCE` (the MMC maintenance image; see
+[storage research](research/storage.md)) and writes `.local/cycling.bin`
+for slot B (`ota_1`). `partitions.csv` matches the device layout; never flash it
+or a generated bootloader.
 
-Keep vendor firmware, dumps, disassembly, identifiers and raw captures in ignored
-`.local/` at the repository root. Sanitized research belongs here; vendor artifacts
-do not. Preserve stock firmware and existing persisted data.
+Device access, flashing and hardware validation follow
+[AGENTS.md](../../AGENTS.md) and the [C606 skill](../../.agents/skills/c606/SKILL.md).
+Host tests do not establish physical timing or hardware behavior.

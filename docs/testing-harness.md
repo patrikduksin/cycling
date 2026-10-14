@@ -1,45 +1,47 @@
 # Testing through the harness
 
-Run named recipes without an interactive prompt:
+`mise run harness` runs named recipes or JSON scenarios against the C606 or the
+virtual backend and prints compact JSON. Real runs follow the
+[C606 skill](../.agents/skills/c606/SKILL.md), including port selection and
+restoring a harness-enabled base afterward.
 
 ```sh
-mise run harness -- recipes
+mise run harness -- recipes                      # List recipes and their steps
+mise run harness -- run input-screen             # Real device; --port is optional
 mise run harness -- run shared --backend virtual
-mise run harness -- run input-screen --port /dev/ttyACM0
-mise run harness -- run frames --port /dev/ttyACM0
-mise run harness -- run acceptance --port /dev/ttyACM0
-mise run harness -- run virtual-foundation --backend virtual
 mise run harness -- run virtual-sdk --backend virtual --sdk
+mise run harness-virtual                         # shared, virtual-foundation and virtual-sdk
 ```
 
-The `acceptance` recipe uses the laptop camera and microphone, plays a known
-speaker fixture, checks acquisition progress during input/capture, and exercises
-terminal reopen, a targeted Linux USB bus reset and firmware restart. It requires
-an idle recording state and access to the selected USB device node. `av` collects a shorter
-camera/microphone fixture with screenshots. Inspect the recorded camera frames to
-assess physical output. A successful camera capture alone does not assess the panel.
-The audio fixture verifies laptop capture, not the C606 buzzer. Buzzer acceptance
-belongs to #84.
+| Recipe | Checks |
+| --- | --- |
+| `input-screen` | Tap, hold, swipe and button input, then a screenshot |
+| `frames` | Four screenshots at 250 ms |
+| `recovery` | Terminal reopen and firmware restart |
+| `shared` | Settings, input, capture and restart; runs on both backends |
+| `av` | Short camera and microphone fixture with screenshots |
+| `acceptance` | Camera, microphone and speaker fixture; display, brightness and acquisition progress during input/capture; terminal reopen, Linux USB bus reset and restart |
+| `virtual-foundation` | Settings persistence, storage failure, positioning freshness and BLE loss fixtures |
+| `virtual-sdk` | Ride start, BLE heart rate, restart recovery and export info |
 
-Use the protected `mise run backup`, `mise run flash` and `mise run stock` workflows
-and the [C606 skill](../.agents/skills/c606/SKILL.md) for firmware changes. An existing
-verified backup must not be overwritten. Build modes are `CYCLING_SDK=0|1` and
-`CYCLING_HARNESS=0|1`. Restore a harness-enabled base after hardware tests.
+Real runs:
 
-`HARNESS CAPS` reports supported commands, input controls, geometry and transfer
-limits before the runner opens a session. Harness-disabled builds retain ordinary
-commands, logs and recovery. They report injection and capture as unsupported.
-Real restart/bus-reset recipes require an explicitly idle recording state to avoid
-interrupting an existing ride or capture. Default recipes never save preferences or write ride/capture data.
-Temporary brightness and all original runtime preferences are restored without
-`SAVE`, including unsaved preferences reloaded by a restart.
+- `HARNESS CAPS` reports supported commands, input controls, geometry and transfer
+  limits before a session opens. Harness-disabled builds keep ordinary commands,
+  logs and recovery, and report injection and capture as unsupported.
+- Restart and bus-reset recipes require an explicitly idle recording state, rechecked
+  immediately before the disruptive step. Terminal reopen works during acquisition.
+- `acceptance` needs access to the selected USB device node.
+- Default recipes never save preferences or write ride or capture data. Temporary
+  brightness and all original runtime preferences are restored without `SAVE`,
+  including unsaved preferences reloaded by a restart.
 
 ## Structured scenarios
 
-Pass a JSON file with `--scenario`. Evidence, persistent virtual media and run state
-must be under ignored `.local/`. The runner keeps the USB lock through the entire
-run, including recovery and cleanup. It sends each mutation once and internally
-waits for completion and verifies transfer chunks.
+Pass a JSON file with `--scenario`. Evidence, persistent virtual media and run
+state must be under ignored `.local/`. The runner holds the USB lock for the whole
+run, including recovery and cleanup, sends each mutation once, waits for its
+completion and verifies transfer chunks.
 
 ```json
 {
@@ -54,67 +56,73 @@ waits for completion and verifies transfer chunks.
 
 | Step | Fields and behavior |
 | --- | --- |
-| `command` | `command`, optional `expect` key/value assertions. Read-only foundation commands, temporary `DISPLAY` and `BRIGHTNESS` are allowed on real devices. |
-| `wait` | Read-only `command`, `equals` key/value conditions, bounded `timeout_s`. Polling stays inside the runner. |
-| `input` | `gesture`: `tap`, `hold`, `swipe`, `drag` or `button`; coordinates, `duration_ms`, destination coordinates, or button index and `repeat`. Alternatively, ordered `events` with `at_ms` and `event`. |
-| `capture` | `count`, `interval_ms`; waits, transfers, verifies and writes ordered PNGs with actual frame timestamps. `expected_crc32` asserts a frame; `checksum_only` avoids a matching transfer. Mismatches retain an image. |
-| `recover` | `mode`: `terminal`, `restart`, `usb-reset`; `seconds` is the bounded intentional missing-host interval. Recovery has a separate timeout. |
-| `delay` | Bounded `seconds`; renews sessions. Virtual execution advances deterministic time. |
-| `manual` | Exact physical `action`; stops with `needs-manual-action`. Completed work is not replayed. |
-| `fixture` | Virtual-only `command`: positioning, BLE observations/loss, time, display failure or bounded storage failure. |
-| `virtual-command` | Production commands against test-owned virtual media, with expected `status` and optional `expect`. Enables settings SAVE and SDK record/recover/export tests. Rejected during real preflight. |
+| `command` | `command`, optional `expect` key/value assertions. Real devices allow read-only foundation commands and temporary `DISPLAY` and `BRIGHTNESS`. |
+| `wait` | Read-only `command`, `equals` conditions, bounded `timeout_s`. Polling stays inside the runner. |
+| `input` | `gesture`: `tap`, `hold`, `swipe`, `drag` or `button`, with coordinates, `duration_ms`, destination, or button index and `repeat`. Or ordered `events` with `at_ms` and `event`. |
+| `capture` | `count`, `interval_ms`; writes verified, ordered PNGs with actual frame timestamps. `expected_crc32` asserts a frame; `checksum_only` skips the transfer. Mismatches retain an image. |
+| `recover` | `mode`: `terminal`, `restart` or `usb-reset`; `seconds` is the intentional missing-host interval. Recovery has its own timeout. |
+| `delay` | Bounded `seconds`; renews sessions. Virtual runs advance deterministic time. |
+| `manual` | Exact physical `action`; stops with `needs-manual-action` without replaying completed work. |
+| `fixture` | Virtual only: positioning, BLE observations/loss, time, display failure or bounded storage failure. |
+| `virtual-command` | Production commands against test-owned virtual media, with expected `status` and optional `expect`. Enables settings `SAVE` and SDK record/recover/export tests. Rejected on real devices. |
+| `wifi`, `ble` | Typed connectivity operations; see [runtime connectivity](runtime-connectivity.md). |
+| `sound`, `gnss`, `mmc`, `companion`, `ant` | Sound play/stop (four finite patterns), GNSS pause/resume (with an on-device resume deadline), read-only MMC read/clock/recover, companion query, bounded ANT scan/stop. |
 
-A command can name a `baseline`. A later command uses `progress_from`, `counters`
-that must increase and `unchanged` counters that must not change. The acceptance
-recipe uses this for GNSS/companion progress and loss checks. Each submitted input
-sequence ends with touch released or cancelled; button events represent the
-verified companion meanings, not invented arbitrary button down/up or long holds.
-Physical observations retain their own counters. Synthetic input enters the normal
-shell consumer and cannot establish switch/touch sensing or wake an electrically
-off device.
+A command can name a `baseline`; a later command uses `progress_from`, `counters`
+that must increase and `unchanged` counters that must not. `acceptance` uses this
+for GNSS/companion progress and loss.
 
-## Results, cancellation and recovery
+Each input sequence ends with touch released or cancelled. Button events carry the
+verified companion meanings, not arbitrary down/up or long holds.
 
-Standard output is compact JSON with schema `version`, `run_id`, overall `status`,
-per-step outcomes, wall time, protocol request count, private report path and any
-exact `manual_action`. The full report contains replies, build modes, boot/session
-identity, device/host timestamps, loss/timing counters, capture configuration,
-artifact paths and integrity hashes. Outcomes distinguish `pass`, `fail`,
-`unsupported`, `skipped`, `needs-manual-action` and `inconclusive`. Exit status is 0
-for pass, 1 for failure and 2 for unsupported/manual/inconclusive work.
+Cleanup checks sound settling, resumed GNSS progress, the original MMC clock and
+completed ANT scanning, independently of preference and radio restoration.
 
-For a longer run:
+## Results
+
+Standard output has schema `version`, `run_id`, overall `status`, per-step
+outcomes, wall time, protocol request count, private report path and any exact
+`manual_action`. The private report adds replies, build modes, boot/session
+identity, device and host timestamps, loss/timing counters, capture configuration,
+artifact paths and integrity hashes.
+
+| Status | Exit |
+| --- | --- |
+| `pass` | 0 |
+| `fail` | 1 |
+| `unsupported`, `needs-manual-action`, `inconclusive` | 2 |
+
+`skipped` marks steps not reached. `host_invocations` counts the scenario
+execution; `protocol_requests` includes handshake, recovery and virtual fixtures.
+`--agent-tool-calls` records an operator-supplied count and stays null otherwise;
+when benchmarking an agent, record launch, wait and assessment calls separately.
+The first virtual run may include compilation.
+
+## Long runs, cancellation and recovery
 
 ```sh
-mise run harness -- start frames --port /dev/ttyACM0
+mise run harness -- start frames
 mise run harness -- wait RUN_ID --seconds 30
 mise run harness -- cancel RUN_ID --seconds 10
 ```
 
-`wait` is bounded to 60 seconds and resumes observation of the same worker. It does
-not restart a scenario or resend completed mutations. Cancellation sends a signal
-to the owned worker and runs cleanup. A timeout after a mutation remains uncertain;
-the runner inspects independently where possible, reports uncertain restoration,
-and never blindly resends the mutation. A disconnected device expires the session
-and cancels held synthetic touch. Manual-action reports preserve completed steps
-for inspection; they do not automatically continue after an unobserved cable action.
+- `wait` is bounded to 60 seconds and observes the same worker; it never restarts
+  a scenario or resends completed mutations.
+- `cancel` signals the owned worker, which runs cleanup.
+- After a timed-out mutation the runner inspects independently where possible,
+  reports uncertain restoration and never resends the mutation.
+- A disconnected device expires the session and cancels held synthetic touch.
+- Manual-action reports keep completed steps and do not continue automatically
+  after an unobserved cable action.
+- `usb-reset` uses Linux `USBDEVFS_RESET` on the exact device, identified by USB
+  identity, never a shared hub or controller. Terminal closure, bus reset and
+  firmware restart are distinct. If rediscovery fails, the report names the
+  required cable or power-button action; retries are bounded and read-only.
 
-`host_invocations` counts the scenario execution. `protocol_requests` includes
-transport handshake/recovery and virtual fixtures. `--agent-tool-calls` records an
-operator-supplied count, or stays null when unknown; the CLI cannot observe agent
-tool calls. Record launch, bounded wait and assessment calls separately when
-benchmarking an agent workflow. First virtual execution may include compilation.
+## Protocol and pixel capture
 
-USB bus reset uses Linux `USBDEVFS_RESET` on the exact device identified by its USB
-identity and never targets a shared hub/controller. Terminal closure, bus reset and
-firmware restart are distinct. No supported operation claims host detach or physical
-VBUS removal. If rediscovery/recovery fails, the report states the required cable
-or power-button action; retries are bounded and contain read-only inspection only.
-
-## Pixel capture and protocol
-
-Ordinary framing is `CMD request_id command`, with one correlated JSON reply.
-Harness operations use the same reply scheduling. Examples:
+Ordinary framing is `CMD request_id command` with one correlated JSON reply.
+Harness operations share that scheduling:
 
 ```text
 HARNESS CAPS
@@ -131,85 +139,72 @@ HARNESS SESSION CAPTURE READ FRAME 0 4096
 HARNESS SESSION CLOSE
 ```
 
-`OPEN` echoes the caller nonce and returns a boot-bound session generation and
-lease. Session operations renew the lease. Old sessions, sequence IDs and frame
-IDs are rejected. `ACCEPTED` is queued work; input/capture status establishes
-completion. Sequences have a fixed event bound and device-relative offsets, with
-actual delivery counts, cancellation, losses and maximum lateness in the result.
-Normal physical input is drained first; physical input loss cancels synthetic holds.
-The host and firmware report limits through discovery rather than promising exact
-scheduling under display/flash work.
+- `OPEN` echoes the caller nonce and returns a boot-bound session generation and
+  lease; session operations renew it. Old sessions, sequence IDs and frame IDs
+  are rejected.
+- `ACCEPTED` is queued work; input and capture status establish completion.
+- Input sequences have a fixed event bound and device-relative offsets. Results
+  report delivery counts, cancellation, losses and maximum lateness. Physical
+  input drains first, and physical input loss cancels synthetic holds.
+- A capture triggers a real submission of the current fill or shell renderer and
+  stores the pixels evaluated for it: identity, RGB565LE geometry, start/end time
+  and submission result.
+- C606 capture storage uses external RAM; harness-disabled builds reserve none.
+  Frames stay bounded without a reader, slow readers cannot grow memory or block
+  acquisition, and a new capture replaces the retained sequence.
+- Chunks carry frame identity, decoded offset/length, encoding and CRC32 of the
+  decoded bytes. Payloads are raw bytes or RGB565 runs (little-endian 16-bit count,
+  16-bit pixel). The host checks the whole-frame CRC and rejects mixed, incomplete,
+  oversized, stale or corrupt data before writing a PNG. Sequences keep actual
+  timing and skipped counts.
 
-Capture requests cause another real submission of the current fill or shell
-renderer. The capture stores the actual pixels evaluated for that submission,
-including its identity, RGB565LE geometry, start/end time and submission result.
-It does not reconstruct a past screen or claim the panel displayed those pixels.
-C606 capture storage uses external RAM; harness-disabled builds reserve none.
-Frames remain bounded even without a reader. Slow readers cannot grow memory or
-block acquisition. A new capture replaces the previous retained sequence.
+Extend this through typed operations and capability discovery, not arbitrary
+memory/register access or a general service registry.
 
-Chunks carry frame identity, decoded offset/length, encoding and CRC32 of decoded
-bytes. Payloads are bounded raw bytes or RGB565 run tuples, each tuple a little-endian
-16-bit count and 16-bit pixel. Metadata supplies a whole-frame CRC; the host rejects
-mixed, incomplete, oversized, stale or corrupt data before emitting a PNG. Frame
-sequences retain actual timing and skipped counts instead of inventing a video rate.
-Future operations should extend typed operations and capability discovery without
-adding arbitrary memory/register access or a general service registry.
+## Camera and microphone
 
-## Camera and microphone evidence
+`mise run harness -- av-discover` lists camera paths and PulseAudio/PipeWire
+sources. A scenario's `captures` list selects at most one `camera` and one
+`microphone`, with `seconds`, camera `device`/`size`/`format` or microphone
+`source`. Each has its own duration cap and stops on failure or cancellation.
 
-`mise run harness -- av-discover` rediscovers camera paths and named PulseAudio /
-PipeWire sources. A scenario's optional `captures` list selects `camera` and/or
-`microphone`, with `seconds`, camera `device`/`size`/`format`, or microphone `source`.
-Only one of each can run. AV processes have independent duration caps and are
-terminated on failure/cancellation. Device USB still has one reader.
+- The tool records camera controls and microphone route and gain. It restores a
+  changed video format and verifies the readback; microphone gain and routing are
+  left unchanged.
+- For relative comparisons, record microphone `position` and keep source,
+  placement and processing unchanged.
+- `fixture: true` plays two 1 kHz bursts through `sink` or the default speaker;
+  the quiet lead-in is the noise reference. `floor_db` and `margin_db` are recorded.
+- Analysis reports onset, duration, repetitions, dominant frequency and bin
+  resolution, dBFS level, noise and clipping. Clipping or no detected events is
+  inconclusive. Unrelated ambient events stay in the report.
+- Inspect the representative camera frames for framing and visible pattern or
+  backlight changes.
 
-The tool records camera controls and microphone route/gain. It snapshots the video
-format, restores it after capture if changed, and verifies the readback. It retains
-microphone gain and routing. Record microphone `position` and keep the source, placement and processing
-unchanged for relative comparisons. Host processing is not assumed disabled;
-comparisons remain limited when AGC/noise processing is unverified. `fixture: true`
-plays two known 1 kHz bursts through `sink` or the default speaker route. Quiet
-background before the bursts supplies the analysis noise reference. Thresholds
-`floor_db` and `margin_db` are recorded through the scenario and analysis.
+## Virtual backend
 
-Audio analysis returns detected onset, duration, repetition count, dominant FFT
-frequency, frequency-bin resolution, recorded dBFS level, noise and clipping.
-Clipping or absent events is inconclusive. Fixture checks identify the two sustained
-1 kHz bursts while retaining unrelated ambient events in the report. No result is calibrated dB SPL. Camera
-recordings include representative frames; inspect these for framing and visible
-patterns/backlight changes. Software screenshots remain separate evidence.
+The virtual backend uses production parsing, shared shell handlers and the SDK
+runtime with deterministic time and file-backed test media locked against
+concurrent access. It covers restart persistence, torn writes and production
+export rules. `mise run test` and CI run these regressions and both original
+shell geometries.
 
-Command host send/receive times do not tightly bound a device reply timestamp:
-the firmware samples time at loop start, before potentially blocking display work.
-AV process launch also precedes first sample by unmeasured backend latency. Retain
-both timelines and treat precise cross-device timing as unmeasured until calibrated.
+## What this does not prove
 
-The virtual backend uses production parsing, shared shell handlers and SDK runtime,
-with deterministic fixture time and file-backed test media locked against concurrent
-access. It exercises restart persistence, torn writes and production export rules;
-it does not emulate C606 chips, radio wiring, DMA or physical timing. `mise run test`
-and CI run these regressions and both original shell geometries.
-
-
-## Runtime connectivity
-
-Typed `wifi` and `ble` operations validate bounded commands and wait for their
-specific operation sequence to complete or fail. Every scenario using these steps
-supplies `connectivity_restore` with the original private profile and connection
-intent. Cleanup restores that configuration through ordinary commands and checks
-completion. See [runtime connectivity](runtime-connectivity.md) for commands,
-scenario generation, private profile paths and radio evidence limits.
-
-## Foundation operations
-
-The real runner also accepts typed `sound` play/stop, `gnss` pause/resume,
-read-only `mmc` read/clock/recover, `companion` query, and bounded `ant` scan/stop.
-These validate the supported command parameters; they do not enable arbitrary
-mutation commands. Sound is limited to four finite patterns. GNSS pauses carry
-an on-device resume deadline. Cleanup checks sound settling, resumed GNSS progress,
-the original MMC clock and completed ANT scanning independently of preference
-and radio restoration.
-
-Disruptive real recovery rechecks idle recording immediately before restart or
-reset. Terminal reopen remains available during acquisition.
+- Screenshots show pixels evaluated for a submission, not what the panel
+  displayed, and cannot reconstruct a past screen. Camera frames are the physical
+  evidence; a successful camera capture alone does not assess the panel.
+- Synthetic input enters the normal shell consumer. It cannot establish switch or
+  touch sensing or wake an electrically off device. Physical observations keep
+  their own counters.
+- The audio fixture verifies laptop capture, not the C606 buzzer (see #84). No
+  result is calibrated dB SPL, and comparisons are limited while host AGC or
+  noise processing is unverified.
+- Timing is reported, not promised: scheduling under display or flash work is
+  bounded only by discovered limits. Host send/receive times do not tightly bound
+  a device reply timestamp, because firmware samples time at loop start before
+  blocking display work, and AV launch precedes the first sample by unmeasured
+  latency. Treat cross-device timing as unmeasured until calibrated.
+- No operation claims host detach or physical VBUS removal.
+- The virtual backend does not emulate C606 chips, radio wiring, DMA or physical timing.
+- The CLI cannot observe agent tool calls.

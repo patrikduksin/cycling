@@ -3,8 +3,6 @@
 Issues and specs live in GitHub Issues for `patrikduksin/cycling`.
 Use the `gh` CLI from this clone.
 
-GitHub issues and PRs own requirements, decisions and history.
-
 ## Operations
 
 - Create: `gh issue create --title "..." --body-file <path>`

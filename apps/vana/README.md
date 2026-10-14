@@ -18,9 +18,9 @@ VANA consumes device contracts and the shared shell. It must not import a board 
 HAL. Hardware acquisition continues independently of the active screen.
 
 Preserve existing ride records and terminal wire formats when changing these
-modules. The shell settings envelope currently stores the BLE profile selector;
-VANA interprets it. Moving that field requires a compatibility plan.
+modules. The BLE profile selector VANA interprets is stored in the
+[shell settings envelope](../../packages/shell/README.md).
 
-Run the host checks through `mise run test`. See [ride recording](../../docs/ride-recording.md)
+Run host checks with `mise run test`. See [ride recording](../../docs/ride-recording.md)
 for persistence and export guarantees, and [architecture](../../docs/architecture.md)
 for package boundaries.

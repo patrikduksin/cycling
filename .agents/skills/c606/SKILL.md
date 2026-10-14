@@ -5,94 +5,120 @@ description: Flash, access serial, debug or measure the connected Magene C606 sa
 
 # C606
 
-Use [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py) through `mise run backup`,
-`mise run flash` and `mise run stock`, also available as `mise run boot-stock`.
-The recovered layout assumes secure boot
-and flash encryption are disabled. Generic flashing tools can replace protected
-boot metadata or stock ota_0. Repository helpers verify the device and baseline,
-validate image/ranges, restrict writes to the owned application/OTA selection,
-and read back changes. The script owns operative geometry. Preserve ride and
-settings reservations, bootloader, partition table and eFuses. No vendor
-filesystem writes.
+The device-safety rules in [AGENTS.md](../../../AGENTS.md) always apply. This
+skill adds the procedure for flashing, device access, testing and reporting.
 
-The one-time full-flash backup is private under `.local/device`; keep a separate
-copy. Port discovery relies on its manifest, so the first backup needs an explicit
-`--port` or `CYCLING_PORT`. Existing baseline backups must not be overwritten. An interrupted operation
-can leave download mode active; inspect the private logs, reconnect and use the
-stock task with the verified backup. Reset completion alone does not prove boot.
-The helper uses a watchdog reset. RTS hard-reset left this device in ROM download
-mode even with stock selected; watchdog reset reached normal stock startup, as
-confirmed by the user. Stock can remove the USB port during startup. The helper
-attempts a brief capture with DTR/RTS released, reports unavailable USB and rejects
-captured ROM download mode. A silent or missing port does not prove boot failure
-or success. Physical startup still needs observation. Stop monitor before opening
-a no-reset reader, and record startup separately from successful attachment.
+## Firmware: backup, flash, stock
 
-## Access and collection
+| Task | Does |
+| --- | --- |
+| `mise run backup` | One-time full-flash backup into private `.local/device`. Refuses to overwrite an existing backup. |
+| `mise run flash` | Rebuilds for the given `CYCLING_SDK`/`CYCLING_HARNESS`, verifies stock, writes cycling to slot B and boots it. |
+| `mise run stock` (alias `boot-stock`) | Verifies and boots preserved stock firmware. |
+| `mise run monitor` | Reads USB logs without resetting. |
 
-Assign one device owner, including across agents. Terminal, collectors, exports,
-tests and flash share the exclusive `.local/usb.lock`; never run simultaneous
-readers. Use CLI `--help` and device `HELP` for current commands and argument forms.
-`CYCLING_PORT` or `--port` selects the port. If permissions require sudo, recheck
-`sudo -n true`; do not assume an old authorization window or change security
-configuration. Reconnection may remove a temporary device ACL.
+These tasks run [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py),
+which owns the flash geometry. It verifies the device and baseline, validates the
+image and ranges, restricts writes to the owned application and OTA selection,
+and reads back changes.
 
-Ordinary terminal/collector opens do not reset, change DTR/RTS or flush input.
-One pending request is correlated with its reply and sent once. Reconnect must
-not replay commands, and replies from an earlier boot must not complete a new
-request. `ACCEPTED` means queued; poll completion where the command requires it.
-Timeout after a mutation is uncertain completion, not permission to retry.
+- Never use generic flashing tools; they can replace protected boot metadata or
+  stock ota_0. The recovered layout assumes secure boot and flash encryption are
+  disabled.
+- Preserve the ride and settings reservations, bootloader, partition table and
+  eFuses. No vendor filesystem writes.
+- The first backup needs an explicit `--port` or `CYCLING_PORT`, because port
+  discovery relies on its manifest. Keep a separate copy of the backup. Never
+  overwrite an existing baseline backup.
+- The helper resets with the watchdog. RTS hard reset left this device in ROM
+  download mode even with stock selected; watchdog reset reached normal stock
+  startup, as confirmed by the user.
+- Stock can remove the USB port during startup. After reset the helper captures
+  briefly with DTR/RTS released, reports unavailable USB and rejects captured ROM
+  download mode. Observe physical startup, and record it separately from
+  successful attachment.
+- If an operation is interrupted, download mode can stay active: inspect the
+  private logs, reconnect and run `mise run stock` with the verified backup.
+- Stop `mise run monitor` before opening a no-reset reader.
 
-The interactive terminal reads while awaiting replies, not while waiting for
-keyboard input. Use `mise run logs` for continuous collection. Capture raw bytes
-and decoded records under ignored `.local/`. Logs are bounded and may drop;
-sequence gaps and loss counters matter, ROM/panic text may be unstructured, and
-boot metadata does not prove receipt of earlier events. Records lost before
-attachment cannot be recovered by the collector. JSON formatting/USB pumping and
-instrumentation have overhead. The measured enqueue time excludes facade message
-formatting; USB pump time includes reply traffic. These samples are not worst-case
-latency, and an idle harness is not measured free CPU or power.
+## Device access
 
-## Build and test choices
+- Assign one device owner, including across agents. Terminal, collectors,
+  exports, tests and flash share the exclusive `.local/usb.lock`; never run
+  simultaneous readers.
+- Port selection: `--port`, then `CYCLING_PORT`, then the single connected C606
+  matching the backup manifest. `mise run device-port` prints that path without
+  opening it. Missing or ambiguous devices fail. Resolve again after flashing,
+  reconnecting or renumbering.
+- If permissions require sudo, recheck `sudo -n true`; do not assume an old
+  authorization window or change security configuration. Reconnection may
+  remove a temporary device ACL.
+- Use CLI `--help` and device `HELP` for current commands and arguments.
+- Ordinary terminal and collector opens do not reset, change DTR/RTS or flush input.
+- One pending request is correlated with its reply and sent once. Reconnect never
+  replays commands, and a reply from an earlier boot never completes a new request.
+- `ACCEPTED` means queued; poll completion where the command requires it. A
+  timeout after a mutation is uncertain completion, not permission to retry.
+- The interactive terminal reads only while awaiting replies. Use `mise run logs`
+  for continuous collection. Keep raw bytes and decoded records under `.local/`.
 
-`CYCLING_SDK=0` selects base and `1` adds cycling workflows.
-`CYCLING_HARNESS=1` enables diagnostic fault controls; `0` removes those controls
-while retaining ordinary terminal, logs, Wi-Fi and the public bring-up probe.
-Pass both values to `mise run flash`, which rebuilds the image. Record firmware
-revision, both modes, device timestamps, collection state and traffic with results.
-Use harness-disabled builds for performance/power baselines. Restore a
-harness-enabled base after testing, with ordinary terminal/logs available, and
-stop readers and owned BLE fixtures.
+## Build modes
 
-Settings mutation tests snapshot and restore original preferences. Report failed
-restoration for inspection; do not retry an ambiguous save blindly. Preserve
-existing rides and never run mutation tests against a ride that must stay active.
-Reclaim requires explicitly identified disposable data and the export verification
-in [ride recording](../../../docs/ride-recording.md).
+| Variable | `0` | `1` |
+| --- | --- | --- |
+| `CYCLING_SDK` | Base (default) | Adds VANA cycling workflows |
+| `CYCLING_HARNESS` | Removes diagnostic fault controls; keeps terminal, logs, Wi-Fi and the bring-up probe | Diagnostic controls (default) |
 
-For deliberate transport starvation, `base_test.py --transport-recovery` requires
-base with harness enabled and no ride consumer. It sends the six-second executor
-stall once. Allow more than six seconds for acknowledgment; its reply timestamp
-precedes the stall, so use subsequent POSITION/INPUT timestamps for recovery.
-Loss is expected only when the test establishes it and then observes resumed
-parser/companion progress; this does not prove every physical overflow path.
+- Pass both values to `mise run flash`.
+- Record firmware revision, both modes, device timestamps, collection state and
+  traffic with results.
+- Use harness-disabled builds for performance and power baselines.
+- After testing, restore a harness-enabled base with ordinary terminal and logs
+  available, and stop readers and owned BLE fixtures.
 
-GNSS can advance valid sentences while reporting no fix indoors. Check transport,
-parser progress, freshness and recovery; absence of a current indoor fix alone
-is not a regression. User-reported outdoor success and historical measurements
-remain separate from new evidence. For BLE, the echo fixture verifies reconnect,
-read/write and notification behavior; a reported MTU is observed, not forced.
-Retain the separate MTU-23 regression. BlueZ tools use system Python; stop the
-simulator to unregister its advertisement and GATT application.
+## Test rules
 
-## Evidence
+- Settings mutation tests (for example `mise run persistence-test`) snapshot and
+  restore original preferences. Report a failed restoration for inspection; do
+  not retry an ambiguous save blindly.
+- Preserve existing rides. Never run mutation tests against a ride that must stay
+  active. Reclaim only explicitly identified disposable data, after the export
+  verification in [ride recording](../../../docs/ride-recording.md).
+- Transport starvation (`mise run e2e -- --transport-recovery`) requires base with
+  harness enabled and no ride consumer. It sends a six-second executor stall once;
+  allow more than six seconds for acknowledgment. The reply timestamp precedes the
+  stall, so judge recovery from later POSITION/INPUT timestamps. Loss is expected
+  only when the test establishes it and then observes resumed parser/companion progress.
+- GNSS: check transport, parser progress, freshness and recovery. Valid sentences
+  without a fix indoors are not a regression by themselves.
+- BLE: `mise run bluetooth-echo` verifies reconnect, read/write and notifications.
+  A reported MTU is observed, not forced; keep the separate MTU-23 regression.
+  BlueZ tasks use system Python. Stop `mise run ble-simulator` afterward to
+  unregister its advertisement and GATT application.
 
-Serial replies and completed LCD transfers prove neither physical panel output
-nor switch behavior or touch accuracy. Battery reports do not establish calibrated
-capacity or charging behavior. Sampled heap minima are not peak memory; reserved
-stack sizes are not measured stack use; event timing is not a power measurement.
+## What this does not prove
+
+- Reset completion does not prove boot. A silent or missing port proves neither
+  boot failure nor success.
+- Logs are bounded and may drop; check sequence gaps and loss counters. ROM and
+  panic text may be unstructured. Boot metadata does not prove receipt of earlier
+  events, and records lost before attachment cannot be recovered.
+- Instrumentation has overhead. Enqueue time excludes facade message formatting;
+  USB pump time includes reply traffic. Samples are not worst-case latency, and an
+  idle harness is not measured free CPU or power.
+- The transport recovery test does not prove every physical overflow path.
+- Serial replies and completed LCD transfers prove neither panel output, switch
+  behavior nor touch accuracy.
+- Battery reports do not establish calibrated capacity or charging behavior.
+- Sampled heap minima are not peak memory; reserved stack sizes are not measured
+  stack use; event timing is not a power measurement.
+- User-reported outdoor success and historical measurements are separate from
+  new evidence.
+
+## Reporting
+
 State what was observed and leave unobserved requirements unresolved. Keep raw
 coordinates, readings, identifiers, credentials and captures private; publish
-sanitized findings with commit-specific provenance in GitHub issues/PRs.
+sanitized findings with commit-specific provenance in GitHub issues and PRs.
 For hardware identity and protocol facts, read the relevant
 [C606 research](../../../devices/c606/research) and preserve fitted-part uncertainty.

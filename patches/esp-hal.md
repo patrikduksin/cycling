@@ -26,8 +26,10 @@ The ESP32-S3-only `Rtc::sleep_light_with_status` entry:
 It retains CPU, digital peripherals, RTC RAM, main RAM, flash/PSRAM supply, XTAL
 and PLL, and does not change the running CPU frequency or disable caches.
 
-Only `esp-hal/src/rtc_cntl/mod.rs` and `esp-hal/src/rtc_cntl/sleep/esp32s3.rs`
-change. Existing upstream entry methods, other HAL sources, linker files, build
+The sleep behavior changes only in `esp-hal/src/rtc_cntl/mod.rs` and
+`esp-hal/src/rtc_cntl/sleep/esp32s3.rs`. Apart from those, the fork changes only
+`esp-hal/Cargo.toml`, replacing sibling-crate path dependencies with registry
+ones. Existing upstream entry methods, other HAL sources, linker files, build
 script and configuration match the previously vendored and hardware-tested copy.
 
 ## Caller obligations and limits

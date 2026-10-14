@@ -1,113 +1,141 @@
 # Ride recording and export
 
-Ride workflows belong to the optional VANA application, selected with `CYCLING_SDK=1`.
-Both diagnostic harness modes support them through the ordinary USB terminal.
-Base firmware leaves existing rides untouched. Use device `HELP` for commands
-and the [C606 skill](../.agents/skills/c606/SKILL.md) for safe access and capture.
+Rides belong to the optional VANA application (`CYCLING_SDK=1`) and work in both
+harness modes through the ordinary USB terminal. Base firmware leaves existing
+rides untouched. Use device `HELP` for commands and the
+[C606 skill](../.agents/skills/c606/SKILL.md) for device access.
 
-A mutation's ACCEPTED reply is not flash completion. Poll `RIDE STATUS` for its
-matching completed token and result before another mutation. Lost replies can
-leave completion uncertain; do not blindly repeat a mutation. Startup recovery
-and writes run independently of terminal requests, one bounded media step at a
-time. There is no automatic deletion or reuse when full.
+## Mutations
+
+- `ACCEPTED` is not flash completion. Poll `RIDE STATUS` for the matching
+  completed token and result before another mutation.
+- After a lost reply or timeout, completion is uncertain; never blindly repeat
+  the mutation.
+- Startup recovery and writes run independently of terminal requests, one bounded
+  media step at a time.
+- Nothing is deleted or reused automatically when storage is full.
 
 Persisted compatibility and recovery invariants live beside
-[ride_log](../apps/vana/src/ride/log.rs) and
-[recorder](../apps/vana/src/ride/recorder.rs). Existing demo records stay readable;
-new terminal rides use live observations. Delayed service can reduce sampling,
-and reset can lose an uncommitted batch.
-
-Location-free rides are valid. Export does not invent coordinates, satellite
-metadata, speed or distance. Battery percentage has no recorded age and may be
-stale. BLE transport loss or stale/disconnected measurements invalidate usable
-sensor values; VANA currently selects one HRS or CSC profile at a time.
+[ride/log.rs](../apps/vana/src/ride/log.rs) and
+[ride/recorder.rs](../apps/vana/src/ride/recorder.rs). Existing demo records stay
+readable; new terminal rides use live observations.
 
 ## Export
 
-Run `mise run ride-export`; consult its `--help` for paths and options. Keep raw
-exports, coordinates and sensor readings in ignored `.local/`.
+```sh
+mise run ride-export                          # Writes .local/exports/<id>/ by default; see --help
+```
 
-Export is read-only and requires a closed, exportable recorder state. The host
-checks every slot's index, length and transport CRC, then rechecks metadata.
-It renames the partial raw file only after the complete prefix passes. It also
-validates record version, commit, CRC, sequence, source and flags. Invalid occupied
-slots remain in the raw prefix and manifest. Restart interrupted exports at zero.
-
-The result includes raw bytes, SHA-256, manifest and reconstructed ride JSON.
-Ride IDs restart after clear, so exported identity includes START-slot and raw
-content hashes. GPX includes only recorded locations and available system UTC.
-Pause/resume, invalid records, missing locations, sequence gaps and backward UTC
-split segments. A location-free ride retains raw/JSON and a GPX-unavailable reason.
+- Export is read-only and requires a closed, exportable recorder state.
+- The host checks every slot's index, length and transport CRC, then rechecks
+  metadata, and renames the partial raw file only after the complete prefix
+  passes. It also validates record version, commit, CRC, sequence, source and flags.
+- Invalid occupied slots stay in the raw prefix and manifest. Restart an
+  interrupted export from zero.
+- Output: raw bytes, SHA-256, manifest, reconstructed ride JSON and GPX. Ride IDs
+  restart after clear, so exported identity includes START-slot and raw content hashes.
+- GPX contains only recorded locations and available system UTC. Pause/resume,
+  invalid records, missing locations, sequence gaps and backward UTC split
+  segments. A location-free ride keeps raw/JSON and records why GPX is unavailable.
 
 ## Explicit reclaim
 
-Retain a complete export, then run `mise run ride-clear -- .local/exports/<export-id>`.
-The helper verifies local length and SHA-256, downloads and hashes the entire
-current device prefix, requires identical content, and rechecks metadata and the
-upper-slot bound. It holds the shared USB lock through verification, mutation and
-completion. Firmware checks the bound and recorder state; the host checks content.
-
-Clear erases and read-verifies only the owned ride reservation. Settings and
-other flash/storage regions remain outside it. Success requires every sector to
-verify erased. Invalid remnants can be cleared through the same fresh-export
-workflow. A power interruption can leave part of the old journal intact. After
-failure or timeout, restart, wait for scanning, inspect status and export again
-before deciding whether to clear. Never automatically resend clear.
-
-Historical ANT diagnostic records remain recognized as occupied slots. Recovery
-and raw exports preserve them alongside ordinary rides. The on-device diagnostic
-recorder has been removed. Decode an existing full raw journal prefix offline:
-
 ```sh
-mise run ant-export -- .local/ant-decoded --input .local/ride-export/ride-slots.bin
+mise run ride-clear -- .local/exports/<export-id>
 ```
 
-Use `--start-slot N` to decode only the tail of a full prefix. The decoder reports
-invalid ANT records and sequence gaps and preserves the selected raw bytes. Keep
-these files private because sensor identifiers and positions appear in them.
+- The helper verifies the local export's length and SHA-256, downloads and hashes
+  the entire current device prefix, requires identical content, and rechecks
+  metadata and the upper-slot bound. It holds the USB lock through verification,
+  mutation and completion. Firmware checks the bound and recorder state.
+- Clear erases and read-verifies only the owned ride reservation; settings and
+  other regions are outside it. Success requires every sector to verify erased.
+  Invalid remnants are cleared through the same fresh-export workflow.
+- After failure or timeout, restart, wait for scanning, inspect status and export
+  again before deciding whether to clear. Never automatically resend clear; a
+  power interruption can leave part of the old journal intact.
+
+## Historical ANT captures
+
+Historical ANT diagnostic records remain occupied slots, preserved by recovery and
+raw export. The on-device diagnostic recorder has been removed. Decode a full raw
+prefix offline:
+
+```sh
+mise run ant-export -- .local/ant-decoded --input .local/exports/<export-id>/ride-slots.bin
+```
+
+`--start-slot N` decodes only the tail. The decoder reports invalid ANT records and
+sequence gaps and keeps the selected raw bytes.
+
+Keep raw exports, decoded captures, coordinates, sensor readings and identifiers
+in ignored `.local/`.
 
 ## VANA workout build
 
-The foreground menu opens training or sensor status. Training shows a short
-connection check, then bottom-left starts, pauses or resumes the ride.
-Bottom-right twice within five seconds finishes and commits the final samples.
-Wait for `saved` before powering off. Top-left returns home when no ride is active.
-Sensor scan uses bottom-left to move, bottom-right to select, top-left to return.
-Four ANT channels accommodate speed, heart rate, power and radar. Starting a scan
-briefly disconnects the selected channels, scans for ten seconds, then restores
-those selections. Explicitly dropped sensors stay disconnected through automatic
-reconnection and scans until selected again. Wait for PICK SENSOR before selecting an additional device.
-Sensor values are unavailable during this scan.
+Controls:
 
-Live rides sample once per second and commit four samples per flash slot.
-A sudden power loss can lose the uncommitted batch. The 1 MiB reservation holds
-about 4.5 hours when empty, less existing rides and event records. Nothing is
-automatically erased. Sampling continues with missing sensors or GPS; unavailable
-measurements remain absent. The full read-only export retains pause/resume events
-and UTC when available. Without a synchronized clock, samples have active elapsed
-time but no calendar timestamp, and pause events do not preserve wall-clock pause
-duration. A timestamped upload then needs a supplied start time and cannot recover
-the time spent paused.
+| Screen | Control |
+| --- | --- |
+| Menu | Opens training or sensor status |
+| Training | After a short connection check, bottom-left starts, pauses or resumes. Bottom-right twice within five seconds finishes and commits the final samples; wait for `saved` before powering off. Top-left returns home when no ride is active. |
+| Sensor scan | Bottom-left moves, bottom-right selects, top-left returns. Wait for PICK SENSOR before selecting another device. |
 
-Optional sample flags 0x40, 0x80 and 0x100 add measured speed in mm/s at byte 40,
-power in watts at byte 38 and signed gradient in tenths of a percent at byte 44.
-Old slots and the version-1 envelope stay readable; use the updated exporter for
-these optional fields. Gradient estimates the pressure change over at least
-30 metres of wheel distance. It needs fresh pressure and moving wheel data.
-This is an approximate barometric grade, not calibrated elevation.
+Sensors:
 
-Wheel circumference is 2136 mm for stock RC520 700x28c tires. Power zones use
-FTP 215 W and the supplied boundaries; HR Z5 starts at 185 bpm. The clock uses
-Santiago summer time UTC-3 for this September workout build; recorded UTC is
-unmodified. Clock synchronization uses existing Wi-Fi SNTP, with GNSS time of
-day as a display fallback.
+- Four ANT channels cover speed, heart rate, power and radar. VANA selects one
+  BLE HRS or CSC profile at a time.
+- A scan briefly disconnects the selected channels, scans for ten seconds, then
+  restores them. Sensor values are unavailable during the scan.
+- Explicitly dropped sensors stay disconnected through reconnection and scans
+  until selected again.
+- BLE transport loss or stale/disconnected measurements invalidate sensor values.
 
-The workout screen reserves the left edge for radar. Each fresh target has a dot:
-farther down means farther behind; the dot moves toward the rider marker as it
-approaches. Yellow marks an approaching target and red marks proximity. A short
-sound plays for a closing target within 40 metres or six seconds of closing time,
-at most once per five seconds. Missing radar data turns the rail grey; it does
-not imply an empty road. Radar alert playback is active on the workout screen,
-including its ready and paused states. The existing decoder expires each target
-page after two seconds. VANA branding and the brief glitch animation appear only
-on the splash screen.
+Recording:
+
+- Live rides sample once per second and commit four samples per flash slot.
+  Delayed service can reduce sampling.
+- The 1 MiB reservation holds about 4.5 hours when empty, less existing rides and
+  event records.
+- Sampling continues with missing sensors or GPS; unavailable measurements stay
+  absent. Location-free rides are valid, and export does not invent coordinates,
+  satellite metadata, speed or distance.
+- Optional sample flags 0x40, 0x80 and 0x100 add measured speed in mm/s at byte
+  40, power in watts at byte 38 and signed gradient in tenths of a percent at byte
+  44. Old slots and the version-1 envelope stay readable; use the current exporter
+  for these fields.
+- Gradient estimates the pressure change over at least 30 metres of wheel
+  distance and needs fresh pressure and moving wheel data.
+
+Fixed settings in this build:
+
+| Setting | Value |
+| --- | --- |
+| Wheel circumference | 2136 mm (stock RC520 700x28c) |
+| Power zones | FTP 215 W with the supplied boundaries |
+| HR Z5 | From 185 bpm |
+| Display clock | Santiago summer time, UTC-3; recorded UTC is unmodified |
+| Clock source | Wi-Fi SNTP, with GNSS time of day as a display fallback |
+
+Radar uses the left edge of the workout screen:
+
+- Each fresh target is a dot; lower means farther behind, and it moves toward the
+  rider marker as it approaches. Yellow marks an approaching target, red proximity.
+- A short sound plays for a closing target within 40 metres or six seconds of
+  closing time, at most once per five seconds, on the workout screen including
+  its ready and paused states.
+- The decoder expires each target page after two seconds. Missing radar data turns
+  the rail grey.
+
+VANA branding and the brief glitch animation appear only on the splash screen.
+
+## What this does not prove
+
+- A sudden power loss or reset can lose the uncommitted batch of up to four samples.
+- Battery percentage has no recorded age and may be stale.
+- Without a synchronized clock, samples have active elapsed time but no calendar
+  timestamp, and pause events do not preserve wall-clock pause duration. A
+  timestamped upload then needs a supplied start time and cannot recover time
+  spent paused.
+- Gradient is an approximate barometric grade, not calibrated elevation.
+- A grey radar rail does not imply an empty road.

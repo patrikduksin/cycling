@@ -66,9 +66,8 @@ and deliberate; they describe the supported interface, not every internal file.
 Keep tests beside their owner. Shared scenarios belong with the tooling that runs
 them; hardware-specific checks belong with the device workflow.
 
-Package documentation should explain ownership, the main entry points and how to
-find verification commands. It should help someone start a change without
-repeating implementation details that will drift.
+Package documentation explains ownership, the main entry points and where to find
+verification commands, without repeating implementation details that will drift.
 
 ## Dependencies follow ownership
 
@@ -145,29 +144,28 @@ owner serializing output and prioritizing replies.
 Memory-region, alignment and cache constraints belong to device code. Preserve
 buffer ownership through DMA completion, failure and cancellation. Blocking flash
 or display work can delay other tasks; a configured timer period alone does not
-prove achieved latency. Validate changes to hardware access and display timing on
-the device, and report the behavior actually observed.
+prove achieved latency, so hardware access and display timing changes need device
+validation.
 
 ## Persisted data belongs to its user
 
 Shell preferences belong to the shell; cycling preferences and rides belong to
-VANA; calibration belongs to the device. The current shell settings envelope also retains the BLE profile selector for
-compatibility; VANA interprets that value. Moving its physical storage requires an
-explicit format migration. Moving code does not authorize discarding
-or reinterpreting their persisted data. Preserve compatibility or provide an
-explicit migration with recovery behavior. A package move must also preserve
-terminal commands, reply framing and binary record formats. Verify compatibility
-through their existing tests; source relocation alone is not evidence that a
-device still behaves correctly.
+VANA; calibration belongs to the device. The shell settings envelope also stores
+the BLE profile selector that VANA interprets (see the
+[shell README](../packages/shell/README.md)).
 
-Unsupported or corrupt occupied journals must remain available for diagnosis.
-They cannot silently become empty settings or free space. VANA owns ride recovery,
-export and reclaim rules, described in [ride recording](ride-recording.md).
-Storage mechanisms enforce their bounds without interpreting those domain rules.
+Moving code does not authorize discarding or reinterpreting persisted data.
+Preserve compatibility or provide an explicit migration with recovery behavior.
+A package move must also preserve terminal commands, reply framing and binary
+record formats; verify them through their existing tests, because relocation
+alone is not evidence that a device still behaves correctly.
 
-Preserve stock firmware, bootloader, partition table, eFuses and vendor
-filesystems. Device workflows own the exact backup and flashing procedure.
-Publish our code, tools and sanitized findings. Keep vendor firmware, disassembly,
-flash dumps, credentials, identifiers and raw captures in ignored `.local/`.
-The redistributable Trouble Host source and its licensed patch belong in `vendor`;
-retain the license and minimum-MTU regression coverage.
+Unsupported or corrupt occupied journals stay available for diagnosis; they never
+silently become empty settings or free space. VANA owns ride recovery, export and
+reclaim rules, described in [ride recording](ride-recording.md). Storage
+mechanisms enforce their bounds without interpreting those rules.
+
+Stock-firmware preservation and private-data rules are in [AGENTS.md](../AGENTS.md);
+the [C606 skill](../.agents/skills/c606/SKILL.md) owns the backup and flashing
+procedure. `vendor` holds redistributable sources with their licenses and local
+patch notes, such as [Trouble Host](../vendor/trouble-host/CYCLING-PATCH.md).

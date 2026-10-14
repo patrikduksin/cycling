@@ -1,17 +1,20 @@
 # Runtime connectivity
 
 Firmware starts Wi-Fi without credentials and base BLE in echo mode. Saved Wi-Fi
-configuration restores after restart. SDK builds also restore the saved HRS/CSC
-peer. Base preserves that saved selection but does not interpret sensor profiles.
-No credentials or target identifiers are compiled into firmware images.
+configuration is restored after restart; SDK builds also restore the saved HRS/CSC
+peer. Base keeps that saved selection but does not interpret sensor profiles.
+Firmware images contain no credentials or target identifiers.
 
-The ordinary USB protocol works with the debug harness enabled or disabled.
-`HELP` lists the available commands. Requests are bounded to 256 ASCII bytes,
-including `CMD` and the request ID. SSIDs, passwords and BLE names use UTF-8 bytes
-encoded as hex so spaces and line breaks cannot change command framing. Use `-`
-for an absent BLE name or address. Addresses use the little-endian byte order
-returned by `BLE PEERS`. Inputs are limited to 32 SSID/name bytes and 8..63 password
-bytes. WPA2 and WPA3 personal authentication are supported.
+## Commands
+
+The commands work with the debug harness enabled or disabled; `HELP` lists them.
+
+- Requests are at most 256 ASCII bytes, including `CMD` and the request ID.
+- SSIDs, passwords and BLE names are UTF-8 bytes encoded as hex, so spaces and
+  line breaks cannot break framing. Use `-` for an absent BLE name or address.
+- Limits: 32 bytes for SSIDs and names, 8..63 bytes for passwords. WPA2 and WPA3
+  personal authentication are supported.
+- BLE addresses use the little-endian byte order returned by `BLE PEERS`.
 
 ```text
 CMD 1 WIFI SCAN
@@ -36,70 +39,71 @@ CMD 19 BLE FORGET
 CMD 20 BLE ECHO
 ```
 
-The Wi-Fi example encodes a test network named `Test` with a test password.
-Use the private profile helper for real credentials. `BLE SELECT` requires an SDK
-build. Base supports discovery, echo, disconnect and forgetting a saved selection.
-`CONNECT` also reconnects an existing selection; `RECONNECT` uses the same bounded
-operation. Selection/configuration saves immediately and disconnects the old link.
-Issue `CONNECT` after the configuration operation completes.
+The Wi-Fi example encodes a test network `Test` with a test password; use
+`mise run wifi-setup` for real credentials. `BLE SELECT` requires an SDK build;
+base supports discovery, echo, disconnect and forgetting a saved selection.
 
-Mutations return `ACCEPTED`, then status reports `operation=pending`, `completed`
-or `error`, with an incrementing `sequence` and a sanitized error code. Poll the
-accepted sequence before another mutation. Wi-Fi connect completion means radio
-association. `state=4` means DHCP and the public HTTP probe also succeeded. BLE
-connect completion means the selected notification characteristic is subscribed.
-Connection and notification counters expose subsequent activity. Unexpected link
-loss retains connection intent and retries with capped backoff. The failed request
-remains inspectable even if a background retry succeeds. Explicit disconnect,
-selection/configuration change and forget stop that reconnect intent.
+## Completion and reconnection
 
-Normal status/help/errors omit passwords, SSIDs and peer identifiers. Explicit
-`NETWORKS` and `PEERS` discovery replies contain private names/identifiers; keep
-those replies in ignored local evidence. Password hex is still a password.
+- Mutations return `ACCEPTED`; status then reports `operation=pending`,
+  `completed` or `error` with an incrementing `sequence` and a sanitized error
+  code. Poll the accepted sequence before the next mutation.
+- Selection and configuration save immediately and disconnect the old link. Issue
+  `CONNECT` after that operation completes. `CONNECT` also reconnects an existing
+  selection; `RECONNECT` is the same bounded operation.
+- Wi-Fi connect completion means radio association; `state=4` means DHCP and the
+  public HTTP probe also succeeded. BLE connect completion means the selected
+  notification characteristic is subscribed. Connection and notification counters
+  show later activity.
+- Unexpected link loss keeps connection intent and retries with capped backoff.
+  The failed request stays inspectable even if a background retry succeeds.
+  Explicit disconnect, selection or configuration change, and forget end that intent.
 
-Settings schema v5 migrates v1 through v4 records without resetting their preferences.
-Connectivity writes preserve previously saved brightness, idle and timezone values,
-including when a harness temporarily changes those values. Unsupported/malformed
-occupied settings still refuse replacement. Configuration uses the existing owned
-journal; ride/capture regions and vendor storage are untouched. Forgetting removes
-the selection from the current record, not every historical journal byte.
+## Privacy and storage
+
+- Status, help and errors omit passwords, SSIDs and peer identifiers. `NETWORKS`
+  and `PEERS` replies contain private names and identifiers; keep them in ignored
+  local evidence. Password hex is still a password.
+- Settings schema v5 migrates v1 through v4 records without resetting preferences.
+  Connectivity writes preserve saved brightness, idle and timezone values, even
+  while a harness has changed them temporarily. Unsupported or malformed occupied
+  settings still refuse replacement.
+- Configuration uses the existing owned settings journal; ride/capture regions and
+  vendor storage are untouched. Forget removes the selection from the current
+  record, not every historical journal byte.
 
 ## Harness validation
 
-`mise run wifi-setup` saves the current authorized NetworkManager profile privately.
-`tools/devtools/src/cycling_devtools/harness/connectivity.py` generates Wi-Fi and BLE scenarios from the
-captured original idle base state. It does not access the device.
+`mise run wifi-setup` saves the current authorized NetworkManager profile to
+`.local/wifi/config.json`. The [connectivity generator](../tools/devtools/src/cycling_devtools/harness/connectivity.py)
+writes Wi-Fi and BLE scenarios to `.local/foundation/scenarios/` from the captured
+original idle base state in `.local/foundation/original/state.json`, without device access.
 
 ```sh
-export CYCLING_PORT="$(mise run device-port)"
 mise exec -- uv run --project tools/devtools --locked python -m cycling_devtools.harness.connectivity
-mise run harness -- run .local/foundation/scenarios/connectivity-wifi.json
-# Start the existing owned host fixture before the BLE SDK scenario:
-mise run ble-simulator -- --profile both
-mise run harness -- run .local/foundation/scenarios/connectivity-ble.json
+mise run harness -- run --scenario .local/foundation/scenarios/connectivity-wifi.json
+mise run ble-simulator -- --profile both    # Owned host fixture for the BLE SDK scenario
+mise run harness -- run --scenario .local/foundation/scenarios/connectivity-ble.json
 ```
 
-The port helper reads sysfs and requires exactly one VID/PID and identity match
-to the private backup manifest; it does not open USB. Stop if discovery fails.
-Repeat `export CYCLING_PORT="$(mise run device-port)"` after flashing,
-reconnection or any port renumbering before running the next terminal or harness.
-`mise run device-port` also prints the verified path.
+Device access and port selection follow the [C606 skill](../.agents/skills/c606/SKILL.md).
+Stop the BLE fixture afterward and restore the harness-enabled base.
 
-Run the BLE fixture as an owned process, stop it after the test, and restore the
-harness-enabled base with the protected firmware workflow. The Wi-Fi scenario tests
-discovery, private provisioning, failed authentication, recovery, restart and forget.
-The BLE scenario tests HRS/CSC selection, change, reconnect, notification progress,
-restart and forget through the real radio. These recipes require appropriate
-hardware; generation or host tests alone do not establish device observations.
+| Scenario | Covers |
+| --- | --- |
+| Wi-Fi | Discovery, private provisioning, failed authentication, recovery, restart and forget |
+| BLE | HRS/CSC selection, change, reconnect, notification progress, restart and forget over the real radio |
 
-A typed step is `{"op":"wifi","action":"configure","profile":".local/wifi/config.json"}`
-or `{"op":"ble","action":"select","mode":"sim-heart"}`. Other actions are
-`scan`, `connect`, `disconnect`, `forget`, plus BLE `echo`. A deliberately failed
-connection uses `"completion":"error"`. Wi-Fi fixture configuration can use
-`"invalid_password":true` to test recovery without writing a second private file.
-Each scenario must supply original restoration values. This example preserves the
-previously compiled authorized SDK peer in owned settings, then returns runtime
-BLE to echo without clearing that saved selection:
+Typed steps look like `{"op":"wifi","action":"configure","profile":".local/wifi/config.json"}`
+or `{"op":"ble","action":"select","mode":"sim-heart"}`. Other actions are `scan`,
+`connect`, `disconnect`, `forget` and BLE `echo`. Each step waits for its own
+operation sequence to complete or fail. `"completion":"error"` expects a
+deliberate failure; Wi-Fi `"invalid_password":true` tests recovery without a
+second private file.
+
+Every scenario with these steps must supply `connectivity_restore` with the
+actual original values; cleanup restores them through ordinary commands and
+checks completion. The device does not export stored credentials.
 
 ```json
 {
@@ -111,17 +115,22 @@ BLE to echo without clearing that saved selection:
 }
 ```
 
-A null Wi-Fi profile means originally unconfigured. BLE modes are `none`, `echo`,
-`sim-heart`, `sim-csc` or `authorized-heart`; the latter reads an explicit private
-authorization record. `echo_after` restores runtime echo while retaining that
-saved SDK selection. Supply the actual original values. The device does not export
-stored credentials. The generator accepts only its recorded original base echo
-case plus its authorized compiled SDK selection. It migrates that selection to
-owned settings, then restores echo for the base composition. Supply a deliberate
-restoration plan for another owner's configuration.
+- A null Wi-Fi profile means originally unconfigured.
+- BLE modes are `none`, `echo`, `sim-heart`, `sim-csc` or `authorized-heart`; the
+  last reads an explicit private authorization record.
+- `echo_after` returns runtime BLE to echo while keeping the saved SDK selection.
+- The generator only handles its recorded original case: base echo plus the
+  authorized compiled SDK selection, which it migrates to owned settings before
+  restoring echo. Restoring another owner's configuration needs a deliberate plan.
 
-The virtual backend tests production parsing, settings migration/persistence,
-selection changes and notification-generation rejection. Radio connection and
-scan operations remain explicitly unsupported there. Virtual tests preserve a
-pre-existing data file and exercise torn configuration updates; they do not emulate
-RF behavior or prove a real notification subscription.
+The virtual backend covers parsing, settings migration and persistence, selection
+changes and notification-generation rejection; radio connect and scan are
+unsupported there. It preserves a pre-existing data file and exercises torn
+configuration updates.
+
+## What this does not prove
+
+- Scenario generation and host tests do not establish device observations; the
+  recipes need the real hardware.
+- The virtual backend does not emulate RF behavior or prove a real notification
+  subscription.

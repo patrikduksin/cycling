@@ -67,6 +67,20 @@ impl Screen {
         self.frame().find(needle)
     }
 
+    /// The value shown under a field label, such as the reading under "WATTS".
+    pub fn field(&self, label: &str) -> Option<String> {
+        let runs = self.frame().read();
+        let label = runs.iter().find(|run| run.text == label)?;
+        let bottom = label.y + 7 * label.scale;
+        runs.iter()
+            .filter(|run| run.y > bottom && run.y < bottom + 120)
+            .filter(|run| {
+                run.x + 30 >= label.x && run.x < label.x + 6 * label.scale * label.text.len()
+            })
+            .min_by_key(|run| run.y)
+            .map(|run| run.text.clone())
+    }
+
     /// A text run that reads exactly `text`, such as a button label.
     pub fn run(&self, text: &str) -> Option<TextRun> {
         self.frame().read().into_iter().find(|run| run.text == text)
@@ -208,6 +222,20 @@ impl Sim {
         self.note(NoteKind::Check, format!("saw {needle:?}"));
     }
 
+    /// Assert the value under a field label.
+    #[track_caller]
+    pub fn expect_field(&mut self, label: &str, value: &str) {
+        let screen = self.screen();
+        assert_eq!(
+            screen.field(label).as_deref(),
+            Some(value),
+            "{label} at {} ms; screen:\n{}",
+            self.now(),
+            screen.text()
+        );
+        self.note(NoteKind::Check, format!("{label} shows {value}"));
+    }
+
     /// Assert the screen does not show `needle` now.
     #[track_caller]
     pub fn expect_no_text(&mut self, needle: &str) {
@@ -315,7 +343,7 @@ impl Sim {
     /// Cut power without warning and boot again; media keeps what was written.
     pub fn power_loss(&mut self) {
         self.note(NoteKind::Device, "power lost; rebooting");
-        self.device.restart().expect("memory media reopens");
+        self.device.power_cycle().expect("memory media reopens");
         self.advance(BOOT_MS);
     }
 

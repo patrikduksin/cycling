@@ -43,7 +43,7 @@ fn connect(sim: &mut Sim, kind: &str) {
 /// Pair sensors from the Sensors page, then return Home.
 fn pair(sim: &mut Sim, kinds: &[&str]) {
     home(sim, "SENSORS");
-    sim.wait_for("SCAN DONE", seconds(20)).ok();
+    sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     for kind in kinds {
         connect(sim, kind);
     }
@@ -53,6 +53,10 @@ fn pair(sim: &mut Sim, kinds: &[&str]) {
         }
         sim.press(Button::TopLeft);
     }
+    panic!(
+        "Sensors did not return Home; screen:\n{}",
+        sim.screen().text()
+    );
 }
 
 /// Train from Home, through the connection check, onto a recording ride page.
@@ -108,9 +112,10 @@ fn ride_shows_live_metrics_and_records_the_gps_track() {
     start_ride(&mut sim);
     sim.ride_at(28.0, 210.0, 142.0, 88.0);
     sim.advance(minutes(5));
-    for value in ["28.0", "210", "142", "00:05:0"] {
-        sim.expect_text(value);
-    }
+    sim.expect_field("SPEED", "28.0");
+    sim.expect_field("WATTS", "210");
+    sim.expect_field("BPM", "142");
+    sim.expect_field("ACTIVE TIME", "00:05:00");
     stop_ride(&mut sim);
 
     let rides = sim.rides();
@@ -138,16 +143,17 @@ fn power_meter_dropout_blanks_watts_and_recovers() {
     start_ride(&mut sim);
     sim.ride_at(25.0, 190.0, 0.0, 85.0);
     sim.advance(seconds(10));
-    sim.expect_text("190");
+    sim.expect_field("WATTS", "190");
 
+    // A short loss keeps the channel tracking; readings blank, then resume.
     sim.set_present(device_type::POWER, POWER, false);
-    sim.wait_gone("190", seconds(5)).unwrap();
-    sim.advance(seconds(20));
-    sim.expect_no_text("190");
+    sim.advance(seconds(5));
+    sim.expect_field("WATTS", "--");
 
     sim.set_present(device_type::POWER, POWER, true);
     let waited = sim.wait_for("190", seconds(10)).unwrap();
     assert!(waited < seconds(3), "recovered after {waited} ms");
+    sim.expect_field("WATTS", "190");
     sim.advance(seconds(10));
     stop_ride(&mut sim);
     let ride = &sim.rides()[0];
@@ -205,4 +211,37 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     sim.advance(seconds(15));
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 0, "vehicle passed");
+}
+
+/// Acceptance for #130: VANA retries only `Disconnected` channels, so a
+/// channel that timed out while the sensor was away is never reopened.
+#[test]
+#[ignore = "VANA does not retry timed-out ANT channels yet (#130)"]
+fn long_power_meter_loss_reconnects_when_it_returns() {
+    let mut sim = rider();
+    pair(&mut sim, &["POWER METER"]);
+    start_ride(&mut sim);
+    sim.ride_at(25.0, 190.0, 0.0, 85.0);
+    sim.advance(seconds(10));
+    sim.expect_field("WATTS", "190");
+
+    // Beyond the companion's search timeout the channel closes.
+    sim.set_present(device_type::POWER, POWER, false);
+    sim.advance(seconds(40));
+    sim.expect_field("WATTS", "--");
+
+    sim.set_present(device_type::POWER, POWER, true);
+    sim.wait_for("190", seconds(30)).unwrap();
+    sim.expect_field("WATTS", "190");
+}
+
+#[test]
+fn sensors_wait_for_the_companion_after_power_on() {
+    let mut sim = Sim::new();
+    sim.ant_sensor(device_type::HEART_RATE, HEART);
+    // Ask for sensors as soon as Home appears; the radio is still starting.
+    sim.advance(seconds(7));
+    home(&mut sim, "SENSORS");
+    sim.wait_for("SCAN DONE", seconds(20)).unwrap();
+    connect(&mut sim, "HEART RATE");
 }

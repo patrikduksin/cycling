@@ -29,8 +29,12 @@ pub mod device_type {
 
 /// Types the stock companion routes.
 const SUPPORTED_TYPES: &[u8] = &[11, 17, 34, 35, 40, 120, 121, 122, 123, 128];
-/// UART transit plus companion processing for one request.
+/// Companion processing before it reports a request's effect.
 const COMPANION_MS: u64 = 40;
+/// A connected channel that hears nothing for this long closes with a timeout.
+/// Inferred from the ten-second timeout C606 sends with each connect request;
+/// the companion's behaviour after losing a tracked sensor is unverified.
+pub const SEARCH_TIMEOUT_MS: u64 = 10_000;
 /// Time an open channel takes to acquire a sensor that is in range.
 const ACQUIRE_MS: u64 = 700;
 /// Wheel circumference VANA assumes.
@@ -137,11 +141,7 @@ impl AntSensor {
                 let watts = world.power_w.round().clamp(0.0, 65_534.0) as u16;
                 model.power_events = model.power_events.wrapping_add(1);
                 model.accumulated_power = model.accumulated_power.wrapping_add(watts);
-                let cadence = if world.cadence_rpm > 0.0 {
-                    world.cadence_rpm.round().clamp(0.0, 254.0) as u8
-                } else {
-                    0xff
-                };
+                let cadence = world.cadence_rpm.round().clamp(0.0, 254.0) as u8;
                 let [accumulated_lo, accumulated_hi] = model.accumulated_power.to_le_bytes();
                 let [watts_lo, watts_hi] = watts.to_le_bytes();
                 [
@@ -280,6 +280,7 @@ struct Open {
     identity: Identity,
     opened_ms: u64,
     connected: bool,
+    heard_ms: u64,
 }
 
 /// Companion-side scan: discovery runs until its own timer, even after a stop.
@@ -341,12 +342,24 @@ impl SimulatedAnt {
         &mut self.sensors[index]
     }
 
-    /// A device restart: the companion powers down with it and forgets every
-    /// channel, while the sensors keep transmitting.
-    pub fn restarted(&mut self) {
+    /// The companion lost power with the device: it forgets every channel and
+    /// scan, while the sensors keep transmitting.
+    pub fn power_cycled(&mut self) {
         let sensors = core::mem::take(&mut self.sensors);
+        let fail_requests = self.fail_requests;
         *self = Self::new(self.availability);
         self.sensors = sensors;
+        self.fail_requests = fail_requests;
+    }
+
+    /// Only the main CPU restarted. Host channel state starts over while the
+    /// companion keeps its open channels and scan, as a CPU reset cannot prove
+    /// otherwise; pages for channels the host no longer selects are ignored.
+    pub fn host_restarted(&mut self) {
+        self.state = Channels::new();
+        self.pending = None;
+        self.scan = ScanOwnership::Idle;
+        self.events.clear();
     }
 
     /// The companion restarted or its UART failed: every channel is lost.
@@ -368,8 +381,9 @@ impl SimulatedAnt {
         }
         self.state.tick(now);
         self.scan.tick(now);
+        // The IO task submits a request on its next pass.
         if let Some((request, at)) = self.pending
-            && now >= at
+            && now > at
         {
             self.pending = None;
             if self.fail_requests {
@@ -393,8 +407,8 @@ impl SimulatedAnt {
             Request::Scan { duration_ms } => {
                 let seconds = u64::from(duration_ms.div_ceil(1000).max(5));
                 self.companion_scan = Some(CompanionScan {
-                    started_ms: now,
-                    natural_end_ms: now + (seconds + 1) * 1000 + 200 - COMPANION_MS,
+                    started_ms: now + COMPANION_MS,
+                    natural_end_ms: now + (seconds + 1) * 1000 + 200,
                     discovering: true,
                     reported: Vec::new(),
                 });
@@ -410,8 +424,9 @@ impl SimulatedAnt {
                     .retain(|o| o.identity.device_type != identity.device_type);
                 self.open.push(Open {
                     identity,
-                    opened_ms: now,
+                    opened_ms: now + COMPANION_MS,
                     connected: false,
+                    heard_ms: now,
                 });
             }
             Request::Disconnect { identity } => {
@@ -456,12 +471,18 @@ impl SimulatedAnt {
         let sensors = &self.sensors;
         let events = &mut self.events;
         self.open.retain_mut(|open| {
-            if open.connected {
-                return true;
-            }
             let found = sensors
                 .iter()
                 .any(|s| s.identity == open.identity && s.present && !s.silent);
+            if open.connected {
+                if found {
+                    open.heard_ms = now;
+                } else if now >= open.heard_ms + SEARCH_TIMEOUT_MS {
+                    events.push((now, Event::Timeout(open.identity)));
+                    return false;
+                }
+                return true;
+            }
             if found && now >= open.opened_ms + ACQUIRE_MS {
                 open.connected = true;
                 events.push((now, Event::Connected(open.identity)));
@@ -558,8 +579,11 @@ impl Ant for SimulatedAnt {
     }
 
     fn request(&mut self, operation: AntOperation, now: u64) -> Result<Admission, Error> {
-        if self.availability != Availability::Ready {
-            return Err(Error::Unavailable);
+        match self.availability {
+            Availability::Ready => {}
+            // C606 answers Busy until the companion is running.
+            Availability::Initializing => return Err(Error::Busy),
+            _ => return Err(Error::Unavailable),
         }
         self.scan.tick(now);
         let starts = matches!(
@@ -605,7 +629,7 @@ impl Ant for SimulatedAnt {
                     }
                     _ => {}
                 }
-                self.pending = Some((request, now + COMPANION_MS));
+                self.pending = Some((request, now));
                 Ok(Admission::Accepted)
             }
             Err(Error::Busy) => Err(Error::InvalidState),

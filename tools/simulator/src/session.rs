@@ -100,6 +100,8 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
+/// Uptime before a powered-on companion reports ready.
+const COMPANION_BOOT_MS: u64 = 1_500;
 pub type VirtualShell =
     firmware_shell::shell::Shell<DisplayDevice, InputDevice, PowerDevice, FileFlash>;
 /// The simulated device and the world it observes, composed like C606 firmware.
@@ -116,6 +118,8 @@ pub struct Session {
     pub speaker: Speaker,
     pub battery: Battery,
     pub startup: Startup,
+    /// Uptime at which a starting companion runs, and the ANT availability then.
+    companion_boot_ms: Option<(u64, Availability)>,
     pub input: InputDevice,
     pub power: PowerDevice,
     pub display: DisplayDevice,
@@ -135,12 +139,24 @@ impl Session {
         }
         Self::with_media(FileFlash::open(root)?, width, height)
     }
-    /// A C606-sized device on memory media, with a ready ANT radio and companion.
+    /// A C606-sized device on memory media whose companion and ANT radio
+    /// start shortly after boot.
     pub fn device() -> io::Result<Self> {
         let mut session = Self::with_media(FileFlash::memory(), 240, 320)?;
-        session.ant.availability = Availability::Ready;
-        session.startup = Startup::Ready;
+        session.companion_starting(Availability::Ready);
         Ok(session)
+    }
+    /// The companion is probing after power-on; ANT admits nothing until it runs.
+    fn companion_starting(&mut self, ant: Availability) {
+        self.startup = Startup::Probing;
+        self.ant.availability = Availability::Initializing;
+        self.companion_boot_ms = Some((COMPANION_BOOT_MS, ant));
+    }
+    fn ant_ready_availability(&self) -> Availability {
+        match self.companion_boot_ms {
+            Some((_, ant)) => ant,
+            None => self.ant.availability,
+        }
     }
     fn with_media(media: FileFlash, width: usize, height: usize) -> io::Result<Self> {
         let boot = media.begin_boot()?;
@@ -191,6 +207,7 @@ impl Session {
             speaker: Speaker::default(),
             battery: Battery::default(),
             startup: Startup::Unsupported,
+            companion_boot_ms: None,
             input,
             power,
             display,
@@ -203,6 +220,13 @@ impl Session {
     }
     /// One pass of the firmware loop, in the order C606 composition runs it.
     pub fn tick(&mut self) {
+        if let Some((at, ant)) = self.companion_boot_ms
+            && self.now >= at
+        {
+            self.companion_boot_ms = None;
+            self.startup = Startup::Ready;
+            self.ant.availability = ant;
+        }
         self.ant.tick(&self.world, self.now);
         if let Some(gps) = &mut self.gps {
             gps.tick(&self.world, self.now, &mut self.position.acquisition);
@@ -562,21 +586,41 @@ impl Session {
         let _ = write!(out, "now_ms={} boot={} fixture=true", self.now, self.boot);
         "OK"
     }
-    /// Reboot the device on the same media. The world, sensors and receiver
-    /// presence persist; everything held in device memory starts over.
+    /// A main-CPU restart, as the terminal `RESTART` requests. The companion
+    /// keeps running with its channels; see `power_cycle` for a full loss.
     pub fn restart(&mut self) -> io::Result<()> {
+        self.reboot(false)
+    }
+    /// Power lost and restored: the companion boots again too.
+    pub fn power_cycle(&mut self) -> io::Result<()> {
+        self.reboot(true)
+    }
+    /// Reboot on the same media. The world, sensors and receiver presence
+    /// persist; everything held in device memory starts over.
+    fn reboot(&mut self, power: bool) -> io::Result<()> {
         let g = self.display.geometry();
         let mut next = Self::with_media(self.media.clone(), g.width, g.height)?;
         next.world = core::mem::take(&mut self.world);
         core::mem::swap(&mut next.ant, &mut self.ant);
-        next.ant.restarted();
+        if power {
+            next.ant.power_cycled();
+            if self.companion_boot_ms.is_some() || self.startup == Startup::Ready {
+                next.companion_starting(self.ant_ready_availability());
+            }
+        } else {
+            next.ant.host_restarted();
+            next.startup = if self.startup == Startup::Ready {
+                Startup::AlreadyRunning
+            } else {
+                self.startup
+            };
+        }
         next.gps = self.gps.take().map(|mut gps| {
             gps.reset();
             gps
         });
         next.position.missing = self.position.missing;
         next.battery = self.battery;
-        next.startup = self.startup;
         next.speaker.played = core::mem::take(&mut self.speaker.played);
         *self = next;
         Ok(())

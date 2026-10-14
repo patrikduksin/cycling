@@ -1,5 +1,7 @@
 //! VANA workout rendering.
+use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::{heart_zone, power_zone};
+use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
 
@@ -14,10 +16,10 @@ pub enum Page {
 
 pub struct View {
     pub now_ms: u64,
-    pub sample: crate::ride::log::Sample,
+    pub sample: Sample,
     pub active_secs: u64,
-    pub state: crate::ride::log::Status,
-    pub radar: crate::sensors::radar::Snapshot,
+    pub state: Status,
+    pub radar: radar::Snapshot,
     pub gps_fix: bool,
     pub stop_confirm: bool,
     values: [Text<12>; 7],
@@ -45,10 +47,10 @@ impl View {
         }
         Self {
             now_ms: 0,
-            sample: crate::ride::log::Sample::default(),
+            sample: Sample::default(),
             active_secs: 0,
-            state: crate::ride::log::Status::Ready,
-            radar: crate::sensors::radar::Snapshot::default(),
+            state: Status::Ready,
+            radar: radar::Snapshot::default(),
             gps_fix: false,
             stop_confirm: false,
             values: core::array::from_fn(|_| Text::new()),
@@ -212,18 +214,13 @@ impl View {
                 let dx = x as i32 - 12;
                 let dy = y as i32 - cy;
                 if dx * dx + dy * dy <= 25 {
-                    return if crate::sensors::radar::close(target) {
-                        0xf800
-                    } else {
-                        0xffe0
-                    };
+                    return if close(target) { 0xf800 } else { 0xffe0 };
                 }
             }
             if (11..=13).contains(&x) && (58..=272).contains(&y) {
                 return match status {
-                    crate::sensors::radar::Status::Ready => CYAN,
-                    crate::sensors::radar::Status::Error
-                    | crate::sensors::radar::Status::ReservedThreat => 0xf800,
+                    radar::Status::Ready => CYAN,
+                    radar::Status::Error | radar::Status::ReservedThreat => 0xf800,
                     _ => DIM,
                 };
             }
@@ -298,11 +295,11 @@ impl View {
             b"STOP TO SAVE"
         } else {
             match self.state {
-                crate::ride::log::Status::Recording => b"RECORDING",
-                crate::ride::log::Status::Paused => b"PAUSED",
-                crate::ride::log::Status::Saved => b"SAVED",
-                crate::ride::log::Status::Error => b"STORAGE ERROR",
-                crate::ride::log::Status::Full => b"STORAGE FULL",
+                Status::Recording => b"RECORDING",
+                Status::Paused => b"PAUSED",
+                Status::Saved => b"SAVED",
+                Status::Error => b"STORAGE ERROR",
+                Status::Full => b"STORAGE FULL",
                 _ => b"READY",
             }
         };
@@ -310,8 +307,8 @@ impl View {
             return if self.stop_confirm { 0xffe0 } else { CYAN };
         }
         let left: &[u8] = match self.state {
-            crate::ride::log::Status::Recording => b"PAUSE",
-            crate::ride::log::Status::Paused => b"RESUME",
+            Status::Recording => b"PAUSE",
+            Status::Paused => b"RESUME",
             _ => b"START",
         };
         if text(x, y, 8, 300, 2, left) || text(x, y, 180, 300, 2, b"STOP") {
@@ -355,5 +352,84 @@ impl<const N: usize> core::fmt::Write for Text<N> {
             self.len += 1;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WHITE: u16 = 0xffff;
+    const CYAN: u16 = 0x07ff;
+
+    /// Every pixel in the label's box has `color` exactly where the label draws.
+    fn shows(view: &View, left: usize, top: usize, scale: usize, label: &[u8], color: u16) -> bool {
+        (top..top + 7 * scale).all(|y| {
+            (left..left + label.len() * 6 * scale)
+                .all(|x| (view.pixel(x, y) == color) == text(x, y, left, top, scale, label))
+        })
+    }
+
+    #[test]
+    fn clock_shows_twelve_hour_local_time() {
+        let clock = |utc| View::new(Page::Home, false, utc).time.as_bytes().to_vec();
+        assert_eq!(clock(Some(0)), b"09:00 PM");
+        assert_eq!(clock(Some(15 * 3600)), b"12:00 PM");
+        assert_eq!(clock(Some(3 * 3600)), b"12:00 AM");
+        assert_eq!(
+            clock(Some(5 * 86400 + 3 * 3600 + 59 * 60 + 59)),
+            b"12:59 AM"
+        );
+        assert_eq!(clock(None), b"--:-- --");
+    }
+
+    #[test]
+    fn ride_page_shows_prepared_metrics_and_zones() {
+        let mut view = View::new(Page::Ride, false, None);
+        view.sample = Sample {
+            speed_mm_s: Some(8333),
+            power_watts: Some(250),
+            gradient_tenths: Some(-35),
+            ..Sample::default()
+        };
+        view.active_secs = 3725;
+        view.state = Status::Recording;
+        view.prepare();
+        assert!(shows(&view, 38, 64, 6, b"29.9", WHITE));
+        assert!(shows(&view, 36, 148, 4, b"250", WHITE));
+        assert!(shows(&view, 38, 184, 2, b"Z5", CYAN));
+        assert!(shows(&view, 145, 148, 4, b"--", WHITE));
+        assert!(shows(&view, 146, 184, 2, b"Z-", CYAN));
+        assert!(shows(&view, 33, 232, 2, b"01:02:05", WHITE));
+        assert!(shows(&view, 159, 232, 2, b"-3.5%", WHITE));
+        assert!(shows(&view, 30, 263, 2, b"RECORDING", CYAN));
+        assert!(shows(&view, 8, 300, 2, b"PAUSE", WHITE));
+    }
+
+    #[test]
+    fn ride_page_asks_for_stop_confirmation() {
+        let mut view = View::new(Page::Ride, false, None);
+        view.state = Status::Paused;
+        view.stop_confirm = true;
+        view.prepare();
+        assert!(shows(&view, 30, 263, 2, b"STOP TO SAVE", 0xffe0));
+        assert!(shows(&view, 8, 300, 2, b"RESUME", WHITE));
+    }
+
+    #[test]
+    fn home_highlights_the_selected_choice() {
+        let mut view = View::new(Page::Home, true, None);
+        view.prepare();
+        assert_eq!(view.pixel(13, 197), CYAN, "Sensors is filled");
+        assert_eq!(view.pixel(13, 111), 0, "Train is outlined only");
+        assert_eq!(view.pixel(12, 111), 0x8410);
+    }
+
+    #[test]
+    fn text_is_uppercase_and_bounded() {
+        let mut line = Text::<4>::new();
+        assert!(line.push_str("ok").is_ok());
+        assert!(line.push_str("abc").is_err());
+        assert_eq!(line.as_bytes(), b"OK");
     }
 }

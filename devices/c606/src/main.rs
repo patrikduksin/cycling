@@ -206,10 +206,12 @@ async fn console(
                 now,
                 &mut devices.ant,
                 &mut devices.ble,
-                &devices.position,
-                device_api::network::Network::online(&devices.network),
-                &devices.input,
-                device_api::sensors::Sensors::snapshot(&devices.sensors, now),
+                vana::app::Observations {
+                    position: &devices.position,
+                    network_online: device_api::network::Network::online(&devices.network),
+                    input: &devices.input,
+                    physical: device_api::sensors::Sensors::snapshot(&devices.sensors, now),
+                },
             );
             #[cfg(feature = "cycling")]
             sdk.present(&mut system, now, &devices.ant, &devices.position);

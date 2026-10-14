@@ -1,45 +1,171 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
+use super::recording::Request;
+use crate::ride::log::Status;
+use crate::ride::metrics::{heart_zone, power_zone};
+use crate::screens::sensors::{MenuMessage, connection_status};
+use crate::screens::workout::{Page, View};
+use crate::sensors::ant::device_type;
 use core::fmt::Write;
+use device_api::ant::Ant;
+use device_api::display::Display as Panel;
 use device_api::gps::FixState;
+use device_api::input::InputSource;
+use device_api::positioning::Positioning;
+use device_api::power::Power;
+use device_api::sensors::Startup;
+use device_api::sound::Sound;
+use device_api::storage::OwnedFlash;
+use firmware_shell::shell::{Screen, Shell};
+
+/// The boot splash yields to Home after this long.
+const BOOT_MS: u64 = 6500;
+/// The connection check yields to the ride page after this long.
+const PREFLIGHT_MS: u64 = 2500;
+const ANIMATED_FRAME_MS: u64 = 500;
+const STATIC_FRAME_MS: u64 = 1000;
+/// Radar alerts use the longest pattern that still fits between radar pages.
+const ALERT_PATTERN_MAX_MS: u16 = 300;
+
+pub(super) struct Navigation {
+    pub(super) page: Page,
+    /// Home highlights Sensors rather than Train.
+    pub(super) home_cursor: bool,
+    pub(super) page_since: u64,
+    pub(super) last_press: u64,
+}
+
+impl Default for Navigation {
+    fn default() -> Self {
+        Self {
+            page: Page::Boot,
+            home_cursor: false,
+            page_since: 0,
+            last_press: 0,
+        }
+    }
+}
+
+/// Foreground drawing. Once the terminal takes over the panel it stays suspended.
+#[derive(Clone, Copy)]
+pub(super) enum Display {
+    Active { next_frame_ms: u64 },
+    Suspended,
+}
+
+impl Default for Display {
+    fn default() -> Self {
+        Self::Active { next_frame_ms: 0 }
+    }
+}
+
+impl Display {
+    pub(super) fn is_active(self) -> bool {
+        matches!(self, Self::Active { .. })
+    }
+
+    /// Draw at the next opportunity rather than waiting for the frame interval.
+    pub(super) fn redraw(&mut self) {
+        if let Self::Active { next_frame_ms } = self {
+            *next_frame_ms = 0;
+        }
+    }
+}
 
 impl Runtime {
-    fn workout_display<
-        D: device_api::display::Display,
-        I: device_api::input::InputSource,
-        P: device_api::power::Power,
-        B: device_api::storage::OwnedFlash,
-    >(
+    pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
-        system: &mut firmware_shell::shell::Shell<D, I, P, B>,
+        system: &mut Shell<D, I, P, B>,
         now: u64,
-        ant: &impl device_api::ant::Ant,
-        position: &impl device_api::positioning::Positioning,
+        ant: &impl Ant,
+        position: &impl Positioning,
     ) {
-        use crate::screens::workout::Page;
-        use crate::screens::workout::View;
-        if self.page == Page::Boot && now >= 6500 {
-            self.page = Page::Home;
+        if system.foreground == Screen::Blank {
+            return;
         }
-        if self.page == Page::Preflight && now.saturating_sub(self.page_since) >= 2500 {
-            self.page = Page::Ride;
+        let Display::Active { next_frame_ms } = &mut self.display else {
+            return;
+        };
+        if now < *next_frame_ms {
+            return;
         }
-        let utc = self.live.utc_ms.map(|v| v / 1000).or_else(|| {
-            position.snapshot(now).and_then(|p| p.gps.utc).map(|v| {
+        let animated = matches!(self.navigation.page, Page::Boot | Page::Ride);
+        *next_frame_ms = now.saturating_add(if animated {
+            ANIMATED_FRAME_MS
+        } else {
+            STATIC_FRAME_MS
+        });
+        self.workout_display(system, now, ant, position);
+    }
+
+    pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
+        if self.navigation.page != Page::Ride {
+            return;
+        }
+        let radar = self.readings.radar.snapshot(now);
+        if self.readings.radar_alert.update(radar, now)
+            && let Some(pattern) = sound
+                .patterns()
+                .iter()
+                .filter(|p| p.nominal_ms <= ALERT_PATTERN_MAX_MS)
+                .max_by_key(|p| p.nominal_ms)
+        {
+            let _ = sound.play(pattern.id, now);
+        }
+    }
+
+    pub fn set_startup_status(&mut self, status: Startup) {
+        if self.startup_status != status.name() {
+            self.startup_status = status.name();
+            self.menu.set_message(match status {
+                Startup::Charging | Startup::WakePending | Startup::Waiting => {
+                    MenuMessage::StartingSensors
+                }
+                Startup::Probing | Startup::Pending => MenuMessage::WaitingForCompanion,
+                Startup::Unavailable | Startup::Uncertain | Startup::TimedOut => {
+                    MenuMessage::StartupFailed
+                }
+                _ => MenuMessage::ScanThenPick,
+            });
+            self.display.redraw();
+        }
+    }
+
+    pub fn suspend_display(&mut self) {
+        self.display = Display::Suspended;
+    }
+
+    fn workout_display<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
+        &mut self,
+        system: &mut Shell<D, I, P, B>,
+        now: u64,
+        ant: &impl Ant,
+        position: &impl Positioning,
+    ) {
+        let navigation = &mut self.navigation;
+        if navigation.page == Page::Boot && now >= BOOT_MS {
+            navigation.page = Page::Home;
+        }
+        if navigation.page == Page::Preflight
+            && now.saturating_sub(navigation.page_since) >= PREFLIGHT_MS
+        {
+            navigation.page = Page::Ride;
+        }
+        let page = navigation.page;
+        let gps = position.snapshot(now);
+        let utc = self.readings.live.utc_ms.map(|v| v / 1000).or_else(|| {
+            gps.and_then(|p| p.gps.utc).map(|v| {
                 u64::from((v[0] - b'0') * 10 + v[1] - b'0') * 3600
                     + u64::from((v[2] - b'0') * 10 + v[3] - b'0') * 60
             })
         });
-        let mut view = View::new(self.page, self.home_cursor, utc);
+        let mut view = View::new(page, navigation.home_cursor, utc);
         view.now_ms = now;
-        view.sample = self.live;
-        view.active_secs = self.recorder.active_ms(now) / 1000;
-        view.state = self.recorder.status();
-        view.radar = self.radar.snapshot(now);
-        view.stop_confirm = self
-            .stop_armed
-            .is_some_and(|at| now.saturating_sub(at) <= 5000);
-        let gps = position.snapshot(now);
+        view.sample = self.readings.live;
+        view.active_secs = self.ride.recorder.active_ms(now) / 1000;
+        view.state = self.ride.recorder.status();
+        view.radar = self.readings.radar.snapshot(now);
+        view.stop_confirm = self.ride.stop_confirming(now);
         view.gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         let gps_status = gps.map_or("OFF", |p| {
             if p.gps.state == FixState::Fresh {
@@ -48,215 +174,146 @@ impl Runtime {
                 "SEARCHING"
             }
         });
-        match self.page {
-            Page::Boot => {
-                let _ = match (now / 1000) % 3 {
-                    0 => write!(view.lines[0], "> COMPANION {}", self.startup_status),
-                    1 => write!(
-                        view.lines[0],
-                        "> RADIO {:?} / GPS {}",
-                        ant.availability(),
-                        gps_status
-                    ),
-                    _ => write!(view.lines[0], "> STORAGE {}", self.recorder.status().name()),
-                };
-            }
-            Page::Preflight => {
-                let _ = view.lines[0].push_str(if self.page == Page::Preflight {
-                    "> TRAIN / CONNECTION CHECK"
-                } else {
-                    "> CONNECTED SENSORS"
-                });
-                for (i, kind) in [123, 120, 11, 40].into_iter().enumerate() {
-                    let channel = ant.channel(kind, now).or_else(|| {
-                        if kind == 123 {
-                            ant.channel(121, now)
-                        } else {
-                            None
-                        }
-                    });
-                    let label = ["SPEED", "HEART", "POWER", "RADAR"][i];
-                    if let Some(channel) = channel {
-                        let id = channel.selected.map_or(0, |p| p.device_number);
-                        let _ = write!(
-                            view.lines[i + 2],
-                            "{} {} {}",
-                            label,
-                            id,
-                            crate::screens::sensors::connection_status(channel)
-                        );
-                    } else {
-                        let _ = write!(view.lines[i + 2], "{} --", label);
-                    }
-                }
-                let _ = write!(view.lines[6], "GPS {}", gps_status);
-                let _ = write!(view.lines[7], "STORAGE {}", self.recorder.status().name());
-                if let Some(message) = self.scan.overview_message() {
-                    let _ = view.lines[8]
-                        .push_str(core::str::from_utf8(message).unwrap_or("SCAN FAILED"));
-                } else {
-                    let _ = write!(view.lines[8], "RADIO {:?}", ant.availability());
-                }
-            }
+        match page {
+            Page::Boot => self.boot_lines(&mut view, now, ant, gps_status),
+            Page::Preflight => self.preflight_lines(&mut view, now, ant, gps_status),
             Page::Ride => {
-                let _ = write!(view.lines[0], "> {}", self.recorder.status().name());
-                if let Some(v) = self.live.speed_mm_s {
-                    let k = v * 36 / 1000;
-                    let _ = write!(view.lines[1], "{}.{} KM/H", k / 10, k % 10);
-                } else {
-                    let _ = view.lines[1].push_str("-- KM/H");
-                }
-                if let Some(v) = self.live.heart_bpm {
-                    let _ = write!(view.lines[2], "{} BPM", v);
-                } else {
-                    let _ = view.lines[2].push_str("-- BPM");
-                }
-                if let Some(v) = self.live.power_watts {
-                    let _ = write!(view.lines[3], "{} W", v);
-                } else {
-                    let _ = view.lines[3].push_str("-- W");
-                }
-                let seconds = self.recorder.active_ms(now) / 1000;
-                let _ = write!(
-                    view.lines[4],
-                    "TIME {:02}:{:02}:{:02}",
-                    seconds / 3600,
-                    seconds / 60 % 60,
-                    seconds % 60
-                );
-                if let Some(v) = self.live.gradient_tenths {
-                    let _ = write!(
-                        view.lines[5],
-                        "GRADE {}{}.{:01}%",
-                        if v < 0 { "-" } else { "+" },
-                        v.unsigned_abs() / 10,
-                        v.unsigned_abs() % 10
-                    );
-                } else {
-                    let _ = view.lines[5].push_str("GRADE --");
-                }
-                let _ = write!(
-                    view.lines[6],
-                    "POWER Z{}  HR Z{}",
-                    self.live
-                        .power_watts
-                        .map_or(0, crate::ride::metrics::power_zone),
-                    self.live
-                        .heart_bpm
-                        .map_or(0, crate::ride::metrics::heart_zone)
-                );
-                let _ = write!(
-                    view.lines[7],
-                    "GPS {} / SAVED {}",
-                    gps_status,
-                    self.recorder.written_samples()
-                );
-                if self
-                    .stop_armed
-                    .is_some_and(|at| now.saturating_sub(at) <= 5000)
-                {
-                    let _ = view.lines[8].push_str("PRESS STOP AGAIN TO SAVE");
-                } else if let Some(result) = self.completion {
-                    let _ = view.lines[8].push_str(if result.ok { "OK" } else { "WRITE FAILED" });
-                } else if self.pending.is_some() {
-                    let _ = view.lines[8].push_str("SAVING");
-                } else {
-                    let _ = view.lines[8].push_str(match self.recorder.status() {
-                        crate::ride::log::Status::Recording => "RECORDING / 1 SECOND",
-                        crate::ride::log::Status::Paused => "PAUSED / LEFT TO RESUME",
-                        crate::ride::log::Status::Saved => "SAVED / TOP LEFT HOME",
-                        _ => self.ui_message,
-                    });
-                }
+                self.ride_lines(&mut view, now, gps_status);
                 system.activity(now);
             }
-            _ => {}
-        }
-        if self.page == Page::Sensors {
-            self.menu.refresh(
+            Page::Home => {}
+            Page::Sensors => self.menu.refresh(
                 ant.discoveries(),
                 ant.channels(now),
-                self.scan.busy(ant),
+                self.discovery.scan.busy(ant),
                 now,
-            );
+            ),
         }
         view.prepare();
+        let menu = &self.menu;
         system.draw_scaled(240, 320, |x, y| {
-            if self.page == Page::Sensors && y >= 25 {
-                self.menu.pixel(x, y)
+            if page == Page::Sensors && y >= 25 {
+                menu.pixel(x, y)
             } else {
                 view.pixel(x, y)
             }
         });
     }
 
-    pub fn alert(&mut self, sound: &mut impl device_api::sound::Sound, now: u64) {
-        if self.page != crate::screens::workout::Page::Ride {
-            return;
-        }
-        if self.radar_alert.update(self.radar.snapshot(now), now)
-            && let Some(pattern) = sound
-                .patterns()
-                .iter()
-                .filter(|p| p.nominal_ms <= 300)
-                .max_by_key(|p| p.nominal_ms)
-        {
-            let _ = sound.play(pattern.id, now);
-        }
+    fn boot_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
+        let line = &mut view.lines[0];
+        let _ = match (now / 1000) % 3 {
+            0 => write!(line, "> COMPANION {}", self.startup_status),
+            1 => write!(
+                line,
+                "> RADIO {:?} / GPS {}",
+                ant.availability(),
+                gps_status
+            ),
+            _ => write!(line, "> STORAGE {}", self.ride.recorder.status().name()),
+        };
     }
 
-    pub fn radar(&self, now: u64) -> crate::sensors::radar::Snapshot {
-        self.radar.snapshot(now)
-    }
-
-    pub fn present<
-        D: device_api::display::Display,
-        I: device_api::input::InputSource,
-        P: device_api::power::Power,
-        B: device_api::storage::OwnedFlash,
-    >(
-        &mut self,
-        system: &mut firmware_shell::shell::Shell<D, I, P, B>,
-        now: u64,
-        ant: &impl device_api::ant::Ant,
-        position: &impl device_api::positioning::Positioning,
-    ) {
-        if system.foreground == firmware_shell::shell::Screen::Blank {
-            return;
-        }
-        if !self.display_active {
-            return;
-        }
-        if now < self.next_display {
-            return;
-        }
-        self.next_display = now.saturating_add(
-            if self.page == crate::screens::workout::Page::Boot
-                || self.page == crate::screens::workout::Page::Ride
-            {
-                500
-            } else {
-                1000
-            },
-        );
-        self.workout_display(system, now, ant, position);
-    }
-
-    pub fn set_startup_status(&mut self, status: device_api::sensors::Startup) {
-        use device_api::sensors::Startup;
-        if self.startup_status != status.name() {
-            self.startup_status = status.name();
-            self.menu.set_message(match status {
-                Startup::Charging | Startup::WakePending | Startup::Waiting => b"STARTING SENSORS",
-                Startup::Probing | Startup::Pending => b"WAITING FOR COMPANION",
-                Startup::Unavailable | Startup::Uncertain | Startup::TimedOut => b"STARTUP FAILED",
-                _ => b"SCAN THEN PICK SENSOR",
+    fn preflight_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
+        let _ = view.lines[0].push_str("> TRAIN / CONNECTION CHECK");
+        let checks = [
+            ("SPEED", device_type::SPEED),
+            ("HEART", device_type::HEART_RATE),
+            ("POWER", device_type::POWER),
+            ("RADAR", device_type::RADAR),
+        ];
+        for (line, (label, kind)) in view.lines[2..].iter_mut().zip(checks) {
+            let channel = ant.channel(kind, now).or_else(|| {
+                // A combined speed/cadence sensor also provides speed.
+                (kind == device_type::SPEED)
+                    .then(|| ant.channel(device_type::SPEED_CADENCE, now))
+                    .flatten()
             });
-            self.next_display = 0;
+            let _ = match channel {
+                Some(channel) => {
+                    let id = channel.selected.map_or(0, |p| p.device_number);
+                    write!(line, "{label} {id} {}", connection_status(channel))
+                }
+                None => write!(line, "{label} --"),
+            };
         }
+        let _ = write!(view.lines[6], "GPS {}", gps_status);
+        let _ = write!(
+            view.lines[7],
+            "STORAGE {}",
+            self.ride.recorder.status().name()
+        );
+        let _ = match self.discovery.scan.overview_message() {
+            Some(message) => view.lines[8].push_str(message.text()),
+            None => write!(view.lines[8], "RADIO {:?}", ant.availability()),
+        };
     }
 
-    pub fn suspend_display(&mut self) {
-        self.display_active = false;
+    fn ride_lines(&self, view: &mut View, now: u64, gps_status: &str) {
+        let live = self.readings.live;
+        let recorder = &self.ride.recorder;
+        let lines = &mut view.lines;
+        let _ = write!(lines[0], "> {}", recorder.status().name());
+        let _ = match live.speed_mm_s {
+            Some(v) => {
+                let k = v * 36 / 1000;
+                write!(lines[1], "{}.{} KM/H", k / 10, k % 10)
+            }
+            None => lines[1].push_str("-- KM/H"),
+        };
+        let _ = match live.heart_bpm {
+            Some(v) => write!(lines[2], "{} BPM", v),
+            None => lines[2].push_str("-- BPM"),
+        };
+        let _ = match live.power_watts {
+            Some(v) => write!(lines[3], "{} W", v),
+            None => lines[3].push_str("-- W"),
+        };
+        let seconds = recorder.active_ms(now) / 1000;
+        let _ = write!(
+            lines[4],
+            "TIME {:02}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        );
+        let _ = match live.gradient_tenths {
+            Some(v) => write!(
+                lines[5],
+                "GRADE {}{}.{:01}%",
+                if v < 0 { "-" } else { "+" },
+                v.unsigned_abs() / 10,
+                v.unsigned_abs() % 10
+            ),
+            None => lines[5].push_str("GRADE --"),
+        };
+        let _ = write!(
+            lines[6],
+            "POWER Z{}  HR Z{}",
+            live.power_watts.map_or(0, power_zone),
+            live.heart_bpm.map_or(0, heart_zone)
+        );
+        let _ = write!(
+            lines[7],
+            "GPS {} / SAVED {}",
+            gps_status,
+            recorder.written_samples()
+        );
+        let status = if self.ride.stop_confirming(now) {
+            "PRESS STOP AGAIN TO SAVE"
+        } else {
+            match self.ride.request {
+                Request::Completed(result) if result.ok => "OK",
+                Request::Completed(_) => "WRITE FAILED",
+                Request::Pending(_) => "SAVING",
+                Request::Idle => match recorder.status() {
+                    Status::Recording => "RECORDING / 1 SECOND",
+                    Status::Paused => "PAUSED / LEFT TO RESUME",
+                    Status::Saved => "SAVED / TOP LEFT HOME",
+                    _ => self.ride.message.text(),
+                },
+            }
+        };
+        let _ = lines[8].push_str(status);
     }
 }

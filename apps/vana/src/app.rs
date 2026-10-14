@@ -1,96 +1,80 @@
 //! VANA application lifecycle and owned runtime state.
 //! Recording advances independently of presentation and terminal requests.
 use crate::{
-    ride::{
-        log::Sample,
-        recorder::{Recorder, ResultEvent},
-    },
+    screens::sensors::Menu,
     sensors::{ble::Client, ble_profile::Profile},
+};
+use device_api::{
+    ant::Ant, ble_transport::Ble, input::InputObservation, positioning::Positioning,
+    sensors::Snapshot,
 };
 
 mod commands;
 mod input;
 mod presentation;
+mod readings;
 mod recording;
-mod sensor_requests;
+mod sensor_links;
 #[cfg(test)]
 mod tests;
 
+/// Observations recorded with each ride sample, beyond the radios VANA drives.
+pub struct Observations<'a, P, I> {
+    pub position: &'a P,
+    pub network_online: bool,
+    /// Battery level source.
+    pub input: &'a I,
+    /// Companion sensors, including barometric pressure.
+    pub physical: Snapshot,
+}
+
 pub struct Runtime {
-    clock: Option<fn() -> u64>,
-    page: crate::screens::workout::Page,
-    home_cursor: bool,
-    search_requested: bool,
-    discovery_generation: u32,
-    scan: crate::sensors::scan::Scan,
-    sensor_requests: [Option<sensor_requests::Pending>; device_api::ant::CHANNEL_CAPACITY],
-    dropped_ant: [Option<u8>; device_api::ant::CHANNEL_CAPACITY],
-    page_since: u64,
-    last_press: u64,
-    speed: crate::ride::metrics::Speed,
-    live: Sample,
-    pressure_base: Option<(u32, u64)>,
-    distance_mm: u64,
-    metric_at: u64,
-    ui_message: &'static str,
-    radar: crate::sensors::radar::Radar,
-    radar_alert: crate::sensors::radar::Alert,
-    stop_armed: Option<u64>,
-    next_display: u64,
-    display_active: bool,
-    menu: crate::screens::sensors::Menu,
+    navigation: presentation::Navigation,
+    display: presentation::Display,
     startup_status: &'static str,
-    next_reconnect: [u64; device_api::ant::CHANNEL_CAPACITY],
-    ant_epochs: [Option<(u32, u32)>; 3],
-    heart: Option<(crate::sensors::ant::HeartRate, u64)>,
-    power: Option<(crate::sensors::ant::Power, u64)>,
-    recorder: Recorder,
+    menu: Menu,
+    discovery: sensor_links::Discovery,
+    requests: sensor_links::Requests,
+    reconnect: sensor_links::Reconnect,
+    readings: readings::Readings,
     sensors: Client,
-    next_token: u32,
-    pending: Option<u32>,
-    completion: Option<ResultEvent>,
+    ride: recording::Ride,
 }
 
 impl Runtime {
     pub fn new(profile: Profile) -> Self {
         Self {
-            clock: None,
-            page: crate::screens::workout::Page::Boot,
-            home_cursor: false,
-            search_requested: false,
-            discovery_generation: 0,
-            scan: crate::sensors::scan::Scan::default(),
-            sensor_requests: [None; device_api::ant::CHANNEL_CAPACITY],
-            dropped_ant: [None; device_api::ant::CHANNEL_CAPACITY],
-            page_since: 0,
-            last_press: 0,
-            speed: crate::ride::metrics::Speed::default(),
-            live: Sample::default(),
-            pressure_base: None,
-            distance_mm: 0,
-            metric_at: 0,
-            ui_message: "READY",
-            radar: crate::sensors::radar::Radar::new(),
-            radar_alert: crate::sensors::radar::Alert::default(),
-            stop_armed: None,
-            next_display: 0,
-            display_active: true,
-            menu: crate::screens::sensors::Menu::new(),
+            navigation: presentation::Navigation::default(),
+            display: presentation::Display::default(),
             startup_status: "unknown",
-            next_reconnect: [0; device_api::ant::CHANNEL_CAPACITY],
-            ant_epochs: [None; 3],
-            heart: None,
-            power: None,
-            recorder: Recorder::default(),
+            menu: Menu::new(),
+            discovery: sensor_links::Discovery::default(),
+            requests: sensor_links::Requests::default(),
+            reconnect: sensor_links::Reconnect::default(),
+            readings: readings::Readings::default(),
             sensors: Client::new(profile),
-            next_token: 1,
-            pending: None,
-            completion: None,
+            ride: recording::Ride::default(),
         }
     }
 
     /// Supply the monotonic clock used to measure synchronous recording work.
     pub fn set_clock(&mut self, clock: fn() -> u64) {
-        self.clock = Some(clock);
+        self.ride.clock = Some(clock);
+    }
+
+    /// Advance sensor links, take new sensor data and service the ride recorder.
+    pub fn tick(
+        &mut self,
+        store: &mut impl crate::ride::storage::RideStorage,
+        now: u64,
+        ant: &mut impl Ant,
+        ble: &mut impl Ble,
+        observations: Observations<'_, impl Positioning, impl InputObservation>,
+    ) {
+        self.service_sensor_links(ant, now);
+        self.receive_ant(ant, now);
+        self.receive_ble(ble);
+        let sample = self.sample(now, ant, &observations);
+        self.record(store, now, sample);
     }
 }

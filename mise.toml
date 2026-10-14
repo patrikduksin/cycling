@@ -117,6 +117,10 @@ run = "{{vars.devtools}} python -m cycling_devtools.rides.ant_capture"
 description = "Run the portable shell against deterministic display and input devices"
 run = "cargo run -p shell-simulator --locked --no-default-features --bin shell-simulator"
 
+[tasks.sim]
+description = "Run VANA ride scenarios in the simulated world"
+run = "cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios"
+
 [tasks.harness]
 description = "Run a named or structured C606/virtual harness scenario and return compact JSON"
 run = "{{vars.devtools}} python -m cycling_devtools.harness.runner"

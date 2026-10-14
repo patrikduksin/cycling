@@ -224,3 +224,94 @@ impl OwnedFlash for Memory {
         Ok(())
     }
 }
+/// Buzzer patterns as C606 advertises them.
+const PATTERNS: &[device_api::sound::Pattern] = &[
+    device_api::sound::Pattern {
+        id: 0,
+        frequency_hz: 3000,
+        nominal_ms: 75,
+        guard_ms: 500,
+    },
+    device_api::sound::Pattern {
+        id: 10,
+        frequency_hz: 4000,
+        nominal_ms: 100,
+        guard_ms: 500,
+    },
+    device_api::sound::Pattern {
+        id: 21,
+        frequency_hz: 2500,
+        nominal_ms: 150,
+        guard_ms: 500,
+    },
+    device_api::sound::Pattern {
+        id: 22,
+        frequency_hz: 3000,
+        nominal_ms: 300,
+        guard_ms: 700,
+    },
+];
+/// The production player, with each submitted pattern recorded instead of played.
+#[derive(Default)]
+pub struct Speaker {
+    player: firmware_services::sound::Player,
+    pub played: Vec<(u64, u8)>,
+}
+impl Speaker {
+    pub fn tick(&mut self, now: u64) {
+        let played = &mut self.played;
+        self.player.dispatch(now, |id| {
+            if let Some(id) = id {
+                played.push((now, id));
+            }
+            Ok(())
+        });
+    }
+}
+impl device_api::sound::Sound for Speaker {
+    fn patterns(&self) -> &'static [device_api::sound::Pattern] {
+        PATTERNS
+    }
+    fn snapshot(&self) -> device_api::sound::Snapshot {
+        self.player.snapshot()
+    }
+    fn play(&mut self, id: u8, now: u64) -> Result<(), Error> {
+        let pattern = PATTERNS.iter().find(|p| p.id == id).ok_or(Error::Invalid)?;
+        self.player.play(*pattern, now)
+    }
+    fn stop(&mut self, now: u64) -> Result<(), Error> {
+        self.player.stop(now)
+    }
+}
+/// Companion battery and button observations as VANA samples them.
+#[derive(Clone, Copy, Default)]
+pub struct Battery {
+    /// Percent and millivolts, or no report.
+    pub level: Option<(u8, u16)>,
+    pub charging: bool,
+}
+impl device_api::input::InputObservation for Battery {
+    fn snapshot(&self, now: u64) -> Option<device_api::input::InputSnapshot> {
+        let battery = match self.level {
+            Some(value) => device_api::observation::Observation::Fresh {
+                value,
+                received_ms: now,
+            },
+            None => device_api::observation::Observation::Unavailable,
+        };
+        Some(device_api::input::InputSnapshot {
+            battery,
+            power: device_api::observation::Observation::Fresh {
+                value: u8::from(self.charging),
+                received_ms: now,
+            },
+            button_counts: [0; 3],
+            touch_available: false,
+            touch_errors: 0,
+            companion_valid: 0,
+            companion_bad_crc: 0,
+            uart_errors: 0,
+            input_lost: 0,
+        })
+    }
+}

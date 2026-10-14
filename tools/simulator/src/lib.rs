@@ -1,3 +1,11 @@
+pub mod ant;
 pub mod devices;
+pub mod gps;
+#[cfg(feature = "cycling")]
+pub mod rides;
+pub mod route;
+pub mod screen;
 pub mod session;
+pub mod sim;
 pub mod storage;
+pub mod world;

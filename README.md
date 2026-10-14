@@ -1,79 +1,59 @@
 # cycling
 
-Open-source Rust firmware for the Magene C606 bike computer. The `no_std` base
-provides positioning, physical input, display, settings, networking, BLE and ANT
-transport through an ordinary USB terminal. The optional VANA application provides
-VANA's workout screens, four concurrent ANT sensors, proximity radar alerts,
-and ride recording, recovery and export. It displays wheel speed, power, heart
-rate, active time, approximate gradient and training zones. One selected BLE
-Heart Rate or Cadence sensor is also supported.
+Open-source Rust firmware for the Magene C606 bike computer.
 
-Device commands expose fixed buzzer patterns, bounded GNSS stream pause/resume,
-raw motion, compensated pressure and owned MMC maintenance. See
-[ride recording](docs/ride-recording.md) for workout controls, storage limits
-and timestamp requirements. Historical raw ANT captures can be decoded offline.
-
-See [architecture and ownership](docs/architecture.md) for the device capability
-and shell boundaries, and [#75](https://github.com/patrikduksin/cycling/issues/75)
-for the original capability-boundary work.
-
-## Repository map
-
-- `apps/vana`: cycling behavior, workout screens, sensors and ride recording.
-- `devices/c606`: hardware implementation, firmware composition and sanitized research.
-- `packages/device-api`: independent device capability contracts.
-- `packages/shell`: foreground presentation, input routing and shared UI policy.
-- `packages/services`: portable acquisition, transport and storage mechanisms.
-- `packages/console`: device command sessions and bounded output.
-- `tools/simulator`: host simulation and fake device implementations.
-- `tools/devtools`: host tools for device access, exports and test workflows.
-- `vendor/trouble-host`: the licensed local dependency patch.
+- **Base** (`no_std`): positioning, physical input, display, settings, networking,
+  BLE and ANT transport, buzzer patterns, GNSS pause/resume, raw motion,
+  compensated pressure and owned MMC maintenance, all through an ordinary USB terminal.
+- **VANA** (optional, `CYCLING_SDK=1`): workout screens, four concurrent ANT
+  sensors plus one selected BLE Heart Rate or Cadence sensor, proximity radar alerts, and
+  ride recording, recovery and export. It shows wheel speed, power, heart rate,
+  active time, approximate gradient and training zones.
 
 ## Development
 
 ```sh
 mise install
-mise run setup
+mise run setup                       # Pinned Xtensa toolchain
 mise run test
 mise run check
 mise run simulate                    # Shared shell with deterministic host devices
 mise run harness-virtual             # Shared command/input/capture/persistence scenarios
-mise run harness -- run input-screen # Real C606 input and screenshots
-mise run build                       # Base, development harness enabled
-CYCLING_SDK=1 mise run build          # Add VANA cycling behavior
-mise run terminal -- STATUS          # Query an already-running device
-mise run boot-stock                  # Verify, select and boot preserved stock
+mise run build                       # Base, harness enabled
+CYCLING_SDK=1 mise run build         # Add VANA
 ```
 
-Setup installs the pinned Xtensa toolchain; builds load its environment without
-changing your shell. [Mise](mise.toml), Cargo configuration and CLI `--help` own
-the current tool versions, task catalog and check matrix.
+`mise tasks` lists every task; [mise.toml](mise.toml), Cargo configuration, CI
+and CLI `--help` own tool versions, options and the check matrix. Builds load the
+toolchain environment without changing your shell.
 
-The same shell source consumes display, input, power and owned-storage contracts
-on C606 and in the host simulator. The simulator uses a framebuffer and scripted
-events to check presentation and input policy. It does not model physical DMA,
-radio coexistence or power sequencing.
+Before connecting to or flashing a device, read the
+[C606 skill](.agents/skills/c606/SKILL.md). Device tasks include
+`mise run terminal -- STATUS`, `mise run harness -- run input-screen` and
+`mise run stock`.
 
-To add a device, select its compatible HAL/runtime, implement the capabilities
-required by the shell, and keep wiring, drivers, memory constraints and task
-startup in its device package. Compose those handles with the shared shell in a
-device entry point. Add the composition to the mise/CI checks and validate its
-hardware behavior. Shell code must not need device imports or board-name branches.
+Wi-Fi is unconfigured until provisioned over USB; firmware images contain no
+credentials. `mise run wifi-setup` copies the current NetworkManager profile into
+ignored `.local/wifi/`; see [runtime connectivity](docs/runtime-connectivity.md).
 
-Wi-Fi is unconfigured until provisioned over USB. `mise run wifi-setup` copies
-the connected NetworkManager personal-network profile into ignored `.local/wifi/`.
-Use the [runtime connectivity commands and harness](docs/runtime-connectivity.md)
-to apply it without rebuilding. Firmware images contain no provisioned credentials.
+## Adding a device
 
-Before connecting or flashing, read the [C606 workflow](.agents/skills/c606/SKILL.md).
-It preserves stock firmware and existing data. Device firmware lives in `devices/<device>`;
-vendor artifacts, credentials and raw evidence stay in ignored `.local/`.
+Select a compatible HAL/runtime and implement the capabilities the shell needs in
+`devices/<device>`, keeping wiring, drivers, memory constraints and task startup
+there. Compose those handles with the shared shell in a device entry point, add
+the composition to the mise and CI checks, and validate it on hardware. Shell
+code must not need device imports or board-name branches. The host simulator
+checks presentation and input policy, not DMA, radio coexistence or power sequencing.
 
-- [Architecture and ownership](docs/architecture.md)
-- [Testing harness and recipes](docs/testing-harness.md)
+## Documentation
+
+- [Agent and contributor rules](AGENTS.md)
+- [Architecture and repository map](docs/architecture.md)
+- [Testing harness](docs/testing-harness.md)
+- [Runtime connectivity](docs/runtime-connectivity.md)
 - [Ride recording and export](docs/ride-recording.md)
 - [C606 hardware research](devices/c606/research)
-- [Requirements and history](https://github.com/patrikduksin/cycling/issues)
 - [Agent delivery workflow](.agents/skills/deliver/SKILL.md)
+- [Requirements and history](https://github.com/patrikduksin/cycling/issues)
 
 [MIT license](LICENSE).

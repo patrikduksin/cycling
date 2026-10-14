@@ -154,6 +154,7 @@ impl Sim {
                 name,
                 self.device.world.time_ms,
                 &self.device.display.0.borrow().pixels,
+                self.notes.len(),
             );
         }
     }
@@ -320,6 +321,22 @@ impl Sim {
         self.device.world.route = Some(route);
         self.device.world.distance_m = 0.0;
         self.device.gps.get_or_insert_with(Default::default);
+    }
+
+    /// A BLE heart-rate strap worn by the rider, in range or not.
+    pub fn ble_heart_strap(&mut self, present: bool) {
+        self.note(
+            NoteKind::World,
+            if present {
+                "BLE heart strap in range"
+            } else {
+                "BLE heart strap out of range"
+            },
+        );
+        self.device
+            .ble_strap
+            .get_or_insert_with(crate::session::BleStrap::new)
+            .present = present;
     }
 
     pub fn set_gps_fix(&mut self, fix: bool) {

@@ -119,6 +119,8 @@ pub struct Checkpoint {
     pub name: String,
     pub at_ms: u64,
     frame: usize,
+    /// Notes taken before this moment; later notes at the same time are not shown.
+    notes: usize,
 }
 
 pub struct Recording {
@@ -207,12 +209,13 @@ impl Recording {
         }
     }
 
-    pub fn checkpoint(&mut self, name: &str, at_ms: u64, pixels: &[u16]) {
+    pub fn checkpoint(&mut self, name: &str, at_ms: u64, pixels: &[u16], notes: usize) {
         self.frames.push(Frame::new(at_ms, pixels));
         self.checkpoints.push(Checkpoint {
             name: name.to_string(),
             at_ms,
             frame: self.frames.len() - 1,
+            notes,
         });
     }
 
@@ -239,7 +242,7 @@ impl Recording {
             let canvas = self.compose(
                 checkpoint.frame,
                 checkpoint.at_ms,
-                &outcome,
+                &outcome.notes[..checkpoint.notes.min(outcome.notes.len())],
                 failure.as_deref(),
                 Some(&checkpoint.name),
             );
@@ -251,7 +254,7 @@ impl Recording {
             let canvas = self.compose(
                 index,
                 outcome.end_ms,
-                &outcome,
+                outcome.notes,
                 failure.as_deref(),
                 Some(if failure.is_some() {
                     "failed here"
@@ -351,7 +354,7 @@ impl Recording {
                 .find(|c| c.frame == index)
                 .map(|c| c.name.as_str());
             stills.push(Still {
-                canvas: self.compose(index, at, outcome, failure, caption),
+                canvas: self.compose(index, at, outcome.notes, failure, caption),
                 hold_ms: shown as u32,
             });
         }
@@ -363,7 +366,7 @@ impl Recording {
         &self,
         index: usize,
         at_ms: u64,
-        outcome: &Outcome<'_>,
+        notes: &[Note],
         failure: Option<&str>,
         caption: Option<&str>,
     ) -> Canvas {
@@ -408,8 +411,7 @@ impl Recording {
         }
         canvas.text(x, y, 1, DIM, "EVENTS");
         y += 12;
-        let recent: Vec<_> = outcome
-            .notes
+        let recent: Vec<_> = notes
             .iter()
             .filter(|n| n.at_ms <= at_ms)
             .rev()

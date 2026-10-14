@@ -47,6 +47,54 @@ impl Positioning for PositionFixture {
         (!self.missing).then(|| self.acquisition.snapshot(now))
     }
 }
+/// A strap in range connects and notifies Heart Rate Measurements at 1 Hz;
+/// out of range, the link drops.
+#[derive(Default)]
+pub struct BleStrap {
+    pub present: bool,
+    next_ms: u64,
+}
+impl BleStrap {
+    pub fn new() -> Self {
+        Self {
+            present: true,
+            next_ms: 0,
+        }
+    }
+    fn tick(&mut self, world: &crate::world::World, now: u64, ble: &mut BleFixture) {
+        use device_api::ble_transport::Link;
+        let link = ble.snapshot.link;
+        if self.present && link != Link::Connected {
+            ble.snapshot.link = Link::Connected;
+            ble.snapshot.connections += 1;
+            ble.packets.clear();
+        } else if !self.present && link == Link::Connected {
+            ble.snapshot.link = Link::Off;
+            ble.snapshot.disconnections += 1;
+            ble.packets.clear();
+        }
+        if !self.present || world.time_ms < self.next_ms {
+            return;
+        }
+        self.next_ms = world.time_ms - world.time_ms % 1000 + 1000;
+        ble.snapshot.notifications += 1;
+        // The transport keeps two packets; older notifications are dropped.
+        if ble.packets.len() >= 2 {
+            ble.packets.pop_front();
+            ble.snapshot.dropped += 1;
+        }
+        let mut bytes = [0; 60];
+        bytes[1] = world.heart_bpm.round().clamp(0.0, 255.0) as u8;
+        ble.packets.push_back(device_api::ble_transport::Packet {
+            connection: ble.snapshot.connections,
+            sequence: ble.snapshot.notifications,
+            dropped: ble.snapshot.dropped,
+            received_ms: now,
+            bytes,
+            length: 2,
+        });
+    }
+}
 #[derive(Default)]
 pub struct BleFixture {
     pub snapshot: device_api::ble_transport::Snapshot,
@@ -112,6 +160,8 @@ pub struct Session {
     pub boot: u32,
     pub position: PositionFixture,
     pub ble: BleFixture,
+    /// A BLE heart-rate strap that notifies the world's heart rate once a second.
+    pub ble_strap: Option<BleStrap>,
     pub ant: SimulatedAnt,
     pub world: World,
     pub gps: Option<Receiver>,
@@ -201,6 +251,7 @@ impl Session {
             boot,
             position: PositionFixture::default(),
             ble: BleFixture::default(),
+            ble_strap: None,
             ant: SimulatedAnt::new(Availability::Unsupported),
             world: World::default(),
             gps: None,
@@ -228,6 +279,9 @@ impl Session {
             self.ant.availability = ant;
         }
         self.ant.tick(&self.world, self.now);
+        if let Some(strap) = &mut self.ble_strap {
+            strap.tick(&self.world, self.now, &mut self.ble);
+        }
         if let Some(gps) = &mut self.gps {
             gps.tick(&self.world, self.now, &mut self.position.acquisition);
         }
@@ -628,6 +682,7 @@ impl Session {
         });
         next.position.missing = self.position.missing;
         next.battery = self.battery;
+        next.ble_strap = self.ble_strap.take();
         next.speaker.played = core::mem::take(&mut self.speaker.played);
         *self = next;
         Ok(())

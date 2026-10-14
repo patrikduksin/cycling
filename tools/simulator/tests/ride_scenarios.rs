@@ -1,6 +1,5 @@
 //! VANA behaviour in a simulated world: sensors, rides, losses and recovery.
 #![cfg(feature = "cycling")]
-use device_api::input::Button;
 use shell_simulator::ant::device_type;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{Sim, minutes, seconds};
@@ -11,69 +10,6 @@ const HEART: u16 = 4242;
 const POWER: u16 = 1234;
 const SPEED: u16 = 777;
 const RADAR: u16 = 31;
-
-/// Choose a Home tile; the selected one is drawn black on cyan.
-fn home(sim: &mut Sim, label: &str) {
-    for _ in 0..3 {
-        if sim.screen().run(label).is_some_and(|run| run.color == 0) {
-            break;
-        }
-        sim.press(Button::BottomLeft);
-    }
-    sim.press(Button::BottomRight);
-}
-
-/// Step through nearby tiles to a sensor kind and connect it.
-fn connect(sim: &mut Sim, kind: &str) {
-    for _ in 0..12 {
-        let screen = sim.screen();
-        if screen.run(kind).is_some() && screen.run("CONNECT").is_some() {
-            sim.press(Button::BottomRight);
-            sim.wait_for("LIVE DATA", seconds(15)).unwrap();
-            return;
-        }
-        sim.press(Button::BottomLeft);
-    }
-    panic!(
-        "no {kind} tile to connect; screen:\n{}",
-        sim.screen().text()
-    );
-}
-
-/// Pair sensors from the Sensors page, then return Home.
-fn pair(sim: &mut Sim, kinds: &[&str]) {
-    home(sim, "SENSORS");
-    sim.wait_for("SCAN DONE", seconds(20)).unwrap();
-    for kind in kinds {
-        connect(sim, kind);
-    }
-    for _ in 0..3 {
-        if sim.screen().contains("READY TO RIDE") {
-            return;
-        }
-        sim.press(Button::TopLeft);
-    }
-    panic!(
-        "Sensors did not return Home; screen:\n{}",
-        sim.screen().text()
-    );
-}
-
-/// Train from Home, through the connection check, onto a recording ride page.
-fn start_ride(sim: &mut Sim) {
-    home(sim, "TRAIN");
-    sim.expect_text("CONNECTION CHECK");
-    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
-    sim.press(Button::BottomLeft);
-    sim.wait_for("RECORDING", seconds(2)).unwrap();
-}
-
-fn stop_ride(sim: &mut Sim) {
-    sim.press(Button::BottomRight);
-    sim.expect_text("STOP TO SAVE");
-    sim.press(Button::BottomRight);
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-}
 
 fn rider() -> Sim {
     let mut sim = Sim::new().boot();
@@ -92,8 +28,8 @@ fn rider() -> Sim {
 #[test]
 fn paired_sensors_pass_the_connection_check() {
     let mut sim = rider();
-    pair(&mut sim, &["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    home(&mut sim, "TRAIN");
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.home("TRAIN");
     let screen = sim.screen();
     for line in [
         "SPEED 777 CONNECTED",
@@ -109,8 +45,8 @@ fn paired_sensors_pass_the_connection_check() {
 #[test]
 fn ride_shows_live_metrics_and_records_the_gps_track() {
     let mut sim = rider();
-    pair(&mut sim, &["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    start_ride(&mut sim);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
     sim.ride_at(28.0, 210.0, 142.0, 88.0);
     sim.advance(minutes(5));
     sim.expect_field("SPEED", "28.0");
@@ -118,7 +54,7 @@ fn ride_shows_live_metrics_and_records_the_gps_track() {
     sim.expect_field("BPM", "142");
     sim.expect_field("ACTIVE TIME", "00:05:00");
     sim.checkpoint("five minutes riding");
-    stop_ride(&mut sim);
+    sim.stop_ride();
     sim.checkpoint("ride saved");
 
     let rides = sim.rides();
@@ -142,8 +78,8 @@ fn ride_shows_live_metrics_and_records_the_gps_track() {
 #[test]
 fn power_meter_dropout_blanks_watts_and_recovers() {
     let mut sim = rider();
-    pair(&mut sim, &["POWER METER"]);
-    start_ride(&mut sim);
+    sim.pair(&["POWER METER"]);
+    sim.start_ride();
     sim.ride_at(25.0, 190.0, 0.0, 85.0);
     sim.advance(seconds(10));
     sim.expect_field("WATTS", "190");
@@ -161,7 +97,7 @@ fn power_meter_dropout_blanks_watts_and_recovers() {
     sim.expect_field("WATTS", "190");
     sim.checkpoint("power reading recovered");
     sim.advance(seconds(10));
-    stop_ride(&mut sim);
+    sim.stop_ride();
     let ride = &sim.rides()[0];
     assert!(ride.samples().any(|s| s.power_watts.is_none()));
     assert!(
@@ -175,8 +111,8 @@ fn power_meter_dropout_blanks_watts_and_recovers() {
 #[test]
 fn power_loss_mid_ride_keeps_the_recorded_prefix() {
     let mut sim = rider();
-    pair(&mut sim, &["HEART RATE"]);
-    start_ride(&mut sim);
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
     sim.ride_at(30.0, 0.0, 150.0, 0.0);
     sim.advance(minutes(2));
     let before = sim.rides()[0].samples().count();
@@ -197,8 +133,8 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
 fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     let mut sim = rider();
     sim.ant_sensor(device_type::RADAR, RADAR);
-    pair(&mut sim, &["RADAR"]);
-    start_ride(&mut sim);
+    sim.pair(&["RADAR"]);
+    sim.start_ride();
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(5));
     assert!(sim.device.speaker.played.is_empty());
@@ -228,8 +164,8 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
 #[ignore = "VANA does not retry timed-out ANT channels yet (#130)"]
 fn long_power_meter_loss_reconnects_when_it_returns() {
     let mut sim = rider();
-    pair(&mut sim, &["POWER METER"]);
-    start_ride(&mut sim);
+    sim.pair(&["POWER METER"]);
+    sim.start_ride();
     sim.ride_at(25.0, 190.0, 0.0, 85.0);
     sim.advance(seconds(10));
     sim.expect_field("WATTS", "190");
@@ -251,8 +187,159 @@ fn sensors_wait_for_the_companion_after_power_on() {
     sim.ant_sensor(device_type::HEART_RATE, HEART);
     // Ask for sensors as soon as Home appears; the radio is still starting.
     sim.advance(seconds(7));
-    home(&mut sim, "SENSORS");
+    sim.home("SENSORS");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
-    connect(&mut sim, "HEART RATE");
+    sim.connect_sensor("HEART RATE");
     sim.checkpoint("heart rate connected");
+}
+
+#[test]
+fn storage_failure_mid_ride_is_shown_and_the_prefix_recovers_after_reboot() {
+    let mut sim = rider();
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 120.0, 0.0);
+    sim.advance(seconds(30));
+    sim.checkpoint("recording");
+    let before = sim.rides()[0].samples().count();
+
+    // The next journal write tears after ten bytes and every later one fails.
+    sim.fail_storage(0, 10);
+    sim.advance(seconds(10));
+    sim.expect_text("STORAGE ERROR");
+    sim.checkpoint("storage error shown");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=error"), "{status}");
+
+    sim.power_loss();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=recovered"), "{status}");
+    let ride = &sim.rides()[0];
+    assert!(ride.samples().count() >= before);
+    assert_eq!(ride.kinds().last(), Some(&Kind::Recovered));
+    sim.checkpoint("booted with the ride recovered");
+}
+
+#[test]
+fn gps_tunnel_records_samples_without_a_position() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 0.0, 0.0, 85.0);
+    sim.advance(seconds(30));
+    let gps = sim.screen().run("GPS").unwrap();
+    assert_eq!(gps.color, 0x07ff, "GPS shown as fixed");
+    sim.checkpoint("gps fixed");
+
+    sim.set_gps_fix(false);
+    sim.advance(seconds(30));
+    let gps = sim.screen().run("GPS").unwrap();
+    assert_ne!(gps.color, 0x07ff, "GPS still shown as fixed in the tunnel");
+    // Wheel speed keeps working without satellites.
+    sim.expect_field("SPEED", "30.0");
+    sim.checkpoint("in the tunnel");
+
+    sim.set_gps_fix(true);
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    let ride = &sim.rides()[0];
+    let samples: Vec<_> = ride.samples().collect();
+    let blind = samples.iter().filter(|s| s.location_e7.is_none()).count();
+    assert!(
+        (25..=35).contains(&blind),
+        "{blind} samples without position"
+    );
+    assert!(samples.iter().all(|s| s.speed_mm_s.is_some()));
+    // The track skips the tunnel instead of inventing positions.
+    let track = ride.track_m();
+    assert!(
+        (track - 750.0).abs() < 60.0,
+        "{track:.0} m tracked of 750 m"
+    );
+}
+
+#[test]
+fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
+    let mut sim = rider();
+    sim.ble_heart_strap(true);
+    sim.start_ride();
+    sim.ride_at(22.0, 0.0, 131.0, 0.0);
+    sim.advance(seconds(10));
+    sim.expect_field("BPM", "131");
+    sim.checkpoint("ble heart rate");
+
+    sim.ble_heart_strap(false);
+    sim.advance(seconds(10));
+    sim.expect_field("BPM", "--");
+    sim.checkpoint("strap out of range");
+
+    sim.ble_heart_strap(true);
+    sim.advance(seconds(5));
+    sim.expect_field("BPM", "131");
+}
+
+#[test]
+fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
+    let mut sim = rider();
+    sim.ant_sensor(device_type::RADAR, RADAR);
+    sim.pair(&["RADAR"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    for (i, side) in [
+        Side::Behind,
+        Side::Behind,
+        Side::Left,
+        Side::Behind,
+        Side::Right,
+        Side::Behind,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sim.vehicle(Vehicle {
+            range_m: 60.0 + 25.0 * i as f64,
+            closing_kmh: 25.0,
+            fast: false,
+            side,
+        });
+    }
+    sim.advance(seconds(2));
+    let radar = sim.device.sdk.radar(sim.device.now);
+    assert_eq!(radar.targets.iter().flatten().count(), 6, "{radar:?}");
+    sim.checkpoint("six vehicles behind");
+    sim.advance(seconds(40));
+    let radar = sim.device.sdk.radar(sim.device.now);
+    assert_eq!(radar.targets.iter().flatten().count(), 0, "{radar:?}");
+    sim.checkpoint("all vehicles passed");
+}
+
+#[test]
+fn pause_excludes_time_and_two_hour_ride_keeps_every_sample() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 220.0, 145.0, 90.0);
+    sim.advance(minutes(60));
+    sim.checkpoint("one hour in");
+
+    sim.ride_at(0.0, 0.0, 95.0, 0.0);
+    sim.pause_ride();
+    sim.advance(minutes(10));
+    sim.expect_field("ACTIVE TIME", "01:00:00");
+    sim.checkpoint("cafe stop, paused");
+    sim.resume_ride();
+
+    sim.ride_at(27.0, 190.0, 138.0, 86.0);
+    sim.advance(minutes(60));
+    sim.expect_field("ACTIVE TIME", "02:00:00");
+    sim.checkpoint("two hours riding");
+    sim.stop_ride();
+
+    let ride = &sim.rides()[0];
+    let kinds = ride.kinds();
+    assert!(kinds.contains(&Kind::Pause) && kinds.contains(&Kind::Resume));
+    let samples = ride.samples().count();
+    assert!((7_150..=7_250).contains(&samples), "{samples} samples");
+    // 30 km in the first hour and 27 km in the second.
+    let km = ride.track_m() / 1000.0;
+    assert!((km - 57.0).abs() < 1.0, "{km:.2} km");
 }

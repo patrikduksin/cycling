@@ -118,8 +118,21 @@ description = "Run the portable shell against deterministic display and input de
 run = "cargo run -p shell-simulator --locked --no-default-features --bin shell-simulator"
 
 [tasks.sim]
-description = "Run VANA ride scenarios in the simulated world"
-run = "cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios"
+description = "Run VANA scenarios in the simulated world; report and artifacts go to .local/sim/latest"
+run = [
+  "rm -rf .local/sim/latest && mkdir -p .local/sim/latest",
+  "SIM_ARTIFACTS=$PWD/.local/sim/latest cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios 2>&1 | tee .local/sim/latest/cargo.log || true",
+  "{{vars.devtools}} python -m cycling_devtools.sim.report .local/sim/latest",
+]
+
+[tasks.sim-pr]
+description = "Run simulator scenarios and post their videos and screenshots inline on a pull request"
+usage = 'arg "<pr>" help="pull request number"'
+run = [
+  "rm -rf .local/sim/pr && mkdir -p .local/sim/pr",
+  "SIM_ARTIFACTS=$PWD/.local/sim/pr cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios 2>&1 | tee .local/sim/pr/cargo.log || true",
+  "{{vars.devtools}} python -m cycling_devtools.sim.report .local/sim/pr --pr \"${usage_pr}\"",
+]
 
 [tasks.harness]
 description = "Run a named or structured C606/virtual harness scenario and return compact JSON"

@@ -20,3 +20,5 @@ firmware-console = { path = "../../packages/console" }
 vana = { path = "../../apps/vana", optional = true }
 serde = { version = "=1.0.229", default-features = false, features = ["derive"] }
 serde-json-core = { version = "=0.6.0", default-features = false }
+png = "=0.18.1"
+gif = "=0.14.2"

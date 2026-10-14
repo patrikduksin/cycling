@@ -1,5 +1,6 @@
 //! VANA behaviour in a simulated world: sensors, rides, losses and recovery.
 #![cfg(feature = "cycling")]
+use device_api::ble_transport::Link;
 use shell_simulator::ant::device_type;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{Sim, minutes, seconds};
@@ -201,6 +202,7 @@ fn storage_failure_mid_ride_is_shown_and_the_prefix_recovers_after_reboot() {
     sim.advance(seconds(30));
     sim.checkpoint("recording");
     let before = sim.rides()[0].samples().count();
+    let last_active = sim.rides()[0].samples().last().map(|s| s.active_ms);
 
     // The next journal write tears after ten bytes and every later one fails.
     sim.fail_storage(0, 10);
@@ -214,7 +216,9 @@ fn storage_failure_mid_ride_is_shown_and_the_prefix_recovers_after_reboot() {
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recovered"), "{status}");
     let ride = &sim.rides()[0];
-    assert!(ride.samples().count() >= before);
+    // Exactly the committed prefix: the torn write adds no garbage sample.
+    assert_eq!(ride.samples().count(), before);
+    assert_eq!(ride.samples().last().map(|s| s.active_ms), last_active);
     assert_eq!(ride.kinds().last(), Some(&Kind::Recovered));
     sim.checkpoint("booted with the ride recovered");
 }
@@ -248,8 +252,18 @@ fn gps_tunnel_records_samples_without_a_position() {
         (25..=35).contains(&blind),
         "{blind} samples without position"
     );
+    // One unbroken gap: the tunnel, not scattered dropouts.
+    let first = samples
+        .iter()
+        .position(|s| s.location_e7.is_none())
+        .unwrap();
+    assert!(
+        samples[first..first + blind]
+            .iter()
+            .all(|s| s.location_e7.is_none())
+    );
     assert!(samples.iter().all(|s| s.speed_mm_s.is_some()));
-    // The track skips the tunnel instead of inventing positions.
+    // The tracked distance still matches the ride around the gap.
     let track = ride.track_m();
     assert!(
         (track - 750.0).abs() < 60.0,
@@ -263,18 +277,36 @@ fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
     sim.ble_heart_strap(true);
     sim.start_ride();
     sim.ride_at(22.0, 0.0, 131.0, 0.0);
-    sim.advance(seconds(10));
-    sim.expect_field("BPM", "131");
+    // A strap in range is not used until it is selected.
+    sim.advance(seconds(15));
+    sim.expect_field("BPM", "--");
+
+    // Selected: a 10 s scan, then connection and discovery.
+    sim.select_ble_heart_strap();
+    sim.advance(seconds(9));
+    sim.expect_field("BPM", "--");
+    sim.wait_for_field("BPM", "131", seconds(5));
     sim.checkpoint("ble heart rate");
 
+    // The link survives a short gap; the reading goes stale, then the link drops.
     sim.ble_heart_strap(false);
-    sim.advance(seconds(10));
+    sim.advance(seconds(3));
+    assert_eq!(sim.device.ble.snapshot.link, Link::Connected);
+    sim.advance(seconds(4));
     sim.expect_field("BPM", "--");
+    assert_ne!(sim.device.ble.snapshot.link, Link::Connected);
     sim.checkpoint("strap out of range");
 
+    // Back in range, it reconnects on the next scan after the backoff.
+    sim.advance(seconds(20));
     sim.ble_heart_strap(true);
-    sim.advance(seconds(5));
-    sim.expect_field("BPM", "131");
+    sim.wait_for_field("BPM", "131", seconds(30));
+
+    // Forgotten, it is never used again even in range.
+    let (status, _) = sim.command("BLE FORGET");
+    assert_eq!(status, "ACCEPTED");
+    sim.advance(seconds(20));
+    sim.expect_field("BPM", "--");
 }
 
 #[test]
@@ -306,10 +338,29 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 6, "{radar:?}");
     sim.checkpoint("six vehicles behind");
-    sim.advance(seconds(40));
-    let radar = sim.device.sdk.radar(sim.device.now);
-    assert_eq!(radar.targets.iter().flatten().count(), 0, "{radar:?}");
+    // They pass one by one: the count never rises and reaches zero.
+    let mut counts = Vec::new();
+    for _ in 0..40 {
+        sim.advance(seconds(1));
+        let radar = sim.device.sdk.radar(sim.device.now);
+        counts.push(radar.targets.iter().flatten().count());
+    }
+    assert!(counts.windows(2).all(|w| w[1] <= w[0]), "{counts:?}");
+    assert!(counts.iter().any(|&n| (1..6).contains(&n)), "{counts:?}");
+    assert_eq!(counts.last(), Some(&0), "{counts:?}");
+    assert!(sim.device.speaker.played.len() >= 5, "alerts sounded");
     sim.checkpoint("all vehicles passed");
+
+    // The radar is still connected: a new vehicle is detected.
+    sim.vehicle(Vehicle {
+        range_m: 80.0,
+        closing_kmh: 20.0,
+        fast: false,
+        side: Side::Behind,
+    });
+    sim.advance(seconds(2));
+    let radar = sim.device.sdk.radar(sim.device.now);
+    assert_eq!(radar.targets.iter().flatten().count(), 1, "{radar:?}");
 }
 
 #[test]
@@ -337,8 +388,19 @@ fn pause_excludes_time_and_two_hour_ride_keeps_every_sample() {
     let ride = &sim.rides()[0];
     let kinds = ride.kinds();
     assert!(kinds.contains(&Kind::Pause) && kinds.contains(&Kind::Resume));
-    let samples = ride.samples().count();
-    assert!((7_150..=7_250).contains(&samples), "{samples} samples");
+    let samples: Vec<_> = ride.samples().collect();
+    assert!(
+        (7_195..=7_205).contains(&samples.len()),
+        "{} samples",
+        samples.len()
+    );
+    // One sample per active second; the pause leaves no gap in active time.
+    let widest = samples
+        .windows(2)
+        .map(|w| w[1].active_ms - w[0].active_ms)
+        .max()
+        .unwrap();
+    assert!(widest <= 1_100, "{widest} ms between samples");
     // 30 km in the first hour and 27 km in the second.
     let km = ride.track_m() / 1000.0;
     assert!((km - 57.0).abs() < 1.0, "{km:.2} km");

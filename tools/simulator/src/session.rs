@@ -47,41 +47,121 @@ impl Positioning for PositionFixture {
         (!self.missing).then(|| self.acquisition.snapshot(now))
     }
 }
-/// A strap in range connects and notifies Heart Rate Measurements at 1 Hz;
-/// out of range, the link drops.
+use device_api::ble_transport::Link;
+/// A heart-rate strap seen through the C606 BLE client
+/// (`devices/c606/src/drivers/bluetooth.rs`). It only connects with a stored
+/// selection: a 10 s scan, then connection and discovery. In range it notifies
+/// Heart Rate Measurements at 1 Hz. Out of range, notifications stop and the
+/// link drops after a supervision timeout; reconnects wait the production
+/// backoff between scans. Connection and supervision times are assumptions.
 #[derive(Default)]
 pub struct BleStrap {
     pub present: bool,
+    phase: Phase,
+    retry: firmware_services::connectivity::Reconnect,
     next_ms: u64,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    /// No selection, or the device just started.
+    #[default]
+    Idle,
+    Scanning(u64),
+    Connecting(u64),
+    Connected,
+    /// Out of range on a live link, until supervision gives up.
+    Silent(u64),
+    /// Backing off before the next scan.
+    Waiting(u64),
+}
+const SCAN_MS: u64 = 10_000;
+const CONNECT_MS: u64 = 1_500;
+const SUPERVISION_MS: u64 = 4_000;
+/// The C606 BLE client queues this many packets and drops newer ones.
+const PACKET_QUEUE: usize = 4;
 impl BleStrap {
     pub fn new() -> Self {
         Self {
             present: true,
-            next_ms: 0,
+            ..Self::default()
         }
     }
-    fn tick(&mut self, world: &crate::world::World, now: u64, ble: &mut BleFixture) {
-        use device_api::ble_transport::Link;
-        let link = ble.snapshot.link;
-        if self.present && link != Link::Connected {
-            ble.snapshot.link = Link::Connected;
-            ble.snapshot.connections += 1;
-            ble.packets.clear();
-        } else if !self.present && link == Link::Connected {
-            ble.snapshot.link = Link::Off;
-            ble.snapshot.disconnections += 1;
-            ble.packets.clear();
+    /// The device restarted; its BLE client starts over.
+    fn reset(&mut self) {
+        self.phase = Phase::Idle;
+        self.retry = Default::default();
+    }
+    fn back_off(&mut self, now: u64, ble: &mut BleFixture) {
+        ble.snapshot.link = Link::Failed;
+        self.phase = Phase::Waiting(now + self.retry.delay() * 1000);
+    }
+    fn tick(
+        &mut self,
+        world: &crate::world::World,
+        now: u64,
+        selected: bool,
+        ble: &mut BleFixture,
+    ) {
+        if !selected {
+            if self.phase != Phase::Idle {
+                self.reset();
+                ble.packets.clear();
+            }
+            return;
         }
-        if !self.present || world.time_ms < self.next_ms {
+        // Selecting a peer resets the link; the client starts over.
+        if matches!(self.phase, Phase::Connected | Phase::Silent(_))
+            && ble.snapshot.link != Link::Connected
+        {
+            self.reset();
+        }
+        match self.phase {
+            Phase::Idle => {
+                self.retry.connect();
+                self.phase = Phase::Scanning(now + SCAN_MS);
+                ble.snapshot.link = Link::Scanning;
+            }
+            Phase::Waiting(until) if now >= until => {
+                self.phase = Phase::Scanning(now + SCAN_MS);
+                ble.snapshot.link = Link::Scanning;
+            }
+            Phase::Scanning(until) if now >= until => {
+                if self.present {
+                    self.phase = Phase::Connecting(now + CONNECT_MS);
+                    ble.snapshot.link = Link::Connecting;
+                } else {
+                    self.back_off(now, ble);
+                }
+            }
+            Phase::Connecting(until) if now >= until => {
+                if self.present {
+                    self.phase = Phase::Connected;
+                    self.retry.recovered();
+                    ble.snapshot.link = Link::Connected;
+                    ble.snapshot.connections += 1;
+                    ble.packets.clear();
+                } else {
+                    self.back_off(now, ble);
+                }
+            }
+            Phase::Connected if !self.present => self.phase = Phase::Silent(now + SUPERVISION_MS),
+            Phase::Silent(_) if self.present => self.phase = Phase::Connected,
+            Phase::Silent(until) if now >= until => {
+                ble.snapshot.disconnections += 1;
+                ble.packets.clear();
+                self.phase = Phase::Waiting(now + self.retry.delay() * 1000);
+                ble.snapshot.link = Link::Retrying;
+            }
+            _ => {}
+        }
+        if self.phase != Phase::Connected || world.time_ms < self.next_ms {
             return;
         }
         self.next_ms = world.time_ms - world.time_ms % 1000 + 1000;
         ble.snapshot.notifications += 1;
-        // The transport keeps two packets; older notifications are dropped.
-        if ble.packets.len() >= 2 {
-            ble.packets.pop_front();
+        if ble.packets.len() >= PACKET_QUEUE {
             ble.snapshot.dropped += 1;
+            return;
         }
         let mut bytes = [0; 60];
         bytes[1] = world.heart_bpm.round().clamp(0.0, 255.0) as u8;
@@ -280,7 +360,8 @@ impl Session {
         }
         self.ant.tick(&self.world, self.now);
         if let Some(strap) = &mut self.ble_strap {
-            strap.tick(&self.world, self.now, &mut self.ble);
+            let selected = self.shell.settings.ble.is_some();
+            strap.tick(&self.world, self.now, selected, &mut self.ble);
         }
         if let Some(gps) = &mut self.gps {
             gps.tick(&self.world, self.now, &mut self.position.acquisition);
@@ -682,7 +763,10 @@ impl Session {
         });
         next.position.missing = self.position.missing;
         next.battery = self.battery;
-        next.ble_strap = self.ble_strap.take();
+        next.ble_strap = self.ble_strap.take().map(|mut strap| {
+            strap.reset();
+            strap
+        });
         next.speaker.played = core::mem::take(&mut self.speaker.played);
         *self = next;
         Ok(())

@@ -210,6 +210,17 @@ impl Sim {
             .map_err(|text| format!("{needle:?} not shown within {timeout_ms} ms; screen:\n{text}"))
     }
 
+    /// Advance until the field under `label` reads `value`; panics on timeout.
+    #[track_caller]
+    pub fn wait_for_field(&mut self, label: &str, value: &str, timeout_ms: u64) {
+        if let Err(text) = self.wait_until(timeout_ms, |screen| {
+            screen.field(label).as_deref() == Some(value)
+        }) {
+            panic!("{label} did not show {value} within {timeout_ms} ms; screen:\n{text}");
+        }
+        self.note(NoteKind::Check, format!("{label} shows {value}"));
+    }
+
     /// Advance until `needle` is gone from the screen.
     pub fn wait_gone(&mut self, needle: &str, timeout_ms: u64) -> Result<u64, String> {
         self.wait_until(timeout_ms, |screen| !screen.contains(needle))
@@ -323,7 +334,18 @@ impl Sim {
         self.device.gps.get_or_insert_with(Default::default);
     }
 
-    /// A BLE heart-rate strap worn by the rider, in range or not.
+    /// Store a BLE heart-rate strap as the selected peer, as the companion
+    /// app does; the client then scans for it and connects.
+    #[cfg(feature = "cycling")]
+    pub fn select_ble_heart_strap(&mut self) {
+        self.note(NoteKind::Input, "select BLE heart strap");
+        // "STRAP" in hex, matched by name.
+        let (status, out) = self.command("BLE SELECT HRS 5354524150 -");
+        assert_eq!(status, "ACCEPTED", "BLE SELECT: {out}");
+    }
+
+    /// A BLE heart-rate strap worn by the rider, in range or not. It only
+    /// connects once selected.
     pub fn ble_heart_strap(&mut self, present: bool) {
         self.note(
             NoteKind::World,

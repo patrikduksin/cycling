@@ -4,14 +4,16 @@ use device_api::input::Button;
 
 impl Sim {
     /// Choose a Home tile; the selected one is drawn black on cyan.
+    #[track_caller]
     pub fn home(&mut self, label: &str) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             if self.screen().run(label).is_some_and(|run| run.color == 0) {
-                break;
+                self.press(Button::BottomRight);
+                return;
             }
             self.press(Button::BottomLeft);
         }
-        self.press(Button::BottomRight);
+        panic!("no Home tile {label:?}; screen:\n{}", self.screen().text());
     }
 
     /// Step through Sensors tiles to a sensor kind and connect it.

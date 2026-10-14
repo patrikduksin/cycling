@@ -20,17 +20,62 @@ from cycling_devtools.workspace import ROOT
 # gh accepts at most this many attachments per command.
 ATTACHMENT_LIMIT = 50
 CHECKPOINT_LIMIT = 4
-ASSET = re.compile(r'https://github\.com/user-attachments/assets/[0-9a-fA-F-]+')
+ASSET = r'https://github\.com/user-attachments/assets/[0-9a-fA-F-]+'
+# The listing labels attachment i as `![i](path)`; gh renders it either as
+# Markdown or as an <img> tag, with attributes in any order.
+LISTED = (
+    re.compile(rf'!\[(\d+)\]\(({ASSET})\)'),
+    re.compile(rf'<img\b[^>]*?alt="(\d+)"[^>]*?src="({ASSET})"'),
+    re.compile(rf'<img\b[^>]*?src="({ASSET})"[^>]*?alt="(\d+)"'),
+)
+TEST_LINE = re.compile(r'^test (?:\S+::)?(\w+) \.\.\. (ok|FAILED|ignored)', re.MULTILINE)
 
 
 def load(run):
-    results = []
-    for path in sorted(Path(run).glob('*/result.json')):
+    """Scenario results, checked against cargo's log in `cargo.log` when present
+    so aborted runs and scenarios that wrote nothing still count as failures."""
+    run = Path(run)
+    results = {}
+    for path in sorted(run.glob('*/result.json')):
         result = json.loads(path.read_text())
         result['dir'] = path.parent
-        results.append(result)
-    results.sort(key=lambda r: (r['status'] == 'pass', r['name']))
-    return results
+        results[path.parent.name] = result
+    log = run / 'cargo.log'
+    if log.exists():
+        text = log.read_text(errors='replace')
+        for name, verdict in TEST_LINE.findall(text):
+            result = results.get(name)
+            if verdict == 'ignored':
+                continue
+            if result is None:
+                results[name] = missing(run, name, 'The scenario wrote no artifacts.')
+            elif verdict == 'FAILED' and result['status'] == 'pass':
+                result['status'] = 'fail'
+                result['failure'] = 'cargo reported this test as failed after its simulator was dropped.'
+        if 'test result:' not in text:
+            results['cargo_test'] = missing(run, 'cargo_test', 'cargo test did not finish; see cargo.log.')
+    ordered = sorted(results.values(), key=lambda r: (r['status'] == 'pass', r['name']))
+    return ordered
+
+
+def missing(run, name, failure):
+    return {
+        'name': name,
+        'status': 'fail',
+        'failure': failure,
+        'simulated_ms': 0,
+        'frames': 0,
+        'files': [],
+        'rides': [],
+        'dir': run / name,
+    }
+
+
+def fenced(text):
+    """A code block that neither closes early nor splits comments."""
+    text = text.strip().replace('\n### ', '\n ### ')
+    fence = '`' * max([3, *(len(m) + 1 for m in re.findall(r'`{3,}', text))])
+    return [fence + 'text', text, fence]
 
 
 def title(name):
@@ -91,12 +136,13 @@ def summary(results, base, heading, commit):
         mark = '✅' if r['status'] == 'pass' else '❌'
         lines += ['', f'### {mark} {title(r["name"])}', '']
         if r['failure']:
-            lines += ['```text', r['failure'].strip(), '```', '']
+            lines += [*fenced(r['failure']), '']
         video, checkpoints, chart = media(r)
         if video:
             path = reference(r['dir'] / video, base)
             attachments.append(path)
-            lines += [path, '']
+            # A bare video URL renders as a player; a GIF needs image syntax.
+            lines += [path if video.endswith('.mp4') else f'![video]({path})', '']
         images = [(name, reference(r['dir'] / name, base)) for name in checkpoints]
         if images:
             lines.append('| ' + ' | '.join(caption(name) for name, _ in images) + ' |')
@@ -162,7 +208,11 @@ def page(results, heading):
                     f'<figure><img src="{name}/{f}"><figcaption>{html.escape(caption(f))}</figcaption></figure>'
                 )
         parts.append('</div>')
-        extras = sorted(p.name for p in r['dir'].iterdir() if p.suffix in ('.gpx', '.json', '.svg', '.txt'))
+        extras = sorted(
+            p.name
+            for p in (r['dir'].iterdir() if r['dir'].is_dir() else [])
+            if p.suffix in ('.gpx', '.json', '.svg', '.txt')
+        )
         parts.append('<p>' + ' · '.join(f'<a href="{name}/{e}">{e}</a>' for e in extras) + '</p></section>')
     return '\n'.join(parts) + '\n'
 
@@ -194,34 +244,40 @@ def post(pr, markdown, attachments):
         command = ['gh', 'pr', 'comment', str(pr), '--body-file', '-']
         for path in files:
             command += ['--attach', path]
-        url = subprocess.run(command, input=listing, text=True, cwd=ROOT, check=True, capture_output=True).stdout
+        url = gh(command, listing)
         comment = url.strip().rsplit('#issuecomment-', 1)[-1]
         if not comment.isdigit():
             raise RuntimeError(f'gh did not report the new comment: {url!r}')
-        uploaded = subprocess.run(
-            ['gh', 'api', f'repos/{{owner}}/{{repo}}/issues/comments/{comment}', '--jq', '.body'],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        subprocess.run(
-            ['gh', 'api', '-X', 'PATCH', f'repos/{{owner}}/{{repo}}/issues/comments/{comment}', '-F', 'body=@-'],
-            input=resolve(body, files, uploaded),
-            text=True,
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-        )
+        endpoint = f'repos/{{owner}}/{{repo}}/issues/comments/{comment}'
+        try:
+            uploaded = gh(['gh', 'api', endpoint, '--jq', '.body'])
+            gh(['gh', 'api', '-X', 'PATCH', endpoint, '-F', 'body=@-'], resolve(body, files, uploaded))
+        except Exception:
+            # Leave no half-written "Uploading…" comment behind.
+            subprocess.run(['gh', 'api', '-X', 'DELETE', endpoint], cwd=ROOT, capture_output=True)
+            raise
+
+
+def gh(command, stdin=None):
+    return subprocess.run(command, input=stdin, text=True, cwd=ROOT, check=True, capture_output=True).stdout
 
 
 def resolve(body, files, uploaded):
-    """Replace local paths with the asset URLs gh uploaded, in listing order."""
-    urls = ASSET.findall(uploaded)
-    if len(urls) != len(files):
-        raise RuntimeError(f'uploaded {len(urls)} of {len(files)} attachments')
-    for path, url in zip(files, urls, strict=True):
-        body = body.replace(path, url)
+    """Replace local paths with the asset URLs gh uploaded, matched by listing index."""
+    urls = {}
+    for pattern in LISTED:
+        for match in pattern.finditer(uploaded):
+            index, url = match.groups() if match.group(1).isdigit() else reversed(match.groups())
+            urls.setdefault(int(index), url)
+    # gh turns videos into bare URLs without their label; those fill the
+    # remaining indices in listing order.
+    bare = [url for url in re.findall(ASSET, uploaded) if url not in urls.values()]
+    unlabelled = [i for i in range(len(files)) if i not in urls]
+    if len(bare) != len(unlabelled):
+        raise RuntimeError(f'uploaded {len(files) - len(unlabelled) + len(bare)} of {len(files)} attachments')
+    urls.update(zip(unlabelled, bare, strict=True))
+    for i, path in enumerate(files):
+        body = body.replace(path, urls[i])
     return body
 
 

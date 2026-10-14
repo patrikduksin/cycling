@@ -21,6 +21,7 @@ const MARGIN: usize = 20;
 const REAL_TIME_BEFORE_MS: u64 = 500;
 const REAL_TIME_AFTER_MS: u64 = 3_000;
 const TARGET_VIDEO_MS: u64 = 45_000;
+const MAX_REAL_TIME_MS: u64 = 90_000;
 const FPS: u32 = 20;
 
 const BACKGROUND: [u8; 3] = [0x14, 0x18, 0x1d];
@@ -35,6 +36,24 @@ const FAIL: [u8; 3] = [0xf8, 0x51, 0x49];
 thread_local! {
     /// The panic message of the current test thread, for failure reports.
     static PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// A directory name no other recording in this process uses.
+fn claim(name: String) -> String {
+    static CLAIMED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    let unique = (1..)
+        .map(|n| {
+            if n == 1 {
+                name.clone()
+            } else {
+                format!("{name}-{n}")
+            }
+        })
+        .find(|candidate| !claimed.contains(candidate))
+        .expect("an unused name exists");
+    claimed.push(unique.clone());
+    unique
 }
 
 /// Remember panic messages per thread, then defer to the default hook.
@@ -143,6 +162,8 @@ impl Recording {
             .next()
             .unwrap_or("scenario")
             .to_string();
+        let name = claim(name);
+        PANIC.with(|p| p.borrow_mut().take());
         Some(Self {
             dir: Path::new(&root).join(&name),
             name,
@@ -274,42 +295,52 @@ impl Recording {
         let end = outcome
             .end_ms
             .max(self.frames.last().map_or(start, |f| f.at_ms) + 1000);
-        let real_time = |at: u64| {
-            outcome.notes.iter().any(|note| {
-                note.kind != NoteKind::Check
-                    && at + REAL_TIME_BEFORE_MS >= note.at_ms
-                    && at <= note.at_ms + REAL_TIME_AFTER_MS
-            }) || self
-                .checkpoints
-                .iter()
-                .any(|c| at + REAL_TIME_BEFORE_MS >= c.at_ms && at <= c.at_ms + 1500)
-        };
-        let durations: Vec<(usize, u64)> = (0..self.frames.len())
-            .map(|i| {
-                let until = self.frames.get(i + 1).map_or(end, |f| f.at_ms);
-                (i, until.saturating_sub(self.frames[i].at_ms))
-            })
-            .filter(|&(_, ms)| ms > 0)
-            .collect();
-        let real: u64 = durations
+        // Windows around actions play in real time; a frame counts only the
+        // part of its hold that overlaps them, so long quiet holds compress.
+        let mut windows: Vec<(u64, u64)> = outcome
+            .notes
             .iter()
-            .filter(|(i, _)| real_time(self.frames[*i].at_ms))
-            .map(|(_, ms)| ms)
-            .sum();
-        let compressed: u64 = durations.iter().map(|(_, ms)| ms).sum::<u64>() - real;
-        let budget = TARGET_VIDEO_MS.saturating_sub(real).max(10_000);
-        let speed = (compressed as f64 / budget as f64).max(1.0);
+            .filter(|note| note.kind != NoteKind::Check)
+            .map(|note| (note.at_ms, REAL_TIME_AFTER_MS))
+            .chain(self.checkpoints.iter().map(|c| (c.at_ms, 1500)))
+            .map(|(at, after)| (at.saturating_sub(REAL_TIME_BEFORE_MS), at + after))
+            .collect();
+        windows.sort_unstable();
+        let overlap = |from: u64, until: u64| -> u64 {
+            let mut covered = 0;
+            let mut reached = from;
+            for &(start, stop) in &windows {
+                let (start, stop) = (start.max(reached), stop.min(until));
+                if start < stop {
+                    covered += stop - start;
+                    reached = stop;
+                }
+            }
+            covered
+        };
+        let durations: Vec<(usize, u64, u64)> = (0..self.frames.len())
+            .map(|i| {
+                let from = self.frames[i].at_ms;
+                let until = self.frames.get(i + 1).map_or(end, |f| f.at_ms).max(from);
+                (i, until - from, overlap(from, until))
+            })
+            .filter(|&(_, ms, _)| ms > 0)
+            .collect();
+        let real: u64 = durations.iter().map(|&(_, _, real)| real).sum();
+        let compressed: u64 = durations.iter().map(|&(_, ms, _)| ms).sum::<u64>() - real;
+        // Real time plays at full speed up to the limit, then everything speeds up.
+        let real_speed = (real as f64 / MAX_REAL_TIME_MS as f64).max(1.0);
+        let shown_real = real as f64 / real_speed;
+        let budget = (TARGET_VIDEO_MS as f64 - shown_real).max(10_000.0);
+        let speed = (compressed as f64 / budget).max(1.0);
         let mut stills = Vec::new();
         let mut carried = 0.0;
-        for (index, ms) in durations {
+        for (index, ms, real) in durations {
             let at = self.frames[index].at_ms;
-            let shown = if real_time(at) {
-                ms as f64
-            } else {
-                ms as f64 / speed
-            } + carried;
+            let shown = real as f64 / real_speed + (ms - real) as f64 / speed + carried;
             // Frames shorter than one video frame merge into the next.
-            if shown < 1000.0 / f64::from(FPS) {
+            if shown < 1000.0 / f64::from(FPS) && !self.checkpoints.iter().any(|c| c.frame == index)
+            {
                 carried = shown;
                 continue;
             }
@@ -463,7 +494,11 @@ impl Recording {
                     "{{\"id\": {}, \"samples\": {}, \"track_m\": {:.0}, \"entries\": [{}]}}",
                     r.id,
                     r.samples,
-                    r.track_m,
+                    if r.track_m.is_finite() {
+                        r.track_m
+                    } else {
+                        0.0
+                    },
                     r.kinds
                         .iter()
                         .map(|k| json(k))
@@ -588,5 +623,60 @@ mod tests {
         assert_eq!(json("a \"b\"\n\\"), "\"a \\\"b\\\"\\n\\\\\"");
         assert_eq!(clock(65_400), "01:05.4");
         assert_eq!(clock(3_723_000), "1:02:03");
+    }
+
+    fn recording(frames: &[u64]) -> Recording {
+        let mut recording = Recording {
+            name: "timing".into(),
+            dir: PathBuf::new(),
+            width: 4,
+            height: 2,
+            frames: Vec::new(),
+            checkpoints: Vec::new(),
+            truth: Vec::new(),
+            submissions: u32::MAX,
+            next_truth_ms: 0,
+        };
+        for (i, &at) in frames.iter().enumerate() {
+            recording.frames.push(Frame::new(at, &[i as u16; 8]));
+        }
+        recording
+    }
+
+    fn note(at_ms: u64) -> Note {
+        Note {
+            at_ms,
+            kind: NoteKind::Input,
+            text: "press".into(),
+        }
+    }
+
+    fn video_ms(recording: &Recording, notes: &[Note], end_ms: u64) -> u64 {
+        let outcome = Outcome {
+            notes,
+            end_ms,
+            rides: Vec::new(),
+        };
+        let stills = recording.stills(&outcome, None);
+        stills.iter().map(|s| u64::from(s.hold_ms)).sum()
+    }
+
+    #[test]
+    fn a_long_hold_after_an_action_plays_only_its_window_in_real_time() {
+        // A press, then ten unchanged minutes on one screen.
+        let recording = recording(&[0, 100]);
+        let total = video_ms(&recording, &[note(0)], 600_000);
+        assert!(
+            (3_000..=TARGET_VIDEO_MS + 1_000).contains(&total),
+            "{total} ms"
+        );
+    }
+
+    #[test]
+    fn many_actions_still_fit_the_real_time_limit() {
+        let frames: Vec<u64> = (0..2_000).map(|i| i * 1_000).collect();
+        let notes: Vec<Note> = (0..2_000).map(|i| note(i * 1_000)).collect();
+        let total = video_ms(&recording(&frames), &notes, 2_000_000);
+        assert!(total <= MAX_REAL_TIME_MS + 1_000, "{total} ms");
     }
 }

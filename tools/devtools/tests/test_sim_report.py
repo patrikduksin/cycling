@@ -80,3 +80,56 @@ def test_uploaded_urls_replace_local_paths_in_order():
     assert './a/' not in resolved
     assert 'https://github.com/user-attachments/assets/1111-aa' in resolved.splitlines()[1]
     assert '<img src="https://github.com/user-attachments/assets/2222-bb">' in resolved
+
+
+def test_labelled_uploads_resolve_by_index_not_position():
+    files = ['./a/video.mp4', './a/01-x.png', './a/02-y.png']
+    body = './a/video.mp4\n![](./a/01-x.png) ![](./a/02-y.png)'
+    uploaded = (
+        '<img alt="2" src="https://github.com/user-attachments/assets/3333-cc">\n'
+        'https://github.com/user-attachments/assets/1111-aa\n'
+        '<img width="10" src="https://github.com/user-attachments/assets/2222-bb" alt="1">'
+    )
+    resolved = report.resolve(body, files, uploaded)
+    assert resolved.splitlines()[0] == 'https://github.com/user-attachments/assets/1111-aa'
+    assert (
+        '![](https://github.com/user-attachments/assets/2222-bb) ![](https://github.com/user-attachments/assets/3333-cc)'
+        in resolved
+    )
+
+
+def test_lost_uploads_fail_loudly():
+    uploaded = '![0](https://github.com/user-attachments/assets/1111-aa)'
+    try:
+        report.resolve('x', ['./a/0.png', './a/1.png'], uploaded)
+    except RuntimeError as error:
+        assert '1 of 2' in str(error)
+    else:
+        raise AssertionError('resolve accepted a missing upload')
+
+
+def test_cargo_log_marks_missing_and_aborted_scenarios_as_failed(tmp_path):
+    scenario(tmp_path, 'wrote_artifacts')
+    scenario(tmp_path, 'dropped_before_assert')
+    (tmp_path / 'cargo.log').write_text(
+        'running 4 tests\n'
+        'test wrote_artifacts ... ok\n'
+        'test dropped_before_assert ... FAILED\n'
+        'test aborted_silently ... ok\n'
+        'test known_gap ... ignored\n'
+    )
+    results = {r['name']: r for r in report.load(tmp_path)}
+    assert results['wrote_artifacts']['status'] == 'pass'
+    assert results['dropped_before_assert']['status'] == 'fail'
+    assert results['aborted_silently']['status'] == 'fail'
+    assert results['cargo_test']['failure'].startswith('cargo test did not finish')
+    assert 'known_gap' not in results
+    markdown, _ = report.summary(list(results.values()), tmp_path, 'Sim', 'abc')
+    assert markdown.startswith('## ❌ Sim: 1/4 scenarios passed')
+    report.page(list(results.values()), 'Sim')
+
+
+def test_failures_cannot_break_their_fence_or_the_comment_split():
+    fence = report.fenced('boom\n```\n### not a heading')
+    assert fence[0] == '````text' and fence[-1] == '````'
+    assert '\n### ' not in fence[1]

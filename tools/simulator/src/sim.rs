@@ -420,17 +420,23 @@ impl Drop for Sim {
         let Some(recording) = self.recording.take() else {
             return;
         };
-        #[cfg(feature = "cycling")]
-        let rides = self.rides().iter().map(crate::rides::summary).collect();
-        #[cfg(not(feature = "cycling"))]
-        let rides = Vec::new();
-        let outcome = Outcome {
-            notes: &self.notes,
-            end_ms: self.device.world.time_ms,
-            rides,
-        };
-        if let Err(error) = recording.write(outcome) {
-            eprintln!("scenario artifacts for {}: {error}", recording.name);
+        // A second panic while a failed scenario unwinds would abort the whole
+        // test binary, so artifact work never unwinds out of here.
+        let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(feature = "cycling")]
+            let rides = self.rides().iter().map(crate::rides::summary).collect();
+            #[cfg(not(feature = "cycling"))]
+            let rides = Vec::new();
+            recording.write(Outcome {
+                notes: &self.notes,
+                end_ms: self.device.world.time_ms,
+                rides,
+            })
+        }));
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("scenario artifacts for {}: {error}", recording.name),
+            Err(_) => eprintln!("scenario artifacts for {} panicked", recording.name),
         }
     }
 }

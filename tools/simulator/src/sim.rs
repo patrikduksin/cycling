@@ -14,6 +14,8 @@ use std::fmt::Write as _;
 const BOOT_MS: u64 = 7_000;
 /// Firmware passes between a press and the next one VANA accepts (debounce is 350 ms).
 const PRESS_GAP_MS: u64 = 400;
+/// The companion repeats a held button's report this often.
+pub const HOLD_REPEAT_MS: u64 = 100;
 
 pub fn seconds(s: u64) -> u64 {
     s * 1000
@@ -97,10 +99,19 @@ pub struct Sim {
 impl Sim {
     /// A powered-off C606 with VANA, an ANT radio and empty memory media.
     pub fn new() -> Self {
+        Self::with(Recording::from_env)
+    }
+
+    /// Like `new`, recorded under `name` rather than the test thread's name.
+    pub fn named(name: &str) -> Self {
+        Self::with(|width, height| Recording::named(name, width, height))
+    }
+
+    fn with(recording: impl FnOnce(usize, usize) -> Option<Recording>) -> Self {
         let device = Session::device().expect("memory media always opens");
         let geometry = device.display.0.borrow().geometry;
         Self {
-            recording: Recording::from_env(geometry.width, geometry.height),
+            recording: recording(geometry.width, geometry.height),
             device,
             notes: Vec::new(),
         }
@@ -162,19 +173,22 @@ impl Sim {
     /// One physical press, then enough time for the next press to count.
     pub fn press(&mut self, button: Button) {
         self.note(NoteKind::Input, format!("press {button:?}"));
+        self.report(button);
+        self.advance(PRESS_GAP_MS);
+    }
+
+    /// One companion report of `button` down, now, without waiting.
+    pub fn report(&mut self, button: Button) {
         self.device
             .input
             .push(self.device.now, Input::Button { button, code: 1 });
-        self.advance(PRESS_GAP_MS);
     }
 
     /// Buttons pressed in the same companion report window.
     pub fn press_together(&mut self, buttons: &[Button]) {
         self.note(NoteKind::Input, format!("press together {buttons:?}"));
         for &button in buttons {
-            self.device
-                .input
-                .push(self.device.now, Input::Button { button, code: 1 });
+            self.report(button);
         }
         self.advance(PRESS_GAP_MS);
     }
@@ -185,11 +199,9 @@ impl Sim {
         self.note(NoteKind::Input, format!("hold {button:?} {ms} ms"));
         let mut held = 0;
         while held < ms {
-            self.device
-                .input
-                .push(self.device.now, Input::Button { button, code: 1 });
-            self.advance(100);
-            held += 100;
+            self.report(button);
+            self.advance(HOLD_REPEAT_MS);
+            held += HOLD_REPEAT_MS;
         }
         self.advance(PRESS_GAP_MS);
     }
@@ -412,9 +424,14 @@ impl Sim {
 
     /// Cut power without warning and boot again; media keeps what was written.
     pub fn power_loss(&mut self) {
+        self.cut_power();
+        self.advance(BOOT_MS);
+    }
+
+    /// Cut power without warning; the device starts booting at once.
+    pub fn cut_power(&mut self) {
         self.note(NoteKind::Device, "power lost; rebooting");
         self.device.power_cycle().expect("memory media reopens");
-        self.advance(BOOT_MS);
     }
 
     /// Fail the next storage mutations after `after` succeed, tearing the failed one.

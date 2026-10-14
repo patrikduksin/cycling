@@ -134,6 +134,10 @@ run = [
   "{{vars.devtools}} python -m cycling_devtools.sim.report .local/sim/pr --pr \"${usage_pr}\"",
 ]
 
+[tasks.sim-live]
+description = "Open a window onto the simulated device; the session is recorded to .local/sim/live"
+run = "SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features cycling,debug-harness,live --bin sim-live"
+
 [tasks.harness]
 description = "Run a named or structured C606/virtual harness scenario and return compact JSON"
 run = "{{vars.devtools}} python -m cycling_devtools.harness.runner"

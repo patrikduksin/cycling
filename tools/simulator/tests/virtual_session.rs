@@ -345,3 +345,38 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
         prefix
     );
 }
+
+#[test]
+fn power_cycle_of_a_running_device_brings_the_companion_back_ready() {
+    use device_api::observation::Availability;
+    use device_api::sensors::Startup;
+    let mut s = Session::device().unwrap();
+    s.step(3_000);
+    assert_eq!(
+        (s.startup, s.ant.availability),
+        (Startup::Ready, Availability::Ready)
+    );
+    s.power_cycle().unwrap();
+    assert_eq!(s.ant.availability, Availability::Initializing);
+    s.step(3_000);
+    assert_eq!(
+        (s.startup, s.ant.availability),
+        (Startup::Ready, Availability::Ready)
+    );
+}
+
+#[test]
+fn cpu_restart_while_the_companion_boots_lets_it_finish() {
+    use device_api::observation::Availability;
+    use device_api::sensors::Startup;
+    let mut s = Session::device().unwrap();
+    s.step(500);
+    assert_eq!(s.startup, Startup::Probing);
+    s.restart().unwrap();
+    assert_eq!(s.ant.availability, Availability::Initializing);
+    s.step(1_100);
+    assert_eq!(
+        (s.startup, s.ant.availability),
+        (Startup::Ready, Availability::Ready)
+    );
+}

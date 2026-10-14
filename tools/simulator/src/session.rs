@@ -601,11 +601,13 @@ impl Session {
         let g = self.display.geometry();
         let mut next = Self::with_media(self.media.clone(), g.width, g.height)?;
         next.world = core::mem::take(&mut self.world);
+        // Read before the swap: afterwards `self.ant` is the fresh radio.
+        let ready = self.ant_ready_availability();
         core::mem::swap(&mut next.ant, &mut self.ant);
         if power {
             next.ant.power_cycled();
             if self.companion_boot_ms.is_some() || self.startup == Startup::Ready {
-                next.companion_starting(self.ant_ready_availability());
+                next.companion_starting(ready);
             }
         } else {
             next.ant.host_restarted();
@@ -614,6 +616,11 @@ impl Session {
             } else {
                 self.startup
             };
+            // A CPU reset does not stop a companion that is still booting;
+            // the new uptime starts at zero, so carry what is left.
+            next.companion_boot_ms = self
+                .companion_boot_ms
+                .map(|(at, ant)| (at.saturating_sub(self.now), ant));
         }
         next.gps = self.gps.take().map(|mut gps| {
             gps.reset();

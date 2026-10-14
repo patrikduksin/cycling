@@ -103,6 +103,11 @@ impl Sim {
     }
 
     /// Like `new`, recorded under `name` rather than the test thread's name.
+    /// Keep this session's artifacts from being written.
+    pub fn discard_recording(&mut self) {
+        self.recording = None;
+    }
+
     pub fn named(name: &str) -> Self {
         Self::with(|width, height| Recording::named(name, width, height))
     }

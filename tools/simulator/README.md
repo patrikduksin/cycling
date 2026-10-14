@@ -45,8 +45,8 @@ in range. Time runs in 10 ms firmware passes at real time or faster:
 | `Space`, `1` `2` `3` | Pause; 1x, 10x, 60x |
 | `Esc` | Quit and write the recording |
 
-The session is written as the `live_session` scenario under `.local/sim/live`
-when the window closes. `sim-live --frames N --screenshot out.png` renders N
+Each session is written as `live_session-<unix time>` under `.local/sim/live`
+when the window closes or on `Esc`; Ctrl-C in the terminal discards it. `sim-live --frames N --screenshot out.png` renders N
 frames at 30 fps without a window.
 
 `mise run simulate` runs the base demonstration and `mise run harness-virtual`

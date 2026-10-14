@@ -23,6 +23,10 @@ fn main() {
         }
         None => window(&mut live),
     };
+    if result.is_err() && live.sim.now() == 0 {
+        // The window never ran; there is no session worth recording.
+        live.sim.discard_recording();
+    }
     if std::env::var_os("SIM_ARTIFACTS").is_some() {
         eprintln!("writing the session recording");
     }

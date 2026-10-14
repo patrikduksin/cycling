@@ -12,8 +12,8 @@ use device_api::input::Button;
 
 /// The firmware loop's pass length.
 const STEP_MS: u64 = 10;
-/// Simulated time a slow frame may owe; beyond it the clock slips rather than stalls.
-const MAX_OWED_MS: f64 = 2_000.0;
+/// Real time a slow frame may owe; beyond it the clock slips rather than stalls.
+const MAX_OWED_REAL_MS: f64 = 250.0;
 /// A key down this long in real time is a held button, repeated by the companion.
 const HOLD_AFTER_MS: f64 = 300.0;
 pub const SPEEDS: [u32; 3] = [1, 10, 60];
@@ -55,7 +55,8 @@ struct Held {
     key: char,
     button: Button,
     real_ms: f64,
-    next_ms: u64,
+    /// Repeats follow real time, so a hold feels the same at every speed.
+    next_real_ms: f64,
 }
 
 pub struct Live {
@@ -71,7 +72,11 @@ pub struct Live {
 impl Live {
     /// A rider on a loop route with ANT sensors around, powering the device on.
     pub fn new() -> Self {
-        let mut sim = Sim::named("live_session");
+        // Each session keeps its own directory; relaunching never replaces one.
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let mut sim = Sim::named(&format!("live_session-{started}"));
         for (_, _, kind, number) in SENSORS {
             sim.ant_sensor(kind, number);
         }
@@ -101,7 +106,7 @@ impl Live {
                 key,
                 button,
                 real_ms: 0.0,
-                next_ms: 0,
+                next_real_ms: HOLD_AFTER_MS,
             });
             return;
         }
@@ -163,18 +168,17 @@ impl Live {
         if self.paused {
             return;
         }
-        self.owed_ms = (self.owed_ms + real_ms * f64::from(self.speed)).min(MAX_OWED_MS);
+        if let Some(held) = &mut self.held
+            && held.real_ms >= held.next_real_ms
+        {
+            held.next_real_ms = held.real_ms + HOLD_REPEAT_MS as f64;
+            self.sim.report(held.button);
+        }
+        let speed = f64::from(self.speed);
+        self.owed_ms = (self.owed_ms + real_ms * speed).min(MAX_OWED_REAL_MS * speed);
         while self.owed_ms >= STEP_MS as f64 {
             self.owed_ms -= STEP_MS as f64;
             self.sim.advance(STEP_MS);
-            let now = self.sim.now();
-            if let Some(held) = &mut self.held
-                && held.real_ms >= HOLD_AFTER_MS
-                && now >= held.next_ms
-            {
-                held.next_ms = now + HOLD_REPEAT_MS;
-                self.sim.report(held.button);
-            }
         }
     }
 
@@ -365,5 +369,24 @@ mod tests {
         run(&mut live, 8_000);
         assert_eq!(moves(&mut live, 'a', 200), 1);
         assert!(moves(&mut live, 'a', 1_500) >= 3);
+    }
+
+    #[test]
+    fn a_hold_repeats_in_real_time_at_every_speed() {
+        let mut live = Live::new();
+        run(&mut live, 8_000);
+        live.key_down('3');
+        // About eight repeats in a real second, not one per simulated 100 ms.
+        let moved = moves(&mut live, 'a', 1_000);
+        assert!((3..=10).contains(&moved), "{moved} moves");
+    }
+
+    #[test]
+    fn a_slow_frame_owes_at_most_a_quarter_second_of_real_time() {
+        let mut live = Live::new();
+        live.key_down('3');
+        let before = live.sim.now();
+        live.tick(5_000.0);
+        assert_eq!(live.sim.now() - before, 15_000);
     }
 }

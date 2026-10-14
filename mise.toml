@@ -32,7 +32,7 @@ run = ["cargo fmt --all", "{{vars.devtools}} ruff format tools/devtools"]
 
 [tasks.check]
 description = "Check formatting and lint host code"
-run = ["uv run --script tools/check-boundaries.py", "{{vars.devtools}} ruff format --check tools/devtools", "{{vars.devtools}} ruff check tools/devtools", "cargo check -p device-api --locked --features network-stack", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling -- -D warnings", "cargo fmt --all -- --check"]
+run = ["uv run --script tools/check-boundaries.py", "{{vars.devtools}} ruff format --check tools/devtools", "{{vars.devtools}} ruff check tools/devtools", "cargo check -p device-api --locked --features network-stack", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling,shell-simulator/live -- -D warnings", "cargo fmt --all -- --check"]
 
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"

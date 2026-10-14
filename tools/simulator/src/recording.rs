@@ -13,9 +13,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// Device screens are shown at twice the panel size.
-const SCALE: usize = 2;
-const PANEL_WIDTH: usize = 360;
-const MARGIN: usize = 20;
+pub(crate) const SCALE: usize = 2;
+pub(crate) const PANEL_WIDTH: usize = 360;
+pub(crate) const MARGIN: usize = 20;
 /// Moments around an action play in real time; the rest is compressed so the
 /// whole video stays short.
 const REAL_TIME_BEFORE_MS: u64 = 500;
@@ -24,14 +24,14 @@ const TARGET_VIDEO_MS: u64 = 45_000;
 const MAX_REAL_TIME_MS: u64 = 90_000;
 const FPS: u32 = 20;
 
-const BACKGROUND: [u8; 3] = [0x14, 0x18, 0x1d];
-const BEZEL: [u8; 3] = [0x2b, 0x32, 0x3a];
-const INK: [u8; 3] = [0xc9, 0xd1, 0xd9];
-const DIM: [u8; 3] = [0x76, 0x80, 0x8a];
-const ACCENT: [u8; 3] = [0x00, 0xd7, 0xd7];
-const AMBER: [u8; 3] = [0xd2, 0x99, 0x22];
-const PASS: [u8; 3] = [0x3f, 0xb9, 0x50];
-const FAIL: [u8; 3] = [0xf8, 0x51, 0x49];
+pub(crate) const BACKGROUND: [u8; 3] = [0x14, 0x18, 0x1d];
+pub(crate) const BEZEL: [u8; 3] = [0x2b, 0x32, 0x3a];
+pub(crate) const INK: [u8; 3] = [0xc9, 0xd1, 0xd9];
+pub(crate) const DIM: [u8; 3] = [0x76, 0x80, 0x8a];
+pub(crate) const ACCENT: [u8; 3] = [0x00, 0xd7, 0xd7];
+pub(crate) const AMBER: [u8; 3] = [0xd2, 0x99, 0x22];
+pub(crate) const PASS: [u8; 3] = [0x3f, 0xb9, 0x50];
+pub(crate) const FAIL: [u8; 3] = [0xf8, 0x51, 0x49];
 
 thread_local! {
     /// The panic message of the current test thread, for failure reports.
@@ -154,17 +154,21 @@ pub struct RideSummary {
 impl Recording {
     /// A recording for the current test thread, when artifacts are requested.
     pub fn from_env(width: usize, height: usize) -> Option<Self> {
-        let root = std::env::var_os("SIM_ARTIFACTS")?;
-        capture_panics();
         let thread = std::thread::current();
         let name = thread
             .name()
             .unwrap_or("scenario")
             .rsplit("::")
             .next()
-            .unwrap_or("scenario")
-            .to_string();
-        let name = claim(name);
+            .unwrap_or("scenario");
+        Self::named(name, width, height)
+    }
+
+    /// A recording called `name`, when artifacts are requested.
+    pub fn named(name: &str, width: usize, height: usize) -> Option<Self> {
+        let root = std::env::var_os("SIM_ARTIFACTS")?;
+        capture_panics();
+        let name = claim(name.to_string());
         PANIC.with(|p| p.borrow_mut().take());
         Some(Self {
             dir: Path::new(&root).join(&name),
@@ -515,7 +519,7 @@ impl Recording {
 }
 
 /// Draw text wrapped to a width; returns the height used.
-fn wrap(
+pub(crate) fn wrap(
     canvas: &mut Canvas,
     x: usize,
     y: usize,

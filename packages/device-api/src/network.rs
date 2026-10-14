@@ -17,8 +17,8 @@ pub trait Network {
     }
 
     fn online(&self) -> bool;
-    fn state(&self) -> u8;
-    fn stats(&self) -> (u32, u32, u32, u8);
+    fn state(&self) -> crate::connectivity::WifiState;
+    fn stats(&self) -> crate::connectivity::WifiStats;
     fn availability(&self) -> Availability;
     fn stack(&self) -> Option<embassy_net::Stack<'static>>;
     fn connection_generation(&self) -> u32;

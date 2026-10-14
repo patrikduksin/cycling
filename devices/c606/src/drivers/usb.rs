@@ -7,6 +7,9 @@ impl Usb {
     #[cfg(feature = "bulk-maintenance")]
     pub fn tx_ready(&self) -> bool {
         // Observe completion without writing WR_DONE again for an empty FIFO.
+        // SAFETY: USB_DEVICE::ptr() is the fixed peripheral register block.
+        // This is a read of a status bit owned by the TX half this struct holds;
+        // reading it has no side effects on the HAL driver state.
         unsafe { &*esp32s3::USB_DEVICE::ptr() }
             .ep1_conf()
             .read()

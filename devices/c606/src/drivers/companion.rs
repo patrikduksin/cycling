@@ -88,6 +88,11 @@ pub fn command(group: u8, payload: [u8; 8]) -> [u8; 16] {
     frame
 }
 
+/// GNSS power command recovered from stock; `open` starts the NMEA stream.
+pub fn gnss_power(open: bool) -> [u8; 16] {
+    command(16, [0xe2, 2, 7, 0, 0, u8::from(open), 0, 0])
+}
+
 pub struct Decoder {
     bytes: [u8; 256],
     len: usize,
@@ -275,6 +280,20 @@ mod tests {
         let crc = crc16(&f[..14]);
         f[14..].copy_from_slice(&crc.to_le_bytes());
         f
+    }
+    #[test]
+    fn gnss_open_matches_the_recovered_stock_frame() {
+        assert_eq!(
+            gnss_power(true),
+            [
+                0xa5, 0x0c, 0x6f, 0xf1, 0x02, 0x10, 0xe2, 0x02, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00,
+                0x89, 0xe5,
+            ]
+        );
+        let close = gnss_power(false);
+        assert_eq!(close[..11], gnss_power(true)[..11]);
+        assert_eq!(close[11], 0);
+        assert_eq!(crc16(&close[..14]).to_le_bytes(), [close[14], close[15]]);
     }
     #[test]
     fn standard_crc_vector() {

@@ -30,11 +30,7 @@ pub fn tick(now: u64) {
             position.map_or(0, |p| p.gps.valid_sentences),
             position.and_then(|p| p.received_at_ms),
             |open| {
-                let frame = crate::drivers::companion::command(
-                    16,
-                    [0xe2, 2, 7, 0, 0, u8::from(open), 0, 0],
-                );
-                crate::drivers::companion_uart::send(&frame)
+                crate::drivers::companion_uart::send(&crate::drivers::companion::gnss_power(open))
             },
         )
     });

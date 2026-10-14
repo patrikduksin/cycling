@@ -40,14 +40,19 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         // SAFETY: the layout has a non-zero size; the block is never freed.
         let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
         if !pointer.is_null() {
-            // SAFETY: the allocator returned `layout.size()` writable bytes at
-            // `pointer`, aligned for u8. Zeroing initializes them before a
-            // slice is formed. The block is never deallocated and this is its
-            // only reference, so a 'static exclusive slice is sound.
-            let capture = unsafe {
-                core::ptr::write_bytes(pointer, 0, layout.size());
-                core::slice::from_raw_parts_mut(pointer, layout.size())
-            };
+            // Zero in chunks and yield between them: one blocking 600 KB PSRAM
+            // write starves the companion UART during its startup probe.
+            for offset in (0..layout.size()).step_by(4096) {
+                let len = (layout.size() - offset).min(4096);
+                // SAFETY: the allocator returned `layout.size()` writable bytes
+                // at `pointer`; `offset + len` stays within them.
+                unsafe { core::ptr::write_bytes(pointer.add(offset), 0, len) };
+                embassy_futures::yield_now().await;
+            }
+            // SAFETY: every byte was initialized above. The block is never
+            // deallocated and this is its only reference, so a 'static
+            // exclusive slice is sound.
+            let capture = unsafe { core::slice::from_raw_parts_mut(pointer, layout.size()) };
             system.harness.buffer = Some(firmware_shell::harness::CaptureBuffer::Borrowed(capture));
         }
     }

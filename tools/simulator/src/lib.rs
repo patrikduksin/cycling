@@ -1,6 +1,8 @@
 pub mod ant;
+pub mod artifacts;
 pub mod devices;
 pub mod gps;
+pub mod recording;
 #[cfg(feature = "cycling")]
 pub mod rides;
 pub mod route;

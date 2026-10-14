@@ -1,6 +1,7 @@
 //! Scenario driver for the simulated device: press buttons, change the world,
 //! let time pass and read what the screen shows.
 use crate::ant::AntSensor;
+use crate::recording::{Outcome, Recording};
 use crate::route::Route;
 use crate::screen::{Frame, TextRun};
 use crate::session::Session;
@@ -90,13 +91,17 @@ impl Screen {
 pub struct Sim {
     pub device: Session,
     pub notes: Vec<Note>,
+    recording: Option<Recording>,
 }
 
 impl Sim {
     /// A powered-off C606 with VANA, an ANT radio and empty memory media.
     pub fn new() -> Self {
+        let device = Session::device().expect("memory media always opens");
+        let geometry = device.display.0.borrow().geometry;
         Self {
-            device: Session::device().expect("memory media always opens"),
+            recording: Recording::from_env(geometry.width, geometry.height),
+            device,
             notes: Vec::new(),
         }
     }
@@ -124,7 +129,33 @@ impl Sim {
     }
 
     pub fn advance(&mut self, ms: u64) {
-        self.device.step(ms);
+        let Some(recording) = &mut self.recording else {
+            self.device.step(ms);
+            return;
+        };
+        let end = self.device.world.time_ms + ms;
+        while self.device.world.time_ms < end {
+            self.device.step((end - self.device.world.time_ms).min(10));
+            let frame = self.device.display.0.borrow();
+            recording.observe(
+                self.device.world.time_ms,
+                frame.submissions,
+                &frame.pixels,
+                &self.device.world,
+            );
+        }
+    }
+
+    /// Name this moment; recordings keep a screenshot of it.
+    pub fn checkpoint(&mut self, name: &str) {
+        self.note(NoteKind::Check, format!("checkpoint {name}"));
+        if let Some(recording) = &mut self.recording {
+            recording.checkpoint(
+                name,
+                self.device.world.time_ms,
+                &self.device.display.0.borrow().pixels,
+            );
+        }
     }
 
     /// One physical press, then enough time for the next press to count.
@@ -219,7 +250,7 @@ impl Sim {
             self.now(),
             screen.text()
         );
-        self.note(NoteKind::Check, format!("saw {needle:?}"));
+        self.note(NoteKind::Check, format!("saw {needle}"));
     }
 
     /// Assert the value under a field label.
@@ -246,7 +277,7 @@ impl Sim {
             self.now(),
             screen.text()
         );
-        self.note(NoteKind::Check, format!("did not see {needle:?}"));
+        self.note(NoteKind::Check, format!("did not see {needle}"));
     }
 
     /// A terminal command as the USB console would send it.
@@ -381,6 +412,26 @@ impl Sim {
         );
         let _ = writeln!(out, "screen:\n{}", self.screen().text());
         out
+    }
+}
+
+impl Drop for Sim {
+    fn drop(&mut self) {
+        let Some(recording) = self.recording.take() else {
+            return;
+        };
+        #[cfg(feature = "cycling")]
+        let rides = self.rides().iter().map(crate::rides::summary).collect();
+        #[cfg(not(feature = "cycling"))]
+        let rides = Vec::new();
+        let outcome = Outcome {
+            notes: &self.notes,
+            end_ms: self.device.world.time_ms,
+            rides,
+        };
+        if let Err(error) = recording.write(outcome) {
+            eprintln!("scenario artifacts for {}: {error}", recording.name);
+        }
     }
 }
 

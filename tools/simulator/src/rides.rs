@@ -1,5 +1,7 @@
 //! Rides read back from simulated media with VANA's own journal decoder.
+use crate::recording::{RideSummary, json};
 use crate::route::{Point, from_e7, to_gpx};
+use std::fmt::Write as _;
 use vana::ride::log::{Entry, Kind, SLOT_SIZE, Sample, Slot, decode};
 
 pub struct Ride {
@@ -64,4 +66,60 @@ pub fn read(media: &[u8]) -> Vec<Ride> {
         }
     }
     rides
+}
+
+/// Files and figures a scenario report shows for one ride.
+pub fn summary(ride: &Ride) -> RideSummary {
+    let mut samples = String::new();
+    for sample in ride.samples() {
+        let field = |value: Option<String>| value.unwrap_or_else(|| "null".into());
+        let _ = write!(
+            samples,
+            "{}\n    {{\"active_ms\": {}, \"lat\": {}, \"lon\": {}, \"speed_kmh\": {}, \"power_w\": {}, \"heart_bpm\": {}, \"cadence_rpm\": {}, \"gradient_pct\": {}, \"battery_pct\": {}}}",
+            if samples.is_empty() { "" } else { "," },
+            sample.active_ms,
+            field(
+                sample
+                    .location_e7
+                    .map(|(lat, _)| format!("{:.7}", f64::from(lat) / 1e7))
+            ),
+            field(
+                sample
+                    .location_e7
+                    .map(|(_, lon)| format!("{:.7}", f64::from(lon) / 1e7))
+            ),
+            field(
+                sample
+                    .speed_mm_s
+                    .map(|v| format!("{:.1}", f64::from(v) * 0.0036))
+            ),
+            field(sample.power_watts.map(|v| v.to_string())),
+            field(sample.heart_bpm.map(|v| v.to_string())),
+            field(
+                sample
+                    .cadence_tenths
+                    .map(|v| format!("{:.1}", f64::from(v) / 10.0))
+            ),
+            field(
+                sample
+                    .gradient_tenths
+                    .map(|v| format!("{:.1}", f64::from(v) / 10.0))
+            ),
+            field(sample.battery_percent.map(|v| v.to_string())),
+        );
+    }
+    let kinds: Vec<String> = ride.kinds().iter().map(|k| format!("{k:?}")).collect();
+    RideSummary {
+        id: ride.id,
+        samples: ride.samples().count(),
+        track_m: ride.track_m(),
+        gpx: ride.gpx(),
+        json: format!(
+            "{{\n  \"ride\": {},\n  \"entries\": [{}],\n  \"samples\": [{}\n  ]\n}}\n",
+            ride.id,
+            kinds.iter().map(|k| json(k)).collect::<Vec<_>>().join(", "),
+            samples
+        ),
+        kinds,
+    }
 }

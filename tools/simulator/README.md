@@ -21,7 +21,13 @@ loop's order and serves the terminal backend. The world and its observers:
   memory media with injected torn writes; memory media survives a power loss.
 - `rides.rs`: reads recorded rides back with VANA's journal decoder.
 
-Scenarios live in `tests/ride_scenarios.rs`; run them with `mise run sim`.
+Scenarios live in `tests/ride_scenarios.rs`. `mise run sim` runs them with
+`SIM_ARTIFACTS` set: `recording.rs` writes a captioned video, checkpoint
+screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
+and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
+including failed ones. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
+and chart encoders. `mise run sim-pr <number>` posts the run inline on a pull
+request through `cycling_devtools.sim.report`.
 `mise run simulate` runs the base demonstration and `mise run harness-virtual`
 the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit
 disposable `--state-dir`.

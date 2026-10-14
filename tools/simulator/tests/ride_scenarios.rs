@@ -103,6 +103,7 @@ fn paired_sensors_pass_the_connection_check() {
     ] {
         assert!(screen.contains(line), "{line}; screen:\n{}", screen.text());
     }
+    sim.checkpoint("connection check passes");
 }
 
 #[test]
@@ -116,7 +117,9 @@ fn ride_shows_live_metrics_and_records_the_gps_track() {
     sim.expect_field("WATTS", "210");
     sim.expect_field("BPM", "142");
     sim.expect_field("ACTIVE TIME", "00:05:00");
+    sim.checkpoint("five minutes riding");
     stop_ride(&mut sim);
+    sim.checkpoint("ride saved");
 
     let rides = sim.rides();
     assert_eq!(rides.len(), 1);
@@ -144,16 +147,19 @@ fn power_meter_dropout_blanks_watts_and_recovers() {
     sim.ride_at(25.0, 190.0, 0.0, 85.0);
     sim.advance(seconds(10));
     sim.expect_field("WATTS", "190");
+    sim.checkpoint("power reading");
 
     // A short loss keeps the channel tracking; readings blank, then resume.
     sim.set_present(device_type::POWER, POWER, false);
     sim.advance(seconds(5));
     sim.expect_field("WATTS", "--");
+    sim.checkpoint("power meter out of range");
 
     sim.set_present(device_type::POWER, POWER, true);
     let waited = sim.wait_for("190", seconds(10)).unwrap();
     assert!(waited < seconds(3), "recovered after {waited} ms");
     sim.expect_field("WATTS", "190");
+    sim.checkpoint("power reading recovered");
     sim.advance(seconds(10));
     stop_ride(&mut sim);
     let ride = &sim.rides()[0];
@@ -175,8 +181,10 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
     sim.advance(minutes(2));
     let before = sim.rides()[0].samples().count();
     assert!(before >= 110, "{before} samples before loss");
+    sim.checkpoint("riding before power loss");
 
     sim.power_loss();
+    sim.checkpoint("booted after power loss");
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recovered"), "{status}");
     let rides = sim.rides();
@@ -208,6 +216,7 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     // Six seconds from reaching the rider, VANA beeps.
     sim.advance(seconds(4));
     assert_eq!(sim.device.speaker.played.len(), 1, "no alert when close");
+    sim.checkpoint("vehicle close, alert sounded");
     sim.advance(seconds(15));
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 0, "vehicle passed");
@@ -229,6 +238,7 @@ fn long_power_meter_loss_reconnects_when_it_returns() {
     sim.set_present(device_type::POWER, POWER, false);
     sim.advance(seconds(40));
     sim.expect_field("WATTS", "--");
+    sim.checkpoint("power meter gone for 40 s");
 
     sim.set_present(device_type::POWER, POWER, true);
     sim.wait_for("190", seconds(30)).unwrap();
@@ -244,4 +254,5 @@ fn sensors_wait_for_the_companion_after_power_on() {
     home(&mut sim, "SENSORS");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     connect(&mut sim, "HEART RATE");
+    sim.checkpoint("heart rate connected");
 }

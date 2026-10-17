@@ -12,6 +12,9 @@ board, the shell or the cycling application.
   validation and clock synchronization.
 - `storage` owns the two-sector journal format. `bulk` validates explicitly owned
   media regions. Neither module owns physical flash addresses.
+- `volume` splits the owned region into named volumes, each its own block
+  device. `sector_log` is an append-only log, `files` a power-loss-safe store of
+  named files and `pack` a host-written read-mostly image; each runs in a volume.
 - `fit` writes Garmin FIT files as a stream: header, definitions, records and
   CRC, with no profile policy. The application chooses messages and fields.
 - `input` owns bounded edge delivery and cancellation after loss. `sound` tracks

@@ -334,8 +334,10 @@ ride compatibility and recovery belong to the SDK. See
 [ride recording](../../../docs/ride-recording.md) for export and explicit reclaim.
 Unknown settings content refuses writes rather than initializing over data.
 
-The owned MMC partition holds the bulk ride log (#105). Relative sectors 0 and 1
-are superblocks, 2 to 9 are the checkpoint ring, and records start at relative
+The owned MMC partition holds a volume table in relative sectors 0 and 1 and
+the volumes it names ([MMC volumes](../../../docs/mmc-volumes.md)). The bulk ride
+log (#105) lives in the RIDES volume from relative sector 2,048. Its sectors 0 and
+1 are superblocks, 2 to 9 are the checkpoint ring, and records start at its
 sector 16. Ordinary builds switch the SD/MMC clock to 20 MHz at boot, because
 each owned access re-reads the MBR and ownership marker. Bulk-maintenance builds
 keep 400 kHz. Log appends and the 20 MHz default are not yet validated on

@@ -189,6 +189,22 @@ run = ["{{vars.devtools}} python -m cycling_devtools.harness.runner run shared -
 description = "Read bounded MMC layout and root metadata into private local evidence"
 run = "{{vars.devtools}} python -m cycling_devtools.device.mmc"
 
+[tasks.volumes]
+description = "Inspect the MMC volume table, terrain pack and file store (inspect|init|terrain-write|terrain-verify|files)"
+run = "{{vars.devtools}} python -m cycling_devtools.device.volumes"
+
+[tasks.terrain-write]
+description = "Install a terrain pack file into the MMC TERRAIN volume, resumable, with --verify readback"
+run = "{{vars.devtools}} python -m cycling_devtools.device.volumes terrain-write"
+
+[tasks.terrain-verify]
+description = "Compare the installed TERRAIN pack with a file, chunk by chunk on the device"
+run = "{{vars.devtools}} python -m cycling_devtools.device.volumes terrain-verify"
+
+[tasks.files]
+description = "List, put, get, delete or format files in the MMC FILES store (list|put name path|get name path|delete name|format --confirm)"
+run = "{{vars.devtools}} python -m cycling_devtools.device.volumes files"
+
 [tasks.mmc-maintenance]
 description = "Back up or explicitly write MMC using the dedicated maintenance image"
 run = "{{vars.devtools}} python -m cycling_devtools.device.mmc_maintenance"

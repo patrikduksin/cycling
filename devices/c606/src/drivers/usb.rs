@@ -4,7 +4,6 @@ pub struct Usb {
     tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Blocking>,
 }
 impl Usb {
-    #[cfg(feature = "bulk-maintenance")]
     pub fn tx_ready(&self) -> bool {
         // Observe completion without writing WR_DONE again for an empty FIFO.
         // SAFETY: USB_DEVICE::ptr() is the fixed peripheral register block.

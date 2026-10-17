@@ -565,6 +565,14 @@ impl Session {
             return status;
         }
         match request.command {
+            // The simulator has no binary USB session; tests install volume
+            // contents through `Sim` instead.
+            Command::Volume(firmware_console::commands::volumes::Command::Transfer) => {
+                return "UNSUPPORTED";
+            }
+            Command::Volume(command) => {
+                return firmware_console::commands::volumes::execute(command, &mut self.bulk, out);
+            }
             Command::Info => {
                 let _ = write!(
                     out,

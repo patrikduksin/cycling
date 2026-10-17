@@ -8,9 +8,12 @@
 //! most that many records however much the region holds. The log never wraps
 //! or reclaims: full media closes the ride, as on the internal journal.
 //!
-//! The region starts unformatted. Only explicit initialize writes a superblock;
-//! clear (after a verified export) starts a new epoch whose superblock makes
-//! older records unreachable without erasing them.
+//! The log lives in the RIDES volume of the owned region's volume table
+//! (`firmware_services::volume`). The region starts unformatted. Only explicit
+//! initialize writes: the volume table when there is none (a blank region, or
+//! the log from before volumes, which then reports `layout=legacy`), then a
+//! superblock; clear (after a verified export) starts a new epoch whose
+//! superblock makes older records unreachable without erasing them.
 
 use crate::ride::journal::{Journal, Progress, Scan};
 use crate::ride::log::{
@@ -19,6 +22,7 @@ use crate::ride::log::{
 use device_api::bulk::{Error as MediaError, ReadWrite};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
 use firmware_services::sector_log::{self, Error, Log, PAYLOAD, Recovery as LogRecovery, Step};
+use firmware_services::volume::{self, Extent, Layout, RIDES, Volume};
 
 /// Owner and schema of the log: VANA rides, slot and catalog version 1.
 pub const TAG: &[u8; 16] = b"VANA-RIDES-V1\0\0\0";
@@ -111,8 +115,38 @@ pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
     })
 }
 
+/// What the owned region's volume table said, once read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    Unread,
+    /// A table with a RIDES volume.
+    Volumes,
+    Blank,
+    /// The whole-region log from before volumes; initialize replaces it.
+    Legacy,
+    /// The table is damaged over a ride log; kept untouched for diagnosis.
+    Lost,
+    /// A table this firmware cannot use, or one without RIDES. Never written.
+    Foreign,
+}
+
+impl Region {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unread => "unknown",
+            Self::Volumes => "volumes",
+            Self::Blank => "blank",
+            Self::Legacy => "legacy",
+            Self::Lost => "lost",
+            Self::Foreign => "foreign",
+        }
+    }
+}
+
 /// Recovery progress and the open epoch, retained across service calls.
 pub struct BulkState {
+    region: Region,
+    rides: Option<Extent>,
     recovery: Option<LogRecovery>,
     scanner: Option<Scanner>,
     log: Option<Log>,
@@ -126,6 +160,8 @@ pub struct BulkState {
 impl Default for BulkState {
     fn default() -> Self {
         Self {
+            region: Region::Unread,
+            rides: None,
             recovery: Some(LogRecovery::new(TAG, u64::from(CHECKPOINT_RECORDS))),
             scanner: None,
             log: None,
@@ -143,9 +179,13 @@ impl BulkState {
         self.log.as_ref()
     }
 
-    /// Sector reads boot recovery took.
+    /// Sector reads boot recovery took, the volume table's included.
     pub fn boot_reads(&self) -> u32 {
         self.boot_reads
+    }
+
+    pub fn region(&self) -> Region {
+        self.region
     }
 }
 
@@ -166,7 +206,18 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
         });
         // The recorder's seed is clock based and can repeat across boots.
         let seed = seed ^ self.media.entropy();
-        match sector_log::format(self.media, TAG, seed, &initial, &mut self.state.sector) {
+        // Creates the table over a blank or legacy region; refuses a foreign one.
+        let rides = volume::create(self.media, &mut self.state.sector)
+            .ok()
+            .and_then(|table| table.find(&RIDES));
+        let Some(rides) = rides else {
+            self.state.log = None;
+            return Progress::Failed;
+        };
+        self.state.region = Region::Volumes;
+        self.state.rides = Some(rides);
+        let mut media = Volume::new(self.media, rides);
+        match sector_log::format(&mut media, TAG, seed, &initial, &mut self.state.sector) {
             Ok(log) => {
                 self.state.log = Some(log);
                 self.state.since_checkpoint = 0;
@@ -180,6 +231,53 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
     }
 }
 
+/// Sector reads of the volume table at boot.
+const TABLE_READS: u32 = 2;
+
+impl<B: ReadWrite> Bulk<'_, B> {
+    /// First scan step: find RIDES in the volume table.
+    fn scan_table(&mut self) -> Scan {
+        let found = volume::read(self.media, &mut self.state.sector);
+        self.state.boot_reads = TABLE_READS;
+        let result = match found {
+            Ok(Layout::Table(table)) => match table.find(&RIDES) {
+                Some(rides) => {
+                    self.state.region = Region::Volumes;
+                    self.state.rides = Some(rides);
+                    return Scan::More;
+                }
+                None => {
+                    self.state.region = Region::Foreign;
+                    Scan::Corrupt
+                }
+            },
+            Ok(Layout::Blank) => {
+                self.state.region = Region::Blank;
+                Scan::Uninitialized
+            }
+            // Test data from before volumes: report it, write nothing.
+            Ok(Layout::Legacy) => {
+                self.state.region = Region::Legacy;
+                Scan::Uninitialized
+            }
+            // Rides may be there; only an explicit initialize writes.
+            Ok(Layout::Lost) => {
+                self.state.region = Region::Lost;
+                Scan::Corrupt
+            }
+            Err(volume::Error::Foreign | volume::Error::Missing | volume::Error::Small) => {
+                self.state.region = Region::Foreign;
+                Scan::Corrupt
+            }
+            Err(volume::Error::Media(MediaError::Unsupported)) => Scan::Unsupported,
+            Err(volume::Error::Media(MediaError::Unavailable)) => Scan::Unavailable,
+            Err(volume::Error::Media(_)) => Scan::Failed,
+        };
+        self.state.recovery = None;
+        result
+    }
+}
+
 impl<B: ReadWrite> Journal for Bulk<'_, B> {
     fn slots(&self) -> usize {
         self.state.log.map_or(0, |log| {
@@ -188,11 +286,18 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
     }
 
     fn scan(&mut self) -> Scan {
+        if self.state.recovery.is_none() {
+            return Scan::Failed;
+        }
+        let Some(rides) = self.state.rides else {
+            return self.scan_table();
+        };
         let Some(recovery) = self.state.recovery.as_mut() else {
             return Scan::Failed;
         };
-        let step = recovery.step(self.media, &mut self.state.sector);
-        self.state.boot_reads = recovery.reads();
+        let mut media = Volume::new(self.media, rides);
+        let step = recovery.step(&mut media, &mut self.state.sector);
+        self.state.boot_reads = TABLE_READS + recovery.reads();
         let result = match step {
             Ok(Step::More) => return Scan::More,
             Ok(Step::Checkpoint(payload)) => match decode_catalog(payload) {
@@ -267,7 +372,8 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
         }
         let mut slot = crate::ride::log::encode(entry);
         slot.0[SLOT_SIZE - 4..].copy_from_slice(&crate::ride::log::commit_word().0);
-        log.append(self.media, &slot.0, &mut self.state.sector)
+        let mut media = Volume::new(self.media, self.state.rides?);
+        log.append(&mut media, &slot.0, &mut self.state.sector)
             .ok()?;
         self.state.since_checkpoint += 1;
         Some(terminal || self.state.since_checkpoint >= CHECKPOINT_RECORDS)
@@ -278,11 +384,12 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
     }
 
     fn checkpoint(&mut self, catalog: &Catalog) -> bool {
-        let Some(log) = self.state.log.as_mut() else {
+        let (Some(log), Some(rides)) = (self.state.log.as_mut(), self.state.rides) else {
             return false;
         };
+        let mut media = Volume::new(self.media, rides);
         let ok = log
-            .checkpoint(self.media, &encode_catalog(catalog), &mut self.state.sector)
+            .checkpoint(&mut media, &encode_catalog(catalog), &mut self.state.sector)
             .is_ok();
         if ok {
             self.state.since_checkpoint = 0;
@@ -292,7 +399,8 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
 
     fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
         let log = self.state.log?;
-        match log.read(self.media, index as u64, &mut self.state.sector) {
+        let mut media = Volume::new(self.media, self.state.rides?);
+        match log.read(&mut media, index as u64, &mut self.state.sector) {
             Ok(Some(payload)) if payload.len() == SLOT_SIZE => {
                 output.0.copy_from_slice(payload);
                 Some(true)

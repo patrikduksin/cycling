@@ -6,6 +6,11 @@ use device_api::bulk::OwnedInfo;
 use std::collections::BTreeMap;
 use std::vec::Vec;
 
+/// RIDES starts after the volume table on small media.
+const V: u64 = firmware_services::volume::TABLE;
+/// Boot reads before the log: the volume table.
+const TABLE: u32 = 2;
+
 /// Sparse owned MMC region. Unwritten sectors hold stale bytes from an older
 /// filesystem; a fault tears one write and then the power is off.
 struct Media {
@@ -292,6 +297,62 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
 }
 
 #[test]
+fn the_whole_region_log_from_before_volumes_is_reported_and_only_initialize_replaces_it() {
+    // The bulk store as #164 left it: the log at relative sector 0.
+    let mut device = Device::new(CAPACITY);
+    let mut sector = [0u8; 512];
+    let initial = encode_catalog(&Catalog::default());
+    let mut old = sector_log::format(&mut device.media, TAG, 3, &initial, &mut sector).unwrap();
+    for _ in 0..4 {
+        old.append(&mut device.media, &[1; SLOT_SIZE], &mut sector)
+            .unwrap();
+    }
+    let writes = device.media.writes;
+    device.reboot();
+    assert_eq!(device.recorder.status(), Status::NeedsInit);
+    assert_eq!(device.state.region(), Region::Legacy);
+    assert!(!device.recorder.request(Action::Start, Source::Live, 0, 1));
+    device.run_until(10_000, 10);
+    assert_eq!(device.media.writes, writes);
+    // Initialize writes the volume table and a new log inside RIDES.
+    assert!(device.recorder.initialize(5));
+    device.service();
+    assert!(device.recorder.take_result().unwrap().ok);
+    assert_eq!(
+        device.media.writes,
+        writes + 2 + 2 + sector_log::RING as u32
+    );
+    device.reboot();
+    assert_eq!(device.state.region(), Region::Volumes);
+    assert_eq!(
+        (device.recorder.status(), device.recorder.next_slot()),
+        (Status::Ready, 0)
+    );
+    assert!(device.act(Action::Start));
+}
+
+#[test]
+fn a_volume_table_this_firmware_cannot_use_is_never_written() {
+    let mut device = Device::initialized(CAPACITY);
+    // A newer table version, resealed.
+    for copy in 0..2 {
+        let mut table = device.media.get(copy);
+        table[16] = 2;
+        let crc = firmware_services::checksum::crc32(&table[..508]);
+        table[508..].copy_from_slice(&crc.to_le_bytes());
+        device.media.written.insert(copy, table);
+    }
+    device.reboot();
+    assert_eq!(device.recorder.status(), Status::Corrupt);
+    assert_eq!(device.state.region(), Region::Foreign);
+    let writes = device.media.writes;
+    assert!(device.recorder.initialize(6));
+    device.service();
+    assert!(!device.recorder.take_result().unwrap().ok);
+    assert_eq!(device.media.writes, writes);
+}
+
+#[test]
 fn ten_hour_ride_is_kept_and_boot_reads_stay_bounded() {
     let mut device = Device::initialized(CAPACITY);
     let hours = 10;
@@ -317,7 +378,7 @@ fn ten_hour_ride_is_kept_and_boot_reads_stay_bounded() {
     // A checkpoint follows the finish, so boot reads only metadata and the
     // replay window after it, not the 9,000 records.
     let reads = device.state.boot_reads();
-    assert!(reads <= 2 + 8 + 1 + 2 * 32, "{reads} boot reads");
+    assert!(reads <= TABLE + 2 + 8 + 1 + 2 * 32, "{reads} boot reads");
     let scanned = device.full_scan();
     assert_eq!(*device.recorder.catalog(), scanned);
     // About 1,111 hours of 1 Hz samples in this million-sector region.
@@ -335,7 +396,7 @@ fn power_loss_mid_ride_recovers_the_committed_prefix_within_one_checkpoint() {
     assert_eq!(device.recorder.status(), Status::Recovered);
     let reads = device.state.boot_reads();
     assert!(
-        reads <= 2 + 8 + 1 + 2 * CHECKPOINT_RECORDS,
+        reads <= TABLE + 2 + 8 + 1 + 2 * CHECKPOINT_RECORDS,
         "{reads} boot reads"
     );
     let scanned = device.full_scan();
@@ -481,7 +542,7 @@ fn boot_reads_stay_bounded_when_power_is_cut_before_every_checkpoint() {
         assert_eq!(device.recorder.status(), Status::Ready, "ride {ride}");
         let reads = device.state.boot_reads();
         assert!(
-            reads <= 2 + 8 + 1 + 2 * 32,
+            reads <= TABLE + 2 + 8 + 1 + 2 * 32,
             "ride {ride}: {reads} boot reads"
         );
     }
@@ -493,7 +554,7 @@ fn boot_reads_stay_bounded_when_power_is_cut_before_every_checkpoint() {
 fn a_reformat_after_lost_superblocks_never_revives_an_older_store() {
     use crate::ride::journal::Journal;
     use crate::ride::log::{Entry, Kind};
-    let mut media = Media::new(sector_log::DATA_START + 1_000);
+    let mut media = Media::new(V + sector_log::DATA_START + 1_000);
     let entry = Entry::event(Kind::Start, Source::Live, 1, 0, 0);
     // Store A with 200 records, from a clock-based seed.
     let mut state = BulkState::default();
@@ -513,8 +574,8 @@ fn a_reformat_after_lost_superblocks_never_revives_an_older_store() {
         assert!(bulk.checkpoint(&Catalog::default()));
     }
     // Both superblocks are lost; the clock seed repeats after a reboot.
-    media.written.insert(0, [0; 512]);
-    media.written.insert(1, [0; 512]);
+    media.written.insert(V, [0; 512]);
+    media.written.insert(V + 1, [0; 512]);
     let mut state = BulkState::default();
     let mut bulk = Bulk::new(&mut state, &mut media);
     assert_eq!(bulk.initialize(0, 7), Progress::Done);
@@ -554,7 +615,7 @@ fn an_overdue_checkpoint_is_written_before_the_next_append_after_boot() {
         device.reboot();
         let reads = device.state.boot_reads();
         assert!(
-            reads <= 2 + 8 + 1 + 2 * 32,
+            reads <= TABLE + 2 + 8 + 1 + 2 * 32,
             "boot {boot}: {reads} boot reads"
         );
     }
@@ -564,8 +625,9 @@ fn an_overdue_checkpoint_is_written_before_the_next_append_after_boot() {
 
 #[test]
 fn full_media_closes_the_ride_and_keeps_it() {
-    // 16 metadata sectors and 12 record sectors: START, 10 batches, FULL.
-    let mut device = Device::initialized(16 + 12);
+    // The volume table, 16 log metadata sectors and 12 record sectors:
+    // START, 10 batches, FULL.
+    let mut device = Device::initialized(V + 16 + 12);
     assert_eq!(device.recorder.remaining_secs(), 40);
     assert!(device.act(Action::Start));
     device.run_until(120_000, 10);
@@ -589,7 +651,7 @@ fn lost_checkpoints_are_kept_until_an_explicit_initialize() {
         device
             .media
             .written
-            .insert(sector_log::RING_START + slot, [0; 512]);
+            .insert(V + sector_log::RING_START + slot, [0; 512]);
     }
     device.reboot();
     assert_eq!(device.recorder.status(), Status::Corrupt);
@@ -600,13 +662,15 @@ fn lost_checkpoints_are_kept_until_an_explicit_initialize() {
     device.run_until(10_000, 10);
     assert_eq!(device.media.writes, writes);
     // Records stay on media for diagnosis; a new epoch writes only metadata.
-    let records: Vec<_> = (16..30).map(|i| device.media.get(i)).collect();
+    let records: Vec<_> = (V + 16..V + 30).map(|i| device.media.get(i)).collect();
     assert!(device.recorder.initialize(2));
     device.service();
     assert!(device.recorder.take_result().unwrap().ok);
     assert_eq!(device.media.writes, writes + 2 + sector_log::RING as u32);
     assert_eq!(
-        (16..30).map(|i| device.media.get(i)).collect::<Vec<_>>(),
+        (V + 16..V + 30)
+            .map(|i| device.media.get(i))
+            .collect::<Vec<_>>(),
         records
     );
     device.reboot();
@@ -626,7 +690,7 @@ fn an_unproven_end_is_corrupt_and_exportable_but_never_written_or_cleared() {
     let upper = device.recorder.next_slot();
     // Power is cut before the finish's checkpoint; then a record after the
     // newest checkpoint is damaged, so the end cannot be proven.
-    let damaged = sector_log::DATA_START + upper as u64 - 4;
+    let damaged = V + sector_log::DATA_START + upper as u64 - 4;
     device.media.written.insert(damaged, [0xa5; 512]);
     device.reboot();
     assert_eq!(device.recorder.status(), Status::Corrupt);

@@ -93,8 +93,12 @@ mise run ride-export -- --medium bulk          # Bulk export; adds store_id, gen
 mise run ride-clear -- --medium bulk .local/exports/<export-id>
 ```
 
-- `RIDE BULK INIT` formats explicitly: it writes ten metadata sectors. Media
-  that is unformatted, foreign or corrupt is never formatted implicitly. A
+- Bulk rides live in the RIDES volume of the MMC's volume table (see
+  [MMC volumes](mmc-volumes.md)). `RIDE BULK INIT` formats explicitly: it
+  writes the volume table if the region has none (two sectors), then ten log
+  metadata sectors. Media that is unformatted, foreign or corrupt is never
+  formatted implicitly. The whole-region log from before volumes reports
+  `state=needs_init layout=legacy` and stays untouched until `RIDE BULK INIT`. A
   corrupt store stays untouched and `corrupt` until someone runs `RIDE BULK INIT`.
   A store whose superblocks were lost while records remain is `corrupt`, not
   unformatted. Export and clear refuse an MMC without a recovered store
@@ -104,15 +108,16 @@ mise run ride-clear -- --medium bulk .local/exports/<export-id>
   `STATUS` and `HISTORY` default to the medium of the ride on screen, and START
   to the medium the next ride will use; `INIT`, `CLEAR` and `EXPORT` default to
   internal. START is refused while a ride is open on either medium. Bulk status adds `capacity`, `store`,
-  `generation` and `boot_reads`.
-- The 3 GB region holds 5,777,391 records, about 6,419 h at 1 Hz, so the
-  Ready screen shows `ROOM FOR 6419 H`.
+  `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `legacy`, `lost`
+  or `foreign`).
+- The 1 GiB RIDES volume holds 2,097,136 records, about 2,330 h at 1 Hz, so the
+  Ready screen shows `ROOM FOR 2330 H`.
 - Records are append-only and never overwrite a valid record of the current
   store. A checkpoint with the catalog is written every 32 records, after each
   ride ends, and at boot before anything else when one is overdue, so at most
-  32 records ever follow the newest checkpoint. Boot reads the two superblocks,
-  the eight-slot checkpoint ring and 64 sectors past the newest checkpoint
-  (75 reads), never the whole region.
+  32 records ever follow the newest checkpoint. Boot reads the volume table, the
+  two superblocks, the eight-slot checkpoint ring and 64 sectors past the
+  newest checkpoint (77 reads), never the whole region.
 - Boot only trusts an end it can prove: the ring holds every checkpoint it
   should, every record after the newest checkpoint is intact and was written
   after it, and no valid record lies further on within those 64 sectors.

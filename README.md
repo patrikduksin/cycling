@@ -52,6 +52,7 @@ checks presentation and input policy, not DMA, radio coexistence or power sequen
 - [Testing harness](docs/testing-harness.md)
 - [Runtime connectivity](docs/runtime-connectivity.md)
 - [Ride recording and export](docs/ride-recording.md)
+- [MMC volumes: rides, files and terrain](docs/mmc-volumes.md)
 - [C606 hardware research](devices/c606/research)
 - [Agent delivery workflow](.agents/skills/deliver/SKILL.md)
 - [Requirements and history](https://github.com/patrikduksin/cycling/issues)

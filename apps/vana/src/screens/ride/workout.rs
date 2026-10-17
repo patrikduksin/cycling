@@ -586,7 +586,7 @@ mod tests {
     use crate::workout::model::Intensity;
     use crate::workout::player::Player;
 
-    fn page(player: &Player, watts: Option<u16>) -> View {
+    fn page(player: &Player, watts: Option<u16>) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Workout;
         view.state = Status::Recording;

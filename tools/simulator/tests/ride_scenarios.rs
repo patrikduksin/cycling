@@ -2217,7 +2217,7 @@ fn each_unsaved_profile_edit_is_reported_before_turning_off() {
     sim.press(Button::BottomRight);
     sim.advance(seconds(1));
     assert!(!sim.is_off(), "turned off and lost FTP 225");
-    sim.expect_text("CHANGES NOT SAVED");
+    sim.expect_text("CHANGES NOT");
     // The background retry saves it.
     sim.advance(seconds(10));
     assert!(sim.command("PROFILE").1.contains("persistence=saved"));
@@ -2229,7 +2229,7 @@ fn each_unsaved_profile_edit_is_reported_before_turning_off() {
     sim.press(Button::BottomRight);
     sim.advance(seconds(1));
     assert!(!sim.is_off(), "turned off and lost FTP 250");
-    sim.expect_text("CHANGES NOT SAVED");
+    sim.expect_text("CHANGES NOT");
     // Turning off again now saves it if it can.
     sim.advance(seconds(5));
     sim.press(Button::TopLeft);
@@ -3558,7 +3558,7 @@ fn an_unsaved_brightness_change_is_reported_before_turning_off() {
     sim.press(Button::BottomRight);
     sim.advance(seconds(1));
     assert!(!sim.is_off(), "turned off and lost the brightness");
-    sim.expect_text("CHANGES NOT SAVED");
+    sim.expect_text("CHANGES NOT");
     sim.checkpoint("brightness not saved, still on");
     // The background retry stores it, and it survives a power loss.
     sim.advance(seconds(10));

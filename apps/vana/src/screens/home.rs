@@ -66,10 +66,10 @@ pub const RIDES_TILE: Rect = Rect {
 };
 const RIDES_RADIUS: usize = 12;
 const INSET: usize = 16;
-/// The top line of the status under the start button.
-const STATUS_TOP: usize = RIDE_TILE.bottom - 24;
 /// The green start button on the RIDE card, centre and radius.
-const PLAY: (usize, usize, usize) = (RIDE_TILE.left + 50, RIDE_TILE.top + 58, 30);
+const PLAY: (usize, usize, usize) = (RIDE_TILE.left + 44, RIDE_TILE.top + 58, 28);
+/// The text column right of the start button: RIDE, GPS and the status line.
+const TEXT_LEFT: usize = PLAY.0 + PLAY.2 + 14;
 /// Icons in the sensors card, left to right.
 /// Up to four sensors show, each an icon with its short name under it; the
 /// count beside the title covers the rest.
@@ -99,7 +99,8 @@ pub struct Home {
     ride: Small,
     gps: Small,
     /// What is still starting, or why turning off did not happen.
-    status: Option<Small>,
+    /// One line, or two when it is too long for the text column.
+    status: Vec<Small, 2>,
     sensors_title: Small,
     count: Small,
     none: Option<Small>,
@@ -133,19 +134,20 @@ impl Home {
             );
         }
         let title = |card: usize| if card == cursor { WHITE } else { MUTED };
-        let text_left = PLAY.0 + PLAY.2 + 18;
+        let text_left = TEXT_LEFT;
         let (gps_text, gps_color): (&[u8], u16) = if gps_fix {
             (b"GPS READY", GREEN)
         } else {
             (b"NO GPS FIX", SECONDARY)
         };
-        let ride_top = PLAY.1 - TITLE.top as usize - TITLE.cap as usize + 4;
+        // RIDE, the GPS line and the status stack as one block centred on the button.
+        let ride_top = PLAY.1 - TITLE.top as usize - TITLE.cap as usize - 5;
         let sensors_top = SENSORS_TILE.top + 14;
         let settings_top = SETTINGS_TILE.top + (SETTINGS_TILE.height() - BODY.height as usize) / 2;
         let left = SENSORS_TILE.left + INSET;
         let right = SENSORS_TILE.right - INSET;
         let count_color = if live > 0 { GREEN } else { SECONDARY };
-        let gps_top = PLAY.1 + 10;
+        let gps_top = PLAY.1;
         let rides_top = RIDES_TILE.top + (RIDES_TILE.height() - BODY.height as usize) / 2;
         let rides_title = label(b"RIDES", &BODY, left, rides_top, Align::Left, title(4));
         // The last ride keeps its numbers: they step down a size to fit.
@@ -155,7 +157,7 @@ impl Home {
         Self {
             cursor,
             ride: label(b"RIDE", &TITLE, text_left, ride_top, Align::Left, title(0)),
-            status: None,
+            status: Vec::new(),
             gps: label(
                 gps_text,
                 &CAPTION,
@@ -195,10 +197,34 @@ impl Home {
     /// The line under the start button: READY TO RIDE, what is still
     /// starting, or a problem in amber.
     pub fn set_status(&mut self, text: &[u8], problem: bool) {
-        let (left, right) = (RIDE_TILE.left + INSET, RIDE_TILE.right - INSET);
-        let line = Line::fit(&[&CAPTION], text, right - left);
+        let (left, right) = (TEXT_LEFT + 2, RIDE_TILE.right - 8);
+        let width = right - left;
         let color = if problem { AMBER } else { SECONDARY };
-        self.status = Some(Label::new(line, left, STATUS_TOP, Align::Left, color));
+        let top = PLAY.1 + CAPTION.height as usize + 4;
+        // Too long for the column: break at the last space that fits.
+        let split = (CAPTION.width(text) + SPILL > width)
+            .then(|| {
+                (1..text.len())
+                    .rev()
+                    .find(|&i| text[i] == b' ' && CAPTION.width(&text[..i]) + SPILL <= width)
+            })
+            .flatten();
+        self.status.clear();
+        let lines: [&[u8]; 2] = match split {
+            Some(i) => [&text[..i], &text[i + 1..]],
+            None => [text, b""],
+        };
+        for (n, part) in lines
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .enumerate()
+        {
+            let line = Line::fit(&[&CAPTION], part, width);
+            let at = top + n * (CAPTION.height as usize + 2);
+            let _ = self
+                .status
+                .push(Label::new(line, left, at, Align::Left, color));
+        }
     }
 
     /// The card under a tap.
@@ -231,7 +257,7 @@ impl Home {
             }
             self.gps.paint(row);
             self.ride.paint(row);
-            if let Some(status) = &self.status {
+            for status in &self.status {
                 status.paint(row);
             }
             let (cx, cy, r) = PLAY;
@@ -240,12 +266,14 @@ impl Home {
                 let fill = Self::surface(focused, RIDE_TILE, x, y)?;
                 Some(Self::play(x, y, button, fill))
             });
-            // The play triangle: 26 rows, widest in the middle.
-            let gy = y as i32 - (cy as i32 - 13);
-            if (0..26).contains(&gy) {
-                let left = cx - 9;
-                let width = (26 - (2 * gy - 25).abs()) as usize / 2;
-                row.span(left..left + width + 1, BLACK);
+            // The play triangle: 24 rows, 20 wide at the middle. Its centroid
+            // (a third of the way from the flat side) sits on the disc's centre,
+            // one pixel right, so it reads as centred.
+            let gy = y as i32 - (cy as i32 - 12);
+            if (0..24).contains(&gy) {
+                let left = cx - 6;
+                let width = (20 * (24 - (2 * gy - 23).abs()) / 24) as usize;
+                row.span(left..left + width.max(1), BLACK);
             }
         } else if y < SENSORS_TILE.bottom {
             let focused = self.cursor == 1;
@@ -302,9 +330,10 @@ impl Home {
     /// The green start button with a black play triangle, 26 tall, inside it.
     fn play(x: usize, y: usize, button: u8, fill: u16) -> u16 {
         let (cx, cy, _) = PLAY;
-        let gx = x as i32 - (cx as i32 - 9);
-        let gy = y as i32 - (cy as i32 - 13);
-        let inside = gx >= 0 && (0..26).contains(&gy) && 2 * gx <= 26 - (2 * gy - 25).abs();
+        let gx = x as i32 - (cx as i32 - 6);
+        let gy = y as i32 - (cy as i32 - 12);
+        let inside =
+            gx >= 0 && (0..24).contains(&gy) && gx < (20 * (24 - (2 * gy - 23).abs()) / 24).max(1);
         if inside {
             BLACK
         } else {

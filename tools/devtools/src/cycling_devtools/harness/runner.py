@@ -83,15 +83,21 @@ def decode_chunk(chunk, frame, offset, requested):
     return payload
 
 
-def png_rgb565(path, payload, width, height):
+def png_rgb565(path, payload, width, height, scale=1):
+    """Write RGB565LE pixels as an 8-bit RGB PNG, optionally upscaled by nearest neighbour."""
     if len(payload) != width * height * 2:
         raise ValueError('pixel byte count does not match geometry')
+    if not 1 <= scale <= 8:
+        raise ValueError('scale must be 1..8')
     raw = bytearray()
     for y in range(height):
-        raw.append(0)
+        row = bytearray()
         for x in range(width):
             value = struct.unpack_from('<H', payload, (y * width + x) * 2)[0]
-            raw.extend(((value >> 11) * 255 // 31, ((value >> 5) & 63) * 255 // 63, (value & 31) * 255 // 31))
+            pixel = bytes(((value >> 11) * 255 // 31, ((value >> 5) & 63) * 255 // 63, (value & 31) * 255 // 31))
+            row.extend(pixel * scale)
+        raw.extend((b'\0' + row) * scale)
+    width, height = width * scale, height * scale
 
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
@@ -474,14 +480,7 @@ class Runner:
             if step.get('checksum_only') and 'expected_crc32' in step and not mismatch:
                 results.append(meta)
                 continue
-            data = bytearray()
-            while len(data) < size:
-                offset, length = len(data), min(int(self.caps['chunk_bytes']), size - len(data))
-                chunk = self.operation(f'CAPTURE READ {frame} {offset} {length}')
-                payload = decode_chunk(chunk, frame, offset, length)
-                data.extend(payload)
-            if zlib.crc32(data) != int(meta['crc32'], 16):
-                raise ValueError('capture frame integrity mismatch')
+            data = self.read_frame(frame, meta)
             path = self.output / f'step-{index}-frame-{frame}.png'
             png_rgb565(path, data, width, height)
             results.append({**meta, 'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
@@ -494,6 +493,18 @@ class Runner:
             'transfer_bytes': sum(int(frame['bytes']) for frame in results if 'path' in frame),
             'physical_panel_verified': False,
         }
+
+    def read_frame(self, frame, meta):
+        """Reassemble one completed frame from bounded chunks and verify its whole-frame CRC."""
+        size = int(meta['bytes'])
+        data = bytearray()
+        while len(data) < size:
+            offset, length = len(data), min(int(self.caps['chunk_bytes']), size - len(data))
+            chunk = self.operation(f'CAPTURE READ {frame} {offset} {length}')
+            data.extend(decode_chunk(chunk, frame, offset, length))
+        if zlib.crc32(data) != int(meta['crc32'], 16):
+            raise ValueError('capture frame integrity mismatch')
+        return bytes(data)
 
     def connectivity(self, radio, step):
         command = connectivity_command(radio, step)

@@ -33,6 +33,8 @@ pub(super) struct History {
     /// The list was opened once: from then on the index reads the journals
     /// in the background. Until then boot and rides read nothing extra.
     indexing: bool,
+    /// Home last saw the full count.
+    counted: bool,
     pub(super) cursor: usize,
     /// The ride on the summary's pages: its journal, its replay and its line.
     open: Option<(Medium, Replay, Summary)>,
@@ -140,6 +142,15 @@ impl Runtime {
         self.navigation.page = Page::History;
     }
 
+    /// Whether every saved ride is counted: always without an index, else
+    /// once its scan has read both journals.
+    fn counted(&self) -> bool {
+        match self.history.index.as_deref() {
+            None => true,
+            Some(index) => self.history.indexing && self.ride.directory_done(index),
+        }
+    }
+
     pub(super) fn history_count(&self) -> usize {
         self.journal_len(Medium::Internal) + self.journal_len(Medium::Bulk)
     }
@@ -150,13 +161,23 @@ impl Runtime {
         store: &mut impl crate::ride::storage::RideStorage,
         bulk: &mut impl device_api::bulk::ReadWrite,
     ) {
+        // Home's RIDES card counts every saved ride, so the scan starts there
+        // too once no ride is open.
+        if !self.history.indexing && self.navigation.page == Page::Home && !self.recording() {
+            self.history.indexing = true;
+        }
         if !self.history.indexing {
             return;
         }
         let Some(index) = self.history.index.as_deref_mut() else {
             return;
         };
-        if self.ride.directory_step(index, store, bulk) && self.navigation.page == Page::History {
+        let added = self.ride.directory_step(index, store, bulk);
+        let page = self.navigation.page;
+        let counted = self.counted();
+        let recount = page == Page::Home && counted != self.history.counted;
+        self.history.counted = counted;
+        if added && page == Page::History || recount {
             self.display.redraw();
         }
     }
@@ -354,8 +375,12 @@ impl Runtime {
         if !self.recording() && distance > 0 {
             return crate::screens::home::last_ride(distance);
         }
-        let saved = self.history_count();
         let mut line = Text::new();
+        if !self.counted() {
+            let _ = line.push_str("...");
+            return line;
+        }
+        let saved = self.history_count();
         let _ = match saved {
             0 => line.push_str("NONE YET"),
             n => write!(line, "{n} SAVED"),

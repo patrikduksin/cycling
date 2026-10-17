@@ -187,6 +187,29 @@ def test_a_build_failure_or_empty_run_is_incomplete(tmp_path):
     assert compare.incomplete(tmp_path, 101) is None
 
 
+def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
+    targets = {}
+
+    def fake(source, artifacts, target, name_filter):
+        targets[artifacts.name] = target
+        artifacts.mkdir(parents=True, exist_ok=True)
+        scenario(artifacts, 'ride', {'riding': png(IMAGE, 4)})
+        (artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
+        return 0
+
+    @contextlib.contextmanager
+    def checkout(commit, path):
+        yield path
+
+    monkeypatch.setattr(compare, 'scenarios', fake)
+    monkeypatch.setattr(compare, 'checkout', checkout)
+    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234')
+    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+    assert compare.main(['--out', str(tmp_path / 'out')]) == 0
+    assert targets['after'] == tmp_path / 'target'
+    assert targets['before'] == tmp_path / 'target-sim-compare-base'
+
+
 def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypatch):
     def fake(source, artifacts, target, name_filter):
         assert artifacts.is_absolute() and target.is_absolute()

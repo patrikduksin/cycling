@@ -57,7 +57,9 @@ struct Resources {
 /// Claim the board once. A second call is rejected by esp_hal's singleton guard.
 /// Backlight starts off; composition applies the persisted brightness after load.
 fn init() -> Resources {
-    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_160MHz));
+    // Rendering is CPU-bound (#167): 240 MHz takes a Home frame from about
+    // 15 to 10 ms. Peripheral clocks come from APB and do not change.
+    let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_240MHz));
     crate::drivers::sleep::initialize(p.LPWR);
     let reset = crash_rtc::reset();
     let crash = crash_rtc::take();

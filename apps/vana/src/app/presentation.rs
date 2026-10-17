@@ -7,7 +7,7 @@ use crate::ride::log::Status;
 use crate::screens::chrome::CONTENT;
 use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Toast, Tone};
 use crate::screens::gesture::Gestures;
-use crate::screens::home::{Home, last_ride};
+use crate::screens::home::Home;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
 use crate::screens::ride::summary::{After, Saving};
@@ -434,7 +434,10 @@ impl Runtime {
                 view.readiness = self.readiness(view.gps, view.battery);
             }
             Page::Summary => view.after = self.after(),
-            Page::EndRide | Page::Phone => {}
+            Page::PastRide => self.past_view(&mut view),
+            Page::Phone => view.phone_ride = self.history.phone.is_some(),
+            Page::History => view.set_canvas(self.history_canvas()),
+            Page::EndRide => {}
             Page::Ride => {
                 // Keep the screen lit while riding; a finished ride may dim and idle off.
                 if self.recording() {
@@ -444,7 +447,7 @@ impl Runtime {
             Page::Home | Page::Sensors => {
                 self.refresh_sensor_menu(ant, now);
                 if page == Page::Home {
-                    view.home = self.home(&view, gps_fix, now);
+                    view.home = self.home(gps_fix, now);
                 }
             }
             Page::Settings => self.settings_lines(&mut view),
@@ -502,14 +505,8 @@ impl Runtime {
         (status, false)
     }
 
-    fn home(&self, view: &View, gps_fix: bool, now: u64) -> Home {
-        let totals = &view.totals;
-        let ridden = !self.recording() && totals.distance_mm() > 0;
-        let last = if ridden {
-            last_ride(totals.distance_mm(), totals.moving_ms() / 1000)
-        } else {
-            Default::default()
-        };
+    fn home(&self, gps_fix: bool, now: u64) -> Home {
+        let last = self.rides_line();
         let mut profile = Text::<12>::new();
         let _ = write!(profile, "FTP {} W", self.preferences.profile.ftp_watts);
         let mut home = Home::new(
@@ -632,10 +629,18 @@ impl Runtime {
     /// summary shows its pages, "End ride?" closes once the ride is no longer paused, and a
     /// summary whose finish failed returns to the ride.
     fn follow_ride(&mut self, status: Status) {
+        if status == Status::Recording {
+            self.history_ride_started();
+        }
         let navigation = &mut self.navigation;
         match navigation.page {
-            // A ride started remotely from the summary needs its controls.
-            Page::Ready | Page::Summary if status == Status::Recording => navigation.open_ride(),
+            // A ride started remotely from the summary or the ride list
+            // needs its controls.
+            Page::Ready | Page::Summary | Page::History | Page::PastRide | Page::Phone
+                if status == Status::Recording =>
+            {
+                navigation.open_ride()
+            }
             Page::EndRide if status != Status::Paused => {
                 self.ride.disarm_stop();
                 navigation.page = Page::Ride;
@@ -664,9 +669,10 @@ impl Runtime {
             page: self.navigation.summary_page,
             saving,
             best: self.ride.efforts.best(),
-            climbs: self.ride.climbs_done,
+            climbs: Some(self.ride.climbs_done),
             // The open lap counts: a ride without a lap press is one lap.
-            laps: self.ride.laps.count().saturating_add(1),
+            laps: Some(self.ride.laps.count().saturating_add(1)),
+            past: false,
         }
     }
 

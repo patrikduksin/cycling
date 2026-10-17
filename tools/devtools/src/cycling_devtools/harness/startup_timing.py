@@ -54,7 +54,7 @@ SENSOR_NAMES = {
 }
 BUTTON = {'top-left': 0, 'bottom-left': 1, 'bottom-right': 2}
 # Home choices in bottom-left order; RIDE is 0.
-HOME_CHOICES = 3
+HOME_CHOICES = 4
 IDLE_STATES = ('ready', 'saved', 'recovered')
 # VANA ignores a press sooner than 350 ms after the previous one.
 PRESS_SETTLE_S = 0.5

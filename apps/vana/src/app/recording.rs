@@ -410,6 +410,38 @@ impl Ride {
         }
     }
 
+    /// Read up to `budget` more slots of a saved ride of `medium` into the
+    /// ride sums, through the export path's reader.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn replay(
+        &mut self,
+        medium: Medium,
+        store: &mut impl RideStorage,
+        bulk: &mut impl ReadWrite,
+        replay: &mut crate::ride::replay::Replay,
+        budget: usize,
+        profile: &TrainingProfile,
+    ) {
+        use crate::ride::journal::Journal;
+        let mut sums = crate::ride::replay::Sums {
+            totals: &mut self.totals,
+            zone_time: &mut self.zone_time,
+            efforts: &mut self.efforts,
+        };
+        let (internal, bulk_media) = (&mut self.internal_media, &mut self.bulk_media);
+        let mut slot = crate::ride::log::Slot::default();
+        replay.step(budget, profile, &mut sums, |index| {
+            let valid = match medium {
+                Medium::Internal => Internal::new(internal, store).read_slot(index, &mut slot),
+                Medium::Bulk => Bulk::new(bulk_media, bulk).read_slot(index, &mut slot),
+            };
+            match valid {
+                Some(true) => crate::ride::log::decode(&slot),
+                _ => None,
+            }
+        });
+    }
+
     /// Start the internal continuation of a ride the bulk medium lost. Waits
     /// for the internal scan; gives up if that journal cannot take a ride.
     fn continue_internally(&mut self, now: u64) {

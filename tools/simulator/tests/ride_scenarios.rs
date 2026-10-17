@@ -2668,8 +2668,8 @@ fn home_shows_ride_sensors_and_the_last_ride_at_a_glance() {
         sim.press(Button::TopLeft);
     }
     sim.wait_gone("RIDE SAVED", seconds(3)).unwrap();
-    sim.expect_text("LAST");
-    let last = sim.screen().find(" KM ").pop().expect("last ride summary");
+    sim.expect_text("RIDES");
+    let last = sim.screen().find(" KM").pop().expect("last ride distance");
     assert!(
         last.text.starts_with("4.9") || last.text.starts_with("5.0"),
         "{}",
@@ -3079,4 +3079,121 @@ fn an_unsaved_brightness_change_is_reported_before_turning_off() {
     sim.advance(seconds(10));
     sim.power_loss();
     assert_eq!(sim.device.shell.settings.brightness, 75);
+}
+
+/// Ride history: Home's RIDES card lists the saved rides, newest first, and
+/// opens one read back from its journal on the summary's pages; ACT there
+/// offers it to the phone.
+#[test]
+fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
+    let mut sim = rider();
+    // Before any ride, the list says how rides get there.
+    sim.home("RIDES");
+    assert_eq!(sim.vana_page(), "history");
+    sim.expect_text("NO RIDES YET");
+    sim.checkpoint("no rides yet");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
+
+    sim.pair(&["POWER METER", "SPEED/CAD", "HEART RATE"]);
+    sim.ride_at(30.0, 150.0, 130.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.done();
+    sim.ride_at(25.0, 240.0, 150.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(5));
+    sim.stop_ride();
+    sim.done();
+    let last = sim.screen().text();
+
+    sim.home("RIDES");
+    sim.expect_text("1/2");
+    sim.checkpoint("two saved rides");
+    // The newest is focused; ACT reads it back.
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.vana_page(), "past_ride");
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_text("SAVED RIDE");
+    sim.expect_field("AVG W", "240");
+    sim.expect_field("AVG BPM", "150");
+    sim.checkpoint("saved ride read back");
+    sim.swipe_next();
+    sim.expect_field("NP W", "240");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("BEST POWER W");
+    // Laps and climbs are not kept with a ride.
+    sim.expect_field("LAPS", "--");
+    sim.checkpoint("saved ride best power");
+
+    // ACT offers this ride to the phone; BACK comes back to it.
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.vana_page(), "phone");
+    sim.expect_text("SEND THIS RIDE TO PHONE");
+    sim.checkpoint("send a saved ride to the phone");
+    sim.press(Button::TopLeft);
+    assert_eq!(sim.vana_page(), "past_ride");
+
+    // The older ride, from the list.
+    sim.press(Button::TopLeft);
+    assert_eq!(sim.vana_page(), "history");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("2/2");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_field("AVG W", "150");
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
+    // Home still names the last ride, not the one read back.
+    assert_eq!(sim.screen().text(), last);
+
+    // A new ride takes over: its own totals, from zero.
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    sim.expect_field("AVG W", "240");
+    sim.done();
+}
+
+/// A saved MMC ride on a card that later fails says it cannot be read,
+/// rather than reading forever; the internal rides around it still read.
+#[test]
+fn a_saved_ride_on_a_failed_card_says_so_and_rides_list_newest_first() {
+    let mut sim = bulk_rider();
+    sim.pair(&["POWER METER"]);
+    sim.init_bulk();
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    // An MMC ride, then one whose start fails and continues internally.
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    sim.done();
+    // The card fails the next ride's START; rides then record internally.
+    sim.fail_bulk(0, 0);
+    sim.command("RIDE STATUS");
+    assert_eq!(sim.command("RIDE START").0, "ACCEPTED");
+    sim.advance(seconds(2));
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    assert!(status.contains("state=error"), "{status}");
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    sim.done();
+
+    sim.home("RIDES");
+    sim.expect_text("1/2");
+    // Newest first: the internal continuation, then the MMC ride.
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_text("0:01:00");
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomRight);
+    sim.wait_for("RIDE UNREADABLE", seconds(5)).unwrap();
+    sim.checkpoint("a saved ride on a failed card");
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
 }

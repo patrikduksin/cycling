@@ -255,6 +255,13 @@ impl Totals {
         self.ascent_dm
     }
 
+    /// These totals with ascent measured another way, such as from the
+    /// recorded gradient of a ride read back.
+    pub fn with_ascent_dm(mut self, ascent_dm: u32) -> Self {
+        self.ascent_dm = ascent_dm;
+        self
+    }
+
     pub fn descent_dm(&self) -> u32 {
         self.descent_dm
     }

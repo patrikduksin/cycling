@@ -1,5 +1,5 @@
-//! Home: one big RIDE card, the sensors at a glance, settings and the last
-//! ride.
+//! Home: one big RIDE card, the sensors at a glance, settings, and the
+//! saved rides with the last one's numbers.
 //!
 //! MOVE (BottomLeft) moves focus down the cards, ACT (BottomRight) opens the
 //! focused one and a tap opens the card under the finger.
@@ -22,6 +22,7 @@ pub enum Tile {
     Ride,
     Sensors,
     Settings,
+    Rides,
 }
 
 const MARGIN: usize = 10;
@@ -45,8 +46,15 @@ pub const SETTINGS_TILE: Rect = Rect {
     right: CONTENT.right - MARGIN,
     bottom: SENSORS_TILE.bottom + GAP + 40,
 };
+/// The saved rides, as a slim card under settings.
+pub const RIDES_TILE: Rect = Rect {
+    left: MARGIN,
+    top: SETTINGS_TILE.bottom + 6,
+    right: CONTENT.right - MARGIN,
+    bottom: SETTINGS_TILE.bottom + 6 + 32,
+};
+const RIDES_RADIUS: usize = 12;
 const INSET: usize = 16;
-const LAST_TOP: usize = SETTINGS_TILE.bottom + 10;
 /// The top line of the status under the start button.
 const STATUS_TOP: usize = RIDE_TILE.bottom - 24;
 /// The green start button on the RIDE card, centre and radius.
@@ -88,12 +96,13 @@ pub struct Home {
     names: Vec<Small, ICONS>,
     settings_title: Small,
     profile: Small,
-    last_title: Option<Small>,
+    rides_title: Small,
     last: Small,
 }
 
 impl Home {
-    /// `profile` summarises the training profile, such as "FTP 250 W".
+    /// `profile` summarises the training profile, such as "FTP 250 W";
+    /// `last` the saved rides, such as the last one's "5.00 KM  0:10:00".
     pub fn new(
         cursor: usize,
         gps_fix: bool,
@@ -133,29 +142,12 @@ impl Home {
         let right = SENSORS_TILE.right - INSET;
         let count_color = if live > 0 { GREEN } else { SECONDARY };
         let gps_top = PLAY.1 + 10;
-        // The last ride keeps its numbers: the summary steps down a size,
-        // then the LAST caption gives way.
-        let last_caption = label(
-            b"LAST",
-            &CAPTION,
-            left,
-            LAST_TOP + 3,
-            Align::Left,
-            SECONDARY,
-        );
-        let fit = |from: usize| {
-            let line = Line::fit(&[&BODY, &CAPTION], last.as_bytes(), right - from);
-            let top = LAST_TOP + (BODY.height - line.face().height) as usize / 2;
-            Label::new(line, right - SPILL, top, Align::Right, WHITE)
-        };
-        let mut last_title = None;
-        let mut last = fit(left);
-        if !last.line.text().is_empty() {
-            let beside = fit(last_caption.right() + SPILL + GAP);
-            if beside.line.text().len() == last.line.text().len() {
-                (last, last_title) = (beside, Some(last_caption));
-            }
-        }
+        let rides_top = RIDES_TILE.top + (RIDES_TILE.height() - BODY.height as usize) / 2;
+        let rides_title = label(b"RIDES", &BODY, left, rides_top, Align::Left, title(3));
+        // The last ride keeps its numbers: they step down a size to fit.
+        let room = right - (rides_title.right() + SPILL + GAP);
+        let line = Line::fit(&[&CAPTION], last.as_bytes(), room);
+        let last = Label::new(line, right, rides_top + 3, Align::Right, SECONDARY);
         Self {
             cursor,
             ride: label(b"RIDE", &TITLE, text_left, ride_top, Align::Left, title(0)),
@@ -205,7 +197,7 @@ impl Home {
                 Align::Right,
                 SECONDARY,
             ),
-            last_title,
+            rides_title,
             last,
         }
     }
@@ -227,6 +219,8 @@ impl Home {
             Some(Tile::Sensors)
         } else if SETTINGS_TILE.contains(x, y) {
             Some(Tile::Settings)
+        } else if RIDES_TILE.contains(x, y) {
+            Some(Tile::Rides)
         } else {
             None
         }
@@ -287,10 +281,12 @@ impl Home {
             self.profile.paint(row);
             self.settings_title.paint(row);
         } else {
+            let focused = self.cursor == 3;
+            paint_rounded(row, RIDES_TILE, RIDES_RADIUS, ring(focused), |x, y| {
+                Self::surface_of(focused, RIDES_TILE, RIDES_RADIUS, x, y)
+            });
+            self.rides_title.paint(row);
             self.last.paint(row);
-            if let Some(title) = &self.last_title {
-                title.paint(row);
-            }
         }
     }
 
@@ -342,20 +338,27 @@ impl Home {
             }
             return fill;
         }
-        for label in [&self.last_title, &Some(self.last)].into_iter().flatten() {
-            if let Some(color) = label.pixel(x, y, BLACK) {
+        let Some(fill) = Self::surface_of(self.cursor == 3, RIDES_TILE, RIDES_RADIUS, x, y) else {
+            return BLACK;
+        };
+        for label in [&self.rides_title, &self.last] {
+            if let Some(color) = label.pixel(x, y, fill) {
                 return color;
             }
         }
-        BLACK
+        fill
     }
 
     /// Fill and focus ring: the focused card is raised and ringed.
     fn surface(focused: bool, rect: Rect, x: usize, y: usize) -> Option<u16> {
+        Self::surface_of(focused, rect, RADIUS, x, y)
+    }
+
+    fn surface_of(focused: bool, rect: Rect, radius: usize, x: usize, y: usize) -> Option<u16> {
         if focused {
-            card(rect, RADIUS, x, y, RAISED, Some(ACCENT))
+            card(rect, radius, x, y, RAISED, Some(ACCENT))
         } else {
-            card(rect, RADIUS, x, y, CARD, None)
+            card(rect, radius, x, y, CARD, None)
         }
     }
 
@@ -431,17 +434,12 @@ pub(crate) fn short_name(kind: u8) -> &'static [u8] {
     }
 }
 
-/// "5.00 KM  0:10:00": the last ride's distance and moving time.
-pub fn last_ride(distance_mm: u64, moving_s: u64) -> Text<20> {
+/// "5.00 KM": the last ride's distance, beside RIDES.
+pub fn last_ride(distance_mm: u64) -> Text<20> {
     let mut km = Text::<12>::new();
-    let mut time = Text::<12>::new();
     super::ride::kilometres(&mut km, distance_mm);
-    super::ride::elapsed(&mut time, moving_s);
     let mut line = Text::new();
-    let _ = core::fmt::Write::write_fmt(
-        &mut line,
-        format_args!("{} KM  {}", km.as_str(), time.as_str()),
-    );
+    let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{} KM", km.as_str()));
     line
 }
 
@@ -496,16 +494,21 @@ mod tests {
                 color: 0xfd20,
             },
         ];
-        let last = last_ride(4_999_800, 600);
-        assert_eq!(last.as_bytes(), b"5.00 KM  0:10:00");
+        let last = last_ride(4_999_800);
+        assert_eq!(last.as_bytes(), b"5.00 KM");
         let home = Home::new(0, false, &glance, b"", last);
         assert_eq!(home.count.line.text(), b"1/2 LIVE");
         let left = SENSORS_TILE.left + INSET;
         assert_eq!(home.pixel(left + 25, ICON_TOP), GREEN);
         assert_eq!(home.pixel(left + ICON_PITCH + 25, ICON_TOP), 0xfd20);
-        assert!(home.last_title.is_some());
+        assert_eq!(home.last.line.text(), b"5.00 KM");
+        assert_eq!(home.rides_title.line.text(), b"RIDES");
         let none = Home::new(0, false, &[], b"", Text::new());
-        assert!(none.none.is_some() && none.last_title.is_none());
+        assert!(none.none.is_some() && none.last.line.text().is_empty());
+        // The RIDES card takes the focus and a tap.
+        let rides = Home::new(3, false, &[], b"", Text::new());
+        assert_eq!(rides.pixel(RIDES_TILE.center_x(), RIDES_TILE.top), ACCENT);
+        assert_eq!(Home::tile_at(120, RIDES_TILE.top + 4), Some(Tile::Rides));
     }
 
     /// What each card shows, as named boxes, for the layout sweep.
@@ -579,7 +582,7 @@ mod tests {
                             let last = if distance_mm == 0 {
                                 Text::new()
                             } else {
-                                last_ride(distance_mm, moving_s)
+                                last_ride(distance_mm + moving_s)
                             };
                             let mut home =
                                 Home::new(cursor, true, &glances[..count], profile, last.clone());
@@ -594,9 +597,9 @@ mod tests {
                                 assert_apart(&items, card.inset(4), &what);
                                 all.extend(items);
                             }
-                            let below = [&home.last_title, &Some(home.last)];
+                            let below = [&home.rides_title, &home.last];
                             let last_items: std::vec::Vec<_> =
-                                below.into_iter().flatten().filter_map(text).collect();
+                                below.into_iter().filter_map(text).collect();
                             all.extend(last_items.clone());
                             assert_apart(&all, CONTENT, &what);
                             if !last.as_bytes().is_empty() {

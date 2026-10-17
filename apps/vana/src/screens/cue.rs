@@ -27,6 +27,8 @@ pub enum Icon {
     Check,
     /// Go back without changing anything.
     Back,
+    /// Send to the phone.
+    Send,
 }
 
 /// The visible quarter disc's radius.
@@ -51,7 +53,7 @@ impl Cue {
     /// with a white one.
     pub const fn colors(&self) -> (u16, u16) {
         match self.icon {
-            Icon::Play | Icon::Check => (GREEN, BLACK),
+            Icon::Play | Icon::Check | Icon::Send => (GREEN, BLACK),
             Icon::Stop | Icon::Back => (RAISED, WHITE),
         }
     }
@@ -192,6 +194,13 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
         }
         Icon::Check => stroke(x, y, &[(-24, 0), (-8, 16), (24, -18)], 7),
         Icon::Back => stroke(x, y, &[(10, -24), (-14, 0), (10, 24)], 7),
+        // An arrow up and away: the shaft, then its head.
+        Icon::Send => stroke(x, y, &[(0, 26), (0, -20)], 7).max(stroke(
+            x,
+            y,
+            &[(-18, -2), (0, -22), (18, -2)],
+            7,
+        )),
     }
 }
 
@@ -247,7 +256,7 @@ mod tests {
     #[test]
     fn cues_sit_in_their_corner_and_paint_their_reference() {
         for corner in [Corner::TopLeft, Corner::BottomRight] {
-            for icon in [Icon::Play, Icon::Stop, Icon::Check, Icon::Back] {
+            for icon in [Icon::Play, Icon::Stop, Icon::Check, Icon::Back, Icon::Send] {
                 let cue = Cue::new(corner, icon);
                 let (fill, ink) = cue.colors();
                 let mut inked = 0;

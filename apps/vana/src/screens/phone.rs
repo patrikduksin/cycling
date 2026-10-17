@@ -1,10 +1,11 @@
 //! Connect phone: a placeholder route for the phone companion (rides to the
-//! phone over Wi-Fi, FIT export). The phone workstream replaces this screen;
-//! BACK returns Home.
+//! phone over Wi-Fi, FIT export). The phone workstream replaces this screen.
+//! Opened from Home it offers every ride; opened from a saved ride, that
+//! ride. BACK returns where it came from.
 use super::canvas::Canvas;
 use super::chrome::{Align, BODY, CAPTION, SECONDARY, TITLE, WHITE, WIDTH};
 
-pub fn prepare() -> Canvas {
+pub fn prepare(one_ride: bool) -> Canvas {
     let mut canvas = Canvas::default();
     canvas.fit(
         &[&TITLE, &BODY],
@@ -17,7 +18,11 @@ pub fn prepare() -> Canvas {
     );
     canvas.fit(
         &[&CAPTION],
-        b"SEND RIDES TO YOUR PHONE",
+        if one_ride {
+            &b"SEND THIS RIDE TO PHONE"[..]
+        } else {
+            &b"SEND RIDES TO YOUR PHONE"[..]
+        },
         WIDTH - 20,
         WIDTH / 2,
         176,

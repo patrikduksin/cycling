@@ -16,6 +16,9 @@ use core::fmt::Write;
 
 /// Below this much recording time left, the ride page warns the rider.
 pub const LOW_STORAGE_S: u32 = 60 * 60;
+/// The clock's time zone: Santiago summer time, UTC-3, for this build.
+/// Recordings keep UTC.
+pub const UTC_OFFSET_S: u64 = 3 * 3600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -32,6 +35,10 @@ pub enum Page {
     Settings,
     /// Placeholder for connecting a phone (rides to the phone, FIT export).
     Phone,
+    /// The saved rides, newest first.
+    History,
+    /// A saved ride read back, on the summary's pages.
+    PastRide,
 }
 
 impl Page {
@@ -46,12 +53,14 @@ impl Page {
             Self::Summary => "summary",
             Self::Settings => "settings",
             Self::Phone => "phone",
+            Self::History => "history",
+            Self::PastRide => "past_ride",
         }
     }
 }
 
 /// Home cards, in MOVE order.
-pub const HOME: [&[u8]; 3] = [b"RIDE", b"SENSORS", b"SETTINGS"];
+pub const HOME: [&[u8]; 4] = [b"RIDE", b"SENSORS", b"SETTINGS", b"RIDES"];
 
 pub struct View {
     pub now_ms: u64,
@@ -104,6 +113,10 @@ pub struct View {
     pub pause_screen: bool,
     /// The summary after a ride.
     pub after: After,
+    /// A saved ride read back: when it started, over its summary.
+    pub past_title: Text<20>,
+    /// The phone screen was opened for one saved ride.
+    pub phone_ride: bool,
     /// Button cues prepared for this frame.
     pub(super) cues: heapless::Vec<Cue, 2>,
     pub(super) badge: Option<Badge>,
@@ -113,7 +126,7 @@ impl View {
         let mut time = Text::new();
         // Santiago summer time for this workout build. UTC remains unchanged in recordings.
         if let Some(utc) = utc {
-            let minutes = ((utc + 86400 - 3 * 3600) % 86400) / 60;
+            let minutes = ((utc + 86400 - UTC_OFFSET_S) % 86400) / 60;
             let hour = minutes / 60;
             let _ = write!(time, "{}:{:02}", (hour + 11) % 12 + 1, minutes % 60);
         } else {
@@ -154,6 +167,8 @@ impl View {
             paused_secs: 0,
             pause_screen: false,
             after: After::default(),
+            past_title: Text::new(),
+            phone_ride: false,
             cues: heapless::Vec::new(),
             badge: None,
         };
@@ -164,6 +179,12 @@ impl View {
         }
         view
     }
+    /// A canvas page the runtime prepares itself, such as the ride list,
+    /// whose cards it makes on demand.
+    pub fn set_canvas(&mut self, canvas: Canvas) {
+        self.canvas = canvas;
+    }
+
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
         let mut pixels = [0u16; WIDTH];
@@ -295,8 +316,20 @@ impl View {
                 }
             }
             Page::Phone => {
-                self.canvas = super::phone::prepare();
+                self.canvas = super::phone::prepare(self.phone_ride);
                 &[]
+            }
+            // The runtime prepares the list with `set_canvas`.
+            Page::History => &[],
+            Page::PastRide => {
+                self.bar.set_pages(self.after.page, summary::PAGES);
+                self.marks = ride::marks(self);
+                self.canvas = summary::prepare(self);
+                if self.after.saving == summary::Saving::Reading {
+                    &[]
+                } else {
+                    &summary::PAST_CUES
+                }
             }
             Page::Ride if self.pause_screen => {
                 self.canvas = ride::paused::prepare(self);
@@ -540,7 +573,7 @@ mod tests {
             let mut view = View::new(Page::Home, cursor, Some(1_000_000));
             view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
-            let last = last_ride(4_999_800, 599);
+            let last = last_ride(4_999_800);
             view.home = Home::new(cursor, cursor == 1, &glance[..cursor], b"FTP 215 W", last);
             view.toast = (cursor == 2).then(|| Toast::new("RIDE SAVED", Tone::Good));
             view.prepare();

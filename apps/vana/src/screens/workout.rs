@@ -122,6 +122,8 @@ pub struct View<'a> {
     pub picker: super::workouts::Picker,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
     pub ftp_offer: Option<(u16, u16)>,
+    /// The back-to-start page's guide; its arrow is placed as it paints.
+    pub back: ride::Back,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -191,6 +193,7 @@ impl View<'_> {
             chart: ride::WorkoutChart::default(),
             picker: super::workouts::Picker::default(),
             ftp_offer: None,
+            back: ride::Back::default(),
             page,
             cursor,
             editing: false,
@@ -677,6 +680,16 @@ mod tests {
                 }
                 view.radar.status = radar::Status::Ready;
                 view.toast = radar_paired.then(|| Toast::new("LAP 1 05:00 200W", Tone::Info));
+                // The back-to-start arrow at an angle, its edges blended.
+                view.back = ride::Back::Guide(crate::ride::homing::Guide {
+                    mode: crate::ride::homing::Mode::Track,
+                    following: true,
+                    direct_m: 1_920,
+                    track_m: 2_700,
+                    off_m: 0,
+                    bearing: 2_500,
+                    heading: Some(300),
+                });
                 view.prepare();
                 assert_paints_reference(&view, &std::format!("{page:?} radar {radar_paired}"));
             }

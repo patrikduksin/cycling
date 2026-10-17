@@ -533,6 +533,9 @@ impl Runtime {
         if view.ride_page == RidePage::Climb {
             view.climbs = self.ride.climbs.clone();
         }
+        if view.ride_page == RidePage::Back {
+            view.back = super::back::view_of(&self.back);
+        }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
             None => Gps::Off,

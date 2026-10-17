@@ -156,7 +156,7 @@ corners; each screen's layout test checks it.
 
 ## Cells
 
-The stats, lap and climb pages list readings in cells: a `CAPTION` in
+The stats, lap, climb and back-to-start pages list readings in cells: a `CAPTION` in
 `SECONDARY` over its value in `VALUE`, in the metric's colour. Cells sit in two
 columns from the body's 10 px margin, 48 px apart, so each caption has 7 clear
 rows above it, and keep 8 px between the columns (`ride::cell`). A page that
@@ -409,6 +409,9 @@ middle and high notes by pitch. Rising runs mean go, falling ones stop.
 | Battery low or critical | low, low |
 | Workout step's last three seconds | low, once a second |
 | Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |
+| Following the track back, or back on it | low, middle |
+| Off the track being followed | high, low |
+| Back at the start, following the track | low, middle, high, high |
 | Vehicle closing from behind | the long alarm pattern |
 
 Each note waits for the previous one's guard. A newer cue replaces one in
@@ -433,7 +436,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout under the finger is chosen. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout under the finger is chosen; on the back-to-start page, the pad starts or stops following the track back. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings |
 | Settings rows | Tap | Act on the row, as ACT does |
 | Settings pads | Act on contact | Step the edited value |

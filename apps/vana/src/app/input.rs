@@ -247,6 +247,23 @@ impl Runtime {
                 };
                 self.choose_workout(row, now);
             }
+            // The back-to-start page's pad follows the track back, or stops.
+            (Page::Ride, Gesture::Tap(point))
+                if self.navigation.ride_page == RidePage::Back
+                    && !(self.ride.active().status() == Status::Paused
+                        && !self.navigation.pause_hidden) =>
+            {
+                let radar = crate::sensors::ant::device_type::RADAR;
+                let centred = ant.channel(radar, now).is_none();
+                if !crate::screens::ride::back::pad_at(
+                    usize::from(point.x),
+                    usize::from(point.y),
+                    centred,
+                ) {
+                    return;
+                }
+                self.toggle_follow(now);
+            }
             // Changing the page is safe while riding; ride control is not.
             (Page::Ride, Gesture::Next) => self.next_ride_page(),
             (Page::Ride, Gesture::Previous) => self.previous_ride_page(),

@@ -7,6 +7,7 @@ pub mod control;
 pub mod directory;
 pub mod fit;
 pub mod gps_speed;
+pub mod homing;
 pub mod index;
 pub mod journal;
 pub mod laps;

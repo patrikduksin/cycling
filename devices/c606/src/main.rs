@@ -117,6 +117,51 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     );
     core::future::pending().await
 }
+/// Back to start's breadcrumb (48 KiB) and its state live in PSRAM: main's
+/// stack shares DRAM with `Runtime`'s static future and cannot spare them.
+/// Without PSRAM the back-to-start page says NO TRACK.
+#[cfg(feature = "cycling")]
+async fn attach_back(sdk: &mut vana::app::Runtime) {
+    use vana::app::{BACK_CRUMBS, BackToStart, Crumb};
+    let Ok(layout) = core::alloc::Layout::array::<Crumb>(BACK_CRUMBS) else {
+        return;
+    };
+    // SAFETY: the layout has a non-zero size; the block is never freed.
+    let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
+    if pointer.is_null() {
+        log::warn!("back to start: no PSRAM for the breadcrumb");
+        return;
+    }
+    // Zero in chunks and yield between them, as for the harness capture, so
+    // the companion UART is never starved.
+    for offset in (0..layout.size()).step_by(4096) {
+        let len = (layout.size() - offset).min(4096);
+        // SAFETY: the allocator returned `layout.size()` writable bytes at
+        // `pointer`; `offset + len` stays within them.
+        unsafe { core::ptr::write_bytes(pointer.add(offset), 0, len) };
+        embassy_futures::yield_now().await;
+    }
+    // SAFETY: the block holds BACK_CRUMBS crumbs at the allocator's
+    // alignment for `Crumb`, all zero bytes, which is a valid `Crumb`. It is
+    // never deallocated and this is its only reference.
+    let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), BACK_CRUMBS) };
+    let state = core::alloc::Layout::new::<BackToStart>();
+    // SAFETY: `BackToStart` has a non-zero size; the block is never freed.
+    let back = unsafe { device::drivers::psram::allocate_external(state) }.cast::<BackToStart>();
+    if back.is_null() {
+        log::warn!("back to start: no PSRAM for its state");
+        return;
+    }
+    // SAFETY: the allocator returned a block with `BackToStart`'s size and
+    // alignment. It is initialized by this write, never deallocated, and
+    // this is its only reference.
+    let back = unsafe {
+        back.write(BackToStart::new(crumbs));
+        &mut *back
+    };
+    sdk.attach_back(back);
+}
+
 #[embassy_executor::task]
 async fn console(
     usb: device::drivers::usb::Usb,
@@ -191,6 +236,7 @@ async fn console(
                 sdk.attach_terrain(terrain);
             }
         }
+        attach_back(sdk).await;
         // The phone session's indexes and response state live in external
         // RAM, copied from a constant, so they cost no task stack.
         const PHONE_WORK: vana::app::PhoneWork = vana::app::PhoneWork::new();

@@ -69,6 +69,28 @@ plays the start chime. On the ride pages ACT pauses, MOVE turns the page and
 BACK takes a lap (with a lap toast and the lap chime). The ride pages never
 show cues: the buttons keep fixed roles.
 
+### Back to start
+
+The last ride page, BACK TO START, points the way to where the ride began.
+The arrow points relative to the way the rider rides, so straight up is
+straight on; standing still, it points north up and says N UP. DIRECT KM is
+the distance straight to the start, TRACK KM the distance back the way the
+ride came. MOVE reaches it last; a swipe back from the first page reaches it
+at once.
+
+Riding back along the ride's own track, against the way it was ridden,
+follows it by itself: FOLLOWING TRACK, a rising cue, and a green arrow that
+points along the track a little way ahead. More than 50 m off it, OFF TRACK
+shows on any page with a falling cue, and again each minute; within 25 m,
+BACK ON TRACK. 500 m off, following stops (STOPPED FOLLOWING): the rider chose
+another way, and the track still leads home from where they left it. At the
+start, BACK AT START. The page's pad (FOLLOW TRACK BACK, STOP FOLLOWING) does
+the same sooner; the buttons keep their ride roles. Laps of a loop the same
+way round never follow by themselves.
+
+The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
+points in PSRAM. Each ride starts a new one; a restart loses it.
+
 ### Paused
 
 A pause, by ACT or by auto-pause, fills the screen: two amber bars, PAUSED or

@@ -311,7 +311,7 @@ impl Sim {
     #[cfg(feature = "cycling")]
     #[track_caller]
     pub fn ride_page(&mut self, indicator: &str) {
-        for _ in 0..5 {
+        for _ in 0..6 {
             if self.screen().page().as_deref() == Some(indicator) {
                 return;
             }

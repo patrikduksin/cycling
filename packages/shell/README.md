@@ -16,7 +16,7 @@ profile interpretation out of this crate.
 Settings version 6 adds a small application area. The shell bounds its length
 and carries its bytes through every save without interpreting them; the
 application owns their schema, versioning and recovery (VANA stores its training
-profile there, see `apps/vana/src/app/preferences.rs`).
+profile and saved ANT sensors there, see `apps/vana/src/app/preferences.rs`).
 
 The settings format includes the BLE profile selector for compatibility. Retain
 its bytes and migration behavior even though VANA interprets the selection; moving

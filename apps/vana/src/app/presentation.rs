@@ -4,7 +4,7 @@ use super::recording::Request;
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
 use crate::screens::ride::RidePage;
-use crate::screens::sensors::{MenuMessage, connection_status};
+use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
 use crate::screens::workout::{Page, View};
 use crate::sensors::ant::device_type;
@@ -252,12 +252,7 @@ impl Runtime {
             }
             Page::Home => {}
             Page::Settings => self.settings_lines(&mut view),
-            Page::Sensors => self.menu.refresh(
-                ant.discoveries(),
-                ant.channels(now),
-                self.discovery.scan.busy(ant),
-                now,
-            ),
+            Page::Sensors => self.refresh_sensor_menu(ant, now),
         }
         view.prepare();
         let menu = &self.menu;
@@ -292,18 +287,27 @@ impl Runtime {
             ("POWER", device_type::POWER),
             ("RADAR", device_type::RADAR),
         ];
+        let tiles = self.sensor_tiles(ant, now);
+        let saved = |kind: u8| {
+            tiles
+                .iter()
+                .flatten()
+                .find(|tile| tile.identity.device_type == kind)
+        };
         for (line, (label, kind)) in view.lines[2..].iter_mut().zip(checks) {
-            let channel = ant.channel(kind, now).or_else(|| {
-                // A combined speed/cadence sensor also provides speed.
+            // A combined speed/cadence sensor also provides speed.
+            let tile = saved(kind).or_else(|| {
                 (kind == device_type::SPEED)
-                    .then(|| ant.channel(device_type::SPEED_CADENCE, now))
+                    .then(|| saved(device_type::SPEED_CADENCE))
                     .flatten()
             });
-            let _ = match channel {
-                Some(channel) => {
-                    let id = channel.selected.map_or(0, |p| p.device_number);
-                    write!(line, "{label} {id} {}", connection_status(channel))
-                }
+            let _ = match tile {
+                Some(tile) => write!(
+                    line,
+                    "{label} {} {}",
+                    tile.identity.device_number,
+                    tile.connection.text()
+                ),
                 None => write!(line, "{label} --"),
             };
         }

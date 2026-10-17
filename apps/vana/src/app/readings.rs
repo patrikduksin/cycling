@@ -145,7 +145,10 @@ impl Runtime {
             let Some(packet) = ant.take_packet() else {
                 break;
             };
-            self.readings.receive(packet);
+            // A removed or replaced sensor's pages never reach the ride.
+            if !self.links.rejects(packet.identity) {
+                self.readings.receive(packet);
+            }
         }
     }
 

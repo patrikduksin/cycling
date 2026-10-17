@@ -14,22 +14,9 @@ mod tests;
 pub use menu::{Action, Diagnostics, Menu};
 pub use message::MenuMessage;
 
-use crate::sensors::ant::device_type;
-use device_api::ant::{LinkState, Snapshot};
+pub use slot::{Connection, Selected};
 
-pub(crate) fn connection_status(channel: Snapshot) -> &'static str {
-    match channel.link {
-        LinkState::Idle => "NOT CONNECTED",
-        LinkState::Connecting => "CONNECTING",
-        LinkState::Connected if channel.age_ms.is_none() => "WAITING FOR DATA",
-        LinkState::Connected if channel.stale => "DATA LOST",
-        LinkState::Connected => "CONNECTED",
-        LinkState::Disconnecting => "DISCONNECTING",
-        LinkState::Disconnected => "DISCONNECTED",
-        LinkState::TimedOut => "CONNECT FAILED",
-        LinkState::TransportLost => "RADIO UNAVAILABLE",
-    }
-}
+use crate::sensors::ant::device_type;
 
 fn kind(kind: u8) -> &'static [u8] {
     match kind {

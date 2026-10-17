@@ -19,14 +19,13 @@ pub enum MenuMessage {
     WaitingForCompanion,
     StartupFailed,
     ScanThenPick,
-    Busy,
-    TypeUnsupported,
-    RequestFailed,
-    TooManyRequests,
     InputLost,
     NotSeen,
-    WaitForCurrentRequest,
     SlotsFull,
+    /// A sensor change could not be saved; saving retries automatically.
+    NotSaved,
+    /// Saved sensors could not be read, so changes are kept until restart only.
+    SavedUnreadable,
 }
 
 impl MenuMessage {
@@ -49,25 +48,23 @@ impl MenuMessage {
             Self::WaitingForCompanion => "WAITING FOR COMPANION",
             Self::StartupFailed => "STARTUP FAILED",
             Self::ScanThenPick => "SCAN THEN PICK SENSOR",
-            Self::Busy => "BUSY - RETRY",
-            Self::TypeUnsupported => "TYPE UNSUPPORTED",
-            Self::RequestFailed => "REQUEST FAILED",
-            Self::TooManyRequests => "TOO MANY REQUESTS",
             Self::InputLost => "INPUT LOST - PRESS NEXT",
             Self::NotSeen => "NOT SEEN - SEARCH AGAIN",
-            Self::WaitForCurrentRequest => "WAIT FOR CURRENT REQUEST",
             Self::SlotsFull => "ALL TEN SENSOR SLOTS ARE IN USE",
+            Self::NotSaved => "NOT SAVED - RETRYING",
+            Self::SavedUnreadable => "SAVED SENSORS UNREADABLE",
         }
     }
 
     /// Wording that fits the page feedback and focused status lines.
     pub const fn short(self) -> &'static str {
         match self {
-            Self::WaitForCurrentRequest => "REQUEST PENDING",
             Self::SlotsFull => "SENSOR SLOTS FULL",
             Self::InputLost => "PRESS NEXT AGAIN",
             Self::WaitingForCompanion => "WAITING FOR RADIO",
             Self::ScanThenPick => "FIND NEARBY",
+            Self::NotSaved => "NOT SAVED",
+            Self::SavedUnreadable => "NOT SAVED",
             message => message.text(),
         }
     }

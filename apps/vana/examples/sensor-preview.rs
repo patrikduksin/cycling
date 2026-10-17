@@ -1,30 +1,25 @@
 //! Render the sensor page with deterministic fixtures into PPM previews.
-use device_api::ant::{Discovery, Event, Identity};
+use device_api::ant::{Discovery, Identity};
 use device_api::input::{Button, Input};
-use vana::screens::sensors::{Menu, MenuMessage};
+use vana::screens::sensors::{Connection, Menu, MenuMessage, Selected};
 fn main() {
     let output = std::env::args().nth(1).expect("output directory");
     std::fs::create_dir_all(&output).unwrap();
-    let mut channels = firmware_services::ant::Channels::new();
-    for (number, kind) in [120, 11, 123, 40, 122, 121, 34, 17, 128, 35]
-        .into_iter()
-        .enumerate()
-    {
-        let peer = Identity {
-            device_type: kind,
-            device_number: number as u16 + 100,
-            transmission_type: 1,
-        };
-        channels.connect(peer, 0).unwrap();
-        channels.receive(Event::Connected(peer), 0);
-        channels.receive(
-            Event::Data {
+    let saved: [Option<Selected>; 10] = std::array::from_fn(|number| {
+        let kind = [120, 11, 123, 40, 122, 121, 34, 17, 128, 35][number];
+        Some(Selected {
+            identity: Identity {
                 device_type: kind,
-                data: [0; 8],
+                device_number: number as u16 + 100,
+                transmission_type: 1,
             },
-            0,
-        );
-    }
+            connection: [
+                Connection::Live,
+                Connection::Searching,
+                Connection::NotFound,
+            ][number % 3],
+        })
+    });
     let discoveries = std::array::from_fn(|index| {
         Some(Discovery {
             identity: Identity {
@@ -38,11 +33,11 @@ fn main() {
     });
     for full in [false, true] {
         let mut menu = Menu::new();
-        let mut snapshots = channels.snapshots(0);
+        let mut tiles = saved;
         if !full {
-            snapshots[3..].fill(None);
+            tiles[3..].fill(None);
         }
-        menu.refresh(discoveries, snapshots, true, 0);
+        menu.refresh(discoveries, tiles, true);
         menu.set_message(MenuMessage::Scanning);
         menu.input(
             Input::Button {
@@ -54,7 +49,7 @@ fn main() {
         render(&menu, &output, if full { "ten" } else { "three" });
     }
     let mut menu = Menu::new();
-    menu.refresh(discoveries, channels.snapshots(0), false, 0);
+    menu.refresh(discoveries, saved, false);
     menu.set_message(MenuMessage::ScanDone);
     let mut now = 0;
     focus(&mut menu, 1, &mut now);
@@ -73,25 +68,15 @@ fn main() {
     render(&menu, &output, "refresh");
     focus(&mut menu, 6, &mut now);
     render(&menu, &output, "combined-sensor");
-    let pending = Identity {
-        device_type: 120,
-        device_number: 65535,
-        transmission_type: 1,
-    };
-    menu.request_pending(pending);
-    render(&menu, &output, "pending");
-    menu.request_failed(pending, MenuMessage::RadioUnavailable);
-    render(&menu, &output, "failed");
+    focus(&mut menu, 3, &mut now);
+    render(&menu, &output, "not-found");
     press(&mut menu, Button::BottomRight, &mut now);
-    render(&menu, &output, "failed-detail");
+    render(&menu, &output, "not-found-detail");
     press(&mut menu, Button::TopLeft, &mut now);
-    focus(&mut menu, 11, &mut now);
-    press(&mut menu, Button::BottomRight, &mut now);
-    render(&menu, &output, "long-identity-replacement");
     let mut empty = Menu::new();
-    empty.refresh([None; 8], [None; 10], true, 0);
+    empty.refresh([None; 8], [None; 10], true);
     render(&empty, &output, "searching");
-    empty.refresh([None; 8], [None; 10], false, 0);
+    empty.refresh([None; 8], [None; 10], false);
     render(&empty, &output, "empty");
     empty.set_message(MenuMessage::RadioUnavailable);
     render(&empty, &output, "unavailable");

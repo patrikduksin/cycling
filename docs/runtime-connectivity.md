@@ -66,7 +66,8 @@ base supports discovery, echo, disconnect and forgetting a saved selection.
   local evidence. Password hex is still a password.
 - Settings schema v6 migrates v1 through v5 records without resetting preferences.
   v6 adds a bounded application area that the shell carries through every save
-  without interpreting; VANA stores its training profile there. Firmware older
+  without interpreting; VANA stores its training profile and saved ANT sensors
+  there. Firmware older
   than v6 reports a v6 record as unsupported and keeps it intact.
   Connectivity writes preserve saved brightness, idle and timezone values, even
   while a harness has changed them temporarily. Unsupported or malformed occupied

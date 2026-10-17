@@ -31,7 +31,7 @@ impl LinkStatus {
         match self {
             Self::Live => GREEN,
             Self::Waiting => CYAN,
-            Self::Failed | Self::Off | Self::Check => AMBER,
+            Self::Failed | Self::Missing | Self::Check => AMBER,
         }
     }
 
@@ -45,7 +45,7 @@ impl LinkStatus {
                 ((x == 1 || x == 5) && (1..6).contains(&y))
                     || ((y == 1 || y == 5) && (1..6).contains(&x))
             }
-            Self::Failed | Self::Off | Self::Check => {
+            Self::Failed | Self::Missing | Self::Check => {
                 (x == 3 && (1..4).contains(&y)) || (x == 3 && y == 5)
             }
         }
@@ -215,28 +215,12 @@ impl Menu {
         if text(x, y, left, 179, 2, b"SENSOR ") || text(x, y, left + 84, 179, 2, identity) {
             return MUTED;
         }
-        let reconnect = selected.retry() && !selected.failed_disconnect;
-        let primary: &[u8] = if selected.pending.is_some() {
-            b"BACK"
-        } else if selected.failed_disconnect {
-            b"RETRY DISCONNECT"
-        } else if selected.retry() {
-            b"RETRY"
-        } else {
-            b"DISCONNECT"
-        };
-        if let Some(color) = self.button_pixel(x, y, 220, 34, Choice::Primary, primary) {
+        // Disconnect is the only removal; ordinary loss reconnects by itself.
+        if let Some(color) = self.button_pixel(x, y, 220, 34, Choice::Primary, b"DISCONNECT") {
             return color;
         }
-        if selected.pending.is_none() {
-            let secondary: &[u8] = if reconnect && selected.can_disconnect() {
-                b"DISCONNECT"
-            } else {
-                b"BACK"
-            };
-            if let Some(color) = self.button_pixel(x, y, 262, 28, Choice::Secondary, secondary) {
-                return color;
-            }
+        if let Some(color) = self.button_pixel(x, y, 262, 28, Choice::Secondary, b"BACK") {
+            return color;
         }
         0
     }

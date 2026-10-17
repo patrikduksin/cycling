@@ -1,31 +1,67 @@
-//! A selected sensor tile: the rider's intent combined with the observed link.
-use super::{MenuMessage, connection_status};
-use device_api::ant::{Identity, LinkState, Snapshot};
+//! A saved sensor tile: the rider's selection and what VANA last observed
+//! while connecting it automatically.
+use device_api::ant::Identity;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum Operation {
-    Connect,
-    Disconnect,
+/// Observed connection progress of a saved sensor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Connection {
+    /// Connected with fresh data.
+    Live,
+    /// Connected; no data has arrived yet.
+    WaitingForData,
+    /// Connected, but data stopped arriving.
+    DataLost,
+    /// The radio is searching for this sensor.
+    Searching,
+    /// The last search found nothing; another follows automatically.
+    NotFound,
+    /// The radio is starting, discovering or busy; connecting follows.
+    WaitingForRadio,
+    /// The previous sensor of this type is closing first.
+    Replacing,
+    /// The radio cannot connect sensors until it recovers.
+    RadioUnavailable,
+    /// The radio does not support this device type.
+    Unsupported,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct Pending {
-    pub(super) operation: Operation,
-    /// The radio accepted the request; only then can an observation complete it.
-    pub(super) admitted: bool,
+impl Connection {
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Live => "CONNECTED",
+            Self::WaitingForData => "WAITING FOR DATA",
+            Self::DataLost => "DATA LOST",
+            Self::Searching => "SEARCHING",
+            Self::NotFound => "NOT FOUND YET",
+            Self::WaitingForRadio => "WAITING FOR RADIO",
+            Self::Replacing => "REPLACING",
+            Self::RadioUnavailable => "RADIO UNAVAILABLE",
+            Self::Unsupported => "TYPE UNSUPPORTED",
+        }
+    }
+
+    pub(super) const fn status(self) -> LinkStatus {
+        match self {
+            Self::Live => LinkStatus::Live,
+            Self::WaitingForData | Self::DataLost => LinkStatus::Check,
+            Self::Searching | Self::WaitingForRadio | Self::Replacing => LinkStatus::Waiting,
+            Self::NotFound => LinkStatus::Missing,
+            Self::RadioUnavailable | Self::Unsupported => LinkStatus::Failed,
+        }
+    }
 }
 
-/// What the rider should conclude about a selected sensor at a glance.
+/// What the rider should conclude about a saved sensor at a glance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LinkStatus {
     /// Connected with fresh data.
     Live,
-    /// A request or link transition is in progress.
+    /// Connecting or waiting for the radio.
     Waiting,
-    /// A request failed or the link timed out or lost its transport.
+    /// Not found by the last search; retrying automatically.
+    Missing,
+    /// The radio cannot connect it.
     Failed,
-    /// Not connected and nothing in progress.
-    Off,
     /// Connected, but data is missing or stale.
     Check,
 }
@@ -36,129 +72,26 @@ impl LinkStatus {
         match self {
             Self::Live => b"LIVE / ",
             Self::Waiting => b"WAIT / ",
+            Self::Missing => b"NOT FOUND / ",
             Self::Failed => b"FAILED / ",
-            Self::Off => b"OFF / ",
             Self::Check => b"CHECK / ",
         }
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct Selected {
-    pub(super) identity: Identity,
-    pub(super) observed: Option<Snapshot>,
-    pub(super) pending: Option<Pending>,
-    pub(super) failure: Option<MenuMessage>,
-    pub(super) failed_disconnect: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Selected {
+    pub identity: Identity,
+    pub connection: Connection,
 }
 
 impl Selected {
-    pub(super) const fn requested(identity: Identity, operation: Operation) -> Self {
-        Self {
-            identity,
-            observed: None,
-            pending: Some(Pending {
-                operation,
-                admitted: false,
-            }),
-            failure: None,
-            failed_disconnect: false,
-        }
-    }
-
-    pub(super) const fn observed(identity: Identity, snapshot: Snapshot) -> Self {
-        Self {
-            identity,
-            observed: Some(snapshot),
-            pending: None,
-            failure: None,
-            failed_disconnect: false,
-        }
-    }
-
-    pub(super) fn link_status(self) -> LinkStatus {
-        if self.failure.is_some() {
-            return LinkStatus::Failed;
-        }
-        if self.pending.is_some() {
-            return LinkStatus::Waiting;
-        }
-        let Some(snapshot) = self.observed else {
-            return LinkStatus::Off;
-        };
-        match snapshot.link {
-            LinkState::Idle | LinkState::Disconnected => LinkStatus::Off,
-            LinkState::TimedOut | LinkState::TransportLost => LinkStatus::Failed,
-            LinkState::Connecting | LinkState::Disconnecting => LinkStatus::Waiting,
-            LinkState::Connected if !snapshot.stale && snapshot.age_ms.is_some() => {
-                LinkStatus::Live
-            }
-            LinkState::Connected => LinkStatus::Check,
-        }
+    pub(super) const fn link_status(self) -> LinkStatus {
+        self.connection.status()
     }
 
     /// Detailed wording for the focused sensor.
-    pub(super) fn status_text(self) -> &'static [u8] {
-        if let Some(failure) = self.failure {
-            return failure.text().as_bytes();
-        }
-        match self.pending {
-            Some(Pending {
-                admitted: false, ..
-            }) => b"WAITING FOR RADIO",
-            Some(Pending {
-                operation: Operation::Disconnect,
-                ..
-            }) => b"DISCONNECTING",
-            Some(Pending {
-                operation: Operation::Connect,
-                ..
-            }) => b"CONNECTING",
-            None => self
-                .observed
-                .map_or(b"DISCONNECTED", |s| connection_status(s).as_bytes()),
-        }
-    }
-
-    pub(super) fn retry(self) -> bool {
-        matches!(self.link_status(), LinkStatus::Failed | LinkStatus::Off)
-    }
-
-    pub(super) fn can_disconnect(self) -> bool {
-        self.observed.is_some_and(|s| {
-            !matches!(
-                s.link,
-                LinkState::Idle | LinkState::Disconnected | LinkState::Disconnecting
-            )
-        })
-    }
-
-    /// Record an observation. Once admitted, a request completes when the link
-    /// shows it took effect.
-    pub(super) fn observe(&mut self, snapshot: Snapshot) {
-        self.observed = Some(snapshot);
-        let Some(Pending {
-            operation,
-            admitted: true,
-        }) = self.pending
-        else {
-            return;
-        };
-        let completed = match operation {
-            Operation::Disconnect => matches!(
-                snapshot.link,
-                LinkState::Disconnecting | LinkState::Disconnected | LinkState::TransportLost
-            ),
-            Operation::Connect => matches!(
-                snapshot.link,
-                LinkState::Connecting
-                    | LinkState::Connected
-                    | LinkState::TimedOut
-                    | LinkState::TransportLost
-            ),
-        };
-        if completed {
-            self.pending = None;
-        }
+    pub(super) const fn status_text(self) -> &'static [u8] {
+        self.connection.text().as_bytes()
     }
 }

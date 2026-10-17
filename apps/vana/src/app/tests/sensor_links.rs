@@ -16,12 +16,14 @@ fn workout_scan_keeps_existing_channels_receiving() {
         reject: None,
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     radio.channels.connect(peer, 0).unwrap();
     radio
         .channels
         .receive(device_api::ant::Event::Connected(peer), 1);
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = restored(&[peer]);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
     runtime.input(
         Input::Button {
@@ -59,8 +61,8 @@ fn workout_scan_keeps_existing_channels_receiving() {
         device_api::ant::LinkState::Connected
     );
 
-    // Explicit DROP must survive later foreground scans. Select the connected
-    // channel row (there are no discovery rows in this radio fixture).
+    // Disconnect must survive later foreground scans. Select the saved tile
+    // (there are no discovery rows in this radio fixture).
     runtime.input(
         Input::Button {
             button: Button::BottomLeft,
@@ -85,7 +87,8 @@ fn workout_scan_keeps_existing_channels_receiving() {
         12900,
         &mut radio,
     );
-    assert!(runtime.reconnect.is_suppressed(120));
+    assert!(runtime.links.saved.of_type(120).is_none());
+    assert!(runtime.preferences.sensors.of_type(120).is_none());
     assert_eq!(
         radio.channels.channel(120, 12500).unwrap().link,
         device_api::ant::LinkState::Disconnected
@@ -143,7 +146,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
         25400,
         &mut radio,
     );
-    assert!(!runtime.reconnect.is_suppressed(120));
+    assert_eq!(runtime.links.saved.of_type(120), Some((0, peer)));
     assert_eq!(
         radio.channels.channel(120, 25000).unwrap().link,
         device_api::ant::LinkState::Connected
@@ -158,6 +161,8 @@ fn back_cancels_starting_scan_and_rescan_waits_for_stop_completion() {
         reject: None,
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
@@ -198,6 +203,8 @@ fn scan_failure_reports_recovery_and_keeps_back_usable() {
         reject: Some(device_api::ant::Error::Unavailable),
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
@@ -233,6 +240,8 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
         reject: None,
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let peer = device_api::ant::Identity {
         device_type: 120,
@@ -292,6 +301,8 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
         reject: None,
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
@@ -319,6 +330,8 @@ fn opening_sensors_starts_discovery_without_a_scan_press() {
         reject: None,
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = crate::screens::workout::Page::Home;
@@ -365,6 +378,8 @@ fn reentry_waits_for_stop_and_busy_scan_start_retries_without_another_press() {
         reject: None,
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = crate::screens::workout::Page::Home;
@@ -400,6 +415,8 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
         reject: Some(device_api::ant::Error::Busy),
         settling: false,
         observe_requests: false,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     let peer = device_api::ant::Identity {
@@ -438,6 +455,8 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
         reject: None,
         settling: false,
         observe_requests: false,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let old = device_api::ant::Identity {
         device_type: 120,
@@ -452,8 +471,15 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
     radio
         .channels
         .receive(device_api::ant::Event::Connected(old), 0);
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = restored(&[old]);
     choose_sensor(&mut runtime, &mut radio, replacement);
+    // The saved selection changes at once; the old peer closes first.
+    assert_eq!(
+        runtime.preferences.sensors.of_type(120),
+        Some((0, replacement))
+    );
+    radio.data(120, [0; 8], 1000);
+    assert!(runtime.links.rejects(old));
     assert!(matches!(
         radio.requests.as_slice(),
         [AntOperation::Disconnect(120)]
@@ -473,13 +499,15 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
 }
 
 #[test]
-fn busy_connection_expires_and_is_not_replayed_when_radio_recovers() {
+fn busy_radio_keeps_the_selection_and_connects_once_it_recovers() {
     let mut radio = Radio {
         channels: firmware_services::ant::Channels::new(),
         requests: std::vec::Vec::new(),
         reject: Some(device_api::ant::Error::Busy),
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     let peer = device_api::ant::Identity {
@@ -488,11 +516,20 @@ fn busy_connection_expires_and_is_not_replayed_when_radio_recovers() {
         transmission_type: 1,
     };
     choose_sensor(&mut runtime, &mut radio, peer);
-    advance(&mut runtime, &mut radio, 26000);
+    for now in (1000..26_000).step_by(10) {
+        advance(&mut runtime, &mut radio, now);
+    }
+    // Refusals back off to one request every two seconds.
+    assert!(radio.connects(peer) <= 16, "{}", radio.connects(peer));
     radio.reject = None;
-    advance(&mut runtime, &mut radio, 27000);
-    assert!(radio.channel(120, 27000).is_none());
-    assert_eq!(radio.requests.len(), 1);
+    for now in (26_000..28_100).step_by(10) {
+        advance(&mut runtime, &mut radio, now);
+    }
+    assert_eq!(
+        radio.channel(120, 28_100).unwrap().link,
+        device_api::ant::LinkState::Connected
+    );
+    assert_eq!(runtime.links.saved.of_type(120), Some((0, peer)));
 }
 
 #[test]
@@ -503,6 +540,8 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
         reject: Some(device_api::ant::Error::Busy),
         settling: false,
         observe_requests: true,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     let peer = device_api::ant::Identity {
@@ -545,6 +584,8 @@ fn radio_wide_connection_failure_is_visible_on_the_page() {
         reject: Some(device_api::ant::Error::Unavailable),
         settling: false,
         observe_requests: false,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let mut runtime = Runtime::new(Profile::HeartRate);
     let peer = device_api::ant::Identity {
@@ -553,10 +594,16 @@ fn radio_wide_connection_failure_is_visible_on_the_page() {
         transmission_type: 1,
     };
     choose_sensor(&mut runtime, &mut radio, peer);
+    let tile = runtime.sensor_tiles(&radio, 1000)[0].unwrap();
     assert_eq!(
-        runtime.menu.diagnostics().message,
-        Some(MenuMessage::RadioUnavailable)
+        tile.connection,
+        crate::screens::sensors::Connection::RadioUnavailable
     );
+    // Retried no faster than every five seconds.
+    for now in (1000..10_000).step_by(10) {
+        advance(&mut runtime, &mut radio, now);
+    }
+    assert!(radio.connects(peer) <= 3, "{}", radio.connects(peer));
 }
 
 #[test]
@@ -567,6 +614,8 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
         reject: None,
         settling: false,
         observe_requests: false,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     radio.channels.begin_scan(0, 1).unwrap();
     for number in 1..=8 {
@@ -619,6 +668,8 @@ fn entry_waits_for_an_admitted_connection_before_starting_discovery() {
         reject: None,
         settling: false,
         observe_requests: false,
+        availability: Availability::Ready,
+        fail_disconnects: false,
     };
     let peer = device_api::ant::Identity {
         device_type: 40,

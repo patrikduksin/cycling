@@ -125,7 +125,7 @@ async fn console(
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
     #[cfg(feature = "cycling")]
-    let mut sdk = vana::app::Runtime::new(profile);
+    let sdk = external(vana::app::Runtime::new(profile));
     #[cfg(feature = "cycling")]
     {
         sdk.load_preferences(&system.settings.app);
@@ -243,7 +243,7 @@ async fn console(
                 &mut devices,
                 &FirmwareDiagnostics,
                 #[cfg(feature = "cycling")]
-                &mut sdk,
+                sdk,
             );
         }
         if now >= next_health {
@@ -268,6 +268,25 @@ async fn console(
             );
         }
         embassy_time::Timer::after_millis(5).await;
+    }
+}
+
+/// Moves long-lived state into PSRAM so it stays out of the console task
+/// future. Task futures are internal DRAM statics, and every byte there comes
+/// out of the main stack (#167).
+#[cfg(feature = "cycling")]
+fn external<T>(value: T) -> &'static mut T {
+    let layout = core::alloc::Layout::new::<T>();
+    // SAFETY: `T` is a sized, non-zero-size state type, so the layout is
+    // non-zero; the block is never freed.
+    let pointer = unsafe { device::drivers::psram::allocate_external(layout) }.cast::<T>();
+    assert!(!pointer.is_null(), "PSRAM exhausted");
+    // SAFETY: the allocator returned a block valid and aligned for `T`. It is
+    // written once here and never deallocated, and the returned reference is
+    // its only one, so a 'static exclusive reference is sound.
+    unsafe {
+        pointer.write(value);
+        &mut *pointer
     }
 }
 

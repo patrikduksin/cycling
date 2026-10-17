@@ -37,6 +37,21 @@ else
 fi
 export CARGO_TARGET_DIR="$PWD/$firmware_target"
 cargo +cycling-esp build -p c606-firmware --bin cycling-os --release --locked --no-default-features --features "$firmware_features" --target xtensa-esp32s3-none-elf
+# The main stack is the internal DRAM that statics and the heap leave. Each
+# task and VANA's frame preparation run on it, so growing statics silently
+# shrinks it until boot overflows the stack guard (#167). Fail the build
+# first: keep new state out of internal RAM, or measure STATUS
+# stack_untouched on the device and lower the budget deliberately.
+min_stack_bytes="${CYCLING_MIN_STACK_BYTES:-61440}"
+stack_symbols="$(xtensa-esp32s3-elf-nm "$CARGO_TARGET_DIR/xtensa-esp32s3-none-elf/release/cycling-os")"
+stack_start="$(awk '$3 == "_stack_start_cpu0" { print $1 }' <<<"$stack_symbols")"
+stack_end="$(awk '$3 == "_stack_end_cpu0" { print $1 }' <<<"$stack_symbols")"
+stack_bytes=$((16#$stack_start - 16#$stack_end))
+echo "Main stack region: $stack_bytes bytes (budget $min_stack_bytes)"
+if (( stack_bytes < min_stack_bytes )); then
+  echo "The main stack region is below its budget: internal DRAM statics grew by $((min_stack_bytes - stack_bytes)) bytes too many." >&2
+  exit 1
+fi
 espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb \
   --partition-table devices/c606/partitions.csv --target-app-partition ota_1 \
   "$CARGO_TARGET_DIR/xtensa-esp32s3-none-elf/release/cycling-os" .local/cycling.bin

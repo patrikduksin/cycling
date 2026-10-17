@@ -196,6 +196,18 @@ impl Runtime {
             return;
         }
         let sheet = self.power.view();
+        // A reveal frame that could still be drawing when the brand time
+        // ends would make Home late; skip it and draw Home on time.
+        if self.navigation.page == Page::Boot
+            && sheet.is_none()
+            && let Some(first) = self.navigation.first_frame
+        {
+            let home_at = first + BRAND_MS;
+            if now < home_at && now + MOTION_FRAME_MS > home_at {
+                *next_frame_ms = home_at;
+                return;
+            }
+        }
         let motion = matches!(sheet, Some(PowerSheet::TurningOff { .. }))
             || (sheet.is_none() && self.navigation.page == Page::Boot);
         let animated = self.navigation.page == Page::Ride

@@ -235,6 +235,45 @@ impl InputObservation for NoInputObservation {
 pub const COMPANION_BOOT_MS: u64 = 3_300;
 pub type VirtualShell =
     firmware_shell::shell::Shell<DisplayDevice, InputDevice, PowerDevice, FileFlash>;
+
+/// Look-ahead blocks of ended sessions. VANA holds its block as `&'static mut`,
+/// as on the device, so each block is leaked once and then handed from one
+/// session or boot to the next instead of leaking one per boot.
+#[cfg(feature = "cycling")]
+static TERRAIN_BLOCKS: std::sync::Mutex<Vec<&'static mut vana::app::Terrain>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A look-ahead block as new: a reused one, reset, or a fresh one.
+#[cfg(feature = "cycling")]
+fn terrain_block() -> &'static mut vana::app::Terrain {
+    let reused = TERRAIN_BLOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop();
+    match reused {
+        Some(terrain) => {
+            terrain.reset();
+            terrain
+        }
+        None => {
+            let arena = Vec::leak(vec![0u8; vana::app::TERRAIN_ARENA_BYTES]);
+            Box::leak(Box::new(vana::app::Terrain::new(arena)))
+        }
+    }
+}
+
+#[cfg(feature = "cycling")]
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(terrain) = self.sdk.detach_terrain() {
+            TERRAIN_BLOCKS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(terrain);
+        }
+    }
+}
+
 /// The simulated device and the world it observes, composed like C606 firmware.
 pub struct Session {
     pub shell: VirtualShell,
@@ -338,6 +377,10 @@ impl Session {
         let mut sdk = vana::app::Runtime::new(profile);
         #[cfg(feature = "cycling")]
         sdk.load_preferences(&shell.settings.app);
+        // The look-ahead and its tile cache, which the device keeps in PSRAM;
+        // each boot starts them over, as device memory does.
+        #[cfg(feature = "cycling")]
+        sdk.attach_terrain(terrain_block());
         Ok(Self {
             shell,
             now: 0,
@@ -462,6 +505,9 @@ impl Session {
                     },
                 },
             );
+            // As composition does: one bounded look-ahead step a pass,
+            // reading the TERRAIN volume's pack when one is installed.
+            self.sdk.look_ahead(&mut self.bulk, self.now);
             self.sdk
                 .present(&mut self.shell, self.now, &self.ant, &self.position);
             self.sdk.save_preferences(&mut self.shell, self.now);

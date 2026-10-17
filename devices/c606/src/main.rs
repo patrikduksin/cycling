@@ -130,9 +130,57 @@ async fn console(
     {
         sdk.load_preferences(&system.settings.app);
         sdk.set_clock(|| embassy_time::Instant::now().as_millis());
-        let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-        system.draw_canvas(240, 320, |row| view.paint(row));
+        {
+            // Its own scope: the view must not live across the awaits below,
+            // or the console task's static future grows by its size.
+            let view =
+                vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
+            system.draw_canvas(240, 320, |row| view.paint(row));
+        }
+        // The terrain look-ahead's tile cache lives in PSRAM. Without it
+        // the climb page says "NO MAP" and keeps to the barometer.
+        let layout =
+            core::alloc::Layout::from_size_align(vana::app::TERRAIN_ARENA_BYTES, 4).unwrap();
+        // SAFETY: the layout has a non-zero size; the block is never freed.
+        let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
+        if pointer.is_null() {
+            log::warn!("terrain: no PSRAM for the tile cache");
+        } else {
+            // Zero in chunks and yield between them, as for the harness
+            // capture, so the companion UART is never starved.
+            for offset in (0..layout.size()).step_by(4096) {
+                let len = (layout.size() - offset).min(4096);
+                // SAFETY: the allocator returned `layout.size()` writable
+                // bytes at `pointer`; `offset + len` stays within them.
+                unsafe { core::ptr::write_bytes(pointer.add(offset), 0, len) };
+                embassy_futures::yield_now().await;
+            }
+            // SAFETY: every byte was initialized above. The block is never
+            // deallocated and this is its only reference.
+            let arena = unsafe { core::slice::from_raw_parts_mut(pointer, layout.size()) };
+            // The look-ahead's state (about 7 KB) gets a block of its own,
+            // like `Runtime`, but a missing one only means "NO MAP" (unlike
+            // `external`, which panics).
+            let state = core::alloc::Layout::new::<vana::app::Terrain>();
+            // SAFETY: `Terrain` has a non-zero size; the block is never freed.
+            let terrain = unsafe { device::drivers::psram::allocate_external(state) }
+                .cast::<vana::app::Terrain>();
+            if terrain.is_null() {
+                log::warn!("terrain: no PSRAM for the look-ahead");
+            } else {
+                // SAFETY: the allocator returned a block with `Terrain`'s size
+                // and alignment. It is initialized by this write, never
+                // deallocated, and this is its only reference.
+                let terrain = unsafe {
+                    terrain.write(vana::app::Terrain::new(arena));
+                    &mut *terrain
+                };
+                sdk.attach_terrain(terrain);
+            }
+        }
     }
+    #[cfg(feature = "cycling")]
+    let mut terrain_step_max_us = 0u64;
     // Only VANA selects a saved BLE peer at startup.
     #[cfg(feature = "cycling")]
     let ble_selection = system.settings.ble.and_then(|saved| {
@@ -214,6 +262,14 @@ async fn console(
                     physical: device_api::sensors::Sensors::snapshot(&devices.sensors, now),
                 },
             );
+            // One bounded look-ahead step a pass (a tile chunk, a match or a
+            // prediction), before the frame that may show its result.
+            #[cfg(feature = "cycling")]
+            {
+                let started = embassy_time::Instant::now();
+                sdk.look_ahead(&mut devices.bulk, now);
+                terrain_step_max_us = terrain_step_max_us.max(started.elapsed().as_micros());
+            }
             #[cfg(feature = "cycling")]
             sdk.present(&mut system, now, &devices.ant, &devices.position);
             #[cfg(feature = "cycling")]
@@ -266,6 +322,15 @@ async fn console(
                 system.heap_min_sampled,
                 terminal.sent()
             );
+            #[cfg(feature = "cycling")]
+            {
+                log::info!(target: "terrain",
+                    "status={:?} step_max_us={}",
+                    sdk.terrain_status(),
+                    terrain_step_max_us
+                );
+                terrain_step_max_us = 0;
+            }
         }
         embassy_time::Timer::after_millis(5).await;
     }

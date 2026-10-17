@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from .graph import METRES_PER_DEGREE, Grid, Tiles
 
 MAGIC = b'VANA-TERRAIN\0\0\0\0'
-VERSION = 1
+# 2: elevation in 0.2 m steps from -500 m (1 had decimetres from -200 m).
+VERSION = 2
 SECTOR = 512
 TILE_MAGIC = b'VT'
 TILE_VERSION = 1
@@ -26,9 +27,10 @@ EDGE = 16
 VERTEX = 6
 ENTRY = 8
 # Elevation is stored as decimetres above -500 m.
-# Elevation is stored as decimetres + 2000 in a u16: -200 m to 6,353.5 m,
-# above Chile's highest roads (about 6,100 m on the DEM).
-Z_OFFSET_DM = 2000
+# Elevation is stored in 0.2 m steps from -500 m in a u16: up to 12,607 m.
+# Chile's highest mapped way (the path up Ojos del Salado) reaches 6,893 m.
+Z_STEP_DM = 2
+Z_OFFSET_DM = 5000
 # The largest tile the device can cache; the builder refuses bigger ones.
 MAX_TILE_BYTES = 48 * 1024  # the firmware cache limit (packages/terrain cache.rs)
 MAX_EDGES = 0x7FFF
@@ -38,14 +40,14 @@ assert HEADER.size <= SECTOR - 4
 
 
 def encode_z(metres: float) -> int:
-    raw = round(metres * 10) + Z_OFFSET_DM
+    raw = round((metres * 10 + Z_OFFSET_DM) / Z_STEP_DM)
     if not 0 <= raw <= 0xFFFF:
         raise ValueError(f'elevation {metres:.1f} m is outside what a pack stores')
     return raw
 
 
 def decode_z(raw: int) -> float:
-    return (raw - Z_OFFSET_DM) / 10
+    return (raw * Z_STEP_DM - Z_OFFSET_DM) / 10
 
 
 def lon_scale_um(grid: Grid, row: int) -> int:

@@ -13,7 +13,9 @@ mod commands;
 mod cues;
 mod history;
 mod input;
+mod lookahead;
 mod night;
+pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
 mod power;
 mod preferences;
 mod presentation;
@@ -56,6 +58,8 @@ pub struct Runtime {
     cues: cues::Cues,
     history: history::History,
     night: night::Night,
+    /// The look-ahead's state lives in the block composition gives it.
+    lookahead: Option<&'static mut lookahead::Terrain>,
 }
 
 impl Runtime {
@@ -77,6 +81,7 @@ impl Runtime {
             cues: cues::Cues::default(),
             history: history::History::default(),
             night: night::Night::default(),
+            lookahead: None,
         }
     }
 

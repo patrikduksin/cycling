@@ -133,11 +133,17 @@ and keeps downloads and national packs in the ignored `.local/terrain`:
 The sample pack (`--sample`, Farellones and route G-21, 92 KB) and a G-21
 track are committed under `packages/terrain/tests/data` for tests.
 
-## Pack format (v1)
+## Pack format (v2)
 
 The pack is a single opaque image. The host writes it into the `TERRAIN`
-volume through the volume pack tooling (`mise run terrain-write`) and the
-device reads it by byte offset. All integers are little-endian.
+volume through the volume pack tooling and the device reads it by byte
+offset:
+
+```sh
+mise run terrain-write -- .local/terrain/chile.terrain --tag CHILE-TERRAIN-V1 --verify
+```
+
+All integers are little-endian.
 
 | Offset | Size | Content |
 | --- | --- | --- |
@@ -149,7 +155,7 @@ device reads it by byte offset. All integers are little-endian.
 Header fields, in order:
 
 - magic `VANA-TERRAIN\0\0\0\0`;
-- version u16 = 1, header sectors u16 (the header and its attribution);
+- version u16 = 2, header sectors u16 (the header and its attribution);
 - tile size µdeg u32, south i32 µdeg, west i32 µdeg;
 - rows u16, cols u16;
 - directory offset u32, data offset u32, total bytes u32, tile count u32;
@@ -169,7 +175,7 @@ header:
 - CRC32 at byte 24, computed with that field zeroed.
 
 Four arrays follow, all in tile-local µdeg (0..=tile size), with elevation as
-decimetres + 2000 in a u16 (−200 m to 6,353.5 m; the builder refuses anything outside):
+a u16 of 0.2 m steps from −500 m (up to 12,607 m; the builder refuses anything outside):
 
 | Record | Bytes | Fields |
 | --- | --- | --- |
@@ -182,8 +188,9 @@ Version rules:
 
 - The pack header version changes on any layout change; the device refuses
   unknown versions and treats the volume as having no pack.
-- The volume pack tag names the format and region (`TERRAIN-V1 CHILE`). Its
-  CRC and digest cover the image.
+- The volume pack tag is the host's label (`CHILE-TERRAIN-V1`). The volume
+  pack's CRC covers the image. The device trusts the terrain header's own
+  magic and version, not the tag.
 
 ## On the device
 
@@ -269,6 +276,11 @@ the match changes.
 VANA calls `step` once per main-loop pass, after the ride tick, so the
 look-ahead never blocks a frame. On the sample ride a fix needs at most about
 25 steps.
+
+The device finds the ready pack in the `TERRAIN` volume, through
+`volume::open` and `pack::open`. It looks at the volume again every 10 s. A
+new, rewritten or removed pack resets the engine, as does a pack the engine
+gave up on after read errors.
 
 ### Climbs ahead
 

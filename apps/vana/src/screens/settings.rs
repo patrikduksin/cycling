@@ -393,7 +393,7 @@ mod tests {
     use super::*;
     use crate::screens::workout::Page;
 
-    fn view(cursor: usize, editing: bool, values: &[(&str, &str)], status: &str) -> View {
+    fn view(cursor: usize, editing: bool, values: &[(&str, &str)], status: &str) -> View<'static> {
         let mut view = View::new(Page::Settings, cursor, None);
         view.editing = editing;
         for (slot, (value, note)) in values.iter().enumerate() {
@@ -405,7 +405,7 @@ mod tests {
         view
     }
 
-    fn profile(cursor: usize, editing: bool) -> View {
+    fn profile(cursor: usize, editing: bool) -> View<'static> {
         let values: &[(&str, &str)] = if editing {
             &[("215", "Z4 195-226 W")]
         } else {

@@ -385,7 +385,7 @@ impl Runtime {
         if let Some(step) = step {
             let profile = self.preferences.profile;
             if let Some(event) = self.ride.count(now, step, &sample, pressure, &profile) {
-                self.navigation.follow_climb(event);
+                self.ride_climb_event(event);
             }
         }
         self.readings.power_3s_watts = self.readings.power_3s.update(now, sample.power_watts);

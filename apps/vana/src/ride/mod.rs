@@ -1,6 +1,7 @@
 pub mod auto;
 pub mod bulk;
 pub mod climb;
+pub mod climb_ahead;
 pub mod control;
 pub mod fit;
 pub mod gps_speed;

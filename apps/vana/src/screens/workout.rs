@@ -7,6 +7,7 @@ use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
 use crate::ride::climb::Climbs;
+use crate::ride::climb_ahead::Forecast;
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
 use crate::ride::totals::Totals;
@@ -62,7 +63,7 @@ impl Page {
 /// Home cards, in MOVE order.
 pub const HOME: [&[u8]; 4] = [b"RIDE", b"SENSORS", b"SETTINGS", b"RIDES"];
 
-pub struct View {
+pub struct View<'a> {
     pub now_ms: u64,
     pub sample: Sample,
     /// Power over the last 3 s, which the ride page shows instead of the
@@ -89,6 +90,9 @@ pub struct View {
     pub ride_page: RidePage,
     /// Climbs and the elevation profile; only the climb page reads them.
     pub climbs: Climbs,
+    /// The road ahead from the map, borrowed: it is 1 KB and main's stack
+    /// cannot spare a copy. Only the climb page reads it.
+    pub forecast: &'a Forecast,
     /// Finished laps for the lap page's chart, oldest first.
     pub lap_bars: ride::LapBars,
     /// What a canvas page (stats, lap, climb, Settings, Ready, paused, end
@@ -124,7 +128,7 @@ pub struct View {
     pub(super) cues: heapless::Vec<Cue, 2>,
     pub(super) badge: Option<Badge>,
 }
-impl View {
+impl View<'_> {
     pub fn new(page: Page, cursor: usize, utc: Option<u64>) -> Self {
         let mut time = Text::new();
         // Santiago summer time for this workout build. UTC remains unchanged in recordings.
@@ -155,6 +159,7 @@ impl View {
             previous_lap: None,
             ride_page: RidePage::Main,
             climbs: Climbs::default(),
+            forecast: &Forecast::NONE,
             lap_bars: ride::LapBars::new(),
             canvas: Canvas::default(),
             smooth: Smooth::default(),

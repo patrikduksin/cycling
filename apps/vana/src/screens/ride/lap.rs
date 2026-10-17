@@ -290,7 +290,7 @@ mod tests {
     }
 
     /// `laps` finished laps of `seconds` each, then the open lap's.
-    fn ridden(laps: &[(u64, Sample)], open: (u64, Sample)) -> View {
+    fn ridden(laps: &[(u64, Sample)], open: (u64, Sample)) -> View<'static> {
         let mut ride = Laps::default();
         let mut now = 0;
         for (index, &(seconds, sample)) in laps.iter().chain([&open]).enumerate() {

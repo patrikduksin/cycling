@@ -168,7 +168,7 @@ mod tests {
     use crate::screens::ride::{BODY, RidePage};
     use crate::screens::workout::Page;
 
-    fn stats(minutes: u64, sample: &Sample) -> View {
+    fn stats(minutes: u64, sample: &Sample) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Stats;
         view.radar_paired = true;

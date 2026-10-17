@@ -334,7 +334,7 @@ mod tests {
         state: Status::Recording,
     };
 
-    fn view(case: Case) -> View {
+    fn view(case: Case) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, Some(86_399_000 / 1000));
         view.state = case.state;
         view.active_secs = case.secs;

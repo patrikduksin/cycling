@@ -42,7 +42,9 @@ def road(blob: bytes, label: str) -> list[tuple[int, int, int]]:
         for number, edge in enumerate(tile.edges):
             if edge[6] != group:
                 continue
-            pieces.append([(south + y, west + x, z - pack.Z_OFFSET_DM) for x, y, z in tile.geometry(number)])
+            pieces.append(
+                [(south + y, west + x, z * pack.Z_STEP_DM - pack.Z_OFFSET_DM) for x, y, z in tile.geometry(number)]
+            )
             oneway.append(bool(edge[5] & ONEWAY))
     ends: dict[tuple[int, int], list[int]] = {}
     for index, piece in enumerate(pieces):

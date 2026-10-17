@@ -304,7 +304,7 @@ mod tests {
     use crate::screens::cue::RADIUS;
     use crate::screens::workout::Page;
 
-    fn extreme(page: usize, saving: Saving) -> View {
+    fn extreme(page: usize, saving: Saving) -> View<'static> {
         let mut view = View::new(Page::Summary, 0, None);
         let sample = Sample {
             speed_mm_s: Some(33_333),

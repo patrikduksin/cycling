@@ -126,8 +126,10 @@ fn grade_tenths(from: Point, to: Point) -> Option<i32> {
 }
 
 /// A climb's measurements: finished, or so far.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
+    /// Distance from the first step fed to where the climb starts.
+    pub start_mm: u64,
     pub start_altitude_dm: i32,
     /// From the start to the highest point.
     pub gain_dm: u32,
@@ -142,9 +144,61 @@ impl Summary {
         (self.length_mm != 0).then(|| (u64::from(self.gain_dm) * 100_000 / self.length_mm) as i32)
     }
 
+    /// Its category, from length and average grade.
+    pub fn category(&self) -> Category {
+        Category::of(self.gain_dm)
+    }
+
     /// Average vertical ascent speed, in metres per hour.
     pub fn vam_m_h(&self) -> Option<u32> {
         (self.time_ms != 0).then(|| (u64::from(self.gain_dm) * 360_000 / self.time_ms) as u32)
+    }
+}
+
+/// How hard a climb is, as cycling computers and Strava grade them: its
+/// score is length in metres times average grade in percent, which is its
+/// gain in metres times 100. Cat 4 from 8,000 (80 m of gain), Cat 3 from
+/// 16,000, Cat 2 from 32,000, Cat 1 from 48,000 and HC from 64,000. A
+/// confirmed climb below Cat 4 is still a climb, just uncategorised.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Category {
+    Uncategorised,
+    Four,
+    Three,
+    Two,
+    One,
+    Hors,
+}
+
+impl Category {
+    /// Gain where each category after `Uncategorised` begins, decimetres.
+    const FROM_DM: [u32; 5] = [800, 1_600, 3_200, 4_800, 6_400];
+
+    pub fn of(gain_dm: u32) -> Self {
+        const ALL: [Category; 6] = [
+            Category::Uncategorised,
+            Category::Four,
+            Category::Three,
+            Category::Two,
+            Category::One,
+            Category::Hors,
+        ];
+        ALL[Self::FROM_DM
+            .iter()
+            .filter(|&&from| gain_dm >= from)
+            .count()]
+    }
+
+    /// Its short name: `CAT 4` to `CAT 1`, `HC`, or `CLIMB`.
+    pub fn name(self) -> &'static [u8] {
+        match self {
+            Self::Uncategorised => b"CLIMB",
+            Self::Four => b"CAT 4",
+            Self::Three => b"CAT 3",
+            Self::Two => b"CAT 2",
+            Self::One => b"CAT 1",
+            Self::Hors => b"HC",
+        }
     }
 }
 
@@ -167,6 +221,7 @@ struct Climb {
 impl Climb {
     fn summary(&self, distance_mm: u64, time_ms: u64) -> Summary {
         Summary {
+            start_mm: self.start.distance_mm,
             start_altitude_dm: self.start.altitude_dm,
             gain_dm: (self.peak.altitude_dm - self.start.altitude_dm).max(0) as u32,
             length_mm: distance_mm.saturating_sub(self.start.distance_mm),
@@ -739,6 +794,40 @@ mod tests {
         let newest = profile[PROFILE_LEN - 1].altitude_dm;
         assert_eq!(newest - profile[0].altitude_dm, 199 * 20);
         assert_eq!(profile[PROFILE_LEN - 1].grade_tenths, 100);
+    }
+
+    #[test]
+    fn categories_follow_the_climb_score() {
+        for (gain_dm, category) in [
+            (200, Category::Uncategorised),
+            (799, Category::Uncategorised),
+            (800, Category::Four),
+            (1_600, Category::Three),
+            (3_199, Category::Three),
+            (3_200, Category::Two),
+            (4_800, Category::One),
+            (6_400, Category::Hors),
+            (18_000, Category::Hors),
+        ] {
+            assert_eq!(Category::of(gain_dm), category, "{gain_dm}");
+        }
+        assert_eq!(Category::Hors.name(), b"HC");
+    }
+
+    #[test]
+    fn a_climb_knows_where_it_starts() {
+        let mut climbs = Climbs::default();
+        let mut at = 0;
+        let events = ride(&mut climbs, &mut at, 4000, 5000, hill(6));
+        let Some((_, Event::Finished(summary))) = events.last() else {
+            panic!("{events:?}");
+        };
+        // The hill starts 1 km in.
+        assert!(
+            (980_000..=1_020_000).contains(&summary.start_mm),
+            "{summary:?}"
+        );
+        assert_eq!(summary.category(), Category::Four);
     }
 
     #[test]

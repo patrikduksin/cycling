@@ -35,7 +35,7 @@ impl Point {
 
 /// A tile point with its elevation in decimetres (absolute).
 pub fn z_dm(node: Node) -> i32 {
-    i32::from(node.z) - crate::tile::Z_OFFSET_DM
+    i32::from(node.z) * crate::tile::Z_STEP_DM - crate::tile::Z_OFFSET_DM
 }
 
 /// Compass bearing of (east, north), degrees clockwise from north, 0..360.

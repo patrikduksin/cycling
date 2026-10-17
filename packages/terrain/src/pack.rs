@@ -38,7 +38,7 @@ pub enum Error {
 }
 
 pub const MAGIC: &[u8; 16] = b"VANA-TERRAIN\0\0\0\0";
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const HEADER_BYTES: usize = 512;
 pub const ENTRY_BYTES: usize = 8;
 

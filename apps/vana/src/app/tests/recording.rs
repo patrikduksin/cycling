@@ -430,6 +430,7 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
 fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     use crate::ride::climb::{Event as Climb, Summary};
     let finished = Climb::Finished(Summary {
+        start_mm: 0,
         start_altitude_dm: 0,
         gain_dm: 900,
         length_mm: 1_500_000,
@@ -469,6 +470,110 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     runtime.navigation.ride_page = RidePage::Main;
     runtime.navigation.follow_climb(Climb::Confirmed);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+#[test]
+fn the_barometer_ending_a_climb_leaves_the_page_while_the_map_climbs_on() {
+    use crate::ride::climb::{Event as Climb, Summary};
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.ride_climb_event(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    // The map has the rider 1 km from the top of a 5% climb.
+    let road = |m: f64| m.min(1000.0) * 0.05;
+    let arena = std::vec![0u8; crate::app::TERRAIN_ARENA_BYTES].leak();
+    let terrain = std::boxed::Box::new(crate::app::Terrain::new(arena));
+    runtime.attach_terrain(std::boxed::Box::leak(terrain));
+    runtime
+        .forecast_mut()
+        .update(&crate::ride::climb_ahead::tests::ahead(1, 5, road));
+    runtime.ride_climb_event(Climb::Finished(Summary::default()));
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    // Without a climb on the map the barometer's word counts again.
+    runtime
+        .forecast_mut()
+        .update(&crate::ride::climb_ahead::tests::ahead(2, 5, |_| 0.0));
+    runtime.ride_climb_event(Climb::Finished(Summary::default()));
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+/// A runtime with a look-ahead whose forecast has a 5% climb starting
+/// `foot` metres ahead.
+fn climb_on_the_map(runtime: &mut Runtime, foot: f64) {
+    let arena = std::vec![0u8; crate::app::TERRAIN_ARENA_BYTES].leak();
+    let terrain = std::boxed::Box::new(crate::app::Terrain::new(arena));
+    runtime.attach_terrain(std::boxed::Box::leak(terrain));
+    let road = move |m: f64| (m - foot).clamp(0.0, 1000.0) * 0.05;
+    runtime
+        .forecast_mut()
+        .update(&crate::ride::climb_ahead::tests::ahead(1, 5, road));
+}
+
+#[test]
+fn a_climb_the_map_saw_before_the_ride_screen_is_announced_on_it() {
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    climb_on_the_map(&mut runtime, 300.0);
+    runtime.navigation.page = Page::Home;
+    runtime.follow_forecast();
+    on_ride_page(&mut runtime);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    runtime.follow_forecast();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+}
+
+#[test]
+fn the_barometer_does_not_bring_back_a_climb_page_the_rider_left() {
+    use crate::ride::climb::Event as Climb;
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    climb_on_the_map(&mut runtime, 0.0);
+    runtime.follow_forecast();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    runtime.navigation.ride_page_chosen(RidePage::Main);
+    runtime.ride_climb_event(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    // A climb the map did not announce is the barometer's to show.
+    runtime.forecast_mut().forget();
+    runtime.lookahead.as_deref_mut().unwrap().announced = false;
+    runtime.ride_climb_event(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+}
+
+#[test]
+fn a_climb_close_after_another_is_announced_too() {
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    climb_on_the_map(&mut runtime, 0.0);
+    runtime.follow_forecast();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    runtime.navigation.ride_page_chosen(RidePage::Main);
+    // Over the top: 300 m level, then the next climb.
+    let road = |m: f64| (m - 300.0).clamp(0.0, 800.0) * 0.06;
+    runtime
+        .forecast_mut()
+        .update(&crate::ride::climb_ahead::tests::ahead(2, 5, road));
+    runtime.follow_forecast();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+}
+
+#[test]
+fn a_forgotten_forecast_shows_no_climb() {
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    climb_on_the_map(&mut runtime, 0.0);
+    assert!(runtime.forecast().current().is_some());
+    runtime.forecast_mut().forget();
+    assert!(runtime.forecast().current().is_none());
+    assert!(runtime.forecast().upcoming().is_none());
 }
 
 /// A wheel turning once per second (7.7 km/h), or standing still, each second.

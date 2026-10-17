@@ -134,7 +134,8 @@ def test_a_way_crossing_the_bbox_without_a_node_inside_is_kept():
 def test_elevations_a_pack_cannot_hold_are_refused():
     assert pack.decode_z(pack.encode_z(6_108.0)) == pytest.approx(6_108.0)
     assert pack.decode_z(pack.encode_z(-150.0)) == pytest.approx(-150.0)
-    for metres in (6_400.0, -250.0):
+    assert pack.decode_z(pack.encode_z(6_893.0)) == pytest.approx(6_893.0)
+    for metres in (12_700.0, -550.0):
         with pytest.raises(ValueError):
             pack.encode_z(metres)
 

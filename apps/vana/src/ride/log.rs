@@ -296,6 +296,19 @@ pub fn erased(slot: &[u8]) -> bool {
     slot.iter().all(|byte| *byte == 0xff)
 }
 
+/// Whether an invalid slot can be this journal's own interrupted append: its
+/// magic and version bytes are programmed, or partly programmed (NOR flash only
+/// clears bits), but never all still erased.
+pub fn torn_append(slot: &[u8]) -> bool {
+    let expected = [MAGIC[0], MAGIC[1], MAGIC[2], MAGIC[3], VERSION];
+    slot.len() == SLOT_SIZE
+        && !erased(&slot[..expected.len()])
+        && slot
+            .iter()
+            .zip(expected)
+            .all(|(byte, bits)| byte & bits == bits)
+}
+
 /// Active duration at `now`, bounded by an already accepted stop request.
 pub fn active_at(accumulated_ms: u64, running_since: u64, stop_at: Option<u64>, now: u64) -> u64 {
     accumulated_ms.saturating_add(stop_at.unwrap_or(now).saturating_sub(running_since))
@@ -395,9 +408,21 @@ pub struct Catalog {
     pub recovery: Option<Recovery>,
     pub summaries: [Option<Summary>; HISTORY_CAPACITY],
     pub summary_count: u8,
+    /// Slot 0 is occupied but invalid and looks like a torn first append.
+    pub torn_first: bool,
 }
 
 impl Catalog {
+    /// Occupied data the recorder did not write: only explicit initialize may
+    /// erase it. A single torn first append (power lost during the first START
+    /// of a fresh or cleared journal) is the recorder's own and stays in place
+    /// as an occupied invalid slot.
+    pub fn unknown_data(&self) -> bool {
+        self.valid_slots == 0
+            && self.invalid_slots != 0
+            && !(self.invalid_slots == 1 && self.next_slot == 1 && self.torn_first)
+    }
+
     pub fn push_summary(&mut self, summary: Summary) {
         if usize::from(self.summary_count) < HISTORY_CAPACITY {
             self.summaries[usize::from(self.summary_count)] = Some(summary);
@@ -420,6 +445,7 @@ pub struct Scanner {
     summaries: [Option<Summary>; HISTORY_CAPACITY],
     summary_count: u8,
     max_ride_id: u32,
+    torn_first: bool,
 }
 
 impl Scanner {
@@ -438,6 +464,7 @@ impl Scanner {
             let mut slot = Slot::default();
             slot.0.copy_from_slice(bytes);
             let Some(entry) = decode(&slot) else {
+                self.torn_first |= base + index == 0 && torn_append(bytes);
                 self.invalid_slots = self.invalid_slots.saturating_add(1);
                 if let Some(open) = self.open.as_mut() {
                     open.gap = true;
@@ -459,6 +486,7 @@ impl Scanner {
             recovery: self.open,
             summaries: self.summaries,
             summary_count: self.summary_count,
+            torn_first: self.torn_first,
         })
     }
 

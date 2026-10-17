@@ -1,13 +1,16 @@
 //! Incremental scanner and append scheduler for the owned ride region.
 //!
-//! Boot scans without erasing. Unknown occupied data requires explicit initialize;
-//! start never reclaims space. A media failure stops mutation until inspection or
+//! Boot scans without erasing. Unknown occupied data requires explicit initialize,
+//! except one torn first append on an otherwise empty journal, which stays an
+//! occupied invalid slot. Start never reclaims space and needs room for one
+//! sample batch besides the terminal slot. A media failure stops mutation until inspection or
 //! reboot/rescan resolves an uncertain commit. Clear verifies each erased sector
 //! but is not atomic across power loss. Never retry a timed-out mutation blindly.
 //!
 //! Pause/finish freeze active duration when accepted, before flushing. Sampling
-//! does not backfill delayed periods, and the drop counter does not count every
-//! missed period. Reset can lose three buffered samples, or four during commit.
+//! stays on the 1 Hz grid of the start/resume press; late service takes the
+//! due sample late, never backfills, and counts wholly skipped periods as
+//! dropped. Reset can lose three buffered samples, or four during commit.
 //! One operation and its unconsumed completion exclude further mutations.
 
 use crate::ride::control::Action;
@@ -120,6 +123,20 @@ impl Recorder {
 
     pub fn max_write_ms(&self) -> u32 {
         self.max_write_ms
+    }
+
+    /// Optimistic 1 Hz recording time left before the journal is full, after
+    /// reserving START (when no ride is open) and the terminal slot. Each
+    /// pause/resume costs an event slot and may pad a partial batch.
+    pub fn remaining_secs(&self) -> u32 {
+        if matches!(self.status, Status::Full | Status::NeedsInit) {
+            return 0;
+        }
+        let used = self
+            .catalog
+            .next_slot
+            .saturating_sub(usize::from(self.open_ride));
+        crate::ride::reclaim::estimated_seconds(used).saturating_sub(self.sample_count as u32)
     }
 
     pub fn max_erase_ms(&self) -> u32 {
@@ -271,7 +288,13 @@ impl Recorder {
             } else {
                 self.dropped_samples = self.dropped_samples.saturating_add(1);
             }
-            self.next_sample = now + 1_000;
+            // Stay on the 1 Hz grid from the start/resume press so service
+            // latency does not stretch every period; count skipped periods.
+            let missed = (now - self.next_sample) / 1_000;
+            self.dropped_samples = self
+                .dropped_samples
+                .saturating_add(missed.min(u64::from(u32::MAX)) as u32);
+            self.next_sample += (missed + 1) * 1_000;
         }
 
         if self.status == Status::Recovered
@@ -325,6 +348,17 @@ impl Recorder {
                 Action::Finish => Kind::Finish,
             };
             if action == Action::Start {
+                if crate::ride::reclaim::estimated_seconds(self.catalog.next_slot) == 0 {
+                    // No room for START, one sample batch and the terminal record.
+                    self.status = Status::Full;
+                    self.pending = None;
+                    self.result = Some(ResultEvent {
+                        action: Some(action),
+                        token,
+                        ok: false,
+                    });
+                    return true;
+                }
                 self.ride_id = self.catalog.next_ride_id;
                 self.sequence = 0;
             }
@@ -356,6 +390,7 @@ impl Recorder {
                     }
                     Action::Resume => {
                         self.running_since = action_ms;
+                        self.next_sample = action_ms;
                         self.stop_at = None;
                         self.status = Status::Recording;
                     }
@@ -404,7 +439,7 @@ impl Recorder {
         if let Some(catalog) = scanner.finish() {
             self.catalog = catalog;
             self.scanner = None;
-            self.status = if catalog.valid_slots == 0 && catalog.invalid_slots != 0 {
+            self.status = if catalog.unknown_data() {
                 Status::NeedsInit
             } else if catalog.next_slot >= crate::ride::log::SLOTS {
                 Status::Full
@@ -637,6 +672,8 @@ mod tests {
         bytes: Vec<u8>,
         mutations: usize,
         fail_commit: bool,
+        /// Power is lost during the next body write after this many bytes.
+        tear_write: Option<usize>,
     }
     impl Default for Memory {
         fn default() -> Self {
@@ -644,6 +681,7 @@ mod tests {
                 bytes: vec![0xff; crate::ride::log::REGION_SIZE],
                 mutations: 0,
                 fail_commit: false,
+                tear_write: None,
             }
         }
     }
@@ -676,14 +714,16 @@ mod tests {
         }
         fn ride_write_slot(&mut self, slot: usize, data: &Slot) -> Result<(), ()> {
             self.mutations += 1;
+            let torn = self.tear_write.take();
             for (stored, new) in self.bytes
                 [slot * crate::ride::log::SLOT_SIZE..(slot + 1) * crate::ride::log::SLOT_SIZE]
                 .iter_mut()
                 .zip(data.0)
+                .take(torn.unwrap_or(crate::ride::log::SLOT_SIZE))
             {
                 *stored &= new;
             }
-            Ok(())
+            if torn.is_some() { Err(()) } else { Ok(()) }
         }
         fn ride_commit_slot(
             &mut self,
@@ -782,5 +822,144 @@ mod tests {
         let mutations = media.mutations;
         assert!(!recorder.service(&mut media, 200, Sample::default(), &|| 200));
         assert_eq!(media.mutations, mutations);
+    }
+
+    fn start(recorder: &mut Recorder, media: &mut Memory, now: u64) {
+        assert!(recorder.request(Action::Start, Source::Live, now, 1));
+        recorder.service(media, now, Sample::default(), &|| now);
+        assert!(recorder.take_result().unwrap().ok);
+    }
+
+    #[test]
+    fn torn_first_write_on_an_empty_journal_keeps_recording_available() {
+        // Power is lost while the very first START of a fresh or cleared
+        // journal is programmed: commit missing, or only a body prefix.
+        for torn in [crate::ride::log::SLOT_SIZE, 10, 5] {
+            let mut media = Memory::default();
+            let mut recorder = Recorder::default();
+            scan(&mut recorder, &mut media);
+            media.tear_write = Some(torn);
+            assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+            recorder.service(&mut media, 100, Sample::default(), &|| 100);
+            assert_eq!(recorder.status(), Status::Error);
+
+            let mut rebooted = Recorder::default();
+            scan(&mut rebooted, &mut media);
+            assert_eq!(rebooted.status(), Status::Ready, "torn after {torn} bytes");
+            assert_eq!(rebooted.next_slot(), 1);
+            start(&mut rebooted, &mut media, 200);
+            assert!(rebooted.request(Action::Finish, Source::Live, 1_200, 2));
+            for now in [1_200, 1_200] {
+                rebooted.service(&mut media, now, Sample::default(), &|| now);
+            }
+            assert!(rebooted.take_result().unwrap().ok);
+            let mut again = Recorder::default();
+            scan(&mut again, &mut media);
+            assert_eq!((again.status(), again.completed()), (Status::Ready, 1));
+        }
+    }
+
+    #[test]
+    fn foreign_data_in_the_first_slot_still_requires_initialization() {
+        for first in [[0u8; 5], *b"RIDE\x02", [0xff, 0xff, 0xff, 0xff, 0xff]] {
+            let mut media = Memory::default();
+            media.bytes[..5].copy_from_slice(&first);
+            media.bytes[100] = 0;
+            let mut recorder = Recorder::default();
+            scan(&mut recorder, &mut media);
+            assert_eq!(recorder.status(), Status::NeedsInit, "{first:?}");
+        }
+        // Two unknown slots are never treated as one torn append.
+        let mut media = Memory::default();
+        media.bytes[..5].copy_from_slice(b"RIDE\x01");
+        media.bytes[256..261].copy_from_slice(b"RIDE\x01");
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert_eq!(recorder.status(), Status::NeedsInit);
+    }
+
+    #[test]
+    fn late_service_keeps_one_sample_per_active_second() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        start(&mut recorder, &mut media, 100);
+        // The main loop serves the recorder every 30 ms, never exactly on time.
+        let mut now = 100;
+        while now < 100 + 600_000 {
+            now += 30;
+            recorder.service(&mut media, now, Sample::default(), &|| now);
+        }
+        assert!(
+            recorder.written_samples() >= 596,
+            "{}",
+            recorder.written_samples()
+        );
+        assert_eq!(recorder.dropped_samples(), 0);
+    }
+
+    #[test]
+    fn resume_samples_from_the_resume_press_without_counting_the_pause_as_dropped() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        start(&mut recorder, &mut media, 0);
+        for now in (0..=10_000).step_by(10) {
+            recorder.service(&mut media, now, Sample::default(), &|| now);
+        }
+        assert!(recorder.request(Action::Pause, Source::Live, 10_005, 2));
+        for _ in 0..3 {
+            recorder.service(&mut media, 10_005, Sample::default(), &|| 10_005);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert!(recorder.request(Action::Resume, Source::Live, 70_000, 3));
+        recorder.service(&mut media, 70_000, Sample::default(), &|| 70_000);
+        assert!(recorder.take_result().unwrap().ok);
+        for now in (70_000..=80_000).step_by(10) {
+            recorder.service(&mut media, now, Sample::default(), &|| now);
+        }
+        assert!(recorder.request(Action::Finish, Source::Live, 80_005, 4));
+        for _ in 0..3 {
+            recorder.service(&mut media, 80_005, Sample::default(), &|| 80_005);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        // Eleven samples on each side of the pause, none counted as dropped.
+        assert_eq!(recorder.dropped_samples(), 0);
+        assert_eq!(recorder.written_samples(), 22);
+    }
+
+    #[test]
+    fn remaining_time_counts_down_and_start_refuses_a_journal_without_room() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        // 4094 sample slots of four 1 Hz samples: 4 h 32 min 56 s when empty.
+        assert_eq!(recorder.remaining_secs(), 16_376);
+        start(&mut recorder, &mut media, 0);
+        assert_eq!(recorder.remaining_secs(), 16_376);
+        recorder.service(&mut media, 0, Sample::default(), &|| 0);
+        assert_eq!(recorder.remaining_secs(), 16_375);
+
+        // A journal with only the terminal slot and one sample slot left has no
+        // room for START plus a sample, so the rider is told FULL at once.
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        start(&mut recorder, &mut media, 0);
+        assert!(recorder.request(Action::Finish, Source::Live, 0, 2));
+        recorder.service(&mut media, 0, Sample::default(), &|| 0);
+        assert!(recorder.take_result().unwrap().ok);
+        media.bytes[2 * crate::ride::log::SLOT_SIZE
+            ..(crate::ride::log::SLOTS - 2) * crate::ride::log::SLOT_SIZE]
+            .fill(0);
+        let mut nearly = Recorder::default();
+        scan(&mut nearly, &mut media);
+        assert_eq!(nearly.status(), Status::Ready);
+        assert_eq!(nearly.remaining_secs(), 0);
+        assert!(nearly.request(Action::Start, Source::Live, 0, 3));
+        nearly.service(&mut media, 0, Sample::default(), &|| 0);
+        assert!(!nearly.take_result().unwrap().ok);
+        assert_eq!(nearly.status(), Status::Full);
+        assert_eq!(nearly.next_slot(), crate::ride::log::SLOTS - 2);
     }
 }

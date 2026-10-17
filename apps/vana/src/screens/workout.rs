@@ -7,6 +7,9 @@ use crate::sensors::radar;
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
 
+/// Below this much recording time left, the ride state row warns the rider.
+pub const LOW_STORAGE_S: u32 = 60 * 60;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Boot,
@@ -35,6 +38,11 @@ pub struct View {
     pub(super) values: Values,
     /// The status-row lap announcement prepared for this frame, if any.
     pub(super) toast: Text<19>,
+    /// Recording time left in the ride journal, when the recorder can record.
+    pub storage_left_s: Option<u32>,
+    /// The ride state row, prepared once per frame.
+    pub(super) state_text: Text<19>,
+    pub(super) state_warns: bool,
     pub page: Page,
     pub cursor: bool,
     pub time: Text<16>,
@@ -70,8 +78,11 @@ impl View {
             previous_lap: None,
             lap_toast: None,
             ride_page: RidePage::Main,
+            storage_left_s: None,
             values: core::array::from_fn(|_| Text::new()),
             toast: Text::new(),
+            state_text: Text::new(),
+            state_warns: false,
             page,
             cursor,
             time,
@@ -185,7 +196,33 @@ impl View {
         if self.page == Page::Ride {
             self.values = ride::prepare(self);
             self.toast = ride::toast(self.lap_toast);
+            self.prepare_state();
         }
+    }
+
+    fn prepare_state(&mut self) {
+        let mut state = Text::new();
+        let low = self.storage_left_s.filter(|left| *left < LOW_STORAGE_S);
+        self.state_warns = self.stop_confirm || low.is_some();
+        let label = match self.state {
+            Status::Recording => "REC",
+            Status::Paused => "PAUSED",
+            _ => "STORAGE",
+        };
+        let _ = match low {
+            _ if self.stop_confirm => state.push_str("PRESS AGAIN TO SAVE"),
+            Some(left) => write!(state, "{label} {}M LEFT", left / 60),
+            None => state.push_str(match self.state {
+                Status::Recording => "RECORDING",
+                Status::Paused => "PAUSED",
+                Status::Saved => "SAVED",
+                Status::Recovered => "RECOVERED",
+                Status::Error => "STORAGE ERROR",
+                Status::Full => "STORAGE FULL",
+                _ => "READY",
+            }),
+        };
+        self.state_text = state;
     }
 }
 
@@ -412,6 +449,29 @@ mod tests {
         two_laps(&mut view, 10, 250, 9000);
         view.prepare();
         assert!(shows(&view, 6, 296, 2, b"PRESS AGAIN TO SAVE", 0xffe0));
+    }
+
+    #[test]
+    fn ride_page_warns_before_storage_runs_out_and_names_a_recovered_ride() {
+        let mut view = View::new(Page::Ride, false, None);
+        view.state = Status::Recording;
+        view.storage_left_s = Some(42 * 60 + 59);
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"REC 42M LEFT", 0xffe0));
+
+        view.storage_left_s = Some(LOW_STORAGE_S);
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"RECORDING", CYAN));
+
+        view.state = Status::Ready;
+        view.storage_left_s = Some(59);
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"STORAGE 0M LEFT", 0xffe0));
+
+        view.state = Status::Recovered;
+        view.storage_left_s = Some(4 * 3600);
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"RECOVERED", CYAN));
     }
 
     #[test]

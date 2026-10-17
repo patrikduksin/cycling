@@ -145,13 +145,14 @@ impl Runtime {
         };
         if write!(
             output,
-            "state={} slot={} rides={} active_ms={} samples={} dropped={} pending={}",
+            "state={} slot={} rides={} active_ms={} samples={} dropped={} free_s={} pending={}",
             recorder.status().name(),
             recorder.next_slot(),
             recorder.completed(),
             recorder.active_ms(now),
             recorder.written_samples(),
             recorder.dropped_samples(),
+            recorder.remaining_secs(),
             pending
         )
         .is_err()

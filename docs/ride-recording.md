@@ -34,7 +34,10 @@ mise run ride-export                          # Writes .local/exports/<id>/ by d
   interrupted export from zero.
 - Output: raw bytes, SHA-256, manifest, reconstructed ride JSON and GPX. Ride IDs
   restart after clear, so exported identity includes START-slot and raw content hashes.
-- GPX contains only recorded locations and available system UTC. Pause/resume,
+- GPX contains only recorded locations and available system UTC. When the clock
+  synchronizes mid-ride, earlier samples of the same running stretch (no pause,
+  gap or invalid record between) are dated from the first timed sample by active
+  time and marked `utc_derived` in JSON. Pause/resume,
   invalid records, missing locations, sequence gaps and backward UTC split
   segments. A location-free ride keeps raw/JSON and records why GPX is unavailable.
 
@@ -128,10 +131,25 @@ Sensors:
 
 Recording:
 
-- Live rides sample once per second and commit four samples per flash slot.
-  Delayed service can reduce sampling.
-- The 1 MiB reservation holds about 4.5 hours when empty, less existing rides and
-  event records.
+- Live rides sample once per second, on the grid of the start or resume press,
+  and commit four samples per flash slot. Late service delays a sample but does
+  not stretch later periods; wholly skipped periods count as `dropped`.
+- Capacity is shared by every ride until an export and explicit clear; nothing is
+  reclaimed automatically. The 1 MiB reservation is 4,096 slots: 4,094 hold
+  samples once START and the terminal record are reserved, which is 16,376 s
+  (4 h 32 min 56 s) at 1 Hz when empty. Each pause/resume costs two event slots
+  plus the unused part of the batch it flushes (about 10 s of capacity).
+- The connection check shows `STORAGE h:mm LEFT`. Under one hour left, the ride
+  state row turns yellow and reads `STORAGE nM LEFT`, `REC nM LEFT` or
+  `PAUSED nM LEFT`; `RIDE STATUS` reports `free_s`. START is refused (`STORAGE
+  FULL`) without room for one sample batch.
+- When the journal fills mid-ride, the last slot closes the ride with a FULL
+  record, later samples are dropped and the screen shows `STORAGE FULL`. The ride
+  and every earlier ride stay exportable.
+- After power loss, the open ride is closed with a RECOVERED record at its last
+  committed active time and the ride screen shows `RECOVERED`; the next START is
+  a new ride. Power lost during the very first write of an empty journal leaves
+  one occupied invalid slot and recording stays available.
 - Sampling continues with missing sensors or GPS; unavailable measurements stay
   absent. Location-free rides are valid, and export does not invent coordinates,
   satellite metadata, speed or distance.

@@ -169,6 +169,11 @@ impl Runtime {
         view.sample = self.readings.live;
         view.active_secs = self.ride.recorder.active_ms(now) / 1000;
         view.state = self.ride.recorder.status();
+        view.storage_left_s = matches!(
+            view.state,
+            Status::Ready | Status::Saved | Status::Recovered | Status::Recording | Status::Paused
+        )
+        .then(|| self.ride.recorder.remaining_secs());
         view.radar = self.readings.radar.snapshot(now);
         view.stop_confirm = self.ride.stop_confirming(now);
         view.ride_page = navigation.ride_page;
@@ -248,11 +253,19 @@ impl Runtime {
             };
         }
         let _ = write!(view.lines[6], "GPS {}", gps_status);
-        let _ = write!(
-            view.lines[7],
-            "STORAGE {}",
-            self.ride.recorder.status().name()
-        );
+        let recorder = &self.ride.recorder;
+        let _ = match recorder.status() {
+            Status::Ready | Status::Saved | Status::Recovered => {
+                let minutes = recorder.remaining_secs() / 60;
+                write!(
+                    view.lines[7],
+                    "STORAGE {}:{:02} LEFT",
+                    minutes / 60,
+                    minutes % 60
+                )
+            }
+            status => write!(view.lines[7], "STORAGE {}", status.name()),
+        };
         let _ = match self.discovery.scan.overview_message() {
             Some(message) => view.lines[8].push_str(message.text()),
             None => write!(view.lines[8], "RADIO {:?}", ant.availability()),

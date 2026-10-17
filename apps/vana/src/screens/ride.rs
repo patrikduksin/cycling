@@ -12,7 +12,6 @@
 //! module beside `main` with `prepare` and `pixel`, dispatched below.
 use super::workout::{Text, View};
 use crate::ride::laps::Lap;
-use crate::ride::log::Status;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
@@ -161,20 +160,9 @@ fn status_pixel(view: &View, x: usize, y: usize) -> u16 {
             CYAN
         };
     }
-    let state: &[u8] = if view.stop_confirm {
-        b"PRESS AGAIN TO SAVE"
-    } else {
-        match view.state {
-            Status::Recording => b"RECORDING",
-            Status::Paused => b"PAUSED",
-            Status::Saved => b"SAVED",
-            Status::Error => b"STORAGE ERROR",
-            Status::Full => b"STORAGE FULL",
-            _ => b"READY",
-        }
-    };
-    if text(x, y, 6, STATUS_TEXT_TOP, 2, state) {
-        return if view.stop_confirm { YELLOW } else { CYAN };
+    // End-ride confirmation, storage warning or recorder state, prepared once.
+    if text(x, y, 6, STATUS_TEXT_TOP, 2, view.state_text.as_bytes()) {
+        return if view.state_warns { YELLOW } else { CYAN };
     }
     0
 }

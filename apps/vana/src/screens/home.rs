@@ -99,7 +99,8 @@ pub struct Home {
     ride: Small,
     gps: Small,
     /// What is still starting, or why turning off did not happen.
-    status: Option<Small>,
+    /// One line, or two when it is too long for the text column.
+    status: Vec<Small, 2>,
     sensors_title: Small,
     count: Small,
     none: Option<Small>,
@@ -156,7 +157,7 @@ impl Home {
         Self {
             cursor,
             ride: label(b"RIDE", &TITLE, text_left, ride_top, Align::Left, title(0)),
-            status: None,
+            status: Vec::new(),
             gps: label(
                 gps_text,
                 &CAPTION,
@@ -197,10 +198,33 @@ impl Home {
     /// starting, or a problem in amber.
     pub fn set_status(&mut self, text: &[u8], problem: bool) {
         let (left, right) = (TEXT_LEFT + 2, RIDE_TILE.right - 8);
-        let line = Line::fit(&[&CAPTION], text, right - left);
+        let width = right - left;
         let color = if problem { AMBER } else { SECONDARY };
         let top = PLAY.1 + CAPTION.height as usize + 4;
-        self.status = Some(Label::new(line, left, top, Align::Left, color));
+        // Too long for the column: break at the last space that fits.
+        let split = (CAPTION.width(text) + SPILL > width)
+            .then(|| {
+                (1..text.len())
+                    .rev()
+                    .find(|&i| text[i] == b' ' && CAPTION.width(&text[..i]) + SPILL <= width)
+            })
+            .flatten();
+        self.status.clear();
+        let lines: [&[u8]; 2] = match split {
+            Some(i) => [&text[..i], &text[i + 1..]],
+            None => [text, b""],
+        };
+        for (n, part) in lines
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .enumerate()
+        {
+            let line = Line::fit(&[&CAPTION], part, width);
+            let at = top + n * (CAPTION.height as usize + 2);
+            let _ = self
+                .status
+                .push(Label::new(line, left, at, Align::Left, color));
+        }
     }
 
     /// The card under a tap.
@@ -233,7 +257,7 @@ impl Home {
             }
             self.gps.paint(row);
             self.ride.paint(row);
-            if let Some(status) = &self.status {
+            for status in &self.status {
                 status.paint(row);
             }
             let (cx, cy, r) = PLAY;

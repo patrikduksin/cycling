@@ -37,6 +37,12 @@ pub enum Cue {
     BandAlert,
     /// Time to eat and drink.
     Fuel,
+    /// Off the track being followed back.
+    OffTrack,
+    /// Back on it.
+    OnTrack,
+    /// Back at the start, following the track.
+    AtStart,
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +72,9 @@ impl Cue {
             Self::BandAlert => &[High, High],
             // A gentle middle pair, unlike the single lap note.
             Self::Fuel => &[Middle, Middle],
+            Self::OffTrack => &[High, Low],
+            Self::OnTrack => &[Low, Middle],
+            Self::AtStart => &[Low, Middle, High, High],
         }
     }
 

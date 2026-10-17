@@ -393,6 +393,14 @@ impl Session {
         sdk.attach_terrain(terrain_block());
         #[cfg(feature = "cycling")]
         sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
+        // Back to start's breadcrumb, which the device keeps in PSRAM; each
+        // boot gets a fresh one, as device memory starts over.
+        #[cfg(feature = "cycling")]
+        {
+            let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::BACK_CRUMBS]);
+            let back = Box::new(vana::app::BackToStart::new(crumbs));
+            sdk.attach_back(Box::leak(back));
+        }
         Ok(Self {
             shell,
             now: 0,

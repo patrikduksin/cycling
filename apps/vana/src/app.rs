@@ -9,6 +9,8 @@ use device_api::{
     sensors::Snapshot,
 };
 
+mod back;
+pub use back::{BACK_CRUMBS, BackToStart, Crumb};
 mod commands;
 mod cues;
 mod history;
@@ -71,6 +73,8 @@ pub struct Runtime {
     lookahead: Option<&'static mut lookahead::Terrain>,
     motion: motion::Motion,
     alerts: crate::ride::alerts::Alerts,
+    /// Back to start's breadcrumb lives in the block composition gives it.
+    back: Option<&'static mut back::BackToStart>,
 }
 
 impl Runtime {
@@ -97,6 +101,7 @@ impl Runtime {
             lookahead: None,
             motion: motion::Motion::default(),
             alerts: crate::ride::alerts::Alerts::default(),
+            back: None,
         }
     }
 
@@ -233,5 +238,6 @@ impl Runtime {
         self.replay_step(store, bulk);
         self.service_workouts(bulk);
         self.directory_step(store, bulk);
+        self.track_back(now);
     }
 }

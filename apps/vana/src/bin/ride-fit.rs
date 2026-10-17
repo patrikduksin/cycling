@@ -95,6 +95,8 @@ fn main() -> ExitCode {
                 match refusal {
                     Refusal::NoClock => "no UTC in ride; pass --start-utc-ms",
                     Refusal::Empty => "no samples",
+                    Refusal::BadClock =>
+                        "start time outside FIT dates; --start-utc-ms takes milliseconds",
                 }
             ),
         };

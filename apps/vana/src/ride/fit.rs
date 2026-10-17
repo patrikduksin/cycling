@@ -13,10 +13,12 @@
 //!
 //! Time: a sample's UTC is `utc - active` of the running stretch it belongs
 //! to plus its active time, as the host GPX export dates samples. A stretch
-//! without UTC (the clock synchronized later, or never) keeps the previous
-//! stretch's offset, so its pause counts as no time; samples before the
-//! ride's first UTC take that first offset. A ride with no UTC at all needs a
-//! start time from the caller. Timestamps never go backwards.
+//! starts at the start, each resume and each unreadable slot (which may have
+//! hidden a pause). A stretch whose clock arrives part way is dated from it
+//! back to its start: the sizing pass notes those offsets for the writing
+//! pass. A stretch without any UTC keeps the previous stretch's offset, so
+//! its pause counts as no time. A ride with no UTC at all needs a start time
+//! from the caller. Timestamps never go backwards.
 //!
 //! What the journal does not have stays out: there is no altitude (pressure
 //! is not recorded), no laps (they live in RAM only) and no distance without
@@ -214,6 +216,10 @@ pub const MAX_START_OUTPUT: usize = 384;
 /// Output of [`Export::finish`]: the closing event, lap, session, activity and CRC.
 pub const MAX_FINISH_OUTPUT: usize = 192;
 
+/// Stretches whose clock arrives part way that a plan remembers; later
+/// ones keep the previous offset until their clock arrives.
+pub const LATE_STRETCHES: usize = 8;
+
 /// What the sizing pass learned, for the pass that writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plan {
@@ -222,6 +228,11 @@ pub struct Plan {
     /// UTC minus active time of the ride's first dated sample.
     pub offset_ms: Option<u64>,
     pub samples: u32,
+    /// Recorded time of the ride.
+    pub active_ms: u64,
+    /// Stretch number and offset of stretches dated part way.
+    late: [(u32, u64); LATE_STRETCHES],
+    late_count: usize,
 }
 
 impl Plan {
@@ -229,6 +240,13 @@ impl Plan {
     /// one that puts its start at `start_utc_ms`.
     pub fn clock(&self, start_utc_ms: Option<u64>) -> Option<u64> {
         self.offset_ms.or(start_utc_ms)
+    }
+
+    fn late_offset(&self, stretch: u32) -> Option<u64> {
+        self.late[..self.late_count]
+            .iter()
+            .find(|(number, _)| *number == stretch)
+            .map(|(_, offset)| *offset)
     }
 }
 
@@ -253,6 +271,15 @@ pub struct Export {
     first_offset_ms: Option<u64>,
     /// The current running stretch has fixed its offset from its own UTC.
     stretch_dated: bool,
+    /// Running stretches so far, and whether this one began without UTC.
+    stretch: u32,
+    stretch_untimed: bool,
+    /// Offsets of stretches dated part way: the plan's, then those found.
+    plan: Option<Plan>,
+    late: [(u32, u64); LATE_STRETCHES],
+    late_count: usize,
+    /// The latest sample, whose readings hold until the next one or a pause.
+    last_sample: Option<Sample>,
     /// A start or resume waiting for the next sample to date it.
     pending_start: Option<u64>,
     paused: bool,
@@ -286,6 +313,12 @@ impl Export {
             offset_ms: clock.unwrap_or(0),
             first_offset_ms: None,
             stretch_dated: false,
+            stretch: 0,
+            stretch_untimed: false,
+            plan: plan.copied(),
+            late: [(0, 0); LATE_STRETCHES],
+            late_count: 0,
+            last_sample: None,
             pending_start: None,
             paused: false,
             start_ts: None,
@@ -357,13 +390,57 @@ impl Export {
         );
     }
 
+    /// A new running stretch: date it from the plan when the sizing pass
+    /// found its clock part way, else from its first UTC sample.
+    fn new_stretch(&mut self) {
+        self.stretch += 1;
+        self.stretch_dated = false;
+        self.stretch_untimed = false;
+        if let Some(offset) = self.plan.and_then(|plan| plan.late_offset(self.stretch)) {
+            self.offset_ms = offset;
+            self.stretch_dated = true;
+        }
+    }
+
+    /// Account the readings of the last sample up to `active_ms`, as the
+    /// live totals do for the time between a sample and a pause or the end.
+    fn settle(&mut self, active_ms: u64) {
+        let (Some(previous), Some(last)) = (self.previous_active_ms, self.last_sample) else {
+            return;
+        };
+        let elapsed = active_ms.saturating_sub(previous);
+        if elapsed == 0 {
+            return;
+        }
+        let step = last
+            .speed_mm_s
+            .map(|speed| u64::from(speed) * elapsed / 1000);
+        if let Some(step) = step {
+            self.distance_mm = Some(self.distance_mm.unwrap_or(0) + step);
+        }
+        let held = Sample {
+            speed_mm_s: last.speed_mm_s,
+            power_watts: last.power_watts,
+            ..Sample::default()
+        };
+        self.totals.add(elapsed, step.unwrap_or(0), &held, None);
+        self.previous_active_ms = Some(active_ms);
+    }
+
     /// Feed one slot. Returns [`Flow::End`] once the ride's terminal record,
     /// or the next ride's start, arrives.
     pub fn slot(&mut self, slot: &Slot, out: &mut impl Sink) -> Flow {
         match log::decode(slot) {
             Some(entry) => self.entry(&entry, out),
             None if self.ended => Flow::End,
-            None => Flow::More,
+            None => {
+                // An unreadable slot may have been a pause and resume:
+                // take the clock again from the next dated sample.
+                if self.started {
+                    self.new_stretch();
+                }
+                Flow::More
+            }
         }
     }
 
@@ -385,6 +462,7 @@ impl Export {
         match entry.kind {
             Kind::Start => {
                 self.started = true;
+                self.new_stretch();
                 self.pending_start = Some(entry.active_ms);
             }
             _ if !self.started => {}
@@ -394,6 +472,9 @@ impl Export {
                 }
             }
             Kind::Pause => {
+                if !self.paused && self.pending_start.is_none() {
+                    self.settle(entry.active_ms);
+                }
                 self.active_ms = self.active_ms.max(entry.active_ms);
                 // A pause right after a resume, with no sample between, adds nothing.
                 if self.pending_start.take().is_none() && !self.paused {
@@ -403,10 +484,14 @@ impl Export {
             }
             Kind::Resume => {
                 self.paused = false;
-                self.stretch_dated = false;
+                self.last_sample = None;
+                self.new_stretch();
                 self.pending_start = Some(entry.active_ms);
             }
             Kind::Finish | Kind::Recovered | Kind::Full => {
+                if !self.paused && self.pending_start.is_none() {
+                    self.settle(entry.active_ms);
+                }
                 self.active_ms = self.active_ms.max(entry.active_ms);
                 self.ended = true;
                 return Flow::End;
@@ -416,13 +501,24 @@ impl Export {
     }
 
     fn sample(&mut self, sample: &Sample, out: &mut impl Sink) {
-        if let Some(utc) = sample.utc_ms
-            && !self.stretch_dated
-            && let Some(offset) = utc.checked_sub(sample.active_ms)
+        match sample
+            .utc_ms
+            .and_then(|utc| utc.checked_sub(sample.active_ms))
         {
-            self.offset_ms = offset;
-            self.stretch_dated = true;
-            self.first_offset_ms.get_or_insert(offset);
+            Some(offset) if !self.stretch_dated => {
+                self.offset_ms = offset;
+                self.stretch_dated = true;
+                self.first_offset_ms.get_or_insert(offset);
+                if self.stretch_untimed && self.late_count < LATE_STRETCHES {
+                    self.late[self.late_count] = (self.stretch, offset);
+                    self.late_count += 1;
+                }
+            }
+            Some(offset) => {
+                self.first_offset_ms.get_or_insert(offset);
+            }
+            None if !self.stretch_dated => self.stretch_untimed = true,
+            None => {}
         }
         if let Some(active) = self.pending_start.take() {
             self.event(out, active, EVENT_TYPE_START);
@@ -433,6 +529,7 @@ impl Export {
             .active_ms
             .saturating_sub(self.previous_active_ms.unwrap_or(sample.active_ms));
         self.previous_active_ms = Some(sample.active_ms);
+        self.last_sample = Some(*sample);
         self.active_ms = self.active_ms.max(sample.active_ms);
         let step = sample
             .speed_mm_s
@@ -581,6 +678,9 @@ impl Export {
             size: self.writer.written() as u32,
             offset_ms: self.first_offset_ms,
             samples: self.samples,
+            active_ms: self.active_ms,
+            late: self.late,
+            late_count: self.late_count,
         }
     }
 }
@@ -592,6 +692,9 @@ pub enum Refusal {
     NoClock,
     /// The ride has no samples.
     Empty,
+    /// The given start puts the ride outside the dates FIT can hold
+    /// (1990 to 2126), as a start in seconds instead of milliseconds would.
+    BadClock,
 }
 
 /// Decide, after the sizing pass, whether and how the writing pass runs.
@@ -599,7 +702,12 @@ pub fn clock_for(plan: &Plan, start_utc_ms: Option<u64>) -> Result<Option<u64>, 
     if plan.samples == 0 {
         return Err(Refusal::Empty);
     }
-    plan.clock(start_utc_ms).map(Some).ok_or(Refusal::NoClock)
+    let clock = plan.clock(start_utc_ms).ok_or(Refusal::NoClock)?;
+    let end = clock.checked_add(plan.active_ms).ok_or(Refusal::BadClock)?;
+    if fit::timestamp(clock).is_none() || fit::timestamp(end).is_none() {
+        return Err(Refusal::BadClock);
+    }
+    Ok(Some(clock))
 }
 
 /// Both passes over slots held in memory, for hosts and tests: the file of

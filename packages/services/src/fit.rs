@@ -33,10 +33,15 @@ pub fn timestamp(unix_ms: u64) -> Option<u32> {
         .filter(|seconds| *seconds > 0x1000_0000 && *seconds != u32::MAX)
 }
 
-/// Degrees times 10^7 to FIT semicircles (2^31 per 180 degrees).
+/// Degrees times 10^7 to FIT semicircles (2^31 per 180 degrees). +180 is
+/// the same meridian as -180; it becomes -180 because 2^31 - 1 is FIT's
+/// invalid value.
 pub fn semicircles(degrees_e7: i32) -> i32 {
     let value = i64::from(degrees_e7) * (1i64 << 31) / 1_800_000_000;
-    value.clamp(i64::from(i32::MIN) + 1, i64::from(i32::MAX)) as i32
+    if value >= 1i64 << 31 {
+        return i32::MIN;
+    }
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX) - 1) as i32
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -384,7 +389,9 @@ mod tests {
         assert_eq!(timestamp(FIT_EPOCH_UNIX_S * 1000 + 5_000), None);
         assert_eq!(semicircles(900_000_000), 1 << 30);
         assert_eq!(semicircles(-900_000_000), -(1 << 30));
-        assert_eq!(semicircles(1_800_000_000), i32::MAX);
+        assert_eq!(semicircles(1_800_000_000), i32::MIN, "+180 is -180");
+        assert_eq!(semicircles(-1_800_000_000), i32::MIN);
+        assert_eq!(semicircles(1_799_999_999), i32::MAX - 1);
         assert_eq!(semicircles(-333_646_900), -398_056_256);
     }
 

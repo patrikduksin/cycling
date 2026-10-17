@@ -321,3 +321,73 @@ fn an_hour_at_one_hertz_stays_small() {
     let session = decode(&bytes).into_iter().find(|m| m.global == 18).unwrap();
     assert_eq!(session.get(34), Some(200), "normalized power");
 }
+
+fn record_times(bytes: &[u8]) -> Vec<u64> {
+    let t = fit_time(T0);
+    decode(bytes)
+        .iter()
+        .filter(|m| m.global == 20)
+        .map(|r| r.get(253).unwrap() - t)
+        .collect()
+}
+
+#[test]
+fn an_unreadable_slot_takes_the_clock_again() {
+    // The damaged slot hid a pause and resume of a minute.
+    let mut late = sample(2_000, true);
+    late.utc_ms = Some(T0 + 62_000);
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &[sample(1_000, true)]).unwrap()),
+        Slot([0x33; 256]),
+        slot(&Entry::batch(Source::Live, 3, 4, &[late]).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 5, 2_000)),
+    ];
+    let (_, bytes) = file(&slots, None).unwrap();
+    assert_eq!(record_times(&bytes), [1, 62]);
+}
+
+#[test]
+fn a_resumed_stretch_dated_part_way_is_dated_from_its_start() {
+    let mut slots = ride(true, 60_000);
+    let mut second: Vec<Sample> = (5..=8).map(|i| sample(i * 1000, true)).collect();
+    for (index, sample) in second.iter_mut().enumerate() {
+        sample.utc_ms = (index >= 2).then(|| T0 + sample.active_ms + 60_000);
+    }
+    slots[4] = slot(&Entry::batch(Source::Live, 3, 4, &second).unwrap());
+    let (_, bytes) = file(&slots, None).unwrap();
+    assert_eq!(record_times(&bytes), [1, 2, 3, 4, 65, 66, 67, 68]);
+    let t = fit_time(T0);
+    let events: Vec<u64> = decode(&bytes)
+        .iter()
+        .filter(|m| m.global == 21)
+        .map(|m| m.get(253).unwrap() - t)
+        .collect();
+    assert_eq!(events, [0, 4, 64, 68]);
+}
+
+#[test]
+fn time_between_the_last_sample_and_a_pause_counts() {
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &[sample(1_000, true)]).unwrap()),
+        slot(&Entry::event(Kind::Pause, Source::Live, 3, 2, 1_500)),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 3, 1_500)),
+    ];
+    let (_, bytes) = file(&slots, None).unwrap();
+    let session = decode(&bytes).into_iter().find(|m| m.global == 18).unwrap();
+    assert_eq!(session.get(9), Some(1_200), "8 m/s for 1.5 s");
+    assert_eq!(session.get(8), Some(1_500));
+}
+
+#[test]
+fn a_start_outside_fit_dates_is_refused() {
+    let slots = ride(false, 0);
+    for start in [0, T0 / 1000, u64::MAX - 1] {
+        assert_eq!(
+            file(&slots, Some(start)).unwrap_err(),
+            Refusal::BadClock,
+            "{start}"
+        );
+    }
+}

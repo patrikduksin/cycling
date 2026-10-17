@@ -141,7 +141,7 @@ fn init() -> Resources {
     let bus = I8080::new(
         lcd.lcd,
         p.DMA_CH0,
-        Config::default().with_frequency(Rate::from_mhz(10)),
+        Config::default().with_frequency(Rate::from_mhz(LCD_WR_MHZ)),
     )
     .unwrap()
     .with_cs(p.GPIO2)
@@ -231,6 +231,10 @@ fn init() -> Resources {
 }
 
 /// Handles expose capabilities, never raw peripheral tokens to consumers.
+/// ST7789 write-cycle clock. Its datasheet allows a 66 ns write cycle
+/// (15.15 MHz); validated on hardware (#167).
+const LCD_WR_MHZ: u32 = 15;
+
 pub struct Input;
 impl device_api::input::InputSource for Input {
     fn controls(&self) -> device_api::input::Controls {

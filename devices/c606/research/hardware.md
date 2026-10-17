@@ -31,7 +31,11 @@
 | D8–D15 | 8, 34, 9, 33, 10, 47, 11, 48 |
 | Backlight | 45 |
 
-RD stays high. Display initialization comes from the main routine at `0x4202aa2c`
+RD stays high. Frames use a write cycle clock of 15 MHz (the ST7789 minimum
+write cycle is 66 ns) and set the column and row window once per frame, then
+send 16-row strips with RAMWR followed by RAMWRC (`0x3c`) (#167). The bus
+completes these transfers without errors; panel output at this clock still
+needs a visual check. Display initialization comes from the main routine at `0x4202aa2c`
 and ST7789 configuration at `0x4202aec4`. The tested unit's board-version predicate
 does not enable optional GPIO43/44 handling. Do not copy pin assignments to another
 board revision without checking.

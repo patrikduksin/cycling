@@ -1,177 +1,386 @@
-//! Settings: the training profile, one field at a time.
+//! Settings: grouped sections of rows, one section per page.
 //!
-//! Buttons keep their system roles. BottomLeft moves to the next field,
-//! BottomRight edits it and TopLeft goes back Home. While a field is being
-//! edited, BottomLeft lowers and BottomRight raises it by `STEP`, and TopLeft
-//! finishes. Touch does the same directly: tap a field to edit it, then tap
-//! the large minus and plus pads. The runtime prepares the lines; this draws
+//! Buttons keep their system roles. BottomLeft moves to the next row (the
+//! page follows into the next section), BottomRight acts on it and TopLeft
+//! goes back Home. Acting cycles a choice, opens a page or edits a number.
+//! While a number is edited, BottomLeft lowers and BottomRight raises it by
+//! `STEP`, and TopLeft finishes. Touch does the same directly: swipe between
+//! sections, tap a row to act on it, and tap the large minus and plus pads
+//! while editing. The runtime prepares each row's value and note; this draws
 //! them and maps touches to `Target`s.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
-    ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, RAISED, Rect, SECONDARY, VALUE, WHITE,
+    ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, Line, RAISED, Rect, SECONDARY, TITLE, VALUE,
+    WHITE,
 };
 use super::workout::View;
 
-const RADIUS: usize = 12;
-/// Text keeps this far inside a field or pad.
-const INSET: usize = 14;
+/// Every row, in BottomLeft order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    Ftp,
+    Threshold,
+    Brightness,
+    AutoDim,
+    AutoPause,
+    AutoLap,
+    Sounds,
+    Sensors,
+    Phone,
+    Storage,
+    Firmware,
+}
 
-/// Editable fields, in BottomLeft order, with their units.
-pub const FIELDS: [&[u8]; 2] = [b"FTP WATTS", b"LTHR BPM"];
-/// Each press or tap moves a field by this much.
+/// What acting on a row does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Opens the number editor.
+    Number,
+    /// Steps to the next choice.
+    Choice,
+    /// Opens another page or flow.
+    Open,
+    /// Shows a fact; acting does nothing.
+    Info,
+}
+
+/// What an `Open` row asks the runtime for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsAction {
+    /// The sensor menu.
+    Sensors,
+    /// Pair a phone. A placeholder until the phone companion lands.
+    ConnectPhone,
+}
+
+/// Sections in order, each with its title and the rows it holds.
+pub const SECTIONS: [(&str, &[Row]); 5] = [
+    ("PROFILE", &[Row::Ftp, Row::Threshold]),
+    ("DISPLAY", &[Row::Brightness, Row::AutoDim]),
+    ("RIDE", &[Row::AutoPause, Row::AutoLap]),
+    ("SOUND", &[Row::Sounds]),
+    (
+        "DEVICE",
+        &[Row::Sensors, Row::Phone, Row::Storage, Row::Firmware],
+    ),
+];
+
+/// The most rows a section shows.
+pub const SECTION_ROWS: usize = 4;
+/// All rows, the cursor's range.
+pub const ROWS: usize = {
+    let mut count = 0;
+    let mut i = 0;
+    while i < SECTIONS.len() {
+        count += SECTIONS[i].1.len();
+        i += 1;
+    }
+    count
+};
+
+impl Row {
+    /// The row at cursor position `index`, wrapping.
+    pub fn at(index: usize) -> Self {
+        let mut index = index % ROWS;
+        for (_, rows) in SECTIONS {
+            if index < rows.len() {
+                return rows[index];
+            }
+            index -= rows.len();
+        }
+        unreachable!("index is below ROWS")
+    }
+
+    /// The row's cursor position.
+    pub fn index(self) -> usize {
+        let mut first = 0;
+        for (_, rows) in SECTIONS {
+            if let Some(i) = rows.iter().position(|row| *row == self) {
+                return first + i;
+            }
+            first += rows.len();
+        }
+        unreachable!("every row is in a section")
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ftp => "FTP WATTS",
+            Self::Threshold => "LTHR BPM",
+            Self::Brightness => "BRIGHTNESS",
+            Self::AutoDim => "DIM AFTER",
+            Self::AutoPause => "AUTO PAUSE",
+            Self::AutoLap => "AUTO LAP",
+            Self::Sounds => "SOUNDS",
+            Self::Sensors => "SENSORS",
+            Self::Phone => "PHONE",
+            Self::Storage => "STORAGE",
+            Self::Firmware => "FIRMWARE",
+        }
+    }
+
+    pub const fn action(self) -> Option<SettingsAction> {
+        match self {
+            Self::Sensors => Some(SettingsAction::Sensors),
+            Self::Phone => Some(SettingsAction::ConnectPhone),
+            _ => None,
+        }
+    }
+
+    pub const fn kind(self) -> Kind {
+        match self {
+            Self::Ftp | Self::Threshold => Kind::Number,
+            Self::Brightness | Self::AutoDim | Self::AutoPause | Self::AutoLap | Self::Sounds => {
+                Kind::Choice
+            }
+            Self::Sensors | Self::Phone => Kind::Open,
+            Self::Storage | Self::Firmware => Kind::Info,
+        }
+    }
+}
+
+/// The section holding cursor position `index`, and its first position.
+pub fn section(index: usize) -> (usize, usize) {
+    let mut first = 0;
+    for (section, (_, rows)) in SECTIONS.iter().enumerate() {
+        if index % ROWS < first + rows.len() {
+            return (section, first);
+        }
+        first += rows.len();
+    }
+    unreachable!("index is below ROWS")
+}
+
+/// The first cursor position of `section`, wrapping.
+pub fn first_of(section: usize) -> usize {
+    SECTIONS[..section % SECTIONS.len()]
+        .iter()
+        .map(|(_, rows)| rows.len())
+        .sum()
+}
+
+/// Each press or tap moves a number by this much.
 pub const STEP: u16 = 5;
 
 /// Lines the runtime prepares for this page.
-pub const TITLE: usize = 0;
-/// Field values, then the zone each field anchors, in `FIELDS` order.
+pub const STATUS: usize = 0;
+/// Each shown row's value, in section order; the edited number's value.
 pub const VALUES: usize = 1;
-pub const ANCHORS: usize = 3;
-/// Whether the profile is saved, or why not.
-pub const STATUS: usize = 5;
+/// A note beside each value, such as the zone a number anchors.
+pub const NOTES: usize = VALUES + SECTION_ROWS;
 
-const LEFT: usize = 12;
-const RIGHT: usize = 228;
-const BOX_TOP: usize = 50;
-const BOX_PITCH: usize = 78;
-const BOX_HEIGHT: usize = 72;
-/// Minus and plus pads, shown while a field is edited.
+const RADIUS: usize = 12;
+/// Text keeps this far inside a row or pad.
+const INSET: usize = 16;
+const LEFT: usize = 10;
+const RIGHT: usize = 230;
+const TITLE_BASE: usize = 62;
+const ROW_TOP: usize = 76;
+const ROW_HEIGHT: usize = 46;
+const ROW_PITCH: usize = 52;
+const FOCUS: usize = 3;
+/// The number editor's field and its minus and plus pads.
+const FIELD_TOP: usize = 76;
+const FIELD_HEIGHT: usize = 92;
 const PAD_TOP: usize = 208;
 const PAD_HEIGHT: usize = 58;
 const PAD_SPLIT: usize = 120;
 const PAD_GAP: usize = 4;
-const STATUS_TOP: usize = 272;
+const STATUS_BASE: usize = 300;
 
 /// What a touch landed on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    Field(usize),
+    /// A row's cursor position.
+    Row(usize),
     Lower,
     Raise,
 }
 
-/// The target under a touch at panel point (`x`, `y`). Pads only count while
-/// a field is being edited.
-pub fn target(x: usize, y: usize, editing: bool) -> Option<Target> {
+fn row_rect(slot: usize) -> Rect {
+    let top = ROW_TOP + slot * ROW_PITCH;
+    Rect {
+        left: LEFT,
+        top,
+        right: RIGHT,
+        bottom: top + ROW_HEIGHT,
+    }
+}
+
+/// The target under a touch at panel point (`x`, `y`) on the section that
+/// holds `cursor`: its rows, or the pads while a number is edited.
+pub fn target(x: usize, y: usize, cursor: usize, editing: bool) -> Option<Target> {
     if !(LEFT..RIGHT).contains(&x) {
         return None;
     }
-    if let Some(field) = (0..FIELDS.len()).find(|i| {
-        let top = BOX_TOP + i * BOX_PITCH;
-        (top..top + BOX_HEIGHT).contains(&y)
-    }) {
-        return Some(Target::Field(field));
+    if editing {
+        return (PAD_TOP..PAD_TOP + PAD_HEIGHT)
+            .contains(&y)
+            .then_some(if x < PAD_SPLIT {
+                Target::Lower
+            } else {
+                Target::Raise
+            });
     }
-    if editing && (PAD_TOP..PAD_TOP + PAD_HEIGHT).contains(&y) {
-        return Some(if x < PAD_SPLIT {
-            Target::Lower
-        } else {
-            Target::Raise
-        });
-    }
-    None
+    let (section, first) = section(cursor);
+    (0..SECTIONS[section].1.len())
+        .find(|slot| {
+            let rect = row_rect(*slot);
+            (rect.top..rect.bottom).contains(&y)
+        })
+        .map(|slot| Target::Row(first + slot))
 }
 
-/// The fields, the pads while editing, the title and the save status.
+/// The section's rows, or the number editor, with the save status.
 pub(super) fn prepare(view: &View) -> Canvas {
-    let lines = &view.lines;
     let mut canvas = Canvas::default();
-    canvas.caption(lines[TITLE].as_bytes(), RIGHT - LEFT, LEFT, 40, Align::Left);
-    for (i, label) in FIELDS.iter().enumerate() {
-        let top = BOX_TOP + i * BOX_PITCH;
-        let rect = Rect {
-            left: LEFT,
-            top,
-            right: RIGHT,
-            bottom: top + BOX_HEIGHT,
-        };
-        // Every field can be tapped, so each sits on a card; the selected one
-        // is raised, and accent while it is edited.
-        let selected = view.cursor == i;
-        let editing = selected && view.editing;
-        let color = match (selected, editing) {
-            (_, true) => ACCENT,
-            (true, false) => RAISED,
-            _ => CARD,
-        };
-        canvas.shape(Shape::Panel {
-            rect,
-            radius: RADIUS,
-            color,
-        });
-        // The field's name, its value, then the zone it anchors.
-        let quiet = if editing { WHITE } else { SECONDARY };
-        let (left, width) = (LEFT + INSET, RIGHT - LEFT - 2 * INSET);
+    let (section, first) = section(view.cursor);
+    let (title, rows) = SECTIONS[section];
+    let row = Row::at(view.cursor);
+    if view.editing && row.kind() == Kind::Number {
+        editor(&mut canvas, view, title, row);
+    } else {
         canvas.fit(
-            &[&CAPTION],
-            label,
-            width,
-            left,
-            top + 22,
-            Align::Left,
-            quiet,
-        );
-        let value = lines[VALUES + i].as_bytes();
-        canvas.fit(
-            &[&VALUE, &BODY],
-            value,
-            width,
-            left,
-            top + 52,
+            &[&TITLE],
+            title.as_bytes(),
+            RIGHT - LEFT,
+            LEFT,
+            TITLE_BASE,
             Align::Left,
             WHITE,
         );
-        let anchor = lines[ANCHORS + i].as_bytes();
-        canvas.fit(
-            &[&CAPTION],
-            anchor,
-            width,
-            left,
-            top + 66,
-            Align::Left,
-            quiet,
-        );
-    }
-    if view.editing {
-        for (left, right, label) in [
-            (LEFT, PAD_SPLIT - PAD_GAP, b"-5"),
-            (PAD_SPLIT + PAD_GAP, RIGHT, b"+5"),
-        ] {
-            canvas.shape(Shape::Panel {
-                rect: Rect {
-                    left,
-                    top: PAD_TOP,
-                    right,
-                    bottom: PAD_TOP + PAD_HEIGHT,
-                },
-                radius: RADIUS,
-                color: RAISED,
-            });
-            let base = PAD_TOP + (PAD_HEIGHT + LARGE.cap as usize) / 2;
-            let middle = (left + right) / 2;
-            canvas.fit(
-                &[&LARGE],
-                label,
-                right - left,
-                middle,
-                base,
-                Align::Center,
-                WHITE,
-            );
+        for (slot, row) in rows.iter().enumerate() {
+            row_card(&mut canvas, view, slot, *row, first + slot == view.cursor);
         }
     }
-    let status = lines[STATUS].as_bytes();
+    // A toast takes the bottom band; the save status waits under it.
+    if view.toast.is_some() {
+        return canvas;
+    }
+    let status = view.lines[STATUS].as_bytes();
     let fine = matches!(status, b"SAVED" | b"SAVING");
-    let color = if fine { SECONDARY } else { AMBER };
     canvas.fit(
         &[&CAPTION],
         status,
         RIGHT - LEFT,
         LEFT,
-        STATUS_TOP + 12,
+        STATUS_BASE,
         Align::Left,
-        color,
+        if fine { SECONDARY } else { AMBER },
     );
     canvas
+}
+
+/// A row: its label over its value, and a note at the right. Every row can
+/// be tapped, so each sits on a small card; the focused one is raised and
+/// ringed.
+fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bool) {
+    let rect = row_rect(slot);
+    if focused {
+        canvas.shape(Shape::Panel {
+            rect,
+            radius: RADIUS,
+            color: ACCENT,
+        });
+    }
+    canvas.shape(Shape::Panel {
+        rect: if focused { rect.inset(FOCUS) } else { rect },
+        radius: if focused { RADIUS - FOCUS } else { RADIUS },
+        color: if focused { RAISED } else { CARD },
+    });
+    let (left, right) = (LEFT + INSET, RIGHT - INSET);
+    canvas.caption(
+        row.label().as_bytes(),
+        right - left,
+        left,
+        rect.top + 19,
+        Align::Left,
+    );
+    let base = rect.top + 38;
+    let value = canvas.fit(
+        &[&BODY, &CAPTION],
+        view.lines[VALUES + slot].as_bytes(),
+        right - left,
+        left,
+        base,
+        Align::Left,
+        WHITE,
+    );
+    // A note that does not fit whole beside the value is left out.
+    let note = view.lines[NOTES + slot].as_bytes();
+    let room = right.saturating_sub(value.right() + 12);
+    if !note.is_empty() && Line::<24>::new(&CAPTION, note).width() <= room {
+        canvas.caption(note, room, right, base, Align::Right);
+    }
+}
+
+/// The edited number on an accent field, with its note, then the pads.
+fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
+    canvas.caption(title.as_bytes(), RIGHT - LEFT, LEFT, 44, Align::Left);
+    let rect = Rect {
+        left: LEFT,
+        top: FIELD_TOP,
+        right: RIGHT,
+        bottom: FIELD_TOP + FIELD_HEIGHT,
+    };
+    canvas.shape(Shape::Panel {
+        rect,
+        radius: RADIUS,
+        color: ACCENT,
+    });
+    let (left, width) = (LEFT + INSET, RIGHT - LEFT - 2 * INSET);
+    canvas.fit(
+        &[&CAPTION],
+        row.label().as_bytes(),
+        width,
+        left,
+        rect.top + 24,
+        Align::Left,
+        WHITE,
+    );
+    canvas.fit(
+        &[&VALUE, &BODY],
+        view.lines[VALUES].as_bytes(),
+        width,
+        left,
+        rect.top + 60,
+        Align::Left,
+        WHITE,
+    );
+    canvas.fit(
+        &[&CAPTION],
+        view.lines[NOTES].as_bytes(),
+        width,
+        left,
+        rect.top + 80,
+        Align::Left,
+        WHITE,
+    );
+    for (left, right, label) in [
+        (LEFT, PAD_SPLIT - PAD_GAP, b"-5"),
+        (PAD_SPLIT + PAD_GAP, RIGHT, b"+5"),
+    ] {
+        canvas.shape(Shape::Panel {
+            rect: Rect {
+                left,
+                top: PAD_TOP,
+                right,
+                bottom: PAD_TOP + PAD_HEIGHT,
+            },
+            radius: RADIUS,
+            color: RAISED,
+        });
+        let base = PAD_TOP + (PAD_HEIGHT + LARGE.cap as usize) / 2;
+        canvas.fit(
+            &[&LARGE],
+            label,
+            right - left,
+            (left + right) / 2,
+            base,
+            Align::Center,
+            WHITE,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -179,17 +388,25 @@ mod tests {
     use super::*;
     use crate::screens::workout::Page;
 
-    fn view(cursor: usize, editing: bool) -> View {
+    fn view(cursor: usize, editing: bool, values: &[(&str, &str)], status: &str) -> View {
         let mut view = View::new(Page::Settings, cursor, None);
         view.editing = editing;
-        let _ = view.lines[TITLE].push_str("TRAINING PROFILE");
-        let _ = view.lines[VALUES].push_str("215");
-        let _ = view.lines[VALUES + 1].push_str("185");
-        let _ = view.lines[ANCHORS].push_str("Z4 195-226 W");
-        let _ = view.lines[ANCHORS + 1].push_str("Z5 FROM 170 BPM");
-        let _ = view.lines[STATUS].push_str("SAVED");
+        for (slot, (value, note)) in values.iter().enumerate() {
+            let _ = view.lines[VALUES + slot].push_str(value);
+            let _ = view.lines[NOTES + slot].push_str(note);
+        }
+        let _ = view.lines[STATUS].push_str(status);
         view.prepare();
         view
+    }
+
+    fn profile(cursor: usize, editing: bool) -> View {
+        let values: &[(&str, &str)] = if editing {
+            &[("215", "Z4 195-226 W")]
+        } else {
+            &[("215", "Z4 195-226 W"), ("185", "Z5 FROM 170 BPM")]
+        };
+        view(cursor, editing, values, "SAVED")
     }
 
     fn panels(view: &View) -> std::vec::Vec<(Rect, u16)> {
@@ -204,25 +421,43 @@ mod tests {
     }
 
     #[test]
-    fn raises_the_selected_field_and_fills_it_while_editing() {
-        let moving = view(1, false);
-        let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
-        assert_eq!(colors, [CARD, RAISED], "no pads");
-        assert_eq!(moving.pixel(LEFT, BOX_TOP), 0, "rounded corner");
-        assert_eq!(moving.canvas.find("215").map(|run| run.color), Some(WHITE));
-        assert!(moving.canvas.find("215").unwrap().line.face().cap == VALUE.cap);
-        // No permanent button labels.
-        assert!((0..240).all(|x| (300..320).all(|y| moving.pixel(x, y) == 0)));
+    fn rows_walk_every_section_in_order() {
+        assert_eq!(ROWS, 11);
+        for index in 0..ROWS {
+            assert_eq!(Row::at(index).index(), index);
+            let (section, first) = section(index);
+            assert_eq!(first_of(section), first);
+            assert!(SECTIONS[section].1.len() <= SECTION_ROWS);
+        }
+        assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
+        assert_eq!(section(Row::Sounds.index()), (3, Row::Sounds.index()));
+        assert_eq!(first_of(SECTIONS.len()), 0);
+    }
 
-        let editing = view(1, true);
+    #[test]
+    fn rings_the_focused_row_and_fills_the_edited_number() {
+        let moving = profile(1, false);
+        let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
+        assert_eq!(colors, [CARD, ACCENT, RAISED], "no pads");
+        assert_eq!(moving.pixel(LEFT, ROW_TOP), 0, "rounded corner");
+        let second = row_rect(1);
+        assert_eq!(moving.pixel(LEFT + 1, second.top + 20), ACCENT, "ring");
+        assert_eq!(moving.pixel(LEFT + 6, second.top + 20), RAISED);
+        assert!(moving.canvas.shows("PROFILE") && moving.canvas.shows("Z4 195-226 W"));
+        assert_eq!(moving.canvas.find("215").map(|run| run.color), Some(WHITE));
+        // No permanent button labels.
+        assert!((0..240).all(|x| (306..320).all(|y| moving.pixel(x, y) == 0)));
+
+        let editing = profile(0, true);
         let colors: std::vec::Vec<_> = panels(&editing).iter().map(|(_, c)| *c).collect();
-        assert_eq!(colors, [CARD, ACCENT, RAISED, RAISED]);
-        assert_eq!(editing.pixel(20, BOX_TOP + BOX_PITCH + 10), ACCENT);
+        assert_eq!(colors, [ACCENT, RAISED, RAISED]);
+        assert!(editing.canvas.find("215").unwrap().line.face().cap == VALUE.cap);
+        assert!(editing.canvas.shows("FTP WATTS") && !editing.canvas.shows("LTHR BPM"));
         assert!(editing.canvas.shows("-5") && editing.canvas.shows("+5"));
         assert_eq!(editing.pixel(LEFT + 2, PAD_TOP + 20), RAISED);
     }
 
-    /// Long values, anchors and statuses still lay out whole on every field.
+    /// Long values, notes and statuses still lay out whole on every section.
     #[test]
     fn extreme_settings_never_overlap_or_clip() {
         let screen = Rect {
@@ -231,21 +466,32 @@ mod tests {
             right: 240,
             bottom: 320,
         };
-        for cursor in 0..FIELDS.len() {
+        let long = [
+            ("1000", "Z4 905-1050 W"),
+            ("220", "Z5 FROM 220 BPM"),
+            ("COMING SOON", ""),
+            ("99H LEFT", "120 RIDES"),
+        ];
+        for cursor in 0..ROWS {
             for editing in [false, true] {
                 for status in ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"] {
-                    let mut view = View::new(Page::Settings, cursor, None);
-                    view.editing = editing;
-                    let _ = view.lines[TITLE].push_str("TRAINING PROFILE");
-                    let _ = view.lines[VALUES].push_str("1000");
-                    let _ = view.lines[VALUES + 1].push_str("220");
-                    let _ = view.lines[ANCHORS].push_str("Z4 905-1050 W");
-                    let _ = view.lines[ANCHORS + 1].push_str("Z5 FROM 220 BPM");
-                    let _ = view.lines[STATUS].push_str(status);
-                    view.prepare();
+                    let view = view(cursor, editing, &long, status);
+                    let (section, _) = section(cursor);
+                    let shown = if editing && Row::at(cursor).kind() == Kind::Number {
+                        1
+                    } else {
+                        SECTIONS[section].1.len()
+                    };
+                    let mut texts = std::vec![status];
+                    for (value, note) in &long[..shown] {
+                        texts.push(value);
+                        if !note.is_empty() {
+                            texts.push(note);
+                        }
+                    }
                     view.canvas.assert_laid_out(
                         screen,
-                        &["1000", "220", "Z4 905-1050 W", "Z5 FROM 220 BPM", status],
+                        &texts,
                         &std::format!("{cursor} {editing} {status}"),
                     );
                 }
@@ -254,16 +500,21 @@ mod tests {
     }
 
     #[test]
-    fn touches_find_fields_and_pads_only_while_editing() {
-        assert_eq!(target(100, BOX_TOP + 10, false), Some(Target::Field(0)));
+    fn touches_find_rows_of_the_shown_section_and_pads_only_while_editing() {
+        let row = |slot| ROW_TOP + slot * ROW_PITCH + 10;
+        assert_eq!(target(100, row(0), 0, false), Some(Target::Row(0)));
+        assert_eq!(target(200, row(1), 0, false), Some(Target::Row(1)));
+        assert_eq!(target(100, row(2), 0, false), None, "profile has two rows");
+        let device = Row::Sensors.index();
         assert_eq!(
-            target(200, BOX_TOP + BOX_PITCH + 70, true),
-            Some(Target::Field(1))
+            target(100, row(3), device, false),
+            Some(Target::Row(device + 3))
         );
-        assert_eq!(target(100, BOX_TOP + BOX_HEIGHT + 2, false), None);
-        assert_eq!(target(30, PAD_TOP + 10, false), None);
-        assert_eq!(target(30, PAD_TOP + 10, true), Some(Target::Lower));
-        assert_eq!(target(200, PAD_TOP + 10, true), Some(Target::Raise));
-        assert_eq!(target(5, PAD_TOP + 10, true), None);
+        assert_eq!(target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false), None);
+        assert_eq!(target(30, PAD_TOP + 10, 0, false), None);
+        assert_eq!(target(30, PAD_TOP + 10, 0, true), Some(Target::Lower));
+        assert_eq!(target(200, PAD_TOP + 10, 0, true), Some(Target::Raise));
+        assert_eq!(target(100, row(0), 0, true), None);
+        assert_eq!(target(5, PAD_TOP + 10, 0, true), None);
     }
 }

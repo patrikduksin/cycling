@@ -1,5 +1,5 @@
-//! VANA's persisted cycling preferences: the training profile and the ANT
-//! sensors the rider selected.
+//! VANA's persisted cycling preferences: the training profile, the ANT
+//! sensors the rider selected and the ride, display and sound options.
 //!
 //! The record lives in the application area of the shell settings envelope,
 //! which the shell stores and carries through its own saves without reading
@@ -7,20 +7,27 @@
 //!
 //! | Byte | Field | Since |
 //! | --- | --- | --- |
-//! | 0 | Record version, 2 | 1 |
+//! | 0 | Record version, 3 | 1 |
 //! | 1..3 | FTP in watts, little-endian | 1 |
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type | 2 |
+//! | then | Flags: bit 0 auto-pause, bit 1 sounds; other bits zero | 3 |
+//! | then | Auto-lap distance in km, 0 for off, at most 100 | 3 |
+//! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
+//! | then | First-run setup step to resume, 0 when setup is done | 3 |
+//! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) | 3 |
 //!
-//! Version 1 is exactly five bytes; it loads with no saved sensors and the next
-//! save rewrites it as version 2. A version 2 record is `6 + 4 * count` bytes,
-//! at most 46.
+//! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
+//! Both load with the default options and setup done, since a rider already
+//! used them, and the next save rewrites them as version 3. A version 3
+//! record is `19 + 4 * count` bytes, at most 59.
 //!
-//! An empty area means nothing was saved yet: the defaults apply and the
-//! first change writes a record. A record VANA cannot read, from a newer
-//! firmware or damaged, also leaves the defaults in force, but stays stored
-//! untouched until the rider explicitly overwrites it (`PROFILE OVERWRITE`).
+//! An empty area means nothing was saved yet: the defaults apply, first-run
+//! setup is due, and the first change writes a record. A record VANA cannot
+//! read, from a newer firmware or damaged, also leaves the defaults in force,
+//! but stays stored untouched until the rider explicitly overwrites it
+//! (`PROFILE OVERWRITE`).
 use super::Runtime;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
@@ -31,12 +38,124 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const PROFILE_LENGTH: usize = 5;
-const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY;
+const ALERTS_LENGTH: usize = 9;
+const OPTIONS_LENGTH: usize = 4 + ALERTS_LENGTH;
+const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY + OPTIONS_LENGTH;
 /// Edits settle this long before a flash write, so a run of presses saves once.
 const DEBOUNCE_MS: u64 = 2_000;
 const RETRY_MS: u64 = 5_000;
+const AUTO_PAUSE: u8 = 1 << 0;
+const SOUNDS: u8 = 1 << 1;
+/// The longest automatic lap a record may hold.
+pub const AUTO_LAP_MAX_KM: u8 = 100;
+
+/// Ride alerts as stored: heart low and high (bpm), power low and high (W,
+/// little-endian), cadence low (rpm), fuel reminder (minutes) and radar
+/// (1 on), with 0 for off. The record carries them whole; the alerts
+/// decode and check them. All off but the radar.
+pub const ALERTS_DEFAULT: [u8; ALERTS_LENGTH] = [0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+/// When the screen follows the sun, or keeps one look.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Daylight {
+    #[default]
+    Auto,
+    Day,
+    Night,
+}
+
+impl Daylight {
+    const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Auto),
+            1 => Some(Self::Day),
+            2 => Some(Self::Night),
+            _ => None,
+        }
+    }
+
+    const fn byte(self) -> u8 {
+        match self {
+            Self::Auto => 0,
+            Self::Day => 1,
+            Self::Night => 2,
+        }
+    }
+}
+
+/// Ride, display and sound choices, and how far first-run setup got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// Pause and resume the ride from wheel speed.
+    pub auto_pause: bool,
+    /// Ride cues and battery warnings sound; safety alerts always do.
+    pub sounds: bool,
+    /// Kilometres between automatic laps; 0 is off.
+    pub auto_lap_km: u8,
+    pub daylight: Daylight,
+    /// The first-run setup step to resume, 0 when setup is done.
+    pub setup: u8,
+    /// Ride alert settings, carried for `ride::alerts`.
+    pub alerts: [u8; ALERTS_LENGTH],
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            auto_pause: true,
+            sounds: true,
+            auto_lap_km: 5,
+            daylight: Daylight::Auto,
+            setup: 0,
+            alerts: ALERTS_DEFAULT,
+        }
+    }
+}
+
+impl Options {
+    /// A device that never saved preferences starts first-run setup here.
+    pub const FIRST_RUN: u8 = 1;
+
+    fn encode(self) -> [u8; OPTIONS_LENGTH] {
+        let mut flags = 0;
+        if self.auto_pause {
+            flags |= AUTO_PAUSE;
+        }
+        if self.sounds {
+            flags |= SOUNDS;
+        }
+        let mut bytes = [0; OPTIONS_LENGTH];
+        bytes[..4].copy_from_slice(&[flags, self.auto_lap_km, self.daylight.byte(), self.setup]);
+        bytes[4..].copy_from_slice(&self.alerts);
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let (&[flags, auto_lap_km, daylight, setup], alerts) = bytes.split_first_chunk()?;
+        let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
+        if flags & !(AUTO_PAUSE | SOUNDS) != 0 || auto_lap_km > AUTO_LAP_MAX_KM {
+            return None;
+        }
+        Some(Self {
+            auto_pause: flags & AUTO_PAUSE != 0,
+            sounds: flags & SOUNDS != 0,
+            auto_lap_km,
+            daylight: Daylight::from_byte(daylight)?,
+            setup,
+            alerts,
+        })
+    }
+}
+
+/// Everything the record holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Record {
+    pub profile: TrainingProfile,
+    pub sensors: Saved,
+    pub options: Options,
+}
 
 /// What the stored record held when VANA read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,22 +203,27 @@ impl Persistence {
     }
 }
 
-pub fn encode(profile: TrainingProfile, sensors: &Saved) -> heapless::Vec<u8, RECORD_CAPACITY> {
-    let [ftp_low, ftp_high] = profile.ftp_watts.to_le_bytes();
-    let [lthr_low, lthr_high] = profile.lthr_bpm.to_le_bytes();
-    let mut record = heapless::Vec::new();
-    // Cannot fail: the capacity covers the profile and every sensor slot.
-    let _ = record.extend_from_slice(&[VERSION, ftp_low, ftp_high, lthr_low, lthr_high]);
-    let _ = record.extend_from_slice(&sensors.encode());
-    record
+pub fn encode(record: &Record) -> heapless::Vec<u8, RECORD_CAPACITY> {
+    let [ftp_low, ftp_high] = record.profile.ftp_watts.to_le_bytes();
+    let [lthr_low, lthr_high] = record.profile.lthr_bpm.to_le_bytes();
+    let mut bytes = heapless::Vec::new();
+    // Cannot fail: the capacity covers the profile, every sensor slot and
+    // the options.
+    let _ = bytes.extend_from_slice(&[VERSION, ftp_low, ftp_high, lthr_low, lthr_high]);
+    let _ = bytes.extend_from_slice(&record.sensors.encode());
+    let _ = bytes.extend_from_slice(&record.options.encode());
+    bytes
 }
 
-pub fn decode(bytes: &[u8]) -> (TrainingProfile, Saved, Stored) {
-    let defaults = (TrainingProfile::default(), Saved::default());
-    let (version, profile, sensors) = match bytes {
-        [] => return (defaults.0, defaults.1, Stored::Missing),
+pub fn decode(bytes: &[u8]) -> (Record, Stored) {
+    let (version, profile, rest) = match bytes {
+        [] => {
+            let mut record = Record::default();
+            record.options.setup = Options::FIRST_RUN;
+            return (record, Stored::Missing);
+        }
         [
-            version @ (1 | VERSION),
+            version @ 1..=VERSION,
             ftp_low,
             ftp_high,
             lthr_low,
@@ -113,19 +237,68 @@ pub fn decode(bytes: &[u8]) -> (TrainingProfile, Saved, Stored) {
             ),
             rest,
         ),
-        [0 | 1 | VERSION, ..] => return (defaults.0, defaults.1, Stored::Malformed),
-        _ => return (defaults.0, defaults.1, Stored::Unsupported),
+        [0..=VERSION, ..] => return (Record::default(), Stored::Malformed),
+        _ => return (Record::default(), Stored::Unsupported),
     };
-    let sensors = match version {
-        1 if sensors.is_empty() => Some(Saved::default()),
-        VERSION => Saved::decode(sensors).ok(),
-        _ => None,
+    let fields = match version {
+        1 => rest
+            .is_empty()
+            .then(|| (Saved::default(), Options::default())),
+        2 => Saved::decode(rest)
+            .ok()
+            .map(|sensors| (sensors, Options::default())),
+        _ => {
+            // The sensor field's own count says where the options start.
+            let length = rest.first().map_or(0, |&count| 1 + 4 * usize::from(count));
+            rest.split_at_checked(length)
+                .and_then(|(sensors, options)| {
+                    Some((Saved::decode(sensors).ok()?, Options::decode(options)?))
+                })
+        }
     };
-    match (profile, sensors) {
-        (Some(profile), Some(sensors)) if version == 1 => (profile, sensors, Stored::Migrated),
-        (Some(profile), Some(sensors)) => (profile, sensors, Stored::Current),
-        _ => (defaults.0, defaults.1, Stored::Malformed),
+    match (profile, fields) {
+        (Some(profile), Some((sensors, options))) => {
+            let stored = if version == VERSION {
+                Stored::Current
+            } else {
+                Stored::Migrated
+            };
+            let record = Record {
+                profile,
+                sensors,
+                options,
+            };
+            (record, stored)
+        }
+        _ => (Record::default(), Stored::Malformed),
     }
+}
+
+/// The shell's backlight choices as Settings shows and edits them. The
+/// shell owns and stores them; VANA only asks it to change them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayChoice {
+    pub brightness: u8,
+    /// Seconds without input before the backlight dims; 0 never dims.
+    pub dim_secs: u16,
+}
+
+impl Default for DisplayChoice {
+    fn default() -> Self {
+        Self {
+            brightness: firmware_shell::preferences::DEFAULT_BRIGHTNESS,
+            dim_secs: firmware_shell::preferences::DEFAULT_DIM_TIMEOUT_SECS,
+        }
+    }
+}
+
+/// A backlight edit waiting for the shell to apply and store it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayEdit {
+    changed_at: u64,
+    applied: bool,
+    /// The shell refused to store it; it retries.
+    failed: bool,
 }
 
 /// The profile in force and how it relates to the stored record.
@@ -133,6 +306,10 @@ pub(super) struct Preferences {
     pub(super) profile: TrainingProfile,
     /// Saved ANT sensors as last selected, in tile order.
     pub(super) sensors: Saved,
+    pub(super) options: Options,
+    /// The shell's backlight choices, as last seen or edited.
+    pub(super) display: DisplayChoice,
+    display_edit: Option<DisplayEdit>,
     pub(super) stored: Stored,
     locked: bool,
     changed_at: Option<u64>,
@@ -148,6 +325,9 @@ impl Default for Preferences {
         Self {
             profile: TrainingProfile::default(),
             sensors: Saved::default(),
+            options: Options::default(),
+            display: DisplayChoice::default(),
+            display_edit: None,
             stored: Stored::Missing,
             locked: false,
             changed_at: None,
@@ -160,10 +340,11 @@ impl Default for Preferences {
 
 impl Preferences {
     fn load(bytes: &[u8]) -> Self {
-        let (profile, sensors, stored) = decode(bytes);
+        let (record, stored) = decode(bytes);
         Self {
-            profile,
-            sensors,
+            profile: record.profile,
+            sensors: record.sensors,
+            options: record.options,
             stored,
             locked: matches!(stored, Stored::Unsupported | Stored::Malformed),
             ..Self::default()
@@ -178,11 +359,12 @@ impl Preferences {
     }
 
     pub(super) fn persistence(&self) -> Persistence {
+        let display = self.display_edit;
         if self.locked {
             Persistence::Locked
-        } else if self.failed {
+        } else if self.failed || display.is_some_and(|edit| edit.failed) {
             Persistence::Failed
-        } else if self.changed_at.is_some() {
+        } else if self.changed_at.is_some() || display.is_some() {
             Persistence::Pending
         } else {
             Persistence::Saved
@@ -198,6 +380,27 @@ impl Preferences {
         if !self.locked {
             self.changed_at = Some(now);
             self.edit = self.edit.wrapping_add(1);
+        }
+    }
+
+    /// Use these options from now on and save them once edits settle.
+    pub(super) fn set_options(&mut self, options: Options, now: u64) {
+        if options == self.options && self.changed_at.is_none() {
+            return;
+        }
+        self.options = options;
+        if !self.locked {
+            self.changed_at = Some(now);
+            self.edit = self.edit.wrapping_add(1);
+        }
+    }
+
+    /// The record as it would be saved now.
+    pub(super) fn record(&self) -> Record {
+        Record {
+            profile: self.profile,
+            sensors: self.sensors,
+            options: self.options,
         }
     }
 
@@ -223,7 +426,7 @@ impl Preferences {
 
     /// The edit waiting for its write, if any.
     pub(super) fn unsaved_edit(&self) -> Option<u32> {
-        self.pending().then_some(self.edit)
+        (self.pending() || self.display_edit.is_some()).then_some(self.edit)
     }
 
     /// An edit is waiting for its write.
@@ -242,6 +445,31 @@ impl Runtime {
     pub fn load_preferences(&mut self, app: &AppPreferences) {
         self.preferences = Preferences::load(app.bytes());
         self.links.saved = self.preferences.sensors;
+        self.apply_options();
+    }
+
+    /// Use these options from now on; they are saved once edits settle.
+    pub(super) fn set_options(&mut self, options: Options, now: u64) {
+        self.preferences.set_options(options, now);
+        self.apply_options();
+    }
+
+    fn apply_options(&mut self) {
+        let km = self.preferences.options.auto_lap_km;
+        self.ride.auto_lap_mm = (km != 0).then(|| u64::from(km) * 1_000_000);
+    }
+
+    /// Ask the shell for these backlight choices: they apply at once and
+    /// are stored once edits settle.
+    pub(super) fn set_display(&mut self, display: DisplayChoice, now: u64) {
+        let preferences = &mut self.preferences;
+        preferences.display = display;
+        preferences.display_edit = Some(DisplayEdit {
+            changed_at: now,
+            applied: false,
+            failed: false,
+        });
+        preferences.edit = preferences.edit.wrapping_add(1);
     }
 
     /// Write settled preference edits through the shell. Call once per loop;
@@ -254,6 +482,52 @@ impl Runtime {
         if self.preferences.due(now) {
             self.write_preferences(system, now);
         }
+        self.save_display(system, now, false);
+    }
+
+    /// Apply a backlight edit, and store it once settled or when `flush`.
+    /// Without an edit, follow the shell's own choices (the terminal can
+    /// change them). Returns whether nothing is left unsaved.
+    fn save_display<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
+        &mut self,
+        system: &mut Shell<D, I, P, B>,
+        now: u64,
+        flush: bool,
+    ) -> bool {
+        let preferences = &mut self.preferences;
+        let Some(edit) = &mut preferences.display_edit else {
+            preferences.display = DisplayChoice {
+                brightness: system.settings.brightness,
+                dim_secs: system.settings.dim_timeout_secs,
+            };
+            return true;
+        };
+        if !edit.applied {
+            edit.applied = true;
+            let wanted = preferences.display;
+            if let Some(settings) =
+                system
+                    .settings
+                    .with_brightness(wanted.brightness)
+                    .and_then(|settings| {
+                        settings.with_idle_preferences(wanted.dim_secs, settings.dim_brightness)
+                    })
+            {
+                system.settings = settings;
+            }
+        }
+        if !flush && now < edit.changed_at.saturating_add(DEBOUNCE_MS) {
+            return false;
+        }
+        let saved = system.save();
+        if saved {
+            preferences.display_edit = None;
+        } else {
+            edit.failed = true;
+            edit.changed_at = now.saturating_add(RETRY_MS - DEBOUNCE_MS);
+        }
+        self.display.redraw();
+        saved
     }
 
     /// Write a pending edit now, without waiting for it to settle, as before
@@ -263,7 +537,8 @@ impl Runtime {
         system: &mut Shell<D, I, P, B>,
         now: u64,
     ) -> bool {
-        !self.preferences.pending() || self.write_preferences(system, now)
+        let display = self.save_display(system, now, true);
+        (!self.preferences.pending() || self.write_preferences(system, now)) && display
     }
 
     fn write_preferences<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
@@ -273,8 +548,7 @@ impl Runtime {
     ) -> bool {
         let preferences = &mut self.preferences;
         // The record always fits the application area.
-        let Some(app) = AppPreferences::new(&encode(preferences.profile, &preferences.sensors))
-        else {
+        let Some(app) = AppPreferences::new(&encode(&preferences.record())) else {
             return false;
         };
         let saved = system.save_app_preferences(app);
@@ -308,15 +582,24 @@ mod tests {
         }
     }
 
+    fn record(profile: TrainingProfile, sensors: Saved, options: Options) -> Record {
+        Record {
+            profile,
+            sensors,
+            options,
+        }
+    }
+
     #[test]
-    fn version_two_layout_is_pinned() {
+    fn version_three_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
-        assert_eq!(encode(profile, &none).as_slice(), [2, 2, 1, 170, 0, 0]);
+        let defaults = record(profile, none, Options::default());
         assert_eq!(
-            decode(&encode(profile, &none)),
-            (profile, none, Stored::Current)
+            encode(&defaults).as_slice(),
+            [3, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
         );
+        assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
         let mut sensors = Saved::default();
         sensors.select(sensor(120, 0x1234));
         sensors.select(device_api::ant::Identity {
@@ -324,43 +607,75 @@ mod tests {
             device_number: 7,
             transmission_type: 5,
         });
-        let record = encode(profile, &sensors);
+        let options = Options {
+            auto_pause: false,
+            sounds: true,
+            auto_lap_km: 10,
+            daylight: Daylight::Night,
+            setup: 3,
+            alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
+        };
+        let chosen = record(profile, sensors, options);
+        let bytes = encode(&chosen);
         assert_eq!(
-            record.as_slice(),
-            [2, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5]
+            bytes.as_slice(),
+            [
+                3, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0
+            ]
         );
-        assert_eq!(decode(&record), (profile, sensors, Stored::Current));
+        assert_eq!(decode(&bytes), (chosen, Stored::Current));
         // Ten sensors fit the shell application area.
         let mut full = Saved::default();
         for kind in 1..=10 {
             full.select(sensor(kind, u16::from(kind)));
         }
-        let record = encode(profile, &full);
-        assert_eq!(record.len(), 46);
-        assert!(AppPreferences::new(&record).is_some());
-        assert_eq!(decode(&record), (profile, full, Stored::Current));
+        let full = record(profile, full, options);
+        let bytes = encode(&full);
+        assert_eq!(bytes.len(), 59);
+        assert!(AppPreferences::new(&bytes).is_some());
+        assert_eq!(decode(&bytes), (full, Stored::Current));
     }
 
+    /// Older records keep every field they had, take the default options and
+    /// count as set up: their rider already used VANA.
     #[test]
-    fn version_one_profile_migrates_with_no_saved_sensors() {
+    fn versions_one_and_two_migrate_with_default_options() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         assert_eq!(
             decode(&[1, 2, 1, 170, 0]),
-            (profile, Saved::default(), Stored::Migrated)
+            (
+                record(profile, Saved::default(), Options::default()),
+                Stored::Migrated
+            )
         );
+        let mut sensors = Saved::default();
+        sensors.select(sensor(120, 0x1234));
+        assert_eq!(
+            decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]),
+            (
+                record(profile, sensors, Options::default()),
+                Stored::Migrated
+            )
+        );
+        assert_eq!(Options::default().setup, 0);
+        // The next save writes version 3 with the same profile and sensors.
+        let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
+        assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
 
     #[test]
     fn missing_unknown_and_damaged_records_use_defaults() {
-        let defaults = TrainingProfile::default();
-        let none = Saved::default();
-        assert_eq!(decode(&[]), (defaults, none, Stored::Missing));
+        let defaults = Record::default();
+        let mut first_run = Record::default();
+        first_run.options.setup = Options::FIRST_RUN;
+        assert_eq!(decode(&[]), (first_run, Stored::Missing));
         // A newer version, even one that appended fields.
         assert_eq!(
-            decode(&[3, 250, 0, 170, 0, 0, 9]),
-            (defaults, none, Stored::Unsupported)
+            decode(&[4, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
+            (defaults, Stored::Unsupported)
         );
-        assert_eq!(decode(&[0xff]), (defaults, none, Stored::Unsupported));
+        assert_eq!(decode(&[0xff]), (defaults, Stored::Unsupported));
         for damaged in [
             &[1][..],
             &[1, 250, 0, 170],
@@ -373,10 +688,38 @@ mod tests {
             &[2, 250, 0, 170, 0, 1, 120, 0, 0, 1],
             &[2, 250, 0, 170, 0, 11],
             &[2, 0, 0, 170, 0, 0],
+            // Version 2 bytes under version 3: the options are missing.
+            &[3, 250, 0, 170, 0, 0],
+            &[3, 250, 0, 170, 0],
+            // A sensor count that runs past the record.
+            &[3, 250, 0, 170, 0, 2, 120, 1, 0, 1],
         ] {
             assert_eq!(
                 decode(damaged),
-                (defaults, none, Stored::Malformed),
+                (defaults, Stored::Malformed),
+                "{damaged:?}"
+            );
+        }
+        // Version 3 options: one byte short or long, an unknown flag, too
+        // long a lap, an unknown day/night choice, and an impossible FTP.
+        let good = Options::default().encode();
+        let with = |at: usize, value: u8| {
+            let mut options = good;
+            options[at] = value;
+            options.to_vec()
+        };
+        for (profile, options) in [
+            ([250, 0], good[..OPTIONS_LENGTH - 1].to_vec()),
+            ([250, 0], [&good[..], &[0]].concat()),
+            ([250, 0], with(0, 4)),
+            ([250, 0], with(1, AUTO_LAP_MAX_KM + 1)),
+            ([250, 0], with(2, 3)),
+            ([0, 0], good.to_vec()),
+        ] {
+            let damaged = [&[3, profile[0], profile[1], 170, 0, 0][..], &options].concat();
+            assert_eq!(
+                decode(&damaged),
+                (defaults, Stored::Malformed),
                 "{damaged:?}"
             );
         }
@@ -390,7 +733,7 @@ mod tests {
         assert_eq!(preferences.stored, Stored::Migrated);
         preferences.set_sensors(sensors, 10_000);
         assert!(preferences.due(10_000));
-        let mut locked = Preferences::load(&[3, 9]);
+        let mut locked = Preferences::load(&[4, 9]);
         locked.set_sensors(sensors, 10_000);
         assert_eq!(locked.sensors, sensors);
         assert!(!locked.due(60_000));
@@ -414,5 +757,23 @@ mod tests {
         assert!(!locked.due(60_000), "unreadable data is never replaced");
         locked.overwrite(60_000);
         assert!(locked.due(60_000));
+    }
+
+    #[test]
+    fn option_edits_settle_like_profile_edits() {
+        let mut preferences = Preferences::load(&[2, 250, 0, 170, 0, 0]);
+        let quiet = Options {
+            sounds: false,
+            ..preferences.options
+        };
+        preferences.set_options(quiet, 1_000);
+        assert_eq!(preferences.options, quiet);
+        assert!(!preferences.due(2_999));
+        assert!(preferences.due(3_000));
+        assert_eq!(
+            decode(&encode(&preferences.record())).0.options,
+            quiet,
+            "saved with the profile"
+        );
     }
 }

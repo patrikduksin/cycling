@@ -86,6 +86,11 @@ pub(super) enum BatteryNews {
 }
 
 impl BatteryNews {
+    /// A low or critical level, which also sounds.
+    pub(super) const fn warning(self) -> bool {
+        matches!(self, Self::Low(_) | Self::Critical(_))
+    }
+
     pub(super) fn toast(self) -> crate::screens::chrome::Toast {
         use crate::screens::chrome::{Toast, Tone};
         use core::fmt::Write;

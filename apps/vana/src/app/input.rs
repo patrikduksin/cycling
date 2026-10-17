@@ -19,6 +19,10 @@ use device_api::ant::Ant;
 use device_api::input::{Button, Input};
 
 const DEBOUNCE_MS: u64 = 350;
+/// Settings choices, in the order acting steps through them.
+const BRIGHTNESS_STEPS: [u8; 4] = [25, 50, 75, 100];
+const DIM_AFTER_SECS: [u16; 5] = [15, 30, 60, 300, 0];
+const AUTO_LAP_KM: [u8; 5] = [0, 1, 2, 5, 10];
 /// Held buttons repeat about every 100 ms; a longer gap means a new press.
 const HOLD_GAP_MS: u64 = 250;
 
@@ -75,6 +79,7 @@ impl Runtime {
         }
         // Settings pads act on contact, not on a finished gesture.
         if self.navigation.page == Page::Settings
+            && self.navigation.settings_editing
             && let Some(Gesture::Down(point)) = gesture
         {
             self.settings_touch(point, now);
@@ -121,7 +126,7 @@ impl Runtime {
                     self.navigation.page = Page::Home;
                 }
             }
-            Page::Settings => self.settings_input(button, now),
+            Page::Settings => self.settings_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = Page::Home,
             Page::Sensors => {}
@@ -149,7 +154,10 @@ impl Runtime {
             }
             Page::Summary => navigation.summary_page as u32,
             Page::Sensors => u32::from(self.menu.touch_view()),
-            Page::Settings => u32::from(navigation.settings_editing),
+            Page::Settings => {
+                let section = settings::section(navigation.settings_field).0 as u32;
+                u32::from(navigation.settings_editing) | section << 1
+            }
             Page::Boot | Page::Home | Page::Ready | Page::EndRide | Page::Phone => 0,
         };
         let sheet = u32::from(self.power.view().is_some());
@@ -188,6 +196,30 @@ impl Runtime {
             // Changing the page is safe while riding; ride control is not.
             (Page::Ride, Gesture::Next) => self.next_ride_page(),
             (Page::Ride, Gesture::Previous) => self.previous_ride_page(),
+            (Page::Settings, Gesture::Tap(point)) => {
+                let navigation = &self.navigation;
+                if let Some(settings::Target::Row(row)) = settings::target(
+                    usize::from(point.x),
+                    usize::from(point.y),
+                    navigation.settings_field,
+                    navigation.settings_editing,
+                ) {
+                    self.navigation.settings_field = row;
+                    self.act_on_setting(now, ant);
+                }
+            }
+            (Page::Settings, Gesture::Next | Gesture::Previous) => {
+                let navigation = &mut self.navigation;
+                let (section, _) = settings::section(navigation.settings_field);
+                let count = settings::SECTIONS.len();
+                let section = if gesture == Gesture::Next {
+                    section + 1
+                } else {
+                    section + count - 1
+                };
+                navigation.settings_field = settings::first_of(section);
+                navigation.settings_editing = false;
+            }
             _ => return,
         }
         self.display.redraw();
@@ -254,18 +286,17 @@ impl Runtime {
         }
     }
 
-    /// Choosing a field: BottomLeft moves to the next, BottomRight edits it,
-    /// TopLeft goes Home. Editing: BottomLeft lowers and BottomRight raises
-    /// the field by `settings::STEP`, TopLeft finishes.
-    fn settings_input(&mut self, button: Button, now: u64) {
+    /// Choosing a row: BottomLeft moves to the next, BottomRight acts on it,
+    /// TopLeft goes Home. Editing a number: BottomLeft lowers and
+    /// BottomRight raises it by `settings::STEP`, TopLeft finishes.
+    fn settings_input(&mut self, button: Button, now: u64, ant: &mut impl Ant) {
         let navigation = &mut self.navigation;
         if !navigation.settings_editing {
             match button {
                 Button::BottomLeft => {
-                    navigation.settings_field =
-                        (navigation.settings_field + 1) % settings::FIELDS.len()
+                    navigation.settings_field = (navigation.settings_field + 1) % settings::ROWS
                 }
-                Button::BottomRight => navigation.settings_editing = true,
+                Button::BottomRight => self.act_on_setting(now, ant),
                 Button::TopLeft => navigation.page = Page::Home,
                 _ => {}
             }
@@ -279,33 +310,82 @@ impl Runtime {
         }
     }
 
-    /// A touch on a field edits it; touches on the pads lower or raise it.
-    /// Each acts once, when the contact begins on Settings.
-    fn settings_touch(&mut self, point: device_api::input::Point, now: u64) {
-        let navigation = &mut self.navigation;
-        match settings::target(
-            usize::from(point.x),
-            usize::from(point.y),
-            navigation.settings_editing,
-        ) {
-            Some(settings::Target::Field(field)) => {
-                navigation.settings_field = field;
-                navigation.settings_editing = true;
+    /// Act on the selected row: edit a number, step a choice or open a page.
+    fn act_on_setting(&mut self, now: u64, ant: &mut impl Ant) {
+        use settings::{Kind, Row, SettingsAction};
+        let row = Row::at(self.navigation.settings_field);
+        match (row.kind(), row.action()) {
+            (Kind::Number, _) => self.navigation.settings_editing = true,
+            (Kind::Choice, _) => self.next_choice(row, now),
+            (_, Some(SettingsAction::Sensors)) => {
+                self.navigation.page = Page::Sensors;
+                self.navigation.page_since = now;
+                self.request_search(ant, now);
             }
-            Some(settings::Target::Lower) => self.adjust_setting(-i32::from(settings::STEP), now),
-            Some(settings::Target::Raise) => self.adjust_setting(i32::from(settings::STEP), now),
-            None => {}
+            // The phone companion's route: its page is a placeholder for now.
+            (_, Some(SettingsAction::ConnectPhone)) => {
+                self.navigation.page = Page::Phone;
+                self.navigation.page_since = now;
+            }
+            _ => {}
         }
     }
 
-    /// Move the selected field by `step`, within its range.
+    /// Step a choice row to its next value, wrapping.
+    fn next_choice(&mut self, row: settings::Row, now: u64) {
+        use settings::Row;
+        /// The choice after `current`, or the first when it is none of them.
+        fn after<T: Copy + PartialEq>(choices: &[T], current: T) -> T {
+            let at = choices.iter().position(|choice| *choice == current);
+            choices[at.map_or(0, |at| (at + 1) % choices.len())]
+        }
+        let mut options = self.preferences.options;
+        let mut display = self.preferences.display;
+        match row {
+            Row::Brightness => {
+                // The next step up, so a level set elsewhere moves on too.
+                display.brightness = BRIGHTNESS_STEPS
+                    .into_iter()
+                    .find(|step| *step > display.brightness)
+                    .unwrap_or(BRIGHTNESS_STEPS[0]);
+            }
+            Row::AutoDim => display.dim_secs = after(&DIM_AFTER_SECS, display.dim_secs),
+            Row::AutoPause => options.auto_pause = !options.auto_pause,
+            Row::AutoLap => options.auto_lap_km = after(&AUTO_LAP_KM, options.auto_lap_km),
+            Row::Sounds => options.sounds = !options.sounds,
+            _ => return,
+        }
+        if display != self.preferences.display {
+            self.set_display(display, now);
+        }
+        if options != self.preferences.options {
+            self.set_options(options, now);
+        }
+    }
+
+    /// A touch on a pad lowers or raises the edited number. Each acts once,
+    /// when the contact begins.
+    fn settings_touch(&mut self, point: device_api::input::Point, now: u64) {
+        let navigation = &self.navigation;
+        match settings::target(
+            usize::from(point.x),
+            usize::from(point.y),
+            navigation.settings_field,
+            navigation.settings_editing,
+        ) {
+            Some(settings::Target::Lower) => self.adjust_setting(-i32::from(settings::STEP), now),
+            Some(settings::Target::Raise) => self.adjust_setting(i32::from(settings::STEP), now),
+            _ => {}
+        }
+    }
+
+    /// Move the edited number by `step`, within its range.
     fn adjust_setting(&mut self, step: i32, now: u64) {
-        let field = self.navigation.settings_field;
         let mut profile = self.preferences.profile;
-        let (value, range) = if field == 0 {
-            (&mut profile.ftp_watts, TrainingProfile::FTP_WATTS)
-        } else {
-            (&mut profile.lthr_bpm, TrainingProfile::LTHR_BPM)
+        let (value, range) = match settings::Row::at(self.navigation.settings_field) {
+            settings::Row::Ftp => (&mut profile.ftp_watts, TrainingProfile::FTP_WATTS),
+            settings::Row::Threshold => (&mut profile.lthr_bpm, TrainingProfile::LTHR_BPM),
+            _ => return,
         };
         *value = (i32::from(*value) + step)
             .clamp(i32::from(*range.start()), i32::from(*range.end())) as u16;

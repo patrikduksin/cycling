@@ -271,7 +271,7 @@ fn radar_alerts_sound_only_on_the_ride_page() {
     // A chime holds the buzzer when a car appears: the alert is not spent
     // on a refused sound, and plays once the buzzer is free.
     speaker.0.clear();
-    runtime.navigation.chime = Some(crate::app::presentation::Chime::Lap);
+    runtime.navigation.chime = Some(crate::app::cues::Cue::Lap);
     runtime.alert(&mut speaker, 7000);
     assert_eq!(speaker.0, [1], "the lap chime");
     radio.data(RADAR, [0x30, 2, 0, 10, 0, 0, 1, 0], 7050);
@@ -290,17 +290,22 @@ fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
     let mut radio = Radio::new();
     let touch = |x, y| Input::Touch(device_api::input::Point { x, y });
     runtime.navigation.page = Page::Settings;
-    // A finger on FTP edits it, and stays down while TopLeft finishes and
-    // TopLeft leaves Settings; it lifts on Home.
+    // A tap on FTP edits it. A finger on the minus pad lowers it once and
+    // stays down while TopLeft finishes and TopLeft leaves Settings; it
+    // lifts on Home.
     runtime.input(touch(120, 86), 1000, &mut radio);
+    runtime.input(Input::Release, 1050, &mut radio);
     assert!(runtime.navigation.settings_editing);
+    runtime.input(touch(60, 237), 1500, &mut radio);
+    assert_eq!(runtime.preferences.profile.ftp_watts, 210);
     runtime.input(press(Button::TopLeft), 2000, &mut radio);
     runtime.input(press(Button::TopLeft), 3000, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
     runtime.input(Input::Release, 3500, &mut radio);
     // Back in Settings, the first tap counts.
     runtime.navigation.page = Page::Settings;
-    runtime.input(touch(120, 164), 4000, &mut radio);
+    runtime.input(touch(120, 140), 4000, &mut radio);
+    runtime.input(Input::Release, 4050, &mut radio);
     assert_eq!(runtime.navigation.settings_field, 1);
     assert!(runtime.navigation.settings_editing);
 }

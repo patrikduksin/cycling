@@ -313,14 +313,57 @@ redraw once a second.
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
 
+## Settings
+
+Settings is a list of sections, one per page, with page dots in the status
+bar: PROFILE, DISPLAY, RIDE, SOUND and DEVICE. A section has a `TITLE`
+headline and at most four rows. A row is a small card (radius 12) with its
+label as a `CAPTION` over its value in `BODY`, and an optional note in
+`SECONDARY` at the right of the value line. A note that does not fit whole is
+left out. The focused row is `RAISED` with a 3 px `ACCENT` ring.
+
+Acting on a row does one of three things:
+
+- a number (FTP, LTHR) opens the editor: one `ACCENT` field with the value in
+  `VALUE` and the zone it anchors, over minus and plus pads;
+- a choice steps to its next value at once (brightness 25/50/75/100%, dim
+  after 15 s/30 s/1 min/5 min/never, auto-pause on/off, auto lap off/1/2/5/10
+  km, sounds on/off);
+- an action opens a page (SENSORS) or a flow (PHONE, a placeholder until the
+  phone companion lands).
+
+Storage and firmware rows only show facts. The save status sits in the
+bottom band, under any toast. Brightness and dimming belong to the shell, so
+VANA asks it to apply them at once and store them; the other choices are
+stored in VANA's preference record.
+
+## Sounds
+
+Cues are short runs of the buzzer's three short patterns, taken as low,
+middle and high notes by pitch. Rising runs mean go, falling ones stop.
+
+| Event | Notes |
+| --- | --- |
+| Ride starts | middle, high |
+| Resumes | high |
+| Pauses, by hand or automatically | high, middle |
+| Lap | middle |
+| Ride saved | low, middle, high |
+| Battery low or critical | low, low |
+| Vehicle closing from behind | the long alarm pattern |
+
+Each note waits for the previous one's guard. A newer cue replaces one in
+progress, and a cue that cannot start within a second is dropped. SOUNDS OFF
+mutes cues; the radar alarm always sounds and nothing replaces it.
+
 ## Input
 
 Three buttons control everything. Touch is a shortcut for navigation only.
 
 | Button | Home | Sensors | Settings | Ride |
 | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Act on the focused tile | Edit the field; while editing, raise it | Pause, resume |
-| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next field; while editing, lower it | Next page (wraps); while paused, the paused screen is one of the pages |
+| BottomRight (ACT) | Open the focused card | Act on the focused tile | Act on the row (edit, step a choice, open); while editing, raise it | Pause, resume |
+| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Next page (wraps); while paused, the paused screen is one of the pages |
 | TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | LAP while recording; asks END RIDE? while paused |
 
 | Button | Ready | End ride? | Summary |
@@ -332,7 +375,8 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | Gesture | Rule | Effect |
 | --- | --- | --- |
 | Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors; on Ready, the sensors line opens Sensors. Tiles own their bounds; the search button's wider touch margin takes only spare space |
-| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages and the summary |
+| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages and the summary; next or previous section on Settings |
+| Settings rows | Tap | Act on the row, as ACT does |
 | Settings pads | Act on contact | Step the edited value |
 
 Touch never starts, pauses, laps or ends a ride. Wet gloves, rain and bumps

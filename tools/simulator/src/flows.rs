@@ -1,5 +1,5 @@
 //! What a rider does on VANA, as button sequences that read the screen.
-use crate::sim::{Sim, seconds};
+use crate::sim::{NoteKind, Sim, seconds};
 use device_api::input::Button;
 
 impl Sim {
@@ -173,6 +173,33 @@ impl Sim {
             });
             self.press(Button::TopLeft);
         }
+    }
+
+    /// On Settings, swipe to the section with the `label` row, then tap the
+    /// row until it reads `value`. Ends on that section.
+    #[track_caller]
+    pub fn set_option(&mut self, label: &str, value: &str) {
+        for _ in 0..6 {
+            if self.screen().run(label).is_some() {
+                break;
+            }
+            self.swipe_next();
+        }
+        for _ in 0..8 {
+            let screen = self.screen();
+            if screen.field(label).as_deref() == Some(value) {
+                self.note(NoteKind::Check, format!("{label} shows {value}"));
+                return;
+            }
+            let run = screen
+                .run(label)
+                .unwrap_or_else(|| panic!("no {label} row; screen:\n{}", screen.text()));
+            self.tap(run.x as u16 + 4, run.y as u16 + 4);
+        }
+        panic!(
+            "{label} never read {value}; screen:\n{}",
+            self.screen().text()
+        );
     }
 
     #[track_caller]

@@ -294,7 +294,10 @@ fn restored(peers: &[Identity]) -> Runtime {
     for peer in peers {
         assert!(saved.select(*peer).is_some());
     }
-    let record = preferences::encode(crate::ride::zones::TrainingProfile::default(), &saved);
+    let record = preferences::encode(&preferences::Record {
+        sensors: saved,
+        ..preferences::Record::default()
+    });
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.load_preferences(&firmware_shell::preferences::AppPreferences::new(&record).unwrap());
     runtime

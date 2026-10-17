@@ -2806,7 +2806,13 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     assert_eq!(sim.vana_page(), "ride");
-    assert_eq!(sim.device.speaker.played.len(), chimes + 1, "start chime");
+    // The second note follows the first's guard.
+    sim.advance(seconds(1));
+    assert_eq!(
+        sim.device.speaker.played.len(),
+        chimes + 2,
+        "start cue: two notes"
+    );
     sim.checkpoint("recording");
     sim.ride_at(30.0, 220.0, 140.0, 90.0);
     sim.advance(minutes(6));
@@ -2905,4 +2911,172 @@ fn a_ride_started_remotely_from_the_summary_shows_its_controls() {
     assert_eq!(sim.rides().len(), 2);
     // The new summary opens at its first page.
     assert_eq!(sim.screen().page().as_deref(), Some("1/3"));
+}
+
+/// Swipe Settings to the section that shows `label`.
+#[track_caller]
+fn show_setting(sim: &mut Sim, label: &str) {
+    for _ in 0..6 {
+        if sim.screen().run(label).is_some() {
+            return;
+        }
+        sim.swipe_next();
+    }
+    panic!("no {label} section; screen:\n{}", sim.screen().text());
+}
+
+/// The patterns played since the `from`th.
+fn played_since(sim: &Sim, from: usize) -> Vec<u8> {
+    let played = &sim.device.speaker.played;
+    played[from..].iter().map(|(_, id)| *id).collect()
+}
+
+#[test]
+fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
+    let mut sim = rider();
+    sim.home("SETTINGS");
+    sim.expect_text("PROFILE");
+    sim.expect_field("FTP WATTS", "215");
+    sim.checkpoint("settings open on the profile");
+    // MOVE walks the rows, past the last profile row into Display.
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_text("DISPLAY");
+    sim.expect_field("BRIGHTNESS", "50%");
+    sim.expect_field("DIM AFTER", "30 S");
+    sim.checkpoint("display section");
+    // ACT steps a choice; the backlight follows at once.
+    sim.press(Button::BottomRight);
+    sim.expect_field("BRIGHTNESS", "75%");
+    assert_eq!(sim.device.shell.settings.brightness, 75);
+    sim.set_option("DIM AFTER", "1 MIN");
+    assert_eq!(sim.device.shell.settings.dim_timeout_secs, 60);
+    sim.checkpoint("brighter, dims after a minute");
+
+    sim.swipe_next();
+    sim.expect_text("RIDE");
+    sim.expect_field("AUTO PAUSE", "ON");
+    sim.expect_field("AUTO LAP", "EVERY 5 KM");
+    sim.set_option("AUTO PAUSE", "OFF");
+    sim.set_option("AUTO LAP", "EVERY 1 KM");
+    sim.checkpoint("ride section");
+    sim.swipe_next();
+    sim.set_option("SOUNDS", "OFF");
+    sim.expect_text("RADAR STAYS ON");
+    sim.checkpoint("sounds off");
+    sim.swipe_next();
+    sim.expect_text("DEVICE");
+    sim.expect_field("SENSORS", "NONE SAVED");
+    let firmware = sim.screen().field("FIRMWARE").unwrap();
+    assert!(firmware.starts_with("VANA "), "{firmware}");
+    sim.checkpoint("device section");
+    // Swiping on from the last section wraps to the first.
+    sim.swipe_next();
+    sim.expect_text("PROFILE");
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    sim.advance(seconds(3));
+    // The phone row opens the phone companion's page, a placeholder for now.
+    sim.swipe_previous();
+    sim.expect_text("DEVICE");
+    let phone = sim.screen().run("PHONE").unwrap();
+    sim.tap(phone.x as u16 + 4, phone.y as u16 + 4);
+    sim.expect_text("SEND RIDES TO YOUR PHONE");
+    sim.checkpoint("phone placeholder");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+
+    sim.power_loss();
+    let (_, profile) = sim.command("PROFILE");
+    assert!(profile.contains("stored=current"), "{profile}");
+    assert_eq!(sim.device.shell.settings.brightness, 75);
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "BRIGHTNESS");
+    sim.expect_field("BRIGHTNESS", "75%");
+    sim.expect_field("DIM AFTER", "1 MIN");
+    show_setting(&mut sim, "AUTO PAUSE");
+    sim.expect_field("AUTO PAUSE", "OFF");
+    sim.expect_field("AUTO LAP", "EVERY 1 KM");
+    show_setting(&mut sim, "SOUNDS");
+    sim.expect_field("SOUNDS", "OFF");
+    sim.checkpoint("choices kept after power loss");
+}
+
+#[test]
+fn ride_cues_rise_to_go_fall_to_pause_and_mark_laps() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    let from = sim.device.speaker.played.len();
+    sim.start_ride();
+    sim.advance(seconds(2));
+    // Middle then high: go.
+    assert_eq!(played_since(&sim, from), [0, 10], "start");
+    let from = sim.device.speaker.played.len();
+    sim.lap(1);
+    sim.advance(seconds(2));
+    assert_eq!(played_since(&sim, from), [0], "one note marks a lap");
+    let from = sim.device.speaker.played.len();
+    sim.pause_ride();
+    sim.advance(seconds(2));
+    assert_eq!(played_since(&sim, from), [10, 0], "high then middle: stop");
+    let from = sim.device.speaker.played.len();
+    sim.resume_ride();
+    sim.advance(seconds(2));
+    assert_eq!(played_since(&sim, from), [10], "resume");
+    sim.pause_ride();
+    sim.advance(seconds(2));
+    let from = sim.device.speaker.played.len();
+    sim.stop_ride();
+    sim.advance(seconds(2));
+    assert_eq!(played_since(&sim, from), [21, 0, 10], "a rising run: saved");
+    sim.checkpoint("ride saved with its cue");
+}
+
+#[test]
+fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_the_choice() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "AUTO PAUSE");
+    sim.set_option("AUTO PAUSE", "OFF");
+    sim.set_option("AUTO LAP", "EVERY 1 KM");
+    sim.swipe_next();
+    sim.set_option("SOUNDS", "OFF");
+    go_home(&mut sim);
+
+    sim.ride_at(30.0, 0.0, 0.0, 0.0);
+    let from = sim.device.speaker.played.len();
+    sim.start_ride();
+    // 1 km at 30 km/h is two minutes.
+    sim.advance(minutes(2) + seconds(20));
+    ride_page(&mut sim, "3/4");
+    sim.expect_text("LAP 2");
+    sim.checkpoint("auto lap at 1 km");
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(30));
+    assert!(recording(&mut sim), "a stop does not pause");
+    sim.expect_no_text("AUTO PAUSED");
+    sim.checkpoint("stopped, still recording");
+    assert_eq!(played_since(&sim, from), Vec::<u8>::new(), "muted");
+}
+
+#[test]
+fn an_unsaved_brightness_change_is_reported_before_turning_off() {
+    let mut sim = rider();
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "BRIGHTNESS");
+    sim.fail_storage(0, 0);
+    sim.set_option("BRIGHTNESS", "75%");
+    sim.expect_text("SAVING");
+    go_home(&mut sim);
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    assert!(!sim.is_off(), "turned off and lost the brightness");
+    sim.expect_text("CHANGES NOT SAVED");
+    sim.checkpoint("brightness not saved, still on");
+    // The background retry stores it, and it survives a power loss.
+    sim.advance(seconds(10));
+    sim.power_loss();
+    assert_eq!(sim.device.shell.settings.brightness, 75);
 }

@@ -9,6 +9,7 @@ so a reviewer sees Before | After only for screens that changed.
 import argparse
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -35,6 +36,9 @@ COMMAND = [
 ]
 PNG = b'\x89PNG\r\n\x1a\n'
 CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}
+# Only these chunks are decoded; any other (PLTE, tRNS, gAMA, ...) falls back to bytes.
+DECODED = {b'IHDR', b'IDAT', b'IEND'}
+TABLE = ['| Screen | Before | After |', '|---|---|---|']
 
 
 @dataclass(frozen=True)
@@ -87,8 +91,9 @@ def same(a, b):
 
 
 def pixels(data):
-    """Header fields and unfiltered rows of a non-interlaced 8-bit PNG, so a
-    different encoder or compression level alone is not a change."""
+    """Header fields and unfiltered rows of a non-interlaced 8-bit grey or RGB
+    PNG, so a different encoder or compression level alone is not a change.
+    Anything this does not fully decode is returned as its bytes."""
     if not data.startswith(PNG):
         return data
     header, chunks, at = None, [], len(PNG)
@@ -102,10 +107,12 @@ def pixels(data):
             chunks.append(body)
         elif kind == b'IEND':
             break
+        elif kind not in DECODED:
+            return data
     width, height, depth, color, _, _, interlace = struct.unpack('>IIBBBBB', header)
-    raw = zlib.decompress(b''.join(chunks))
     if depth != 8 or interlace or color not in CHANNELS:
-        return header, raw
+        return data
+    raw = zlib.decompress(b''.join(chunks))
     bpp = CHANNELS[color]
     stride = width * bpp
     previous = bytearray(stride)
@@ -181,21 +188,24 @@ def comparison(pairs, before, after, base, refs):
         if failed and result['failure']:
             lines += [*report.fenced(result['failure']), '']
         video = result and next((f for f in result['files'] if f.startswith('video.')), None)
+        section = 0
         if video and shown:
             path = report.reference(result['dir'] / video, base)
             attachments.append(path)
+            section += 1
             lines += [path if video.endswith('.mp4') else f'![video]({path})', '']
         if shown:
-            lines += ['| Screen | Before | After |', '|---|---|---|']
+            lines += TABLE
         for p, state in shown:
-            cells = []
-            for image in (p.before, p.after):
-                if image is None:
-                    cells.append('—')
-                else:
-                    path = report.reference(image, base)
-                    attachments.append(path)
-                    cells.append(f'<img src="{path}" width="300">')
+            images = [None if i is None else report.reference(i, base) for i in (p.before, p.after)]
+            needed = sum(i is not None for i in images)
+            # Comments split only between sections, so keep each within gh's limit.
+            if section + needed > report.ATTACHMENT_LIMIT:
+                lines += ['', f'### {mark} {report.title(scenario)} (continued)', '', *TABLE]
+                section = 0
+            section += needed
+            attachments += [i for i in images if i]
+            cells = ['—' if i is None else f'<img src="{i}" width="300">' for i in images]
             label = p.checkpoint if state == 'changed' else f'{p.checkpoint} · **{state}**'
             lines.append(f'| {label} | {cells[0]} | {cells[1]} |')
     lines += [
@@ -206,19 +216,58 @@ def comparison(pairs, before, after, base, refs):
 
 
 def scenarios(source, artifacts, target, name_filter):
-    """Run the scenarios of `source` into `artifacts`, keeping cargo's log."""
+    """Run the scenarios of `source` into `artifacts`, keeping cargo's log, and
+    return cargo's exit status. cargo and its tests never outlive the call, so
+    they cannot write into a worktree that is being removed."""
     shutil.rmtree(artifacts, ignore_errors=True)
     artifacts.mkdir(parents=True)
     command = [*COMMAND, *([name_filter] if name_filter else [])]
     env = {**os.environ, 'SIM_ARTIFACTS': str(artifacts), 'CARGO_TARGET_DIR': str(target)}
     with (artifacts / 'cargo.log').open('w') as log:
         process = subprocess.Popen(
-            command, cwd=source, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            command,
+            cwd=source,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
         )
-        for line in process.stdout:
-            sys.stdout.write(line)
-            log.write(line)
-        process.wait()
+        try:
+            for line in process.stdout:
+                sys.stdout.write(line)
+                log.write(line)
+            return process.wait()
+        finally:
+            stop(process)
+
+
+def stop(process):
+    """Terminate and reap the process group of a process that is still running."""
+    if process.poll() is not None:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def incomplete(directory, status):
+    """Why a run cannot be compared, or None. Failing scenarios still compare;
+    a build failure or a run without scenarios would show every screen as new
+    or removed."""
+    log = directory / 'cargo.log'
+    if 'test result:' not in (log.read_text(errors='replace') if log.exists() else ''):
+        return f'cargo test did not finish (exit status {status}); see {log}'
+    if not any(directory.glob('*/result.json')):
+        return 'no scenario ran; check --filter'
+    return None
 
 
 @contextmanager
@@ -255,25 +304,39 @@ def main(argv=None):
     except subprocess.CalledProcessError:
         print(f'unknown git ref {args.base!r}', file=sys.stderr)
         return 2
-    target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target')
-    after_dir, before_dir = args.out / 'after', args.out / 'before'
-    scenarios(ROOT, after_dir, target, args.filter)
-    with checkout(base_commit, args.out / 'base-src') as source:
-        scenarios(source, before_dir, target, args.filter)
-    before, after = report.load(before_dir), report.load(after_dir)
-    if not after:
-        print(f'no scenario results under {after_dir}', file=sys.stderr)
+    # Absolute, because the base runs with its worktree as working directory.
+    out = args.out.resolve()
+    target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target').resolve()
+    after_dir, before_dir = out / 'after', out / 'before'
+    (out / 'summary.md').unlink(missing_ok=True)
+    after_status = scenarios(ROOT, after_dir, target, args.filter)
+    with checkout(base_commit, out / 'base-src') as source:
+        before_status = scenarios(source, before_dir, target, args.filter)
+    problems = [
+        f'{side}: {problem}'
+        for side, directory, status in (
+            ('after (this checkout)', after_dir, after_status),
+            (f'before ({args.base})', before_dir, before_status),
+        )
+        if (problem := incomplete(directory, status))
+    ]
+    if problems:
+        sys.stdout.flush()
+        print('\nsim-compare: refusing to compare an incomplete run; nothing was reported or posted.', file=sys.stderr)
+        for problem in problems:
+            print(f'  {problem}', file=sys.stderr)
         return 1
+    before, after = report.load(before_dir), report.load(after_dir)
     for directory, results in ((before_dir, before), (after_dir, after)):
         (directory / 'index.html').write_text(report.page(results, f'Simulator scenarios ({directory.name})'))
     pairs = pair(before, after)
     markdown, attachments = comparison(pairs, before, after, ROOT, (args.base, base_commit, report.commit()))
-    (args.out / 'summary.md').write_text(markdown)
+    (out / 'summary.md').write_text(markdown)
     print(markdown.split('\n\n', 1)[0].removeprefix('## '))
-    print(f'report {args.out / "summary.md"}; artifacts {before_dir}/index.html and {after_dir}/index.html')
+    print(f'report {out / "summary.md"}; artifacts {before_dir}/index.html and {after_dir}/index.html')
     if args.pr:
         report.post(args.pr, markdown, attachments)
-    return 1 if any(r['status'] != 'pass' for r in after) else 0
+    return 1 if after_status or any(r['status'] != 'pass' for r in after) else 0
 
 
 if __name__ == '__main__':

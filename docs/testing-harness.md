@@ -13,6 +13,20 @@ mise run harness -- run virtual-sdk --backend virtual --sdk
 mise run harness-virtual                         # shared, virtual-foundation and virtual-sdk
 ```
 
+For a single picture of the panel, use `mise run screenshot`. It saves the next
+frame the firmware pushes to the panel, after scaling, as a PNG. The command trace
+and USB log stay in `.local/screenshots/`.
+
+```sh
+mise run screenshot -- shot.png --scale 2        # Nearest-neighbour 2x upscale
+mise run screenshot -- shot.png --press bottom-left --press bottom-right
+mise run screenshot -- --backend virtual --sdk   # Simulator; default path in .local/screenshots
+```
+
+`--press` wakes a dimmed screen first, then sends the listed synthetic button
+presses in order, waiting `--settle-ms` after each. The JSON summary reports render
+time, capture wait, transfer time and the number of chunk reads.
+
 | Recipe | Checks |
 | --- | --- |
 | `input-screen` | Tap, hold, swipe and button input, then a screenshot |

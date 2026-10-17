@@ -151,6 +151,10 @@ run = "SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked 
 description = "Run a named or structured C606/virtual harness scenario and return compact JSON"
 run = "{{vars.devtools}} python -m cycling_devtools.harness.runner"
 
+[tasks.screenshot]
+description = "Save the next frame pushed to the C606 panel as a PNG (harness builds); --scale 2, --press BUTTON"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.screenshot"
+
 [tasks.harness-virtual]
 description = "Run shared deterministic input, capture and restart scenarios"
 run = ["{{vars.devtools}} python -m cycling_devtools.harness.runner run shared --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-foundation --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-sdk --backend virtual --sdk"]

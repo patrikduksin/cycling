@@ -15,6 +15,8 @@ pub mod crash_rtc;
 pub mod display;
 #[cfg(feature = "hardware")]
 pub mod gps_uart;
+#[cfg(feature = "hardware")]
+pub mod http;
 pub mod input;
 pub mod power_transition;
 #[cfg(feature = "hardware")]

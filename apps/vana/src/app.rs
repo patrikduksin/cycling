@@ -23,11 +23,15 @@ mod presentation;
 mod readings;
 mod recording;
 pub use recording::Medium;
+mod phone;
 mod sensor_links;
 #[cfg(test)]
 mod tests;
 mod timing;
 mod training;
+pub use phone::{
+    Closed as PhoneClosed, Mode as PhoneMode, Status as PhoneStatus, Work as PhoneWork,
+};
 
 pub use power::{
     AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
@@ -45,6 +49,7 @@ pub struct Observations<'a, P, I> {
 
 pub struct Runtime {
     navigation: presentation::Navigation,
+    phone: phone::Phone,
     display: presentation::Display,
     startup_status: &'static str,
     startup: device_api::sensors::Startup,
@@ -70,6 +75,7 @@ impl Runtime {
     pub fn new(profile: Profile) -> Self {
         Self {
             navigation: presentation::Navigation::default(),
+            phone: phone::Phone::default(),
             display: presentation::Display::default(),
             startup_status: "unknown",
             startup: device_api::sensors::Startup::Unsupported,

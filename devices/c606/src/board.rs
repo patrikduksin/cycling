@@ -320,6 +320,8 @@ pub struct Parts {
     pub ble: Ble,
     pub positioning: Positioning,
     pub network: Network,
+    pub server: crate::drivers::http::Server,
+    pub access_point: AccessPoint,
     pub power: Power,
     pub power_control: Power,
     pub sensors: Sensors,
@@ -335,10 +337,23 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
     spawner.spawn(crate::capabilities::power::run(board.backlight).unwrap());
     spawner.spawn(crate::capabilities::positioning::run(board.gps_receiver).unwrap());
     spawner.spawn(crate::capabilities::io::run(board.touch, board.touch_available).unwrap());
-    let stack = crate::drivers::wifi::initialize(board.wifi, spawner).await;
-    if let Some(stack) = stack {
-        spawner.spawn(crate::drivers::wifi::time_sync(stack).unwrap());
+    let stacks = crate::drivers::wifi::initialize(board.wifi, spawner).await;
+    if let Some(stacks) = stacks {
+        spawner.spawn(crate::drivers::wifi::time_sync(stacks.station).unwrap());
+        spawner.spawn(crate::drivers::wifi::access_point_dhcp(stacks.access_point).unwrap());
+        // One connection per stack; the web client asks one thing at a time.
+        // Two listeners per stack: one accepts while the other closes, so a
+        // browser's next request is not refused.
+        for stack in [
+            stacks.station,
+            stacks.station,
+            stacks.access_point,
+            stacks.access_point,
+        ] {
+            spawner.spawn(crate::drivers::http::serve(stack).unwrap());
+        }
     }
+    let stack = stacks.map(|stacks| stacks.station);
     spawner.spawn(crate::drivers::bluetooth::start(board.bluetooth).unwrap());
     // Output intentionally remains asserted for the device lifetime. Today
     // Output has no drop glue, but forgetting keeps that true if the HAL adds one.
@@ -352,6 +367,8 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         ble: Ble,
         positioning: Positioning,
         network: Network(stack),
+        server: crate::drivers::http::Server,
+        access_point: AccessPoint(stack),
         power: Power,
         power_control: Power,
         sensors: Sensors,
@@ -442,6 +459,52 @@ impl device_api::network::Network for Network {
     }
     fn discoveries(&self) -> [Option<device_api::connectivity::NetworkDiscovery>; 8] {
         crate::drivers::wifi::discoveries()
+    }
+}
+
+/// The soft access point for the phone companion, and where its server is reached.
+pub struct AccessPoint(Option<embassy_net::Stack<'static>>);
+impl device_api::server::AccessPoint for AccessPoint {
+    fn start(
+        &mut self,
+        config: device_api::server::AccessPointConfig,
+    ) -> Result<(), device_api::observation::Error> {
+        if self.0.is_none() {
+            return Err(device_api::observation::Error::Unsupported);
+        }
+        let _access = crate::capabilities::power::ACCESS.enter()?;
+        crate::drivers::wifi::access_point_request(Some(config))
+    }
+    fn stop(&mut self) -> Result<(), device_api::observation::Error> {
+        if self.0.is_none() {
+            return Ok(());
+        }
+        crate::drivers::wifi::access_point_request(None)
+    }
+    fn state(&self) -> device_api::server::AccessPointState {
+        if self.0.is_none() {
+            return device_api::server::AccessPointState::Unsupported;
+        }
+        crate::drivers::wifi::access_point_state()
+    }
+    fn reach(&self) -> device_api::server::Reach {
+        let access_point = matches!(
+            self.state(),
+            device_api::server::AccessPointState::Up { .. }
+        )
+        .then_some(crate::drivers::wifi::AP_ADDRESS);
+        let station = self
+            .0
+            .filter(|_| crate::drivers::wifi::online())
+            .and_then(|stack| stack.config_v4())
+            .map(|config| config.address.address().octets());
+        device_api::server::Reach {
+            access_point,
+            station,
+        }
+    }
+    fn entropy(&mut self) -> u32 {
+        esp_hal::rng::Rng::new().random()
     }
 }
 

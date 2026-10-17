@@ -18,5 +18,6 @@ pub mod position_control;
 pub mod positioning;
 pub mod power;
 pub mod sensors;
+pub mod server;
 pub mod sound;
 pub mod storage;

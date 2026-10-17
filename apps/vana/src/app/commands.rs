@@ -47,6 +47,12 @@ impl Runtime {
         if words.next().is_some() {
             return "INVALID";
         }
+        if domain == Some("PHONE") {
+            if named.is_some() || bound.is_some() {
+                return "INVALID";
+            }
+            return self.phone_command(operation, argument, output);
+        }
         if domain == Some("RADAR") {
             if named.is_some() || argument.is_some() || bound.is_some() {
                 return "INVALID";
@@ -188,6 +194,54 @@ impl Runtime {
             return "OUTPUT";
         }
         "OK"
+    }
+
+    /// `PHONE` reports the phone session; `PHONE START [HOME]` opens one on
+    /// the access point or the home network; `PHONE STOP` closes it. The
+    /// reply carries the session's password and token: the terminal is the
+    /// owner's.
+    fn phone_command(
+        &mut self,
+        operation: Option<&str>,
+        argument: Option<&str>,
+        output: &mut impl Write,
+    ) -> &'static str {
+        match (operation, argument) {
+            (None, None) => {}
+            (Some("START"), None) => self.open_phone(super::PhoneMode::AccessPoint),
+            (Some("START"), Some("HOME")) => self.open_phone(super::PhoneMode::Home),
+            (Some("STOP"), None) => self.close_phone(),
+            _ => return "INVALID",
+        }
+        let result = match self.phone_status() {
+            Some(status) => {
+                let url = status.url();
+                write!(
+                    output,
+                    "state=open mode={} ssid={} password={} url={} ap={} requests={} downloads={}",
+                    status.mode.name(),
+                    status.ssid.text(),
+                    status.password.text(),
+                    url.as_ref().map_or("pending", |url| url.as_str()),
+                    status.access_point.name(),
+                    status.requests,
+                    status.downloads
+                )
+            }
+            None => write!(
+                output,
+                "state=closed reason={}",
+                self.phone_closed().map_or("none", |closed| closed.name())
+            ),
+        };
+        if result.is_err() {
+            return "OUTPUT";
+        }
+        if operation.is_some() {
+            "ACCEPTED"
+        } else {
+            "OK"
+        }
     }
 
     fn radar_command(

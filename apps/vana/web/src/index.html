@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>VANA</title>
+<style>
+:root {
+  --black: #000; --white: #fff; --secondary: #8e8e93; --muted: #aeaeb2; --tertiary: #48484a;
+  --card: #1c1c1e; --raised: #2c2c2e; --accent: #0a84ff; --green: #30d158; --amber: #ff9f0a;
+  --red: #ff453a; --speed: #64d2ff; --power: #ffd60a; --heart: #ff375f; --cadence: #30d158;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--black); color: var(--white); }
+body {
+  font-family: ui-rounded, "SF Pro Rounded", Nunito, system-ui, -apple-system, sans-serif;
+  font-weight: 700; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  max-width: 640px; margin: 0 auto;
+}
+h1 { font-size: 34px; font-weight: 900; letter-spacing: .5px; margin: 8px 0 2px; }
+.caption { font-size: 13px; font-weight: 800; color: var(--secondary); text-transform: uppercase; letter-spacing: .6px; }
+.status { display: flex; gap: 16px; flex-wrap: wrap; margin: 4px 0 20px; }
+.card { background: var(--card); border-radius: 18px; padding: 16px; margin: 0 0 8px; }
+.ride-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ride-date { font-size: 18px; }
+.metrics { display: flex; gap: 20px; margin: 10px 0 12px; flex-wrap: wrap; }
+.value { font-size: 29px; font-weight: 700; line-height: 1; }
+.unit { font-size: 13px; font-weight: 800; color: var(--secondary); margin-left: 4px; }
+.badges { display: flex; gap: 6px; }
+.badge { width: 8px; height: 8px; border-radius: 4px; display: inline-block; }
+a.button, button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--raised); color: var(--white); border: 0; border-radius: 12px;
+  font: inherit; font-size: 18px; padding: 12px 18px; text-decoration: none; cursor: pointer;
+}
+a.button.primary { background: var(--accent); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input[type=datetime-local] {
+  background: var(--raised); color: var(--white); border: 0; border-radius: 12px;
+  font: inherit; font-size: 16px; padding: 10px 12px; color-scheme: dark;
+}
+.note { color: var(--secondary); font-size: 15px; font-weight: 700; line-height: 1.35; margin: 8px 0; }
+.empty { color: var(--secondary); text-align: center; padding: 40px 0; }
+.warn { color: var(--amber); }
+.alert { color: var(--red); }
+footer { margin-top: 24px; display: flex; justify-content: space-between; align-items: center; }
+</style>
+</head>
+<body>
+<h1>VANA</h1>
+<div class="status caption" id="status">Connecting…</div>
+<div id="list"><div class="empty caption">Loading rides…</div></div>
+<footer>
+  <span class="caption" id="foot"></span>
+  <button id="done" type="button">Done</button>
+</footer>
+<script>
+'use strict';
+const params = new URLSearchParams(location.search);
+const token = params.get('t') || sessionStorage.getItem('vana-token') || '';
+if (params.get('t')) {
+  sessionStorage.setItem('vana-token', token);
+  history.replaceState(null, '', '/');
+}
+const $ = (id) => document.getElementById(id);
+
+async function api(path, options = {}) {
+  const response = await fetch(path, { ...options, headers: { 'X-Session': token }, cache: 'no-store' });
+  if (response.status === 401) throw new Error('This session ended. Open Connect phone on the device and scan again.');
+  if (!response.ok && response.status !== 204) throw new Error(`Device answered ${response.status}`);
+  return response.status === 204 ? null : response.json();
+}
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === 'class') node.className = value;
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  return node;
+}
+
+function duration(seconds) {
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, s = seconds % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function when(start) {
+  if (start == null) return 'No date recorded';
+  return new Date(start * 1000).toLocaleString(undefined, {
+    weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function metric(value, unit, color) {
+  return el('div', {}, el('span', { class: 'value', style: `color:${color}` }, value), el('span', { class: 'unit' }, unit));
+}
+
+function localInput(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function rideCard(ride) {
+  const url = `/api/activities/${ride.id}.fit`;
+  const actions = el('div', { class: 'row' });
+  if (ride.start == null) {
+    // Rides recorded before the clock synchronized need a start time.
+    const guess = new Date(Date.now() - ride.duration_s * 1000);
+    const input = el('input', { type: 'datetime-local', value: localInput(guess) });
+    const link = el('a', { class: 'button primary', href: '#' }, 'Download .fit');
+    const update = () => {
+      const start = Math.floor(new Date(input.value).getTime() / 1000);
+      link.href = Number.isFinite(start) ? `${url}?start=${start}` : '#';
+    };
+    input.addEventListener('input', update);
+    update();
+    actions.append(el('div', { class: 'note' }, 'This ride has no time. When did it start?'), input, link);
+  } else {
+    actions.append(el('a', { class: 'button primary', href: url, download: '' }, 'Download .fit'));
+  }
+  const dot = (on, color) => el('span', { class: 'badge', style: `background:${on ? color : 'var(--tertiary)'}` });
+  return el('div', { class: 'card' },
+    el('div', { class: 'ride-top' },
+      el('span', { class: 'ride-date' }, when(ride.start)),
+      el('span', { class: 'badges', title: 'GPS · power · heart rate' },
+        dot(ride.gps, 'var(--white)'), dot(ride.power, 'var(--power)'), dot(ride.heart, 'var(--heart)'))),
+    el('div', { class: 'metrics' },
+      metric(duration(ride.duration_s), 'TIME', 'var(--white)'),
+      ride.distance_m == null ? '' : metric((ride.distance_m / 1000).toFixed(1), 'KM', 'var(--white)')),
+    ride.end === 'recovered' ? el('div', { class: 'note warn' }, 'Recovered after power loss') : '',
+    actions);
+}
+
+async function load() {
+  try {
+    // One request at a time: the device serves one connection.
+    const status = await api('/api/status');
+    const list = await api('/api/activities');
+    const battery = status.battery == null ? '' : `Battery ${status.battery}%`;
+    $('status').replaceChildren(el('span', {}, `FTP ${status.ftp} W`), el('span', {}, battery));
+    const rides = list.activities;
+    $('list').replaceChildren(...(rides.length ? rides.map(rideCard)
+      : [el('div', { class: 'empty caption' }, list.indexing ? 'Reading rides…' : 'No rides yet')]));
+    $('foot').textContent = list.indexing ? 'Reading rides…' : `${rides.length} rides`;
+    if (list.indexing || status.indexing) setTimeout(load, 700);
+  } catch (error) {
+    $('status').replaceChildren(el('span', { class: 'alert' }, error.message));
+  }
+}
+
+$('done').addEventListener('click', async () => {
+  try { await api('/api/close', { method: 'POST' }); } catch {}
+  document.body.replaceChildren(el('h1', {}, 'VANA'), el('div', { class: 'note' }, 'Disconnected. You can leave this Wi-Fi now.'));
+});
+
+load();
+</script>
+</body>
+</html>

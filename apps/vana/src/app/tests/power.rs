@@ -755,3 +755,41 @@ fn press_latency_starts_when_the_device_received_the_press() {
     runtime.timing.report(&mut report);
     assert!(report.contains("press_frame_last_ms=850 "), "{report}");
 }
+
+#[test]
+fn a_hold_queued_behind_slow_work_still_continues() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut screen = Screen::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    screen.present(&mut runtime, &radio, 0);
+    // Two TopLeft reports 100 ms apart, the second handled 800 ms late.
+    runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
+    assert_eq!(runtime.navigation.page, Page::Home);
+    runtime.input_received(press(Button::TopLeft), 1_100, 1_800, &mut radio);
+    assert_eq!(
+        runtime.power.sheet,
+        Sheet::Closed,
+        "a held key asked to turn off"
+    );
+}
+
+#[test]
+fn ride_start_latency_starts_when_the_device_received_the_press() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.navigation.page = Page::Ride;
+    // Received at 7 900 ms, handled at 8 700 ms behind slow work.
+    runtime.input_received(press(Button::BottomRight), 7_900, 8_700, &mut radio);
+    let mut step = 0;
+    while runtime.ride.recorder.status() != Status::Recording {
+        assert!(step < 50, "never recording");
+        tick(&mut runtime, &mut journal, &mut radio, 8_700);
+        step += 1;
+    }
+    let mut report = std::string::String::new();
+    runtime.timing.report(&mut report);
+    assert!(report.contains("ride_press_ms=7900 "), "{report}");
+    assert!(report.contains("recording_ms=8700 "), "{report}");
+}

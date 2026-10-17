@@ -11,6 +11,7 @@ use std::vec::Vec;
 mod commands;
 mod presentation;
 mod recording;
+mod saved_sensors;
 mod sensor_links;
 
 struct Radio {
@@ -19,6 +20,10 @@ struct Radio {
     reject: Option<device_api::ant::Error>,
     settling: bool,
     observe_requests: bool,
+    availability: Availability,
+    /// Disconnects are admitted but their delivery fails, as when the UART
+    /// submission to the companion fails.
+    fail_disconnects: bool,
 }
 impl Radio {
     fn new() -> Self {
@@ -28,7 +33,24 @@ impl Radio {
             reject: None,
             settling: false,
             observe_requests: true,
+            availability: Availability::Ready,
+            fail_disconnects: false,
         }
+    }
+
+    /// A radio that admits requests but leaves link events to the test.
+    fn quiet() -> Self {
+        Self {
+            observe_requests: false,
+            ..Self::new()
+        }
+    }
+
+    fn connects(&self, peer: Identity) -> usize {
+        self.requests
+            .iter()
+            .filter(|op| matches!(op, AntOperation::Connect(p) if *p == peer))
+            .count()
     }
 
     fn connected(&mut self, device_type: u8, now: u64) -> Identity {
@@ -49,7 +71,7 @@ impl Radio {
 }
 impl Ant for Radio {
     fn availability(&self) -> Availability {
-        Availability::Ready
+        self.availability
     }
     fn capabilities(&self) -> device_api::ant::Capabilities {
         device_api::ant::Capabilities {
@@ -100,7 +122,12 @@ impl Ant for Radio {
             AntOperation::Disconnect(kind) => {
                 let peer = self.channels.channel(*kind, now).unwrap().selected.unwrap();
                 self.channels.disconnect(*kind, now).unwrap();
-                if self.observe_requests {
+                if self.fail_disconnects {
+                    self.channels.request_failed(
+                        device_api::ant::Request::Disconnect { identity: peer },
+                        now,
+                    );
+                } else if self.observe_requests {
                     self.channels
                         .receive(device_api::ant::Event::Disconnected(peer), now);
                 }
@@ -242,6 +269,18 @@ fn tick(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut Radio, 
 
 fn advance(runtime: &mut Runtime, radio: &mut Radio, now: u64) {
     tick(runtime, &mut Absent, radio, now);
+}
+
+/// A runtime started with these sensors saved, as after a restart.
+fn restored(peers: &[Identity]) -> Runtime {
+    let mut saved = crate::sensors::saved::Saved::default();
+    for peer in peers {
+        assert!(saved.select(*peer).is_some());
+    }
+    let record = preferences::encode(crate::ride::zones::TrainingProfile::default(), &saved);
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    runtime.load_preferences(&firmware_shell::preferences::AppPreferences::new(&record).unwrap());
+    runtime
 }
 
 /// A runtime whose recorder finished scanning an erased journal.

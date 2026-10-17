@@ -178,6 +178,10 @@ impl Menu {
                 };
             }
         }
+        if let Some(notice) = self.notice {
+            layout.page_feedback = Label::new();
+            layout.page_feedback.push(notice.short().as_bytes());
+        }
         if let View::Replace(identity) = self.view {
             layout.identity = self.identity_label(identity);
             let current = self.selected_identity(identity.device_type);

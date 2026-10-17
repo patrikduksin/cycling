@@ -1,5 +1,6 @@
 //! VANA behaviour in a simulated world: sensors, rides, losses and recovery.
 #![cfg(feature = "cycling")]
+use device_api::ant::{LinkState, Request};
 use device_api::ble_transport::Link;
 use device_api::input::Button;
 use shell_simulator::ant::device_type;
@@ -287,10 +288,9 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     assert_eq!(radar.targets.iter().flatten().count(), 0, "vehicle passed");
 }
 
-/// Acceptance for #130: VANA retries only `Disconnected` channels, so a
-/// channel that timed out while the sensor was away is never reopened.
+/// The channel times out while the sensor is away; VANA keeps searching for
+/// the saved identity with bounded backoff, so watts return by themselves.
 #[test]
-#[ignore = "VANA does not retry timed-out ANT channels yet (#130)"]
 fn long_power_meter_loss_reconnects_when_it_returns() {
     let mut sim = rider();
     sim.pair(&["POWER METER"]);
@@ -308,6 +308,13 @@ fn long_power_meter_loss_reconnects_when_it_returns() {
     sim.set_present(device_type::POWER, POWER, true);
     sim.wait_for("190", seconds(30)).unwrap();
     sim.expect_field("WATTS", "190");
+    sim.checkpoint("power meter back without visiting sensors");
+    sim.advance(seconds(10));
+    sim.stop_ride();
+    // The gap is recorded as missing power, never bridged with old watts.
+    let ride = &sim.rides()[0];
+    let gap = ride.samples().filter(|s| s.power_watts.is_none()).count();
+    assert!(gap >= 35, "{gap} samples without power");
 }
 
 #[test]
@@ -1282,4 +1289,227 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     sim.expect_text("CLIMBING");
     expect_near(&mut sim, "GAIN M", 84.0, 5.0);
     sim.checkpoint("climbing after the barometer returns");
+}
+
+fn link(sim: &Sim, kind: u8) -> Option<LinkState> {
+    shell_simulator::ant::link(&sim.device.ant, kind, sim.device.now)
+}
+
+/// Let time pass until the channel of this kind is connected.
+#[track_caller]
+fn wait_connected(sim: &mut Sim, kind: u8, timeout_ms: u64) {
+    let mut waited = 0;
+    while link(sim, kind) != Some(LinkState::Connected) {
+        assert!(
+            waited < timeout_ms,
+            "{kind} not connected after {waited} ms: {:?}",
+            link(sim, kind)
+        );
+        sim.advance(100);
+        waited += 100;
+    }
+    sim.note(NoteKind::Check, format!("ANT type {kind} connected"));
+}
+
+/// Connect requests the companion received since it last started.
+fn connects(sim: &Sim, kind: u8) -> Vec<u16> {
+    sim.device
+        .ant
+        .log
+        .iter()
+        .filter_map(|(_, request)| match request {
+            Request::Connect { identity } if identity.device_type == kind => {
+                Some(identity.device_number)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[track_caller]
+fn expect_check_lines(sim: &mut Sim, lines: &[&str]) {
+    sim.home("TRAIN");
+    sim.expect_text("CONNECTION CHECK");
+    for line in lines {
+        sim.expect_text(line);
+    }
+}
+
+#[test]
+fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.advance(seconds(1));
+    sim.power_loss();
+    sim.checkpoint("home after reboot");
+    wait_connected(&mut sim, device_type::HEART_RATE, seconds(5));
+    wait_connected(&mut sim, device_type::POWER, seconds(5));
+    // Saved identities were asked for directly: no discovery ran.
+    assert!(
+        sim.device
+            .ant
+            .log
+            .iter()
+            .all(|(_, request)| !matches!(request, Request::Scan { .. })),
+        "{:?}",
+        sim.device.ant.log
+    );
+    assert_eq!(connects(&sim, device_type::HEART_RATE), [HEART]);
+    assert_eq!(connects(&sim, device_type::POWER), [POWER]);
+
+    sim.home("SENSORS");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("LIVE DATA");
+    sim.checkpoint("sensors after reboot");
+    go_home(&mut sim);
+
+    expect_check_lines(&mut sim, &["HEART 4242 CONNECTED", "POWER 1234 CONNECTED"]);
+    sim.checkpoint("connection check after reboot");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.ride_at(27.0, 205.0, 138.0, 88.0);
+    sim.advance(seconds(5));
+    sim.expect_field("WATTS", "205");
+    sim.expect_field("BPM", "138");
+    sim.checkpoint("riding after reboot");
+}
+
+#[test]
+fn sensor_that_wakes_late_connects_after_boot() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE"]);
+    sim.advance(seconds(1));
+    // The strap is not worn yet when the device powers on.
+    sim.set_present(device_type::HEART_RATE, HEART, false);
+    sim.power_loss();
+    sim.advance(seconds(25));
+    assert_ne!(
+        link(&sim, device_type::HEART_RATE),
+        Some(LinkState::Connected)
+    );
+    sim.home("SENSORS");
+    sim.press(Button::BottomLeft);
+    let screen = sim.screen();
+    assert!(
+        screen.contains("SEARCHING")
+            || screen.contains("NOT FOUND YET")
+            || screen.contains("WAITING FOR RADIO"),
+        "{}",
+        screen.text()
+    );
+    sim.checkpoint("heart strap still asleep");
+    go_home(&mut sim);
+    sim.advance(seconds(60));
+    // Searches back off instead of hammering the radio.
+    let searches = connects(&sim, device_type::HEART_RATE).len();
+    assert!((3..=8).contains(&searches), "{searches} searches");
+
+    sim.set_present(device_type::HEART_RATE, HEART, true);
+    wait_connected(&mut sim, device_type::HEART_RATE, seconds(45));
+    sim.start_ride();
+    sim.ride_at(20.0, 0.0, 131.0, 0.0);
+    sim.advance(seconds(5));
+    sim.expect_field("BPM", "131");
+    sim.checkpoint("late strap reading");
+}
+
+#[test]
+fn disconnect_is_remembered_across_reboot() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.home("SENSORS");
+    sim.disconnect_sensor("HEART RATE");
+    // The tile goes at once; its pages are ignored from now on.
+    assert!(
+        sim.device
+            .sdk
+            .saved_sensors()
+            .of_type(device_type::HEART_RATE)
+            .is_none()
+    );
+    sim.expect_no_text("LIVE / ");
+    sim.checkpoint("heart rate disconnected");
+    // The channel closes once the cancelled discovery has released the radio.
+    let mut waited = 0;
+    while link(&sim, device_type::HEART_RATE) != Some(LinkState::Disconnected) {
+        assert!(waited < seconds(15), "{:?}", sim.device.ant.log);
+        sim.advance(100);
+        waited += 100;
+    }
+    // Disconnect cancelled the search. A new one offers the strap, still
+    // nearby, for explicit selection again.
+    sim.press(Button::BottomRight);
+    sim.wait_for("SCAN DONE", seconds(20)).unwrap();
+    let mut offered = false;
+    for _ in 0..12 {
+        let screen = sim.screen();
+        if screen.run("HEART RATE").is_some() && screen.run("CONNECT").is_some() {
+            offered = true;
+            break;
+        }
+        sim.press(Button::BottomLeft);
+    }
+    assert!(offered, "{}", sim.screen().text());
+    sim.checkpoint("heart rate offered as nearby");
+    go_home(&mut sim);
+
+    sim.power_loss();
+    wait_connected(&mut sim, device_type::POWER, seconds(5));
+    // Less than the dimming timeout, so the next press is not a wake press.
+    sim.advance(seconds(20));
+    assert!(connects(&sim, device_type::HEART_RATE).is_empty());
+    assert_eq!(link(&sim, device_type::HEART_RATE), None);
+    expect_check_lines(&mut sim, &["HEART --", "POWER 1234 CONNECTED"]);
+    sim.checkpoint("connection check without the removed sensor");
+}
+
+#[test]
+fn same_type_replacement_is_saved_and_survives_reboot() {
+    let mut sim = rider();
+    const SECOND_HEART: u16 = 5151;
+    sim.ant_sensor(device_type::HEART_RATE, SECOND_HEART);
+    sim.home("SENSORS");
+    sim.wait_for("SCAN DONE", seconds(20)).unwrap();
+    sim.connect_sensor("HEART RATE");
+    let first = sim
+        .device
+        .sdk
+        .saved_sensors()
+        .of_type(device_type::HEART_RATE);
+    let first = first.unwrap().1.device_number;
+    sim.replace_sensor("HEART RATE");
+    sim.checkpoint("heart rate replaced");
+    let second = if first == HEART { SECOND_HEART } else { HEART };
+    assert_eq!(
+        sim.device
+            .sdk
+            .saved_sensors()
+            .of_type(device_type::HEART_RATE)
+            .map(|(_, peer)| peer.device_number),
+        Some(second)
+    );
+    go_home(&mut sim);
+
+    sim.power_loss();
+    wait_connected(&mut sim, device_type::HEART_RATE, seconds(5));
+    assert_eq!(connects(&sim, device_type::HEART_RATE), [second]);
+    expect_check_lines(&mut sim, &[&format!("HEART {second} CONNECTED")]);
+    sim.checkpoint("replacement after reboot");
+}
+
+#[test]
+fn saved_sensors_keep_the_training_profile() {
+    let mut sim = rider();
+    sim.edit_profile(250, 175);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+    sim.pair(&["POWER METER"]);
+    sim.advance(seconds(1));
+    sim.power_loss();
+    assert_eq!(
+        sim.command("PROFILE").1,
+        "ftp=250 lthr=175 stored=current persistence=saved"
+    );
+    wait_connected(&mut sim, device_type::POWER, seconds(5));
 }

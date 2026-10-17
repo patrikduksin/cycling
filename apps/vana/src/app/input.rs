@@ -52,13 +52,9 @@ impl Runtime {
     }
 
     fn sensors_input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
-        self.menu.refresh(
-            ant.discoveries(),
-            ant.channels(now),
-            self.discovery.scan.busy(ant),
-            now,
-        );
-        match self.menu.input(input, now) {
+        self.refresh_sensor_menu(ant, now);
+        let action = self.menu.input(input, now);
+        match action {
             Some(Action::Scan) => self.request_search(ant, now),
             Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
                 self.request_sensor(action, ant, now)
@@ -68,6 +64,10 @@ impl Runtime {
                 self.navigation.page = Page::Home;
             }
             None => {}
+        }
+        self.refresh_sensor_menu(ant, now);
+        if let Some(Action::Connect(peer)) = action {
+            self.menu.focus_type(peer.device_type);
         }
         self.display.redraw();
     }

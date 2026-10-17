@@ -323,7 +323,7 @@ impl Session {
         {
             let view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-            shell.draw_scaled(240, 320, |x, y| view.pixel(x, y));
+            shell.draw_canvas(240, 320, |row| view.paint(row));
         }
         #[cfg(feature = "cycling")]
         let mut sdk = vana::app::Runtime::new(profile);

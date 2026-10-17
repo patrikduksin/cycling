@@ -252,6 +252,8 @@ pub struct State {
     ordered: bool,
     pub clock: Option<fn() -> u64>,
     pub now: u64,
+    /// When the latest delivered event was due; delivery can be later.
+    pub due: u64,
 }
 impl Default for State {
     fn default() -> Self {
@@ -293,6 +295,7 @@ impl State {
             ordered: true,
             clock: None,
             now: 0,
+            due: 0,
         }
     }
     pub fn time(&self) -> u64 {
@@ -334,6 +337,7 @@ impl State {
             return None;
         }
         self.max_late = self.max_late.max(now - due);
+        self.due = due;
         self.delivered += 1;
         let event = match scheduled.event {
             Event::Button(index) => Input::Button {
@@ -400,7 +404,7 @@ impl State {
         self.ordered = true;
         true
     }
-    pub fn pixel(&mut self, x: usize, y: usize, value: u16) {
+    pub fn row(&mut self, y: usize, pixels: &[u16]) {
         if !self.writing {
             return;
         }
@@ -408,13 +412,15 @@ impl State {
             return;
         };
         let f = self.frames[self.count];
-        let index = y * f.width + x;
-        self.ordered &= x < f.width && y < f.height && index == self.written;
-        if x < f.width && y < f.height {
-            let base = f.offset + index * 2;
-            buffer[base..base + 2].copy_from_slice(&value.to_le_bytes());
+        self.ordered &= pixels.len() == f.width && y < f.height && y * f.width == self.written;
+        if self.ordered {
+            let base = f.offset + y * f.width * 2;
+            let (bytes, _) = buffer[base..base + f.width * 2].as_chunks_mut::<2>();
+            for (bytes, value) in bytes.iter_mut().zip(pixels) {
+                *bytes = value.to_le_bytes();
+            }
         }
-        self.written += 1;
+        self.written += pixels.len();
     }
     pub fn finish_frame(&mut self, submitted: bool) {
         if !self.writing {

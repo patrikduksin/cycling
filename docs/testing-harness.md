@@ -25,7 +25,18 @@ mise run screenshot -- --backend virtual --sdk   # Simulator; default path in .l
 
 `--press` wakes a dimmed screen first, then sends the listed synthetic button
 presses in order, waiting `--settle-ms` after each. The JSON summary reports render
-time, capture wait, transfer time and the number of chunk reads.
+time, capture wait, transfer time and the number of chunk reads. Render time
+includes copying the frame into capture memory; STATUS `display_ms` is the latest
+frame without that copy.
+
+For responsiveness, `mise run latency` times button presses to the end of the next
+frame on the C606 and reports the idle frame rate and frame time. Presses fall due
+at random phases, so some wait for a frame already rendering.
+
+```sh
+mise run latency -- --press top-left --count 20        # On Home
+mise run latency -- --press bottom-left --count 21     # During a ride: steps through the pages
+```
 
 | Recipe | Checks |
 | --- | --- |

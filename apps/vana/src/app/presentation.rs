@@ -256,11 +256,11 @@ impl Runtime {
         }
         view.prepare();
         let menu = &self.menu;
-        system.draw_scaled(240, 320, |x, y| {
-            if page == Page::Sensors && y >= 25 {
-                menu.pixel(x, y)
+        system.draw_canvas(240, 320, |row| {
+            if page == Page::Sensors && row.y() >= 25 {
+                menu.paint(row)
             } else {
-                view.pixel(x, y)
+                view.paint(row)
             }
         });
     }

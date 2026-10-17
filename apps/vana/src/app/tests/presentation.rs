@@ -24,13 +24,11 @@ impl device_api::display::Display for Panel {
     }
     fn submit(
         &mut self,
-        pixel: impl Fn(usize, usize) -> u16,
+        mut row: impl FnMut(usize, &mut [u16]),
     ) -> Result<(), device_api::observation::Error> {
         let mut frame = self.0.borrow_mut();
-        for y in 0..HEIGHT {
-            for x in 0..WIDTH {
-                frame[y * WIDTH + x] = pixel(x, y);
-            }
+        for (y, pixels) in frame.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
+            row(y, pixels);
         }
         Ok(())
     }

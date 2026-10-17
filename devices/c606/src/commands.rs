@@ -233,13 +233,18 @@ pub fn execute(
         Command::Status => {
             let _ = write!(
                 output,
-                "synthetic_events={} routed_events={} foreground={:?} ",
-                system.synthetic_events, system.routed_events, system.foreground
+                "synthetic_events={} routed_events={} foreground={:?} press_frame_ms={} press_frame_max_ms={} press_frames={} ",
+                system.synthetic_events,
+                system.routed_events,
+                system.foreground,
+                system.press_frame_ms,
+                system.press_frame_max_ms,
+                system.press_frames
             );
             let logs = crate::logging::stats();
             let _ = write!(
                 output,
-                "uptime_ms={} reset={} crash={} heap_free={} heap_min_sampled={} psram_free={} input_events={} display_submissions={} display_max_ms={} storage_ops={} storage_max_ms={} terminal_rejected={} log_attempts={} log_total_us={} log_max_us={} log_lost={} log_depth={} log_buffer_bytes={} usb_poll_max_us={}",
+                "uptime_ms={} reset={} crash={} heap_free={} heap_min_sampled={} psram_free={} input_events={} display_submissions={} display_ms={} display_max_ms={} storage_ops={} storage_max_ms={} terminal_rejected={} log_attempts={} log_total_us={} log_max_us={} log_lost={} log_depth={} log_buffer_bytes={} usb_poll_max_us={}",
                 now,
                 system.reset.name(),
                 system.crash.name(),
@@ -248,6 +253,7 @@ pub fn execute(
                 diagnostics.external_free(),
                 system.input_events,
                 system.display_submissions,
+                system.display_ms,
                 system.display_max_ms,
                 system.operations,
                 system.storage_max_ms,

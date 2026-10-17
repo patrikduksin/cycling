@@ -99,13 +99,17 @@ pub fn status<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
 ) {
     let _ = write!(
         out,
-        "uptime_ms={} input_events={} synthetic_events={} routed_events={} display_submissions={} display_max_ms={} storage_ops={} storage_max_ms={} foreground={:?} ",
+        "uptime_ms={} input_events={} synthetic_events={} routed_events={} display_submissions={} display_ms={} display_max_ms={} press_frame_ms={} press_frame_max_ms={} press_frames={} storage_ops={} storage_max_ms={} foreground={:?} ",
         now,
         system.input_events,
         system.synthetic_events,
         system.routed_events,
         system.display_submissions,
+        system.display_ms,
         system.display_max_ms,
+        system.press_frame_ms,
+        system.press_frame_max_ms,
+        system.press_frames,
         system.operations,
         system.storage_max_ms,
         system.foreground

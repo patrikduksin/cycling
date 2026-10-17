@@ -40,16 +40,14 @@ impl Display for DisplayDevice {
     fn geometry(&self) -> Geometry {
         self.0.borrow().geometry
     }
-    fn submit(&mut self, pixel: impl Fn(usize, usize) -> u16) -> Result<(), Error> {
+    fn submit(&mut self, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
         let mut frame = self.0.borrow_mut();
         if core::mem::take(&mut frame.fail_next) {
             return Err(Error::Failed);
         }
-        for y in 0..frame.geometry.height {
-            for x in 0..frame.geometry.width {
-                let offset = y * frame.geometry.width + x;
-                frame.pixels[offset] = pixel(x, y);
-            }
+        let width = frame.geometry.width;
+        for (y, pixels) in frame.pixels.chunks_exact_mut(width).enumerate() {
+            row(y, pixels);
         }
         frame.submissions += 1;
         Ok(())

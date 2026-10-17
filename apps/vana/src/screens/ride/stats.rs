@@ -1,9 +1,15 @@
 //! The ride totals page: what this ride has added up so far, kept after stop,
 //! above bars of the time spent in each power and heart rate zone.
-use super::zones::{BAR_WIDTH, bar_pixel};
-use super::{BODY_BOTTOM, Cell, DIM, GRID, Values, clock, kilometres, speed, whole};
+#[cfg(test)]
+use super::zones::bar_pixel;
+use super::zones::{BAR_WIDTH, paint_bar};
+use super::{BODY_BOTTOM, Cell, DIM, GRID, Values, WHITE, clock, kilometres, speed, whole};
+#[cfg(test)]
 use crate::screens::rounded;
+use crate::screens::rounded_span;
 use crate::screens::workout::View;
+use firmware_shell::rendering::row::Row;
+#[cfg(test)]
 use firmware_shell::rendering::text::text;
 
 const COLUMNS: [usize; 2] = [34, 141];
@@ -66,7 +72,67 @@ pub(super) fn prepare(view: &View, values: &mut Values) {
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
 }
 
-pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+/// The cell of `index` in the row band starting at `top`.
+fn cell(index: usize, top: usize) -> Option<Cell> {
+    let column = index % 2;
+    Some(Cell {
+        left: COLUMNS[column],
+        top: top + 3,
+        label: LABELS.get(index)?,
+        label_scale: 1,
+        value_top: top + if index == TIME { 16 } else { 13 },
+        value_scale: if index == TIME { 2 } else { 3 },
+    })
+}
+
+/// Paint one content row: two cells per band and rules between them, then
+/// the time-in-zone bars.
+pub(super) fn paint(view: &View, row: &mut Row) {
+    let y = row.y();
+    if y >= ZONES_TOP {
+        paint_zones(view, row);
+        return;
+    }
+    if let Some(band) = y.checked_sub(FIRST_ROW).map(|y| y / ROW_PITCH) {
+        let top = FIRST_ROW + band * ROW_PITCH;
+        if y == top + ROW_PITCH - 1 {
+            row.fill(GRID);
+        } else {
+            for (column, columns) in [0..DIVIDER + 1, DIVIDER + 1..usize::MAX]
+                .into_iter()
+                .enumerate()
+            {
+                let index = band * 2 + column;
+                if let Some(cell) = cell(index, top) {
+                    cell.paint(&mut row.within(columns), &view.values[index], WHITE);
+                }
+            }
+        }
+    }
+    row.set(DIVIDER, GRID);
+}
+
+fn paint_zones(view: &View, row: &mut Row) {
+    let y = row.y();
+    let marks = &view.marks;
+    for (top, label) in [(POWER_BAR, b"PWR".as_slice()), (HEART_BAR, b"HR")] {
+        if !(top..top + BAR_HEIGHT).contains(&y) {
+            continue;
+        }
+        let bounds = (BAR_LEFT, top, BAR_LEFT + BAR_WIDTH, top + BAR_HEIGHT);
+        let shape = rounded_span(y, bounds, BAR_HEIGHT / 2);
+        if top == POWER_BAR {
+            paint_bar(row, marks.power_time, BAR_LEFT, shape);
+        } else {
+            paint_bar(row, marks.heart_time, BAR_LEFT, shape);
+        }
+        row.text(COLUMNS[0], top, 1, label, DIM);
+    }
+}
+
+/// The per-pixel original of `paint`, kept as the reference it must match.
+#[cfg(test)]
+pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     if y >= ZONES_TOP {
         return zones_pixel(view, x, y);
     }
@@ -96,6 +162,7 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
     cell.pixel(&view.values[index], x, y).unwrap_or(0)
 }
 
+#[cfg(test)]
 fn zones_pixel(view: &View, x: usize, y: usize) -> u16 {
     let marks = &view.marks;
     for (top, label) in [(POWER_BAR, b"PWR".as_slice()), (HEART_BAR, b"HR")] {

@@ -63,6 +63,9 @@ and reads back changes.
   next frame submitted to the panel (harness builds). It is PR proof of rendered
   pixels, not of panel output. A `BUSY power transition` reply after flashing
   means charging standby; `POWER` shows it and `POWER WAKE` leaves it.
+- `mise run latency -- --press BUTTON` times synthetic presses to the end of the
+  next frame submission and reports idle frame rate and time (harness builds).
+  It does not observe the panel or physical switches.
 - The interactive terminal reads only while awaiting replies. Use `mise run logs`
   for continuous collection. Keep raw bytes and decoded records under `.local/`.
 

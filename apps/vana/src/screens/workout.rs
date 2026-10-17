@@ -7,7 +7,12 @@ use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::sensors::radar;
 use core::fmt::Write;
+use firmware_shell::rendering::row::Row;
+#[cfg(test)]
 use firmware_shell::rendering::text::text;
+
+#[cfg(test)]
+mod reference;
 
 /// Below this much recording time left, the ride state row warns the rider.
 pub const LOW_STORAGE_S: u32 = 60 * 60;
@@ -112,10 +117,19 @@ impl View {
             lines: core::array::from_fn(|_| Text::new()),
         }
     }
+    /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
+        let mut pixels = [0u16; 240];
+        self.paint(&mut Row::new(y, &mut pixels));
+        pixels.get(x).copied().unwrap_or(0)
+    }
+    /// Paint one row of the 240 x 320 canvas; later paints cover earlier ones.
+    pub fn paint(&self, row: &mut Row) {
         const CYAN: u16 = 0x07ff;
         const WHITE: u16 = 0xffff;
         const DIM: u16 = 0x8410;
+        let y = row.y();
+        row.fill(0);
         if self.page == Page::Boot {
             let frame = self.now_ms / 180;
             let glitch = frame % 9 == 1 || frame % 9 == 2;
@@ -124,99 +138,87 @@ impl View {
             } else {
                 0
             };
-            if text(x + shift, y, 24, 108, 8, b"VANA") {
-                return WHITE;
+            if y == 300 {
+                row.span(0..((self.now_ms % 6500) * 240 / 6500) as usize, CYAN);
             }
-            if glitch
-                && (text(x + shift + 4, y, 24, 106, 8, b"VANA")
-                    || text(x + shift, y + 3, 28, 108, 8, b"VANA"))
-            {
-                return if y.is_multiple_of(2) { CYAN } else { 0xf81f };
+            row.text(8, 269, 1, self.lines[0].as_bytes(), WHITE);
+            row.text(96, 195, 2, b"LABS", CYAN);
+            if y == 98 || y == 174 {
+                row.span(24..216, CYAN);
             }
-            if (y == 98 || y == 174) && (24..216).contains(&x) {
-                return CYAN;
+            // The type is sampled `shift` pixels to the right; move it left instead.
+            if glitch {
+                let color = if y.is_multiple_of(2) { CYAN } else { 0xf81f };
+                row.text(28 - shift, 105, 8, b"VANA", color);
+                row.text(20 - shift, 106, 8, b"VANA", color);
             }
-            if text(x, y, 96, 195, 2, b"LABS") {
-                return CYAN;
-            }
-            if text(x, y, 8, 269, 1, self.lines[0].as_bytes()) {
-                return WHITE;
-            }
-            if y == 300 && x < ((self.now_ms % 6500) * 240 / 6500) as usize {
-                return CYAN;
-            }
-            return 0;
+            row.text(24 - shift, 108, 8, b"VANA", WHITE);
+            return;
         }
         if y < 29 {
-            if text(x, y, 128, 7, 2, self.time.as_bytes()) {
-                return WHITE;
+            if self.page == Page::Ride {
+                row.text(72, 7, 2, &self.ride_page.indicator(), DIM);
             }
-            if text(x, y, 8, 7, 2, if self.gps_fix { b"GPS" } else { b"GPS?" }) {
-                return if self.gps_fix { CYAN } else { DIM };
-            }
-            if self.page == Page::Ride && text(x, y, 72, 7, 2, &self.ride_page.indicator()) {
-                return DIM;
-            }
-            return 0;
+            let (gps, color): (&[u8], u16) = if self.gps_fix {
+                (b"GPS", CYAN)
+            } else {
+                (b"GPS?", DIM)
+            };
+            row.text(8, 7, 2, gps, color);
+            row.text(128, 7, 2, self.time.as_bytes(), WHITE);
+            return;
         }
         if y == 29 || y == 285 {
-            return 0x39e7;
+            row.fill(0x39e7);
+            return;
         }
         if self.page == Page::Ride {
-            return ride::pixel(self, x, y);
+            return ride::paint(self, row);
         }
         if self.page == Page::Settings {
-            return super::settings::pixel(self, x, y);
-        }
-        if self.page == Page::Home {
-            if text(x, y, 24, 50, 2, b"READY TO RIDE") {
-                return DIM;
-            }
-            for (i, label) in HOME.iter().enumerate() {
-                let top = 82 + i * 68;
-                if (12..228).contains(&x) && (top..top + 58).contains(&y) {
-                    let selected = self.cursor == i;
-                    if text(x, y, 22, top + 18, 3, label) {
-                        return if selected { 0 } else { WHITE };
-                    }
-                    if selected {
-                        return CYAN;
-                    }
-                    if x == 12 || x == 227 || y == top || y == top + 57 {
-                        return DIM;
-                    }
-                }
-            }
-        } else {
-            for (i, line) in self.lines.iter().enumerate() {
-                if text(
-                    x,
-                    y,
-                    10,
-                    36 + i * 27,
-                    if i == 0
-                        || (matches!(self.page, Page::Sensors | Page::Preflight)
-                            && (2..=5).contains(&i))
-                    {
-                        1
-                    } else {
-                        2
-                    },
-                    line.as_bytes(),
-                ) {
-                    return if i == 0 { CYAN } else { WHITE };
-                }
-            }
+            return super::settings::paint(self, row);
         }
         let (left, right): (&[u8], &[u8]) = match self.page {
             Page::Home => (b"NEXT", b"SELECT"),
             Page::Sensors => (b"BACK", b"SCAN"),
             _ => (b"", b""),
         };
-        if text(x, y, 8, 300, 2, left) || text(x, y, 156, 300, 2, right) {
-            return CYAN;
+        row.text(156, 300, 2, right, CYAN);
+        row.text(8, 300, 2, left, CYAN);
+        if self.page == Page::Home {
+            for (i, label) in HOME.iter().enumerate().rev() {
+                let top = 82 + i * 68;
+                if !(top..top + 58).contains(&y) {
+                    continue;
+                }
+                let selected = self.cursor == i;
+                let mut tile = row.within(12..228);
+                tile.fill(0);
+                if selected {
+                    tile.fill(CYAN);
+                } else if y == top || y == top + 57 {
+                    tile.fill(DIM);
+                } else {
+                    tile.set(12, DIM);
+                    tile.set(227, DIM);
+                }
+                tile.text(22, top + 18, 3, label, if selected { 0 } else { WHITE });
+            }
+            row.text(24, 50, 2, b"READY TO RIDE", DIM);
+        } else {
+            for (i, line) in self.lines.iter().enumerate().rev() {
+                let scale = if i == 0
+                    || (matches!(self.page, Page::Sensors | Page::Preflight)
+                        && (2..=5).contains(&i))
+                {
+                    1
+                } else {
+                    2
+                };
+                let color = if i == 0 { CYAN } else { WHITE };
+                row.text(10, 36 + i * 27, scale, line.as_bytes(), color);
+            }
         }
-        0
     }
     pub fn prepare(&mut self) {
         if self.page == Page::Ride {

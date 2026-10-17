@@ -2,7 +2,7 @@
 //! way (or altitude, ascent and the last climb) and the last 4 km of
 //! elevation as a filled profile coloured by local grade.
 //!
-//! `frame` precomputes every chart column once per frame; `pixel` only looks
+//! `frame` precomputes every chart column once per frame; `paint` only looks
 //! them up.
 use super::{
     CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT, CONTENT_TOP, CYAN, Cell, DIM, GRID, Values, WHITE,
@@ -10,6 +10,8 @@ use super::{
 };
 use crate::ride::climb::{PROFILE_LEN, ProfileSample, Steepness, Summary};
 use crate::screens::workout::View;
+use firmware_shell::rendering::row::Row;
+#[cfg(test)]
 use firmware_shell::rendering::text::text;
 
 /// Inner margin from the content rectangle's edges.
@@ -191,7 +193,97 @@ pub(super) fn frame(view: &View) -> Frame {
     frame
 }
 
-pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+/// Paint one content row: the grade and its band, the cells, or the chart.
+pub(super) fn paint(view: &View, row: &mut Row) {
+    let y = row.y();
+    let frame = &view.climb;
+    if y >= CHART_TOP {
+        paint_chart(frame, row);
+        return;
+    }
+    if BAND.contains(&y) {
+        row.span(LEFT..RIGHT, frame.grade.map_or(GRID, color));
+        return;
+    }
+    if y < FIRST_ROW {
+        row.text(
+            LEFT,
+            GRADE_TOP,
+            GRADE_SCALE,
+            view.values[GRADE].as_bytes(),
+            WHITE,
+        );
+        if frame.layout == Layout::Climbing {
+            row.text(STATUS_LEFT, GRADE_LABEL_TOP, 2, b"CLIMBING", CYAN);
+        } else {
+            row.text(STATUS_LEFT, GRADE_LABEL_TOP, 2, b"NO CLIMB", DIM);
+        }
+        row.text(LEFT, GRADE_LABEL_TOP, 2, b"GRADE", DIM);
+        return;
+    }
+    let band = (y - FIRST_ROW) / ROW_PITCH;
+    let (labels, cells) = match frame.layout {
+        Layout::Climbing => (&CLIMBING, 6),
+        Layout::Last => (&IDLE, 6),
+        Layout::Idle => (&IDLE, 2),
+    };
+    if band >= ROWS || band * 2 >= cells {
+        return;
+    }
+    let top = FIRST_ROW + band * ROW_PITCH;
+    if y == top + ROW_PITCH - 1 {
+        row.fill(GRID);
+        return;
+    }
+    for (column, columns) in [0..DIVIDER + 1, DIVIDER + 1..usize::MAX]
+        .into_iter()
+        .enumerate()
+    {
+        let index = band * 2 + column;
+        let (label, time) = labels[index];
+        let cell = Cell {
+            left: COLUMNS[column],
+            top: top + 2,
+            label,
+            label_scale: 1,
+            value_top: top + if time { 14 } else { 11 },
+            value_scale: if time { 2 } else { 3 },
+        };
+        cell.paint(
+            &mut row.within(columns),
+            &view.values[FIRST_CELL + index],
+            WHITE,
+        );
+    }
+    row.set(DIVIDER, GRID);
+}
+
+/// The profile fill, its baseline and the rider's marker.
+fn paint_chart(frame: &Frame, row: &mut Row) {
+    let y = row.y();
+    if y == CHART_BOTTOM {
+        row.span(CHART_LEFT..RIGHT, GRID);
+    }
+    if y >= CHART_BOTTOM {
+        return;
+    }
+    let line = y - CHART_TOP;
+    for (column, (&top, &band)) in frame.tops.iter().zip(&frame.bands).enumerate() {
+        if top != EMPTY && line >= usize::from(top) {
+            row.set(CHART_LEFT + column, color(band));
+        }
+    }
+    // The rider, at the right edge: a white arrow at the newest altitude.
+    let newest = frame.tops[PROFILE_LEN - 1];
+    if newest != EMPTY {
+        let reach = line.abs_diff(usize::from(newest));
+        row.span(RIGHT + reach..RIGHT + MARGIN - 2, WHITE);
+    }
+}
+
+/// The per-pixel original of `paint`, kept as the reference it must match.
+#[cfg(test)]
+pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     let frame = &view.climb;
     if y >= CHART_TOP {
         return chart_pixel(frame, x, y);
@@ -252,6 +344,7 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
     if y == CHART_BOTTOM {
         return if (CHART_LEFT..RIGHT).contains(&x) {

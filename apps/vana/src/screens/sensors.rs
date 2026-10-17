@@ -1,11 +1,13 @@
 //! Sensor selection and physical-button navigation, independent of radio scheduling.
 //!
 //! `menu` owns selection state and input, `layout` derives text and tile
-//! placement after each change, and `render` draws that layout per pixel.
+//! placement after each change, and `render` paints that layout row by row.
 mod icons;
 mod layout;
 mod menu;
 mod message;
+#[cfg(test)]
+mod reference;
 mod render;
 mod slot;
 #[cfg(test)]

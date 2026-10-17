@@ -1,7 +1,7 @@
 """Run simulator scenarios on a base ref and the current checkout, and compare them.
 
 The base runs in a temporary detached worktree under `.local/sim/compare`, built
-into its own target directory beside the current one. Sharing one directory let
+into its own directory inside the current target directory (ignored with it). Sharing one directory let
 cargo reuse the base's test binary for the current checkout afterwards, because
 workspace artifacts are keyed by package, not by checkout path, and freshness by
 file times. The separate directory stays incremental from run to run. Checkpoint
@@ -222,7 +222,7 @@ def comparison(pairs, before, after, base, refs):
 
 def base_target(target):
     """The base's own cargo target directory, so neither build can serve the other."""
-    return target.parent / f'{target.name}-sim-compare-base'
+    return target / 'sim-compare-base'
 
 
 def scenarios(source, artifacts, target, name_filter):

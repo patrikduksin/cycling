@@ -232,5 +232,6 @@ impl Runtime {
         self.record(store, bulk, now, sample);
         self.replay_step(store, bulk);
         self.service_workouts(bulk);
+        self.directory_step(store, bulk);
     }
 }

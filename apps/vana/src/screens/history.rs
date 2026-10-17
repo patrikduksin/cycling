@@ -10,8 +10,6 @@ use super::chrome::{
 };
 use super::workout::Text;
 
-/// The most rides the list keeps: every summary both journals hold.
-pub const CAPACITY: usize = 2 * crate::ride::log::HISTORY_CAPACITY;
 /// Cards on screen at once; the list scrolls to keep the focused one shown.
 pub const SHOWN: usize = 4;
 
@@ -191,6 +189,8 @@ fn civil(days: u64) -> (u64, u8, u8) {
 
 #[cfg(test)]
 mod tests {
+    /// A list longer than the screen.
+    const ROWS: usize = 8;
     use super::*;
 
     fn row(index: usize) -> Row {
@@ -228,7 +228,7 @@ mod tests {
             right: WIDTH,
             bottom: 320,
         };
-        let full = list(CAPACITY, 0);
+        let full = list(ROWS, 0);
         let want = [
             "RIDES",
             "DEC 31  12:59",
@@ -237,20 +237,14 @@ mod tests {
             "141 BPM",
         ];
         prepare(&full).assert_laid_out(bounds, &want, "list");
-        let last = list(CAPACITY, CAPACITY - 1);
-        assert_eq!(first_shown(last.cursor), CAPACITY - SHOWN);
+        let last = list(ROWS, ROWS - 1);
+        assert_eq!(first_shown(last.cursor), ROWS - SHOWN);
         assert!(prepare(&last).shows("8/8"));
-        let end = CAPACITY - 1;
-        assert_eq!(
-            row_at(CAPACITY, end, 120, card(SHOWN - 1).top + 4),
-            Some(end)
-        );
-        assert_eq!(
-            row_at(CAPACITY, end, 120, card(0).top + 4),
-            Some(CAPACITY - SHOWN)
-        );
+        let end = ROWS - 1;
+        assert_eq!(row_at(ROWS, end, 120, card(SHOWN - 1).top + 4), Some(end));
+        assert_eq!(row_at(ROWS, end, 120, card(0).top + 4), Some(ROWS - SHOWN));
         assert_eq!(row_at(1, 0, 120, card(1).top + 4), None);
-        assert_eq!(row_at(CAPACITY, end, 120, CONTENT.top), None);
+        assert_eq!(row_at(ROWS, end, 120, CONTENT.top), None);
         let empty = prepare(&list(0, 0));
         empty.assert_laid_out(bounds, &["NO RIDES YET", "SAVED RIDES SHOW HERE"], "empty");
     }

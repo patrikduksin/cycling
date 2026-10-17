@@ -130,6 +130,17 @@ async fn console(
     let sdk = external(vana::app::Runtime::new(profile));
     #[cfg(feature = "cycling")]
     {
+        // Every saved ride of both journals, for ride history: about 20 KB
+        // per journal, in PSRAM; VANA keeps only the pointer.
+        use vana::ride::directory::{ENTRY, RIDES, RideIndex};
+        let index = external(RideIndex::new(
+            external_bytes(RIDES * ENTRY),
+            external_bytes(RIDES * ENTRY),
+        ));
+        sdk.attach_ride_index(index);
+    }
+    #[cfg(feature = "cycling")]
+    {
         sdk.load_preferences(&system.settings.app);
         sdk.set_clock(|| embassy_time::Instant::now().as_millis());
         {
@@ -370,6 +381,21 @@ fn external<T>(value: T) -> &'static mut T {
     unsafe {
         pointer.write(value);
         &mut *pointer
+    }
+}
+
+/// `len` zeroed bytes of PSRAM, never freed.
+#[cfg(feature = "cycling")]
+fn external_bytes(len: usize) -> &'static mut [u8] {
+    let layout = core::alloc::Layout::from_size_align(len, 4).expect("byte layout");
+    // SAFETY: callers pass a non-zero length; the block is never freed.
+    let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
+    assert!(!pointer.is_null(), "PSRAM exhausted");
+    // SAFETY: the allocator returned `len` writable bytes, zeroed here before
+    // the only reference to them is made; they are never deallocated.
+    unsafe {
+        core::ptr::write_bytes(pointer, 0, len);
+        core::slice::from_raw_parts_mut(pointer, len)
     }
 }
 

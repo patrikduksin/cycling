@@ -376,6 +376,12 @@ impl Session {
         #[cfg(feature = "cycling")]
         let mut sdk = vana::app::Runtime::new(profile);
         #[cfg(feature = "cycling")]
+        {
+            use vana::ride::directory::{ENTRY, RIDES, RideIndex};
+            let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
+            sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
+        }
+        #[cfg(feature = "cycling")]
         sdk.load_preferences(&shell.settings.app);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;
         // each boot starts them over, as device memory does.

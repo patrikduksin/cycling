@@ -113,7 +113,10 @@ def test_comparison_shows_only_differences_side_by_side(tmp_path):
     scenario(after, 'steady', {'home': png(IMAGE, 4)})
     scenario(after, 'ride', {'riding': png(OTHER, 4), 'new view': png(IMAGE, 4)})
     old, new = report.load(before), report.load(after)
-    markdown, attachments = compare.comparison(compare.pair(old, new), old, new, tmp_path, ('main', 'aaa', 'bbb'))
+    markdown, attachments = compare.comparison(
+        compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
+    )
+    assert 'Before: `origin/main` at `aaa` (Base subject)' in markdown
     assert markdown.startswith('## ✅ Simulator before/after: 1 changed · 1 new · 1 removed · 1 unchanged')
     assert '- Steady: home' in markdown
     assert '### ✅ Steady' not in markdown
@@ -137,7 +140,9 @@ def test_unchanged_run_says_so_and_failures_still_show(tmp_path):
     scenario(before, 'steady', {'home': png(IMAGE, 4)})
     scenario(after, 'steady', {'home': png(IMAGE, 4)}, status='fail')
     old, new = report.load(before), report.load(after)
-    markdown, attachments = compare.comparison(compare.pair(old, new), old, new, tmp_path, ('main', 'aaa', 'bbb'))
+    markdown, attachments = compare.comparison(
+        compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
+    )
     assert markdown.startswith('## ❌ Simulator before/after: 0 changed · 0 new · 0 removed · 1 unchanged')
     assert 'No screen changed.' in markdown
     assert '### ❌ Steady' in markdown and 'boom' in markdown
@@ -165,7 +170,9 @@ def test_one_scenario_with_many_changes_splits_within_the_attachment_limit(tmp_p
     scenario(before, 'busy', {f'screen {i}': png(IMAGE, 4) for i in range(many)})
     scenario(after, 'busy', {f'screen {i}': png(OTHER, 4) for i in range(many)})
     old, new = report.load(before), report.load(after)
-    markdown, attachments = compare.comparison(compare.pair(old, new), old, new, tmp_path, ('main', 'aaa', 'bbb'))
+    markdown, attachments = compare.comparison(
+        compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
+    )
     assert len(attachments) == 2 * many + 1
     assert '### ✅ Busy (continued)' in markdown
     chunks = report.comments(markdown, attachments)
@@ -203,7 +210,8 @@ def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
 
     monkeypatch.setattr(compare, 'scenarios', fake)
     monkeypatch.setattr(compare, 'checkout', checkout)
-    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234')
+    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234 Base subject')
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
     monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
     assert compare.main(['--out', str(tmp_path / 'out')]) == 0
     assert targets['after'] == tmp_path / 'target'
@@ -228,12 +236,75 @@ def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypa
     posted = []
     monkeypatch.setattr(compare, 'scenarios', fake)
     monkeypatch.setattr(compare, 'checkout', checkout)
-    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234')
+    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234 Base subject')
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
     monkeypatch.setattr(report, 'post', lambda *args: posted.append(args))
     monkeypatch.chdir(tmp_path)
     assert compare.main(['--out', 'relative', '--pr', '1']) == 1
     assert posted == []
     assert not (tmp_path / 'relative/summary.md').exists()
+
+
+def fake_git(monkeypatch, calls):
+    """Answers rev-parse and log like git would, recording every call."""
+
+    def git(*args):
+        calls.append(args)
+        if args[0] == 'rev-parse':
+            return 'abc1234'
+        assert args[0] == 'log' and '--no-show-signature' in args
+        return 'Base subject'
+
+    monkeypatch.setattr(compare, 'git', git)
+
+
+def test_default_base_is_origin_main_fetched_before_resolving(monkeypatch):
+    calls = []
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
+    fake_git(monkeypatch, calls)
+    assert compare.resolve_base(None) == ('origin/main', 'abc1234', 'Base subject')
+    assert calls[0] == 'fetch'
+    assert calls[1] == ('rev-parse', '--short', '--verify', 'origin/main^{commit}')
+    assert calls[2] == ('log', '-1', '--no-show-signature', '--format=%s', 'abc1234')
+
+
+def test_explicit_base_is_resolved_without_fetching(monkeypatch):
+    calls = []
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
+    fake_git(monkeypatch, calls)
+    assert compare.resolve_base('main') == ('main', 'abc1234', 'Base subject')
+    assert 'fetch' not in calls
+    assert calls[0] == ('rev-parse', '--short', '--verify', 'main^{commit}')
+
+
+def test_signed_base_under_show_signature_is_not_parsed_as_sha(monkeypatch):
+    # With log.showSignature=true, a log without --no-show-signature prints gpg lines before the commit line.
+    def git(*args):
+        if args[0] == 'rev-parse':
+            return 'abc1234'
+        if '--no-show-signature' not in args:
+            return 'gpg: Signature made Sat Oct 17\ngpg: Good signature\nabc1234 Base subject'
+        return 'Base subject'
+
+    monkeypatch.setattr(compare, 'git', git)
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    assert compare.resolve_base(None) == ('origin/main', 'abc1234', 'Base subject')
+
+
+def test_failed_fetch_warns_and_keeps_existing_origin_main(monkeypatch, capsys):
+    seen = {}
+
+    def run(args, **kwargs):
+        seen['args'], seen['env'] = args, kwargs['env']
+        return subprocess.CompletedProcess(args, 128, '', 'fatal: could not resolve host: github.com\n')
+
+    monkeypatch.setattr(compare.subprocess, 'run', run)
+    compare.fetch_origin_main()  # must not raise
+    # The explicit refspec updates origin/main even where the remote's configured refspec omits main.
+    assert seen['args'] == ['git', 'fetch', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']
+    assert seen['env']['GIT_TERMINAL_PROMPT'] == '0'
+    err = capsys.readouterr().err
+    assert 'could not fetch origin/main' in err and 'could not resolve host' in err and 'existing origin/main' in err
 
 
 def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):

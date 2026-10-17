@@ -27,8 +27,8 @@ screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
 and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
 including failed ones. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
 and chart encoders. `mise run sim-pr <number>` posts the run inline on a pull
-request through `cycling_devtools.sim.report`. `mise run sim-compare [--base main]
-[--filter <test name>] [--pr <number>]` also runs the base ref in a temporary
+request through `cycling_devtools.sim.report`. `mise run sim-compare [--base <ref>]
+[--filter <test name>] [--pr <number>]` also runs the base ref (default `origin/main`, fetched first) in a temporary
 worktree and reports only screens whose pixels changed, Before | After
 (`cycling_devtools.sim.compare`).
 

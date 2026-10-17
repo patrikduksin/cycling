@@ -1,0 +1,35 @@
+[project]
+name = "cycling-terrain"
+version = "0.1.0"
+description = "Build offline road and elevation packs for VANA's climb look-ahead"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["osmium>=4.1", "numpy>=2.3", "tifffile>=2025.6", "imagecodecs>=2025.3"]
+
+[project.scripts]
+cycling-terrain = "cycling_terrain.cli:main"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.17.0"]
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13"]
+build-backend = "uv_build"
+
+[tool.pytest]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501", "SIM105"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cycling_terrain"]

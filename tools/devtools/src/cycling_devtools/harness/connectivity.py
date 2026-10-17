@@ -61,6 +61,14 @@ def scenarios(wifi_profile, original_wifi_connected=True):
                 'command': 'BLE',
                 'progress_from': 'heart_after_att_timeout',
                 'counters': ['notifications'],
+                'unchanged': ['dropped'],
+            },
+            # Against the pre-hold baseline: a reconnect during the hold must fail.
+            {
+                'op': 'command',
+                'command': 'BLE',
+                'progress_from': 'heart',
+                'counters': ['notifications'],
                 'unchanged': ['dropped', 'connections', 'disconnections'],
             },
             {'op': 'ble', 'action': 'disconnect', 'expect': {'link': 'off'}},

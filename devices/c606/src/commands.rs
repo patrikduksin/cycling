@@ -554,10 +554,41 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
     use device_api::console::Console;
     use firmware_console::transfer::{self, HEADER, MAX_PAYLOAD, Session};
     use firmware_services::checksum::crc32;
+    // The request and reply buffers (8 KiB) live in external RAM for the
+    // session only: held across awaits they would sit in the console task's
+    // static future and take internal RAM from the main stack.
+    struct Buffers(*mut u8);
+    const LAYOUT: core::alloc::Layout =
+        match core::alloc::Layout::from_size_align(2 * MAX_PAYLOAD, 4) {
+            Ok(layout) => layout,
+            Err(_) => panic!("transfer buffer layout"),
+        };
+    impl Drop for Buffers {
+        fn drop(&mut self) {
+            // SAFETY: the block came from `allocate_external` with `LAYOUT`,
+            // is freed only here, and no slice of it outlives `self`.
+            unsafe { device::drivers::psram::deallocate_external(self.0, LAYOUT) };
+        }
+    }
+    // SAFETY: `LAYOUT` has a non-zero size.
+    let pointer = unsafe { device::drivers::psram::allocate_external(LAYOUT) };
+    if pointer.is_null() {
+        // No external RAM: the host times out and reports the session failed.
+        return;
+    }
+    let buffers = Buffers(pointer);
+    // SAFETY: the allocator returned `LAYOUT.size()` writable bytes, zeroed
+    // here before any reference exists; `buffers` frees them only after
+    // `payload` and `out` (declared later, dropped first) are gone.
+    let (payload, out) = unsafe {
+        core::ptr::write_bytes(buffers.0, 0, LAYOUT.size());
+        (
+            &mut *buffers.0.cast::<[u8; MAX_PAYLOAD]>(),
+            &mut *buffers.0.add(MAX_PAYLOAD).cast::<[u8; MAX_PAYLOAD]>(),
+        )
+    };
     let mut session = Session::default();
     let mut header = [0u8; HEADER];
-    let mut payload = [0u8; MAX_PAYLOAD];
-    let mut out = [0u8; MAX_PAYLOAD];
     let mut last = embassy_time::Instant::now();
     let idle = embassy_time::Duration::from_millis(transfer::IDLE_MS);
     // Bytes until `deadline`, or `None` if the host went quiet.
@@ -645,7 +676,7 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
                 length: 0,
             }
         } else {
-            session.handle(&request, body, bulk, &mut out)
+            session.handle(&request, body, bulk, out)
         };
         let data = &out[..reply.length];
         let head = transfer::encode_reply(&request, &reply, data);

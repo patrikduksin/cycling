@@ -117,6 +117,12 @@ fn init() -> Resources {
                 let mut reader = reader;
                 if let Err(error) = reader.clock(20_000_000) {
                     println!("CYCLING_SDMMC clock_failed hz=20000000 error={:?}", error);
+                    // A reset in the middle of a card command can leave the
+                    // first switch failing; CMD0 re-initialization clears it.
+                    let started = embassy_time::Instant::now();
+                    let retried = reader.recover().and_then(|()| reader.clock(20_000_000));
+                    sdmmc::HEALTH.recovered(retried.is_ok(), started.elapsed().as_millis());
+                    println!("CYCLING_SDMMC clock_retry ok={}", retried.is_ok());
                 }
                 reader
             };
@@ -136,6 +142,7 @@ fn init() -> Resources {
             Some(reader)
         }
         Err(error) => {
+            sdmmc::HEALTH.record(sdmmc::Stage::Open, error);
             println!("CYCLING_SDMMC initialization_failed error={:?}", error);
             None
         }
@@ -349,7 +356,7 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         power_control: Power,
         sensors: Sensors,
         sound: Sound,
-        bulk: Bulk(board.bulk),
+        bulk: Bulk(board.bulk, None),
         storage: crate::drivers::storage::Backend::new(board.flash),
         terminal: crate::drivers::usb::Usb::new(board.usb),
         reset: board.reset,
@@ -440,7 +447,46 @@ impl device_api::network::Network for Network {
 
 /// A missing medium remains explicitly unavailable. It never falls through to
 /// the owned boot-flash journals.
-pub struct Bulk(Option<sdmmc::Reader<'static>>);
+/// The MMC, and when it last recovered on its own.
+pub struct Bulk(
+    Option<sdmmc::Reader<'static>>,
+    Option<embassy_time::Instant>,
+);
+
+/// A failed medium recovers on its own at most this often, so a dead card
+/// cannot stall the main loop with re-initialization.
+const AUTO_RECOVER_GAP: embassy_time::Duration = embassy_time::Duration::from_secs(30);
+
+impl Bulk {
+    /// Run `op` on the medium. A failure (sticky until recovery) gets one CMD0
+    /// re-initialization and one retry, at most every `AUTO_RECOVER_GAP`: a
+    /// watchdog or software reset mid-command must not leave the MMC failed
+    /// until a power cycle, with rides silently falling back to internal.
+    fn with_recovery<T>(
+        &mut self,
+        mut op: impl FnMut(&mut sdmmc::Reader<'static>) -> Result<T, device_api::bulk::Error>,
+    ) -> Result<T, device_api::bulk::Error> {
+        use device_api::bulk::{Error, Read};
+        let _access = crate::capabilities::power::ACCESS
+            .enter()
+            .map_err(|_| Error::Unavailable)?;
+        let reader = self.0.as_mut().ok_or(Error::Unavailable)?;
+        match op(reader) {
+            Err(Error::Failed) if self.1.is_none_or(|last| last.elapsed() >= AUTO_RECOVER_GAP) => {
+                let started = embassy_time::Instant::now();
+                self.1 = Some(started);
+                let recovered = reader.recover();
+                #[cfg(not(feature = "bulk-maintenance"))]
+                let recovered = recovered.and_then(|()| reader.clock(20_000_000));
+                sdmmc::HEALTH.recovered(recovered.is_ok(), started.elapsed().as_millis());
+                log::warn!(target: "mmc", "auto recover ok={}", recovered.is_ok());
+                recovered?;
+                op(reader)
+            }
+            other => other,
+        }
+    }
+}
 #[cfg(feature = "bulk-maintenance")]
 impl Bulk {
     pub(super) fn maintenance_reader(self) -> Option<sdmmc::Reader<'static>> {
@@ -455,13 +501,7 @@ impl device_api::bulk::Read for Bulk {
             .info()
     }
     fn read(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<(), device_api::bulk::Error> {
-        let _access = crate::capabilities::power::ACCESS
-            .enter()
-            .map_err(|_| device_api::bulk::Error::Unavailable)?;
-        self.0
-            .as_mut()
-            .ok_or(device_api::bulk::Error::Unavailable)?
-            .read(sector, output)
+        self.with_recovery(|reader| reader.read(sector, output))
     }
     fn clock(&mut self, hz: u32) -> Result<(), device_api::bulk::Error> {
         let _access = crate::capabilities::power::ACCESS
@@ -490,39 +530,21 @@ impl device_api::bulk::ReadWrite for Bulk {
         (u64::from(rng.random()) << 32) | u64::from(rng.random())
     }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
-        let _access = crate::capabilities::power::ACCESS
-            .enter()
-            .map_err(|_| device_api::bulk::Error::Unavailable)?;
-        self.0
-            .as_mut()
-            .ok_or(device_api::bulk::Error::Unavailable)?
-            .owned_info()
+        self.with_recovery(|reader| reader.owned_info())
     }
     fn owned_read(
         &mut self,
         sector: u64,
         output: &mut [u8; 512],
     ) -> Result<(), device_api::bulk::Error> {
-        let _access = crate::capabilities::power::ACCESS
-            .enter()
-            .map_err(|_| device_api::bulk::Error::Unavailable)?;
-        self.0
-            .as_mut()
-            .ok_or(device_api::bulk::Error::Unavailable)?
-            .owned_read(sector, output)
+        self.with_recovery(|reader| reader.owned_read(sector, output))
     }
     fn owned_write(
         &mut self,
         sector: u64,
         input: &[u8; 512],
     ) -> Result<(), device_api::bulk::Error> {
-        let _access = crate::capabilities::power::ACCESS
-            .enter()
-            .map_err(|_| device_api::bulk::Error::Unavailable)?;
-        self.0
-            .as_mut()
-            .ok_or(device_api::bulk::Error::Unavailable)?
-            .owned_write(sector, input)
+        self.with_recovery(|reader| reader.owned_write(sector, input))
     }
 }
 

@@ -59,6 +59,10 @@ and reads back changes.
   replays commands, and a reply from an earlier boot never completes a new request.
 - `ACCEPTED` means queued; poll completion where the command requires it. A
   timeout after a mutation is uncertain completion, not permission to retry.
+- `mise run screenshot -- out.png [--scale 2] [--press BUTTON ...]` saves the
+  next frame submitted to the panel (harness builds). It is PR proof of rendered
+  pixels, not of panel output. A `BUSY power transition` reply after flashing
+  means charging standby; `POWER` shows it and `POWER WAKE` leaves it.
 - The interactive terminal reads only while awaiting replies. Use `mise run logs`
   for continuous collection. Keep raw bytes and decoded records under `.local/`.
 

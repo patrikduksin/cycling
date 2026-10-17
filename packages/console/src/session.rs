@@ -5,6 +5,11 @@ use crate::protocol::Request;
 use serde::Serialize;
 
 const BYTES: usize = 1536;
+/// Bytes offered per poll, one less than a full-speed bulk packet. Each flush
+/// then ends in a short packet, which completes the host's read transfer. A
+/// record ending on a full 64-byte packet without a zero-length packet stays
+/// queued on the host (Linux cdc-acm) until unrelated later output arrives.
+const PACKET: usize = 63;
 
 #[derive(Serialize)]
 struct Reply<'a> {
@@ -72,7 +77,7 @@ impl<T: device_api::console::Console> Terminal<T> {
         }
     }
     /// Whole records cannot interleave. Replies win between records; each poll
-    /// offers at most 64 bytes and never waits on a disconnected host.
+    /// offers at most one short packet and never waits on a disconnected host.
     pub fn pump(
         &mut self,
         mut next_log: impl FnMut() -> Option<Line>,
@@ -92,7 +97,7 @@ impl<T: device_api::console::Console> Terminal<T> {
             }
             self.offset = 0;
         }
-        for _ in 0..64 {
+        for _ in 0..PACKET {
             if self.offset == self.length {
                 break;
             }
@@ -203,7 +208,7 @@ mod tests {
         let first = [b'x'; 100];
         let mut logs = VecDeque::from([line(&first), line(b"next log\n")]);
         session.pump(|| logs.pop_front(), || 0);
-        assert_eq!(session.usb.output.len(), 64);
+        assert_eq!(session.usb.output.len(), PACKET);
         session.reply(7, "OK", "done", 20);
         session.pump(|| logs.pop_front(), || 0);
         assert_eq!(&session.usb.output, &first);
@@ -217,6 +222,23 @@ mod tests {
             output,
             "{\"type\":\"reply\",\"id\":7,\"status\":\"OK\",\"ms\":20,\"data\":\"done\"}\nnext log\n"
         );
+    }
+
+    #[test]
+    fn every_flush_ends_in_a_short_packet() {
+        // A 128-byte reply would otherwise end on a full packet and stall on the host.
+        let mut session = Terminal::new(Transport::default());
+        let data = "x".repeat(128 - 55);
+        session.reply(1, "OK", &data, 0);
+        let mut flushes = Vec::new();
+        for _ in 0..4 {
+            let before = session.usb.output.len();
+            session.pump(|| None, || 0);
+            flushes.push(session.usb.output.len() - before);
+        }
+        assert_eq!(session.usb.output.len(), 128);
+        assert_eq!(*session.usb.output.last().unwrap(), b'\n');
+        assert!(flushes.iter().all(|&n| n < 64), "{flushes:?}");
     }
 
     #[test]

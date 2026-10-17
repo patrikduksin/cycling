@@ -7,6 +7,7 @@ pub mod ant;
 pub mod bulk;
 pub mod checksum;
 pub mod connectivity;
+pub mod fit;
 pub mod gps;
 pub mod input;
 pub mod le;

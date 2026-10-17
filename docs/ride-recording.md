@@ -41,6 +41,28 @@ mise run ride-export                          # Writes .local/exports/<id>/ by d
   invalid records, missing locations, sequence gaps and backward UTC split
   segments. A location-free ride keeps raw/JSON and records why GPX is unavailable.
 
+### FIT activities
+
+```sh
+mise run ride-export -- --format fit                        # Also writes ride-<id>.fit, listed in fit.json
+mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an earlier export offline
+```
+
+- [ride/fit.rs](../apps/vana/src/ride/fit.rs) turns a ride into a FIT
+  activity (cycling): file_id, device_info, timer start, stop and resume
+  events, one record per sample with time, position, distance, speed, heart
+  rate, cadence, power and grade, then one lap, the session (with normalized
+  power) and the activity. The host uses the same encoder as the device
+  (`ride-fit` binary), and `tools/devtools/tests/test_fit_export.py` reads its
+  files with Garmin's FIT SDK and fitdecode.
+- Samples are dated like GPX: each running stretch from its first UTC sample;
+  a stretch without UTC keeps the previous offset, so its pause counts as no
+  time. A ride with no UTC at all has no FIT until `--start-utc-ms` gives its
+  start.
+- Distance comes from wheel speed only. Without a wheel sensor the file has
+  none and readers use GPS. The journal holds no altitude and no laps, so the
+  file has one lap and no elevation; Strava fills elevation from its own map.
+
 ## Explicit reclaim
 
 ```sh

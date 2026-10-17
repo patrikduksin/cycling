@@ -4,12 +4,17 @@
 internal journal. Its slots are the same version-1 records; each sits in a
 sector container the device validates. Invalid containers are exported as zero
 slots, listed in the manifest, and their raw sectors are kept for diagnosis.
+
+`--format fit` also writes a FIT activity per ride (`ride-<id>.fit`, listed in
+`fit.json`) with the firmware's own encoder, for Strava or Garmin Connect.
+`--from <export>` converts an earlier export without the device.
 """
 
 import argparse
 import datetime as dt
 import hashlib
 import json
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 import zlib
@@ -425,13 +430,48 @@ def write_exports(output, canonical, header):
     return {**manifest, 'ride_count': count}
 
 
+def fit_command(canonical, output, start_utc_ms=None):
+    """The firmware's own FIT encoder, built for the host (`apps/vana/src/bin/ride-fit.rs`)."""
+    command = ['cargo', 'run', '--quiet', '--release', '--locked', '-p', 'vana', '--bin', 'ride-fit', '--']
+    command += [str(canonical), str(output)]
+    if start_utc_ms is not None:
+        command += ['--start-utc-ms', str(start_utc_ms)]
+    return command
+
+
+def write_fit(output, canonical, start_utc_ms=None, run=subprocess.run):
+    """Convert every ride in `canonical` to `ride-<id>.fit`; list the results in `fit.json`."""
+    result = run(fit_command(canonical, output, start_utc_ms), cwd=ROOT, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f'FIT conversion failed: {result.stderr.strip()}')
+    rides = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    (Path(output) / 'fit.json').write_text(
+        json.dumps({'raw_file': Path(canonical).name, 'rides': rides}, indent=2) + '\n'
+    )
+    return rides
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_port_argument(parser)
     parser.add_argument('--output', type=Path, default=ROOT / '.local/exports' / str(time.time_ns()))
     parser.add_argument('--medium', choices=MEDIA, default='internal', help='ride journal to read (default internal)')
+    parser.add_argument('--format', choices=('raw', 'fit'), default='raw', help='fit: also write FIT activities')
+    parser.add_argument('--from', dest='source', type=Path, help='convert an earlier export instead of the device')
+    parser.add_argument('--start-utc-ms', type=int, help='FIT start time for rides recorded without a clock')
     args = parser.parse_args()
+    if args.source is not None:
+        if args.format != 'fit':
+            parser.error('--from needs --format fit')
+        rides = write_fit(args.source, args.source / 'ride-slots.bin', args.start_utc_ms)
+        print(json.dumps(rides, indent=2))
+        print(f'FIT files are listed in {args.source / "fit.json"}')
+        return
     summary = export(selected_port(parser, args.port), args.output, args.medium)
+    if args.format == 'fit':
+        rides = write_fit(args.output, args.output / 'ride-slots.bin', args.start_utc_ms)
+        written = sum(ride['fit'] is not None for ride in rides)
+        print(f'{written} FIT files are listed in {args.output / "fit.json"}')
     keep = ('medium', 'store_id', 'generation', 'upper_bound', 'status', 'raw_sha256', 'ride_count')
     print(json.dumps({key: summary[key] for key in keep if key in summary}, indent=2))
     print(f'Rides and their files are listed in {args.output / "manifest.json"}')

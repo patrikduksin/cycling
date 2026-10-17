@@ -106,7 +106,7 @@ mise run ride-clear -- --medium bulk .local/exports/<export-id>
   internal. START is refused while a ride is open on either medium. Bulk status adds `capacity`, `store`,
   `generation` and `boot_reads`.
 - The 3 GB region holds 5,777,391 records, about 6,419 h at 1 Hz, so the
-  connection check shows `MMC nH LEFT`.
+  Ready screen shows `ROOM FOR 6419 H`.
 - Records are append-only and never overwrite a valid record of the current
   store. A checkpoint with the catalog is written every 32 records, after each
   ride ends, and at boot before anything else when one is overdue, so at most
@@ -161,22 +161,23 @@ Controls:
 | Screen | Control |
 | --- | --- |
 | Menu | Opens training, sensor status or settings |
-| Training | After a short connection check, the ride buttons below apply. |
+| Ride | Opens Ready (GPS, sensors, battery and storage in plain words); ACT or rolling off starts the ride, and the ride buttons below apply. See [UX flows](ux-flows.md). |
 | Settings | Bottom-left moves to the next field (FTP, LTHR), bottom-right edits it, top-left returns home. While editing, bottom-left lowers and bottom-right raises it by 5 and top-left finishes. Touch: tap a field to edit it, then tap the large minus or plus pad. Edits apply at once and are saved two seconds after the last change. |
 | Sensors | Bottom-left moves, bottom-right selects, top-left returns. Choosing a nearby sensor saves it; choosing another of a saved type asks to replace it. A saved sensor opens a page whose only action is Disconnect, which removes it. |
 
 Ride buttons keep the system-wide roles: bottom-right acts, bottom-left moves,
 top-left marks or backs out. The ride screen shows no button labels; the
 status row under the pages names the ride state, and short toasts confirm a
-lap or ask for the end-ride confirmation. A ride ends only once paused, so a
-bump of top-left while riding marks a lap instead. Touch never starts, pauses,
-laps or ends a ride.
+lap. A pause fills the screen. A ride ends only once paused, and only through
+the END RIDE? question, so a bump of top-left while riding marks a lap
+instead. Touch never starts, pauses, laps or ends a ride.
 
 | Ride state | Bottom-right (act) | Bottom-left (move) | Top-left (mark / back) |
 | --- | --- | --- | --- |
-| Ready, saved or recovered | Start | Next page, wrapping | Home |
+| Ready | Start | — | Home |
 | Recording | Pause | Next page, wrapping | Lap |
-| Paused | Resume | Next page, wrapping | End ride: a second press within three seconds (toast `PRESS AGAIN TO SAVE`) finishes and commits the final samples; wait for `saved` before powering off |
+| Paused | Resume | From the paused screen to the ride pages; past the last page, back | Asks END RIDE?: ACT finishes and commits the final samples, then the summary shows `RIDE SAVED`; BACK keeps the ride paused |
+| Saved (summary) | Done: Home | Next summary page | Home |
 
 The pages are live, totals, lap and climb; the header shows `1/4`. A
 confirmed climb (3% over 200 m that gains 20 m) brings up the climb page, and
@@ -256,7 +257,7 @@ Recording:
   samples once START and the terminal record are reserved, which is 16,376 s
   (4 h 32 min 56 s) at 1 Hz when empty. Each pause/resume costs two event slots
   plus the unused part of the batch it flushes (about 10 s of capacity).
-- The connection check shows `STORAGE h:mm LEFT`. Under one hour left, the ride
+- Ready shows `ROOM FOR n H` (`ROOM FOR n MIN` under an hour). Under one hour left, the ride
   state row turns yellow and reads `STORAGE nM LEFT`, `REC nM LEFT` or
   `PAUSED nM LEFT`; `RIDE STATUS` reports `free_s`. START is refused (`STORAGE
   FULL`) without room for one sample batch.

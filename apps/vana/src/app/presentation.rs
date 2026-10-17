@@ -8,6 +8,8 @@ use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Toast, Tone};
 use crate::screens::gesture::Gestures;
 use crate::screens::home::{Home, last_ride};
 use crate::screens::power::Sheet as PowerSheet;
+use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
+use crate::screens::ride::summary::{After, Saving};
 use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
@@ -29,8 +31,6 @@ use firmware_shell::shell::{Screen, Shell};
 /// The brand stays this long after VANA's first frame, then Home opens. The
 /// device keeps the backlight dark until VANA runs, so this is all a rider sees.
 pub(super) const BRAND_MS: u64 = 400;
-/// The connection check yields to the ride page after this long.
-const PREFLIGHT_MS: u64 = 2500;
 const ANIMATED_FRAME_MS: u64 = 500;
 /// Motion (the brand reveal, the farewell) draws at this cadence: a frame
 /// takes about 25 ms on the C606, so this leaves the loop free between them.
@@ -69,6 +69,31 @@ pub(super) struct Navigation {
     pub(super) toast: Option<(Toast, u64)>,
     /// The recorder state the last frame announced.
     announced: Status,
+    /// When the ride was last paused, for the paused screen's timer.
+    pub(super) paused_since: Option<u64>,
+    /// The rider paged from the paused screen to the ride pages.
+    pub(super) pause_hidden: bool,
+    /// The paused screen came back by paging past either end of the ride
+    /// pages, so MOVE continues at the first page and a swipe back at the
+    /// last, rather than at the page the rider left.
+    pub(super) pause_wrapped: bool,
+    /// The summary page shown after a ride.
+    pub(super) summary_page: usize,
+    /// A sound the next `alert` plays.
+    pub(super) chime: Option<Chime>,
+}
+
+/// Short sounds that mark ride moments, so the rider need not look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Chime {
+    /// Recording started or resumed: the highest tone.
+    Go,
+    /// Paused: the lowest tone.
+    Pause,
+    /// A lap: the shortest tick.
+    Lap,
+    /// The ride is saved: the highest tone.
+    Saved,
 }
 
 impl Navigation {
@@ -82,23 +107,59 @@ impl Navigation {
         self.toast = Some((toast, now.saturating_add(ms)));
     }
 
-    /// Announce a recorder state change, from any source, once.
-    /// An automatic pause is named by its own toast for as long as it lasts.
-    pub(super) fn announce(&mut self, status: Status, auto_paused: bool, now: u64) {
+    /// Announce a recorder state change, from any source, once: a toast
+    /// and a chime, the paused screen, or the summary of a finished ride.
+    pub(super) fn announce(&mut self, status: Status, now: u64) {
         let before = core::mem::replace(&mut self.announced, status);
         if before == status {
             return;
         }
+        let riding = matches!(before, Status::Recording | Status::Paused);
         let (message, tone) = match (before, status) {
-            (Status::Paused, Status::Recording) => ("RESUMED", Tone::Good),
-            (_, Status::Recording) => ("RECORDING", Tone::Good),
-            (_, Status::Paused) if auto_paused => return,
-            (_, Status::Paused) => ("PAUSED", Tone::Warn),
-            (Status::Recording | Status::Paused, Status::Saved) => ("RIDE SAVED", Tone::Good),
+            (Status::Paused, Status::Recording) => {
+                self.paused_since = None;
+                self.chime = Some(Chime::Go);
+                ("RESUMED", Tone::Good)
+            }
+            (_, Status::Recording) => {
+                self.paused_since = None;
+                self.chime = Some(Chime::Go);
+                // A ride started by rolling off, or from the terminal, shows.
+                if self.page == Page::Ready {
+                    self.open_ride();
+                }
+                ("RECORDING", Tone::Good)
+            }
+            // The paused screen says it, whoever paused.
+            (_, Status::Paused) => {
+                self.paused_since = Some(now);
+                self.pause_hidden = false;
+                self.pause_wrapped = false;
+                self.chime = Some(Chime::Pause);
+                return;
+            }
+            // A full journal or a failure mid-ride stays on the ride screen,
+            // where its toast explains it.
+            (_, Status::Saved)
+                if riding && matches!(self.page, Page::Ride | Page::EndRide | Page::Summary) =>
+            {
+                self.chime = Some(Chime::Saved);
+                self.page = Page::Summary;
+                self.summary_page = 0;
+                return;
+            }
+            (_, Status::Saved) if riding => ("RIDE SAVED", Tone::Good),
             (_, Status::Recovered) => ("RIDE RECOVERED", Tone::Info),
             _ => return,
         };
         self.toast(message, tone, now);
+    }
+
+    /// Show the ride screen's first page.
+    pub(super) fn open_ride(&mut self) {
+        self.page = Page::Ride;
+        self.ride_page_chosen(RidePage::Main);
+        self.pause_hidden = false;
     }
 }
 
@@ -118,6 +179,11 @@ impl Default for Navigation {
             gestures: Gestures::default(),
             toast: None,
             announced: Status::Ready,
+            paused_since: None,
+            pause_hidden: false,
+            pause_wrapped: false,
+            summary_page: 0,
+            chime: None,
         }
     }
 }
@@ -210,8 +276,10 @@ impl Runtime {
         }
         let motion = matches!(sheet, Some(PowerSheet::TurningOff { .. }))
             || (sheet.is_none() && self.navigation.page == Page::Boot);
-        let animated = self.navigation.page == Page::Ride
-            || sheet.is_some_and(PowerSheet::animated)
+        let animated = matches!(
+            self.navigation.page,
+            Page::Ride | Page::Ready | Page::EndRide | Page::Summary
+        ) || sheet.is_some_and(PowerSheet::animated)
             || self.readings.battery.charging();
         *next_frame_ms = now.saturating_add(if motion {
             MOTION_FRAME_MS
@@ -230,18 +298,43 @@ impl Runtime {
         }
     }
 
+    /// Sound a radar alert on the ride screen, or else the latest ride
+    /// moment's chime. A radar alert always wins: the chime is dropped.
+    /// While the buzzer is still busy (a chime and its guard) nothing is
+    /// decided: a radar alert is not spent on a buzzer that would refuse it,
+    /// and sounds as soon as the buzzer is free.
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
-        if self.navigation.page != Page::Ride {
+        if core::mem::take(&mut self.ride.lap_chime) {
+            self.navigation.chime = Some(Chime::Lap);
+        }
+        if now < sound.snapshot().until_ms {
             return;
         }
-        let radar = self.readings.radar.snapshot(now);
-        if self.readings.radar_alert.update(radar, now)
-            && let Some(pattern) = sound
-                .patterns()
-                .iter()
-                .filter(|p| p.nominal_ms <= ALERT_PATTERN_MAX_MS)
-                .max_by_key(|p| p.nominal_ms)
-        {
+        let chime = self.navigation.chime.take();
+        if self.navigation.page == Page::Ride {
+            let radar = self.readings.radar.snapshot(now);
+            if self.readings.radar_alert.update(radar, now)
+                && let Some(pattern) = sound
+                    .patterns()
+                    .iter()
+                    .filter(|p| p.nominal_ms <= ALERT_PATTERN_MAX_MS)
+                    .max_by_key(|p| p.nominal_ms)
+            {
+                let _ = sound.play(pattern.id, now);
+                return;
+            }
+        }
+        let Some(chime) = chime else {
+            return;
+        };
+        // Short patterns only: a chime never holds the buzzer from an alert.
+        let short = sound.patterns().iter().filter(|p| p.nominal_ms <= 150);
+        let pattern = match chime {
+            Chime::Go | Chime::Saved => short.max_by_key(|p| (p.frequency_hz, p.nominal_ms)),
+            Chime::Pause => short.min_by_key(|p| (p.frequency_hz, u16::MAX - p.nominal_ms)),
+            Chime::Lap => short.min_by_key(|p| p.nominal_ms),
+        };
+        if let Some(pattern) = pattern {
             let _ = sound.play(pattern.id, now);
         }
     }
@@ -296,12 +389,12 @@ impl Runtime {
         if navigation.page == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
             navigation.page = Page::Home;
         }
-        if navigation.page == Page::Preflight
-            && now.saturating_sub(navigation.page_since) >= PREFLIGHT_MS
-        {
-            navigation.page = Page::Ride;
-            navigation.ride_page_chosen(RidePage::Main);
+        let status = self.ride.active().status();
+        if navigation.page != Page::Boot {
+            navigation.announce(status, now);
         }
+        self.follow_ride(status);
+        let navigation = &mut self.navigation;
         let page = navigation.page;
         let gps = position.snapshot(now);
         let utc = self.readings.live.utc_ms.map(|v| v / 1000).or_else(|| {
@@ -355,23 +448,23 @@ impl Runtime {
             }),
             Observation::Unavailable => None,
         };
-        if page != Page::Boot {
-            navigation.announce(view.state, self.ride.auto.paused(), now);
-        }
+        view.paused_secs = navigation
+            .paused_since
+            .map_or(0, |since| now.saturating_sub(since) / 1000);
+        view.pause_screen =
+            page == Page::Ride && view.state == Status::Paused && !navigation.pause_hidden;
         view.toast = self.toast(now);
-        let gps_status = gps.map_or("OFF", |p| {
-            if p.gps.state == FixState::Fresh {
-                "FIX OK"
-            } else {
-                "SEARCHING"
-            }
-        });
         match page {
             Page::Boot => {
                 let shown = now.saturating_sub(first_frame).min(BRAND_MS);
                 view.reveal = (shown * u64::from(crate::screens::brand::DONE) / BRAND_MS) as u16;
             }
-            Page::Preflight => self.preflight_lines(&mut view, now, ant, gps_status),
+            Page::Ready => {
+                self.refresh_sensor_menu(ant, now);
+                view.readiness = self.readiness(view.gps, view.battery);
+            }
+            Page::Summary => view.after = self.after(),
+            Page::EndRide | Page::Phone => {}
             Page::Ride => {
                 // Keep the screen lit while riding; a finished ride may dim and idle off.
                 if self.recording() {
@@ -461,14 +554,10 @@ impl Runtime {
         home
     }
 
-    /// What the toast band shows now: an armed end ride first, then a lap
-    /// just finished, then an automatic start or resume, then the latest
+    /// What the toast band shows now: a lap just finished first, then an automatic start or resume, then the latest
     /// confirmation, then ride problems and low storage, which last until
     /// they are resolved, then what auto-pause is doing.
     pub(super) fn toast(&mut self, now: u64) -> Option<Toast> {
-        if self.ride.stop_confirming(now) {
-            return Some(Toast::new("PRESS AGAIN TO SAVE", Tone::Warn));
-        }
         if let Some(lap) = self.ride.lap_toast(now) {
             return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
         }
@@ -549,12 +638,15 @@ impl Runtime {
         self.ride.fallback() && self.ride.shown() == Medium::Internal
     }
 
-    /// A pause the device chose stays named until the ride resumes. Without
-    /// wheel speed auto-pause cannot work, which the first seconds of the
-    /// ride say once rather than for the whole ride.
+    /// A pause the device chose stays named on the ride pages until the ride
+    /// resumes; the paused screen names it itself. Without wheel speed
+    /// auto-pause cannot work, which the first seconds of the ride say once
+    /// rather than for the whole ride.
     fn auto_pause_toast(&self, status: Status, now: u64) -> Option<Toast> {
         let text = match status {
-            Status::Paused if self.ride.auto.paused() => "AUTO PAUSED",
+            Status::Paused if self.ride.auto.paused() && self.navigation.pause_hidden => {
+                "AUTO PAUSED"
+            }
             Status::Recording
                 if self.readings.live.speed_mm_s.is_none()
                     && self.ride.active_ms(now) < NO_SPEED_NOTE_MS =>
@@ -566,69 +658,156 @@ impl Runtime {
         Some(Toast::new(text, Tone::Info))
     }
 
-    pub(super) fn preflight_lines(
-        &self,
-        view: &mut View,
-        now: u64,
-        ant: &impl Ant,
-        gps_status: &str,
-    ) {
-        let _ = view.lines[0].push_str("CONNECTION CHECK");
-        let checks = [
-            ("SPEED", device_type::SPEED),
-            ("HEART", device_type::HEART_RATE),
-            ("POWER", device_type::POWER),
-            ("RADAR", device_type::RADAR),
-        ];
-        let tiles = self.sensor_tiles(ant, now);
-        let saved = |kind: u8| {
-            tiles
-                .iter()
-                .flatten()
-                .find(|tile| tile.identity.device_type == kind)
-        };
-        for (line, (label, kind)) in view.lines[2..].iter_mut().zip(checks) {
-            // A combined speed/cadence sensor also provides speed.
-            let tile = saved(kind).or_else(|| {
-                (kind == device_type::SPEED)
-                    .then(|| saved(device_type::SPEED_CADENCE))
-                    .flatten()
-            });
-            let _ = match tile {
-                Some(tile) => write!(
-                    line,
-                    "{label} {} {}",
-                    tile.identity.device_number,
-                    tile.connection.text()
-                ),
-                None => write!(line, "{label} --"),
-            };
-        }
-        let _ = write!(view.lines[6], "GPS {}", gps_status);
-        // Name the medium only on boards that have bulk storage.
-        let medium = match self.ride.bulk.status() {
-            Status::Unsupported => "STORAGE",
-            _ => self.ride.medium().label(),
-        };
-        // The connection check is about the ride about to start.
-        let recorder = self.ride.recorder(self.ride.medium());
-        let line = &mut view.lines[7];
-        let _ = match recorder.status() {
-            Status::Ready | Status::Saved | Status::Recovered => {
-                let hours = recorder.remaining_secs() / 3600;
-                if hours >= 100 {
-                    write!(line, "{medium} {hours}H LEFT")
-                } else {
-                    let minutes = recorder.remaining_secs() / 60 % 60;
-                    write!(line, "{medium} {hours}:{minutes:02} LEFT")
-                }
+    /// Keep the shown page true to the ride: a ride started on Ready or the
+    /// summary shows its pages, "End ride?" closes once the ride is no longer paused, and a
+    /// summary whose finish failed returns to the ride.
+    fn follow_ride(&mut self, status: Status) {
+        let navigation = &mut self.navigation;
+        match navigation.page {
+            // A ride started remotely from the summary needs its controls.
+            Page::Ready | Page::Summary if status == Status::Recording => navigation.open_ride(),
+            Page::EndRide if status != Status::Paused => {
+                self.ride.disarm_stop();
+                navigation.page = Page::Ride;
             }
-            status => write!(line, "{medium} {}", status.name()),
+            Page::Summary
+                if status == Status::Paused
+                    && !self.ride.pending()
+                    && matches!(self.ride.request, Request::Completed(r) if !r.ok) =>
+            {
+                navigation.page = Page::Ride;
+            }
+            _ => {}
+        }
+    }
+
+    /// What the summary shows beyond the totals.
+    fn after(&self) -> After {
+        let status = self.ride.active().status();
+        let saving = match status {
+            _ if self.ride.pending() => Saving::Writing,
+            Status::Recording | Status::Paused => Saving::Writing,
+            Status::Error => Saving::Failed,
+            _ => Saving::Saved,
         };
-        let _ = match self.discovery.scan.overview_message() {
-            Some(message) => view.lines[8].push_str(message.text()),
-            None => write!(view.lines[8], "RADIO {:?}", ant.availability()),
+        After {
+            page: self.navigation.summary_page,
+            saving,
+            best: self.ride.efforts.best(),
+            climbs: self.ride.climbs_done,
+            // The open lap counts: a ride without a lap press is one lap.
+            laps: self.ride.laps.count().saturating_add(1),
+        }
+    }
+
+    /// The Ready checks: GPS, sensors, battery and room to record, each in
+    /// plain words with what to do when something needs the rider.
+    pub(super) fn readiness(&self, gps: Gps, battery: Option<Battery>) -> Readiness {
+        let mut readiness = Readiness::default();
+        let checks = &mut readiness.checks;
+        checks[ReadyLine::Gps as usize] = match gps {
+            Gps::Fixed => Check::new(Level::Good, "GPS LOCKED", ""),
+            Gps::Searching => Check::new(Level::Wait, "FINDING GPS", "YOU CAN START ANYWAY"),
+            Gps::Off => Check::new(Level::Off, "NO GPS", "RECORDS WITHOUT A MAP"),
         };
+        checks[ReadyLine::Sensors as usize] = self.sensors_check();
+        checks[ReadyLine::Battery as usize] = match battery {
+            None => Check::new(Level::Off, "BATTERY", ""),
+            Some(Battery {
+                percent,
+                charging: true,
+                ..
+            }) => {
+                let mut title = Text::<24>::new();
+                let _ = write!(title, "CHARGING {percent}%");
+                Check::new(Level::Good, title.as_str(), "")
+            }
+            Some(Battery { percent, .. }) => {
+                let mut title = Text::<24>::new();
+                let _ = write!(title, "BATTERY {percent}%");
+                let (level, hint) = match percent {
+                    30.. => (Level::Good, ""),
+                    15..30 => (Level::Wait, "CHARGE AFTER THE RIDE"),
+                    _ => (Level::Problem, "CHARGE BEFORE RIDING"),
+                };
+                Check::new(level, title.as_str(), hint)
+            }
+        };
+        checks[ReadyLine::Storage as usize] = self.storage_check();
+        readiness
+    }
+
+    fn sensors_check(&self) -> Check {
+        if matches!(
+            self.startup,
+            Startup::Uncertain | Startup::TimedOut | Startup::Unavailable
+        ) {
+            return Check::new(Level::Wait, "SENSORS UNAVAILABLE", "TURN VANA OFF AND ON");
+        }
+        let glance = self.menu.glance();
+        if glance.is_empty() {
+            return Check::new(Level::Off, "NO SENSORS", "TAP HERE TO PAIR ONE");
+        }
+        let live = glance.iter().filter(|g| g.live).count();
+        let mut title = Text::<24>::new();
+        // Short names, two spaces apart: at most four fit a line.
+        let mut names = Text::<19>::new();
+        let pick = |want_live: bool| glance.iter().filter(move |g| g.live == want_live);
+        if live == glance.len() {
+            let plural = if live == 1 { "" } else { "S" };
+            let _ = write!(title, "{live} SENSOR{plural} LIVE");
+            for (index, g) in pick(true).enumerate() {
+                let separator = if index == 0 { "" } else { "  " };
+                let name = core::str::from_utf8(crate::screens::home::short_name(g.kind));
+                let _ = write!(names, "{separator}{}", name.unwrap_or(""));
+            }
+            return Check::new(Level::Good, title.as_str(), names.as_str());
+        }
+        // Name the sensors still waking; pedalling or wearing them helps.
+        for (index, g) in pick(false).enumerate() {
+            let separator = if index == 0 { "" } else { "  " };
+            let name = core::str::from_utf8(crate::screens::home::short_name(g.kind));
+            let _ = write!(names, "{separator}{}", name.unwrap_or(""));
+        }
+        Check::new(Level::Wait, "SENSORS WAKING UP", names.as_str())
+    }
+
+    /// Room for the ride about to start, wherever it will go.
+    fn storage_check(&self) -> Check {
+        let medium = self.ride.medium();
+        let recorder = self.ride.recorder(medium);
+        let mut title = Text::<24>::new();
+        match recorder.status() {
+            Status::Scanning | Status::Formatting | Status::Clearing => {
+                Check::new(Level::Wait, "CHECKING STORAGE", "")
+            }
+            Status::Recording | Status::Paused => Check::new(Level::Good, "RECORDING", ""),
+            status @ (Status::Ready | Status::Saved | Status::Recovered) => {
+                let left = recorder.remaining_secs();
+                if left == 0 {
+                    return Check::new(Level::Problem, "STORAGE FULL", "EXPORT OLD RIDES");
+                }
+                // Seconds left still record; the ride counts them down.
+                if left < 60 {
+                    return Check::new(Level::Wait, "UNDER 1 MIN OF ROOM", "EXPORT OLD RIDES");
+                }
+                if left < LOW_STORAGE_S {
+                    let _ = write!(title, "ROOM FOR {} MIN", left / 60);
+                    return Check::new(Level::Wait, title.as_str(), "EXPORT OLD RIDES");
+                }
+                let _ = write!(title, "ROOM FOR {} H", left / 3600);
+                if self.ride.fallback() {
+                    return Check::new(Level::Wait, title.as_str(), "ON INTERNAL MEMORY");
+                }
+                // A ride cut short by power loss was kept; say so once here.
+                if status == Status::Recovered {
+                    return Check::new(Level::Good, title.as_str(), "LAST RIDE RECOVERED");
+                }
+                Check::new(Level::Good, title.as_str(), "")
+            }
+            Status::Full => Check::new(Level::Problem, "STORAGE FULL", "EXPORT OLD RIDES"),
+            _ => Check::new(Level::Problem, "STORAGE PROBLEM", "TURN VANA OFF AND ON"),
+        }
     }
 
     fn settings_lines(&self, view: &mut View) {

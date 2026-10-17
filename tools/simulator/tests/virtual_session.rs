@@ -288,11 +288,11 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     let t = Temp::new();
     let mut s = Session::new(&t.0, 240, 320).unwrap();
     s.advance(7000).unwrap();
-    present(&mut s); // Splash completes into the TRAIN/SENSORS menu.
+    present(&mut s); // Splash completes into Home.
     state(&mut s, "ready");
-    press(&mut s, Button::BottomRight); // TRAIN -> preflight.
+    press(&mut s, Button::BottomRight); // RIDE -> Ready.
     s.advance(2600).unwrap();
-    present(&mut s); // Preflight -> ready workout.
+    present(&mut s); // Ready waits for ACT.
     assert!(!s.sdk.recording());
     press(&mut s, Button::BottomRight);
     state(&mut s, "recording");
@@ -309,9 +309,9 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     state(&mut s, "recording");
     press(&mut s, Button::BottomRight); // Only a paused ride ends.
     state(&mut s, "paused");
-    press(&mut s, Button::TopLeft); // Arm end ride; a single press must not save.
+    press(&mut s, Button::TopLeft); // Asks END RIDE?; a single press must not save.
     state(&mut s, "paused");
-    press(&mut s, Button::TopLeft);
+    press(&mut s, Button::BottomRight); // Yes: save.
     let saved_duration = active(&state(&mut s, "saved"));
     assert!(!s.sdk.recording());
     let saved = std::fs::read(t.0.join("data.bin")).unwrap();
@@ -333,12 +333,15 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     assert_eq!(entries.last().unwrap().active_ms, saved_duration);
 
     // A later workout appends after the completed one, including across restart.
-    press(&mut s, Button::BottomRight);
+    press(&mut s, Button::BottomRight); // Summary: Done, Home.
+    press(&mut s, Button::BottomRight); // RIDE -> Ready.
+    press(&mut s, Button::BottomRight); // Start.
+    state(&mut s, "recording");
     s.advance(1500).unwrap();
     press(&mut s, Button::BottomRight);
     state(&mut s, "paused");
     press(&mut s, Button::TopLeft);
-    press(&mut s, Button::TopLeft);
+    press(&mut s, Button::BottomRight);
     state(&mut s, "saved");
     assert_eq!(
         &std::fs::read(t.0.join("data.bin")).unwrap()[..prefix.len()],

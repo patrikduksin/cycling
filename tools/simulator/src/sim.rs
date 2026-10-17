@@ -113,16 +113,6 @@ impl Screen {
             .map(|run| run.text.clone())
     }
 
-    /// A connection check line such as "HEART 4242 CONNECTED": the check's
-    /// name, with its state under it.
-    pub fn shows_check(&self, line: &str) -> bool {
-        let (name, state) = line.split_once(' ').unwrap_or((line, ""));
-        let runs = self.frame().read();
-        runs.iter()
-            .filter(|run| run.text == name)
-            .any(|label| Self::value_of(&runs, label).as_deref() == Some(state))
-    }
-
     /// A text run that reads exactly `text`, such as a button label.
     pub fn run(&self, text: &str) -> Option<TextRun> {
         self.frame().read().into_iter().find(|run| run.text == text)
@@ -476,19 +466,6 @@ impl Sim {
             screen.text()
         );
         self.note(NoteKind::Check, format!("saw {needle}"));
-    }
-
-    /// Assert a connection check line, such as "HEART 4242 CONNECTED".
-    #[track_caller]
-    pub fn expect_check(&mut self, line: &str) {
-        let screen = self.screen();
-        assert!(
-            screen.shows_check(line),
-            "expected check {line:?} at {} ms; screen:\n{}",
-            self.now(),
-            screen.text()
-        );
-        self.note(NoteKind::Check, format!("saw {line}"));
     }
 
     /// Assert the value under a field label.

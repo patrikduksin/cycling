@@ -78,20 +78,45 @@ pub(super) fn prepare(view: &View) -> Canvas {
         );
     }
     let marks = &view.marks;
-    zone_bar(&mut canvas, b"PWR", POWER_BAR, marks.power_time);
-    zone_bar(&mut canvas, b"HR", HEART_BAR, marks.heart_time);
+    zone_bar(
+        &mut canvas,
+        b"PWR",
+        (LEFT, BAR_LEFT),
+        POWER_BAR,
+        marks.power_time,
+    );
+    zone_bar(
+        &mut canvas,
+        b"HR",
+        (LEFT, BAR_LEFT),
+        HEART_BAR,
+        marks.heart_time,
+    );
     canvas
 }
 
-/// A caption, then one segment per zone ridden, in zone colours with black
-/// between them; a `TERTIARY` track before any time is recorded.
-fn zone_bar<const N: usize>(canvas: &mut Canvas, caption: &[u8], top: usize, bar: Bar<N>) {
+/// A caption at `caption_left`, then from `bar_left` one segment per zone
+/// ridden, in zone colours with black between them; a `TERTIARY` track
+/// before any time is recorded.
+pub(super) fn zone_bar<const N: usize>(
+    canvas: &mut Canvas,
+    caption: &[u8],
+    (caption_left, bar_left): (usize, usize),
+    top: usize,
+    bar: Bar<N>,
+) {
     // The caption's capitals centre on the bar.
-    canvas.caption(caption, BAR_LEFT - 8 - LEFT, LEFT, top + 10, Align::Left);
+    canvas.caption(
+        caption,
+        bar_left - 8 - caption_left,
+        caption_left,
+        top + 10,
+        Align::Left,
+    );
     let bar_rect = |left: usize, right: usize| Rect {
-        left: BAR_LEFT + left,
+        left: bar_left + left,
         top,
-        right: BAR_LEFT + right,
+        right: bar_left + right,
         bottom: top + BAR_HEIGHT,
     };
     let Some(ends) = bar else {

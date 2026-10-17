@@ -100,20 +100,38 @@ impl Sim {
             .is_some_and(|run| run.smooth && run.scale >= 3)
     }
 
-    /// Ride from Home, through the connection check, onto a recording ride
-    /// page. BottomRight acts: it starts, pauses and resumes a ride.
+    /// Ride from Home: RIDE opens Ready, and BottomRight starts recording
+    /// onto the ride pages. BottomRight acts: it starts, pauses and resumes.
     pub fn start_ride(&mut self) {
         self.home("RIDE");
-        self.expect_text("CONNECTION CHECK");
-        self.wait_for("KM/H", seconds(5)).unwrap();
+        self.expect_text("READY");
         self.press(Button::BottomRight);
         self.wait_for("RECORDING", seconds(2)).unwrap();
+    }
+
+    /// The page VANA shows, such as "summary".
+    #[cfg(feature = "cycling")]
+    pub fn vana_page(&self) -> &'static str {
+        self.device.sdk.page().name()
     }
 
     pub fn pause_ride(&mut self) {
         self.press(Button::BottomRight);
         // A lap toast may cover the status row for up to two seconds.
         self.wait_for("PAUSED", seconds(3)).unwrap();
+    }
+
+    /// From the paused screen, MOVE to the ride page shown before the pause.
+    #[track_caller]
+    pub fn show_ride_pages(&mut self) {
+        if self.screen().contains("RIDE TIME") {
+            self.press(Button::BottomLeft);
+        }
+        assert!(
+            !self.screen().contains("RIDE TIME"),
+            "{}",
+            self.screen().text()
+        );
     }
 
     pub fn resume_ride(&mut self) {
@@ -185,16 +203,24 @@ impl Sim {
             .to_string()
     }
 
-    /// Pause if still recording (only a paused ride ends), then press TopLeft
-    /// twice, confirming on "PRESS AGAIN TO SAVE", and wait for the save.
+    /// Pause if still recording (only a paused ride ends), then TopLeft asks
+    /// "End ride?" and BottomRight answers it; wait for RIDE SAVED on the
+    /// summary. Ends on the summary.
     pub fn stop_ride(&mut self) {
         if self.ride_state() == "recording" {
             self.pause_ride();
         }
         self.press(Button::TopLeft);
-        self.expect_text("PRESS AGAIN TO SAVE");
-        self.press(Button::TopLeft);
+        self.expect_text("END RIDE?");
+        self.press(Button::BottomRight);
         self.wait_for("RIDE SAVED", seconds(5)).unwrap();
+    }
+
+    /// Finish the summary with BottomRight and land on Home.
+    #[track_caller]
+    pub fn done(&mut self) {
+        self.press(Button::BottomRight);
+        assert!(self.on_home(), "{}", self.screen().text());
     }
 
     /// TopLeft on a recording ride: close the lap and see its toast, such as

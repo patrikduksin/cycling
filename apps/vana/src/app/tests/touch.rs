@@ -18,7 +18,7 @@ fn tapping_a_home_tile_opens_it() {
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = Page::Home;
     touch(&mut runtime, &mut radio, &[(120, 40)], 1000);
-    assert!(runtime.navigation.page == Page::Preflight);
+    assert!(runtime.navigation.page == Page::Ready);
     runtime.navigation.page = Page::Home;
     let y = (SENSORS_TILE.top + 20) as u16;
     touch(&mut runtime, &mut radio, &[(120, y)], 2000);
@@ -87,9 +87,9 @@ fn state_changes_are_announced_once_in_a_toast() {
     };
     runtime
         .navigation
-        .announce(runtime.ride.active().status(), false, 1000);
+        .announce(runtime.ride.active().status(), 1000);
     assert_eq!(text(&mut runtime, 1000).as_deref(), Some("RECORDING"));
-    runtime.navigation.announce(Status::Recording, false, 1500);
+    runtime.navigation.announce(Status::Recording, 1500);
     assert_eq!(text(&mut runtime, 3100), None, "expired and not repeated");
     // A lap outranks the confirmation it follows.
     runtime.input(press(Button::TopLeft), 3200, &mut radio);
@@ -100,11 +100,9 @@ fn state_changes_are_announced_once_in_a_toast() {
         tick(&mut runtime, &mut journal, &mut radio, 6000 + step * 50);
     }
     assert_eq!(runtime.ride.active().status(), Status::Paused);
-    runtime.input(press(Button::TopLeft), 6400, &mut radio);
-    assert_eq!(
-        text(&mut runtime, 6400).as_deref(),
-        Some("PRESS AGAIN TO SAVE")
-    );
+    // The paused screen says PAUSED; no toast repeats it.
+    runtime.navigation.announce(Status::Paused, 6300);
+    assert_eq!(text(&mut runtime, 6300), None);
 }
 
 #[test]

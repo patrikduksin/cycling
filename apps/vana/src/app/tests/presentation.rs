@@ -166,7 +166,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
 }
 
 #[test]
-fn train_shows_the_connection_check_then_the_ride_page() {
+fn ride_opens_ready_which_waits_for_act_to_start() {
     let mut screen = Screen::new();
     let mut radio = Radio::new();
     let heart = radio.connected(HEART_RATE, 0);
@@ -176,17 +176,27 @@ fn train_shows_the_connection_check_then_the_ride_page() {
     assert!(screen.present(&mut runtime, &radio, 6500));
     assert!(runtime.navigation.page == Page::Home);
     runtime.input(press(Button::BottomRight), 7000, &mut radio);
-    assert!(runtime.navigation.page == Page::Preflight);
+    assert!(runtime.navigation.page == Page::Ready);
 
     assert!(screen.present(&mut runtime, &radio, 7000));
-    let mut view = crate::screens::workout::View::new(Page::Preflight, 0, None);
-    runtime.preflight_lines(&mut view, 7000, &radio, "OFF");
-    let line = |i: usize| std::string::String::from(view.lines[i].as_str());
-    assert_eq!(line(0), "CONNECTION CHECK");
-    assert_eq!(line(2), "SPEED --");
-    assert_eq!(line(3), "HEART 42 CONNECTED");
-    assert_eq!(line(6), "GPS OFF");
-    // The panel shows those lines, laid out as the page lays them out.
+    let readiness = runtime.readiness(
+        crate::screens::chrome::Gps::Off,
+        Some(crate::screens::chrome::Battery {
+            percent: 80,
+            ..Default::default()
+        }),
+    );
+    let title = |line: crate::screens::ready::Line| {
+        std::string::String::from(readiness.checks[line as usize].title.as_str())
+    };
+    use crate::screens::ready::Line;
+    assert_eq!(title(Line::Gps), "NO GPS");
+    assert_eq!(title(Line::Battery), "BATTERY 80%");
+    assert_eq!(title(Line::Sensors), "1 SENSOR LIVE");
+    assert_eq!(readiness.checks[Line::Sensors as usize].hint.as_str(), "HR");
+    // The panel shows the Ready screen as the view lays it out.
+    let mut view = crate::screens::workout::View::new(Page::Ready, 0, None);
+    view.readiness = runtime.readiness(crate::screens::chrome::Gps::Off, None);
     view.prepare();
     let content = crate::screens::chrome::CONTENT.top..crate::screens::chrome::TOAST.top;
     assert!(
@@ -195,17 +205,18 @@ fn train_shows_the_connection_check_then_the_ride_page() {
             .all(|y| (0..WIDTH).all(|x| screen.panel.pixel(x, y) == view.pixel(x, y)))
     );
 
-    // Pages advance when a frame is drawn.
-    assert!(screen.present(&mut runtime, &radio, 9499));
-    assert!(runtime.navigation.page == Page::Preflight);
-    assert!(screen.present(&mut runtime, &radio, 10_499));
-    assert!(runtime.navigation.page == Page::Ride);
+    // Ready stays until the rider acts: no timer moves on.
+    assert!(screen.present(&mut runtime, &radio, 30_000));
+    assert!(runtime.navigation.page == Page::Ready);
+    runtime.input(press(Button::TopLeft), 30_500, &mut radio);
+    assert!(runtime.navigation.page == Page::Home);
 }
 
 #[test]
 fn radar_alerts_sound_only_on_the_ride_page() {
-    use device_api::sound::{Pattern, Snapshot, Sound};
-    struct Speaker(Vec<u8>);
+    use device_api::sound::{Pattern, Snapshot, Sound, State};
+    /// Played ids, and when the buzzer is free again (500 ms per sound).
+    struct Speaker(Vec<u8>, u64);
     impl Sound for Speaker {
         fn patterns(&self) -> &'static [Pattern] {
             const fn pattern(id: u8, nominal_ms: u16) -> Pattern {
@@ -220,10 +231,20 @@ fn radar_alerts_sound_only_on_the_ride_page() {
             &PATTERNS
         }
         fn snapshot(&self) -> Snapshot {
-            unimplemented!("alerts only play patterns")
+            Snapshot {
+                state: State::Elapsed,
+                pattern: None,
+                requested_ms: 0,
+                submitted_ms: None,
+                until_ms: self.1,
+            }
         }
-        fn play(&mut self, id: u8, _: u64) -> Result<(), device_api::observation::Error> {
+        fn play(&mut self, id: u8, now: u64) -> Result<(), device_api::observation::Error> {
+            if now < self.1 {
+                return Err(device_api::observation::Error::Unavailable);
+            }
             self.0.push(id);
+            self.1 = now + 500;
             Ok(())
         }
         fn stop(&mut self, _: u64) -> Result<(), device_api::observation::Error> {
@@ -233,7 +254,7 @@ fn radar_alerts_sound_only_on_the_ride_page() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    let mut speaker = Speaker(Vec::new());
+    let mut speaker = Speaker(Vec::new(), 0);
     radio.connected(RADAR, 0);
     // One target 31 m behind, closing at 3 m/s.
     let close = [0x30, 1, 0, 10, 0, 0, 1, 0];
@@ -246,6 +267,21 @@ fn radar_alerts_sound_only_on_the_ride_page() {
     tick(&mut runtime, &mut journal, &mut radio, 1250);
     runtime.alert(&mut speaker, 1250);
     assert_eq!(speaker.0, [2], "the longest pattern that fits");
+
+    // A chime holds the buzzer when a car appears: the alert is not spent
+    // on a refused sound, and plays once the buzzer is free.
+    speaker.0.clear();
+    runtime.navigation.chime = Some(crate::app::presentation::Chime::Lap);
+    runtime.alert(&mut speaker, 7000);
+    assert_eq!(speaker.0, [1], "the lap chime");
+    radio.data(RADAR, [0x30, 2, 0, 10, 0, 0, 1, 0], 7050);
+    tick(&mut runtime, &mut journal, &mut radio, 7050);
+    runtime.alert(&mut speaker, 7050);
+    assert_eq!(speaker.0, [1], "the buzzer is busy");
+    radio.data(RADAR, [0x30, 2, 0, 10, 0, 0, 1, 0], 7500);
+    tick(&mut runtime, &mut journal, &mut radio, 7500);
+    runtime.alert(&mut speaker, 7500);
+    assert_eq!(speaker.0, [1, 2], "the alert, once the buzzer is free");
 }
 
 #[test]

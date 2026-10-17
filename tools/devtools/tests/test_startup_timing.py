@@ -122,7 +122,7 @@ class Vana:
 
     def __init__(self, page='home', state='ready', cursor=0, ignore_save=False):
         self.page, self.state, self.cursor = page, state, cursor
-        self.rides, self.armed, self.ignore_save = 0, False, ignore_save
+        self.rides, self.ignore_save = 0, ignore_save
         self.edited = False
         self.presses = []
         self.session = None
@@ -155,14 +155,19 @@ class Vana:
             if button == 'bottom-left':
                 self.cursor = (self.cursor + 1) % 3
             elif button == 'bottom-right':
-                self.page = ('ride', 'sensors', 'settings')[self.cursor]
+                self.page = ('ready', 'sensors', 'settings')[self.cursor]
+        elif self.page == 'ready':
+            if button == 'bottom-right':
+                self.page, self.state = 'ride', 'recording'
         elif self.page == 'ride':
             if button == 'bottom-right':
                 self.state = {'recording': 'paused', 'paused': 'recording'}.get(self.state, 'recording')
             elif button == 'top-left' and self.state == 'paused':
-                if self.armed and not self.ignore_save:
-                    self.state, self.rides = 'saved', self.rides + 1
-                self.armed = True
+                self.page = 'end_ride'
+        elif self.page == 'end_ride' and button == 'bottom-right' and not self.ignore_save:
+            self.page, self.state, self.rides = 'summary', 'saved', self.rides + 1
+        elif self.page == 'summary' and button == 'bottom-right':
+            self.page = 'home'
 
 
 def test_ride_refuses_away_from_home_without_pressing():
@@ -174,11 +179,11 @@ def test_ride_refuses_away_from_home_without_pressing():
         assert not vana.edited
 
 
-def test_ride_walks_home_to_train_and_ends_with_the_ride_saved():
+def test_ride_walks_home_to_ready_and_ends_with_the_ride_saved():
     vana = Vana(cursor=2)
     startup_timing.ride(vana)
     assert vana.presses[:2] == ['bottom-left', 'bottom-right']
-    assert (vana.state, vana.rides, vana.edited) == ('saved', 1, False)
+    assert (vana.page, vana.state, vana.rides, vana.edited) == ('home', 'saved', 1, False)
     assert vana.session is None
 
 

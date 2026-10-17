@@ -32,6 +32,7 @@ type FirmwareShell = firmware_shell::shell::Shell<
 
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) -> ! {
+    device::stack::paint();
     let board = device::board::start(spawner).await;
     let boot = esp_hal::rng::Rng::new().random();
     logging::init(boot);

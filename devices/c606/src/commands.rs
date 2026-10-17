@@ -249,7 +249,8 @@ pub fn execute(
                 crate::device::drivers::display::TIMING.snapshot();
             let _ = write!(
                 output,
-                "display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} "
+                "display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} stack_untouched={} ",
+                crate::device::stack::untouched()
             );
             let logs = crate::logging::stats();
             let _ = write!(

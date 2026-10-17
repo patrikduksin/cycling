@@ -55,6 +55,12 @@ pub(super) struct Navigation {
     pub(super) settings_field: usize,
     /// The selected Settings field is being changed.
     pub(super) settings_editing: bool,
+    /// The focused card on a first-run setup page.
+    pub(super) setup_cursor: usize,
+    /// The Settings editor was opened from setup and returns there.
+    pub(super) setup_return: bool,
+    /// The sensor menu was opened from setup and returns there.
+    pub(super) sensors_return: bool,
     /// The page to return to when the climb that switched to the climb page
     /// ends; cleared when the rider changes page themselves.
     pub(super) climb_return: Option<RidePage>,
@@ -160,6 +166,9 @@ impl Default for Navigation {
             home_cursor: 0,
             settings_field: 0,
             settings_editing: false,
+            setup_cursor: 0,
+            setup_return: false,
+            sensors_return: false,
             climb_return: None,
             page_since: 0,
             last_press: 0,
@@ -387,10 +396,18 @@ impl Runtime {
             }
             return;
         }
+        let first_page = self.first_page();
         let navigation = &mut self.navigation;
+        // A return to setup lasts only while its editor or sensor menu does.
+        if !(navigation.page == Page::Settings && navigation.settings_editing) {
+            navigation.setup_return = false;
+        }
+        if navigation.page != Page::Sensors {
+            navigation.sensors_return = false;
+        }
         let first_frame = *navigation.first_frame.get_or_insert(now);
         if navigation.page == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
-            navigation.page = Page::Home;
+            navigation.page = first_page;
         }
         // A ride opens on its first page: the workout page during a workout.
         let first = self.first_ride_page();
@@ -426,10 +443,10 @@ impl Runtime {
                     + u64::from((v[2] - b'0') * 10 + v[3] - b'0') * 60
             })
         });
-        let cursor = if page == Page::Settings {
-            navigation.settings_field
-        } else {
-            navigation.home_cursor
+        let cursor = match page {
+            Page::Settings => navigation.settings_field,
+            Page::Setup => navigation.setup_cursor,
+            _ => navigation.home_cursor,
         };
         let mut view = View::new(page, cursor, utc);
         view.editing = page == Page::Settings && navigation.settings_editing;
@@ -526,6 +543,7 @@ impl Runtime {
             }
             Page::Settings => self.settings_lines(&mut view),
             Page::Workouts => {}
+            Page::Setup => self.setup_lines(&mut view),
         }
         if view.ride_page == RidePage::Climb {
             // Borrowed from the look-ahead's own block, not copied.
@@ -550,7 +568,8 @@ impl Runtime {
         }
         let drawn = self.drawn_at(now);
         self.timing.first_frame(drawn);
-        if page == Page::Home {
+        // Setup on a first start is as ready as Home.
+        if matches!(page, Page::Home | Page::Setup) {
             self.timing.home(drawn);
         }
         self.timing.frame(drawn);

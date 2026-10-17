@@ -368,10 +368,16 @@ mod tests {
         }
     }
 
+    /// Power on past first-run setup, onto Home.
+    fn boot(live: &mut Live) {
+        run(live, 8_000);
+        live.sim.skip_setup();
+    }
+
     #[test]
     fn boots_in_real_time_and_composes_screen_and_panel() {
         let mut live = Live::new();
-        run(&mut live, 8_000);
+        boot(&mut live);
         assert!(live.sim.on_home());
         let canvas = live.compose();
         assert_eq!(canvas.width, MARGIN * 3 + 240 * SCALE + PANEL_WIDTH);
@@ -428,7 +434,7 @@ mod tests {
     #[test]
     fn a_mouse_click_on_the_screen_is_a_tap() {
         let mut live = Live::new();
-        run(&mut live, 8_000);
+        boot(&mut live);
         // The SENSORS tile, in window coordinates.
         let (x, y) = ((MARGIN + 120 * SCALE) as f32, (MARGIN + 180 * SCALE) as f32);
         live.pointer(x, y, true);
@@ -453,7 +459,7 @@ mod tests {
             |x: usize, y: usize| ((MARGIN + x * SCALE) as f32, (MARGIN + y * SCALE) as f32);
         for speed in SPEEDS {
             let mut live = Live::new();
-            run(&mut live, 8_000);
+            boot(&mut live);
             live.speed = speed;
             let (x, y) = window(120, 180);
             let start = live.sim.device.now;
@@ -476,7 +482,7 @@ mod tests {
     #[test]
     fn a_tap_is_one_press_and_a_hold_repeats() {
         let mut live = Live::new();
-        run(&mut live, 8_000);
+        boot(&mut live);
         assert_eq!(moves(&mut live, 'a', 200), 1);
         assert!(moves(&mut live, 'a', 1_500) >= 3);
     }
@@ -484,7 +490,7 @@ mod tests {
     #[test]
     fn a_hold_repeats_in_real_time_at_every_speed() {
         let mut live = Live::new();
-        run(&mut live, 8_000);
+        boot(&mut live);
         live.key_down('3');
         // About eight repeats in a real second, not one per simulated 100 ms.
         let moved = moves(&mut live, 'a', 1_000);
@@ -494,7 +500,7 @@ mod tests {
     #[test]
     fn holding_q_turns_an_off_device_back_on() {
         let mut live = Live::new();
-        run(&mut live, 8_000);
+        boot(&mut live);
         for key in ['q', 'd'] {
             live.key_down(key);
             live.key_up(key);
@@ -510,7 +516,7 @@ mod tests {
         run(&mut live, 2_500);
         live.key_up('q');
         assert!(!live.sim.is_off(), "holding Q did not turn it on");
-        run(&mut live, 8_000);
+        boot(&mut live);
         assert!(live.sim.screen().contains("READY TO RIDE"));
     }
 
@@ -518,7 +524,7 @@ mod tests {
     fn holding_q_turns_an_off_device_on_at_every_speed() {
         for speed in SPEEDS {
             let mut live = Live::new();
-            run(&mut live, 8_000);
+            boot(&mut live);
             for key in ['q', 'd'] {
                 live.key_down(key);
                 live.key_up(key);
@@ -556,7 +562,7 @@ mod tests {
     #[test]
     fn a_held_key_runs_the_device_in_real_time_then_the_speed_returns() {
         let mut live = Live::new();
-        run(&mut live, 8_000);
+        boot(&mut live);
         live.speed = 60;
         let start = live.sim.device.now;
         live.key_down('a');

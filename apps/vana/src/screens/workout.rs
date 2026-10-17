@@ -42,6 +42,8 @@ pub enum Page {
     History,
     /// A saved ride read back, on the summary's pages.
     PastRide,
+    /// First-run setup.
+    Setup,
 }
 
 impl Page {
@@ -59,6 +61,7 @@ impl Page {
             Self::Phone => "phone",
             Self::History => "history",
             Self::PastRide => "past_ride",
+            Self::Setup => "setup",
         }
     }
 }
@@ -83,6 +86,8 @@ pub struct View<'a> {
     pub battery: Option<Battery>,
     /// The brand reveal's progress, in thousandths, on the boot page.
     pub reveal: u16,
+    /// The first-run setup page shown on `Page::Setup`.
+    pub setup: super::setup::Step,
     pub toast: Option<Toast>,
     pub home: Home,
     bar: StatusBar,
@@ -163,6 +168,7 @@ impl View<'_> {
             gps: Gps::Off,
             battery: None,
             reveal: 0,
+            setup: super::setup::Step::Welcome,
             toast: None,
             home: Home::new(cursor, false, &[], Text::new()),
             bar: StatusBar::default(),
@@ -339,6 +345,13 @@ impl View<'_> {
                 } else {
                     core::slice::from_ref(&summary::CUE)
                 }
+            }
+            Page::Setup => {
+                self.canvas = super::setup::prepare(self, self.setup);
+                let steps = super::setup::STEPS.len();
+                self.bar
+                    .set_pages(usize::from(self.setup.byte()) - 1, steps);
+                &[]
             }
             Page::Phone => {
                 self.canvas = super::phone::prepare(self.phone_ride);

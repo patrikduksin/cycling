@@ -314,7 +314,7 @@ fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bo
     // A note that does not fit whole beside the value is left out.
     let note = view.lines[NOTES + slot].as_bytes();
     let room = right.saturating_sub(value.right() + 12);
-    if !note.is_empty() && Line::<24>::new(&CAPTION, note).width() <= room {
+    if !note.is_empty() && Line::<24>::fit(&[&CAPTION], note, room).text().len() == note.len() {
         canvas.caption(note, room, right, base, Align::Right);
     }
 }

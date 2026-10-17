@@ -139,8 +139,9 @@ impl Runtime {
             Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant),
             Page::Workouts => self.workouts_input(button, now),
+            Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
-            Page::Boot => self.navigation.page = Page::Home,
+            Page::Boot => self.navigation.page = self.first_page(),
             Page::Sensors => {}
         }
     }
@@ -172,6 +173,7 @@ impl Runtime {
                 let section = settings::section(navigation.settings_field).0 as u32;
                 u32::from(navigation.settings_editing) | section << 1
             }
+            Page::Setup => u32::from(self.preferences.options.setup),
             Page::Boot
             | Page::Home
             | Page::Ready
@@ -239,6 +241,9 @@ impl Runtime {
             // Changing the page is safe while riding; ride control is not.
             (Page::Ride, Gesture::Next) => self.next_ride_page(),
             (Page::Ride, Gesture::Previous) => self.previous_ride_page(),
+            (Page::Setup, Gesture::Tap(point)) => {
+                self.setup_tap(usize::from(point.x), usize::from(point.y), now, ant)
+            }
             // Adding a minute to a step changes no ride state, so a tap may.
             (Page::Ride, Gesture::Tap(point))
                 if self.navigation.ride_page == RidePage::Workout
@@ -289,7 +294,7 @@ impl Runtime {
             }
             Some(Action::Ride) => {
                 self.cancel_search(ant, now);
-                self.navigation.page = Page::Home;
+                self.navigation.page = self.after_sensors();
             }
             None => {}
         }
@@ -357,7 +362,9 @@ impl Runtime {
         match button {
             Button::BottomLeft => self.adjust_setting(-i32::from(settings::STEP), now),
             Button::BottomRight => self.adjust_setting(i32::from(settings::STEP), now),
-            Button::TopLeft => navigation.settings_editing = false,
+            Button::TopLeft if !self.setup_edit_finished(now) => {
+                self.navigation.settings_editing = false
+            }
             _ => {}
         }
     }

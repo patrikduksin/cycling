@@ -39,7 +39,7 @@ fn local(east: f64, north: f64) -> (u16, u16) {
 }
 
 fn z(metres: f64) -> u16 {
-    (metres * 10.0).round() as u16 + 2000
+    ((metres * 10.0 + 5000.0) / 2.0).round() as u16
 }
 
 /// A one-tile pack (1 x 1 grid) holding `roads`; junctions are shared ends.
@@ -108,7 +108,7 @@ fn pack(roads: &[Road]) -> Vec<u8> {
     let data = directory + 8;
     let mut out = vec![0u8; HEADER_BYTES];
     out[..16].copy_from_slice(MAGIC);
-    out[16..18].copy_from_slice(&1u16.to_le_bytes());
+    out[16..18].copy_from_slice(&crate::pack::VERSION.to_le_bytes());
     out[18..20].copy_from_slice(&1u16.to_le_bytes());
     out[20..24].copy_from_slice(&(TILE as u32).to_le_bytes());
     out[24..28].copy_from_slice(&SOUTH.to_le_bytes());
@@ -203,6 +203,40 @@ fn a_straight_road_through_a_crossing_is_followed_to_its_end() {
     assert!((metres_at(&ahead, 200) - 10.0).abs() < 0.6);
     assert!((metres_at(&ahead, 880) - 44.0).abs() < 0.6);
     assert!(ahead.confidence > 80, "{}", ahead.confidence);
+}
+
+#[test]
+fn a_fix_just_past_a_t_junction_does_not_take_a_side_arm() {
+    // North to a T: the west arm climbs at 10%, the east one is level.
+    let roads = [
+        road(
+            &[(0.0, -400.0, 100.0), (0.0, 0.0, 100.0)],
+            class::SECONDARY,
+            7,
+        ),
+        road(
+            &[(0.0, 0.0, 100.0), (-300.0, 0.0, 130.0)],
+            class::SECONDARY,
+            0,
+        ),
+        road(
+            &[(0.0, 0.0, 100.0), (300.0, 0.0, 100.0)],
+            class::SECONDARY,
+            0,
+        ),
+    ];
+    let pack = pack(&roads);
+    // Still heading north, the last fix 1 m west of and 5 m past the node.
+    let ahead = ride(
+        &pack,
+        &[(0.0, -400.0), (0.0, 0.0), (-1.0, 5.0), (-1.0, 10.0)],
+    );
+    let climbing = ahead.len > 6 && metres_at(&ahead, 100) > 5.0;
+    assert!(
+        !(climbing && ahead.confidence >= 50),
+        "confident on the west arm: {}",
+        ahead.confidence
+    );
 }
 
 #[test]

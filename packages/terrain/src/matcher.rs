@@ -6,7 +6,9 @@
 //! `(distance / 15 m)² + (heading error / 35°)²`, less a bonus for the edge
 //! already matched (1) or one joined to it (0.5). The current match stays
 //! until another edge beats it by `SWITCH` on two fixes in a row, or until it
-//! is out of reach. Three fixes with no road in reach end the match.
+//! is out of reach; an edge joined to it that scores better takes over at
+//! once, since that is the road going on past a junction. Three fixes with
+//! no road in reach end the match.
 use crate::cache::{Cache, Lookup};
 use crate::geo::{self, Point};
 use crate::pack::{Header, TileKey};
@@ -20,6 +22,9 @@ const WRONG_WAY: f32 = 4.0;
 const SAME_BONUS: f32 = 1.0;
 const JOINED_BONUS: f32 = 0.5;
 const SWITCH: f32 = 1.0;
+/// Past the end of the matched edge, a joined edge takes over only if it
+/// costs at most this much more: about 49 degrees of heading error.
+const PAST_NODE: f32 = 2.0;
 /// A held direction reverses only past this heading error.
 const REVERSE_DEG: f32 = 135.0;
 /// Heading error counted at most this much while a direction is held.
@@ -64,6 +69,11 @@ struct Nearest {
 struct Candidate {
     found: Matched,
     cost: f32,
+    /// Shares a node with the current match: the road on past a junction.
+    joined: bool,
+    /// Its nearest point is one of its end nodes: the rider is near where it
+    /// starts, not beside it.
+    at_node: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -153,10 +163,14 @@ impl Matcher {
         self.misses = 0;
         let same = |c: &Candidate, m: &Matched| c.found.tile == m.tile && c.found.edge == m.edge;
         let mut chosen = top;
+        let previous = self.current;
         if let Some(current) = self.current
             && let Some(kept) = best.iter().flatten().find(|c| same(c, &current)).copied()
         {
-            if same(&top, &current) || top.cost + SWITCH >= kept.cost {
+            if top.joined && !same(&top, &current) {
+                // Past the junction at the end of the current edge.
+                self.challenger = None;
+            } else if same(&top, &current) || top.cost + SWITCH >= kept.cost {
                 self.challenger = None;
                 chosen = kept;
             } else {
@@ -176,11 +190,30 @@ impl Matcher {
                 }
             }
         }
-        // Confidence: near the road, and clearly better than any other.
+        // Past the end of the matched edge: the road goes on along an edge
+        // joined to it, if the rider is beside one and riding along it (a
+        // bend, not a side arm the heading crosses).
+        if chosen.at_node
+            && let Some(on) = best
+                .iter()
+                .flatten()
+                .filter(|c| c.joined && !c.at_node && c.cost <= chosen.cost + PAST_NODE)
+                .min_by(|a, b| a.cost.total_cmp(&b.cost))
+        {
+            self.challenger = None;
+            chosen = *on;
+        }
+        // Confidence: near the road, and clearly better than any other road
+        // beside the rider. Roads that only start at a node near the rider
+        // (the edge just left, a junction's other arms) say nothing about
+        // which road the rider is on.
+        let left = previous.filter(|p| {
+            chosen.joined && !(p.tile == chosen.found.tile && p.edge == chosen.found.edge)
+        });
         let runner_up = best
             .iter()
             .flatten()
-            .filter(|c| !same(c, &chosen.found))
+            .filter(|c| !same(c, &chosen.found) && !c.at_node && left.is_none_or(|p| !same(c, &p)))
             .map(|c| c.cost)
             .fold(f32::INFINITY, f32::min);
         let near = (1.0 - chosen.found.offset_m / RADIUS_M).clamp(0.0, 1.0);
@@ -248,6 +281,8 @@ impl Matcher {
             else {
                 continue;
             };
+            let at_node = (segment == 0 && fraction <= 0.0)
+                || (usize::from(segment) + 2 == points && fraction >= 1.0);
             let along = geo::bearing(sb.0 - sa.0, sb.1 - sa.1);
             let mut cost = (distance / DISTANCE_M) * (distance / DISTANCE_M);
             let mut forward = None;
@@ -288,6 +323,7 @@ impl Matcher {
                 cost += (error / HEADING_DEG) * (error / HEADING_DEG) + penalty;
                 forward = Some(fwd);
             }
+            let mut joined = false;
             if let Some(current) = self.current {
                 if current.tile == tile.key && current.edge == number {
                     cost -= SAME_BONUS;
@@ -298,6 +334,7 @@ impl Matcher {
                         .any(|n| *n == edge.from || *n == edge.to)
                     {
                         cost -= JOINED_BONUS;
+                        joined = true;
                     }
                 }
             }
@@ -315,7 +352,15 @@ impl Matcher {
                 flags: edge.flags,
                 confidence: 0,
             };
-            insert(best, Candidate { found, cost });
+            insert(
+                best,
+                Candidate {
+                    found,
+                    cost,
+                    joined,
+                    at_node,
+                },
+            );
         }
     }
 }

@@ -455,6 +455,10 @@ impl Runtime {
             }
             Page::Settings => self.settings_lines(&mut view),
         }
+        if view.ride_page == RidePage::Climb {
+            // Borrowed from the look-ahead's own block, not copied.
+            view.forecast = super::lookahead::forecast_of(&self.lookahead);
+        }
         view.prepare();
         let menu = &self.menu;
         system.draw_canvas(240, 320, |row| {

@@ -8,7 +8,7 @@
 //! | Edges | 16 B | from node, to node, first vertex u32, vertices u16, class, flags, road group, reserved |
 //! | Vertices | 6 B | x, y, z: the edge's interior points, from `from` to `to` |
 //!
-//! Elevation `z` is decimetres above -200 m. Nodes are sorted by (y, x). A
+//! Elevation `z` is fifths of a metre above -500 m. Nodes are sorted by (y, x). A
 //! node on the tile boundary continues in the neighbouring tile at the same
 //! point (a portal).
 use crate::pack::{Error, TileKey, u16_at, u32_at};
@@ -18,8 +18,9 @@ const NODE: usize = 8;
 const ADJ: usize = 2;
 const EDGE: usize = 16;
 const VERTEX: usize = 6;
-/// Elevation offset of `z`, in decimetres.
-pub const Z_OFFSET_DM: i32 = 2000;
+/// `z` counts steps of `Z_STEP_DM` (0.2 m) from -500 m: up to 12,607 m.
+pub const Z_STEP_DM: i32 = 2;
+pub const Z_OFFSET_DM: i32 = 5000;
 
 /// Road classes, most major first.
 pub mod class {

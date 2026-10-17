@@ -2527,6 +2527,7 @@ dependencies = [
  "heapless 0.9.3",
  "libm",
  "log",
+ "terrain",
 ]
 
 [[package]]

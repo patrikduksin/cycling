@@ -76,23 +76,39 @@ impl Runtime {
         }
     }
 
+    /// Ride buttons, with one meaning system-wide: BottomRight acts (start,
+    /// pause, resume), BottomLeft moves to the next page, and TopLeft marks or
+    /// backs out: a lap while recording, end ride while paused (pressed twice
+    /// within the confirm window), Home when no ride is open.
     fn ride_input(&mut self, button: Button, now: u64) {
-        if button == Button::TopLeft {
+        if button == Button::BottomLeft {
             self.next_ride_page();
+            return;
+        }
+        if button == Button::TopLeft && !self.recording() {
+            self.navigation.ride_page = RidePage::Main;
+            self.navigation.page = Page::Home;
             return;
         }
         if self.ride.pending() {
             return;
         }
         let status = self.ride.recorder.status();
-        let action = match button {
-            Button::BottomLeft => match status {
-                Status::Recording => RideAction::Pause,
-                Status::Paused => RideAction::Resume,
-                Status::Ready | Status::Saved | Status::Recovered => RideAction::Start,
-                _ => return,
-            },
-            Button::BottomRight if matches!(status, Status::Recording | Status::Paused) => {
+        let action = match (button, status) {
+            (Button::BottomRight, Status::Recording) => RideAction::Pause,
+            (Button::BottomRight, Status::Paused) => RideAction::Resume,
+            (Button::BottomRight, Status::Ready | Status::Saved | Status::Recovered) => {
+                RideAction::Start
+            }
+            (Button::TopLeft, Status::Recording) => {
+                self.ride.disarm_stop();
+                if let Some(lap) = self.ride.laps.lap(now) {
+                    self.ride.lap_closed(lap, now);
+                }
+                return;
+            }
+            // Only a paused ride ends, and only on a confirming second press.
+            (Button::TopLeft, Status::Paused) => {
                 if !self.ride.stop_confirming(now) {
                     self.ride.arm_stop(now);
                     return;
@@ -113,19 +129,9 @@ impl Runtime {
         }
     }
 
-    /// TopLeft steps through the ride pages. Past the last one it wraps to the
-    /// first while a ride is open, and leaves for Home otherwise.
+    /// BottomLeft steps through the ride pages, wrapping after the last.
     fn next_ride_page(&mut self) {
-        let open = self.recording();
         let navigation = &mut self.navigation;
-        match navigation.ride_page.next() {
-            Some(next) => navigation.ride_page = next,
-            None => {
-                navigation.ride_page = RidePage::Main;
-                if !open {
-                    navigation.page = Page::Home;
-                }
-            }
-        }
+        navigation.ride_page = navigation.ride_page.next().unwrap_or(RidePage::Main);
     }
 }

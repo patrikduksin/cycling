@@ -173,6 +173,9 @@ impl Runtime {
         view.stop_confirm = self.ride.stop_confirming(now);
         view.ride_page = navigation.ride_page;
         view.totals = self.ride.totals;
+        view.lap = self.ride.laps.current();
+        view.previous_lap = self.ride.laps.previous();
+        view.lap_toast = self.ride.lap_toast(now);
         view.gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         let gps_status = gps.map_or("OFF", |p| {
             if p.gps.state == FixState::Fresh {
@@ -307,16 +310,16 @@ impl Runtime {
             recorder.written_samples()
         );
         let status = if self.ride.stop_confirming(now) {
-            "PRESS STOP AGAIN TO SAVE"
+            "PRESS AGAIN TO SAVE"
         } else {
             match self.ride.request {
                 Request::Completed(result) if result.ok => "OK",
                 Request::Completed(_) => "WRITE FAILED",
                 Request::Pending(_) => "SAVING",
                 Request::Idle => match recorder.status() {
-                    Status::Recording => "RECORDING / 1 SECOND",
-                    Status::Paused => "PAUSED / LEFT TO RESUME",
-                    Status::Saved => "SAVED / TOP LEFT PAGES",
+                    Status::Recording => "RECORDING / TOP LEFT LAPS",
+                    Status::Paused => "PAUSED / TOP LEFT ENDS",
+                    Status::Saved => "SAVED / TOP LEFT HOME",
                     _ => self.ride.message.text(),
                 },
             }

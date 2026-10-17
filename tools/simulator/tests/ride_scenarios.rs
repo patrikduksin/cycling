@@ -430,16 +430,8 @@ fn expect_near(sim: &mut Sim, label: &str, expected: f64, tolerance: f64) {
     sim.note(NoteKind::Check, format!("{label} shows {value}"));
 }
 
-/// TopLeft until the header shows a ride page indicator, such as "2/2".
-#[track_caller]
 fn ride_page(sim: &mut Sim, indicator: &str) {
-    for _ in 0..4 {
-        if sim.screen().contains(indicator) {
-            return;
-        }
-        sim.press(Button::TopLeft);
-    }
-    panic!("no ride page {indicator}; screen:\n{}", sim.screen().text());
+    sim.ride_page(indicator);
 }
 
 #[test]
@@ -449,12 +441,12 @@ fn stats_page_totals_a_steady_ten_minutes() {
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.advance(minutes(10));
-    sim.expect_text("1/2");
+    sim.expect_text("1/3");
     expect_near(&mut sim, "DISTANCE", 5.0, 0.05);
     sim.expect_field("CADENCE", "90");
     sim.checkpoint("main page after ten minutes");
 
-    ride_page(&mut sim, "2/2");
+    ride_page(&mut sim, "2/3");
     sim.expect_no_text("WATTS Z");
     // Sensors take a few seconds to report after the start.
     expect_near(&mut sim, "DISTANCE KM", 5.0, 0.05);
@@ -474,10 +466,14 @@ fn stats_page_totals_a_steady_ten_minutes() {
     );
     sim.checkpoint("stats page after ten minutes");
 
-    // Stopping keeps the totals on screen; past the last page is Home.
+    // Stopping keeps the totals on screen; pages still wrap, TopLeft is Home.
     sim.stop_ride();
     sim.expect_field("AVG WATTS", "200");
     sim.checkpoint("stats page after saving");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("3/3");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("1/3");
     sim.press(Button::TopLeft);
     sim.expect_text("READY TO RIDE");
 }
@@ -502,7 +498,7 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     sim.ride_at(24.0, 230.0, 0.0, 80.0);
     sim.advance(minutes(5));
     sim.checkpoint("climbing on the main page");
-    ride_page(&mut sim, "2/2");
+    ride_page(&mut sim, "2/3");
     // Two kilometres in: up 50 m, then down again.
     expect_near(&mut sim, "ASCENT M", 50.0, 4.0);
     sim.checkpoint("stats halfway round");
@@ -529,7 +525,7 @@ fn pause_leaves_the_totals_untouched() {
     sim.start_ride();
     sim.ride_at(30.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(5));
-    ride_page(&mut sim, "2/2");
+    ride_page(&mut sim, "2/3");
     expect_near(&mut sim, "DISTANCE KM", 2.5, 0.05);
 
     // Paused but still rolling hard: nothing the wheel or pedals do counts.
@@ -558,8 +554,236 @@ fn pause_leaves_the_totals_untouched() {
     );
     sim.checkpoint("stats after resuming");
     // The main page agrees: the pause is not ride time.
-    ride_page(&mut sim, "1/2");
+    ride_page(&mut sim, "1/3");
     let active = sim.screen().field("ACTIVE TIME").unwrap();
     assert!(active.starts_with("00:10:0"), "{active}");
     sim.checkpoint("main page after resuming");
+}
+
+/// The text run that reads exactly `text`, and its colour.
+#[track_caller]
+fn color_of(sim: &Sim, text: &str) -> u16 {
+    sim.screen()
+        .run(text)
+        .unwrap_or_else(|| panic!("no {text:?}; screen:\n{}", sim.screen().text()))
+        .color
+}
+
+const GREEN: u16 = 0x07e0;
+const RED: u16 = 0xf800;
+
+#[test]
+fn manual_laps_compare_each_effort_with_the_last() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(minutes(5));
+    let toast = sim.lap(1);
+    // Sensors take a few seconds to report after the start.
+    assert!(
+        toast.starts_with("LAP 1 04:5") || toast.starts_with("LAP 1 05:0"),
+        "{toast}"
+    );
+    sim.checkpoint("lap toast after the first lap");
+    sim.advance(seconds(2));
+    sim.expect_no_text("LAP 1 0");
+    sim.expect_text("RECORDING");
+
+    // A harder, faster second lap shows green with a plus.
+    sim.ride_at(33.0, 250.0, 150.0, 92.0);
+    sim.advance(minutes(4));
+    ride_page(&mut sim, "3/3");
+    sim.expect_text("LAP 2");
+    let lap = sim.screen().field("LAP TIME").unwrap();
+    assert!(lap.starts_with("04:0"), "{lap}");
+    expect_near(&mut sim, "LAP KM", 2.2, 0.05);
+    // Within a watt or a beat: the change of effort spans a second.
+    expect_near(&mut sim, "LAP AVG W", 250.0, 1.0);
+    expect_near(&mut sim, "LAP KM/H", 33.0, 0.2);
+    expect_near(&mut sim, "LAP AVG BPM", 150.0, 1.0);
+    sim.expect_text("PREV LAP 1");
+    sim.expect_field("PREV AVG W", "200");
+    let harder = sim.screen().field("W VS PREV").unwrap();
+    assert!(harder == "+49" || harder == "+50", "{harder}");
+    assert_eq!(color_of(&sim, &harder), GREEN);
+    let faster = sim.screen().field("KM/H VS PREV").unwrap();
+    assert!(
+        faster.starts_with("+2.") || faster.starts_with("+3."),
+        "{faster}"
+    );
+    assert_eq!(color_of(&sim, &faster), GREEN);
+    sim.checkpoint("lap page, second lap harder");
+
+    // An easy third lap is red with a minus.
+    let toast = sim.lap(2);
+    assert!(
+        toast.ends_with(" 250W") || toast.ends_with(" 249W"),
+        "{toast}"
+    );
+    sim.ride_at(24.0, 150.0, 130.0, 85.0);
+    sim.advance(minutes(3));
+    sim.expect_text("LAP 3");
+    sim.expect_text("PREV LAP 2");
+    let previous: f64 = sim.screen().field("PREV AVG W").unwrap().parse().unwrap();
+    let easier = reading(&sim, "W VS PREV");
+    assert!((easier - (150.0 - previous)).abs() <= 1.0, "{easier}");
+    assert_eq!(
+        color_of(&sim, &sim.screen().field("W VS PREV").unwrap()),
+        RED
+    );
+    let slower = sim.screen().field("KM/H VS PREV").unwrap();
+    assert!(
+        slower.starts_with("-8.") || slower.starts_with("-9."),
+        "{slower}"
+    );
+    assert_eq!(color_of(&sim, &slower), RED);
+    sim.checkpoint("lap page, easy third lap");
+    sim.stop_ride();
+    // Laps stay on screen after saving, like the totals.
+    sim.expect_text("LAP 3");
+}
+
+#[test]
+fn auto_lap_closes_every_five_kilometres() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    ride_page(&mut sim, "3/3");
+    sim.advance(minutes(9) + seconds(50));
+    sim.expect_text("LAP 1");
+    expect_near(&mut sim, "LAP KM", 4.9, 0.05);
+    // 5 km at 30 km/h is ten minutes, plus the seconds sensors take to report.
+    sim.wait_for("LAP 1 10:", seconds(30)).unwrap();
+    let toast = sim.screen().find("LAP 1 10:").remove(0).text;
+    assert!(toast.ends_with(" 220W"), "{toast}");
+    sim.checkpoint("auto lap toast at 5 km");
+    sim.expect_text("LAP 2");
+    sim.expect_text("PREV LAP 1");
+    let previous = sim.screen().field("PREV LAP 1").unwrap();
+    assert!(previous.starts_with("10:0"), "{previous}");
+    // The wheel reads 29.9 km/h, so each 5 km takes a few seconds over ten minutes.
+    sim.advance(minutes(10));
+    sim.wait_for("LAP 3", seconds(10)).unwrap();
+    let previous = sim.screen().field("PREV LAP 2").unwrap();
+    assert!(previous.starts_with("10:0"), "{previous}");
+    // A steady ride matches its last lap: no sign, no colour.
+    sim.advance(seconds(30));
+    sim.expect_field("W VS PREV", "0");
+    assert_eq!(color_of(&sim, "0"), 0xffff);
+    expect_near(&mut sim, "KM/H VS PREV", 0.0, 0.2);
+    sim.checkpoint("lap page after two auto laps");
+}
+
+#[test]
+fn paused_time_is_not_lap_time() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    ride_page(&mut sim, "3/3");
+    sim.advance(minutes(2));
+    sim.lap(1);
+    sim.advance(minutes(2));
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.pause_ride();
+    let held = sim.screen().field("LAP TIME").unwrap();
+    assert!(held.starts_with("02:0"), "{held}");
+    sim.advance(minutes(5));
+    sim.expect_field("LAP TIME", &held);
+    sim.checkpoint("paused, lap time held");
+
+    sim.resume_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(1));
+    let lap = sim.screen().field("LAP TIME").unwrap();
+    assert!(lap.starts_with("03:0"), "{lap}");
+    sim.checkpoint("lap time after resuming");
+}
+
+#[test]
+fn a_second_lap_press_within_three_seconds_is_ignored() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    ride_page(&mut sim, "3/3");
+    sim.advance(minutes(1));
+    sim.lap(1);
+    // A double press, as a glove or a pothole makes.
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    sim.expect_text("LAP 2");
+    sim.expect_no_text("LAP 3");
+    sim.checkpoint("double press makes one lap");
+    sim.advance(seconds(3));
+    sim.lap(2);
+    sim.expect_text("LAP 3");
+}
+
+#[test]
+fn ending_a_ride_needs_a_pause_first() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(1));
+    // No button labels on the ride screen; the status row names the state.
+    for label in ["PAUSE", "LAP", "STOP", "START"] {
+        assert!(sim.screen().run(label).is_none(), "{label} label shown");
+    }
+    // Recording, TopLeft laps however often it is pressed.
+    for _ in 0..3 {
+        sim.press(Button::TopLeft);
+        sim.expect_no_text("PRESS AGAIN TO SAVE");
+    }
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=recording"), "{status}");
+
+    sim.pause_ride();
+    sim.checkpoint("paused");
+    sim.press(Button::TopLeft);
+    sim.expect_text("PRESS AGAIN TO SAVE");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=paused"), "{status}");
+    sim.checkpoint("paused, press again to save");
+    // The confirmation lapses after three seconds, within a frame.
+    sim.advance(seconds(3));
+    sim.wait_gone("PRESS AGAIN TO SAVE", 600).unwrap();
+    sim.expect_text("PAUSED");
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    sim.checkpoint("saved after pause and end ride");
+    assert_eq!(sim.rides()[0].kinds().last(), Some(&Kind::Finish));
+    sim.press(Button::TopLeft);
+    sim.expect_text("READY TO RIDE");
+}
+
+#[test]
+fn ending_a_ride_right_after_a_lap_shows_the_prompt() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(1));
+    sim.lap(1);
+    // The lap toast still covers the status row; pause and end anyway.
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.ride_state(), "paused");
+    sim.press(Button::TopLeft);
+    sim.expect_text("PRESS AGAIN TO SAVE");
+    sim.expect_no_text("LAP 1 ");
+    sim.checkpoint("end ride armed over a lap toast");
+    sim.press(Button::TopLeft);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+
+    // The helpers cope with a toast too: lap, then stop at once.
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(seconds(10));
+    sim.lap(1);
+    sim.stop_ride();
+    assert_eq!(sim.rides().len(), 2);
 }

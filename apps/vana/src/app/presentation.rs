@@ -400,6 +400,11 @@ impl Runtime {
         if navigation.page != Page::Boot {
             navigation.announce(status, now);
         }
+        // Over the ride's own news: its workout could not be read.
+        if core::mem::take(&mut self.training.missing) {
+            self.navigation
+                .toast("WORKOUT MISSING", crate::screens::chrome::Tone::Warn, now);
+        }
         self.follow_ride(status);
         let pages = self.workout_pages();
         let shown = match self.navigation.page {

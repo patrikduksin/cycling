@@ -72,38 +72,69 @@ def test_examples_encode(path):
 
 
 class FakeConnection:
-    def __init__(self, refuse=None):
-        self.sent, self.refuse = [], refuse
+    def __init__(self, listed):
+        self.sent, self.listed = [], listed
 
     def terminal_command(self, command):
         self.sent.append(command)
-        if self.refuse and command.startswith(self.refuse):
-            return {'status': 'CHECKSUM', 'data': ''}
-        return {'status': 'OK', 'data': 'slot=1 name=X' if command == 'WORKOUT COMMIT' else ''}
+        return {'status': 'OK', 'data': self.listed}
 
 
-def test_upload_sends_begin_chunks_and_commit():
+class FakeTransfer:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, op, *args, **kwargs):
+        self.calls.append(op)
+
+
+def fake_volumes(monkeypatch, transfer, put):
+    monkeypatch.setattr(load.volumes, 'open_session', lambda connection: transfer)
+    monkeypatch.setattr(load.volumes, 'files_put', put)
+
+
+def test_upload_puts_the_file_on_files_and_has_vana_list_it(monkeypatch, tmp_path):
     data = bytes(range(100))
-    connection = FakeConnection()
-    assert load.upload(connection, 1, data) == 'slot=1 name=X'
-    assert connection.sent == [
-        f'WORKOUT BEGIN 1 100 {zlib.crc32(data):08x}',
-        f'WORKOUT DATA 0 {data[:48].hex()}',
-        f'WORKOUT DATA 48 {data[48:96].hex()}',
-        f'WORKOUT DATA 96 {data[96:].hex()}',
-        'WORKOUT COMMIT',
-    ]
-    # Every command fits the console's domain-command limit.
-    assert max(len(command) for command in connection.sent) <= 128
+    transfer, put = FakeTransfer(), []
+
+    def files_put(session, name, path):
+        put.append((session, name, path.read_bytes()))
+        return {'name': name, 'length': len(data), 'crc32': f'{zlib.crc32(data):08x}'}
+
+    fake_volumes(monkeypatch, transfer, files_put)
+    connection = FakeConnection('rows=9 upload0=workouts/x.vw:X')
+    entry = load.upload(connection, 'workouts/x.vw', data, tmp_path)
+    assert put == [(transfer, 'workouts/x.vw', data)]
+    assert transfer.calls == ['end']
+    assert connection.sent == ['WORKOUT LIST']
+    assert entry['crc32'] == f'{zlib.crc32(data):08x}'
 
 
-def test_a_refused_commit_is_reported_and_not_retried():
-    connection = FakeConnection(refuse='WORKOUT COMMIT')
-    with pytest.raises(RuntimeError, match='COMMIT refused: CHECKSUM'):
-        load.upload(connection, 0, b'VW')
-    assert connection.sent.count('WORKOUT COMMIT') == 1
+def test_a_failed_put_still_ends_the_session_and_lists_nothing(monkeypatch, tmp_path):
+    transfer = FakeTransfer()
+
+    def files_put(session, name, path):
+        raise RuntimeError('file readback differs')
+
+    fake_volumes(monkeypatch, transfer, files_put)
+    connection = FakeConnection('')
+    with pytest.raises(RuntimeError, match='readback'):
+        load.upload(connection, 'workouts/x.vw', b'VW', tmp_path)
+    assert transfer.calls == ['end']
+    assert connection.sent == []
 
 
-def test_slots_outside_the_store_are_refused():
+def test_a_workout_vana_does_not_list_is_reported(monkeypatch, tmp_path):
+    fake_volumes(monkeypatch, FakeTransfer(), lambda session, name, path: {'name': name})
+    with pytest.raises(RuntimeError, match='did not list'):
+        load.upload(FakeConnection('rows=8 uploads=0 skipped=1'), 'workouts/x.vw', b'VW', tmp_path)
+
+
+def test_file_names_are_files_safe_and_bounded():
+    assert load.file_name('over-unders') == 'workouts/over-unders.vw'
+    assert load.file_name('Sweet spot 2x20!') == 'workouts/Sweet-spot-2x20.vw'
+    name = load.file_name('x' * 80)
+    assert len(name) == load.NAME_MAX
+    assert name.endswith('.vw')
     with pytest.raises(ValueError):
-        list(load.commands(4, b'VW'))
+        load.file_name('///')

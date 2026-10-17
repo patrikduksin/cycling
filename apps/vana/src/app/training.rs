@@ -7,15 +7,20 @@
 //! step; the last three seconds of a timed step beep. While a workout runs,
 //! MARK (TopLeft) ends the step, which also closes the lap.
 //!
-//! Terminal, one workout at a time into upload slot `n` (`mise run
-//! workout-load` drives it):
+//! Uploads are codec files a host puts under `workouts/` on the FILES
+//! volume (`mise run workout-load`). The library lists them at boot, each
+//! time the picker opens and on `WORKOUT LIST`, keeping only names and
+//! outlines; a ride reads its workout's steps when it starts. A finished
+//! ride's workout outcome is saved beside it (`workout::history`).
 //!
-//! - `WORKOUT LIST` and `WORKOUT STATUS` report the library and the player.
-//! - `WORKOUT BEGIN n length crc32hex`, then `WORKOUT DATA offset hex` in
-//!   order, then `WORKOUT COMMIT` checks, decodes and stores the workout.
-//! - `WORKOUT DELETE n` empties a slot; `WORKOUT SELECT row` chooses a
-//!   picker row (0 is free ride) for the next ride and opens Ready, as the
-//!   picker does.
+//! Terminal:
+//!
+//! - `WORKOUT LIST` lists the uploads again and reports the library;
+//!   `WORKOUT STATUS` reports the player.
+//! - `WORKOUT SELECT row` chooses a picker row (0 is free ride) for the
+//!   next ride and opens Ready, as the picker does; `WORKOUT DELETE n`
+//!   deletes upload `n`'s file.
+//! - `WORKOUT HISTORY INTERNAL|BULK id` reports a saved ride's workout.
 use super::Runtime;
 use super::cues::Cue;
 use crate::ride::zones::TrainingProfile;
@@ -23,16 +28,13 @@ use crate::screens::chrome::Tone;
 use crate::screens::ride::{RidePage, Training as Shown};
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker};
-use crate::workout::codec::ENCODED_MAX;
-use crate::workout::library::{Id, Library, UPLOAD_SLOTS};
+use crate::workout::history;
+use crate::workout::library::{Id, Library, LoadError, Outline};
 use crate::workout::model::{Length, Name, Played};
 use crate::workout::player::{Event, Player, Summary};
 use core::fmt::Write;
+use device_api::bulk::ReadWrite;
 use device_api::input::Button;
-use firmware_services::checksum::crc32;
-
-/// Bytes per `WORKOUT DATA` line: the console takes 128-byte domain commands.
-pub const CHUNK: usize = 48;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beep {
@@ -40,14 +42,6 @@ enum Beep {
     Count,
     /// A step began, the workout ended or a test measured FTP.
     Step,
-}
-
-struct Upload {
-    slot: usize,
-    length: usize,
-    crc: u32,
-    bytes: [u8; ENCODED_MAX],
-    received: usize,
 }
 
 #[derive(Default)]
@@ -59,7 +53,15 @@ pub(super) struct Training {
     beep: Option<(Beep, u64)>,
     /// A test's FTP waiting for the rider's answer.
     pub(super) ftp_offer: Option<u16>,
-    upload: Option<Upload>,
+    /// The library lists what FILES holds now; cleared at boot and each
+    /// time the picker opens.
+    listed: bool,
+    /// Why the last listing found no uploads, if it failed.
+    list_error: Option<LoadError>,
+    /// The picker was open at the last tick.
+    picking: bool,
+    /// The ride just started free: its workout could not be read.
+    pub(super) missing: bool,
     /// The last workout ridden and how it went, once its ride is closed.
     pub(super) last: Option<(Name, Summary)>,
 }
@@ -84,16 +86,47 @@ impl Training {
     fn rows(&self) -> usize {
         1 + self.library.ids().count()
     }
+
+    /// List the uploads again, keeping the chosen one chosen if it is
+    /// still there.
+    fn list(&mut self, media: &mut impl ReadWrite) {
+        let chosen = match self.selected {
+            Some(Id::Uploaded(index)) => self
+                .library
+                .uploads()
+                .get(usize::from(index))
+                .map(|upload| upload.file),
+            _ => None,
+        };
+        self.list_error = self.library.refresh(media).err();
+        if let Some(file) = chosen {
+            self.selected = self.library.find(&file);
+        }
+        self.picker_cursor = self.picker_cursor.min(self.rows() - 1);
+        self.listed = true;
+    }
+
+    /// The chosen workout's player, its steps read now: `Ok(None)` rides
+    /// free.
+    pub(super) fn load_chosen(
+        &self,
+        media: &mut impl ReadWrite,
+    ) -> Result<Option<Player>, LoadError> {
+        let Some(id) = self.selected else {
+            return Ok(None);
+        };
+        self.library.load(id, media).map(|w| Some(Player::new(w)))
+    }
 }
 
 /// "52 MIN  12 STEPS", or what an FTP test is.
-fn detail(workout: &crate::workout::model::Workout) -> Text<24> {
+fn detail(outline: Outline) -> Text<24> {
     let mut text = Text::new();
-    let minutes = workout.planned_secs().div_ceil(60);
-    let _ = match workout.test {
+    let minutes = outline.planned_secs.div_ceil(60);
+    let _ = match outline.test {
         Some(test) => write!(text, "{}", test.label()),
-        None if workout.has_untimed_steps() => write!(text, "{} STEPS", workout.played_len()),
-        None => write!(text, "{minutes} MIN  {} STEPS", workout.played_len()),
+        None if outline.untimed => write!(text, "{} STEPS", outline.played),
+        None => write!(text, "{minutes} MIN  {} STEPS", outline.played),
     };
     text
 }
@@ -140,10 +173,19 @@ impl Runtime {
         self.ride.workout.is_some() || self.training.selected.is_some()
     }
 
-    /// A new ride starts the chosen workout, if any.
-    pub(super) fn chosen_player(&self) -> Option<Player> {
-        let id = self.training.selected?;
-        self.training.library.get(id).copied().map(Player::new)
+    /// List the uploads when the library is out of date: at boot and when
+    /// the picker opens, never during a ride.
+    pub(super) fn service_workouts(&mut self, media: &mut impl ReadWrite) {
+        let picking = self.navigation.page == Page::Workouts;
+        if picking && !self.training.picking {
+            self.training.listed = false;
+        }
+        self.training.picking = picking;
+        if self.training.listed || self.recording() {
+            return;
+        }
+        self.training.list(media);
+        self.display.redraw();
     }
 
     /// Leaving the ride screen: the workout's summary stays readable, the
@@ -169,10 +211,10 @@ impl Runtime {
             detail: free,
         });
         for id in training.library.ids() {
-            if let Some(workout) = training.library.get(id) {
+            if let Some((name, outline)) = training.library.outline(id) {
                 picker.push(Choice {
-                    name: workout.name,
-                    detail: detail(workout),
+                    name,
+                    detail: detail(outline),
                 });
             }
         }
@@ -316,17 +358,24 @@ impl Runtime {
     pub(super) fn workout_command(
         &mut self,
         words: &mut core::str::SplitAsciiWhitespace<'_>,
+        media: &mut impl ReadWrite,
         now: u64,
         output: &mut impl Write,
     ) -> &'static str {
         let operation = words.next();
-        let arguments: heapless::Vec<&str, 3> = words.by_ref().take(3).collect();
+        let arguments: heapless::Vec<&str, 2> = words.by_ref().take(2).collect();
         if words.next().is_some() {
             return "INVALID";
         }
         let number = |index: usize| arguments.get(index).and_then(|v| v.parse::<usize>().ok());
         let written = match (operation, arguments.len()) {
-            (None | Some("LIST"), 0) => self.workout_list(output),
+            (None | Some("LIST"), 0) => {
+                if !self.recording() {
+                    self.training.list(media);
+                    self.display.redraw();
+                }
+                self.workout_list(output)
+            }
             (Some("STATUS"), 0) => self.workout_status(output),
             (Some("SELECT"), 1) => {
                 let Some(row) = number(0).filter(|&row| row < self.training.rows()) else {
@@ -340,84 +389,51 @@ impl Runtime {
                 self.display.redraw();
                 write!(output, "selected={row}")
             }
-            (Some("BEGIN"), 3) => {
-                let (Some(slot), Some(length), Ok(crc)) =
-                    (number(0), number(1), u32::from_str_radix(arguments[2], 16))
-                else {
-                    return "INVALID";
-                };
-                if slot >= UPLOAD_SLOTS || length == 0 || length > ENCODED_MAX {
-                    return "BOUNDS";
-                }
-                self.training.upload = Some(Upload {
-                    slot,
-                    length,
-                    crc,
-                    bytes: [0; ENCODED_MAX],
-                    received: 0,
-                });
-                write!(output, "slot={slot} length={length} chunk={CHUNK}")
-            }
-            (Some("DATA"), 2) => {
-                let Some(upload) = self.training.upload.as_mut() else {
-                    return "STATE";
-                };
-                let hex = arguments[1].as_bytes();
-                if number(0) != Some(upload.received) {
-                    return "SEQUENCE";
-                }
-                if !hex.len().is_multiple_of(2) || hex.len() / 2 > CHUNK {
-                    return "INVALID";
-                }
-                let end = upload.received + hex.len() / 2;
-                if end > upload.length {
-                    return "BOUNDS";
-                }
-                for (i, pair) in hex.chunks(2).enumerate() {
-                    let digits = core::str::from_utf8(pair).ok();
-                    let Some(byte) = digits.and_then(|d| u8::from_str_radix(d, 16).ok()) else {
-                        return "INVALID";
-                    };
-                    upload.bytes[upload.received + i] = byte;
-                }
-                upload.received = end;
-                write!(output, "received={end}")
-            }
-            (Some("COMMIT"), 0) => {
-                let Some(upload) = self.training.upload.take() else {
-                    return "STATE";
-                };
-                let bytes = &upload.bytes[..upload.length];
-                if upload.received != upload.length || crc32(bytes) != upload.crc {
-                    return "CHECKSUM";
-                }
-                match self.training.library.install(upload.slot, bytes) {
-                    Ok(workout) => {
-                        let name = workout.name;
-                        self.display.redraw();
-                        write!(output, "slot={} name={}", upload.slot, Underscored(name))
-                    }
-                    Err(error) => {
-                        let _ = write!(output, "error={error:?}");
-                        return "INVALID";
-                    }
-                }
-            }
             (Some("DELETE"), 1) => {
-                let Some(slot) = number(0) else {
+                let Some(index) = number(0) else {
                     return "INVALID";
                 };
-                if self.training.selected == Some(Id::Uploaded(slot as u8)) {
-                    if self.recording() {
-                        return "STATE";
-                    }
-                    self.training.selected = None;
+                if self.recording() {
+                    return "STATE";
                 }
-                if self.training.library.remove(slot).is_err() {
+                let Some(upload) = self.training.library.uploads().get(index).copied() else {
                     return "BOUNDS";
+                };
+                let id = Id::Uploaded(index as u8);
+                if let Err(error) = self.training.library.delete(id, media) {
+                    let _ = write!(output, "error={}", error.name());
+                    return "FAILED";
                 }
+                // Later uploads moved up a place: keep the chosen one chosen.
+                self.training.selected = match self.training.selected {
+                    Some(chosen) if chosen == id => None,
+                    Some(Id::Uploaded(later)) if usize::from(later) > index => {
+                        Some(Id::Uploaded(later - 1))
+                    }
+                    other => other,
+                };
+                self.training.picker_cursor =
+                    self.training.picker_cursor.min(self.training.rows() - 1);
                 self.display.redraw();
-                write!(output, "slot={slot}")
+                write!(output, "deleted={}", upload.file.as_str())
+            }
+            (Some("HISTORY"), 2) => {
+                let journal = match arguments[0] {
+                    "INTERNAL" => b'i',
+                    "BULK" => b'b',
+                    _ => return "INVALID",
+                };
+                let Some(ride) = arguments[1].parse::<u32>().ok() else {
+                    return "INVALID";
+                };
+                match history::load(media, journal, ride) {
+                    Ok(Some(record)) => write_record(output, &record),
+                    Ok(None) => write!(output, "ride={ride} workout=none"),
+                    Err(error) => {
+                        let _ = write!(output, "error={}", error.name());
+                        return "FAILED";
+                    }
+                }
             }
             _ => return "INVALID",
         };
@@ -431,12 +447,24 @@ impl Runtime {
             .selected
             .and_then(|id| library.ids().position(|other| other == id))
             .map_or(0, |index| index + 1);
-        write!(output, "rows={} selected={selected}", self.training.rows())?;
-        for slot in 0..UPLOAD_SLOTS {
-            match library.get(Id::Uploaded(slot as u8)) {
-                Some(workout) => write!(output, " slot{slot}={}", Underscored(workout.name))?,
-                None => write!(output, " slot{slot}=-")?,
-            }
+        let files = match self.training.list_error {
+            None => "ok",
+            Some(error) => error.name(),
+        };
+        write!(
+            output,
+            "rows={} selected={selected} files={files} uploads={} skipped={}",
+            self.training.rows(),
+            library.uploads().len(),
+            library.skipped
+        )?;
+        for (index, upload) in library.uploads().iter().enumerate() {
+            write!(
+                output,
+                " upload{index}={}:{}",
+                upload.file.as_str(),
+                Underscored(upload.name)
+            )?;
         }
         Ok(())
     }
@@ -503,8 +531,27 @@ impl Runtime {
     /// The Home ride card names the workout the next ride plays.
     pub(super) fn chosen_name(&self) -> Option<Name> {
         let id = self.training.selected?;
-        Some(self.training.library.get(id)?.name)
+        Some(self.training.library.outline(id)?.0)
     }
+}
+
+/// A saved ride's workout record as reply fields.
+fn write_record(output: &mut impl Write, record: &history::Record) -> core::fmt::Result {
+    let summary = &record.summary;
+    write!(
+        output,
+        "ride={} workout={} test={} steps={}/{} skipped={} finished={} in_pct={} ftp={} start_utc_ms={}",
+        record.ride_id,
+        Underscored(record.name),
+        record.test.map_or("none", |test| test.label()),
+        summary.steps_done,
+        summary.steps,
+        summary.skipped,
+        u8::from(summary.finished),
+        summary.in_target_pct().map_or(-1, i16::from),
+        summary.ftp.unwrap_or(0),
+        record.started_utc_ms.unwrap_or(0),
+    )
 }
 
 /// A name in a reply, spaces as underscores so replies stay word-separated.

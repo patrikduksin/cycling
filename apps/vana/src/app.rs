@@ -206,5 +206,6 @@ impl Runtime {
         self.note_milestones(now, ant, &sample);
         self.record(store, bulk, now, sample);
         self.replay_step(store, bulk);
+        self.service_workouts(bulk);
     }
 }

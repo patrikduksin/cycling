@@ -4,6 +4,8 @@
 use super::GRID;
 use crate::ride::zones::{HEART_ZONES, POWER_ZONES, TrainingProfile, ZoneTime};
 use crate::screens::workout::View;
+use core::ops::Range;
+use firmware_shell::rendering::row::Row;
 
 /// Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple. All
 /// are light enough for black text; the zone number is always drawn too.
@@ -70,8 +72,34 @@ fn bar<const N: usize>(time: &[u64; N]) -> Bar<N> {
     }))
 }
 
+/// The gauge `left..left + GAUGE_WIDTH` over the columns `shape` covers.
+pub(super) fn paint_gauge(row: &mut Row, mark: Mark, left: usize, shape: Range<usize>) {
+    row.span(shape.clone(), GRID);
+    row.span(shape.start..shape.end.min(left + mark.fill), mark.colour);
+}
+
+/// The bar `left..left + BAR_WIDTH` over the columns `shape` covers.
+pub(super) fn paint_bar<const N: usize>(
+    row: &mut Row,
+    bar: Bar<N>,
+    left: usize,
+    shape: Range<usize>,
+) {
+    row.span(shape.clone(), GRID);
+    let Some(ends) = bar else {
+        return;
+    };
+    let mut start = left;
+    for (zone, &end) in ends.iter().enumerate() {
+        let end = left + end;
+        row.span(start.max(shape.start)..end.min(shape.end), COLOURS[zone]);
+        start = start.max(end);
+    }
+}
+
 /// A gauge `left..left + GAUGE_WIDTH`: lit in the zone colour up to the
 /// reading, then a dim track.
+#[cfg(test)]
 pub(super) fn gauge_pixel(mark: Mark, left: usize, x: usize) -> u16 {
     if x < left + mark.fill {
         mark.colour
@@ -82,6 +110,7 @@ pub(super) fn gauge_pixel(mark: Mark, left: usize, x: usize) -> u16 {
 
 /// A bar `left..left + BAR_WIDTH` split by time in each zone, or a dim track
 /// before any time is recorded.
+#[cfg(test)]
 pub(super) fn bar_pixel<const N: usize>(bar: Bar<N>, left: usize, x: usize) -> u16 {
     let Some(ends) = bar else {
         return GRID;

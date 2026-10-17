@@ -3,6 +3,7 @@ use crate::idle::Config;
 use crate::idle::Gate;
 use crate::idle::Idle;
 use crate::preferences::Settings;
+use crate::rendering::row::Row;
 use crate::storage::Store;
 use device_api::display::Display;
 use device_api::input::Button;
@@ -16,6 +17,7 @@ use device_api::power::Power;
 /// Constant working memory; rendering borrows no frame buffer across submission.
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
+pub const CANVAS_MAX_WIDTH: usize = 320;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Status,
@@ -36,8 +38,18 @@ pub struct Shell<D, I, P, B> {
     pub operations: u32,
     pub storage_max_ms: u64,
     pub display_submissions: u32,
+    /// The latest submission, rendering included; measured when `clock` is set.
+    pub display_ms: u64,
     pub display_max_ms: u64,
     pub input_events: u32,
+    /// Press-to-frame latency: from a routed button press to the end of the
+    /// next frame submission, measured when `clock` is set.
+    pub press_frame_ms: u64,
+    pub press_frame_max_ms: u64,
+    pub press_frames: u32,
+    pressed_at: Option<u64>,
+    /// Milliseconds on the same clock as input timestamps.
+    pub clock: Option<fn() -> u64>,
     idle: Idle,
     effective: u8,
     power: P,
@@ -119,8 +131,14 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             operations: 0,
             storage_max_ms: 0,
             display_submissions: 0,
+            display_ms: 0,
             display_max_ms: 0,
             input_events: 0,
+            press_frame_ms: 0,
+            press_frame_max_ms: 0,
+            press_frames: 0,
+            pressed_at: None,
+            clock: None,
             idle: Idle::new(now),
             effective: 0,
             power,
@@ -200,7 +218,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 self.harness
                     .stop_input(crate::harness::InputState::PhysicalLoss);
             }
-            self.consume(edge.input, now);
+            self.consume(edge.input, now, edge.received_ms);
         }
         // Physical events already queued win ties; synthetic events use the same
         // consumer and wake gate without incrementing physical observations.
@@ -212,7 +230,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                     break;
                 };
                 self.synthetic_events = self.synthetic_events.saturating_add(1);
-                self.consume(event, now);
+                self.consume(event, now, self.harness.due);
             }
             if self.harness.capture_due(now) {
                 self.dirty = true;
@@ -258,7 +276,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         // Foreground owns display submission. Background acquisition never waits
         // on this owner or on terminal attachment.
     }
-    fn consume(&mut self, input: Input, now: u64) {
+    /// `at` is when the input happened, which can precede `now` while a frame renders.
+    fn consume(&mut self, input: Input, now: u64, at: u64) {
         let gate = match input {
             Input::Touch(_) => self.idle.contact(now),
             Input::Release | Input::Cancel => self.idle.release(now),
@@ -266,6 +285,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         };
         if gate == Gate::Forward {
             self.routed_events = self.routed_events.saturating_add(1);
+            if matches!(input, Input::Button { code: 1, .. }) {
+                self.pressed_at.get_or_insert(at);
+            }
             if self.app_active {
                 self.app_input.push(now, input);
                 return;
@@ -298,7 +320,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             );
             if self.harness.take_cancel() {
                 self.synthetic_events = self.synthetic_events.saturating_add(1);
-                self.consume(Input::Cancel, now);
+                self.consume(Input::Cancel, now, now);
             }
             status
         }
@@ -322,21 +344,14 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         if self.app_active || !self.dirty {
             return;
         }
-        let geometry = self.display.geometry();
         let screen = self.foreground;
         let fill = self.fill_color;
         let frame = self.dev_frame;
-        self.draw_pixels(|x, y| {
-            if let Some(color) = fill {
-                color
-            } else if screen == Screen::Blank {
-                0
-            } else {
-                // Keep layout independent of native panel geometry.
-                let x = x * 240 / geometry.width;
-                let y = y * 320 / geometry.height;
-                crate::rendering::dev::pixel(x, y, frame)
-            }
+        // Keep layout independent of native panel geometry.
+        self.draw_canvas(240, 320, |row| match (fill, screen) {
+            (Some(color), _) => row.fill(color),
+            (None, Screen::Blank) => row.fill(0),
+            (None, Screen::Status) => crate::rendering::dev::paint(row, frame),
         });
         self.dirty = self.display_error;
     }
@@ -370,43 +385,82 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         result.is_ok()
     }
-    pub fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
+    /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
+    pub fn draw_rows(&mut self, row: impl FnMut(usize, &mut [u16])) {
+        let started = self.clock.map(|clock| clock());
         #[cfg(feature = "debug-harness")]
         {
             if self.harness.begin_frame(self.display.geometry()) {
-                let capture = core::cell::RefCell::new(&mut self.harness);
+                let mut row = row;
+                let harness = &mut self.harness;
                 self.display_error = self
                     .display
-                    .submit(|x, y| {
-                        let value = pixel(x, y);
-                        capture.borrow_mut().pixel(x, y, value);
-                        value
+                    .submit(|y, pixels| {
+                        row(y, pixels);
+                        harness.row(y, pixels);
                     })
                     .is_err();
                 self.harness.finish_frame(!self.display_error);
             } else {
-                self.display_error = self.display.submit(pixel).is_err();
+                self.display_error = self.display.submit(row).is_err();
             }
         }
         #[cfg(not(feature = "debug-harness"))]
         {
-            self.display_error = self.display.submit(pixel).is_err();
+            self.display_error = self.display.submit(row).is_err();
         }
         self.display_submissions = self.display_submissions.saturating_add(1);
+        if let (Some(clock), Some(started)) = (self.clock, started) {
+            self.display_ms = clock().saturating_sub(started);
+            self.display_max_ms = self.display_max_ms.max(self.display_ms);
+        }
+        if !self.display_error
+            && let Some(clock) = self.clock
+            && let Some(at) = self.pressed_at.take()
+        {
+            self.press_frame_ms = clock().saturating_sub(at);
+            self.press_frame_max_ms = self.press_frame_max_ms.max(self.press_frame_ms);
+            self.press_frames = self.press_frames.saturating_add(1);
+        }
     }
-    /// Fit an application's logical canvas to the advertised display geometry.
-    pub fn draw_scaled(
-        &mut self,
-        width: usize,
-        height: usize,
-        pixel: impl Fn(usize, usize) -> u16,
-    ) {
+    /// Per-pixel convenience over `draw_rows` for small or irregular frames.
+    pub fn draw_pixels(&mut self, pixel: impl Fn(usize, usize) -> u16) {
+        self.draw_rows(|y, pixels| {
+            for (x, value) in pixels.iter_mut().enumerate() {
+                *value = pixel(x, y);
+            }
+        });
+    }
+    /// Paint an application's logical canvas row by row, fitted to the advertised
+    /// display geometry: physical pixel (x, y) shows logical pixel
+    /// (x * width / geometry.width, y * height / geometry.height).
+    /// A scaled canvas is at most `CANVAS_MAX_WIDTH` logical pixels wide.
+    pub fn draw_canvas(&mut self, width: usize, height: usize, mut paint: impl FnMut(&mut Row)) {
         let geometry = self.display.geometry();
-        self.draw_pixels(|x, y| pixel(x * width / geometry.width, y * height / geometry.height));
+        if geometry.width == width && geometry.height == height {
+            self.draw_rows(|y, pixels| paint(&mut Row::new(y, pixels)));
+            return;
+        }
+        if width == 0 || width > CANVAS_MAX_WIDTH {
+            self.display_error = true;
+            return;
+        }
+        let mut logical = [0u16; CANVAS_MAX_WIDTH];
+        let mut painted = None;
+        self.draw_rows(|y, pixels| {
+            let source = y * height / geometry.height;
+            if painted != Some(source) {
+                paint(&mut Row::new(source, &mut logical[..width]));
+                painted = Some(source);
+            }
+            for (x, value) in pixels.iter_mut().enumerate() {
+                *value = logical[x * width / geometry.width];
+            }
+        });
     }
     pub fn fill(&mut self, color: u16) {
         self.fill_color = Some(color);
-        self.draw_pixels(|_, _| color);
+        self.draw_rows(|_, pixels| pixels.fill(color));
         self.dirty = false;
     }
 }

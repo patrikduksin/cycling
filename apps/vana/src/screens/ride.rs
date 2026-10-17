@@ -9,7 +9,7 @@
 //! constants so the chrome can change without rewriting them.
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
-//! module beside `main` with `prepare` and `pixel`, dispatched below.
+//! module beside `main` with `prepare` and `paint`, dispatched below.
 //!
 //! The climb page also follows the road: when a climb is confirmed the ride
 //! screen switches to it, and when the climb ends it returns to the page the
@@ -19,6 +19,8 @@ use super::workout::{Text, View};
 use crate::ride::laps::Lap;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
+use firmware_shell::rendering::row::Row;
+#[cfg(test)]
 use firmware_shell::rendering::text::text;
 
 mod climb;
@@ -85,7 +87,7 @@ impl RidePage {
     }
 }
 
-/// Formatted readings a page prepares once per frame and draws per pixel.
+/// Formatted readings a page prepares once per frame and paints per row.
 pub type Values = [Text<12>; 12];
 
 /// Prepare the shown page's values, and the climb page's chart, once per frame.
@@ -104,25 +106,98 @@ pub(super) fn prepare(view: &mut View) {
 }
 
 /// Everything below the header, except the footer divider the view draws.
-pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+/// The row arrives cleared.
+pub(super) fn paint(view: &View, row: &mut Row) {
+    let y = row.y();
+    if y < CONTENT_BOTTOM {
+        let mut content = row.within(CONTENT_LEFT..CONTENT_RIGHT);
+        match view.ride_page {
+            RidePage::Main => main::paint(view, &mut content),
+            RidePage::Stats => stats::paint(view, &mut content),
+            RidePage::Lap => lap::paint(view, &mut content),
+            RidePage::Climb => climb::paint(view, &mut content),
+        }
+        row.set(27, GRID);
+    } else {
+        paint_status(view, row);
+    }
+    if (38..279).contains(&y) {
+        paint_radar(view.radar, &mut row.within(0..26));
+    }
+}
+
+/// The radar strip, which owns its columns: an arrow, the range track and
+/// targets on top.
+fn paint_radar(radar: radar::Snapshot, row: &mut Row) {
+    let y = row.y();
+    row.fill(0);
+    if y < 49 {
+        let half = (y - 38) / 2;
+        row.span(12 - half..13 + half, WHITE);
+    }
+    if (58..=272).contains(&y) {
+        let color = match radar.status {
+            radar::Status::Ready => CYAN,
+            radar::Status::Error | radar::Status::ReservedThreat => RED,
+            _ => DIM,
+        };
+        row.span(11..14, color);
+    }
+    // The first target wins where dots overlap, so paint it last.
+    for target in radar.targets.iter().rev().flatten() {
+        let cy = 58 + (target.range_mm.min(200000) * 214 / 200000) as i32;
+        let dy = y as i32 - cy;
+        if dy * dy > 25 {
+            continue;
+        }
+        let mut half = 0;
+        while (half + 1) * (half + 1) + dy * dy <= 25 {
+            half += 1;
+        }
+        let color = if close(*target) { RED } else { YELLOW };
+        row.span((12 - half) as usize..(13 + half) as usize, color);
+    }
+}
+
+/// The status row under the content: the end-ride confirmation, a lap
+/// toast, or the recorder state. No button labels.
+fn paint_status(view: &View, row: &mut Row) {
+    if row.y() <= CONTENT_BOTTOM {
+        return;
+    }
+    // An armed end ride outranks a lap toast: the next press saves.
+    if !view.stop_confirm && !view.toast.as_bytes().is_empty() {
+        row.fill(CYAN);
+        row.text(6, STATUS_TEXT_TOP, 2, view.toast.as_bytes(), 0);
+        return;
+    }
+    // End-ride confirmation, storage warning or recorder state, prepared once.
+    let color = if view.state_warns { YELLOW } else { CYAN };
+    row.text(6, STATUS_TEXT_TOP, 2, view.state_text.as_bytes(), color);
+}
+
+/// The per-pixel original of `paint`, kept as the reference it must match.
+#[cfg(test)]
+pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     if x < 26 && (38..279).contains(&y) {
-        return radar_pixel(view.radar, x, y);
+        return reference_radar_pixel(view.radar, x, y);
     }
     if x == 27 && y < 285 {
         return GRID;
     }
     if x >= CONTENT_LEFT && y < CONTENT_BOTTOM {
         return match view.ride_page {
-            RidePage::Main => main::pixel(view, x, y),
-            RidePage::Stats => stats::pixel(view, x, y),
-            RidePage::Lap => lap::pixel(view, x, y),
-            RidePage::Climb => climb::pixel(view, x, y),
+            RidePage::Main => main::reference_pixel(view, x, y),
+            RidePage::Stats => stats::reference_pixel(view, x, y),
+            RidePage::Lap => lap::reference_pixel(view, x, y),
+            RidePage::Climb => climb::reference_pixel(view, x, y),
         };
     }
-    status_pixel(view, x, y)
+    reference_status_pixel(view, x, y)
 }
 
-fn radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
+#[cfg(test)]
+fn reference_radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
     for target in radar.targets.into_iter().flatten() {
         let cy = 58 + (target.range_mm.min(200000) * 214 / 200000) as i32;
         let dx = x as i32 - 12;
@@ -165,9 +240,8 @@ pub(super) fn toast(lap: Option<Lap>) -> Text<19> {
     toast
 }
 
-/// The status row under the content: the end-ride confirmation, a lap
-/// toast, or the recorder state. No button labels.
-fn status_pixel(view: &View, x: usize, y: usize) -> u16 {
+#[cfg(test)]
+fn reference_status_pixel(view: &View, x: usize, y: usize) -> u16 {
     if y <= CONTENT_BOTTOM {
         return 0;
     }
@@ -197,7 +271,20 @@ pub(super) struct Cell {
 }
 
 impl Cell {
+    /// The cell's label in DIM over `value` in `color`.
+    pub(super) fn paint(&self, row: &mut Row, value: &Text<12>, color: u16) {
+        row.text(
+            self.left,
+            self.value_top,
+            self.value_scale,
+            value.as_bytes(),
+            color,
+        );
+        row.text(self.left, self.top, self.label_scale, self.label, DIM);
+    }
+
     /// The cell's label in DIM and `value` in WHITE, or none of its pixels.
+    #[cfg(test)]
     pub(super) fn pixel(&self, value: &Text<12>, x: usize, y: usize) -> Option<u16> {
         if text(x, y, self.left, self.top, self.label_scale, self.label) {
             return Some(DIM);

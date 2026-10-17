@@ -1,10 +1,11 @@
-//! Per-pixel drawing of the prepared sensor layout on the 240 × 320 canvas.
+//! Row painting of the prepared sensor layout on the 240 × 320 canvas.
 use super::layout::{NEARBY_GRID, SELECTED_GRID};
 use super::menu::{Choice, Menu, View};
 use super::slot::{LinkStatus, Selected};
 use super::{icons, kind};
+use core::ops::Range;
 use device_api::ant::Identity;
-use firmware_shell::rendering::text::text;
+use firmware_shell::rendering::row::Row;
 
 pub(super) const WHITE: u16 = 0xffff;
 pub(super) const CYAN: u16 = 0x07ff;
@@ -36,7 +37,7 @@ impl LinkStatus {
     }
 
     /// A 7 × 7 glyph: a check when live, a ring while waiting, otherwise an alert.
-    fn indicator(self, x: usize, y: usize) -> bool {
+    pub(super) fn indicator(self, x: usize, y: usize) -> bool {
         match self {
             Self::Live => {
                 (x <= 2 && (y == x + 3 || y == x + 2)) || (x >= 2 && (y + x == 7 || y + x == 6))
@@ -53,12 +54,23 @@ impl LinkStatus {
 }
 
 impl Menu {
+    /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
-        if x >= WIDTH || y >= HEIGHT {
-            return 0;
+        let mut pixels = [0u16; WIDTH];
+        self.paint(&mut Row::new(y, &mut pixels));
+        pixels.get(x).copied().unwrap_or(0)
+    }
+
+    /// Paint one row of the 240 x 320 canvas; later paints cover earlier ones.
+    pub fn paint(&self, row: &mut Row) {
+        let y = row.y();
+        row.fill(0);
+        if y >= HEIGHT {
+            return;
         }
         if y == FOOTER_DIVIDER_Y {
-            return DIVIDER;
+            row.fill(DIVIDER);
+            return;
         }
         if y >= FOOTER_Y {
             let action = if matches!(self.view, View::Tiles) {
@@ -67,226 +79,198 @@ impl Menu {
                 b"SELECT"
             };
             let right = WIDTH - MARGIN - action.len() * 2 * GLYPH;
-            if text(x, y, MARGIN, FOOTER_Y, 2, b"NEXT") || text(x, y, right, FOOTER_Y, 2, action) {
-                return WHITE;
-            }
-            return 0;
+            row.text(right, FOOTER_Y, 2, action, WHITE);
+            row.text(MARGIN, FOOTER_Y, 2, b"NEXT", WHITE);
+            return;
         }
         match self.view {
-            View::Tiles => self.tiles_pixel(x, y),
-            View::Detail(slot) => self.selected[slot].map_or(0, |s| self.detail_pixel(x, y, s)),
-            View::Replace(identity) => self.replace_pixel(x, y, identity),
+            View::Tiles => self.paint_tiles(row),
+            View::Detail(slot) => {
+                if let Some(selected) = self.selected[slot] {
+                    self.paint_detail(row, selected);
+                }
+            }
+            View::Replace(identity) => self.paint_replace(row, identity),
         }
     }
 
-    fn tiles_pixel(&self, x: usize, y: usize) -> u16 {
+    fn paint_tiles(&self, row: &mut Row) {
+        let y = row.y();
+        row.text(
+            MARGIN,
+            267,
+            2,
+            self.layout.status.as_bytes(),
+            self.layout.color,
+        );
+        row.text(MARGIN, 238, 3, self.layout.title, WHITE);
+        if y == 226 {
+            row.span(MARGIN..WIDTH - MARGIN, DIVIDER);
+        }
+        if self.layout.nearby.is_empty() {
+            let empty: &[u8] = if self.scanning {
+                b"LOOKING NEARBY..."
+            } else {
+                b"NO SENSORS FOUND"
+            };
+            row.text(MARGIN, 168, 2, empty, MUTED);
+        }
+        if self.layout.selected.is_empty() {
+            row.text(MARGIN, 68, 2, b"NONE SELECTED", MUTED);
+        }
+        for (index, left, top) in NEARBY_GRID.tiles(y) {
+            let Some(&(cursor, identity)) = self.layout.nearby.get(index) else {
+                continue;
+            };
+            let focused = self.cursor == cursor;
+            let mut tile = row.within(left..left + NEARBY_GRID.width);
+            tile.fill(fill(focused));
+            icon(&mut tile, left + 14, top + 6, identity.device_type);
+            border(
+                &mut tile,
+                top,
+                NEARBY_GRID.height,
+                stroke(focused),
+                if focused { CYAN } else { BORDER },
+            );
+        }
+        for (index, left, top) in SELECTED_GRID.tiles(y) {
+            if let Some(&slot) = self.layout.selected.get(index)
+                && let Some(selected) = self.selected[slot]
+            {
+                self.paint_selected_tile(
+                    &mut row.within(left..left + SELECTED_GRID.width),
+                    top,
+                    slot,
+                    selected,
+                );
+            }
+        }
+        self.paint_search_button(row);
+        if self.scanning {
+            row.text(96, 138, 2, b"SEARCHING", CYAN);
+        }
+        row.text(MARGIN, 138, 2, b"NEARBY", WHITE);
         let feedback = &self.layout.page_feedback;
         let (heading, color): (&[u8], u16) = if feedback.is_empty() {
             (b"MY SENSORS", WHITE)
         } else {
             (feedback.as_bytes(), AMBER)
         };
-        if text(x, y, MARGIN, 36, 2, heading) {
-            return color;
-        }
-        if text(x, y, MARGIN, 138, 2, b"NEARBY") {
-            return WHITE;
-        }
-        if self.scanning && text(x, y, 96, 138, 2, b"SEARCHING") {
-            return CYAN;
-        }
-        if let Some(color) = self.search_button_pixel(x, y) {
-            return color;
-        }
-        if let Some((index, left, top)) = SELECTED_GRID.tile(x, y)
-            && let Some(&slot) = self.layout.selected.get(index)
-            && let Some(selected) = self.selected[slot]
-        {
-            return self.selected_tile_pixel(x, y, left, top, slot, selected);
-        }
-        if let Some((index, left, top)) = NEARBY_GRID.tile(x, y)
-            && let Some(&(cursor, identity)) = self.layout.nearby.get(index)
-        {
-            let focused = self.cursor == cursor;
-            if border(
-                x,
-                y,
-                left,
-                top,
-                NEARBY_GRID.width,
-                NEARBY_GRID.height,
-                stroke(focused),
-            ) {
-                return if focused { CYAN } else { BORDER };
-            }
-            if icon(x, y, left + 14, top + 6, identity.device_type) {
-                return WHITE;
-            }
-            return fill(focused);
-        }
-        if self.layout.selected.is_empty() && text(x, y, MARGIN, 68, 2, b"NONE SELECTED") {
-            return MUTED;
-        }
-        let empty: &[u8] = if self.scanning {
-            b"LOOKING NEARBY..."
-        } else {
-            b"NO SENSORS FOUND"
-        };
-        if self.layout.nearby.is_empty() && text(x, y, MARGIN, 168, 2, empty) {
-            return MUTED;
-        }
-        if y == 226 && (MARGIN..WIDTH - MARGIN).contains(&x) {
-            return DIVIDER;
-        }
-        if text(x, y, MARGIN, 238, 3, self.layout.title) {
-            return WHITE;
-        }
-        if text(x, y, MARGIN, 267, 2, self.layout.status.as_bytes()) {
-            return self.layout.color;
-        }
-        0
+        row.text(MARGIN, 36, 2, heading, color);
     }
 
-    fn search_button_pixel(&self, x: usize, y: usize) -> Option<u16> {
+    fn paint_search_button(&self, row: &mut Row) {
         let (left, top) = SEARCH_BUTTON;
         let size = SEARCH_BUTTON_SIZE;
-        if !(left..left + size).contains(&x) || !(top..top + size).contains(&y) {
-            return None;
+        let y = row.y();
+        if !(top..top + size).contains(&y) {
+            return;
         }
         let focused = self.cursor == 0;
-        if focused && border(x, y, left, top, size, size, 2) {
-            return Some(CYAN);
+        let mut button = row.within(left..left + size);
+        button.fill(fill(focused));
+        let color = if self.scanning { CYAN } else { WHITE };
+        button.bits(left, icons::refresh_row(y - top), color);
+        if focused {
+            border(&mut button, top, size, 2, CYAN);
         }
-        if icons::refresh_pixel(x - left, y - top) {
-            return Some(if self.scanning { CYAN } else { WHITE });
-        }
-        Some(fill(focused))
     }
 
-    fn selected_tile_pixel(
-        &self,
-        x: usize,
-        y: usize,
-        left: usize,
-        top: usize,
-        slot: usize,
-        selected: Selected,
-    ) -> u16 {
+    /// `tile` is clipped to the tile's columns.
+    fn paint_selected_tile(&self, tile: &mut Row, top: usize, slot: usize, selected: Selected) {
+        let left = tile.clip().start;
+        let y = tile.y();
         let focused = self.cursor == slot + 1;
-        let (width, height) = (SELECTED_GRID.width, SELECTED_GRID.height);
-        if border(x, y, left, top, width, height, stroke(focused)) {
-            return if focused { CYAN } else { BORDER };
-        }
-        if icon(x, y, left + 9, top + 6, selected.identity.device_type) {
-            return WHITE;
-        }
+        tile.fill(fill(focused));
         let status = selected.link_status();
         let (indicator_left, indicator_top) = (left + 30, top + 3);
-        if (indicator_left..indicator_left + STATUS_INDICATOR_SIZE).contains(&x)
-            && (indicator_top..indicator_top + STATUS_INDICATOR_SIZE).contains(&y)
-            && status.indicator(x - indicator_left, y - indicator_top)
-        {
-            return status.color();
+        if (indicator_top..indicator_top + STATUS_INDICATOR_SIZE).contains(&y) {
+            let dy = y - indicator_top;
+            tile.each(
+                indicator_left..indicator_left + STATUS_INDICATOR_SIZE,
+                |x| {
+                    status
+                        .indicator(x - indicator_left, dy)
+                        .then(|| status.color())
+                },
+            );
         }
-        fill(focused)
+        icon(tile, left + 9, top + 6, selected.identity.device_type);
+        border(
+            tile,
+            top,
+            SELECTED_GRID.height,
+            stroke(focused),
+            if focused { CYAN } else { BORDER },
+        );
     }
 
-    fn detail_pixel(&self, x: usize, y: usize, selected: Selected) -> u16 {
-        if scaled_icon(x, y, 98, 52, selected.identity.device_type) {
-            return WHITE;
-        }
-        if centered_title(x, y, 111, kind(selected.identity.device_type)) {
-            return WHITE;
-        }
+    fn paint_detail(&self, row: &mut Row, selected: Selected) {
+        // Disconnect is the only removal; ordinary loss reconnects by itself.
+        self.paint_button(row, 262, 28, Choice::Secondary, b"BACK");
+        self.paint_button(row, 220, 34, Choice::Primary, b"DISCONNECT");
+        let identity = self.layout.identity.as_bytes();
+        let left = centered(b"SENSOR ".len() + identity.len(), 2);
+        row.text(left + 84, 179, 2, identity, MUTED);
+        row.text(left, 179, 2, b"SENSOR ", MUTED);
         let status = selected.link_status();
         if status == LinkStatus::Live {
-            if text(x, y, 60, 149, 2, b"LIVE DATA") || live_check(x, y, 38, 150) {
-                return GREEN;
-            }
+            live_check(row, 38, 150);
+            row.text(60, 149, 2, b"LIVE DATA", GREEN);
         } else {
             let line = selected.status_text();
             let line = &line[..line.len().min(18)];
-            if text(x, y, centered(line.len(), 2), 149, 2, line) {
-                return status.color();
-            }
+            row.text(centered(line.len(), 2), 149, 2, line, status.color());
         }
-        let identity = self.layout.identity.as_bytes();
-        let left = centered(b"SENSOR ".len() + identity.len(), 2);
-        if text(x, y, left, 179, 2, b"SENSOR ") || text(x, y, left + 84, 179, 2, identity) {
-            return MUTED;
-        }
-        // Disconnect is the only removal; ordinary loss reconnects by itself.
-        if let Some(color) = self.button_pixel(x, y, 220, 34, Choice::Primary, b"DISCONNECT") {
-            return color;
-        }
-        if let Some(color) = self.button_pixel(x, y, 262, 28, Choice::Secondary, b"BACK") {
-            return color;
-        }
-        0
+        centered_title(row, 111, kind(selected.identity.device_type));
+        scaled_icon(row, 98, 52, selected.identity.device_type);
     }
 
-    fn replace_pixel(&self, x: usize, y: usize, identity: Identity) -> u16 {
-        if scaled_icon(x, y, 98, 43, identity.device_type) {
-            return WHITE;
-        }
-        if centered_title(x, y, 94, kind(identity.device_type))
-            || text(x, y, 30, 129, 2, b"REPLACE SENSOR")
-        {
-            return WHITE;
-        }
+    fn paint_replace(&self, row: &mut Row, identity: Identity) {
+        let y = row.y();
+        self.paint_button(row, 258, 32, Choice::Secondary, b"KEEP CURRENT");
+        self.paint_button(row, 216, 34, Choice::Primary, b"REPLACE");
+        row.text(174, 191, 2, b"NEW", MUTED);
+        row.text(MARGIN, 191, 2, b"CURRENT", MUTED);
+        arrow(row);
         if (160..191).contains(&y) {
             // Current peer on the left half, replacement on the right.
-            let index = usize::from(x >= WIDTH / 2);
-            let center = [54, 180][index];
-            let number = &self.layout.replacement_numbers[index];
-            let transmission = &self.layout.replacement_transmissions[index];
-            let scale = if transmission.is_empty() { 3 } else { 2 };
-            let number_left = center - number.len() * GLYPH / 2 * scale;
-            let transmission_left = center - transmission.len() * GLYPH;
-            if text(x, y, number_left, 160, scale, number.as_bytes())
-                || text(x, y, transmission_left, 177, 2, transmission.as_bytes())
-            {
-                return WHITE;
+            for (index, half) in [0..WIDTH / 2, WIDTH / 2..WIDTH].into_iter().enumerate() {
+                let center = [54, 180][index];
+                let number = &self.layout.replacement_numbers[index];
+                let transmission = &self.layout.replacement_transmissions[index];
+                let scale = if transmission.is_empty() { 3 } else { 2 };
+                let number_left = center - number.len() * GLYPH / 2 * scale;
+                let transmission_left = center - transmission.len() * GLYPH;
+                let mut half = row.within(half);
+                half.text(transmission_left, 177, 2, transmission.as_bytes(), WHITE);
+                half.text(number_left, 160, scale, number.as_bytes(), WHITE);
             }
         }
-        if arrow(x, y) {
-            return CYAN;
-        }
-        if text(x, y, MARGIN, 191, 2, b"CURRENT") || text(x, y, 174, 191, 2, b"NEW") {
-            return MUTED;
-        }
-        if let Some(color) = self.button_pixel(x, y, 216, 34, Choice::Primary, b"REPLACE") {
-            return color;
-        }
-        if let Some(color) = self.button_pixel(x, y, 258, 32, Choice::Secondary, b"KEEP CURRENT") {
-            return color;
-        }
-        0
+        row.text(30, 129, 2, b"REPLACE SENSOR", WHITE);
+        centered_title(row, 94, kind(identity.device_type));
+        scaled_icon(row, 98, 43, identity.device_type);
     }
 
     /// A full-width button, highlighted when it is the current choice.
-    fn button_pixel(
-        &self,
-        x: usize,
-        y: usize,
-        top: usize,
-        height: usize,
-        choice: Choice,
-        label: &[u8],
-    ) -> Option<u16> {
+    fn paint_button(&self, row: &mut Row, top: usize, height: usize, choice: Choice, label: &[u8]) {
+        if !(top..top + height).contains(&row.y()) {
+            return;
+        }
         let width = WIDTH - 2 * MARGIN;
-        if !(MARGIN..MARGIN + width).contains(&x) || !(top..top + height).contains(&y) {
-            return None;
-        }
         let focused = self.choice == choice;
-        if border(x, y, MARGIN, top, width, height, stroke(focused)) {
-            return Some(if focused { CYAN } else { BORDER });
-        }
+        let mut button = row.within(MARGIN..MARGIN + width);
+        button.fill(fill(focused));
         let label_top = top + (height - 14) / 2;
-        if text(x, y, centered(label.len(), 2), label_top, 2, label) {
-            return Some(WHITE);
-        }
-        Some(fill(focused))
+        button.text(centered(label.len(), 2), label_top, 2, label, WHITE);
+        border(
+            &mut button,
+            top,
+            height,
+            stroke(focused),
+            if focused { CYAN } else { BORDER },
+        );
     }
 }
 
@@ -295,8 +279,8 @@ const fn centered(chars: usize, scale: usize) -> usize {
     (WIDTH - chars * GLYPH * scale) / 2
 }
 
-fn centered_title(x: usize, y: usize, top: usize, title: &[u8]) -> bool {
-    text(x, y, centered(title.len(), 3), top, 3, title)
+fn centered_title(row: &mut Row, top: usize, title: &[u8]) {
+    row.text(centered(title.len(), 3), top, 3, title, WHITE);
 }
 
 const fn stroke(focused: bool) -> usize {
@@ -308,44 +292,54 @@ const fn fill(focused: bool) -> u16 {
 }
 
 /// The current-to-new arrow between the two replacement identities.
-fn arrow(x: usize, y: usize) -> bool {
-    ((103..130).contains(&x) && (171..173).contains(&y))
-        || ((121..131).contains(&x) && ((y as isize - 172).unsigned_abs() == 130 - x))
-}
-
-fn live_check(x: usize, y: usize, left: usize, top: usize) -> bool {
-    if !(left..left + 11).contains(&x) || !(top..top + 12).contains(&y) {
-        return false;
+fn arrow(row: &mut Row) {
+    let y = row.y();
+    if (171..173).contains(&y) {
+        row.span(103..130, CYAN);
     }
-    let x = x - left;
+    let x = 130 - (y as isize - 172).unsigned_abs().min(130);
+    if (121..131).contains(&x) {
+        row.set(x, CYAN);
+    }
+}
+
+fn live_check(row: &mut Row, left: usize, top: usize) {
+    let y = row.y();
+    if !(top..top + 12).contains(&y) {
+        return;
+    }
     let y = y - top;
-    ((1..=4).contains(&x) && (y == x + 4 || y + 1 == x + 4))
-        || ((4..=10).contains(&x) && (x + y == 12 || x + y == 11))
+    row.each(left..left + 11, |x| {
+        let x = x - left;
+        (((1..=4).contains(&x) && (y == x + 4 || y + 1 == x + 4))
+            || ((4..=10).contains(&x) && (x + y == 12 || x + y == 11)))
+            .then_some(GREEN)
+    });
 }
 
-fn scaled_icon(x: usize, y: usize, left: usize, top: usize, kind: u8) -> bool {
-    x >= left && y >= top && icons::pixel(kind, (x - left) / 2, (y - top) / 2)
+fn scaled_icon(row: &mut Row, left: usize, top: usize, kind: u8) {
+    if let Some(y) = row.y().checked_sub(top) {
+        row.bits_scaled(left, icons::row(kind, y / 2), 2, WHITE);
+    }
 }
 
-fn border(
-    x: usize,
-    y: usize,
-    left: usize,
-    top: usize,
-    width: usize,
-    height: usize,
-    stroke: usize,
-) -> bool {
-    x >= left
-        && x < left + width
-        && y >= top
-        && y < top + height
-        && (x < left + stroke
-            || x >= left + width - stroke
-            || y < top + stroke
-            || y >= top + height - stroke)
+/// The row of a `stroke`-wide frame around a tile whose columns are `tile`'s clip.
+fn border(tile: &mut Row, top: usize, height: usize, stroke: usize, color: u16) {
+    let Range { start: left, end } = tile.clip();
+    let y = tile.y();
+    if y < top || y >= top + height {
+        return;
+    }
+    if y < top + stroke || y >= top + height - stroke {
+        tile.fill(color);
+    } else {
+        tile.span(left..left + stroke, color);
+        tile.span(end - stroke..end, color);
+    }
 }
 
-fn icon(x: usize, y: usize, left: usize, top: usize, kind: u8) -> bool {
-    x >= left && y >= top && icons::pixel(kind, x - left, y - top)
+fn icon(row: &mut Row, left: usize, top: usize, kind: u8) {
+    if let Some(y) = row.y().checked_sub(top) {
+        row.bits(left, icons::row(kind, y), WHITE);
+    }
 }

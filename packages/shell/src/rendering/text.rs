@@ -38,11 +38,12 @@ pub fn number(
 }
 
 fn dot(character: u8, x: usize, y: usize) -> bool {
-    if x >= 5 {
-        return false;
-    }
-    // Each row uses five low bits, with the leftmost dot in bit four.
-    let rows = match character {
+    x < 5 && glyph(character)[y] & (1 << (4 - x)) != 0
+}
+
+/// Seven glyph rows; each uses five low bits, with the leftmost dot in bit four.
+pub(crate) fn glyph(character: u8) -> [u8; 7] {
+    match character {
         b':' => [0, 6, 6, 0, 6, 6, 0],
         b'/' => [1, 1, 2, 4, 8, 16, 16],
         b'+' => [0, 4, 4, 31, 4, 4, 0],
@@ -88,8 +89,7 @@ fn dot(character: u8, x: usize, y: usize) -> bool {
         b'8' => [14, 17, 17, 14, 17, 17, 14],
         b'9' => [14, 17, 17, 15, 1, 1, 14],
         _ => [0; 7],
-    };
-    rows[y] & (1 << (4 - x)) != 0
+    }
 }
 
 #[cfg(test)]

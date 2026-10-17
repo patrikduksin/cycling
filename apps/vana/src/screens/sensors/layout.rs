@@ -22,7 +22,25 @@ pub(super) struct Grid {
 }
 
 impl Grid {
+    /// Index, left and top of each tile whose rows include `y`.
+    pub(super) fn tiles(&self, y: usize) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+        let row = y
+            .checked_sub(self.top)
+            .map(|offset| offset / self.pitch_y)
+            .filter(|&row| row < self.rows && y < self.top + row * self.pitch_y + self.height);
+        row.into_iter().flat_map(move |row| {
+            (0..self.columns).map(move |column| {
+                (
+                    row * self.columns + column,
+                    self.left + column * self.pitch_x,
+                    self.top + row * self.pitch_y,
+                )
+            })
+        })
+    }
+
     /// The tile index under a point and the tile's top-left corner.
+    #[cfg(test)]
     pub(super) fn tile(&self, x: usize, y: usize) -> Option<(usize, usize, usize)> {
         if x < self.left || y < self.top {
             return None;

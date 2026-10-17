@@ -553,3 +553,51 @@ fn bounded_rle_transfer_round_trips_runs_raw_fallback_and_pixel_boundaries() {
         assert_eq!(bytes, expected[4094..]);
     }
 }
+
+#[test]
+fn canvas_rows_are_fitted_to_any_panel_geometry() {
+    let logical = |x: usize, y: usize| ((x * 7 + y * 13) % 65_536) as u16;
+    for (w, h) in [(240, 320), (120, 160), (320, 320), (17, 23)] {
+        let (mut s, d, _) = shell(w, h);
+        s.draw_canvas(240, 320, |row| {
+            let y = row.y();
+            row.each(0..240, |x| Some(logical(x, y)));
+        });
+        assert!(!s.display_error);
+        let frame = d.0.borrow();
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(
+                    frame.pixels[y * w + x],
+                    logical(x * 240 / w, y * 320 / h),
+                    "{w}x{h} at {x},{y}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn press_to_frame_latency_counts_from_when_the_press_happened() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NOW: AtomicU64 = AtomicU64::new(0);
+    let (mut s, _, physical) = shell(32, 24);
+    s.clock = Some(|| NOW.load(Ordering::Relaxed));
+    physical.push(
+        100,
+        Input::Button {
+            button: Button::TopLeft,
+            code: 1,
+        },
+    );
+    // The press waited behind other work and is consumed later.
+    NOW.store(130, Ordering::Relaxed);
+    s.tick(130);
+    NOW.store(145, Ordering::Relaxed);
+    s.present();
+    assert_eq!((s.press_frame_ms, s.press_frames), (45, 1));
+    // Frames without a new press do not count.
+    s.fill(0);
+    assert_eq!(s.press_frames, 1);
+    assert_eq!(s.display_ms, 0);
+}

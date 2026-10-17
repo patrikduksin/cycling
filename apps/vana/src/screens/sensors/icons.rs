@@ -1,9 +1,10 @@
 //! Monochrome sensor glyphs from the Vana Paper design, sampled at native 22 × 20.
 //! Source: https://app.paper.design/file/01M2KXNPZ2GGT5CXJ71Y979SE9/1-0
 
-pub(super) fn pixel(device_type: u8, x: usize, y: usize) -> bool {
-    if x >= 22 || y >= 20 {
-        return false;
+/// Row `y` of a glyph; bit `x` is column `x`.
+pub(super) fn row(device_type: u8, y: usize) -> u32 {
+    if y >= 20 {
+        return 0;
     }
     let index = match device_type {
         120 => 0,
@@ -17,7 +18,12 @@ pub(super) fn pixel(device_type: u8, x: usize, y: usize) -> bool {
         35 => 8,
         _ => 9,
     };
-    GLYPHS[index][y] & (1 << x) != 0
+    GLYPHS[index][y] & 0x3f_ffff
+}
+
+#[cfg(test)]
+pub(super) fn pixel(device_type: u8, x: usize, y: usize) -> bool {
+    x < 22 && row(device_type, y) & (1 << x) != 0
 }
 
 const GLYPHS: [[u32; 20]; 10] = [
@@ -73,8 +79,14 @@ const GLYPHS: [[u32; 20]; 10] = [
     ],
 ];
 
+/// Row `y` of the refresh glyph; bit `x` is column `x`.
+pub(super) fn refresh_row(y: usize) -> u32 {
+    REFRESH.get(y).map_or(0, |bits| bits & 0xff_ffff)
+}
+
+#[cfg(test)]
 pub(super) fn refresh_pixel(x: usize, y: usize) -> bool {
-    x < 24 && y < 24 && REFRESH[y] & (1 << x) != 0
+    x < 24 && refresh_row(y) & (1 << x) != 0
 }
 
 const REFRESH: [u32; 24] = [

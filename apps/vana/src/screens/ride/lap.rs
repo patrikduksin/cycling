@@ -8,6 +8,8 @@ use super::{
 };
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
+use firmware_shell::rendering::row::Row;
+#[cfg(test)]
 use firmware_shell::rendering::text::text;
 
 const NUMBER: usize = 0;
@@ -136,7 +138,43 @@ fn delta_color(value: &Text<12>) -> u16 {
     }
 }
 
-pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+/// Paint one content row; earlier cells in `CELLS` cover later ones.
+pub(super) fn paint(view: &View, row: &mut Row) {
+    let y = row.y();
+    let values = &view.values;
+    if y < ROWS[0] {
+        // Under an hour the time takes five characters at scale 6.
+        let time = values[TIME].as_bytes();
+        let (scale, top) = if time.len() <= 5 {
+            (6, TOP + 24)
+        } else {
+            (4, TOP + 32)
+        };
+        row.text(LEFT, top, scale, time, WHITE);
+        row.text(RIGHT, TOP + 4, 2, values[NUMBER].as_bytes(), CYAN);
+        row.text(LEFT, TOP + 8, 1, b"LAP TIME", DIM);
+    } else {
+        for (cell, value) in CELLS.iter().rev() {
+            let color = if matches!(*value, SPEED_DELTA | POWER_DELTA) {
+                delta_color(&values[*value])
+            } else {
+                WHITE
+            };
+            cell.paint(row, &values[*value], color);
+        }
+        row.text(LEFT, TOP + 189, 2, values[PREVIOUS_TIME].as_bytes(), WHITE);
+        row.text(LEFT, TOP + 177, 1, values[PREVIOUS].as_bytes(), DIM);
+    }
+    if ROWS.contains(&y) {
+        row.fill(GRID);
+    } else if y > ROWS[0] {
+        row.set(COLUMN, GRID);
+    }
+}
+
+/// The per-pixel original of `paint`, kept as the reference it must match.
+#[cfg(test)]
+pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     if ROWS.contains(&y) || (x == COLUMN && y > ROWS[0]) {
         return GRID;
     }

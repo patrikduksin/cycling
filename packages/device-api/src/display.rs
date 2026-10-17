@@ -22,5 +22,9 @@ pub trait Display {
     fn format(&self) -> Format {
         Format::Rgb565
     }
-    fn submit(&mut self, pixel: impl Fn(usize, usize) -> u16) -> Result<(), Error>;
+    /// Calls `row(y, pixels)` once per row, top to bottom, with `geometry().width`
+    /// pixels to fill completely; their prior contents are unspecified. Rows are
+    /// requested in order so a device can transfer earlier rows while later ones
+    /// render.
+    fn submit(&mut self, row: impl FnMut(usize, &mut [u16])) -> Result<(), Error>;
 }

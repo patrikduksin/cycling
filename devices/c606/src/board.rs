@@ -142,7 +142,11 @@ fn init() -> Resources {
     .with_data13(p.GPIO47)
     .with_data14(p.GPIO11)
     .with_data15(p.GPIO48);
-    let mut screen = display::Display::new(bus, dma_tx_buffer!(3840).unwrap());
+    let mut screen = display::Display::new(
+        bus,
+        dma_tx_buffer!(display::STRIP_BYTES).unwrap(),
+        dma_tx_buffer!(display::STRIP_BYTES).unwrap(),
+    );
     screen.init();
 
     let touch_bus = esp_hal::i2c::master::I2c::new(

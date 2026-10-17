@@ -155,6 +155,10 @@ run = "{{vars.devtools}} python -m cycling_devtools.harness.runner"
 description = "Save the next frame pushed to the C606 panel as a PNG (harness builds); --scale 2, --press BUTTON"
 run = "{{vars.devtools}} python -m cycling_devtools.harness.screenshot"
 
+[tasks.latency]
+description = "Time button press to finished frame on the C606 and the idle frame rate (harness builds); --press, --setup"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.latency"
+
 [tasks.harness-virtual]
 description = "Run shared deterministic input, capture and restart scenarios"
 run = ["{{vars.devtools}} python -m cycling_devtools.harness.runner run shared --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-foundation --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-sdk --backend virtual --sdk"]

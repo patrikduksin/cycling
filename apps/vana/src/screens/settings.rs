@@ -6,8 +6,12 @@
 //! finishes. Touch does the same directly: tap a field to edit it, then tap
 //! the large minus and plus pads. The runtime prepares the lines; this draws
 //! them and maps touches to `Target`s.
+#[cfg(test)]
 use super::rounded;
+use super::rounded_span;
 use super::workout::View;
+use firmware_shell::rendering::row::Row;
+#[cfg(test)]
 use firmware_shell::rendering::text::text;
 
 const CYAN: u16 = 0x07ff;
@@ -73,7 +77,57 @@ pub fn target(x: usize, y: usize, editing: bool) -> Option<Target> {
     None
 }
 
-pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+/// Paint one row below the header; the row arrives cleared.
+pub(super) fn paint(view: &View, row: &mut Row) {
+    let y = row.y();
+    let lines = &view.lines;
+    let status = lines[STATUS].as_bytes();
+    let color = if status.starts_with(b"NOT") {
+        YELLOW
+    } else {
+        DIM
+    };
+    row.text(LEFT, STATUS_TOP, 1, status, color);
+    let mut inside = row.within(LEFT..RIGHT);
+    if view.editing && (PAD_TOP..PAD_TOP + PAD_HEIGHT).contains(&y) {
+        inside.fill(0);
+        for (left, right, label) in [
+            (LEFT, PAD_SPLIT - PAD_GAP, b"-5"),
+            (PAD_SPLIT + PAD_GAP, RIGHT, b"+5"),
+        ] {
+            let pad = rounded_span(y, (left, PAD_TOP, right, PAD_TOP + PAD_HEIGHT), RADIUS);
+            inside.span(pad, RAISED);
+            let middle = (left + right) / 2;
+            inside
+                .within(left..right)
+                .text(middle - 24, PAD_TOP + 15, 4, label, WHITE);
+        }
+    }
+    for (i, label) in FIELDS.iter().enumerate().rev() {
+        let top = BOX_TOP + i * BOX_PITCH;
+        if !(top..top + BOX_HEIGHT).contains(&y) {
+            continue;
+        }
+        let selected = view.cursor == i;
+        let filled = selected && view.editing;
+        let (ink, label_ink) = if filled { (0, 0) } else { (WHITE, DIM) };
+        inside.fill(0);
+        // The selected field sits on a soft panel, cyan while it is edited;
+        // the others float on black.
+        if selected {
+            let panel = rounded_span(y, (LEFT, top, RIGHT, top + BOX_HEIGHT), RADIUS);
+            inside.span(panel, if filled { CYAN } else { RAISED });
+        }
+        inside.text(130, top + 46, 1, lines[ANCHORS + i].as_bytes(), label_ink);
+        inside.text(22, top + 28, 5, lines[VALUES + i].as_bytes(), ink);
+        inside.text(22, top + 8, 2, label, label_ink);
+    }
+    row.text(10, 36, 1, lines[TITLE].as_bytes(), CYAN);
+}
+
+/// The per-pixel original of `paint`, kept as the reference it must match.
+#[cfg(test)]
+pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     let lines = &view.lines;
     if text(x, y, 10, 36, 1, lines[TITLE].as_bytes()) {
         return CYAN;

@@ -57,6 +57,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         }
     }
     system.boot_id = boot;
+    system.clock = Some(|| embassy_time::Instant::now().as_millis());
     system.reset = board.reset;
     system.crash = board.crash;
     system.heap_min_sampled = esp_alloc::HEAP.free();
@@ -113,7 +114,7 @@ async fn console(
         sdk.load_preferences(&system.settings.app);
         sdk.set_clock(|| embassy_time::Instant::now().as_millis());
         let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-        system.draw_scaled(240, 320, |x, y| view.pixel(x, y));
+        system.draw_canvas(240, 320, |row| view.paint(row));
     }
     #[cfg(feature = "cycling")]
     use device_api::ble_transport::Ble as _;

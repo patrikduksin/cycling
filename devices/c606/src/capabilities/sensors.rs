@@ -85,7 +85,10 @@ pub fn loss() {
         }
     });
 }
-pub fn tick(now: u64) {
+/// `link_faults` is this acquisition tick's cumulative UART error and bad-CRC
+/// count. The published bridge snapshot lags one tick behind framing losses
+/// counted here, which would split one fault across two ticks.
+pub fn tick(now: u64, link_faults: u32) {
     // Ordinary recovery/query writers stop during a power transition. Explicit
     // charging wake and passive physical-startup observations still progress.
     let blocked = super::power::ACCESS.closed();
@@ -95,15 +98,15 @@ pub fn tick(now: u64) {
         matches!(s.battery, Observation::Fresh { .. })
             && matches!(s.power, Observation::Fresh { .. })
     });
-    let transport_clean = bridge.is_none_or(|s| s.uart_errors == 0 && s.companion_bad_crc == 0);
     let radio_seen = super::ant::startup_activity();
     let acknowledge = !blocked
         && SHARED.lock(|s| {
             let mut s = s.borrow_mut();
             let sample = s.state.unwrap_or_default().snapshot(now, 5000);
-            let transport_clean = transport_clean && sample.losses == 0;
+            // Cumulative, so startup judges only faults counted since it began observing.
+            let faults = link_faults.saturating_add(sample.losses);
             s.startup
-                .probe(sample, now, bridge_fresh, transport_clean, radio_seen)
+                .probe(sample, now, bridge_fresh, faults, radio_seen)
         });
     if acknowledge {
         let result =
@@ -116,7 +119,7 @@ pub fn tick(now: u64) {
         s.startup.wake(
             sample,
             bridge_fresh,
-            transport_clean && sample.losses == 0,
+            link_faults.saturating_add(sample.losses),
             radio_seen,
         )
     });

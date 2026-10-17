@@ -78,7 +78,7 @@ Controls:
 | Screen | Control |
 | --- | --- |
 | Menu | Opens training or sensor status |
-| Training | After a short connection check, bottom-left starts, pauses or resumes. Bottom-right twice within five seconds finishes and commits the final samples; wait for `saved` before powering off. Top-left returns home when no ride is active. |
+| Training | After a short connection check, bottom-left starts, pauses or resumes. Bottom-right twice within five seconds finishes and commits the final samples; wait for `saved` before powering off. Top-left steps through the ride pages (live, then totals; the header shows `1/2`). Past the last page it wraps while a ride is open and returns home otherwise. |
 | Sensor scan | Bottom-left moves, bottom-right selects, top-left returns. Wait for PICK SENSOR before selecting another device. |
 
 Sensors:

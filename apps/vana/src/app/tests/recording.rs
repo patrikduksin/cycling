@@ -1,5 +1,6 @@
 use super::*;
 use crate::ride::log::Status;
+use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER, SPEED};
 
@@ -119,23 +120,80 @@ fn stop_needs_a_second_press_within_five_seconds() {
     on_ride_page(&mut runtime);
     runtime.input(press(Button::BottomLeft), 1000, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1000);
-    // Leaving is refused while a ride is open.
+    // While a ride is open TopLeft only steps through the ride pages.
     runtime.input(press(Button::TopLeft), 1400, &mut radio);
     assert!(runtime.navigation.page == Page::Ride);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
+    runtime.input(press(Button::TopLeft), 1800, &mut radio);
+    assert!(runtime.navigation.page == Page::Ride);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
 
-    runtime.input(press(Button::BottomRight), 2000, &mut radio);
-    assert!(runtime.ride.stop_confirming(2000));
+    runtime.input(press(Button::BottomRight), 2200, &mut radio);
+    assert!(runtime.ride.stop_confirming(2200));
     // Too late: the second press only re-arms.
-    runtime.input(press(Button::BottomRight), 7001, &mut radio);
-    tick(&mut runtime, &mut journal, &mut radio, 7001);
+    runtime.input(press(Button::BottomRight), 7201, &mut radio);
+    tick(&mut runtime, &mut journal, &mut radio, 7201);
     assert_eq!(runtime.ride.recorder.status(), Status::Recording);
     runtime.input(press(Button::BottomRight), 12_000, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 12_000);
     assert_eq!(runtime.ride.recorder.status(), Status::Saved);
     assert!(!runtime.ride.stop_confirming(12_000));
 
+    // Saved, the pages still show the ride; past the last one is Home.
     runtime.input(press(Button::TopLeft), 14_400, &mut radio);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
+    runtime.input(press(Button::TopLeft), 14_800, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+#[test]
+fn totals_count_recorded_seconds_survive_pause_and_restart_with_a_new_ride() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    let ride = |runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, from, until| {
+        for now in (from..until).step_by(250) {
+            radio.data(POWER, POWER_250, now);
+            tick(runtime, journal, radio, now);
+        }
+    };
+    // Before the start nothing is counted.
+    ride(&mut runtime, &mut journal, &mut radio, 1000, 5000);
+    assert_eq!(runtime.ride.totals.work_kj(), None);
+    runtime.input(press(Button::BottomLeft), 5000, &mut radio);
+    ride(&mut runtime, &mut journal, &mut radio, 5000, 25_000);
+    let power = runtime.ride.totals.avg_power();
+    assert_eq!(power, Some(250));
+    // 20 s at 250 W is 5 kJ, give or take the second the start took.
+    let work = runtime.ride.totals.work_kj();
+    assert!(matches!(work, Some(4..=5)), "{work:?}");
+
+    runtime.input(press(Button::BottomLeft), 25_000, &mut radio);
+    ride(&mut runtime, &mut journal, &mut radio, 25_000, 65_000);
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.totals.work_kj(), work, "paused seconds count");
+    runtime.input(press(Button::BottomLeft), 65_000, &mut radio);
+    ride(&mut runtime, &mut journal, &mut radio, 65_000, 85_000);
+    let resumed = runtime.ride.totals.work_kj().unwrap();
+    assert!((9..=10).contains(&resumed), "{resumed} kJ");
+
+    runtime.input(press(Button::BottomRight), 85_000, &mut radio);
+    runtime.input(press(Button::BottomRight), 85_400, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 85_400);
+    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(
+        runtime.ride.totals.work_kj(),
+        Some(resumed),
+        "kept after stop"
+    );
+
+    runtime.input(press(Button::BottomLeft), 90_000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 90_000);
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert!(runtime.ride.totals.work_kj().unwrap_or(0) <= 1, "new ride");
 }
 
 #[test]
@@ -152,4 +210,49 @@ fn ride_buttons_wait_for_the_previous_request() {
     runtime.input(press(Button::BottomLeft), 1800, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1800);
     assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+}
+
+/// Power-only page 0x10 with 2000 W, so a second of it is two kilojoules.
+const POWER_2000: [u8; 8] = [0x10, 1, 0, 90, 0, 0, 0xd0, 0x07];
+
+/// Record one active second at 2000 W from 1000 ms, then press `stop` at 2100 ms
+/// and service the accepted request only at 5000 and 6000 ms.
+fn delayed_stop(stop: &[(Button, u64)]) -> Runtime {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    for now in (1000..=2000).step_by(250) {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    for &(button, at) in stop {
+        runtime.input(press(button), at, &mut radio);
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    for now in [5000, 6000] {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    settle(&mut runtime, &mut journal, &mut radio, 6000);
+    assert_eq!(runtime.ride.recorder.active_ms(6000), 1100);
+    runtime
+}
+
+#[test]
+fn totals_stop_at_an_accepted_pause_while_its_flush_is_pending() {
+    let runtime = delayed_stop(&[(Button::BottomLeft, 2100)]);
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    // 1.1 active seconds at 2000 W, not the five seconds until the flush.
+    assert_eq!(runtime.ride.totals.work_kj(), Some(2));
+    assert_eq!(runtime.ride.totals.avg_power(), Some(2000));
+}
+
+#[test]
+fn totals_stop_at_an_accepted_finish_while_its_flush_is_pending() {
+    let runtime = delayed_stop(&[(Button::BottomRight, 1700), (Button::BottomRight, 2100)]);
+    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.totals.work_kj(), Some(2));
 }

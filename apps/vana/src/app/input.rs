@@ -3,6 +3,7 @@ use super::Runtime;
 use super::recording::{Request, RideMessage};
 use crate::ride::control::Action as RideAction;
 use crate::ride::log::{Source, Status};
+use crate::screens::ride::RidePage;
 use crate::screens::sensors::Action;
 use crate::screens::workout::Page;
 use device_api::ant::Ant;
@@ -76,6 +77,10 @@ impl Runtime {
     }
 
     fn ride_input(&mut self, button: Button, now: u64) {
+        if button == Button::TopLeft {
+            self.next_ride_page();
+            return;
+        }
         if self.ride.pending() {
             return;
         }
@@ -94,10 +99,6 @@ impl Runtime {
                 }
                 RideAction::Finish
             }
-            Button::TopLeft if !self.recording() => {
-                self.navigation.page = Page::Home;
-                return;
-            }
             _ => return,
         };
         self.ride.request = Request::Idle;
@@ -109,6 +110,22 @@ impl Runtime {
             self.ride.disarm_stop();
         } else {
             self.ride.message = RideMessage::StorageNotReady;
+        }
+    }
+
+    /// TopLeft steps through the ride pages. Past the last one it wraps to the
+    /// first while a ride is open, and leaves for Home otherwise.
+    fn next_ride_page(&mut self) {
+        let open = self.recording();
+        let navigation = &mut self.navigation;
+        match navigation.ride_page.next() {
+            Some(next) => navigation.ride_page = next,
+            None => {
+                navigation.ride_page = RidePage::Main;
+                if !open {
+                    navigation.page = Page::Home;
+                }
+            }
         }
     }
 }

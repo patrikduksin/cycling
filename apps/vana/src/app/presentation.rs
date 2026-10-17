@@ -3,6 +3,7 @@ use super::Runtime;
 use super::recording::Request;
 use crate::ride::log::Status;
 use crate::ride::metrics::{heart_zone, power_zone};
+use crate::screens::ride::RidePage;
 use crate::screens::sensors::{MenuMessage, connection_status};
 use crate::screens::workout::{Page, View};
 use crate::sensors::ant::device_type;
@@ -29,6 +30,8 @@ const ALERT_PATTERN_MAX_MS: u16 = 300;
 
 pub(super) struct Navigation {
     pub(super) page: Page,
+    /// The ride page shown while `page` is the ride screen.
+    pub(super) ride_page: RidePage,
     /// Home highlights Sensors rather than Train.
     pub(super) home_cursor: bool,
     pub(super) page_since: u64,
@@ -39,6 +42,7 @@ impl Default for Navigation {
     fn default() -> Self {
         Self {
             page: Page::Boot,
+            ride_page: RidePage::Main,
             home_cursor: false,
             page_since: 0,
             last_press: 0,
@@ -150,6 +154,7 @@ impl Runtime {
             && now.saturating_sub(navigation.page_since) >= PREFLIGHT_MS
         {
             navigation.page = Page::Ride;
+            navigation.ride_page = RidePage::Main;
         }
         let page = navigation.page;
         let gps = position.snapshot(now);
@@ -166,6 +171,8 @@ impl Runtime {
         view.state = self.ride.recorder.status();
         view.radar = self.readings.radar.snapshot(now);
         view.stop_confirm = self.ride.stop_confirming(now);
+        view.ride_page = navigation.ride_page;
+        view.totals = self.ride.totals;
         view.gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         let gps_status = gps.map_or("OFF", |p| {
             if p.gps.state == FixState::Fresh {
@@ -309,7 +316,7 @@ impl Runtime {
                 Request::Idle => match recorder.status() {
                     Status::Recording => "RECORDING / 1 SECOND",
                     Status::Paused => "PAUSED / LEFT TO RESUME",
-                    Status::Saved => "SAVED / TOP LEFT HOME",
+                    Status::Saved => "SAVED / TOP LEFT PAGES",
                     _ => self.ride.message.text(),
                 },
             }

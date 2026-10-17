@@ -1,7 +1,8 @@
 //! VANA workout rendering.
+use super::ride::{self, RidePage, Values};
 use crate::ride::log::{Sample, Status};
-use crate::ride::metrics::{heart_zone, power_zone};
-use crate::sensors::radar::{self, close};
+use crate::ride::totals::Totals;
+use crate::sensors::radar;
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
 
@@ -22,7 +23,10 @@ pub struct View {
     pub radar: radar::Snapshot,
     pub gps_fix: bool,
     pub stop_confirm: bool,
-    values: [Text<12>; 7],
+    pub totals: Totals,
+    pub ride_page: RidePage,
+    /// What the ride page prepared for this frame.
+    pub(super) values: Values,
     pub page: Page,
     pub cursor: bool,
     pub time: Text<16>,
@@ -53,6 +57,8 @@ impl View {
             radar: radar::Snapshot::default(),
             gps_fix: false,
             stop_confirm: false,
+            totals: Totals::default(),
+            ride_page: RidePage::Main,
             values: core::array::from_fn(|_| Text::new()),
             page,
             cursor,
@@ -102,13 +108,16 @@ impl View {
             if text(x, y, 8, 7, 2, if self.gps_fix { b"GPS" } else { b"GPS?" }) {
                 return if self.gps_fix { CYAN } else { DIM };
             }
+            if self.page == Page::Ride && text(x, y, 72, 7, 2, &self.ride_page.indicator()) {
+                return DIM;
+            }
             return 0;
         }
         if y == 29 || y == 285 {
             return 0x39e7;
         }
         if self.page == Page::Ride {
-            return self.ride_pixel(x, y);
+            return ride::pixel(self, x, y);
         }
         if self.page == Page::Home {
             if text(x, y, 24, 65, 2, b"READY TO RIDE") {
@@ -161,160 +170,9 @@ impl View {
         0
     }
     pub fn prepare(&mut self) {
-        let mut speed = Text::<12>::new();
-        let mut power = Text::<12>::new();
-        let mut heart = Text::<12>::new();
-        let mut pz = Text::<12>::new();
-        let mut hz = Text::<12>::new();
-        let mut timer = Text::<12>::new();
-        let mut grade = Text::<12>::new();
-        if let Some(v) = self.sample.speed_mm_s {
-            let k = v * 36 / 1000;
-            let _ = write!(speed, "{}.{}", k / 10, k % 10);
-        } else {
-            let _ = speed.push_str("--");
+        if self.page == Page::Ride {
+            self.values = ride::prepare(self);
         }
-        if let Some(v) = self.sample.power_watts {
-            let _ = write!(power, "{}", v);
-            let _ = write!(pz, "Z{}", power_zone(v));
-        } else {
-            let _ = power.push_str("--");
-            let _ = pz.push_str("Z-");
-        }
-        if let Some(v) = self.sample.heart_bpm {
-            let _ = write!(heart, "{}", v);
-            let _ = write!(hz, "Z{}", heart_zone(v));
-        } else {
-            let _ = heart.push_str("--");
-            let _ = hz.push_str("Z-");
-        }
-        let t = self.active_secs;
-        let _ = write!(timer, "{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
-        if let Some(v) = self.sample.gradient_tenths {
-            let _ = write!(
-                grade,
-                "{}{}.{}%",
-                if v < 0 { "-" } else { "" },
-                v.unsigned_abs() / 10,
-                v.unsigned_abs() % 10
-            );
-        } else {
-            let _ = grade.push_str("--%");
-        }
-        self.values = [speed, power, heart, pz, hz, timer, grade];
-    }
-    fn ride_pixel(&self, x: usize, y: usize) -> u16 {
-        const WHITE: u16 = 0xffff;
-        const CYAN: u16 = 0x07ff;
-        const DIM: u16 = 0x8410;
-        if x < 26 && (38..279).contains(&y) {
-            let status = self.radar.status;
-            for target in self.radar.targets.into_iter().flatten() {
-                let cy = 58 + (target.range_mm.min(200000) * 214 / 200000) as i32;
-                let dx = x as i32 - 12;
-                let dy = y as i32 - cy;
-                if dx * dx + dy * dy <= 25 {
-                    return if close(target) { 0xf800 } else { 0xffe0 };
-                }
-            }
-            if (11..=13).contains(&x) && (58..=272).contains(&y) {
-                return match status {
-                    radar::Status::Ready => CYAN,
-                    radar::Status::Error | radar::Status::ReservedThreat => 0xf800,
-                    _ => DIM,
-                };
-            }
-            if y < 49 && (x as i32 - 12).abs() <= (y as i32 - 38) / 2 {
-                return WHITE;
-            }
-            return 0;
-        }
-        if (x == 27 && y < 285)
-            || (x >= 28 && (y == 115 || y == 202))
-            || (x == 135 && (116..202).contains(&y))
-        {
-            return 0x39e7;
-        }
-        let [speed, power, heart, pz, hz, timer, grade] = &self.values;
-        if y < 115 {
-            if text(x, y, 38, 38, 2, b"SPEED") || text(x, y, 178, 91, 1, b"KM/H") {
-                return DIM;
-            }
-            return if text(x, y, 38, 64, 6, speed.as_bytes()) {
-                WHITE
-            } else {
-                0
-            };
-        }
-        if y < 202 {
-            let (left, label, value, zone) = if x < 135 {
-                (38, b"WATTS".as_slice(), power, pz)
-            } else {
-                (146, b"BPM".as_slice(), heart, hz)
-            };
-            if text(x, y, left, 123, 2, label) {
-                return DIM;
-            }
-            if text(
-                x,
-                y,
-                if x < 135 { 36 } else { 145 },
-                148,
-                4,
-                value.as_bytes(),
-            ) {
-                return WHITE;
-            }
-            return if text(x, y, left, 184, 2, zone.as_bytes()) {
-                CYAN
-            } else {
-                0
-            };
-        }
-        if y < 257 {
-            if x < 150 {
-                if text(x, y, 38, 211, 1, b"ACTIVE TIME") {
-                    return DIM;
-                }
-                return if text(x, y, 33, 232, 2, timer.as_bytes()) {
-                    WHITE
-                } else {
-                    0
-                };
-            }
-            if text(x, y, 164, 211, 1, b"GRADE") {
-                return DIM;
-            }
-            return if text(x, y, 159, 232, 2, grade.as_bytes()) {
-                WHITE
-            } else {
-                0
-            };
-        }
-        let state: &[u8] = if self.stop_confirm {
-            b"STOP TO SAVE"
-        } else {
-            match self.state {
-                Status::Recording => b"RECORDING",
-                Status::Paused => b"PAUSED",
-                Status::Saved => b"SAVED",
-                Status::Error => b"STORAGE ERROR",
-                Status::Full => b"STORAGE FULL",
-                _ => b"READY",
-            }
-        };
-        if text(x, y, 30, 263, 2, state) {
-            return if self.stop_confirm { 0xffe0 } else { CYAN };
-        }
-        let left: &[u8] = match self.state {
-            Status::Recording => b"PAUSE",
-            Status::Paused => b"RESUME",
-            _ => b"START",
-        };
-        if text(x, y, 8, 300, 2, left) || text(x, y, 180, 300, 2, b"STOP") {
-            return WHITE;
-        }
-        0
     }
 }
 
@@ -389,30 +247,58 @@ mod tests {
         view.sample = Sample {
             speed_mm_s: Some(8333),
             power_watts: Some(250),
+            cadence_tenths: Some(904),
             gradient_tenths: Some(-35),
             ..Sample::default()
         };
+        view.totals.add(1000, 12_345, &view.sample, None);
         view.active_secs = 3725;
         view.state = Status::Recording;
         view.prepare();
-        assert!(shows(&view, 38, 64, 6, b"29.9", WHITE));
-        assert!(shows(&view, 36, 148, 4, b"250", WHITE));
-        assert!(shows(&view, 38, 184, 2, b"Z5", CYAN));
-        assert!(shows(&view, 145, 148, 4, b"--", WHITE));
-        assert!(shows(&view, 146, 184, 2, b"Z-", CYAN));
-        assert!(shows(&view, 33, 232, 2, b"01:02:05", WHITE));
-        assert!(shows(&view, 159, 232, 2, b"-3.5%", WHITE));
+        assert!(shows(&view, 72, 7, 2, b"1/2", 0x8410));
+        assert!(shows(&view, 38, 54, 6, b"29.9", WHITE));
+        assert!(shows(&view, 38, 124, 4, b"250", WHITE));
+        assert!(shows(&view, 38, 157, 2, b"Z5", CYAN));
+        assert!(shows(&view, 146, 124, 4, b"--", WHITE));
+        assert!(shows(&view, 146, 157, 2, b"Z-", CYAN));
+        assert!(shows(&view, 38, 192, 3, b"90", WHITE));
+        assert!(shows(&view, 146, 192, 3, b"0.01", WHITE));
+        assert!(shows(&view, 38, 234, 2, b"01:02:05", WHITE));
+        assert!(shows(&view, 150, 234, 2, b"-3.5%", WHITE));
         assert!(shows(&view, 30, 263, 2, b"RECORDING", CYAN));
         assert!(shows(&view, 8, 300, 2, b"PAUSE", WHITE));
     }
 
     #[test]
-    fn ride_page_asks_for_stop_confirmation() {
+    fn stats_page_shows_ride_totals() {
         let mut view = View::new(Page::Ride, false, None);
+        view.ride_page = RidePage::Stats;
+        let sample = Sample {
+            speed_mm_s: Some(8333),
+            power_watts: Some(200),
+            heart_bpm: Some(140),
+            cadence_tenths: Some(900),
+            ..Sample::default()
+        };
+        for _ in 0..600 {
+            view.totals.add(1000, 8333, &sample, None);
+        }
         view.state = Status::Paused;
-        view.stop_confirm = true;
         view.prepare();
-        assert!(shows(&view, 30, 263, 2, b"STOP TO SAVE", 0xffe0));
+        assert!(shows(&view, 72, 7, 2, b"2/2", 0x8410));
+        assert!(shows(&view, 34, 36, 1, b"DISTANCE KM", 0x8410));
+        assert!(shows(&view, 34, 46, 3, b"5.00", WHITE));
+        assert!(shows(&view, 141, 49, 2, b"00:10:00", WHITE));
+        assert!(shows(&view, 34, 83, 3, b"29.9", WHITE));
+        assert!(shows(&view, 141, 120, 3, b"200", WHITE));
+        assert!(shows(&view, 34, 157, 3, b"200", WHITE));
+        assert!(shows(&view, 141, 157, 3, b"120", WHITE));
+        assert!(shows(&view, 141, 194, 3, b"140", WHITE));
+        assert!(shows(&view, 34, 231, 3, b"90", WHITE));
+        assert!(shows(&view, 141, 221, 1, b"ASCENT M", 0x8410));
+        assert!(shows(&view, 141, 231, 3, b"0", WHITE));
+        // The shared frame stays: status and ride controls.
+        assert!(shows(&view, 30, 263, 2, b"PAUSED", CYAN));
         assert!(shows(&view, 8, 300, 2, b"RESUME", WHITE));
     }
 

@@ -203,16 +203,21 @@ impl Runtime {
             })
             .then(|| self.readings.speed.value(now))
             .flatten();
+        let pressure = match observations.physical.pressure {
+            Observation::Fresh { value, .. } => Some(value.pressure_centi_pa),
+            _ => None,
+        };
         let readings = &mut self.readings;
-        if readings.odometer.step(now, speed_mm_s) {
-            let pressure = match observations.physical.pressure {
-                Observation::Fresh { value, .. } => Some(value.pressure_centi_pa),
-                _ => None,
-            };
+        let step = readings.odometer.step(now, speed_mm_s);
+        if step.is_some() {
             let distance_mm = readings.odometer.distance_mm();
             readings.gradient.update(pressure, distance_mm, speed_mm_s);
         }
         let fresh = |received_ms: u64| now.saturating_sub(received_ms) <= READING_FRESH_MS;
+        let power = readings
+            .power
+            .filter(|power| fresh(power.received_ms))
+            .map(|power| power.value);
         let sample = Sample {
             active_ms: 0,
             utc_ms,
@@ -224,16 +229,23 @@ impl Runtime {
                 .and_then(|heart| heart.value.bpm)
                 .map(u16::from)
                 .or(ble_heart_bpm),
-            cadence_tenths,
+            // A power meter's crank cadence stands in when no BLE sensor reports one.
+            cadence_tenths: cadence_tenths.or_else(|| {
+                power
+                    .and_then(|power| power.cadence_rpm)
+                    .map(|rpm| u16::from(rpm) * 10)
+            }),
             battery_percent,
             speed_mm_s,
-            power_watts: readings
-                .power
-                .filter(|power| fresh(power.received_ms) && power.value.watts != u16::MAX)
-                .map(|power| power.value.watts),
+            power_watts: power
+                .filter(|power| power.watts != u16::MAX)
+                .map(|power| power.watts),
             gradient_tenths: readings.gradient.tenths(),
         };
-        readings.live = sample;
+        if let Some(step) = step {
+            self.ride.count(now, step, &sample, pressure);
+        }
+        self.readings.live = sample;
         sample
     }
 }

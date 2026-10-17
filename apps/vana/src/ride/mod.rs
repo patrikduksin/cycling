@@ -4,3 +4,4 @@ pub mod metrics;
 pub mod reclaim;
 pub mod recorder;
 pub mod storage;
+pub mod totals;

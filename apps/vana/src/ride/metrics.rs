@@ -74,6 +74,13 @@ impl Speed {
     }
 }
 
+/// One odometer integration: the time it covered and the distance it added.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub elapsed_ms: u64,
+    pub distance_mm: u64,
+}
+
 /// Ride distance, integrated from wheel speed about once per second.
 #[derive(Default)]
 pub struct Odometer {
@@ -86,17 +93,19 @@ impl Odometer {
     /// Longer gaps, such as a stalled loop, are not extrapolated beyond this.
     const MAX_STEP_MS: u64 = 3000;
 
-    /// Integrate the current speed if a step is due, reporting whether it was.
-    pub fn step(&mut self, now: u64, speed_mm_s: Option<u32>) -> bool {
+    /// Integrate the current speed if a step is due, reporting the step taken.
+    pub fn step(&mut self, now: u64, speed_mm_s: Option<u32>) -> Option<Step> {
         if now < self.last_step_ms.saturating_add(Self::STEP_MS) {
-            return false;
+            return None;
         }
-        let elapsed = now.saturating_sub(self.last_step_ms).min(Self::MAX_STEP_MS);
+        let elapsed_ms = now.saturating_sub(self.last_step_ms).min(Self::MAX_STEP_MS);
         self.last_step_ms = now;
-        self.distance_mm = self
-            .distance_mm
-            .saturating_add(u64::from(speed_mm_s.unwrap_or(0)) * elapsed / 1000);
-        true
+        let distance_mm = u64::from(speed_mm_s.unwrap_or(0)) * elapsed_ms / 1000;
+        self.distance_mm = self.distance_mm.saturating_add(distance_mm);
+        Some(Step {
+            elapsed_ms,
+            distance_mm,
+        })
     }
 
     pub fn distance_mm(&self) -> u64 {
@@ -240,17 +249,23 @@ mod tests {
     }
     #[test]
     fn odometer_integrates_speed_once_per_second_and_bounds_gaps() {
+        let step = |elapsed_ms, distance_mm| {
+            Some(Step {
+                elapsed_ms,
+                distance_mm,
+            })
+        };
         let mut odometer = Odometer::default();
-        assert!(!odometer.step(999, Some(10_000)));
-        assert!(odometer.step(1000, Some(10_000)));
+        assert_eq!(odometer.step(999, Some(10_000)), None);
+        assert_eq!(odometer.step(1000, Some(10_000)), step(1000, 10_000));
         assert_eq!(odometer.distance_mm(), 10_000);
-        assert!(!odometer.step(1999, Some(10_000)));
-        assert!(odometer.step(2500, Some(10_000)));
+        assert_eq!(odometer.step(1999, Some(10_000)), None);
+        assert_eq!(odometer.step(2500, Some(10_000)), step(1500, 15_000));
         assert_eq!(odometer.distance_mm(), 25_000);
         // A ten-second stall counts as three seconds of travel.
-        assert!(odometer.step(12_500, Some(10_000)));
+        assert_eq!(odometer.step(12_500, Some(10_000)), step(3000, 30_000));
         assert_eq!(odometer.distance_mm(), 55_000);
-        assert!(odometer.step(13_500, None));
+        assert_eq!(odometer.step(13_500, None), step(1000, 0));
         assert_eq!(odometer.distance_mm(), 55_000);
     }
     #[test]

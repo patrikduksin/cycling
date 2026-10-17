@@ -1,9 +1,10 @@
 //! VANA behaviour in a simulated world: sensors, rides, losses and recovery.
 #![cfg(feature = "cycling")]
 use device_api::ble_transport::Link;
+use device_api::input::Button;
 use shell_simulator::ant::device_type;
 use shell_simulator::route::{Point, Route};
-use shell_simulator::sim::{Sim, minutes, seconds};
+use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::log::Kind;
 
@@ -404,4 +405,161 @@ fn pause_excludes_time_and_two_hour_ride_keeps_every_sample() {
     // 30 km in the first hour and 27 km in the second.
     let km = ride.track_m() / 1000.0;
     assert!((km - 57.0).abs() < 1.0, "{km:.2} km");
+}
+
+/// The number under `label`, for readings that may differ in the last digit.
+#[track_caller]
+fn reading(sim: &Sim, label: &str) -> f64 {
+    let screen = sim.screen();
+    let value = screen
+        .field(label)
+        .unwrap_or_else(|| panic!("no {label}; screen:\n{}", screen.text()));
+    value
+        .parse()
+        .unwrap_or_else(|_| panic!("{label} shows {value:?}; screen:\n{}", screen.text()))
+}
+
+#[track_caller]
+fn expect_near(sim: &mut Sim, label: &str, expected: f64, tolerance: f64) {
+    let value = reading(sim, label);
+    assert!(
+        (value - expected).abs() <= tolerance,
+        "{label} shows {value}, expected {expected} ± {tolerance}; screen:\n{}",
+        sim.screen().text()
+    );
+    sim.note(NoteKind::Check, format!("{label} shows {value}"));
+}
+
+/// TopLeft until the header shows a ride page indicator, such as "2/2".
+#[track_caller]
+fn ride_page(sim: &mut Sim, indicator: &str) {
+    for _ in 0..4 {
+        if sim.screen().contains(indicator) {
+            return;
+        }
+        sim.press(Button::TopLeft);
+    }
+    panic!("no ride page {indicator}; screen:\n{}", sim.screen().text());
+}
+
+#[test]
+fn stats_page_totals_a_steady_ten_minutes() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(minutes(10));
+    sim.expect_text("1/2");
+    expect_near(&mut sim, "DISTANCE", 5.0, 0.05);
+    sim.expect_field("CADENCE", "90");
+    sim.checkpoint("main page after ten minutes");
+
+    ride_page(&mut sim, "2/2");
+    sim.expect_no_text("WATTS Z");
+    // Sensors take a few seconds to report after the start.
+    expect_near(&mut sim, "DISTANCE KM", 5.0, 0.05);
+    expect_near(&mut sim, "AVG KM/H", 30.0, 0.2);
+    expect_near(&mut sim, "MAX KM/H", 30.0, 0.3);
+    sim.expect_field("AVG WATTS", "200");
+    sim.expect_field("MAX WATTS", "200");
+    sim.expect_field("NP WATTS", "200");
+    expect_near(&mut sim, "WORK KJ", 120.0, 2.0);
+    sim.expect_field("AVG BPM", "140");
+    sim.expect_field("MAX BPM", "140");
+    sim.expect_field("AVG RPM", "90");
+    let moving = sim.screen().field("MOVING TIME").unwrap();
+    assert!(
+        moving.starts_with("00:09:5") || moving == "00:10:00",
+        "moving {moving}"
+    );
+    sim.checkpoint("stats page after ten minutes");
+
+    // Stopping keeps the totals on screen; past the last page is Home.
+    sim.stop_ride();
+    sim.expect_field("AVG WATTS", "200");
+    sim.checkpoint("stats page after saving");
+    sim.press(Button::TopLeft);
+    sim.expect_text("READY TO RIDE");
+}
+
+#[test]
+fn ascent_counts_the_climbs_of_a_hilly_loop() {
+    let mut sim = Sim::new().boot();
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
+    sim.ant_sensor(device_type::POWER, POWER);
+    // A 4 km loop that rises 50 m, drops 100 m and climbs back: 100 m of ascent.
+    sim.ride_route(Route::loop_around(
+        Point {
+            ele: Some(600.0),
+            ..Point::new(-33.45, -70.66)
+        },
+        4_000.0,
+        50.0,
+    ));
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.pair(&["SPEED/CAD", "POWER METER"]);
+    sim.start_ride();
+    sim.ride_at(24.0, 230.0, 0.0, 80.0);
+    sim.advance(minutes(5));
+    sim.checkpoint("climbing on the main page");
+    ride_page(&mut sim, "2/2");
+    // Two kilometres in: up 50 m, then down again.
+    expect_near(&mut sim, "ASCENT M", 50.0, 4.0);
+    sim.checkpoint("stats halfway round");
+
+    sim.advance(minutes(5));
+    expect_near(&mut sim, "DISTANCE KM", 4.0, 0.05);
+    // The 3 m band and smoothing may leave the last metres of the final climb.
+    expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
+    sim.checkpoint("stats after one hilly lap");
+}
+
+#[test]
+fn pause_leaves_the_totals_untouched() {
+    const TOTALS: [&str; 6] = [
+        "DISTANCE KM",
+        "MOVING TIME",
+        "AVG WATTS",
+        "MAX WATTS",
+        "WORK KJ",
+        "MAX BPM",
+    ];
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 250.0, 150.0, 92.0);
+    sim.advance(minutes(5));
+    ride_page(&mut sim, "2/2");
+    expect_near(&mut sim, "DISTANCE KM", 2.5, 0.05);
+
+    // Paused but still rolling hard: nothing the wheel or pedals do counts.
+    sim.pause_ride();
+    let screen = sim.screen();
+    let before: Vec<_> = TOTALS.iter().map(|label| screen.field(label)).collect();
+    sim.checkpoint("stats when paused");
+    sim.ride_at(30.0, 400.0, 170.0, 100.0);
+    sim.advance(minutes(5));
+    let screen = sim.screen();
+    for (label, before) in TOTALS.iter().zip(&before) {
+        assert_eq!(&screen.field(label), before, "{label} changed while paused");
+    }
+    sim.expect_field("MAX WATTS", "250");
+    sim.checkpoint("stats after five paused minutes");
+
+    sim.resume_ride();
+    sim.ride_at(30.0, 250.0, 150.0, 92.0);
+    sim.advance(minutes(5));
+    expect_near(&mut sim, "DISTANCE KM", 5.0, 0.08);
+    sim.expect_field("AVG WATTS", "250");
+    let moving = sim.screen().field("MOVING TIME").unwrap();
+    assert!(
+        moving.starts_with("00:09:5") || moving == "00:10:00",
+        "{moving}"
+    );
+    sim.checkpoint("stats after resuming");
+    // The main page agrees: the pause is not ride time.
+    ride_page(&mut sim, "1/2");
+    let active = sim.screen().field("ACTIVE TIME").unwrap();
+    assert!(active.starts_with("00:10:0"), "{active}");
+    sim.checkpoint("main page after resuming");
 }

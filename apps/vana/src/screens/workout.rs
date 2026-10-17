@@ -17,7 +17,7 @@ mod reference;
 /// Below this much recording time left, the ride state row warns the rider.
 pub const LOW_STORAGE_S: u32 = 60 * 60;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Boot,
     Home,
@@ -25,6 +25,19 @@ pub enum Page {
     Preflight,
     Ride,
     Settings,
+}
+
+impl Page {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Boot => "boot",
+            Self::Home => "home",
+            Self::Sensors => "sensors",
+            Self::Preflight => "preflight",
+            Self::Ride => "ride",
+            Self::Settings => "settings",
+        }
+    }
 }
 
 /// Home choices, in BottomLeft order.
@@ -144,9 +157,6 @@ impl View {
             } else {
                 0
             };
-            if y == 300 {
-                row.span(0..((self.now_ms % 6500) * 240 / 6500) as usize, CYAN);
-            }
             row.text(8, 269, 1, self.lines[0].as_bytes(), WHITE);
             row.text(96, 195, 2, b"LABS", CYAN);
             if y == 98 || y == 174 {
@@ -210,7 +220,7 @@ impl View {
                 }
                 tile.text(22, top + 18, 3, label, if selected { 0 } else { WHITE });
             }
-            row.text(24, 50, 2, b"READY TO RIDE", DIM);
+            row.text(24, 50, 2, self.lines[0].as_bytes(), DIM);
         } else {
             for (i, line) in self.lines.iter().enumerate().rev() {
                 let scale = if i == 0

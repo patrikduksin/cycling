@@ -159,6 +159,10 @@ run = "{{vars.devtools}} python -m cycling_devtools.harness.screenshot"
 description = "Time button press to finished frame on the C606 and the idle frame rate (harness builds); --press, --setup"
 run = "{{vars.devtools}} python -m cycling_devtools.harness.latency"
 
+[tasks.startup-timing]
+description = "Measure power-on to first frame, Home, storage, GNSS, sensors, ride start and press latency (C606, or --sim)"
+run = "{{vars.devtools}} python -m cycling_devtools.harness.startup_timing"
+
 [tasks.harness-virtual]
 description = "Run shared deterministic input, capture and restart scenarios"
 run = ["{{vars.devtools}} python -m cycling_devtools.harness.runner run shared --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-foundation --backend virtual", "{{vars.devtools}} python -m cycling_devtools.harness.runner run virtual-sdk --backend virtual --sdk"]

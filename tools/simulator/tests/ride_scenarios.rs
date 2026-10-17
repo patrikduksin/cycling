@@ -1614,3 +1614,218 @@ fn slow_steep_climbing_never_auto_pauses() {
         .count();
     assert_eq!(pauses, 1);
 }
+
+/// Advance in firmware passes until the panel lights; returns the uptime then.
+fn wait_lit(sim: &mut Sim) -> u64 {
+    while !sim.device.lit() {
+        assert!(sim.device.now < seconds(15), "panel never lit");
+        sim.advance(10);
+    }
+    sim.device.now
+}
+
+/// The milestones VANA reports for `mise run startup-timing -- --sim`, which
+/// reads them from `STARTUP_TIMING_OUT`. Simulated timings are modelled.
+#[test]
+fn startup_timing() {
+    let mut sim = Sim::new();
+    sim.ant_sensor(device_type::HEART_RATE, HEART);
+    sim.ant_sensor(device_type::POWER, POWER);
+    sim.ride_route(Route::loop_around(
+        Point::new(-33.45, -70.66),
+        5_000.0,
+        20.0,
+    ));
+    sim.ride_at(0.0, 0.0, 72.0, 0.0);
+    let lit = wait_lit(&mut sim);
+    sim.checkpoint("power-on: brand flash");
+    sim.wait_usable();
+    let home = sim.device.now;
+    sim.checkpoint("power-on: Home ready");
+    sim.expect_text("READY TO RIDE");
+    assert!(home - lit <= 500, "brand flash {} ms", home - lit);
+    assert!(home <= seconds(5), "Home at {home} ms uptime");
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 180.0, 130.0, 85.0);
+    sim.advance(seconds(10));
+    sim.pause_ride();
+    sim.resume_ride();
+    let (status, timing) = sim.command("RIDE TIMING");
+    assert_eq!(status, "OK", "{timing}");
+    for key in [
+        "first_frame_ms",
+        "home_ms",
+        "storage_ms",
+        "gnss_fix_ms",
+        "ride_press_ms",
+        "recording_ms",
+    ] {
+        assert!(
+            !timing.contains(&format!("{key}=-")),
+            "{key} missing: {timing}"
+        );
+    }
+    if let Ok(path) = std::env::var("STARTUP_TIMING_OUT") {
+        std::fs::write(path, &timing).expect("timing output is writable");
+    }
+    sim.stop_ride();
+}
+
+#[test]
+fn turning_off_from_home_asks_first_and_the_top_left_hold_turns_it_back_on() {
+    let mut sim = Sim::new().boot();
+    sim.press(Button::TopLeft);
+    sim.expect_text("TURN OFF");
+    sim.checkpoint("turn off sheet");
+    // BACK keeps it on.
+    sim.press(Button::TopLeft);
+    sim.expect_text("READY TO RIDE");
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.expect_text("TURNING OFF");
+    sim.checkpoint("turning off");
+    sim.advance(seconds(1));
+    assert!(sim.is_off(), "device still on");
+    sim.checkpoint("off");
+    // Presses other than the power-on hold do nothing while off.
+    sim.press(Button::BottomRight);
+    sim.press(Button::TopLeft);
+    assert!(sim.is_off());
+    sim.advance(minutes(1));
+    let usable = sim.turn_on();
+    assert!(usable <= seconds(5), "Home {usable} ms after turning on");
+    sim.checkpoint("Home after turning on");
+
+    // Separate top-left taps never add up to a hold.
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    assert!(sim.is_off());
+    for _ in 0..shell_simulator::sim::POWER_ON_REPORTS * 2 {
+        sim.press(Button::TopLeft);
+    }
+    assert!(sim.is_off(), "taps turned the device on");
+
+    // Holding the top-left button, as the live window does, also turns it on.
+    sim.hold(Button::TopLeft, seconds(2));
+    assert!(!sim.is_off(), "a top-left hold did not turn the device on");
+    sim.wait_usable();
+}
+
+#[test]
+fn a_ride_must_end_before_the_device_can_turn_off() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 140.0, 0.0);
+    sim.advance(seconds(30));
+    // TopLeft marks a lap while recording; it never leaves the ride.
+    sim.press(Button::TopLeft);
+    sim.expect_no_text("TURN OFF");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=recording"), "{status}");
+    // Paused, TopLeft only arms ending the ride.
+    sim.pause_ride();
+    sim.press(Button::TopLeft);
+    sim.expect_no_text("TURN OFF");
+    sim.advance(seconds(6));
+    sim.resume_ride();
+    sim.stop_ride();
+    sim.press(Button::TopLeft);
+    sim.expect_text("READY TO RIDE");
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off());
+    let rides = sim.rides();
+    assert_eq!(rides.len(), 1);
+    assert_eq!(rides[0].kinds().last(), Some(&Kind::Finish));
+    sim.turn_on();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(!status.contains("state=recovered"), "{status}");
+}
+
+#[test]
+fn an_idle_device_warns_then_turns_itself_off_unless_on_usb() {
+    use vana::app::{AUTO_OFF_MS, AUTO_OFF_WARNING_MS};
+    let mut sim = Sim::new().boot();
+    sim.set_battery(60, true);
+    sim.advance(AUTO_OFF_MS + minutes(5));
+    assert!(!sim.is_off(), "turned off on USB power");
+    sim.expect_text("READY TO RIDE");
+
+    sim.set_battery(60, false);
+    sim.press(Button::BottomLeft);
+    sim.advance(AUTO_OFF_MS - AUTO_OFF_WARNING_MS + seconds(2));
+    sim.expect_text("PRESS ANY BUTTON");
+    sim.checkpoint("idle off warning");
+    // A press keeps it on; the first press may only wake a dimmed screen.
+    sim.press(Button::BottomLeft);
+    sim.expect_no_text("PRESS ANY BUTTON");
+    sim.advance(AUTO_OFF_MS + seconds(5));
+    assert!(sim.is_off(), "idle device stayed on");
+}
+
+#[test]
+fn a_ble_heart_strap_on_home_keeps_vana_on() {
+    use vana::app::AUTO_OFF_MS;
+    let mut sim = Sim::new().boot();
+    sim.select_ble_heart_strap();
+    sim.ble_heart_strap(true);
+    sim.advance(AUTO_OFF_MS + minutes(5));
+    assert!(!sim.is_off(), "turned off with a notifying BLE strap");
+    sim.expect_no_text("PRESS ANY BUTTON");
+    // Once the strap goes away, the idle period runs out.
+    sim.ble_heart_strap(false);
+    sim.advance(AUTO_OFF_MS + minutes(1));
+    assert!(sim.is_off(), "idle device stayed on after the strap left");
+}
+
+#[test]
+fn turning_off_right_after_a_profile_edit_keeps_the_edit() {
+    let mut sim = rider();
+    let (_, reply) = sim.command("PROFILE FTP 225");
+    assert!(reply.contains("persistence=pending"), "{reply}");
+    // Off before the edit settles.
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    assert!(sim.is_off());
+    sim.turn_on();
+    let (_, after) = sim.command("PROFILE");
+    assert!(after.starts_with("ftp=225 "), "{after}");
+    assert!(after.contains("persistence=saved"), "{after}");
+}
+
+#[test]
+fn each_unsaved_profile_edit_is_reported_before_turning_off() {
+    let mut sim = rider();
+    sim.command("PROFILE FTP 225");
+    sim.fail_storage(0, 0);
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    assert!(!sim.is_off(), "turned off and lost FTP 225");
+    sim.expect_text("CHANGES NOT SAVED");
+    // The background retry saves it.
+    sim.advance(seconds(10));
+    assert!(sim.command("PROFILE").1.contains("persistence=saved"));
+
+    // A new edit whose turn-off save fails is reported again, not dropped.
+    sim.command("PROFILE FTP 250");
+    sim.fail_storage(0, 0);
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    assert!(!sim.is_off(), "turned off and lost FTP 250");
+    sim.expect_text("CHANGES NOT SAVED");
+    // Turning off again now saves it if it can.
+    sim.advance(seconds(5));
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    assert!(sim.is_off());
+    sim.turn_on();
+    assert!(sim.command("PROFILE").1.starts_with("ftp=250 "));
+}

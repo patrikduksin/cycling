@@ -34,9 +34,6 @@ impl View {
             if text(x, y, 8, 269, 1, self.lines[0].as_bytes()) {
                 return WHITE;
             }
-            if y == 300 && x < ((self.now_ms % 6500) * 240 / 6500) as usize {
-                return CYAN;
-            }
             return 0;
         }
         if y < 29 {
@@ -61,7 +58,7 @@ impl View {
             return crate::screens::settings::reference_pixel(self, x, y);
         }
         if self.page == Page::Home {
-            if text(x, y, 24, 50, 2, b"READY TO RIDE") {
+            if text(x, y, 24, 50, 2, self.lines[0].as_bytes()) {
                 return DIM;
             }
             for (i, label) in HOME.iter().enumerate() {

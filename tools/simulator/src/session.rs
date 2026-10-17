@@ -4,6 +4,7 @@ use crate::devices::Battery;
 use crate::devices::DisplayDevice;
 use crate::devices::InputDevice;
 use crate::devices::PowerDevice;
+use crate::devices::PowerSwitch;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
 use crate::storage::{Fault, FileFlash};
@@ -228,8 +229,10 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
-/// Uptime before a powered-on companion reports ready.
-const COMPANION_BOOT_MS: u64 = 1_500;
+/// Uptime before a powered-on companion reports ready. Modelled on C606
+/// startup: three seconds of passive observation before the startup
+/// acknowledgment, then an operating reason and two advancing sensor samples.
+pub const COMPANION_BOOT_MS: u64 = 3_300;
 pub type VirtualShell =
     firmware_shell::shell::Shell<DisplayDevice, InputDevice, PowerDevice, FileFlash>;
 /// The simulated device and the world it observes, composed like C606 firmware.
@@ -252,6 +255,10 @@ pub struct Session {
     companion_boot_ms: Option<(u64, Availability)>,
     pub input: InputDevice,
     pub power: PowerDevice,
+    /// Coordinated shutdown and work readiness, as composition reads them.
+    pub switch: PowerSwitch,
+    /// The device turned itself off; only a power-button start brings it back.
+    pub off: bool,
     pub display: DisplayDevice,
     wifi_control: device_api::connectivity::ControlStatus,
     ble_control: device_api::connectivity::ControlStatus,
@@ -345,6 +352,8 @@ impl Session {
             companion_boot_ms: None,
             input,
             power,
+            switch: PowerSwitch::default(),
+            off: false,
             display,
             wifi_control: device_api::connectivity::ControlStatus::new(),
             ble_control: device_api::connectivity::ControlStatus::new(),
@@ -355,6 +364,9 @@ impl Session {
     }
     /// One pass of the firmware loop, in the order C606 composition runs it.
     pub fn tick(&mut self) {
+        if self.off {
+            return;
+        }
         if let Some((at, ant)) = self.companion_boot_ms
             && self.now >= at
         {
@@ -375,6 +387,28 @@ impl Session {
             .level
             .map(|(percent, mv)| (percent, mv, self.now));
         self.speaker.tick(self.now);
+        self.switch.now = self.now;
+        self.switch.startup_ready = matches!(
+            self.startup,
+            Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
+        );
+        self.switch.startup_running =
+            self.switch.startup_ready || self.startup == Startup::RunningDegraded;
+        if self.switch.off_due() {
+            self.turn_off();
+            return;
+        }
+        let power = device_api::power::PowerControl::status(&self.switch);
+        // C606 composition scans the ride journal while the companion starts
+        // and runs the shell and VANA only once power work is ready; until
+        // then the backlight stays dark.
+        #[cfg(feature = "cycling")]
+        if power.state == device_api::power::State::Initializing {
+            self.sdk.prepare(&mut self.shell.data_storage(), self.now);
+        }
+        if !power.ready {
+            return;
+        }
         #[cfg(feature = "cycling")]
         {
             self.sdk.set_startup_status(self.startup);
@@ -386,7 +420,8 @@ impl Session {
             let Some(edge) = self.shell.take_app_input() else {
                 break;
             };
-            self.sdk.input(edge.input, self.now, &mut self.ant);
+            self.sdk
+                .input_received(edge.input, edge.received_ms, self.now, &mut self.ant);
         }
         self.shell.observe_position(&self.position, self.now);
         self.shell.present();
@@ -425,7 +460,29 @@ impl Session {
                 .present(&mut self.shell, self.now, &self.ant, &self.position);
             self.sdk.save_preferences(&mut self.shell, self.now);
             self.sdk.alert(&mut self.speaker, self.now);
+            self.sdk.power(&mut self.shell, &mut self.switch, self.now);
         }
+    }
+    /// The coordinated shutdown finished: the backlight is dark and nothing
+    /// runs. On USB the C606 rests in charging standby, which looks the same.
+    fn turn_off(&mut self) {
+        self.off = true;
+        self.power.0.borrow_mut().brightness = 0;
+        let mut frame = self.display.0.borrow_mut();
+        frame.pixels.fill(0);
+        frame.submissions += 1;
+    }
+    /// Whether the panel is lit: the shell set a brightness since power-on.
+    pub fn lit(&self) -> bool {
+        !self.off && self.power.0.borrow().brightness > 0
+    }
+    /// Hold the top-left button of a device that is off: it starts again,
+    /// companion included. A running device ignores this.
+    pub fn power_button(&mut self) -> io::Result<()> {
+        if self.off {
+            self.reboot(true)?;
+        }
+        Ok(())
     }
     /// Advance device and world time together in 10 ms firmware passes.
     pub fn step(&mut self, ms: u64) {
@@ -746,7 +803,9 @@ impl Session {
         core::mem::swap(&mut next.ant, &mut self.ant);
         if power {
             next.ant.power_cycled();
-            if self.companion_boot_ms.is_some() || self.startup == Startup::Ready {
+            if self.companion_boot_ms.is_some()
+                || matches!(self.startup, Startup::Ready | Startup::AlreadyRunning)
+            {
                 next.companion_starting(ready);
             }
         } else {

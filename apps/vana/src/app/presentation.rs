@@ -3,6 +3,7 @@ use super::Runtime;
 use super::recording::Request;
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
+use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ride::RidePage;
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
@@ -20,8 +21,9 @@ use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
 use firmware_shell::shell::{Screen, Shell};
 
-/// The boot splash yields to Home after this long.
-const BOOT_MS: u64 = 6500;
+/// The brand stays this long after VANA's first frame, then Home opens. The
+/// device keeps the backlight dark until VANA runs, so this is all a rider sees.
+pub(super) const BRAND_MS: u64 = 400;
 /// The connection check yields to the ride page after this long.
 const PREFLIGHT_MS: u64 = 2500;
 const ANIMATED_FRAME_MS: u64 = 500;
@@ -46,6 +48,10 @@ pub(super) struct Navigation {
     pub(super) climb_return: Option<RidePage>,
     pub(super) page_since: u64,
     pub(super) last_press: u64,
+    /// When VANA drew its first frame; the brand flash counts from here.
+    pub(super) first_frame: Option<u64>,
+    /// Latest report of each button, to tell a held button from a new press.
+    pub(super) last_report: [Option<u64>; 3],
 }
 
 impl Default for Navigation {
@@ -60,6 +66,8 @@ impl Default for Navigation {
             climb_return: None,
             page_since: 0,
             last_press: 0,
+            first_frame: None,
+            last_report: [None; 3],
         }
     }
 }
@@ -127,7 +135,8 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
-        if system.foreground == Screen::Blank {
+        // Once the device accepted turning off, the last frame stays.
+        if system.foreground == Screen::Blank || self.turning_off() {
             return;
         }
         let Display::Active { next_frame_ms } = &mut self.display else {
@@ -136,13 +145,21 @@ impl Runtime {
         if now < *next_frame_ms {
             return;
         }
-        let animated = matches!(self.navigation.page, Page::Boot | Page::Ride);
+        let animated = matches!(self.navigation.page, Page::Boot | Page::Ride)
+            || matches!(self.power.view(), Some(PowerSheet::Warning { .. }));
         *next_frame_ms = now.saturating_add(if animated {
             ANIMATED_FRAME_MS
         } else {
             STATIC_FRAME_MS
         });
         self.workout_display(system, now, ant, position);
+        // Open Home exactly when the brand flash ends, not on the next animation frame.
+        if self.navigation.page == Page::Boot
+            && let (Some(first), Display::Active { next_frame_ms }) =
+                (self.navigation.first_frame, &mut self.display)
+        {
+            *next_frame_ms = (*next_frame_ms).min(first + BRAND_MS);
+        }
     }
 
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
@@ -164,6 +181,7 @@ impl Runtime {
     pub fn set_startup_status(&mut self, status: Startup) {
         if self.startup_status != status.name() {
             self.startup_status = status.name();
+            self.startup = status;
             self.menu.set_message(match status {
                 Startup::Charging | Startup::WakePending | Startup::Waiting => {
                     MenuMessage::StartingSensors
@@ -178,6 +196,12 @@ impl Runtime {
         }
     }
 
+    /// When the frame just submitted reached the panel: the monotonic clock
+    /// after submission, so slow rendering shows up in press-to-frame latency.
+    fn drawn_at(&self, now: u64) -> u64 {
+        self.ride.clock.map_or(now, |clock| clock()).max(now)
+    }
+
     pub fn suspend_display(&mut self) {
         self.display = Display::Suspended;
     }
@@ -189,8 +213,17 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
+        if let Some(sheet) = self.power.view() {
+            system.draw_canvas(240, 320, |row| sheet.paint(row));
+            self.power_drawn(!system.display_error);
+            if !system.display_error {
+                self.timing.frame(self.drawn_at(now));
+            }
+            return;
+        }
         let navigation = &mut self.navigation;
-        if navigation.page == Page::Boot && now >= BOOT_MS {
+        let first_frame = *navigation.first_frame.get_or_insert(now);
+        if navigation.page == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
             navigation.page = Page::Home;
         }
         if navigation.page == Page::Preflight
@@ -250,9 +283,12 @@ impl Runtime {
             Page::Preflight => self.preflight_lines(&mut view, now, ant, gps_status),
             Page::Ride => {
                 self.ride_lines(&mut view, now, gps_status);
-                system.activity(now);
+                // Keep the screen lit while riding; a finished ride may dim and idle off.
+                if self.recording() {
+                    system.activity(now);
+                }
             }
-            Page::Home => {}
+            Page::Home => self.home_lines(&mut view, now),
             Page::Settings => self.settings_lines(&mut view),
             Page::Sensors => self.refresh_sensor_menu(ant, now),
         }
@@ -265,6 +301,44 @@ impl Runtime {
                 view.paint(row)
             }
         });
+        // Only a frame the panel accepted is a milestone or answers a press;
+        // a pending press waits for the next frame that reaches the panel.
+        if system.display_error {
+            return;
+        }
+        let drawn = self.drawn_at(now);
+        self.timing.first_frame(drawn);
+        if page == Page::Home {
+            self.timing.home(drawn);
+        }
+        self.timing.frame(drawn);
+    }
+
+    /// Home says what is still starting, or why turning off did not happen.
+    fn home_lines(&self, view: &mut View, now: u64) {
+        let line = &mut view.lines[0];
+        let status = if let Some(notice) = self.power.notice(now) {
+            notice.text()
+        } else if self.ride.recorder.status() == Status::Scanning {
+            "CHECKING STORAGE"
+        } else if matches!(
+            self.startup,
+            Startup::NotSubmitted
+                | Startup::Probing
+                | Startup::Pending
+                | Startup::Waiting
+                | Startup::WakePending
+        ) {
+            "STARTING SENSORS"
+        } else if matches!(
+            self.startup,
+            Startup::Uncertain | Startup::TimedOut | Startup::Unavailable
+        ) {
+            "SENSORS UNAVAILABLE"
+        } else {
+            "READY TO RIDE"
+        };
+        let _ = line.push_str(status);
     }
 
     fn boot_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {

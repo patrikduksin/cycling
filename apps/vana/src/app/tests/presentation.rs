@@ -13,8 +13,9 @@ const WIDTH: usize = 240;
 const HEIGHT: usize = 320;
 
 /// A panel whose last frame stays readable after the shell takes ownership.
+/// The second field rejects that many submissions before accepting again.
 #[derive(Clone)]
-struct Panel(Rc<RefCell<Vec<u16>>>);
+pub(super) struct Panel(Rc<RefCell<Vec<u16>>>, pub(super) Rc<core::cell::Cell<u32>>);
 impl device_api::display::Display for Panel {
     fn geometry(&self) -> Geometry {
         Geometry {
@@ -26,6 +27,10 @@ impl device_api::display::Display for Panel {
         &mut self,
         mut row: impl FnMut(usize, &mut [u16]),
     ) -> Result<(), device_api::observation::Error> {
+        if self.1.get() > 0 {
+            self.1.set(self.1.get() - 1);
+            return Err(device_api::observation::Error::Unavailable);
+        }
         let mut frame = self.0.borrow_mut();
         for (y, pixels) in frame.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
             row(y, pixels);
@@ -34,11 +39,11 @@ impl device_api::display::Display for Panel {
     }
 }
 impl Panel {
-    fn pixel(&self, x: usize, y: usize) -> u16 {
+    pub(super) fn pixel(&self, x: usize, y: usize) -> u16 {
         self.0.borrow()[y * WIDTH + x]
     }
     /// Pixels in the label's box are white exactly where the label draws.
-    fn shows(&self, left: usize, top: usize, scale: usize, label: &[u8]) -> bool {
+    pub(super) fn shows(&self, left: usize, top: usize, scale: usize, label: &[u8]) -> bool {
         (top..top + 7 * scale).all(|y| {
             (left..left + label.len() * 6 * scale)
                 .all(|x| (self.pixel(x, y) == 0xffff) == text(x, y, left, top, scale, label))
@@ -46,7 +51,7 @@ impl Panel {
     }
 }
 
-struct Keys;
+pub(super) struct Keys;
 impl device_api::input::InputSource for Keys {
     fn controls(&self) -> device_api::input::Controls {
         device_api::input::Controls {
@@ -59,7 +64,7 @@ impl device_api::input::InputSource for Keys {
     }
 }
 
-struct NoPower;
+pub(super) struct NoPower;
 impl device_api::power::Power for NoPower {
     fn availability(&self) -> Availability {
         Availability::Unsupported
@@ -72,7 +77,7 @@ impl device_api::power::Power for NoPower {
     }
 }
 
-struct NoFlash;
+pub(super) struct NoFlash;
 impl device_api::storage::OwnedFlash for NoFlash {
     type Error = ();
     fn availability(&self, _: device_api::storage::Region) -> Availability {
@@ -96,19 +101,22 @@ impl device_api::storage::OwnedFlash for NoFlash {
     }
 }
 
-struct Screen {
-    panel: Panel,
-    shell: Shell<Panel, Keys, NoPower, NoFlash>,
+pub(super) struct Screen {
+    pub(super) panel: Panel,
+    pub(super) shell: Shell<Panel, Keys, NoPower, NoFlash>,
 }
 impl Screen {
-    fn new() -> Self {
-        let panel = Panel(Rc::new(RefCell::new(vec![0; WIDTH * HEIGHT])));
+    pub(super) fn new() -> Self {
+        let panel = Panel(
+            Rc::new(RefCell::new(vec![0; WIDTH * HEIGHT])),
+            Rc::default(),
+        );
         let shell = Shell::new(panel.clone(), Keys, NoPower, NoFlash, 0).expect("display is ready");
         Self { panel, shell }
     }
 
     /// Whether this call drew a frame.
-    fn present(&mut self, runtime: &mut Runtime, radio: &Radio, now: u64) -> bool {
+    pub(super) fn present(&mut self, runtime: &mut Runtime, radio: &Radio, now: u64) -> bool {
         let before = self.shell.display_submissions;
         runtime.present(&mut self.shell, now, radio, &Absent);
         self.shell.display_submissions != before
@@ -120,12 +128,12 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     let mut screen = Screen::new();
     let mut runtime = Runtime::new(Profile::HeartRate);
     let mut radio = Radio::new();
-    // The animated boot splash redraws twice a second.
-    assert!(screen.present(&mut runtime, &radio, 0));
-    assert!(!screen.present(&mut runtime, &radio, 499));
-    assert!(screen.present(&mut runtime, &radio, 500));
-    // The last splash frame hands over to Home, which redraws once a second.
-    assert!(screen.present(&mut runtime, &radio, 6500));
+    // The brand flashes from VANA's first frame, whenever the device lets it run.
+    assert!(screen.present(&mut runtime, &radio, 3000));
+    assert!(runtime.navigation.page == Page::Boot);
+    assert!(!screen.present(&mut runtime, &radio, 3399));
+    // Home opens as the flash ends and then redraws once a second.
+    assert!(screen.present(&mut runtime, &radio, 3400));
     assert!(runtime.navigation.page == Page::Home);
     assert!(screen.present(&mut runtime, &radio, 7000));
     assert!(!screen.present(&mut runtime, &radio, 7999));
@@ -160,7 +168,9 @@ fn train_shows_the_connection_check_then_the_ride_page() {
     let heart = radio.connected(HEART_RATE, 0);
     let mut runtime = restored(&[heart]);
     radio.data(HEART_RATE, [0; 8], 6000);
+    assert!(screen.present(&mut runtime, &radio, 6000));
     assert!(screen.present(&mut runtime, &radio, 6500));
+    assert!(runtime.navigation.page == Page::Home);
     runtime.input(press(Button::BottomRight), 7000, &mut radio);
     assert!(runtime.navigation.page == Page::Preflight);
 

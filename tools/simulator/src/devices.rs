@@ -299,8 +299,10 @@ impl device_api::input::InputObservation for Battery {
         };
         Some(device_api::input::InputSnapshot {
             battery,
+            // Stock treats power status zero as USB charging; 7 is the
+            // status observed on battery.
             power: device_api::observation::Observation::Fresh {
-                value: u8::from(self.charging),
+                value: if self.charging { 0 } else { 7 },
                 received_ms: now,
             },
             button_counts: [0; 3],
@@ -311,5 +313,77 @@ impl device_api::input::InputObservation for Battery {
             uart_errors: 0,
             input_lost: 0,
         })
+    }
+}
+
+/// Preparation the C606 runs between accepting shutdown and going dark: it
+/// quiesces Wi-Fi, BLE, ANT, GNSS and sound, then darkens the backlight.
+/// Modelled, not measured; see the power-flow PR for device timings.
+pub const SHUTDOWN_PREPARE_MS: u64 = 500;
+
+/// Coordinated power control as C606 composition sees it
+/// (`devices/c606/src/capabilities/power.rs`): work is not ready while the
+/// companion starts, and an accepted shutdown closes work until power is gone.
+pub struct PowerSwitch {
+    pub now: u64,
+    pub status: device_api::power::Status,
+    /// The companion finished starting, as `Startup::{Ready, AlreadyRunning}` report.
+    pub startup_ready: bool,
+    /// Degraded companion startup keeps work ready but refuses shutdown.
+    pub startup_running: bool,
+}
+impl Default for PowerSwitch {
+    fn default() -> Self {
+        Self {
+            now: 0,
+            status: device_api::power::Status::IDLE,
+            startup_ready: true,
+            startup_running: true,
+        }
+    }
+}
+impl PowerSwitch {
+    /// When an accepted shutdown has finished preparing and the device is off.
+    pub fn off_due(&self) -> bool {
+        self.status.state == device_api::power::State::Requested
+            && self
+                .status
+                .prepare_at_ms
+                .is_some_and(|at| self.now >= at + SHUTDOWN_PREPARE_MS)
+    }
+}
+impl device_api::power::PowerControl for PowerSwitch {
+    fn capabilities(&self) -> device_api::power::Capabilities {
+        use device_api::power::Support;
+        device_api::power::Capabilities {
+            shutdown: Support::Supported,
+            ..device_api::power::Capabilities::UNSUPPORTED
+        }
+    }
+    fn status(&self) -> device_api::power::Status {
+        let mut status = self.status;
+        if status.state == device_api::power::State::Idle && !self.startup_running {
+            status.state = device_api::power::State::Initializing;
+            status.ready = false;
+        }
+        status
+    }
+    fn request(&mut self, operation: device_api::power::Operation) -> Result<(), Error> {
+        if operation != device_api::power::Operation::Shutdown {
+            return Err(Error::Unsupported);
+        }
+        if !self.startup_ready || !self.status().ready {
+            return Err(Error::Unavailable);
+        }
+        self.status = device_api::power::Status {
+            sequence: self.status.sequence.wrapping_add(1),
+            operation: Some(operation),
+            state: device_api::power::State::Requested,
+            at_ms: self.now,
+            prepare_at_ms: Some(self.now),
+            failure: None,
+            ready: false,
+        };
+        Ok(())
     }
 }

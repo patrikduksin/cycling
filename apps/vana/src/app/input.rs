@@ -12,6 +12,8 @@ use device_api::ant::Ant;
 use device_api::input::{Button, Input};
 
 const DEBOUNCE_MS: u64 = 350;
+/// Held buttons repeat about every 100 ms; a longer gap means a new press.
+const HOLD_GAP_MS: u64 = 250;
 
 impl Runtime {
     pub fn input_active(&self) -> bool {
@@ -19,6 +21,16 @@ impl Runtime {
     }
 
     pub fn input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
+        self.input_received(input, now, now, ant);
+    }
+
+    /// `input` as the device received it at `received_ms`, handled at `now`.
+    /// Every input-timing decision (hold continuity, debounce, double-press
+    /// windows, press-to-frame and ride-start latency) uses reception, so
+    /// time the edge spent queued behind rendering or storage work neither
+    /// splits a hold nor hides latency. Ride data keeps the handling time.
+    pub fn input_received(&mut self, input: Input, received_ms: u64, now: u64, ant: &mut impl Ant) {
+        let received = received_ms.min(now);
         // A lift ends the touch wherever it lands, so a finger still down
         // while a button changes page cannot swallow the next tap.
         if matches!(input, Input::Release | Input::Cancel) {
@@ -27,8 +39,33 @@ impl Runtime {
         if !self.display.is_active() {
             return;
         }
+        // The companion repeats reports while a button is held. A report soon
+        // after the previous one of that button continues a hold, such as the
+        // power-on hold of TopLeft, rather than starting a new press.
+        let held = match input {
+            Input::Button { button, code: 1 } => {
+                let last = &mut self.navigation.last_report[button.index().min(2)];
+                let held = last.is_some_and(|at| received.saturating_sub(at) < HOLD_GAP_MS);
+                *last = Some(received);
+                held
+            }
+            _ => false,
+        };
+        // A power sheet covers every page and takes buttons first; touch never
+        // turns the device off.
+        if self.power.view().is_some() {
+            if let Input::Button { button, code: 1 } = input
+                && !held
+                && received.saturating_sub(self.navigation.last_press) >= DEBOUNCE_MS
+                && self.power_input(button)
+            {
+                self.navigation.last_press = received;
+                self.display.redraw();
+            }
+            return;
+        }
         if self.navigation.page == Page::Sensors {
-            self.sensors_input(input, now, ant);
+            self.sensors_input(input, received, now, ant);
             return;
         }
         if self.navigation.page == Page::Settings && self.settings_touch(input, now) {
@@ -38,22 +75,27 @@ impl Runtime {
         let Input::Button { button, code: 1 } = input else {
             return;
         };
-        if now.saturating_sub(self.navigation.last_press) < DEBOUNCE_MS {
+        if received.saturating_sub(self.navigation.last_press) < DEBOUNCE_MS {
             return;
         }
-        self.navigation.last_press = now;
+        self.navigation.last_press = received;
         self.display.redraw();
         match self.navigation.page {
-            Page::Home => self.home_input(button, now, ant),
-            Page::Ride => self.ride_input(button, now),
+            Page::Home => self.home_input(button, received, now, ant, held),
+            Page::Ride => {
+                self.timing.press(received);
+                self.ride_input(button, received, now)
+            }
             Page::Settings => self.settings_input(button, now),
-            Page::Boot | Page::Sensors | Page::Preflight => {}
+            // A press during the brand flash opens Home straight away.
+            Page::Boot => self.navigation.page = Page::Home,
+            Page::Sensors | Page::Preflight => {}
         }
     }
 
-    fn sensors_input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
+    fn sensors_input(&mut self, input: Input, received: u64, now: u64, ant: &mut impl Ant) {
         self.refresh_sensor_menu(ant, now);
-        let action = self.menu.input(input, now);
+        let action = self.menu.input(input, received);
         match action {
             Some(Action::Scan) => self.request_search(ant, now),
             Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
@@ -72,7 +114,14 @@ impl Runtime {
         self.display.redraw();
     }
 
-    fn home_input(&mut self, button: Button, now: u64, ant: &mut impl Ant) {
+    fn home_input(
+        &mut self,
+        button: Button,
+        received: u64,
+        now: u64,
+        ant: &mut impl Ant,
+        held: bool,
+    ) {
         match button {
             Button::BottomLeft => {
                 self.navigation.home_cursor = (self.navigation.home_cursor + 1) % HOME.len()
@@ -92,6 +141,8 @@ impl Runtime {
                     }
                 }
             }
+            // BACK on Home asks to turn off; Home is never reachable mid-ride.
+            Button::TopLeft if !held => self.open_power_sheet(received),
             _ => {}
         }
     }
@@ -171,7 +222,8 @@ impl Runtime {
     /// pause, resume), BottomLeft moves to the next page, and TopLeft marks or
     /// backs out: a lap while recording, end ride while paused (pressed twice
     /// within the confirm window), Home when no ride is open.
-    fn ride_input(&mut self, button: Button, now: u64) {
+    /// `received` times the press; `now` stamps the ride data it changes.
+    fn ride_input(&mut self, button: Button, received: u64, now: u64) {
         if button == Button::BottomLeft {
             self.next_ride_page();
             return;
@@ -200,8 +252,8 @@ impl Runtime {
             }
             // Only a paused ride ends, and only on a confirming second press.
             (Button::TopLeft, Status::Paused) => {
-                if !self.ride.stop_confirming(now) {
-                    self.ride.arm_stop(now);
+                if !self.ride.stop_confirming(received) {
+                    self.ride.arm_stop(received);
                     return;
                 }
                 RideAction::Finish
@@ -218,6 +270,9 @@ impl Runtime {
             .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
         {
             self.ride.auto.manual();
+            if action == RideAction::Start {
+                self.timing.ride_press(received);
+            }
             self.ride.message = RideMessage::Ready;
             self.ride.disarm_stop();
         } else {

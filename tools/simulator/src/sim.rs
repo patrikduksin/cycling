@@ -10,12 +10,15 @@ use device_api::input::{Button, Input};
 use device_api::storage::Region;
 use std::fmt::Write as _;
 
-/// The boot splash lasts 6.5 s; Home is drawn on the next frame.
-const BOOT_MS: u64 = 7_000;
+/// Power-on never takes longer than this to open Home in the simulator.
+const BOOT_TIMEOUT_MS: u64 = 15_000;
 /// Firmware passes between a press and the next one VANA accepts (debounce is 350 ms).
 const PRESS_GAP_MS: u64 = 400;
 /// The companion repeats a held button's report this often.
 pub const HOLD_REPEAT_MS: u64 = 100;
+/// Repeated top-left reports that turn an off device on: about a 1.5 s hold.
+/// Counted rather than timed, so a held key powers on at any live speed.
+pub const POWER_ON_REPORTS: u32 = 15;
 
 pub fn seconds(s: u64) -> u64 {
     s * 1000
@@ -94,6 +97,9 @@ pub struct Sim {
     pub device: Session,
     pub notes: Vec<Note>,
     recording: Option<Recording>,
+    /// Top-left reports seen in a row while the device is off.
+    /// Top-left reports in the current hold while the device is off.
+    power_hold: u32,
 }
 
 impl Sim {
@@ -119,13 +125,52 @@ impl Sim {
             recording: recording(geometry.width, geometry.height),
             device,
             notes: Vec::new(),
+            power_hold: 0,
         }
     }
 
-    /// Power on and wait for the splash to finish.
+    /// Power on and wait until the device can be used.
     pub fn boot(mut self) -> Self {
-        self.advance(BOOT_MS);
+        self.wait_usable();
         self
+    }
+
+    /// Advance until the panel is lit and, with VANA, Home is open. Returns
+    /// the time waited.
+    #[track_caller]
+    pub fn wait_usable(&mut self) -> u64 {
+        let start = self.now();
+        while !self.usable() {
+            assert!(
+                self.now() - start < BOOT_TIMEOUT_MS,
+                "not usable {BOOT_TIMEOUT_MS} ms after power-on; screen:\n{}",
+                self.screen().text()
+            );
+            self.advance(10);
+        }
+        self.now() - start
+    }
+
+    fn usable(&self) -> bool {
+        #[cfg(feature = "cycling")]
+        let home = self.device.sdk.page() == vana::screens::workout::Page::Home;
+        #[cfg(not(feature = "cycling"))]
+        let home = true;
+        self.device.lit() && home
+    }
+
+    /// Whether the device turned itself off.
+    pub fn is_off(&self) -> bool {
+        self.device.off
+    }
+
+    /// Hold the top-left button of a device that is off, as a rider turns
+    /// the C606 on, and wait until it can be used.
+    pub fn turn_on(&mut self) -> u64 {
+        assert!(self.is_off(), "turn_on needs a device that is off");
+        self.note(NoteKind::Input, "hold TopLeft to turn on");
+        self.device.power_button().expect("memory media reopens");
+        self.wait_usable()
     }
 
     pub fn now(&self) -> u64 {
@@ -193,8 +238,39 @@ impl Sim {
         self.advance(PRESS_GAP_MS);
     }
 
-    /// One companion report of `button` down, now, without waiting.
+    /// One companion report of `button` going down, now, without waiting.
     pub fn report(&mut self, button: Button) {
+        self.deliver(button, false);
+    }
+
+    /// A repeated report of a button still held since the previous report.
+    /// The caller knows the hold is continuous: the live window keeps time in
+    /// real milliseconds, while uptime runs faster at 10x and 60x.
+    pub fn repeat(&mut self, button: Button) {
+        self.deliver(button, true);
+    }
+
+    /// While the device is off, only a held top-left button does anything:
+    /// it turns the device on, as the companion does.
+    fn deliver(&mut self, button: Button, continuing: bool) {
+        if self.is_off() {
+            if button != Button::TopLeft {
+                self.power_hold = 0;
+                return;
+            }
+            self.power_hold = if continuing && self.power_hold > 0 {
+                self.power_hold + 1
+            } else {
+                1
+            };
+            if self.power_hold >= POWER_ON_REPORTS {
+                self.power_hold = 0;
+                self.note(NoteKind::Device, "top-left held: turning on");
+                self.device.power_button().expect("memory media reopens");
+            }
+            return;
+        }
+        self.power_hold = 0;
         self.device
             .input
             .push(self.device.now, Input::Button { button, code: 1 });
@@ -215,7 +291,7 @@ impl Sim {
         self.note(NoteKind::Input, format!("hold {button:?} {ms} ms"));
         let mut held = 0;
         while held < ms {
-            self.report(button);
+            self.deliver(button, held > 0);
             self.advance(HOLD_REPEAT_MS);
             held += HOLD_REPEAT_MS;
         }
@@ -454,7 +530,7 @@ impl Sim {
     /// Cut power without warning and boot again; media keeps what was written.
     pub fn power_loss(&mut self) {
         self.cut_power();
-        self.advance(BOOT_MS);
+        self.wait_usable();
     }
 
     /// Cut power without warning; the device starts booting at once.

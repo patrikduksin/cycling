@@ -39,7 +39,7 @@ in range. Time runs in 10 ms firmware passes at real time or faster:
 
 | Keys | Action |
 | --- | --- |
-| `Q` `A` `D` | Top-left, bottom-left, bottom-right button; a key held past 0.3 s repeats like a held button |
+| `Q` `A` `D` | Top-left, bottom-left, bottom-right button; a key held past 0.3 s repeats like a held button, and the device runs at 1x while it is held; holding `Q` while off turns it on |
 | `H` `P` `C` `R` | Heart-rate, power, speed/cadence, radar sensor in or out of range |
 | `B` / `G` | BLE heart strap in range / GPS fix |
 | `L` / `K` | Next battery level (80, 40, 15, 5%) / charging |

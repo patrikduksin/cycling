@@ -172,9 +172,16 @@ impl Live {
             && held.real_ms >= held.next_real_ms
         {
             held.next_real_ms = held.real_ms + HOLD_REPEAT_MS as f64;
-            self.sim.report(held.button);
+            self.sim.repeat(held.button);
         }
-        let speed = f64::from(self.speed);
+        // While a key is held the device runs in real time, as the companion
+        // repeats every 100 ms of device time: VANA sees one continuous hold,
+        // not presses seconds apart, at any selected speed.
+        let speed = if self.held.is_some() {
+            1.0
+        } else {
+            f64::from(self.speed)
+        };
         self.owed_ms = (self.owed_ms + real_ms * speed).min(MAX_OWED_REAL_MS * speed);
         while self.owed_ms >= STEP_MS as f64 {
             self.owed_ms -= STEP_MS as f64;
@@ -385,6 +392,88 @@ mod tests {
         // About eight repeats in a real second, not one per simulated 100 ms.
         let moved = moves(&mut live, 'a', 1_000);
         assert!((3..=10).contains(&moved), "{moved} moves");
+    }
+
+    #[test]
+    fn holding_q_turns_an_off_device_back_on() {
+        let mut live = Live::new();
+        run(&mut live, 8_000);
+        for key in ['q', 'd'] {
+            live.key_down(key);
+            live.key_up(key);
+            run(&mut live, 600);
+        }
+        run(&mut live, 2_000);
+        assert!(live.sim.is_off(), "the turn-off sheet did not turn it off");
+        live.key_down('q');
+        live.key_up('q');
+        run(&mut live, 1_000);
+        assert!(live.sim.is_off(), "a tap turned it on");
+        live.key_down('q');
+        run(&mut live, 2_500);
+        live.key_up('q');
+        assert!(!live.sim.is_off(), "holding Q did not turn it on");
+        run(&mut live, 8_000);
+        assert!(live.sim.screen().contains("READY TO RIDE"));
+    }
+
+    #[test]
+    fn holding_q_turns_an_off_device_on_at_every_speed() {
+        for speed in SPEEDS {
+            let mut live = Live::new();
+            run(&mut live, 8_000);
+            for key in ['q', 'd'] {
+                live.key_down(key);
+                live.key_up(key);
+                run(&mut live, 600);
+            }
+            run(&mut live, 2_000);
+            assert!(live.sim.is_off(), "{speed}x: the sheet did not turn it off");
+            live.speed = speed;
+            live.key_down('q');
+            // The rest of the power-on hold never reads as BACK on Home.
+            for _ in 0..2_500 / 33 {
+                live.tick(33.0);
+                let screen = live.sim.screen();
+                assert!(
+                    !screen.contains("TURN OFF"),
+                    "{speed}x: the hold opened the sheet"
+                );
+            }
+            live.key_up('q');
+            assert!(!live.sim.is_off(), "{speed}x: holding Q did not turn it on");
+            run(&mut live, 6_000);
+            let screen = live.sim.screen();
+            assert!(
+                !screen.contains("TURN OFF"),
+                "{speed}x: the hold opened the sheet"
+            );
+            assert!(
+                screen.contains("READY TO RIDE"),
+                "{speed}x:\n{}",
+                screen.text()
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_key_runs_the_device_in_real_time_then_the_speed_returns() {
+        let mut live = Live::new();
+        run(&mut live, 8_000);
+        live.speed = 60;
+        let start = live.sim.device.now;
+        live.key_down('a');
+        run(&mut live, 1_000);
+        let held = live.sim.device.now - start;
+        assert!(
+            (900..=1_100).contains(&held),
+            "{held} ms of uptime in a real second"
+        );
+        live.key_up('a');
+        let start = live.sim.device.now;
+        run(&mut live, 1_000);
+        let free = live.sim.device.now - start;
+        assert!(free >= 50_000, "{free} ms of uptime at 60x");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod power;
 pub mod ride;
 pub mod sensors;
 pub mod settings;

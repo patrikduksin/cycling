@@ -9,6 +9,7 @@ use device_api::observation::{Availability, Observation};
 use std::vec::Vec;
 
 mod commands;
+mod power;
 mod presentation;
 mod recording;
 mod saved_sensors;

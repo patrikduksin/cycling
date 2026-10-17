@@ -170,3 +170,30 @@ fn radar_sensors_reports_only_recent_ant_readings() {
         ("OK", "heart=None power=None".into())
     );
 }
+
+#[test]
+fn ride_status_reports_the_page_and_home_selection() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.navigation.page = crate::screens::workout::Page::Home;
+    runtime.navigation.home_cursor = 2;
+    let mut out = std::string::String::new();
+    assert_eq!(
+        runtime.command("RIDE STATUS", &mut journal, 0, &mut out),
+        "OK"
+    );
+    assert!(out.contains(" page=home home_cursor=2 pending=0"), "{out}");
+    // A power sheet covers Home: a harness must not press through it.
+    runtime.input(
+        Input::Button {
+            button: Button::TopLeft,
+            code: 1,
+        },
+        1_000,
+        &mut radio,
+    );
+    out.clear();
+    runtime.command("RIDE STATUS", &mut journal, 1_000, &mut out);
+    assert!(out.contains(" page=power "), "{out}");
+}

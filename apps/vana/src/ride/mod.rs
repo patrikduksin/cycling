@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod auto;
 pub mod bulk;
 pub mod climb;

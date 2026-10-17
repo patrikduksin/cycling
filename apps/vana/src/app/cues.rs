@@ -31,6 +31,12 @@ pub enum Cue {
     Step,
     /// A vehicle closing from behind.
     RadarApproach,
+    /// The vehicles behind have passed.
+    RadarClear,
+    /// A ride alert: heart rate, power or cadence left the rider's band.
+    BandAlert,
+    /// Time to eat and drink.
+    Fuel,
 }
 
 #[derive(Clone, Copy)]
@@ -54,6 +60,12 @@ impl Cue {
             Self::Countdown => &[Low],
             Self::Step => &[High, High],
             Self::RadarApproach => &[Alarm],
+            // Low to high: the road behind is clear again.
+            Self::RadarClear => &[Low, High],
+            // Two high notes ask for attention without sounding like an alarm.
+            Self::BandAlert => &[High, High],
+            // A gentle middle pair, unlike the single lap note.
+            Self::Fuel => &[Middle, Middle],
         }
     }
 
@@ -158,6 +170,9 @@ mod tests {
         assert_eq!(ids(Cue::Saved), [21, 0, 10]);
         assert_eq!(ids(Cue::LowBattery), [21, 21]);
         assert_eq!(ids(Cue::RadarApproach), [22]);
+        assert_eq!(ids(Cue::RadarClear), [21, 10]);
+        assert_eq!(ids(Cue::BandAlert), [10, 10]);
+        assert_eq!(ids(Cue::Fuel), [0, 0]);
         // One pattern stands for every note; none leaves cues silent.
         let single = [pattern(4, 3000, 100)];
         assert_eq!(resolve(&single, Cue::Saved).to_vec(), [4, 4, 4]);

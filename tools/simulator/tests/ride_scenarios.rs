@@ -422,6 +422,72 @@ fn gps_tunnel_records_samples_without_a_position() {
 }
 
 #[test]
+fn radar_names_new_vehicles_and_calls_all_clear_when_they_pass() {
+    let mut sim = rider();
+    sim.ant_sensor(device_type::RADAR, RADAR);
+    sim.pair(&["RADAR"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(5));
+    sim.vehicle(Vehicle {
+        range_m: 140.0,
+        closing_kmh: 30.0,
+        fast: false,
+        side: Side::Behind,
+    });
+    sim.wait_for("1 VEHICLE", seconds(3)).unwrap();
+    sim.checkpoint("radar: one vehicle behind");
+    sim.vehicle(Vehicle {
+        range_m: 140.0,
+        closing_kmh: 30.0,
+        fast: false,
+        side: Side::Behind,
+    });
+    sim.wait_for("2 VEHICLES", seconds(3)).unwrap();
+    let played = sim.device.speaker.played.len();
+    sim.wait_for("ALL CLEAR", seconds(30)).unwrap();
+    sim.checkpoint("radar: all clear after they passed");
+    sim.advance(seconds(1));
+    let clear: Vec<_> = sim.device.speaker.played[played..].to_vec();
+    // The all-clear cue runs low to high: 2.5 kHz, then 4 kHz.
+    let ids: Vec<_> = clear.iter().map(|&(_, id)| id).collect();
+    assert!(
+        ids.windows(2).any(|pair| pair == [21, 10]),
+        "the all-clear cue sounds: {ids:?}"
+    );
+}
+
+#[test]
+fn heart_rate_band_and_eat_and_drink_alerts_sound_and_show() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.home("SETTINGS");
+    sim.set_option("HR ABOVE", "170 BPM");
+    sim.set_option("EAT AND DRINK", "EVERY 20 MIN");
+    sim.checkpoint("alert limits in Settings");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.ride_at(28.0, 220.0, 150.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.expect_no_text("HR HIGH");
+    sim.ride_at(28.0, 320.0, 172.0, 90.0);
+    let latency = sim.wait_for("HR HIGH 172", seconds(20)).unwrap();
+    assert!(latency >= seconds(10), "a surge alerted after {latency} ms");
+    // Two high notes: the band cue.
+    let ids = played_since(&sim, 0);
+    assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
+    sim.checkpoint("alert: heart rate above the band");
+    sim.ride_at(28.0, 220.0, 150.0, 90.0);
+    sim.wait_for("EAT AND DRINK", minutes(19)).unwrap();
+    let active = elapsed_secs(&sim);
+    assert!((1199..=1202).contains(&active), "reminder at {active} s");
+    let ids = played_since(&sim, 0);
+    assert!(ids.windows(2).any(|pair| pair == [0, 0]), "{ids:?}");
+    sim.checkpoint("alert: eat and drink after 20 minutes");
+}
+
+#[test]
 fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
     let mut sim = rider();
     sim.ble_heart_strap(true);
@@ -3361,6 +3427,21 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_text("RADAR STAYS ON");
     sim.checkpoint("sounds off");
     sim.swipe_next();
+    // Every alert is off but the radar count, until the rider sets one.
+    sim.expect_text("ALERTS");
+    sim.expect_field("RADAR COUNT", "ON");
+    sim.expect_field("EAT AND DRINK", "OFF");
+    sim.expect_field("LOW CADENCE", "OFF");
+    sim.set_option("LOW CADENCE", "70 RPM");
+    sim.checkpoint("alerts section");
+    sim.swipe_next();
+    sim.expect_text("LIMITS");
+    for label in ["HR ABOVE", "HR BELOW", "POWER ABOVE", "POWER BELOW"] {
+        sim.expect_field(label, "OFF");
+    }
+    sim.set_option("POWER ABOVE", "300 W");
+    sim.checkpoint("limits section");
+    sim.swipe_next();
     sim.expect_text("DEVICE");
     sim.expect_field("SENSORS", "NONE SAVED");
     let firmware = sim.screen().field("FIRMWARE").unwrap();
@@ -3394,6 +3475,10 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_field("AUTO LAP", "EVERY 1 KM");
     show_setting(&mut sim, "SOUNDS");
     sim.expect_field("SOUNDS", "OFF");
+    show_setting(&mut sim, "LOW CADENCE");
+    sim.expect_field("LOW CADENCE", "70 RPM");
+    show_setting(&mut sim, "POWER ABOVE");
+    sim.expect_field("POWER ABOVE", "300 W");
     sim.checkpoint("choices kept after power loss");
 }
 

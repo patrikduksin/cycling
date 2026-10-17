@@ -231,6 +231,12 @@ impl Recorder {
         self.result.take()
     }
 
+    /// A pause or finish was accepted and active time is frozen, though the
+    /// status stays Recording until its flush completes.
+    pub fn stopping(&self) -> bool {
+        self.status == Status::Recording && self.stop_at.is_some()
+    }
+
     pub fn active_ms(&self, now: u64) -> u64 {
         if self.status == Status::Recording {
             crate::ride::log::active_at(self.accumulated_ms, self.running_since, self.stop_at, now)

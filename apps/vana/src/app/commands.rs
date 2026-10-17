@@ -83,9 +83,11 @@ impl Runtime {
         if write!(output, "token={}", self.ride.next_token()).is_err() {
             return "OUTPUT";
         }
+        let token = self.ride.next_token();
         if !self.ride.submit(start) {
             return "STATE";
         }
+        self.ride.host_token = Some(token);
         "ACCEPTED"
     }
 

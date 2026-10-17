@@ -76,6 +76,7 @@ impl Runtime {
         self.receive_ant(ant, now);
         self.receive_ble(ble);
         let sample = self.sample(now, ant, &observations);
+        self.auto_control(now, sample.speed_mm_s);
         self.record(store, now, sample);
     }
 }

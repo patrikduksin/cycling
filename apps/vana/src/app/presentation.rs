@@ -223,6 +223,8 @@ impl Runtime {
             Status::Ready | Status::Saved | Status::Recovered | Status::Recording | Status::Paused
         )
         .then(|| self.ride.recorder.remaining_secs());
+        view.auto_paused = self.ride.auto.paused();
+        view.auto_toast = self.ride.toast(now);
         view.radar = self.readings.radar.snapshot(now);
         view.stop_confirm = self.ride.stop_confirming(now);
         view.ride_page = navigation.ride_page;

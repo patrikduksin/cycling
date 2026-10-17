@@ -1,3 +1,4 @@
+pub mod auto;
 pub mod climb;
 pub mod control;
 pub mod laps;

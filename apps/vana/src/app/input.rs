@@ -208,11 +208,16 @@ impl Runtime {
             }
             _ => return,
         };
+        // ACT on an automatic pause keeps the ride paused, now by the rider.
+        if action == RideAction::Resume && self.ride.auto.take_over() {
+            return;
+        }
         self.ride.request = Request::Idle;
         if self
             .ride
             .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
         {
+            self.ride.auto.manual();
             self.ride.message = RideMessage::Ready;
             self.ride.disarm_stop();
         } else {

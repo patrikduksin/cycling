@@ -1,18 +1,24 @@
 //! Ride recorder ownership, request tokens and bounded recording work.
 use super::Runtime;
+use crate::ride::auto::{Auto, Decision, Wheel};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
+use crate::ride::control::Action;
 use crate::ride::laps::{Lap, Laps};
-use crate::ride::log::{Sample, Status};
+use crate::ride::log::{Sample, Source, Status};
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
+use crate::screens::workout::Page;
 
 /// A second end-ride press within this window finishes the ride.
 const STOP_CONFIRM_MS: u64 = 3000;
 /// A finished lap shows in the status row this long.
 const LAP_TOAST_MS: u64 = 2000;
+
+/// How long the brief notice of an automatic action stays up.
+const TOAST_MS: u64 = 3000;
 
 /// The recorder operation a rider or host requested, until someone reads its result.
 #[derive(Clone, Copy)]
@@ -43,6 +49,8 @@ impl RideMessage {
 pub(super) struct Ride {
     pub(super) recorder: Recorder,
     pub(super) request: Request,
+    /// Token of the latest host command; only its completion is the host's to read.
+    pub(super) host_token: Option<u32>,
     next_token: u32,
     stop_armed: Option<u64>,
     pub(super) message: RideMessage,
@@ -58,6 +66,14 @@ pub(super) struct Ride {
     pub(super) zone_time: ZoneTime,
     /// Climb detection and the elevation profile, fed and reset with `totals`.
     pub(super) climbs: Climbs,
+    /// The last step wholly inside active time. A step cut short by an accepted
+    /// pause or finish is settled with these readings, not those that arrived
+    /// after the stop.
+    settled: Option<(Sample, Step, Option<u32>)>,
+    /// Auto-pause and auto-start state.
+    pub(super) auto: Auto,
+    /// The last automatic action and when it happened, shown briefly.
+    toast: Option<(&'static str, u64)>,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -67,6 +83,7 @@ impl Default for Ride {
         Self {
             recorder: Recorder::default(),
             request: Request::Idle,
+            host_token: None,
             next_token: 1,
             stop_armed: None,
             message: RideMessage::Ready,
@@ -76,6 +93,9 @@ impl Default for Ride {
             lap_toast: None,
             zone_time: ZoneTime::default(),
             climbs: Climbs::default(),
+            settled: None,
+            auto: Auto::default(),
+            toast: None,
             clock: None,
         }
     }
@@ -103,6 +123,12 @@ impl Ride {
         matches!(self.request, Request::Pending(_))
     }
 
+    /// A finished host command waits for its status read; automatic actions
+    /// must not replace its result.
+    pub(super) fn host_completion_unread(&self) -> bool {
+        matches!(self.request, Request::Completed(r) if Some(r.token) == self.host_token)
+    }
+
     /// Stop is armed: only a paused ride stops, within `STOP_CONFIRM_MS`.
     pub(super) fn stop_confirming(&self, now: u64) -> bool {
         self.recorder.status() == Status::Paused
@@ -116,6 +142,14 @@ impl Ride {
         self.message = RideMessage::ConfirmStop;
         // The confirmation replaces any lap toast still showing.
         self.lap_toast = None;
+    }
+
+    /// The notice of a recent automatic action, if any.
+    pub(super) fn toast(&self, now: u64) -> &'static str {
+        match self.toast {
+            Some((text, at)) if now.saturating_sub(at) <= TOAST_MS => text,
+            _ => "",
+        }
     }
 
     pub(super) fn disarm_stop(&mut self) {
@@ -144,15 +178,24 @@ impl Ride {
         if credited == 0 {
             return None;
         }
+        let cut_short = credited < step.elapsed_ms && self.recorder.stopping();
+        let (sample, step, pressure_centi_pa) = if !cut_short {
+            self.settled = Some((*sample, step, pressure_centi_pa));
+            (*sample, step, pressure_centi_pa)
+        } else {
+            // Cut short by a stop: the readings of this step describe the time
+            // after it, so the credited part takes the last full step's.
+            self.settled?
+        };
         let distance_mm = step.distance_mm * credited / step.elapsed_ms;
         self.totals
-            .add(credited, distance_mm, sample, pressure_centi_pa);
-        self.zone_time.add(credited, sample, profile);
+            .add(credited, distance_mm, &sample, pressure_centi_pa);
+        self.zone_time.add(credited, &sample, profile);
         // Only a fresh reading is altitude for the climbs; the totals keep
         // their last one through a gap, which would read as a level road.
         let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
         let climb = self.climbs.add(credited, distance_mm, altitude);
-        if let Some(lap) = self.laps.add(credited, distance_mm, sample, now) {
+        if let Some(lap) = self.laps.add(credited, distance_mm, &sample, now) {
             self.lap_closed(lap, now);
         }
         climb
@@ -181,6 +224,51 @@ impl Runtime {
             )
     }
 
+    /// Pause, resume or start the ride from wheel speed (see `ride::auto`),
+    /// through the same request path as the buttons.
+    pub(super) fn auto_control(&mut self, now: u64, speed_mm_s: Option<u32>) {
+        if self.ride.pending() || self.ride.host_completion_unread() {
+            return;
+        }
+        // The first press to save an auto-paused ride takes it over: moving or
+        // a lost sensor must not resume it under the rider's confirmation.
+        if self.ride.stop_confirming(now) {
+            self.ride.auto.manual();
+            return;
+        }
+        let ready = self.navigation.page == Page::Ride;
+        let status = self.ride.recorder.status();
+        let wheel = match speed_mm_s {
+            Some(speed) => Wheel::Measured(speed),
+            None if self.readings.wheel_fresh => Wheel::Unknown,
+            None => Wheel::Lost,
+        };
+        let Some(decision) = self.ride.auto.update(now, status, wheel, ready) else {
+            return;
+        };
+        let (action, toast) = match decision {
+            Decision::Pause => (Action::Pause, ""),
+            Decision::Resume => (Action::Resume, "AUTO RESUME"),
+            Decision::Start => (Action::Start, "AUTO START"),
+        };
+        self.ride.request = Request::Idle;
+        if self
+            .ride
+            .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
+        {
+            self.ride.auto.accepted(decision);
+            self.ride.toast = Some((toast, now));
+            self.ride.message = RideMessage::Ready;
+            self.ride.disarm_stop();
+            self.display.redraw();
+        } else {
+            self.ride.auto.declined();
+            if decision == Decision::Start {
+                self.ride.message = RideMessage::StorageNotReady;
+            }
+        }
+    }
+
     pub(super) fn record(&mut self, store: &mut impl RideStorage, now: u64, sample: Sample) {
         let clock = self.ride.clock;
         let before = self.ride.recorder.status();
@@ -199,6 +287,16 @@ impl Runtime {
             self.ride.zone_time = ZoneTime::default();
             self.ride.climbs = Climbs::default();
             self.navigation.climb_return = None;
+        }
+        // A started or resumed segment settles with its own readings, not those
+        // from before the pause, or none at all before its first full step.
+        if before != Status::Recording && self.ride.recorder.status() == Status::Recording {
+            let distance_mm = u64::from(sample.speed_mm_s.unwrap_or(0));
+            let step = Step {
+                elapsed_ms: 1000,
+                distance_mm,
+            };
+            self.ride.settled = Some((sample, step, None));
         }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);

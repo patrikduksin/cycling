@@ -6,7 +6,7 @@ use shell_simulator::ant::device_type;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
-use vana::ride::log::Kind;
+use vana::ride::log::{Entry, Kind, SLOT_SIZE, SLOTS, Sample, Source, commit_word, encode};
 
 const HEART: u16 = 4242;
 const POWER: u16 = 1234;
@@ -14,7 +14,10 @@ const SPEED: u16 = 777;
 const RADAR: u16 = 31;
 
 fn rider() -> Sim {
-    let mut sim = Sim::new().boot();
+    equip(Sim::new().boot())
+}
+
+fn equip(mut sim: Sim) -> Sim {
     sim.ant_sensor(device_type::HEART_RATE, HEART);
     sim.ant_sensor(device_type::POWER, POWER);
     sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
@@ -129,6 +132,130 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
     assert_eq!(rides.len(), 1);
     assert!(rides[0].samples().count() >= before);
     assert_eq!(rides[0].kinds().last(), Some(&Kind::Recovered));
+
+    // The rider is told the interrupted ride was kept, then rides on.
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("RECOVERED");
+    sim.checkpoint("recovered ride named on the ride screen");
+    sim.press(device_api::input::Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    let rides = sim.rides();
+    assert_eq!(rides.len(), 2);
+    assert_ne!(rides[0].id, rides[1].id);
+    assert_eq!(rides[1].kinds().last(), Some(&Kind::Finish));
+}
+
+/// A finished ride that leaves `free` sample slots before the terminal slot.
+fn old_ride_leaving(free: usize) -> Vec<u8> {
+    let used = SLOTS - 2 - free;
+    let mut bytes = Vec::with_capacity(used * SLOT_SIZE);
+    let sample = |s: u64| Sample {
+        active_ms: s * 1_000,
+        ..Sample::default()
+    };
+    for index in 0..used {
+        let sequence = index as u32;
+        let entry = if index == 0 {
+            Entry::event(Kind::Start, Source::Live, 1, 0, 0)
+        } else if index == used - 1 {
+            Entry::event(
+                Kind::Finish,
+                Source::Live,
+                1,
+                sequence,
+                index as u64 * 4_000,
+            )
+        } else {
+            let first = (index as u64 - 1) * 4 + 1;
+            let batch = [
+                sample(first),
+                sample(first + 1),
+                sample(first + 2),
+                sample(first + 3),
+            ];
+            Entry::batch(Source::Live, 1, sequence, &batch).unwrap()
+        };
+        let mut slot = encode(&entry);
+        slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
+        bytes.extend_from_slice(&slot.0);
+    }
+    bytes
+}
+
+#[test]
+fn nearly_full_storage_warns_and_a_full_journal_closes_the_ride() {
+    use device_api::storage::{OwnedFlash, Region};
+    let mut sim = Sim::new();
+    // An earlier, un-exported ride leaves ten minutes of 1 Hz recording.
+    sim.device
+        .media
+        .program(Region::Data, 0, &old_ride_leaving(150))
+        .unwrap();
+    let mut sim = equip(sim.boot());
+    sim.pair(&["HEART RATE"]);
+    sim.home("TRAIN");
+    sim.expect_text("STORAGE 0:10 LEFT");
+    sim.checkpoint("connection check shows ten minutes of storage");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("STORAGE 10M LEFT");
+    sim.press(device_api::input::Button::BottomRight);
+    sim.wait_for("REC 9M LEFT", seconds(2)).unwrap();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.advance(minutes(5));
+    sim.expect_text("REC 4M LEFT");
+    sim.checkpoint("recording with low storage");
+
+    sim.advance(minutes(6));
+    sim.expect_text("STORAGE FULL");
+    sim.checkpoint("journal full, ride closed");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(
+        status.contains("state=full") && status.contains("free_s=0"),
+        "{status}"
+    );
+    let rides = sim.rides();
+    assert_eq!(rides.len(), 2, "the earlier ride is never reclaimed");
+    let ride = &rides[1];
+    assert_eq!(ride.kinds().last(), Some(&Kind::Full));
+    // Exactly the ten minutes the warning promised; later samples are dropped.
+    assert_eq!(ride.samples().count(), 600);
+    let (reply, info) = sim.command("EXPORT INFO");
+    assert_eq!(reply, "OK", "{info}");
+    assert!(info.contains(&format!(" {SLOTS} full")), "{info}");
+
+    // Rebooting a full journal keeps both rides and still refuses to record.
+    sim.power_loss();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=full"), "{status}");
+    assert_eq!(sim.rides().len(), 2);
+}
+
+#[test]
+fn power_lost_during_the_first_write_of_a_fresh_journal_still_records() {
+    let mut sim = rider();
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    // Power fails ten bytes into the very first START record.
+    sim.fail_storage(0, 10);
+    sim.press(device_api::input::Button::BottomRight);
+    sim.wait_for("STORAGE ERROR", seconds(2)).unwrap();
+    sim.checkpoint("first write torn");
+
+    sim.power_loss();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(status.contains("state=ready"), "{status}");
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 120.0, 0.0);
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.checkpoint("ride saved after the torn first write");
+    let rides = sim.rides();
+    assert_eq!(rides.len(), 1);
+    assert_eq!(rides[0].kinds().last(), Some(&Kind::Finish));
+    assert!(rides[0].samples().count() >= 29);
 }
 
 #[test]

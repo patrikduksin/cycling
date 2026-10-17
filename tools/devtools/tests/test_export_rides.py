@@ -301,6 +301,44 @@ class RideExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(write_gpx(ride, Path(directory) / 'bad.gpx'), 'UTC timestamp outside GPX host range')
 
+    def test_clock_sync_mid_ride_dates_earlier_samples_of_the_same_running_stretch(self):
+        before = [{'active_ms': ms, 'utc_ms': None, 'location': (ms, ms)} for ms in (1000, 2000, 3000)]
+        synced = {'active_ms': 4000, 'utc_ms': 1_700_000_004_250, 'location': (4000, 4000)}
+        after_pause = [
+            {'active_ms': 5000, 'utc_ms': None, 'location': (5000, 5000)},
+            {'active_ms': 6000, 'utc_ms': 1_700_000_100_000, 'location': (6000, 6000)},
+        ]
+        slots = [
+            slot(1, 2, 3, 0, 0),
+            slot(2, 2, 3, 1, 4000, [*before, synced]),
+            slot(3, 2, 3, 2, 4000),
+            slot(4, 2, 3, 3, 4000),
+            slot(2, 2, 3, 4, 6000, after_pause),
+            slot(5, 2, 3, 5, 6000),
+        ]
+        ride = rides_from_slots(slots)[0][0]
+        times = [sample['utc_ms'] for sample in ride['samples']]
+        # Active time runs with the clock until the pause, so the first three
+        # samples get exact times; the pause boundary is never crossed.
+        self.assertEqual(times[:4], [1_700_000_001_250, 1_700_000_002_250, 1_700_000_003_250, 1_700_000_004_250])
+        self.assertEqual([sample.get('utc_derived', False) for sample in ride['samples']][:4], [True] * 3 + [False])
+        self.assertEqual(times[4], 1_700_000_099_000)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'ride.gpx'
+            self.assertIsNone(write_gpx(ride, path))
+            ns = {'g': 'http://www.topografix.com/GPX/1/1'}
+            points = ET.parse(path).getroot().findall('.//g:trkpt', ns)
+            self.assertEqual(len(points), 6)
+            self.assertTrue(all(point.find('g:time', ns) is not None for point in points))
+
+    def test_clock_sync_after_a_gap_does_not_date_samples_before_the_gap(self):
+        untimed = [{'active_ms': 1000, 'utc_ms': None, 'location': (1, 1)}]
+        timed = [{'active_ms': 9000, 'utc_ms': 1_700_000_009_000, 'location': (2, 2)}]
+        slots = [slot(1, 2, 4, 0, 0), slot(2, 2, 4, 1, 1000, untimed), b'\0' * SLOT_SIZE, slot(2, 2, 4, 3, 9000, timed)]
+        ride = rides_from_slots(slots)[0][0]
+        self.assertIsNone(ride['samples'][0]['utc_ms'])
+        self.assertNotIn('utc_derived', ride['samples'][0])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -114,6 +114,25 @@ def decode_slot(data):
     }
 
 
+def new_run(ride):
+    """Start a running stretch: active time advances with the clock only inside one."""
+    ride['_untimed'] = []
+
+
+def date_run(ride, anchor):
+    """Date untimed samples that precede the first UTC sample of their running stretch.
+
+    Without pause, gap or reboot between them, active time and UTC advance together,
+    so `utc = anchor_utc - (anchor_active - active)` is exact to the device clock.
+    """
+    for sample in ride['_untimed']:
+        utc = anchor['utc_ms'] - (anchor['active_ms'] - sample['active_ms'])
+        if sample['active_ms'] <= anchor['active_ms'] and utc >= 0:
+            sample['utc_ms'] = utc
+            sample['utc_derived'] = True
+    ride['_untimed'] = None
+
+
 def rides_from_slots(slots):
     rides, current, seen = [], None, set()
     invalid = []
@@ -125,11 +144,13 @@ def rides_from_slots(slots):
             if current:
                 current['gap'] = True
                 current['segments'].append([])
+                new_run(current)
             continue
         if entry is None:
             if current:
                 current['gap'] = True
                 current['segments'].append([])
+                new_run(current)
             continue
         entry['slot'] = index
         if entry['kind'] == 1:
@@ -154,6 +175,7 @@ def rides_from_slots(slots):
                 'active_ms': 0,
                 '_last_utc': None,
             }
+            new_run(current)
             continue
         if not current:
             continue
@@ -161,12 +183,14 @@ def rides_from_slots(slots):
             current['gap'] = True
             if current['segments'][-1]:
                 current['segments'].append([])
+            new_run(current)
             continue
         current['records'].append(index)
         if entry['sequence'] != current['next_sequence']:
             current['gap'] = True
             if current['segments'][-1]:
                 current['segments'].append([])
+            new_run(current)
             if entry['sequence'] < current['next_sequence']:
                 continue
         current['next_sequence'] = entry['sequence'] + 1
@@ -174,6 +198,11 @@ def rides_from_slots(slots):
         if entry['kind'] == 2:
             for sample in entry['samples']:
                 current['samples'].append(sample)
+                if current['_untimed'] is not None:
+                    if sample['utc_ms'] is None:
+                        current['_untimed'].append(sample)
+                    else:
+                        date_run(current, sample)
                 segment = current['segments'][-1]
                 missing = sample['latitude_e7'] is None
                 invalid_location = not missing and not (
@@ -196,6 +225,7 @@ def rides_from_slots(slots):
         elif entry['kind'] in (3, 4):
             if current['segments'][-1]:
                 current['segments'].append([])
+            new_run(current)
         elif entry['kind'] in (5, 6, 7):
             current['terminal'] = {5: 'saved', 6: 'recovered', 7: 'full'}[entry['kind']]
             current['end_slot'] = index

@@ -96,7 +96,7 @@ impl View {
         } else {
             let _ = time.push_str("--:--");
         }
-        Self {
+        let mut view = Self {
             now_ms: 0,
             sample: Sample::default(),
             active_secs: 0,
@@ -126,7 +126,13 @@ impl View {
             editing: false,
             time,
             lines: core::array::from_fn(|_| Text::new()),
+        };
+        // The brand flash is painted before anything prepares a frame, as
+        // the preloaded startup frame: it needs no `prepare` to show.
+        if page == Page::Boot {
+            view.canvas = view.boot_canvas();
         }
+        view
     }
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
@@ -550,6 +556,19 @@ mod tests {
         let _ = view.lines[0].push_str("COMPANION READY");
         view.prepare();
         assert_paints_reference(&view, "boot");
+    }
+
+    /// A Boot view straight from `new`, as the startup frame is built,
+    /// paints VANA and LABS without `prepare`.
+    #[test]
+    fn a_new_boot_view_paints_the_brand_without_prepare() {
+        let view = View::new(Page::Boot, 0, None);
+        assert!(view.canvas.shows("VANA") && view.canvas.shows("LABS"));
+        let lit = (0..320)
+            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+            .filter(|&(x, y)| view.pixel(x, y) != BLACK)
+            .count();
+        assert!(lit > 200, "{lit} lit pixels");
     }
 
     /// Preflight and the brand flash with the longest lines they can get.

@@ -307,7 +307,8 @@ def fetch_origin_main():
     """Bring origin/main up to date. Offline or without credentials, warn and keep the existing ref."""
     try:
         result = subprocess.run(
-            ['git', 'fetch', '--quiet', 'origin', 'main'],
+            # The explicit refspec updates origin/main even where the remote's configured refspec omits main.
+            ['git', 'fetch', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -329,7 +330,9 @@ def resolve_base(base):
     if base is None:
         fetch_origin_main()
         base = DEFAULT_BASE
-    sha, _, subject = git('log', '-1', '--format=%h %s', base).partition(' ')
+    # rev-parse resolves the commit itself; log --format would print signature output first under log.showSignature.
+    sha = git('rev-parse', '--short', '--verify', f'{base}^{{commit}}')
+    subject = git('log', '-1', '--no-show-signature', '--format=%s', sha)
     return base, sha, subject
 
 

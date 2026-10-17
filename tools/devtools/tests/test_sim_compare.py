@@ -245,20 +245,50 @@ def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypa
     assert not (tmp_path / 'relative/summary.md').exists()
 
 
+def fake_git(monkeypatch, calls):
+    """Answers rev-parse and log like git would, recording every call."""
+
+    def git(*args):
+        calls.append(args)
+        if args[0] == 'rev-parse':
+            return 'abc1234'
+        assert args[0] == 'log' and '--no-show-signature' in args
+        return 'Base subject'
+
+    monkeypatch.setattr(compare, 'git', git)
+
+
 def test_default_base_is_origin_main_fetched_before_resolving(monkeypatch):
     calls = []
     monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
-    monkeypatch.setattr(compare, 'git', lambda *args: calls.append(args[-1]) or 'abc1234 Base subject')
+    fake_git(monkeypatch, calls)
     assert compare.resolve_base(None) == ('origin/main', 'abc1234', 'Base subject')
-    assert calls == ['fetch', 'origin/main']
+    assert calls[0] == 'fetch'
+    assert calls[1] == ('rev-parse', '--short', '--verify', 'origin/main^{commit}')
+    assert calls[2] == ('log', '-1', '--no-show-signature', '--format=%s', 'abc1234')
 
 
 def test_explicit_base_is_resolved_without_fetching(monkeypatch):
     calls = []
     monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
-    monkeypatch.setattr(compare, 'git', lambda *args: calls.append(args[-1]) or 'abc1234 Base subject')
+    fake_git(monkeypatch, calls)
     assert compare.resolve_base('main') == ('main', 'abc1234', 'Base subject')
-    assert calls == ['main']
+    assert 'fetch' not in calls
+    assert calls[0] == ('rev-parse', '--short', '--verify', 'main^{commit}')
+
+
+def test_signed_base_under_show_signature_is_not_parsed_as_sha(monkeypatch):
+    # With log.showSignature=true, a log without --no-show-signature prints gpg lines before the commit line.
+    def git(*args):
+        if args[0] == 'rev-parse':
+            return 'abc1234'
+        if '--no-show-signature' not in args:
+            return 'gpg: Signature made Sat Oct 17\ngpg: Good signature\nabc1234 Base subject'
+        return 'Base subject'
+
+    monkeypatch.setattr(compare, 'git', git)
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    assert compare.resolve_base(None) == ('origin/main', 'abc1234', 'Base subject')
 
 
 def test_failed_fetch_warns_and_keeps_existing_origin_main(monkeypatch, capsys):
@@ -270,7 +300,8 @@ def test_failed_fetch_warns_and_keeps_existing_origin_main(monkeypatch, capsys):
 
     monkeypatch.setattr(compare.subprocess, 'run', run)
     compare.fetch_origin_main()  # must not raise
-    assert seen['args'] == ['git', 'fetch', '--quiet', 'origin', 'main']
+    # The explicit refspec updates origin/main even where the remote's configured refspec omits main.
+    assert seen['args'] == ['git', 'fetch', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']
     assert seen['env']['GIT_TERMINAL_PROMPT'] == '0'
     err = capsys.readouterr().err
     assert 'could not fetch origin/main' in err and 'could not resolve host' in err and 'existing origin/main' in err

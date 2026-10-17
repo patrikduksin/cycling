@@ -8,10 +8,11 @@ lives in `apps/vana/src/screens/chrome.rs` (geometry, palette, shapes, status
 bar, toasts), `apps/vana/src/screens/canvas.rs` (a prepared screen of text
 runs and shapes) and `packages/shell/src/rendering/font` (type).
 
-Every screen uses it: Home, Sensors, the four ride pages, Settings,
-Preflight, the brand reveal, the power sheets and the charge shown while the
-device is off on USB power. None draws in the 5 × 7
-bitmap font.
+Every screen uses it: Home, Sensors, Ready, the four ride pages, the paused
+screen, End ride, the ride summary, Settings, the brand reveal, the power
+sheets and the charge shown while the device is off on USB power. None draws
+in the 5 × 7 bitmap font. The screens a ride passes through, in order, are
+set out in [UX flows](ux-flows.md).
 
 ## Principles
 
@@ -115,6 +116,24 @@ Shapes are coverage functions (`disc`, `rounded`), blended over what lies
 behind them, and painted per row by `paint_rounded` and `paint_disc`. Never
 draw a 1 px outline as decoration.
 
+### Button cues
+
+A screen that asks for a decision points at the buttons that answer it with a
+cue: a quarter disc of radius 42 in the screen corner beside the button, with
+an icon and no words (`screens::cue`). The disc's colour says what the button
+does, so the cue reads at a glance.
+
+| Icon | Disc | Meaning |
+| --- | --- | --- |
+| Play | `GREEN`, black icon | Start or resume (ACT) |
+| Check | `GREEN`, black icon | Yes, or Done (ACT) |
+| Stop | `RAISED`, white icon | End the ride: asks first (BACK) |
+| Back | `RAISED`, white icon | No, go back (BACK) |
+
+Only Ready, the paused screen, End ride and the summary show cues. Ride pages
+never do: their buttons keep fixed roles. Content stays clear of the cue
+corners; each screen's layout test checks it.
+
 ## Cells
 
 The stats, lap and climb pages list readings in cells: a `CAPTION` in
@@ -158,7 +177,7 @@ The status bar is the only chrome that is always on screen. It shows only state
 the rider may need at any moment:
 
 - whether a ride is recording, paused, or paused by auto-pause (amber bars
-  and AUTO);
+  and AUTO) while the rider looks at ride pages during a pause;
 - which page is showing;
 - GPS: grey while searching, green when fixed;
 - battery: an icon filled to the charge, white, amber at 30% or less; below
@@ -177,38 +196,52 @@ centred over the bottom of the content.
 
 | Tone | Dot | Used for |
 | --- | --- | --- |
-| `Good` | Green | Saved, resumed |
+| `Good` | Green | Recording, resumed |
 | `Info` | Blue | Laps, recovery, neutral news |
-| `Warn` | Amber | An armed press (PRESS AGAIN TO SAVE), paused, low storage |
+| `Warn` | Amber | Low storage, rides falling back to internal flash |
 | `Alert` | Red | Storage failures |
 
 Only one toast shows at a time. From highest priority to lowest:
 
-1. The armed END RIDE confirmation.
-2. The lap just taken.
-3. An automatic start or resume (AUTO START, AUTO RESUME), shown briefly.
-4. Transient announcements, shown for 2 s: RECORDING, RESUMED, PAUSED, RIDE
-   SAVED, RIDE RECOVERED. An automatic pause skips PAUSED, because item 7
-   names it. Battery news shows for 4 s, on any page: CHARGING 64% (`Good`)
-   when USB power arrives, LOW BATTERY 20% (`Warn`) as the charge falls to
+1. The lap just taken.
+2. An automatic start or resume (AUTO START, AUTO RESUME), shown briefly.
+3. Transient announcements, shown for 2 s: RECORDING, RESUMED, RIDE SAVED
+   (when a ride ends away from the summary), RIDE RECOVERED. A pause has no
+   toast: the paused screen says it. Battery news shows for 4 s, on any
+   page: CHARGING 64% (`Good`) when USB power arrives, LOW BATTERY 20% (`Warn`) as the charge falls to
    20%, and CHARGE SOON 10% (`Alert`) at 10% and again at 5%. Each level is
    announced once per discharge; charging re-arms them. A device switched on
    already low says so only in its status bar.
-5. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
+4. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
-   hidden: the only one item 6 may replace is the bulk failure that moved
+   hidden: the only one item 5 may replace is the bulk failure that moved
    the ride to internal flash. Any later failure shows here.
-6. Sticky low storage: under one hour left, the toast shows `REC 42M LEFT`.
+5. Sticky low storage: under one hour left, the toast shows `REC 42M LEFT`.
    Otherwise, while bulk media cannot take rides and the ride page shows an
    internal ride, a `Warn` toast names it: READY INT, RECORDING INT, PAUSED
    INT, AUTO PAUSED INT, SAVED INT or RECOVERED INT. After a recovery, RIDE
    RECOVERED stays until recording resumes.
-7. Auto-pause: AUTO PAUSED stays for as long as an automatic pause lasts. A
+6. Auto-pause: AUTO PAUSED stays while the rider looks at ride pages during
+   an automatic pause (the paused screen names it itself). A
    ride recording without wheel speed shows AUTO PAUSE OFF for its first 8 s
    of active time, not for the whole ride.
 
 There are no bottom button labels. Each button has a fixed role, so the screen
-does not need to explain them.
+does not need to explain them; where a screen asks a question, a button cue
+points at the answer.
+
+### Ride chimes
+
+Short chimes mark the ride's moments, so the rider need not look. Each uses a
+platform pattern no longer than 150 ms; the 300 ms pattern stays the radar
+alert's, and an alert always wins over a chime.
+
+| Moment | Chime |
+| --- | --- |
+| Recording starts or resumes | The highest pattern |
+| Paused (manual or automatic) | The lowest pattern |
+| Lap | The shortest pattern |
+| Ride saved | The highest pattern |
 
 ## Charts
 
@@ -286,14 +319,20 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 
 | Button | Home | Sensors | Settings | Ride |
 | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Act on the focused tile | Edit the field; while editing, raise it | Start, pause, resume |
-| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next field; while editing, lower it | Next page (wraps) |
-| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | LAP while recording; END RIDE while paused (press again within 3 s); Home when no ride is open |
+| BottomRight (ACT) | Open the focused card | Act on the focused tile | Edit the field; while editing, raise it | Pause, resume |
+| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next field; while editing, lower it | Next page (wraps); while paused, the paused screen is one of the pages |
+| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | LAP while recording; asks END RIDE? while paused |
+
+| Button | Ready | End ride? | Summary |
+| --- | --- | --- | --- |
+| BottomRight (ACT) | Start the ride | End and save it | Done: Home |
+| BottomLeft (MOVE) | — | — | Next page (wraps) |
+| TopLeft (BACK) | Home | Keep the ride, paused | Home |
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors. Tiles own their bounds; the search button's wider touch margin takes only spare space |
-| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors; on Ready, the sensors line opens Sensors. Tiles own their bounds; the search button's wider touch margin takes only spare space |
+| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages and the summary |
 | Settings pads | Act on contact | Step the edited value |
 
 Touch never starts, pauses, laps or ends a ride. Wet gloves, rain and bumps

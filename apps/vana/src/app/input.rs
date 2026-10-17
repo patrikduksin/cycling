@@ -9,7 +9,9 @@ use crate::ride::log::{Source, Status};
 use crate::ride::zones::TrainingProfile;
 use crate::screens::gesture::{Gesture, Owner};
 use crate::screens::home::{Home, Tile};
+use crate::screens::ready;
 use crate::screens::ride::RidePage;
+use crate::screens::ride::summary::PAGES as SUMMARY_PAGES;
 use crate::screens::sensors::Action;
 use crate::screens::settings;
 use crate::screens::workout::{HOME, Page};
@@ -101,14 +103,28 @@ impl Runtime {
         self.display.redraw();
         match self.navigation.page {
             Page::Home => self.home_input(button, received, now, ant, held),
+            Page::Ready => {
+                self.timing.press(received);
+                self.ready_input(button, received, now)
+            }
             Page::Ride => {
                 self.timing.press(received);
                 self.ride_input(button, received, now)
             }
+            Page::EndRide => {
+                self.timing.press(received);
+                self.end_ride_input(button, now)
+            }
+            Page::Summary => self.summary_input(button, held),
+            Page::Phone => {
+                if button == Button::TopLeft && !held {
+                    self.navigation.page = Page::Home;
+                }
+            }
             Page::Settings => self.settings_input(button, now),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = Page::Home,
-            Page::Sensors | Page::Preflight => {}
+            Page::Sensors => {}
         }
     }
 
@@ -125,10 +141,16 @@ impl Runtime {
         let navigation = &self.navigation;
         let page = navigation.page as u32;
         let subview = match navigation.page {
-            Page::Ride => navigation.ride_page.index() as u32,
+            // The paused screen is a view of its own over the ride pages.
+            Page::Ride => {
+                let paused = self.ride.active().status() == Status::Paused;
+                let screen = paused && !navigation.pause_hidden;
+                navigation.ride_page.index() as u32 | u32::from(screen) << 3
+            }
+            Page::Summary => navigation.summary_page as u32,
             Page::Sensors => u32::from(self.menu.touch_view()),
             Page::Settings => u32::from(navigation.settings_editing),
-            Page::Boot | Page::Home | Page::Preflight => 0,
+            Page::Boot | Page::Home | Page::Ready | Page::EndRide | Page::Phone => 0,
         };
         let sheet = u32::from(self.power.view().is_some());
         let dark = u32::from(!self.display.is_active());
@@ -148,20 +170,24 @@ impl Runtime {
                 };
                 self.open_home_tile(now, ant);
             }
+            // A tap on the sensors line of Ready pairs sensors.
+            (Page::Ready, Gesture::Tap(point)) => {
+                if ready::line_at(usize::from(point.y)) != Some(ready::Line::Sensors) {
+                    return;
+                }
+                self.navigation.page = Page::Sensors;
+                self.request_search(ant, now);
+            }
+            (Page::Summary, Gesture::Next) => self.next_summary_page(1),
+            (Page::Summary, Gesture::Previous) => self.next_summary_page(SUMMARY_PAGES - 1),
             (Page::Sensors, Gesture::Tap(point)) => {
                 self.refresh_sensor_menu(ant, now);
                 let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
                 self.sensors_action(action, now, ant);
             }
             // Changing the page is safe while riding; ride control is not.
-            (Page::Ride, Gesture::Next) => {
-                let page = self.navigation.ride_page.following();
-                self.navigation.ride_page_chosen(page)
-            }
-            (Page::Ride, Gesture::Previous) => {
-                let page = self.navigation.ride_page.preceding();
-                self.navigation.ride_page_chosen(page)
-            }
+            (Page::Ride, Gesture::Next) => self.next_ride_page(),
+            (Page::Ride, Gesture::Previous) => self.previous_ride_page(),
             _ => return,
         }
         self.display.redraw();
@@ -215,7 +241,7 @@ impl Runtime {
     fn open_home_tile(&mut self, now: u64, ant: &mut impl Ant) {
         self.navigation.page_since = now;
         match self.navigation.home_cursor {
-            0 => self.navigation.page = Page::Preflight,
+            0 => self.navigation.page = Page::Ready,
             1 => {
                 self.navigation.page = Page::Sensors;
                 self.request_search(ant, now);
@@ -286,10 +312,99 @@ impl Runtime {
         self.preferences.set(profile, now);
     }
 
+    /// Ready: ACT starts the ride and shows its pages, BACK returns Home.
+    /// MOVE does nothing here: there is one thing to do.
+    fn ready_input(&mut self, button: Button, received: u64, now: u64) {
+        match button {
+            Button::TopLeft => self.navigation.page = Page::Home,
+            Button::BottomRight => {
+                // Rolling off may have started the ride a moment before the
+                // press: then ACT only shows it, never pauses it.
+                let started = self.ride.pending()
+                    || matches!(
+                        self.ride.active().status(),
+                        Status::Recording | Status::Paused
+                    );
+                if started {
+                    self.navigation.open_ride();
+                    return;
+                }
+                self.ride_input(button, received, now);
+                // Only a start the recorder took leaves Ready; otherwise Ready
+                // stays, its storage line saying why.
+                if self.ride.pending() || self.ride.active().status() == Status::Recording {
+                    self.navigation.open_ride();
+                } else {
+                    self.navigation.toast(
+                        "STORAGE NOT READY",
+                        crate::screens::chrome::Tone::Alert,
+                        now,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// "End ride?": ACT saves and ends the ride and shows its summary; BACK
+    /// keeps it paused.
+    fn end_ride_input(&mut self, button: Button, now: u64) {
+        match button {
+            Button::TopLeft => {
+                self.ride.disarm_stop();
+                self.ride.message = RideMessage::Ready;
+                self.navigation.page = Page::Ride;
+            }
+            Button::BottomRight => {
+                if self.ride.pending() || self.ride.active().status() != Status::Paused {
+                    return;
+                }
+                let medium = self.ride.shown();
+                self.ride.request = Request::Idle;
+                if self.ride.submit(medium, |recorder, token| {
+                    recorder.request(RideAction::Finish, Source::Live, now, token)
+                }) {
+                    self.ride.auto.manual();
+                    self.ride.message = RideMessage::Ready;
+                    self.ride.disarm_stop();
+                    self.navigation.summary_page = 0;
+                    self.navigation.page = Page::Summary;
+                } else {
+                    self.ride.message = RideMessage::StorageNotReady;
+                    self.ride.disarm_stop();
+                    self.navigation.page = Page::Ride;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The summary: MOVE steps its pages; ACT or BACK finishes, to Home.
+    /// Nothing happens while the ride is still being saved.
+    fn summary_input(&mut self, button: Button, held: bool) {
+        let saving = matches!(
+            self.ride.active().status(),
+            Status::Recording | Status::Paused
+        ) || self.ride.pending();
+        match button {
+            Button::BottomLeft => self.next_summary_page(1),
+            Button::BottomRight | Button::TopLeft if !held && !saving => {
+                self.navigation.ride_page = RidePage::Main;
+                self.navigation.page = Page::Home;
+            }
+            _ => {}
+        }
+    }
+
+    fn next_summary_page(&mut self, step: usize) {
+        let navigation = &mut self.navigation;
+        navigation.summary_page = (navigation.summary_page + step) % SUMMARY_PAGES;
+    }
+
     /// Ride buttons, with one meaning system-wide: BottomRight acts (start,
     /// pause, resume), BottomLeft moves to the next page, and TopLeft marks or
-    /// backs out: a lap while recording, end ride while paused (pressed twice
-    /// within the confirm window), Home when no ride is open.
+    /// backs out: a lap while recording, "End ride?" while paused, Home when
+    /// no ride is open.
     /// `received` times the press; `now` stamps the ride data it changes.
     fn ride_input(&mut self, button: Button, received: u64, now: u64) {
         if button == Button::BottomLeft {
@@ -319,13 +434,11 @@ impl Runtime {
                 }
                 return;
             }
-            // Only a paused ride ends, and only on a confirming second press.
+            // Only a paused ride ends, and only once "End ride?" is answered.
             (Button::TopLeft, Status::Paused) => {
-                if !self.ride.stop_confirming(received) {
-                    self.ride.arm_stop(received);
-                    return;
-                }
-                RideAction::Finish
+                self.ride.arm_stop(received);
+                self.navigation.page = Page::EndRide;
+                return;
             }
             _ => return,
         };
@@ -349,9 +462,45 @@ impl Runtime {
     }
 
     /// BottomLeft steps through the ride pages, wrapping after the last.
+    /// While paused the paused screen comes first: from it to the page the
+    /// rider was on, and from the last page back to it.
     fn next_ride_page(&mut self) {
+        let paused = self.ride.active().status() == Status::Paused;
         let navigation = &mut self.navigation;
-        let next = navigation.ride_page.next().unwrap_or(RidePage::Main);
-        navigation.ride_page_chosen(next);
+        if paused && !navigation.pause_hidden {
+            navigation.pause_hidden = true;
+            if core::mem::take(&mut navigation.pause_wrapped) {
+                navigation.ride_page_chosen(RidePage::Main);
+            }
+            return;
+        }
+        match navigation.ride_page.next() {
+            Some(next) => navigation.ride_page_chosen(next),
+            None if paused => {
+                navigation.pause_hidden = false;
+                navigation.pause_wrapped = true;
+            }
+            None => navigation.ride_page_chosen(RidePage::Main),
+        }
+    }
+
+    /// A swipe back: the mirror of `next_ride_page`.
+    pub(super) fn previous_ride_page(&mut self) {
+        let paused = self.ride.active().status() == Status::Paused;
+        let navigation = &mut self.navigation;
+        if paused && !navigation.pause_hidden {
+            navigation.pause_hidden = true;
+            if core::mem::take(&mut navigation.pause_wrapped) {
+                navigation.ride_page_chosen(RidePage::ALL[RidePage::ALL.len() - 1]);
+            }
+            return;
+        }
+        if paused && navigation.ride_page == RidePage::Main {
+            navigation.pause_hidden = false;
+            navigation.pause_wrapped = true;
+            return;
+        }
+        let page = navigation.ride_page.preceding();
+        navigation.ride_page_chosen(page);
     }
 }

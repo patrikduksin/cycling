@@ -260,11 +260,209 @@ impl Totals {
     }
 }
 
+/// The best-effort durations, in seconds: 5 s, 1 min, 5 min and 20 min.
+pub const EFFORT_SECONDS: [u32; 4] = [5, 60, 300, 1200];
+/// Seconds of power kept one by one, for the short efforts.
+const FINE: usize = 60;
+/// Seconds summed into one coarse bucket for the long efforts.
+const BUCKET_S: u32 = 10;
+/// Coarse buckets kept: 20 minutes.
+const BUCKETS: usize = 120;
+
+/// The highest average power this ride held for each of
+/// [`EFFORT_SECONDS`], from one power sample per recorded second.
+///
+/// 5 s and 1 min are exact over every window of samples. 5 and 20 min are
+/// measured over windows that start on a 10 s bucket, which keeps the state
+/// at about 600 bytes; such a window is at most 9 s off the best one, so the
+/// result can read a few watts low, never high. Seconds without a power
+/// reading are skipped, as normalized power skips them.
+#[derive(Clone)]
+pub struct Efforts {
+    fine: [u16; FINE],
+    fine_len: usize,
+    fine_next: usize,
+    /// Running sums of the last 5 and 60 samples.
+    short: [u32; 2],
+    bucket: u32,
+    bucket_len: u32,
+    buckets: [u32; BUCKETS],
+    buckets_len: usize,
+    buckets_next: usize,
+    /// Running sums of the last 30 and 120 buckets.
+    long: [u32; 2],
+    best: [Option<u16>; 4],
+    /// Credited time not yet a whole second, and its energy in W·ms.
+    carry_ms: u64,
+    carry_energy: u64,
+}
+
+impl Default for Efforts {
+    fn default() -> Self {
+        Self {
+            fine: [0; FINE],
+            fine_len: 0,
+            fine_next: 0,
+            short: [0; 2],
+            bucket: 0,
+            bucket_len: 0,
+            buckets: [0; BUCKETS],
+            buckets_len: 0,
+            buckets_next: 0,
+            long: [0; 2],
+            best: [None; 4],
+            carry_ms: 0,
+            carry_energy: 0,
+        }
+    }
+}
+
+impl Efforts {
+    /// Account `elapsed_ms` of recorded time at `watts`, resampled onto a
+    /// one-second grid: a long step counts for every second it covers, and
+    /// a second split between steps averages their power.
+    pub fn add_ms(&mut self, watts: u16, elapsed_ms: u64) {
+        // Steps are capped at a few seconds; the bound keeps a frame short.
+        let mut left = elapsed_ms.min(10_000);
+        while left > 0 {
+            let take = left.min(1000 - self.carry_ms);
+            left -= take;
+            self.carry_ms += take;
+            self.carry_energy += u64::from(watts) * take;
+            if self.carry_ms == 1000 {
+                let second = (self.carry_energy / 1000) as u16;
+                (self.carry_ms, self.carry_energy) = (0, 0);
+                self.add(second);
+            }
+        }
+    }
+
+    /// Account one recorded second of power.
+    pub fn add(&mut self, watts: u16) {
+        // Short windows: drop what leaves each window, then add the new second.
+        for (sum, window) in self.short.iter_mut().zip([5usize, FINE]) {
+            if self.fine_len >= window {
+                let leaving = (self.fine_next + FINE - window) % FINE;
+                *sum -= u32::from(self.fine[leaving]);
+            }
+            *sum += u32::from(watts);
+        }
+        self.fine[self.fine_next] = watts;
+        self.fine_next = (self.fine_next + 1) % FINE;
+        self.fine_len = (self.fine_len + 1).min(FINE);
+        for (slot, window) in [(0, 5usize), (1, FINE)] {
+            if self.fine_len >= window {
+                self.raise(slot, self.short[slot] / window as u32);
+            }
+        }
+        self.bucket += u32::from(watts);
+        self.bucket_len += 1;
+        if self.bucket_len < BUCKET_S {
+            return;
+        }
+        let bucket = core::mem::take(&mut self.bucket);
+        self.bucket_len = 0;
+        for (sum, window) in self.long.iter_mut().zip([30usize, BUCKETS]) {
+            if self.buckets_len >= window {
+                let leaving = (self.buckets_next + BUCKETS - window) % BUCKETS;
+                *sum -= self.buckets[leaving];
+            }
+            *sum += bucket;
+        }
+        self.buckets[self.buckets_next] = bucket;
+        self.buckets_next = (self.buckets_next + 1) % BUCKETS;
+        self.buckets_len = (self.buckets_len + 1).min(BUCKETS);
+        for (slot, window) in [(2, 30usize), (3, BUCKETS)] {
+            if self.buckets_len >= window {
+                let seconds = window as u32 * BUCKET_S;
+                self.raise(slot, self.long[slot - 2] / seconds);
+            }
+        }
+    }
+
+    fn raise(&mut self, slot: usize, watts: u32) {
+        let watts = watts.min(u32::from(u16::MAX)) as u16;
+        self.best[slot] = self.best[slot].max(Some(watts));
+    }
+
+    /// Best average watts for each of [`EFFORT_SECONDS`]; none until the
+    /// ride has that much power.
+    pub fn best(&self) -> [Option<u16>; 4] {
+        self.best
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SEA_LEVEL: u32 = 10_132_500;
+
+    #[test]
+    fn long_steps_count_for_every_second_they_cover() {
+        // Two 2 s bursts at 900 W around one 3 s step at 100 W: the best
+        // 5 s is (900 + 900 + 100 * 3) / 5 = 420 W, not 740 W.
+        let mut efforts = Efforts::default();
+        for (watts, ms) in [(900, 2000), (100, 3000), (900, 2000)] {
+            efforts.add_ms(watts, ms);
+        }
+        assert_eq!(efforts.best()[0], Some(420));
+        // Part seconds carry over.
+        let mut efforts = Efforts::default();
+        for _ in 0..10 {
+            efforts.add_ms(300, 500);
+        }
+        assert_eq!(efforts.best()[0], Some(300));
+        // A second split between steps averages them: 1.5 s at 0 W and 1.5 s
+        // at 900 W, three times, holds 450 W on average and at most 540 W
+        // over any 5 s.
+        let mut efforts = Efforts::default();
+        for _ in 0..3 {
+            efforts.add_ms(0, 1500);
+            efforts.add_ms(900, 1500);
+        }
+        let best = efforts.best()[0].unwrap();
+        assert!(best <= 540, "{best}");
+    }
+
+    #[test]
+    fn best_efforts_find_the_hardest_window_of_each_length() {
+        let mut efforts = Efforts::default();
+        assert_eq!(efforts.best(), [None; 4]);
+        // 10 min at 200 W, a 7 s sprint at 900 W, then 25 min at 250 W.
+        for _ in 0..600 {
+            efforts.add(200);
+        }
+        for _ in 0..7 {
+            efforts.add(900);
+        }
+        let best = efforts.best();
+        assert_eq!(best[0], Some(900));
+        // The best minute holds the whole sprint: 53 s at 200 and 7 at 900.
+        assert_eq!(best[1], Some(((53 * 200 + 7 * 900u32) / 60) as u16));
+        assert_eq!(best[2], Some(200), "bucket-aligned five minutes");
+        assert_eq!(best[3], None, "less than 20 min of buckets");
+        for _ in 0..1500 {
+            efforts.add(250);
+        }
+        let best = efforts.best();
+        assert_eq!(best[0], Some(900), "a best is never lowered");
+        // The sprint lifts the windows that hold it above the steady 250 W.
+        assert_eq!(best[2], Some(((7 * 900 + 293 * 250u32) / 300) as u16));
+        assert_eq!(best[3], Some(((7 * 900 + 1193 * 250u32) / 1200) as u16));
+    }
+
+    #[test]
+    fn long_efforts_read_low_by_at_most_one_bucket_never_high() {
+        let mut efforts = Efforts::default();
+        // 5 min at 300 W that starts 5 s into a bucket, around 100 W.
+        for second in 0..1200u32 {
+            let hard = (5..305).contains(&second);
+            efforts.add(if hard { 300 } else { 100 });
+        }
+        let five = efforts.best()[2].unwrap();
+        assert!((300 - 200 * 9 / 300 - 1..=300).contains(&five), "{five}");
+    }
 
     fn riding(speed_mm_s: u32, watts: u16, bpm: u16, cadence_rpm: u16) -> Sample {
         Sample {

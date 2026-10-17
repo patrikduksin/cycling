@@ -39,19 +39,10 @@ fn paired_sensors_pass_the_connection_check() {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.home("RIDE");
     let screen = sim.screen();
-    for line in [
-        "SPEED 777 CONNECTED",
-        "HEART 4242 CONNECTED",
-        "POWER 1234 CONNECTED",
-        "GPS FIX OK",
-    ] {
-        assert!(
-            screen.shows_check(line),
-            "{line}; screen:\n{}",
-            screen.text()
-        );
+    for line in ["READY", "GPS LOCKED", "3 SENSORS LIVE", "HR  PWR  SPD/C"] {
+        assert!(screen.contains(line), "{line}; screen:\n{}", screen.text());
     }
-    sim.checkpoint("connection check passes");
+    sim.checkpoint("ready with every sensor live");
 }
 
 #[test]
@@ -145,11 +136,10 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
     assert!(rides[0].samples().count() >= before);
     assert_eq!(rides[0].kinds().last(), Some(&Kind::Recovered));
 
-    // The rider is told the interrupted ride was kept, then rides on.
+    // Ready tells the rider the interrupted ride was kept, then they ride on.
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.expect_text("RECOVERED");
-    sim.checkpoint("recovered ride named on the ride screen");
+    sim.expect_text("LAST RIDE RECOVERED");
+    sim.checkpoint("recovered ride named on Ready");
     sim.press(device_api::input::Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     sim.advance(seconds(20));
@@ -158,6 +148,16 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
     assert_eq!(rides.len(), 2);
     assert_ne!(rides[0].id, rides[1].id);
     assert_eq!(rides[1].kinds().last(), Some(&Kind::Finish));
+}
+
+/// Radar alerts sounded: the 300 ms pattern, which ride chimes never use.
+fn alerts(sim: &Sim) -> usize {
+    sim.device
+        .speaker
+        .played
+        .iter()
+        .filter(|(_, id)| *id == 22)
+        .count()
 }
 
 /// A finished ride that leaves `free` sample slots before the terminal slot.
@@ -209,10 +209,9 @@ fn nearly_full_storage_warns_and_a_full_journal_closes_the_ride() {
     let mut sim = equip(sim.boot());
     sim.pair(&["HEART RATE"]);
     sim.home("RIDE");
-    sim.expect_check("STORAGE 0:10 LEFT");
-    sim.checkpoint("connection check shows ten minutes of storage");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.expect_text("STORAGE 10M LEFT");
+    sim.expect_text("ROOM FOR 10 MIN");
+    sim.expect_text("EXPORT OLD RIDES");
+    sim.checkpoint("ready shows ten minutes of storage");
     sim.press(device_api::input::Button::BottomRight);
     sim.wait_for("REC 9M LEFT", seconds(2)).unwrap();
     sim.ride_at(28.0, 0.0, 140.0, 0.0);
@@ -249,7 +248,7 @@ fn nearly_full_storage_warns_and_a_full_journal_closes_the_ride() {
 fn power_lost_during_the_first_write_of_a_fresh_journal_still_records() {
     let mut sim = rider();
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
+    sim.expect_text("READY");
     // Power fails ten bytes into the very first START record.
     sim.fail_storage(0, 10);
     sim.press(device_api::input::Button::BottomRight);
@@ -278,7 +277,9 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     sim.start_ride();
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(5));
-    assert!(sim.device.speaker.played.is_empty());
+    // Starting chimed once; no alert yet.
+    assert_eq!(alerts(&sim), 0);
+    assert!(!sim.device.speaker.played.is_empty(), "the start chime");
 
     sim.vehicle(Vehicle {
         range_m: 120.0,
@@ -289,10 +290,10 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     sim.advance(seconds(2));
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 1, "{radar:?}");
-    assert!(sim.device.speaker.played.is_empty(), "alert while far away");
+    assert_eq!(alerts(&sim), 0, "alert while far away");
     // Six seconds from reaching the rider, VANA beeps.
     sim.advance(seconds(4));
-    assert_eq!(sim.device.speaker.played.len(), 1, "no alert when close");
+    assert_eq!(alerts(&sim), 1, "no alert when close");
     sim.checkpoint("vehicle close, alert sounded");
     sim.advance(seconds(15));
     let radar = sim.device.sdk.radar(sim.device.now);
@@ -495,7 +496,7 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
     assert!(counts.windows(2).all(|w| w[1] <= w[0]), "{counts:?}");
     assert!(counts.iter().any(|&n| (1..6).contains(&n)), "{counts:?}");
     assert_eq!(counts.last(), Some(&0), "{counts:?}");
-    assert!(sim.device.speaker.played.len() >= 5, "alerts sounded");
+    assert!(alerts(&sim) >= 5, "alerts sounded");
     sim.checkpoint("all vehicles passed");
 
     // The radar is still connected: a new vehicle is detected.
@@ -613,13 +614,15 @@ fn stats_page_totals_a_steady_ten_minutes() {
     );
     sim.checkpoint("stats page after ten minutes");
 
-    // Stopping keeps the totals on screen; pages still wrap, TopLeft is Home.
+    // The summary keeps the totals; its pages wrap, TopLeft is Home.
     sim.stop_ride();
     sim.expect_field("AVG W", "200");
-    sim.checkpoint("stats page after saving");
-    ride_page(&mut sim, "4/4");
+    sim.checkpoint("summary after saving");
+    sim.ride_page("2/3");
+    sim.expect_field("NP W", "200");
     sim.press(Button::BottomLeft);
-    assert_eq!(sim.screen().page().as_deref(), Some("1/4"));
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("1/3"));
     sim.press(Button::TopLeft);
     assert!(sim.on_home(), "{}", sim.screen().text());
 }
@@ -671,6 +674,7 @@ fn pause_leaves_the_totals_untouched() {
 
     // Paused but still rolling hard: nothing the wheel or pedals do counts.
     sim.pause_ride();
+    sim.show_ride_pages();
     let screen = sim.screen();
     let before: Vec<_> = TOTALS.iter().map(|label| screen.field(label)).collect();
     sim.checkpoint("stats when paused");
@@ -977,8 +981,9 @@ fn manual_laps_compare_each_effort_with_the_last() {
     assert_eq!(color_of(&sim, &slower), SECONDARY);
     sim.checkpoint("lap page, easy third lap");
     sim.stop_ride();
-    // Laps stay on screen after saving, like the totals.
-    sim.expect_text("LAP 3");
+    // The summary counts the three laps, the open one included.
+    sim.ride_page("3/3");
+    sim.expect_field("LAPS", "3");
 }
 
 #[test]
@@ -1025,6 +1030,7 @@ fn paused_time_is_not_lap_time() {
     sim.advance(minutes(2));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.pause_ride();
+    sim.show_ride_pages();
     let held = sim.screen().field("LAP TIME").unwrap();
     assert!(held.starts_with("02:0"), "{held}");
     sim.advance(minutes(5));
@@ -1074,29 +1080,35 @@ fn ending_a_ride_needs_a_pause_first() {
     // Recording, TopLeft laps however often it is pressed.
     for _ in 0..3 {
         sim.press(Button::TopLeft);
-        sim.expect_no_text("PRESS AGAIN TO SAVE");
+        sim.expect_no_text("END RIDE?");
     }
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recording"), "{status}");
 
+    // Paused, the whole screen says so; TopLeft asks, BACK keeps riding.
     sim.pause_ride();
+    sim.expect_text("RIDE TIME");
     sim.checkpoint("paused");
     sim.press(Button::TopLeft);
-    sim.expect_text("PRESS AGAIN TO SAVE");
+    sim.expect_text("END RIDE?");
+    assert_eq!(sim.vana_page(), "end_ride");
+    sim.checkpoint("end ride?");
+    // The question waits; nothing ends the ride but an answer.
+    sim.advance(seconds(10));
+    sim.expect_text("END RIDE?");
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=paused"), "{status}");
-    sim.checkpoint("paused, press again to save");
-    // The confirmation lapses after three seconds, within a frame.
-    sim.advance(seconds(3));
-    sim.wait_gone("PRESS AGAIN TO SAVE", 600).unwrap();
+    sim.press(Button::TopLeft);
     sim.expect_text("PAUSED");
+    sim.expect_no_text("END RIDE?");
+    // Asked again and answered with ACT: saved, then the summary.
     sim.press(Button::TopLeft);
-    sim.press(Button::TopLeft);
-    sim.wait_for("SAVED", seconds(5)).unwrap();
-    sim.checkpoint("saved after pause and end ride");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
+    assert_eq!(sim.vana_page(), "summary");
+    sim.checkpoint("ride saved summary");
     assert_eq!(sim.rides()[0].kinds().last(), Some(&Kind::Finish));
-    sim.press(Button::TopLeft);
-    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.done();
 }
 
 #[test]
@@ -1107,19 +1119,19 @@ fn ending_a_ride_right_after_a_lap_shows_the_prompt() {
     sim.ride_at(30.0, 200.0, 0.0, 90.0);
     sim.advance(minutes(1));
     sim.lap(1);
-    // The lap toast still covers the status row; pause and end anyway.
+    // The lap toast is still up; pause and end anyway.
     sim.press(Button::BottomRight);
     assert_eq!(sim.ride_state(), "paused");
     sim.press(Button::TopLeft);
-    sim.expect_text("PRESS AGAIN TO SAVE");
+    sim.expect_text("END RIDE?");
     sim.expect_no_text("LAP 1 ");
-    sim.checkpoint("end ride armed over a lap toast");
-    sim.press(Button::TopLeft);
-    sim.wait_for("SAVED", seconds(5)).unwrap();
+    sim.checkpoint("end ride asked over a lap toast");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
 
     // The helpers cope with a toast too: lap, then stop at once.
-    sim.press(Button::BottomRight);
-    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.done();
+    sim.start_ride();
     sim.advance(seconds(10));
     sim.lap(1);
     sim.stop_ride();
@@ -1349,12 +1361,13 @@ fn connects(sim: &Sim, kind: u8) -> Vec<u16> {
         .collect()
 }
 
+/// Open Ready from Home and read its sensors line and the names under it.
 #[track_caller]
-fn expect_check_lines(sim: &mut Sim, lines: &[&str]) {
+fn expect_ready_sensors(sim: &mut Sim, lines: &[&str]) {
     sim.home("RIDE");
-    sim.expect_text("CONNECTION CHECK");
+    sim.expect_text("READY");
     for line in lines {
-        sim.expect_check(line);
+        sim.expect_text(line);
     }
 }
 
@@ -1386,9 +1399,8 @@ fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     sim.checkpoint("sensors after reboot");
     go_home(&mut sim);
 
-    expect_check_lines(&mut sim, &["HEART 4242 CONNECTED", "POWER 1234 CONNECTED"]);
-    sim.checkpoint("connection check after reboot");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
+    expect_ready_sensors(&mut sim, &["2 SENSORS LIVE", "HR", "PWR"]);
+    sim.checkpoint("ready after reboot");
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     sim.ride_at(27.0, 205.0, 138.0, 88.0);
@@ -1483,8 +1495,9 @@ fn disconnect_is_remembered_across_reboot() {
     sim.advance(seconds(20));
     assert!(connects(&sim, device_type::HEART_RATE).is_empty());
     assert_eq!(link(&sim, device_type::HEART_RATE), None);
-    expect_check_lines(&mut sim, &["HEART --", "POWER 1234 CONNECTED"]);
-    sim.checkpoint("connection check without the removed sensor");
+    expect_ready_sensors(&mut sim, &["1 SENSOR LIVE", "PWR"]);
+    sim.expect_no_text("HR");
+    sim.checkpoint("ready without the removed sensor");
 }
 
 #[test]
@@ -1517,7 +1530,7 @@ fn same_type_replacement_is_saved_and_survives_reboot() {
     sim.power_loss();
     wait_connected(&mut sim, device_type::HEART_RATE, seconds(5));
     assert_eq!(connects(&sim, device_type::HEART_RATE), [second]);
-    expect_check_lines(&mut sim, &[&format!("HEART {second} CONNECTED")]);
+    expect_ready_sensors(&mut sim, &["1 SENSOR LIVE", "HR"]);
     sim.checkpoint("replacement after reboot");
 }
 
@@ -1563,9 +1576,10 @@ fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
     let latency = sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
     assert!(latency <= seconds(5), "auto-pause took {latency} ms");
     println!("auto-pause latency {latency} ms");
-    // The status bar marks an automatic pause; the toast spells it out.
-    let paused = sim.screen().run("AUTO").expect("AUTO in the status bar");
-    assert_eq!((paused.y < 24, paused.color), (true, AMBER));
+    // The paused screen names an automatic pause in amber.
+    let paused = sim.screen().run("AUTO PAUSED").expect("AUTO PAUSED");
+    assert_eq!(paused.color, AMBER);
+    sim.expect_text("RIDE ON TO RESUME");
     sim.checkpoint("auto paused at the light");
     sim.advance(seconds(60));
     sim.expect_text("AUTO PAUSED");
@@ -1588,7 +1602,7 @@ fn riding_off_starts_the_ride_by_itself() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
+    sim.expect_text("READY");
     sim.advance(seconds(5));
     assert!(sim.rides().is_empty());
     sim.checkpoint("waiting at standstill");
@@ -1611,6 +1625,7 @@ fn a_manual_pause_does_not_resume_when_the_bike_moves() {
     sim.advance(seconds(60));
     assert!(sim.screen().run("PAUSED").is_some());
     sim.expect_no_text("AUTO");
+    sim.expect_text("FOR 01:00");
     assert!(!recording(&mut sim));
     sim.checkpoint("manual pause while riding");
 }
@@ -1650,6 +1665,9 @@ fn slow_steep_climbing_never_auto_pauses() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     sim.ride_at(5.0, 180.0, 0.0, 50.0);
+    // Let the wheel report the climbing speed before starting: started
+    // while it still reads standstill, a ride pauses at once, rightly.
+    sim.advance(seconds(3));
     sim.start_ride();
     sim.advance(minutes(5));
     assert!(recording(&mut sim));
@@ -1665,7 +1683,7 @@ fn slow_steep_climbing_never_auto_pauses() {
         .iter()
         .filter(|kind| **kind == Kind::Pause)
         .count();
-    assert_eq!(pauses, 1);
+    assert_eq!(pauses, 1, "{:?}", sim.rides()[0].kinds());
 }
 
 /// Advance in firmware passes until the panel lights; returns the uptime then.
@@ -1883,11 +1901,12 @@ fn a_ride_must_end_before_the_device_can_turn_off() {
     sim.expect_no_text("TURN OFF");
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recording"), "{status}");
-    // Paused, TopLeft only arms ending the ride.
+    // Paused, TopLeft only asks to end the ride; BACK answers no.
     sim.pause_ride();
     sim.press(Button::TopLeft);
     sim.expect_no_text("TURN OFF");
-    sim.advance(seconds(6));
+    sim.expect_text("END RIDE?");
+    sim.press(Button::TopLeft);
     sim.resume_ride();
     sim.stop_ride();
     sim.press(Button::TopLeft);
@@ -1999,9 +2018,8 @@ fn unformatted_bulk_media_records_internally_until_initialized() {
     let mut sim = bulk_rider();
     sim.pair(&["HEART RATE"]);
     sim.home("RIDE");
-    sim.expect_check("INT 4:32 LEFT");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.wait_for("READY INT", seconds(5)).unwrap();
+    sim.expect_text("ROOM FOR 4 H");
+    sim.expect_text("ON INTERNAL MEMORY");
     sim.checkpoint("unformatted MMC: rides go to internal flash");
     let (_, status) = sim.command("RIDE STATUS");
     assert!(
@@ -2016,13 +2034,11 @@ fn unformatted_bulk_media_records_internally_until_initialized() {
     // Ten metadata sectors (superblocks and ring), not the 3 GB region.
     assert_eq!(sim.device.bulk.writes(), 10);
     sim.press(Button::TopLeft);
-    sim.press(Button::TopLeft);
     sim.home("RIDE");
-    sim.expect_check("MMC 6419H LEFT");
+    sim.advance(seconds(1));
+    sim.expect_text("ROOM FOR 6419 H");
+    sim.expect_no_text("ON INTERNAL MEMORY");
     sim.checkpoint("formatted MMC: 6,419 hours left");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.advance(seconds(3));
-    sim.expect_no_text("READY INT");
 }
 
 #[test]
@@ -2067,9 +2083,8 @@ fn bulk_media_keeps_a_long_ride_through_power_loss() {
     assert!(sim.rides().is_empty(), "the internal journal is untouched");
 
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.expect_text("RECOVERED");
-    sim.checkpoint("recovered MMC ride named on the ride screen");
+    sim.expect_text("LAST RIDE RECOVERED");
+    sim.checkpoint("recovered MMC ride named on Ready");
 }
 
 #[test]
@@ -2260,7 +2275,7 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
+    sim.expect_text("UNDER 1 MIN OF ROOM");
     sim.press(Button::BottomRight);
     // The countdown replaces RECORDING: there is room for 32 seconds.
     sim.wait_for("REC 0M LEFT", seconds(2)).unwrap();
@@ -2274,13 +2289,15 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     assert_eq!(status_field(&status, "fallback"), "1", "{status}");
     sim.expect_no_text("INT");
     let active = sim.screen().elapsed().unwrap();
-    // The RECORDING toast covers the countdown for its first seconds.
     assert!(
         ("0:00:20"..="0:00:23").contains(&active.as_str()),
         "{active}"
     );
 
     // The next ride goes to internal flash, and the screen says so.
+    sim.done();
+    sim.home("RIDE");
+    sim.expect_text("ON INTERNAL MEMORY");
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING INT", seconds(3)).unwrap();
     let (_, status) = sim.command("RIDE STATUS");
@@ -2290,9 +2307,8 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     // After a reboot nothing is shown from the MMC ride: rides go internal.
     sim.power_loss();
     sim.home("RIDE");
-    sim.expect_check("INT 4:32 LEFT");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.wait_for("READY INT", seconds(5)).unwrap();
+    sim.expect_text("ROOM FOR 4 H");
+    sim.expect_text("ON INTERNAL MEMORY");
     sim.checkpoint("an MMC without room: rides record internally");
     let (_, status) = sim.command("RIDE STATUS");
     assert_eq!(status_field(&status, "fallback"), "1", "{status}");
@@ -2328,8 +2344,7 @@ fn bulk_rides_without_superblocks_are_kept_out_of_export_and_clear() {
         "the records stay for diagnosis"
     );
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
-    sim.wait_for("READY INT", seconds(5)).unwrap();
+    sim.expect_text("ON INTERNAL MEMORY");
     sim.checkpoint("MMC metadata lost: kept, and rides record internally");
 }
 
@@ -2349,7 +2364,7 @@ fn a_continuation_that_cannot_start_does_not_count_the_bulk_ride_twice() {
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);
     sim.home("RIDE");
-    sim.wait_for("KM/H", seconds(5)).unwrap();
+    sim.expect_text("READY");
     sim.press(Button::BottomRight);
     sim.wait_for("REC 0M LEFT", seconds(2)).unwrap();
     sim.advance(seconds(60));
@@ -2463,7 +2478,8 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
     sim.start_ride();
     sim.advance(seconds(20));
     sim.stop_ride();
-    sim.wait_for("SAVED INT", seconds(5)).unwrap();
+    // The summary shows the saved ride; Home stays put for the next one.
+    sim.done();
     sim.advance(seconds(2));
     sim.command("RIDE STATUS");
     sim.init_bulk();
@@ -2472,9 +2488,12 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
     let (result, _) = sim.command("RIDE START");
     assert_eq!(result, "ACCEPTED");
     sim.advance(seconds(2));
-    sim.expect_text("STORAGE ERROR");
-    sim.expect_no_text("SAVED INT");
-    sim.checkpoint("the MMC fails its first START: the error shows, not the saved internal ride");
+    // The failed MMC ride is not shown as saved; the next ride records
+    // internally, and Ready says where.
+    sim.home("RIDE");
+    sim.expect_no_text("RIDE SAVED");
+    sim.expect_text("ON INTERNAL MEMORY");
+    sim.checkpoint("the MMC fails its first START: Ready falls back to internal");
     let (_, status) = sim.command("RIDE STATUS");
     assert_eq!(status_field(&status, "medium"), "bulk", "{status}");
     assert_eq!(status_field(&status, "state"), "error", "{status}");
@@ -2534,9 +2553,10 @@ fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     assert!(sim.on_home(), "{}", sim.screen().text());
     sim.expect_text("1/1 LIVE");
     sim.checkpoint("home after tapping a sensor");
-    // The RIDE tile opens the connection check.
+    // The RIDE tile opens Ready.
     sim.tap(120, 80);
-    sim.expect_text("CONNECTION CHECK");
+    sim.expect_text("READY");
+    sim.expect_text("1 SENSOR LIVE");
 }
 
 #[test]
@@ -2560,19 +2580,24 @@ fn status_bar_and_toasts_follow_the_ride_state() {
 
     sim.pause_ride();
     sim.advance(seconds(3));
+    // The paused screen, then the ride pages with PAUSED in the status bar.
+    let paused = sim.screen().run("PAUSED").expect("PAUSED");
+    assert_eq!((paused.y > 24, paused.color), (true, AMBER));
+    sim.checkpoint("paused screen");
+    sim.show_ride_pages();
     let paused = sim
         .screen()
         .run("PAUSED")
         .expect("PAUSED in the status bar");
     assert_eq!((paused.y < 24, paused.color), (true, AMBER));
-    sim.checkpoint("paused");
+    sim.checkpoint("paused, ride pages");
 
     sim.press(Button::TopLeft);
-    sim.expect_text("PRESS AGAIN TO SAVE");
-    sim.checkpoint("end ride armed toast");
-    sim.press(Button::TopLeft);
+    sim.expect_text("END RIDE?");
+    sim.checkpoint("end ride?");
+    sim.press(Button::BottomRight);
     sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
-    sim.checkpoint("ride saved toast");
+    sim.checkpoint("ride saved summary");
     assert!(sim.screen().run("REC").is_none());
 }
 
@@ -2606,6 +2631,137 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
     }
     let (_, status) = sim.command("RIDE STATUS");
     assert!(status.contains("state=recording"), "{status}");
-    sim.expect_no_text("PRESS AGAIN TO SAVE");
+    sim.expect_no_text("END RIDE?");
     sim.checkpoint("still recording after taps");
+}
+
+/// The whole ride lifecycle as a rider meets it: Ready, the start, a lap,
+/// pausing and paging, a change of mind at "End ride?", then saving, the
+/// summary pages and Done back Home.
+#[test]
+fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
+    let mut sim = rider();
+    sim.set_battery(22, false);
+    sim.home("RIDE");
+    assert_eq!(sim.vana_page(), "ready");
+    // Nothing paired: Ready says so in words, and still lets the ride start.
+    sim.expect_text("ALMOST READY");
+    sim.expect_text("NO SENSORS");
+    sim.expect_text("TAP HERE TO PAIR ONE");
+    sim.expect_text("CHARGE AFTER THE RIDE");
+    sim.checkpoint("ready, almost: no sensors and a low battery");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
+
+    sim.set_battery(80, false);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.home("RIDE");
+    sim.expect_text("READY");
+    sim.expect_no_text("ALMOST");
+    sim.checkpoint("ready: GPS, three sensors, battery and room");
+
+    // ACT starts at once: the ride pages, a RECORDING toast and a chime.
+    let chimes = sim.device.speaker.played.len();
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    assert_eq!(sim.vana_page(), "ride");
+    assert_eq!(sim.device.speaker.played.len(), chimes + 1, "start chime");
+    sim.checkpoint("recording");
+    sim.ride_at(30.0, 220.0, 140.0, 90.0);
+    sim.advance(minutes(6));
+    sim.lap(1);
+    sim.checkpoint("lap");
+    sim.advance(minutes(1));
+
+    // Pause fills the screen and counts the pause.
+    sim.pause_ride();
+    sim.advance(seconds(12));
+    sim.expect_text("PAUSED");
+    sim.expect_text("FOR 00:12");
+    sim.checkpoint("paused screen");
+    // MOVE shows the ride pages under PAUSED, and past the last page the
+    // paused screen comes back.
+    sim.show_ride_pages();
+    sim.checkpoint("paused, ride pages");
+    for _ in 0..8 {
+        if sim.screen().contains("RIDE TIME") {
+            break;
+        }
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("RIDE TIME");
+
+    // BACK asks; BACK again keeps the ride.
+    sim.press(Button::TopLeft);
+    sim.expect_text("END RIDE?");
+    sim.checkpoint("end ride?");
+    sim.press(Button::TopLeft);
+    assert_eq!(sim.ride_state(), "paused");
+    // Resuming chimes too.
+    let chimes = sim.device.speaker.played.len();
+    sim.resume_ride();
+    sim.wait_for("RESUMED", seconds(2)).unwrap();
+    assert_eq!(sim.device.speaker.played.len(), chimes + 1, "resume chime");
+    sim.advance(minutes(1));
+
+    // Now end it: the summary shows the ride over three pages.
+    sim.stop_ride();
+    assert_eq!(sim.vana_page(), "summary");
+    sim.expect_text("RIDE SAVED");
+    sim.expect_field("AVG W", "220");
+    sim.checkpoint("summary: ride saved");
+    sim.swipe_next();
+    sim.expect_field("NP W", "220");
+    sim.checkpoint("summary: effort and zones");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("BEST POWER W");
+    sim.expect_field("LAPS", "2");
+    sim.checkpoint("summary: best power, climbs and laps");
+    sim.done();
+    sim.checkpoint("home after the ride");
+}
+
+/// Rolling off from Ready starts the ride, and a stop at a light shows the
+/// whole-screen automatic pause until the rider rolls on.
+#[test]
+fn rolling_off_from_ready_starts_and_stopping_auto_pauses() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.home("RIDE");
+    sim.expect_text("READY");
+    sim.ride_at(20.0, 0.0, 0.0, 80.0);
+    sim.wait_for("REC", seconds(10)).unwrap();
+    assert_eq!(sim.vana_page(), "ride");
+    sim.checkpoint("auto start from ready");
+    sim.advance(minutes(1));
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
+    sim.expect_text("RIDE ON TO RESUME");
+    sim.checkpoint("auto paused screen");
+    sim.ride_at(20.0, 0.0, 0.0, 80.0);
+    sim.wait_gone("AUTO PAUSED", seconds(15)).unwrap();
+    sim.expect_no_text("RIDE TIME");
+    assert!(recording(&mut sim));
+    sim.checkpoint("auto resumed onto the ride pages");
+}
+
+/// A ride started from the host while the summary shows takes the rider
+/// to its controls, so the buttons can pause and end it.
+#[test]
+fn a_ride_started_remotely_from_the_summary_shows_its_controls() {
+    let mut sim = rider();
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    assert_eq!(sim.vana_page(), "summary");
+    sim.ride_page("3/3");
+    sim.command("RIDE STATUS");
+    assert_eq!(sim.command("RIDE START").0, "ACCEPTED");
+    sim.advance(seconds(2));
+    assert_eq!(sim.vana_page(), "ride");
+    sim.pause_ride();
+    sim.stop_ride();
+    assert_eq!(sim.rides().len(), 2);
+    // The new summary opens at its first page.
+    assert_eq!(sim.screen().page().as_deref(), Some("1/3"));
 }

@@ -1,9 +1,10 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
-use super::chrome::{
-    Align, BLACK, BODY, Battery, CAPTION, CONTENT, Gps, Mark, Row, StatusBar, Toast, WHITE, WIDTH,
-};
+use super::chrome::{BLACK, Battery, CONTENT, Gps, Mark, Row, StatusBar, Toast, WIDTH};
+use super::cue::{Badge, Cue};
 use super::home::Home;
+use super::ready::Readiness;
+use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
 use crate::ride::climb::Climbs;
 use crate::ride::laps::{Lap, Laps};
@@ -21,9 +22,16 @@ pub enum Page {
     Boot,
     Home,
     Sensors,
-    Preflight,
+    /// Before a ride: what is ready, and ACT starts.
+    Ready,
     Ride,
+    /// "End ride?" over a paused ride.
+    EndRide,
+    /// Saving, then the saved ride's summary.
+    Summary,
     Settings,
+    /// Placeholder for connecting a phone (rides to the phone, FIT export).
+    Phone,
 }
 
 impl Page {
@@ -32,9 +40,12 @@ impl Page {
             Self::Boot => "boot",
             Self::Home => "home",
             Self::Sensors => "sensors",
-            Self::Preflight => "preflight",
+            Self::Ready => "ready",
             Self::Ride => "ride",
+            Self::EndRide => "end_ride",
+            Self::Summary => "summary",
             Self::Settings => "settings",
+            Self::Phone => "phone",
         }
     }
 }
@@ -68,8 +79,8 @@ pub struct View {
     pub climbs: Climbs,
     /// Finished laps for the lap page's chart, oldest first.
     pub lap_bars: ride::LapBars,
-    /// What a canvas page (stats, lap, climb, Settings, Preflight, boot)
-    /// prepared for this frame.
+    /// What a canvas page (stats, lap, climb, Settings, Ready, paused, end
+    /// ride, summary, boot) prepared for this frame.
     pub(super) canvas: Canvas,
     pub(super) smooth: Smooth,
     pub zone_time: ZoneTime,
@@ -85,6 +96,17 @@ pub struct View {
     pub editing: bool,
     pub time: Text<16>,
     pub lines: [Text<38>; 9],
+    /// Ready: the checks before a ride.
+    pub readiness: Readiness,
+    /// How long the ride has been paused.
+    pub paused_secs: u64,
+    /// The paused ride shows the paused screen rather than a ride page.
+    pub pause_screen: bool,
+    /// The summary after a ride.
+    pub after: After,
+    /// Button cues prepared for this frame.
+    pub(super) cues: heapless::Vec<Cue, 2>,
+    pub(super) badge: Option<Badge>,
 }
 impl View {
     pub fn new(page: Page, cursor: usize, utc: Option<u64>) -> Self {
@@ -128,6 +150,12 @@ impl View {
             editing: false,
             time,
             lines: core::array::from_fn(|_| Text::new()),
+            readiness: Readiness::default(),
+            paused_secs: 0,
+            pause_screen: false,
+            after: After::default(),
+            cues: heapless::Vec::new(),
+            badge: None,
         };
         // The brand flash is painted before anything prepares a frame, as
         // the preloaded startup frame: it needs no `prepare` to show.
@@ -143,8 +171,18 @@ impl View {
         pixels.get(x).copied().unwrap_or(0)
     }
 
+    /// The screen takes the whole panel, without the status bar: the brand,
+    /// the paused screen and the end-ride question.
+    fn full_screen(&self) -> bool {
+        matches!(self.page, Page::Boot | Page::EndRide) || self.paused_screen_shown()
+    }
+
+    fn paused_screen_shown(&self) -> bool {
+        self.page == Page::Ride && self.pause_screen
+    }
+
     /// Paint one row of the 240 × 320 canvas: the status bar, the shown
-    /// screen, then the toast over it.
+    /// screen, its button cues, then the toast over it.
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
         row.fill(BLACK);
@@ -152,14 +190,20 @@ impl View {
             self.canvas.paint(row);
             return;
         }
-        if y < CONTENT.top {
+        if y < CONTENT.top && !self.full_screen() {
             self.bar.paint(row);
             return;
         }
         match self.page {
-            Page::Ride => ride::paint(self, row),
+            Page::Ride if !self.pause_screen => ride::paint(self, row),
             Page::Home => self.home.paint(row),
             _ => self.canvas.paint(row),
+        }
+        if let Some(badge) = &self.badge {
+            badge.paint(row);
+        }
+        for cue in &self.cues {
+            cue.paint(row);
         }
         self.paint_toast(row);
     }
@@ -180,58 +224,30 @@ impl View {
         canvas
     }
 
-    /// Preflight: a title, then one row per check, its name in a caption
-    /// over its state.
-    fn lines_canvas(&self) -> Canvas {
-        const LEFT: usize = 16;
-        const RIGHT: usize = WIDTH - 16;
-        let mut canvas = Canvas::default();
-        canvas.caption(
-            self.lines[0].as_bytes(),
-            RIGHT - LEFT,
-            LEFT,
-            40,
-            Align::Left,
-        );
-        let rows = self.lines[1..]
-            .iter()
-            .filter(|line| !line.as_bytes().is_empty());
-        for (row, line) in rows.enumerate() {
-            let base = 64 + row * 34;
-            let text = line.as_bytes();
-            let split = text.iter().position(|&c| c == b' ').unwrap_or(text.len());
-            let (name, state) = (&text[..split], text.get(split + 1..).unwrap_or(&[]));
-            canvas.caption(name, RIGHT - LEFT, LEFT, base, Align::Left);
-            canvas.fit(
-                &[&BODY, &CAPTION],
-                state,
-                RIGHT - LEFT,
-                LEFT,
-                base + 19,
-                Align::Left,
-                WHITE,
-            );
-        }
-        canvas
-    }
-
     /// The per-pixel original of `paint`, kept as the reference it must match.
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
         if self.page == Page::Boot {
             return self.canvas.pixel(x, y, BLACK);
         }
-        if y < CONTENT.top {
+        if y < CONTENT.top && !self.full_screen() {
             return self.bar.pixel(x, y);
         }
         if let Some(color) = self.toast.as_ref().and_then(|toast| toast.pixel(x, y)) {
             return color;
         }
-        match self.page {
-            Page::Ride => ride::reference_pixel(self, x, y),
+        let mut color = match self.page {
+            Page::Ride if !self.pause_screen => ride::reference_pixel(self, x, y),
             Page::Home => self.home.pixel(x, y),
             _ => self.canvas.pixel(x, y, BLACK),
+        };
+        if let Some(badge) = &self.badge {
+            color = badge.pixel(x, y, color);
         }
+        for cue in &self.cues {
+            color = cue.pixel(x, y, color);
+        }
+        color
     }
 
     pub fn prepare(&mut self) {
@@ -242,18 +258,58 @@ impl View {
             _ => Mark::None,
         };
         self.bar = StatusBar::with_battery(&self.time, self.gps, self.battery, mark);
-        match self.page {
-            Page::Boot => self.canvas = self.boot_canvas(),
-            Page::Settings => self.canvas = super::settings::prepare(self),
-            Page::Preflight => self.canvas = self.lines_canvas(),
-            Page::Home | Page::Sensors | Page::Ride => {}
-        }
-        if self.page == Page::Ride {
-            self.bar
-                .set_pages(self.ride_page.index(), RidePage::ALL.len());
-            self.marks = ride::marks(self);
-            ride::prepare(self);
-        }
+        self.cues.clear();
+        self.badge = None;
+        let cues: &[Cue] = match self.page {
+            Page::Boot => {
+                self.canvas = self.boot_canvas();
+                &[]
+            }
+            Page::Settings => {
+                self.canvas = super::settings::prepare(self);
+                &[]
+            }
+            Page::Ready => {
+                self.canvas = super::ready::prepare(&self.readiness);
+                if self.readiness.can_start() {
+                    &super::ready::CUES
+                } else {
+                    &[]
+                }
+            }
+            Page::EndRide => {
+                self.canvas = ride::end::prepare(self);
+                &ride::end::CUES
+            }
+            Page::Summary => {
+                self.bar.set_pages(self.after.page, summary::PAGES);
+                self.marks = ride::marks(self);
+                self.canvas = summary::prepare(self);
+                self.badge = summary::badge(self);
+                if self.after.saving == summary::Saving::Writing {
+                    &[]
+                } else {
+                    core::slice::from_ref(&summary::CUE)
+                }
+            }
+            Page::Phone => {
+                self.canvas = super::phone::prepare();
+                &[]
+            }
+            Page::Ride if self.pause_screen => {
+                self.canvas = ride::paused::prepare(self);
+                &ride::paused::CUES
+            }
+            Page::Ride => {
+                self.bar
+                    .set_pages(self.ride_page.index(), RidePage::ALL.len());
+                self.marks = ride::marks(self);
+                ride::prepare(self);
+                &[]
+            }
+            Page::Home | Page::Sensors => &[],
+        };
+        self.cues = cues.iter().copied().collect();
     }
 }
 
@@ -303,7 +359,7 @@ mod tests {
 
     use crate::screens::chrome::{
         AMBER, CADENCE, GRADE, GREEN, HEART, POWER, RAISED, RED, Rect, SPEED, STATUS_BAR, TOAST,
-        Tone, zone_color,
+        Tone, WHITE, zone_color,
     };
 
     /// The colour of the prepared label that reads `text`.
@@ -531,8 +587,8 @@ mod tests {
         for (page, editing) in [
             (Page::Settings, false),
             (Page::Settings, true),
-            (Page::Preflight, false),
             (Page::Sensors, false),
+            (Page::Phone, false),
         ] {
             let mut view = View::new(page, 1, None);
             view.editing = editing;
@@ -548,6 +604,78 @@ mod tests {
         assert_paints_reference(&view, "boot");
     }
 
+    /// The ride lifecycle screens: Ready, paused, end ride and the summary
+    /// pages, with their cues, badge and a toast.
+    #[test]
+    fn lifecycle_screens_paint_their_reference() {
+        use crate::screens::ready::{Check, Level};
+        use crate::screens::ride::summary::Saving;
+        let sample = Sample {
+            speed_mm_s: Some(8333),
+            power_watts: Some(262),
+            heart_bpm: Some(151),
+            ..Sample::default()
+        };
+        let ride = |page: Page| {
+            let mut view = View::new(page, 0, Some(1_000_000));
+            view.battery = Some(Battery {
+                percent: 80,
+                ..Default::default()
+            });
+            view.gps = Gps::Fixed;
+            view.active_secs = 3725;
+            view.paused_secs = 42;
+            for _ in 0..600 {
+                view.totals.add(1000, 8333, &sample, None);
+                view.zone_time.add(1000, &sample, &view.profile);
+            }
+            view
+        };
+        let mut ready = ride(Page::Ready);
+        for (index, level) in [Level::Good, Level::Wait, Level::Off, Level::Problem]
+            .into_iter()
+            .enumerate()
+        {
+            ready.readiness.checks[index] = Check::new(level, "GPS LOCKED", "YOU CAN START");
+        }
+        ready.prepare();
+        assert!(
+            ready.cues.is_empty(),
+            "no start cue while storage is a problem"
+        );
+        assert_paints_reference(&ready, "ready, blocked");
+        ready.readiness.checks[3] = Check::new(Level::Good, "ROOM FOR 99 H", "");
+        ready.prepare();
+        assert_eq!(ready.cues.len(), 1);
+        assert_paints_reference(&ready, "ready");
+        for auto in [false, true] {
+            let mut paused = ride(Page::Ride);
+            paused.state = Status::Paused;
+            paused.auto_paused = auto;
+            paused.pause_screen = true;
+            paused.toast = Some(Toast::new("WRITE FAILED", Tone::Alert));
+            paused.prepare();
+            assert_eq!(paused.cues.len(), 2);
+            assert_paints_reference(&paused, "paused");
+        }
+        let mut end = ride(Page::EndRide);
+        end.state = Status::Paused;
+        end.prepare();
+        assert_paints_reference(&end, "end ride");
+        for saving in [Saving::Writing, Saving::Saved, Saving::Failed] {
+            for page in 0..crate::screens::ride::summary::PAGES {
+                let mut summary = ride(Page::Summary);
+                summary.state = Status::Saved;
+                summary.after.saving = saving;
+                summary.after.page = page;
+                summary.after.best = [Some(900), Some(400), Some(300), None];
+                summary.prepare();
+                let what = std::format!("summary {page} {saving:?}");
+                assert_paints_reference(&summary, &what);
+            }
+        }
+    }
+
     /// A Boot view straight from `new`, as the startup frame is built,
     /// paints VANA and LABS without `prepare`.
     #[test]
@@ -561,38 +689,15 @@ mod tests {
         assert!(lit > 200, "{lit} lit pixels");
     }
 
-    /// Preflight and the brand flash with the longest lines they can get.
+    /// The brand flash with the longest line it can get.
     #[test]
-    fn text_pages_lay_out_whole_with_long_lines() {
-        let mut view = View::new(Page::Preflight, 0, None);
-        for (line, text) in view.lines.iter_mut().zip([
-            "CONNECTION CHECK",
-            "",
-            "SPEED 65535 WAITING FOR RADIO",
-            "HEART 65535 CONNECTED",
-            "POWER --",
-            "RADAR 65535 SEARCHING",
-            "GPS SEARCHING",
-            "STORAGE 99:59 LEFT",
-            "RADIO WAITING FOR RADIO",
-        ]) {
-            let _ = line.push_str(text);
-        }
-        view.prepare();
+    fn the_brand_lays_out_whole_with_a_long_line() {
         let content = Rect {
             left: 0,
             top: CONTENT.top,
             right: WIDTH,
             bottom: 320,
         };
-        let want = [
-            "CONNECTION CHECK",
-            "65535 WAITING FOR RADIO",
-            "65535 CONNECTED",
-            "WAITING FOR RADIO",
-        ];
-        view.canvas.assert_laid_out(content, &want, "preflight");
-
         let mut view = View::new(Page::Boot, 0, None);
         let _ = view.lines[0].push_str("RADIO WAITING FOR RADIO / GPS SEARCHING");
         view.prepare();

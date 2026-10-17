@@ -17,13 +17,11 @@ use crate::ride::log::{Sample, Source, Status};
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
-use crate::ride::totals::Totals;
+use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
 
-/// A second end-ride press within this window finishes the ride.
-const STOP_CONFIRM_MS: u64 = 3000;
 /// A finished lap shows in the status row this long.
 const LAP_TOAST_MS: u64 = 2000;
 
@@ -42,6 +40,7 @@ pub(super) enum Request {
 #[derive(Clone, Copy)]
 pub(super) enum RideMessage {
     Ready,
+    /// The rider is answering "End ride?".
     ConfirmStop,
     StorageNotReady,
 }
@@ -83,6 +82,7 @@ pub(super) struct Ride {
     /// Token of the latest host command; only its completion is the host's to read.
     pub(super) host_token: Option<u32>,
     next_token: u32,
+    /// "End ride?" is open over the paused ride, since then.
     stop_armed: Option<u64>,
     pub(super) message: RideMessage,
     /// What this ride has added up so far; kept after stop until the next start.
@@ -95,6 +95,12 @@ pub(super) struct Ride {
     lap_toast: Option<(u64, Lap)>,
     /// Time in each training zone, kept and reset with `totals`.
     pub(super) zone_time: ZoneTime,
+    /// Best power over 5 s to 20 min, kept and reset with `totals`.
+    pub(super) efforts: Efforts,
+    /// Climbs finished this ride.
+    pub(super) climbs_done: u16,
+    /// A lap closed since the last chime.
+    pub(super) lap_chime: bool,
     /// Climb detection and the elevation profile, fed and reset with `totals`.
     pub(super) climbs: Climbs,
     /// The last step wholly inside active time. A step cut short by an accepted
@@ -141,6 +147,9 @@ impl Default for Ride {
             laps: Laps::default(),
             lap_toast: None,
             zone_time: ZoneTime::default(),
+            efforts: Efforts::default(),
+            climbs_done: 0,
+            lap_chime: false,
             climbs: Climbs::default(),
             settled: None,
             auto: Auto::default(),
@@ -285,12 +294,9 @@ impl Ride {
         matches!(self.request, Request::Completed(r) if Some(r.token) == self.host_token)
     }
 
-    /// Stop is armed: only a paused ride stops, within `STOP_CONFIRM_MS`.
+    /// "End ride?" is open over a paused ride, asked at or before `now`.
     pub(super) fn stop_confirming(&self, now: u64) -> bool {
-        self.active().status() == Status::Paused
-            && self
-                .stop_armed
-                .is_some_and(|at| now.saturating_sub(at) <= STOP_CONFIRM_MS)
+        self.active().status() == Status::Paused && self.stop_armed.is_some_and(|at| at <= now)
     }
 
     pub(super) fn arm_stop(&mut self, now: u64) {
@@ -348,10 +354,18 @@ impl Ride {
         self.totals
             .add(credited, distance_mm, &sample, pressure_centi_pa);
         self.zone_time.add(credited, &sample, profile);
+        if let Some(watts) = sample.power_watts
+            && !cut_short
+        {
+            self.efforts.add_ms(watts, credited);
+        }
         // Only a fresh reading is altitude for the climbs; the totals keep
         // their last one through a gap, which would read as a level road.
         let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
         let climb = self.climbs.add(credited, distance_mm, altitude);
+        if let Some(ClimbEvent::Finished(_)) = climb {
+            self.climbs_done = self.climbs_done.saturating_add(1);
+        }
         if let Some(lap) = self.laps.add(credited, distance_mm, &sample, now) {
             self.lap_closed(lap, now);
         }
@@ -361,6 +375,7 @@ impl Ride {
     /// Show a finished lap in the status row.
     pub(super) fn lap_closed(&mut self, lap: Lap, now: u64) {
         self.lap_toast = Some((now, lap));
+        self.lap_chime = true;
     }
 
     /// The finished lap the status row shows at `now`, for `LAP_TOAST_MS`.
@@ -438,7 +453,8 @@ impl Runtime {
             self.ride.auto.manual();
             return;
         }
-        let ready = self.navigation.page == Page::Ride;
+        // Rolling off starts a ride from Ready or the ride screen.
+        let ready = matches!(self.navigation.page, Page::Ride | Page::Ready);
         let status = self.ride.active().status();
         let wheel = match speed_mm_s {
             Some(speed) => Wheel::Measured(speed),
@@ -556,6 +572,8 @@ impl Runtime {
                 ride.laps = Laps::default();
                 ride.lap_toast = None;
                 ride.zone_time = ZoneTime::default();
+                ride.efforts = Efforts::default();
+                ride.climbs_done = 0;
                 ride.climbs = Climbs::default();
                 self.navigation.climb_return = None;
             }

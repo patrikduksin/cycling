@@ -1,9 +1,12 @@
 pub mod brand;
 pub mod canvas;
 pub mod chrome;
+pub mod cue;
 pub mod gesture;
 pub mod home;
+pub mod phone;
 pub mod power;
+pub mod ready;
 pub mod ride;
 pub mod sensors;
 pub mod settings;

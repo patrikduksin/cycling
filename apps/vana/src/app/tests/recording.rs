@@ -107,7 +107,7 @@ fn a_recording_ride_writes_samples_until_finished() {
 
     pause(&mut runtime, &mut journal, &mut radio, now);
     runtime.input(press(Button::TopLeft), now + 400, &mut radio);
-    runtime.input(press(Button::TopLeft), now + 800, &mut radio);
+    runtime.input(press(Button::BottomRight), now + 800, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, now + 800);
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert!(!runtime.recording());
@@ -124,7 +124,7 @@ fn pause(runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, now: u
 }
 
 #[test]
-fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
+fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -143,53 +143,100 @@ fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
         assert_eq!(runtime.navigation.ride_page, page);
     }
 
-    // Recording, TopLeft laps and never arms the end of the ride.
+    // Recording, TopLeft laps and never asks to end the ride.
     for at in [3000, 3400] {
         runtime.input(press(Button::TopLeft), at, &mut radio);
         tick(&mut runtime, &mut journal, &mut radio, at);
         assert!(!runtime.ride.stop_confirming(at));
+        assert!(runtime.navigation.page == Page::Ride);
         assert_eq!(runtime.ride.internal.status(), Status::Recording);
     }
     assert_eq!(runtime.ride.laps.count(), 1, "the second lap is debounced");
 
+    // Paused, TopLeft asks "End ride?"; BACK keeps the ride paused.
     pause(&mut runtime, &mut journal, &mut radio, 4000);
     runtime.input(press(Button::TopLeft), 4400, &mut radio);
+    assert!(runtime.navigation.page == Page::EndRide);
     assert!(runtime.ride.stop_confirming(4400));
-    // Resuming disarms it; TopLeft laps again.
-    runtime.input(press(Button::BottomRight), 4800, &mut radio);
-    tick(&mut runtime, &mut journal, &mut radio, 4800);
-    assert_eq!(runtime.ride.internal.status(), Status::Recording);
-    assert!(!runtime.ride.stop_confirming(4800));
-    runtime.input(press(Button::TopLeft), 7000, &mut radio);
-    assert_eq!(runtime.ride.laps.count(), 2);
-    assert_eq!(runtime.ride.internal.status(), Status::Recording);
-
-    pause(&mut runtime, &mut journal, &mut radio, 7400);
-    runtime.input(press(Button::TopLeft), 7800, &mut radio);
-    assert!(runtime.ride.stop_confirming(7800));
-    // Too late: the second press only re-arms.
-    runtime.input(press(Button::TopLeft), 10_801, &mut radio);
-    tick(&mut runtime, &mut journal, &mut radio, 10_801);
-    assert_eq!(runtime.ride.internal.status(), Status::Paused);
-    runtime.input(press(Button::TopLeft), 13_000, &mut radio);
-    settle(&mut runtime, &mut journal, &mut radio, 13_000);
-    assert_eq!(runtime.ride.internal.status(), Status::Saved);
-    assert!(!runtime.ride.stop_confirming(15_000));
-
-    // Saved, the pages still show the ride and wrap; TopLeft goes Home.
-    runtime.input(press(Button::BottomLeft), 14_400, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
-    runtime.input(press(Button::BottomLeft), 14_800, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Lap);
-    runtime.input(press(Button::BottomLeft), 15_200, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime.input(press(Button::BottomLeft), 15_600, &mut radio);
+    runtime.input(press(Button::TopLeft), 4800, &mut radio);
     assert!(runtime.navigation.page == Page::Ride);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-    runtime.input(press(Button::BottomLeft), 16_000, &mut radio);
-    runtime.input(press(Button::TopLeft), 16_400, &mut radio);
+    assert!(!runtime.ride.stop_confirming(4800));
+    // MOVE on the question does nothing; it waits as long as it takes.
+    runtime.input(press(Button::TopLeft), 5200, &mut radio);
+    runtime.input(press(Button::BottomLeft), 5600, &mut radio);
+    tick(&mut runtime, &mut journal, &mut radio, 60_000);
+    assert!(runtime.navigation.page == Page::EndRide);
+    assert!(runtime.ride.stop_confirming(60_000));
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    // ACT answers: the ride saves and its summary opens.
+    runtime.input(press(Button::BottomRight), 60_400, &mut radio);
+    assert!(runtime.navigation.page == Page::Summary);
+    settle(&mut runtime, &mut journal, &mut radio, 60_400);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
+    assert!(!runtime.ride.stop_confirming(62_000));
+
+    // The summary pages wrap; ACT finishes, to Home.
+    assert_eq!(runtime.navigation.summary_page, 0);
+    runtime.input(press(Button::BottomLeft), 63_000, &mut radio);
+    assert_eq!(runtime.navigation.summary_page, 1);
+    runtime.input(press(Button::BottomLeft), 63_400, &mut radio);
+    runtime.input(press(Button::BottomLeft), 63_800, &mut radio);
+    assert_eq!(runtime.navigation.summary_page, 0);
+    runtime.input(press(Button::BottomRight), 64_200, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+#[test]
+fn the_paused_screen_comes_first_and_paging_returns_to_it() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    tick(&mut runtime, &mut journal, &mut radio, 1000);
+    pause(&mut runtime, &mut journal, &mut radio, 2000);
+    runtime.navigation.announce(Status::Paused, 2200);
+    assert!(!runtime.navigation.pause_hidden, "the paused screen shows");
+    runtime.input(press(Button::BottomLeft), 2600, &mut radio);
+    assert!(runtime.navigation.pause_hidden);
+    assert_eq!(
+        runtime.navigation.ride_page,
+        RidePage::Main,
+        "the page before"
+    );
+    for at in [3000, 3400, 3800] {
+        runtime.input(press(Button::BottomLeft), at, &mut radio);
+    }
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    runtime.input(press(Button::BottomLeft), 4200, &mut radio);
+    assert!(
+        !runtime.navigation.pause_hidden,
+        "back to the paused screen"
+    );
+    // Paging on goes round every page again, starting at the first.
+    let mut seen = std::vec::Vec::new();
+    for at in (4600..8000).step_by(400).take(5) {
+        runtime.input(press(Button::BottomLeft), at, &mut radio);
+        let navigation = &runtime.navigation;
+        seen.push(navigation.pause_hidden.then_some(navigation.ride_page));
+    }
+    let pages = RidePage::ALL.map(Some);
+    assert_eq!(seen[..4], pages, "every page");
+    assert_eq!(seen[4], None, "then the paused screen");
+    // A swipe back from the paused screen shows the last page.
+    runtime.navigation.ride_page_chosen(RidePage::Main);
+    runtime.navigation.pause_hidden = true;
+    runtime.navigation.pause_wrapped = false;
+    runtime.previous_ride_page();
+    assert!(!runtime.navigation.pause_hidden);
+    runtime.previous_ride_page();
+    assert_eq!(
+        (
+            runtime.navigation.pause_hidden,
+            runtime.navigation.ride_page
+        ),
+        (true, RidePage::Climb)
+    );
 }
 
 #[test]
@@ -227,7 +274,7 @@ fn totals_count_recorded_seconds_survive_pause_and_restart_with_a_new_ride() {
 
     pause(&mut runtime, &mut journal, &mut radio, 85_000);
     runtime.input(press(Button::TopLeft), 85_400, &mut radio);
-    runtime.input(press(Button::TopLeft), 85_800, &mut radio);
+    runtime.input(press(Button::BottomRight), 85_800, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 85_800);
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert_eq!(
@@ -236,6 +283,7 @@ fn totals_count_recorded_seconds_survive_pause_and_restart_with_a_new_ride() {
         "kept after stop"
     );
 
+    on_ride_page(&mut runtime);
     runtime.input(press(Button::BottomRight), 90_000, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 90_000);
     assert_eq!(runtime.ride.internal.status(), Status::Recording);
@@ -273,11 +321,12 @@ fn laps_split_the_recorded_seconds_and_restart_with_a_new_ride() {
     assert_eq!(runtime.ride.laps.current(), before);
 
     runtime.input(press(Button::TopLeft), 45_400, &mut radio);
-    runtime.input(press(Button::TopLeft), 45_800, &mut radio);
+    runtime.input(press(Button::BottomRight), 45_800, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 45_800);
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert_eq!(runtime.ride.laps.count(), 1, "kept after stop");
 
+    on_ride_page(&mut runtime);
     runtime.input(press(Button::BottomRight), 50_000, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 50_000);
     assert_eq!(runtime.ride.laps.count(), 0, "new ride");
@@ -370,9 +419,10 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
     runtime.input(press(Button::TopLeft), 5000, &mut radio);
     assert!(runtime.ride.lap_toast(5000).is_some());
     pause(&mut runtime, &mut journal, &mut radio, 5400);
-    // Within the toast's two seconds: the prompt must show, not the lap.
+    // Within the toast's two seconds: the question replaces the lap.
     runtime.input(press(Button::TopLeft), 5800, &mut radio);
     assert!(runtime.ride.stop_confirming(5800));
+    assert!(runtime.navigation.page == Page::EndRide);
     assert_eq!(runtime.ride.lap_toast(5800), None);
 }
 
@@ -789,7 +839,7 @@ fn saving_an_auto_paused_ride_is_not_undone_by_movement() {
         false,
     );
     assert!(runtime.ride.auto.paused());
-    // First save press arms; the bike then moves on, which must not resume.
+    // "End ride?" is open; the bike then moves on, which must not resume.
     runtime.input(press(Button::TopLeft), at, &mut radio);
     at = roll(
         (&mut runtime, &mut journal, &mut radio),
@@ -799,7 +849,7 @@ fn saving_an_auto_paused_ride_is_not_undone_by_movement() {
         true,
     );
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
-    runtime.input(press(Button::TopLeft), at, &mut radio);
+    runtime.input(press(Button::BottomRight), at, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, at);
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
 }

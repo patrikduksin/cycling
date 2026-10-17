@@ -415,7 +415,7 @@ impl Home {
 }
 
 /// A sensor's name short enough to sit under its icon on Home.
-fn short_name(kind: u8) -> &'static [u8] {
+pub(crate) fn short_name(kind: u8) -> &'static [u8] {
     use crate::sensors::ant::device_type;
     match kind {
         device_type::RADAR => b"RDR",

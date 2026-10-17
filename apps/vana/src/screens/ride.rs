@@ -22,9 +22,12 @@ use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 
 mod climb;
+pub(super) mod end;
 mod lap;
 mod main;
+pub(super) mod paused;
 mod stats;
+pub mod summary;
 mod zones;
 
 pub(super) use zones::{Marks, marks};

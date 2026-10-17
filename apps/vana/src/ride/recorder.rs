@@ -188,6 +188,11 @@ impl Recorder {
         self.catalog.summaries
     }
 
+    /// One kept summary, oldest first, without copying the others.
+    pub fn summary(&self, index: usize) -> Option<&Summary> {
+        self.catalog.summaries.get(index)?.as_ref()
+    }
+
     pub fn summary_count(&self) -> u8 {
         self.catalog.summary_count
     }

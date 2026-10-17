@@ -105,8 +105,33 @@ write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED.
 The 5 s and 1 min bests are exact. The 5 and 20 min bests use 10 s buckets, so
 they can read slightly low but never high.
 
+## Saved rides
+
+```text
+Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved ride (3 pages) ── ACT ──> Phone
+                   │ BACK: Home                            │ BACK: Rides               │ BACK: the ride
+```
+
+Home's last card, RIDES, names the last ride's distance (or how many rides are
+saved, or NONE YET) and opens the list. Each card shows when the ride started
+(OCT 17  7:12, or RIDE n when the clock was unknown), its recorded time and
+distance where kept, and its average heart rate. MOVE focuses the next ride,
+ACT or a tap opens it, BACK goes Home. Without a saved ride the list says NO
+RIDES YET.
+
+A saved ride opens on the summary's three pages, read back from its journal:
+SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
+read. Laps and climbs are not kept with a ride, so they read --; ascent comes
+from the recorded gradient. MOVE or a swipe turns the page, BACK returns to
+the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
+record cannot be read says RIDE UNREADABLE.
+
+The list holds what each journal keeps a summary of: the last four rides on
+internal flash and the last four on the memory card.
+
 ## Other routes
 
 - **Phone.** `Page::Phone` is a placeholder for the phone companion: PHONE and
-  "SEND RIDES TO YOUR PHONE"; BACK goes Home. That workstream owns its Home
-  entry.
+  SEND RIDES TO YOUR PHONE from Home, or SEND THIS RIDE TO PHONE from a saved
+  ride; BACK returns where it came from. The phone workstream owns its Home
+  entry and the sending.

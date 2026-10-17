@@ -11,6 +11,7 @@ use device_api::{
 
 mod commands;
 mod cues;
+mod history;
 mod input;
 mod power;
 mod preferences;
@@ -52,6 +53,7 @@ pub struct Runtime {
     power: power::Power,
     timing: timing::Timing,
     cues: cues::Cues,
+    history: history::History,
 }
 
 impl Runtime {
@@ -71,6 +73,7 @@ impl Runtime {
             power: power::Power::default(),
             timing: timing::Timing::default(),
             cues: cues::Cues::default(),
+            history: history::History::default(),
         }
     }
 
@@ -182,5 +185,6 @@ impl Runtime {
         }
         self.note_milestones(now, ant, &sample);
         self.record(store, bulk, now, sample);
+        self.replay_step(store, bulk);
     }
 }

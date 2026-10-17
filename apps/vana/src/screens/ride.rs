@@ -309,13 +309,13 @@ pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
 }
 
 /// H:MM:SS, the way a workout clock reads.
-pub(super) fn elapsed(value: &mut Text<12>, seconds: u64) {
+pub(crate) fn elapsed(value: &mut Text<12>, seconds: u64) {
     let t = seconds;
     let _ = write!(value, "{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
 }
 
 /// Kilometres with two rounded decimals, one from 100 km.
-pub(super) fn kilometres(value: &mut Text<12>, mm: u64) {
+pub(crate) fn kilometres(value: &mut Text<12>, mm: u64) {
     let hundredths = (mm + 5_000) / 10_000;
     let _ = if hundredths < 10_000 {
         write!(value, "{}.{:02}", hundredths / 100, hundredths % 100)

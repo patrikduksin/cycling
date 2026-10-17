@@ -121,11 +121,9 @@ impl Runtime {
                 self.end_ride_input(button, now)
             }
             Page::Summary => self.summary_input(button, held),
-            Page::Phone => {
-                if button == Button::TopLeft && !held {
-                    self.navigation.page = Page::Home;
-                }
-            }
+            Page::Phone => self.phone_input(button, held),
+            Page::History => self.history_input(button),
+            Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = Page::Home,
@@ -152,7 +150,9 @@ impl Runtime {
                 let screen = paused && !navigation.pause_hidden;
                 navigation.ride_page.index() as u32 | u32::from(screen) << 3
             }
-            Page::Summary => navigation.summary_page as u32,
+            Page::Summary | Page::PastRide => navigation.summary_page as u32,
+            // Cards scroll with the focus, so a tap belongs to one list view.
+            Page::History => self.history.cursor as u32,
             Page::Sensors => u32::from(self.menu.touch_view()),
             Page::Settings => {
                 let section = settings::section(navigation.settings_field).0 as u32;
@@ -175,6 +175,7 @@ impl Runtime {
                     Tile::Ride => 0,
                     Tile::Sensors => 1,
                     Tile::Settings => 2,
+                    Tile::Rides => 3,
                 };
                 self.open_home_tile(now, ant);
             }
@@ -186,8 +187,19 @@ impl Runtime {
                 self.navigation.page = Page::Sensors;
                 self.request_search(ant, now);
             }
-            (Page::Summary, Gesture::Next) => self.next_summary_page(1),
-            (Page::Summary, Gesture::Previous) => self.next_summary_page(SUMMARY_PAGES - 1),
+            (Page::Summary | Page::PastRide, Gesture::Next) => self.next_summary_page(1),
+            (Page::Summary | Page::PastRide, Gesture::Previous) => {
+                self.next_summary_page(SUMMARY_PAGES - 1)
+            }
+            (Page::History, Gesture::Tap(point)) => {
+                let (x, y) = (usize::from(point.x), usize::from(point.y));
+                let count = self.history_count();
+                if let Some(index) =
+                    crate::screens::history::row_at(count, self.history.cursor, x, y)
+                {
+                    self.open_past_ride(index);
+                }
+            }
             (Page::Sensors, Gesture::Tap(point)) => {
                 self.refresh_sensor_menu(ant, now);
                 let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
@@ -278,6 +290,7 @@ impl Runtime {
                 self.navigation.page = Page::Sensors;
                 self.request_search(ant, now);
             }
+            3 => self.open_history(),
             _ => {
                 self.navigation.page = Page::Settings;
                 self.navigation.settings_field = 0;
@@ -476,7 +489,7 @@ impl Runtime {
         }
     }
 
-    fn next_summary_page(&mut self, step: usize) {
+    pub(super) fn next_summary_page(&mut self, step: usize) {
         let navigation = &mut self.navigation;
         navigation.summary_page = (navigation.summary_page + step) % SUMMARY_PAGES;
     }

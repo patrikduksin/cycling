@@ -153,9 +153,9 @@ class Vana:
             self.edited = True
         elif self.page == 'home':
             if button == 'bottom-left':
-                self.cursor = (self.cursor + 1) % 3
+                self.cursor = (self.cursor + 1) % 4
             elif button == 'bottom-right':
-                self.page = ('ready', 'sensors', 'settings')[self.cursor]
+                self.page = ('ready', 'sensors', 'settings', 'history')[self.cursor]
         elif self.page == 'ready':
             if button == 'bottom-right':
                 self.page, self.state = 'ride', 'recording'
@@ -180,7 +180,7 @@ def test_ride_refuses_away_from_home_without_pressing():
 
 
 def test_ride_walks_home_to_ready_and_ends_with_the_ride_saved():
-    vana = Vana(cursor=2)
+    vana = Vana(cursor=3)
     startup_timing.ride(vana)
     assert vana.presses[:2] == ['bottom-left', 'bottom-right']
     assert (vana.page, vana.state, vana.rides, vana.edited) == ('home', 'saved', 1, False)

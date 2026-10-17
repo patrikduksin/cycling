@@ -3,6 +3,7 @@ pub mod canvas;
 pub mod chrome;
 pub mod cue;
 pub mod gesture;
+pub mod history;
 pub mod home;
 pub mod phone;
 pub mod power;

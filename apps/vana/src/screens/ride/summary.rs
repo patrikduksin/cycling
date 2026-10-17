@@ -9,6 +9,11 @@
 //!    the climbs and laps.
 //!
 //! ACT (the green check cue) or BACK finishes and opens Home.
+//!
+//! A saved ride from the ride list shows on the same pages, read back from
+//! its journal: its start replaces RIDE SAVED, BACK returns to the list and
+//! ACT sends it to the phone. What the journal does not keep (laps and
+//! climbs) shows as --.
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
 use crate::ride::totals::EFFORT_SECONDS;
@@ -21,6 +26,9 @@ use crate::screens::cue::{Badge, Corner, Cue, Icon};
 use crate::screens::workout::{Text, View};
 
 pub const CUE: Cue = Cue::new(Corner::BottomRight, Icon::Check);
+/// A saved ride: ACT sends it to the phone. BACK keeps its fixed role,
+/// back to the list, without a cue, as on the ride pages.
+pub const PAST_CUES: [Cue; 1] = [Cue::new(Corner::BottomRight, Icon::Send)];
 pub const PAGES: usize = 3;
 
 /// Where the saved ride stands.
@@ -32,6 +40,10 @@ pub enum Saving {
     Saved,
     /// Storage failed while finishing: what was written before is kept.
     Failed,
+    /// A saved ride is being read back.
+    Reading,
+    /// A saved ride could not be found or read.
+    Unreadable,
 }
 
 /// What the summary shows beyond the ride totals.
@@ -41,8 +53,11 @@ pub struct After {
     pub saving: Saving,
     /// Best average watts over `EFFORT_SECONDS`.
     pub best: [Option<u16>; 4],
-    pub climbs: u16,
-    pub laps: u16,
+    /// Unknown for a saved ride read back.
+    pub climbs: Option<u16>,
+    pub laps: Option<u16>,
+    /// A saved ride from the list, titled by `View::past_title`.
+    pub past: bool,
 }
 
 const LEFT: usize = 16;
@@ -96,6 +111,22 @@ pub fn prepare(view: &View) -> Canvas {
             centred(&mut canvas, &[&CAPTION], b"KEEP VANA ON", 178, SECONDARY);
             return canvas;
         }
+        Saving::Reading => {
+            centred(&mut canvas, &[&TITLE, &BODY], b"READING", 150, WHITE);
+            centred(&mut canvas, &[&CAPTION], b"ONE MOMENT", 178, SECONDARY);
+            return canvas;
+        }
+        Saving::Unreadable => {
+            centred(&mut canvas, &[&BODY], b"RIDE UNREADABLE", 150, AMBER);
+            centred(
+                &mut canvas,
+                &[&CAPTION],
+                b"ITS RECORD IS DAMAGED",
+                174,
+                SECONDARY,
+            );
+            return canvas;
+        }
         Saving::Failed if view.after.page == 0 => {
             centred(&mut canvas, &[&TITLE, &BODY], b"NOT ALL SAVED", 86, AMBER);
             centred(
@@ -118,12 +149,22 @@ pub fn prepare(view: &View) -> Canvas {
 
 /// The badge shows over a saved ride's first page.
 pub fn badge(view: &View) -> Option<Badge> {
-    (view.after.saving == Saving::Saved && view.after.page == 0).then_some(BADGE)
+    (view.after.saving == Saving::Saved && view.after.page == 0 && !view.after.past)
+        .then_some(BADGE)
 }
 
 fn overview(view: &View, canvas: &mut Canvas) {
     let totals = &view.totals;
-    if view.after.saving == Saving::Saved {
+    if view.after.past {
+        canvas.caption(b"SAVED RIDE", RIGHT - LEFT, CENTRE, 70, Align::Center);
+        centred(
+            canvas,
+            &[&TITLE, &BODY],
+            view.past_title.as_bytes(),
+            112,
+            WHITE,
+        );
+    } else if view.after.saving == Saving::Saved {
         centred(canvas, &[&TITLE, &BODY], b"RIDE SAVED", 112, WHITE);
     }
     let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
@@ -228,8 +269,8 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     }
     let mut climbs = Text::<12>::new();
     let mut laps = Text::<12>::new();
-    whole(&mut climbs, Some(view.after.climbs));
-    whole(&mut laps, Some(view.after.laps));
+    whole(&mut climbs, view.after.climbs);
+    whole(&mut laps, view.after.laps);
     cells(
         canvas,
         first + 22 + 4 * pitch + 6,
@@ -280,8 +321,9 @@ mod tests {
             page,
             saving,
             best: [Some(1999), Some(1500), None, None],
-            climbs: 999,
-            laps: 999,
+            climbs: Some(999),
+            laps: Some(999),
+            past: false,
         };
         view.prepare();
         view
@@ -322,6 +364,39 @@ mod tests {
         assert!(extreme(0, Saving::Failed).canvas.shows("NOT ALL SAVED"));
         let saving = extreme(0, Saving::Writing);
         assert!(saving.canvas.shows("SAVING") && badge(&saving).is_none());
+    }
+
+    #[test]
+    fn a_saved_ride_shows_its_start_and_what_is_unknown() {
+        let bounds = Rect {
+            left: 0,
+            top: CONTENT.top,
+            right: WIDTH,
+            bottom: HEIGHT - RADIUS + 12,
+        };
+        let past = |page, saving| {
+            let mut view = extreme(page, saving);
+            view.page = Page::PastRide;
+            view.after.past = true;
+            view.after.climbs = None;
+            view.after.laps = None;
+            let _ = view.past_title.push_str("DEC 31  12:59");
+            view.prepare();
+            view
+        };
+        let first = past(0, Saving::Saved);
+        let want = ["SAVED RIDE", "DEC 31  12:59", "99:59:59"];
+        first.canvas.assert_laid_out(bounds, &want, "past ride");
+        assert!(!first.canvas.shows("RIDE SAVED") && badge(&first).is_none());
+        assert!(past(2, Saving::Saved).canvas.shows("--"));
+        let reading = past(0, Saving::Reading);
+        assert!(reading.canvas.shows("READING"));
+        let missing = past(0, Saving::Unreadable);
+        missing.canvas.assert_laid_out(
+            bounds,
+            &["RIDE UNREADABLE", "ITS RECORD IS DAMAGED"],
+            "unreadable",
+        );
     }
 
     #[test]

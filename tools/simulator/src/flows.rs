@@ -3,10 +3,11 @@ use crate::sim::{NoteKind, Sim, seconds};
 use device_api::input::Button;
 
 impl Sim {
-    /// Choose a Home card, RIDE or SENSORS; the focused one has a white title.
+    /// Choose a Home card, such as RIDE or RIDES; the focused one has a white
+    /// title. One extra press covers a dimmed screen, which a press only wakes.
     #[track_caller]
     pub fn home(&mut self, label: &str) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             if self
                 .screen()
                 .run(label)

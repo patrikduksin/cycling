@@ -127,10 +127,12 @@ does, so the cue reads at a glance.
 | --- | --- | --- |
 | Play | `GREEN`, black icon | Start or resume (ACT) |
 | Check | `GREEN`, black icon | Yes, or Done (ACT) |
+| Send | `GREEN`, black icon | Send a saved ride to the phone (ACT) |
 | Stop | `RAISED`, white icon | End the ride: asks first (BACK) |
 | Back | `RAISED`, white icon | No, go back (BACK) |
 
-Only Ready, the paused screen, End ride and the summary show cues. Ride pages
+Only Ready, the paused screen, End ride, the summary and a saved ride show
+cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the cue
 corners; each screen's layout test checks it.
 
@@ -366,16 +368,16 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Next page (wraps); while paused, the paused screen is one of the pages |
 | TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | LAP while recording; asks END RIDE? while paused |
 
-| Button | Ready | End ride? | Summary |
-| --- | --- | --- | --- |
-| BottomRight (ACT) | Start the ride | End and save it | Done: Home |
-| BottomLeft (MOVE) | — | — | Next page (wraps) |
-| TopLeft (BACK) | Home | Keep the ride, paused | Home |
+| Button | Ready | End ride? | Summary | Rides | Saved ride |
+| --- | --- | --- | --- | --- | --- |
+| BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone |
+| BottomLeft (MOVE) | — | — | Next page (wraps) | Focus the next ride (wraps) | Next page (wraps) |
+| TopLeft (BACK) | Home | Keep the ride, paused | Home | Home | Back to Rides |
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors; on Ready, the sensors line opens Sensors. Tiles own their bounds; the search button's wider touch margin takes only spare space |
-| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages and the summary; next or previous section on Settings |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors. Tiles own their bounds; the search button's wider touch margin takes only spare space |
+| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings |
 | Settings rows | Tap | Act on the row, as ACT does |
 | Settings pads | Act on contact | Step the edited value |
 

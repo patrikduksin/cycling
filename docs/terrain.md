@@ -169,7 +169,7 @@ header:
 - CRC32 at byte 24, computed with that field zeroed.
 
 Four arrays follow, all in tile-local µdeg (0..=tile size), with elevation as
-decimetres + 5000 in a u16 (−500 m to 6,053 m):
+decimetres + 2000 in a u16 (−200 m to 6,353.5 m; the builder refuses anything outside):
 
 | Record | Bytes | Fields |
 | --- | --- | --- |

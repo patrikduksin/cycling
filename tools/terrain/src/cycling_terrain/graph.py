@@ -160,6 +160,22 @@ def node_elevations(dem: Dem, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     return np.mean(samples, axis=0)
 
 
+def distinct_positions(ends: dict[int, tuple[float, float]]) -> dict[int, tuple[float, float]]:
+    """Junction positions on the micro-degree grid the pack stores, one per
+    OSM node. The pack joins edges by position, so two unconnected nodes that
+    round to the same point would become a false junction; the later one moves
+    a micro-degree (about 0.1 m) east until its point is free."""
+    taken: dict[tuple[int, int], int] = {}
+    out = {}
+    for node, (lat, lon) in ends.items():
+        y, x = round(lat * 1e6), round(lon * 1e6)
+        while taken.get((y, x), node) != node:
+            x += 1
+        taken[(y, x)] = node
+        out[node] = (y / 1e6, x / 1e6)
+    return out
+
+
 def build_edges(ways: list[osm.Way], dem: Dem) -> list[Edge]:
     pieces = split_at_junctions(ways)
     # Junction elevations, keyed by OSM node id, sampled in one batch.
@@ -167,6 +183,7 @@ def build_edges(ways: list[osm.Way], dem: Dem) -> list[Edge]:
     for way, first, last in pieces:
         for index in (first, last):
             ends[int(way.refs[index])] = (float(way.lat[index]), float(way.lon[index]))
+    ends = distinct_positions(ends)
     ids = list(ends)
     coords = np.array([ends[i] for i in ids]) if ids else np.zeros((0, 2))
     heights = node_elevations(dem, coords[:, 0], coords[:, 1]) if ids else np.zeros(0)
@@ -188,6 +205,9 @@ def build_edges(ways: list[osm.Way], dem: Dem) -> list[Edge]:
             z = start + (end - start) * distance / total
         else:
             z = smooth(z, distance, start, end)
+        # Ends sit exactly on their junction's (distinct) position.
+        lat[0], lon[0] = ends[int(way.refs[first])]
+        lat[-1], lon[-1] = ends[int(way.refs[last])]
         x, y = local_metres(lat, lon)
         kept = simplify(x, y, z)
         edges.append(Edge(lat[kept], lon[kept], z[kept], way.road_class, way.flags, way.group))

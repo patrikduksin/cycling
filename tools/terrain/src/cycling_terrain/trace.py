@@ -44,24 +44,34 @@ def road(blob: bytes, label: str) -> list[tuple[int, int, int]]:
     for index, piece in enumerate(pieces):
         for point in (piece[0], piece[-1]):
             ends.setdefault(point[:2], []).append(index)
+    lengths = [_length(piece) for piece in pieces]
+
+    def longest(end, used: set[int]) -> tuple[float, list]:
+        """The longest continuation from `end` through unused pieces: every
+        branch is tried (a road's own pieces are few)."""
+        best: tuple[float, list] = (0.0, [])
+        for index in ends.get(end, []):
+            if index in used:
+                continue
+            piece = pieces[index]
+            if piece[0][:2] != end:
+                piece = list(reversed(piece))
+            used.add(index)
+            length, rest = longest(piece[-1][:2], used)
+            used.discard(index)
+            if lengths[index] + length > best[0]:
+                best = (lengths[index] + length, piece[1:] + rest)
+        return best
+
     best: list = []
+    best_length = 0.0
     for start in range(len(pieces)):
         for reverse in (False, True):
-            used = {start}
             chain = list(reversed(pieces[start])) if reverse else list(pieces[start])
-            while True:
-                end = chain[-1][:2]
-                following = [i for i in ends.get(end, []) if i not in used]
-                if not following:
-                    break
-                index = following[0]
-                used.add(index)
-                piece = pieces[index]
-                if piece[0][:2] != end:
-                    piece = list(reversed(piece))
-                chain.extend(piece[1:])
-            if _length(chain) > _length(best):
-                best = chain
+            length, rest = longest(chain[-1][:2], {start})
+            if lengths[start] + length > best_length:
+                best_length = lengths[start] + length
+                best = chain + rest
     if best and best[0][2] > best[-1][2]:
         best.reverse()
     return best

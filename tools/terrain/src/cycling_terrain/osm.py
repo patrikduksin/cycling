@@ -153,20 +153,25 @@ class _Collector(osmium.SimpleHandler):
             return
         lat_a = np.array(lat)
         lon_a = np.array(lon)
-        if self.bbox is not None:
-            south, west, north, east = self.bbox
-            inside = (lat_a >= south) & (lat_a <= north) & (lon_a >= west) & (lon_a <= east)
-            if not inside.any():
-                return
+        if self.bbox is not None and not overlaps(self.bbox, lat_a, lon_a):
+            return
         refs_a = np.array(refs, dtype=np.int64)
         if reverse:
             refs_a, lat_a, lon_a = refs_a[::-1].copy(), lat_a[::-1].copy(), lon_a[::-1].copy()
         self.ways.append(Way(refs_a, lat_a, lon_a, road_class, flags, road_group(w.tags)))
 
 
+def overlaps(bbox: tuple[float, float, float, float], lat: np.ndarray, lon: np.ndarray) -> bool:
+    """Whether a way's bounding box meets `bbox`: conservative, so a way that
+    crosses it without a node inside is kept. The tiler clips the rest."""
+    south, west, north, east = bbox
+    return bool(lat.min() <= north and lat.max() >= south and lon.min() <= east and lon.max() >= west)
+
+
 def read_ways(pbf: str, bbox: tuple[float, float, float, float] | None = None) -> list[Way]:
     """Every kept way with node locations; with `bbox` (south, west, north,
-    east), only ways with a node inside it. Geometry outside is clipped later."""
+    east), only ways whose bounding box meets it. Geometry outside is clipped
+    later."""
     collector = _Collector(bbox)
     collector.apply_file(pbf, locations=True, idx='flex_mem')
     return collector.ways

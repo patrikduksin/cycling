@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from cycling_terrain import osm, pack, trace
-from cycling_terrain.graph import Edge, Grid, _cut_segment, cut_into_tiles, simplify, smooth
+from cycling_terrain.graph import Edge, Grid, _cut_segment, cut_into_tiles, distinct_positions, simplify, smooth
 
 SAMPLE = Path(__file__).resolve().parents[3] / 'packages/terrain/tests/data/farellones.terrain'
 TILE = 15_625
@@ -115,3 +115,37 @@ def test_the_sample_pack_validates_and_holds_g21():
     road = trace.road(blob, 'G-21')
     gain = (road[-1][2] - road[0][2]) / 10
     assert gain > 1500
+
+
+def test_unconnected_nodes_at_one_rounded_point_stay_apart():
+    # Two OSM nodes 1 cm apart round to the same micro-degree.
+    ends = {1: (-33.4000001, -70.5000001), 2: (-33.4000000, -70.5000000), 3: (-33.41, -70.51)}
+    positions = distinct_positions(ends)
+    assert len({(round(a * 1e6), round(b * 1e6)) for a, b in positions.values()}) == 3
+    assert positions[3] == (-33.41, -70.51)
+
+
+def test_a_way_crossing_the_bbox_without_a_node_inside_is_kept():
+    bbox = (0.0, 0.0, 0.015625, 0.015625)
+    assert osm.overlaps(bbox, np.array([0.005, 0.005]), np.array([-0.01, 0.03]))
+    assert not osm.overlaps(bbox, np.array([0.02, 0.03]), np.array([-0.01, 0.03]))
+
+
+def test_elevations_a_pack_cannot_hold_are_refused():
+    assert pack.decode_z(pack.encode_z(6_108.0)) == pytest.approx(6_108.0)
+    assert pack.decode_z(pack.encode_z(-150.0)) == pytest.approx(-150.0)
+    for metres in (6_400.0, -250.0):
+        with pytest.raises(ValueError):
+            pack.encode_z(metres)
+
+
+def test_trace_joins_the_two_longest_arms_of_a_branching_road():
+    # A three-arm junction at the tile middle; the short arm comes first.
+    grid = Grid.around(-33.4, -70.5, -33.39, -70.49, TILE)
+    middle = (grid.south + 7_800, grid.west + 7_800)
+    arms = [(middle[0], middle[1] + 500), (middle[0] - 6_000, middle[1]), (middle[0] + 6_000, middle[1])]
+    roads = [edge([(*arm, 900.0 + n), (*middle, 950.0)], group=trace.group_of('G-1')) for n, arm in enumerate(arms)]
+    blob = pack.encode_pack(cut_into_tiles(roads, grid), 'a', 'b', 0)
+    road = trace.road(blob, 'G-1')
+    lats = [lat for lat, _, _ in road]
+    assert max(lats) - min(lats) == 12_000

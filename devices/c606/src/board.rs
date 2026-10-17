@@ -100,7 +100,28 @@ fn init() -> Resources {
     ) {
         Ok(reader) => {
             use device_api::bulk::Read;
-            let info = reader.info().unwrap();
+            // Rides append to the owned region from the main loop. At 400 kHz
+            // each checked append takes about 80 ms; 20 MHz (validated for
+            // owned reads and writes in #108) keeps it to a few milliseconds.
+            // A failed switch leaves the medium failed, and rides fall back
+            // to the internal journal. Maintenance keeps its explicit clock.
+            #[cfg(not(feature = "bulk-maintenance"))]
+            let reader = {
+                let mut reader = reader;
+                if let Err(error) = reader.clock(20_000_000) {
+                    println!("CYCLING_SDMMC clock_failed hz=20000000 error={:?}", error);
+                }
+                reader
+            };
+            let info = reader.info().unwrap_or(device_api::bulk::Info {
+                sectors: 0,
+                sector_size: 512,
+                clock_hz: 0,
+                bus_width: 0,
+                reads: 0,
+                failures: 1,
+                last_read_us: 0,
+            });
             println!(
                 "CYCLING_SDMMC ready mode=read-only sectors={} sector_size={} width={} clock_hz={}",
                 info.sectors, info.sector_size, info.bus_width, info.clock_hz
@@ -452,6 +473,11 @@ impl device_api::bulk::Read for Bulk {
 }
 
 impl device_api::bulk::ReadWrite for Bulk {
+    /// The ESP32-S3 RNG, which is a true random source while the radios run.
+    fn entropy(&mut self) -> u64 {
+        let rng = esp_hal::rng::Rng::new();
+        (u64::from(rng.random()) << 32) | u64::from(rng.random())
+    }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
         let _access = crate::capabilities::power::ACCESS
             .enter()

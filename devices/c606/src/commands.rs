@@ -182,6 +182,7 @@ pub fn execute(
             status = sdk.command(
                 core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                 &mut system.data_storage(),
+                bulk,
                 now,
                 &mut output,
             );

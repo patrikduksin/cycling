@@ -1,8 +1,17 @@
-//! Ride recorder ownership, request tokens and bounded recording work.
+//! Ride recorder ownership, storage media, request tokens and bounded
+//! recording work.
+//!
+//! Two recorders run side by side: the bulk MMC log takes new rides whenever it
+//! is ready and has room, and the internal journal takes them otherwise. Both
+//! keep their own rides and recover them independently. If the bulk medium
+//! fails or fills while a ride is running, the ride continues on the internal
+//! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
 use crate::ride::auto::{Auto, Decision, Wheel};
+use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
+use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Source, Status};
 use crate::ride::metrics::Step;
@@ -11,6 +20,7 @@ use crate::ride::storage::RideStorage;
 use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::screens::workout::Page;
+use device_api::bulk::ReadWrite;
 
 /// A second end-ride press within this window finishes the ride.
 const STOP_CONFIRM_MS: u64 = 3000;
@@ -46,8 +56,37 @@ impl RideMessage {
     }
 }
 
+/// Where a recorder keeps its rides.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Medium {
+    /// The 1 MiB journal in the owned boot-flash reservation.
+    Internal,
+    /// The sector log in the owned MMC partition.
+    Bulk,
+}
+
+impl Medium {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Internal => "internal",
+            Self::Bulk => "bulk",
+        }
+    }
+
+    /// Short label for the screen.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Internal => "INT",
+            Self::Bulk => "MMC",
+        }
+    }
+}
+
 pub(super) struct Ride {
-    pub(super) recorder: Recorder,
+    pub(super) internal: Recorder,
+    pub(super) bulk: Recorder,
+    internal_media: InternalState,
+    pub(super) bulk_media: BulkState,
     pub(super) request: Request,
     /// Token of the latest host command; only its completion is the host's to read.
     pub(super) host_token: Option<u32>,
@@ -74,6 +113,20 @@ pub(super) struct Ride {
     pub(super) auto: Auto,
     /// The last automatic action and when it happened, shown briefly.
     toast: Option<(&'static str, u64)>,
+    /// Active time the bulk medium recorded before this ride moved to internal.
+    carried_ms: u64,
+    /// Bulk active time awaiting the internal continuation; carried only once
+    /// it starts, dropped if it cannot.
+    carry_ms: u64,
+    /// Bulk media failed mid-ride; the next internal start continues the ride.
+    continuing: bool,
+    /// The current ride moved from bulk to internal media.
+    pub(super) moved: bool,
+    /// The bulk ride was paused when lost; pause its continuation once it runs.
+    pause_continuation: bool,
+    /// The medium of the latest ride, whose outcome the rider sees until the
+    /// next ride starts, even when the next ride will use the other medium.
+    last: Option<Medium>,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -81,7 +134,10 @@ pub(super) struct Ride {
 impl Default for Ride {
     fn default() -> Self {
         Self {
-            recorder: Recorder::default(),
+            internal: Recorder::default(),
+            bulk: Recorder::default(),
+            internal_media: InternalState::default(),
+            bulk_media: BulkState::default(),
             request: Request::Idle,
             host_token: None,
             next_token: 1,
@@ -96,12 +152,115 @@ impl Default for Ride {
             settled: None,
             auto: Auto::default(),
             toast: None,
+            carried_ms: 0,
+            carry_ms: 0,
+            continuing: false,
+            moved: false,
+            pause_continuation: false,
+            last: None,
             clock: None,
         }
     }
 }
 
 impl Ride {
+    /// The medium the rider's ride is on, or the one a new ride would use:
+    /// bulk while it scans, or is ready with room; internal otherwise.
+    pub(super) fn medium(&self) -> Medium {
+        if self.internal.riding() || self.continuing {
+            return Medium::Internal;
+        }
+        if self.bulk.riding() {
+            return Medium::Bulk;
+        }
+        match self.bulk.status() {
+            Status::Scanning | Status::Formatting | Status::Clearing => Medium::Bulk,
+            status if status.usable() && self.bulk.remaining_secs() > 0 => Medium::Bulk,
+            _ => Medium::Internal,
+        }
+    }
+
+    pub(super) fn recorder(&self, medium: Medium) -> &Recorder {
+        match medium {
+            Medium::Internal => &self.internal,
+            Medium::Bulk => &self.bulk,
+        }
+    }
+
+    fn recorder_mut(&mut self, medium: Medium) -> &mut Recorder {
+        match medium {
+            Medium::Internal => &mut self.internal,
+            Medium::Bulk => &mut self.bulk,
+        }
+    }
+
+    /// The medium of the ride the rider sees: the open ride, else the
+    /// outcome of the latest one (saved, full or failed), else where the next
+    /// ride will go.
+    pub(super) fn shown(&self) -> Medium {
+        if self.internal.riding() || self.continuing {
+            return Medium::Internal;
+        }
+        if self.bulk.riding() {
+            return Medium::Bulk;
+        }
+        match self.last {
+            Some(medium)
+                if matches!(
+                    self.recorder(medium).status(),
+                    Status::Saved | Status::Full | Status::Error
+                ) =>
+            {
+                medium
+            }
+            _ => self.medium(),
+        }
+    }
+
+    /// The open ride is moving from bulk to internal media, and may still
+    /// have to be paused there.
+    fn moving(&self) -> bool {
+        self.continuing || self.pause_continuation
+    }
+
+    /// A ride is open on either medium, or moving between them.
+    pub(super) fn open(&self) -> bool {
+        self.internal.riding() || self.bulk.riding() || self.continuing
+    }
+
+    /// The recorder of the ride the rider sees.
+    pub(super) fn active(&self) -> &Recorder {
+        self.recorder(self.shown())
+    }
+
+    /// Active time of the rider's ride, across a move to internal media.
+    pub(super) fn active_ms(&self, now: u64) -> u64 {
+        let waiting = if self.continuing { self.carry_ms } else { 0 };
+        self.carried_ms + waiting + self.active().active_ms(now)
+    }
+
+    /// The continuation cannot start: the bulk ride stays the rider's ride.
+    fn give_up_continuation(&mut self) {
+        self.continuing = false;
+        self.pause_continuation = false;
+        self.carry_ms = 0;
+    }
+
+    /// Bulk media should take rides but cannot, so they go to internal flash:
+    /// it is unformatted, missing, damaged, failed, or has no room left.
+    pub(super) fn fallback(&self) -> bool {
+        let status = self.bulk.status();
+        self.medium() == Medium::Internal
+            && (matches!(
+                status,
+                Status::NeedsInit
+                    | Status::Unavailable
+                    | Status::Corrupt
+                    | Status::Error
+                    | Status::Full
+            ) || (status.usable() && self.bulk.remaining_secs() == 0))
+    }
+
     /// The token the next submitted operation will carry.
     pub(super) fn next_token(&self) -> u32 {
         self.next_token
@@ -109,9 +268,13 @@ impl Ride {
 
     /// Start a recorder operation under the next token. `start` reports
     /// whether the recorder accepted it; only then is the token consumed.
-    pub(super) fn submit(&mut self, start: impl FnOnce(&mut Recorder, u32) -> bool) -> bool {
+    pub(super) fn submit(
+        &mut self,
+        medium: Medium,
+        start: impl FnOnce(&mut Recorder, u32) -> bool,
+    ) -> bool {
         let token = self.next_token;
-        if !start(&mut self.recorder, token) {
+        if !start(self.recorder_mut(medium), token) {
             return false;
         }
         self.next_token = token.wrapping_add(1).max(1);
@@ -131,7 +294,7 @@ impl Ride {
 
     /// Stop is armed: only a paused ride stops, within `STOP_CONFIRM_MS`.
     pub(super) fn stop_confirming(&self, now: u64) -> bool {
-        self.recorder.status() == Status::Paused
+        self.active().status() == Status::Paused
             && self
                 .stop_armed
                 .is_some_and(|at| now.saturating_sub(at) <= STOP_CONFIRM_MS)
@@ -169,16 +332,17 @@ impl Ride {
         pressure_centi_pa: Option<u32>,
         profile: &TrainingProfile,
     ) -> Option<ClimbEvent> {
-        if self.recorder.status() != Status::Recording {
+        let recorder = self.active();
+        if recorder.status() != Status::Recording {
             return None;
         }
-        let active = self.recorder.active_ms(now);
+        let active = recorder.active_ms(now);
         let credited = active.saturating_sub(self.counted_ms).min(step.elapsed_ms);
         self.counted_ms = active;
         if credited == 0 {
             return None;
         }
-        let cut_short = credited < step.elapsed_ms && self.recorder.stopping();
+        let cut_short = credited < step.elapsed_ms && self.active().stopping();
         let (sample, step, pressure_centi_pa) = if !cut_short {
             self.settled = Some((*sample, step, pressure_centi_pa));
             (*sample, step, pressure_centi_pa)
@@ -212,22 +376,67 @@ impl Ride {
             .filter(|(at, _)| now.saturating_sub(*at) < LAP_TOAST_MS)
             .map(|(_, lap)| lap)
     }
+
+    /// Read one slot of `medium` for export; `Some(false)` marks an invalid
+    /// bulk container, whose slot bytes are zeroed.
+    pub(super) fn read_slot(
+        &mut self,
+        medium: Medium,
+        store: &mut impl RideStorage,
+        bulk: &mut impl ReadWrite,
+        index: usize,
+        output: &mut crate::ride::log::Slot,
+    ) -> Option<bool> {
+        use crate::ride::journal::Journal;
+        match medium {
+            Medium::Internal => {
+                Internal::new(&mut self.internal_media, store).read_slot(index, output)
+            }
+            Medium::Bulk => Bulk::new(&mut self.bulk_media, bulk).read_slot(index, output),
+        }
+    }
+
+    /// Start the internal continuation of a ride the bulk medium lost. Waits
+    /// for the internal scan; gives up if that journal cannot take a ride.
+    fn continue_internally(&mut self, now: u64) {
+        if !self.continuing || self.internal.riding() || self.internal.busy() {
+            return;
+        }
+        // Wait for the scan, and for recovery to close an interrupted ride:
+        // START is refused only until that record is appended.
+        if self.internal.status() == Status::Scanning || self.internal.recovering() {
+            return;
+        }
+        // Token 0: no rider or host waits for this start.
+        if !self.internal.request(Action::Start, Source::Live, now, 0) {
+            self.give_up_continuation();
+        }
+    }
 }
 
 impl Runtime {
     pub fn recording(&self) -> bool {
-        // Protect accepted writes and active/paused rides from host-triggered restart.
+        // Protect accepted writes and active/paused rides from host-triggered
+        // restart, including a ride moving to internal media whose start or
+        // pause is queued but not yet written.
         self.ride.pending()
-            || matches!(
-                self.ride.recorder.status(),
-                Status::Recording | Status::Paused | Status::Formatting | Status::Clearing
-            )
+            || self.ride.open()
+            || self.ride.moving()
+            || [&self.ride.internal, &self.ride.bulk].iter().any(|r| {
+                r.pending_action().is_some()
+                    || matches!(
+                        r.status(),
+                        Status::Recording | Status::Paused | Status::Formatting | Status::Clearing
+                    )
+            })
     }
 
     /// Pause, resume or start the ride from wheel speed (see `ride::auto`),
     /// through the same request path as the buttons.
     pub(super) fn auto_control(&mut self, now: u64, speed_mm_s: Option<u32>) {
-        if self.ride.pending() || self.ride.host_completion_unread() {
+        // A ride moving to internal media keeps its automatic pause: the
+        // continuation passes through Ready and Recording before it pauses.
+        if self.ride.pending() || self.ride.host_completion_unread() || self.ride.moving() {
             return;
         }
         // The first press to save an auto-paused ride takes it over: moving or
@@ -237,7 +446,7 @@ impl Runtime {
             return;
         }
         let ready = self.navigation.page == Page::Ride;
-        let status = self.ride.recorder.status();
+        let status = self.ride.active().status();
         let wheel = match speed_mm_s {
             Some(speed) => Wheel::Measured(speed),
             None if self.readings.wheel_fresh => Wheel::Unknown,
@@ -252,10 +461,16 @@ impl Runtime {
             Decision::Start => (Action::Start, "AUTO START"),
         };
         self.ride.request = Request::Idle;
-        if self
-            .ride
-            .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
-        {
+        // A new ride goes where the next ride is recorded; the open one
+        // stays on its medium.
+        let medium = if action == Action::Start {
+            self.ride.medium()
+        } else {
+            self.ride.shown()
+        };
+        if self.ride.submit(medium, |recorder, token| {
+            recorder.request(action, Source::Live, now, token)
+        }) {
             self.ride.auto.accepted(decision);
             self.ride.toast = Some((toast, now));
             self.ride.message = RideMessage::Ready;
@@ -269,47 +484,142 @@ impl Runtime {
         }
     }
 
-    pub(super) fn record(&mut self, store: &mut impl RideStorage, now: u64, sample: Sample) {
+    pub(super) fn record(
+        &mut self,
+        store: &mut impl RideStorage,
+        bulk: &mut impl ReadWrite,
+        now: u64,
+        sample: Sample,
+    ) {
         let clock = self.ride.clock;
-        let before = self.ride.recorder.status();
-        self.ride
-            .recorder
-            .service(store, now, sample, &|| clock.map_or(now, |clock| clock()));
+        let clock = &|| clock.map_or(now, |clock| clock());
+        let ride = &mut self.ride;
+        let before = ride.active().status();
+        let was_scanning =
+            ride.internal.status() == Status::Scanning || ride.bulk.status() == Status::Scanning;
+        let internal_reset = matches!(
+            ride.internal.status(),
+            Status::Clearing | Status::Formatting
+        );
+        // An open bulk ride that the rider is not finishing continues on
+        // internal media if the bulk medium fails; `Some(true)` if paused.
+        let lost_paused = if ride.bulk.riding() {
+            match ride.bulk.pending_action() {
+                Some(Action::Finish) => None,
+                Some(Action::Resume) => Some(false),
+                Some(Action::Pause) => Some(true),
+                _ => Some(ride.bulk.status() == Status::Paused),
+            }
+        } else {
+            None
+        };
+        ride.continue_internally(now);
+        ride.internal.service(
+            &mut Internal::new(&mut ride.internal_media, store),
+            now,
+            sample,
+            clock,
+        );
+        ride.bulk.service(
+            &mut Bulk::new(&mut ride.bulk_media, bulk),
+            now,
+            sample,
+            clock,
+        );
+        // Clearing or initializing internal flash removes the ride a moved
+        // ride continued as, and with it the bulk time carried into it.
+        if internal_reset
+            && !matches!(
+                ride.internal.status(),
+                Status::Clearing | Status::Formatting
+            )
+        {
+            ride.carried_ms = 0;
+            ride.moved = false;
+        }
+        if let Some(paused) = lost_paused
+            && matches!(ride.bulk.status(), Status::Error | Status::Full)
+        {
+            ride.carry_ms = ride.bulk.active_ms(now);
+            ride.continuing = true;
+            ride.pause_continuation = paused;
+            log::warn!(target: "sdk.recorder", "bulk_lost state={} continuing=internal", ride.bulk.status().name());
+            ride.continue_internally(now);
+        }
         // A new ride, from any source, starts its totals and laps from zero;
-        // resume keeps them.
-        if self.ride.recorder.status() == Status::Recording
+        // resume and a move to internal media keep them.
+        if ride.active().status() == Status::Recording
             && !matches!(before, Status::Recording | Status::Paused)
         {
-            self.ride.totals = Totals::default();
-            self.ride.counted_ms = 0;
-            self.ride.laps = Laps::default();
-            self.ride.lap_toast = None;
-            self.ride.zone_time = ZoneTime::default();
-            self.ride.climbs = Climbs::default();
-            self.navigation.climb_return = None;
+            ride.last = Some(ride.shown());
+            if ride.continuing {
+                ride.continuing = false;
+                ride.carried_ms += core::mem::take(&mut ride.carry_ms);
+                ride.moved = true;
+            } else {
+                ride.totals = Totals::default();
+                ride.carried_ms = 0;
+                ride.moved = false;
+                ride.laps = Laps::default();
+                ride.lap_toast = None;
+                ride.zone_time = ZoneTime::default();
+                ride.climbs = Climbs::default();
+                self.navigation.climb_return = None;
+            }
+            ride.counted_ms = 0;
         }
         // A started or resumed segment settles with its own readings, not those
         // from before the pause, or none at all before its first full step.
-        if before != Status::Recording && self.ride.recorder.status() == Status::Recording {
+        if before != Status::Recording && ride.active().status() == Status::Recording {
             let distance_mm = u64::from(sample.speed_mm_s.unwrap_or(0));
             let step = Step {
                 elapsed_ms: 1000,
                 distance_mm,
             };
-            self.ride.settled = Some((sample, step, None));
+            ride.settled = Some((sample, step, None));
         }
-        // Stamp milestones after the synchronous write, so its cost shows.
-        let done = clock.map_or(now, |clock| clock()).max(now);
-        let status = self.ride.recorder.status();
-        if before == Status::Scanning && status != Status::Scanning {
+        for medium in [Medium::Internal, Medium::Bulk] {
+            let Some(result) = ride.recorder_mut(medium).take_result() else {
+                continue;
+            };
+            if result.token != 0 {
+                // A ride the rider or host asked for that failed to start is
+                // the latest ride, so its storage error is what shows.
+                if result.action == Some(Action::Start) && !result.ok {
+                    ride.last = Some(medium);
+                }
+                ride.request = Request::Completed(result);
+            } else if !result.ok {
+                ride.give_up_continuation();
+            }
+        }
+        // A ride lost while paused continues paused; automation waits until
+        // it is, so an automatic pause stays automatic.
+        if ride.pause_continuation && !ride.continuing {
+            match ride.internal.status() {
+                Status::Paused => ride.pause_continuation = false,
+                Status::Recording => {
+                    if ride.internal.pending_action().is_none() {
+                        ride.internal.request(Action::Pause, Source::Live, now, 0);
+                    }
+                }
+                _ if !ride.internal.riding() => ride.pause_continuation = false,
+                _ => {}
+            }
+        }
+        // Stamp milestones after the synchronous writes, so their cost shows:
+        // storage once neither journal scans, recording once the ride does.
+        let done = clock().max(now);
+        let scanning = |ride: &Ride| {
+            ride.internal.status() == Status::Scanning || ride.bulk.status() == Status::Scanning
+        };
+        if was_scanning && !scanning(ride) {
+            let status = ride.recorder(ride.medium()).status();
             self.timing
                 .storage(done, status.name(), status != Status::Error);
         }
-        if self.ride.recorder.status() == Status::Recording {
+        if ride.active().status() == Status::Recording {
             self.timing.recording(done);
-        }
-        if let Some(result) = self.ride.recorder.take_result() {
-            self.ride.request = Request::Completed(result);
         }
     }
 }

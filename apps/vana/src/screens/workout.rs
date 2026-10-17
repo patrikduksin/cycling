@@ -70,6 +70,8 @@ pub struct View {
     pub(super) toast: Text<19>,
     /// Recording time left in the ride journal, when the recorder can record.
     pub storage_left_s: Option<u32>,
+    /// Bulk media should take rides but cannot; rides go to internal flash.
+    pub storage_fallback: bool,
     /// The ride state row, prepared once per frame.
     pub(super) state_text: Text<19>,
     pub(super) state_warns: bool,
@@ -121,6 +123,7 @@ impl View {
             ride_page: RidePage::Main,
             storage_left_s: None,
             climbs: Climbs::default(),
+            storage_fallback: false,
             values: core::array::from_fn(|_| Text::new()),
             zone_time: ZoneTime::default(),
             profile: TrainingProfile::default(),
@@ -248,7 +251,10 @@ impl View {
     fn prepare_state(&mut self) {
         let mut state = Text::new();
         let low = self.storage_left_s.filter(|left| *left < LOW_STORAGE_S);
-        self.state_warns = self.stop_confirm || !self.auto_toast.is_empty() || low.is_some();
+        self.state_warns = self.stop_confirm
+            || !self.auto_toast.is_empty()
+            || low.is_some()
+            || self.storage_fallback;
         let label = match self.state {
             Status::Recording => "REC",
             Status::Paused => "PAUSED",
@@ -259,6 +265,16 @@ impl View {
             // A fresh automatic action replaces the state for a moment.
             _ if !self.auto_toast.is_empty() => state.push_str(self.auto_toast),
             Some(left) => write!(state, "{label} {}M LEFT", left / 60),
+            None if self.storage_fallback => state.push_str(match self.state {
+                Status::Recording => "RECORDING INT",
+                Status::Paused if self.auto_paused => "AUTO PAUSED INT",
+                Status::Paused => "PAUSED INT",
+                Status::Saved => "SAVED INT",
+                Status::Recovered => "RECOVERED INT",
+                Status::Error => "STORAGE ERROR",
+                Status::Full => "STORAGE FULL",
+                _ => "READY INT",
+            }),
             None => state.push_str(match self.state {
                 Status::Recording => "RECORDING",
                 Status::Paused if self.auto_paused => "AUTO PAUSED",
@@ -577,6 +593,23 @@ mod tests {
         view.storage_left_s = Some(4 * 3600);
         view.prepare();
         assert!(shows(&view, 6, 296, 2, b"RECOVERED", CYAN));
+    }
+
+    #[test]
+    fn ride_page_warns_when_rides_fall_back_to_internal_flash() {
+        let mut view = View::new(Page::Ride, 0, None);
+        view.state = Status::Recording;
+        view.storage_left_s = Some(4 * 3600);
+        view.storage_fallback = true;
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"RECORDING INT", 0xffe0));
+        view.state = Status::Ready;
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"READY INT", 0xffe0));
+        // The countdown still wins once little is left.
+        view.storage_left_s = Some(300);
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"STORAGE 5M LEFT", 0xffe0));
     }
 
     #[test]

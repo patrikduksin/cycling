@@ -1,4 +1,8 @@
-//! Incremental scanner and append scheduler for the owned ride region.
+//! Incremental scanner and append scheduler for one ride journal.
+//!
+//! The same recorder runs the internal journal and the bulk MMC log; a
+//! [`Journal`] supplies the medium. Bulk media that are missing, unformatted or
+//! untrustworthy stay in their own state and are never written implicitly.
 //!
 //! Boot scans without erasing. Unknown occupied data requires explicit initialize,
 //! except one torn first append on an otherwise empty journal, which stays an
@@ -15,20 +19,15 @@
 
 use crate::ride::control::Action;
 
+use crate::ride::journal::{Journal, Progress, Scan};
 use crate::ride::log::Catalog;
 use crate::ride::log::Entry;
 use crate::ride::log::Kind;
+use crate::ride::log::Recovery;
 use crate::ride::log::Sample;
-use crate::ride::log::Scanner;
-use crate::ride::log::Slot;
 use crate::ride::log::Source;
 use crate::ride::log::Status;
 use crate::ride::log::Summary;
-use crate::ride::reclaim::Clear;
-use crate::ride::reclaim::Media;
-use crate::ride::reclaim::Progress;
-
-use crate::ride::storage::RideStorage;
 
 #[derive(Clone, Copy)]
 enum Pending {
@@ -45,12 +44,16 @@ pub struct ResultEvent {
 }
 
 pub struct Recorder {
-    scanner: Option<Scanner>,
-    scan_sector: crate::ride::log::Sector,
     catalog: Catalog,
     status: Status,
-    format_sector: usize,
-    clear: Clear,
+    /// Slots of the medium, including the reserved terminal slot.
+    slots: usize,
+    /// Initialize or clear step.
+    step: usize,
+    /// Active time of the last record this ride committed.
+    committed_ms: u64,
+    /// The journal asked for recovery state to be saved.
+    checkpoint_due: bool,
     pending: Option<Pending>,
     result: Option<ResultEvent>,
     ride_id: u32,
@@ -73,12 +76,12 @@ pub struct Recorder {
 impl Default for Recorder {
     fn default() -> Self {
         Self {
-            scanner: Some(Scanner::default()),
-            scan_sector: crate::ride::log::Sector::default(),
             catalog: Catalog::default(),
             status: Status::Scanning,
-            format_sector: 0,
-            clear: Clear::default(),
+            slots: crate::ride::log::SLOTS,
+            step: 0,
+            committed_ms: 0,
+            checkpoint_due: false,
             pending: None,
             result: None,
             ride_id: 0,
@@ -129,14 +132,48 @@ impl Recorder {
     /// reserving START (when no ride is open) and the terminal slot. Each
     /// pause/resume costs an event slot and may pad a partial batch.
     pub fn remaining_secs(&self) -> u32 {
-        if matches!(self.status, Status::Full | Status::NeedsInit) {
+        if !self.status.usable() {
             return 0;
         }
         let used = self
             .catalog
             .next_slot
             .saturating_sub(usize::from(self.open_ride));
-        crate::ride::reclaim::estimated_seconds(used).saturating_sub(self.sample_count as u32)
+        crate::ride::reclaim::estimated_seconds_in(self.slots, used)
+            .saturating_sub(self.sample_count as u32)
+    }
+
+    /// Slots of the medium, including the reserved terminal slot.
+    pub fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// A ride is open and running or paused on this journal.
+    pub fn riding(&self) -> bool {
+        self.open_ride && matches!(self.status, Status::Recording | Status::Paused)
+    }
+
+    /// A pause or finish was accepted and not yet completed.
+    pub fn stop_requested(&self) -> bool {
+        self.stop_at.is_some()
+    }
+
+    /// The ride action accepted and not yet completed.
+    pub fn pending_action(&self) -> Option<Action> {
+        match self.pending {
+            Some(Pending::Ride(action, ..)) => Some(action),
+            _ => None,
+        }
+    }
+
+    /// Recovered with an interrupted ride whose closing record is still to be
+    /// appended; a new ride may start once it is.
+    pub fn recovering(&self) -> bool {
+        self.status == Status::Recovered && self.catalog.recovery.is_some()
+    }
+
+    pub fn busy(&self) -> bool {
+        self.pending.is_some() || self.result.is_some()
     }
 
     pub fn max_erase_ms(&self) -> u32 {
@@ -155,6 +192,11 @@ impl Recorder {
         self.catalog.summary_count
     }
 
+    #[cfg(test)]
+    pub(crate) fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
     pub fn exportable(&self) -> bool {
         !self.open_ride
             && self.pending.is_none()
@@ -166,6 +208,7 @@ impl Recorder {
                     | Status::Saved
                     | Status::Recovered
                     | Status::Full
+                    | Status::Corrupt
             )
     }
 
@@ -201,12 +244,17 @@ impl Recorder {
         allowed
     }
 
+    /// Explicitly prepare a journal that holds no usable rides. Corrupt bulk
+    /// media is only superseded by a new epoch; its sectors stay readable.
     pub fn initialize(&mut self, token: u32) -> bool {
-        if self.status != Status::NeedsInit || self.pending.is_some() || self.result.is_some() {
+        if !matches!(self.status, Status::NeedsInit | Status::Corrupt)
+            || self.pending.is_some()
+            || self.result.is_some()
+        {
             return false;
         }
         self.pending = Some(Pending::Initialize(token));
-        self.format_sector = 0;
+        self.step = 0;
         self.status = Status::Formatting;
         true
     }
@@ -222,7 +270,7 @@ impl Recorder {
             return false;
         }
         self.pending = Some(Pending::Clear(token));
-        self.clear = Clear::default();
+        self.step = 0;
         self.status = Status::Clearing;
         true
     }
@@ -245,16 +293,17 @@ impl Recorder {
         }
     }
 
-    /// Perform at most one scan sector, erase sector, or committed slot append.
+    /// Perform at most one scan step, initialize/clear step, checkpoint, or
+    /// committed slot append.
     pub fn service(
         &mut self,
-        store: &mut impl RideStorage,
+        journal: &mut impl Journal,
         now: u64,
         sample: Sample,
         clock: &impl Fn() -> u64,
     ) -> bool {
         let before = self.status;
-        let worked = self.service_inner(store, now, sample, clock);
+        let worked = self.service_inner(journal, now, sample, clock);
         if self.status != before {
             if self.status == Status::Error {
                 log::error!(target: "sdk.recorder", "media_failed previous={} next_slot={}", before.name(), self.catalog.next_slot);
@@ -267,21 +316,41 @@ impl Recorder {
 
     fn service_inner(
         &mut self,
-        store: &mut impl RideStorage,
+        journal: &mut impl Journal,
         now: u64,
         sample: Sample,
         clock: &impl Fn() -> u64,
     ) -> bool {
         if self.status == Status::Scanning {
-            self.scan(store);
+            self.scan(journal);
             return true;
         }
-        if self.status == Status::Formatting {
-            self.format(store, clock);
+        if matches!(self.status, Status::Formatting | Status::Clearing) {
+            self.prepare(journal, clock);
             return true;
         }
-        if self.status == Status::Clearing {
-            self.clear_all(store, clock);
+        if self.status == Status::Error {
+            // The medium's state is uncertain: write nothing until recovery,
+            // and fail any action still queued so its token completes.
+            if let Some(Pending::Ride(action, .., token)) = self.pending.take() {
+                self.stop_at = None;
+                self.result = Some(ResultEvent {
+                    action: Some(action),
+                    token,
+                    ok: false,
+                });
+                return true;
+            }
+            return false;
+        }
+        if self.checkpoint_due {
+            self.checkpoint_due = false;
+            let catalog = self.checkpoint_catalog();
+            if !journal.checkpoint(&catalog) {
+                self.freeze(now);
+                self.status = Status::Error;
+                return self.service_inner(journal, now, sample, clock);
+            }
             return true;
         }
 
@@ -313,7 +382,7 @@ impl Recorder {
                 recovery.next_sequence,
                 recovery.active_ms,
             );
-            if self.append(store, &entry, true, now, clock) {
+            if self.append(journal, &entry, true, now, clock) {
                 self.catalog.completed = self.catalog.completed.saturating_add(1);
                 self.catalog.recovery = None;
                 self.accumulated_ms = recovery.active_ms;
@@ -333,7 +402,7 @@ impl Recorder {
         }
         if let Some(Pending::Ride(action, source, action_ms, token)) = self.pending {
             if self.sample_count != 0 && matches!(action, Action::Pause | Action::Finish) {
-                if !self.flush(store, now, clock) {
+                if !self.flush(journal, now, clock) {
                     self.pending = None;
                     self.result = Some(ResultEvent {
                         action: Some(action),
@@ -354,7 +423,9 @@ impl Recorder {
                 Action::Finish => Kind::Finish,
             };
             if action == Action::Start {
-                if crate::ride::reclaim::estimated_seconds(self.catalog.next_slot) == 0 {
+                if crate::ride::reclaim::estimated_seconds_in(self.slots, self.catalog.next_slot)
+                    == 0
+                {
                     // No room for START, one sample batch and the terminal record.
                     self.status = Status::Full;
                     self.pending = None;
@@ -370,7 +441,7 @@ impl Recorder {
             }
             let entry = Entry::event(kind, source, self.ride_id, self.sequence, active_ms);
             let ok = self.append(
-                store,
+                journal,
                 &entry,
                 matches!(kind, Kind::Finish | Kind::Recovered | Kind::Full),
                 now,
@@ -388,6 +459,8 @@ impl Recorder {
                         self.open_ride = true;
                         self.summary = Summary::started(self.ride_id, source);
                         self.status = Status::Recording;
+                        // As a scan would see it once START is committed.
+                        self.catalog.next_ride_id = self.ride_id.wrapping_add(1).max(1);
                     }
                     Action::Pause => {
                         self.accumulated_ms = active_ms;
@@ -422,152 +495,140 @@ impl Recorder {
         }
 
         if self.status == Status::Recording && self.sample_count == self.samples.len() {
-            self.flush(store, now, clock);
+            self.flush(journal, now, clock);
             return true;
         }
         false
     }
 
-    fn scan(&mut self, store: &mut impl RideStorage) {
-        let scanner = self.scanner.as_mut().unwrap();
-        let Some(sector) = scanner.next_sector() else {
+    fn scan(&mut self, journal: &mut impl Journal) {
+        let scan = journal.scan();
+        if scan == Scan::More {
             return;
+        }
+        // Whatever the outcome, report this journal's capacity: none for a
+        // medium without an epoch.
+        self.slots = journal.slots();
+        let catalog = match scan {
+            Scan::More => return,
+            Scan::Done(catalog) => catalog,
+            Scan::Uninitialized => {
+                self.status = Status::NeedsInit;
+                return;
+            }
+            Scan::Unsupported => {
+                self.status = Status::Unsupported;
+                return;
+            }
+            Scan::Unavailable => {
+                self.status = Status::Unavailable;
+                return;
+            }
+            Scan::Corrupt => {
+                self.status = Status::Corrupt;
+                return;
+            }
+            Scan::Uncertain(catalog) => {
+                // Exportable up to the extent seen; nothing is written and
+                // only an explicit initialize starts over.
+                self.catalog = catalog;
+                self.status = Status::Corrupt;
+                return;
+            }
+            Scan::Failed => {
+                self.status = Status::Error;
+                return;
+            }
         };
-        if store
-            .ride_read_sector(sector, &mut self.scan_sector)
-            .is_err()
-        {
-            self.status = Status::Error;
-            self.scanner = None;
-            return;
-        }
-        scanner.accept(&self.scan_sector);
-        if let Some(catalog) = scanner.finish() {
-            self.catalog = catalog;
-            self.scanner = None;
-            self.status = if catalog.unknown_data() {
-                Status::NeedsInit
-            } else if catalog.next_slot >= crate::ride::log::SLOTS {
-                Status::Full
-            } else if let Some(recovery) = catalog.recovery {
-                self.accumulated_ms = recovery.active_ms;
-                self.ride_id = recovery.ride_id;
-                self.sequence = recovery.next_sequence;
-                self.source = recovery.source;
-                self.open_ride = true;
-                self.summary = recovery.summary;
-                Status::Recovered
-            } else {
-                Status::Ready
-            };
-        }
+        self.catalog = catalog;
+        // Write an overdue checkpoint before any append, so repeated cuts
+        // cannot grow what the next boot replays.
+        self.checkpoint_due = journal.checkpoint_overdue();
+        self.status = if catalog.unknown_data() {
+            Status::NeedsInit
+        } else if catalog.next_slot >= self.slots {
+            Status::Full
+        } else if let Some(recovery) = catalog.recovery {
+            self.accumulated_ms = recovery.active_ms;
+            self.committed_ms = recovery.active_ms;
+            self.ride_id = recovery.ride_id;
+            self.sequence = recovery.next_sequence;
+            self.source = recovery.source;
+            self.open_ride = true;
+            self.summary = recovery.summary;
+            Status::Recovered
+        } else {
+            Status::Ready
+        };
     }
 
-    fn format(&mut self, store: &mut impl RideStorage, clock: &impl Fn() -> u64) {
+    /// One initialize or clear step; completion leaves an empty journal.
+    fn prepare(&mut self, journal: &mut impl Journal, clock: &impl Fn() -> u64) {
+        let clearing = self.status == Status::Clearing;
         let started = clock();
-        let ok = store.ride_erase_sector(self.format_sector).is_ok()
-            && store
-                .ride_read_sector(self.format_sector, &mut self.scan_sector)
-                .is_ok()
-            && crate::ride::log::erased(&self.scan_sector.0);
+        // A new bulk epoch needs an identity that differs from the last one.
+        let seed = started ^ (u64::from(self.catalog.next_ride_id) << 32) ^ self.step as u64;
+        let progress = if clearing {
+            journal.clear(self.step, seed)
+        } else {
+            journal.initialize(self.step, seed)
+        };
         self.max_erase_ms = self
             .max_erase_ms
             .max(clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32);
-        if !ok {
-            self.status = Status::Error;
-            let token = match self.pending.take() {
-                Some(Pending::Initialize(token)) => token,
-                _ => 0,
-            };
-            self.result = Some(ResultEvent {
-                action: None,
-                token,
-                ok: false,
-            });
-            return;
-        }
-        self.format_sector += 1;
-        if self.format_sector == crate::ride::log::SECTORS {
-            let token = match self.pending.take() {
-                Some(Pending::Initialize(token)) => token,
-                _ => 0,
-            };
+        let ok = match progress {
+            Progress::More => {
+                self.step += 1;
+                return;
+            }
+            Progress::Done => true,
+            Progress::Failed => false,
+        };
+        let token = match self.pending.take() {
+            Some(Pending::Initialize(token) | Pending::Clear(token)) => token,
+            _ => 0,
+        };
+        if ok {
+            self.slots = journal.slots();
             self.catalog = Catalog {
                 next_ride_id: 1,
                 ..Catalog::default()
             };
+            self.ride_id = 0;
+            self.sequence = 0;
+            self.accumulated_ms = 0;
+            self.committed_ms = 0;
             self.open_ride = false;
+            self.sample_count = 0;
             self.status = Status::Ready;
-            self.result = Some(ResultEvent {
-                action: None,
-                token,
-                ok: true,
+        } else {
+            self.status = Status::Error;
+        }
+        self.result = Some(ResultEvent {
+            action: None,
+            token,
+            ok,
+        });
+    }
+
+    /// The state a scan of everything committed so far would rebuild.
+    fn checkpoint_catalog(&self) -> Catalog {
+        let mut catalog = self.catalog;
+        if self.open_ride && catalog.recovery.is_none() {
+            catalog.recovery = Some(Recovery {
+                ride_id: self.ride_id,
+                source: self.source,
+                next_sequence: self.sequence,
+                active_ms: self.committed_ms,
+                gap: false,
+                summary: self.summary,
             });
         }
+        catalog
     }
 
-    fn clear_all(&mut self, store: &mut impl RideStorage, clock: &impl Fn() -> u64) {
-        struct StoreMedia<'a, S>(&'a mut S);
-        impl<S: RideStorage> Media for StoreMedia<'_, S> {
-            type Error = ();
-            fn erase_sector(&mut self, sector: usize) -> Result<(), Self::Error> {
-                self.0.ride_erase_sector(sector).map_err(|_| ())
-            }
-            fn read_sector(
-                &mut self,
-                sector: usize,
-                output: &mut crate::ride::log::Sector,
-            ) -> Result<(), Self::Error> {
-                self.0.ride_read_sector(sector, output).map_err(|_| ())
-            }
-        }
-        let started = clock();
-        let progress = self
-            .clear
-            .service(&mut StoreMedia(store), &mut self.scan_sector);
-        self.max_erase_ms = self
-            .max_erase_ms
-            .max(clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32);
-        match progress {
-            Ok(Progress::More) => {}
-            Ok(Progress::Complete) => {
-                let token = match self.pending.take() {
-                    Some(Pending::Clear(token)) => token,
-                    _ => 0,
-                };
-                self.catalog = Catalog {
-                    next_ride_id: 1,
-                    ..Catalog::default()
-                };
-                self.ride_id = 0;
-                self.sequence = 0;
-                self.accumulated_ms = 0;
-                self.open_ride = false;
-                self.sample_count = 0;
-                self.status = Status::Ready;
-                self.result = Some(ResultEvent {
-                    action: None,
-                    token,
-                    ok: true,
-                });
-            }
-            Err(_) => {
-                let token = match self.pending.take() {
-                    Some(Pending::Clear(token)) => token,
-                    _ => 0,
-                };
-                self.status = Status::Error;
-                self.result = Some(ResultEvent {
-                    action: None,
-                    token,
-                    ok: false,
-                });
-            }
-        }
-    }
-
-    fn flush(&mut self, store: &mut impl RideStorage, now: u64, clock: &impl Fn() -> u64) -> bool {
-        if self.catalog.next_slot >= crate::ride::log::SLOTS - 1 {
+    fn flush(&mut self, journal: &mut impl Journal, now: u64, clock: &impl Fn() -> u64) -> bool {
+        if self.catalog.next_slot >= self.slots.saturating_sub(1) {
             self.freeze(now);
             self.dropped_samples = self
                 .dropped_samples
@@ -580,7 +641,7 @@ impl Recorder {
                 self.sequence,
                 self.active_ms(now),
             );
-            if self.append(store, &entry, true, now, clock) {
+            if self.append(journal, &entry, true, now, clock) {
                 self.summary.finish(Kind::Full, entry.active_ms, false);
                 self.catalog.push_summary(self.summary);
                 self.catalog.completed = self.catalog.completed.saturating_add(1);
@@ -596,7 +657,7 @@ impl Recorder {
             &self.samples[..self.sample_count],
         )
         .unwrap();
-        if self.append(store, &entry, false, now, clock) {
+        if self.append(journal, &entry, false, now, clock) {
             self.sequence = self.sequence.wrapping_add(1);
             for sample in &self.samples[..self.sample_count] {
                 self.summary.add_sample(*sample);
@@ -613,46 +674,38 @@ impl Recorder {
 
     fn append(
         &mut self,
-        store: &mut impl RideStorage,
+        journal: &mut impl Journal,
         entry: &Entry,
         final_slot: bool,
         now: u64,
         clock: &impl Fn() -> u64,
     ) -> bool {
-        if self.catalog.next_slot >= crate::ride::log::SLOTS
-            || (!final_slot && self.catalog.next_slot >= crate::ride::log::SLOTS - 1)
+        if self.catalog.next_slot >= self.slots
+            || (!final_slot && self.catalog.next_slot >= self.slots.saturating_sub(1))
         {
             self.freeze(now);
             self.status = Status::Full;
             return false;
         }
-        let target = self.catalog.next_slot;
-        let mut verify = Slot::default();
-        if store.ride_read_slot(target, &mut verify).is_err()
-            || !crate::ride::log::erased(&verify.0)
-        {
-            self.freeze(now);
-            self.status = Status::Error;
-            return false;
-        }
-        let slot = crate::ride::log::encode(entry);
         let started = clock();
-        let _write = store
-            .ride_write_slot(target, &slot)
-            .and_then(|()| store.ride_commit_slot(target, &crate::ride::log::commit_word()));
+        let appended = journal.append(self.catalog.next_slot, entry, final_slot);
         let elapsed = clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32;
         self.max_write_ms = self.max_write_ms.max(elapsed);
-        let verified = store.ride_read_slot(target, &mut verify).is_ok()
-            && crate::ride::log::decode(&verify).as_ref() == Some(entry);
-        if verified {
-            self.catalog.next_slot += 1;
-            true
-        } else {
-            // The commit may have reached flash even when verification could not
-            // complete. Stop and let the boot scanner reconcile this slot.
-            self.freeze(now);
-            self.status = Status::Error;
-            false
+        match appended {
+            Some(checkpoint) => {
+                self.catalog.next_slot += 1;
+                self.catalog.valid_slots = self.catalog.valid_slots.saturating_add(1);
+                self.committed_ms = entry.active_ms;
+                self.checkpoint_due |= checkpoint;
+                true
+            }
+            None => {
+                // The commit may have reached the medium even when verification
+                // could not complete. Stop and let the boot scan reconcile it.
+                self.freeze(now);
+                self.status = Status::Error;
+                false
+            }
         }
     }
 
@@ -671,17 +724,61 @@ impl Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ride::journal::{Internal, InternalState};
+    use crate::ride::log::Slot;
+    use crate::ride::storage::RideStorage;
     use std::vec;
     use std::vec::Vec;
 
+    /// Internal journal media and its scan state, rebuilt on every reboot.
+    #[derive(Default)]
     struct Memory {
+        flash: Flash,
+        state: InternalState,
+    }
+    impl core::ops::Deref for Memory {
+        type Target = Flash;
+        fn deref(&self) -> &Flash {
+            &self.flash
+        }
+    }
+    impl core::ops::DerefMut for Memory {
+        fn deref_mut(&mut self) -> &mut Flash {
+            &mut self.flash
+        }
+    }
+    impl Journal for Memory {
+        fn slots(&self) -> usize {
+            crate::ride::log::SLOTS
+        }
+        fn scan(&mut self) -> Scan {
+            Internal::new(&mut self.state, &mut self.flash).scan()
+        }
+        fn initialize(&mut self, step: usize, seed: u64) -> Progress {
+            Internal::new(&mut self.state, &mut self.flash).initialize(step, seed)
+        }
+        fn clear(&mut self, step: usize, seed: u64) -> Progress {
+            Internal::new(&mut self.state, &mut self.flash).clear(step, seed)
+        }
+        fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Option<bool> {
+            Internal::new(&mut self.state, &mut self.flash).append(index, entry, terminal)
+        }
+        fn checkpoint(&mut self, catalog: &Catalog) -> bool {
+            Internal::new(&mut self.state, &mut self.flash).checkpoint(catalog)
+        }
+        fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
+            Internal::new(&mut self.state, &mut self.flash).read_slot(index, output)
+        }
+    }
+
+    struct Flash {
         bytes: Vec<u8>,
         mutations: usize,
         fail_commit: bool,
         /// Power is lost during the next body write after this many bytes.
         tear_write: Option<usize>,
     }
-    impl Default for Memory {
+    impl Default for Flash {
         fn default() -> Self {
             Self {
                 bytes: vec![0xff; crate::ride::log::REGION_SIZE],
@@ -691,7 +788,7 @@ mod tests {
             }
         }
     }
-    impl RideStorage for Memory {
+    impl RideStorage for Flash {
         type Error = ();
         fn ride_read_sector(
             &mut self,
@@ -746,6 +843,7 @@ mod tests {
         }
     }
     fn scan(recorder: &mut Recorder, media: &mut Memory) {
+        media.state = InternalState::default();
         for _ in 0..crate::ride::log::SECTORS {
             recorder.service(media, 0, Sample::default(), &|| 0);
         }

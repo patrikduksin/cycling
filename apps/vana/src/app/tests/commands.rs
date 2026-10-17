@@ -9,7 +9,7 @@ fn run(
     words: &str,
 ) -> (&'static str, String) {
     let mut output = String::new();
-    let status = runtime.command(words, journal, now, &mut output);
+    let status = runtime.command(words, journal, &mut NoBulk, now, &mut output);
     (status, output)
 }
 
@@ -68,7 +68,7 @@ fn undersized_reply_leaves_the_command_unqueued() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     assert_eq!(
-        runtime.command("RIDE START", &mut journal, 0, &mut Full),
+        runtime.command("RIDE START", &mut journal, &mut NoBulk, 0, &mut Full),
         "OUTPUT"
     );
     assert!(!runtime.recording());
@@ -180,7 +180,7 @@ fn ride_status_reports_the_page_and_home_selection() {
     runtime.navigation.home_cursor = 2;
     let mut out = std::string::String::new();
     assert_eq!(
-        runtime.command("RIDE STATUS", &mut journal, 0, &mut out),
+        runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, 0, &mut out),
         "OK"
     );
     assert!(out.contains(" page=home home_cursor=2 pending=0"), "{out}");
@@ -194,6 +194,6 @@ fn ride_status_reports_the_page_and_home_selection() {
         &mut radio,
     );
     out.clear();
-    runtime.command("RIDE STATUS", &mut journal, 1_000, &mut out);
+    runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, 1_000, &mut out);
     assert!(out.contains(" page=power "), "{out}");
 }

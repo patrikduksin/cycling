@@ -164,7 +164,7 @@ async fn console(
         // opens with storage ready. Charging standby and transitions skip it.
         #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Initializing {
-            sdk.prepare(&mut system.data_storage(), now);
+            sdk.prepare(&mut system.data_storage(), &mut devices.bulk, now);
         }
         // Diagnostic power requests enter only with no active domain work.
         // Keep USB observations alive while device owners complete the transition.
@@ -191,6 +191,7 @@ async fn console(
             #[cfg(feature = "cycling")]
             sdk.tick(
                 &mut system.data_storage(),
+                &mut devices.bulk,
                 now,
                 &mut devices.ant,
                 &mut devices.ble,

@@ -293,7 +293,11 @@ mod tests {
                                 view.radar = radar;
                                 view.state = state;
                                 view.stop_confirm = stop_confirm;
-                                view.storage_left_s = [None, Some(42 * 60), Some(4 * 3600)][t % 3];
+                                view.storage_left_s =
+                                    [None, Some(42 * 60), Some(4 * 3600)][(t + r) % 3];
+                                // Rides falling back to internal flash: the
+                                // yellow INT status goes through the rows too.
+                                view.storage_fallback = (t + r) % 2 == 1;
                                 view.active_secs = 3725 * s as u64;
                                 view.ride_page = page;
                                 if s == 2 {

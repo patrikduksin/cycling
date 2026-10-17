@@ -14,5 +14,6 @@ pub mod network;
 pub mod network_time;
 pub mod position_control;
 pub mod positioning;
+pub mod sector_log;
 pub mod sound;
 pub mod storage;

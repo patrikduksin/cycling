@@ -263,6 +263,8 @@ pub struct Session {
     wifi_control: device_api::connectivity::ControlStatus,
     ble_control: device_api::connectivity::ControlStatus,
     pub media: FileFlash,
+    /// The owned MMC region; absent unless a scenario fits one.
+    pub bulk: crate::bulk::SimBulk,
     #[cfg(feature = "cycling")]
     pub sdk: vana::app::Runtime,
 }
@@ -358,6 +360,7 @@ impl Session {
             wifi_control: device_api::connectivity::ControlStatus::new(),
             ble_control: device_api::connectivity::ControlStatus::new(),
             media,
+            bulk: crate::bulk::SimBulk::default(),
             #[cfg(feature = "cycling")]
             sdk,
         })
@@ -404,7 +407,8 @@ impl Session {
         // then the backlight stays dark.
         #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Initializing {
-            self.sdk.prepare(&mut self.shell.data_storage(), self.now);
+            self.sdk
+                .prepare(&mut self.shell.data_storage(), &mut self.bulk, self.now);
         }
         if !power.ready {
             return;
@@ -439,6 +443,7 @@ impl Session {
             };
             self.sdk.tick(
                 &mut self.shell.data_storage(),
+                &mut self.bulk,
                 self.now,
                 &mut self.ant,
                 &mut self.ble,
@@ -638,6 +643,7 @@ impl Session {
                 return self.sdk.command(
                     core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                     &mut self.shell.data_storage(),
+                    &mut self.bulk,
                     self.now,
                     out,
                 );
@@ -797,6 +803,8 @@ impl Session {
     fn reboot(&mut self, power: bool) -> io::Result<()> {
         let g = self.display.geometry();
         let mut next = Self::with_media(self.media.clone(), g.width, g.height)?;
+        self.bulk.begin_boot();
+        next.bulk = self.bulk.clone();
         next.world = core::mem::take(&mut self.world);
         // Read before the swap: afterwards `self.ant` is the fresh radio.
         let ready = self.ant_ready_availability();

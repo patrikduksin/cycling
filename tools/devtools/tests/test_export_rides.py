@@ -1,5 +1,7 @@
+import hashlib
 import json
 import tempfile
+import tracemalloc
 import unittest
 import xml.etree.ElementTree as ET
 import zlib
@@ -10,8 +12,11 @@ from cycling_devtools.rides.export import (
     SLOT_SIZE,
     decode_slot,
     download_prefix,
+    info,
+    read_owned_sector,
     read_slot,
     rides_from_slots,
+    write_exports,
     write_gpx,
 )
 from cycling_devtools.terminal.usb import terminal_reply
@@ -66,6 +71,31 @@ class FakeConnection:
             raise TimeoutError('injected interruption')
         data = self.slots[index]
         return dict(id=index + 1, status='OK', data=f'SLOT {index} {zlib.crc32(data):08x} {data.hex()}')
+
+
+class FakeBulk:
+    """Bulk export replies: slot containers, one invalid, and raw owned sectors."""
+
+    def __init__(self, slots, invalid=(), capacity=5_777_391):
+        self.slots, self.invalid, self.capacity, self.commands = slots, set(invalid), capacity, []
+
+    def terminal_command(self, command):
+        self.commands.append(command)
+        words = command.split()
+        if words[:3] == ['EXPORT', 'BULK', 'INFO']:
+            data = f'INFO 1 256 {len(self.slots)} ready 00000000000000ab 2 {self.capacity}'
+        elif words[:3] == ['EXPORT', 'BULK', 'SLOT']:
+            index = int(words[3])
+            valid = index not in self.invalid
+            data = self.slots[index] if valid else bytes(SLOT_SIZE)
+            data = f'SLOT {index} {zlib.crc32(data):08x} {data.hex()} {"valid" if valid else "invalid"}'
+        elif words[:3] == ['MMC', 'OWNED', 'READ']:
+            sector, offset = int(words[3]), int(words[4])
+            chunk = bytes([sector & 0xFF]) * 256 if offset else b'\xa5' * 256
+            data = f'sector={sector} offset={offset} length=256 crc32={zlib.crc32(chunk):08x} data={chunk.hex()}'
+        else:
+            raise AssertionError(command)
+        return dict(id=len(self.commands), status='OK', data=data)
 
 
 class RideExportTests(unittest.TestCase):
@@ -151,6 +181,38 @@ class RideExportTests(unittest.TestCase):
             self.assertEqual(partial.read_bytes(), slots[0])
             download_prefix(FakeConnection(slots), partial, len(slots))
             self.assertEqual(partial.read_bytes(), b''.join(slots))
+
+    def test_bulk_export_reads_the_bulk_log_and_reports_invalid_containers(self):
+        slots = self.fixture()
+        connection = FakeBulk(slots, invalid={2})
+        metadata = info(connection, 'bulk')
+        self.assertEqual(metadata['upper_bound'], len(slots))
+        self.assertEqual((metadata['store_id'], metadata['generation']), ('00000000000000ab', 2))
+        with tempfile.TemporaryDirectory() as directory:
+            partial = Path(directory) / 'slots.partial'
+            self.assertEqual(download_prefix(connection, partial, len(slots), 'bulk'), [2])
+            raw = partial.read_bytes()
+        self.assertEqual(raw[2 * SLOT_SIZE : 3 * SLOT_SIZE], bytes(SLOT_SIZE))
+        self.assertEqual(raw[:SLOT_SIZE], slots[0])
+        self.assertTrue(all(command.startswith('EXPORT BULK ') for command in connection.commands))
+        sector = read_owned_sector(connection, 18)
+        self.assertEqual(sector, b'\xa5' * 256 + bytes([18]) * 256)
+        self.assertEqual(connection.commands[-2:], ['MMC OWNED READ 18 0 256', 'MMC OWNED READ 18 256 256'])
+
+    def test_bulk_export_info_is_bounded_by_capacity_and_strict(self):
+        with self.assertRaisesRegex(ValueError, 'out-of-bounds'):
+            info(FakeBulk(self.fixture(), capacity=2), 'bulk')
+
+        class Internal(FakeBulk):
+            def terminal_command(self, command):
+                reply = super().terminal_command(command)
+                reply['data'] = reply['data'].rsplit(' ', 3)[0]
+                return reply
+
+        with self.assertRaisesRegex(ValueError, 'malformed'):
+            info(Internal(self.fixture()), 'bulk')
+        with self.assertRaises(ValueError):
+            read_slot(FakeBulk(self.fixture()), 0, 'removable')
 
     def test_forward_gap_keeps_later_records_and_splits_unknown_source(self):
         sample = {'active_ms': 3000, 'utc_ms': 100, 'location': (1, 2)}
@@ -338,6 +400,50 @@ class RideExportTests(unittest.TestCase):
         ride = rides_from_slots(slots)[0][0]
         self.assertIsNone(ride['samples'][0]['utc_ms'])
         self.assertNotIn('utc_derived', ride['samples'][0])
+
+
+class LargeExportTests(unittest.TestCase):
+    def test_a_large_prefix_exports_ride_by_ride_in_bounded_memory(self):
+        rides, batches = 60, 1000
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            canonical = output / 'ride-slots.bin'
+            with canonical.open('wb') as raw:
+                for ride in range(1, rides + 1):
+                    raw.write(slot(1, 2, ride, 0, 0))
+                    for batch in range(1, batches + 1):
+                        samples = [
+                            {'active_ms': (batch - 1) * 4000 + step * 1000, 'heart': 120} for step in range(1, 5)
+                        ]
+                        raw.write(slot(2, 2, ride, batch, batch * 4000, samples))
+                    raw.write(slot(5, 2, ride, batches + 1, batches * 4000))
+            size = canonical.stat().st_size
+            tracemalloc.start()
+            try:
+                summary = write_exports(output, canonical, {'version': 1, 'upper_bound': size // SLOT_SIZE})
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            # 15 MiB of slots and 240,000 samples; holding them all took well over 100 MiB.
+            self.assertLess(peak, 16 * 2**20, f'{peak / 2**20:.1f} MiB peak')
+            manifest = json.loads((output / 'manifest.json').read_text())
+            self.assertEqual(summary['ride_count'], rides)
+            self.assertEqual(manifest['raw_sha256'], hashlib.sha256(canonical.read_bytes()).hexdigest())
+            self.assertEqual([entry['ride_id'] for entry in manifest['rides']], list(range(1, rides + 1)))
+            self.assertTrue(all(entry['samples'] == batches * 4 for entry in manifest['rides']))
+            self.assertEqual(manifest['invalid_slots'], [])
+            self.assertFalse((output / 'manifest-rides.partial').exists())
+            last = json.loads((output / f'ride-{rides}.json').read_text())
+            self.assertEqual((last['terminal'], len(last['samples'])), ('saved', batches * 4))
+
+    def test_an_empty_prefix_still_writes_a_valid_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            canonical = output / 'ride-slots.bin'
+            canonical.write_bytes(b'')
+            write_exports(output, canonical, {'version': 1})
+            manifest = json.loads((output / 'manifest.json').read_text())
+            self.assertEqual((manifest['rides'], manifest['raw_sha256']), ([], hashlib.sha256(b'').hexdigest()))
 
 
 if __name__ == '__main__':

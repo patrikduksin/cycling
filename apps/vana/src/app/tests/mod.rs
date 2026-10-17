@@ -195,6 +195,20 @@ impl RideStorage for Absent {
     }
 }
 
+/// A board without bulk media: rides use the internal journal.
+struct NoBulk;
+impl device_api::bulk::ReadWrite for NoBulk {
+    fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
+        Err(device_api::bulk::Error::Unsupported)
+    }
+    fn owned_read(&mut self, _: u64, _: &mut [u8; 512]) -> Result<(), device_api::bulk::Error> {
+        Err(device_api::bulk::Error::Unsupported)
+    }
+    fn owned_write(&mut self, _: u64, _: &[u8; 512]) -> Result<(), device_api::bulk::Error> {
+        panic!("no bulk media to write")
+    }
+}
+
 /// An in-memory ride reservation with NOR semantics: programming clears bits.
 struct Journal(Vec<u8>);
 impl Journal {
@@ -256,6 +270,7 @@ fn no_physical_sensors() -> device_api::sensors::Snapshot {
 fn tick(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut Radio, now: u64) {
     runtime.tick(
         store,
+        &mut NoBulk,
         now,
         radio,
         &mut Absent,
@@ -291,7 +306,7 @@ fn ready_runtime(journal: &mut Journal, radio: &mut Radio) -> Runtime {
         tick(&mut runtime, journal, radio, 0);
     }
     assert_eq!(
-        runtime.ride.recorder.status(),
+        runtime.ride.internal.status(),
         crate::ride::log::Status::Ready
     );
     runtime

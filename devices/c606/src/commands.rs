@@ -266,6 +266,8 @@ pub fn execute(
                 "display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} stack_untouched={} ",
                 crate::device::stack::untouched()
             );
+            let _ = crate::device::drivers::sdmmc::HEALTH.write(&mut output);
+            let _ = write!(output, " ");
             let logs = crate::logging::stats();
             let _ = write!(
                 output,

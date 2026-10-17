@@ -12,6 +12,7 @@
 //! without making that contract and its console and VANA callers async. Keep
 //! command sequencing and DMA buffer lifetimes unchanged if that happens.
 
+use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 
@@ -86,6 +87,135 @@ pub enum Error {
 impl From<ProtocolError> for Error {
     fn from(value: ProtocolError) -> Self {
         Self::Protocol(value)
+    }
+}
+
+impl Error {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::ResponseTimeout => "response_timeout",
+            Self::ResponseCrc => "response_crc",
+            Self::Response => "response",
+            Self::HardwareLocked => "hardware_locked",
+            Self::DataTimeout => "data_timeout",
+            Self::DataCrc => "data_crc",
+            Self::Fifo => "fifo",
+            Self::StartBit => "start_bit",
+            Self::Dma => "dma",
+            Self::Protocol(ProtocolError::AppCommand) => "protocol_app_command",
+            Self::Protocol(ProtocolError::Capacity) => "protocol_capacity",
+            Self::Protocol(ProtocolError::CardStatus) => "protocol_card_status",
+            Self::Protocol(ProtocolError::UnsupportedCsd) => "protocol_unsupported_csd",
+            Self::InterfaceCondition => "interface_condition",
+            Self::InitializationTimeout => "initialization_timeout",
+            Self::Readback => "readback",
+        }
+    }
+}
+
+/// Where a media failure happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Open = 1,
+    Clock = 2,
+    Read = 3,
+    Transfer = 4,
+    Binding = 5,
+    Recover = 6,
+}
+
+const STAGES: [&str; 7] = [
+    "none", "open", "clock", "read", "transfer", "binding", "recover",
+];
+const ERRORS: [&str; 18] = [
+    "unknown",
+    "timeout",
+    "response_timeout",
+    "response_crc",
+    "response",
+    "hardware_locked",
+    "data_timeout",
+    "data_crc",
+    "fifo",
+    "start_bit",
+    "dma",
+    "protocol_app_command",
+    "protocol_capacity",
+    "protocol_card_status",
+    "protocol_unsupported_csd",
+    "interface_condition",
+    "initialization_timeout",
+    "readback",
+];
+
+/// Media failures kept for STATUS. The boot log ring is too small to keep the
+/// line naming the first failure, and a failed medium stays failed until it
+/// recovers, so the root cause must outlive the log.
+pub struct Health {
+    first: AtomicU32,
+    last: AtomicU32,
+    recoveries: AtomicU32,
+    recover_failures: AtomicU32,
+    recover_max_ms: AtomicU32,
+}
+
+pub static HEALTH: Health = Health {
+    first: AtomicU32::new(0),
+    last: AtomicU32::new(0),
+    recoveries: AtomicU32::new(0),
+    recover_failures: AtomicU32::new(0),
+    recover_max_ms: AtomicU32::new(0),
+};
+
+impl Health {
+    pub fn record(&self, stage: Stage, error: Error) {
+        let index = ERRORS
+            .iter()
+            .position(|name| *name == error.name())
+            .unwrap_or(0) as u32;
+        let code = (stage as u32) << 8 | index;
+        let _ = self
+            .first
+            .compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);
+        self.last.store(code, Ordering::Relaxed);
+    }
+
+    /// A recovery that took `ms` (the media, and so the main loop, waited).
+    pub fn recovered(&self, ok: bool, ms: u64) {
+        self.recover_max_ms
+            .fetch_max(ms.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
+        let counter = if ok {
+            &self.recoveries
+        } else {
+            &self.recover_failures
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn describe(code: u32) -> (&'static str, &'static str) {
+        if code == 0 {
+            return ("none", "none");
+        }
+        let stage = STAGES.get((code >> 8) as usize).copied().unwrap_or("none");
+        let error = ERRORS
+            .get((code & 0xff) as usize)
+            .copied()
+            .unwrap_or("unknown");
+        (stage, error)
+    }
+
+    /// `mmc_first=stage:error mmc_last=stage:error mmc_recoveries=n mmc_recover_failures=n mmc_recover_max_ms=n`.
+    pub fn write(&self, output: &mut impl core::fmt::Write) -> core::fmt::Result {
+        let (first_stage, first_error) = Self::describe(self.first.load(Ordering::Relaxed));
+        let (last_stage, last_error) = Self::describe(self.last.load(Ordering::Relaxed));
+        write!(
+            output,
+            "mmc_first={first_stage}:{first_error} mmc_last={last_stage}:{last_error} mmc_recoveries={} mmc_recover_failures={} mmc_recover_max_ms={}",
+            self.recoveries.load(Ordering::Relaxed),
+            self.recover_failures.load(Ordering::Relaxed),
+            self.recover_max_ms.load(Ordering::Relaxed)
+        )
     }
 }
 
@@ -620,6 +750,7 @@ impl Reader<'_> {
         {
             self.failed = true;
             self.failures = self.failures.saturating_add(1);
+            HEALTH.record(Stage::Binding, Error::Readback);
             return Err(device_api::bulk::Error::Failed);
         }
         self.owned_binding = Some(binding);
@@ -646,6 +777,7 @@ impl Reader<'_> {
         result.map_err(|error| {
             self.failed = true;
             self.failures = self.failures.saturating_add(1);
+            HEALTH.record(Stage::Transfer, error);
             log::warn!(target: "mmc", "maintenance transfer failed error={:?}; recover required", error);
             device_api::bulk::Error::Failed
         })
@@ -735,6 +867,7 @@ impl device_api::bulk::Read for Reader<'_> {
         if let Err(error) = result {
             self.failed = true;
             self.failures = self.failures.saturating_add(1);
+            HEALTH.record(Stage::Read, error);
             log::warn!(target: "mmc", "read failed error={:?}; recover before another read", error);
             return Err(device_api::bulk::Error::Failed);
         }
@@ -752,7 +885,8 @@ impl device_api::bulk::Read for Reader<'_> {
         if self.failed {
             return Err(device_api::bulk::Error::Failed);
         }
-        if self.host.set_clock(divider).is_err() {
+        if let Err(error) = self.host.set_clock(divider) {
+            HEALTH.record(Stage::Clock, error);
             self.failed = true;
             self.failures = self.failures.saturating_add(1);
             return Err(device_api::bulk::Error::Failed);
@@ -774,9 +908,13 @@ impl device_api::bulk::Read for Reader<'_> {
                 Kind::Sd => identify_sd(&mut self.host)?.ok_or(Error::InterfaceCondition),
             }
         })();
-        let report = result.map_err(|_| device_api::bulk::Error::Failed)?;
+        let report = result.map_err(|error| {
+            HEALTH.record(Stage::Recover, error);
+            device_api::bulk::Error::Failed
+        })?;
         // A changed medium cannot silently replace the one selected at boot.
         if report.cid != self.report.cid || report.sectors != self.report.sectors {
+            HEALTH.record(Stage::Recover, Error::Readback);
             return Err(device_api::bulk::Error::Failed);
         }
         self.report = report;

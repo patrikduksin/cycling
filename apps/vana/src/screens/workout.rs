@@ -327,17 +327,17 @@ impl View<'_> {
         self.badge = None;
         let cues: &[Cue] = match self.page {
             Page::Boot => {
-                self.canvas = self.boot_canvas();
+                fill(self, |view| view.boot_canvas());
                 &[]
             }
             Page::Settings => {
-                self.canvas = super::settings::prepare(self);
+                fill(self, super::settings::prepare);
                 let (section, _) = super::settings::section(self.cursor);
                 self.bar.set_pages(section, super::settings::SECTIONS.len());
                 &[]
             }
             Page::Ready => {
-                self.canvas = super::ready::prepare(&self.readiness);
+                fill(self, |view| super::ready::prepare(&view.readiness));
                 if self.readiness.can_start() {
                     &super::ready::CUES
                 } else {
@@ -345,13 +345,13 @@ impl View<'_> {
                 }
             }
             Page::EndRide => {
-                self.canvas = ride::end::prepare(self);
+                fill(self, ride::end::prepare);
                 &ride::end::CUES
             }
             Page::Summary => {
                 self.bar.set_pages(self.after.page, summary::PAGES);
                 self.marks = ride::marks(self);
-                self.canvas = summary::prepare(self);
+                fill(self, summary::prepare);
                 self.badge = summary::badge(self);
                 if self.after.saving == summary::Saving::Writing {
                     &[]
@@ -360,18 +360,18 @@ impl View<'_> {
                 }
             }
             Page::Setup => {
-                self.canvas = super::setup::prepare(self, self.setup);
+                fill(self, |view| super::setup::prepare(view, view.setup));
                 let steps = super::setup::STEPS.len();
                 self.bar
                     .set_pages(usize::from(self.setup.byte()) - 1, steps);
                 &[]
             }
             Page::Phone => {
-                self.canvas = super::phone::prepare(self);
+                fill(self, super::phone::prepare);
                 &[]
             }
             Page::Workouts => {
-                self.canvas = super::workouts::prepare(self);
+                fill(self, super::workouts::prepare);
                 &[]
             }
             // The runtime prepares the list with `set_canvas`.
@@ -379,7 +379,7 @@ impl View<'_> {
             Page::PastRide => {
                 self.bar.set_pages(self.after.page, summary::PAGES);
                 self.marks = ride::marks(self);
-                self.canvas = summary::prepare(self);
+                fill(self, summary::prepare);
                 if self.after.saving == summary::Saving::Reading {
                     &[]
                 } else {
@@ -387,7 +387,7 @@ impl View<'_> {
                 }
             }
             Page::Ride if self.pause_screen => {
-                self.canvas = ride::paused::prepare(self);
+                fill(self, ride::paused::prepare);
                 &ride::paused::CUES
             }
             Page::Ride => {
@@ -405,7 +405,7 @@ impl View<'_> {
         self.cues = cues.iter().copied().collect();
         // The FTP sheet covers whatever page it shows over.
         if let Some((new, old)) = self.ftp_offer {
-            self.canvas = super::workouts::ftp_sheet(new, old);
+            fill(self, |_| super::workouts::ftp_sheet(new, old));
             self.cues.clear();
             self.badge = None;
         }
@@ -450,6 +450,15 @@ impl<const N: usize> core::fmt::Write for Text<N> {
         }
         Ok(())
     }
+}
+
+/// Prepare a page's canvas in this frame, not inlined into `View::prepare`:
+/// a canvas is about 4 KB, and inlined, each page's would take its own slot
+/// in one frame under every frame VANA prepares (#167).
+#[inline(never)]
+pub(super) fn fill(view: &mut View, make: impl FnOnce(&View) -> Canvas) {
+    let canvas = make(view);
+    view.canvas = canvas;
 }
 
 #[cfg(test)]

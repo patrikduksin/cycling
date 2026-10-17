@@ -3378,7 +3378,7 @@ fn a_ride_started_remotely_from_the_summary_shows_its_controls() {
 /// Swipe Settings to the section that shows `label`.
 #[track_caller]
 fn show_setting(sim: &mut Sim, label: &str) {
-    for _ in 0..6 {
+    for _ in 0..vana::screens::settings::SECTIONS.len() + 1 {
         if sim.screen().run(label).is_some() {
             return;
         }
@@ -3452,13 +3452,14 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_text("PROFILE");
     sim.wait_for("SAVED", seconds(5)).unwrap();
     sim.advance(seconds(3));
-    // The phone row opens the phone companion's page, a placeholder for now.
+    // The phone row opens Connect phone.
     sim.swipe_previous();
     sim.expect_text("DEVICE");
     let phone = sim.screen().run("PHONE").unwrap();
     sim.tap(phone.x as u16 + 4, phone.y as u16 + 4);
-    sim.expect_text("SEND RIDES TO YOUR PHONE");
-    sim.checkpoint("phone placeholder");
+    sim.advance(seconds(1));
+    sim.expect_text("JOIN VANA WI-FI");
+    sim.checkpoint("connect phone from settings");
     sim.press(Button::TopLeft);
     assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
 
@@ -3611,7 +3612,8 @@ fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
     // ACT offers this ride to the phone; BACK comes back to it.
     sim.press(Button::BottomRight);
     assert_eq!(sim.vana_page(), "phone");
-    sim.expect_text("SEND THIS RIDE TO PHONE");
+    sim.advance(seconds(1));
+    sim.expect_text("JOIN VANA WI-FI");
     sim.checkpoint("send a saved ride to the phone");
     sim.press(Button::TopLeft);
     assert_eq!(sim.vana_page(), "past_ride");
@@ -3977,4 +3979,68 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
     sim.advance(seconds(5));
     sim.home("RIDES");
     sim.expect_text("1/45");
+}
+
+/// The QR code on the panel, read back as a phone camera would.
+fn scanned(sim: &Sim) -> String {
+    let screen = sim.screen();
+    let luma = |x: usize, y: usize| {
+        let pixel = screen.pixels[y * screen.width + x];
+        // RGB565 green channel is enough to tell dark from light.
+        (((pixel >> 5) & 0x3f) << 2) as u8
+    };
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(screen.width, screen.height, luma);
+    let grids = image.detect_grids();
+    assert_eq!(grids.len(), 1, "one code on screen:\n{}", screen.text());
+    grids[0].decode().expect("the code decodes").1
+}
+
+/// After a ride, Connect phone shows a code to join the device's Wi-Fi,
+/// then, once a phone joins, a code that opens the rides page.
+#[test]
+fn connect_phone_shows_scannable_join_and_page_codes() {
+    let mut sim = rider();
+    sim.start_ride();
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.press(Button::BottomRight);
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "PHONE");
+    let row = sim.screen().run("PHONE").expect("phone row");
+    sim.tap(row.x as u16 + 4, row.y as u16 + 4);
+    sim.advance(seconds(1));
+    assert_eq!(sim.vana_page(), "phone");
+    sim.expect_text("JOIN VANA WI-FI");
+    let config = sim
+        .device
+        .access_point
+        .config
+        .expect("access point started");
+    let join = scanned(&sim);
+    assert_eq!(
+        join,
+        format!(
+            "WIFI:T:WPA;S:{};P:{};;",
+            config.ssid.text(),
+            config.password.text()
+        )
+    );
+    assert!(sim.device.phone_server.listening);
+    sim.checkpoint("connect phone: join wi-fi");
+
+    sim.device.access_point.clients = 1;
+    sim.advance(seconds(1));
+    sim.expect_text("OPEN YOUR RIDES");
+    let page = scanned(&sim);
+    assert!(page.starts_with("http://192.168.4.1/?t="), "{page}");
+    sim.checkpoint("connect phone: open rides");
+
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    assert_eq!(sim.vana_page(), "home");
+    assert!(
+        sim.device.access_point.config.is_none(),
+        "access point stopped"
+    );
+    assert!(!sim.device.phone_server.listening);
 }

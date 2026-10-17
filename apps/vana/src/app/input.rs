@@ -213,6 +213,15 @@ impl Runtime {
                 self.navigation.page = Page::Sensors;
                 self.request_search(ant, now);
             }
+            // A tap on the code switches codes; after a session ended, any
+            // tap tries again.
+            (Page::Phone, Gesture::Tap(point)) => {
+                let on_code =
+                    crate::screens::phone::on_code(usize::from(point.x), usize::from(point.y));
+                if on_code || self.phone_status().is_none() {
+                    self.phone_touch();
+                }
+            }
             (Page::Summary | Page::PastRide, Gesture::Next) => self.next_summary_page(1),
             (Page::Summary | Page::PastRide, Gesture::Previous) => {
                 self.next_summary_page(SUMMARY_PAGES - 1)
@@ -381,9 +390,8 @@ impl Runtime {
                 self.navigation.page_since = now;
                 self.request_search(ant, now);
             }
-            // The phone companion's route: its page is a placeholder for now.
             (_, Some(SettingsAction::ConnectPhone)) => {
-                self.navigation.page = Page::Phone;
+                self.enter_phone();
                 self.navigation.page_since = now;
             }
             _ => {}

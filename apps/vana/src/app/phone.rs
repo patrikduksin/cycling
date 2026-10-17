@@ -35,8 +35,9 @@ pub const IDLE_MS: u64 = 10 * 60 * 1000;
 const READS_PER_STEP: usize = 48;
 /// The web client, built by `apps/vana/web/build.py`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!("../../web/dist/index.html.gz");
-/// Readable characters for passwords: no 0/O, 1/l/I.
-const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+/// Readable characters for passwords, upper case as the screen shows
+/// them: no 0/O or 1/I.
+const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 /// Where the phone reaches the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -989,6 +990,123 @@ enum Readiness {
     Ready(usize),
     Pending,
     Never,
+}
+
+impl Runtime {
+    /// Open Connect phone: a session on the device's access point, starting
+    /// at the join code.
+    pub(super) fn enter_phone(&mut self) {
+        self.navigation.page = crate::screens::workout::Page::Phone;
+        self.navigation.phone_step = 0;
+        self.navigation.phone_advanced = false;
+        self.open_phone(Mode::AccessPoint);
+    }
+
+    /// BACK ends the session and returns where it was opened from; any
+    /// other press or a tap on the code switches codes, or tries again after
+    /// a session ended.
+    pub(super) fn phone_input(&mut self, button: device_api::input::Button, held: bool) {
+        use device_api::input::Button;
+        match button {
+            Button::TopLeft if !held => {
+                self.close_phone();
+                self.navigation.page = if self.history.phone.take().is_some() {
+                    crate::screens::workout::Page::PastRide
+                } else {
+                    crate::screens::workout::Page::Home
+                };
+            }
+            Button::TopLeft => {}
+            _ => self.phone_touch(),
+        }
+    }
+
+    pub(super) fn phone_touch(&mut self) {
+        if self.phone.session.is_none() && self.phone.wanted.is_none() {
+            self.enter_phone();
+        } else {
+            self.navigation.phone_step ^= 1;
+        }
+    }
+
+    /// The Connect phone lines and code for this frame.
+    pub(super) fn phone_view(&mut self, view: &mut crate::screens::workout::View) {
+        use crate::screens::phone::{NAME, NOTE, PROBLEM, SECRET, STEP, TITLE_LINE, place};
+        use crate::screens::qr::Qr;
+        let lines = &mut view.lines;
+        let Some(status) = self.phone_status() else {
+            let reason = match (self.phone.wanted, self.phone.closed) {
+                (Some(Some(_)), _) | (_, None) => None,
+                (_, Some(closed)) => Some(closed),
+            };
+            match reason {
+                None => {
+                    let _ = lines[STEP].push_str("CONNECT PHONE");
+                    let _ = lines[TITLE_LINE].push_str("STARTING WI-FI");
+                }
+                Some(closed) => {
+                    let _ = lines[STEP].push_str("PHONE DISCONNECTED");
+                    let _ = lines[TITLE_LINE].push_str(match closed {
+                        Closed::Rider => "SESSION ENDED",
+                        Closed::Idle => "ENDED AFTER 10 MIN IDLE",
+                        Closed::Ride => "NOT DURING A RIDE",
+                        Closed::Radio => "WI-FI DID NOT START",
+                        Closed::Offline => "NO HOME WI-FI",
+                    });
+                    let _ = lines[NOTE].push_str("TAP TO TRY AGAIN");
+                    let _ = lines[PROBLEM].push_str("1");
+                }
+            }
+            return;
+        };
+        let joined = match status.access_point {
+            AccessPointState::Up { clients } => clients,
+            _ => 0,
+        };
+        if status.mode == Mode::AccessPoint && joined > 0 && !self.navigation.phone_advanced {
+            self.navigation.phone_advanced = true;
+            self.navigation.phone_step = 1;
+        }
+        let url = status.url();
+        let join = status.mode == Mode::AccessPoint && self.navigation.phone_step == 0;
+        if join {
+            let _ = lines[STEP].push_str("STEP 1 OF 2");
+            let _ = lines[TITLE_LINE].push_str("JOIN VANA WI-FI");
+            let _ = lines[NAME].push_str(status.ssid.text());
+            for (index, chunk) in status.password.bytes().chunks(4).enumerate() {
+                if index > 0 {
+                    let _ = lines[SECRET].push_str(" ");
+                }
+                let _ = lines[SECRET].push_str(core::str::from_utf8(chunk).unwrap_or(""));
+            }
+            if joined > 0 {
+                let _ = write!(lines[NOTE], "{joined} JOINED");
+            } else {
+                let _ = lines[NOTE].push_str("SCAN WITH THE CAMERA");
+            }
+            view.qr = Qr::encode(status.join_text().as_str()).map(place);
+            return;
+        }
+        let _ = lines[STEP].push_str(match status.mode {
+            Mode::AccessPoint => "STEP 2 OF 2",
+            Mode::Home => "ON HOME WI-FI",
+        });
+        let _ = lines[TITLE_LINE].push_str("OPEN YOUR RIDES");
+        match (&url, status.address) {
+            (Some(url), Some([a, b, c, d])) => {
+                let _ = write!(lines[NAME], "{a}.{b}.{c}.{d}");
+                if status.downloads > 0 {
+                    let _ = write!(lines[NOTE], "{} SENT", status.downloads);
+                } else {
+                    let _ = lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
+                }
+                view.qr = Qr::encode(url.as_str()).map(place);
+            }
+            _ => {
+                let _ = lines[NAME].push_str("WAITING FOR WI-FI");
+            }
+        }
+    }
 }
 
 /// `null` or the value, for JSON.

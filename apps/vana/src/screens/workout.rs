@@ -36,7 +36,7 @@ pub enum Page {
     Settings,
     /// The workout picker.
     Workouts,
-    /// Placeholder for connecting a phone (rides to the phone, FIT export).
+    /// Connect phone: rides to the phone over Wi-Fi, as FIT files.
     Phone,
     /// The saved rides, newest first.
     History,
@@ -129,6 +129,8 @@ pub struct View<'a> {
     pub editing: bool,
     pub time: Text<16>,
     pub lines: [Text<38>; 9],
+    /// The Connect phone screen's QR code.
+    pub qr: Option<super::qr::Placed>,
     /// Ready: the checks before a ride.
     pub readiness: Readiness,
     /// How long the ride has been paused.
@@ -194,6 +196,7 @@ impl View<'_> {
             editing: false,
             time,
             lines: core::array::from_fn(|_| Text::new()),
+            qr: None,
             readiness: Readiness::default(),
             paused_secs: 0,
             pause_screen: false,
@@ -249,6 +252,10 @@ impl View<'_> {
         match self.page {
             Page::Ride if !self.pause_screen => ride::paint(self, row),
             Page::Home => self.home.paint(row),
+            Page::Phone => {
+                self.canvas.paint(row);
+                super::phone::paint(self, row);
+            }
             _ => self.canvas.paint(row),
         }
         if let Some(badge) = &self.badge {
@@ -291,6 +298,9 @@ impl View<'_> {
         let mut color = match self.page {
             Page::Ride if !self.pause_screen => ride::reference_pixel(self, x, y),
             Page::Home => self.home.pixel(x, y),
+            Page::Phone => {
+                super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas.pixel(x, y, BLACK))
+            }
             _ => self.canvas.pixel(x, y, BLACK),
         };
         if let Some(badge) = &self.badge {
@@ -354,7 +364,7 @@ impl View<'_> {
                 &[]
             }
             Page::Phone => {
-                self.canvas = super::phone::prepare(self.phone_ride);
+                self.canvas = super::phone::prepare(self);
                 &[]
             }
             Page::Workouts => {

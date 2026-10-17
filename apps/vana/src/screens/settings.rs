@@ -57,7 +57,7 @@ pub enum Kind {
 pub enum SettingsAction {
     /// The sensor menu.
     Sensors,
-    /// Pair a phone. A placeholder until the phone companion lands.
+    /// Connect phone: send rides to a phone over Wi-Fi.
     ConnectPhone,
 }
 
@@ -504,7 +504,7 @@ mod tests {
         let long = [
             ("1000", "Z4 905-1050 W"),
             ("220", "Z5 FROM 220 BPM"),
-            ("COMING SOON", ""),
+            ("SEND RIDES", ""),
             ("99H LEFT", "120 RIDES"),
         ];
         for cursor in 0..ROWS {

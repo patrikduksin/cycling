@@ -7,6 +7,7 @@ pub mod history;
 pub mod home;
 pub mod phone;
 pub mod power;
+pub mod qr;
 pub mod ready;
 pub mod ride;
 pub mod sensors;

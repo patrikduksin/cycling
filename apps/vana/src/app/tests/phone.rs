@@ -64,6 +64,7 @@ impl Server for Transport {
 #[derive(Default)]
 struct Radio2 {
     started: Option<AccessPointConfig>,
+    clients: u8,
     stops: u32,
     word: u32,
 }
@@ -80,7 +81,9 @@ impl AccessPoint for Radio2 {
     }
     fn state(&self) -> AccessPointState {
         if self.started.is_some() {
-            AccessPointState::Up { clients: 1 }
+            AccessPointState::Up {
+                clients: self.clients,
+            }
         } else {
             AccessPointState::Off
         }
@@ -370,4 +373,102 @@ fn a_session_does_not_open_during_a_ride() {
     assert!(runtime.phone_status().is_none());
     assert_eq!(runtime.phone_closed(), Some(PhoneClosed::Ride));
     assert!(access_point.started.is_none());
+}
+
+fn phone_lines(runtime: &mut Runtime) -> (Vec<String>, Option<usize>) {
+    let mut view =
+        crate::screens::workout::View::new(crate::screens::workout::Page::Phone, 0, None);
+    runtime.phone_view(&mut view);
+    let lines = view
+        .lines
+        .iter()
+        .map(|line| String::from(line.as_str()))
+        .collect();
+    (lines, view.qr.map(|code| code.qr.size()))
+}
+
+#[test]
+fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joins() {
+    use crate::screens::phone::{NAME, NOTE, SECRET, STEP, TITLE_LINE};
+    use crate::screens::settings::Row;
+    use crate::screens::workout::Page;
+    let mut journal = Journal::erased();
+    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
+    attach(&mut runtime);
+    runtime.navigation.page = Page::Settings;
+    runtime.navigation.settings_field = Row::Phone.index();
+    runtime.input(press(Button::BottomRight), now + 1600, &mut radio);
+    assert_eq!(runtime.navigation.page, Page::Phone);
+    let (lines, code) = phone_lines(&mut runtime);
+    assert_eq!(lines[TITLE_LINE], "STARTING WI-FI");
+    assert!(code.is_none());
+
+    let mut phone = Phone {
+        runtime: &mut runtime,
+        journal: &mut journal,
+        transport: Transport::default(),
+        radio: Radio2::default(),
+        now: now + 1600,
+    };
+    phone.step();
+    phone.step();
+    let status = phone.runtime.phone_status().unwrap();
+    let (lines, code) = phone_lines(phone.runtime);
+    assert_eq!(lines[STEP], "STEP 1 OF 2");
+    assert_eq!(lines[TITLE_LINE], "JOIN VANA WI-FI");
+    assert_eq!(lines[NAME], status.ssid.text());
+    assert_eq!(lines[SECRET].replace(' ', ""), status.password.text());
+    assert_eq!(lines[NOTE], "SCAN WITH THE CAMERA");
+    assert!(code.is_some());
+
+    // A phone joins: the page code shows by itself, once.
+    phone.radio.clients = 1;
+    phone.step();
+    let (lines, code) = phone_lines(phone.runtime);
+    assert_eq!(lines[STEP], "STEP 2 OF 2");
+    assert_eq!(lines[NAME], "192.168.4.1");
+    assert!(code.is_some());
+    // The rider can go back to the join code for a second phone.
+    phone
+        .runtime
+        .input(press(Button::BottomLeft), phone.now + 400, &mut radio);
+    let (lines, _) = phone_lines(phone.runtime);
+    assert_eq!(lines[STEP], "STEP 1 OF 2");
+    assert_eq!(lines[NOTE], "1 JOINED");
+
+    // BACK ends the session and the access point stops.
+    phone
+        .runtime
+        .input(press(Button::TopLeft), phone.now + 800, &mut radio);
+    assert_eq!(phone.runtime.navigation.page, Page::Home);
+    phone.step();
+    phone.step();
+    assert!(phone.runtime.phone_status().is_none());
+    assert_eq!(phone.radio.stops, 1);
+}
+
+#[test]
+fn connect_phone_says_why_a_session_ended_and_a_tap_tries_again() {
+    use crate::screens::phone::{NOTE, PROBLEM, TITLE_LINE};
+    let mut journal = Journal::erased();
+    let (mut runtime, _, now) = saved_ride(&mut journal);
+    attach(&mut runtime);
+    runtime.enter_phone();
+    let mut phone = Phone {
+        runtime: &mut runtime,
+        journal: &mut journal,
+        transport: Transport::default(),
+        radio: Radio2::default(),
+        now,
+    };
+    phone.step();
+    phone.now += crate::app::phone::IDLE_MS + 1;
+    phone.step();
+    let (lines, code) = phone_lines(phone.runtime);
+    assert_eq!(lines[TITLE_LINE], "ENDED AFTER 10 MIN IDLE");
+    assert_eq!(lines[NOTE], "TAP TO TRY AGAIN");
+    assert!(!lines[PROBLEM].is_empty() && code.is_none());
+    phone.runtime.phone_touch();
+    phone.step();
+    assert!(phone.runtime.phone_status().is_some(), "a new session");
 }

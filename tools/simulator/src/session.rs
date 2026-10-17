@@ -306,6 +306,10 @@ pub struct Session {
     pub bulk: crate::bulk::SimBulk,
     #[cfg(feature = "cycling")]
     pub sdk: vana::app::Runtime,
+    #[cfg(feature = "cycling")]
+    pub phone_server: crate::phone::SimServer,
+    #[cfg(feature = "cycling")]
+    pub access_point: crate::phone::SimAccessPoint,
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
@@ -387,6 +391,8 @@ impl Session {
         // each boot starts them over, as device memory does.
         #[cfg(feature = "cycling")]
         sdk.attach_terrain(terrain_block());
+        #[cfg(feature = "cycling")]
+        sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
         Ok(Self {
             shell,
             now: 0,
@@ -412,6 +418,10 @@ impl Session {
             bulk: crate::bulk::SimBulk::default(),
             #[cfg(feature = "cycling")]
             sdk,
+            #[cfg(feature = "cycling")]
+            phone_server: Default::default(),
+            #[cfg(feature = "cycling")]
+            access_point: Default::default(),
         })
     }
     /// One pass of the firmware loop, in the order C606 composition runs it.
@@ -514,6 +524,13 @@ impl Session {
             // As composition does: one bounded look-ahead step a pass,
             // reading the TERRAIN volume's pack when one is installed.
             self.sdk.look_ahead(&mut self.bulk, self.now);
+            self.sdk.serve_phone(
+                &mut self.phone_server,
+                &mut self.access_point,
+                &mut self.shell.data_storage(),
+                &mut self.bulk,
+                self.now,
+            );
             self.sdk
                 .present(&mut self.shell, self.now, &self.ant, &self.position);
             self.sdk.save_preferences(&mut self.shell, self.now);

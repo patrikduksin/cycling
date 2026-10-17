@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import select
 import termios
 import time
@@ -49,7 +50,9 @@ class UsbConnection:
         self.port, self.log_path = port, Path(log)
         self.fd = self.lock = self.log = None
         self.pending = bytearray()
-        self.request_id = 0
+        # Each process starts from an unpredictable id so a late reply from an earlier
+        # process cannot be mistaken for this process's reply.
+        self.request_id = secrets.randbelow(1 << 30) + 1
         self.boot = [None]
 
     def __enter__(self):

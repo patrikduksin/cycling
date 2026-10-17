@@ -10,6 +10,7 @@ from cycling_devtools.terminal.usb import UsbConnection, acquire_lock
 class UsbTests(unittest.TestCase):
     def test_reenumerated_tty_waits_before_first_accepted_submission(self):
         connection = UsbConnection('/dev/test', 'unused')
+        connection.request_id = 0  # the first request is CMD 1 below
         connection.fd, connection.log = 123, io.BytesIO()
         request = b'CMD 1 SAVE\n'
         response = b'{"type":"reply","id":1,"status":"OK","data":""}\n'
@@ -23,6 +24,7 @@ class UsbTests(unittest.TestCase):
 
     def test_short_submission_is_never_replayed(self):
         connection = UsbConnection('/dev/test', 'unused')
+        connection.request_id = 0  # the first request is CMD 1 below
         connection.fd, connection.log = 123, io.BytesIO()
         with patch('cycling_devtools.terminal.usb.os.write', return_value=3) as write:
             with self.assertRaisesRegex(RuntimeError, 'uncertain'):
@@ -31,6 +33,7 @@ class UsbTests(unittest.TestCase):
 
     def test_unwritable_timeout_reports_no_submission(self):
         connection = UsbConnection('/dev/test', 'unused')
+        connection.request_id = 0  # the first request is CMD 1 below
         connection.fd, connection.log = 123, io.BytesIO()
         with patch('cycling_devtools.terminal.usb.os.write', side_effect=BlockingIOError()) as write:
             with self.assertRaisesRegex(TimeoutError, 'not submitted'):
@@ -39,6 +42,7 @@ class UsbTests(unittest.TestCase):
 
     def test_wait_expiring_cannot_submit_a_mutation_after_its_deadline(self):
         connection = UsbConnection('/dev/test', 'unused')
+        connection.request_id = 0  # the first request is CMD 1 below
         connection.fd, connection.log = 123, io.BytesIO()
         with (
             patch(
@@ -64,6 +68,7 @@ class UsbTests(unittest.TestCase):
     def test_disconnect_or_reboot_never_replays_pending_mutation(self):
         for data in (b'', b'CYCLING_BOOT version=test\n'):
             connection = UsbConnection('/dev/test', 'unused')
+            connection.request_id = 0  # the first request is CMD 1 below
             connection.fd, connection.log = 123, io.BytesIO()
             with (
                 patch('cycling_devtools.terminal.usb.os.write', return_value=len(b'CMD 1 SAVE\n')) as write,
@@ -78,6 +83,7 @@ class UsbTests(unittest.TestCase):
         password = 'private-test-password'
         command = f'WIFI CONFIG WPA2 54657374 {password.encode().hex()}'
         connection = UsbConnection('/dev/test', 'unused')
+        connection.request_id = 0  # the first request is CMD 1 below
         connection.fd, connection.log = 123, io.BytesIO()
         request = f'CMD 1 {command}\n'.encode()
         with patch('cycling_devtools.terminal.usb.os.write', return_value=len(request)) as write:

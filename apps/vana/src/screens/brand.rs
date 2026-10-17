@@ -33,7 +33,7 @@ const fn turns(progress: u16) -> u16 {
 }
 
 /// `color` faded to black by `progress`: whole at 0, gone at `DONE`.
-fn fade(color: u16, progress: u16) -> u16 {
+pub fn fade(color: u16, progress: u16) -> u16 {
     let progress = if progress > DONE { DONE } else { progress };
     blend(
         color,

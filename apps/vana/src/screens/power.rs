@@ -70,7 +70,7 @@ impl Sheet {
             Self::Warning { seconds } => warning(&mut canvas, seconds),
             Self::TurningOff { progress } => {
                 brand::farewell(&mut canvas, progress);
-                let quiet = blend(SECONDARY, BLACK, 15 - (progress.min(1000) / 67) as u8);
+                let quiet = brand::fade(SECONDARY, progress);
                 centred(&mut canvas, &[&BODY], b"TURNING OFF", 268, quiet);
             }
             Self::Charging { battery, known } => charging(&mut canvas, battery, known),
@@ -279,6 +279,17 @@ mod tests {
                 .assert_laid_out(SCREEN, want, &std::format!("{sheet:?}"));
             assert_paints_reference(sheet);
         }
+    }
+
+    /// Shutdown follows the last farewell frame, so it must be black.
+    #[test]
+    fn the_last_farewell_frame_is_black() {
+        let canvas = Sheet::TurningOff {
+            progress: brand::DONE,
+        }
+        .canvas();
+        let dark = (0..HEIGHT).all(|y| (0..240).all(|x| canvas.pixel(x, y, BLACK) == BLACK));
+        assert!(dark);
     }
 
     #[test]

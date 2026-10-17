@@ -8,10 +8,12 @@ pub const DEFAULT_TIMEZONE_MINUTES: i16 = 0;
 pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 const LENGTH: usize = layout::APP + APP_CAPACITY;
 /// Bytes reserved for the application's own versioned preference record.
-pub const APP_CAPACITY: usize = 32;
+pub const APP_CAPACITY: usize = 96;
+/// Version 6 reserved this much; its records migrate unchanged.
+const V6_APP_CAPACITY: usize = 32;
 
 /// Byte offsets of the persisted settings record. Older versions are prefixes
 /// of this layout; text fields are length-prefixed and zero-padded, and every
@@ -45,14 +47,21 @@ const V2_LENGTH: usize = 10;
 const V3_LENGTH: usize = 13;
 const V4_LENGTH: usize = layout::RESERVED + 1;
 const V5_LENGTH: usize = layout::APP_LEN;
+const V6_LENGTH: usize = layout::APP + V6_APP_CAPACITY;
 
 /// Application-owned preference bytes the shell stores without interpreting.
 /// The application chooses their schema, versioning and recovery; the shell
 /// only bounds their length and carries them through every settings save.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppPreferences {
     length: u8,
     bytes: [u8; APP_CAPACITY],
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 impl AppPreferences {
@@ -258,9 +267,10 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
                 None => (Settings::default(), Source::Malformed),
             };
         }
-        4 | 5 | VERSION
+        4..=VERSION
             if ((version == 4 && length == V4_LENGTH)
                 || (version == 5 && length == V5_LENGTH)
+                || (version == 6 && length == V6_LENGTH)
                 || (version == VERSION && length == LENGTH))
                 && payload[RESERVED] == 0 =>
         {
@@ -271,7 +281,7 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
                 get_u16(payload, TIMEZONE) as i16,
             )
         }
-        4 | 5 | VERSION => None,
+        4..=VERSION => None,
         _ => return (Settings::default(), Source::Unsupported),
     };
     match settings {
@@ -336,10 +346,15 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
             if version == 5 {
                 return (settings, Source::Migrated);
             }
-            let Some(app) = text(payload, APP_LEN, LENGTH).and_then(AppPreferences::new) else {
+            // Version 7 only enlarged the application area.
+            let end = if version == 6 { V6_LENGTH } else { LENGTH };
+            let Some(app) = text(payload, APP_LEN, end).and_then(AppPreferences::new) else {
                 return malformed();
             };
             settings.app = app;
+            if version == 6 {
+                return (settings, Source::Migrated);
+            }
             (settings, Source::Current)
         }
         None => (Settings::default(), Source::Malformed),
@@ -422,7 +437,7 @@ mod tests {
         assert_eq!(decode(Some(b"cycling\x01")).1, Source::LegacyDefaults);
         assert_eq!(decode(None).1, Source::Missing);
         assert_eq!(decode(Some(b"garbage")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x07\x32\0")).1, Source::Unsupported);
+        assert_eq!(decode(Some(b"cycling\x08\x32\0")).1, Source::Unsupported);
         assert_eq!(decode(Some(b"cycling\x02\x00\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x65\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x4b\0")).1, Source::Migrated);
@@ -488,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn version_five_and_six_layouts_are_pinned_and_padding_must_be_zero() {
+    fn version_five_six_and_seven_layouts_are_pinned_and_padding_must_be_zero() {
         let mut settings = Settings::with_values(77, 0x0102, 12, -180).unwrap();
         settings.wifi =
             Some(device_api::connectivity::WifiConfig::new(b"ssid", b"password", false).unwrap());
@@ -521,12 +536,24 @@ mod tests {
         // Version 5 records stay readable, with no application preferences.
         assert_eq!(decode(Some(&expected)), (settings, Source::Migrated));
         let version_five = expected;
-        let mut expected = [0u8; 192];
-        expected[..159].copy_from_slice(&version_five);
-        expected[7] = 6;
-        expected[159] = 3;
-        expected[160..163].copy_from_slice(&[1, 0xd7, 0]);
+        let mut version_six = [0u8; 192];
+        version_six[..159].copy_from_slice(&version_five);
+        version_six[7] = 6;
+        version_six[159] = 3;
+        version_six[160..163].copy_from_slice(&[1, 0xd7, 0]);
         settings.app = AppPreferences::new(&[1, 0xd7, 0]).unwrap();
+        // Version 6 records keep their 32-byte application area.
+        assert_eq!(decode(Some(&version_six)), (settings, Source::Migrated));
+        for (index, value) in [(159, 33), (163, 1), (191, 1)] {
+            let mut payload = version_six;
+            payload[index] = value;
+            assert_eq!(decode(Some(&payload)).1, Source::Malformed, "{index}");
+        }
+        assert_eq!(decode(Some(&version_six[..191])).1, Source::Malformed);
+        // Version 7 only enlarges that area to 96 bytes.
+        let mut expected = [0u8; 256];
+        expected[..192].copy_from_slice(&version_six);
+        expected[7] = 7;
         assert_eq!(settings.encode(), expected);
         assert_eq!(decode(Some(&expected)), (settings, Source::Current));
         for (index, value) in [
@@ -535,9 +562,10 @@ mod tests {
             (58, 1),
             (118, 1),
             (148, 2),
-            (159, 33),
+            (159, 97),
             (163, 1),
             (191, 1),
+            (255, 1),
         ] {
             let mut payload = expected;
             payload[index] = value;

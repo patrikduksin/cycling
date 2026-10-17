@@ -108,7 +108,7 @@ mod tests {
         use crate::preferences::Settings;
         use crate::preferences::Source;
         for (payload, source) in [
-            (b"cycling\x07".as_slice(), Source::Unsupported),
+            (b"cycling\x08".as_slice(), Source::Unsupported),
             (b"unrecognized".as_slice(), Source::Malformed),
             (b"cycling\x04".as_slice(), Source::Malformed),
         ] {
@@ -173,9 +173,30 @@ mod tests {
         assert_eq!(store.load().unwrap().settings.app, app);
 
         let mut journal = Journal::new(Memory::default(), Region::Configuration);
-        journal.save(b"cycling\x07").unwrap();
+        journal.save(b"cycling\x08").unwrap();
         let mut store = Store { journal };
         assert_eq!(store.save_app(app), Err(Error::UnrecognizedSettings));
+    }
+
+    #[test]
+    fn version_six_records_migrate_to_the_larger_application_area() {
+        use crate::preferences::{APP_CAPACITY, AppPreferences, Settings, Source};
+        let mut stored = Settings::with_values(80, 45, 12, 60).unwrap();
+        stored.app = AppPreferences::new(&[1, 0xd7, 0, 170, 0]).unwrap();
+        let mut version_six = stored.encode()[..192].to_vec();
+        version_six[7] = 6;
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
+        journal.save(&version_six).unwrap();
+        let mut store = Store { journal };
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.source, Source::Migrated);
+        assert_eq!(loaded.settings, stored);
+        let larger = AppPreferences::new(&[2; APP_CAPACITY]).unwrap();
+        store.save_app(larger).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.source, Source::Current);
+        stored.app = larger;
+        assert_eq!(loaded.settings, stored);
     }
 
     #[test]

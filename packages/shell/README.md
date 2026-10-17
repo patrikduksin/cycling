@@ -13,10 +13,12 @@ The application runtime remains in VANA. Composition coordinates it with the
 shell; there is no generic application framework. Keep device imports and cycling
 profile interpretation out of this crate.
 
-Settings version 6 adds a small application area. The shell bounds its length
-and carries its bytes through every save without interpreting them; the
-application owns their schema, versioning and recovery (VANA stores its training
-profile there, see `apps/vana/src/app/preferences.rs`).
+Settings version 6 added a small application area; version 7 enlarges it from
+32 to 96 bytes and changes nothing else, so version 6 records migrate unchanged.
+The shell bounds its length and carries its bytes through every save without
+interpreting them; the application owns their schema, versioning and recovery
+(VANA stores its training profile and saved ANT sensors there, see
+`apps/vana/src/app/preferences.rs`).
 
 The settings format includes the BLE profile selector for compatibility. Retain
 its bytes and migration behavior even though VANA interprets the selection; moving

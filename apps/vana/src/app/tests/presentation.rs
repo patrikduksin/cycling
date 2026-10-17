@@ -158,9 +158,9 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
 #[test]
 fn train_shows_the_connection_check_then_the_ride_page() {
     let mut screen = Screen::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
     let mut radio = Radio::new();
-    radio.connected(HEART_RATE, 0);
+    let heart = radio.connected(HEART_RATE, 0);
+    let mut runtime = restored(&[heart]);
     radio.data(HEART_RATE, [0; 8], 6000);
     assert!(screen.present(&mut runtime, &radio, 6500));
     runtime.input(press(Button::BottomRight), 7000, &mut radio);

@@ -80,7 +80,7 @@ Controls:
 | Menu | Opens training, sensor status or settings |
 | Settings | Bottom-left moves to the next field (FTP, LTHR), bottom-right edits it, top-left returns home. While editing, bottom-left lowers and bottom-right raises it by 5 and top-left finishes. Touch: tap a field to edit it, then tap the large minus or plus pad. Edits apply at once and are saved two seconds after the last change. |
 | Training | After a short connection check, bottom-left starts, pauses or resumes. Bottom-right twice within five seconds finishes and commits the final samples; wait for `saved` before powering off. Top-left steps through the ride pages (live, then totals; the header shows `1/2`). Past the last page it wraps while a ride is open and returns home otherwise. |
-| Sensor scan | Bottom-left moves, bottom-right selects, top-left returns. Wait for PICK SENSOR before selecting another device. |
+| Sensors | Bottom-left moves, bottom-right selects, top-left returns. Choosing a nearby sensor saves it; choosing another of a saved type asks to replace it. A saved sensor opens a page whose only action is Disconnect, which removes it. |
 
 Sensors:
 
@@ -88,8 +88,23 @@ Sensors:
   BLE HRS or CSC profile at a time.
 - A scan briefly disconnects the selected channels, scans for ten seconds, then
   restores them. Sensor values are unavailable during the scan.
-- Explicitly dropped sensors stay disconnected through reconnection and scans
-  until selected again.
+- Selected ANT sensors are saved, one per device type with their full identity,
+  and reconnect by themselves: after power-on (without opening Sensors), when a
+  sensor wakes late, after signal loss or a sensor power cycle, and after a
+  radio restart or device wake. VANA only ever reconnects the saved identity.
+  Each failed search waits 1, 2, 4, 8, 16, then 30 seconds before the next
+  (on top of the radio's ten-second search), one radio request at a time, with
+  saved sensors taken in turn. Discovery pauses reconnection briefly; an
+  uncertain radio is not retried until it restarts.
+- Sensor tiles keep their positions and show what was observed: live,
+  waiting for data, data lost, searching, not found yet (retrying), waiting for
+  radio, replacing, radio unavailable or type unsupported.
+- Disconnect removes the sensor from the saved sensors at once and closes its
+  channel; its pages are ignored from then on. It stays removed through
+  reconnection, scans and restarts until selected again.
+- Saved sensors are stored with the training profile (see below). A save that
+  fails shows NOT SAVED on the Sensors page and is retried every five seconds;
+  an unreadable stored record shows SAVED SENSORS UNREADABLE and is kept.
 - BLE transport loss or stale/disconnected measurements invalidate sensor values.
 
 Recording:
@@ -130,9 +145,11 @@ Training profile:
   recorded time in each power and heart rate zone as two bars. Time in zone is
   kept in memory with the other ride totals; it is not part of the ride record.
 - `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
-  read and set it from the terminal. The profile is stored in the application
-  area of the settings record; a stored profile this firmware cannot read keeps
-  the defaults in force and is never replaced until `PROFILE OVERWRITE`.
+  read and set it from the terminal. The profile and the saved ANT sensors are
+  one versioned record in the application area of the settings record
+  (version 2; version 1 profiles migrate with no saved sensors). A stored record
+  this firmware cannot read keeps the defaults in force, with no saved sensors,
+  and is never replaced until `PROFILE OVERWRITE`.
 
 Radar uses the left edge of the workout screen:
 

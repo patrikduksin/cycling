@@ -22,7 +22,7 @@ impl Sim {
             let screen = self.screen();
             if screen.run(kind).is_some() && screen.run("CONNECT").is_some() {
                 self.press(Button::BottomRight);
-                self.wait_for("LIVE DATA", seconds(15)).unwrap();
+                self.wait_for("LIVE", seconds(15)).unwrap();
                 return;
             }
             self.press(Button::BottomLeft);
@@ -31,6 +31,42 @@ impl Sim {
             "no {kind} tile to connect; screen:\n{}",
             self.screen().text()
         );
+    }
+
+    /// Step through Sensors tiles to a nearby sensor of an already saved
+    /// kind and confirm it replaces the saved one.
+    pub fn replace_sensor(&mut self, kind: &str) {
+        for _ in 0..20 {
+            let screen = self.screen();
+            if screen.run(kind).is_some() && screen.run("REPLACE").is_some() {
+                self.press(Button::BottomRight);
+                self.expect_text("REPLACE SENSOR");
+                self.press(Button::BottomRight);
+                self.wait_for("LIVE", seconds(15)).unwrap();
+                return;
+            }
+            self.press(Button::BottomLeft);
+        }
+        panic!(
+            "no {kind} tile to replace; screen:\n{}",
+            self.screen().text()
+        );
+    }
+
+    /// Step through Sensors tiles to a saved sensor and disconnect it, which
+    /// removes it from the saved sensors.
+    pub fn disconnect_sensor(&mut self, kind: &str) {
+        for _ in 0..20 {
+            let screen = self.screen();
+            if screen.run(kind).is_some() && screen.run("OPEN").is_some() {
+                self.press(Button::BottomRight);
+                self.expect_text("DISCONNECT");
+                self.press(Button::BottomRight);
+                return;
+            }
+            self.press(Button::BottomLeft);
+        }
+        panic!("no saved {kind} tile; screen:\n{}", self.screen().text());
     }
 
     /// Pair sensors from the Sensors page, then return Home.

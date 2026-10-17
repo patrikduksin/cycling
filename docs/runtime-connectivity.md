@@ -64,10 +64,11 @@ base supports discovery, echo, disconnect and forgetting a saved selection.
 - Status, help and errors omit passwords, SSIDs and peer identifiers. `NETWORKS`
   and `PEERS` replies contain private names and identifiers; keep them in ignored
   local evidence. Password hex is still a password.
-- Settings schema v6 migrates v1 through v5 records without resetting preferences.
-  v6 adds a bounded application area that the shell carries through every save
-  without interpreting; VANA stores its training profile there. Firmware older
-  than v6 reports a v6 record as unsupported and keeps it intact.
+- Settings schema v7 migrates v1 through v6 records without resetting preferences.
+  v6 added a bounded application area that the shell carries through every save
+  without interpreting; v7 only enlarges it from 32 to 96 bytes. VANA stores its
+  training profile and saved ANT sensors there. Firmware older than v7 reports a
+  v7 record as unsupported and keeps it intact.
   Connectivity writes preserve saved brightness, idle and timezone values, even
   while a harness has changed them temporarily. Unsupported or malformed occupied
   settings still refuse replacement.

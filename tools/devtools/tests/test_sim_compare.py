@@ -225,8 +225,11 @@ def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):
         def write(self, text):
             raise BrokenPipeError
 
-    child = 'import subprocess, sys, time; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])'
-    script = f'{child}; print("ready", flush=True); time.sleep(60)'
+    # The leader dies on SIGTERM; its child ignores SIGTERM and announces it.
+    child = (
+        'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("ready", flush=True); time.sleep(60)'
+    )
+    script = f'import subprocess, sys, time; subprocess.Popen([sys.executable, "-c", {child!r}]); time.sleep(60)'
     monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
     monkeypatch.setattr(compare.subprocess, 'Popen', popen)
     monkeypatch.setattr(compare.sys, 'stdout', Broken())

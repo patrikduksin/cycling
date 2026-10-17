@@ -38,6 +38,8 @@ PNG = b'\x89PNG\r\n\x1a\n'
 CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}
 # Only these chunks are decoded; any other (PLTE, tRNS, gAMA, ...) falls back to bytes.
 DECODED = {b'IHDR', b'IDAT', b'IEND'}
+# How long cargo gets to exit on SIGTERM before its process group is killed.
+GRACE_S = 5
 TABLE = ['| Screen | Before | After |', '|---|---|---|']
 
 
@@ -243,19 +245,19 @@ def scenarios(source, artifacts, target, name_filter):
 
 
 def stop(process):
-    """Terminate and reap the process group of a process that is still running."""
-    if process.poll() is not None:
-        return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=10)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+    """End the whole process group, then reap its leader. Descendants can
+    outlive or ignore SIGTERM, so the group always gets SIGKILL after a grace."""
+    try:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=GRACE_S)
+            except subprocess.TimeoutExpired:
+                pass
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 def incomplete(directory, status):

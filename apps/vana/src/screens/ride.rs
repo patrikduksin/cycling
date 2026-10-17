@@ -1,0 +1,233 @@
+//! The ride screen: pages that TopLeft steps through inside a shared frame.
+//!
+//! The frame draws the radar strip (x < 28), the recording status and the
+//! button labels (y >= 257); every page keeps them so radar and ride control
+//! never depend on the page shown. A page owns the body, x 28..240 and
+//! y 30..257, and the values it prepares once per frame.
+//!
+//! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
+//! module beside `main` with `prepare` and `pixel`, dispatched below.
+use super::workout::{Text, View};
+use crate::ride::log::Status;
+use crate::sensors::radar::{self, close};
+use core::fmt::Write;
+use firmware_shell::rendering::text::text;
+
+mod main;
+mod stats;
+
+pub(super) const WHITE: u16 = 0xffff;
+pub(super) const CYAN: u16 = 0x07ff;
+pub(super) const DIM: u16 = 0x8410;
+pub(super) const GRID: u16 = 0x39e7;
+const YELLOW: u16 = 0xffe0;
+const RED: u16 = 0xf800;
+
+/// The body ends where the shared status row begins.
+pub(super) const BODY_BOTTOM: usize = 257;
+
+/// A ride page, in TopLeft order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RidePage {
+    /// Live speed, power, heart rate, cadence, distance, time and grade.
+    #[default]
+    Main,
+    /// Ride totals: distance, moving time, averages, maxima, NP, work, ascent.
+    Stats,
+}
+
+impl RidePage {
+    pub const ALL: [Self; 2] = [Self::Main, Self::Stats];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The page after this one; none after the last.
+    pub fn next(self) -> Option<Self> {
+        Self::ALL.get(self.index() + 1).copied()
+    }
+
+    /// "1/2" style position, for the header.
+    pub(super) fn indicator(self) -> [u8; 3] {
+        [
+            b'1' + self.index() as u8,
+            b'/',
+            b'0' + Self::ALL.len() as u8,
+        ]
+    }
+}
+
+/// Formatted readings a page prepares once per frame and draws per pixel.
+pub type Values = [Text<12>; 12];
+
+pub(super) fn prepare(view: &View) -> Values {
+    let mut values = core::array::from_fn(|_| Text::new());
+    match view.ride_page {
+        RidePage::Main => main::prepare(view, &mut values),
+        RidePage::Stats => stats::prepare(view, &mut values),
+    }
+    values
+}
+
+/// Everything below the header, except the footer divider the view draws.
+pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+    if x < 26 && (38..279).contains(&y) {
+        return radar_pixel(view.radar, x, y);
+    }
+    if x == 27 && y < 285 {
+        return GRID;
+    }
+    if x >= 28 && y < BODY_BOTTOM {
+        return match view.ride_page {
+            RidePage::Main => main::pixel(view, x, y),
+            RidePage::Stats => stats::pixel(view, x, y),
+        };
+    }
+    status_pixel(view, x, y)
+}
+
+fn radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
+    for target in radar.targets.into_iter().flatten() {
+        let cy = 58 + (target.range_mm.min(200000) * 214 / 200000) as i32;
+        let dx = x as i32 - 12;
+        let dy = y as i32 - cy;
+        if dx * dx + dy * dy <= 25 {
+            return if close(target) { RED } else { YELLOW };
+        }
+    }
+    if (11..=13).contains(&x) && (58..=272).contains(&y) {
+        return match radar.status {
+            radar::Status::Ready => CYAN,
+            radar::Status::Error | radar::Status::ReservedThreat => RED,
+            _ => DIM,
+        };
+    }
+    if y < 49 && (x as i32 - 12).abs() <= (y as i32 - 38) / 2 {
+        return WHITE;
+    }
+    0
+}
+
+fn status_pixel(view: &View, x: usize, y: usize) -> u16 {
+    let state: &[u8] = if view.stop_confirm {
+        b"STOP TO SAVE"
+    } else {
+        match view.state {
+            Status::Recording => b"RECORDING",
+            Status::Paused => b"PAUSED",
+            Status::Saved => b"SAVED",
+            Status::Error => b"STORAGE ERROR",
+            Status::Full => b"STORAGE FULL",
+            _ => b"READY",
+        }
+    };
+    if text(x, y, 30, 263, 2, state) {
+        return if view.stop_confirm { YELLOW } else { CYAN };
+    }
+    let left: &[u8] = match view.state {
+        Status::Recording => b"PAUSE",
+        Status::Paused => b"RESUME",
+        _ => b"START",
+    };
+    if text(x, y, 8, 300, 2, left) || text(x, y, 180, 300, 2, b"STOP") {
+        return WHITE;
+    }
+    0
+}
+
+/// A label and the value under it, in a page's cell.
+pub(super) struct Cell {
+    pub(super) left: usize,
+    pub(super) top: usize,
+    pub(super) label: &'static [u8],
+    pub(super) label_scale: usize,
+    pub(super) value_top: usize,
+    pub(super) value_scale: usize,
+}
+
+impl Cell {
+    /// The cell's label in DIM and `value` in WHITE, or none of its pixels.
+    pub(super) fn pixel(&self, value: &Text<12>, x: usize, y: usize) -> Option<u16> {
+        if text(x, y, self.left, self.top, self.label_scale, self.label) {
+            return Some(DIM);
+        }
+        text(
+            x,
+            y,
+            self.left,
+            self.value_top,
+            self.value_scale,
+            value.as_bytes(),
+        )
+        .then_some(WHITE)
+    }
+}
+
+/// km/h with one truncated decimal, as the live reading always showed, or "--".
+pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
+    let _ = match mm_s {
+        Some(v) => {
+            let k = u64::from(v) * 36 / 1000;
+            write!(value, "{}.{}", k / 10, k % 10)
+        }
+        None => value.push_str("--"),
+    };
+}
+
+/// HH:MM:SS.
+pub(super) fn clock(value: &mut Text<12>, seconds: u64) {
+    let t = seconds;
+    let _ = write!(value, "{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
+}
+
+/// Kilometres with two rounded decimals, one from 100 km.
+pub(super) fn kilometres(value: &mut Text<12>, mm: u64) {
+    let hundredths = (mm + 5_000) / 10_000;
+    let _ = if hundredths < 10_000 {
+        write!(value, "{}.{:02}", hundredths / 100, hundredths % 100)
+    } else {
+        write!(value, "{}.{}", hundredths / 100, hundredths % 100 / 10)
+    };
+}
+
+/// A whole reading, or "--" without one.
+pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Display>) {
+    let _ = match reading {
+        Some(v) => write!(value, "{v}"),
+        None => value.push_str("--"),
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pages_step_in_order_and_end() {
+        assert_eq!(RidePage::default(), RidePage::Main);
+        assert_eq!(RidePage::Main.next(), Some(RidePage::Stats));
+        assert_eq!(RidePage::Stats.next(), None);
+        assert_eq!(&RidePage::Main.indicator(), b"1/2");
+        assert_eq!(&RidePage::Stats.indicator(), b"2/2");
+    }
+
+    #[test]
+    fn formats_distance_speed_and_readings() {
+        let format = |write: &dyn Fn(&mut Text<12>)| {
+            let mut value = Text::new();
+            write(&mut value);
+            value.as_bytes().to_vec()
+        };
+        assert_eq!(format(&|v| kilometres(v, 4_999_800)), b"5.00");
+        assert_eq!(format(&|v| kilometres(v, 0)), b"0.00");
+        assert_eq!(format(&|v| kilometres(v, 99_994_999)), b"99.99");
+        assert_eq!(format(&|v| kilometres(v, 123_456_000)), b"123.4");
+        assert_eq!(format(&|v| speed(v, Some(8334))), b"30.0");
+        assert_eq!(format(&|v| speed(v, Some(8333))), b"29.9");
+        assert_eq!(format(&|v| speed(v, None)), b"--");
+        assert_eq!(format(&|v| clock(v, 3725)), b"01:02:05");
+        assert_eq!(format(&|v| whole(v, Some(42))), b"42");
+        assert_eq!(format(&|v| whole(v, None::<u16>)), b"--");
+    }
+}

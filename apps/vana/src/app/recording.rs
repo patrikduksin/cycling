@@ -3,6 +3,7 @@ use super::Runtime;
 use crate::ride::log::{Sample, Status};
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
+use crate::ride::totals::Totals;
 
 /// A second Stop within this window finishes the ride.
 const STOP_CONFIRM_MS: u64 = 5000;
@@ -39,6 +40,8 @@ pub(super) struct Ride {
     next_token: u32,
     stop_armed: Option<u64>,
     pub(super) message: RideMessage,
+    /// What this ride has added up so far; kept after stop until the next start.
+    pub(super) totals: Totals,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -51,6 +54,7 @@ impl Default for Ride {
             next_token: 1,
             stop_armed: None,
             message: RideMessage::Ready,
+            totals: Totals::default(),
             clock: None,
         }
     }
@@ -105,9 +109,16 @@ impl Runtime {
 
     pub(super) fn record(&mut self, store: &mut impl RideStorage, now: u64, sample: Sample) {
         let clock = self.ride.clock;
+        let before = self.ride.recorder.status();
         self.ride
             .recorder
             .service(store, now, sample, &|| clock.map_or(now, |clock| clock()));
+        // A new ride, from any source, starts its totals from zero; resume keeps them.
+        if self.ride.recorder.status() == Status::Recording
+            && !matches!(before, Status::Recording | Status::Paused)
+        {
+            self.ride.totals = Totals::default();
+        }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);
         }

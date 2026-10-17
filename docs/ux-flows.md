@@ -115,9 +115,9 @@ Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved r
 Home's last card, RIDES, names the last ride's distance (or how many rides are
 saved, or NONE YET) and opens the list. Each card shows when the ride started
 (OCT 17  7:12, or RIDE n when the clock was unknown), its recorded time and
-distance where kept, and its average heart rate. MOVE focuses the next ride,
-ACT or a tap opens it, BACK goes Home. Without a saved ride the list says NO
-RIDES YET.
+distance where kept, and its average heart rate. MOVE focuses the next ride
+(held, it pages four cards at a time), ACT or a tap opens it, BACK goes Home.
+Without a saved ride the list says NO RIDES YET.
 
 A saved ride opens on the summary's three pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
@@ -126,8 +126,13 @@ from the recorded gradient. MOVE or a swipe turns the page, BACK returns to
 the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
 record cannot be read says RIDE UNREADABLE.
 
-The list holds what each journal keeps a summary of: the last four rides on
-internal flash and the last four on the memory card.
+The list holds every saved ride of both journals (internal flash and the
+memory card's RIDES volume), newest first. A ride index, kept in PSRAM and
+rebuilt after each boot, reads each journal in the background a few records
+per tick once the list was first opened, about 20 bytes per ride and up to 1,000 rides per journal (the
+oldest drop out beyond that). Until it has read a journal, the last four rides
+each journal's catalog keeps still show, and a newly saved ride appears at
+once.
 
 ## Other routes
 

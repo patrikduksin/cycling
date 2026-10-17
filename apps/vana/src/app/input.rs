@@ -135,7 +135,7 @@ impl Runtime {
             }
             Page::Summary => self.summary_input(button, held),
             Page::Phone => self.phone_input(button, held),
-            Page::History => self.history_input(button),
+            Page::History => self.history_input(button, held),
             Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant),
             Page::Workouts => self.workouts_input(button, now),

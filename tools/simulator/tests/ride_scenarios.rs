@@ -3910,3 +3910,71 @@ fn setup_hand_offs_return_to_setup_only_from_setup() {
     sim.press(Button::TopLeft);
     assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
 }
+
+/// Run a ride command and read its completion, as a host does.
+fn ride_command(sim: &mut Sim, command: &str) {
+    let (status, out) = sim.command(command);
+    assert_eq!(status, "ACCEPTED", "{command}: {out}");
+    sim.advance(500);
+    let (_, out) = sim.command("RIDE STATUS");
+    assert!(out.contains("result=OK"), "{command}: {out}");
+}
+
+#[test]
+fn ride_history_lists_every_saved_ride_of_both_journals() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    // 22 short rides on each journal: far more than the four each journal's
+    // catalog keeps.
+    for ride in 0..22u32 {
+        for medium in ["INTERNAL", "BULK"] {
+            sim.ride_at(20.0, 150.0, 100.0 + f64::from(ride), 80.0);
+            ride_command(&mut sim, &format!("RIDE {medium} START"));
+            sim.advance(seconds(12));
+            ride_command(&mut sim, &format!("RIDE {medium} PAUSE"));
+            ride_command(&mut sim, &format!("RIDE {medium} FINISH"));
+        }
+    }
+    sim.advance(seconds(5));
+    // Opening the list starts the index; until it has read both journals
+    // the catalogs' newest rides show.
+    sim.home("RIDES");
+    sim.advance(seconds(20));
+    sim.expect_text("1/44");
+    sim.checkpoint("every saved ride of both journals");
+    // Held MOVE pages through the list; MOVE then steps to the oldest.
+    sim.hold(Button::BottomLeft, 3000);
+    let shown = sim.screen().text();
+    assert!(
+        !shown.contains("1/44") && !shown.contains("2/44"),
+        "{shown}"
+    );
+    sim.checkpoint("paged through the rides");
+    for _ in 0..44 {
+        if sim.screen().text().contains("44/44") {
+            break;
+        }
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("44/44");
+    // The oldest ride, outside every catalog, reads back.
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.vana_page(), "past_ride");
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_text("SAVED RIDE");
+    sim.expect_field("AVG BPM", "100");
+    sim.checkpoint("the oldest ride read back");
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
+
+    // A new ride is listed once saved.
+    ride_command(&mut sim, "RIDE INTERNAL START");
+    sim.advance(seconds(12));
+    ride_command(&mut sim, "RIDE INTERNAL PAUSE");
+    ride_command(&mut sim, "RIDE INTERNAL FINISH");
+    sim.advance(seconds(5));
+    sim.home("RIDES");
+    sim.expect_text("1/45");
+}

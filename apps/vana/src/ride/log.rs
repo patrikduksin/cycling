@@ -536,9 +536,19 @@ pub struct Scanner {
     summary_count: u8,
     max_ride_id: u32,
     torn_first: bool,
+    /// The ride the last accepted slot completed, for the ride index.
+    completed_now: Option<Summary>,
 }
 
 impl Scanner {
+    /// Scan one slot, as `accept_slot`, and return the summary of the ride
+    /// it completed, if it completed one.
+    pub fn accept_completing(&mut self, index: usize, bytes: &[u8]) -> Option<Summary> {
+        self.completed_now = None;
+        self.accept_slot(index, bytes);
+        self.completed_now.take()
+    }
+
     pub fn next_sector(&self) -> Option<usize> {
         (self.sector < SECTORS).then_some(self.sector)
     }
@@ -565,6 +575,7 @@ impl Scanner {
             summary_count: catalog.summary_count,
             max_ride_id: catalog.next_ride_id.saturating_sub(1),
             torn_first: catalog.torn_first,
+            completed_now: None,
         }
     }
 
@@ -670,6 +681,7 @@ impl Scanner {
     }
 
     fn push_summary(&mut self, summary: Summary) {
+        self.completed_now = Some(summary);
         if usize::from(self.summary_count) < HISTORY_CAPACITY {
             self.summaries[usize::from(self.summary_count)] = Some(summary);
             self.summary_count += 1;

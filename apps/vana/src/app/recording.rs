@@ -28,6 +28,11 @@ const LAP_TOAST_MS: u64 = 2000;
 /// How long the brief notice of an automatic action stays up.
 const TOAST_MS: u64 = 3000;
 
+/// Slots the ride index reads per tick: internal flash reads are quick, each
+/// MMC read is three card reads (ownership checks, then the record).
+const INDEX_INTERNAL_BUDGET: usize = 32;
+const INDEX_BULK_BUDGET: usize = 4;
+
 /// The recorder operation a rider or host requested, until someone reads its result.
 #[derive(Clone, Copy)]
 pub(super) enum Request {
@@ -476,6 +481,47 @@ impl Ride {
                 _ => None,
             }
         });
+    }
+
+    /// Index a few more saved rides of each journal, through the export
+    /// path's reader, while no ride is open. Returns whether any was added.
+    pub(super) fn directory_step(
+        &mut self,
+        index: &mut crate::ride::directory::RideIndex,
+        store: &mut impl RideStorage,
+        bulk: &mut impl ReadWrite,
+    ) -> bool {
+        use crate::ride::directory::Read;
+        use crate::ride::journal::Journal;
+        if self.internal.riding() || self.bulk.riding() {
+            return false;
+        }
+        let mut slot = crate::ride::log::Slot::default();
+        let read = |valid: Option<bool>| match valid {
+            Some(true) => Read::Slot,
+            Some(false) => Read::Invalid,
+            None => Read::Failed,
+        };
+        let mut added = false;
+        if self.internal.exportable() {
+            let media = &mut self.internal_media;
+            added |= index.internal.step(
+                self.internal.next_slot(),
+                INDEX_INTERNAL_BUDGET,
+                &mut slot,
+                |i, out| read(Internal::new(media, store).read_slot(i, out)),
+            );
+        }
+        if self.bulk.exportable() {
+            let media = &mut self.bulk_media;
+            added |= index.bulk.step(
+                self.bulk.next_slot(),
+                INDEX_BULK_BUDGET,
+                &mut slot,
+                |i, out| read(Bulk::new(media, bulk).read_slot(i, out)),
+            );
+        }
+        added
     }
 
     /// Start the internal continuation of a ride the bulk medium lost. Waits

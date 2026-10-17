@@ -1,8 +1,11 @@
 //! Ride history: the saved rides of both journals as a list, and one of them
 //! read back onto the summary's pages.
 //!
-//! The list comes from the summaries each journal already keeps (the last
-//! four per medium), referenced rather than copied. Opening a ride replays
+//! The list comes from the ride index the composition lends (every saved
+//! ride of both journals, built in the background), plus the summaries each
+//! journal's catalog keeps for rides the index has not reached yet. Without
+//! an index only those catalog summaries (the last four per medium) show.
+//! Entries are looked up on demand, so nothing is copied. Opening a ride replays
 //! its journal records a few slots per tick, read-only, and only while that
 //! journal is idle, so recording is never held up and nothing persisted
 //! changes. The replay adds up into the ride sums the live ride uses: rides
@@ -10,6 +13,7 @@
 //! Home keeps the last ride's line from before the first replay.
 use super::Runtime;
 use super::recording::Medium;
+use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::screens::history::{self, List, Row};
@@ -24,10 +28,14 @@ const BULK_BUDGET: usize = 8;
 
 #[derive(Default)]
 pub(super) struct History {
-    /// Newest first: each ride's journal and its summary's index there.
-    order: heapless::Vec<(Medium, u8), { history::CAPACITY }>,
+    /// Every saved ride of both journals, in storage the composition lends.
+    pub(super) index: Option<&'static mut RideIndex>,
+    /// The list was opened once: from then on the index reads the journals
+    /// in the background. Until then boot and rides read nothing extra.
+    indexing: bool,
     pub(super) cursor: usize,
-    open: Option<(Medium, Replay)>,
+    /// The ride on the summary's pages: its journal, its replay and its line.
+    open: Option<(Medium, Replay, Summary)>,
     /// The ride the phone screen was opened for.
     pub(super) phone: Option<(Medium, u32)>,
     /// Home's last-ride distance, kept from before a replay took over the
@@ -36,64 +44,135 @@ pub(super) struct History {
 }
 
 impl Runtime {
-    fn saved(&self, medium: Medium, index: u8) -> Option<&Summary> {
-        self.ride.recorder(medium).summary(usize::from(index))
+    /// Lend storage for the ride index, so the list holds every saved ride.
+    pub fn attach_ride_index(&mut self, index: &'static mut RideIndex) {
+        self.history.index = Some(index);
     }
 
-    fn listed(&self, index: usize) -> Option<&Summary> {
-        let (medium, at) = *self.history.order.get(index)?;
-        self.saved(medium, at)
+    fn indexed(&self, medium: Medium) -> Option<&Journal> {
+        let index = self.history.index.as_deref()?;
+        Some(match medium {
+            Medium::Internal => &index.internal,
+            Medium::Bulk => &index.bulk,
+        })
+    }
+
+    /// One journal's rides: how many the index holds, and the first catalog
+    /// summary newer than all of them.
+    fn split(&self, medium: Medium) -> (usize, usize) {
+        let recorder = self.ride.recorder(medium);
+        let kept = usize::from(recorder.summary_count());
+        let Some(journal) = self.indexed(medium) else {
+            return (0, 0);
+        };
+        let last = journal.last_ride_id();
+        let newer = (0..kept)
+            .find(|&i| {
+                recorder
+                    .summary(i)
+                    .is_some_and(|s| last.is_none_or(|last| s.ride_id > last))
+            })
+            .unwrap_or(kept);
+        (journal.len(), newer)
+    }
+
+    /// Saved rides of one journal.
+    fn journal_len(&self, medium: Medium) -> usize {
+        let recorder = self.ride.recorder(medium);
+        if matches!(recorder.status(), Status::Scanning | Status::NeedsInit) {
+            return 0;
+        }
+        let (indexed, newer) = self.split(medium);
+        indexed + usize::from(recorder.summary_count()) - newer
+    }
+
+    /// The `index`-th saved ride of one journal, oldest first.
+    fn journal_ride(&self, medium: Medium, index: usize) -> Option<Summary> {
+        let (indexed, newer) = self.split(medium);
+        if index < indexed {
+            return self.indexed(medium)?.get(index);
+        }
+        self.ride
+            .recorder(medium)
+            .summary(newer + index - indexed)
+            .copied()
+    }
+
+    /// The `n`-th newest saved ride of both journals. Each journal's own
+    /// order is certain (oldest first), so the two are merged newest first,
+    /// keeping each journal's order; start times decide between journals
+    /// where both are known.
+    fn listed(&self, n: usize) -> Option<(Medium, Summary)> {
+        let mut left = [
+            self.journal_len(Medium::Internal),
+            self.journal_len(Medium::Bulk),
+        ];
+        let media = [Medium::Internal, Medium::Bulk];
+        for taken in 0.. {
+            let head = |at: usize| {
+                left[at]
+                    .checked_sub(1)
+                    .and_then(|i| self.journal_ride(media[at], i))
+            };
+            let (internal, bulk) = (head(0), head(1));
+            let pick = match (&internal, &bulk) {
+                (Some(a), Some(b)) => match (a.first_utc_ms, b.first_utc_ms) {
+                    (Some(a), Some(b)) if b > a => 1,
+                    _ => 0,
+                },
+                (Some(_), None) => 0,
+                (None, Some(_)) => 1,
+                (None, None) => return None,
+            };
+            if taken == n {
+                return [internal, bulk][pick].map(|summary| (media[pick], summary));
+            }
+            left[pick] -= 1;
+        }
+        None
     }
 
     /// Show the saved rides, newest first, with the newest focused.
     pub(super) fn open_history(&mut self) {
-        // Each journal's own order is certain (oldest first), so the two are
-        // merged newest first, keeping each journal's order; start times
-        // decide between journals where both are known.
-        let newest = |medium: Medium| {
-            let recorder = self.ride.recorder(medium);
-            let listed = !matches!(recorder.status(), Status::Scanning | Status::NeedsInit);
-            (0..crate::ride::log::HISTORY_CAPACITY as u8)
-                .rev()
-                .filter(move |&index| listed && recorder.summary(usize::from(index)).is_some())
-                .map(move |index| (medium, index))
-                .peekable()
-        };
-        let (mut internal, mut bulk) = (newest(Medium::Internal), newest(Medium::Bulk));
-        let started = |&(medium, index): &(Medium, u8)| {
-            self.saved(medium, index).and_then(|s| s.first_utc_ms)
-        };
-        let mut order: heapless::Vec<(Medium, u8), { history::CAPACITY }> = heapless::Vec::new();
-        loop {
-            let next = match (internal.peek(), bulk.peek()) {
-                (Some(a), Some(b)) => match (started(a), started(b)) {
-                    (Some(a), Some(b)) if b > a => bulk.next(),
-                    _ => internal.next(),
-                },
-                (Some(_), None) => internal.next(),
-                (None, Some(_)) => bulk.next(),
-                (None, None) => break,
-            };
-            if let Some(next) = next {
-                let _ = order.push(next);
-            }
-        }
-        self.history.order = order;
+        self.history.indexing = true;
         self.history.cursor = 0;
         self.history.open = None;
         self.navigation.page = Page::History;
     }
 
     pub(super) fn history_count(&self) -> usize {
-        self.history.order.len()
+        self.journal_len(Medium::Internal) + self.journal_len(Medium::Bulk)
     }
 
-    /// MOVE focuses the next ride, ACT opens it, BACK goes Home.
-    pub(super) fn history_input(&mut self, button: Button) {
+    /// Index a few more saved rides; the list redraws when one is added.
+    pub(super) fn directory_step(
+        &mut self,
+        store: &mut impl crate::ride::storage::RideStorage,
+        bulk: &mut impl device_api::bulk::ReadWrite,
+    ) {
+        if !self.history.indexing {
+            return;
+        }
+        let Some(index) = self.history.index.as_deref_mut() else {
+            return;
+        };
+        if self.ride.directory_step(index, store, bulk) && self.navigation.page == Page::History {
+            self.display.redraw();
+        }
+    }
+
+    /// MOVE focuses the next ride (held, the next page of cards), ACT opens
+    /// it, BACK goes Home.
+    pub(super) fn history_input(&mut self, button: Button, held: bool) {
         let count = self.history_count();
         match button {
             Button::BottomLeft if count > 0 => {
-                self.history.cursor = (self.history.cursor + 1) % count;
+                let step = if held { history::SHOWN } else { 1 };
+                self.history.cursor = if self.history.cursor + 1 >= count {
+                    0
+                } else {
+                    (self.history.cursor + step).min(count - 1)
+                };
             }
             Button::BottomRight if count > 0 => self.open_past_ride(self.history.cursor),
             Button::TopLeft => self.navigation.page = Page::Home,
@@ -102,12 +181,10 @@ impl Runtime {
     }
 
     pub(super) fn open_past_ride(&mut self, index: usize) {
-        let Some(&(medium, at)) = self.history.order.get(index) else {
+        let Some((medium, summary)) = self.listed(index) else {
             return;
         };
-        let Some(ride_id) = self.saved(medium, at).map(|s| s.ride_id) else {
-            return;
-        };
+        let ride_id = summary.ride_id;
         if self.ride.active().riding() {
             return;
         }
@@ -119,7 +196,7 @@ impl Runtime {
         self.sums().clear();
         self.history.cursor = index;
         let upper = self.ride.recorder(medium).next_slot();
-        self.history.open = Some((medium, Replay::new(ride_id, upper)));
+        self.history.open = Some((medium, Replay::new(ride_id, upper), summary));
         self.navigation.summary_page = 0;
         self.navigation.page = Page::PastRide;
     }
@@ -140,13 +217,10 @@ impl Runtime {
             Button::BottomLeft => self.next_summary_page(1),
             Button::TopLeft if !held => self.navigation.page = Page::History,
             Button::BottomRight if !held => {
-                let Some((medium, _)) = self.history.open else {
+                let Some((medium, _, summary)) = self.history.open else {
                     return;
                 };
-                let Some(ride_id) = self.listed(self.history.cursor).map(|s| s.ride_id) else {
-                    return;
-                };
-                self.history.phone = Some((medium, ride_id));
+                self.history.phone = Some((medium, summary.ride_id));
                 self.navigation.page = Page::Phone;
             }
             _ => {}
@@ -180,7 +254,7 @@ impl Runtime {
         if self.navigation.page != Page::PastRide {
             return;
         }
-        let Some((medium, mut replay)) = self.history.open else {
+        let Some((medium, mut replay, summary)) = self.history.open else {
             return;
         };
         if replay.progress() != Progress::Reading || self.ride.active().riding() {
@@ -191,7 +265,7 @@ impl Runtime {
             // A failed journal stays unreadable until VANA restarts.
             if matches!(recorder.status(), Status::Error | Status::NeedsInit) {
                 replay.abandon();
-                self.history.open = Some((medium, replay));
+                self.history.open = Some((medium, replay, summary));
                 self.display.redraw();
             }
             return;
@@ -203,7 +277,7 @@ impl Runtime {
         let profile = self.preferences.profile;
         self.ride
             .replay(medium, store, bulk, &mut replay, budget, &profile);
-        self.history.open = Some((medium, replay));
+        self.history.open = Some((medium, replay, summary));
         if replay.progress() != Progress::Reading {
             self.display.redraw();
         }
@@ -220,11 +294,12 @@ impl Runtime {
     }
 
     fn history_row(&self, index: usize, count: usize) -> Row {
-        let Some(summary) = self.listed(index) else {
+        let Some((_, summary)) = self.listed(index) else {
             return Row::default();
         };
+        let summary = &summary;
         let mut row = Row {
-            title: title(summary, count - index),
+            title: title(summary, count.saturating_sub(index)),
             ..Row::default()
         };
         let mut time = Text::<12>::new();
@@ -243,13 +318,14 @@ impl Runtime {
 
     /// The open ride on the summary's pages.
     pub(super) fn past_view(&self, view: &mut View) {
-        let Some((_, replay)) = &self.history.open else {
+        let Some((_, replay, summary)) = &self.history.open else {
             return;
         };
-        let summary = self.listed(self.history.cursor);
-        if let Some(summary) = summary {
-            view.past_title = title(summary, self.history_count() - self.history.cursor);
-        }
+        view.past_title = title(
+            summary,
+            self.history_count().saturating_sub(self.history.cursor),
+        );
+        let summary = Some(summary);
         let saving = match replay.progress() {
             Progress::Reading => Saving::Reading,
             Progress::Done => Saving::Saved,
@@ -278,10 +354,7 @@ impl Runtime {
         if !self.recording() && distance > 0 {
             return crate::screens::home::last_ride(distance);
         }
-        let saved: usize = [Medium::Internal, Medium::Bulk]
-            .iter()
-            .map(|&m| usize::from(self.ride.recorder(m).summary_count()))
-            .sum();
+        let saved = self.history_count();
         let mut line = Text::new();
         let _ = match saved {
             0 => line.push_str("NONE YET"),

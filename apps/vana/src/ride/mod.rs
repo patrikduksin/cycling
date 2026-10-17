@@ -4,6 +4,7 @@ pub mod bulk;
 pub mod climb;
 pub mod climb_ahead;
 pub mod control;
+pub mod directory;
 pub mod fit;
 pub mod gps_speed;
 pub mod index;

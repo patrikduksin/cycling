@@ -80,23 +80,34 @@ pub(super) fn prepare(view: &View, values: &mut Values) {
     };
 }
 
+/// Called for every body pixel, so it looks up the one cell under the pixel
+/// by row and column rather than testing all of them.
 pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
     if ROWS.contains(&y) || (x == COLUMN && y > ROWS[0]) {
         return GRID;
     }
     let values = &view.values;
-    if text(x, y, 178, 89, 1, b"KM/H") {
+    let row = ROWS.iter().position(|&bottom| y < bottom).unwrap_or(ROWS.len());
+    let right = x > COLUMN;
+    if row == 0 && text(x, y, 178, 89, 1, b"KM/H") {
         return DIM;
     }
-    for (cell, value) in &CELLS {
-        if let Some(color) = cell.pixel(&values[*value], x, y) {
-            return color;
+    if row == 1 {
+        let (left, zone) = if right {
+            (146, HEART_ZONE)
+        } else {
+            (38, POWER_ZONE)
+        };
+        if text(x, y, left, 157, 2, values[zone].as_bytes()) {
+            return CYAN;
         }
     }
-    if text(x, y, 38, 157, 2, values[POWER_ZONE].as_bytes())
-        || text(x, y, 146, 157, 2, values[HEART_ZONE].as_bytes())
-    {
-        return CYAN;
-    }
-    0
+    // Speed spans the first row; then each row has a left and a right cell.
+    let index = if row == 0 {
+        0
+    } else {
+        2 * row - 1 + usize::from(right)
+    };
+    let (cell, value) = &CELLS[index];
+    cell.pixel(&values[*value], x, y).unwrap_or(0)
 }

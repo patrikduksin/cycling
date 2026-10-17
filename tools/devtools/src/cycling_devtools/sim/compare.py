@@ -44,6 +44,7 @@ DECODED = {b'IHDR', b'IDAT', b'IEND'}
 # How long cargo gets to exit on SIGTERM before its process group is killed.
 GRACE_S = 5
 TABLE = ['| Screen | Before | After |', '|---|---|---|']
+DEFAULT_BASE = 'origin/main'
 
 
 @dataclass(frozen=True)
@@ -157,12 +158,12 @@ def comparison(pairs, before, after, base, refs):
     count = {s: sum(state == s for _, state in states) for s in ('changed', 'new', 'removed', 'unchanged')}
     passed = sum(r['status'] == 'pass' for r in after)
     icon = '✅' if passed == len(after) else '❌'
-    base_ref, base_commit, head_commit = refs
+    base_ref, base_commit, base_subject, head_commit = refs
     lines = [
         f'## {icon} Simulator before/after: {count["changed"]} changed · {count["new"]} new · '
         f'{count["removed"]} removed · {count["unchanged"]} unchanged',
         '',
-        f'Before: `{base_ref}` at `{base_commit}`, '
+        f'Before: `{base_ref}` at `{base_commit}` ({base_subject}), '
         f'{sum(r["status"] == "pass" for r in before)}/{len(before)} scenarios passed. '
         f'After: `{head_commit}`, {passed}/{len(after)} passed. '
         'Screens are paired by scenario and checkpoint and compared by pixels.',
@@ -302,18 +303,51 @@ def git(*args):
     return subprocess.run(['git', *args], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def fetch_origin_main():
+    """Bring origin/main up to date. Offline or without credentials, warn and keep the existing ref."""
+    try:
+        result = subprocess.run(
+            ['git', 'fetch', '--quiet', 'origin', 'main'],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'},
+        )
+        failure = None if result.returncode == 0 else result.stderr.strip() or f'exit status {result.returncode}'
+    except (OSError, subprocess.TimeoutExpired) as error:
+        failure = str(error)
+    if failure:
+        print(
+            f'sim-compare: warning: could not fetch origin/main ({failure}); using the existing origin/main',
+            file=sys.stderr,
+        )
+
+
+def resolve_base(base):
+    """(ref, short sha, subject) of the base. Without an explicit base, origin/main is fetched first."""
+    if base is None:
+        fetch_origin_main()
+        base = DEFAULT_BASE
+    sha, _, subject = git('log', '-1', '--format=%h %s', base).partition(' ')
+    return base, sha, subject
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--base', default='main', help='git ref to compare against (default: main)')
+    parser.add_argument(
+        '--base', help=f'git ref to compare against (default: {DEFAULT_BASE}, fetched from origin first)'
+    )
     parser.add_argument('--pr', help='pull request to comment on with the comparison')
     parser.add_argument('--filter', help='cargo test name filter, applied to both runs')
     parser.add_argument('--out', type=Path, default=OUT)
     args = parser.parse_args(argv)
     try:
-        base_commit = git('rev-parse', '--short', '--verify', f'{args.base}^{{commit}}')
+        base, base_commit, base_subject = resolve_base(args.base)
     except subprocess.CalledProcessError:
-        print(f'unknown git ref {args.base!r}', file=sys.stderr)
+        print(f'unknown git ref {args.base or DEFAULT_BASE!r}', file=sys.stderr)
         return 2
+    print(f'sim-compare base: {base} at {base_commit} {base_subject}', flush=True)
     # Absolute, because the base runs with its worktree as working directory.
     out = args.out.resolve()
     target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target').resolve()
@@ -326,7 +360,7 @@ def main(argv=None):
         f'{side}: {problem}'
         for side, directory, status in (
             ('after (this checkout)', after_dir, after_status),
-            (f'before ({args.base})', before_dir, before_status),
+            (f'before ({base})', before_dir, before_status),
         )
         if (problem := incomplete(directory, status))
     ]
@@ -340,7 +374,7 @@ def main(argv=None):
     for directory, results in ((before_dir, before), (after_dir, after)):
         (directory / 'index.html').write_text(report.page(results, f'Simulator scenarios ({directory.name})'))
     pairs = pair(before, after)
-    markdown, attachments = comparison(pairs, before, after, ROOT, (args.base, base_commit, report.commit()))
+    markdown, attachments = comparison(pairs, before, after, ROOT, (base, base_commit, base_subject, report.commit()))
     (out / 'summary.md').write_text(markdown)
     print(markdown.split('\n\n', 1)[0].removeprefix('## '))
     print(f'report {out / "summary.md"}; artifacts {before_dir}/index.html and {after_dir}/index.html')

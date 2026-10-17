@@ -149,3 +149,17 @@ def test_trace_joins_the_two_longest_arms_of_a_branching_road():
     road = trace.road(blob, 'G-1')
     lats = [lat for lat, _, _ in road]
     assert max(lats) - min(lats) == 12_000
+
+
+def test_trace_rides_oneways_forwards_and_goes_uphill():
+    grid = Grid.around(-33.4, -70.5, -33.39, -70.49, TILE)
+    south, west = grid.south + 1_000, grid.west + 1_000
+    group = trace.group_of('G-2')
+    roads = [
+        # Up 100 m north, then a oneway that only runs back down south.
+        edge([(south, west, 900.0), (south + 3_000, west, 1_000.0)], group=group),
+        edge([(south + 9_000, west, 1_200.0), (south + 3_000, west, 1_000.0)], flags=osm.ONEWAY, group=group),
+    ]
+    road = trace.road(pack.encode_pack(cut_into_tiles(roads, grid), 'a', 'b', 0), 'G-2')
+    assert road[0][2] < road[-1][2]
+    assert max(lat for lat, _, _ in road) == south + 3_000

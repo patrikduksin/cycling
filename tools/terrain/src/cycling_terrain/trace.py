@@ -1,8 +1,8 @@
 """A named road through a pack, as a track: test fixtures and scenarios.
 
-The longest chain of edges sharing a road group (its `ref`, else its name)
-is written from its lowest end, one line per vertex: latitude, longitude
-(degrees) and elevation (metres).
+The longest uphill chain of edges sharing a road group (its `ref`, else its
+name) that a rider may follow (oneways only forwards) is written one line per
+vertex: latitude, longitude (degrees) and elevation (metres).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import math
 import zlib
 
 from . import pack
+from .osm import ONEWAY
 
 
 def group_of(label: str) -> int:
@@ -29,10 +30,12 @@ def _length(points) -> float:
 
 
 def road(blob: bytes, label: str) -> list[tuple[int, int, int]]:
-    """(lat µdeg, lon µdeg, z dm) of the longest chain of `label`'s edges."""
+    """(lat µdeg, lon µdeg, z dm) of the longest rideable uphill chain of
+    `label`'s edges."""
     header = pack.read_header(blob)
     group = group_of(label)
     pieces = []
+    oneway = []
     for row, col, tile in pack.tiles(blob):
         south = header.south + row * header.tile
         west = header.west + col * header.tile
@@ -40,6 +43,7 @@ def road(blob: bytes, label: str) -> list[tuple[int, int, int]]:
             if edge[6] != group:
                 continue
             pieces.append([(south + y, west + x, z - pack.Z_OFFSET_DM) for x, y, z in tile.geometry(number)])
+            oneway.append(bool(edge[5] & ONEWAY))
     ends: dict[tuple[int, int], list[int]] = {}
     for index, piece in enumerate(pieces):
         for point in (piece[0], piece[-1]):
@@ -55,6 +59,8 @@ def road(blob: bytes, label: str) -> list[tuple[int, int, int]]:
                 continue
             piece = pieces[index]
             if piece[0][:2] != end:
+                if oneway[index]:
+                    continue
                 piece = list(reversed(piece))
             used.add(index)
             length, rest = longest(piece[-1][:2], used)
@@ -66,14 +72,13 @@ def road(blob: bytes, label: str) -> list[tuple[int, int, int]]:
     best: list = []
     best_length = 0.0
     for start in range(len(pieces)):
-        for reverse in (False, True):
+        for reverse in (False, True) if not oneway[start] else (False,):
             chain = list(reversed(pieces[start])) if reverse else list(pieces[start])
             length, rest = longest(chain[-1][:2], {start})
-            if lengths[start] + length > best_length:
+            whole = chain + rest
+            if whole[-1][2] >= whole[0][2] and lengths[start] + length > best_length:
                 best_length = lengths[start] + length
-                best = chain + rest
-    if best and best[0][2] > best[-1][2]:
-        best.reverse()
+                best = whole
     return best
 
 

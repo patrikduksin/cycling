@@ -395,6 +395,13 @@ impl Preferences {
         }
     }
 
+    /// Save a pending edit without waiting for edits to settle.
+    pub(super) fn settle_now(&mut self, now: u64) {
+        if self.changed_at.is_some() {
+            self.changed_at = Some(now.saturating_sub(DEBOUNCE_MS));
+        }
+    }
+
     /// The record as it would be saved now.
     pub(super) fn record(&self) -> Record {
         Record {

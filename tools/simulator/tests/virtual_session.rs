@@ -288,7 +288,8 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     let t = Temp::new();
     let mut s = Session::new(&t.0, 240, 320).unwrap();
     s.advance(7000).unwrap();
-    present(&mut s); // Splash completes into Home.
+    present(&mut s); // Splash completes into first-run setup.
+    press(&mut s, Button::TopLeft); // BACK leaves setup for the TRAIN/SENSORS menu.
     state(&mut s, "ready");
     press(&mut s, Button::BottomRight); // RIDE -> Ready.
     s.advance(2600).unwrap();

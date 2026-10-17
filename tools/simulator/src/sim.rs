@@ -202,7 +202,20 @@ impl Sim {
     /// Power on and wait until the device can be used.
     pub fn boot(mut self) -> Self {
         self.wait_usable();
+        self.skip_setup();
         self
+    }
+
+    /// A fresh device starts with first-run setup: skip it, as a rider who
+    /// knows VANA would. Does nothing on Home.
+    pub fn skip_setup(&mut self) {
+        #[cfg(feature = "cycling")]
+        if self.device.sdk.page() == vana::screens::workout::Page::Setup {
+            self.press(device_api::input::Button::BottomLeft);
+            self.expect_text("SKIP SETUP");
+            self.press(device_api::input::Button::BottomRight);
+            assert!(self.device.sdk.page() == vana::screens::workout::Page::Home);
+        }
     }
 
     /// Advance until the panel is lit and, with VANA, Home is open. Returns
@@ -223,7 +236,10 @@ impl Sim {
 
     fn usable(&self) -> bool {
         #[cfg(feature = "cycling")]
-        let home = self.device.sdk.page() == vana::screens::workout::Page::Home;
+        let home = matches!(
+            self.device.sdk.page(),
+            vana::screens::workout::Page::Home | vana::screens::workout::Page::Setup
+        );
         #[cfg(not(feature = "cycling"))]
         let home = true;
         self.device.lit() && home

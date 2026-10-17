@@ -336,6 +336,7 @@ fn sensors_wait_for_the_companion_after_power_on() {
     sim.ant_sensor(device_type::HEART_RATE, HEART);
     // Ask for sensors as soon as Home appears; the radio is still starting.
     sim.advance(seconds(7));
+    sim.skip_setup();
     sim.home("SENSORS");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.connect_sensor("HEART RATE");
@@ -851,8 +852,8 @@ fn training_profile_survives_power_loss() {
     let mut sim = rider();
     let (_, before) = sim.command("PROFILE");
     assert_eq!(
-        before, "ftp=215 lthr=185 stored=missing persistence=saved",
-        "a fresh device has the defaults"
+        before, "ftp=215 lthr=185 stored=current persistence=saved",
+        "a fresh device has the defaults, saved when setup was skipped"
     );
     // Edited by touch this time: tap a field, then the minus/plus pads.
     sim.edit_profile_by_touch(280, 170);
@@ -1874,10 +1875,13 @@ fn startup_timing() {
     sim.checkpoint("power-on: brand flash");
     sim.wait_usable();
     let home = sim.device.now;
-    sim.checkpoint("power-on: Home ready");
-    sim.expect_text("READY TO RIDE");
+    // A fresh device opens first-run setup where Home would be, as soon.
+    sim.checkpoint("power-on: setup ready");
+    sim.expect_text("WELCOME");
     assert!(home - lit <= 500, "brand flash {} ms", home - lit);
     assert!(home <= seconds(5), "Home at {home} ms uptime");
+    sim.skip_setup();
+    sim.expect_text("READY TO RIDE");
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.start_ride();
     sim.ride_at(25.0, 180.0, 130.0, 85.0);
@@ -1972,6 +1976,7 @@ fn the_brand_ring_closes_on_power_on_and_unwinds_on_power_off() {
         usable + 200
     );
     let _ = lit;
+    sim.skip_setup();
     sim.expect_text("READY TO RIDE");
 
     sim.press(Button::TopLeft);
@@ -3214,7 +3219,9 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     );
     sim.checkpoint("summary: ride saved");
     sim.swipe_next();
-    sim.expect_field("NP W", "220");
+    // The first second of a ride may still read the power before it.
+    let watts: u32 = sim.screen().field("NP W").unwrap().parse().unwrap();
+    assert!(watts.abs_diff(220) <= 1, "NP W {watts}");
     sim.checkpoint("summary: effort and zones");
     sim.press(Button::BottomLeft);
     sim.expect_text("BEST POWER W");
@@ -3641,7 +3648,8 @@ fn readings_glide_between_samples_and_settle_on_the_reading() {
     sim.ride_at(28.0, 300.0, 142.0, 88.0);
     let mut drawn = Vec::new();
     let mut captured = false;
-    for _ in 0..100 {
+    // Long enough for the 3 s power to take in only the new reading.
+    for _ in 0..200 {
         sim.advance(20);
         let watts: u32 = sim.screen().field("W").unwrap().parse().unwrap();
         if drawn.last() != Some(&watts) {
@@ -3662,4 +3670,125 @@ fn readings_glide_between_samples_and_settle_on_the_reading() {
     );
     assert_eq!(drawn.last(), Some(&300), "{drawn:?}");
     sim.checkpoint("power settled on the reading");
+}
+
+/// A new rider's device: nothing saved, so it opens first-run setup.
+fn new_rider() -> Sim {
+    let mut sim = equip(Sim::new());
+    sim.wait_usable();
+    sim
+}
+
+#[test]
+fn first_start_sets_up_power_heart_and_sensors_then_rides() {
+    let mut sim = new_rider();
+    sim.expect_text("WELCOME");
+    sim.checkpoint("welcome");
+    sim.press(Button::BottomRight);
+    sim.expect_text("POWER");
+    sim.expect_text("215 W");
+    sim.checkpoint("power: set or don't know");
+    // SET FTP opens the Settings editor; finishing it goes on to heart.
+    sim.press(Button::BottomRight);
+    sim.expect_field("FTP WATTS", "215");
+    for _ in 0..7 {
+        sim.press(Button::BottomRight);
+    }
+    sim.expect_field("FTP WATTS", "250");
+    sim.checkpoint("editing FTP from setup");
+    sim.press(Button::TopLeft);
+    sim.expect_text("HEART");
+    sim.expect_text("185 BPM");
+    // I DON'T KNOW keeps the default, by touch this time.
+    let unknown = sim.screen().run("I DON'T KNOW").unwrap();
+    sim.tap(unknown.x as u16 + 4, unknown.y as u16 + 4);
+    sim.expect_text("PAIR SENSORS");
+    sim.checkpoint("sensors");
+    // PAIR SENSORS hands off to the sensor menu; leaving it finishes setup.
+    sim.press(Button::BottomRight);
+    sim.wait_for("SCAN DONE", seconds(20)).unwrap();
+    sim.connect_sensor("HEART RATE");
+    for _ in 0..3 {
+        if sim.screen().contains("READY") && sim.screen().contains("HOME") {
+            break;
+        }
+        sim.press(Button::TopLeft);
+    }
+    sim.expect_text("RIDE");
+    sim.expect_text("HOME");
+    sim.checkpoint("ready");
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.vana_page(), "ready");
+    assert_eq!(
+        sim.command("PROFILE").1,
+        "ftp=250 lthr=185 stored=current persistence=saved"
+    );
+    // Setup is done for good: the next start opens Home.
+    sim.power_loss();
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+    sim.expect_text("READY TO RIDE");
+}
+
+#[test]
+fn setup_resumes_where_it_was_left_and_never_blocks_a_ride() {
+    let mut sim = new_rider();
+    sim.press(Button::BottomRight);
+    sim.expect_text("POWER");
+    // BACK leaves setup for Home, where a ride starts as always.
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
+    sim.checkpoint("home before setup is finished");
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    go_home(&mut sim);
+    sim.advance(seconds(3));
+    // The next start resumes setup on the page it was left at.
+    sim.power_loss();
+    sim.expect_text("POWER");
+    sim.checkpoint("setup resumed at power");
+    // SKIP SETUP is on Welcome only; finishing from here also works.
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomRight);
+    sim.expect_text("HEART");
+}
+
+/// Setup's ways into Settings and the sensor menu return to setup only when
+/// taken from setup.
+#[test]
+fn setup_hand_offs_return_to_setup_only_from_setup() {
+    let mut sim = new_rider();
+    sim.press(Button::BottomRight);
+    sim.expect_text("POWER");
+    // SET FTP, then leave the editor by swiping away and going Home.
+    sim.press(Button::BottomRight);
+    sim.expect_field("FTP WATTS", "215");
+    sim.swipe_next();
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+    // An ordinary edit later stays in Settings.
+    sim.home("SETTINGS");
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomRight);
+    sim.press(Button::TopLeft);
+    assert_eq!(sim.vana_page(), "settings");
+    sim.press(Button::TopLeft);
+    // Sensors from Home goes back Home even with setup at its last step.
+    sim.power_loss();
+    sim.expect_text("POWER");
+    for _ in 0..2 {
+        sim.press(Button::BottomLeft);
+        sim.press(Button::BottomRight);
+    }
+    sim.expect_text("PAIR SENSORS");
+    sim.press(Button::BottomRight);
+    sim.press(Button::TopLeft);
+    sim.expect_text("READY");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
+    sim.home("SENSORS");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
 }

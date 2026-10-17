@@ -22,6 +22,7 @@ mod preferences;
 mod presentation;
 mod readings;
 mod recording;
+mod setup;
 pub use recording::Medium;
 mod phone;
 mod sensor_links;

@@ -369,6 +369,23 @@ bottom band, under any toast. Brightness and dimming belong to the shell, so
 VANA asks it to apply them at once and store them; the other choices are
 stored in VANA's preference record.
 
+## First-run setup
+
+A device with no saved preferences opens setup where Home would be, as soon
+as Home would. Its pages carry step dots, a `TITLE`, two short `SECONDARY`
+lines and two cards: WELCOME (SET UP, SKIP SETUP), POWER (SET FTP, I DON'T
+KNOW), HEART (SET LTHR, I DON'T KNOW), SENSORS (PAIR SENSORS, LATER) and READY
+(RIDE, HOME). A card's note shows the value in force, such as 215 W.
+
+- SET FTP and SET LTHR open the Settings editor; finishing it (BACK) goes on.
+- I DON'T KNOW keeps the default, which Settings can change later.
+- PAIR SENSORS opens the sensor menu; leaving it opens READY.
+- BACK leaves setup for Home at any page, so a ride never waits for setup.
+  The next start resumes at the same page. SKIP SETUP, RIDE and HOME finish
+  setup for good.
+
+Units are not asked yet: every screen is metric.
+
 ## Sounds
 
 Cues are short runs of the buzzer's three short patterns, taken as low,

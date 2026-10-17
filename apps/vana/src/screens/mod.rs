@@ -11,5 +11,6 @@ pub mod ready;
 pub mod ride;
 pub mod sensors;
 pub mod settings;
+pub mod setup;
 pub mod workout;
 pub mod workouts;

@@ -1,6 +1,16 @@
 name: check
 
-on: [push, pull_request]
+# PRs are verified locally (test, check, simulate, harness-virtual and the four
+# firmware builds) with the results posted on the PR. CI runs once per push to
+# main as a backstop, or on demand.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

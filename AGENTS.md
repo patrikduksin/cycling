@@ -27,7 +27,10 @@ Use mise tasks and commit `Cargo.lock`.
 - Firmware changes: `mise run test`, `mise run check` (includes boundary checks
   and ruff) and `mise run build`. Host tasks cover base and cycling builds.
 - Feature-boundary changes: also build base and cycling with both harness modes
-  (`CYCLING_SDK=0|1`, `CYCLING_HARNESS=0|1`), as CI does.
+  (`CYCLING_SDK=0|1`, `CYCLING_HARNESS=0|1`).
+- PRs are verified locally, not by GitHub CI: run test, check, simulate,
+  harness-virtual and all four builds, and post the results on the PR. CI runs
+  only on pushes to main.
 - Preserve the licensed [Trouble Host patch](vendor/trouble-host/CYCLING-PATCH.md)
   and its minimum-MTU (ATT MTU 23) regression coverage.
 

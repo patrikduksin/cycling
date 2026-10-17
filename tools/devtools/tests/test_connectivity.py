@@ -104,6 +104,9 @@ class ConnectivityTests(unittest.TestCase):
             if s.get('command') == 'RIDE SENSORS' and s.get('equals', {}).get('cadence') == 'Some(600)'
         ]
         self.assertEqual(len(cadence_checks), 2)
+        late = ble['steps'].index({'op': 'command', 'command': 'BLE', 'baseline': 'heart_after_att_timeout'})
+        self.assertGreater(sum(s['seconds'] for s in ble['steps'][:late] if s['op'] == 'delay'), 30)
+        self.assertIn('disconnections', ble['steps'][late + 2]['unchanged'])
         restore = harness.connectivity_restore_steps('ble', ble['connectivity_restore']['ble'])
         self.assertEqual([s['action'] for s in restore], ['select', 'echo'])
         self.assertEqual(restore[0]['mode'], 'authorized-heart')

@@ -51,6 +51,18 @@ def scenarios(wifi_profile, original_wifi_connected=True):
                 'equals': {'profile': 'heart', 'heart': 'Some(72)', 'invalid': '0'},
                 'timeout_s': 10,
             },
+            # BlueZ discovers the C606's own GATT server and closes the link when a
+            # request stays unanswered for the 30 s ATT timeout: keep receiving past it.
+            {'op': 'delay', 'seconds': 35},
+            {'op': 'command', 'command': 'BLE', 'baseline': 'heart_after_att_timeout'},
+            {'op': 'delay', 'seconds': 3},
+            {
+                'op': 'command',
+                'command': 'BLE',
+                'progress_from': 'heart_after_att_timeout',
+                'counters': ['notifications'],
+                'unchanged': ['dropped', 'connections', 'disconnections'],
+            },
             {'op': 'ble', 'action': 'disconnect', 'expect': {'link': 'off'}},
             {'op': 'ble', 'action': 'connect', 'timeout_s': 90, 'expect': {'link': 'connected'}},
             {

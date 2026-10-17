@@ -9,17 +9,24 @@ struct Epoch {
     nanos: u32,
 }
 
+/// The line buffer and transport counters. Decoding lives in `Decoder`, a
+/// separate field, so a complete line is decoded in place instead of copied.
 #[derive(Clone)]
 pub struct Parser {
     line: [u8; LINE],
     len: usize,
     discarding: bool,
     bytes: u32,
-    valid: u32,
-    checksum_errors: u32,
     parse_errors: u32,
     overflows: u32,
     line_overflows: u32,
+    decoder: Decoder,
+}
+
+#[derive(Clone)]
+struct Decoder {
+    valid: u32,
+    checksum_errors: u32,
     last_sentence: Option<u64>,
     last_fix: Option<u64>,
     current_fix: bool,
@@ -28,6 +35,10 @@ pub struct Parser {
     satellites: Option<u8>,
     satellites_at: Option<u64>,
     satellites_epoch: Option<Epoch>,
+    /// HDOP in tenths and the epoch it describes (ms of the UTC day).
+    hdop: Option<(u16, u32)>,
+    /// Ground speed in mm/s and the epoch it describes (ms of the UTC day).
+    speed: Option<(u32, u32)>,
     utc: Option<[u8; 6]>,
     current_epoch: Option<Epoch>,
     identity: Identity,
@@ -40,22 +51,26 @@ impl Default for Parser {
             len: 0,
             discarding: false,
             bytes: 0,
-            valid: 0,
-            checksum_errors: 0,
             parse_errors: 0,
             overflows: 0,
             line_overflows: 0,
-            last_sentence: None,
-            last_fix: None,
-            current_fix: false,
-            latitude_e7: 0,
-            longitude_e7: 0,
-            satellites: None,
-            satellites_at: None,
-            satellites_epoch: None,
-            utc: None,
-            current_epoch: None,
-            identity: Identity::Unknown,
+            decoder: Decoder {
+                valid: 0,
+                checksum_errors: 0,
+                last_sentence: None,
+                last_fix: None,
+                current_fix: false,
+                latitude_e7: 0,
+                longitude_e7: 0,
+                satellites: None,
+                satellites_at: None,
+                satellites_epoch: None,
+                hdop: None,
+                speed: None,
+                utc: None,
+                current_epoch: None,
+                identity: Identity::Unknown,
+            },
         }
     }
 }
@@ -70,12 +85,14 @@ impl Parser {
     /// Explicit stream control invalidates a previously fresh fix immediately.
     pub fn control_boundary(&mut self) {
         self.data_loss();
-        self.current_fix = false;
-        self.last_fix = None;
-        self.satellites = None;
-        self.satellites_at = None;
-        self.satellites_epoch = None;
-        self.current_epoch = None;
+        self.decoder.current_fix = false;
+        self.decoder.last_fix = None;
+        self.decoder.satellites = None;
+        self.decoder.satellites_at = None;
+        self.decoder.satellites_epoch = None;
+        self.decoder.hdop = None;
+        self.decoder.speed = None;
+        self.decoder.current_epoch = None;
     }
     pub fn data_loss(&mut self) {
         self.len = 0;
@@ -98,7 +115,7 @@ impl Parser {
         if byte == b'\n' {
             let len = self.len;
             self.len = 0;
-            if !self.parse_line(len, now) {
+            if !self.decoder.parse_line(&self.line[..len], now) {
                 self.parse_errors = self.parse_errors.saturating_add(1);
             }
             return;
@@ -113,9 +130,65 @@ impl Parser {
         self.len += 1;
     }
 
-    fn parse_line(&mut self, len: usize, now: u64) -> bool {
-        let line = self.line;
-        let Some(star) = line[..len].iter().position(|&b| b == b'*') else {
+    pub fn snapshot(&self, now: u64) -> Snapshot {
+        let age = self.decoder.last_fix.map(|at| now.saturating_sub(at));
+        let state = if self.decoder.last_sentence.is_none() {
+            FixState::NoData
+        } else if self.decoder.current_fix {
+            if age.unwrap_or(u64::MAX) <= STALE_MS {
+                FixState::Fresh
+            } else {
+                FixState::Stale
+            }
+        } else {
+            FixState::NoFix
+        };
+        let expose = matches!(state, FixState::Fresh | FixState::Stale);
+        let epoch_ms = self
+            .decoder
+            .current_epoch
+            .filter(|_| expose)
+            .map(Epoch::ms_of_day);
+        let of_fix = |epoch: u32| epoch_ms == Some(epoch);
+        Snapshot {
+            state,
+            identity: self.decoder.identity,
+            latitude_e7: expose.then_some(self.decoder.latitude_e7),
+            longitude_e7: expose.then_some(self.decoder.longitude_e7),
+            satellites: self
+                .decoder
+                .satellites_at
+                .filter(|at| now.saturating_sub(*at) <= STALE_MS)
+                .filter(|_| !expose || self.decoder.satellites_epoch == self.decoder.current_epoch)
+                .and(self.decoder.satellites),
+            hdop_tenths: self
+                .decoder
+                .hdop
+                .filter(|(_, epoch)| of_fix(*epoch))
+                .map(|(hdop, _)| hdop),
+            speed_mm_s: self
+                .decoder
+                .speed
+                .filter(|(_, epoch)| state == FixState::Fresh && of_fix(*epoch))
+                .map(|(speed, _)| speed),
+            epoch_ms,
+            utc: self.decoder.utc,
+            age_ms: age,
+            bytes: self.bytes,
+            valid_sentences: self.decoder.valid,
+            checksum_errors: self.decoder.checksum_errors,
+            parse_errors: self.parse_errors,
+            overflows: self.overflows,
+            line_overflows: self.line_overflows,
+            uart_errors: 0,
+        }
+    }
+}
+
+impl Decoder {
+    fn parse_line(&mut self, line: &[u8], now: u64) -> bool {
+        let len = line.len();
+        let Some(star) = line.iter().position(|&b| b == b'*') else {
             return false;
         };
         if star + 3 != len {
@@ -139,7 +212,7 @@ impl Parser {
             return false;
         };
         if kind.len() != 5
-            || !matches!(&kind[2..], b"GGA" | b"RMC")
+            || !matches!(&kind[2..], b"GGA" | b"RMC" | b"VTG")
             || !matches!(&kind[..2], b"GN" | b"GP" | b"GL" | b"GA" | b"GB" | b"BD")
         {
             self.valid = self.valid.saturating_add(1);
@@ -154,10 +227,22 @@ impl Parser {
             values[n] = field;
             n += 1;
         }
-        let parsed = if &kind[2..] == b"GGA" {
-            self.gga(&values[..n], now)
-        } else {
-            self.rmc(&values[..n], now)
+        let parsed = match &kind[2..] {
+            b"GGA" => {
+                let parsed = self.gga(&values[..n], now);
+                if parsed {
+                    self.gga_hdop(&values[..n]);
+                }
+                parsed
+            }
+            b"RMC" => {
+                let parsed = self.rmc(&values[..n], now);
+                if parsed {
+                    self.rmc_speed(&values[..n]);
+                }
+                parsed
+            }
+            _ => self.vtg(&values[..n]),
         };
         if parsed {
             self.valid = self.valid.saturating_add(1);
@@ -217,6 +302,56 @@ impl Parser {
         }
     }
 
+    /// VTG carries no time: its speed belongs to the fix it follows, so a VTG
+    /// sent ahead of its epoch's position never reaches a reader.
+    fn vtg(&mut self, f: &[&[u8]]) -> bool {
+        if f.len() < 8 {
+            return false;
+        }
+        let mode = f.get(8).copied().unwrap_or(b"");
+        if mode == b"N" || !self.current_fix {
+            return true;
+        }
+        let speed = match decimal_milli(f[6]) {
+            Some(kmh_milli) => kmh_mm_s(kmh_milli),
+            None => decimal_milli(f[4]).and_then(knots_mm_s),
+        };
+        if speed.is_some() {
+            self.ground_speed(speed);
+        }
+        true
+    }
+
+    /// The speed of an RMC that just set the fix. Kept apart from `rmc` and
+    /// out of line: in `rmc` it overflows the Xtensa register scavenger
+    /// ("Cannot scavenge register without an emergency spill slot").
+    #[inline(never)]
+    fn rmc_speed(&mut self, f: &[&[u8]]) {
+        if self.current_fix && parse_epoch(f[0]) == self.current_epoch {
+            self.ground_speed(decimal_milli(f[6]).and_then(knots_mm_s));
+        }
+    }
+
+    /// The HDOP of a GGA, for its epoch. Out of line for the same reason.
+    #[inline(never)]
+    fn gga_hdop(&mut self, f: &[&[u8]]) {
+        self.hdop = f
+            .get(7)
+            .and_then(|hdop| decimal_milli(hdop))
+            .zip(parse_epoch(f[0]))
+            .map(|(milli, epoch)| {
+                let tenths = (milli / 100).min(u32::from(u16::MAX)) as u16;
+                (tenths, epoch.ms_of_day())
+            });
+    }
+
+    /// The ground speed of the current fix's epoch.
+    fn ground_speed(&mut self, speed_mm_s: Option<u32>) {
+        self.speed = speed_mm_s
+            .zip(self.current_epoch)
+            .map(|(speed, epoch)| (speed, epoch.ms_of_day()));
+    }
+
     fn set_fix(&mut self, lat: &[u8], ns: &[u8], lon: &[u8], ew: &[u8], now: u64) -> bool {
         let Some(lat) = coordinate(lat, ns, 2, 90, b'N', b'S') else {
             return false;
@@ -231,42 +366,6 @@ impl Parser {
         true
     }
 
-    pub fn snapshot(&self, now: u64) -> Snapshot {
-        let age = self.last_fix.map(|at| now.saturating_sub(at));
-        let state = if self.last_sentence.is_none() {
-            FixState::NoData
-        } else if self.current_fix {
-            if age.unwrap_or(u64::MAX) <= STALE_MS {
-                FixState::Fresh
-            } else {
-                FixState::Stale
-            }
-        } else {
-            FixState::NoFix
-        };
-        let expose = matches!(state, FixState::Fresh | FixState::Stale);
-        Snapshot {
-            state,
-            identity: self.identity,
-            latitude_e7: expose.then_some(self.latitude_e7),
-            longitude_e7: expose.then_some(self.longitude_e7),
-            satellites: self
-                .satellites_at
-                .filter(|at| now.saturating_sub(*at) <= STALE_MS)
-                .filter(|_| !expose || self.satellites_epoch == self.current_epoch)
-                .and(self.satellites),
-            utc: self.utc,
-            age_ms: age,
-            bytes: self.bytes,
-            valid_sentences: self.valid,
-            checksum_errors: self.checksum_errors,
-            parse_errors: self.parse_errors,
-            overflows: self.overflows,
-            line_overflows: self.line_overflows,
-            uart_errors: 0,
-        }
-    }
-
     fn observe_identity(&mut self, identity: Identity) {
         self.identity = match (self.identity, identity) {
             (Identity::Unknown, identity) | (identity, Identity::Unknown) => identity,
@@ -274,6 +373,51 @@ impl Parser {
             _ => Identity::Conflicting,
         };
     }
+}
+
+impl Epoch {
+    fn ms_of_day(self) -> u32 {
+        let digit = |i: usize| u32::from(self.utc[i] - b'0');
+        let hours = digit(0) * 10 + digit(1);
+        let minutes = digit(2) * 10 + digit(3);
+        let seconds = digit(4) * 10 + digit(5);
+        ((hours * 60 + minutes) * 60 + seconds) * 1000 + self.nanos / 1_000_000
+    }
+}
+
+/// Speeds above 999 knots or 999 km/h are not ground speeds.
+const MAX_SPEED_MILLI: u32 = 999_000;
+
+/// 1 knot is 1852 m/h: knots/1000 * 1_852_000 mm / 3600 s.
+fn knots_mm_s(knots_milli: u32) -> Option<u32> {
+    (knots_milli <= MAX_SPEED_MILLI).then(|| knots_milli * 1852 / 3600)
+}
+
+fn kmh_mm_s(kmh_milli: u32) -> Option<u32> {
+    (kmh_milli <= MAX_SPEED_MILLI).then(|| kmh_milli * 10 / 36)
+}
+
+/// A non-negative decimal such as `12.345`, in thousandths. Digits past the
+/// third decimal are checked and dropped; at most six whole digits.
+#[inline(never)]
+fn decimal_milli(bytes: &[u8]) -> Option<u32> {
+    let (whole, fraction) = match bytes.iter().position(|&b| b == b'.') {
+        Some(dot) => (&bytes[..dot], &bytes[dot + 1..]),
+        None => (bytes, &[][..]),
+    };
+    if whole.is_empty() && fraction.is_empty()
+        || whole.len() > 6
+        || !whole.iter().chain(fraction).all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    let mut value = whole
+        .iter()
+        .fold(0u32, |n, &b| n * 10 + u32::from(b - b'0'));
+    for i in 0..3 {
+        value = value * 10 + fraction.get(i).map_or(0, |&b| u32::from(b - b'0'));
+    }
+    Some(value)
 }
 
 fn hex(a: u8, b: u8) -> Option<u8> {
@@ -403,7 +547,7 @@ mod tests {
         assert_eq!(p.snapshot(10).latitude_e7, Some(-333646900));
         assert_eq!(p.snapshot(3011).state, FixState::Stale);
         feed(&mut p, "$GPRMC,0*00\n", 20);
-        assert_eq!(p.checksum_errors, 1)
+        assert_eq!(p.decoder.checksum_errors, 1)
     }
 
     #[test]
@@ -499,6 +643,72 @@ mod tests {
             6,
         );
         assert_eq!(parser.snapshot(6).satellites, None);
+    }
+
+    #[test]
+    fn ground_speed_and_hdop_belong_to_the_fix_epoch() {
+        let mut parser = Parser::default();
+        body(
+            &mut parser,
+            b"GNGGA,010203.00,3321.8814,S,07030.9348,W,1,09,1.25,545.4,M,,M,,",
+            0,
+        );
+        let gga = parser.snapshot(0);
+        assert_eq!(gga.hdop_tenths, Some(12));
+        assert_eq!(gga.speed_mm_s, None);
+        assert_eq!(gga.epoch_ms, Some(3_723_000));
+        // 10 knots over ground in the same epoch.
+        body(
+            &mut parser,
+            b"GNRMC,010203.00,A,3321.8814,S,07030.9348,W,10.00,90.0,110926,,,A",
+            5,
+        );
+        let rmc = parser.snapshot(5);
+        assert_eq!((rmc.speed_mm_s, rmc.hdop_tenths), (Some(5144), Some(12)));
+        // The next epoch's position arrives before its speed: no old speed.
+        body(
+            &mut parser,
+            b"GNGGA,010203.50,3321.8814,S,07030.9348,W,1,09,0.9,545.4,M,,M,,",
+            500,
+        );
+        let next = parser.snapshot(500);
+        assert_eq!((next.speed_mm_s, next.epoch_ms), (None, Some(3_723_500)));
+        // VTG after the position carries that epoch's speed, km/h preferred.
+        body(&mut parser, b"GNVTG,90.0,T,,M,10.00,N,18.000,K,A", 501);
+        assert_eq!(parser.snapshot(501).speed_mm_s, Some(5000));
+        body(&mut parser, b"GNVTG,90.0,T,,M,1.0,N,,K,A", 502);
+        assert_eq!(parser.snapshot(502).speed_mm_s, Some(514));
+        // An invalid VTG says nothing; a stale fix exposes no speed.
+        body(&mut parser, b"GNVTG,,T,,M,,N,99.0,K,N", 503);
+        assert_eq!(parser.snapshot(503).speed_mm_s, Some(514));
+        assert_eq!(parser.snapshot(503 + STALE_MS).speed_mm_s, None);
+        assert_eq!(parser.snapshot(503 + STALE_MS).epoch_ms, Some(3_723_500));
+        // RMC without a speed field leaves its epoch without one.
+        body(
+            &mut parser,
+            b"GNRMC,010204.00,A,3321.8814,S,07030.9348,W,,,110926,,,A",
+            1000,
+        );
+        assert_eq!(parser.snapshot(1000).speed_mm_s, None);
+        assert_eq!(parser.snapshot(1000).hdop_tenths, None);
+        // No fix: nothing is exposed.
+        body(&mut parser, b"GNGGA,010205.00,,,,,0,00,99.9,,M,,M,,", 2000);
+        let lost = parser.snapshot(2000);
+        assert_eq!(
+            (lost.speed_mm_s, lost.hdop_tenths, lost.epoch_ms),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn decimals_are_strict_and_bounded() {
+        assert_eq!(decimal_milli(b"12.3456"), Some(12_345));
+        assert_eq!(decimal_milli(b"7"), Some(7_000));
+        assert_eq!(decimal_milli(b".5"), Some(500));
+        assert_eq!(decimal_milli(b"999999.9"), Some(999_999_900));
+        for bad in [&b""[..], b".", b"1.2.3", b"-1", b"1e3", b"1234567"] {
+            assert_eq!(decimal_milli(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

@@ -229,23 +229,46 @@ Sensors:
   an unreadable stored record shows SAVED SENSORS UNREADABLE and is kept.
 - BLE transport loss or stale/disconnected measurements invalidate sensor values.
 
+Speed and distance:
+
+- A wheel sensor that measures is the speed source. Without one (none paired,
+  lost, or not yet turning) GPS stands in (`ride/gps_speed.rs`): the receiver's
+  Doppler ground speed from RMC or VTG when it sends one for the fix, otherwise
+  the distance the fix moved over the last 2-4 s (a median of three). The
+  record format is unchanged: `speed_mm_s` holds whichever source was used.
+- GPS speed needs a fresh fix (at most 2 s old) with HDOP of 5.0 or better and
+  at least four satellites when the receiver reports them. A poorer fix gives
+  no speed and cannot move or stop the ride. Below 3.6 km/h GPS reads zero:
+  standstill jitter adds no distance.
+- Without a fix (a tunnel) there is no speed and no distance; the ride keeps
+  recording and does not pause. The ride page, the recorded samples and the
+  FIT export agree on what was measured; the GPX track shows the gap.
+- `POSITION` on the terminal reports `hdop_tenths` and `speed_mm_s`, so an
+  outdoor check shows whether the receiver sends Doppler.
+
 Auto-pause and auto-start (on by default, constants in `ride/auto.rs`):
 
-- Wheel speed only; there is no GPS speed. Without a fresh wheel reading nothing
-  pauses or starts, and the ride page says `NO SPEED: AUTO PAUSE OFF`.
-- Pause: below 3 km/h for 1 s. Wheel speed decays once a revolution is overdue
+- Only a measured speed pauses, resumes or starts a ride. Without a wheel or
+  GPS speed nothing pauses or starts, and the ride page says `AUTO PAUSE OFF`
+  for the first 8 s.
+- Wheel: pause below 3 km/h for 1 s. Wheel speed decays once a revolution is overdue
   (at most one circumference per time since it), so it is below 3 km/h about 3 s
   after the last revolution and the ride pauses about 4 s after standing. Resume: at or
-  above 4.5 km/h for 1 s. The 1 s debounce stays in active time; time paused is
-  excluded like a manual pause.
-- Start: on the ride screen with the ride Ready, at or above 6 km/h for 3 s, through
-  the ordinary start request (refused while storage is not ready). Only a Ready
-  ride starts itself, not one that is Saved or Recovered.
+  above 4.5 km/h for 1 s. Start: at or above 6 km/h for 3 s. The debounce stays
+  in active time; time paused is excluded like a manual pause.
+- GPS: pause at zero (below 3.6 km/h) for 2 s, resume at or above 7.2 km/h for
+  2 s, start at or above 10 km/h for 5 s. In the simulator the pause takes
+  about 3 s with Doppler and 7 s from positions; jitter of 2 m at a light
+  neither resumes the ride nor adds distance.
+- Start happens on the ride screen with the ride Ready, through the ordinary
+  start request (refused while storage is not ready). Only a Ready ride starts
+  itself, not one that is Saved or Recovered.
 - Journal: the same Pause, Resume and Start events as the buttons; the record
   format and export are unchanged. The screen says `AUTO PAUSED`.
 - A manual pause never auto-resumes. ACT on an auto-pause keeps the ride paused
-  as a manual pause; the next ACT resumes. If the wheel sensor is lost during an
-  auto-pause for 3 s, the ride resumes.
+  as a manual pause; the next ACT resumes. If every speed source is lost during
+  an auto-pause, the ride resumes after 3 s when a wheel measured the stop, or
+  10 s when GPS did.
 
 Recording:
 

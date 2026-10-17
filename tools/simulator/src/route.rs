@@ -228,12 +228,21 @@ fn attribute(tag: &str, name: &str) -> Option<f64> {
 pub struct Nmea {
     utc_start_s: u32,
     date: (u8, u8, u8),
+    /// RMC carries the ground speed; without it the field is empty.
+    pub doppler: bool,
+    /// Horizontal dilution of precision reported in GGA.
+    pub hdop: f64,
 }
 
 impl Nmea {
     /// `utc_start_s` is seconds since midnight UTC at simulated t=0; `date` is (day, month, year2).
     pub fn new(utc_start_s: u32, date: (u8, u8, u8)) -> Self {
-        Self { utc_start_s, date }
+        Self {
+            utc_start_s,
+            date,
+            doppler: true,
+            hdop: 0.9,
+        }
     }
 
     fn time(&self, now_ms: u64) -> String {
@@ -261,18 +270,25 @@ impl Nmea {
         let (lat, ns) = coordinate(point.lat, 2, 'N', 'S');
         let (lon, ew) = coordinate(point.lon, 3, 'E', 'W');
         let ele = point.ele.unwrap_or(0.0);
-        let knots = speed_mps * 3600.0 / 1852.0;
+        let knots = if self.doppler {
+            format!("{:.2}", speed_mps * 3600.0 / 1852.0)
+        } else {
+            String::new()
+        };
+        let hdop = self.hdop;
         let course = course_deg.rem_euclid(360.0);
         let (d, m, y) = self.date;
         let mut out = String::new();
         sentence(
             &mut out,
-            &format!("GNGGA,{time},{lat},{ns},{lon},{ew},1,{satellites:02},0.9,{ele:.1},M,0.0,M,,"),
+            &format!(
+                "GNGGA,{time},{lat},{ns},{lon},{ew},1,{satellites:02},{hdop:.1},{ele:.1},M,0.0,M,,"
+            ),
         );
         sentence(
             &mut out,
             &format!(
-                "GNRMC,{time},A,{lat},{ns},{lon},{ew},{knots:.2},{course:.1},{d:02}{m:02}{y:02},,,A"
+                "GNRMC,{time},A,{lat},{ns},{lon},{ew},{knots},{course:.1},{d:02}{m:02}{y:02},,,A"
             ),
         );
         out.into_bytes()

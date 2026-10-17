@@ -141,7 +141,7 @@ impl Runtime {
         self.receive_ant(ant, now);
         self.receive_ble(ble);
         let sample = self.sample(now, ant, &observations);
-        self.auto_control(now, sample.speed_mm_s);
+        self.auto_control(now);
         let power_status = observations
             .input
             .snapshot(now)

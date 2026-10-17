@@ -451,6 +451,9 @@ impl Runtime {
             recorder.request(action, Source::Live, now, token)
         }) {
             self.ride.auto.manual();
+            // The rider's own action supersedes a notice of an automatic one,
+            // so PAUSED or RIDE SAVED is not hidden under AUTO RESUME.
+            self.ride.toast = None;
             if action == RideAction::Start {
                 self.timing.ride_press(received);
             }

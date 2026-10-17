@@ -223,7 +223,7 @@ Only one toast shows at a time. From highest priority to lowest:
    RECOVERED stays until recording resumes.
 6. Auto-pause: AUTO PAUSED stays while the rider looks at ride pages during
    an automatic pause (the paused screen names it itself). A
-   ride recording without wheel speed shows AUTO PAUSE OFF for its first 8 s
+   ride recording without wheel or GPS speed shows AUTO PAUSE OFF for its first 8 s
    of active time, not for the whole ride.
 
 There are no bottom button labels. Each button has a fixed role, so the screen

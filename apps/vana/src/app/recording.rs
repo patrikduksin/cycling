@@ -7,7 +7,7 @@
 //! fails or fills while a ride is running, the ride continues on the internal
 //! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
-use crate::ride::auto::{Auto, Decision, Wheel};
+use crate::ride::auto::{Auto, Decision};
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
@@ -110,7 +110,7 @@ pub(super) struct Ride {
     /// Auto-pause and auto-start state.
     pub(super) auto: Auto,
     /// The last automatic action and when it happened, shown briefly.
-    toast: Option<(&'static str, u64)>,
+    pub(super) toast: Option<(&'static str, u64)>,
     /// Active time the bulk medium recorded before this ride moved to internal.
     carried_ms: u64,
     /// Bulk active time awaiting the internal continuation; carried only once
@@ -439,9 +439,9 @@ impl Runtime {
             })
     }
 
-    /// Pause, resume or start the ride from wheel speed (see `ride::auto`),
+    /// Pause, resume or start the ride from its speed source (see `ride::auto`),
     /// through the same request path as the buttons.
-    pub(super) fn auto_control(&mut self, now: u64, speed_mm_s: Option<u32>) {
+    pub(super) fn auto_control(&mut self, now: u64) {
         // A ride moving to internal media keeps its automatic pause: the
         // continuation passes through Ready and Recording before it pauses.
         if self.ride.pending() || self.ride.host_completion_unread() || self.ride.moving() {
@@ -456,12 +456,8 @@ impl Runtime {
         // Rolling off starts a ride from Ready or the ride screen.
         let ready = matches!(self.navigation.page, Page::Ride | Page::Ready);
         let status = self.ride.active().status();
-        let wheel = match speed_mm_s {
-            Some(speed) => Wheel::Measured(speed),
-            None if self.readings.wheel_fresh => Wheel::Unknown,
-            None => Wheel::Lost,
-        };
-        let Some(decision) = self.ride.auto.update(now, status, wheel, ready) else {
+        let motion = self.readings.motion;
+        let Some(decision) = self.ride.auto.update(now, status, motion, ready) else {
             return;
         };
         let (action, toast) = match decision {

@@ -19,6 +19,7 @@ pub enum Command {
     Power(Option<device_api::power::Operation>),
     PowerShutdownAfter(u32),
     Peripheral(crate::commands::peripherals::Command),
+    Volume(crate::commands::volumes::Command),
     Harness(firmware_shell::harness::Command),
     #[cfg(feature = "cycling")]
     Domain {
@@ -251,6 +252,9 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             }),
             _ => return Err(Error::Invalid),
         },
+        name @ ("VOLUME" | "TERRAIN" | "FILES") => Command::Volume(
+            crate::commands::volumes::parse(name, &mut words).ok_or(Error::Invalid)?,
+        ),
         name @ ("MMC" | "SOUND" | "GNSS" | "PRESSURE" | "MOTION" | "COMPANION") => {
             Command::Peripheral(
                 crate::commands::peripherals::parse(name, &mut words).ok_or(Error::Invalid)?,

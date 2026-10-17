@@ -264,11 +264,12 @@ impl Runtime {
             let log = self.ride.bulk_media.log();
             if write!(
                 output,
-                " capacity={} store={:016x} generation={} boot_reads={}",
+                " capacity={} store={:016x} generation={} boot_reads={} layout={}",
                 recorder.slots(),
                 log.map_or(0, |log| log.store_id()),
                 log.map_or(0, |log| log.generation()),
-                self.ride.bulk_media.boot_reads()
+                self.ride.bulk_media.boot_reads(),
+                self.ride.bulk_media.region().name()
             )
             .is_err()
             {

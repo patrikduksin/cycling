@@ -10,6 +10,7 @@ from pathlib import Path
 from cycling_devtools.rides.export import (
     COMMIT,
     SLOT_SIZE,
+    bulk_data_start,
     decode_slot,
     download_prefix,
     info,
@@ -89,6 +90,8 @@ class FakeBulk:
             valid = index not in self.invalid
             data = self.slots[index] if valid else bytes(SLOT_SIZE)
             data = f'SLOT {index} {zlib.crc32(data):08x} {data.hex()} {"valid" if valid else "invalid"}'
+        elif words == ['VOLUME', 'STATUS']:
+            data = 'layout=volumes sectors=5777407 generation=1 unallocated=0 rides=2048+2097152:log'
         elif words[:3] == ['MMC', 'OWNED', 'READ']:
             sector, offset = int(words[3]), int(words[4])
             chunk = bytes([sector & 0xFF]) * 256 if offset else b'\xa5' * 256
@@ -444,6 +447,26 @@ class LargeExportTests(unittest.TestCase):
             write_exports(output, canonical, {'version': 1})
             manifest = json.loads((output / 'manifest.json').read_text())
             self.assertEqual((manifest['rides'], manifest['raw_sha256']), ([], hashlib.sha256(b'').hexdigest()))
+
+
+class BulkDataStartTest(unittest.TestCase):
+    def start(self, status, data):
+        class Reply:
+            def terminal_command(self, command):
+                assert command == 'VOLUME STATUS'
+                return dict(id=1, status=status, data=data)
+
+        return bulk_data_start(Reply())
+
+    def test_rides_volume_offsets_record_zero(self):
+        self.assertEqual(self.start('OK', 'layout=volumes rides=2048+2097152:log'), 2064)
+
+    def test_firmware_without_volumes_keeps_the_legacy_start(self):
+        self.assertEqual(self.start('INVALID', 'malformed command'), 16)
+
+    def test_a_legacy_layout_under_volume_firmware_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            self.start('OK', 'layout=legacy region=5777407')
 
 
 if __name__ == '__main__':

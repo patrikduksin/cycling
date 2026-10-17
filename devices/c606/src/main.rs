@@ -226,6 +226,11 @@ async fn console(
             sdk.power(&mut system, &mut devices.power, now);
         }
         terminal.pump(logging::take, || embassy_time::Instant::now().as_micros());
+        if terminal.transfer_due() {
+            // The ACCEPTED reply went out; the host now speaks binary frames.
+            commands::transfer(terminal.transport(), &mut devices.bulk).await;
+            terminal.end_transfer();
+        }
         if let Some(panic) = terminal.reboot_due(now) {
             commands::Diagnostics::restart(&FirmwareDiagnostics, panic);
         }

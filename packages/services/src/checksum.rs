@@ -1,8 +1,27 @@
 //! IEEE CRC32 (reflected 0xEDB88320) shared by persisted records, media markers
 //! and host transfer checks.
 
+const fn table() -> [u32; 256] {
+    let mut table = [0; 256];
+    let mut index = 0;
+    while index < 256 {
+        let mut value = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            value = (value >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(value & 1));
+            bit += 1;
+        }
+        table[index] = value;
+        index += 1;
+    }
+    table
+}
+
+/// Byte-at-a-time table: whole-volume checks over hundreds of MB stay fast.
+static TABLE: [u32; 256] = table();
+
 /// Incremental CRC32 for records whose checked bytes are not contiguous.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crc32(u32);
 
 impl Default for Crc32 {
@@ -18,10 +37,7 @@ impl Crc32 {
 
     pub fn update(mut self, bytes: &[u8]) -> Self {
         for &byte in bytes {
-            self.0 ^= u32::from(byte);
-            for _ in 0..8 {
-                self.0 = (self.0 >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(self.0 & 1));
-            }
+            self.0 = (self.0 >> 8) ^ TABLE[usize::from(self.0 as u8 ^ byte)];
         }
         self
     }

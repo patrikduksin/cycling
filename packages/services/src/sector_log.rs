@@ -148,6 +148,12 @@ fn record(sector: &Sector, store: u64, index: u64) -> Option<Header> {
     open(sector, RECORD).filter(|h| h.store == store && h.index == index)
 }
 
+/// Whether `sector` is a sealed superblock of any log, so a region this
+/// mechanism formatted is recognised before something else reuses it.
+pub fn is_superblock(sector: &Sector) -> bool {
+    sector[..4] == MAGIC && sector[4] == SUPER && get_u32(sector, CRC) == crc32(&sector[..CRC])
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Super {
     store: u64,

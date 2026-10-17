@@ -28,8 +28,10 @@ from cycling_devtools.workspace import ROOT
 SLOT_SIZE = 256
 COMMIT = 0x434F4D54
 MAX_SLOTS = 4096
-# Relative owned MMC sector of bulk record 0 (after superblocks and checkpoints).
-BULK_DATA_START = 16
+# Bulk record 0 follows the log's superblocks and checkpoints in its volume.
+BULK_LOG_DATA = 16
+# Where record 0 was before the volume table (exports made then record no start).
+BULK_DATA_START = BULK_LOG_DATA
 MEDIA = ('internal', 'bulk')
 
 
@@ -84,6 +86,22 @@ def read_slot(connection, index, medium='internal'):
     if parts[6] not in ('valid', 'invalid'):
         raise ValueError('malformed slot container state')
     return data, parts[6] == 'valid'
+
+
+def bulk_data_start(connection):
+    """Owned MMC sector of bulk record 0: the RIDES volume's start plus the log metadata."""
+    reply = connection.terminal_command('VOLUME STATUS')
+    if reply['status'] == 'INVALID':
+        # Firmware from before the volume table has no VOLUME command; its log starts at sector 0.
+        return BULK_DATA_START
+    fields = dict(field.split('=', 1) for field in reply['data'].split() if '=' in field)
+    if reply['status'] != 'OK' or fields.get('layout') != 'volumes' or 'rides' not in fields:
+        raise RuntimeError(f'no RIDES volume: {reply["status"]} {reply["data"]}')
+    try:
+        start = int(fields['rides'].split('+', 1)[0])
+    except ValueError as error:
+        raise ValueError('malformed volume status') from error
+    return start + BULK_LOG_DATA
 
 
 def read_owned_sector(connection, sector):
@@ -361,8 +379,9 @@ def export(port, output, medium='internal'):
         metadata = info(connection, medium)
         invalid_containers = download_prefix(connection, partial, metadata['upper_bound'], medium)
         invalid_sectors = []
+        data_start = bulk_data_start(connection) if medium == 'bulk' else None
         for index in invalid_containers:
-            sector = BULK_DATA_START + index
+            sector = data_start + index
             raw_sector = read_owned_sector(connection, sector)
             name = f'invalid-sector-{sector}.bin'
             (output / name).write_bytes(raw_sector)
@@ -373,7 +392,11 @@ def export(port, output, medium='internal'):
             raise RuntimeError('ride prefix changed during export')
     canonical = output / 'ride-slots.bin'
     partial.replace(canonical)
-    extra = {'invalid_containers': invalid_containers, 'invalid_sectors': invalid_sectors} if medium == 'bulk' else {}
+    extra = (
+        {'invalid_containers': invalid_containers, 'invalid_sectors': invalid_sectors, 'data_start': data_start}
+        if medium == 'bulk'
+        else {}
+    )
     return write_exports(output, canonical, {**metadata, **extra})
 
 

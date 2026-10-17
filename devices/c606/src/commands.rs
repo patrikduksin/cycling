@@ -119,7 +119,7 @@ pub fn execute(
         ) {
             let _ = write!(
                 output,
-                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
+                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
             );
             #[cfg(feature = "cycling")]
             {
@@ -166,6 +166,20 @@ pub fn execute(
                 power.status()
             );
         }
+        Command::Volume(command) => {
+            use firmware_console::commands::volumes;
+            // Transfers pause the app; refuse while a ride records. Volume
+            // writes never reach RIDES, so other commands need no guard.
+            #[cfg(feature = "cycling")]
+            if command == volumes::Command::Transfer && sdk.recording() {
+                terminal.reply(request.id, "BUSY", "active work", now);
+                return;
+            }
+            status = volumes::execute(command, bulk, &mut output);
+            if command == volumes::Command::Transfer && status == "ACCEPTED" {
+                terminal.schedule_transfer();
+            }
+        }
         Command::Peripheral(command) => {
             status = firmware_console::commands::peripherals::execute(
                 command,
@@ -210,7 +224,7 @@ pub fn execute(
             );
             let _ = write!(
                 output,
-                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
+                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; VOLUME [STATUS|INIT|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
             );
             let _ = write!(
                 output,
@@ -531,4 +545,115 @@ pub fn execute(
     }
     terminal.reply(request.id, status, output.as_str(), now);
     terminal.command_completed();
+}
+
+/// Serve the binary volume transfer session on the terminal's USB until the
+/// host ends it or stays silent for `IDLE_MS`. The app does not run meanwhile;
+/// `VOLUME TRANSFER` refused while a ride records.
+pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::board::Bulk) {
+    use device_api::console::Console;
+    use firmware_console::transfer::{self, HEADER, MAX_PAYLOAD, Session};
+    use firmware_services::checksum::crc32;
+    let mut session = Session::default();
+    let mut header = [0u8; HEADER];
+    let mut payload = [0u8; MAX_PAYLOAD];
+    let mut out = [0u8; MAX_PAYLOAD];
+    let mut last = embassy_time::Instant::now();
+    let idle = embassy_time::Duration::from_millis(transfer::IDLE_MS);
+    // Bytes until `deadline`, or `None` if the host went quiet.
+    async fn receive(
+        usb: &mut device::drivers::usb::Usb,
+        bytes: &mut [u8],
+        deadline: embassy_time::Instant,
+    ) -> Option<()> {
+        for byte in bytes {
+            loop {
+                if let Some(value) = usb.read() {
+                    *byte = value;
+                    break;
+                }
+                if embassy_time::Instant::now() >= deadline {
+                    return None;
+                }
+                embassy_time::Timer::after_micros(50).await;
+            }
+        }
+        Some(())
+    }
+    async fn transmit(
+        usb: &mut device::drivers::usb::Usb,
+        bytes: &[u8],
+        deadline: embassy_time::Instant,
+    ) -> Option<()> {
+        // 63-byte packets: every packet is short, so cdc-acm hands each one up
+        // at once instead of waiting for a ZLP after a full 64-byte packet.
+        for packet in bytes.chunks(63) {
+            for byte in packet {
+                while !usb.write(*byte) {
+                    if embassy_time::Instant::now() >= deadline {
+                        return None;
+                    }
+                    embassy_time::Timer::after_micros(50).await;
+                }
+            }
+            usb.flush();
+            while !usb.tx_ready() {
+                if embassy_time::Instant::now() >= deadline {
+                    return None;
+                }
+                embassy_time::Timer::after_micros(50).await;
+            }
+        }
+        Some(())
+    }
+    while !session.ended() {
+        // Find the request magic, so stray bytes cannot become a request.
+        let mut found = 0;
+        while found < 4 {
+            let Some(byte) = usb.read() else {
+                if last.elapsed() >= idle {
+                    return;
+                }
+                embassy_time::Timer::after_micros(50).await;
+                continue;
+            };
+            if byte == transfer::REQUEST[found] {
+                header[found] = byte;
+                found += 1;
+            } else {
+                found = usize::from(byte == transfer::REQUEST[0]);
+                header[0] = byte;
+            }
+        }
+        let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(5);
+        if receive(usb, &mut header[4..], deadline).await.is_none() {
+            continue;
+        }
+        let Some(request) = transfer::request(&header) else {
+            continue;
+        };
+        let body = &mut payload[..request.length as usize];
+        if receive(usb, body, deadline).await.is_none() {
+            continue;
+        }
+        last = embassy_time::Instant::now();
+        let reply = if crc32(body) != request.payload_crc {
+            transfer::Reply {
+                status: transfer::status::INVALID,
+                arg: 0,
+                count: 0,
+                length: 0,
+            }
+        } else {
+            session.handle(&request, body, bulk, &mut out)
+        };
+        let data = &out[..reply.length];
+        let head = transfer::encode_reply(&request, &reply, data);
+        let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(5);
+        if transmit(usb, &head, deadline).await.is_none()
+            || transmit(usb, data, deadline).await.is_none()
+        {
+            return;
+        }
+    }
 }

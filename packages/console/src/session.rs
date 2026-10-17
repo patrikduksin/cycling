@@ -31,6 +31,7 @@ pub struct Terminal<T> {
     sent: u32,
     tx_max_us: u64,
     reboot: Option<(u64, bool)>,
+    transfer: bool,
 }
 impl<T: device_api::console::Console> Terminal<T> {
     pub fn new(usb: T) -> Self {
@@ -46,6 +47,7 @@ impl<T: device_api::console::Console> Terminal<T> {
             sent: 0,
             tx_max_us: 0,
             reboot: None,
+            transfer: false,
         }
     }
     pub fn reply(&mut self, id: u32, status: &'static str, data: &str, now: u64) {
@@ -89,6 +91,9 @@ impl<T: device_api::console::Console> Terminal<T> {
                 self.length = self.reply_len;
                 self.current[..self.length].copy_from_slice(&self.reply[..self.length]);
                 self.reply_len = 0;
+            } else if self.transfer {
+                // No log record may start between the reply and the session.
+                return;
             } else if let Some(record) = next_log() {
                 self.length = record.as_bytes().len();
                 self.current[..self.length].copy_from_slice(record.as_bytes());
@@ -121,6 +126,24 @@ impl<T: device_api::console::Console> Terminal<T> {
             None
         }
     }
+    /// Hand the transport to the binary transfer session once the current
+    /// reply has been sent (`transfer_due`).
+    pub fn schedule_transfer(&mut self) {
+        self.transfer = true;
+    }
+    /// The transfer was scheduled and every queued reply byte was offered.
+    pub fn transfer_due(&self) -> bool {
+        self.transfer && self.reply_len == 0 && self.offset == self.length
+    }
+    /// The transport, for the transfer session.
+    pub fn transport(&mut self) -> &mut T {
+        &mut self.usb
+    }
+    /// Back to line commands; bytes of the binary session never become one.
+    pub fn end_transfer(&mut self) {
+        self.transfer = false;
+        self.lines = Lines::default();
+    }
     pub fn schedule_reboot(&mut self, now: u64, panic: bool) {
         self.reboot = Some((now, panic));
     }
@@ -137,7 +160,7 @@ impl<T: device_api::console::Console> Terminal<T> {
         self.sent = self.sent.saturating_add(1);
     }
     pub fn request(&mut self, now: u64) -> Option<Request> {
-        if self.reply_len != 0 {
+        if self.reply_len != 0 || self.transfer {
             return None;
         }
         for _ in 0..64 {
@@ -257,6 +280,28 @@ mod tests {
         }
         assert_eq!(session.reboot_due(99), None);
         assert_eq!(session.reboot_due(100), Some(true));
+    }
+
+    #[test]
+    fn a_scheduled_transfer_waits_for_its_reply_and_no_log_follows_it() {
+        let mut transport = Transport::default();
+        transport.input.extend(b"CMD 4 HELP\n");
+        let mut session = Terminal::new(transport);
+        let mut logs = VecDeque::from([line(b"log\n")]);
+        session.reply(3, "ACCEPTED", "", 0);
+        session.schedule_transfer();
+        assert!(!session.transfer_due());
+        for _ in 0..4 {
+            session.pump(|| logs.pop_front(), || 0);
+        }
+        assert!(session.transfer_due());
+        assert_eq!(logs.len(), 1);
+        assert!(session.usb.output.ends_with(b"}\n"));
+        // Bytes waiting are the session's, never a line command.
+        assert!(session.request(0).is_none());
+        assert_eq!(session.transport().input.len(), 11);
+        session.end_transfer();
+        assert!(!session.transfer_due());
     }
 
     #[test]

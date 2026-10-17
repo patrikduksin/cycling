@@ -681,6 +681,78 @@ impl Sim {
         );
     }
 
+    /// Write the volume table over a blank or legacy region, as
+    /// `VOLUME INIT` would.
+    pub fn init_volumes(&mut self) -> firmware_services::volume::Table {
+        let mut sector = [0u8; 512];
+        firmware_services::volume::create(&mut self.device.bulk, &mut sector).expect("volume table")
+    }
+
+    /// Install `bytes` as the ready TERRAIN pack, as the host's terrain write
+    /// would (volume table created if needed).
+    pub fn install_terrain(&mut self, tag: &[u8; 16], bytes: &[u8]) {
+        use firmware_services::{pack, volume};
+        self.init_volumes();
+        let mut sector = [0u8; 512];
+        let media = &mut self.device.bulk;
+        let mut terrain = volume::open(media, &volume::TERRAIN, &mut sector).expect("TERRAIN");
+        let spec = pack::Spec {
+            length: bytes.len() as u64,
+            crc: firmware_services::checksum::crc32(bytes),
+            tag: *tag,
+            digest: [0; 32],
+            stamp: 0,
+        };
+        let mut writer = pack::begin(&mut terrain, spec, &mut sector).expect("begin");
+        for (index, chunk) in bytes.chunks(512).enumerate() {
+            let mut data = [0u8; 512];
+            data[..chunk.len()].copy_from_slice(chunk);
+            writer
+                .write(&mut terrain, index as u64, &data)
+                .expect("terrain write");
+        }
+        writer.commit(&mut terrain, &mut sector).expect("commit");
+        self.note(
+            NoteKind::Device,
+            format!("host installed a {} byte terrain pack", bytes.len()),
+        );
+    }
+
+    /// Put a file into FILES, formatting the store first if it has none, as
+    /// the host's file put would.
+    pub fn put_file(&mut self, name: &str, bytes: &[u8]) {
+        use firmware_services::{files, volume};
+        self.init_volumes();
+        let mut sector = [0u8; 512];
+        let media = &mut self.device.bulk;
+        let mut store = volume::open(media, &volume::FILES, &mut sector).expect("FILES");
+        if files::mount(&mut store, &mut sector) == Err(files::Error::Uninitialized) {
+            files::format(&mut store, 1, &mut sector).expect("format");
+        }
+        let name = files::Name::new(name).expect("file name");
+        files::write(&mut store, &name, bytes, &mut sector).expect("file write");
+        self.note(
+            NoteKind::Device,
+            format!("host put {} ({} bytes)", name.as_str(), bytes.len()),
+        );
+    }
+
+    /// A file's bytes from FILES, if it exists.
+    pub fn file(&mut self, name: &str) -> Option<Vec<u8>> {
+        use firmware_services::{files, volume};
+        let mut sector = [0u8; 512];
+        let media = &mut self.device.bulk;
+        let mut store = volume::open(media, &volume::FILES, &mut sector).ok()?;
+        let dir = files::mount(&mut store, &mut sector).ok()?;
+        let entry = dir
+            .find(&mut store, &files::Name::new(name).ok()?, &mut sector)
+            .ok()??;
+        let mut bytes = vec![0u8; entry.length as usize];
+        dir.read(&mut store, &entry, 0, &mut bytes, &mut sector)
+            .ok()?;
+        Some(bytes)
+    }
+
     /// Rides on the bulk log, read through `EXPORT BULK` as a host would.
     #[cfg(feature = "cycling")]
     pub fn bulk_rides(&mut self) -> Vec<crate::rides::Ride> {

@@ -73,7 +73,9 @@ class ClearRidesTests(unittest.TestCase):
                 tracemalloc.stop()
             self.assertLess(peak, 4 * 2**20)
 
-    def run_clear(self, export, output, raw, infos, replies=None, medium='internal', invalid=(), sectors=None):
+    def run_clear(
+        self, export, output, raw, infos, replies=None, medium='internal', invalid=(), sectors=None, data_start=16
+    ):
         connection = MagicMock()
         context = MagicMock()
         context.__enter__.return_value = connection
@@ -94,6 +96,7 @@ class ClearRidesTests(unittest.TestCase):
                 ],
             ),
             patch('cycling_devtools.rides.clear.read_owned_sector', side_effect=lambda _, sector: sectors[sector]),
+            patch('cycling_devtools.rides.clear.bulk_data_start', return_value=data_start),
             patch('cycling_devtools.rides.clear.time.sleep'),
         ):
             self.connection, self.factory, self.context = connection, factory, context
@@ -179,6 +182,10 @@ class ClearRidesTests(unittest.TestCase):
                 'generation': 1,
                 'capacity': 5_777_391,
             }
+            # Records that moved (a new volume table) are not the exported ones.
+            with self.assertRaisesRegex(RuntimeError, 'moved since the export'):
+                self.run_clear(export, root / 'moved', raw, [info, info], medium='bulk', invalid={1}, data_start=2064)
+            self.connection.terminal_command.assert_not_called()
             # The device sector changed after export: no clear is sent.
             with self.assertRaisesRegex(RuntimeError, 'invalid sectors do not match'):
                 self.run_clear(

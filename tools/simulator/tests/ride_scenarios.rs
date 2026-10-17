@@ -2031,14 +2031,15 @@ fn unformatted_bulk_media_records_internally_until_initialized() {
     assert_eq!(sim.device.bulk.writes(), 0, "never formatted implicitly");
 
     sim.init_bulk();
-    // Ten metadata sectors (superblocks and ring), not the 3 GB region.
-    assert_eq!(sim.device.bulk.writes(), 10);
+    // The volume table and ten log metadata sectors (superblocks and ring),
+    // not the 3 GB region.
+    assert_eq!(sim.device.bulk.writes(), 12);
     sim.press(Button::TopLeft);
     sim.home("RIDE");
     sim.advance(seconds(1));
-    sim.expect_text("ROOM FOR 6419 H");
+    sim.expect_text("ROOM FOR 2330 H");
     sim.expect_no_text("ON INTERNAL MEMORY");
-    sim.checkpoint("formatted MMC: 6,419 hours left");
+    sim.checkpoint("formatted MMC: 2,330 hours left in the RIDES volume");
 }
 
 #[test]
@@ -2071,7 +2072,7 @@ fn bulk_media_keeps_a_long_ride_through_power_loss() {
         .unwrap()
         .parse()
         .unwrap();
-    assert!(boot_reads <= 75, "{boot_reads} boot reads");
+    assert!(boot_reads <= 77, "{boot_reads} boot reads");
     assert!(sim.device.bulk.reads() - reads < 200);
     sim.checkpoint("booted after power loss");
 
@@ -2270,7 +2271,7 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     let mut sim = Sim::new();
     sim.fit_bulk(Presence::Ready);
     // Ten records: room for one short ride and nothing more after it.
-    sim.device.bulk.set_sectors(16 + 10);
+    sim.device.bulk.set_sectors(2 + 16 + 10);
     let mut sim = equip(sim.boot());
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);
@@ -2327,9 +2328,9 @@ fn bulk_rides_without_superblocks_are_kept_out_of_export_and_clear() {
     sim.start_ride();
     sim.advance(minutes(2));
     sim.stop_ride();
-    // Both superblock copies are lost; the ride's records remain.
-    sim.device.bulk.corrupt(0);
-    sim.device.bulk.corrupt(1);
+    // Both superblock copies of the RIDES log are lost; the ride's records remain.
+    sim.device.bulk.corrupt(2048);
+    sim.device.bulk.corrupt(2049);
     sim.power_loss();
     let (_, status) = sim.command("RIDE BULK STATUS");
     assert_eq!(status_field(&status, "state"), "corrupt", "{status}");
@@ -2359,7 +2360,7 @@ fn a_continuation_that_cannot_start_does_not_count_the_bulk_ride_twice() {
         .unwrap();
     sim.fit_bulk(Presence::Ready);
     // The MMC holds START and ten sample batches, then fills mid-ride.
-    sim.device.bulk.set_sectors(16 + 12);
+    sim.device.bulk.set_sectors(2 + 16 + 12);
     let mut sim = equip(sim.boot());
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);

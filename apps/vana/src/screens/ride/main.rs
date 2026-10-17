@@ -87,7 +87,10 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
         return GRID;
     }
     let values = &view.values;
-    let row = ROWS.iter().position(|&bottom| y < bottom).unwrap_or(ROWS.len());
+    let row = ROWS
+        .iter()
+        .position(|&bottom| y < bottom)
+        .unwrap_or(ROWS.len());
     let right = x > COLUMN;
     if row == 0 && text(x, y, 178, 89, 1, b"KM/H") {
         return DIM;

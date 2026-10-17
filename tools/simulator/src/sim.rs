@@ -81,6 +81,10 @@ impl Screen {
     pub fn field(&self, label: &str) -> Option<String> {
         let runs = self.frame().read();
         let label = runs.iter().find(|run| run.text == label)?;
+        Self::value_of(&runs, label)
+    }
+
+    fn value_of(runs: &[TextRun], label: &TextRun) -> Option<String> {
         let bottom = label.y + 7 * label.scale;
         if label.smooth {
             // A unit names the larger reading just left of it on its line.
@@ -90,10 +94,11 @@ impl Screen {
                 .filter(|run| run.x < label.x && run.x + 200 > label.x)
                 .filter(|run| run.y <= bottom && run.y + 9 * run.scale >= bottom)
                 .max_by_key(|run| run.x);
-            // Otherwise the reading under the label, in its column.
+            // Otherwise the reading under the label, in its column: larger
+            // type, or a state line under a check's name.
             let under = || {
                 runs.iter()
-                    .filter(|run| run.smooth && run.scale > label.scale)
+                    .filter(|run| run.smooth && run.scale >= label.scale)
                     .filter(|run| run.y > label.y && run.y < bottom + 16)
                     .min_by_key(|run| run.x.abs_diff(label.x))
             };
@@ -106,6 +111,16 @@ impl Screen {
             })
             .min_by_key(|run| run.y)
             .map(|run| run.text.clone())
+    }
+
+    /// A connection check line such as "HEART 4242 CONNECTED": the check's
+    /// name, with its state under it.
+    pub fn shows_check(&self, line: &str) -> bool {
+        let (name, state) = line.split_once(' ').unwrap_or((line, ""));
+        let runs = self.frame().read();
+        runs.iter()
+            .filter(|run| run.text == name)
+            .any(|label| Self::value_of(&runs, label).as_deref() == Some(state))
     }
 
     /// A text run that reads exactly `text`, such as a button label.
@@ -461,6 +476,19 @@ impl Sim {
             screen.text()
         );
         self.note(NoteKind::Check, format!("saw {needle}"));
+    }
+
+    /// Assert a connection check line, such as "HEART 4242 CONNECTED".
+    #[track_caller]
+    pub fn expect_check(&mut self, line: &str) {
+        let screen = self.screen();
+        assert!(
+            screen.shows_check(line),
+            "expected check {line:?} at {} ms; screen:\n{}",
+            self.now(),
+            screen.text()
+        );
+        self.note(NoteKind::Check, format!("saw {line}"));
     }
 
     /// Assert the value under a field label.

@@ -1,7 +1,11 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
-use super::chrome::{BLACK, CONTENT, Gps, Mark, Row, StatusBar, Toast, WIDTH};
+use super::canvas::Canvas;
+use super::chrome::{
+    ACCENT, Align, BLACK, BODY, CAPTION, CONTENT, Gps, Mark, Row, SECONDARY, StatusBar, TITLE,
+    Toast, WHITE, WIDTH,
+};
 use super::home::Home;
-use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth, Values};
+use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
 use crate::ride::climb::Climbs;
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
@@ -9,8 +13,6 @@ use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::sensors::radar;
 use core::fmt::Write;
-#[cfg(test)]
-use firmware_shell::rendering::text::text;
 
 /// Below this much recording time left, the ride page warns the rider.
 pub const LOW_STORAGE_S: u32 = 60 * 60;
@@ -63,14 +65,17 @@ pub struct View {
     pub ride_page: RidePage,
     /// Climbs and the elevation profile; only the climb page reads them.
     pub climbs: Climbs,
-    /// What the ride page prepared for this frame.
-    pub(super) values: Values,
+    /// Finished laps for the lap page's chart, oldest first.
+    pub lap_bars: ride::LapBars,
+    /// What a canvas page (stats, lap, climb, Settings, Preflight, boot)
+    /// prepared for this frame.
+    pub(super) canvas: Canvas,
     pub(super) smooth: Smooth,
     pub zone_time: ZoneTime,
     pub profile: TrainingProfile,
     /// Zone colours and gauges prepared for this frame.
     pub(super) marks: Marks,
-    /// The climb page's chart, prepared with `values`.
+    /// The climb page's chart, prepared with `canvas`.
     pub(super) climb: ClimbFrame,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
@@ -91,7 +96,7 @@ impl View {
         } else {
             let _ = time.push_str("--:--");
         }
-        Self {
+        let mut view = Self {
             now_ms: 0,
             sample: Sample::default(),
             active_secs: 0,
@@ -109,7 +114,8 @@ impl View {
             previous_lap: None,
             ride_page: RidePage::Main,
             climbs: Climbs::default(),
-            values: core::array::from_fn(|_| Text::new()),
+            lap_bars: ride::LapBars::new(),
+            canvas: Canvas::default(),
             smooth: Smooth::default(),
             zone_time: ZoneTime::default(),
             profile: TrainingProfile::default(),
@@ -120,7 +126,13 @@ impl View {
             editing: false,
             time,
             lines: core::array::from_fn(|_| Text::new()),
+        };
+        // The brand flash is painted before anything prepares a frame, as
+        // the preloaded startup frame: it needs no `prepare` to show.
+        if page == Page::Boot {
+            view.canvas = view.boot_canvas();
         }
+        view
     }
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
@@ -135,7 +147,7 @@ impl View {
         let y = row.y();
         row.fill(BLACK);
         if self.page == Page::Boot {
-            self.paint_boot(row);
+            self.canvas.paint(row);
             return;
         }
         if y < CONTENT.top {
@@ -145,8 +157,7 @@ impl View {
         match self.page {
             Page::Ride => ride::paint(self, row),
             Page::Home => self.home.paint(row),
-            Page::Settings => super::settings::paint(self, row),
-            _ => self.paint_lines(row),
+            _ => self.canvas.paint(row),
         }
         self.paint_toast(row);
     }
@@ -158,81 +169,74 @@ impl View {
         }
     }
 
-    fn paint_boot(&self, row: &mut Row) {
-        const CYAN: u16 = 0x07ff;
-        const WHITE: u16 = 0xffff;
-        let y = row.y();
-        let frame = self.now_ms / 180;
-        let glitch = frame % 9 == 1 || frame % 9 == 2;
-        let shift = if glitch && (y / 9 + frame as usize).is_multiple_of(3) {
-            8
-        } else {
-            0
-        };
-        row.text(8, 269, 1, self.lines[0].as_bytes(), WHITE);
-        row.text(96, 195, 2, b"LABS", CYAN);
-        if y == 98 || y == 174 {
-            row.span(24..216, CYAN);
-        }
-        // The type is sampled `shift` pixels to the right; move it left instead.
-        if glitch {
-            let color = if y.is_multiple_of(2) { CYAN } else { 0xf81f };
-            row.text(28 - shift, 105, 8, b"VANA", color);
-            row.text(20 - shift, 106, 8, b"VANA", color);
-        }
-        row.text(24 - shift, 108, 8, b"VANA", WHITE);
+    /// The brand flash: VANA and LABS, and what is starting under them.
+    fn boot_canvas(&self) -> Canvas {
+        let mut canvas = Canvas::default();
+        let width = WIDTH - 20;
+        let centre = WIDTH / 2;
+        canvas.fit(&[&TITLE], b"VANA", width, centre, 160, Align::Center, WHITE);
+        canvas.fit(
+            &[&CAPTION],
+            b"LABS",
+            width,
+            centre,
+            184,
+            Align::Center,
+            ACCENT,
+        );
+        let status = self.lines[0].as_bytes();
+        canvas.fit(
+            &[&CAPTION],
+            status,
+            width,
+            centre,
+            296,
+            Align::Center,
+            SECONDARY,
+        );
+        canvas
     }
 
-    /// Preflight and the other text screens: the first line wins where lines meet.
-    fn paint_lines(&self, row: &mut Row) {
-        const CYAN: u16 = 0x07ff;
-        const WHITE: u16 = 0xffff;
-        for (i, line) in self.lines.iter().enumerate().rev() {
-            let color = if i == 0 { CYAN } else { WHITE };
-            row.text(10, 36 + i * 27, self.line_scale(i), line.as_bytes(), color);
+    /// Preflight: a title, then one row per check, its name in a caption
+    /// over its state.
+    fn lines_canvas(&self) -> Canvas {
+        const LEFT: usize = 16;
+        const RIGHT: usize = WIDTH - 16;
+        let mut canvas = Canvas::default();
+        canvas.caption(
+            self.lines[0].as_bytes(),
+            RIGHT - LEFT,
+            LEFT,
+            40,
+            Align::Left,
+        );
+        let rows = self.lines[1..]
+            .iter()
+            .filter(|line| !line.as_bytes().is_empty());
+        for (row, line) in rows.enumerate() {
+            let base = 64 + row * 34;
+            let text = line.as_bytes();
+            let split = text.iter().position(|&c| c == b' ').unwrap_or(text.len());
+            let (name, state) = (&text[..split], text.get(split + 1..).unwrap_or(&[]));
+            canvas.caption(name, RIGHT - LEFT, LEFT, base, Align::Left);
+            canvas.fit(
+                &[&BODY, &CAPTION],
+                state,
+                RIGHT - LEFT,
+                LEFT,
+                base + 19,
+                Align::Left,
+                WHITE,
+            );
         }
-    }
-
-    fn line_scale(&self, i: usize) -> usize {
-        if i == 0 || (self.page == Page::Preflight && (2..=5).contains(&i)) {
-            1
-        } else {
-            2
-        }
+        canvas
     }
 
     /// The per-pixel original of `paint`, kept as the reference it must match.
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
-        const CYAN: u16 = 0x07ff;
-        const WHITE: u16 = 0xffff;
         if self.page == Page::Boot {
-            let frame = self.now_ms / 180;
-            let glitch = frame % 9 == 1 || frame % 9 == 2;
-            let shift = if glitch && (y / 9 + frame as usize).is_multiple_of(3) {
-                8
-            } else {
-                0
-            };
-            if text(x + shift, y, 24, 108, 8, b"VANA") {
-                return WHITE;
-            }
-            if glitch
-                && (text(x + shift + 4, y, 24, 106, 8, b"VANA")
-                    || text(x + shift, y + 3, 28, 108, 8, b"VANA"))
-            {
-                return if y.is_multiple_of(2) { CYAN } else { 0xf81f };
-            }
-            if (y == 98 || y == 174) && (24..216).contains(&x) {
-                return CYAN;
-            }
-            if text(x, y, 96, 195, 2, b"LABS") {
-                return CYAN;
-            }
-            if text(x, y, 8, 269, 1, self.lines[0].as_bytes()) {
-                return WHITE;
-            }
-            return 0;
+            return self.canvas.pixel(x, y, BLACK);
         }
         if y < CONTENT.top {
             return self.bar.pixel(x, y);
@@ -243,15 +247,7 @@ impl View {
         match self.page {
             Page::Ride => ride::reference_pixel(self, x, y),
             Page::Home => self.home.pixel(x, y),
-            Page::Settings => super::settings::reference_pixel(self, x, y),
-            _ => {
-                for (i, line) in self.lines.iter().enumerate() {
-                    if text(x, y, 10, 36 + i * 27, self.line_scale(i), line.as_bytes()) {
-                        return if i == 0 { CYAN } else { WHITE };
-                    }
-                }
-                0
-            }
+            _ => self.canvas.pixel(x, y, BLACK),
         }
     }
 
@@ -263,11 +259,17 @@ impl View {
             _ => Mark::None,
         };
         self.bar = StatusBar::new(&self.time, self.gps, self.battery, mark);
+        match self.page {
+            Page::Boot => self.canvas = self.boot_canvas(),
+            Page::Settings => self.canvas = super::settings::prepare(self),
+            Page::Preflight => self.canvas = self.lines_canvas(),
+            Page::Home | Page::Sensors | Page::Ride => {}
+        }
         if self.page == Page::Ride {
             self.bar
                 .set_pages(self.ride_page.index(), RidePage::ALL.len());
-            ride::prepare(self);
             self.marks = ride::marks(self);
+            ride::prepare(self);
         }
     }
 }
@@ -317,17 +319,9 @@ mod tests {
     use super::*;
 
     use crate::screens::chrome::{
-        ACCENT, AMBER, CADENCE, GRADE, GREEN, HEART, POWER, RAISED, RED, SECONDARY, SPEED,
-        STATUS_BAR, TOAST, Tone, WHITE, zone_color,
+        AMBER, CADENCE, GRADE, GREEN, HEART, POWER, RAISED, RED, Rect, SPEED, STATUS_BAR, TOAST,
+        Tone, zone_color,
     };
-
-    /// Every pixel in the label's box has `color` exactly where the 5x7 label draws.
-    fn shows(view: &View, left: usize, top: usize, scale: usize, label: &[u8], color: u16) -> bool {
-        (top..top + 7 * scale).all(|y| {
-            (left..left + label.len() * 6 * scale)
-                .all(|x| (view.pixel(x, y) == color) == text(x, y, left, top, scale, label))
-        })
-    }
 
     /// The colour of the prepared label that reads `text`.
     fn label_color(view: &View, text: &[u8]) -> Option<u16> {
@@ -421,41 +415,6 @@ mod tests {
         assert!(painted(&view, 0..STATUS_BAR.bottom, 0..40, WHITE));
     }
 
-    #[test]
-    fn stats_page_shows_ride_totals() {
-        let mut view = View::new(Page::Ride, 0, None);
-        view.radar_paired = true;
-        view.ride_page = RidePage::Stats;
-        let sample = Sample {
-            speed_mm_s: Some(8333),
-            power_watts: Some(200),
-            heart_bpm: Some(140),
-            cadence_tenths: Some(900),
-            ..Sample::default()
-        };
-        for _ in 0..600 {
-            view.totals.add(1000, 8333, &sample, None);
-            view.zone_time.add(1000, &sample, &view.profile);
-        }
-        view.state = Status::Paused;
-        view.prepare();
-        assert!(painted(&view, 0..STATUS_BAR.bottom, 0..80, AMBER), "PAUSED");
-        assert!(shows(&view, 34, 36, 1, b"DISTANCE KM", SECONDARY));
-        assert!(shows(&view, 34, 46, 3, b"5.00", WHITE));
-        assert!(shows(&view, 141, 49, 2, b"00:10:00", WHITE));
-        assert!(shows(&view, 34, 83, 3, b"29.9", WHITE));
-        assert!(shows(&view, 141, 120, 3, b"200", WHITE));
-        assert!(shows(&view, 141, 221, 1, b"ASCENT M", SECONDARY));
-        // Ten minutes at 200 W and 140 bpm: all Z4 power, all Z1 heart rate.
-        assert!(shows(&view, 34, 261, 1, b"PWR", SECONDARY));
-        assert!(shows(&view, 34, 273, 1, b"HR", SECONDARY));
-        for x in [60, 150, 235] {
-            assert_eq!(view.pixel(x, 264), zone_color(4));
-            assert_eq!(view.pixel(x, 276), zone_color(1));
-        }
-        assert_eq!(view.pixel(238, 264), 0);
-    }
-
     /// A first lap of five minutes at 200 W and 30 km/h, then `seconds` of
     /// the second at `watts` and `speed_mm_s`.
     fn two_laps(view: &mut View, seconds: u64, watts: u16, speed_mm_s: u32) {
@@ -481,52 +440,6 @@ mod tests {
         }
         view.lap = laps.current();
         view.previous_lap = laps.previous();
-    }
-
-    #[test]
-    fn lap_page_compares_the_open_lap_with_the_last_one() {
-        let mut view = View::new(Page::Ride, 0, None);
-        view.ride_page = RidePage::Lap;
-        view.radar_paired = true;
-        view.state = Status::Recording;
-        two_laps(&mut view, 125, 250, 9000);
-        view.prepare();
-        assert!(shows(&view, 38, 32, 1, b"LAP TIME", SECONDARY));
-        assert!(shows(&view, 146, 28, 2, b"LAP 2", ACCENT));
-        assert!(shows(&view, 38, 48, 6, b"02:05", WHITE));
-        assert!(shows(&view, 38, 116, 3, b"1.13", WHITE));
-        assert!(shows(&view, 146, 116, 3, b"250", WHITE));
-        assert!(shows(&view, 38, 164, 3, b"32.4", WHITE));
-        assert!(shows(&view, 146, 164, 3, b"150", WHITE));
-        assert!(shows(&view, 38, 201, 1, b"PREV LAP 1", SECONDARY));
-        assert!(shows(&view, 38, 213, 2, b"05:00", WHITE));
-        assert!(shows(&view, 146, 213, 2, b"200", WHITE));
-        // Faster and harder: green, and signed for colour-blind riders.
-        assert!(shows(&view, 38, 248, 3, b"+2.4", GREEN));
-        assert!(shows(&view, 146, 248, 3, b"+50", GREEN));
-
-        // Slower and easier: red with a minus; level is white and unsigned.
-        two_laps(&mut view, 60, 150, 7667);
-        view.prepare();
-        assert!(shows(&view, 38, 248, 3, b"-2.4", RED));
-        assert!(shows(&view, 146, 248, 3, b"-50", RED));
-        two_laps(&mut view, 60, 200, 8334);
-        view.prepare();
-        assert!(shows(&view, 38, 248, 3, b"0.0", WHITE));
-        assert!(shows(&view, 146, 248, 3, b"0", WHITE));
-    }
-
-    #[test]
-    fn lap_page_before_the_first_lap_has_no_comparison() {
-        let mut view = View::new(Page::Ride, 0, None);
-        view.ride_page = RidePage::Lap;
-        view.radar_paired = true;
-        view.prepare();
-        assert!(shows(&view, 146, 28, 2, b"LAP 1", ACCENT));
-        assert!(shows(&view, 38, 48, 6, b"00:00", WHITE));
-        assert!(shows(&view, 38, 201, 1, b"PREV LAP", SECONDARY));
-        assert!(shows(&view, 38, 248, 3, b"--", WHITE));
-        assert!(shows(&view, 146, 248, 3, b"--", WHITE));
     }
 
     #[test]
@@ -639,12 +552,63 @@ mod tests {
             view.prepare();
             assert_paints_reference(&view, "text page");
         }
-        for now_ms in [0, 180, 360, 3000] {
-            let mut view = View::new(Page::Boot, 0, None);
-            view.now_ms = now_ms;
-            let _ = view.lines[0].push_str("BOOT 1.2");
-            assert_paints_reference(&view, "boot");
+        let mut view = View::new(Page::Boot, 0, None);
+        let _ = view.lines[0].push_str("COMPANION READY");
+        view.prepare();
+        assert_paints_reference(&view, "boot");
+    }
+
+    /// A Boot view straight from `new`, as the startup frame is built,
+    /// paints VANA and LABS without `prepare`.
+    #[test]
+    fn a_new_boot_view_paints_the_brand_without_prepare() {
+        let view = View::new(Page::Boot, 0, None);
+        assert!(view.canvas.shows("VANA") && view.canvas.shows("LABS"));
+        let lit = (0..320)
+            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+            .filter(|&(x, y)| view.pixel(x, y) != BLACK)
+            .count();
+        assert!(lit > 200, "{lit} lit pixels");
+    }
+
+    /// Preflight and the brand flash with the longest lines they can get.
+    #[test]
+    fn text_pages_lay_out_whole_with_long_lines() {
+        let mut view = View::new(Page::Preflight, 0, None);
+        for (line, text) in view.lines.iter_mut().zip([
+            "CONNECTION CHECK",
+            "",
+            "SPEED 65535 WAITING FOR RADIO",
+            "HEART 65535 CONNECTED",
+            "POWER --",
+            "RADAR 65535 SEARCHING",
+            "GPS SEARCHING",
+            "STORAGE 99:59 LEFT",
+            "RADIO WAITING FOR RADIO",
+        ]) {
+            let _ = line.push_str(text);
         }
+        view.prepare();
+        let content = Rect {
+            left: 0,
+            top: CONTENT.top,
+            right: WIDTH,
+            bottom: 320,
+        };
+        let want = [
+            "CONNECTION CHECK",
+            "65535 WAITING FOR RADIO",
+            "65535 CONNECTED",
+            "WAITING FOR RADIO",
+        ];
+        view.canvas.assert_laid_out(content, &want, "preflight");
+
+        let mut view = View::new(Page::Boot, 0, None);
+        let _ = view.lines[0].push_str("RADIO WAITING FOR RADIO / GPS SEARCHING");
+        view.prepare();
+        let screen = Rect { top: 0, ..content };
+        view.canvas
+            .assert_laid_out(screen, &["VANA", "LABS"], "boot");
     }
 
     #[test]

@@ -1,15 +1,13 @@
 //! Full-screen power sheets: confirm turning off, the idle warning and the
-//! last frame before the device turns off. Hints sit next to the physical
-//! button they describe and only appear while a sheet is shown.
-use firmware_shell::rendering::row::Row;
-#[cfg(test)]
-use firmware_shell::rendering::text::text;
-
-const WHITE: u16 = 0xffff;
-const CYAN: u16 = 0x07ff;
-const DIM: u16 = 0x8410;
-const AMBER: u16 = 0xfd20;
-const RULE: u16 = 0x39e7;
+//! last frame before the device turns off. They only appear while a sheet
+//! is shown, and like every screen they carry no bottom button labels: an
+//! `ACCENT` corner marks ACT where it turns the device off.
+use super::canvas::{Canvas, Shape};
+use super::chrome::{
+    ACCENT, AMBER, Align, BLACK, BODY, CAPTION, HERO, Rect, Row, SECONDARY, TITLE, WHITE,
+};
+use core::fmt::Write;
+use firmware_shell::rendering::font::Face;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
@@ -21,93 +19,137 @@ pub enum Sheet {
     TurningOff,
 }
 
-/// Left edge that centres `chars` glyphs of `scale` on the 240-wide canvas.
-const fn centre(chars: usize, scale: usize) -> usize {
-    (240 - chars * 6 * scale) / 2
-}
+const CENTRE: usize = 120;
+/// Text keeps 10 px from the panel's edges.
+const WIDTH: usize = 220;
 
 impl Sheet {
-    /// One pixel of the sheet; tests only, as it paints a whole row.
-    pub fn pixel(self, x: usize, y: usize) -> u16 {
-        let mut pixels = [0u16; 240];
-        self.paint(&mut Row::new(y, &mut pixels));
-        pixels.get(x).copied().unwrap_or(0)
-    }
-
-    /// Paint one row of the 240 x 320 sheet.
-    pub fn paint(self, row: &mut Row) {
-        let y = row.y();
-        row.fill(0);
+    /// The sheet laid out for one frame.
+    pub fn canvas(self) -> Canvas {
+        let mut canvas = Canvas::default();
         match self {
             Self::Confirm => {
-                row.text(centre(8, 4), 104, 4, b"TURN OFF", WHITE);
-                if y == 150 {
-                    row.span(40..200, RULE);
-                }
-                row.text(centre(15, 1), 166, 1, b"RIDES ARE SAVED", DIM);
-                // Hints beside the buttons: BACK top left, OFF bottom right.
-                row.text(8, 8, 2, b"BACK", DIM);
-                row.text(240 - 3 * 6 * 3 - 6, 290, 3, b"OFF", CYAN);
-                if y >= 316 {
-                    row.span(170..240, CYAN);
-                } else if y >= 270 {
-                    row.span(236..240, CYAN);
+                centred(&mut canvas, &[&TITLE, &BODY], b"TURN OFF", 150, WHITE);
+                centred(
+                    &mut canvas,
+                    &[&BODY, &CAPTION],
+                    b"RIDES ARE SAVED",
+                    182,
+                    SECONDARY,
+                );
+                // BACK sits by its button, top left.
+                canvas.caption(b"BACK", 60, 8, 20, Align::Left);
+                // ACT, bottom right, turns off: its corner is lit.
+                for rect in [
+                    Rect {
+                        left: 170,
+                        top: 316,
+                        right: 240,
+                        bottom: 320,
+                    },
+                    Rect {
+                        left: 236,
+                        top: 270,
+                        right: 240,
+                        bottom: 320,
+                    },
+                ] {
+                    canvas.shape(Shape::Bar {
+                        rect,
+                        radius: 0,
+                        color: ACCENT,
+                    });
                 }
             }
             Self::Warning { seconds } => {
-                row.text(centre(11, 3), 84, 3, b"TURNING OFF", AMBER);
-                // "IN nn S", with the count right-aligned in two digits.
-                let left = centre(7, 4);
-                let seconds = seconds.min(99) as u8;
-                let tens = if seconds >= 10 {
-                    b'0' + seconds / 10
-                } else {
-                    b' '
-                };
-                row.text(left, 130, 4, b"IN", WHITE);
-                row.text(left + 3 * 24, 130, 4, &[tens, b'0' + seconds % 10], WHITE);
-                row.text(left + 6 * 24, 130, 4, b"S", WHITE);
-                row.text(centre(16, 2), 206, 2, b"PRESS ANY BUTTON", DIM);
-                row.text(centre(10, 2), 230, 2, b"TO STAY ON", DIM);
+                centred(&mut canvas, &[&BODY], b"TURNING OFF IN", 96, AMBER);
+                let mut count = super::workout::Text::<4>::new();
+                let _ = write!(count, "{}", seconds.min(99));
+                centred(&mut canvas, &[&HERO], count.as_bytes(), 176, WHITE);
+                centred(&mut canvas, &[&CAPTION], b"SECONDS", 198, SECONDARY);
+                centred(
+                    &mut canvas,
+                    &[&BODY, &CAPTION],
+                    b"PRESS ANY BUTTON",
+                    244,
+                    SECONDARY,
+                );
+                centred(
+                    &mut canvas,
+                    &[&BODY, &CAPTION],
+                    b"TO STAY ON",
+                    268,
+                    SECONDARY,
+                );
             }
-            Self::TurningOff => row.text(centre(11, 3), 150, 3, b"TURNING OFF", WHITE),
+            Self::TurningOff => centred(&mut canvas, &[&BODY], b"TURNING OFF", 168, WHITE),
         }
+        canvas
     }
+
+    /// Paint one row of the 240 x 320 sheet from its `canvas`.
+    pub fn paint(canvas: &Canvas, row: &mut Row) {
+        row.fill(BLACK);
+        canvas.paint(row);
+    }
+}
+
+/// `text` centred on the sheet in the largest of `faces` that fits.
+fn centred(canvas: &mut Canvas, faces: &[&'static Face], text: &[u8], base: usize, color: u16) {
+    canvas.fit(faces, text, WIDTH, CENTRE, base, Align::Center, color);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::chrome::{HEIGHT, Rect as Bounds};
 
-    fn shows(sheet: Sheet, left: usize, top: usize, scale: usize, label: &[u8]) -> bool {
-        (top..top + 7 * scale).all(|y| {
-            (left..left + label.len() * 6 * scale)
-                .all(|x| (sheet.pixel(x, y) != 0) == text(x, y, left, top, scale, label))
-        })
+    const SCREEN: Bounds = Bounds {
+        left: 0,
+        top: 0,
+        right: 240,
+        bottom: HEIGHT,
+    };
+
+    /// Every row the sheet paints equals the canvas's per-pixel reference.
+    fn assert_paints_reference(sheet: Sheet) {
+        let canvas = sheet.canvas();
+        for y in 0..HEIGHT {
+            let mut pixels = [0x5555; 240];
+            Sheet::paint(&canvas, &mut Row::new(y, &mut pixels));
+            for (x, &pixel) in pixels.iter().enumerate() {
+                assert_eq!(pixel, canvas.pixel(x, y, BLACK), "{sheet:?} at {x},{y}");
+            }
+        }
     }
 
     #[test]
-    fn confirm_names_the_action_and_its_button() {
-        assert!(shows(Sheet::Confirm, centre(8, 4), 104, 4, b"TURN OFF"));
-        assert!(shows(Sheet::Confirm, 8, 8, 2, b"BACK"));
-        assert_eq!(Sheet::Confirm.pixel(239, 319), CYAN, "ACT corner marker");
+    fn sheets_lay_out_whole_and_paint_their_reference() {
+        let sheets = [
+            (Sheet::Confirm, &["TURN OFF", "RIDES ARE SAVED", "BACK"][..]),
+            (
+                Sheet::Warning { seconds: 9 },
+                &["TURNING OFF IN", "9", "TO STAY ON"],
+            ),
+            (Sheet::Warning { seconds: 60 }, &["60"]),
+            (Sheet::Warning { seconds: 1000 }, &["99"]),
+            (Sheet::TurningOff, &["TURNING OFF"]),
+        ];
+        for (sheet, want) in sheets {
+            sheet
+                .canvas()
+                .assert_laid_out(SCREEN, want, &std::format!("{sheet:?}"));
+            assert_paints_reference(sheet);
+        }
     }
 
     #[test]
-    fn warning_counts_down_in_whole_seconds() {
-        let sheet = Sheet::Warning { seconds: 9 };
-        let left = centre(7, 4);
-        // A single digit leaves the tens column dark.
-        assert!((left + 72..left + 96).all(|x| (130..158).all(|y| sheet.pixel(x, y) == 0)));
-        assert!(shows(sheet, left + 96, 130, 4, b"9"));
-    }
-
-    #[test]
-    fn turning_off_is_a_single_quiet_line() {
-        let lit = (0..320)
-            .flat_map(|y| (0..240).map(move |x| (x, y)))
-            .filter(|&(x, y)| Sheet::TurningOff.pixel(x, y) != 0)
-            .all(|(_, y)| (150..171).contains(&y));
-        assert!(lit);
+    fn confirm_marks_act_and_turning_off_is_one_quiet_line() {
+        let confirm = Sheet::Confirm.canvas();
+        assert_eq!(confirm.pixel(239, 319, BLACK), ACCENT, "ACT corner marker");
+        assert_eq!(confirm.find("TURN OFF").map(|run| run.color), Some(WHITE));
+        let off = Sheet::TurningOff.canvas();
+        assert_eq!(off.runs.len(), 1);
+        assert!(off.shapes.is_empty());
     }
 }

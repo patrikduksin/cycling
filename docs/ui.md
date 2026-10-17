@@ -5,11 +5,12 @@ second, often in sunlight, while moving. So every screen follows the same rules:
 black space instead of boxes, a few large numbers, and colour that always means
 something. This document defines those rules. The code that implements them
 lives in `apps/vana/src/screens/chrome.rs` (geometry, palette, shapes, status
-bar, toasts) and `packages/shell/src/rendering/font` (type).
+bar, toasts), `apps/vana/src/screens/canvas.rs` (a prepared screen of text
+runs and shapes) and `packages/shell/src/rendering/font` (type).
 
-Pages that are not yet in this language still use the 5 × 7 bitmap font: the
-stats, lap and climb ride pages, Settings and Preflight. They should move to it
-using the rules below and nothing else.
+Every screen uses it: Home, Sensors, the four ride pages, Settings,
+Preflight, the brand flash and the power sheets. None draws in the 5 × 7
+bitmap font.
 
 ## Principles
 
@@ -97,9 +98,6 @@ Climb steepness uses the ramp from blue up:
 | Hard, 9–12% | `ZONES[5]` (red) |
 | Severe, 12% and more | `ZONES[6]` (purple) |
 
-The current climb page still uses its older pure RGB565 colours. The restyle
-should replace them with these.
-
 ## Shapes
 
 | Shape | Rule |
@@ -114,6 +112,22 @@ should replace them with these.
 Shapes are coverage functions (`disc`, `rounded`), blended over what lies
 behind them, and painted per row by `paint_rounded` and `paint_disc`. Never
 draw a 1 px outline as decoration.
+
+## Cells
+
+The stats, lap and climb pages list readings in cells: a `CAPTION` in
+`SECONDARY` over its value in `VALUE`, in the metric's colour. Cells sit in two
+columns from the body's 10 px margin, 48 px apart, so each caption has 7 clear
+rows above it, and keep 8 px between the columns (`ride::cell`). A page that
+cannot fit its readings at that rhythm shows fewer of them: space over
+density. A value that does not fit its column steps down to
+`BODY` on the same baseline. Captions are short enough for a column:
+`DIST KM`, `AVG W`, `LAP BPM`, `KM/H DIFF`. A previous lap is named by its
+number, `LAP 4`, as its toast named it.
+
+A difference carries its sign: `GREEN` with "+" for a gain, `SECONDARY` with
+"-" for a loss or no change. An easier lap is not a failure, so it is never
+`RED`; red stays for warnings.
 
 ## Spacing and regions
 
@@ -215,9 +229,13 @@ Applied to the cycling-specific charts:
 | Chart | Design |
 | --- | --- |
 | Zone gauge (main page) | One segment per zone, 5 px. Zones below the current one are lit in their colours. The current zone fills left to right as the reading moves through it. Zones above are `TERTIARY`. The zone chip (`Z4`) beside the reading is `BODY` in the zone colour, `Z-` without a zone. |
-| Time in zone (stats) | One 8 px bar per metric, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. Below it, a `CAPTION` with the most-ridden zone and its time. |
-| Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade. The climbed part is full colour; the rest of a known climb is 25%. A `WHITE` disc marks the rider. One `TERTIARY` baseline. A `CAPTION` with gain and length sits at the right end. |
-| Lap comparison (laps) | One vertical bar per lap, 8 px wide with 3 px gaps, height proportional to the lap's average. The metric colour comes from the page's metric (power, speed or time). Finished laps are drawn at 25%, the current lap in full colour, and the best lap gets a `WHITE` cap. The newest lap is on the right; older laps scroll off the left. |
+| Time in zone (stats) | One 8 px bar per metric, `PWR` and `HR` captions on its left, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. A `TERTIARY` track before any time is recorded. |
+| Elevation profile (climb) | A solid area per column over the last 4 km, coloured by the steepness of that column's grade. The climbed part is full colour; the rest of a known climb, once routes provide one, is 25%. A 6 px `WHITE` disc marks the rider on the newest column. One `TERTIARY` baseline. The cells above it carry the gain and length. A 5 px bar under the grade shows its steepness colour. |
+| Lap comparison (laps) | One vertical bar per lap across the page's full width, each centred in an equal slot, up to 24 px wide with at least 3 px between bars, on one `TERTIARY` baseline. Height is proportional to the lap's average power, or its speed on a ride without power, in that metric's colour. Finished laps are drawn at 25%, the open lap in full colour, and the best lap gets a 2 px `WHITE` cap. The oldest lap is on the left and the open lap on the right; the 16 kept laps and the open one fit. |
+
+The time-in-zone bars, the profile and the lap bars reach into the toast band.
+They are the least important part of their page, and a toast covers them for
+a moment only.
 
 ## How data updates
 

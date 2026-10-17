@@ -6,7 +6,7 @@ use crate::route::Route;
 use crate::screen::{Frame, TextRun};
 use crate::session::Session;
 use crate::world::{Vehicle, World};
-use device_api::input::{Button, Input};
+use device_api::input::{Button, Input, Point};
 use device_api::storage::Region;
 use std::fmt::Write as _;
 
@@ -14,6 +14,8 @@ use std::fmt::Write as _;
 const BOOT_TIMEOUT_MS: u64 = 15_000;
 /// Firmware passes between a press and the next one VANA accepts (debounce is 350 ms).
 const PRESS_GAP_MS: u64 = 400;
+/// Touch reports arrive this often while a finger moves.
+const TOUCH_STEP_MS: u64 = 30;
 /// The companion repeats a held button's report this often.
 pub const HOLD_REPEAT_MS: u64 = 100;
 /// Repeated top-left reports that turn an off device on: about a 1.5 s hold.
@@ -73,11 +75,30 @@ impl Screen {
         self.frame().find(needle)
     }
 
-    /// The value shown under a field label, such as the reading under "WATTS".
+    /// The value a label names: the reading just left of a unit on its line,
+    /// such as "250" before "W", or the reading under a 5x7 label such as
+    /// "AVG WATTS".
     pub fn field(&self, label: &str) -> Option<String> {
         let runs = self.frame().read();
         let label = runs.iter().find(|run| run.text == label)?;
         let bottom = label.y + 7 * label.scale;
+        if label.smooth {
+            // A unit names the larger reading just left of it on its line.
+            let beside = runs
+                .iter()
+                .filter(|run| run.smooth && run.scale > label.scale)
+                .filter(|run| run.x < label.x && run.x + 200 > label.x)
+                .filter(|run| run.y <= bottom && run.y + 9 * run.scale >= bottom)
+                .max_by_key(|run| run.x);
+            // Otherwise the reading under the label, in its column.
+            let under = || {
+                runs.iter()
+                    .filter(|run| run.smooth && run.scale > label.scale)
+                    .filter(|run| run.y > label.y && run.y < bottom + 16)
+                    .min_by_key(|run| run.x.abs_diff(label.x))
+            };
+            return beside.or_else(under).map(|run| run.text.clone());
+        }
         runs.iter()
             .filter(|run| run.y > bottom && run.y < bottom + 120)
             .filter(|run| {
@@ -90,6 +111,48 @@ impl Screen {
     /// A text run that reads exactly `text`, such as a button label.
     pub fn run(&self, text: &str) -> Option<TextRun> {
         self.frame().read().into_iter().find(|run| run.text == text)
+    }
+
+    /// The ride clock: the largest H:MM:SS reading, the top one on a tie.
+    /// Its size is not part of it, because layout steps a long clock down.
+    pub fn elapsed(&self) -> Option<String> {
+        self.frame()
+            .read()
+            .into_iter()
+            .filter(|run| run.smooth)
+            .filter(|run| {
+                let parts: Vec<_> = run.text.split(':').collect();
+                parts.len() == 3
+                    && parts
+                        .iter()
+                        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            })
+            .min_by_key(|run| (std::cmp::Reverse(run.scale), run.y))
+            .map(|run| run.text)
+    }
+
+    /// The status bar's page dots as "2/3": the lit dot and the count.
+    #[cfg(feature = "cycling")]
+    pub fn page(&self) -> Option<String> {
+        use vana::screens::chrome::{DOT_SIZE, DOTS_Y, TERTIARY, WHITE};
+        let row = self
+            .pixels
+            .get(DOTS_Y * self.width..(DOTS_Y + 1) * self.width)?;
+        let mut dots = Vec::new();
+        let mut x = 0;
+        // Dots sit on the left half; the clock is white on the right.
+        while x < row.len() / 2 {
+            let color = row[x];
+            let start = x;
+            while x < row.len() && row[x] == color {
+                x += 1;
+            }
+            if (color == WHITE || color == TERTIARY) && (2..=DOT_SIZE).contains(&(x - start)) {
+                dots.push(color == WHITE);
+            }
+        }
+        let lit = dots.iter().position(|&lit| lit)?;
+        Some(format!("{}/{}", lit + 1, dots.len()))
     }
 }
 
@@ -227,17 +290,6 @@ impl Sim {
         self.advance(PRESS_GAP_MS);
     }
 
-    /// A finger touches the panel at (`x`, `y`) and lifts, then enough time
-    /// passes for the next input to count.
-    pub fn tap(&mut self, x: u16, y: u16) {
-        self.note(NoteKind::Input, format!("tap {x},{y}"));
-        let now = self.device.now;
-        let input = &self.device.input;
-        input.push(now, Input::Touch(device_api::input::Point { x, y }));
-        input.push(now, Input::Release);
-        self.advance(PRESS_GAP_MS);
-    }
-
     /// One companion report of `button` going down, now, without waiting.
     pub fn report(&mut self, button: Button) {
         self.deliver(button, false);
@@ -274,6 +326,48 @@ impl Sim {
         self.device
             .input
             .push(self.device.now, Input::Button { button, code: 1 });
+    }
+
+    /// A finger on the screen at (x, y), lifted at once.
+    pub fn tap(&mut self, x: u16, y: u16) {
+        self.note(NoteKind::Input, format!("tap {x},{y}"));
+        self.touch(&[(x, y), (x, y)]);
+    }
+
+    /// A finger dragged from `from` to `to` in a quarter second.
+    pub fn swipe(&mut self, from: (u16, u16), to: (u16, u16)) {
+        self.note(
+            NoteKind::Input,
+            format!("swipe {},{} to {},{}", from.0, from.1, to.0, to.1),
+        );
+        let lerp =
+            |a: u16, b: u16, i: i32| (i32::from(a) + (i32::from(b) - i32::from(a)) * i / 8) as u16;
+        let points: Vec<_> = (0..=8)
+            .map(|i| (lerp(from.0, to.0, i), lerp(from.1, to.1, i)))
+            .collect();
+        self.touch(&points);
+    }
+
+    /// Swipe right to left across the middle: the next page.
+    pub fn swipe_next(&mut self) {
+        self.swipe((200, 160), (40, 160));
+    }
+
+    /// Swipe left to right across the middle: the previous page.
+    pub fn swipe_previous(&mut self) {
+        self.swipe((40, 160), (200, 160));
+    }
+
+    /// Report a contact through `points`, then the release.
+    fn touch(&mut self, points: &[(u16, u16)]) {
+        for &(x, y) in points {
+            self.device
+                .input
+                .push(self.device.now, Input::Touch(Point { x, y }));
+            self.advance(TOUCH_STEP_MS);
+        }
+        self.device.input.push(self.device.now, Input::Release);
+        self.advance(PRESS_GAP_MS);
     }
 
     /// Buttons pressed in the same companion report window.

@@ -1,12 +1,11 @@
-//! The ride screen: pages that BottomLeft steps through inside a shared frame.
+//! The ride screen: pages that MOVE or a swipe steps through.
 //!
-//! The frame draws the radar strip (x < `CONTENT_LEFT`) and, below the
-//! content, one status row for the ride state and short toasts. There are no
-//! button labels: the buttons keep one meaning system-wide (see
-//! docs/ride-recording.md). A page owns the content rectangle,
-//! `CONTENT_LEFT..CONTENT_RIGHT` by `CONTENT_TOP..CONTENT_BOTTOM`, and the
-//! values it prepares once per frame; new pages place everything from these
-//! constants so the chrome can change without rewriting them.
+//! The shared chrome draws the status bar (ride state, clock, page dots) and
+//! toasts. This frame adds the radar strip on the left while a radar is
+//! paired. A page owns [`BODY`] and the values it prepares once per frame;
+//! without a radar the frame centres the body, so pages never move their own
+//! coordinates. Keep the least important readings at the bottom: toasts
+//! cover `chrome::TOAST` for a moment.
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` with `prepare` and `paint`, dispatched below.
@@ -15,14 +14,11 @@
 //! screen switches to it, and when the climb ends it returns to the page the
 //! rider was on, unless they changed page during the climb (see
 //! `Navigation::follow_climb`).
+use super::chrome::{self, CONTENT, Rect};
 use super::workout::{Text, View};
 use crate::ride::laps::Lap;
-use crate::ride::log::Status;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
-use firmware_shell::rendering::row::Row;
-#[cfg(test)]
-use firmware_shell::rendering::text::text;
 
 mod climb;
 mod lap;
@@ -34,25 +30,37 @@ pub(super) use zones::{Marks, marks};
 
 pub use climb::Frame as ClimbFrame;
 
-pub(super) const WHITE: u16 = 0xffff;
-pub(super) const CYAN: u16 = 0x07ff;
-pub(super) const DIM: u16 = 0x8410;
-pub(super) const GRID: u16 = 0x39e7;
-const YELLOW: u16 = 0xffe0;
-pub(super) const RED: u16 = 0xf800;
-pub(super) const GREEN: u16 = 0x07e0;
+use chrome::{ACCENT, AMBER, BLACK, POWER, Row};
+pub(super) use chrome::{GREEN, RED, WHITE};
+#[cfg(test)]
+use firmware_shell::rendering::text::text;
 
-/// The content rectangle a page draws in.
-pub(super) const CONTENT_LEFT: usize = 28;
-pub(super) const CONTENT_TOP: usize = 30;
-pub(super) const CONTENT_RIGHT: usize = 240;
-/// The content ends at the footer divider; the status row is below it.
+/// The lap page still draws in the 5x7 font with these colours; it moves to
+/// the anti-aliased faces in a later pass.
+pub(super) const CYAN: u16 = ACCENT;
+pub(super) const DIM: u16 = chrome::SECONDARY;
+pub(super) const GRID: u16 = chrome::TERTIARY;
+
+/// The radar strip and its divider.
+const RADAR_WIDTH: usize = 28;
+/// What a page draws into, beside the radar strip.
+pub(super) const BODY: Rect = Rect {
+    left: CONTENT.left + RADAR_WIDTH,
+    top: CONTENT.top,
+    right: CONTENT.right,
+    bottom: CONTENT.bottom,
+};
+/// The body's edges by name, for pages placed from them.
+pub(super) const CONTENT_LEFT: usize = BODY.left;
+pub(super) const CONTENT_TOP: usize = BODY.top;
+pub(super) const CONTENT_RIGHT: usize = BODY.right;
+/// The 5x7 pages end above the toast band.
 pub(super) const CONTENT_BOTTOM: usize = 285;
 pub(super) const BODY_BOTTOM: usize = CONTENT_BOTTOM;
-/// The status row's text line, full width under the content.
-const STATUS_TEXT_TOP: usize = 296;
+/// Without a radar the body moves left by this much, to the centre.
+const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 
-/// A ride page, in BottomLeft order.
+/// A ride page, in MOVE order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RidePage {
     /// Live speed, power, heart rate, cadence, distance, time and grade.
@@ -78,24 +86,40 @@ impl RidePage {
         Self::ALL.get(self.index() + 1).copied()
     }
 
-    /// "1/2" style position, for the header.
-    pub(super) fn indicator(self) -> [u8; 3] {
-        [
-            b'1' + self.index() as u8,
-            b'/',
-            b'0' + Self::ALL.len() as u8,
-        ]
+    /// The page after this one, wrapping to the first.
+    pub fn following(self) -> Self {
+        self.next().unwrap_or(Self::ALL[0])
+    }
+
+    /// The page before this one, wrapping to the last.
+    pub fn preceding(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 }
 
-/// Formatted readings a page prepares once per frame and paints per row.
+/// Formatted readings a 5x7 page prepares once per frame.
 pub type Values = [Text<12>; 12];
 
-/// Prepare the shown page's values, and the climb page's chart, once per frame.
+/// Text the main page lays out once per frame in the anti-aliased faces,
+/// and the zones its gauges show.
+pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
+
+#[derive(Default)]
+pub struct Smooth {
+    pub(super) labels: Labels,
+    pub(super) zones: [u8; 2],
+}
+
+/// Prepare the shown page once per frame: the main page's labels, or the
+/// 5x7 pages' values and the climb page's chart.
 pub(super) fn prepare(view: &mut View) {
+    if view.ride_page == RidePage::Main {
+        view.smooth = main::prepare(view);
+        return;
+    }
     let mut values = core::array::from_fn(|_| Text::new());
     match view.ride_page {
-        RidePage::Main => main::prepare(view, &mut values),
+        RidePage::Main => {}
         RidePage::Stats => stats::prepare(view, &mut values),
         RidePage::Lap => lap::prepare(view, &mut values),
         RidePage::Climb => {
@@ -106,173 +130,130 @@ pub(super) fn prepare(view: &mut View) {
     view.values = values;
 }
 
-/// Everything below the header, except the footer divider the view draws.
-/// The row arrives cleared.
+/// Paint a content row: the radar strip while a radar is paired, and the
+/// page in the body, centred without a radar.
 pub(super) fn paint(view: &View, row: &mut Row) {
-    let y = row.y();
-    if y < CONTENT_BOTTOM {
-        let mut content = row.within(CONTENT_LEFT..CONTENT_RIGHT);
-        match view.ride_page {
-            RidePage::Main => main::paint(view, &mut content),
-            RidePage::Stats => stats::paint(view, &mut content),
-            RidePage::Lap => lap::paint(view, &mut content),
-            RidePage::Climb => climb::paint(view, &mut content),
-        }
-        row.set(27, GRID);
-    } else {
-        paint_status(view, row);
+    row.fill(BLACK);
+    if view.radar_paired {
+        paint_radar(view.radar, &mut row.within(0..RADAR_WIDTH - 2));
+        paint_page(view, &mut row.within(BODY.left..BODY.right));
+        return;
     }
-    if (38..279).contains(&y) {
-        paint_radar(view.radar, &mut row.within(0..26));
+    // Paint the page where it sits beside a radar, then move it to the centre.
+    let mut page = [BLACK; chrome::WIDTH];
+    paint_page(
+        view,
+        &mut Row::new(row.y(), &mut page).within(BODY.left..BODY.right),
+    );
+    let clip = row.clip();
+    let start = (BODY.left - CENTRE_SHIFT).max(clip.start);
+    let end = (BODY.right - CENTRE_SHIFT).min(clip.end);
+    if start < end {
+        row.pixels_mut()[start..end]
+            .copy_from_slice(&page[start + CENTRE_SHIFT..end + CENTRE_SHIFT]);
     }
 }
 
-/// The radar strip, which owns its columns: an arrow, the range track and
-/// targets on top.
+/// The 5x7 pages end above the toast band; the main page uses all of it.
+fn paint_page(view: &View, row: &mut Row) {
+    match view.ride_page {
+        RidePage::Main => main::paint(view, row),
+        _ if row.y() >= BODY_BOTTOM => {}
+        RidePage::Stats => stats::paint(view, row),
+        RidePage::Lap => lap::paint(view, row),
+        RidePage::Climb => climb::paint(view, row),
+    }
+}
+
+/// Where the radar track runs: the rider at the top, 200 m at the bottom.
+/// It ends above the toast band, so a toast never hides a target.
+const TRACK_TOP: usize = BODY.top + 22;
+const TRACK_BOTTOM: usize = chrome::TOAST.top - 1 - TARGET_RADIUS;
+/// Targets are discs this many rows above and below their range.
+const TARGET_RADIUS: usize = 5;
+const ARROW_TOP: usize = BODY.top + 8;
+const RANGE_MM: u32 = 200_000;
+
+fn target_y(target: radar::Target) -> i32 {
+    let span = (TRACK_BOTTOM - TRACK_TOP) as u32;
+    (TRACK_TOP as u32 + target.range_mm.min(RANGE_MM) * span / RANGE_MM) as i32
+}
+
+fn track_color(status: radar::Status) -> u16 {
+    match status {
+        radar::Status::Ready => ACCENT,
+        radar::Status::Error | radar::Status::ReservedThreat => RED,
+        _ => AMBER,
+    }
+}
+
+/// The radar strip: the arrow, the track, then targets, the first on top.
 fn paint_radar(radar: radar::Snapshot, row: &mut Row) {
     let y = row.y();
-    row.fill(0);
-    if y < 49 {
-        let half = (y - 38) / 2;
+    if (ARROW_TOP..ARROW_TOP + 11).contains(&y) {
+        let half = (y - ARROW_TOP) / 2;
         row.span(12 - half..13 + half, WHITE);
     }
-    if (58..=272).contains(&y) {
-        let color = match radar.status {
-            radar::Status::Ready => CYAN,
-            radar::Status::Error | radar::Status::ReservedThreat => RED,
-            _ => DIM,
-        };
-        row.span(11..14, color);
+    if (TRACK_TOP..=TRACK_BOTTOM).contains(&y) {
+        row.span(11..14, track_color(radar.status));
     }
-    // The first target wins where dots overlap, so paint it last.
     for target in radar.targets.iter().rev().flatten() {
-        let cy = 58 + (target.range_mm.min(200000) * 214 / 200000) as i32;
-        let dy = y as i32 - cy;
-        if dy * dy > 25 {
+        let dy = y as i32 - target_y(*target);
+        if dy * dy > (TARGET_RADIUS * TARGET_RADIUS) as i32 {
             continue;
         }
         let mut half = 0;
-        while (half + 1) * (half + 1) + dy * dy <= 25 {
+        while (half + 1) * (half + 1) + dy * dy <= (TARGET_RADIUS * TARGET_RADIUS) as i32 {
             half += 1;
         }
-        let color = if close(*target) { RED } else { YELLOW };
+        let color = if close(*target) { RED } else { POWER };
         row.span((12 - half) as usize..(13 + half) as usize, color);
-    }
-}
-
-/// The status row under the content: the end-ride confirmation, a lap
-/// toast, or the recorder state. No button labels.
-fn paint_status(view: &View, row: &mut Row) {
-    if row.y() <= CONTENT_BOTTOM {
-        return;
-    }
-    // An armed end ride outranks a lap toast: the next press saves.
-    if !view.stop_confirm && !view.toast.as_bytes().is_empty() {
-        row.fill(CYAN);
-        row.text(6, STATUS_TEXT_TOP, 2, view.toast.as_bytes(), 0);
-        return;
-    }
-    // End-ride confirmation, storage warning or recorder state, prepared once.
-    let color = if view.state_warns { YELLOW } else { CYAN };
-    row.text(6, STATUS_TEXT_TOP, 2, view.state_text.as_bytes(), color);
-    // Under the state: the honest note that auto-pause has no wheel speed.
-    if view.state == Status::Recording && view.sample.speed_mm_s.is_none() {
-        row.text(6, 287, 1, b"NO SPEED: AUTO PAUSE OFF", DIM);
     }
 }
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    if x < 26 && (38..279).contains(&y) {
-        return reference_radar_pixel(view.radar, x, y);
+    let x = if view.radar_paired {
+        if x < RADAR_WIDTH - 2 {
+            return reference_radar_pixel(view.radar, x, y);
+        }
+        x
+    } else {
+        x + CENTRE_SHIFT
+    };
+    if !(BODY.left..BODY.right).contains(&x) {
+        return BLACK;
     }
-    if x == 27 && y < 285 {
-        return GRID;
+    match view.ride_page {
+        RidePage::Main => main::reference_pixel(view, x, y),
+        _ if y >= BODY_BOTTOM => BLACK,
+        RidePage::Stats => stats::reference_pixel(view, x, y),
+        RidePage::Lap => lap::reference_pixel(view, x, y),
+        RidePage::Climb => climb::reference_pixel(view, x, y),
     }
-    if x >= CONTENT_LEFT && y < CONTENT_BOTTOM {
-        return match view.ride_page {
-            RidePage::Main => main::reference_pixel(view, x, y),
-            RidePage::Stats => stats::reference_pixel(view, x, y),
-            RidePage::Lap => lap::reference_pixel(view, x, y),
-            RidePage::Climb => climb::reference_pixel(view, x, y),
-        };
-    }
-    reference_status_pixel(view, x, y)
 }
 
 #[cfg(test)]
 fn reference_radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
     for target in radar.targets.into_iter().flatten() {
-        let cy = 58 + (target.range_mm.min(200000) * 214 / 200000) as i32;
         let dx = x as i32 - 12;
-        let dy = y as i32 - cy;
-        if dx * dx + dy * dy <= 25 {
-            return if close(target) { RED } else { YELLOW };
+        let dy = y as i32 - target_y(target);
+        if dx * dx + dy * dy <= (TARGET_RADIUS * TARGET_RADIUS) as i32 {
+            return if close(target) { RED } else { POWER };
         }
     }
-    if (11..=13).contains(&x) && (58..=272).contains(&y) {
-        return match radar.status {
-            radar::Status::Ready => CYAN,
-            radar::Status::Error | radar::Status::ReservedThreat => RED,
-            _ => DIM,
-        };
+    if (11..=13).contains(&x) && (TRACK_TOP..=TRACK_BOTTOM).contains(&y) {
+        return track_color(radar.status);
     }
-    if y < 49 && (x as i32 - 12).abs() <= (y as i32 - 38) / 2 {
+    let top = ARROW_TOP;
+    if (top..top + 11).contains(&y) && (x as i32 - 12).abs() <= (y - top) as i32 / 2 {
         return WHITE;
     }
-    0
+    BLACK
 }
 
-/// The finished lap the status row announces: number, time and average power.
-pub(super) fn toast(lap: Option<Lap>) -> Text<19> {
-    let mut toast = Text::new();
-    let Some(lap) = lap else {
-        return toast;
-    };
-    let mut time = Text::<12>::new();
-    lap_time(&mut time, lap.time_ms / 1000);
-    let time = core::str::from_utf8(time.as_bytes()).unwrap_or("");
-    let written = match lap.avg_power() {
-        Some(watts) => write!(toast, "LAP {} {time} {watts}W", lap.number),
-        None => write!(toast, "LAP {} {time} --W", lap.number),
-    };
-    // Past lap 99 and an hour the power no longer fits the row.
-    if written.is_err() {
-        toast = Text::new();
-        let _ = write!(toast, "LAP {} {time}", lap.number);
-    }
-    toast
-}
-
-#[cfg(test)]
-fn reference_status_pixel(view: &View, x: usize, y: usize) -> u16 {
-    if y <= CONTENT_BOTTOM {
-        return 0;
-    }
-    // An armed end ride outranks a lap toast: the next press saves.
-    if !view.stop_confirm && !view.toast.as_bytes().is_empty() {
-        return if text(x, y, 6, STATUS_TEXT_TOP, 2, view.toast.as_bytes()) {
-            0
-        } else {
-            CYAN
-        };
-    }
-    // End-ride confirmation, storage warning or recorder state, prepared once.
-    if text(x, y, 6, STATUS_TEXT_TOP, 2, view.state_text.as_bytes()) {
-        return if view.state_warns { YELLOW } else { CYAN };
-    }
-    // Under the state: the honest note that auto-pause has no wheel speed.
-    if view.state == Status::Recording
-        && view.sample.speed_mm_s.is_none()
-        && text(x, y, 6, 287, 1, b"NO SPEED: AUTO PAUSE OFF")
-    {
-        return DIM;
-    }
-    0
-}
-
-/// A label and the value under it, in a page's cell.
+/// A label and the value under it, in a 5x7 page's cell.
 pub(super) struct Cell {
     pub(super) left: usize,
     pub(super) top: usize,
@@ -313,6 +294,24 @@ impl Cell {
     }
 }
 
+/// A finished lap's toast: number, time and average power.
+pub fn lap_toast(lap: Lap) -> Text<19> {
+    let mut toast = Text::new();
+    let mut time = Text::<12>::new();
+    lap_time(&mut time, lap.time_ms / 1000);
+    let time = time.as_str();
+    let written = match lap.avg_power() {
+        Some(watts) => write!(toast, "LAP {} {time} {watts}W", lap.number),
+        None => write!(toast, "LAP {} {time} --W", lap.number),
+    };
+    // Past lap 99 and an hour the power no longer fits.
+    if written.is_err() {
+        toast = Text::new();
+        let _ = write!(toast, "LAP {} {time}", lap.number);
+    }
+    toast
+}
+
 /// km/h with one truncated decimal, as the live reading always showed, or "--".
 pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
     let _ = match mm_s {
@@ -324,7 +323,13 @@ pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
     };
 }
 
-/// HH:MM:SS.
+/// H:MM:SS, the way a workout clock reads.
+pub(super) fn elapsed(value: &mut Text<12>, seconds: u64) {
+    let t = seconds;
+    let _ = write!(value, "{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
+}
+
+/// HH:MM:SS, as the 5x7 pages show it.
 pub(super) fn clock(value: &mut Text<12>, seconds: u64) {
     let t = seconds;
     let _ = write!(value, "{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
@@ -377,16 +382,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pages_step_in_order_and_end() {
+    fn pages_step_in_order_and_wrap_both_ways() {
         assert_eq!(RidePage::default(), RidePage::Main);
         assert_eq!(RidePage::Main.next(), Some(RidePage::Stats));
         assert_eq!(RidePage::Stats.next(), Some(RidePage::Lap));
         assert_eq!(RidePage::Lap.next(), Some(RidePage::Climb));
         assert_eq!(RidePage::Climb.next(), None);
-        assert_eq!(&RidePage::Main.indicator(), b"1/4");
-        assert_eq!(&RidePage::Stats.indicator(), b"2/4");
-        assert_eq!(&RidePage::Lap.indicator(), b"3/4");
-        assert_eq!(&RidePage::Climb.indicator(), b"4/4");
+        assert_eq!(RidePage::Climb.following(), RidePage::Main);
+        assert_eq!(RidePage::Main.preceding(), RidePage::Climb);
+        assert_eq!(RidePage::Stats.preceding(), RidePage::Main);
+    }
+
+    /// Radar alerts are safety-critical: even the farthest target is drawn
+    /// whole above the band a toast may cover.
+    #[test]
+    fn radar_targets_stay_clear_of_toasts() {
+        for range_mm in [0, 190_000, 200_000, 400_000] {
+            let target = radar::Target {
+                threat: radar::Threat::Approach,
+                side: radar::Side::Behind,
+                range_mm,
+                closing_speed_cm_s: 0,
+            };
+            let bottom = target_y(target) + TARGET_RADIUS as i32;
+            assert!(bottom < chrome::TOAST.top as i32, "{range_mm} mm");
+            let mut snapshot = radar::Snapshot::default();
+            snapshot.targets[0] = Some(target);
+            for y in chrome::TOAST.top..chrome::HEIGHT {
+                for x in 0..RADAR_WIDTH {
+                    assert_eq!(reference_radar_pixel(snapshot, x, y), BLACK, "({x}, {y})");
+                }
+            }
+        }
     }
 
     #[test]
@@ -403,7 +430,7 @@ mod tests {
         assert_eq!(format(&|v| speed(v, Some(8334))), b"30.0");
         assert_eq!(format(&|v| speed(v, Some(8333))), b"29.9");
         assert_eq!(format(&|v| speed(v, None)), b"--");
-        assert_eq!(format(&|v| clock(v, 3725)), b"01:02:05");
+        assert_eq!(format(&|v| elapsed(v, 3725)), b"1:02:05");
         assert_eq!(format(&|v| lap_time(v, 312)), b"05:12");
         assert_eq!(format(&|v| lap_time(v, 3725)), b"1:02:05");
         assert_eq!(format(&|v| whole(v, Some(42))), b"42");

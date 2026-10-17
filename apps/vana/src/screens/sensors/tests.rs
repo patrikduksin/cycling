@@ -1,8 +1,36 @@
-use super::render::{AMBER, CYAN, GREEN, WHITE};
+use super::layout::DETAIL_BUTTONS;
+use super::render::{AMBER, CYAN, GREEN, HEADING_TOP, STATUS_TOP, TITLE_TOP, WHITE};
 use super::*;
+use crate::screens::chrome::{Align, BODY, CAPTION, CARD, Label, Line, RAISED, VALUE};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::{Button, Input};
-use firmware_shell::rendering::text::text;
+use firmware_shell::rendering::font::Face;
+
+/// The menu draws `text` exactly where a label of it is solid, and nowhere
+/// else in its box.
+fn shows(
+    menu: &Menu,
+    face: &'static Face,
+    text: &[u8],
+    x: usize,
+    top: usize,
+    align: Align,
+    color: u16,
+) -> bool {
+    let label = Label::new(Line::<24>::new(face, text), x, top, align, color);
+    (top..label.bottom()).all(|y| {
+        (label.left..label.right()).all(|x| match label.line.coverage(x - label.left, y - top) {
+            15 => menu.pixel(x, y) == color,
+            0 => menu.pixel(x, y) != color,
+            _ => true,
+        })
+    })
+}
+
+/// The focused sensor's status line.
+fn status(menu: &Menu, color: u16, text: &[u8]) -> bool {
+    shows(menu, &CAPTION, text, 12, STATUS_TOP, Align::Left, color)
+}
 
 fn press(button: Button) -> Input {
     Input::Button { button, code: 1 }
@@ -32,10 +60,6 @@ fn saved(tiles: &[(Identity, Connection)]) -> [Option<Selected>; CHANNEL_CAPACIT
         })
     })
 }
-fn shows(menu: &Menu, left: usize, top: usize, color: u16, label: &[u8]) -> bool {
-    (top..top + 14)
-        .all(|y| (12..228).all(|x| (menu.pixel(x, y) == color) == text(x, y, left, top, 2, label)))
-}
 
 #[test]
 fn runtime_scan_messages_preserve_focused_identity_and_connection_feedback() {
@@ -49,7 +73,7 @@ fn runtime_scan_messages_preserve_focused_identity_and_connection_feedback() {
     let mut baseline = [0; 216 * 44];
     for y in 0..44 {
         for x in 0..216 {
-            baseline[y * 216 + x] = menu.pixel(12 + x, 238 + y);
+            baseline[y * 216 + x] = menu.pixel(12 + x, TITLE_TOP + y);
         }
     }
     for message in [
@@ -65,7 +89,7 @@ fn runtime_scan_messages_preserve_focused_identity_and_connection_feedback() {
         for y in 0..44 {
             for x in 0..216 {
                 assert_eq!(
-                    menu.pixel(12 + x, 238 + y),
+                    menu.pixel(12 + x, TITLE_TOP + y),
                     baseline[y * 216 + x],
                     "{message:?} at {x},{y}"
                 );
@@ -84,10 +108,18 @@ fn runtime_scan_messages_preserve_focused_identity_and_connection_feedback() {
     );
     menu.focus_type(11);
     menu.set_message(MenuMessage::ScanCancelled);
-    assert!(shows(&menu, 12, 267, CYAN, b"WAIT / 10"));
+    assert!(status(&menu, CYAN, b"WAIT / 10"));
     menu.set_message(MenuMessage::RadioUnavailable);
-    assert!(shows(&menu, 12, 267, CYAN, b"WAIT / 10"));
-    assert!(shows(&menu, 12, 36, AMBER, b"RADIO UNAVAILABLE"));
+    assert!(status(&menu, CYAN, b"WAIT / 10"));
+    assert!(shows(
+        &menu,
+        &BODY,
+        b"RADIO UNAVAILABLE",
+        12,
+        HEADING_TOP,
+        Align::Left,
+        AMBER
+    ));
 }
 
 #[test]
@@ -112,7 +144,7 @@ fn saved_sensor_status_is_honest_about_searching_and_retrying() {
         );
         menu.focus_type(11);
         assert!(indicator_has_color(&menu, color), "{connection:?}");
-        assert!(shows(&menu, 12, 267, color, label), "{connection:?}");
+        assert!(status(&menu, color, label), "{connection:?}");
     }
 }
 
@@ -143,16 +175,45 @@ fn replacement_disambiguates_maximum_identity_without_overlapping_numbers() {
             let _ = menu.pixel(x, y);
         }
     }
-    // Each side reserves a 14px number line and a separate transmission line.
-    for y in 160..191 {
-        for x in 12..100 {
-            assert_eq!(
-                menu.pixel(x, y) == WHITE,
-                text(x, y, 24, 160, 2, b"65535") || text(x, y, 30, 177, 2, b"T254"),
-                "{x},{y}"
-            );
-        }
-    }
+    // Each side reserves a number line and a separate transmission line.
+    assert!(shows(
+        &menu,
+        &VALUE,
+        b"65535",
+        60,
+        140,
+        Align::Center,
+        WHITE
+    ));
+    assert!(shows(
+        &menu,
+        &CAPTION,
+        b"T254",
+        60,
+        172,
+        Align::Center,
+        WHITE
+    ));
+    assert!(shows(
+        &menu,
+        &CAPTION,
+        b"T255",
+        180,
+        172,
+        Align::Center,
+        WHITE
+    ));
+    let number = Label::new(
+        Line::<8>::new(&VALUE, b"65535"),
+        60,
+        140,
+        Align::Center,
+        WHITE,
+    );
+    assert!(
+        number.bottom() <= 172 && number.right() < 120,
+        "numbers do not overlap"
+    );
 }
 
 #[test]
@@ -172,11 +233,12 @@ fn paper_grid_shows_ten_selected_and_eight_nearby_without_scrolling() {
         saved(&tiles),
         false,
     );
-    assert_eq!(menu.pixel(231, 125), 0x3186);
-    assert_eq!(menu.pixel(228, 223), 0x3186);
+    // The last selected and nearby tiles are on screen and unfocused.
+    assert_eq!(menu.pixel(194, 110), CARD);
+    assert_eq!(menu.pixel(181, 210), CARD);
     menu.input(press(Button::BottomLeft), 0);
-    assert_eq!(menu.pixel(8, 56), CYAN);
-    assert_eq!(menu.pixel(10, 58), 0x0945);
+    assert_eq!(menu.pixel(28, 56), CYAN, "focus ring");
+    assert_eq!(menu.pixel(12, 70), RAISED, "focused fill");
 }
 
 #[test]
@@ -212,13 +274,13 @@ fn identities_with_equal_device_numbers_have_distinct_available_suffixes() {
     let mut first_status = [0; 216 * 14];
     for y in 0..14 {
         for x in 0..216 {
-            first_status[y * 216 + x] = menu.pixel(12 + x, 267 + y);
+            first_status[y * 216 + x] = menu.pixel(12 + x, STATUS_TOP + y);
         }
     }
     menu.input(press(Button::BottomLeft), 400);
-    assert!(
-        (0..14).any(|y| (0..216).any(|x| first_status[y * 216 + x] != menu.pixel(12 + x, 267 + y)))
-    );
+    assert!((0..14).any(|y| {
+        (0..216).any(|x| first_status[y * 216 + x] != menu.pixel(12 + x, STATUS_TOP + y))
+    }));
 }
 
 #[test]
@@ -236,17 +298,12 @@ fn detail_offers_only_disconnect_and_back_whatever_the_link_state() {
         );
         menu.input(press(Button::BottomLeft), 0);
         assert_eq!(menu.input(press(Button::BottomRight), 400), None);
-        let screen: std::vec::Vec<u16> = (0..320)
-            .flat_map(|y| (0..240).map(move |x| (x, y)))
-            .map(|(x, y)| menu.pixel(x, y))
-            .collect();
-        let label = |left, top, label: &[u8]| {
-            (top..top + 14).any(|y| {
-                (0..240).any(|x| text(x, y, left, top, 2, label) && screen[y * 240 + x] == WHITE)
-            })
+        let label = |(top, height): (usize, usize), label: &[u8]| {
+            let top = top + height / 2 - usize::from(BODY.top) - usize::from(BODY.cap) / 2;
+            shows(&menu, &BODY, label, 120, top, Align::Center, WHITE)
         };
-        assert!(label(60, 230, b"DISCONNECT"), "{connection:?}");
-        assert!(label(96, 269, b"BACK"), "{connection:?}");
+        assert!(label(DETAIL_BUTTONS[0], b"DISCONNECT"), "{connection:?}");
+        assert!(label(DETAIL_BUTTONS[1], b"BACK"), "{connection:?}");
         // Secondary is Back: nothing is removed.
         menu.input(press(Button::BottomLeft), 800);
         assert_eq!(menu.input(press(Button::BottomRight), 1200), None);
@@ -438,4 +495,170 @@ fn save_notice_outlasts_discovery_messages_on_the_page() {
             .as_bytes()
             .starts_with(b"SCAN FAILED")
     );
+}
+
+#[test]
+fn taps_focus_and_activate_what_is_under_the_finger() {
+    let mut menu = Menu::new();
+    menu.refresh(nearby(&[peer(10)]), [None; CHANNEL_CAPACITY], false);
+    // Empty space does nothing; the search button searches.
+    assert_eq!(menu.tap(120, 100), None);
+    assert_eq!(menu.tap(218, 140), Some(Action::Scan));
+    // The search margin takes only spare space: an empty slot, never a tile.
+    assert_eq!(
+        menu.tap(200, 158),
+        Some(Action::Scan),
+        "an empty slot is spare"
+    );
+    let mut crowded = Menu::new();
+    crowded.refresh(
+        nearby(&[peer(10), peer(11), peer(12), peer(13)]),
+        [None; CHANNEL_CAPACITY],
+        false,
+    );
+    assert_eq!(
+        crowded.tap(200, 158),
+        Some(Action::Connect(peer(13).identity))
+    );
+    // Lost input asks for a confirmed focus; a tap is one.
+    menu.input(Input::Cancel, 100);
+    assert_eq!(menu.input(press(Button::BottomRight), 600), None);
+    assert_eq!(menu.tap(30, 170), Some(Action::Connect(peer(10).identity)));
+    // Once saved, tapping its tile opens the detail; Back closes it.
+    let tiles = saved(&[(peer(10).identity, Connection::Searching)]);
+    menu.refresh(nearby(&[peer(10)]), tiles, false);
+    assert_eq!(menu.tap(20, 70), None);
+    assert!(matches!(menu.view, menu::View::Detail(0)));
+    assert_eq!(menu.tap(120, 275), None);
+    assert!(matches!(menu.view, menu::View::Tiles));
+    assert_eq!(menu.tap(20, 70), None);
+    assert_eq!(menu.tap(120, 236), Some(Action::Disconnect(11)));
+}
+
+#[test]
+fn home_glance_lists_selected_sensors_with_their_state() {
+    let mut menu = Menu::new();
+    assert!(menu.glance().is_empty());
+    let tiles = saved(&[(peer(10).identity, Connection::Searching)]);
+    menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
+    let glance = menu.glance();
+    assert_eq!(glance.len(), 1);
+    assert_eq!(glance[0].kind, 11);
+    assert!(!glance[0].live);
+    assert_eq!(glance[0].color, CYAN);
+}
+
+/// Every painted row of the menu equals the per-pixel reference.
+#[track_caller]
+fn assert_paints_reference(menu: &Menu, what: &str) {
+    for y in 0..320 {
+        for x in 0..240 {
+            let (got, want) = (menu.pixel(x, y), menu.reference_pixel(x, y));
+            assert_eq!(got, want, "{what} at {x},{y}: {got:#06x} != {want:#06x}");
+        }
+    }
+}
+
+#[test]
+fn painted_rows_match_the_per_pixel_reference() {
+    let mut menu = Menu::new();
+    menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], true);
+    assert_paints_reference(&menu, "empty and scanning");
+    let mut replacement = peer(77);
+    replacement.identity.transmission_type = 5;
+    let mut radar = peer(30);
+    radar.identity.device_type = 40;
+    let tiles = saved(&[
+        (peer(10).identity, Connection::Live),
+        (
+            Identity {
+                device_type: 120,
+                ..peer(11).identity
+            },
+            Connection::Searching,
+        ),
+        (
+            Identity {
+                device_type: 121,
+                ..peer(12).identity
+            },
+            Connection::DataLost,
+        ),
+    ]);
+    menu.refresh(nearby(&[peer(20), replacement, radar]), tiles, false);
+    assert_paints_reference(&menu, "tiles, search focused");
+    menu.set_notice(Some(MenuMessage::NotSaved));
+    for step in 0..6 {
+        menu.input(press(Button::BottomLeft), 400 * (step + 1));
+        assert_paints_reference(&menu, "tiles, focus moving");
+    }
+    menu.set_notice(None);
+    // The first saved sensor's detail, both choices.
+    menu.focus_type(11);
+    menu.input(press(Button::BottomRight), 4000);
+    assert!(matches!(menu.view, menu::View::Detail(_)));
+    assert_paints_reference(&menu, "detail");
+    menu.input(press(Button::BottomLeft), 4400);
+    assert_paints_reference(&menu, "detail, back focused");
+    // A nearby strap of the saved type asks to replace it.
+    let mut menu = Menu::new();
+    let tiles = saved(&[(peer(10).identity, Connection::Live)]);
+    menu.refresh(nearby(&[peer(10), replacement]), tiles, false);
+    menu.input(press(Button::BottomLeft), 0);
+    menu.input(press(Button::BottomLeft), 400);
+    assert_eq!(menu.input(press(Button::BottomRight), 800), None);
+    assert!(matches!(menu.view, menu::View::Replace(_)));
+    assert_paints_reference(&menu, "replace");
+    menu.input(press(Button::BottomLeft), 1200);
+    assert_paints_reference(&menu, "replace, keep focused");
+}
+
+/// The text a whole frame of the menu paints, once per label, as ink boxes.
+fn painted_text(menu: &Menu) -> std::vec::Vec<(std::string::String, crate::screens::chrome::Rect)> {
+    use super::render::PAINTED;
+    PAINTED.with(|painted| painted.borrow_mut().clear());
+    for y in 0..320 {
+        let mut pixels = [0; 240];
+        menu.paint(&mut crate::screens::chrome::Row::new(y, &mut pixels));
+    }
+    let mut labels = PAINTED.with(|painted| painted.take());
+    labels.sort_by_key(|label| (label.top, label.left));
+    labels.dedup_by(|a, b| (a.left, a.top, a.line.text()) == (b.left, b.top, b.line.text()));
+    labels
+        .iter()
+        .filter_map(crate::screens::chrome::layout::text)
+        .collect()
+}
+
+#[test]
+fn crowded_sensor_pages_never_overlap_or_clip_text() {
+    use crate::screens::chrome::{CONTENT, layout::assert_apart};
+    // Ten saved sensors and eight nearby, many of one type with the largest
+    // numbers, so every status line names an identity.
+    let tiles: [_; CHANNEL_CAPACITY] = core::array::from_fn(|n| {
+        let identity = Identity {
+            device_type: if n < 5 { 11 } else { n as u8 + 110 },
+            device_number: u16::MAX - n as u16,
+            transmission_type: 255,
+        };
+        (identity, Connection::Searching)
+    });
+    let mut menu = Menu::new();
+    let found = core::array::from_fn(|n| {
+        let mut discovery = peer(u16::MAX - 20 - n as u16);
+        discovery.identity.transmission_type = 255;
+        Some(discovery)
+    });
+    menu.refresh(found, saved(&tiles), true);
+    for step in 0..20 {
+        let what = std::format!("tiles, focus step {step}");
+        let text = painted_text(&menu);
+        assert!(text.len() >= 2, "{what}: {text:?}");
+        assert_apart(&text, CONTENT, &what);
+        menu.input(press(Button::BottomLeft), 400 * step as u64);
+    }
+    // A saved sensor's detail.
+    menu.focus_type(11);
+    menu.input(press(Button::BottomRight), 20_000);
+    assert_apart(&painted_text(&menu), CONTENT, "detail");
 }

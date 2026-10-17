@@ -60,7 +60,7 @@ impl MenuMessage {
     pub const fn short(self) -> &'static str {
         match self {
             Self::SlotsFull => "SENSOR SLOTS FULL",
-            Self::InputLost => "PRESS NEXT AGAIN",
+            Self::InputLost => "MOVE FOCUS FIRST",
             Self::WaitingForCompanion => "WAITING FOR RADIO",
             Self::ScanThenPick => "FIND NEARBY",
             Self::NotSaved => "NOT SAVED",

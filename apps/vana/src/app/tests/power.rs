@@ -164,7 +164,7 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
     runtime.input(press(Button::TopLeft), 1_500, &mut radio);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_500);
-    assert!(lit(&screen, 24, 50, 2, b"READY TO RIDE"));
+    assert_eq!(runtime.home_status(1_500).0, "READY TO RIDE");
 
     runtime.input(press(Button::TopLeft), 2_500, &mut radio);
     runtime.input(press(Button::BottomRight), 3_000, &mut radio);
@@ -194,7 +194,7 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_500);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_600);
-    assert!(lit(&screen, 24, 50, 2, b"CANNOT TURN OFF"));
+    assert_eq!(runtime.home_status(1_600), ("CANNOT TURN OFF", true));
 
     // An accepted request the device later abandons also comes back.
     let mut switch = Switch::new(true);
@@ -601,7 +601,7 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
         Some(crate::app::power::Notice::Unsaved)
     );
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_700);
-    assert!(lit(&screen, 24, 50, 2, b"CHANGES NOT SAVED"));
+    assert_eq!(runtime.home_status(1_700), ("CHANGES NOT SAVED", true));
     // Told once, turning off again goes ahead.
     runtime.input(press(Button::TopLeft), 3_000, &mut radio);
     runtime.input(press(Button::BottomRight), 3_400, &mut radio);

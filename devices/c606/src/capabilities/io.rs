@@ -17,6 +17,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Instant;
 use embassy_time::Timer;
+use firmware_services::input::{Poll, TouchContact};
 
 static EDGES: Mutex<CriticalSectionRawMutex, RefCell<Edges>> =
     Mutex::new(RefCell::new(Edges::new()));
@@ -57,17 +58,21 @@ pub fn snapshot(now: u64) -> Option<Snapshot> {
 pub fn take_edge() -> Option<Edge> {
     EDGES.lock(|edges| edges.borrow_mut().pop())
 }
-fn edge(now: u64, input: Input) {
+/// Queue an edge; returns whether the queue overflowed and sent a Cancel,
+/// so the touch contact in progress must be cancelled too.
+#[must_use]
+fn edge(now: u64, input: Input) -> bool {
     if super::power::ACCESS.closed() {
-        return;
+        return false;
     }
-    EDGES.lock(|edges| edges.borrow_mut().push(now, input));
+    EDGES.lock(|edges| edges.borrow_mut().push(now, input))
 }
 pub fn power_boundary(now: u64) {
     EDGES.lock(|edges| {
         let mut edges = edges.borrow_mut();
         while edges.pop().is_some() {}
-        edges.push(now, Input::Cancel);
+        // An empty queue cannot overflow.
+        let _ = edges.push(now, Input::Cancel);
     });
 }
 
@@ -103,8 +108,7 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
     };
     let mut decoder = Decoder::default();
     let mut last_rx = Instant::now().as_millis();
-    let mut last_touch = last_rx;
-    let mut point = None;
+    let mut contact = TouchContact::default();
     log::info!(target: "input", "acquisition started poll_ms=10 edges=16");
     loop {
         let now = Instant::now().as_millis();
@@ -112,7 +116,8 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
             decoder.reset();
             state.battery = None;
             state.power = None;
-            point = None;
+            // `power_boundary` sent the Cancel.
+            contact.cancel(now);
             last_rx = now;
         }
         if now.saturating_sub(last_rx) > 250 {
@@ -125,8 +130,8 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
         }
         let errors = counters.errors();
         if errors != state.uart_errors {
-            edge(now, Input::Cancel);
-            point = None;
+            let _ = edge(now, Input::Cancel);
+            contact.cancel(now);
             log::warn!(target: "input", "companion loss uart={} ring={}", errors, counters.ring_overflows);
         }
         state.uart_errors = crate::drivers::companion::feed_frames(
@@ -138,8 +143,8 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                 let Ok(frame) = frame else {
                     super::ant::loss(now);
                     super::sensors::loss();
-                    edge(now, Input::Cancel);
-                    point = None;
+                    let _ = edge(now, Input::Cancel);
+                    contact.cancel(now);
                     return;
                 };
                 if let Some(payload) = frame.identity_reply() {
@@ -164,7 +169,9 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                         Event::Power { status } => state.power = Some((status, now)),
                         Event::Button { button, code } => {
                             log::info!(target: "button", "id={} code={}", button.index(), code);
-                            edge(now, Input::Button { button, code });
+                            if edge(now, Input::Button { button, code }) {
+                                contact.cancel(now);
+                            }
                         }
                     }
                 }
@@ -179,32 +186,25 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;
-        match touch.poll() {
-            Ok(Report::Press(next)) => {
-                state.touch_available = true;
-                last_touch = now;
-                if point != Some(next) {
-                    edge(now, Input::Touch(next));
+        let poll = match touch.poll() {
+            Ok(report) => {
+                if report != Report::Invalid {
+                    state.touch_available = true;
                 }
-                point = Some(next);
+                Poll::from(report)
             }
-            Ok(Report::Release) => {
-                state.touch_available = true;
-                if point.take().is_some() {
-                    edge(now, Input::Release);
-                }
-            }
-            Ok(Report::Invalid) => {}
             Err(_) => {
                 state.touch_available = false;
                 state.touch_errors = state.touch_errors.saturating_add(1);
-                if point.take().is_some() {
-                    edge(now, Input::Cancel);
-                }
+                Poll::Failed
             }
-        }
-        if now.saturating_sub(last_touch) > 250 && point.take().is_some() {
-            edge(now, Input::Cancel);
+        };
+        // See `Input::Cancel` for the contract these edges keep. An overflow
+        // cancels the contact, as the queue's Cancel told the consumer.
+        for input in contact.poll(poll, now).into_iter().flatten() {
+            if edge(now, input) {
+                contact.cancel(now);
+            }
         }
         if state.touch_available != was_available {
             log::info!(target: "input", "touch available={} errors={}", state.touch_available, state.touch_errors);

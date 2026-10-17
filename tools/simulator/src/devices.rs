@@ -66,7 +66,7 @@ impl InputDevice {
         }
     }
     pub fn push(&self, now: u64, event: Input) {
-        self.edges.borrow_mut().push(now, event);
+        let _ = self.edges.borrow_mut().push(now, event);
     }
 }
 impl InputSource for InputDevice {

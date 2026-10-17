@@ -294,7 +294,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 self.pressed_at.get_or_insert(at);
             }
             if self.app_active {
-                self.app_input.push(at, input);
+                let _ = self.app_input.push(at, input);
                 return;
             }
             if matches!(input, Input::Button { button, code: 1 } if Some(button) == self.next_button)

@@ -6,14 +6,13 @@ mod icons;
 mod layout;
 mod menu;
 mod message;
-#[cfg(test)]
-mod reference;
 mod render;
 mod slot;
 #[cfg(test)]
 mod tests;
 
-pub use menu::{Action, Diagnostics, Menu};
+pub(crate) use icons::row as icon_row;
+pub use menu::{Action, Diagnostics, Glance, Menu};
 pub use message::MenuMessage;
 
 pub use slot::{Connection, Selected};

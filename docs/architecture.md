@@ -40,7 +40,8 @@ Keep VANA's domain logic and screens together while they serve one application.
 Separate their responsibilities inside the package. Extract a domain library when
 a real consumer needs it and the interface is clear. Keep simulated devices with
 the simulator until another consumer needs them. Component drivers can stay
-private to the device that uses them.
+private to the device that uses them. Screens follow one visual language and
+input model, described in [ui](ui.md).
 
 `services` holds portable mechanisms, such as decoding a positioning stream or
 maintaining a journal. Its modules remain independent. It must not become a
@@ -116,7 +117,7 @@ Use typed results and observations; terminal code owns their text formatting.
 | Capability | Boundary and reason |
 | --- | --- |
 | Display | Expose geometry, supported formats and submission completion. The device owns panel quirks and DMA; the shell owns layout and rendering policy. Callers must know when a buffer is safe to reuse. |
-| Input | Expose supported physical controls and observations. The shell maps them to actions and chooses wake behavior. Device code must not invent releases the hardware cannot establish; overflow cancels held state. |
+| Input | Expose supported physical controls and observations. The shell maps them to actions and chooses wake behavior. Device code must not invent releases the hardware cannot establish; overflow cancels held state, and a cancelled touch contact ends with one `Release` once the panel reports the lift or stops reporting the finger (`Input::Cancel`). |
 | Power | Expose battery observations and supported brightness and power operations. The device enforces hardware limits and sequencing; the shell chooses preferences and inactivity policy. |
 | Storage | Expose checked relative access to owned reservations. Callers never receive access to stock or vendor regions. Journal mechanics are reusable; the owner of the stored data chooses its schema and recovery rules. |
 | Positioning | Expose timestamped observations with freshness and loss information. Keep byte framing, decoding and acquisition state behind the contract. Consumers decide whether a fix is useful for their task. |

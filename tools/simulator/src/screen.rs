@@ -1,4 +1,8 @@
-//! Recovers text from an RGB565 frame drawn with the shared 5x7 bitmap font.
+//! Recovers text from an RGB565 frame drawn with the shared 5x7 bitmap font
+//! or the anti-aliased faces of `firmware_shell::rendering::font`.
+use firmware_shell::rendering::font::{FACES, Face, blend};
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Mirrors the private glyph table in `firmware_shell::rendering::text`; a unit
 /// test compares both so drift is caught. Rows use five low bits, leftmost dot
@@ -67,8 +71,12 @@ pub struct TextRun {
     pub text: String,
     pub x: usize,
     pub y: usize,
+    /// The 5x7 scale, or for anti-aliased text the 5x7 scale of about the
+    /// same capital height.
     pub scale: usize,
     pub color: u16,
+    /// Drawn in an anti-aliased face rather than the 5x7 font.
+    pub smooth: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -76,9 +84,89 @@ struct Glyph {
     character: u8,
     x: usize,
     y: usize,
+    /// 5x7 scale, or `FACE_SCALE` plus the face's index.
     scale: usize,
     color: u16,
     ink: u32,
+    /// Pen advance to the next glyph.
+    advance: usize,
+}
+
+/// Anti-aliased glyphs group apart from 5x7 scales.
+const FACE_SCALE: usize = 100;
+
+/// A face's glyph by its fully covered pixels, relative to the first of them
+/// in raster order. Full coverage is drawn exactly in the text colour.
+struct Template {
+    character: u8,
+    face: usize,
+    /// The anchor pixel within the glyph box.
+    anchor: (usize, usize),
+    /// Glyph box offset from the pen position and its size.
+    offset: (i32, i32),
+    size: (usize, usize),
+    solid: Vec<bool>,
+    /// Coverage 0..=15 of every box pixel.
+    coverage: Vec<u8>,
+    ink: u32,
+}
+
+/// Templates keyed by the solid run right of and below the anchor.
+fn templates() -> &'static HashMap<(usize, usize), Vec<Template>> {
+    static TEMPLATES: OnceLock<HashMap<(usize, usize), Vec<Template>>> = OnceLock::new();
+    TEMPLATES.get_or_init(|| {
+        let mut map: HashMap<(usize, usize), Vec<Template>> = HashMap::new();
+        for (face_index, face) in FACES.iter().enumerate() {
+            for character in 0x21..=0x5f_u8 {
+                let glyph = face.glyph(character);
+                let (w, h) = (usize::from(glyph.w), usize::from(glyph.h));
+                if w == 0 {
+                    continue;
+                }
+                let at = |x: usize, y: usize| {
+                    face.coverage(
+                        character,
+                        x as i32 + i32::from(glyph.x),
+                        y as i32 + i32::from(glyph.y),
+                    )
+                };
+                let coverage: Vec<u8> = (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, y)))
+                    .map(|(x, y)| at(x, y))
+                    .collect();
+                let solid: Vec<bool> = coverage.iter().map(|&c| c == 15).collect();
+                let Some(first) = solid.iter().position(|&s| s) else {
+                    continue;
+                };
+                let anchor = (first % w, first / w);
+                let right = (anchor.0..w)
+                    .take_while(|&x| solid[anchor.1 * w + x])
+                    .count();
+                let down = (anchor.1..h)
+                    .take_while(|&y| solid[y * w + anchor.0])
+                    .count();
+                let ink = solid.iter().filter(|&&s| s).count() as u32;
+                map.entry((right, down)).or_default().push(Template {
+                    character,
+                    face: face_index,
+                    anchor,
+                    offset: (i32::from(glyph.x), i32::from(glyph.y)),
+                    size: (w, h),
+                    solid,
+                    coverage,
+                    ink,
+                });
+            }
+        }
+        for list in map.values_mut() {
+            list.sort_by_key(|t| std::cmp::Reverse(t.ink));
+        }
+        map
+    })
+}
+
+fn face(index: usize) -> &'static Face {
+    FACES[index]
 }
 
 impl Frame<'_> {
@@ -87,7 +175,9 @@ impl Frame<'_> {
         if self.pixels.len() < self.width * self.height {
             return Vec::new();
         }
-        let mut runs = self.group(self.glyphs());
+        let mut glyphs = self.glyphs();
+        glyphs.extend(self.smooth_glyphs());
+        let mut runs = self.group(glyphs);
         runs.retain(|run| !(run.text.len() == 1 && b"-.,:/".contains(&run.text.as_bytes()[0])));
         runs.sort_by_key(|run| (run.y, run.x));
         runs
@@ -148,6 +238,129 @@ impl Frame<'_> {
         found
     }
 
+    /// Anti-aliased glyphs: each starts at a solid pixel with no solid pixel of
+    /// its colour to the left or above, and matches a template exactly.
+    fn smooth_glyphs(&self) -> Vec<Glyph> {
+        let templates = templates();
+        let (width, height) = (self.width, self.height);
+        let mut claimed = vec![false; width * height];
+        let mut found = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let color = self.at(x, y);
+                // Ink touching from the left or above starts elsewhere, unless
+                // it belongs to a glyph already read, as touching capitals do.
+                let joined =
+                    |nx: usize, ny: usize| self.at(nx, ny) == color && !claimed[ny * width + nx];
+                if color == 0
+                    || claimed[y * width + x]
+                    || (x > 0 && joined(x - 1, y))
+                    || (y > 0 && joined(x, y - 1))
+                {
+                    continue;
+                }
+                let right = (x..width).take_while(|&cx| self.at(cx, y) == color).count();
+                let down = (y..height)
+                    .take_while(|&cy| self.at(x, cy) == color)
+                    .count();
+                // A run that continues into the next glyph, as in "TT", is
+                // longer than the template's own.
+                let exact = templates.get(&(right, down)).into_iter().flatten();
+                let joined = templates
+                    .iter()
+                    .filter(|((r, d), _)| *d == down && *r < right)
+                    .flat_map(|(_, list)| list);
+                for template in exact.chain(joined) {
+                    let Some((left, top)) = self.matches(template, x, y, color, &claimed) else {
+                        continue;
+                    };
+                    let (w, h) = template.size;
+                    for row in top..top + h {
+                        for col in left..left + w {
+                            if template.solid[(row - top) * w + col - left] {
+                                claimed[row * width + col] = true;
+                            }
+                        }
+                    }
+                    let glyph = face(template.face).glyph(template.character);
+                    found.push(Glyph {
+                        character: template.character,
+                        x: (left as i32 - template.offset.0) as usize,
+                        y: (top as i32 - template.offset.1) as usize,
+                        scale: FACE_SCALE + template.face,
+                        color,
+                        ink: template.ink,
+                        advance: usize::from(glyph.advance),
+                    });
+                    break;
+                }
+            }
+        }
+        found
+    }
+
+    /// The glyph box's top-left corner when `template` matches at an anchor.
+    fn matches(
+        &self,
+        template: &Template,
+        x: usize,
+        y: usize,
+        color: u16,
+        claimed: &[bool],
+    ) -> Option<(usize, usize)> {
+        let left = x.checked_sub(template.anchor.0)?;
+        let top = y.checked_sub(template.anchor.1)?;
+        let (w, h) = template.size;
+        if left + w > self.width || top + h > self.height {
+            return None;
+        }
+        for row in 0..h {
+            for col in 0..w {
+                let (px, py) = (left + col, top + row);
+                let solid = self.at(px, py) == color;
+                // Neighbours reach into the box: the glyph before is already
+                // claimed, and the one after may touch the last two columns,
+                // as the crossbars of "TT" do.
+                let neighbour = solid && (claimed[py * self.width + px] || col + 2 >= w);
+                if solid != template.solid[row * w + col] && !neighbour {
+                    return None;
+                }
+            }
+        }
+        // Pen positions are whole pixels; a glyph left of the canvas is not text.
+        if (left as i32) < template.offset.0 || (top as i32) < template.offset.1 {
+            return None;
+        }
+        // The edges must blend from the background, or this is a patch of
+        // some other glyph's edge colour shaped like a small glyph.
+        let pixel = |i: usize| self.at(left + i % w, top + i / w);
+        let edges: Vec<usize> = (0..w * h)
+            .filter(|&i| (1..15).contains(&template.coverage[i]))
+            .collect();
+        if edges.is_empty() {
+            return Some((left, top));
+        }
+        let outside = if left > 0 {
+            self.at(left - 1, top)
+        } else {
+            self.at(left + w, top)
+        };
+        // The commonest colour outside the glyph, since neighbours may reach in.
+        let mut counts: HashMap<u16, usize> = HashMap::new();
+        for i in (0..w * h).filter(|&i| template.coverage[i] == 0) {
+            *counts.entry(pixel(i)).or_default() += 1;
+        }
+        let background = counts
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .map_or(outside, |(c, _)| c);
+        let blended = edges
+            .iter()
+            .filter(|&&i| pixel(i) == blend(color, background, template.coverage[i]))
+            .count();
+        (blended * 4 >= edges.len() * 3).then_some((left, top))
+    }
+
     fn overlaps(&self, claimed: &[bool], x: usize, y: usize, scale: usize) -> bool {
         (y..y + 7 * scale).any(|row| {
             let start = row * self.width + x;
@@ -198,6 +411,7 @@ impl Frame<'_> {
                     scale: s,
                     color,
                     ink: bits.count_ones(),
+                    advance: 6 * s,
                 });
             }
         }
@@ -243,12 +457,25 @@ impl Frame<'_> {
                     == (glyph.y, glyph.scale, glyph.color);
                 let step = glyph.x.wrapping_sub(previous.x);
                 let s = glyph.scale;
-                if same && step == 6 * s {
+                if same && s >= FACE_SCALE {
+                    let space = usize::from(face(s - FACE_SCALE).glyph(b' ').advance);
+                    let gap = step.wrapping_sub(previous.advance);
+                    if gap == 0 || gap == space || gap == 2 * space {
+                        for _ in 0..gap / space.max(1) {
+                            run.text.push(' ');
+                        }
+                        run.text.push(character);
+                        last = Some(glyph);
+                        continue;
+                    }
+                }
+                if same && s < FACE_SCALE && step == 6 * s {
                     run.text.push(character);
                     last = Some(glyph);
                     continue;
                 }
                 if same
+                    && s < FACE_SCALE
                     && step == 12 * s
                     && self.cell_blank(previous.x + 6 * s, glyph.y, s, glyph.color)
                 {
@@ -262,8 +489,14 @@ impl Frame<'_> {
                 text: character.to_string(),
                 x: glyph.x,
                 y: glyph.y,
-                scale: glyph.scale,
+                // A face reads as the 5x7 scale of similar capital height.
+                scale: if glyph.scale >= FACE_SCALE {
+                    (usize::from(face(glyph.scale - FACE_SCALE).cap) / 7).max(1)
+                } else {
+                    glyph.scale
+                },
                 color: glyph.color,
+                smooth: glyph.scale >= FACE_SCALE,
             });
             last = Some(glyph);
         }
@@ -331,7 +564,64 @@ mod tests {
             y,
             scale,
             color,
+            smooth: false,
         }
+    }
+
+    fn smooth(
+        pixels: &mut [u16],
+        x: usize,
+        y: usize,
+        face: &'static Face,
+        color: u16,
+        label: &str,
+    ) {
+        use firmware_shell::rendering::font::{Align, Label, Line};
+        let label = Label::new(
+            Line::<24>::new(face, label.as_bytes()),
+            x,
+            y,
+            Align::Left,
+            color,
+        );
+        for py in y..label.bottom() {
+            for px in x..label.right() + 2 {
+                let bg = pixels[py * W + px];
+                if let Some(c) = label.pixel(px, py, bg) {
+                    pixels[py * W + px] = c;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reads_anti_aliased_faces_beside_bitmap_text() {
+        use firmware_shell::rendering::font::{BODY, CAPTION, HERO, LARGE, TITLE, VALUE};
+        let mut p = canvas(0);
+        smooth(&mut p, 10, 4, &CAPTION, 0x8410, "REC 9:41 AM/PM 100%");
+        smooth(&mut p, 6, 24, &TITLE, WHITE, "RIDE");
+        smooth(&mut p, 10, 70, &BODY, CYAN, "SCAN DONE - PICK");
+        smooth(&mut p, 10, 100, &HERO, CYAN, "29.9");
+        smooth(&mut p, 10, 170, &LARGE, 0xffe0, "1250");
+        smooth(&mut p, 130, 170, &VALUE, RED, "-3.5%");
+        smooth(&mut p, 10, 230, &VALUE, WHITE, "01:02:05");
+        smooth(&mut p, 10, 270, &BODY, WHITE, "5.00 KM  00:10:00");
+        draw(&mut p, 150, 230, 2, GREEN, "OK");
+        let texts: Vec<_> = frame(&p).read().into_iter().map(|r| r.text).collect();
+        assert_eq!(
+            texts,
+            [
+                "REC 9:41 AM/PM 100%",
+                "RIDE",
+                "SCAN DONE - PICK",
+                "29.9",
+                "1250",
+                "-3.5%",
+                "01:02:05",
+                "OK",
+                "5.00 KM  00:10:00",
+            ]
+        );
     }
 
     #[test]

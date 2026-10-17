@@ -497,3 +497,49 @@ fn replacement_backs_off_when_the_old_channel_keeps_failing_to_close() {
     assert_eq!(link(&radio, HEART, now), Some(LinkState::Connected));
     assert_eq!(closes(&radio), attempts + 1);
 }
+
+/// Touch and lost input on Sensors: a contact belongs to the subview it
+/// began on, and a Cancel reaches the menu so ACT waits for MOVE.
+#[test]
+fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
+    let heart = peer(HEART, 4242);
+    let touch = |runtime: &mut Runtime, radio: &mut Radio, now| {
+        // Where the detail page's DISCONNECT button sits.
+        let point = device_api::input::Point { x: 120, y: 237 };
+        runtime.input(Input::Touch(point), now, radio)
+    };
+    let saved = |runtime: &Runtime| runtime.preferences.sensors.of_type(HEART).is_some();
+
+    // Down on the tiles, ACT opens the detail page, lift over DISCONNECT
+    // within a tap's time: the detail page never saw the contact begin.
+    let mut runtime = restored(&[heart]);
+    let mut radio = Radio::quiet();
+    advance(&mut runtime, &mut radio, 0);
+    runtime.navigation.page = Page::Sensors;
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    touch(&mut runtime, &mut radio, 1300);
+    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    assert_ne!(runtime.menu.touch_view(), 0, "detail page open");
+    runtime.input(Input::Release, 1500, &mut radio);
+    assert!(saved(&runtime), "a lift after ACT must not disconnect");
+    // A contact that begins on the detail page does act.
+    touch(&mut runtime, &mut radio, 2000);
+    runtime.input(Input::Release, 2100, &mut radio);
+    assert!(!saved(&runtime));
+
+    // A Cancel reaches the menu: ACT then waits for MOVE to reconfirm.
+    let mut runtime = restored(&[heart]);
+    let mut radio = Radio::quiet();
+    advance(&mut runtime, &mut radio, 0);
+    runtime.navigation.page = Page::Sensors;
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    assert_ne!(runtime.menu.touch_view(), 0, "detail page open");
+    runtime.input(Input::Cancel, 1600, &mut radio);
+    assert_eq!(
+        runtime.menu.diagnostics().message,
+        Some(MenuMessage::InputLost)
+    );
+    runtime.input(press(Button::BottomRight), 2000, &mut radio);
+    assert!(saved(&runtime), "ACT after lost input changes nothing");
+}

@@ -54,18 +54,29 @@ pub trait InputObservation {
     fn snapshot(&self, now_ms: u64) -> Option<InputSnapshot>;
 }
 
+/// A contact with no report for this long is over (see [`Input::Cancel`]).
+pub const STALE_CONTACT_MS: u64 = 250;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
+    /// A finger is down at this point: the first edge of a contact, or a move.
     Touch(Point),
+    /// The finger lifted, ending the contact.
     Release,
     /// Cancel all consumer-held input. Caused by invalid/lost touch or edge loss.
+    ///
+    /// A Cancel during a contact ends that contact for gestures: whatever it
+    /// still reports must not complete as a tap or swipe. Producers follow it
+    /// with a `Release` once the cancelled contact is over (the panel reports
+    /// the lift, or [`STALE_CONTACT_MS`] pass without a report of it), and
+    /// send no `Touch` from it before then. Edge queues that overflow keep
+    /// this too (`firmware_services::input::Edges`). Consumers that cannot rely on
+    /// that start a new contact at a `Touch` arriving at least
+    /// `STALE_CONTACT_MS` after the last touch edge.
     Cancel,
     /// Known physical button with uninterpreted companion report code. Repeated
     /// code 1 reports do not establish a physical release; clients choose policy.
-    Button {
-        button: Button,
-        code: u16,
-    },
+    Button { button: Button, code: u16 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

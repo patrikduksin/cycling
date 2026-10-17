@@ -8,7 +8,7 @@ use crate::recording::{
 use crate::route::{Point, Route};
 use crate::sim::{HOLD_REPEAT_MS, NoteKind, Sim};
 use crate::world::{Side, Vehicle};
-use device_api::input::Button;
+use device_api::input::{Button, Input, Point as Touch};
 
 /// The firmware loop's pass length.
 const STEP_MS: u64 = 10;
@@ -27,8 +27,9 @@ const SENSORS: [(char, &str, u8, u16); 4] = [
     ('r', "RADAR", device_type::RADAR, 31),
 ];
 
-pub const KEYS: [(&str, &str); 12] = [
+pub const KEYS: [(&str, &str); 13] = [
     ("Q A D", "TOP LEFT, BOTTOM LEFT, RIGHT"),
+    ("MOUSE", "TAP, DRAG TO SWIPE"),
     ("H P C R", "HEART, POWER, SPD/CAD, RADAR"),
     ("B", "BLE HEART STRAP"),
     ("G", "GPS FIX"),
@@ -64,6 +65,8 @@ pub struct Live {
     pub speed: u32,
     pub paused: bool,
     held: Option<Held>,
+    /// Where the mouse last touched the screen, while its button is down.
+    finger: Option<(u16, u16)>,
     owed_ms: f64,
     battery: usize,
     checkpoints: usize,
@@ -92,6 +95,7 @@ impl Live {
             speed: 1,
             paused: false,
             held: None,
+            finger: None,
             owed_ms: 0.0,
             battery: 0,
             checkpoints: 0,
@@ -154,6 +158,50 @@ impl Live {
         }
     }
 
+    /// The mouse over the composed window: `down` with the button held.
+    /// Presses on the device screen touch it; dragging moves the finger.
+    pub fn pointer(&mut self, x: f32, y: f32, down: bool) {
+        let frame = self.sim.device.display.0.borrow();
+        let (w, h) = (frame.geometry.width as f32, frame.geometry.height as f32);
+        drop(frame);
+        let (sx, sy) = (
+            (x - MARGIN as f32) / SCALE as f32,
+            (y - MARGIN as f32) / SCALE as f32,
+        );
+        let point = (sx.clamp(0.0, w - 1.0) as u16, sy.clamp(0.0, h - 1.0) as u16);
+        let on_screen = (0.0..w).contains(&sx) && (0.0..h).contains(&sy);
+        let now = self.sim.device.now;
+        match (self.finger, down) {
+            (None, true) if on_screen => {
+                self.sim
+                    .note(NoteKind::Input, format!("touch {},{}", point.0, point.1));
+                self.sim.device.input.push(
+                    now,
+                    Input::Touch(Touch {
+                        x: point.0,
+                        y: point.1,
+                    }),
+                );
+                self.finger = Some(point);
+            }
+            (Some(last), true) if last != point => {
+                self.sim.device.input.push(
+                    now,
+                    Input::Touch(Touch {
+                        x: point.0,
+                        y: point.1,
+                    }),
+                );
+                self.finger = Some(point);
+            }
+            (Some(_), false) => {
+                self.sim.device.input.push(now, Input::Release);
+                self.finger = None;
+            }
+            _ => {}
+        }
+    }
+
     pub fn key_up(&mut self, key: char) {
         if self.held.as_ref().is_some_and(|held| held.key == key) {
             self.held = None;
@@ -176,8 +224,9 @@ impl Live {
         }
         // While a key is held the device runs in real time, as the companion
         // repeats every 100 ms of device time: VANA sees one continuous hold,
-        // not presses seconds apart, at any selected speed.
-        let speed = if self.held.is_some() {
+        // not presses seconds apart, at any selected speed. A finger on the
+        // screen does too, so a click stays a tap and a drag a swipe.
+        let speed = if self.held.is_some() || self.finger.is_some() {
             1.0
         } else {
             f64::from(self.speed)
@@ -323,7 +372,7 @@ mod tests {
     fn boots_in_real_time_and_composes_screen_and_panel() {
         let mut live = Live::new();
         run(&mut live, 8_000);
-        assert!(live.sim.screen().contains("READY TO RIDE"));
+        assert!(live.sim.on_home());
         let canvas = live.compose();
         assert_eq!(canvas.width, MARGIN * 3 + 240 * SCALE + PANEL_WIDTH);
         assert_eq!(canvas.height, MARGIN * 2 + 320 * SCALE + 40);
@@ -356,12 +405,12 @@ mod tests {
 
     /// Moves of the Home cursor while `key` stays down for `ms`.
     fn moves(live: &mut Live, key: char, ms: u64) -> usize {
-        // The selected Home tile is drawn black on cyan.
+        // The focused Home card has a white title.
         let train = |live: &Live| {
             let screen = live.sim.screen();
-            ["TRAIN", "SENSORS", "SETTINGS"]
+            ["RIDE", "SENSORS", "SETTINGS"]
                 .into_iter()
-                .position(|tile| screen.run(tile).unwrap().color == 0)
+                .position(|tile| screen.run(tile).is_some_and(|run| run.color == 0xffff))
         };
         let mut was = train(live);
         let mut moves = 0;
@@ -374,6 +423,54 @@ mod tests {
         live.key_up(key);
         run(live, 1_000);
         moves + usize::from(train(live) != was)
+    }
+
+    #[test]
+    fn a_mouse_click_on_the_screen_is_a_tap() {
+        let mut live = Live::new();
+        run(&mut live, 8_000);
+        // The SENSORS tile, in window coordinates.
+        let (x, y) = ((MARGIN + 120 * SCALE) as f32, (MARGIN + 180 * SCALE) as f32);
+        live.pointer(x, y, true);
+        run(&mut live, 100);
+        live.pointer(x, y, false);
+        run(&mut live, 1_500);
+        assert!(
+            live.sim.screen().contains("MY SENSORS"),
+            "{}",
+            live.sim.screen().text()
+        );
+        // Clicks beside the screen touch nothing.
+        live.pointer(2.0, 2.0, true);
+        assert!(live.finger.is_none());
+    }
+
+    /// At 10x and 60x a click and a drag still last their real time to the
+    /// recognizer, so they stay a tap and a swipe.
+    #[test]
+    fn mouse_gestures_run_in_real_time_at_every_speed() {
+        let window =
+            |x: usize, y: usize| ((MARGIN + x * SCALE) as f32, (MARGIN + y * SCALE) as f32);
+        for speed in SPEEDS {
+            let mut live = Live::new();
+            run(&mut live, 8_000);
+            live.speed = speed;
+            let (x, y) = window(120, 180);
+            let start = live.sim.device.now;
+            live.pointer(x, y, true);
+            run(&mut live, 100);
+            let held = live.sim.device.now - start;
+            assert!(held <= 150, "{speed}x: a 100 ms click lasted {held} ms");
+            live.pointer(x, y, false);
+            run(&mut live, 200);
+            live.speed = 1;
+            run(&mut live, 1_500);
+            assert!(
+                live.sim.screen().contains("MY SENSORS"),
+                "{speed}x: the click was not a tap:\n{}",
+                live.sim.screen().text()
+            );
+        }
     }
 
     #[test]

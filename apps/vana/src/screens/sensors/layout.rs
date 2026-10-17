@@ -40,7 +40,6 @@ impl Grid {
     }
 
     /// The tile index under a point and the tile's top-left corner.
-    #[cfg(test)]
     pub(super) fn tile(&self, x: usize, y: usize) -> Option<(usize, usize, usize)> {
         if x < self.left || y < self.top {
             return None;
@@ -83,6 +82,14 @@ pub(super) const NEARBY_GRID: Grid = Grid {
     height: 32,
 };
 
+/// The search button's top-left corner and side.
+pub(super) const SEARCH_BUTTON: (usize, usize) = (208, 130);
+pub(super) const SEARCH_BUTTON_SIZE: usize = 24;
+
+/// Full-width choice buttons, as (top, height): detail then replacement.
+pub(super) const DETAIL_BUTTONS: [(usize, usize); 2] = [(220, 34), (262, 28)];
+pub(super) const REPLACE_BUTTONS: [(usize, usize); 2] = [(216, 34), (258, 32)];
+
 const LABEL_CAPACITY: usize = 18;
 
 /// Bounded text that silently truncates at the status line's width.
@@ -109,10 +116,6 @@ impl Label {
         &self.0
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.0.len()
-    }
-
     pub(super) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -130,7 +133,6 @@ pub(super) struct Layout {
     pub(super) replacement_numbers: [Label; 2],
     pub(super) replacement_transmissions: [Label; 2],
     pub(super) color: u16,
-    pub(super) action: &'static [u8],
 }
 
 impl Layout {
@@ -145,7 +147,6 @@ impl Layout {
             replacement_numbers: [Label::new(), Label::new()],
             replacement_transmissions: [Label::new(), Label::new()],
             color: MUTED,
-            action: b"SEARCH",
         }
     }
 }
@@ -239,7 +240,6 @@ impl Menu {
             Focus::Selected(selected) => {
                 let status = selected.link_status();
                 layout.color = status.color();
-                layout.action = b"OPEN";
                 layout.status.push(if show_identity {
                     status.prefix()
                 } else if status == LinkStatus::Live {
@@ -250,11 +250,6 @@ impl Menu {
             }
             Focus::Nearby { identity, present } => {
                 layout.color = MUTED;
-                layout.action = if self.selected_identity(identity.device_type).is_some() {
-                    b"REPLACE"
-                } else {
-                    b"CONNECT"
-                };
                 layout.status.push(match (show_identity, present) {
                     (true, true) => b"SENSOR / ",
                     (true, false) => b"GONE / ",

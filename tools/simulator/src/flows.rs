@@ -3,11 +3,15 @@ use crate::sim::{Sim, seconds};
 use device_api::input::Button;
 
 impl Sim {
-    /// Choose a Home tile; the selected one is drawn black on cyan.
+    /// Choose a Home card, RIDE or SENSORS; the focused one has a white title.
     #[track_caller]
     pub fn home(&mut self, label: &str) {
         for _ in 0..4 {
-            if self.screen().run(label).is_some_and(|run| run.color == 0) {
+            if self
+                .screen()
+                .run(label)
+                .is_some_and(|run| run.color == 0xffff)
+            {
                 self.press(Button::BottomRight);
                 return;
             }
@@ -20,7 +24,7 @@ impl Sim {
     pub fn connect_sensor(&mut self, kind: &str) {
         for _ in 0..12 {
             let screen = self.screen();
-            if screen.run(kind).is_some() && screen.run("CONNECT").is_some() {
+            if screen.run(kind).is_some() && focused_nearby(&screen) {
                 self.press(Button::BottomRight);
                 self.wait_for("LIVE", seconds(15)).unwrap();
                 return;
@@ -38,7 +42,8 @@ impl Sim {
     pub fn replace_sensor(&mut self, kind: &str) {
         for _ in 0..20 {
             let screen = self.screen();
-            if screen.run(kind).is_some() && screen.run("REPLACE").is_some() {
+            // A nearby sensor of a saved kind shows its number to tell them apart.
+            if screen.run(kind).is_some() && screen.contains("SENSOR / ") {
                 self.press(Button::BottomRight);
                 self.expect_text("REPLACE SENSOR");
                 self.press(Button::BottomRight);
@@ -58,7 +63,7 @@ impl Sim {
     pub fn disconnect_sensor(&mut self, kind: &str) {
         for _ in 0..20 {
             let screen = self.screen();
-            if screen.run(kind).is_some() && screen.run("OPEN").is_some() {
+            if screen.run(kind).is_some() && !focused_nearby(&screen) {
                 self.press(Button::BottomRight);
                 self.expect_text("DISCONNECT");
                 self.press(Button::BottomRight);
@@ -77,7 +82,7 @@ impl Sim {
             self.connect_sensor(kind);
         }
         for _ in 0..3 {
-            if self.screen().contains("READY TO RIDE") {
+            if self.on_home() {
                 return;
             }
             self.press(Button::TopLeft);
@@ -88,12 +93,19 @@ impl Sim {
         );
     }
 
-    /// Train from Home, through the connection check, onto a recording ride
+    /// Home shows its big RIDE card.
+    pub fn on_home(&self) -> bool {
+        self.screen()
+            .run("RIDE")
+            .is_some_and(|run| run.smooth && run.scale >= 3)
+    }
+
+    /// Ride from Home, through the connection check, onto a recording ride
     /// page. BottomRight acts: it starts, pauses and resumes a ride.
     pub fn start_ride(&mut self) {
-        self.home("TRAIN");
+        self.home("RIDE");
         self.expect_text("CONNECTION CHECK");
-        self.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+        self.wait_for("KM/H", seconds(5)).unwrap();
         self.press(Button::BottomRight);
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
@@ -106,7 +118,7 @@ impl Sim {
 
     pub fn resume_ride(&mut self) {
         self.press(Button::BottomRight);
-        self.wait_for("RECORDING", seconds(3)).unwrap();
+        self.wait_for("RESUMED", seconds(3)).unwrap();
     }
 
     /// From Home, open Settings and set the training profile with buttons:
@@ -182,7 +194,7 @@ impl Sim {
         self.press(Button::TopLeft);
         self.expect_text("PRESS AGAIN TO SAVE");
         self.press(Button::TopLeft);
-        self.wait_for("SAVED", seconds(5)).unwrap();
+        self.wait_for("RIDE SAVED", seconds(5)).unwrap();
     }
 
     /// TopLeft on a recording ride: close the lap and see its toast, such as
@@ -205,11 +217,12 @@ impl Sim {
             .text
     }
 
-    /// BottomLeft until the header shows a ride page indicator, such as "2/3".
+    /// BottomLeft until the status bar's page dots read `indicator`, such as "2/3".
+    #[cfg(feature = "cycling")]
     #[track_caller]
     pub fn ride_page(&mut self, indicator: &str) {
-        for _ in 0..4 {
-            if self.screen().contains(indicator) {
+        for _ in 0..5 {
+            if self.screen().page().as_deref() == Some(indicator) {
                 return;
             }
             self.press(Button::BottomLeft);
@@ -219,4 +232,17 @@ impl Sim {
             self.screen().text()
         );
     }
+}
+
+/// The Sensors status line names a nearby sensor, not a saved one.
+fn focused_nearby(screen: &crate::sim::Screen) -> bool {
+    [
+        "READY TO CONNECT",
+        "VEHICLES BEHIND",
+        "SENSOR / ",
+        "NOT SEEN",
+        "GONE / ",
+    ]
+    .iter()
+    .any(|status| screen.contains(status))
 }

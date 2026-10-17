@@ -1,3 +1,6 @@
+pub mod chrome;
+pub mod gesture;
+pub mod home;
 pub mod power;
 pub mod ride;
 pub mod sensors;

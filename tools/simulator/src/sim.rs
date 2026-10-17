@@ -591,6 +591,23 @@ impl Sim {
         }
     }
 
+    /// Change what the GPS receiver reports: whether RMC carries Doppler
+    /// speed, the HDOP, and how far each fix strays (m per axis).
+    pub fn set_gps_quality(&mut self, doppler: bool, hdop: f64, jitter_m: f64) {
+        self.note(
+            NoteKind::World,
+            format!(
+                "GPS {} Doppler, HDOP {hdop:.1}, jitter {jitter_m:.1} m",
+                if doppler { "with" } else { "without" }
+            ),
+        );
+        if let Some(gps) = &mut self.device.gps {
+            gps.nmea.doppler = doppler;
+            gps.nmea.hdop = hdop;
+            gps.jitter_m = jitter_m;
+        }
+    }
+
     pub fn ride_at(&mut self, speed_kmh: f64, power_w: f64, heart_bpm: f64, cadence_rpm: f64) {
         self.note(
             NoteKind::World,

@@ -208,13 +208,14 @@ fn nearly_full_storage_warns_and_a_full_journal_closes_the_ride() {
         .unwrap();
     let mut sim = equip(sim.boot());
     sim.pair(&["HEART RATE"]);
+    // Rolling with GPS from the start, so no auto-pause interrupts the count.
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
     sim.home("RIDE");
     sim.expect_text("ROOM FOR 10 MIN");
     sim.expect_text("EXPORT OLD RIDES");
     sim.checkpoint("ready shows ten minutes of storage");
     sim.press(device_api::input::Button::BottomRight);
     sim.wait_for("REC 9M LEFT", seconds(2)).unwrap();
-    sim.ride_at(28.0, 0.0, 140.0, 0.0);
     sim.advance(minutes(5));
     sim.expect_text("REC 4M LEFT");
     sim.checkpoint("recording with low storage");
@@ -1648,13 +1649,16 @@ fn a_speed_sensor_dropout_does_not_pause_the_ride() {
 }
 
 #[test]
-fn riding_without_wheel_speed_says_auto_pause_is_off() {
+fn riding_without_wheel_speed_or_gps_says_auto_pause_is_off() {
     let mut sim = rider();
     sim.pair(&["HEART RATE"]);
+    // Indoors: no sky view, so GPS cannot stand in for a wheel sensor.
+    sim.set_gps_fix(false);
     sim.ride_at(25.0, 0.0, 140.0, 0.0);
     sim.start_ride();
     sim.wait_for("AUTO PAUSE OFF", seconds(3)).unwrap();
-    sim.checkpoint("no wheel speed, auto-pause off");
+    sim.expect_field("KM/H", "--");
+    sim.checkpoint("no wheel speed or GPS, auto-pause off");
     // A note, not a standing banner over the readings.
     sim.wait_gone("AUTO PAUSE OFF", seconds(15)).unwrap();
     assert!(recording(&mut sim));
@@ -1684,6 +1688,139 @@ fn slow_steep_climbing_never_auto_pauses() {
         .filter(|kind| **kind == Kind::Pause)
         .count();
     assert_eq!(pauses, 1, "{:?}", sim.rides()[0].kinds());
+}
+
+/// A rider with a heart strap and GPS but no wheel sensor, the most common
+/// setup: speed, distance and auto-pause all come from GPS.
+fn gps_rider(doppler: bool) -> Sim {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE"]);
+    if !doppler {
+        // A receiver that sends no ground speed, with a metre of jitter.
+        sim.set_gps_quality(false, 1.2, 1.0);
+    }
+    sim
+}
+
+#[test]
+fn riding_with_gps_only_shows_speed_and_distance() {
+    for doppler in [true, false] {
+        let mut sim = gps_rider(doppler);
+        sim.ride_at(25.0, 0.0, 140.0, 0.0);
+        sim.start_ride();
+        sim.advance(minutes(10));
+        // Doppler is exact; positions jitter, so their speed wobbles a little.
+        let tolerance = if doppler { 0.15 } else { 1.5 };
+        expect_near(&mut sim, "KM/H", 25.0, tolerance);
+        expect_near(&mut sim, "KM", 4.17, 0.08);
+        sim.expect_no_text("AUTO PAUSE OFF");
+        if doppler {
+            sim.checkpoint("GPS only: speed and distance");
+        }
+        ride_page(&mut sim, "2/4");
+        expect_near(&mut sim, "DIST KM", 4.17, 0.08);
+        expect_near(&mut sim, "AVG KM/H", 25.0, 0.5);
+        if doppler {
+            sim.checkpoint("GPS only: stats after ten minutes");
+        }
+        sim.stop_ride();
+        let ride = &sim.rides()[0];
+        let measured = ride.samples().filter(|s| s.speed_mm_s.is_some()).count();
+        assert!(measured >= 595, "{measured} samples with speed");
+        let pauses = ride.kinds().iter().filter(|k| **k == Kind::Pause).count();
+        assert_eq!(pauses, 1, "only the pause stop_ride pressed");
+    }
+}
+
+#[test]
+fn gps_only_traffic_light_stop_auto_pauses_through_jitter() {
+    for doppler in [true, false] {
+        let mut sim = gps_rider(doppler);
+        if !doppler {
+            // A poor sky at the light: two metres of position jitter.
+            sim.set_gps_quality(false, 1.8, 2.0);
+        }
+        sim.ride_at(25.0, 0.0, 140.0, 0.0);
+        sim.start_ride();
+        sim.advance(seconds(60));
+        sim.ride_at(0.0, 0.0, 120.0, 0.0);
+        let latency = sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
+        println!("GPS doppler={doppler} auto-pause latency {latency} ms");
+        assert!(latency <= seconds(8), "auto-pause took {latency} ms");
+        if doppler {
+            sim.checkpoint("GPS only: auto paused at the light");
+        }
+        let km = paused_km(&sim);
+        // Two minutes at the light: jitter neither resumes nor adds distance.
+        sim.advance(minutes(2));
+        sim.expect_text("AUTO PAUSED");
+        assert!(!recording(&mut sim));
+        assert_eq!(paused_km(&sim), km, "distance crept while standing");
+        if !doppler {
+            sim.checkpoint("GPS jitter at the light: still paused");
+        }
+        sim.ride_at(25.0, 0.0, 140.0, 0.0);
+        let latency = sim.wait_for("AUTO RESUME", seconds(15)).unwrap();
+        println!("GPS doppler={doppler} auto-resume latency {latency} ms");
+        assert!(latency <= seconds(8), "auto-resume took {latency} ms");
+        assert!(recording(&mut sim));
+        // Stopping right after the resume: PAUSED and RIDE SAVED still show.
+        sim.stop_ride();
+    }
+}
+
+/// The ride distance the paused screen shows, as in "0.42 KM".
+#[track_caller]
+fn paused_km(sim: &Sim) -> String {
+    let text = sim.screen().text();
+    text.lines()
+        .find_map(|line| line.strip_suffix(" KM"))
+        .unwrap_or_else(|| panic!("no distance; screen:\n{text}"))
+        .to_owned()
+}
+
+#[test]
+fn gps_only_tunnel_keeps_recording_without_inventing_distance() {
+    let mut sim = gps_rider(true);
+    sim.ride_at(30.0, 0.0, 140.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(60));
+    sim.set_gps_fix(false);
+    sim.advance(seconds(20));
+    // No speed in the tunnel, and no pause: GPS loss is not a stop.
+    sim.expect_field("KM/H", "--");
+    assert!(recording(&mut sim));
+    sim.expect_no_text("AUTO PAUSED");
+    sim.checkpoint("GPS only: in the tunnel");
+    let km = reading(&sim, "KM");
+    sim.advance(seconds(20));
+    assert_eq!(reading(&sim, "KM"), km, "distance without a speed");
+    sim.set_gps_fix(true);
+    sim.advance(seconds(20));
+    // 80 of the 120 s measured at 30 km/h: 0.67 km. The track shows the gap.
+    expect_near(&mut sim, "KM", 0.67, 0.03);
+    expect_near(&mut sim, "KM/H", 30.0, 0.2);
+    sim.checkpoint("GPS only: speed back after the tunnel");
+    assert!(recording(&mut sim));
+    sim.stop_ride();
+    let ride = &sim.rides()[0];
+    let blind = ride.samples().filter(|s| s.speed_mm_s.is_none()).count();
+    assert!((38..=45).contains(&blind), "{blind} samples without speed");
+}
+
+#[test]
+fn gps_only_rider_rolling_off_starts_the_ride() {
+    let mut sim = gps_rider(true);
+    sim.home("RIDE");
+    sim.wait_for("GPS LOCKED", seconds(5)).unwrap();
+    // Walking the bike out is not a start.
+    sim.ride_at(5.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(30));
+    assert!(sim.rides().is_empty());
+    sim.ride_at(20.0, 0.0, 0.0, 0.0);
+    sim.wait_for("AUTO START", seconds(15)).unwrap();
+    assert!(recording(&mut sim));
+    sim.checkpoint("GPS only: auto started");
 }
 
 /// Advance in firmware passes until the panel lights; returns the uptime then.
@@ -2275,6 +2412,7 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     let mut sim = equip(sim.boot());
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.home("RIDE");
     sim.expect_text("UNDER 1 MIN OF ROOM");
     sim.press(Button::BottomRight);
@@ -2364,6 +2502,7 @@ fn a_continuation_that_cannot_start_does_not_count_the_bulk_ride_twice() {
     let mut sim = equip(sim.boot());
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.home("RIDE");
     sim.expect_text("READY");
     sim.press(Button::BottomRight);
@@ -2426,6 +2565,7 @@ fn a_bulk_ride_that_fails_with_internal_flash_full_stays_on_screen() {
     let mut sim = equip(sim.boot());
     sim.init_bulk();
     sim.pair(&["HEART RATE"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.advance(seconds(30));
     sim.fail_bulk(0, 0);

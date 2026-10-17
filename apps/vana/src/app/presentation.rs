@@ -639,7 +639,7 @@ impl Runtime {
     }
 
     /// A pause the device chose stays named on the ride pages until the ride
-    /// resumes; the paused screen names it itself. Without wheel speed
+    /// resumes; the paused screen names it itself. Without wheel or GPS speed
     /// auto-pause cannot work, which the first seconds of the ride say once
     /// rather than for the whole ride.
     fn auto_pause_toast(&self, status: Status, now: u64) -> Option<Toast> {

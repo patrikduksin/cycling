@@ -22,7 +22,7 @@
 //!
 //! What the journal does not have stays out: there is no altitude (pressure
 //! is not recorded), no laps (they live in RAM only) and no distance without
-//! wheel speed, so readers fall back to GPS for distance and their own
+//! a recorded speed (wheel or GPS), so readers fall back to GPS for distance and their own
 //! elevation data. Totals use the ride page's rules (`Totals`).
 
 use crate::ride::log::{self, Entry, Kind, Sample, Slot};

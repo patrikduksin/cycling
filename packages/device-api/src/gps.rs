@@ -43,6 +43,15 @@ pub struct Snapshot {
     pub latitude_e7: Option<i32>,
     pub longitude_e7: Option<i32>,
     pub satellites: Option<u8>,
+    /// Horizontal dilution of precision of the exposed fix, in tenths, when
+    /// the receiver reported it for that fix's epoch.
+    pub hdop_tenths: Option<u16>,
+    /// Receiver ground speed (Doppler) for the exposed fix's epoch, in mm/s.
+    /// Absent when the receiver sends no speed for that epoch.
+    pub speed_mm_s: Option<u32>,
+    /// UTC time of day of the exposed fix's epoch, in ms. Fixes of the same
+    /// epoch from different sentences share it.
+    pub epoch_ms: Option<u32>,
     pub utc: Option<[u8; 6]>,
     pub age_ms: Option<u64>,
     pub bytes: u32,
@@ -62,6 +71,9 @@ impl Default for Snapshot {
             latitude_e7: None,
             longitude_e7: None,
             satellites: None,
+            hdop_tenths: None,
+            speed_mm_s: None,
+            epoch_ms: None,
             utc: None,
             age_ms: None,
             bytes: 0,

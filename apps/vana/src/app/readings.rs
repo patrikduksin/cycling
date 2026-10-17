@@ -1,5 +1,7 @@
 //! Sensor data intake and the live ride sample built from it.
 use super::{Observations, Runtime};
+use crate::ride::auto::{Motion, Source};
+use crate::ride::gps_speed::{GpsSpeed, Ground};
 use crate::ride::log::Sample;
 use crate::ride::metrics::{Gradient, Odometer, Speed};
 use crate::sensors::ant::{Epoch, HeartRate, Power, device_type};
@@ -54,8 +56,10 @@ pub(super) struct Readings {
     /// The sample most recently offered to the recorder.
     pub(super) live: Sample,
     speed: Speed,
-    /// A wheel sensor is connected and sending fresh packets.
-    pub(super) wheel_fresh: bool,
+    /// Ground speed from GPS, the fallback when no wheel sensor measures.
+    gps: GpsSpeed,
+    /// What the speed sources said at the last sample, for auto-pause.
+    pub(super) motion: Motion,
     odometer: Odometer,
     gradient: Gradient,
     pub(super) heart: Option<Timed<HeartRate>>,
@@ -165,7 +169,8 @@ impl Default for Readings {
         Self {
             live: Sample::default(),
             speed: Speed::default(),
-            wheel_fresh: false,
+            gps: GpsSpeed::default(),
+            motion: Motion::Lost,
             odometer: Odometer::default(),
             gradient: Gradient::default(),
             heart: None,
@@ -216,6 +221,18 @@ impl Readings {
                 }
             }
         }
+    }
+}
+
+/// A measuring wheel sensor first, then GPS; a live wheel without a speed
+/// yet only when GPS cannot measure either.
+fn motion(wheel_fresh: bool, wheel: Option<u32>, ground: Ground) -> Motion {
+    match (wheel, ground) {
+        (Some(speed), _) => Motion::Measured(Source::Wheel, speed),
+        (None, Ground::Measured(speed)) => Motion::Measured(Source::Gps, speed),
+        (None, _) if wheel_fresh => Motion::Unknown(Source::Wheel),
+        (None, Ground::Unknown) => Motion::Unknown(Source::Gps),
+        (None, Ground::Lost) => Motion::Lost,
     }
 }
 
@@ -270,7 +287,8 @@ impl Runtime {
         let ble = self.sensors.snapshot(now);
         let (ble_heart_bpm, cadence_tenths) =
             ble_profile::ride_fields(ble, self.ride.active().source());
-        let location_e7 = observations.position.snapshot(now).and_then(|snapshot| {
+        let position = observations.position.snapshot(now);
+        let location_e7 = position.and_then(|snapshot| {
             (snapshot.gps.state == FixState::Fresh)
                 .then(|| Some((snapshot.gps.latitude_e7?, snapshot.gps.longitude_e7?)))
                 .flatten()
@@ -303,10 +321,18 @@ impl Runtime {
                 ant.channel(kind, now)
                     .is_some_and(|s| s.link == LinkState::Connected && !s.stale)
             });
-        self.readings.wheel_fresh = wheel_fresh;
-        let speed_mm_s = wheel_fresh
+        let wheel = wheel_fresh
             .then(|| self.readings.speed.value(now))
             .flatten();
+        self.readings
+            .gps
+            .observe(now, position.as_ref().map(|snapshot| &snapshot.gps));
+        let motion = motion(wheel_fresh, wheel, self.readings.gps.reading(now));
+        self.readings.motion = motion;
+        let speed_mm_s = match motion {
+            Motion::Measured(_, speed) => Some(speed),
+            _ => None,
+        };
         let pressure = match observations.physical.pressure {
             Observation::Fresh { value, .. } => Some(value.pressure_centi_pa),
             _ => None,
@@ -359,7 +385,7 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatteryNews, BatteryWatch};
+    use super::*;
 
     #[test]
     fn each_low_level_warns_once_per_discharge_and_charging_rearms_them() {
@@ -401,5 +427,29 @@ mod tests {
         assert_eq!(BatteryNews::Charging(64).toast().text(), b"CHARGING 64%");
         assert_eq!(BatteryNews::Low(20).toast().text(), b"LOW BATTERY 20%");
         assert_eq!(BatteryNews::Critical(5).toast().text(), b"CHARGE SOON 5%");
+    }
+
+    #[test]
+    fn a_measuring_wheel_wins_then_gps_then_a_live_wheel() {
+        use Ground::{Lost, Measured, Unknown};
+        let wheel = Motion::Measured(Source::Wheel, 5_000);
+        let gps = Motion::Measured(Source::Gps, 6_000);
+        let rows = [
+            (true, Some(5_000), Measured(6_000), wheel),
+            (true, Some(5_000), Lost, wheel),
+            (true, None, Measured(6_000), gps),
+            (false, None, Measured(6_000), gps),
+            (true, None, Unknown, Motion::Unknown(Source::Wheel)),
+            (true, None, Lost, Motion::Unknown(Source::Wheel)),
+            (false, None, Unknown, Motion::Unknown(Source::Gps)),
+            (false, None, Lost, Motion::Lost),
+        ];
+        for (fresh, speed, ground, expected) in rows {
+            assert_eq!(
+                motion(fresh, speed, ground),
+                expected,
+                "{fresh} {speed:?} {ground:?}"
+            );
+        }
     }
 }

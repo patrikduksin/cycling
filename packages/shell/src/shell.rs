@@ -52,6 +52,9 @@ pub struct Shell<D, I, P, B> {
     pub clock: Option<fn() -> u64>,
     idle: Idle,
     effective: u8,
+    /// The most backlight the application allows now, such as at night.
+    /// It is never stored.
+    ceiling: u8,
     power: P,
     display: D,
     input: I,
@@ -141,6 +144,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             clock: None,
             idle: Idle::new(now),
             effective: 0,
+            ceiling: 100,
             power,
             display,
             input,
@@ -179,6 +183,14 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     }
     pub fn effective(&self) -> u8 {
         self.effective
+    }
+    /// Cap the backlight at `percent` from the next tick, without changing
+    /// the stored brightness.
+    pub fn set_ceiling(&mut self, percent: u8) {
+        self.ceiling = percent.min(100);
+    }
+    pub fn ceiling(&self) -> u8 {
+        self.ceiling
     }
     pub fn dimmed(&self) -> bool {
         self.idle.dimmed()
@@ -253,7 +265,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             0
         } else {
             self.idle.tick(now, config);
-            self.idle.effective(self.settings.brightness, config)
+            self.idle
+                .effective(self.settings.brightness, config)
+                .min(self.ceiling)
         };
         self.power_error = self.power.availability() == Availability::Failed;
         if self.power.availability() == Availability::Ready && self.effective != effective {

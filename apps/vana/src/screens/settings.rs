@@ -22,6 +22,7 @@ pub enum Row {
     Threshold,
     Brightness,
     AutoDim,
+    Daylight,
     AutoPause,
     AutoLap,
     Sounds,
@@ -56,7 +57,7 @@ pub enum SettingsAction {
 /// Sections in order, each with its title and the rows it holds.
 pub const SECTIONS: [(&str, &[Row]); 5] = [
     ("PROFILE", &[Row::Ftp, Row::Threshold]),
-    ("DISPLAY", &[Row::Brightness, Row::AutoDim]),
+    ("DISPLAY", &[Row::Brightness, Row::AutoDim, Row::Daylight]),
     ("RIDE", &[Row::AutoPause, Row::AutoLap]),
     ("SOUND", &[Row::Sounds]),
     (
@@ -109,6 +110,7 @@ impl Row {
             Self::Threshold => "LTHR BPM",
             Self::Brightness => "BRIGHTNESS",
             Self::AutoDim => "DIM AFTER",
+            Self::Daylight => "DAY / NIGHT",
             Self::AutoPause => "AUTO PAUSE",
             Self::AutoLap => "AUTO LAP",
             Self::Sounds => "SOUNDS",
@@ -130,9 +132,12 @@ impl Row {
     pub const fn kind(self) -> Kind {
         match self {
             Self::Ftp | Self::Threshold => Kind::Number,
-            Self::Brightness | Self::AutoDim | Self::AutoPause | Self::AutoLap | Self::Sounds => {
-                Kind::Choice
-            }
+            Self::Brightness
+            | Self::AutoDim
+            | Self::Daylight
+            | Self::AutoPause
+            | Self::AutoLap
+            | Self::Sounds => Kind::Choice,
             Self::Sensors | Self::Phone => Kind::Open,
             Self::Storage | Self::Firmware => Kind::Info,
         }
@@ -422,7 +427,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 11);
+        assert_eq!(ROWS, 12);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);

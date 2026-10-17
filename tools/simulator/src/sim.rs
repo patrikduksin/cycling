@@ -608,6 +608,29 @@ impl Sim {
         }
     }
 
+    /// Set the receiver's clock so it reads `utc_s` seconds after UTC
+    /// midnight now, on `date` (day, month, two-digit year).
+    pub fn set_gps_clock(&mut self, utc_s: u32, date: (u8, u8, u8)) {
+        self.note(
+            NoteKind::World,
+            format!(
+                "GPS clock {:02}:{:02} UTC on {:02}/{:02}/{:02}",
+                utc_s / 3600,
+                utc_s / 60 % 60,
+                date.0,
+                date.1,
+                date.2
+            ),
+        );
+        let elapsed = (self.device.world.time_ms / 1000 % 86_400) as u32;
+        if let Some(gps) = &mut self.device.gps {
+            let mut nmea = crate::route::Nmea::new((utc_s + 86_400 - elapsed) % 86_400, date);
+            nmea.doppler = gps.nmea.doppler;
+            nmea.hdop = gps.nmea.hdop;
+            gps.nmea = nmea;
+        }
+    }
+
     pub fn ride_at(&mut self, speed_kmh: f64, power_w: f64, heart_bpm: f64, cadence_rpm: f64) {
         self.note(
             NoteKind::World,

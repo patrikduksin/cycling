@@ -3197,3 +3197,76 @@ fn a_saved_ride_on_a_failed_card_says_so_and_rides_list_newest_first() {
     sim.press(Button::TopLeft);
     assert!(sim.on_home());
 }
+
+#[test]
+fn riding_through_sunset_dims_the_backlight_smoothly_and_settings_can_hold_day() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    // Santiago on 14 October 2026: the sun sets at 22:51 UTC (19:51 local)
+    // and the sky is dim (4 degrees down) by about 23:12.
+    sim.set_gps_clock(22 * 3600 + 40 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    assert_eq!(sim.device.shell.effective(), 50, "day");
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.checkpoint("riding before sunset");
+    sim.advance(minutes(30));
+    assert_eq!(sim.device.shell.effective(), 50, "still light at 23:10");
+    // Sample the backlight through the change: it only steps down, a few
+    // percent at a time, and settles at the night level.
+    let mut levels = vec![sim.device.shell.effective()];
+    for _ in 0..(4 * 60 * 10) {
+        sim.advance(100);
+        levels.push(sim.device.shell.effective());
+    }
+    assert!(
+        levels.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] <= 4),
+        "{levels:?}"
+    );
+    assert_eq!(levels.last(), Some(&20), "night level");
+    let ramp = levels
+        .iter()
+        .filter(|level| (21..50).contains(*level))
+        .count();
+    assert!(
+        (5..=10).contains(&ramp),
+        "a ramp of about a second: {ramp} steps"
+    );
+    assert!(recording(&mut sim));
+    sim.checkpoint("after dark, the backlight is down");
+    sim.stop_ride();
+    go_home(&mut sim);
+
+    // Settings says why, and DAY holds the full backlight.
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "DAY / NIGHT");
+    sim.expect_field("DAY / NIGHT", "AUTO");
+    sim.expect_text("NIGHT NOW");
+    sim.expect_text("NIGHT 20%");
+    sim.checkpoint("settings in auto, at night");
+    sim.set_option("DAY / NIGHT", "DAY");
+    sim.advance(seconds(2));
+    assert_eq!(sim.device.shell.effective(), 50);
+    assert_eq!(sim.device.shell.settings.brightness, 50, "never stored");
+    sim.checkpoint("held at day");
+}
+
+/// Losing the fix before dusk stops the receiver's clock; night still comes
+/// on time from the last fix's time carried on.
+#[test]
+fn night_comes_on_time_after_the_gps_fix_is_lost() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.set_gps_clock(22 * 3600 + 40 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    assert_eq!(sim.device.shell.effective(), 50, "day");
+    // A ride keeps the screen awake.
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.set_gps_fix(false);
+    sim.advance(minutes(30));
+    assert_eq!(sim.device.shell.effective(), 50, "still light at 23:10");
+    sim.advance(minutes(8));
+    assert_eq!(sim.device.shell.effective(), 20, "dark by 23:18");
+    sim.checkpoint("night without a fix");
+}

@@ -69,6 +69,24 @@ The background is always `BLACK`.
 | `AMBER` | Attention: paused, low, needs a check, an armed press |
 | `RED` | Recording, danger, failure |
 
+### Night
+
+At night VANA keeps the same palette and lowers the backlight to at most 20%
+(`app::night::NIGHT_PERCENT`). The background is already black, so the
+backlight is what glares in the dark. A dimmer palette would make the panel
+darker still but would also shrink the gap between `WHITE` readings and
+`SECONDARY` labels, and between `AMBER` and `RED` alerts and everything else,
+so it is not used: alerts keep their full contrast at night.
+
+DAY / NIGHT in Settings → Display chooses AUTO, DAY or NIGHT. In AUTO the sun
+decides: night begins once it is 4° below the horizon at the last fixed
+position (mid civil twilight) and ends once it is back above 2° below, so a
+reading near the line cannot flicker. The time is network time, or the GPS
+receiver's date and time. Without a position, the local clock decides (night
+from 20:00 to 7:00); with no clock at all, the last answer stays. The night
+cap goes through the shell's backlight ceiling (`Shell::set_ceiling`), which
+is never stored, so the rider's chosen brightness is unchanged.
+
 ### Metric colours
 
 A metric's number always uses its own colour, on every page and in every chart.
@@ -314,6 +332,7 @@ redraw once a second.
 | Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
+| Day to night | The backlight steps 4% every 100 ms from the rider's brightness down to the night level, and back up in the morning. Nothing is redrawn. | About 1 s at 50% |
 
 ## Settings
 
@@ -329,7 +348,7 @@ Acting on a row does one of three things:
 - a number (FTP, LTHR) opens the editor: one `ACCENT` field with the value in
   `VALUE` and the zone it anchors, over minus and plus pads;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
-  after 15 s/30 s/1 min/5 min/never, auto-pause on/off, auto lap off/1/2/5/10
+  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, auto-pause on/off, auto lap off/1/2/5/10
   km, sounds on/off);
 - an action opens a page (SENSORS) or a flow (PHONE, a placeholder until the
   phone companion lands).

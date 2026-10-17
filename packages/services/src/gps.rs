@@ -40,6 +40,7 @@ struct Decoder {
     /// Ground speed in mm/s and the epoch it describes (ms of the UTC day).
     speed: Option<(u32, u32)>,
     utc: Option<[u8; 6]>,
+    date: Option<[u8; 6]>,
     current_epoch: Option<Epoch>,
     identity: Identity,
 }
@@ -68,6 +69,7 @@ impl Default for Parser {
                 hdop: None,
                 speed: None,
                 utc: None,
+                date: None,
                 current_epoch: None,
                 identity: Identity::Unknown,
             },
@@ -173,6 +175,7 @@ impl Parser {
                 .map(|(speed, _)| speed),
             epoch_ms,
             utc: self.decoder.utc,
+            date: self.decoder.date,
             age_ms: age,
             bytes: self.bytes,
             valid_sentences: self.decoder.valid,
@@ -290,11 +293,15 @@ impl Decoder {
         let Some(epoch) = parse_epoch(f[0]) else {
             return false;
         };
-        if f[8].len() != 6 || !f[8].iter().all(u8::is_ascii_digit) {
+        let Ok(date) = <[u8; 6]>::try_from(f[8]) else {
+            return false;
+        };
+        if !date.iter().all(u8::is_ascii_digit) {
             return false;
         }
         if self.set_fix(f[2], f[3], f[4], f[5], now) {
             self.utc = Some(epoch.utc);
+            self.date = Some(date);
             self.current_epoch = Some(epoch);
             true
         } else {
@@ -545,6 +552,7 @@ mod tests {
         );
         assert_eq!(p.snapshot(10).state, FixState::Fresh);
         assert_eq!(p.snapshot(10).latitude_e7, Some(-333646900));
+        assert_eq!(p.snapshot(10).date, Some(*b"110926"));
         assert_eq!(p.snapshot(3011).state, FixState::Stale);
         feed(&mut p, "$GPRMC,0*00\n", 20);
         assert_eq!(p.decoder.checksum_errors, 1)

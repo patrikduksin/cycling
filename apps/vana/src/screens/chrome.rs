@@ -200,6 +200,18 @@ pub fn paint_rounded(
     edge: usize,
     pixel: impl Fn(usize, usize) -> Option<u16>,
 ) {
+    paint_rounded_over(row, rect, radius, edge, |x, y, _| pixel(x, y));
+}
+
+/// `paint_rounded` for shapes over something other than black: `pixel` is
+/// also given what the row already holds there, to blend its edge over.
+pub fn paint_rounded_over(
+    row: &mut Row,
+    rect: Rect,
+    radius: usize,
+    edge: usize,
+    pixel: impl Fn(usize, usize, u16) -> Option<u16>,
+) {
     let y = row.y();
     if y < rect.top || y >= rect.bottom {
         return;
@@ -213,12 +225,17 @@ pub fn paint_rounded(
     let side = edge.min(radius);
     let middle = rect.left + side..rect.right - side;
     if !middle.is_empty()
-        && let Some(color) = pixel(middle.start, y)
+        && let Some(color) = pixel(middle.start, y, under(row, middle.start))
     {
         row.span(middle.clone(), color);
     }
-    row.each(rect.left..middle.start, |x| pixel(x, y));
-    row.each(middle.end..rect.right, |x| pixel(x, y));
+    row.each_over(rect.left..middle.start, |x, under| pixel(x, y, under));
+    row.each_over(middle.end..rect.right, |x, under| pixel(x, y, under));
+}
+
+/// What the row holds at `x`: black beyond its end.
+fn under(row: &Row, x: usize) -> u16 {
+    row.pixels().get(x).copied().unwrap_or(BLACK)
 }
 
 /// A row through a rounded shape's corners. Each corner is a quarter of a
@@ -230,7 +247,7 @@ fn paint_corner_row(
     rect: Rect,
     radius: usize,
     edge: usize,
-    pixel: &impl Fn(usize, usize) -> Option<u16>,
+    pixel: &impl Fn(usize, usize, u16) -> Option<u16>,
 ) {
     let y = row.y();
     let cy = if y < rect.top + radius {
@@ -242,7 +259,7 @@ fn paint_corner_row(
     let color = if middle.is_empty() {
         None
     } else {
-        pixel(middle.start, y)
+        pixel(middle.start, y, under(row, middle.start))
     };
     let discs = |cx: usize| {
         let outer = disc_row(y, 4 * cx as i32, 4 * cy as i32, 4 * radius as i32);
@@ -268,7 +285,7 @@ fn paint_corner_row(
         fringe_end = fringe_end.max(end);
     }
     let fringe_end = fringe_end.clamp(start, middle.start);
-    row.each(start..fringe_end, |x| pixel(x, y));
+    row.each_over(start..fringe_end, |x, under| pixel(x, y, under));
     // Right corner, mirrored.
     let ((solid, touched), inner) = discs(rect.right - radius);
     let end = touched.end.min(rect.right);
@@ -289,7 +306,7 @@ fn paint_corner_row(
     if let Some(color) = color {
         row.span(fringe_end..fringe_start, color);
     }
-    row.each(fringe_start..end, |x| pixel(x, y));
+    row.each_over(fringe_start..end, |x, under| pixel(x, y, under));
 }
 
 /// The columns of row `y` where a `disc` of `radius` around (cx, cy), in
@@ -315,9 +332,20 @@ pub fn disc_row(y: usize, cx: i32, cy: i32, radius: i32) -> (Range<usize>, Range
 /// with its coverage, at the anti-aliased edge.
 pub fn paint_disc(
     row: &mut Row,
-    (cx, cy, radius): (i32, i32, i32),
+    disc: (i32, i32, i32),
     solid: u16,
     fringe: impl Fn(usize, u8) -> Option<u16>,
+) {
+    paint_disc_over(row, disc, solid, |x, coverage, _| fringe(x, coverage));
+}
+
+/// `paint_disc` for discs over something other than black: `fringe` is also
+/// given what the row already holds there, to blend the edge over.
+pub fn paint_disc_over(
+    row: &mut Row,
+    (cx, cy, radius): (i32, i32, i32),
+    solid: u16,
+    fringe: impl Fn(usize, u8, u16) -> Option<u16>,
 ) {
     let y = row.y();
     let (inside, touched) = disc_row(y, cx, cy, radius);
@@ -330,12 +358,12 @@ pub fn paint_disc(
         inside
     };
     row.span(inside.clone(), solid);
-    let pixel = |x| match disc(x, y, cx, cy, radius) {
+    let pixel = |x, under| match disc(x, y, cx, cy, radius) {
         0 => None,
-        coverage => fringe(x, coverage),
+        coverage => fringe(x, coverage, under),
     };
-    row.each(touched.start..inside.start, pixel);
-    row.each(inside.end..touched.end, pixel);
+    row.each_over(touched.start..inside.start, pixel);
+    row.each_over(inside.end..touched.end, pixel);
 }
 
 /// The ride state the status bar marks.

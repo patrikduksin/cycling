@@ -3,6 +3,7 @@ use super::presentation::Screen;
 use super::*;
 use crate::app::power::Sheet;
 use crate::ride::log::Status;
+use crate::screens::power::Sheet as View;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::HEART_RATE;
 use device_api::power::{Operation, PowerControl, State, Status as PowerStatus};
@@ -43,15 +44,6 @@ impl PowerControl for Switch {
         };
         Ok(())
     }
-}
-
-/// The label's box is lit exactly where the label draws, in any colour.
-fn lit(screen: &Screen, left: usize, top: usize, scale: usize, label: &[u8]) -> bool {
-    use firmware_shell::rendering::text::text;
-    (top..top + 7 * scale).all(|y| {
-        (left..left + label.len() * 6 * scale)
-            .all(|x| (screen.panel.pixel(x, y) != 0) == text(x, y, left, top, scale, label))
-    })
 }
 
 /// Companion power status zero: USB charging, as stock reads it.
@@ -157,8 +149,7 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
     runtime.input(press(Button::TopLeft), 1_000, &mut radio);
     assert_eq!(runtime.power.sheet, Sheet::Confirm { since: 1_000 });
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_000);
-    assert!(screen.panel.shows(24, 104, 4, b"TURN OFF"));
-    assert!(lit(&screen, 8, 8, 2, b"BACK"));
+    assert!(screen.panel.shows_sheet(View::Confirm));
 
     // BACK returns to Home without turning off.
     runtime.input(press(Button::TopLeft), 1_500, &mut radio);
@@ -173,7 +164,7 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
     runtime.power(&mut screen.shell, &mut switch, 3_000);
     assert!(switch.requests.is_empty());
     pass(&mut runtime, &mut screen, &radio, &mut switch, 3_010);
-    assert!(screen.panel.shows(21, 150, 3, b"TURNING OFF"));
+    assert!(screen.panel.shows_sheet(View::TurningOff));
     assert_eq!(switch.requests, [Operation::Shutdown]);
     assert!(runtime.turning_off());
     // Nothing else is drawn or requested while the device turns off.
@@ -428,10 +419,10 @@ fn a_rejected_turning_off_frame_is_drawn_again_before_shutdown() {
         switch.requests.is_empty(),
         "shut down with the old screen visible"
     );
-    assert!(!screen.panel.shows(21, 150, 3, b"TURNING OFF"));
+    assert!(!screen.panel.shows_sheet(View::TurningOff));
     // The retry follows at once and, once accepted, hands over.
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_510);
-    assert!(screen.panel.shows(21, 150, 3, b"TURNING OFF"));
+    assert!(screen.panel.shows_sheet(View::TurningOff));
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 

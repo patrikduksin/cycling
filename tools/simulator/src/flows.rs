@@ -212,7 +212,8 @@ impl Sim {
         self.screen()
             .find(&prefix)
             .into_iter()
-            .find(|run| run.text.starts_with(&prefix))
+            // The toast names the lap's time; the lap page's captions do not.
+            .find(|run| run.text.starts_with(&prefix) && run.text.contains(':'))
             .unwrap_or_else(|| panic!("no {prefix:?} toast; screen:\n{}", self.screen().text()))
             .text
     }

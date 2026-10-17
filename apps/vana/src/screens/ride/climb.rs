@@ -1,82 +1,75 @@
-//! The climb page: the grade now with its steepness colour, the climb under
+//! The climb page: the grade now in its steepness colour, the climb under
 //! way (or altitude, ascent and the last climb) and the last 4 km of
-//! elevation as a filled profile coloured by local grade.
+//! elevation as a solid profile coloured by local grade, with a white disc
+//! for the rider.
 //!
-//! `frame` precomputes every chart column once per frame; `paint` only looks
-//! them up.
-use super::{
-    CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT, CONTENT_TOP, CYAN, Cell, DIM, GRID, Values, WHITE,
-    clock, grade, kilometres, whole,
-};
+//! `frame` precomputes every chart column once per frame; `paint_chart` only
+//! looks them up, and the canvas paints the text and the rider over it.
+use super::{BODY, CELL_PITCH, GRID, LEFT, RIGHT, cell, grade, kilometres, lap_time, whole};
 use crate::ride::climb::{PROFILE_LEN, ProfileSample, Steepness, Summary};
-use crate::screens::workout::View;
-use firmware_shell::rendering::row::Row;
+use crate::screens::canvas::{Canvas, Shape};
 #[cfg(test)]
-use firmware_shell::rendering::text::text;
+use crate::screens::chrome::BLACK;
+use crate::screens::chrome::{ACCENT, Align, GRADE, HERO, LARGE, Rect, Row, VALUE, WHITE, ZONES};
+use crate::screens::workout::{Text, View};
 
-/// Inner margin from the content rectangle's edges.
-const MARGIN: usize = 6;
-const LEFT: usize = CONTENT_LEFT + MARGIN;
-/// One chart column per 20 m profile sample, right-aligned; the rider's
-/// marker takes the last four columns of the margin.
-const RIGHT: usize = CONTENT_RIGHT - MARGIN;
-const CHART_LEFT: usize = RIGHT - PROFILE_LEN;
-const _: () = assert!(CHART_LEFT >= CONTENT_LEFT, "the profile needs 200 columns");
-const DIVIDER: usize = (CONTENT_LEFT + CONTENT_RIGHT) / 2;
-const COLUMNS: [usize; 2] = [LEFT, DIVIDER + MARGIN];
-const GRADE_LABEL_TOP: usize = CONTENT_TOP + 4;
-const GRADE_TOP: usize = GRADE_LABEL_TOP + 18;
-const GRADE_SCALE: usize = 5;
-/// "CLIMBING" and "NO CLIMB" are eight scale-2 characters, right-aligned.
-const STATUS_LEFT: usize = RIGHT - 8 * 12;
+/// "GRADE" and the climb state share this baseline.
+const HEAD: usize = 40;
+/// The grade's baseline, under its caption.
+const GRADE_BASE: usize = HEAD + 4 + HERO.cap as usize;
 /// The steepness band under the grade.
-const BAND: core::ops::Range<usize> =
-    GRADE_TOP + 7 * GRADE_SCALE + 3..GRADE_TOP + 7 * GRADE_SCALE + 7;
-const FIRST_ROW: usize = BAND.end + 3;
-const ROW_PITCH: usize = 33;
+const BAND_TOP: usize = GRADE_BASE + 6;
+const BAND_HEIGHT: usize = 5;
+/// The first band of cells; up to three follow.
+const FIRST: usize = BAND_TOP + BAND_HEIGHT + 4;
 const ROWS: usize = 3;
-const CHART_TOP: usize = FIRST_ROW + ROWS * ROW_PITCH + 3;
-/// The baseline row; the fill ends above it.
-const CHART_BOTTOM: usize = CONTENT_BOTTOM - 3;
+/// One chart column per 20 m profile sample, ending at the body's right
+/// margin; the rider's disc sits on the newest.
+const CHART_RIGHT: usize = BODY.right - 6;
+const CHART_LEFT: usize = CHART_RIGHT - PROFILE_LEN;
+const _: () = assert!(CHART_LEFT >= BODY.left, "the profile needs 200 columns");
+const CHART_TOP: usize = FIRST + ROWS * CELL_PITCH + 6;
+/// The baseline row; the fill ends above it. The chart runs into the toast
+/// band, where a toast covers it for a moment.
+const CHART_BOTTOM: usize = BODY.bottom - 8;
 const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
 const _: () = assert!(CHART_HEIGHT >= 24 && CHART_HEIGHT < EMPTY as usize);
 /// A flat road spans at least 20 m of chart height, so it stays flat.
 const MIN_SPAN_DM: i32 = 200;
 /// A column with no profile sample yet.
 const EMPTY: u8 = u8::MAX;
+/// The rider's disc: 6 px across, in quarter pixels.
+const RIDER_RADIUS: i32 = 12;
 
-/// Steepness colours: blue down, then green, yellow, orange, red, crimson.
+/// Steepness colours, from the zone ramp: blue down, then green, yellow,
+/// orange, red and purple.
 pub(super) const fn color(steepness: Steepness) -> u16 {
-    match steepness {
-        Steepness::Descent => 0x3dbf,
-        Steepness::Easy => 0x07e0,
-        Steepness::Moderate => 0xffe0,
-        Steepness::Steep => 0xfd20,
-        Steepness::Hard => 0xf800,
-        Steepness::Severe => 0xc80f,
-    }
+    ZONES[match steepness {
+        Steepness::Descent => 1,
+        Steepness::Easy => 2,
+        Steepness::Moderate => 3,
+        Steepness::Steep => 4,
+        Steepness::Hard => 5,
+        Steepness::Severe => 6,
+    }]
 }
 
-const GRADE: usize = 0;
-/// Values 1..=6 fill the cells, two per row.
-const FIRST_CELL: usize = 1;
-
-/// Cell labels; `true` marks a clock, drawn smaller to fit.
-const CLIMBING: [(&[u8], bool); 6] = [
-    (b"GAIN M", false),
-    (b"LENGTH KM", false),
-    (b"AVG GRADE", false),
-    (b"VAM M/H", false),
-    (b"CLIMB TIME", true),
-    (b"ALTITUDE M", false),
+/// Cell captions and value colours, two per band.
+const CLIMBING: [(&[u8], u16); 6] = [
+    (b"GAIN M", GRADE),
+    (b"LENGTH KM", WHITE),
+    (b"AVG GRADE", GRADE),
+    (b"VAM M/H", GRADE),
+    (b"CLIMB TIME", WHITE),
+    (b"ALTITUDE M", GRADE),
 ];
-const IDLE: [(&[u8], bool); 6] = [
-    (b"ALTITUDE M", false),
-    (b"ASCENT M", false),
-    (b"LAST GAIN M", false),
-    (b"LAST KM", false),
-    (b"LAST AVG", false),
-    (b"LAST TIME", true),
+const IDLE: [(&[u8], u16); 6] = [
+    (b"ALTITUDE M", GRADE),
+    (b"ASCENT M", GRADE),
+    (b"LAST GAIN", GRADE),
+    (b"LAST KM", WHITE),
+    (b"LAST AVG", GRADE),
+    (b"LAST TIME", WHITE),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -111,43 +104,110 @@ impl Default for Frame {
     }
 }
 
-fn metres(value: &mut super::Text<12>, dm: i32) {
+fn metres(value: &mut Text<12>, dm: i32) {
     whole(value, Some((dm + 5).div_euclid(10)));
+}
+
+fn altitude(value: &mut Text<12>, dm: Option<i32>) {
+    match dm {
+        Some(dm) => metres(value, dm),
+        None => whole(value, None::<u8>),
+    }
 }
 
 /// A climb's gain, length and average grade into the first three cells, and
 /// its time into cell `time`.
-fn summary(cells: &mut [super::Text<12>], climb: &Summary, time: usize) {
+fn summary(cells: &mut [Text<12>], climb: &Summary, time: usize) {
     metres(&mut cells[0], climb.gain_dm as i32);
     kilometres(&mut cells[1], climb.length_mm);
     grade(&mut cells[2], climb.grade_tenths());
-    clock(&mut cells[time], climb.time_ms / 1000);
+    lap_time(&mut cells[time], climb.time_ms / 1000);
 }
 
-pub(super) fn prepare(view: &View, values: &mut Values) {
-    grade(
-        &mut values[GRADE],
-        view.sample.gradient_tenths.map(i32::from),
+/// The text, the steepness band and the rider; `frame` must be prepared.
+pub(super) fn prepare(view: &View) -> Canvas {
+    let frame = &view.climb;
+    let mut canvas = Canvas::default();
+    let width = RIGHT - LEFT;
+    let (state, state_color) = if frame.layout == Layout::Climbing {
+        (b"CLIMBING".as_slice(), ACCENT)
+    } else {
+        (b"NO CLIMB".as_slice(), crate::screens::chrome::SECONDARY)
+    };
+    let state = canvas.fit(
+        &[&crate::screens::chrome::CAPTION],
+        state,
+        width,
+        RIGHT,
+        HEAD,
+        Align::Right,
+        state_color,
     );
-    let altitude = view.totals.altitude_dm();
-    if let Some(climb) = view.climbs.climbing() {
-        summary(&mut values[FIRST_CELL..], &climb, 4);
-        whole(&mut values[FIRST_CELL + 3], view.climbs.vam_m_h());
-        match altitude {
-            Some(dm) => metres(&mut values[FIRST_CELL + 5], dm),
-            None => whole(&mut values[FIRST_CELL + 5], None::<u8>),
+    canvas.caption(b"GRADE", state.left - LEFT, LEFT, HEAD, Align::Left);
+    let mut now = Text::<12>::new();
+    grade(&mut now, view.sample.gradient_tenths.map(i32::from));
+    let faces = [&HERO, &LARGE, &VALUE];
+    canvas.fit(
+        &faces,
+        now.as_bytes(),
+        width,
+        LEFT,
+        GRADE_BASE,
+        Align::Left,
+        GRADE,
+    );
+    canvas.shape(Shape::Bar {
+        rect: Rect {
+            left: LEFT,
+            top: BAND_TOP,
+            right: RIGHT,
+            bottom: BAND_TOP + BAND_HEIGHT,
+        },
+        radius: 2,
+        color: frame.grade.map_or(GRID, color),
+    });
+
+    let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
+    let altitude_dm = view.totals.altitude_dm();
+    let (labels, cells) = if let Some(climb) = view.climbs.climbing() {
+        summary(&mut values, &climb, 4);
+        whole(&mut values[3], view.climbs.vam_m_h());
+        altitude(&mut values[5], altitude_dm);
+        (&CLIMBING, 6)
+    } else {
+        altitude(&mut values[0], altitude_dm);
+        metres(&mut values[1], view.totals.ascent_dm() as i32);
+        match view.climbs.last_climb() {
+            // The last climb fills the cells after altitude and ascent.
+            Some(last) => {
+                summary(&mut values[2..], &last, 3);
+                (&IDLE, 6)
+            }
+            None => (&IDLE, 2),
         }
-        return;
+    };
+    for (index, ((caption, color), value)) in labels.iter().zip(&values).take(cells).enumerate() {
+        let top = FIRST + index / 2 * CELL_PITCH;
+        cell(
+            &mut canvas,
+            index % 2,
+            top,
+            caption,
+            value.as_bytes(),
+            *color,
+        );
     }
-    match altitude {
-        Some(dm) => metres(&mut values[FIRST_CELL], dm),
-        None => whole(&mut values[FIRST_CELL], None::<u8>),
+
+    let newest = frame.tops[PROFILE_LEN - 1];
+    if newest != EMPTY {
+        canvas.shape(Shape::Disc {
+            cx: 4 * (CHART_RIGHT - 1) as i32 + 2,
+            cy: 4 * (CHART_TOP + usize::from(newest)) as i32 + 2,
+            radius: RIDER_RADIUS,
+            color: WHITE,
+        });
     }
-    metres(&mut values[FIRST_CELL + 1], view.totals.ascent_dm() as i32);
-    if let Some(last) = view.climbs.last_climb() {
-        // The last climb fills the cells after altitude and ascent.
-        summary(&mut values[FIRST_CELL + 2..], &last, 3);
-    }
+    canvas
 }
 
 /// Precompute the layout, grade colour and every chart column.
@@ -180,8 +240,8 @@ pub(super) fn frame(view: &View) -> Frame {
     let span = range.max(MIN_SPAN_DM);
     // A range smaller than the minimum span sits in the lower part, as a road.
     let floor = low - (span - range) / 4;
-    // Leave two rows above the highest point for the marker.
-    let rows = CHART_HEIGHT as i32 - 3;
+    // Leave room above the highest point for the rider's disc.
+    let rows = CHART_HEIGHT as i32 - 4;
     let first = PROFILE_LEN - len;
     let mut band = Steepness::of(samples.first().map_or(0, |s| i32::from(s.grade_tenths)));
     for (index, sample) in samples.iter().enumerate() {
@@ -193,185 +253,52 @@ pub(super) fn frame(view: &View) -> Frame {
     frame
 }
 
-/// Paint one content row: the grade and its band, the cells, or the chart.
-pub(super) fn paint(view: &View, row: &mut Row) {
-    let y = row.y();
-    let frame = &view.climb;
-    if y >= CHART_TOP {
-        paint_chart(frame, row);
-        return;
-    }
-    if BAND.contains(&y) {
-        row.span(LEFT..RIGHT, frame.grade.map_or(GRID, color));
-        return;
-    }
-    if y < FIRST_ROW {
-        row.text(
-            LEFT,
-            GRADE_TOP,
-            GRADE_SCALE,
-            view.values[GRADE].as_bytes(),
-            WHITE,
-        );
-        if frame.layout == Layout::Climbing {
-            row.text(STATUS_LEFT, GRADE_LABEL_TOP, 2, b"CLIMBING", CYAN);
-        } else {
-            row.text(STATUS_LEFT, GRADE_LABEL_TOP, 2, b"NO CLIMB", DIM);
-        }
-        row.text(LEFT, GRADE_LABEL_TOP, 2, b"GRADE", DIM);
-        return;
-    }
-    let band = (y - FIRST_ROW) / ROW_PITCH;
-    let (labels, cells) = match frame.layout {
-        Layout::Climbing => (&CLIMBING, 6),
-        Layout::Last => (&IDLE, 6),
-        Layout::Idle => (&IDLE, 2),
-    };
-    if band >= ROWS || band * 2 >= cells {
-        return;
-    }
-    let top = FIRST_ROW + band * ROW_PITCH;
-    if y == top + ROW_PITCH - 1 {
-        row.fill(GRID);
-        return;
-    }
-    for (column, columns) in [0..DIVIDER + 1, DIVIDER + 1..usize::MAX]
-        .into_iter()
-        .enumerate()
-    {
-        let index = band * 2 + column;
-        let (label, time) = labels[index];
-        let cell = Cell {
-            left: COLUMNS[column],
-            top: top + 2,
-            label,
-            label_scale: 1,
-            value_top: top + if time { 14 } else { 11 },
-            value_scale: if time { 2 } else { 3 },
-        };
-        cell.paint(
-            &mut row.within(columns),
-            &view.values[FIRST_CELL + index],
-            WHITE,
-        );
-    }
-    row.set(DIVIDER, GRID);
-}
-
-/// The profile fill, its baseline and the rider's marker.
-fn paint_chart(frame: &Frame, row: &mut Row) {
+/// The profile fill and its baseline.
+pub(super) fn paint_chart(frame: &Frame, row: &mut Row) {
     let y = row.y();
     if y == CHART_BOTTOM {
-        row.span(CHART_LEFT..RIGHT, GRID);
+        row.span(CHART_LEFT..CHART_RIGHT, GRID);
     }
-    if y >= CHART_BOTTOM {
+    if !(CHART_TOP..CHART_BOTTOM).contains(&y) {
         return;
     }
     let line = y - CHART_TOP;
-    for (column, (&top, &band)) in frame.tops.iter().zip(&frame.bands).enumerate() {
-        if top != EMPTY && line >= usize::from(top) {
-            row.set(CHART_LEFT + column, color(band));
+    // Runs of one colour fill as spans.
+    let mut column = 0;
+    while column < PROFILE_LEN {
+        let filled = |c: usize| frame.tops[c] != EMPTY && line >= usize::from(frame.tops[c]);
+        if !filled(column) {
+            column += 1;
+            continue;
         }
-    }
-    // The rider, at the right edge: a white arrow at the newest altitude.
-    let newest = frame.tops[PROFILE_LEN - 1];
-    if newest != EMPTY {
-        let reach = line.abs_diff(usize::from(newest));
-        row.span(RIGHT + reach..RIGHT + MARGIN - 2, WHITE);
+        let band = frame.bands[column];
+        let start = column;
+        while column < PROFILE_LEN && filled(column) && frame.bands[column] == band {
+            column += 1;
+        }
+        row.span(CHART_LEFT + start..CHART_LEFT + column, color(band));
     }
 }
 
-/// The per-pixel original of `paint`, kept as the reference it must match.
+/// The per-pixel original of `paint_chart`.
 #[cfg(test)]
-pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    let frame = &view.climb;
-    if y >= CHART_TOP {
-        return chart_pixel(frame, x, y);
+pub(super) fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
+    if !(CHART_LEFT..CHART_RIGHT).contains(&x) {
+        return BLACK;
     }
-    if BAND.contains(&y) {
-        return match ((LEFT..RIGHT).contains(&x), frame.grade) {
-            (true, Some(steepness)) => color(steepness),
-            (true, None) => GRID,
-            _ => 0,
-        };
-    }
-    if y < FIRST_ROW {
-        if text(x, y, LEFT, GRADE_LABEL_TOP, 2, b"GRADE") {
-            return DIM;
-        }
-        if frame.layout == Layout::Climbing {
-            if text(x, y, STATUS_LEFT, GRADE_LABEL_TOP, 2, b"CLIMBING") {
-                return CYAN;
-            }
-        } else if text(x, y, STATUS_LEFT, GRADE_LABEL_TOP, 2, b"NO CLIMB") {
-            return DIM;
-        }
-        let value = view.values[GRADE].as_bytes();
-        return if text(x, y, LEFT, GRADE_TOP, GRADE_SCALE, value) {
-            WHITE
-        } else {
-            0
-        };
-    }
-    let row = (y - FIRST_ROW) / ROW_PITCH;
-    if row >= ROWS {
-        return 0;
-    }
-    let top = FIRST_ROW + row * ROW_PITCH;
-    let (labels, cells) = match frame.layout {
-        Layout::Climbing => (&CLIMBING, 6),
-        Layout::Last => (&IDLE, 6),
-        Layout::Idle => (&IDLE, 2),
-    };
-    if row * 2 >= cells {
-        return 0;
-    }
-    if y == top + ROW_PITCH - 1 || x == DIVIDER {
+    if y == CHART_BOTTOM {
         return GRID;
     }
-    let column = usize::from(x > DIVIDER);
-    let index = row * 2 + column;
-    let (label, time) = labels[index];
-    let cell = Cell {
-        left: COLUMNS[column],
-        top: top + 2,
-        label,
-        label_scale: 1,
-        value_top: top + if time { 14 } else { 11 },
-        value_scale: if time { 2 } else { 3 },
-    };
-    cell.pixel(&view.values[FIRST_CELL + index], x, y)
-        .unwrap_or(0)
-}
-
-#[cfg(test)]
-fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
-    if y == CHART_BOTTOM {
-        return if (CHART_LEFT..RIGHT).contains(&x) {
-            GRID
-        } else {
-            0
-        };
+    if !(CHART_TOP..CHART_BOTTOM).contains(&y) {
+        return BLACK;
     }
-    if y > CHART_BOTTOM || x < CHART_LEFT {
-        return 0;
-    }
-    let row = y - CHART_TOP;
     let column = x - CHART_LEFT;
-    if let Some(&top) = frame.tops.get(column) {
-        return if top != EMPTY && row >= usize::from(top) {
-            color(frame.bands[column])
-        } else {
-            0
-        };
+    let top = frame.tops[column];
+    if top != EMPTY && y - CHART_TOP >= usize::from(top) {
+        color(frame.bands[column])
+    } else {
+        BLACK
     }
-    // The rider, at the right edge: a white arrow at the newest altitude.
-    let newest = frame.tops[PROFILE_LEN - 1];
-    let reach = x - RIGHT;
-    if newest != EMPTY && reach < MARGIN - 2 && row.abs_diff(usize::from(newest)) <= reach {
-        return WHITE;
-    }
-    0
 }
 
 #[cfg(test)]
@@ -411,10 +338,13 @@ mod tests {
             view.pixel(CHART_LEFT + 150, CHART_BOTTOM - 1),
             color(Steepness::Easy)
         );
-        assert_eq!(view.pixel(CHART_LEFT + 50, CHART_BOTTOM - 1), 0);
+        assert_eq!(view.pixel(CHART_LEFT + 50, CHART_BOTTOM - 1), BLACK);
         assert_eq!(view.pixel(CHART_LEFT + 50, CHART_BOTTOM), GRID);
-        // The rider's marker points at the newest altitude.
-        assert_eq!(view.pixel(RIGHT + 2, CHART_TOP + usize::from(flat)), WHITE);
+        // The rider's disc sits on the newest altitude.
+        assert_eq!(
+            view.pixel(CHART_RIGHT - 1, CHART_TOP + usize::from(flat)),
+            WHITE
+        );
     }
 
     #[test]
@@ -431,8 +361,8 @@ mod tests {
         // 170 samples, right-aligned: the flat starts at column 30.
         assert_eq!(frame.tops[29], EMPTY);
         assert_eq!(usize::from(frame.tops[60]), CHART_HEIGHT - 1);
-        // Highest at the top of the 10%, two rows below the chart top.
-        assert_eq!(frame.tops[180], 2);
+        // Highest at the top of the 10%, three rows below the chart top.
+        assert_eq!(frame.tops[180], 3);
         // Each steady stretch is one solid colour.
         assert!(frame.bands[30..75].iter().all(|&b| b == Steepness::Easy));
         assert!(frame.bands[85..125].iter().all(|&b| b == Steepness::Steep));
@@ -455,5 +385,43 @@ mod tests {
         view.prepare();
         let bands = &view.climb.bands[100..];
         assert!(bands.iter().all(|&b| b == bands[0]), "{bands:?}");
+    }
+
+    /// Every climb state, with the widest values, lays out whole.
+    #[test]
+    fn extreme_climbs_never_overlap_or_clip() {
+        let steep = |m: u32| m as i32 * 25 / 10;
+        let cases: [(&str, View); 4] = [
+            ("nothing ridden", ridden(0, |_| 0)),
+            ("flat", ridden(4000, |_| 5000)),
+            ("climbing 25%", ridden(4000, steep)),
+            (
+                "after a climb",
+                ridden(6000, |m| {
+                    steep(m.min(3000)) - (m.saturating_sub(3000)) as i32
+                }),
+            ),
+        ];
+        for (what, mut view) in cases {
+            for tenths in [None, Some(-125), Some(-5), Some(255), Some(999)] {
+                view.sample.gradient_tenths = tenths;
+                view.totals.add(1000, 0, &view.sample, Some(30_000));
+                view.prepare();
+                view.canvas
+                    .assert_laid_out(BODY, &["GRADE"], &std::format!("{what} {tenths:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_grade_band_takes_the_steepness_colour() {
+        let mut view = ridden(1000, |_| 0);
+        view.sample.gradient_tenths = Some(105);
+        view.prepare();
+        assert!(view.canvas.shapes.iter().any(|shape| matches!(
+            shape,
+            Shape::Bar { color, .. } if *color == ZONES[5]
+        )));
+        assert_eq!(view.canvas.find("10.5%").map(|run| run.color), Some(GRADE));
     }
 }

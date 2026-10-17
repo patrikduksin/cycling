@@ -3,7 +3,6 @@ use crate::screens::sensors::MenuMessage;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, RADAR};
 use device_api::display::Geometry;
-use firmware_shell::rendering::text::text;
 use firmware_shell::shell::Shell;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -42,12 +41,10 @@ impl Panel {
     pub(super) fn pixel(&self, x: usize, y: usize) -> u16 {
         self.0.borrow()[y * WIDTH + x]
     }
-    /// Pixels in the label's box are white exactly where the label draws.
-    pub(super) fn shows(&self, left: usize, top: usize, scale: usize, label: &[u8]) -> bool {
-        (top..top + 7 * scale).all(|y| {
-            (left..left + label.len() * 6 * scale)
-                .all(|x| (self.pixel(x, y) == 0xffff) == text(x, y, left, top, scale, label))
-        })
+    /// The whole frame is `sheet`, pixel for pixel.
+    pub(super) fn shows_sheet(&self, sheet: crate::screens::power::Sheet) -> bool {
+        let canvas = sheet.canvas();
+        (0..HEIGHT).all(|y| (0..WIDTH).all(|x| self.pixel(x, y) == canvas.pixel(x, y, 0)))
     }
 }
 
@@ -175,13 +172,21 @@ fn train_shows_the_connection_check_then_the_ride_page() {
     assert!(runtime.navigation.page == Page::Preflight);
 
     assert!(screen.present(&mut runtime, &radio, 7000));
-    assert!(screen.panel.shows(10, 36 + 2 * 27, 1, b"SPEED --"));
+    let mut view = crate::screens::workout::View::new(Page::Preflight, 0, None);
+    runtime.preflight_lines(&mut view, 7000, &radio, "OFF");
+    let line = |i: usize| std::string::String::from(view.lines[i].as_str());
+    assert_eq!(line(0), "CONNECTION CHECK");
+    assert_eq!(line(2), "SPEED --");
+    assert_eq!(line(3), "HEART 42 CONNECTED");
+    assert_eq!(line(6), "GPS OFF");
+    // The panel shows those lines, laid out as the page lays them out.
+    view.prepare();
+    let content = crate::screens::chrome::CONTENT.top..crate::screens::chrome::TOAST.top;
     assert!(
-        screen
-            .panel
-            .shows(10, 36 + 3 * 27, 1, b"HEART 42 CONNECTED")
+        content
+            .into_iter()
+            .all(|y| (0..WIDTH).all(|x| screen.panel.pixel(x, y) == view.pixel(x, y)))
     );
-    assert!(screen.panel.shows(10, 36 + 6 * 27, 2, b"GPS OFF"));
 
     // Pages advance when a frame is drawn.
     assert!(screen.present(&mut runtime, &radio, 9499));

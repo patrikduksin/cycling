@@ -2,19 +2,20 @@
 //!
 //! The shared chrome draws the status bar (ride state, clock, page dots) and
 //! toasts. This frame adds the radar strip on the left while a radar is
-//! paired. A page owns [`BODY`] and the values it prepares once per frame;
-//! without a radar the frame centres the body, so pages never move their own
-//! coordinates. Keep the least important readings at the bottom: toasts
-//! cover `chrome::TOAST` for a moment.
+//! paired. A page owns [`BODY`] and lays out its text and shapes once per
+//! frame; without a radar the frame centres the body, so pages never move
+//! their own coordinates. Keep the least important readings at the bottom:
+//! toasts cover `chrome::TOAST` for a moment.
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
-//! module beside `main` with `prepare` and `paint`, dispatched below.
+//! module beside `main` whose `prepare` returns its canvas, dispatched below.
 //!
 //! The climb page also follows the road: when a climb is confirmed the ride
 //! screen switches to it, and when the climb ends it returns to the page the
 //! rider was on, unless they changed page during the climb (see
 //! `Navigation::follow_climb`).
-use super::chrome::{self, CONTENT, Rect};
+use super::canvas::Canvas;
+use super::chrome::{self, Align, CONTENT, Rect};
 use super::workout::{Text, View};
 use crate::ride::laps::Lap;
 use crate::sensors::radar::{self, close};
@@ -29,16 +30,11 @@ mod zones;
 pub(super) use zones::{Marks, marks};
 
 pub use climb::Frame as ClimbFrame;
+pub use lap::{LapBar, LapBars};
 
-use chrome::{ACCENT, AMBER, BLACK, POWER, Row};
-pub(super) use chrome::{GREEN, RED, WHITE};
-#[cfg(test)]
-use firmware_shell::rendering::text::text;
+use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
+pub(super) use chrome::{RED, WHITE};
 
-/// The lap page still draws in the 5x7 font with these colours; it moves to
-/// the anti-aliased faces in a later pass.
-pub(super) const CYAN: u16 = ACCENT;
-pub(super) const DIM: u16 = chrome::SECONDARY;
 pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
@@ -50,13 +46,20 @@ pub(super) const BODY: Rect = Rect {
     right: CONTENT.right,
     bottom: CONTENT.bottom,
 };
-/// The body's edges by name, for pages placed from them.
-pub(super) const CONTENT_LEFT: usize = BODY.left;
-pub(super) const CONTENT_TOP: usize = BODY.top;
-pub(super) const CONTENT_RIGHT: usize = BODY.right;
-/// The 5x7 pages end above the toast band.
-pub(super) const CONTENT_BOTTOM: usize = 285;
-pub(super) const BODY_BOTTOM: usize = CONTENT_BOTTOM;
+/// Text margins inside the body, as on the main page.
+pub(super) const LEFT: usize = BODY.left + 10;
+pub(super) const RIGHT: usize = BODY.right - 8;
+/// Where a page's right column of cells starts.
+pub(super) const MIDDLE: usize = (LEFT + RIGHT) / 2 + 4;
+/// Clear columns between a left cell's ink and the right column.
+const COLUMN_GAP: usize = 8;
+/// A caption over its value: one band of cells. The next caption clears the
+/// value above it by 7 rows.
+pub(super) const CELL_PITCH: usize = 48;
+const _: () = assert!(
+    CELL_PITCH + 12 - chrome::CAPTION.cap as usize > 41 + 6,
+    "a caption needs 6 clear rows over the value above it"
+);
 /// Without a radar the body moves left by this much, to the centre.
 const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 
@@ -97,9 +100,6 @@ impl RidePage {
     }
 }
 
-/// Formatted readings a 5x7 page prepares once per frame.
-pub type Values = [Text<12>; 12];
-
 /// Text the main page lays out once per frame in the anti-aliased faces,
 /// and the zones its gauges show.
 pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
@@ -111,23 +111,46 @@ pub struct Smooth {
 }
 
 /// Prepare the shown page once per frame: the main page's labels, or the
-/// 5x7 pages' values and the climb page's chart.
+/// other pages' canvas and the climb page's chart.
 pub(super) fn prepare(view: &mut View) {
-    if view.ride_page == RidePage::Main {
-        view.smooth = main::prepare(view);
-        return;
-    }
-    let mut values = core::array::from_fn(|_| Text::new());
     match view.ride_page {
-        RidePage::Main => {}
-        RidePage::Stats => stats::prepare(view, &mut values),
-        RidePage::Lap => lap::prepare(view, &mut values),
+        RidePage::Main => view.smooth = main::prepare(view),
+        RidePage::Stats => view.canvas = stats::prepare(view),
+        RidePage::Lap => view.canvas = lap::prepare(view),
         RidePage::Climb => {
-            climb::prepare(view, &mut values);
             view.climb = climb::frame(view);
+            view.canvas = climb::prepare(view);
         }
     }
-    view.values = values;
+}
+
+/// A caption over its value in `column` (0 or 1) of the band whose caption
+/// top is `top`. The value steps down to `BODY` before it would leave its
+/// column.
+pub(super) fn cell(
+    canvas: &mut Canvas,
+    column: usize,
+    top: usize,
+    caption: &[u8],
+    value: &[u8],
+    color: u16,
+) {
+    let (left, right) = if column == 0 {
+        (LEFT, MIDDLE - COLUMN_GAP)
+    } else {
+        (MIDDLE, RIGHT)
+    };
+    let width = right - left;
+    canvas.caption(caption, width, left, top + 12, Align::Left);
+    canvas.fit(
+        &[&VALUE, &BODY_FACE],
+        value,
+        width,
+        left,
+        top + 41,
+        Align::Left,
+        color,
+    );
 }
 
 /// Paint a content row: the radar strip while a radar is paired, and the
@@ -154,14 +177,14 @@ pub(super) fn paint(view: &View, row: &mut Row) {
     }
 }
 
-/// The 5x7 pages end above the toast band; the main page uses all of it.
 fn paint_page(view: &View, row: &mut Row) {
     match view.ride_page {
         RidePage::Main => main::paint(view, row),
-        _ if row.y() >= BODY_BOTTOM => {}
-        RidePage::Stats => stats::paint(view, row),
-        RidePage::Lap => lap::paint(view, row),
-        RidePage::Climb => climb::paint(view, row),
+        RidePage::Stats | RidePage::Lap => view.canvas.paint(row),
+        RidePage::Climb => {
+            climb::paint_chart(&view.climb, row);
+            view.canvas.paint(row);
+        }
     }
 }
 
@@ -227,10 +250,10 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     }
     match view.ride_page {
         RidePage::Main => main::reference_pixel(view, x, y),
-        _ if y >= BODY_BOTTOM => BLACK,
-        RidePage::Stats => stats::reference_pixel(view, x, y),
-        RidePage::Lap => lap::reference_pixel(view, x, y),
-        RidePage::Climb => climb::reference_pixel(view, x, y),
+        RidePage::Stats | RidePage::Lap => view.canvas.pixel(x, y, BLACK),
+        RidePage::Climb => view
+            .canvas
+            .pixel(x, y, climb::chart_pixel(&view.climb, x, y)),
     }
 }
 
@@ -251,47 +274,6 @@ fn reference_radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
         return WHITE;
     }
     BLACK
-}
-
-/// A label and the value under it, in a 5x7 page's cell.
-pub(super) struct Cell {
-    pub(super) left: usize,
-    pub(super) top: usize,
-    pub(super) label: &'static [u8],
-    pub(super) label_scale: usize,
-    pub(super) value_top: usize,
-    pub(super) value_scale: usize,
-}
-
-impl Cell {
-    /// The cell's label in DIM over `value` in `color`.
-    pub(super) fn paint(&self, row: &mut Row, value: &Text<12>, color: u16) {
-        row.text(
-            self.left,
-            self.value_top,
-            self.value_scale,
-            value.as_bytes(),
-            color,
-        );
-        row.text(self.left, self.top, self.label_scale, self.label, DIM);
-    }
-
-    /// The cell's label in DIM and `value` in WHITE, or none of its pixels.
-    #[cfg(test)]
-    pub(super) fn pixel(&self, value: &Text<12>, x: usize, y: usize) -> Option<u16> {
-        if text(x, y, self.left, self.top, self.label_scale, self.label) {
-            return Some(DIM);
-        }
-        text(
-            x,
-            y,
-            self.left,
-            self.value_top,
-            self.value_scale,
-            value.as_bytes(),
-        )
-        .then_some(WHITE)
-    }
 }
 
 /// A finished lap's toast: number, time and average power.
@@ -327,12 +309,6 @@ pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
 pub(super) fn elapsed(value: &mut Text<12>, seconds: u64) {
     let t = seconds;
     let _ = write!(value, "{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
-}
-
-/// HH:MM:SS, as the 5x7 pages show it.
-pub(super) fn clock(value: &mut Text<12>, seconds: u64) {
-    let t = seconds;
-    let _ = write!(value, "{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60);
 }
 
 /// Kilometres with two rounded decimals, one from 100 km.

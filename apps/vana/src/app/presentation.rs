@@ -254,7 +254,8 @@ impl Runtime {
         position: &impl Positioning,
     ) {
         if let Some(sheet) = self.power.view() {
-            system.draw_canvas(240, 320, |row| sheet.paint(row));
+            let canvas = sheet.canvas();
+            system.draw_canvas(240, 320, |row| PowerSheet::paint(&canvas, row));
             self.power_drawn(!system.display_error);
             if !system.display_error {
                 self.timing.frame(self.drawn_at(now));
@@ -298,6 +299,14 @@ impl Runtime {
         view.totals = self.ride.totals;
         view.lap = self.ride.laps.current();
         view.previous_lap = self.ride.laps.previous();
+        if view.ride_page == RidePage::Lap {
+            let laps = &self.ride.laps;
+            let kept = (0..crate::ride::laps::HISTORY).rev();
+            view.lap_bars = kept
+                .filter_map(|back| laps.finished(back))
+                .map(Into::into)
+                .collect();
+        }
         view.zone_time = self.ride.zone_time;
         view.profile = self.preferences.profile;
         if view.ride_page == RidePage::Climb {
@@ -524,24 +533,25 @@ impl Runtime {
     fn boot_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
         let line = &mut view.lines[0];
         let _ = match (now / 1000) % 3 {
-            0 => write!(line, "> COMPANION {}", self.startup_status),
-            1 => write!(
-                line,
-                "> RADIO {:?} / GPS {}",
-                ant.availability(),
-                gps_status
-            ),
+            0 => write!(line, "COMPANION {}", self.startup_status),
+            1 => write!(line, "RADIO {:?} / GPS {}", ant.availability(), gps_status),
             _ => write!(
                 line,
-                "> STORAGE {} {}",
+                "STORAGE {} {}",
                 self.ride.medium().label(),
                 self.ride.active().status().name()
             ),
         };
     }
 
-    fn preflight_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
-        let _ = view.lines[0].push_str("> RIDE / CONNECTION CHECK");
+    pub(super) fn preflight_lines(
+        &self,
+        view: &mut View,
+        now: u64,
+        ant: &impl Ant,
+        gps_status: &str,
+    ) {
+        let _ = view.lines[0].push_str("CONNECTION CHECK");
         let checks = [
             ("SPEED", device_type::SPEED),
             ("HEART", device_type::HEART_RATE),
@@ -604,7 +614,7 @@ impl Runtime {
         let preferences = &self.preferences;
         let profile = preferences.profile;
         let lines = &mut view.lines;
-        let _ = lines[settings::TITLE].push_str("> SETTINGS / TRAINING PROFILE");
+        let _ = lines[settings::TITLE].push_str("TRAINING PROFILE");
         let _ = write!(lines[settings::VALUES], "{}", profile.ftp_watts);
         let _ = write!(lines[settings::VALUES + 1], "{}", profile.lthr_bpm);
         // Threshold zones: where FTP and LTHR put the rider's limit.
@@ -616,7 +626,7 @@ impl Runtime {
             Persistence::Saved => "SAVED",
             Persistence::Pending => "SAVING",
             Persistence::Failed => "SAVE FAILED, RETRYING",
-            Persistence::Locked => "NOT SAVED - UNREADABLE DATA KEPT",
+            Persistence::Locked => "NOT SAVED: DATA KEPT",
         });
     }
 }

@@ -1,11 +1,8 @@
 //! Training-zone colours: the zone chips and gauges on the main page and the
 //! time-in-zone bars on the stats page. Everything is measured in `marks`,
 //! once per frame; drawing only compares coordinates.
-use super::GRID;
 use crate::ride::zones::{HEART_ZONES, POWER_ZONES, TrainingProfile, ZoneTime};
 use crate::screens::workout::View;
-use core::ops::Range;
-use firmware_shell::rendering::row::Row;
 
 /// Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple. All
 /// are light enough for black text; the zone number is always drawn too.
@@ -13,8 +10,8 @@ pub const COLOURS: [u16; POWER_ZONES] = crate::screens::chrome::ZONES;
 
 /// Pixels in a zone gauge.
 pub(super) const GAUGE_WIDTH: usize = 56;
-/// Pixels in a time-in-zone bar.
-pub(super) const BAR_WIDTH: usize = 180;
+/// Pixels in a time-in-zone bar, beside its caption on the stats page.
+pub(super) const BAR_WIDTH: usize = 148;
 
 /// A live reading's position within its zone.
 #[derive(Clone, Copy, Default)]
@@ -70,38 +67,6 @@ fn bar<const N: usize>(time: &[u64; N]) -> Bar<N> {
     }))
 }
 
-/// The bar `left..left + BAR_WIDTH` over the columns `shape` covers.
-pub(super) fn paint_bar<const N: usize>(
-    row: &mut Row,
-    bar: Bar<N>,
-    left: usize,
-    shape: Range<usize>,
-) {
-    row.span(shape.clone(), GRID);
-    let Some(ends) = bar else {
-        return;
-    };
-    let mut start = left;
-    for (zone, &end) in ends.iter().enumerate() {
-        let end = left + end;
-        row.span(start.max(shape.start)..end.min(shape.end), COLOURS[zone]);
-        start = start.max(end);
-    }
-}
-
-/// A bar `left..left + BAR_WIDTH` split by time in each zone, or a dim track
-/// before any time is recorded.
-#[cfg(test)]
-pub(super) fn bar_pixel<const N: usize>(bar: Bar<N>, left: usize, x: usize) -> u16 {
-    let Some(ends) = bar else {
-        return GRID;
-    };
-    let offset = x - left;
-    ends.iter()
-        .position(|&end| offset < end)
-        .map_or(GRID, |zone| COLOURS[zone])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,14 +85,9 @@ mod tests {
     }
 
     #[test]
-    fn bars_split_by_time_and_stay_dim_when_empty() {
+    fn bars_split_by_time_and_are_empty_without_any() {
         assert!(bar(&[0u64; 5]).is_none());
         let ends = bar(&[0, 1000, 0, 3000, 0]).unwrap();
-        assert_eq!(ends, [0, 45, 45, 180, 180]);
-        assert_eq!(bar_pixel(Some(ends), 10, 10), COLOURS[1]);
-        assert_eq!(bar_pixel(Some(ends), 10, 54), COLOURS[1]);
-        assert_eq!(bar_pixel(Some(ends), 10, 55), COLOURS[3]);
-        assert_eq!(bar_pixel(Some(ends), 10, 189), COLOURS[3]);
-        assert_eq!(bar_pixel(None::<[usize; 5]>, 10, 50), GRID);
+        assert_eq!(ends, [0, 37, 37, BAR_WIDTH, BAR_WIDTH]);
     }
 }

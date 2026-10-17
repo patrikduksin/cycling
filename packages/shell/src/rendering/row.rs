@@ -103,6 +103,17 @@ impl<'a> Row<'a> {
             }
         }
     }
+    /// `each`, given what the row already holds at each pixel, for edges
+    /// that blend over it.
+    pub fn each_over(&mut self, x: Range<usize>, mut pixel: impl FnMut(usize, u16) -> Option<u16>) {
+        let start = x.start.max(self.start);
+        let end = x.end.min(self.pixels.len());
+        for x in start..end {
+            if let Some(color) = pixel(x, self.pixels[x]) {
+                self.pixels[x] = color;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

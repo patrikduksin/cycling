@@ -6,21 +6,15 @@
 //! finishes. Touch does the same directly: tap a field to edit it, then tap
 //! the large minus and plus pads. The runtime prepares the lines; this draws
 //! them and maps touches to `Target`s.
-#[cfg(test)]
-use super::rounded;
-use super::rounded_span;
+use super::canvas::{Canvas, Shape};
+use super::chrome::{
+    ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, RAISED, Rect, SECONDARY, VALUE, WHITE,
+};
 use super::workout::View;
-use firmware_shell::rendering::row::Row;
-#[cfg(test)]
-use firmware_shell::rendering::text::text;
 
-const CYAN: u16 = 0x07ff;
-const WHITE: u16 = 0xffff;
-const DIM: u16 = 0x8410;
-const YELLOW: u16 = 0xffe0;
-/// A soft fill that groups without drawing borders.
-const RAISED: u16 = 0x2124;
 const RADIUS: usize = 12;
+/// Text keeps this far inside a field or pad.
+const INSET: usize = 14;
 
 /// Editable fields, in BottomLeft order, with their units.
 pub const FIELDS: [&[u8]; 2] = [b"FTP WATTS", b"LTHR BPM"];
@@ -77,110 +71,107 @@ pub fn target(x: usize, y: usize, editing: bool) -> Option<Target> {
     None
 }
 
-/// Paint one row below the header; the row arrives cleared.
-pub(super) fn paint(view: &View, row: &mut Row) {
-    let y = row.y();
+/// The fields, the pads while editing, the title and the save status.
+pub(super) fn prepare(view: &View) -> Canvas {
     let lines = &view.lines;
-    let status = lines[STATUS].as_bytes();
-    let color = if status.starts_with(b"NOT") {
-        YELLOW
-    } else {
-        DIM
-    };
-    row.text(LEFT, STATUS_TOP, 1, status, color);
-    let mut inside = row.within(LEFT..RIGHT);
-    if view.editing && (PAD_TOP..PAD_TOP + PAD_HEIGHT).contains(&y) {
-        inside.fill(0);
+    let mut canvas = Canvas::default();
+    canvas.caption(lines[TITLE].as_bytes(), RIGHT - LEFT, LEFT, 40, Align::Left);
+    for (i, label) in FIELDS.iter().enumerate() {
+        let top = BOX_TOP + i * BOX_PITCH;
+        let rect = Rect {
+            left: LEFT,
+            top,
+            right: RIGHT,
+            bottom: top + BOX_HEIGHT,
+        };
+        // Every field can be tapped, so each sits on a card; the selected one
+        // is raised, and accent while it is edited.
+        let selected = view.cursor == i;
+        let editing = selected && view.editing;
+        let color = match (selected, editing) {
+            (_, true) => ACCENT,
+            (true, false) => RAISED,
+            _ => CARD,
+        };
+        canvas.shape(Shape::Panel {
+            rect,
+            radius: RADIUS,
+            color,
+        });
+        // The field's name, its value, then the zone it anchors.
+        let quiet = if editing { WHITE } else { SECONDARY };
+        let (left, width) = (LEFT + INSET, RIGHT - LEFT - 2 * INSET);
+        canvas.fit(
+            &[&CAPTION],
+            label,
+            width,
+            left,
+            top + 22,
+            Align::Left,
+            quiet,
+        );
+        let value = lines[VALUES + i].as_bytes();
+        canvas.fit(
+            &[&VALUE, &BODY],
+            value,
+            width,
+            left,
+            top + 52,
+            Align::Left,
+            WHITE,
+        );
+        let anchor = lines[ANCHORS + i].as_bytes();
+        canvas.fit(
+            &[&CAPTION],
+            anchor,
+            width,
+            left,
+            top + 66,
+            Align::Left,
+            quiet,
+        );
+    }
+    if view.editing {
         for (left, right, label) in [
             (LEFT, PAD_SPLIT - PAD_GAP, b"-5"),
             (PAD_SPLIT + PAD_GAP, RIGHT, b"+5"),
         ] {
-            let pad = rounded_span(y, (left, PAD_TOP, right, PAD_TOP + PAD_HEIGHT), RADIUS);
-            inside.span(pad, RAISED);
+            canvas.shape(Shape::Panel {
+                rect: Rect {
+                    left,
+                    top: PAD_TOP,
+                    right,
+                    bottom: PAD_TOP + PAD_HEIGHT,
+                },
+                radius: RADIUS,
+                color: RAISED,
+            });
+            let base = PAD_TOP + (PAD_HEIGHT + LARGE.cap as usize) / 2;
             let middle = (left + right) / 2;
-            inside
-                .within(left..right)
-                .text(middle - 24, PAD_TOP + 15, 4, label, WHITE);
+            canvas.fit(
+                &[&LARGE],
+                label,
+                right - left,
+                middle,
+                base,
+                Align::Center,
+                WHITE,
+            );
         }
     }
-    for (i, label) in FIELDS.iter().enumerate().rev() {
-        let top = BOX_TOP + i * BOX_PITCH;
-        if !(top..top + BOX_HEIGHT).contains(&y) {
-            continue;
-        }
-        let selected = view.cursor == i;
-        let filled = selected && view.editing;
-        let (ink, label_ink) = if filled { (0, 0) } else { (WHITE, DIM) };
-        inside.fill(0);
-        // The selected field sits on a soft panel, cyan while it is edited;
-        // the others float on black.
-        if selected {
-            let panel = rounded_span(y, (LEFT, top, RIGHT, top + BOX_HEIGHT), RADIUS);
-            inside.span(panel, if filled { CYAN } else { RAISED });
-        }
-        inside.text(130, top + 46, 1, lines[ANCHORS + i].as_bytes(), label_ink);
-        inside.text(22, top + 28, 5, lines[VALUES + i].as_bytes(), ink);
-        inside.text(22, top + 8, 2, label, label_ink);
-    }
-    row.text(10, 36, 1, lines[TITLE].as_bytes(), CYAN);
-}
-
-/// The per-pixel original of `paint`, kept as the reference it must match.
-#[cfg(test)]
-pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    let lines = &view.lines;
-    if text(x, y, 10, 36, 1, lines[TITLE].as_bytes()) {
-        return CYAN;
-    }
-    let inside = (LEFT..RIGHT).contains(&x);
-    for (i, label) in FIELDS.iter().enumerate() {
-        let top = BOX_TOP + i * BOX_PITCH;
-        if !(inside && (top..top + BOX_HEIGHT).contains(&y)) {
-            continue;
-        }
-        let selected = view.cursor == i;
-        let filled = selected && view.editing;
-        let (ink, label_ink) = if filled { (0, 0) } else { (WHITE, DIM) };
-        if text(x, y, 22, top + 8, 2, label) {
-            return label_ink;
-        }
-        if text(x, y, 22, top + 28, 5, lines[VALUES + i].as_bytes()) {
-            return ink;
-        }
-        if text(x, y, 130, top + 46, 1, lines[ANCHORS + i].as_bytes()) {
-            return label_ink;
-        }
-        // The selected field sits on a soft panel, cyan while it is edited;
-        // the others float on black.
-        if !selected || !rounded(x, y, (LEFT, top, RIGHT, top + BOX_HEIGHT), RADIUS) {
-            return 0;
-        }
-        return if filled { CYAN } else { RAISED };
-    }
-    if view.editing && inside && (PAD_TOP..PAD_TOP + PAD_HEIGHT).contains(&y) {
-        let (left, right, label): (usize, usize, &[u8]) = if x < PAD_SPLIT {
-            (LEFT, PAD_SPLIT - PAD_GAP, b"-5")
-        } else {
-            (PAD_SPLIT + PAD_GAP, RIGHT, b"+5")
-        };
-        if !(left..right).contains(&x) {
-            return 0;
-        }
-        let middle = (left + right) / 2;
-        if text(x, y, middle - 24, PAD_TOP + 15, 4, label) {
-            return WHITE;
-        }
-        let pad = rounded(x, y, (left, PAD_TOP, right, PAD_TOP + PAD_HEIGHT), RADIUS);
-        return if pad { RAISED } else { 0 };
-    }
-    if text(x, y, LEFT, STATUS_TOP, 1, lines[STATUS].as_bytes()) {
-        return if lines[STATUS].as_bytes().starts_with(b"NOT") {
-            YELLOW
-        } else {
-            DIM
-        };
-    }
-    0
+    let status = lines[STATUS].as_bytes();
+    let fine = matches!(status, b"SAVED" | b"SAVING");
+    let color = if fine { SECONDARY } else { AMBER };
+    canvas.fit(
+        &[&CAPTION],
+        status,
+        RIGHT - LEFT,
+        LEFT,
+        STATUS_TOP + 12,
+        Align::Left,
+        color,
+    );
+    canvas
 }
 
 #[cfg(test)]
@@ -191,43 +182,75 @@ mod tests {
     fn view(cursor: usize, editing: bool) -> View {
         let mut view = View::new(Page::Settings, cursor, None);
         view.editing = editing;
+        let _ = view.lines[TITLE].push_str("TRAINING PROFILE");
         let _ = view.lines[VALUES].push_str("215");
         let _ = view.lines[VALUES + 1].push_str("185");
+        let _ = view.lines[ANCHORS].push_str("Z4 195-226 W");
+        let _ = view.lines[ANCHORS + 1].push_str("Z5 FROM 170 BPM");
+        let _ = view.lines[STATUS].push_str("SAVED");
         view.prepare();
         view
     }
 
-    fn lit(view: &View, left: usize, top: usize, scale: usize, label: &[u8], color: u16) -> bool {
-        (top..top + 7 * scale).all(|y| {
-            (left..left + label.len() * 6 * scale)
-                .all(|x| (view.pixel(x, y) == color) == text(x, y, left, top, scale, label))
-        })
+    fn panels(view: &View) -> std::vec::Vec<(Rect, u16)> {
+        view.canvas
+            .shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Panel { rect, color, .. } => Some((*rect, *color)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn frames_the_selected_field_and_fills_it_while_editing() {
+    fn raises_the_selected_field_and_fills_it_while_editing() {
         let moving = view(1, false);
-        assert_eq!(moving.pixel(20, BOX_TOP + 4), 0, "unselected: no box");
-        assert_eq!(moving.pixel(20, BOX_TOP + BOX_PITCH + 4), RAISED);
-        assert_eq!(moving.pixel(LEFT, BOX_TOP + BOX_PITCH), 0, "rounded corner");
-        assert!(lit(&moving, 22, BOX_TOP + 28, 5, b"215", WHITE));
-        // No pads, and no permanent button labels.
-        assert_eq!(moving.pixel(60, PAD_TOP), 0);
-        assert!((0..240).all(|x| (290..320).all(|y| moving.pixel(x, y) == 0)));
+        let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
+        assert_eq!(colors, [CARD, RAISED], "no pads");
+        assert_eq!(moving.pixel(LEFT, BOX_TOP), 0, "rounded corner");
+        assert_eq!(moving.canvas.find("215").map(|run| run.color), Some(WHITE));
+        assert!(moving.canvas.find("215").unwrap().line.face().cap == VALUE.cap);
+        // No permanent button labels.
+        assert!((0..240).all(|x| (300..320).all(|y| moving.pixel(x, y) == 0)));
 
         let editing = view(1, true);
-        assert_eq!(editing.pixel(20, BOX_TOP + BOX_PITCH + 10), CYAN);
-        assert!(lit(
-            &editing,
-            22,
-            BOX_TOP + BOX_PITCH + 8,
-            2,
-            b"LTHR BPM",
-            0
-        ));
-        assert!(lit(&editing, 40, PAD_TOP + 15, 4, b"-5", WHITE));
-        assert!(lit(&editing, 152, PAD_TOP + 15, 4, b"+5", WHITE));
+        let colors: std::vec::Vec<_> = panels(&editing).iter().map(|(_, c)| *c).collect();
+        assert_eq!(colors, [CARD, ACCENT, RAISED, RAISED]);
+        assert_eq!(editing.pixel(20, BOX_TOP + BOX_PITCH + 10), ACCENT);
+        assert!(editing.canvas.shows("-5") && editing.canvas.shows("+5"));
         assert_eq!(editing.pixel(LEFT + 2, PAD_TOP + 20), RAISED);
+    }
+
+    /// Long values, anchors and statuses still lay out whole on every field.
+    #[test]
+    fn extreme_settings_never_overlap_or_clip() {
+        let screen = Rect {
+            left: 0,
+            top: 24,
+            right: 240,
+            bottom: 320,
+        };
+        for cursor in 0..FIELDS.len() {
+            for editing in [false, true] {
+                for status in ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"] {
+                    let mut view = View::new(Page::Settings, cursor, None);
+                    view.editing = editing;
+                    let _ = view.lines[TITLE].push_str("TRAINING PROFILE");
+                    let _ = view.lines[VALUES].push_str("1000");
+                    let _ = view.lines[VALUES + 1].push_str("220");
+                    let _ = view.lines[ANCHORS].push_str("Z4 905-1050 W");
+                    let _ = view.lines[ANCHORS + 1].push_str("Z5 FROM 220 BPM");
+                    let _ = view.lines[STATUS].push_str(status);
+                    view.prepare();
+                    view.canvas.assert_laid_out(
+                        screen,
+                        &["1000", "220", "Z4 905-1050 W", "Z5 FROM 220 BPM", status],
+                        &std::format!("{cursor} {editing} {status}"),
+                    );
+                }
+            }
+        }
     }
 
     #[test]

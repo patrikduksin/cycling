@@ -9,7 +9,7 @@ use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::log::{Entry, Kind, SLOT_SIZE, SLOTS, Sample, Source, commit_word, encode};
-use vana::screens::chrome::{AMBER, GREEN, RED, ZONES};
+use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, ZONES};
 
 const HEART: u16 = 4242;
 const POWER: u16 = 1234;
@@ -45,7 +45,11 @@ fn paired_sensors_pass_the_connection_check() {
         "POWER 1234 CONNECTED",
         "GPS FIX OK",
     ] {
-        assert!(screen.contains(line), "{line}; screen:\n{}", screen.text());
+        assert!(
+            screen.shows_check(line),
+            "{line}; screen:\n{}",
+            screen.text()
+        );
     }
     sim.checkpoint("connection check passes");
 }
@@ -205,7 +209,7 @@ fn nearly_full_storage_warns_and_a_full_journal_closes_the_ride() {
     let mut sim = equip(sim.boot());
     sim.pair(&["HEART RATE"]);
     sim.home("RIDE");
-    sim.expect_text("STORAGE 0:10 LEFT");
+    sim.expect_check("STORAGE 0:10 LEFT");
     sim.checkpoint("connection check shows ten minutes of storage");
     sim.wait_for("KM/H", seconds(5)).unwrap();
     sim.expect_text("STORAGE 10M LEFT");
@@ -594,26 +598,24 @@ fn stats_page_totals_a_steady_ten_minutes() {
         "main page units are gone"
     );
     // Sensors take a few seconds to report after the start.
-    expect_near(&mut sim, "DISTANCE KM", 5.0, 0.05);
+    expect_near(&mut sim, "DIST KM", 5.0, 0.05);
     expect_near(&mut sim, "AVG KM/H", 30.0, 0.2);
     expect_near(&mut sim, "MAX KM/H", 30.0, 0.3);
-    sim.expect_field("AVG WATTS", "200");
-    sim.expect_field("MAX WATTS", "200");
-    sim.expect_field("NP WATTS", "200");
-    expect_near(&mut sim, "WORK KJ", 120.0, 2.0);
+    sim.expect_field("AVG W", "200");
+    sim.expect_field("MAX W", "200");
+    sim.expect_field("NP W", "200");
     sim.expect_field("AVG BPM", "140");
-    sim.expect_field("MAX BPM", "140");
     sim.expect_field("AVG RPM", "90");
-    let moving = sim.screen().field("MOVING TIME").unwrap();
+    let moving = sim.screen().field("MOVING").unwrap();
     assert!(
-        moving.starts_with("00:09:5") || moving == "00:10:00",
+        moving.starts_with("09:5") || moving == "10:00",
         "moving {moving}"
     );
     sim.checkpoint("stats page after ten minutes");
 
     // Stopping keeps the totals on screen; pages still wrap, TopLeft is Home.
     sim.stop_ride();
-    sim.expect_field("AVG WATTS", "200");
+    sim.expect_field("AVG W", "200");
     sim.checkpoint("stats page after saving");
     ride_page(&mut sim, "4/4");
     sim.press(Button::BottomLeft);
@@ -650,7 +652,7 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     sim.advance(minutes(5));
     // The final climb brought up the climb page; back to the totals.
     ride_page(&mut sim, "2/4");
-    expect_near(&mut sim, "DISTANCE KM", 4.0, 0.05);
+    expect_near(&mut sim, "DIST KM", 4.0, 0.05);
     // The 3 m band and smoothing may leave the last metres of the final climb.
     expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
     sim.checkpoint("stats after one hilly lap");
@@ -658,21 +660,14 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
 
 #[test]
 fn pause_leaves_the_totals_untouched() {
-    const TOTALS: [&str; 6] = [
-        "DISTANCE KM",
-        "MOVING TIME",
-        "AVG WATTS",
-        "MAX WATTS",
-        "WORK KJ",
-        "MAX BPM",
-    ];
+    const TOTALS: [&str; 6] = ["DIST KM", "MOVING", "AVG W", "MAX W", "NP W", "AVG BPM"];
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(5));
     ride_page(&mut sim, "2/4");
-    expect_near(&mut sim, "DISTANCE KM", 2.5, 0.05);
+    expect_near(&mut sim, "DIST KM", 2.5, 0.05);
 
     // Paused but still rolling hard: nothing the wheel or pedals do counts.
     sim.pause_ride();
@@ -685,19 +680,16 @@ fn pause_leaves_the_totals_untouched() {
     for (label, before) in TOTALS.iter().zip(&before) {
         assert_eq!(&screen.field(label), before, "{label} changed while paused");
     }
-    sim.expect_field("MAX WATTS", "250");
+    sim.expect_field("MAX W", "250");
     sim.checkpoint("stats after five paused minutes");
 
     sim.resume_ride();
     sim.ride_at(30.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(5));
-    expect_near(&mut sim, "DISTANCE KM", 5.0, 0.08);
-    sim.expect_field("AVG WATTS", "250");
-    let moving = sim.screen().field("MOVING TIME").unwrap();
-    assert!(
-        moving.starts_with("00:09:5") || moving == "00:10:00",
-        "{moving}"
-    );
+    expect_near(&mut sim, "DIST KM", 5.0, 0.08);
+    sim.expect_field("AVG W", "250");
+    let moving = sim.screen().field("MOVING").unwrap();
+    assert!(moving.starts_with("09:5") || moving == "10:00", "{moving}");
     sim.checkpoint("stats after resuming");
     // The main page agrees: the pause is not ride time.
     ride_page(&mut sim, "1/4");
@@ -887,15 +879,20 @@ fn stats_page_splits_time_between_two_power_zones() {
     sim.advance(minutes(5));
     ride_page(&mut sim, "2/4");
     sim.expect_text("PWR");
-    // Without a radar the page is centred: the power bar spans x 44..224 at
-    // y 261..269; the heart bar sits below.
-    let bar: Vec<u16> = (44..224).map(|x| pixel(&sim, x, 264)).collect();
+    // Without a radar the page is centred: the power bar spans x 70..218 at
+    // y 286..294, with 2 px of black between zones; the heart bar sits below.
+    let bar: Vec<u16> = (70..218).map(|x| pixel(&sim, x, 290)).collect();
+    let bar: Vec<u16> = bar.into_iter().filter(|&c| c != 0).collect();
     let blue = bar.iter().filter(|&&c| c == ZONE_BLUE).count();
     let orange = bar.iter().filter(|&&c| c == ZONE_ORANGE).count();
     assert_eq!(blue + orange, bar.len(), "only Z2 and Z5: {bar:x?}");
-    assert!(blue.abs_diff(orange) <= 4, "{blue} blue, {orange} orange");
+    // The gap between the zones comes out of the first.
+    assert!(
+        (blue + 2).abs_diff(orange) <= 4,
+        "{blue} blue, {orange} orange"
+    );
     assert_eq!(bar[0], ZONE_BLUE, "lower zones first");
-    assert!((44..224).all(|x| pixel(&sim, x, 276) == ZONE_GREY));
+    assert!((70..218).all(|x| pixel(&sim, x, 306) == ZONE_GREY));
     sim.note(
         NoteKind::Check,
         format!("power bar {blue} px Z2, {orange} px Z5; heart all Z1"),
@@ -939,15 +936,15 @@ fn manual_laps_compare_each_effort_with_the_last() {
     assert!(lap.starts_with("04:0"), "{lap}");
     expect_near(&mut sim, "LAP KM", 2.2, 0.05);
     // Within a watt or a beat: the change of effort spans a second.
-    expect_near(&mut sim, "LAP AVG W", 250.0, 1.0);
+    expect_near(&mut sim, "LAP W", 250.0, 1.0);
     expect_near(&mut sim, "LAP KM/H", 33.0, 0.2);
-    expect_near(&mut sim, "LAP AVG BPM", 150.0, 1.0);
-    sim.expect_text("PREV LAP 1");
-    sim.expect_field("PREV AVG W", "200");
-    let harder = sim.screen().field("W VS PREV").unwrap();
+    expect_near(&mut sim, "LAP BPM", 150.0, 1.0);
+    sim.expect_text("LAP 1");
+    sim.expect_field("LAP 1 W", "200");
+    let harder = sim.screen().field("W DIFF").unwrap();
     assert!(harder == "+49" || harder == "+50", "{harder}");
     assert_eq!(color_of(&sim, &harder), GREEN);
-    let faster = sim.screen().field("KM/H VS PREV").unwrap();
+    let faster = sim.screen().field("KM/H DIFF").unwrap();
     assert!(
         faster.starts_with("+2.") || faster.starts_with("+3."),
         "{faster}"
@@ -955,7 +952,7 @@ fn manual_laps_compare_each_effort_with_the_last() {
     assert_eq!(color_of(&sim, &faster), GREEN);
     sim.checkpoint("lap page, second lap harder");
 
-    // An easy third lap is red with a minus.
+    // An easy third lap is plain grey with a minus: not an alert.
     let toast = sim.lap(2);
     assert!(
         toast.ends_with(" 250W") || toast.ends_with(" 249W"),
@@ -964,20 +961,20 @@ fn manual_laps_compare_each_effort_with_the_last() {
     sim.ride_at(24.0, 150.0, 130.0, 85.0);
     sim.advance(minutes(3));
     sim.expect_text("LAP 3");
-    sim.expect_text("PREV LAP 2");
-    let previous: f64 = sim.screen().field("PREV AVG W").unwrap().parse().unwrap();
-    let easier = reading(&sim, "W VS PREV");
+    sim.expect_text("LAP 2");
+    let previous: f64 = sim.screen().field("LAP 2 W").unwrap().parse().unwrap();
+    let easier = reading(&sim, "W DIFF");
     assert!((easier - (150.0 - previous)).abs() <= 1.0, "{easier}");
     assert_eq!(
-        color_of(&sim, &sim.screen().field("W VS PREV").unwrap()),
-        RED
+        color_of(&sim, &sim.screen().field("W DIFF").unwrap()),
+        SECONDARY
     );
-    let slower = sim.screen().field("KM/H VS PREV").unwrap();
+    let slower = sim.screen().field("KM/H DIFF").unwrap();
     assert!(
         slower.starts_with("-8.") || slower.starts_with("-9."),
         "{slower}"
     );
-    assert_eq!(color_of(&sim, &slower), RED);
+    assert_eq!(color_of(&sim, &slower), SECONDARY);
     sim.checkpoint("lap page, easy third lap");
     sim.stop_ride();
     // Laps stay on screen after saving, like the totals.
@@ -1000,19 +997,19 @@ fn auto_lap_closes_every_five_kilometres() {
     assert!(toast.ends_with(" 220W"), "{toast}");
     sim.checkpoint("auto lap toast at 5 km");
     sim.expect_text("LAP 2");
-    sim.expect_text("PREV LAP 1");
-    let previous = sim.screen().field("PREV LAP 1").unwrap();
+    sim.expect_text("LAP 1");
+    let previous = sim.screen().field("LAP 1").unwrap();
     assert!(previous.starts_with("10:0"), "{previous}");
     // The wheel reads 29.9 km/h, so each 5 km takes a few seconds over ten minutes.
     sim.advance(minutes(10));
     sim.wait_for("LAP 3", seconds(10)).unwrap();
-    let previous = sim.screen().field("PREV LAP 2").unwrap();
+    let previous = sim.screen().field("LAP 2").unwrap();
     assert!(previous.starts_with("10:0"), "{previous}");
-    // A steady ride matches its last lap: no sign, no colour.
+    // A steady ride matches its last lap: no sign, plain grey.
     sim.advance(seconds(30));
-    sim.expect_field("W VS PREV", "0");
-    assert_eq!(color_of(&sim, "0"), 0xffff);
-    expect_near(&mut sim, "KM/H VS PREV", 0.0, 0.2);
+    sim.expect_field("W DIFF", "0");
+    assert_eq!(color_of(&sim, "0"), SECONDARY);
+    expect_near(&mut sim, "KM/H DIFF", 0.0, 0.2);
     sim.checkpoint("lap page after two auto laps");
 }
 
@@ -1240,7 +1237,7 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     expect_near(&mut sim, "VAM M/H", 840.0, 60.0);
     expect_near(&mut sim, "ALTITUDE M", 645.0, 3.0);
     let time = sim.screen().field("CLIMB TIME").unwrap();
-    assert!(time.starts_with("00:03:"), "{time}");
+    assert!(time.starts_with("03:"), "{time}");
     sim.checkpoint("climb page mid-climb");
 
     ride_to(&mut sim, 2510.0);
@@ -1259,13 +1256,13 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.expect_text("NO CLIMB");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     expect_near(&mut sim, "ASCENT M", 90.0, 4.0);
-    expect_near(&mut sim, "LAST GAIN M", 90.0, 4.0);
+    expect_near(&mut sim, "LAST GAIN", 90.0, 4.0);
     expect_near(&mut sim, "LAST KM", 1.5, 0.08);
     expect_percent(&mut sim, "LAST AVG", 6.0, 0.4);
     let time = sim.screen().field("LAST TIME").unwrap();
     // 1.5 km at 14 km/h is 6:26.
     assert!(
-        time.starts_with("00:06:") || time.starts_with("00:07:0"),
+        time.starts_with("06:") || time.starts_with("07:0"),
         "{time}"
     );
     sim.checkpoint("climb page after the descent");
@@ -1357,7 +1354,7 @@ fn expect_check_lines(sim: &mut Sim, lines: &[&str]) {
     sim.home("RIDE");
     sim.expect_text("CONNECTION CHECK");
     for line in lines {
-        sim.expect_text(line);
+        sim.expect_check(line);
     }
 }
 
@@ -1897,7 +1894,7 @@ fn unformatted_bulk_media_records_internally_until_initialized() {
     let mut sim = bulk_rider();
     sim.pair(&["HEART RATE"]);
     sim.home("RIDE");
-    sim.expect_text("INT 4:32 LEFT");
+    sim.expect_check("INT 4:32 LEFT");
     sim.wait_for("KM/H", seconds(5)).unwrap();
     sim.wait_for("READY INT", seconds(5)).unwrap();
     sim.checkpoint("unformatted MMC: rides go to internal flash");
@@ -1916,7 +1913,7 @@ fn unformatted_bulk_media_records_internally_until_initialized() {
     sim.press(Button::TopLeft);
     sim.press(Button::TopLeft);
     sim.home("RIDE");
-    sim.expect_text("MMC 6419H LEFT");
+    sim.expect_check("MMC 6419H LEFT");
     sim.checkpoint("formatted MMC: 6,419 hours left");
     sim.wait_for("KM/H", seconds(5)).unwrap();
     sim.advance(seconds(3));
@@ -2188,7 +2185,7 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     // After a reboot nothing is shown from the MMC ride: rides go internal.
     sim.power_loss();
     sim.home("RIDE");
-    sim.expect_text("INT 4:32 LEFT");
+    sim.expect_check("INT 4:32 LEFT");
     sim.wait_for("KM/H", seconds(5)).unwrap();
     sim.wait_for("READY INT", seconds(5)).unwrap();
     sim.checkpoint("an MMC without room: rides record internally");
@@ -2485,7 +2482,7 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
 
     sim.swipe_next();
     assert_eq!(sim.screen().page().as_deref(), Some("2/4"));
-    sim.expect_text("AVG WATTS");
+    sim.expect_text("AVG W");
     sim.checkpoint("swiped to stats");
     sim.swipe_previous();
     assert_eq!(sim.screen().page().as_deref(), Some("1/4"));

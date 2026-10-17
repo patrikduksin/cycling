@@ -349,7 +349,13 @@ mod tests {
 
     /// Moves of the Home cursor while `key` stays down for `ms`.
     fn moves(live: &mut Live, key: char, ms: u64) -> usize {
-        let train = |live: &Live| live.sim.screen().run("TRAIN").unwrap().color == 0;
+        // The selected Home tile is drawn black on cyan.
+        let train = |live: &Live| {
+            let screen = live.sim.screen();
+            ["TRAIN", "SENSORS", "SETTINGS"]
+                .into_iter()
+                .position(|tile| screen.run(tile).unwrap().color == 0)
+        };
         let mut was = train(live);
         let mut moves = 0;
         live.key_down(key);

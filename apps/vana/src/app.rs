@@ -11,6 +11,7 @@ use device_api::{
 
 mod commands;
 mod input;
+mod preferences;
 mod presentation;
 mod readings;
 mod recording;
@@ -39,6 +40,7 @@ pub struct Runtime {
     readings: readings::Readings,
     sensors: Client,
     ride: recording::Ride,
+    preferences: preferences::Preferences,
 }
 
 impl Runtime {
@@ -54,6 +56,7 @@ impl Runtime {
             readings: readings::Readings::default(),
             sensors: Client::new(profile),
             ride: recording::Ride::default(),
+            preferences: preferences::Preferences::default(),
         }
     }
 

@@ -1,8 +1,9 @@
 //! VANA workout rendering.
-use super::ride::{self, RidePage, Values};
+use super::ride::{self, Marks, RidePage, Values};
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
 use crate::ride::totals::Totals;
+use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::sensors::radar;
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
@@ -17,7 +18,11 @@ pub enum Page {
     Sensors,
     Preflight,
     Ride,
+    Settings,
 }
+
+/// Home choices, in BottomLeft order.
+pub const HOME: [&[u8]; 3] = [b"TRAIN", b"SENSORS", b"SETTINGS"];
 
 pub struct View {
     pub now_ms: u64,
@@ -43,13 +48,20 @@ pub struct View {
     /// The ride state row, prepared once per frame.
     pub(super) state_text: Text<19>,
     pub(super) state_warns: bool,
+    pub zone_time: ZoneTime,
+    pub profile: TrainingProfile,
+    /// Zone colours and gauges prepared for this frame.
+    pub(super) marks: Marks,
     pub page: Page,
-    pub cursor: bool,
+    /// The highlighted Home choice, or the selected Settings field.
+    pub cursor: usize,
+    /// Settings: the selected field is being changed.
+    pub editing: bool,
     pub time: Text<16>,
     pub lines: [Text<38>; 9],
 }
 impl View {
-    pub fn new(page: Page, cursor: bool, utc: Option<u64>) -> Self {
+    pub fn new(page: Page, cursor: usize, utc: Option<u64>) -> Self {
         let mut time = Text::new();
         // Santiago summer time for this workout build. UTC remains unchanged in recordings.
         if let Some(utc) = utc {
@@ -80,11 +92,15 @@ impl View {
             ride_page: RidePage::Main,
             storage_left_s: None,
             values: core::array::from_fn(|_| Text::new()),
+            zone_time: ZoneTime::default(),
+            profile: TrainingProfile::default(),
+            marks: Marks::default(),
             toast: Text::new(),
             state_text: Text::new(),
             state_warns: false,
             page,
             cursor,
+            editing: false,
             time,
             lines: core::array::from_fn(|_| Text::new()),
         }
@@ -142,21 +158,24 @@ impl View {
         if self.page == Page::Ride {
             return ride::pixel(self, x, y);
         }
+        if self.page == Page::Settings {
+            return super::settings::pixel(self, x, y);
+        }
         if self.page == Page::Home {
-            if text(x, y, 24, 65, 2, b"READY TO RIDE") {
+            if text(x, y, 24, 50, 2, b"READY TO RIDE") {
                 return DIM;
             }
-            for (i, label) in [b"TRAIN".as_slice(), b"SENSORS"].iter().enumerate() {
-                let top = 110 + i * 86;
-                if (12..228).contains(&x) && (top..top + 68).contains(&y) {
-                    let selected = usize::from(self.cursor) == i;
-                    if text(x, y, 22, top + 23, 3, label) {
+            for (i, label) in HOME.iter().enumerate() {
+                let top = 82 + i * 68;
+                if (12..228).contains(&x) && (top..top + 58).contains(&y) {
+                    let selected = self.cursor == i;
+                    if text(x, y, 22, top + 18, 3, label) {
                         return if selected { 0 } else { WHITE };
                     }
                     if selected {
                         return CYAN;
                     }
-                    if x == 12 || x == 227 || y == top || y == top + 67 {
+                    if x == 12 || x == 227 || y == top || y == top + 57 {
                         return DIM;
                     }
                 }
@@ -197,6 +216,7 @@ impl View {
             self.values = ride::prepare(self);
             self.toast = ride::toast(self.lap_toast);
             self.prepare_state();
+            self.marks = ride::marks(self);
         }
     }
 
@@ -280,7 +300,7 @@ mod tests {
 
     #[test]
     fn clock_shows_twelve_hour_local_time() {
-        let clock = |utc| View::new(Page::Home, false, utc).time.as_bytes().to_vec();
+        let clock = |utc| View::new(Page::Home, 0, utc).time.as_bytes().to_vec();
         assert_eq!(clock(Some(0)), b"09:00 PM");
         assert_eq!(clock(Some(15 * 3600)), b"12:00 PM");
         assert_eq!(clock(Some(3 * 3600)), b"12:00 AM");
@@ -293,7 +313,7 @@ mod tests {
 
     #[test]
     fn ride_page_shows_prepared_metrics_and_zones() {
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.sample = Sample {
             speed_mm_s: Some(8333),
             power_watts: Some(250),
@@ -308,9 +328,25 @@ mod tests {
         assert!(shows(&view, 72, 7, 2, b"1/3", 0x8410));
         assert!(shows(&view, 38, 54, 6, b"29.9", WHITE));
         assert!(shows(&view, 38, 124, 4, b"250", WHITE));
-        assert!(shows(&view, 38, 157, 2, b"Z5", CYAN));
+        // 250 W is Z5 at the default FTP: black on an orange chip, and the
+        // gauge lit to its place in 227..259 W.
+        const ORANGE: u16 = 0xfc60;
+        assert!(shows(&view, 38, 157, 2, b"Z5", 0));
+        assert_eq!(view.pixel(36, 164), ORANGE);
+        assert_eq!(view.pixel(74, 164), ORANGE);
+        assert_eq!(view.pixel(113, 164), ORANGE);
+        assert_eq!(view.pixel(114, 164), 0x39e7);
+        assert_eq!(view.pixel(70, 164), 0, "a gap between chip and gauge");
         assert!(shows(&view, 146, 124, 4, b"--", WHITE));
-        assert!(shows(&view, 146, 157, 2, b"Z-", CYAN));
+        // No heart rate: a dim Z- with no chip or gauge.
+        assert!(shows(&view, 146, 157, 2, b"Z-", 0x8410));
+        assert_eq!(view.pixel(143, 155), 0);
+        assert_eq!(view.pixel(190, 164), 0);
+        // The same watts sit in a lower zone for a stronger rider.
+        view.profile = crate::ride::zones::TrainingProfile::new(300, 185).unwrap();
+        view.prepare();
+        assert!(shows(&view, 38, 157, 2, b"Z3", 0));
+        assert_eq!(view.pixel(36, 164), 0x07e0);
         assert!(shows(&view, 38, 192, 3, b"90", WHITE));
         assert!(shows(&view, 146, 192, 3, b"0.01", WHITE));
         assert!(shows(&view, 38, 234, 2, b"01:02:05", WHITE));
@@ -320,7 +356,7 @@ mod tests {
 
     #[test]
     fn stats_page_shows_ride_totals() {
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Stats;
         let sample = Sample {
             speed_mm_s: Some(8333),
@@ -331,6 +367,7 @@ mod tests {
         };
         for _ in 0..600 {
             view.totals.add(1000, 8333, &sample, None);
+            view.zone_time.add(1000, &sample, &view.profile);
         }
         view.state = Status::Paused;
         view.prepare();
@@ -346,6 +383,14 @@ mod tests {
         assert!(shows(&view, 34, 231, 3, b"90", WHITE));
         assert!(shows(&view, 141, 221, 1, b"ASCENT M", 0x8410));
         assert!(shows(&view, 141, 231, 3, b"0", WHITE));
+        // Ten minutes at 200 W and 140 bpm: all Z4 power, all Z1 heart rate.
+        assert!(shows(&view, 34, 261, 1, b"PWR", 0x8410));
+        assert!(shows(&view, 34, 273, 1, b"HR", 0x8410));
+        for x in [60, 150, 235] {
+            assert_eq!(view.pixel(x, 264), 0xffe0);
+            assert_eq!(view.pixel(x, 276), 0x8410);
+        }
+        assert_eq!(view.pixel(238, 264), 0);
         // The shared frame stays: the status row.
         assert!(shows(&view, 6, 296, 2, b"PAUSED", CYAN));
     }
@@ -381,7 +426,7 @@ mod tests {
     fn lap_page_compares_the_open_lap_with_the_last_one() {
         const GREEN: u16 = 0x07e0;
         const RED: u16 = 0xf800;
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Lap;
         view.state = Status::Recording;
         two_laps(&mut view, 125, 250, 9000);
@@ -415,7 +460,7 @@ mod tests {
 
     #[test]
     fn lap_page_before_the_first_lap_has_no_comparison() {
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Lap;
         view.prepare();
         assert!(shows(&view, 146, 34, 2, b"LAP 1", CYAN));
@@ -427,7 +472,7 @@ mod tests {
 
     #[test]
     fn status_row_shows_state_and_toasts_without_button_labels() {
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.state = Status::Recording;
         view.prepare();
         assert!(shows(&view, 6, 296, 2, b"RECORDING", CYAN));
@@ -439,7 +484,7 @@ mod tests {
         assert!(shows(&view, 6, 296, 2, b"LAP 1 05:00 200W", 0));
         assert_eq!(view.pixel(3, 290), CYAN);
 
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.state = Status::Paused;
         view.stop_confirm = true;
         view.prepare();
@@ -453,7 +498,7 @@ mod tests {
 
     #[test]
     fn ride_page_warns_before_storage_runs_out_and_names_a_recovered_ride() {
-        let mut view = View::new(Page::Ride, false, None);
+        let mut view = View::new(Page::Ride, 0, None);
         view.state = Status::Recording;
         view.storage_left_s = Some(42 * 60 + 59);
         view.prepare();
@@ -476,11 +521,13 @@ mod tests {
 
     #[test]
     fn home_highlights_the_selected_choice() {
-        let mut view = View::new(Page::Home, true, None);
+        let mut view = View::new(Page::Home, 1, None);
         view.prepare();
-        assert_eq!(view.pixel(13, 197), CYAN, "Sensors is filled");
-        assert_eq!(view.pixel(13, 111), 0, "Train is outlined only");
-        assert_eq!(view.pixel(12, 111), 0x8410);
+        assert_eq!(view.pixel(13, 151), CYAN, "Sensors is filled");
+        assert_eq!(view.pixel(13, 83), 0, "Train is outlined only");
+        assert_eq!(view.pixel(12, 83), 0x8410);
+        assert_eq!(view.pixel(13, 219), 0, "Settings is outlined only");
+        assert!(shows(&view, 22, 236, 3, b"SETTINGS", WHITE));
     }
 
     #[test]

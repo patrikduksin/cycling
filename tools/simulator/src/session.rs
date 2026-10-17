@@ -322,9 +322,13 @@ impl Session {
         #[cfg(feature = "cycling")]
         {
             let view =
-                vana::screens::workout::View::new(vana::screens::workout::Page::Boot, false, None);
+                vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
             shell.draw_scaled(240, 320, |x, y| view.pixel(x, y));
         }
+        #[cfg(feature = "cycling")]
+        let mut sdk = vana::app::Runtime::new(profile);
+        #[cfg(feature = "cycling")]
+        sdk.load_preferences(&shell.settings.app);
         Ok(Self {
             shell,
             now: 0,
@@ -346,7 +350,7 @@ impl Session {
             ble_control: device_api::connectivity::ControlStatus::new(),
             media,
             #[cfg(feature = "cycling")]
-            sdk: vana::app::Runtime::new(profile),
+            sdk,
         })
     }
     /// One pass of the firmware loop, in the order C606 composition runs it.
@@ -419,6 +423,7 @@ impl Session {
             );
             self.sdk
                 .present(&mut self.shell, self.now, &self.ant, &self.position);
+            self.sdk.save_preferences(&mut self.shell, self.now);
             self.sdk.alert(&mut self.speaker, self.now);
         }
     }
@@ -466,7 +471,7 @@ impl Session {
             ) {
                 out.push_str(" ordinary=HELP,INFO,STATUS,POSITION,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,STORAGE,DISPLAY,WIFI,BLE,RESTART");
                 #[cfg(feature = "cycling")]
-                out.push_str(",RIDE,EXPORT,RADAR");
+                out.push_str(",RIDE,EXPORT,RADAR,PROFILE");
             }
             return status;
         }

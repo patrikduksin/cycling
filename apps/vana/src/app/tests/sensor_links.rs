@@ -519,7 +519,7 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
         1400,
         &mut radio,
     );
-    runtime.navigation.home_cursor = true;
+    runtime.navigation.home_cursor = 1;
     radio.reject = None;
     runtime.input(
         Input::Button {
@@ -585,7 +585,7 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
     radio.channels.tick(1);
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
-    runtime.navigation.home_cursor = true;
+    runtime.navigation.home_cursor = 1;
     let press = |button| Input::Button { button, code: 1 };
     runtime.input(press(Button::BottomLeft), 1000, &mut radio);
     runtime.input(press(Button::TopLeft), 1400, &mut radio);

@@ -6,6 +6,7 @@ use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::Totals;
+use crate::ride::zones::{TrainingProfile, ZoneTime};
 
 /// A second end-ride press within this window finishes the ride.
 const STOP_CONFIRM_MS: u64 = 3000;
@@ -52,6 +53,8 @@ pub(super) struct Ride {
     pub(super) laps: Laps,
     /// The last finished lap and when it closed, for the status-row toast.
     lap_toast: Option<(u64, Lap)>,
+    /// Time in each training zone, kept and reset with `totals`.
+    pub(super) zone_time: ZoneTime,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -68,6 +71,7 @@ impl Default for Ride {
             counted_ms: 0,
             laps: Laps::default(),
             lap_toast: None,
+            zone_time: ZoneTime::default(),
             clock: None,
         }
     }
@@ -124,6 +128,7 @@ impl Ride {
         step: Step,
         sample: &Sample,
         pressure_centi_pa: Option<u32>,
+        profile: &TrainingProfile,
     ) {
         if self.recorder.status() != Status::Recording {
             return;
@@ -137,6 +142,7 @@ impl Ride {
         let distance_mm = step.distance_mm * credited / step.elapsed_ms;
         self.totals
             .add(credited, distance_mm, sample, pressure_centi_pa);
+        self.zone_time.add(credited, sample, profile);
         if let Some(lap) = self.laps.add(credited, distance_mm, sample, now) {
             self.lap_closed(lap, now);
         }
@@ -180,6 +186,7 @@ impl Runtime {
             self.ride.counted_ms = 0;
             self.ride.laps = Laps::default();
             self.ride.lap_toast = None;
+            self.ride.zone_time = ZoneTime::default();
         }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);

@@ -7,6 +7,8 @@ mod flows;
 pub mod gps;
 #[cfg(feature = "cycling")]
 pub mod live;
+#[cfg(feature = "cycling")]
+pub mod phone;
 pub mod recording;
 #[cfg(feature = "cycling")]
 pub mod rides;

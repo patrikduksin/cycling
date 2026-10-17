@@ -62,6 +62,10 @@ pub(super) struct Navigation {
     pub(super) setup_return: bool,
     /// The sensor menu was opened from setup and returns there.
     pub(super) sensors_return: bool,
+    /// Connect phone shows the join code (0) or the page code (1).
+    pub(super) phone_step: u8,
+    /// The screen already moved to the page code when a phone joined.
+    pub(super) phone_advanced: bool,
     /// The page to return to when the climb that switched to the climb page
     /// ends; cleared when the rider changes page themselves.
     pub(super) climb_return: Option<RidePage>,
@@ -170,6 +174,8 @@ impl Default for Navigation {
             setup_cursor: 0,
             setup_return: false,
             sensors_return: false,
+            phone_step: 0,
+            phone_advanced: false,
             climb_return: None,
             page_since: 0,
             last_press: 0,
@@ -558,7 +564,12 @@ impl Runtime {
             }
             Page::Summary => view.after = self.after(),
             Page::PastRide => self.past_view(&mut view),
-            Page::Phone => view.phone_ride = self.history.phone.is_some(),
+            Page::Phone => {
+                view.phone_ride = self.history.phone.is_some();
+                // The codes stay readable while a phone connects.
+                system.activity(now);
+                self.phone_view(&mut view);
+            }
             Page::History => view.set_canvas(self.history_canvas()),
             Page::EndRide => {}
             Page::Ride => {
@@ -1028,8 +1039,7 @@ impl Runtime {
                 0 => write!(value, "NONE SAVED"),
                 count => write!(value, "{count} SAVED"),
             },
-            // The PHONE COMPANION workstream replaces this placeholder.
-            Row::Phone => write!(value, "COMING SOON"),
+            Row::Phone => write!(value, "SEND RIDES"),
             Row::Storage => {
                 if self.ride.bulk.status() != Status::Unsupported {
                     let _ = write!(note, "{}", self.ride.medium().label());

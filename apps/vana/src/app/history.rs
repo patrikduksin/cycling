@@ -221,22 +221,10 @@ impl Runtime {
                     return;
                 };
                 self.history.phone = Some((medium, summary.ride_id));
-                self.navigation.page = Page::Phone;
+                self.enter_phone();
             }
             _ => {}
         }
-    }
-
-    /// BACK from the phone screen returns where it was opened from.
-    pub(super) fn phone_input(&mut self, button: Button, held: bool) {
-        if button != Button::TopLeft || held {
-            return;
-        }
-        self.navigation.page = if self.history.phone.take().is_some() {
-            Page::PastRide
-        } else {
-            Page::Home
-        };
     }
 
     /// A new ride takes the sums back; Home shows it as the last ride.

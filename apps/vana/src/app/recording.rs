@@ -485,6 +485,22 @@ impl Ride {
 
     /// Index a few more saved rides of each journal, through the export
     /// path's reader, while no ride is open. Returns whether any was added.
+    /// Whether the index has read every slot both journals hold; a journal
+    /// that cannot be read yet holds nothing to count.
+    pub(super) fn directory_done(&self, index: &crate::ride::directory::RideIndex) -> bool {
+        let caught_up =
+            |exportable: bool, scanned: usize, next: usize| !exportable || scanned >= next;
+        caught_up(
+            self.internal.exportable(),
+            index.internal.scanned(),
+            self.internal.next_slot(),
+        ) && caught_up(
+            self.bulk.exportable(),
+            index.bulk.scanned(),
+            self.bulk.next_slot(),
+        )
+    }
+
     pub(super) fn directory_step(
         &mut self,
         index: &mut crate::ride::directory::RideIndex,

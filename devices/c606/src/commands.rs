@@ -37,6 +37,8 @@ impl Write for Text {
 }
 pub trait Diagnostics {
     fn board(&self) -> &'static str;
+    /// Application slot that booted: `A`, `B` or `unknown`.
+    fn slot(&self) -> &'static str;
     fn heap_free(&self) -> usize;
     fn external_free(&self) -> usize;
     fn restart(&self, panic: bool) -> !;
@@ -222,8 +224,9 @@ pub fn execute(
             crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board={} commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
+                "board={} slot={} commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
                 diagnostics.board(),
+                diagnostics.slot(),
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                 cfg!(feature = "debug-harness"),
                 cfg!(feature = "cycling"),

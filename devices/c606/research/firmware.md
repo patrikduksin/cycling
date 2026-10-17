@@ -45,7 +45,7 @@ but its RTS hard-reset left the ROM reporting `DOWNLOAD(USB/UART0)` and
 `waiting for download`. Changing only the reset to esptool's `watchdog-reset`
 booted stock into its normal state, confirmed by the user. USB disappeared after
 that reset, so serial capture alone could not confirm application startup.
-The stock task, also named `boot-stock`, now uses watchdog reset. See
+That selection path (now `mise run stock-select`, alias `boot-stock`; `mise run stock` became the full-backup restore) uses watchdog reset. See
 [esptool reset modes](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/advanced-options.html#reset-after-operation-after).
 
 The main stock updater's OTA routine was located at `0x421b3488`; it performs begin,

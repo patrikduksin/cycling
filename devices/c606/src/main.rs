@@ -6,7 +6,22 @@ mod bringup;
 mod commands;
 mod logging;
 use esp_backtrace as _;
+#[cfg(not(feature = "bulk-maintenance"))]
 esp_bootloader_esp_idf::esp_app_desc!();
+// The descriptor version marks the binary maintenance protocol, so host tools
+// pick the right readiness probe from the stored image alone.
+#[cfg(feature = "bulk-maintenance")]
+esp_bootloader_esp_idf::esp_app_desc!(
+    concat!(env!("CARGO_PKG_VERSION"), "+maintenance"),
+    env!("CARGO_PKG_NAME"),
+    esp_bootloader_esp_idf::BUILD_TIME,
+    esp_bootloader_esp_idf::BUILD_DATE,
+    esp_bootloader_esp_idf::ESP_IDF_COMPATIBLE_VERSION,
+    esp_bootloader_esp_idf::MMU_PAGE_SIZE,
+    0,
+    u16::MAX,
+    esp_bootloader_esp_idf::SECURE_VERSION
+);
 
 type FirmwareShell = firmware_shell::shell::Shell<
     device::drivers::display::Display<'static>,
@@ -242,6 +257,9 @@ struct FirmwareDiagnostics;
 impl commands::Diagnostics for FirmwareDiagnostics {
     fn board(&self) -> &'static str {
         "c606"
+    }
+    fn slot(&self) -> &'static str {
+        device::drivers::boot_slot::running()
     }
     fn heap_free(&self) -> usize {
         esp_alloc::HEAP.free()

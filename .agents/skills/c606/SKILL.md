@@ -1,6 +1,6 @@
 ---
 name: c606
-description: Flash, access serial, debug or measure the connected Magene C606 safely, preserving stock firmware and persisted data.
+description: Flash, access serial, debug or measure the connected Magene C606 safely, preserving the stock backup, boot metadata and persisted data.
 ---
 
 # C606
@@ -8,27 +8,59 @@ description: Flash, access serial, debug or measure the connected Magene C606 sa
 The device-safety rules in [AGENTS.md](../../../AGENTS.md) always apply. This
 skill adds the procedure for flashing, device access, testing and reporting.
 
-## Firmware: backup, flash, stock
+## Firmware: backup, A/B flash, rollback, stock
 
 | Task | Does |
 | --- | --- |
 | `mise run backup` | One-time full-flash backup into private `.local/device`. Refuses to overwrite an existing backup. |
-| `mise run flash` | Rebuilds for the given `CYCLING_SDK`/`CYCLING_HARNESS`, verifies stock, writes cycling to slot B and boots it. |
-| `mise run stock` (alias `boot-stock`) | Verifies and boots preserved stock firmware. |
+| `mise run flash` | Rebuilds for the given `CYCLING_SDK`/`CYCLING_HARNESS`, writes the slot that is not selected, verifies it and the reservations, selects and boots it, and requires its console. |
+| `mise run rollback` | Validates the cycling image in the other slot and boots it. No slot writes. |
+| `mise run stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
+| `mise run restore-owned -- <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
+| `mise run stock-select` (alias `boot-stock`) | Boots slot A without rewriting flash, only while it still holds the verified stock image. |
 | `mise run monitor` | Reads USB logs without resetting. |
 
 These tasks run [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py),
 which owns the flash geometry. It verifies the device and baseline, validates the
-image and ranges, restricts writes to the owned application and OTA selection,
-and reads back changes.
+image and ranges, restricts writes to an application slot and OTA selection
+(or, for `stock`, the backup itself), and reads back changes.
 
-- Never use generic flashing tools; they can replace protected boot metadata or
-  stock ota_0. The recovered layout assumes secure boot and flash encryption are
-  disabled.
-- Preserve the ride and settings reservations, bootloader, partition table and
-  eFuses. No vendor filesystem writes.
+Stock lives in the verified backup, not on the device: cycling may occupy both
+slots (owner decision, 2026-10-17). The backup is `.local/device/flash.bin` with
+its `manifest.json`; keep the separate copy too.
+
+- A/B: slot A is `0x20000` (stock's ota_0), slot B `0x760000`. Slot B ends with
+  the 1 MiB ride journal and the settings, so images are capped below them in
+  both slots (`APP_SIZE`). `flash` writes the slot that is not selected; after a
+  full restore that is slot B, and the next flash replaces stock in slot A.
+- After the watchdog reset `flash` and `rollback` wait up to 25 s for the
+  console to answer `INFO`, whose `slot=` field reports the booted slot. Silence
+  or a different slot reselects the previous slot and fails with the reason.
+  Firmware without the `slot=` field is reported by OTA selection only.
+  `CYCLING_BULK_MAINTENANCE=1` builds mark their descriptor version
+  `+maintenance`; for such an image (new, rollback target or previous slot) the
+  check uses the maintenance protocol's INFO frame instead (that build has no
+  JSON console and needs working MMC). Maintenance images built before the
+  marker are probed as JSON and get switched back. A reset
+  failure after the selection was written (for example ROM download mode) also
+  reselects the previous slot from freshly read metadata.
+- `stock` checks every backup hash and the device identity before writing, saves
+  the current ride and settings reservations as
+  `.local/device/owned-pre-restore-<ns>.bin` (rides at offset 0, settings at
+  `0x100000`) and prints the path and the `mise run restore-owned` command
+  that puts them back after the next cycling flash, writes only differing sectors (boot metadata
+  last, identical bootloader sectors never), reads the whole flash back, and
+  resets. It reads 16 MiB twice: allow about five minutes. The reservations
+  then hold the backup's bytes, so cycling reports `SETTINGS source=failed
+  persistence_error=true` and `EXPORT INFO ... needs_init` and refuses to persist
+  until `mise run restore-owned` writes the snapshot back.
+- Never use generic flashing tools or write the backup by hand. The recovered
+  layout assumes secure boot and flash encryption are disabled.
+- Never touch eFuses. Preserve the bootloader, partition table and the ride and
+  settings reservations across flashes. No vendor filesystem writes.
 - The first backup needs an explicit `--port` or `CYCLING_PORT`, because port
-  discovery relies on its manifest. Keep a separate copy of the backup. Never
+  discovery relies on its manifest. `backup` refuses when slot A holds cycling:
+  on a new host, copy the existing verified backup instead. Keep a separate copy of the backup. Never
   overwrite an existing baseline backup.
 - The helper resets with the watchdog. RTS hard reset left this device in ROM
   download mode even with stock selected; watchdog reset reached normal stock
@@ -38,7 +70,8 @@ and reads back changes.
   download mode. Observe physical startup, and record it separately from
   successful attachment.
 - If an operation is interrupted, download mode can stay active: inspect the
-  private logs, reconnect and run `mise run stock` with the verified backup.
+  private logs and reconnect. ROM download mode stays reachable, so rerun the
+  interrupted task, `mise run rollback`, or `mise run stock` for a full restore.
 - Stop `mise run monitor` before opening a no-reset reader.
 
 ## Device access

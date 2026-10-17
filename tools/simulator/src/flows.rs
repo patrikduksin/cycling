@@ -52,29 +52,69 @@ impl Sim {
         );
     }
 
-    /// Train from Home, through the connection check, onto a recording ride page.
+    /// Train from Home, through the connection check, onto a recording ride
+    /// page. BottomRight acts: it starts, pauses and resumes a ride.
     pub fn start_ride(&mut self) {
         self.home("TRAIN");
         self.expect_text("CONNECTION CHECK");
         self.wait_for("ACTIVE TIME", seconds(5)).unwrap();
-        self.press(Button::BottomLeft);
+        self.press(Button::BottomRight);
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
     pub fn pause_ride(&mut self) {
-        self.press(Button::BottomLeft);
+        self.press(Button::BottomRight);
         self.wait_for("PAUSED", seconds(2)).unwrap();
     }
 
     pub fn resume_ride(&mut self) {
-        self.press(Button::BottomLeft);
+        self.press(Button::BottomRight);
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
+    /// Pause if still recording (only a paused ride ends), then press TopLeft
+    /// twice, confirming on "PRESS AGAIN TO SAVE", and wait for the save.
     pub fn stop_ride(&mut self) {
-        self.press(Button::BottomRight);
-        self.expect_text("STOP TO SAVE");
-        self.press(Button::BottomRight);
+        if self.screen().run("RECORDING").is_some() {
+            self.pause_ride();
+        }
+        self.press(Button::TopLeft);
+        self.expect_text("PRESS AGAIN TO SAVE");
+        self.press(Button::TopLeft);
         self.wait_for("SAVED", seconds(5)).unwrap();
+    }
+
+    /// TopLeft on a recording ride: close the lap and see its toast, such as
+    /// "LAP 1 05:00 200W".
+    #[track_caller]
+    pub fn lap(&mut self, number: u16) -> String {
+        assert!(
+            self.screen().run("RECORDING").is_some(),
+            "TopLeft laps only a recording ride; screen:\n{}",
+            self.screen().text()
+        );
+        self.press(Button::TopLeft);
+        let prefix = format!("LAP {number} ");
+        self.screen()
+            .find(&prefix)
+            .into_iter()
+            .find(|run| run.text.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("no {prefix:?} toast; screen:\n{}", self.screen().text()))
+            .text
+    }
+
+    /// BottomLeft until the header shows a ride page indicator, such as "2/3".
+    #[track_caller]
+    pub fn ride_page(&mut self, indicator: &str) {
+        for _ in 0..4 {
+            if self.screen().contains(indicator) {
+                return;
+            }
+            self.press(Button::BottomLeft);
+        }
+        panic!(
+            "no ride page {indicator}; screen:\n{}",
+            self.screen().text()
+        );
     }
 }

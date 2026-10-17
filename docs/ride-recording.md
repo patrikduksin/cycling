@@ -78,8 +78,43 @@ Controls:
 | Screen | Control |
 | --- | --- |
 | Menu | Opens training or sensor status |
-| Training | After a short connection check, bottom-left starts, pauses or resumes. Bottom-right twice within five seconds finishes and commits the final samples; wait for `saved` before powering off. Top-left steps through the ride pages (live, then totals; the header shows `1/2`). Past the last page it wraps while a ride is open and returns home otherwise. |
+| Training | After a short connection check, the ride buttons below apply. |
 | Sensor scan | Bottom-left moves, bottom-right selects, top-left returns. Wait for PICK SENSOR before selecting another device. |
+
+Ride buttons keep the system-wide roles: bottom-right acts, bottom-left moves,
+top-left marks or backs out. The ride screen shows no button labels; the
+status row under the pages names the ride state, and short toasts confirm a
+lap or ask for the end-ride confirmation. A ride ends only once paused, so a
+bump of top-left while riding marks a lap instead. Touch never starts, pauses,
+laps or ends a ride.
+
+| Ride state | Bottom-right (act) | Bottom-left (move) | Top-left (mark / back) |
+| --- | --- | --- | --- |
+| Ready, saved or recovered | Start | Next page, wrapping | Home |
+| Recording | Pause | Next page, wrapping | Lap |
+| Paused | Resume | Next page, wrapping | End ride: a second press within three seconds (toast `PRESS AGAIN TO SAVE`) finishes and commits the final samples; wait for `saved` before powering off |
+
+The pages are live, totals and lap; the header shows `1/3`.
+
+Laps:
+
+- A lap press closes the current lap; another within three seconds is ignored.
+  An automatic lap closes every 5 km of lap distance (fixed in this build), and
+  a lap press restarts that count. Both share one numbered list.
+- For two seconds a toast in the status row shows `LAP n`, the finished lap's
+  time and its average power.
+- Lap time is recorded time, so a pause adds none. Lap averages follow the ride
+  totals: power counts zeros, speed is lap distance over moving time, heart rate
+  counts seconds with a reading.
+- The lap page shows the open lap's time, number, distance and average power,
+  speed and heart rate, then the previous lap's time and average power. Speed
+  and power deltas against the previous lap are green with `+` when higher and
+  red with `-` when lower.
+- Laps restart with each ride, stay visible after saving, and keep the last 16
+  summaries. They live in RAM only: the journal has no lap record, and current
+  and older readers (firmware recovery and `ride-export`) treat an unknown record
+  kind as an invalid slot that marks the ride as gapped. Exports therefore carry
+  no laps, and power-off loses them.
 
 Sensors:
 

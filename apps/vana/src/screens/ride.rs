@@ -1,18 +1,23 @@
-//! The ride screen: pages that TopLeft steps through inside a shared frame.
+//! The ride screen: pages that BottomLeft steps through inside a shared frame.
 //!
-//! The frame draws the radar strip (x < 28), the recording status and the
-//! button labels (y >= 257); every page keeps them so radar and ride control
-//! never depend on the page shown. A page owns the body, x 28..240 and
-//! y 30..257, and the values it prepares once per frame.
+//! The frame draws the radar strip (x < `CONTENT_LEFT`) and, below the
+//! content, one status row for the ride state and short toasts. There are no
+//! button labels: the buttons keep one meaning system-wide (see
+//! docs/ride-recording.md). A page owns the content rectangle,
+//! `CONTENT_LEFT..CONTENT_RIGHT` by `CONTENT_TOP..CONTENT_BOTTOM`, and the
+//! values it prepares once per frame; new pages place everything from these
+//! constants so the chrome can change without rewriting them.
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` with `prepare` and `pixel`, dispatched below.
 use super::workout::{Text, View};
+use crate::ride::laps::Lap;
 use crate::ride::log::Status;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
 
+mod lap;
 mod main;
 mod stats;
 
@@ -21,12 +26,20 @@ pub(super) const CYAN: u16 = 0x07ff;
 pub(super) const DIM: u16 = 0x8410;
 pub(super) const GRID: u16 = 0x39e7;
 const YELLOW: u16 = 0xffe0;
-const RED: u16 = 0xf800;
+pub(super) const RED: u16 = 0xf800;
+pub(super) const GREEN: u16 = 0x07e0;
 
-/// The body ends where the shared status row begins.
-pub(super) const BODY_BOTTOM: usize = 257;
+/// The content rectangle a page draws in.
+pub(super) const CONTENT_LEFT: usize = 28;
+pub(super) const CONTENT_TOP: usize = 30;
+pub(super) const CONTENT_RIGHT: usize = 240;
+/// The content ends at the footer divider; the status row is below it.
+pub(super) const CONTENT_BOTTOM: usize = 285;
+pub(super) const BODY_BOTTOM: usize = CONTENT_BOTTOM;
+/// The status row's text line, full width under the content.
+const STATUS_TEXT_TOP: usize = 296;
 
-/// A ride page, in TopLeft order.
+/// A ride page, in BottomLeft order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RidePage {
     /// Live speed, power, heart rate, cadence, distance, time and grade.
@@ -34,10 +47,12 @@ pub enum RidePage {
     Main,
     /// Ride totals: distance, moving time, averages, maxima, NP, work, ascent.
     Stats,
+    /// The open lap against the last finished one.
+    Lap,
 }
 
 impl RidePage {
-    pub const ALL: [Self; 2] = [Self::Main, Self::Stats];
+    pub const ALL: [Self; 3] = [Self::Main, Self::Stats, Self::Lap];
 
     pub fn index(self) -> usize {
         self as usize
@@ -66,6 +81,7 @@ pub(super) fn prepare(view: &View) -> Values {
     match view.ride_page {
         RidePage::Main => main::prepare(view, &mut values),
         RidePage::Stats => stats::prepare(view, &mut values),
+        RidePage::Lap => lap::prepare(view, &mut values),
     }
     values
 }
@@ -78,10 +94,11 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
     if x == 27 && y < 285 {
         return GRID;
     }
-    if x >= 28 && y < BODY_BOTTOM {
+    if x >= CONTENT_LEFT && y < CONTENT_BOTTOM {
         return match view.ride_page {
             RidePage::Main => main::pixel(view, x, y),
             RidePage::Stats => stats::pixel(view, x, y),
+            RidePage::Lap => lap::pixel(view, x, y),
         };
     }
     status_pixel(view, x, y)
@@ -109,9 +126,42 @@ fn radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
     0
 }
 
+/// The finished lap the status row announces: number, time and average power.
+pub(super) fn toast(lap: Option<Lap>) -> Text<19> {
+    let mut toast = Text::new();
+    let Some(lap) = lap else {
+        return toast;
+    };
+    let mut time = Text::<12>::new();
+    lap_time(&mut time, lap.time_ms / 1000);
+    let time = core::str::from_utf8(time.as_bytes()).unwrap_or("");
+    let written = match lap.avg_power() {
+        Some(watts) => write!(toast, "LAP {} {time} {watts}W", lap.number),
+        None => write!(toast, "LAP {} {time} --W", lap.number),
+    };
+    // Past lap 99 and an hour the power no longer fits the row.
+    if written.is_err() {
+        toast = Text::new();
+        let _ = write!(toast, "LAP {} {time}", lap.number);
+    }
+    toast
+}
+
+/// The status row under the content: a lap toast, the end-ride
+/// confirmation, or the recorder state. No button labels.
 fn status_pixel(view: &View, x: usize, y: usize) -> u16 {
+    if y <= CONTENT_BOTTOM {
+        return 0;
+    }
+    if !view.toast.as_bytes().is_empty() {
+        return if text(x, y, 6, STATUS_TEXT_TOP, 2, view.toast.as_bytes()) {
+            0
+        } else {
+            CYAN
+        };
+    }
     let state: &[u8] = if view.stop_confirm {
-        b"STOP TO SAVE"
+        b"PRESS AGAIN TO SAVE"
     } else {
         match view.state {
             Status::Recording => b"RECORDING",
@@ -122,16 +172,8 @@ fn status_pixel(view: &View, x: usize, y: usize) -> u16 {
             _ => b"READY",
         }
     };
-    if text(x, y, 30, 263, 2, state) {
+    if text(x, y, 6, STATUS_TEXT_TOP, 2, state) {
         return if view.stop_confirm { YELLOW } else { CYAN };
-    }
-    let left: &[u8] = match view.state {
-        Status::Recording => b"PAUSE",
-        Status::Paused => b"RESUME",
-        _ => b"START",
-    };
-    if text(x, y, 8, 300, 2, left) || text(x, y, 180, 300, 2, b"STOP") {
-        return WHITE;
     }
     0
 }
@@ -191,6 +233,16 @@ pub(super) fn kilometres(value: &mut Text<12>, mm: u64) {
     };
 }
 
+/// Lap time: MM:SS, or H:MM:SS from an hour.
+pub(super) fn lap_time(value: &mut Text<12>, seconds: u64) {
+    let t = seconds;
+    let _ = if t < 3600 {
+        write!(value, "{:02}:{:02}", t / 60, t % 60)
+    } else {
+        write!(value, "{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60)
+    };
+}
+
 /// A whole reading, or "--" without one.
 pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Display>) {
     let _ = match reading {
@@ -207,9 +259,11 @@ mod tests {
     fn pages_step_in_order_and_end() {
         assert_eq!(RidePage::default(), RidePage::Main);
         assert_eq!(RidePage::Main.next(), Some(RidePage::Stats));
-        assert_eq!(RidePage::Stats.next(), None);
-        assert_eq!(&RidePage::Main.indicator(), b"1/2");
-        assert_eq!(&RidePage::Stats.indicator(), b"2/2");
+        assert_eq!(RidePage::Stats.next(), Some(RidePage::Lap));
+        assert_eq!(RidePage::Lap.next(), None);
+        assert_eq!(&RidePage::Main.indicator(), b"1/3");
+        assert_eq!(&RidePage::Stats.indicator(), b"2/3");
+        assert_eq!(&RidePage::Lap.indicator(), b"3/3");
     }
 
     #[test]
@@ -227,6 +281,8 @@ mod tests {
         assert_eq!(format(&|v| speed(v, Some(8333))), b"29.9");
         assert_eq!(format(&|v| speed(v, None)), b"--");
         assert_eq!(format(&|v| clock(v, 3725)), b"01:02:05");
+        assert_eq!(format(&|v| lap_time(v, 312)), b"05:12");
+        assert_eq!(format(&|v| lap_time(v, 3725)), b"1:02:05");
         assert_eq!(format(&|v| whole(v, Some(42))), b"42");
         assert_eq!(format(&|v| whole(v, None::<u16>)), b"--");
     }

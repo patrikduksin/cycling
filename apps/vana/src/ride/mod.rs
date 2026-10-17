@@ -1,4 +1,5 @@
 pub mod control;
+pub mod laps;
 pub mod log;
 pub mod metrics;
 pub mod reclaim;

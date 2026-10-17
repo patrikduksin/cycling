@@ -1,13 +1,16 @@
 //! Ride recorder ownership, request tokens and bounded recording work.
 use super::Runtime;
+use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::Totals;
 
-/// A second Stop within this window finishes the ride.
-const STOP_CONFIRM_MS: u64 = 5000;
+/// A second end-ride press within this window finishes the ride.
+const STOP_CONFIRM_MS: u64 = 3000;
+/// A finished lap shows in the status row this long.
+const LAP_TOAST_MS: u64 = 2000;
 
 /// The recorder operation a rider or host requested, until someone reads its result.
 #[derive(Clone, Copy)]
@@ -29,7 +32,7 @@ impl RideMessage {
     pub(super) const fn text(self) -> &'static str {
         match self {
             Self::Ready => "READY",
-            Self::ConfirmStop => "PRESS STOP AGAIN TO SAVE",
+            Self::ConfirmStop => "PRESS AGAIN TO SAVE",
             Self::StorageNotReady => "STORAGE NOT READY",
         }
     }
@@ -45,6 +48,10 @@ pub(super) struct Ride {
     pub(super) totals: Totals,
     /// Recorder active time the totals already cover.
     counted_ms: u64,
+    /// This ride's laps, reset with the totals.
+    pub(super) laps: Laps,
+    /// The last finished lap and when it closed, for the status-row toast.
+    lap_toast: Option<(u64, Lap)>,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -59,6 +66,8 @@ impl Default for Ride {
             message: RideMessage::Ready,
             totals: Totals::default(),
             counted_ms: 0,
+            laps: Laps::default(),
+            lap_toast: None,
             clock: None,
         }
     }
@@ -86,9 +95,12 @@ impl Ride {
         matches!(self.request, Request::Pending(_))
     }
 
+    /// Stop is armed: only a paused ride stops, within `STOP_CONFIRM_MS`.
     pub(super) fn stop_confirming(&self, now: u64) -> bool {
-        self.stop_armed
-            .is_some_and(|at| now.saturating_sub(at) <= STOP_CONFIRM_MS)
+        self.recorder.status() == Status::Paused
+            && self
+                .stop_armed
+                .is_some_and(|at| now.saturating_sub(at) <= STOP_CONFIRM_MS)
     }
 
     pub(super) fn arm_stop(&mut self, now: u64) {
@@ -123,6 +135,21 @@ impl Ride {
         let distance_mm = step.distance_mm * credited / step.elapsed_ms;
         self.totals
             .add(credited, distance_mm, sample, pressure_centi_pa);
+        if let Some(lap) = self.laps.add(credited, distance_mm, sample, now) {
+            self.lap_closed(lap, now);
+        }
+    }
+
+    /// Show a finished lap in the status row.
+    pub(super) fn lap_closed(&mut self, lap: Lap, now: u64) {
+        self.lap_toast = Some((now, lap));
+    }
+
+    /// The finished lap the status row shows at `now`, for `LAP_TOAST_MS`.
+    pub(super) fn lap_toast(&self, now: u64) -> Option<Lap> {
+        self.lap_toast
+            .filter(|(at, _)| now.saturating_sub(*at) < LAP_TOAST_MS)
+            .map(|(_, lap)| lap)
     }
 }
 
@@ -142,12 +169,15 @@ impl Runtime {
         self.ride
             .recorder
             .service(store, now, sample, &|| clock.map_or(now, |clock| clock()));
-        // A new ride, from any source, starts its totals from zero; resume keeps them.
+        // A new ride, from any source, starts its totals and laps from zero;
+        // resume keeps them.
         if self.ride.recorder.status() == Status::Recording
             && !matches!(before, Status::Recording | Status::Paused)
         {
             self.ride.totals = Totals::default();
             self.ride.counted_ms = 0;
+            self.ride.laps = Laps::default();
+            self.ride.lap_toast = None;
         }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);

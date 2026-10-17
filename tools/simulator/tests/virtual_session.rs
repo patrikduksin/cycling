@@ -294,19 +294,24 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     s.advance(2600).unwrap();
     present(&mut s); // Preflight -> ready workout.
     assert!(!s.sdk.recording());
-    press(&mut s, Button::BottomLeft);
+    press(&mut s, Button::BottomRight);
     state(&mut s, "recording");
     s.advance(5200).unwrap();
-    press(&mut s, Button::BottomLeft);
+    press(&mut s, Button::BottomRight);
     let paused = active(&state(&mut s, "paused"));
     s.advance(5000).unwrap();
     assert_eq!(active(&state(&mut s, "paused")), paused);
-    press(&mut s, Button::BottomLeft);
+    press(&mut s, Button::BottomRight);
     s.advance(2100).unwrap();
     assert!(active(&state(&mut s, "recording")) > paused);
-    press(&mut s, Button::BottomRight); // Arm stop; a single press must not save.
+    press(&mut s, Button::TopLeft); // Recording, this is a lap, not end ride.
+    press(&mut s, Button::TopLeft);
     state(&mut s, "recording");
-    press(&mut s, Button::BottomRight);
+    press(&mut s, Button::BottomRight); // Only a paused ride ends.
+    state(&mut s, "paused");
+    press(&mut s, Button::TopLeft); // Arm end ride; a single press must not save.
+    state(&mut s, "paused");
+    press(&mut s, Button::TopLeft);
     let saved_duration = active(&state(&mut s, "saved"));
     assert!(!s.sdk.recording());
     let saved = std::fs::read(t.0.join("data.bin")).unwrap();
@@ -328,10 +333,12 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     assert_eq!(entries.last().unwrap().active_ms, saved_duration);
 
     // A later workout appends after the completed one, including across restart.
-    press(&mut s, Button::BottomLeft);
+    press(&mut s, Button::BottomRight);
     s.advance(1500).unwrap();
     press(&mut s, Button::BottomRight);
-    press(&mut s, Button::BottomRight);
+    state(&mut s, "paused");
+    press(&mut s, Button::TopLeft);
+    press(&mut s, Button::TopLeft);
     state(&mut s, "saved");
     assert_eq!(
         &std::fs::read(t.0.join("data.bin")).unwrap()[..prefix.len()],

@@ -1,5 +1,6 @@
 //! VANA workout rendering.
 use super::ride::{self, RidePage, Values};
+use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
 use crate::ride::totals::Totals;
 use crate::sensors::radar;
@@ -24,9 +25,16 @@ pub struct View {
     pub gps_fix: bool,
     pub stop_confirm: bool,
     pub totals: Totals,
+    /// The open lap and the last finished one.
+    pub lap: Lap,
+    pub previous_lap: Option<Lap>,
+    /// A just-finished lap the status row announces.
+    pub lap_toast: Option<Lap>,
     pub ride_page: RidePage,
     /// What the ride page prepared for this frame.
     pub(super) values: Values,
+    /// The status-row lap announcement prepared for this frame, if any.
+    pub(super) toast: Text<19>,
     pub page: Page,
     pub cursor: bool,
     pub time: Text<16>,
@@ -58,8 +66,12 @@ impl View {
             gps_fix: false,
             stop_confirm: false,
             totals: Totals::default(),
+            lap: Laps::default().current(),
+            previous_lap: None,
+            lap_toast: None,
             ride_page: RidePage::Main,
             values: core::array::from_fn(|_| Text::new()),
+            toast: Text::new(),
             page,
             cursor,
             time,
@@ -172,6 +184,7 @@ impl View {
     pub fn prepare(&mut self) {
         if self.page == Page::Ride {
             self.values = ride::prepare(self);
+            self.toast = ride::toast(self.lap_toast);
         }
     }
 }
@@ -255,7 +268,7 @@ mod tests {
         view.active_secs = 3725;
         view.state = Status::Recording;
         view.prepare();
-        assert!(shows(&view, 72, 7, 2, b"1/2", 0x8410));
+        assert!(shows(&view, 72, 7, 2, b"1/3", 0x8410));
         assert!(shows(&view, 38, 54, 6, b"29.9", WHITE));
         assert!(shows(&view, 38, 124, 4, b"250", WHITE));
         assert!(shows(&view, 38, 157, 2, b"Z5", CYAN));
@@ -265,8 +278,7 @@ mod tests {
         assert!(shows(&view, 146, 192, 3, b"0.01", WHITE));
         assert!(shows(&view, 38, 234, 2, b"01:02:05", WHITE));
         assert!(shows(&view, 150, 234, 2, b"-3.5%", WHITE));
-        assert!(shows(&view, 30, 263, 2, b"RECORDING", CYAN));
-        assert!(shows(&view, 8, 300, 2, b"PAUSE", WHITE));
+        assert!(shows(&view, 6, 296, 2, b"RECORDING", CYAN));
     }
 
     #[test]
@@ -285,7 +297,7 @@ mod tests {
         }
         view.state = Status::Paused;
         view.prepare();
-        assert!(shows(&view, 72, 7, 2, b"2/2", 0x8410));
+        assert!(shows(&view, 72, 7, 2, b"2/3", 0x8410));
         assert!(shows(&view, 34, 36, 1, b"DISTANCE KM", 0x8410));
         assert!(shows(&view, 34, 46, 3, b"5.00", WHITE));
         assert!(shows(&view, 141, 49, 2, b"00:10:00", WHITE));
@@ -297,9 +309,104 @@ mod tests {
         assert!(shows(&view, 34, 231, 3, b"90", WHITE));
         assert!(shows(&view, 141, 221, 1, b"ASCENT M", 0x8410));
         assert!(shows(&view, 141, 231, 3, b"0", WHITE));
-        // The shared frame stays: status and ride controls.
-        assert!(shows(&view, 30, 263, 2, b"PAUSED", CYAN));
-        assert!(shows(&view, 8, 300, 2, b"RESUME", WHITE));
+        // The shared frame stays: the status row.
+        assert!(shows(&view, 6, 296, 2, b"PAUSED", CYAN));
+    }
+
+    /// A first lap of five minutes at 200 W and 30 km/h, then `seconds` of
+    /// the second at `watts` and `speed_mm_s`.
+    fn two_laps(view: &mut View, seconds: u64, watts: u16, speed_mm_s: u32) {
+        let mut laps = Laps::default();
+        let steady = |watts, speed_mm_s| Sample {
+            speed_mm_s: Some(speed_mm_s),
+            power_watts: Some(watts),
+            heart_bpm: Some(150),
+            ..Sample::default()
+        };
+        for second in 0..300 {
+            laps.add(1000, 8334, &steady(200, 8334), second * 1000);
+        }
+        view.lap_toast = laps.lap(300_000);
+        for second in 0..seconds {
+            let sample = steady(watts, speed_mm_s);
+            laps.add(
+                1000,
+                u64::from(speed_mm_s),
+                &sample,
+                300_000 + second * 1000,
+            );
+        }
+        view.lap = laps.current();
+        view.previous_lap = laps.previous();
+    }
+
+    #[test]
+    fn lap_page_compares_the_open_lap_with_the_last_one() {
+        const GREEN: u16 = 0x07e0;
+        const RED: u16 = 0xf800;
+        let mut view = View::new(Page::Ride, false, None);
+        view.ride_page = RidePage::Lap;
+        view.state = Status::Recording;
+        two_laps(&mut view, 125, 250, 9000);
+        view.lap_toast = None;
+        view.prepare();
+        assert!(shows(&view, 72, 7, 2, b"3/3", 0x8410));
+        assert!(shows(&view, 38, 38, 1, b"LAP TIME", 0x8410));
+        assert!(shows(&view, 146, 34, 2, b"LAP 2", CYAN));
+        assert!(shows(&view, 38, 54, 6, b"02:05", WHITE));
+        assert!(shows(&view, 38, 122, 3, b"1.13", WHITE));
+        assert!(shows(&view, 146, 122, 3, b"250", WHITE));
+        assert!(shows(&view, 38, 170, 3, b"32.4", WHITE));
+        assert!(shows(&view, 146, 170, 3, b"150", WHITE));
+        assert!(shows(&view, 38, 207, 1, b"PREV LAP 1", 0x8410));
+        assert!(shows(&view, 38, 219, 2, b"05:00", WHITE));
+        assert!(shows(&view, 146, 219, 2, b"200", WHITE));
+        // Faster and harder: green, and signed for colour-blind riders.
+        assert!(shows(&view, 38, 254, 3, b"+2.4", GREEN));
+        assert!(shows(&view, 146, 254, 3, b"+50", GREEN));
+
+        // Slower and easier: red with a minus; level is white and unsigned.
+        two_laps(&mut view, 60, 150, 7667);
+        view.prepare();
+        assert!(shows(&view, 38, 254, 3, b"-2.4", RED));
+        assert!(shows(&view, 146, 254, 3, b"-50", RED));
+        two_laps(&mut view, 60, 200, 8334);
+        view.prepare();
+        assert!(shows(&view, 38, 254, 3, b"0.0", WHITE));
+        assert!(shows(&view, 146, 254, 3, b"0", WHITE));
+    }
+
+    #[test]
+    fn lap_page_before_the_first_lap_has_no_comparison() {
+        let mut view = View::new(Page::Ride, false, None);
+        view.ride_page = RidePage::Lap;
+        view.prepare();
+        assert!(shows(&view, 146, 34, 2, b"LAP 1", CYAN));
+        assert!(shows(&view, 38, 54, 6, b"00:00", WHITE));
+        assert!(shows(&view, 38, 207, 1, b"PREV LAP", 0x8410));
+        assert!(shows(&view, 38, 254, 3, b"--", WHITE));
+        assert!(shows(&view, 146, 254, 3, b"--", WHITE));
+    }
+
+    #[test]
+    fn status_row_shows_state_and_toasts_without_button_labels() {
+        let mut view = View::new(Page::Ride, false, None);
+        view.state = Status::Recording;
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"RECORDING", CYAN));
+        // No labels: everything under the status text is blank.
+        assert!((0..240).all(|x| (311..320).all(|y| view.pixel(x, y) == 0)));
+        two_laps(&mut view, 10, 250, 9000);
+        view.prepare();
+        // The toast is a cyan banner with dark text over the status row.
+        assert!(shows(&view, 6, 296, 2, b"LAP 1 05:00 200W", 0));
+        assert_eq!(view.pixel(3, 290), CYAN);
+
+        let mut view = View::new(Page::Ride, false, None);
+        view.state = Status::Paused;
+        view.stop_confirm = true;
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"PRESS AGAIN TO SAVE", 0xffe0));
     }
 
     #[test]

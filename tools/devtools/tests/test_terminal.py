@@ -103,6 +103,44 @@ class TerminalTests(unittest.TestCase):
             log.close.assert_called_once()
             lock.close.assert_called_once()
 
+    def test_stale_reply_from_previous_process_is_ignored(self):
+        # A previous one-shot process always used id 1. Its late reply must not
+        # complete this process's command, whichever id this process starts from.
+        class FakeTransport:
+            def __init__(self):
+                self.replies, self.sent = [], []
+
+            def write(self, fd, data):
+                self.sent.append(data)
+                request_id = int(data.split()[1])
+                self.replies.append(json.dumps(dict(type='reply', id=1, status='OK', data='stale')).encode() + b'\n')
+                self.replies.append(
+                    json.dumps(dict(type='reply', id=request_id, status='OK', data='real')).encode() + b'\n'
+                )
+                return len(data)
+
+            def read(self, fd, size):
+                return self.replies.pop(0)
+
+        transport = FakeTransport()
+        with tempfile.TemporaryDirectory() as directory:
+            connection = UsbConnection('/dev/test', Path(directory) / 'usb.log')
+            connection.fd = 123
+            connection.log = MagicMock()
+            with (
+                patch('cycling_devtools.terminal.usb.os.write', side_effect=transport.write),
+                patch('cycling_devtools.terminal.usb.os.read', side_effect=transport.read),
+                patch(
+                    'cycling_devtools.terminal.usb.select.select',
+                    side_effect=lambda r, w, x, t: (r, [], []),
+                ),
+            ):
+                reply = connection.terminal_command('STATUS')
+        self.assertEqual(reply['data'], 'real')
+        self.assertNotEqual(connection.request_id, 1)
+        self.assertEqual(transport.sent, [f'CMD {connection.request_id} STATUS\n'.encode()])
+        self.assertEqual(transport.replies, [])
+
 
 if __name__ == '__main__':
     unittest.main()

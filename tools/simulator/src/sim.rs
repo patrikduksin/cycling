@@ -389,6 +389,19 @@ impl Sim {
             .present = present;
     }
 
+    /// Barometric pressure readings stop (or resume); elevation goes on.
+    pub fn set_barometer(&mut self, present: bool) {
+        self.note(
+            NoteKind::World,
+            if present {
+                "barometer reporting"
+            } else {
+                "barometer silent"
+            },
+        );
+        self.device.world.barometer_lost = !present;
+    }
+
     pub fn set_gps_fix(&mut self, fix: bool) {
         self.note(
             NoteKind::World,

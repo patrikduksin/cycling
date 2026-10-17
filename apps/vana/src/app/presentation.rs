@@ -1,6 +1,7 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
 use super::recording::Request;
+use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
 use crate::screens::ride::RidePage;
 use crate::screens::sensors::{MenuMessage, connection_status};
@@ -40,6 +41,9 @@ pub(super) struct Navigation {
     pub(super) settings_editing: bool,
     /// A touch is down; taps act on contact, once, until release.
     pub(super) touching: bool,
+    /// The page to return to when the climb that switched to the climb page
+    /// ends; cleared when the rider changes page themselves.
+    pub(super) climb_return: Option<RidePage>,
     pub(super) page_since: u64,
     pub(super) last_press: u64,
 }
@@ -53,9 +57,39 @@ impl Default for Navigation {
             settings_field: 0,
             settings_editing: false,
             touching: false,
+            climb_return: None,
             page_since: 0,
             last_press: 0,
         }
+    }
+}
+
+impl Navigation {
+    /// The ride screen follows climbs: a confirmed climb shows the climb page,
+    /// and its end returns to the page the rider was on, unless they changed
+    /// page during the climb (`ride_page_chosen`).
+    pub(super) fn follow_climb(&mut self, event: ClimbEvent) {
+        if self.page != Page::Ride {
+            return;
+        }
+        match event {
+            ClimbEvent::Confirmed if self.ride_page != RidePage::Climb => {
+                self.climb_return = Some(self.ride_page);
+                self.ride_page = RidePage::Climb;
+            }
+            ClimbEvent::Confirmed => {}
+            ClimbEvent::Finished(_) => {
+                if let Some(previous) = self.climb_return.take() {
+                    self.ride_page = previous;
+                }
+            }
+        }
+    }
+
+    /// The rider picked a ride page: a climb no longer takes them back.
+    pub(super) fn ride_page_chosen(&mut self, page: RidePage) {
+        self.ride_page = page;
+        self.climb_return = None;
     }
 }
 
@@ -163,7 +197,7 @@ impl Runtime {
             && now.saturating_sub(navigation.page_since) >= PREFLIGHT_MS
         {
             navigation.page = Page::Ride;
-            navigation.ride_page = RidePage::Main;
+            navigation.ride_page_chosen(RidePage::Main);
         }
         let page = navigation.page;
         let gps = position.snapshot(now);
@@ -198,6 +232,9 @@ impl Runtime {
         view.lap_toast = self.ride.lap_toast(now);
         view.zone_time = self.ride.zone_time;
         view.profile = self.preferences.profile;
+        if view.ride_page == RidePage::Climb {
+            view.climbs = self.ride.climbs.clone();
+        }
         view.gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         let gps_status = gps.map_or("OFF", |p| {
             if p.gps.state == FixState::Fresh {

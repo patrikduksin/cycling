@@ -10,18 +10,26 @@
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` with `prepare` and `pixel`, dispatched below.
+//!
+//! The climb page also follows the road: when a climb is confirmed the ride
+//! screen switches to it, and when the climb ends it returns to the page the
+//! rider was on, unless they changed page during the climb (see
+//! `Navigation::follow_climb`).
 use super::workout::{Text, View};
 use crate::ride::laps::Lap;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
 
+mod climb;
 mod lap;
 mod main;
 mod stats;
 mod zones;
 
 pub(super) use zones::{Marks, marks};
+
+pub use climb::Frame as ClimbFrame;
 
 pub(super) const WHITE: u16 = 0xffff;
 pub(super) const CYAN: u16 = 0x07ff;
@@ -51,10 +59,12 @@ pub enum RidePage {
     Stats,
     /// The open lap against the last finished one.
     Lap,
+    /// Grade, the climb under way or the last one, and the elevation profile.
+    Climb,
 }
 
 impl RidePage {
-    pub const ALL: [Self; 3] = [Self::Main, Self::Stats, Self::Lap];
+    pub const ALL: [Self; 4] = [Self::Main, Self::Stats, Self::Lap, Self::Climb];
 
     pub fn index(self) -> usize {
         self as usize
@@ -78,14 +88,19 @@ impl RidePage {
 /// Formatted readings a page prepares once per frame and draws per pixel.
 pub type Values = [Text<12>; 12];
 
-pub(super) fn prepare(view: &View) -> Values {
+/// Prepare the shown page's values, and the climb page's chart, once per frame.
+pub(super) fn prepare(view: &mut View) {
     let mut values = core::array::from_fn(|_| Text::new());
     match view.ride_page {
         RidePage::Main => main::prepare(view, &mut values),
         RidePage::Stats => stats::prepare(view, &mut values),
         RidePage::Lap => lap::prepare(view, &mut values),
+        RidePage::Climb => {
+            climb::prepare(view, &mut values);
+            view.climb = climb::frame(view);
+        }
     }
-    values
+    view.values = values;
 }
 
 /// Everything below the header, except the footer divider the view draws.
@@ -101,6 +116,7 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
             RidePage::Main => main::pixel(view, x, y),
             RidePage::Stats => stats::pixel(view, x, y),
             RidePage::Lap => lap::pixel(view, x, y),
+            RidePage::Climb => climb::pixel(view, x, y),
         };
     }
     status_pixel(view, x, y)
@@ -235,6 +251,20 @@ pub(super) fn lap_time(value: &mut Text<12>, seconds: u64) {
     };
 }
 
+/// A grade in percent with one decimal, or "--%".
+pub(super) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
+    let _ = match tenths {
+        Some(v) => write!(
+            value,
+            "{}{}.{}%",
+            if v < 0 { "-" } else { "" },
+            v.unsigned_abs() / 10,
+            v.unsigned_abs() % 10
+        ),
+        None => value.push_str("--%"),
+    };
+}
+
 /// A whole reading, or "--" without one.
 pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Display>) {
     let _ = match reading {
@@ -252,10 +282,12 @@ mod tests {
         assert_eq!(RidePage::default(), RidePage::Main);
         assert_eq!(RidePage::Main.next(), Some(RidePage::Stats));
         assert_eq!(RidePage::Stats.next(), Some(RidePage::Lap));
-        assert_eq!(RidePage::Lap.next(), None);
-        assert_eq!(&RidePage::Main.indicator(), b"1/3");
-        assert_eq!(&RidePage::Stats.indicator(), b"2/3");
-        assert_eq!(&RidePage::Lap.indicator(), b"3/3");
+        assert_eq!(RidePage::Lap.next(), Some(RidePage::Climb));
+        assert_eq!(RidePage::Climb.next(), None);
+        assert_eq!(&RidePage::Main.indicator(), b"1/4");
+        assert_eq!(&RidePage::Stats.indicator(), b"2/4");
+        assert_eq!(&RidePage::Lap.indicator(), b"3/4");
+        assert_eq!(&RidePage::Climb.indicator(), b"4/4");
     }
 
     #[test]
@@ -277,5 +309,9 @@ mod tests {
         assert_eq!(format(&|v| lap_time(v, 3725)), b"1:02:05");
         assert_eq!(format(&|v| whole(v, Some(42))), b"42");
         assert_eq!(format(&|v| whole(v, None::<u16>)), b"--");
+        assert_eq!(format(&|v| grade(v, Some(-35))), b"-3.5%");
+        assert_eq!(format(&|v| grade(v, Some(-5))), b"-0.5%");
+        assert_eq!(format(&|v| grade(v, Some(120))), b"12.0%");
+        assert_eq!(format(&|v| grade(v, None)), b"--%");
     }
 }

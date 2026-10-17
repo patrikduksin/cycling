@@ -127,6 +127,34 @@ impl Route {
         Route::new(points, true)
     }
 
+    /// A straight road east from `start` whose elevation follows `profile`:
+    /// (distance m, elevation m) knots, linearly interpolated, in order.
+    pub fn profile(start: Point, profile: &[(f64, f64)]) -> Route {
+        const STEP_M: f64 = 10.0;
+        let length = profile.last().map_or(0.0, |&(distance, _)| distance);
+        let dlon = (STEP_M / EARTH_RADIUS_M).to_degrees() / start.lat.to_radians().cos().max(1e-6);
+        let elevation = |d: f64| {
+            let next = profile.partition_point(|&(at, _)| at <= d);
+            match (next.checked_sub(1).map(|i| profile[i]), profile.get(next)) {
+                (Some((d0, e0)), Some(&(d1, e1))) => e0 + (e1 - e0) * (d - d0) / (d1 - d0),
+                (Some((_, e)), None) | (None, Some(&(_, e))) => e,
+                (None, None) => 0.0,
+            }
+        };
+        let steps = (length / STEP_M).ceil() as usize;
+        let points = (0..=steps)
+            .map(|i| {
+                let d = (i as f64 * STEP_M).min(length);
+                Point {
+                    lat: start.lat,
+                    lon: start.lon + dlon * d / STEP_M,
+                    ele: Some(elevation(d)),
+                }
+            })
+            .collect();
+        Route::new(points, false)
+    }
+
     pub fn length_m(&self) -> f64 {
         self.cumulative.last().copied().unwrap_or(0.0)
     }
@@ -388,6 +416,22 @@ mod tests {
         acq.ingest(1000, &epoch, 0, 0);
         assert_eq!(acq.snapshot(1000).gps.state, FixState::Fresh);
         assert_eq!(acq.snapshot(4001).gps.state, FixState::Stale);
+    }
+
+    #[test]
+    fn profile_roads_follow_their_elevation_knots() {
+        let start = Point::new(-33.45, -70.66);
+        let route = Route::profile(start, &[(0.0, 500.0), (1000.0, 500.0), (2500.0, 590.0)]);
+        assert!(
+            (route.length_m() - 2500.0).abs() < 1.0,
+            "{}",
+            route.length_m()
+        );
+        assert_eq!(route.at(500.0).ele, Some(500.0));
+        let mid = route.at(1750.0).ele.unwrap();
+        assert!((mid - 545.0).abs() < 0.5, "{mid}");
+        assert_eq!(route.at(9_000.0).ele, Some(590.0));
+        assert!((route.course(100.0) - 90.0).abs() < 0.1);
     }
 
     #[test]

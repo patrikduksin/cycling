@@ -1,7 +1,7 @@
 //! The main ride page: live speed, power and heart rate with their zones,
 //! then cadence, distance, active time and grade.
 use super::zones::{GAUGE_WIDTH, Mark, gauge_pixel};
-use super::{Cell, DIM, GRID, Values, clock, kilometres, speed, whole};
+use super::{Cell, DIM, GRID, Values, clock, grade, kilometres, speed, whole};
 use crate::screens::rounded;
 use crate::screens::workout::View;
 use core::fmt::Write;
@@ -83,16 +83,7 @@ pub(super) fn prepare(view: &View, values: &mut Values) {
     );
     kilometres(&mut values[DISTANCE], view.totals.distance_mm());
     clock(&mut values[TIME], view.active_secs);
-    let _ = match sample.gradient_tenths {
-        Some(v) => write!(
-            values[GRADE],
-            "{}{}.{}%",
-            if v < 0 { "-" } else { "" },
-            v.unsigned_abs() / 10,
-            v.unsigned_abs() % 10
-        ),
-        None => values[GRADE].push_str("--%"),
-    };
+    grade(&mut values[GRADE], sample.gradient_tenths.map(i32::from));
 }
 
 /// Called for every body pixel, so it looks up the one cell under the pixel

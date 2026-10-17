@@ -569,12 +569,12 @@ fn stats_page_totals_a_steady_ten_minutes() {
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.advance(minutes(10));
-    sim.expect_text("1/3");
+    sim.expect_text("1/4");
     expect_near(&mut sim, "DISTANCE", 5.0, 0.05);
     sim.expect_field("CADENCE", "90");
     sim.checkpoint("main page after ten minutes");
 
-    ride_page(&mut sim, "2/3");
+    ride_page(&mut sim, "2/4");
     sim.expect_no_text("WATTS Z");
     // Sensors take a few seconds to report after the start.
     expect_near(&mut sim, "DISTANCE KM", 5.0, 0.05);
@@ -598,10 +598,9 @@ fn stats_page_totals_a_steady_ten_minutes() {
     sim.stop_ride();
     sim.expect_field("AVG WATTS", "200");
     sim.checkpoint("stats page after saving");
+    ride_page(&mut sim, "4/4");
     sim.press(Button::BottomLeft);
-    sim.expect_text("3/3");
-    sim.press(Button::BottomLeft);
-    sim.expect_text("1/3");
+    sim.expect_text("1/4");
     sim.press(Button::TopLeft);
     sim.expect_text("READY TO RIDE");
 }
@@ -626,12 +625,14 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     sim.ride_at(24.0, 230.0, 0.0, 80.0);
     sim.advance(minutes(5));
     sim.checkpoint("climbing on the main page");
-    ride_page(&mut sim, "2/3");
+    ride_page(&mut sim, "2/4");
     // Two kilometres in: up 50 m, then down again.
     expect_near(&mut sim, "ASCENT M", 50.0, 4.0);
     sim.checkpoint("stats halfway round");
 
     sim.advance(minutes(5));
+    // The final climb brought up the climb page; back to the totals.
+    ride_page(&mut sim, "2/4");
     expect_near(&mut sim, "DISTANCE KM", 4.0, 0.05);
     // The 3 m band and smoothing may leave the last metres of the final climb.
     expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
@@ -653,7 +654,7 @@ fn pause_leaves_the_totals_untouched() {
     sim.start_ride();
     sim.ride_at(30.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(5));
-    ride_page(&mut sim, "2/3");
+    ride_page(&mut sim, "2/4");
     expect_near(&mut sim, "DISTANCE KM", 2.5, 0.05);
 
     // Paused but still rolling hard: nothing the wheel or pedals do counts.
@@ -682,7 +683,7 @@ fn pause_leaves_the_totals_untouched() {
     );
     sim.checkpoint("stats after resuming");
     // The main page agrees: the pause is not ride time.
-    ride_page(&mut sim, "1/3");
+    ride_page(&mut sim, "1/4");
     let active = sim.screen().field("ACTIVE TIME").unwrap();
     assert!(active.starts_with("00:10:0"), "{active}");
     sim.checkpoint("main page after resuming");
@@ -865,7 +866,7 @@ fn stats_page_splits_time_between_two_power_zones() {
     sim.advance(minutes(5));
     sim.ride_at(30.0, 250.0, 130.0, 90.0);
     sim.advance(minutes(5));
-    ride_page(&mut sim, "2/3");
+    ride_page(&mut sim, "2/4");
     sim.expect_text("PWR");
     // The power bar spans x 58..238 at y 261..269; the heart bar sits below.
     let bar: Vec<u16> = (58..238).map(|x| pixel(&sim, x, 264)).collect();
@@ -915,7 +916,7 @@ fn manual_laps_compare_each_effort_with_the_last() {
     // A harder, faster second lap shows green with a plus.
     sim.ride_at(33.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(4));
-    ride_page(&mut sim, "3/3");
+    ride_page(&mut sim, "3/4");
     sim.expect_text("LAP 2");
     let lap = sim.screen().field("LAP TIME").unwrap();
     assert!(lap.starts_with("04:0"), "{lap}");
@@ -972,7 +973,7 @@ fn auto_lap_closes_every_five_kilometres() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
-    ride_page(&mut sim, "3/3");
+    ride_page(&mut sim, "3/4");
     sim.advance(minutes(9) + seconds(50));
     sim.expect_text("LAP 1");
     expect_near(&mut sim, "LAP KM", 4.9, 0.05);
@@ -1004,7 +1005,7 @@ fn paused_time_is_not_lap_time() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 0.0, 90.0);
-    ride_page(&mut sim, "3/3");
+    ride_page(&mut sim, "3/4");
     sim.advance(minutes(2));
     sim.lap(1);
     sim.advance(minutes(2));
@@ -1031,7 +1032,7 @@ fn a_second_lap_press_within_three_seconds_is_ignored() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 0.0, 90.0);
-    ride_page(&mut sim, "3/3");
+    ride_page(&mut sim, "3/4");
     sim.advance(minutes(1));
     sim.lap(1);
     // A double press, as a glove or a pothole makes.
@@ -1109,4 +1110,176 @@ fn ending_a_ride_right_after_a_lap_shows_the_prompt() {
     sim.lap(1);
     sim.stop_ride();
     assert_eq!(sim.rides().len(), 2);
+}
+
+/// Flat for 1 km at 600 m, 1.5 km at 6% to 690 m, 1.5 km down, then flat.
+fn hill_rider() -> Sim {
+    let mut sim = Sim::new().boot();
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
+    sim.ant_sensor(device_type::POWER, POWER);
+    sim.ride_route(Route::profile(
+        Point::new(-33.45, -70.66),
+        &[
+            (0.0, 600.0),
+            (1000.0, 600.0),
+            (2500.0, 690.0),
+            (4000.0, 600.0),
+            (6000.0, 600.0),
+        ],
+    ));
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.pair(&["SPEED/CAD", "POWER METER"]);
+    sim
+}
+
+/// Ride on, a second at a time, until `metres` along the route.
+fn ride_to(sim: &mut Sim, metres: f64) {
+    while sim.world().distance_m < metres {
+        sim.advance(seconds(1));
+    }
+}
+
+/// Ride on until `needle` shows, returning where along the route it appeared.
+#[track_caller]
+fn ride_until_shown(sim: &mut Sim, needle: &str, before_m: f64) -> f64 {
+    while !sim.screen().contains(needle) {
+        assert!(
+            sim.world().distance_m < before_m,
+            "no {needle} by {before_m} m; screen:\n{}",
+            sim.screen().text()
+        );
+        sim.advance(seconds(1));
+    }
+    let at = sim.world().distance_m;
+    sim.note(NoteKind::Check, format!("{needle} at {at:.0} m"));
+    at
+}
+
+/// A percentage reading such as "6.0%".
+#[track_caller]
+fn expect_percent(sim: &mut Sim, label: &str, expected: f64, tolerance: f64) {
+    let screen = sim.screen();
+    let value = screen
+        .field(label)
+        .unwrap_or_else(|| panic!("no {label}; screen:\n{}", screen.text()));
+    let number: f64 = value
+        .trim_end_matches('%')
+        .parse()
+        .unwrap_or_else(|_| panic!("{label} shows {value:?}"));
+    assert!(
+        (number - expected).abs() <= tolerance,
+        "{label} shows {value}, expected {expected}% ± {tolerance}; screen:\n{}",
+        screen.text()
+    );
+    sim.note(NoteKind::Check, format!("{label} shows {value}"));
+}
+
+#[test]
+fn climb_page_measures_a_six_percent_climb_over_the_top() {
+    let mut sim = hill_rider();
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    ride_page(&mut sim, "4/4");
+    ride_to(&mut sim, 800.0);
+    sim.expect_text("NO CLIMB");
+    expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
+    sim.expect_field("ASCENT M", "0");
+    expect_percent(&mut sim, "GRADE", 0.0, 0.5);
+    sim.checkpoint("climb page on the flat");
+
+    // Up at 14 km/h. 20 m of gain confirms the climb about 330 m in.
+    ride_to(&mut sim, 1000.0);
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    ride_to(&mut sim, 1200.0);
+    sim.expect_text("NO CLIMB");
+    let confirmed = ride_until_shown(&mut sim, "CLIMBING", 1600.0);
+    assert!(
+        (1300.0..1450.0).contains(&confirmed),
+        "climb confirmed at {confirmed:.0} m"
+    );
+
+    ride_to(&mut sim, 1750.0);
+    expect_percent(&mut sim, "GRADE", 6.0, 0.5);
+    expect_near(&mut sim, "GAIN M", 45.0, 4.0);
+    expect_near(&mut sim, "LENGTH KM", 0.75, 0.05);
+    expect_percent(&mut sim, "AVG GRADE", 6.0, 0.4);
+    // 3.9 m/s at 6% is 840 m/h.
+    expect_near(&mut sim, "VAM M/H", 840.0, 60.0);
+    expect_near(&mut sim, "ALTITUDE M", 645.0, 3.0);
+    let time = sim.screen().field("CLIMB TIME").unwrap();
+    assert!(time.starts_with("00:03:"), "{time}");
+    sim.checkpoint("climb page mid-climb");
+
+    ride_to(&mut sim, 2510.0);
+    sim.expect_text("CLIMBING");
+    expect_near(&mut sim, "GAIN M", 90.0, 4.0);
+    expect_near(&mut sim, "LENGTH KM", 1.5, 0.05);
+    sim.checkpoint("climb page at the top");
+
+    // Over the top at 40 km/h the climb ends within about 200 m.
+    sim.ride_at(40.0, 60.0, 0.0, 0.0);
+    let ended = ride_until_shown(&mut sim, "NO CLIMB", 2800.0);
+    assert!(ended > 2500.0, "climb ended at {ended:.0} m");
+    ride_to(&mut sim, 4300.0);
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    sim.advance(seconds(20));
+    sim.expect_text("NO CLIMB");
+    expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
+    expect_near(&mut sim, "ASCENT M", 90.0, 4.0);
+    expect_near(&mut sim, "LAST GAIN M", 90.0, 4.0);
+    expect_near(&mut sim, "LAST KM", 1.5, 0.08);
+    expect_percent(&mut sim, "LAST AVG", 6.0, 0.4);
+    let time = sim.screen().field("LAST TIME").unwrap();
+    // 1.5 km at 14 km/h is 6:26.
+    assert!(
+        time.starts_with("00:06:") || time.starts_with("00:07:0"),
+        "{time}"
+    );
+    sim.checkpoint("climb page after the descent");
+}
+
+#[test]
+fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
+    let mut sim = hill_rider();
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    ride_to(&mut sim, 1000.0);
+    sim.expect_text("1/4");
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    let shown = ride_until_shown(&mut sim, "4/4", 1600.0);
+    assert!((1300.0..1450.0).contains(&shown), "at {shown:.0} m");
+    sim.expect_text("CLIMBING");
+    sim.checkpoint("climb page brought up by the climb");
+
+    ride_to(&mut sim, 2500.0);
+    sim.ride_at(40.0, 60.0, 0.0, 0.0);
+    let back = ride_until_shown(&mut sim, "1/4", 2800.0);
+    assert!(back > 2500.0, "back at {back:.0} m");
+    expect_near(&mut sim, "SPEED", 40.0, 0.3);
+    sim.checkpoint("main page again over the top");
+}
+
+#[test]
+fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
+    let mut sim = hill_rider();
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    ride_to(&mut sim, 1000.0);
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    ride_until_shown(&mut sim, "CLIMBING", 1600.0);
+    ride_to(&mut sim, 1600.0);
+
+    // 400 m of climbing without pressure readings: the climb page stays.
+    sim.set_barometer(false);
+    while sim.world().distance_m < 2000.0 {
+        sim.advance(seconds(1));
+        sim.expect_text("4/4");
+        sim.expect_text("CLIMBING");
+    }
+    sim.checkpoint("climbing through a barometer gap");
+    sim.set_barometer(true);
+    ride_to(&mut sim, 2400.0);
+    sim.expect_text("CLIMBING");
+    expect_near(&mut sim, "GAIN M", 84.0, 5.0);
+    sim.checkpoint("climbing after the barometer returns");
 }

@@ -1,7 +1,10 @@
 """Run simulator scenarios on a base ref and the current checkout, and compare them.
 
 The base runs in a temporary detached worktree under `.local/sim/compare`, built
-into the same cargo target directory so dependencies are reused. Checkpoint
+into its own target directory beside the current one. Sharing one directory let
+cargo reuse the base's test binary for the current checkout afterwards, because
+workspace artifacts are keyed by package, not by checkout path, and freshness by
+file times. The separate directory stays incremental from run to run. Checkpoint
 screenshots are paired by scenario and checkpoint name and compared by pixels,
 so a reviewer sees Before | After only for screens that changed.
 """
@@ -217,6 +220,11 @@ def comparison(pairs, before, after, base, refs):
     return '\n'.join(lines) + '\n', attachments
 
 
+def base_target(target):
+    """The base's own cargo target directory, so neither build can serve the other."""
+    return target.parent / f'{target.name}-sim-compare-base'
+
+
 def scenarios(source, artifacts, target, name_filter):
     """Run the scenarios of `source` into `artifacts`, keeping cargo's log, and
     return cargo's exit status. cargo and its tests never outlive the call, so
@@ -313,7 +321,7 @@ def main(argv=None):
     (out / 'summary.md').unlink(missing_ok=True)
     after_status = scenarios(ROOT, after_dir, target, args.filter)
     with checkout(base_commit, out / 'base-src') as source:
-        before_status = scenarios(source, before_dir, target, args.filter)
+        before_status = scenarios(source, before_dir, base_target(target), args.filter)
     problems = [
         f'{side}: {problem}'
         for side, directory, status in (

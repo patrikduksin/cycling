@@ -309,8 +309,8 @@ a moment only.
   paints cover earlier ones. Each painted screen keeps its per-pixel original
   as a test reference, and tests assert whole frames match it.
 - **Values change in place.** Digits are tabular and right- or left-aligned to
-  fixed anchors, so a number never shifts its neighbours. Readings never
-  animate. The next frame is the update.
+  fixed anchors, so a number never shifts its neighbours. A reading moves
+  only by gliding (see Motion).
 - **Missing data looks dim, not alarming.** A stale or absent reading shows `--`.
   Zone colours fall back to `TERTIARY`. Errors belong in toasts or the status
   bar, not in the reading's place.
@@ -320,11 +320,20 @@ a moment only.
 
 ## Motion
 
-Motion marks the device's own moments, never a reading. Each is a ring that
-moves and text that fades, prepared like any other frame, so a motion frame
-costs what a still one does (about 25 ms on the C606). Motion frames draw
-every 40 ms; the charging icon and sheets step every 500 ms; still pages
-redraw once a second.
+Motion marks the device's own moments. Each is a ring that moves and text
+that fades, prepared like any other frame, so a motion frame costs what a
+still one does (about 10 ms on the C606). Motion frames draw every 40 ms; the
+charging icon and sheets step every 500 ms; still pages redraw once a second.
+
+Readings glide; nothing else about them moves. Sensors report about four
+times a second. On the ride screen, speed, power, heart rate and cadence, and
+the zone gauges that follow them, ease from the drawn value to each new
+reading over 200 ms. They move fast at first, never pass the reading and land
+on it exactly. Between reports, radar targets keep closing at their reported
+speed for at most 300 ms, then glide to the next report. The ride screen
+draws every 40 ms while something glides. Only drawing glides: recording,
+totals and alerts use readings as they arrive. The mechanism is
+`firmware_shell::rendering::glide`; VANA's use of it is in `app/motion.rs`.
 
 | Moment | Motion | Duration |
 | --- | --- | --- |

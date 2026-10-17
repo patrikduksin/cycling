@@ -3295,3 +3295,40 @@ fn night_comes_on_time_after_the_gps_fix_is_lost() {
     assert_eq!(sim.device.shell.effective(), 20, "dark by 23:18");
     sim.checkpoint("night without a fix");
 }
+
+/// Numbers glide between quarter-second ANT+ samples: a step in power is
+/// drawn through values in between, never past the new reading, and lands on
+/// it exactly.
+#[test]
+fn readings_glide_between_samples_and_settle_on_the_reading() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.ride_at(28.0, 200.0, 142.0, 88.0);
+    sim.start_ride();
+    sim.advance(seconds(10));
+    sim.expect_field("W", "200");
+    sim.ride_at(28.0, 300.0, 142.0, 88.0);
+    let mut drawn = Vec::new();
+    let mut captured = false;
+    for _ in 0..100 {
+        sim.advance(20);
+        let watts: u32 = sim.screen().field("W").unwrap().parse().unwrap();
+        if drawn.last() != Some(&watts) {
+            drawn.push(watts);
+        }
+        if !captured && (240..=260).contains(&watts) {
+            sim.checkpoint("power gliding to a new reading");
+            captured = true;
+        }
+    }
+    assert!(
+        drawn.windows(2).all(|w| w[0] <= w[1]) && drawn.iter().all(|w| (200..=300).contains(w)),
+        "{drawn:?}"
+    );
+    assert!(
+        drawn.iter().filter(|&&w| w > 200 && w < 300).count() >= 3,
+        "glides through values between samples: {drawn:?}"
+    );
+    assert_eq!(drawn.last(), Some(&300), "{drawn:?}");
+    sim.checkpoint("power settled on the reading");
+}

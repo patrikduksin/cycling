@@ -349,6 +349,18 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         result.is_ok()
     }
+    /// Persist the application's preferences without saving temporary shell
+    /// changes; on success they also become the current settings.
+    pub fn save_app_preferences(&mut self, app: crate::preferences::AppPreferences) -> bool {
+        let result = self.store.save_app(app);
+        self.operations = self.operations.saturating_add(1);
+        self.settings_error = result.is_err();
+        if result.is_ok() {
+            self.settings.app = app;
+            self.settings_source = "current";
+        }
+        result.is_ok()
+    }
     pub fn save(&mut self) -> bool {
         let result = self.store.save(self.settings);
         self.operations = self.operations.saturating_add(1);

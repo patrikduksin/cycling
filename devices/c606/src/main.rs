@@ -110,9 +110,9 @@ async fn console(
     let mut sdk = vana::app::Runtime::new(profile);
     #[cfg(feature = "cycling")]
     {
+        sdk.load_preferences(&system.settings.app);
         sdk.set_clock(|| embassy_time::Instant::now().as_millis());
-        let view =
-            vana::screens::workout::View::new(vana::screens::workout::Page::Boot, false, None);
+        let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
         system.draw_scaled(240, 320, |x, y| view.pixel(x, y));
     }
     #[cfg(feature = "cycling")]
@@ -215,6 +215,8 @@ async fn console(
             );
             #[cfg(feature = "cycling")]
             sdk.present(&mut system, now, &devices.ant, &devices.position);
+            #[cfg(feature = "cycling")]
+            sdk.save_preferences(&mut system, now);
             #[cfg(feature = "cycling")]
             sdk.alert(&mut devices.sound, now);
         }

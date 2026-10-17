@@ -8,8 +8,10 @@ pub const DEFAULT_TIMEZONE_MINUTES: i16 = 0;
 pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
-const VERSION: u8 = 5;
-const LENGTH: usize = layout::BLE_CHARACTERISTIC + 2;
+const VERSION: u8 = 6;
+const LENGTH: usize = layout::APP + APP_CAPACITY;
+/// Bytes reserved for the application's own versioned preference record.
+pub const APP_CAPACITY: usize = 32;
 
 /// Byte offsets of the persisted settings record. Older versions are prefixes
 /// of this layout; text fields are length-prefixed and zero-padded, and every
@@ -35,10 +37,43 @@ mod layout {
     pub const BLE_ADDRESS: usize = BLE_ADDRESS_KIND + 1;
     pub const BLE_SERVICE: usize = BLE_ADDRESS + 6;
     pub const BLE_CHARACTERISTIC: usize = BLE_SERVICE + 2;
+    /// Terminates version 5 records.
+    pub const APP_LEN: usize = BLE_CHARACTERISTIC + 2;
+    pub const APP: usize = APP_LEN + 1;
 }
 const V2_LENGTH: usize = 10;
 const V3_LENGTH: usize = 13;
 const V4_LENGTH: usize = layout::RESERVED + 1;
+const V5_LENGTH: usize = layout::APP_LEN;
+
+/// Application-owned preference bytes the shell stores without interpreting.
+/// The application chooses their schema, versioning and recovery; the shell
+/// only bounds their length and carries them through every settings save.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AppPreferences {
+    length: u8,
+    bytes: [u8; APP_CAPACITY],
+}
+
+impl AppPreferences {
+    pub const EMPTY: Self = Self {
+        length: 0,
+        bytes: [0; APP_CAPACITY],
+    };
+
+    pub fn new(value: &[u8]) -> Option<Self> {
+        let mut bytes = [0; APP_CAPACITY];
+        bytes.get_mut(..value.len())?.copy_from_slice(value);
+        Some(Self {
+            length: value.len() as u8,
+            bytes,
+        })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
@@ -49,6 +84,8 @@ pub struct Settings {
     pub wifi: Option<device_api::connectivity::WifiConfig>,
     pub ble: Option<device_api::ble_transport::Selection>,
     pub ble_profile: u8,
+    /// Application preferences, opaque to the shell.
+    pub app: AppPreferences,
 }
 
 impl Default for Settings {
@@ -61,6 +98,7 @@ impl Default for Settings {
             wifi: None,
             ble: None,
             ble_profile: 0,
+            app: AppPreferences::EMPTY,
         }
     }
 }
@@ -98,6 +136,7 @@ impl Settings {
                 wifi: None,
                 ble: None,
                 ble_profile: 0,
+                app: AppPreferences::EMPTY,
             })
     }
 
@@ -112,6 +151,7 @@ impl Settings {
             settings.wifi = self.wifi;
             settings.ble = self.ble;
             settings.ble_profile = self.ble_profile;
+            settings.app = self.app;
             settings
         })
     }
@@ -127,6 +167,7 @@ impl Settings {
             settings.wifi = self.wifi;
             settings.ble = self.ble;
             settings.ble_profile = self.ble_profile;
+            settings.app = self.app;
             settings
         })
     }
@@ -142,6 +183,7 @@ impl Settings {
             settings.wifi = self.wifi;
             settings.ble = self.ble;
             settings.ble_profile = self.ble_profile;
+            settings.app = self.app;
             settings
         })
     }
@@ -171,6 +213,7 @@ impl Settings {
             put_u16(&mut output, BLE_SERVICE, ble.service);
             put_u16(&mut output, BLE_CHARACTERISTIC, ble.characteristic);
         }
+        put_text(&mut output, APP_LEN, self.app.bytes());
         output
     }
 }
@@ -215,8 +258,9 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
                 None => (Settings::default(), Source::Malformed),
             };
         }
-        4 | VERSION
+        4 | 5 | VERSION
             if ((version == 4 && length == V4_LENGTH)
+                || (version == 5 && length == V5_LENGTH)
                 || (version == VERSION && length == LENGTH))
                 && payload[RESERVED] == 0 =>
         {
@@ -227,7 +271,7 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
                 get_u16(payload, TIMEZONE) as i16,
             )
         }
-        4 | VERSION => None,
+        4 | 5 | VERSION => None,
         _ => return (Settings::default(), Source::Unsupported),
     };
     match settings {
@@ -259,7 +303,7 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
             }
             match payload[BLE] {
                 0 => {
-                    if payload[BLE_PROFILE..].iter().any(|b| *b != 0) {
+                    if payload[BLE_PROFILE..APP_LEN].iter().any(|b| *b != 0) {
                         return malformed();
                     }
                 }
@@ -289,6 +333,13 @@ pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
                 }
                 _ => return malformed(),
             }
+            if version == 5 {
+                return (settings, Source::Migrated);
+            }
+            let Some(app) = text(payload, APP_LEN, LENGTH).and_then(AppPreferences::new) else {
+                return malformed();
+            };
+            settings.app = app;
             (settings, Source::Current)
         }
         None => (Settings::default(), Source::Malformed),
@@ -371,7 +422,7 @@ mod tests {
         assert_eq!(decode(Some(b"cycling\x01")).1, Source::LegacyDefaults);
         assert_eq!(decode(None).1, Source::Missing);
         assert_eq!(decode(Some(b"garbage")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x06\x32\0")).1, Source::Unsupported);
+        assert_eq!(decode(Some(b"cycling\x07\x32\0")).1, Source::Unsupported);
         assert_eq!(decode(Some(b"cycling\x02\x00\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x65\0")).1, Source::Malformed);
         assert_eq!(decode(Some(b"cycling\x02\x4b\0")).1, Source::Migrated);
@@ -429,7 +480,7 @@ mod tests {
     #[test]
     fn corrupt_connectivity_lengths_and_reserved_bytes_are_preserved_as_malformed() {
         let current = Settings::default().encode();
-        for index in [15, 16, 49, 113, 114, 115, 148, 158] {
+        for index in [15, 16, 49, 113, 114, 115, 148, 158, 159, 160, 191] {
             let mut payload = current;
             payload[index] = 255;
             assert_eq!(decode(Some(&payload)).1, Source::Malformed);
@@ -437,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn version_five_layout_is_pinned_and_padding_must_be_zero() {
+    fn version_five_and_six_layouts_are_pinned_and_padding_must_be_zero() {
         let mut settings = Settings::with_values(77, 0x0102, 12, -180).unwrap();
         settings.wifi =
             Some(device_api::connectivity::WifiConfig::new(b"ssid", b"password", false).unwrap());
@@ -467,9 +518,27 @@ mod tests {
         expected[149..155].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
         expected[155..157].copy_from_slice(&[0x0d, 0x18]);
         expected[157..159].copy_from_slice(&[0x37, 0x2a]);
+        // Version 5 records stay readable, with no application preferences.
+        assert_eq!(decode(Some(&expected)), (settings, Source::Migrated));
+        let version_five = expected;
+        let mut expected = [0u8; 192];
+        expected[..159].copy_from_slice(&version_five);
+        expected[7] = 6;
+        expected[159] = 3;
+        expected[160..163].copy_from_slice(&[1, 0xd7, 0]);
+        settings.app = AppPreferences::new(&[1, 0xd7, 0]).unwrap();
         assert_eq!(settings.encode(), expected);
         assert_eq!(decode(Some(&expected)), (settings, Source::Current));
-        for (index, value) in [(14, 1), (21, 1), (58, 1), (118, 1), (148, 2)] {
+        for (index, value) in [
+            (14, 1),
+            (21, 1),
+            (58, 1),
+            (118, 1),
+            (148, 2),
+            (159, 33),
+            (163, 1),
+            (191, 1),
+        ] {
             let mut payload = expected;
             payload[index] = value;
             assert_eq!(decode(Some(&payload)).1, Source::Malformed, "{index}");
@@ -486,6 +555,32 @@ mod tests {
         unnamed[148] = 0;
         unnamed[149..155].fill(0);
         assert_eq!(decode(Some(&unnamed)).1, Source::Malformed);
+    }
+
+    #[test]
+    fn application_preferences_survive_every_shell_update() {
+        let app = AppPreferences::new(b"vana").unwrap();
+        assert_eq!(app.bytes(), b"vana");
+        assert!(AppPreferences::new(&[0; APP_CAPACITY]).is_some());
+        assert!(AppPreferences::new(&[0; APP_CAPACITY + 1]).is_none());
+        let mut settings = Settings {
+            app,
+            ..Settings::default()
+        };
+        for updated in [
+            settings.with_brightness(62).unwrap(),
+            settings.with_idle_preferences(90, 20).unwrap(),
+            settings.with_timezone(330).unwrap(),
+        ] {
+            assert_eq!(updated.app, app);
+            assert_eq!(decode(Some(&updated.encode())), (updated, Source::Current));
+        }
+        // Full-capacity application bytes need no padding.
+        settings.app = AppPreferences::new(&[0xa5; APP_CAPACITY]).unwrap();
+        assert_eq!(
+            decode(Some(&settings.encode())),
+            (settings, Source::Current)
+        );
     }
 
     #[test]

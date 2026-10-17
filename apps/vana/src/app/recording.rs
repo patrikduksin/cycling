@@ -5,6 +5,7 @@ use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::Totals;
+use crate::ride::zones::{TrainingProfile, ZoneTime};
 
 /// A second Stop within this window finishes the ride.
 const STOP_CONFIRM_MS: u64 = 5000;
@@ -45,6 +46,8 @@ pub(super) struct Ride {
     pub(super) totals: Totals,
     /// Recorder active time the totals already cover.
     counted_ms: u64,
+    /// Time in each training zone, kept and reset with `totals`.
+    pub(super) zone_time: ZoneTime,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -59,6 +62,7 @@ impl Default for Ride {
             message: RideMessage::Ready,
             totals: Totals::default(),
             counted_ms: 0,
+            zone_time: ZoneTime::default(),
             clock: None,
         }
     }
@@ -110,6 +114,7 @@ impl Ride {
         step: Step,
         sample: &Sample,
         pressure_centi_pa: Option<u32>,
+        profile: &TrainingProfile,
     ) {
         if self.recorder.status() != Status::Recording {
             return;
@@ -123,6 +128,7 @@ impl Ride {
         let distance_mm = step.distance_mm * credited / step.elapsed_ms;
         self.totals
             .add(credited, distance_mm, sample, pressure_centi_pa);
+        self.zone_time.add(credited, sample, profile);
     }
 }
 
@@ -148,6 +154,7 @@ impl Runtime {
         {
             self.ride.totals = Totals::default();
             self.ride.counted_ms = 0;
+            self.ride.zone_time = ZoneTime::default();
         }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);

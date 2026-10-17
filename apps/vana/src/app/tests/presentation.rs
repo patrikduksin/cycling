@@ -147,8 +147,8 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     runtime.suspend_display();
     assert!(!runtime.input_active());
     runtime.input(press(Button::BottomLeft), 9000, &mut radio);
-    assert!(
-        runtime.navigation.home_cursor,
+    assert_eq!(
+        runtime.navigation.home_cursor, 1,
         "input is ignored while suspended"
     );
     assert!(!screen.present(&mut runtime, &radio, 9000));

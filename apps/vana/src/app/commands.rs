@@ -43,6 +43,9 @@ impl Runtime {
         if bound.is_some() {
             return "INVALID";
         }
+        if domain == Some("PROFILE") {
+            return self.profile_command(operation, argument, now, output);
+        }
         match (domain, operation, argument) {
             (Some("RIDE"), Some("INIT"), None) => {
                 self.submit(output, |recorder, token| recorder.initialize(token))
@@ -84,6 +87,55 @@ impl Runtime {
             return "STATE";
         }
         "ACCEPTED"
+    }
+
+    /// `PROFILE` reports the training profile; `PROFILE FTP|LTHR value` sets
+    /// one threshold, saved once edits settle; `PROFILE OVERWRITE` replaces a
+    /// stored profile this firmware cannot read.
+    fn profile_command(
+        &mut self,
+        operation: Option<&str>,
+        argument: Option<&str>,
+        now: u64,
+        output: &mut impl Write,
+    ) -> &'static str {
+        let mut profile = self.preferences.profile;
+        match (operation, argument) {
+            (None, None) => {}
+            (Some(field @ ("FTP" | "LTHR")), Some(value)) => {
+                let Ok(value) = value.parse::<u16>() else {
+                    return "INVALID";
+                };
+                if field == "FTP" {
+                    profile.ftp_watts = value;
+                } else {
+                    profile.lthr_bpm = value;
+                }
+                let Some(profile) =
+                    crate::ride::zones::TrainingProfile::new(profile.ftp_watts, profile.lthr_bpm)
+                else {
+                    return "INVALID";
+                };
+                self.preferences.set(profile, now);
+                self.display.redraw();
+            }
+            (Some("OVERWRITE"), None) => self.preferences.overwrite(now),
+            _ => return "INVALID",
+        }
+        let preferences = &self.preferences;
+        if write!(
+            output,
+            "ftp={} lthr={} stored={} persistence={}",
+            preferences.profile.ftp_watts,
+            preferences.profile.lthr_bpm,
+            preferences.stored.name(),
+            preferences.persistence().name()
+        )
+        .is_err()
+        {
+            return "OUTPUT";
+        }
+        "OK"
     }
 
     fn radar_command(

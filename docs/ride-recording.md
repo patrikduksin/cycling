@@ -77,7 +77,8 @@ Controls:
 
 | Screen | Control |
 | --- | --- |
-| Menu | Opens training or sensor status |
+| Menu | Opens training, sensor status or settings |
+| Settings | Bottom-left moves to the next field (FTP, LTHR), bottom-right edits it, top-left returns home. While editing, bottom-left lowers and bottom-right raises it by 5 and top-left finishes. Touch: tap a field to edit it, then tap the large minus or plus pad. Edits apply at once and are saved two seconds after the last change. |
 | Training | After a short connection check, bottom-left starts, pauses or resumes. Bottom-right twice within five seconds finishes and commits the final samples; wait for `saved` before powering off. Top-left steps through the ride pages (live, then totals; the header shows `1/2`). Past the last page it wraps while a ride is open and returns home otherwise. |
 | Sensor scan | Bottom-left moves, bottom-right selects, top-left returns. Wait for PICK SENSOR before selecting another device. |
 
@@ -112,10 +113,26 @@ Fixed settings in this build:
 | Setting | Value |
 | --- | --- |
 | Wheel circumference | 2136 mm (stock RC520 700x28c) |
-| Power zones | FTP 215 W with the supplied boundaries |
-| HR Z5 | From 185 bpm |
 | Display clock | Santiago summer time, UTC-3; recorded UTC is unmodified |
 | Clock source | Wi-Fi SNTP, with GNSS time of day as a display fallback |
+
+Training profile:
+
+- Power zones are Coggan's seven zones as a percentage of FTP (Z1 up to 55 %,
+  then 75, 90, 105, 120 and 150 %); heart rate zones are Friel's five as a
+  percentage of LTHR (Z2 from 81 %, then 90, 94 and 100 %). Boundaries round to
+  the nearest watt or beat.
+- The defaults, FTP 215 W and LTHR 185 bpm, reproduce the earlier fixed power
+  table exactly and keep Z5 heart rate from 185 bpm.
+- The main ride page shows each zone number in black on a band of the zone
+  colour (Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple),
+  with a gauge of the reading's place within the zone. The stats page shows the
+  recorded time in each power and heart rate zone as two bars. Time in zone is
+  kept in memory with the other ride totals; it is not part of the ride record.
+- `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
+  read and set it from the terminal. The profile is stored in the application
+  area of the settings record; a stored profile this firmware cannot read keeps
+  the defaults in force and is never replaced until `PROFILE OVERWRITE`.
 
 Radar uses the left edge of the workout screen:
 

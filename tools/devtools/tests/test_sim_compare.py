@@ -207,7 +207,7 @@ def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
     monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
     assert compare.main(['--out', str(tmp_path / 'out')]) == 0
     assert targets['after'] == tmp_path / 'target'
-    assert targets['before'] == tmp_path / 'target-sim-compare-base'
+    assert targets['before'] == tmp_path / 'target/sim-compare-base'
 
 
 def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypatch):

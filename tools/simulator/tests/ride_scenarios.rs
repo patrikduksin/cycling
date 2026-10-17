@@ -1735,7 +1735,8 @@ fn turning_off_from_home_asks_first_and_the_top_left_hold_turns_it_back_on() {
     sim.press(Button::TopLeft);
     sim.expect_text("READY TO RIDE");
     sim.press(Button::TopLeft);
-    sim.press(Button::BottomRight);
+    sim.report(Button::BottomRight);
+    sim.advance(80);
     sim.expect_text("TURNING OFF");
     sim.checkpoint("turning off");
     sim.advance(seconds(1));

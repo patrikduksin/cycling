@@ -529,23 +529,12 @@ impl Runtime {
         if self.links.shown == Some(persistence) {
             return;
         }
-        let message = match persistence {
+        self.links.shown = Some(persistence);
+        self.menu.set_notice(match persistence {
             Persistence::Failed => Some(MenuMessage::NotSaved),
             Persistence::Locked => Some(MenuMessage::SavedUnreadable),
-            // Only clear a problem this page showed.
-            _ if matches!(
-                self.links.shown,
-                Some(Persistence::Failed | Persistence::Locked)
-            ) =>
-            {
-                Some(self.discovery.scan.message())
-            }
-            _ => None,
-        };
-        self.links.shown = Some(persistence);
-        if let Some(message) = message {
-            self.menu.set_message(message);
-            self.display.redraw();
-        }
+            Persistence::Saved | Persistence::Pending => None,
+        });
+        self.display.redraw();
     }
 }

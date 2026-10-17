@@ -416,3 +416,26 @@ fn choosing_available_moves_focus_to_selected_and_back_exits_immediately() {
     assert_eq!(menu.input(press(Button::TopLeft), 1200), None);
     assert_eq!(menu.input(press(Button::TopLeft), 1600), Some(Action::Ride));
 }
+
+#[test]
+fn save_notice_outlasts_discovery_messages_on_the_page() {
+    let mut menu = Menu::new();
+    menu.refresh(nearby(&[peer(10)]), [None; CHANNEL_CAPACITY], true);
+    menu.set_notice(Some(MenuMessage::SavedUnreadable));
+    for message in [
+        MenuMessage::StartingScan,
+        MenuMessage::Scanning,
+        MenuMessage::ScanDone,
+        MenuMessage::ScanFailed,
+    ] {
+        menu.set_message(message);
+        assert_eq!(menu.layout.page_feedback.as_bytes(), b"NOT SAVED");
+    }
+    menu.set_notice(None);
+    assert!(
+        menu.layout
+            .page_feedback
+            .as_bytes()
+            .starts_with(b"SCAN FAILED")
+    );
+}

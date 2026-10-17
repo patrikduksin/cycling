@@ -24,6 +24,7 @@ pub struct Diagnostics {
     pub last_press: Option<u64>,
     pub needs_nav: bool,
     pub message: Option<MenuMessage>,
+    pub notice: Option<MenuMessage>,
 }
 
 /// What the cursor points at.
@@ -82,6 +83,9 @@ pub struct Menu {
     pub(super) scanning: bool,
     needs_navigation: bool,
     pub(super) message: Option<MenuMessage>,
+    /// Save trouble, kept apart from discovery progress so it stays visible
+    /// for as long as the problem lasts.
+    pub(super) notice: Option<MenuMessage>,
 }
 
 impl Default for Menu {
@@ -104,6 +108,7 @@ impl Menu {
             scanning: false,
             needs_navigation: false,
             message: None,
+            notice: None,
         }
     }
 
@@ -113,11 +118,18 @@ impl Menu {
             last_press: self.last_press,
             needs_nav: self.needs_navigation,
             message: self.message,
+            notice: self.notice,
         }
     }
 
     pub fn set_message(&mut self, message: MenuMessage) {
         self.message = Some(message);
+        self.prepare_layout();
+    }
+
+    /// Show or clear a lasting save problem; discovery messages never replace it.
+    pub fn set_notice(&mut self, notice: Option<MenuMessage>) {
+        self.notice = notice;
         self.prepare_layout();
     }
 

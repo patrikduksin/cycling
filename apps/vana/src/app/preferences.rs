@@ -166,6 +166,13 @@ impl Preferences {
         }
     }
 
+    /// A save that the flash refused, as `save_preferences` records it.
+    #[cfg(test)]
+    pub(super) fn save_failed(&mut self, now: u64) {
+        self.failed = true;
+        self.retry_at = now.saturating_add(RETRY_MS);
+    }
+
     pub(super) fn persistence(&self) -> Persistence {
         if self.locked {
             Persistence::Locked

@@ -358,7 +358,7 @@ fn unreadable_saved_record_is_kept_and_reported() {
     let mut radio = Radio::new();
     advance(&mut runtime, &mut radio, 0);
     assert_eq!(
-        runtime.menu.diagnostics().message,
+        runtime.menu.diagnostics().notice,
         Some(MenuMessage::SavedUnreadable)
     );
     // Selections still work until restart, but are not written.
@@ -397,4 +397,55 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
         .count();
     run(&mut runtime, &mut radio, 26_000, 80_000);
     assert!(radio.connects(heart) > connects_before);
+}
+
+/// Save trouble stays on the page through discovery, which only ever
+/// replaces its own progress messages.
+#[test]
+fn save_problems_stay_visible_while_discovery_runs() {
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    runtime
+        .load_preferences(&firmware_shell::preferences::AppPreferences::new(&[3, 1, 2]).unwrap());
+    let mut radio = Radio::new();
+    run(&mut runtime, &mut radio, 0, 1_000);
+    // Opening Sensors starts a search whose progress replaces page messages.
+    runtime.navigation.page = Page::Home;
+    runtime.navigation.home_cursor = 1;
+    runtime.input(press(Button::BottomRight), 1_000, &mut radio);
+    for (from, to) in [(1_000, 1_500), (1_500, 4_000), (4_000, 20_000)] {
+        run(&mut runtime, &mut radio, from, to);
+        assert_eq!(
+            runtime.menu.diagnostics().notice,
+            Some(MenuMessage::SavedUnreadable),
+            "at {to} ms"
+        );
+    }
+    assert!(
+        radio
+            .requests
+            .iter()
+            .any(|op| matches!(op, AntOperation::Scan(_)))
+    );
+
+    // A failing save is reported through a search, and cleared once saved.
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut radio = Radio::new();
+    run(&mut runtime, &mut radio, 0, 1_000);
+    runtime.navigation.page = Page::Home;
+    runtime.navigation.home_cursor = 1;
+    runtime.input(press(Button::BottomRight), 1_000, &mut radio);
+    run(&mut runtime, &mut radio, 1_000, 1_200);
+    runtime.preferences.save_failed(1_200);
+    run(&mut runtime, &mut radio, 1_200, 6_000);
+    assert_eq!(
+        runtime.menu.diagnostics().notice,
+        Some(MenuMessage::NotSaved)
+    );
+    assert_ne!(
+        runtime.menu.diagnostics().message,
+        Some(MenuMessage::NotSaved)
+    );
+    runtime.preferences = super::super::preferences::Preferences::default();
+    run(&mut runtime, &mut radio, 6_000, 6_100);
+    assert_eq!(runtime.menu.diagnostics().notice, None);
 }

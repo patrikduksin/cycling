@@ -224,8 +224,9 @@ impl Live {
         }
         // While a key is held the device runs in real time, as the companion
         // repeats every 100 ms of device time: VANA sees one continuous hold,
-        // not presses seconds apart, at any selected speed.
-        let speed = if self.held.is_some() {
+        // not presses seconds apart, at any selected speed. A finger on the
+        // screen does too, so a click stays a tap and a drag a swipe.
+        let speed = if self.held.is_some() || self.finger.is_some() {
             1.0
         } else {
             f64::from(self.speed)
@@ -442,6 +443,34 @@ mod tests {
         // Clicks beside the screen touch nothing.
         live.pointer(2.0, 2.0, true);
         assert!(live.finger.is_none());
+    }
+
+    /// At 10x and 60x a click and a drag still last their real time to the
+    /// recognizer, so they stay a tap and a swipe.
+    #[test]
+    fn mouse_gestures_run_in_real_time_at_every_speed() {
+        let window =
+            |x: usize, y: usize| ((MARGIN + x * SCALE) as f32, (MARGIN + y * SCALE) as f32);
+        for speed in SPEEDS {
+            let mut live = Live::new();
+            run(&mut live, 8_000);
+            live.speed = speed;
+            let (x, y) = window(120, 180);
+            let start = live.sim.device.now;
+            live.pointer(x, y, true);
+            run(&mut live, 100);
+            let held = live.sim.device.now - start;
+            assert!(held <= 150, "{speed}x: a 100 ms click lasted {held} ms");
+            live.pointer(x, y, false);
+            run(&mut live, 200);
+            live.speed = 1;
+            run(&mut live, 1_500);
+            assert!(
+                live.sim.screen().contains("MY SENSORS"),
+                "{speed}x: the click was not a tap:\n{}",
+                live.sim.screen().text()
+            );
+        }
     }
 
     #[test]

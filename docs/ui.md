@@ -173,8 +173,9 @@ Only one toast shows at a time. From highest priority to lowest:
    SAVED, RIDE RECOVERED. An automatic pause skips PAUSED, because item 7
    names it.
 5. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
-   FULL, WRITE FAILED, STORAGE NOT READY. Once bulk media fails and rides
-   fall back to internal flash, the fallback (item 6) replaces WRITE FAILED.
+   FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
+   hidden: the only one item 6 may replace is the bulk failure that moved
+   the ride to internal flash. Any later failure shows here.
 6. Sticky low storage: under one hour left, the toast shows `REC 42M LEFT`.
    Otherwise, while bulk media cannot take rides and the ride page shows an
    internal ride, a `Warn` toast names it: READY INT, RECORDING INT, PAUSED

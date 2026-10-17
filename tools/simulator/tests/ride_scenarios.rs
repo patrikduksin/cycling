@@ -2035,6 +2035,45 @@ fn missing_bulk_media_is_shown_and_rides_record_internally() {
     assert!(status.contains("state=unavailable"), "{status}");
 }
 
+#[test]
+fn an_internal_write_failure_after_a_move_is_never_hidden_by_the_fallback() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.advance(minutes(1));
+    // The MMC fails: the ride moves to internal flash, named in amber.
+    sim.fail_bulk(0, 0);
+    sim.wait_for("RECORDING INT", seconds(10)).unwrap();
+    sim.checkpoint("MMC failed: recording on internal flash");
+    // Then internal flash fails too, and the red fault replaces the fallback.
+    sim.fail_storage(0, 0);
+    // Pausing asks for a write on internal flash.
+    sim.press(Button::BottomRight);
+    let mut shown = None;
+    for _ in 0..20 {
+        sim.advance(seconds(1));
+        let screen = sim.screen();
+        shown = ["STORAGE ERROR", "WRITE FAILED"]
+            .into_iter()
+            .find(|fault| screen.contains(fault));
+        if shown.is_some() {
+            break;
+        }
+    }
+    let fault = shown.unwrap_or_else(|| panic!("no fault shown:\n{}", sim.screen().text()));
+    sim.expect_no_text("RECORDING INT");
+    sim.expect_no_text("PAUSED INT");
+    sim.checkpoint("internal flash failed too: the fault shows");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(
+        status_field(&status, "medium"),
+        "internal",
+        "{fault}: {status}"
+    );
+}
+
 fn status_field(status: &str, name: &str) -> String {
     status
         .split_whitespace()

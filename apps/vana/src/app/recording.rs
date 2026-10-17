@@ -78,6 +78,8 @@ pub(super) struct Ride {
     internal_media: InternalState,
     pub(super) bulk_media: BulkState,
     pub(super) request: Request,
+    /// The medium whose recorder completed `request`.
+    pub(super) request_on: Medium,
     /// Token of the latest host command; only its completion is the host's to read.
     pub(super) host_token: Option<u32>,
     next_token: u32,
@@ -129,6 +131,7 @@ impl Default for Ride {
             internal_media: InternalState::default(),
             bulk_media: BulkState::default(),
             request: Request::Idle,
+            request_on: Medium::Internal,
             host_token: None,
             next_token: 1,
             stop_armed: None,
@@ -579,6 +582,7 @@ impl Runtime {
                     ride.last = Some(medium);
                 }
                 ride.request = Request::Completed(result);
+                ride.request_on = medium;
             } else if !result.ok {
                 ride.give_up_continuation();
             }

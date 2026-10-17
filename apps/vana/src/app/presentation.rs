@@ -448,10 +448,13 @@ impl Runtime {
         let problem = match (self.ride.request, self.ride.active().status()) {
             (_, Status::Error) => "STORAGE ERROR",
             (_, Status::Full) => "STORAGE FULL",
-            // A bulk write that failed moved the ride to internal flash,
-            // which is what the band names from then on.
-            (_, status) if self.falling_back() => return self.storage_toast(status),
-            (Request::Completed(result), _) if !result.ok => "WRITE FAILED",
+            // A failed write always shows, except the bulk failure that moved
+            // the ride to internal flash: the fallback toast names that one.
+            (Request::Completed(result), _)
+                if !result.ok && !(self.falling_back() && self.ride.request_on == Medium::Bulk) =>
+            {
+                "WRITE FAILED"
+            }
             _ if matches!(self.ride.message, RideMessage::StorageNotReady) => "STORAGE NOT READY",
             (_, status) => {
                 return self

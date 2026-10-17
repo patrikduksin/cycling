@@ -1012,6 +1012,7 @@ fn a_ride_moving_to_internal_flash_counts_as_active_work() {
 /// toast for as long as rides go to internal flash.
 #[test]
 fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
+    use crate::app::recording::Request;
     use crate::screens::chrome::Tone;
     let mut journal = Journal::erased();
     // Never formatted: rides go to internal flash until it is initialized.
@@ -1054,6 +1055,25 @@ fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
         toast(&mut runtime, now),
         ("RECORDING INT".into(), Tone::Warn)
     );
+    // The bulk failure that moved a ride is what the fallback names; a
+    // failed write on internal flash is never hidden behind it.
+    let failed = Request::Completed(crate::ride::recorder::ResultEvent {
+        action: Some(crate::ride::control::Action::Pause),
+        token: 9,
+        ok: false,
+    });
+    runtime.ride.request = failed;
+    runtime.ride.request_on = Medium::Bulk;
+    assert_eq!(
+        toast(&mut runtime, now),
+        ("RECORDING INT".into(), Tone::Warn)
+    );
+    runtime.ride.request_on = Medium::Internal;
+    assert_eq!(
+        toast(&mut runtime, now),
+        ("WRITE FAILED".into(), Tone::Alert)
+    );
+    runtime.ride.request = Request::Idle;
     // Off the ride page nothing is shown.
     runtime.navigation.page = Page::Home;
     assert!(runtime.toast(now).is_none());

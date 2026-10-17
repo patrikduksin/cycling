@@ -29,7 +29,7 @@ impl Runtime {
     ) -> &'static str {
         let mut workout = words.split_ascii_whitespace();
         if workout.next() == Some("WORKOUT") {
-            return self.workout_command(&mut workout, now, output);
+            return self.workout_command(&mut workout, bulk, now, output);
         }
         let mut words = words.split_ascii_whitespace().peekable();
         let domain = words.next();

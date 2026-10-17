@@ -575,15 +575,13 @@ impl Runtime {
     ) {
         let clock = self.ride.clock;
         let clock = &|| clock.map_or(now, |clock| clock());
-        let player = self.chosen_player();
         let ride = &mut self.ride;
         let before = ride.active().status();
         let was_scanning =
             ride.internal.status() == Status::Scanning || ride.bulk.status() == Status::Scanning;
-        let internal_reset = matches!(
-            ride.internal.status(),
-            Status::Clearing | Status::Formatting
-        );
+        let resetting = |status| matches!(status, Status::Clearing | Status::Formatting);
+        let internal_reset = resetting(ride.internal.status());
+        let bulk_reset = resetting(ride.bulk.status());
         // An open bulk ride that the rider is not finishing continues on
         // internal media if the bulk medium fails; `Some(true)` if paused.
         let lost_paused = if ride.bulk.riding() {
@@ -611,14 +609,22 @@ impl Runtime {
         );
         // Clearing or initializing internal flash removes the ride a moved
         // ride continued as, and with it the bulk time carried into it.
-        if internal_reset
-            && !matches!(
-                ride.internal.status(),
-                Status::Clearing | Status::Formatting
-            )
-        {
+        if internal_reset && !resetting(ride.internal.status()) {
             ride.carried_ms = 0;
             ride.moved = false;
+        }
+        // A cleared or initialized journal numbers its rides from 1 again:
+        // its old workout records would name rides that are gone.
+        for (reset, medium, journal) in [
+            (internal_reset, Medium::Internal, b'i'),
+            (bulk_reset, Medium::Bulk, b'b'),
+        ] {
+            if reset
+                && !resetting(ride.recorder(medium).status())
+                && let Err(error) = crate::workout::history::forget(bulk, journal)
+            {
+                log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
+            }
         }
         if let Some(paused) = lost_paused
             && matches!(ride.bulk.status(), Status::Error | Status::Full)
@@ -650,8 +656,17 @@ impl Runtime {
                 ride.climbs_done = 0;
                 ride.climbs = Climbs::default();
                 self.navigation.climb_return = None;
-                // The chosen workout starts with the ride; its steps lap it.
-                ride.workout = player;
+                // The chosen workout starts with the ride, its steps read
+                // now; its steps lap it. One that cannot be read rides free.
+                ride.workout = match self.training.load_chosen(bulk) {
+                    Ok(player) => player,
+                    Err(error) => {
+                        log::warn!(target: "sdk.workout", "load_failed error={}", error.name());
+                        self.training.selected = None;
+                        self.training.missing = true;
+                        None
+                    }
+                };
                 ride.workout_events.clear();
                 // The last workout's summary belongs to the ride it ended with.
                 self.training.last = None;
@@ -669,10 +684,14 @@ impl Runtime {
             };
             ride.settled = Some((sample, step, None));
         }
+        let mut finished = None;
         for medium in [Medium::Internal, Medium::Bulk] {
             let Some(result) = ride.recorder_mut(medium).take_result() else {
                 continue;
             };
+            if result.ok && result.action == Some(Action::Finish) {
+                finished = Some(medium);
+            }
             if result.token != 0 {
                 // A ride the rider or host asked for that failed to start is
                 // the latest ride, so its storage error is what shows.
@@ -683,6 +702,25 @@ impl Runtime {
                 ride.request_on = medium;
             } else if !result.ok {
                 ride.give_up_continuation();
+            }
+        }
+        // A saved ride keeps how its workout went beside it on FILES.
+        if let (Some(medium), Some(player)) = (finished, ride.workout.as_ref())
+            && let Some(saved) = ride.recorder(medium).summaries().iter().flatten().last()
+        {
+            let record = crate::workout::history::Record {
+                journal: match medium {
+                    Medium::Internal => b'i',
+                    Medium::Bulk => b'b',
+                },
+                ride_id: saved.ride_id,
+                started_utc_ms: saved.first_utc_ms,
+                name: player.workout().name,
+                test: player.workout().test,
+                summary: player.summary(),
+            };
+            if let Err(error) = crate::workout::history::save(bulk, &record) {
+                log::warn!(target: "sdk.workout", "history_failed error={}", error.name());
             }
         }
         // A ride lost while paused continues paused; automation waits until

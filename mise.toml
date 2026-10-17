@@ -87,7 +87,7 @@ description = "Clear the owned ride journal after verifying a named complete exp
 run = "{{vars.devtools}} python -m cycling_devtools.rides.clear"
 
 [tasks.workout-load]
-description = "Load a workout JSON file onto the device's workout picker over USB (--dry-run prints the commands)"
+description = "Put a workout JSON file on the device's FILES volume for the workout picker (--dry-run prints the file)"
 run = "{{vars.devtools}} python -m cycling_devtools.workouts.load"
 
 [tasks.gps-stress]

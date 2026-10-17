@@ -394,15 +394,32 @@ new FTP to the profile, BACK keeps the old one.
   stays under 90% of the step for 10 s, or at MARK. FTP is 75% of the best
   full minute.
 
-Load a workout from JSON with `mise run workout-load <file> [--slot 0..3]`;
-`--dry-run` prints the commands. Examples are in `tools/devtools/workouts/`
-and the format is described in `cycling_devtools.workouts.load`. The host
-writes codec version 1 (`apps/vana/src/workout/codec.rs`) in 48-byte chunks:
-`WORKOUT BEGIN slot length crc`, `WORKOUT DATA offset hex` in order, then
-`WORKOUT COMMIT`, which checks the CRC and the workout before it installs.
-`WORKOUT LIST`, `SELECT row` and `DELETE slot` manage the four slots. In this
-build uploads stay in RAM: a power-off forgets them. Persistent storage
-belongs behind `WorkoutStore`.
+Load a workout from JSON with `mise run workout-load <file> [--name stem]`;
+`--dry-run` prints the file it would put. Examples are in
+`tools/devtools/workouts/` and the format is described in
+`cycling_devtools.workouts.load`. The host writes codec version 1
+(`apps/vana/src/workout/codec.rs`) to the MMC's FILES volume as
+`workouts/<stem>.vw` through the volume transfer session. That session checks
+the CRC on commit and reads the file back. `mise run files -- put
+workouts/NAME.vw PATH` works too. Format FILES once first if `FILES STATUS`
+says it is not formatted.
+
+VANA lists `workouts/` at boot, each time the picker opens and on
+`WORKOUT LIST`. It keeps only each upload's file, name and outline: the first
+8 by file name, in name order after the built-ins. Files that do not decode
+are counted as `skipped`. A ride reads its workout's steps from FILES when it
+starts. If the file is gone by then, the ride runs free and shows WORKOUT
+MISSING. `WORKOUT SELECT row` chooses a picker row and opens Ready.
+`WORKOUT DELETE n` deletes upload `n`'s file.
+
+When a ride with a workout is saved, VANA writes how the workout went beside
+it as `rides/<i|b><ride id>.workout` on FILES. The record holds the name,
+test, steps done and skipped, time in, under and over target, the FTP a test
+measured, and the ride's start time. Clearing or initializing a journal
+deletes its records, as its ride ids start over. It is a versioned 70-byte
+record (`apps/vana/src/workout/history.rs`) that later versions only extend.
+The newest 32 are kept. `WORKOUT HISTORY INTERNAL|BULK id` reports one. A
+ride recovered after a power cut has no record.
 
 ## What this does not prove
 

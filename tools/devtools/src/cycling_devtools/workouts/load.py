@@ -21,17 +21,24 @@ least), or
 `ftp` [low, high] %, `watts` [low, high], `heart_zone` 1-5, `lthr` [low,
 high] %, `cadence` [low, high] rpm or `ramp` {start, step, every}; none is a
 free ride. `test` may be `twenty` or `ramp`. The encoding is codec version 1
-(`apps/vana/src/workout/codec.rs`). Uploads live in RAM on this firmware: a
-power-off forgets them, the built-ins stay.
+(`apps/vana/src/workout/codec.rs`).
+
+The workout goes onto the MMC's FILES volume as `workouts/<name>.vw` through
+the volume transfer session, which checks the file's CRC on commit and reads
+it back. VANA lists `workouts/` when its picker opens; this tool also asks it
+to list again (`WORKOUT LIST`). Run `mise run files -- format --confirm` once
+on a device whose FILES volume is not formatted yet.
 """
 
 import argparse
 import json
+import re
 import struct
 import time
 import zlib
 from pathlib import Path
 
+from cycling_devtools.device import volumes
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT
@@ -41,9 +48,10 @@ VERSION = 1
 NAME_BYTES = 20
 MAX_STEPS = 12
 MAX_BLOCKS = 8
-UPLOAD_SLOTS = 4
-# The device's DATA chunk: 48 bytes as 96 hex digits fits a terminal line.
-CHUNK = 48
+FOLDER = 'workouts/'
+SUFFIX = '.vw'
+# FILES names: 1 to 40 bytes of A-Z a-z 0-9 . _ - /.
+NAME_MAX = 40
 MIN_DISTANCE_M = 100
 
 INTENSITIES = ('warmup', 'work', 'recovery', 'cooldown', 'test')
@@ -174,42 +182,49 @@ def encode(workout):
     return bytes(body) + struct.pack('<I', zlib.crc32(body))
 
 
-def commands(slot, data):
-    """The terminal commands that upload `data` into `slot`."""
-    if not 0 <= slot < UPLOAD_SLOTS:
-        raise ValueError(f'slot must be 0..{UPLOAD_SLOTS - 1}')
-    yield f'WORKOUT BEGIN {slot} {len(data)} {zlib.crc32(data):08x}'
-    for offset in range(0, len(data), CHUNK):
-        yield f'WORKOUT DATA {offset} {data[offset : offset + CHUNK].hex()}'
-    yield 'WORKOUT COMMIT'
+def file_name(stem):
+    """The FILES name of a workout called `stem`: `workouts/<stem>.vw`."""
+    safe = re.sub(r'[^A-Za-z0-9._-]+', '-', stem).strip('-.')
+    safe = safe[: NAME_MAX - len(FOLDER) - len(SUFFIX)]
+    if not safe:
+        raise ValueError(f'no usable file name in {stem!r}')
+    return f'{FOLDER}{safe}{SUFFIX}'
 
 
-def upload(connection, slot, data):
-    """Send the upload once; the device installs it only when COMMIT checks out."""
-    reply = None
-    for command in commands(slot, data):
-        reply = connection.terminal_command(command)
-        if reply['status'] != 'OK':
-            raise RuntimeError(f'{command.split()[1]} refused: {reply["status"]} {reply["data"]}'.rstrip())
-    return reply['data']
+def upload(connection, name, data, scratch):
+    """Put `data` on FILES as `name`, then have VANA list its workouts again."""
+    path = scratch / name.replace('/', '__')
+    path.write_bytes(data)
+    transfer = volumes.open_session(connection)
+    try:
+        entry = volumes.files_put(transfer, name, path)
+    finally:
+        transfer.call('end')
+    reply = connection.terminal_command('WORKOUT LIST')
+    if reply['status'] != 'OK':
+        raise RuntimeError(f'WORKOUT LIST: {reply["status"]} {reply["data"]}'.rstrip())
+    if f'{name}:' not in reply['data']:
+        raise RuntimeError(f'VANA did not list {name}: {reply["data"]}')
+    return {**entry, 'list': reply['data']}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('workout', type=Path, help='workout JSON file')
-    parser.add_argument('--slot', type=int, default=0, help=f'upload slot 0..{UPLOAD_SLOTS - 1} (default 0)')
-    parser.add_argument('--dry-run', action='store_true', help='print the commands without a device')
+    parser.add_argument('--name', help='file name stem (default: the JSON file name)')
+    parser.add_argument('--dry-run', action='store_true', help='print the file it would put, without a device')
     add_port_argument(parser)
     args = parser.parse_args()
     data = encode(json.loads(args.workout.read_text()))
+    name = file_name(args.name or args.workout.stem)
     if args.dry_run:
-        print('\n'.join(commands(args.slot, data)))
+        print(json.dumps({'name': name, 'length': len(data), 'crc32': f'{zlib.crc32(data):08x}'}))
         return
     port = selected_port(parser, args.port)
-    log = ROOT / '.local/tests' / f'workout-load-{time.time_ns()}.log'
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with UsbConnection(port, log) as connection:
-        print(upload(connection, args.slot, data))
+    scratch = ROOT / '.local/tests'
+    scratch.mkdir(parents=True, exist_ok=True)
+    with UsbConnection(port, scratch / f'workout-load-{time.time_ns()}.log') as connection:
+        print(json.dumps(upload(connection, name, data, scratch)))
 
 
 if __name__ == '__main__':

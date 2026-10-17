@@ -3079,26 +3079,21 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     }];
     let workout = Workout::new("OVER UNDERS", STEPS, BLOCKS, None);
     let bytes = encode(&workout);
-    let crc = firmware_services::checksum::crc32(&bytes);
-    let upload = |sim: &mut Sim, bytes: &[u8]| {
-        let (status, out) = sim.command(&format!("WORKOUT BEGIN 0 {} {crc:08x}", bytes.len()));
-        assert_eq!(status, "OK", "{out}");
-        for (i, chunk) in bytes.chunks(48).enumerate() {
-            let hex: String = chunk.iter().map(|b| format!("{b:02x}")).collect();
-            let (status, out) = sim.command(&format!("WORKOUT DATA {} {hex}", i * 48));
-            assert_eq!(status, "OK", "{out}");
-        }
-        sim.command("WORKOUT COMMIT")
-    };
-    let mut sim = training_rider();
-    // A transfer damaged on the way is refused and stores nothing.
+    // Uploads and workout records live on the MMC's FILES volume.
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(30.0, 120.0, 0.0, 90.0);
+    // A file damaged on the way is listed as skipped and never offered.
     let mut damaged = bytes.to_vec();
     damaged[10] ^= 1;
-    assert_ne!(upload(&mut sim, &damaged).0, "OK");
+    sim.put_file("workouts/broken.vw", &damaged);
     let (_, list) = sim.command("WORKOUT LIST");
-    assert!(list.contains("slot0=-"), "{list}");
-    let (status, out) = upload(&mut sim, &bytes);
-    assert_eq!((status, out.as_str()), ("OK", "slot=0 name=OVER_UNDERS"));
+    assert!(list.contains("files=ok uploads=0 skipped=1"), "{list}");
+    // The host puts the workout on FILES; opening the picker lists it.
+    sim.put_file("workouts/over-unders.vw", &bytes);
     sim.home("TRAIN");
     for _ in 0..8 {
         sim.press(Button::BottomLeft);
@@ -3106,6 +3101,11 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     sim.expect_text("OVER UNDERS");
     sim.expect_text("8 STEPS");
     sim.checkpoint("uploaded workout in the picker");
+    let (_, list) = sim.command("WORKOUT LIST");
+    assert!(
+        list.contains("uploads=1 skipped=1 upload0=workouts/over-unders.vw:OVER_UNDERS"),
+        "{list}"
+    );
     go_home(&mut sim);
     sim.choose_workout("OVER UNDERS");
     sim.press(Button::BottomRight);
@@ -3118,12 +3118,45 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     assert_eq!(sim.workout()["target"], "198-206");
     sim.checkpoint("uploaded workout riding");
     sim.stop_ride();
+    // The saved ride keeps how its workout went on FILES.
+    let (_, rides) = sim.command("RIDE HISTORY");
+    let ride: u32 = rides
+        .rsplit(" ride=")
+        .next()
+        .and_then(|last| last.split(',').next())
+        .and_then(|id| id.parse().ok())
+        .unwrap_or_else(|| panic!("RIDE HISTORY: {rides}"));
+    let saved = ["INTERNAL", "BULK"]
+        .iter()
+        .map(|journal| sim.command(&format!("WORKOUT HISTORY {journal} {ride}")).1)
+        .find(|reply| reply.contains("workout=OVER_UNDERS"))
+        .expect("a workout record for the saved ride");
+    assert!(saved.contains("steps=1/8 skipped=1 finished=0"), "{saved}");
     sim.done();
     assert_eq!(
         sim.workout()["workout"],
         "none",
         "the next ride is free again"
     );
+    // A workout whose file goes away after it was chosen rides free.
+    sim.choose_workout("OVER UNDERS");
+    let (status, out) = sim.command("FILES DELETE workouts/over-unders.vw");
+    assert_eq!(status, "OK", "{out}");
+    sim.press(Button::BottomRight);
+    sim.wait_for("WORKOUT MISSING", seconds(2)).unwrap();
+    assert_eq!(sim.workout()["workout"], "none");
+    sim.stop_ride();
+    sim.done();
+    // WORKOUT DELETE removes an upload's file.
+    sim.put_file("workouts/over-unders.vw", &bytes);
+    let (_, list) = sim.command("WORKOUT LIST");
+    assert!(list.contains("uploads=1"), "{list}");
+    let (status, out) = sim.command("WORKOUT DELETE 0");
+    assert_eq!(
+        (status, out.as_str()),
+        ("OK", "deleted=workouts/over-unders.vw")
+    );
+    assert_eq!(sim.file("workouts/over-unders.vw"), None);
 }
 
 /// The whole ride lifecycle as a rider meets it: Ready, the start, a lap,

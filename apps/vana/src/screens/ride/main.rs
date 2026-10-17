@@ -1,189 +1,489 @@
-//! The main ride page: live speed, power and heart rate with their zones,
-//! then cadence, distance, active time and grade.
-#[cfg(test)]
-use super::zones::gauge_pixel;
-use super::zones::{GAUGE_WIDTH, Mark, paint_gauge};
-use super::{Cell, DIM, GRID, Values, WHITE, clock, grade, kilometres, speed, whole};
-#[cfg(test)]
-use crate::screens::rounded;
-use crate::screens::rounded_span;
+//! The main ride page, stacked like a workout view: elapsed time and grade,
+//! then speed as the hero number, power and heart rate with zone gauges,
+//! then cadence and distance. Each value has its signature colour and a
+//! small unit beside it; there are no boxes or dividers.
+use super::zones::GAUGE_WIDTH;
+use super::{BODY, Labels, Smooth, Text, elapsed, kilometres, speed, whole};
+use crate::screens::chrome::{
+    Align, BLACK, BODY as BODY_FACE, CADENCE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line,
+    POWER, Rect, Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
+};
 use crate::screens::workout::View;
 use core::fmt::Write;
-use firmware_shell::rendering::row::Row;
-#[cfg(test)]
-use firmware_shell::rendering::text::text;
+use firmware_shell::rendering::font::{Face, SPILL};
 
-const SPEED: usize = 0;
-const POWER: usize = 1;
-const HEART: usize = 2;
-const POWER_ZONE: usize = 3;
-const HEART_ZONE: usize = 4;
-const CADENCE: usize = 5;
-const DISTANCE: usize = 6;
-const TIME: usize = 7;
-const GRADE: usize = 8;
+const LEFT: usize = BODY.left + 10;
+const RIGHT: usize = BODY.right - 8;
+const TIME_TOP: usize = BODY.top + 4;
+const SPEED_TOP: usize = BODY.top + 38;
+const POWER_TOP: usize = BODY.top + 108;
+const HEART_TOP: usize = BODY.top + 166;
+const LOWER_TOP: usize = BODY.top + 228;
+/// Zone gauges sit just under the power and heart-rate numbers.
+const GAUGES: [usize; 2] = [POWER_TOP + 47, HEART_TOP + 47];
+const GAUGE_HEIGHT: usize = 5;
+const GAUGE_GAP: usize = 3;
+/// Power has seven zones, heart rate five.
+const SEGMENTS: [usize; 2] = [7, 5];
 
-/// Row dividers below speed, power/heart and cadence/distance.
-const ROWS: [usize; 3] = [101, 176, 217];
-const COLUMN: usize = 135;
-
-/// Zone chips: the Z label on a band of the zone colour, then a gauge of the
-/// reading's position within its zone. Power left, heart rate right.
-const CHIP_TOP: usize = 154;
-const CHIP_BOTTOM: usize = 175;
-const CHIP_WIDTH: usize = 34;
-const GAUGE_TOP: usize = 161;
-const GAUGE_BOTTOM: usize = 168;
-type MarkOf = fn(&View) -> Option<Mark>;
-const ZONES: [(usize, usize, MarkOf); 2] = [
-    (34, POWER_ZONE, |view| view.marks.power),
-    (142, HEART_ZONE, |view| view.marks.heart),
-];
-
-/// Each cell and the value it shows, left column then right.
-const CELLS: [(Cell, usize); 7] = [
-    (cell(38, 36, b"SPEED", 2, 54, 6), SPEED),
-    (cell(38, 106, b"WATTS", 2, 124, 4), POWER),
-    (cell(146, 106, b"BPM", 2, 124, 4), HEART),
-    (cell(38, 181, b"CADENCE", 1, 192, 3), CADENCE),
-    (cell(146, 181, b"DISTANCE", 1, 192, 3), DISTANCE),
-    (cell(38, 222, b"ACTIVE TIME", 1, 234, 2), TIME),
-    (cell(150, 222, b"GRADE", 1, 234, 2), GRADE),
-];
-
-const fn cell(
-    left: usize,
-    top: usize,
-    label: &'static [u8],
-    label_scale: usize,
-    value_top: usize,
-    value_scale: usize,
-) -> Cell {
-    Cell {
-        left,
-        top,
-        label,
-        label_scale,
-        value_top,
-        value_scale,
-    }
+/// The bottom of `face`'s capitals for a label whose top is `top`.
+const fn baseline(face: &Face, top: usize) -> usize {
+    top + face.top as usize + face.cap as usize
 }
 
-pub(super) fn prepare(view: &View, values: &mut Values) {
+/// A label whose capitals end on `base`.
+fn on_baseline(
+    face: &'static Face,
+    text: &[u8],
+    x: usize,
+    base: usize,
+    align: Align,
+    color: u16,
+) -> Label<12> {
+    let top = base - face.top as usize - face.cap as usize;
+    Label::new(Line::new(face, text), x, top, align, color)
+}
+
+/// The least space between two readings on one line.
+const GAP: usize = 8;
+/// Space between a value and its unit.
+const UNIT_GAP: usize = 4;
+
+/// A value and its unit just after it on baseline `base`, both inside
+/// `left..right`: the value takes the largest of `faces` that leaves room.
+#[allow(clippy::too_many_arguments)]
+fn reading(
+    labels: &mut Labels,
+    faces: &[&'static Face],
+    value: &Text<12>,
+    unit: &[u8],
+    (left, right): (usize, usize),
+    base: usize,
+    align: Align,
+    color: u16,
+) {
+    let unit_width = CAPTION.width(unit) + SPILL;
+    let room = right.saturating_sub(left + UNIT_GAP + unit_width);
+    let line = Line::fit(faces, value.as_bytes(), room);
+    let face = line.face();
+    let top = base - face.top as usize - face.cap as usize;
+    let (value, unit) = match align {
+        Align::Right => {
+            let unit = on_baseline(&CAPTION, unit, right - SPILL, base, Align::Right, SECONDARY);
+            let value = Label::new(line, unit.left - UNIT_GAP, top, Align::Right, color);
+            (value, unit)
+        }
+        _ => {
+            let value = Label::new(line, left, top, Align::Left, color);
+            // After the value's ink, so a "--" keeps its unit as close as
+            // a number does.
+            let at = left + face.ink_width(value.line.text()) + UNIT_GAP;
+            (
+                value,
+                on_baseline(&CAPTION, unit, at, base, Align::Left, SECONDARY),
+            )
+        }
+    };
+    let _ = labels.push(value);
+    let _ = labels.push(unit);
+}
+
+pub(super) fn prepare(view: &View) -> Smooth {
     let sample = view.sample;
-    speed(&mut values[SPEED], sample.speed_mm_s);
-    whole(&mut values[POWER], sample.power_watts);
-    whole(&mut values[HEART], sample.heart_bpm);
-    let profile = view.profile;
-    let _ = match sample.power_watts {
-        Some(v) => write!(values[POWER_ZONE], "Z{}", profile.power_zone(v)),
-        None => values[POWER_ZONE].push_str("Z-"),
+    let mut smooth = Smooth::default();
+    let labels = &mut smooth.labels;
+    let value = |write: &dyn Fn(&mut Text<12>)| {
+        let mut text = Text::new();
+        write(&mut text);
+        text
     };
-    let _ = match sample.heart_bpm {
-        Some(v) => write!(values[HEART_ZONE], "Z{}", profile.heart_zone(v)),
-        None => values[HEART_ZONE].push_str("Z-"),
-    };
-    whole(
-        &mut values[CADENCE],
-        sample.cadence_tenths.map(|tenths| (tenths + 5) / 10),
+
+    // Time and grade share a line; the grade keeps its size and the clock
+    // steps down when hours of riding make it long.
+    let grade = value(&|v| {
+        let _ = match sample.gradient_tenths {
+            Some(g) => write!(
+                v,
+                "{}{}.{}%",
+                if g < 0 { "-" } else { "" },
+                g.unsigned_abs() / 10,
+                g.unsigned_abs() % 10
+            ),
+            None => v.push_str("--%"),
+        };
+    });
+    let base = baseline(&VALUE, TIME_TOP);
+    let grade = on_baseline(
+        &BODY_FACE,
+        grade.as_bytes(),
+        RIGHT - SPILL,
+        base,
+        Align::Right,
+        GRADE,
     );
-    kilometres(&mut values[DISTANCE], view.totals.distance_mm());
-    clock(&mut values[TIME], view.active_secs);
-    grade(&mut values[GRADE], sample.gradient_tenths.map(i32::from));
+    let time = value(&|v| elapsed(v, view.active_secs));
+    let line = Line::fit(
+        &[&VALUE, &BODY_FACE],
+        time.as_bytes(),
+        grade.left - GAP - LEFT,
+    );
+    let top = base - line.face().top as usize - line.face().cap as usize;
+    let _ = labels.push(Label::new(line, LEFT, top, Align::Left, WHITE));
+    let _ = labels.push(grade);
+
+    let kmh = value(&|v| speed(v, sample.speed_mm_s));
+    let base = baseline(&HERO, SPEED_TOP);
+    let faces: [&Face; 3] = [&HERO, &LARGE, &VALUE];
+    reading(
+        labels,
+        &faces,
+        &kmh,
+        b"KM/H",
+        (LEFT, RIGHT),
+        base,
+        Align::Left,
+        SPEED,
+    );
+
+    smooth.zones = [
+        sample
+            .power_watts
+            .map_or(0, |watts| view.profile.power_zone(watts)),
+        sample
+            .heart_bpm
+            .map_or(0, |bpm| view.profile.heart_zone(bpm)),
+    ];
+    let watts = value(&|v| whole(v, sample.power_watts));
+    let bpm = value(&|v| whole(v, sample.heart_bpm));
+    let rows = [
+        (watts, &b"W"[..], POWER_TOP, POWER),
+        (bpm, &b"BPM"[..], HEART_TOP, HEART),
+    ];
+    for ((text, unit, top, color), zone) in rows.into_iter().zip(smooth.zones) {
+        let mut name = Text::<12>::new();
+        let _ = match zone {
+            0 => name.push_str("Z-"),
+            z => write!(name, "Z{z}"),
+        };
+        let base = baseline(&LARGE, top);
+        let zone = on_baseline(
+            &BODY_FACE,
+            name.as_bytes(),
+            RIGHT - SPILL,
+            base,
+            Align::Right,
+            zone_color(zone),
+        );
+        let faces: [&Face; 2] = [&LARGE, &VALUE];
+        let span = (LEFT, zone.left - GAP);
+        reading(labels, &faces, &text, unit, span, base, Align::Left, color);
+        let _ = labels.push(zone);
+    }
+
+    // Cadence and distance split the last line between them.
+    let middle = (LEFT + RIGHT) / 2;
+    let base = baseline(&VALUE, LOWER_TOP);
+    let faces: [&Face; 2] = [&VALUE, &BODY_FACE];
+    let rpm = value(&|v| whole(v, sample.cadence_tenths.map(|t| (t + 5) / 10)));
+    let span = (LEFT, middle - GAP / 2);
+    reading(
+        labels,
+        &faces,
+        &rpm,
+        b"RPM",
+        span,
+        base,
+        Align::Left,
+        CADENCE,
+    );
+    let km = value(&|v| kilometres(v, view.totals.distance_mm()));
+    let span = (middle + GAP / 2, RIGHT);
+    reading(labels, &faces, &km, b"KM", span, base, Align::Right, WHITE);
+    smooth
 }
 
-/// Paint one content row: the cells of its band, or the zone chips, then the
-/// grid on top.
+/// Paint a body row: a gauge row, or the labels that cover it.
 pub(super) fn paint(view: &View, row: &mut Row) {
     let y = row.y();
-    let values = &view.values;
-    let band = ROWS
-        .iter()
-        .position(|&bottom| y < bottom)
-        .unwrap_or(ROWS.len());
-    if band == 0 {
-        // Speed spans the first band.
-        let (cell, value) = &CELLS[0];
-        cell.paint(row, &values[*value], WHITE);
-        row.text(178, 89, 1, b"KM/H", DIM);
-    } else {
-        // Each later band has a left and a right cell, split after the column.
-        for (right, columns) in [(false, 0..COLUMN + 1), (true, COLUMN + 1..usize::MAX)] {
-            let mut half = row.within(columns);
-            if band == 1 && (CHIP_TOP..CHIP_BOTTOM).contains(&y) {
-                let (left, zone, mark) = ZONES[usize::from(right)];
-                paint_zone(&mut half, mark(view), left, values[zone].as_bytes());
-            } else {
-                let (cell, value) = &CELLS[2 * band - 1 + usize::from(right)];
-                cell.paint(&mut half, &values[*value], WHITE);
-            }
+    for (i, &top) in GAUGES.iter().enumerate() {
+        if (top..top + GAUGE_HEIGHT).contains(&y) {
+            let mark = [view.marks.power, view.marks.heart][i];
+            let fill = mark.map_or(0, |mark| mark.fill);
+            paint_gauge(row, view.smooth.zones[i], fill, SEGMENTS[i], top);
+            return;
         }
     }
-    if ROWS.contains(&y) {
-        row.fill(GRID);
-    } else if y > ROWS[0] {
-        row.set(COLUMN, GRID);
+    for label in &view.smooth.labels {
+        label.paint(row);
     }
-}
-
-/// The zone chip and gauge starting at `left`.
-fn paint_zone(row: &mut Row, mark: Option<Mark>, left: usize, label: &[u8]) {
-    let y = row.y();
-    let Some(mark) = mark else {
-        row.text(left + 4, CHIP_TOP + 3, 2, label, DIM);
-        return;
-    };
-    // A pill of the zone colour behind the black zone number.
-    let pill = rounded_span(y, (left, CHIP_TOP, left + CHIP_WIDTH, CHIP_BOTTOM), 7);
-    row.span(pill.clone(), mark.colour);
-    row.within(pill).text(left + 4, CHIP_TOP + 3, 2, label, 0);
-    let gauge = left + CHIP_WIDTH + 6;
-    let bounds = (gauge, GAUGE_TOP, gauge + GAUGE_WIDTH, GAUGE_BOTTOM);
-    paint_gauge(row, mark, gauge, rounded_span(y, bounds, 3));
 }
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    if ROWS.contains(&y) || (x == COLUMN && y > ROWS[0]) {
-        return GRID;
+    for (i, &top) in GAUGES.iter().enumerate() {
+        if (top..top + GAUGE_HEIGHT).contains(&y) {
+            let mark = [view.marks.power, view.marks.heart][i];
+            let fill = mark.map_or(0, |mark| mark.fill);
+            return gauge(view.smooth.zones[i], fill, SEGMENTS[i], x, y, top);
+        }
     }
-    let values = &view.values;
-    let row = ROWS
-        .iter()
-        .position(|&bottom| y < bottom)
-        .unwrap_or(ROWS.len());
-    let right = x > COLUMN;
-    if row == 0 && text(x, y, 178, 89, 1, b"KM/H") {
-        return DIM;
+    for label in &view.smooth.labels {
+        if let Some(color) = label.pixel(x, y, BLACK) {
+            return color;
+        }
     }
-    if row == 1 && (CHIP_TOP..CHIP_BOTTOM).contains(&y) {
-        let (left, zone, mark) = ZONES[usize::from(right)];
-        return zone_pixel(mark(view), left, values[zone].as_bytes(), x, y).unwrap_or(0);
-    }
-    // Speed spans the first row; then each row has a left and a right cell.
-    let index = if row == 0 {
-        0
-    } else {
-        2 * row - 1 + usize::from(right)
-    };
-    let (cell, value) = &CELLS[index];
-    cell.pixel(&values[*value], x, y).unwrap_or(0)
+    BLACK
 }
 
-/// The zone chip and gauge starting at `left`, or none of their pixels.
-#[cfg(test)]
-fn zone_pixel(mark: Option<Mark>, left: usize, label: &[u8], x: usize, y: usize) -> Option<u16> {
-    let ink = text(x, y, left + 4, CHIP_TOP + 3, 2, label);
-    let Some(mark) = mark else {
-        return ink.then_some(DIM);
-    };
-    if (left..left + CHIP_WIDTH).contains(&x) {
-        // A pill of the zone colour behind the black zone number.
-        let pill = rounded(x, y, (left, CHIP_TOP, left + CHIP_WIDTH, CHIP_BOTTOM), 7);
-        return pill.then_some(if ink { 0 } else { mark.colour });
+/// `gauge` as spans: each segment lit up to its split, then the dim track,
+/// with only its rounded ends worked out per pixel.
+fn paint_gauge(row: &mut Row, zone: u8, fill: usize, segments: usize, top: usize) {
+    let y = row.y();
+    let pitch = (RIGHT - LEFT + GAUGE_GAP) / segments;
+    let width = pitch - GAUGE_GAP;
+    let lit = usize::from(zone);
+    for segment in 0..segments {
+        let left = LEFT + segment * pitch;
+        let split = if segment + 1 < lit {
+            width
+        } else if segment + 1 == lit {
+            width * fill / GAUGE_WIDTH
+        } else {
+            0
+        };
+        row.span(left..left + split, zone_color(segment as u8 + 1));
+        row.span(left + split..left + width, TERTIARY);
+        let end = |x| Some(gauge(zone, fill, segments, x, y, top));
+        row.each(left..left + 2, end);
+        row.each(left + width - 2..left + width, end);
     }
-    let gauge = left + CHIP_WIDTH + 6;
-    let bounds = (gauge, GAUGE_TOP, gauge + GAUGE_WIDTH, GAUGE_BOTTOM);
-    rounded(x, y, bounds, 3).then(|| gauge_pixel(mark, gauge, x))
+}
+
+/// A row of rounded segments, one per zone: those below `zone` lit in their
+/// colours, the current one lit `fill` / `GAUGE_WIDTH` of the way through
+/// its range, the rest a dim track.
+fn gauge(zone: u8, fill: usize, segments: usize, x: usize, y: usize, top: usize) -> u16 {
+    if !(LEFT..RIGHT).contains(&x) {
+        return BLACK;
+    }
+    let pitch = (RIGHT - LEFT + GAUGE_GAP) / segments;
+    let segment = (x - LEFT) / pitch;
+    let left = LEFT + segment * pitch;
+    let rect = Rect {
+        left,
+        top,
+        right: left + pitch - GAUGE_GAP,
+        bottom: top + GAUGE_HEIGHT,
+    };
+    let zone = usize::from(zone);
+    let width = pitch - GAUGE_GAP;
+    let lit = segment + 1 < zone || (segment + 1 == zone && x - left < width * fill / GAUGE_WIDTH);
+    let color = if lit {
+        zone_color(segment as u8 + 1)
+    } else {
+        TERTIARY
+    };
+    blend(color, BLACK, rounded(rect, 2, x, y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ride::log::{Sample, Status};
+    use crate::screens::chrome::layout::{assert_apart, assert_shown, text};
+    use crate::screens::workout::Page;
+    use std::string::String;
+    use std::vec::Vec;
+
+    /// One extreme reading of each kind the main page shows.
+    #[derive(Clone, Copy)]
+    struct Case {
+        speed_mm_s: Option<u32>,
+        watts: Option<u16>,
+        bpm: Option<u16>,
+        cadence_tenths: Option<u16>,
+        distance_mm: u64,
+        secs: u64,
+        grade_tenths: Option<i16>,
+        state: Status,
+    }
+
+    const SPEEDS: [Option<u32>; 5] = [None, Some(0), Some(2_750), Some(27_750), Some(33_334)];
+    const WATTS: [Option<u16>; 4] = [None, Some(0), Some(999), Some(1999)];
+    const BPMS: [Option<u16>; 3] = [None, Some(40), Some(220)];
+    const CADENCES: [Option<u16>; 4] = [None, Some(0), Some(1000), Some(1800)];
+    const DISTANCES: [u64; 4] = [0, 15_000_000, 150_000_000, 1_000_000_000];
+    const TIMES: [u64; 4] = [0, 3_599, 36_000, 359_999];
+    const GRADES: [Option<i16>; 4] = [None, Some(0), Some(-255), Some(199)];
+    const STATES: [Status; 4] = [
+        Status::Ready,
+        Status::Recording,
+        Status::Paused,
+        Status::Saved,
+    ];
+
+    /// The widest of everything at once.
+    const WIDEST: Case = Case {
+        speed_mm_s: Some(33_334),
+        watts: Some(1999),
+        bpm: Some(220),
+        cadence_tenths: Some(1800),
+        distance_mm: 1_000_000_000,
+        secs: 359_999,
+        grade_tenths: Some(-255),
+        state: Status::Recording,
+    };
+
+    fn view(case: Case) -> View {
+        let mut view = View::new(Page::Ride, 0, Some(86_399_000 / 1000));
+        view.state = case.state;
+        view.active_secs = case.secs;
+        let sample = Sample {
+            speed_mm_s: case.speed_mm_s,
+            power_watts: case.watts,
+            heart_bpm: case.bpm,
+            cadence_tenths: case.cadence_tenths,
+            gradient_tenths: case.grade_tenths,
+            ..Sample::default()
+        };
+        view.totals.add(1000, case.distance_mm, &sample, None);
+        view.sample = sample;
+        view.prepare();
+        view
+    }
+
+    fn items(view: &View) -> Vec<(String, Rect)> {
+        let mut items: Vec<_> = view.smooth.labels.iter().filter_map(text).collect();
+        for (i, &top) in GAUGES.iter().enumerate() {
+            let rect = Rect {
+                left: LEFT,
+                top,
+                right: RIGHT,
+                bottom: top + GAUGE_HEIGHT,
+            };
+            items.push((std::format!("gauge {i}"), rect));
+        }
+        items
+    }
+
+    /// Every case: the widest of everything, then each extreme of one
+    /// reading with the rest at their widest.
+    fn cases() -> Vec<Case> {
+        let mut cases = std::vec![WIDEST];
+        let mut vary = |set: &dyn Fn(&mut Case)| {
+            let mut case = WIDEST;
+            set(&mut case);
+            cases.push(case);
+        };
+        for v in SPEEDS {
+            vary(&|c| c.speed_mm_s = v);
+        }
+        for v in WATTS {
+            vary(&|c| c.watts = v);
+        }
+        for v in BPMS {
+            vary(&|c| c.bpm = v);
+        }
+        for v in CADENCES {
+            vary(&|c| c.cadence_tenths = v);
+        }
+        for v in DISTANCES {
+            vary(&|c| c.distance_mm = v);
+        }
+        for v in TIMES {
+            vary(&|c| c.secs = v);
+        }
+        for v in GRADES {
+            vary(&|c| c.grade_tenths = v);
+        }
+        for v in STATES {
+            vary(&|c| c.state = v);
+        }
+        cases
+    }
+
+    /// A unit follows the ink of its value: "--" keeps it as close as a
+    /// number does.
+    #[test]
+    fn units_follow_the_value_they_belong_to() {
+        let gaps = |case: Case| {
+            let items = items(&view(case));
+            ["KM/H", "W", "BPM", "RPM"].map(|unit| {
+                let unit = items.iter().find(|(n, _)| n == unit).unwrap().1;
+                // The nearest ink before the unit on its line: its value.
+                // Dashes sit at mid height, above the unit's capitals.
+                let value = items
+                    .iter()
+                    .filter(|(name, _)| !name.starts_with("gauge"))
+                    .map(|(_, rect)| *rect)
+                    .filter(|rect| rect.right <= unit.left)
+                    .filter(|rect| rect.top < unit.bottom && unit.top < rect.bottom + 40)
+                    .max_by_key(|rect| rect.right)
+                    .unwrap();
+                unit.left - value.right
+            })
+        };
+        let empty = gaps(Case {
+            speed_mm_s: None,
+            watts: None,
+            bpm: None,
+            cadence_tenths: None,
+            ..WIDEST
+        });
+        let full = gaps(Case {
+            speed_mm_s: Some(8334),
+            watts: Some(250),
+            bpm: Some(140),
+            cadence_tenths: Some(900),
+            ..WIDEST
+        });
+        for (empty, full) in empty.iter().zip(&full) {
+            assert!(empty.abs_diff(*full) <= 2, "{empty:?} vs {full:?}");
+            assert!((UNIT_GAP..=UNIT_GAP + 3).contains(empty), "{empty:?}");
+        }
+    }
+
+    #[test]
+    fn extreme_readings_never_overlap_or_clip() {
+        let bounds = Rect {
+            left: BODY.left,
+            top: BODY.top,
+            right: BODY.right,
+            bottom: BODY.bottom,
+        };
+        for case in cases() {
+            let view = view(case);
+            let what = std::format!(
+                "{:?} km/h, {:?} W, {:?} bpm, {:?} rpm/10, {} mm, {} s, {:?}",
+                case.speed_mm_s,
+                case.watts,
+                case.bpm,
+                case.cadence_tenths,
+                case.distance_mm,
+                case.secs,
+                case.grade_tenths
+            );
+            let items = items(&view);
+            assert_apart(&items, bounds, &what);
+            let mut want = Vec::new();
+            let mut format = |write: &dyn Fn(&mut Text<12>)| {
+                let mut text = Text::new();
+                write(&mut text);
+                want.push(String::from(text.as_str()));
+            };
+            format(&|v| speed(v, case.speed_mm_s));
+            format(&|v| whole(v, case.watts));
+            format(&|v| whole(v, case.bpm));
+            format(&|v| whole(v, case.cadence_tenths.map(|t| (t + 5) / 10)));
+            format(&|v| kilometres(v, case.distance_mm));
+            format(&|v| elapsed(v, case.secs));
+            let want: Vec<&str> = want
+                .iter()
+                .map(String::as_str)
+                .chain(["KM/H", "W", "BPM", "RPM", "KM"])
+                .collect();
+            assert_shown(&items, &want, &what);
+        }
+    }
 }

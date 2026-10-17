@@ -1,19 +1,24 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
-use super::recording::{Medium, Request};
+use super::recording::{Medium, Request, RideMessage};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
+use crate::screens::chrome::CONTENT;
+use crate::screens::chrome::{Gps, Toast, Tone};
+use crate::screens::gesture::Gestures;
+use crate::screens::home::{Home, last_ride};
 use crate::screens::power::Sheet as PowerSheet;
-use crate::screens::ride::RidePage;
+use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
-use crate::screens::workout::{Page, View};
+use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::device_type;
 use core::fmt::Write;
 use device_api::ant::Ant;
 use device_api::display::Display as Panel;
 use device_api::gps::FixState;
 use device_api::input::InputSource;
+use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use device_api::power::Power;
 use device_api::sensors::Startup;
@@ -30,6 +35,10 @@ const ANIMATED_FRAME_MS: u64 = 500;
 const STATIC_FRAME_MS: u64 = 1000;
 /// Radar alerts use the longest pattern that still fits between radar pages.
 const ALERT_PATTERN_MAX_MS: u16 = 300;
+/// How long a confirmation or hint stays over the content.
+pub(super) const TOAST_MS: u64 = 2000;
+/// How long a ride without wheel speed notes that auto-pause is off.
+const NO_SPEED_NOTE_MS: u64 = 8000;
 
 pub(super) struct Navigation {
     pub(super) page: Page,
@@ -41,8 +50,6 @@ pub(super) struct Navigation {
     pub(super) settings_field: usize,
     /// The selected Settings field is being changed.
     pub(super) settings_editing: bool,
-    /// A touch is down; taps act on contact, once, until release.
-    pub(super) touching: bool,
     /// The page to return to when the climb that switched to the climb page
     /// ends; cleared when the rider changes page themselves.
     pub(super) climb_return: Option<RidePage>,
@@ -52,6 +59,37 @@ pub(super) struct Navigation {
     pub(super) first_frame: Option<u64>,
     /// Latest report of each button, to tell a held button from a new press.
     pub(super) last_report: [Option<u64>; 3],
+    pub(super) gestures: Gestures,
+    /// A confirmation or hint and when it expires.
+    pub(super) toast: Option<(Toast, u64)>,
+    /// The recorder state the last frame announced.
+    announced: Status,
+}
+
+impl Navigation {
+    /// Show `message` over the content for a moment, replacing any other.
+    pub(super) fn toast(&mut self, message: &str, tone: Tone, now: u64) {
+        self.toast = Some((Toast::new(message, tone), now.saturating_add(TOAST_MS)));
+    }
+
+    /// Announce a recorder state change, from any source, once.
+    /// An automatic pause is named by its own toast for as long as it lasts.
+    pub(super) fn announce(&mut self, status: Status, auto_paused: bool, now: u64) {
+        let before = core::mem::replace(&mut self.announced, status);
+        if before == status {
+            return;
+        }
+        let (message, tone) = match (before, status) {
+            (Status::Paused, Status::Recording) => ("RESUMED", Tone::Good),
+            (_, Status::Recording) => ("RECORDING", Tone::Good),
+            (_, Status::Paused) if auto_paused => return,
+            (_, Status::Paused) => ("PAUSED", Tone::Warn),
+            (Status::Recording | Status::Paused, Status::Saved) => ("RIDE SAVED", Tone::Good),
+            (_, Status::Recovered) => ("RIDE RECOVERED", Tone::Info),
+            _ => return,
+        };
+        self.toast(message, tone, now);
+    }
 }
 
 impl Default for Navigation {
@@ -62,12 +100,14 @@ impl Default for Navigation {
             home_cursor: 0,
             settings_field: 0,
             settings_editing: false,
-            touching: false,
             climb_return: None,
             page_since: 0,
             last_press: 0,
             first_frame: None,
             last_report: [None; 3],
+            gestures: Gestures::default(),
+            toast: None,
+            announced: Status::Ready,
         }
     }
 }
@@ -249,29 +289,34 @@ impl Runtime {
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
         view.sample = self.readings.live;
-        let recorder = self.ride.active();
         view.active_secs = self.ride.active_ms(now) / 1000;
-        view.state = recorder.status();
-        // Room for the open ride, or for the next one wherever it will go.
-        let next = self.ride.recorder(self.ride.medium());
-        view.storage_left_s =
-            (view.state.usable() && next.status().usable()).then(|| next.remaining_secs());
-        view.storage_fallback = self.ride.fallback() && self.ride.shown() == Medium::Internal;
-        view.auto_paused = self.ride.auto.paused();
-        view.auto_toast = self.ride.toast(now);
+        view.state = self.ride.active().status();
         view.radar = self.readings.radar.snapshot(now);
-        view.stop_confirm = self.ride.stop_confirming(now);
+        view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
+        view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
         view.totals = self.ride.totals;
         view.lap = self.ride.laps.current();
         view.previous_lap = self.ride.laps.previous();
-        view.lap_toast = self.ride.lap_toast(now);
         view.zone_time = self.ride.zone_time;
         view.profile = self.preferences.profile;
         if view.ride_page == RidePage::Climb {
             view.climbs = self.ride.climbs.clone();
         }
-        view.gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
+        let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
+        view.gps = match gps {
+            None => Gps::Off,
+            Some(_) if gps_fix => Gps::Fixed,
+            Some(_) => Gps::Searching,
+        };
+        view.battery = match system.battery {
+            Observation::Fresh { value, .. } | Observation::Stale { value, .. } => Some(value.0),
+            Observation::Unavailable => None,
+        };
+        if page != Page::Boot {
+            navigation.announce(view.state, self.ride.auto.paused(), now);
+        }
+        view.toast = self.toast(now);
         let gps_status = gps.map_or("OFF", |p| {
             if p.gps.state == FixState::Fresh {
                 "FIX OK"
@@ -283,21 +328,25 @@ impl Runtime {
             Page::Boot => self.boot_lines(&mut view, now, ant, gps_status),
             Page::Preflight => self.preflight_lines(&mut view, now, ant, gps_status),
             Page::Ride => {
-                self.ride_lines(&mut view, now, gps_status);
                 // Keep the screen lit while riding; a finished ride may dim and idle off.
                 if self.recording() {
                     system.activity(now);
                 }
             }
-            Page::Home => self.home_lines(&mut view, now),
+            Page::Home | Page::Sensors => {
+                self.refresh_sensor_menu(ant, now);
+                if page == Page::Home {
+                    view.home = self.home(&view, gps_fix, now);
+                }
+            }
             Page::Settings => self.settings_lines(&mut view),
-            Page::Sensors => self.refresh_sensor_menu(ant, now),
         }
         view.prepare();
         let menu = &self.menu;
         system.draw_canvas(240, 320, |row| {
-            if page == Page::Sensors && row.y() >= 25 {
-                menu.paint(row)
+            if page == Page::Sensors && row.y() >= CONTENT.top {
+                menu.paint(row);
+                view.paint_toast(row);
             } else {
                 view.paint(row)
             }
@@ -315,12 +364,13 @@ impl Runtime {
         self.timing.frame(drawn);
     }
 
-    /// Home says what is still starting, or why turning off did not happen.
-    fn home_lines(&self, view: &mut View, now: u64) {
-        let line = &mut view.lines[0];
-        let status = if let Some(notice) = self.power.notice(now) {
-            notice.text()
-        } else if self.ride.internal.status() == Status::Scanning
+    /// Home says what is still starting, or why turning off did not happen;
+    /// `true` when it is a problem.
+    pub(super) fn home_status(&self, now: u64) -> (&'static str, bool) {
+        if let Some(notice) = self.power.notice(now) {
+            return (notice.text(), true);
+        }
+        let status = if self.ride.internal.status() == Status::Scanning
             || self.ride.bulk.status() == Status::Scanning
         {
             "CHECKING STORAGE"
@@ -337,11 +387,135 @@ impl Runtime {
             self.startup,
             Startup::Uncertain | Startup::TimedOut | Startup::Unavailable
         ) {
-            "SENSORS UNAVAILABLE"
+            return ("SENSORS UNAVAILABLE", true);
         } else {
             "READY TO RIDE"
         };
-        let _ = line.push_str(status);
+        (status, false)
+    }
+
+    fn home(&self, view: &View, gps_fix: bool, now: u64) -> Home {
+        let totals = &view.totals;
+        let ridden = !self.recording() && totals.distance_mm() > 0;
+        let last = if ridden {
+            last_ride(totals.distance_mm(), totals.moving_ms() / 1000)
+        } else {
+            Default::default()
+        };
+        let mut profile = Text::<12>::new();
+        let _ = write!(profile, "FTP {} W", self.preferences.profile.ftp_watts);
+        let mut home = Home::new(
+            self.navigation.home_cursor,
+            gps_fix,
+            &self.menu.glance(),
+            profile.as_bytes(),
+            last,
+        );
+        let (status, problem) = self.home_status(now);
+        home.set_status(status.as_bytes(), problem);
+        home
+    }
+
+    /// What the toast band shows now: an armed end ride first, then a lap
+    /// just finished, then an automatic start or resume, then the latest
+    /// confirmation, then ride problems and low storage, which last until
+    /// they are resolved, then what auto-pause is doing.
+    pub(super) fn toast(&mut self, now: u64) -> Option<Toast> {
+        if self.ride.stop_confirming(now) {
+            return Some(Toast::new("PRESS AGAIN TO SAVE", Tone::Warn));
+        }
+        if let Some(lap) = self.ride.lap_toast(now) {
+            return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
+        }
+        let auto = self.ride.toast(now);
+        if !auto.is_empty() {
+            return Some(Toast::new(auto, Tone::Info));
+        }
+        let navigation = &mut self.navigation;
+        if navigation
+            .toast
+            .as_ref()
+            .is_some_and(|(_, until)| now >= *until)
+        {
+            navigation.toast = None;
+        }
+        if let Some((toast, _)) = &navigation.toast {
+            return Some(*toast);
+        }
+        if navigation.page != Page::Ride {
+            return None;
+        }
+        let problem = match (self.ride.request, self.ride.active().status()) {
+            (_, Status::Error) => "STORAGE ERROR",
+            (_, Status::Full) => "STORAGE FULL",
+            // A bulk write that failed moved the ride to internal flash,
+            // which is what the band names from then on.
+            (_, status) if self.falling_back() => return self.storage_toast(status),
+            (Request::Completed(result), _) if !result.ok => "WRITE FAILED",
+            _ if matches!(self.ride.message, RideMessage::StorageNotReady) => "STORAGE NOT READY",
+            (_, status) => {
+                return self
+                    .storage_toast(status)
+                    .or_else(|| self.auto_pause_toast(status, now));
+            }
+        };
+        Some(Toast::new(problem, Tone::Alert))
+    }
+
+    /// Recording time left, once it is under `LOW_STORAGE_S`; else rides
+    /// falling back to internal flash because bulk media cannot take them;
+    /// else a recovered ride.
+    fn storage_toast(&self, status: Status) -> Option<Toast> {
+        let label = match status {
+            Status::Recording => "REC",
+            Status::Paused => "PAUSED",
+            Status::Ready | Status::Saved | Status::Recovered => "STORAGE",
+            _ => return None,
+        };
+        // Room for the open ride, or for the next one wherever it will go.
+        let next = self.ride.recorder(self.ride.medium());
+        let left = next.status().usable().then(|| next.remaining_secs());
+        if let Some(left) = left.filter(|left| *left < LOW_STORAGE_S) {
+            let mut text = Text::<20>::new();
+            let _ = write!(text, "{label} {}M LEFT", left / 60);
+            return Some(Toast::new(text.as_str(), Tone::Warn));
+        }
+        if self.falling_back() {
+            let text = match status {
+                Status::Recording => "RECORDING INT",
+                Status::Paused if self.ride.auto.paused() => "AUTO PAUSED INT",
+                Status::Paused => "PAUSED INT",
+                Status::Saved => "SAVED INT",
+                Status::Recovered => "RECOVERED INT",
+                _ => "READY INT",
+            };
+            return Some(Toast::new(text, Tone::Warn));
+        }
+        // Until the next start, the ride page names a ride kept after power loss.
+        (status == Status::Recovered).then(|| Toast::new("RIDE RECOVERED", Tone::Info))
+    }
+
+    /// Rides go to internal flash because bulk media cannot take them, and
+    /// the ride page shows an internal ride.
+    fn falling_back(&self) -> bool {
+        self.ride.fallback() && self.ride.shown() == Medium::Internal
+    }
+
+    /// A pause the device chose stays named until the ride resumes. Without
+    /// wheel speed auto-pause cannot work, which the first seconds of the
+    /// ride say once rather than for the whole ride.
+    fn auto_pause_toast(&self, status: Status, now: u64) -> Option<Toast> {
+        let text = match status {
+            Status::Paused if self.ride.auto.paused() => "AUTO PAUSED",
+            Status::Recording
+                if self.readings.live.speed_mm_s.is_none()
+                    && self.ride.active_ms(now) < NO_SPEED_NOTE_MS =>
+            {
+                "AUTO PAUSE OFF"
+            }
+            _ => return None,
+        };
+        Some(Toast::new(text, Tone::Info))
     }
 
     fn boot_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
@@ -364,7 +538,7 @@ impl Runtime {
     }
 
     fn preflight_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
-        let _ = view.lines[0].push_str("> TRAIN / CONNECTION CHECK");
+        let _ = view.lines[0].push_str("> RIDE / CONNECTION CHECK");
         let checks = [
             ("SPEED", device_type::SPEED),
             ("HEART", device_type::HEART_RATE),
@@ -441,75 +615,5 @@ impl Runtime {
             Persistence::Failed => "SAVE FAILED, RETRYING",
             Persistence::Locked => "NOT SAVED - UNREADABLE DATA KEPT",
         });
-    }
-
-    fn ride_lines(&self, view: &mut View, now: u64, gps_status: &str) {
-        let live = self.readings.live;
-        let recorder = self.ride.active();
-        let lines = &mut view.lines;
-        let _ = write!(lines[0], "> {}", recorder.status().name());
-        let _ = match live.speed_mm_s {
-            Some(v) => {
-                let k = v * 36 / 1000;
-                write!(lines[1], "{}.{} KM/H", k / 10, k % 10)
-            }
-            None => lines[1].push_str("-- KM/H"),
-        };
-        let _ = match live.heart_bpm {
-            Some(v) => write!(lines[2], "{} BPM", v),
-            None => lines[2].push_str("-- BPM"),
-        };
-        let _ = match live.power_watts {
-            Some(v) => write!(lines[3], "{} W", v),
-            None => lines[3].push_str("-- W"),
-        };
-        let seconds = self.ride.active_ms(now) / 1000;
-        let _ = write!(
-            lines[4],
-            "TIME {:02}:{:02}:{:02}",
-            seconds / 3600,
-            seconds / 60 % 60,
-            seconds % 60
-        );
-        let _ = match live.gradient_tenths {
-            Some(v) => write!(
-                lines[5],
-                "GRADE {}{}.{:01}%",
-                if v < 0 { "-" } else { "+" },
-                v.unsigned_abs() / 10,
-                v.unsigned_abs() % 10
-            ),
-            None => lines[5].push_str("GRADE --"),
-        };
-        let profile = self.preferences.profile;
-        let _ = write!(
-            lines[6],
-            "POWER Z{}  HR Z{}",
-            live.power_watts.map_or(0, |w| profile.power_zone(w)),
-            live.heart_bpm.map_or(0, |b| profile.heart_zone(b))
-        );
-        let _ = write!(
-            lines[7],
-            "GPS {} / SAVED {}",
-            gps_status,
-            recorder.written_samples()
-        );
-        let status = if self.ride.stop_confirming(now) {
-            "PRESS AGAIN TO SAVE"
-        } else {
-            match self.ride.request {
-                Request::Completed(result) if result.ok => "OK",
-                Request::Completed(_) => "WRITE FAILED",
-                Request::Pending(_) => "SAVING",
-                Request::Idle => match recorder.status() {
-                    Status::Recording if self.ride.moved => "RECORDING / INTERNAL",
-                    Status::Recording => "RECORDING / TOP LEFT LAPS",
-                    Status::Paused => "PAUSED / TOP LEFT ENDS",
-                    Status::Saved => "SAVED / TOP LEFT HOME",
-                    _ => self.ride.message.text(),
-                },
-            }
-        };
-        let _ = lines[8].push_str(status);
     }
 }

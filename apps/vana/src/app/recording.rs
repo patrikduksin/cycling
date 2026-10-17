@@ -46,16 +46,6 @@ pub(super) enum RideMessage {
     StorageNotReady,
 }
 
-impl RideMessage {
-    pub(super) const fn text(self) -> &'static str {
-        match self {
-            Self::Ready => "READY",
-            Self::ConfirmStop => "PRESS AGAIN TO SAVE",
-            Self::StorageNotReady => "STORAGE NOT READY",
-        }
-    }
-}
-
 /// Where a recorder keeps its rides.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Medium {

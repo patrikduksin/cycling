@@ -9,17 +9,16 @@ use firmware_shell::rendering::row::Row;
 
 /// Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple. All
 /// are light enough for black text; the zone number is always drawn too.
-pub const COLOURS: [u16; POWER_ZONES] = [0x8410, 0x249f, 0x07e0, 0xffe0, 0xfc60, 0xf800, 0xa21f];
+pub const COLOURS: [u16; POWER_ZONES] = crate::screens::chrome::ZONES;
 
 /// Pixels in a zone gauge.
 pub(super) const GAUGE_WIDTH: usize = 56;
 /// Pixels in a time-in-zone bar.
 pub(super) const BAR_WIDTH: usize = 180;
 
-/// A live reading's zone and its position within that zone.
+/// A live reading's position within its zone.
 #[derive(Clone, Copy, Default)]
 pub(in crate::screens) struct Mark {
-    pub(super) colour: u16,
     /// Gauge pixels lit, 1..=GAUGE_WIDTH.
     pub(super) fill: usize,
 }
@@ -41,21 +40,20 @@ pub(in crate::screens) fn marks(view: &View) -> Marks {
     Marks {
         power: view.sample.power_watts.map(|watts| {
             let zone = profile.power_zone(watts);
-            mark(zone, u32::from(watts), profile.power_range(zone))
+            mark(u32::from(watts), profile.power_range(zone))
         }),
         heart: view.sample.heart_bpm.map(|bpm| {
             let zone = profile.heart_zone(bpm);
-            mark(zone, u32::from(bpm), profile.heart_range(zone))
+            mark(u32::from(bpm), profile.heart_range(zone))
         }),
         power_time: bar(&time.power_ms),
         heart_time: bar(&time.heart_ms),
     }
 }
 
-fn mark(zone: u8, value: u32, (low, high): (u32, u32)) -> Mark {
+fn mark(value: u32, (low, high): (u32, u32)) -> Mark {
     let into = value.clamp(low, high) - low;
     Mark {
-        colour: COLOURS[usize::from(zone - 1)],
         fill: (into as usize * GAUGE_WIDTH / (high - low) as usize).clamp(1, GAUGE_WIDTH),
     }
 }
@@ -70,12 +68,6 @@ fn bar<const N: usize>(time: &[u64; N]) -> Bar<N> {
         so_far += time[zone];
         (so_far * BAR_WIDTH as u64 / total) as usize
     }))
-}
-
-/// The gauge `left..left + GAUGE_WIDTH` over the columns `shape` covers.
-pub(super) fn paint_gauge(row: &mut Row, mark: Mark, left: usize, shape: Range<usize>) {
-    row.span(shape.clone(), GRID);
-    row.span(shape.start..shape.end.min(left + mark.fill), mark.colour);
 }
 
 /// The bar `left..left + BAR_WIDTH` over the columns `shape` covers.
@@ -94,17 +86,6 @@ pub(super) fn paint_bar<const N: usize>(
         let end = left + end;
         row.span(start.max(shape.start)..end.min(shape.end), COLOURS[zone]);
         start = start.max(end);
-    }
-}
-
-/// A gauge `left..left + GAUGE_WIDTH`: lit in the zone colour up to the
-/// reading, then a dim track.
-#[cfg(test)]
-pub(super) fn gauge_pixel(mark: Mark, left: usize, x: usize) -> u16 {
-    if x < left + mark.fill {
-        mark.colour
-    } else {
-        GRID
     }
 }
 
@@ -129,13 +110,13 @@ mod tests {
     fn gauges_show_position_within_the_zone() {
         // Z4 spans 195..227 W at the default FTP.
         let profile = TrainingProfile::default();
-        let at = |watts| mark(4, watts, profile.power_range(4)).fill;
+        let at = |watts| mark(watts, profile.power_range(4)).fill;
         assert_eq!(at(195), 1);
         assert_eq!(at(211), GAUGE_WIDTH / 2);
         assert_eq!(at(226), GAUGE_WIDTH * 31 / 32);
         assert_eq!(at(500), GAUGE_WIDTH);
-        assert_eq!(mark(7, 2000, profile.power_range(7)).fill, GAUGE_WIDTH);
-        assert_eq!(mark(1, 0, profile.power_range(1)).fill, 1);
+        assert_eq!(mark(2000, profile.power_range(7)).fill, GAUGE_WIDTH);
+        assert_eq!(mark(0, profile.power_range(1)).fill, 1);
     }
 
     #[test]

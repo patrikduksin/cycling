@@ -383,6 +383,7 @@ mod tests {
     /// A view of the climb page after riding `metres` along `altitude_dm(m)`.
     fn ridden(metres: u32, altitude_dm: impl Fn(u32) -> i32) -> View {
         let mut view = View::new(Page::Ride, 0, None);
+        view.radar_paired = true;
         view.ride_page = crate::screens::ride::RidePage::Climb;
         let mut climbs = Climbs::default();
         for m in (5..=metres).step_by(5) {

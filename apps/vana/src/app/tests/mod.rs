@@ -14,6 +14,7 @@ mod presentation;
 mod recording;
 mod saved_sensors;
 mod sensor_links;
+mod touch;
 
 struct Radio {
     channels: firmware_services::ant::Channels,

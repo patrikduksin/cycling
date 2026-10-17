@@ -1,5 +1,6 @@
 //! Single-finger reports used by the C606's stock 0x5a touch driver.
 use device_api::input::Point;
+use firmware_services::input::Poll;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Report {
@@ -26,6 +27,16 @@ pub fn decode(data: [u8; 7]) -> Report {
         return Report::Invalid;
     }
     Report::Press(Point { x, y })
+}
+
+impl From<Report> for Poll {
+    fn from(report: Report) -> Self {
+        match report {
+            Report::Press(point) => Self::Press(point),
+            Report::Release => Self::Release,
+            Report::Invalid => Self::Nothing,
+        }
+    }
 }
 
 #[cfg(test)]

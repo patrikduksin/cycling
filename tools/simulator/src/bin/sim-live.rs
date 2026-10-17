@@ -1,6 +1,6 @@
 //! A window onto the simulated device: keys press buttons and change the world.
 //! `--frames N --screenshot out.png` renders N frames without a window.
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 use shell_simulator::artifacts::Canvas;
 use shell_simulator::live::Live;
 use std::time::Instant;
@@ -71,6 +71,9 @@ fn window(live: &mut Live) -> Result<(), String> {
             if let Some(c) = char_of(key) {
                 live.key_up(c);
             }
+        }
+        if let Some((x, y)) = window.get_mouse_pos(MouseMode::Pass) {
+            live.pointer(x, y, window.get_mouse_down(MouseButton::Left));
         }
         let now = Instant::now();
         live.tick((now - last).as_secs_f64() * 1000.0);

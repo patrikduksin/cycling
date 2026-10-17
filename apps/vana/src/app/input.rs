@@ -1,9 +1,14 @@
-//! Physical controls and workout navigation.
+//! Physical controls, touch gestures and workout navigation.
+//!
+//! Buttons keep one role on every screen (see `docs/ui.md`). Touch selects
+//! and changes pages; it never starts, pauses, laps or stops a ride.
 use super::Runtime;
 use super::recording::{Request, RideMessage};
 use crate::ride::control::Action as RideAction;
 use crate::ride::log::{Source, Status};
 use crate::ride::zones::TrainingProfile;
+use crate::screens::gesture::{Gesture, Owner};
+use crate::screens::home::{Home, Tile};
 use crate::screens::ride::RidePage;
 use crate::screens::sensors::Action;
 use crate::screens::settings;
@@ -31,11 +36,13 @@ impl Runtime {
     /// splits a hold nor hides latency. Ride data keeps the handling time.
     pub fn input_received(&mut self, input: Input, received_ms: u64, now: u64, ant: &mut impl Ant) {
         let received = received_ms.min(now);
-        // A lift ends the touch wherever it lands, so a finger still down
-        // while a button changes page cannot swallow the next tap.
-        if matches!(input, Input::Release | Input::Cancel) {
-            self.navigation.touching = false;
-        }
+        // Every touch edge reaches the recognizer first, whatever owns input,
+        // so a sheet or a dark screen can never leave it mid-contact. A
+        // contact only completes on the screen it began on.
+        let gesture = self
+            .navigation
+            .gestures
+            .feed(input, received, self.touch_owner());
         if !self.display.is_active() {
             return;
         }
@@ -64,12 +71,24 @@ impl Runtime {
             }
             return;
         }
-        if self.navigation.page == Page::Sensors {
-            self.sensors_input(input, received, now, ant);
+        // Settings pads act on contact, not on a finished gesture.
+        if self.navigation.page == Page::Settings
+            && let Some(Gesture::Down(point)) = gesture
+        {
+            self.settings_touch(point, now);
+            self.display.redraw();
             return;
         }
-        if self.navigation.page == Page::Settings && self.settings_touch(input, now) {
-            self.display.redraw();
+        if matches!(input, Input::Touch(_) | Input::Release) {
+            if let Some(gesture) = gesture {
+                self.gesture(gesture, now, ant);
+            }
+            return;
+        }
+        // Buttons and a Cancel reach the sensor menu, so lost input makes
+        // MOVE reconfirm the focus before ACT can change a sensor.
+        if self.navigation.page == Page::Sensors {
+            self.sensors_input(input, received, now, ant);
             return;
         }
         let Input::Button { button, code: 1 } = input else {
@@ -93,9 +112,68 @@ impl Runtime {
         }
     }
 
+    /// Everything that decides what a touch lands on: the page and its
+    /// subview (the ride page, the sensor menu's tiles, detail or replacement
+    /// page, Settings' edit mode with its pads), a power sheet, and a dark
+    /// screen. Any change cancels a contact in progress.
+    ///
+    /// Left out on purpose, because touch never acts on them: Home's cursor
+    /// and Settings' selected field (targets have fixed bounds), the end-ride
+    /// confirm window (touch never controls a ride) and toasts (not
+    /// tappable).
+    fn touch_owner(&self) -> Owner {
+        let navigation = &self.navigation;
+        let page = navigation.page as u32;
+        let subview = match navigation.page {
+            Page::Ride => navigation.ride_page.index() as u32,
+            Page::Sensors => u32::from(self.menu.touch_view()),
+            Page::Settings => u32::from(navigation.settings_editing),
+            Page::Boot | Page::Home | Page::Preflight => 0,
+        };
+        let sheet = u32::from(self.power.view().is_some());
+        let dark = u32::from(!self.display.is_active());
+        Owner(page | subview << 4 | sheet << 12 | dark << 13)
+    }
+
+    fn gesture(&mut self, gesture: Gesture, now: u64, ant: &mut impl Ant) {
+        match (self.navigation.page, gesture) {
+            (Page::Home, Gesture::Tap(point)) => {
+                let Some(tile) = Home::tile_at(usize::from(point.x), usize::from(point.y)) else {
+                    return;
+                };
+                self.navigation.home_cursor = match tile {
+                    Tile::Ride => 0,
+                    Tile::Sensors => 1,
+                    Tile::Settings => 2,
+                };
+                self.open_home_tile(now, ant);
+            }
+            (Page::Sensors, Gesture::Tap(point)) => {
+                self.refresh_sensor_menu(ant, now);
+                let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
+                self.sensors_action(action, now, ant);
+            }
+            // Changing the page is safe while riding; ride control is not.
+            (Page::Ride, Gesture::Next) => {
+                let page = self.navigation.ride_page.following();
+                self.navigation.ride_page_chosen(page)
+            }
+            (Page::Ride, Gesture::Previous) => {
+                let page = self.navigation.ride_page.preceding();
+                self.navigation.ride_page_chosen(page)
+            }
+            _ => return,
+        }
+        self.display.redraw();
+    }
+
     fn sensors_input(&mut self, input: Input, received: u64, now: u64, ant: &mut impl Ant) {
         self.refresh_sensor_menu(ant, now);
         let action = self.menu.input(input, received);
+        self.sensors_action(action, now, ant);
+    }
+
+    fn sensors_action(&mut self, action: Option<Action>, now: u64, ant: &mut impl Ant) {
         match action {
             Some(Action::Scan) => self.request_search(ant, now),
             Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
@@ -114,6 +192,7 @@ impl Runtime {
         self.display.redraw();
     }
 
+    /// MOVE steps the focused card, ACT opens it and BACK asks to turn off.
     fn home_input(
         &mut self,
         button: Button,
@@ -126,24 +205,26 @@ impl Runtime {
             Button::BottomLeft => {
                 self.navigation.home_cursor = (self.navigation.home_cursor + 1) % HOME.len()
             }
-            Button::BottomRight => {
-                self.navigation.page_since = now;
-                match self.navigation.home_cursor {
-                    0 => self.navigation.page = Page::Preflight,
-                    1 => {
-                        self.navigation.page = Page::Sensors;
-                        self.request_search(ant, now);
-                    }
-                    _ => {
-                        self.navigation.page = Page::Settings;
-                        self.navigation.settings_field = 0;
-                        self.navigation.settings_editing = false;
-                    }
-                }
-            }
+            Button::BottomRight => self.open_home_tile(now, ant),
             // BACK on Home asks to turn off; Home is never reachable mid-ride.
             Button::TopLeft if !held => self.open_power_sheet(received),
             _ => {}
+        }
+    }
+
+    fn open_home_tile(&mut self, now: u64, ant: &mut impl Ant) {
+        self.navigation.page_since = now;
+        match self.navigation.home_cursor {
+            0 => self.navigation.page = Page::Preflight,
+            1 => {
+                self.navigation.page = Page::Sensors;
+                self.request_search(ant, now);
+            }
+            _ => {
+                self.navigation.page = Page::Settings;
+                self.navigation.settings_field = 0;
+                self.navigation.settings_editing = false;
+            }
         }
     }
 
@@ -172,21 +253,9 @@ impl Runtime {
         }
     }
 
-    /// A tap on a field edits it; taps on the pads lower or raise it. Touch
-    /// acts once on contact and again only after release. Returns whether the
-    /// input was touch.
-    fn settings_touch(&mut self, input: Input, now: u64) -> bool {
-        let point = match input {
-            Input::Touch(point) => point,
-            Input::Release | Input::Cancel => {
-                self.navigation.touching = false;
-                return true;
-            }
-            Input::Button { .. } => return false,
-        };
-        if core::mem::replace(&mut self.navigation.touching, true) {
-            return true;
-        }
+    /// A touch on a field edits it; touches on the pads lower or raise it.
+    /// Each acts once, when the contact begins on Settings.
+    fn settings_touch(&mut self, point: device_api::input::Point, now: u64) {
         let navigation = &mut self.navigation;
         match settings::target(
             usize::from(point.x),
@@ -201,7 +270,6 @@ impl Runtime {
             Some(settings::Target::Raise) => self.adjust_setting(i32::from(settings::STEP), now),
             None => {}
         }
-        true
     }
 
     /// Move the selected field by `step`, within its range.

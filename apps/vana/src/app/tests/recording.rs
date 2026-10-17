@@ -1008,6 +1008,57 @@ fn a_ride_moving_to_internal_flash_counts_as_active_work() {
     assert!(runtime.recording());
 }
 
+/// Bulk media that cannot take rides is named on the ride page by a warning
+/// toast for as long as rides go to internal flash.
+#[test]
+fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
+    use crate::screens::chrome::Tone;
+    let mut journal = Journal::erased();
+    // Never formatted: rides go to internal flash until it is initialized.
+    let mut bulk = FlakyBulk {
+        sectors: std::collections::BTreeMap::new(),
+        fail: false,
+    };
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut now = 0;
+    while runtime.ride.internal.status() == Status::Scanning
+        || runtime.ride.bulk.status() == Status::Scanning
+    {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert!(runtime.ride.fallback());
+    let toast = |runtime: &mut Runtime, now| {
+        let toast = runtime.toast(now).expect("a toast");
+        (
+            String::from_utf8(toast.text().to_vec()).unwrap(),
+            toast.tone,
+        )
+    };
+    runtime.navigation.page = Page::Ride;
+    assert_eq!(toast(&mut runtime, now), ("READY INT".into(), Tone::Warn));
+    let mut out = String::new();
+    assert_eq!(
+        runtime.command("RIDE START", &mut journal, &mut bulk, now, &mut out),
+        "ACCEPTED"
+    );
+    while runtime.ride.internal.status() != Status::Recording {
+        now += 100;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        assert!(now < 10_000, "never recording");
+    }
+    // Past the ride's first notes, the fallback is what the band names.
+    now += 60_000;
+    tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    runtime.navigation.toast = None;
+    assert_eq!(
+        toast(&mut runtime, now),
+        ("RECORDING INT".into(), Tone::Warn)
+    );
+    // Off the ride page nothing is shown.
+    runtime.navigation.page = Page::Home;
+    assert!(runtime.toast(now).is_none());
+}
+
 #[test]
 fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
     let mut journal = Journal::erased();

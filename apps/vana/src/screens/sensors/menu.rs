@@ -1,7 +1,10 @@
 //! Sensor selection state and physical-button navigation.
 use super::MenuMessage;
-use super::layout::Layout;
-use super::slot::Selected;
+use super::layout::{
+    DETAIL_BUTTONS, Layout, NEARBY_GRID, REPLACE_BUTTONS, SEARCH_BUTTON, SEARCH_BUTTON_SIZE,
+    SELECTED_GRID,
+};
+use super::slot::{LinkStatus, Selected};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::{Button, Input};
 
@@ -16,6 +19,15 @@ pub enum Action {
     Connect(Identity),
     Disconnect(u8),
     Ride,
+}
+
+/// A selected sensor as Home summarises it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Glance {
+    pub kind: u8,
+    pub live: bool,
+    /// The status colour the sensor tiles use.
+    pub color: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,6 +204,94 @@ impl Menu {
             self.cursor = 0;
         }
         self.prepare_layout();
+    }
+
+    /// Selected sensors in tile order, for Home.
+    pub fn glance(&self) -> heapless::Vec<Glance, CHANNEL_CAPACITY> {
+        self.selected_peers()
+            .map(|s| {
+                let status = s.link_status();
+                Glance {
+                    kind: s.identity.device_type,
+                    live: status == LinkStatus::Live,
+                    color: status.color(),
+                }
+            })
+            .collect()
+    }
+
+    /// A tap focuses what is under the finger and activates it, as MOVE to it
+    /// then ACT would. A tap names its target, so it also confirms focus
+    /// after lost input.
+    pub fn tap(&mut self, x: usize, y: usize) -> Option<Action> {
+        let action = self.handle_tap(x, y);
+        self.prepare_layout();
+        action
+    }
+
+    fn handle_tap(&mut self, x: usize, y: usize) -> Option<Action> {
+        let within = |(top, height): (usize, usize)| (top..top + height).contains(&y);
+        match self.view {
+            View::Tiles => {
+                let (left, top) = SEARCH_BUTTON;
+                let size = SEARCH_BUTTON_SIZE;
+                let on_search = |margin: usize| {
+                    (left.saturating_sub(margin)..left + size + margin).contains(&x)
+                        && (top.saturating_sub(margin)..top + size + margin).contains(&y)
+                };
+                let selected = SELECTED_GRID
+                    .tile(x, y)
+                    .and_then(|(index, _, _)| self.layout.selected.get(index))
+                    .map(|slot| 1 + slot);
+                let nearby = NEARBY_GRID
+                    .tile(x, y)
+                    .and_then(|(index, _, _)| self.layout.nearby.get(index))
+                    .map(|(cursor, _)| *cursor);
+                // Shown tiles own their bounds; fingers are wider than the
+                // search icon, so its margin takes only the space left over.
+                let cursor = if on_search(0) {
+                    0
+                } else if let Some(cursor) = selected.or(nearby) {
+                    cursor
+                } else if on_search(8) {
+                    0
+                } else {
+                    return None;
+                };
+                self.cursor = cursor;
+            }
+            View::Detail(_) => {
+                self.choice = if within(DETAIL_BUTTONS[0]) {
+                    Choice::Primary
+                } else if within(DETAIL_BUTTONS[1]) {
+                    Choice::Secondary
+                } else {
+                    return None;
+                };
+            }
+            View::Replace(_) => {
+                self.choice = if within(REPLACE_BUTTONS[0]) {
+                    Choice::Primary
+                } else if within(REPLACE_BUTTONS[1]) {
+                    Choice::Secondary
+                } else {
+                    return None;
+                };
+            }
+        }
+        self.needs_navigation = false;
+        self.activate()
+    }
+
+    /// Which subview touch lands on: the tiles, one sensor's detail page or
+    /// a replacement prompt. A contact that began on one never acts on
+    /// another.
+    pub fn touch_view(&self) -> u8 {
+        match self.view {
+            View::Tiles => 0,
+            View::Detail(slot) => 1 + slot.min(0x7e) as u8,
+            View::Replace(_) => 0xff,
+        }
     }
 
     pub fn input(&mut self, input: Input, now: u64) -> Option<Action> {

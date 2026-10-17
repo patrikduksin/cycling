@@ -1,8 +1,7 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
 use super::chrome::{
-    ACCENT, Align, BLACK, BODY, CAPTION, CONTENT, Gps, Mark, Row, SECONDARY, StatusBar, TITLE,
-    Toast, WHITE, WIDTH,
+    Align, BLACK, BODY, Battery, CAPTION, CONTENT, Gps, Mark, Row, StatusBar, Toast, WHITE, WIDTH,
 };
 use super::home::Home;
 use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
@@ -54,7 +53,9 @@ pub struct View {
     /// The pause came from auto-pause, not the rider.
     pub auto_paused: bool,
     pub gps: Gps,
-    pub battery: Option<u8>,
+    pub battery: Option<Battery>,
+    /// The brand reveal's progress, in thousandths, on the boot page.
+    pub reveal: u16,
     pub toast: Option<Toast>,
     pub home: Home,
     bar: StatusBar,
@@ -106,6 +107,7 @@ impl View {
             auto_paused: false,
             gps: Gps::Off,
             battery: None,
+            reveal: 0,
             toast: None,
             home: Home::new(cursor, false, &[], b"", Text::new()),
             bar: StatusBar::default(),
@@ -169,31 +171,12 @@ impl View {
         }
     }
 
-    /// The brand flash: VANA and LABS, and what is starting under them.
+    /// The brand reveal: VANA, then the ring closing round it
+    /// (`brand::reveal`). Nothing technical shows here; Home says what is
+    /// still starting.
     fn boot_canvas(&self) -> Canvas {
         let mut canvas = Canvas::default();
-        let width = WIDTH - 20;
-        let centre = WIDTH / 2;
-        canvas.fit(&[&TITLE], b"VANA", width, centre, 160, Align::Center, WHITE);
-        canvas.fit(
-            &[&CAPTION],
-            b"LABS",
-            width,
-            centre,
-            184,
-            Align::Center,
-            ACCENT,
-        );
-        let status = self.lines[0].as_bytes();
-        canvas.fit(
-            &[&CAPTION],
-            status,
-            width,
-            centre,
-            296,
-            Align::Center,
-            SECONDARY,
-        );
+        super::brand::reveal(&mut canvas, self.reveal);
         canvas
     }
 
@@ -258,7 +241,7 @@ impl View {
             Status::Paused => Mark::Paused,
             _ => Mark::None,
         };
-        self.bar = StatusBar::new(&self.time, self.gps, self.battery, mark);
+        self.bar = StatusBar::with_battery(&self.time, self.gps, self.battery, mark);
         match self.page {
             Page::Boot => self.canvas = self.boot_canvas(),
             Page::Settings => self.canvas = super::settings::prepare(self),
@@ -372,7 +355,10 @@ mod tests {
         assert_eq!(label_color(&view, b"1:02:05"), Some(WHITE));
         assert_eq!(label_color(&view, b"-3.5%"), Some(GRADE));
         assert_eq!(label_color(&view, b"29.9"), Some(SPEED));
-        assert_eq!(label_color(&view, b"KM/H"), Some(SECONDARY));
+        assert_eq!(
+            label_color(&view, b"KM/H"),
+            Some(crate::screens::chrome::SECONDARY)
+        );
         assert_eq!(label_color(&view, b"250"), Some(POWER));
         assert_eq!(label_color(&view, b"Z5"), Some(zone_color(5)));
         assert_eq!(label_color(&view, b"--"), Some(HEART));
@@ -494,7 +480,7 @@ mod tests {
         ];
         for cursor in 0..3 {
             let mut view = View::new(Page::Home, cursor, Some(1_000_000));
-            view.battery = Some(14);
+            view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
             let last = last_ride(4_999_800, 599);
             view.home = Home::new(cursor, cursor == 1, &glance[..cursor], b"FTP 215 W", last);
@@ -510,7 +496,11 @@ mod tests {
                 view.sample = sample;
                 view.state = Status::Recording;
                 view.active_secs = 3725;
-                view.battery = Some(80);
+                view.battery = Some(Battery {
+                    percent: 80,
+                    charging: radar_paired,
+                    phase: 2,
+                });
                 view.gps = Gps::Searching;
                 two_laps(&mut view, 125, 250, 9000);
                 for _ in 0..600 {

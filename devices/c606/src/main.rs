@@ -166,6 +166,17 @@ async fn console(
         if power.state == device_api::power::State::Initializing {
             sdk.prepare(&mut system.data_storage(), &mut devices.bulk, now);
         }
+        // On USB power with VANA off, VANA shows the charge for a while,
+        // then the panel goes dark; holding top left starts VANA as usual.
+        #[cfg(feature = "cycling")]
+        if power.state == device_api::power::State::Charging {
+            let lit = sdk.standby(&mut system, &devices.input, now);
+            device::capabilities::power::standby_light(if lit {
+                system.settings.brightness
+            } else {
+                0
+            });
+        }
         // Diagnostic power requests enter only with no active domain work.
         // Keep USB observations alive while device owners complete the transition.
         if power.ready {

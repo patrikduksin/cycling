@@ -9,7 +9,8 @@ bar, toasts), `apps/vana/src/screens/canvas.rs` (a prepared screen of text
 runs and shapes) and `packages/shell/src/rendering/font` (type).
 
 Every screen uses it: Home, Sensors, the four ride pages, Settings,
-Preflight, the brand flash and the power sheets. None draws in the 5 × 7
+Preflight, the brand reveal, the power sheets and the charge shown while the
+device is off on USB power. None draws in the 5 × 7
 bitmap font.
 
 ## Principles
@@ -108,6 +109,7 @@ Climb steepness uses the ramp from blue up:
 | Gauge segment | 5 px tall, 3 px gaps, radius 2 |
 | Dot | 6 px page dots; an 8 px tone dot in toasts |
 | Icons | Drawn in one colour on a card. A state badge (a green check) sits at the top-right. |
+| Ring | An arc of a ring with round ends (`chrome::Ring`), running clockwise from 12 o'clock. VANA's one shape for progress, charge and time left: the brand mark, the turn-off countdown, the charge and the power symbol. A ring that shows a share stands on a 25% track of its own colour. |
 
 Shapes are coverage functions (`disc`, `rounded`), blended over what lies
 behind them, and painted per row by `paint_rounded` and `paint_disc`. Never
@@ -159,8 +161,10 @@ the rider may need at any moment:
   and AUTO);
 - which page is showing;
 - GPS: grey while searching, green when fixed;
-- battery: white, amber at 30% or less; below 20% a red percentage replaces
-  the icon;
+- battery: an icon filled to the charge, white, amber at 30% or less; below
+  20% a red percentage replaces the icon. On USB power a green bolt sits
+  left of the icon, which stays even when low, and its green fill climbs
+  from the charge to full in four steps, one per frame, then starts again;
 - the clock.
 
 Items are laid out with measured widths, in priority order: the ride mark,
@@ -185,7 +189,11 @@ Only one toast shows at a time. From highest priority to lowest:
 3. An automatic start or resume (AUTO START, AUTO RESUME), shown briefly.
 4. Transient announcements, shown for 2 s: RECORDING, RESUMED, PAUSED, RIDE
    SAVED, RIDE RECOVERED. An automatic pause skips PAUSED, because item 7
-   names it.
+   names it. Battery news shows for 4 s, on any page: CHARGING 64% (`Good`)
+   when USB power arrives, LOW BATTERY 20% (`Warn`) as the charge falls to
+   20%, and CHARGE SOON 10% (`Alert`) at 10% and again at 5%. Each level is
+   announced once per discharge; charging re-arms them. A device switched on
+   already low says so only in its status bar.
 5. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
    hidden: the only one item 6 may replace is the bulk failure that moved
@@ -248,14 +256,29 @@ a moment only.
   paints cover earlier ones. Each painted screen keeps its per-pixel original
   as a test reference, and tests assert whole frames match it.
 - **Values change in place.** Digits are tabular and right- or left-aligned to
-  fixed anchors, so a number never shifts its neighbours. There is no
-  animation. The next frame is the update.
+  fixed anchors, so a number never shifts its neighbours. Readings never
+  animate. The next frame is the update.
 - **Missing data looks dim, not alarming.** A stale or absent reading shows `--`.
   Zone colours fall back to `TERTIARY`. Errors belong in toasts or the status
   bar, not in the reading's place.
 - **State changes announce themselves once.** Starting, pausing, resuming,
   laps and saving each raise a toast. Persistent conditions use the sticky
   toasts above or the status bar.
+
+## Motion
+
+Motion marks the device's own moments, never a reading. Each is a ring that
+moves and text that fades, prepared like any other frame, so a motion frame
+costs what a still one does (about 25 ms on the C606). Motion frames draw
+every 40 ms; the charging icon and sheets step every 500 ms; still pages
+redraw once a second.
+
+| Moment | Motion | Duration |
+| --- | --- | --- |
+| Power on | VANA shows on the first lit frame; an `ACCENT` ring closes clockwise round it from 12 o'clock and LABS fades in. Home opens when it ends. | 400 ms, the existing brand time: Home is not later |
+| Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
+| Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
+| Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
 
 ## Input
 

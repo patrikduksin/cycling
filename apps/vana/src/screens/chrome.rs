@@ -366,6 +366,152 @@ pub fn paint_disc_over(
     row.each_over(inside.end..touched.end, pixel);
 }
 
+/// Angles are in 4096ths of a turn, clockwise from 12 o'clock.
+pub const TURN: u16 = 4096;
+
+/// Clockwise angle from 12 o'clock of the offset (`dx`, `dy`), with y
+/// growing down, in `TURN`ths. Within about 0.2° of the true angle, finer
+/// than a pixel on any ring that fits the screen.
+pub const fn angle(dx: i32, dy: i32) -> u16 {
+    let (across, up) = (dx.unsigned_abs(), dy.unsigned_abs());
+    // Turned from the vertical axis towards the side the point lies on.
+    let quarter = if across <= up {
+        octant(across, up)
+    } else {
+        1024 - octant(up, across)
+    } as u16;
+    match (dx >= 0, dy <= 0) {
+        (true, true) => quarter,
+        (true, false) => 2048 - quarter,
+        (false, false) => 2048 + quarter,
+        (false, true) => (TURN - quarter) % TURN,
+    }
+}
+
+/// atan(small / large), for small <= large, in 4096ths of a turn:
+/// 512 t + 178 t (1 - t) with t in 1024ths.
+const fn octant(small: u32, large: u32) -> u32 {
+    if large == 0 {
+        return 0;
+    }
+    let t = small * 1024 / large;
+    (512 * t + 178 * t * (1024 - t) / 1024) / 1024
+}
+
+/// Sine of `half` half-turns, 0 to 1, by Bhaskara I's formula (within 0.2%).
+fn half_sine(half: f32) -> f32 {
+    let degrees = half * 180.0;
+    let product = degrees * (180.0 - degrees);
+    4.0 * product / (40_500.0 - product)
+}
+
+/// A point `radius` from (cx, cy) at `turn` (`TURN`ths clockwise from 12
+/// o'clock), all in quarter pixels. Prepare-time only.
+pub fn on_circle(cx: i32, cy: i32, radius: i32, turn: u16) -> (i32, i32) {
+    let sine = |turns: f32| {
+        let turns = if turns >= 1.0 { turns - 1.0 } else { turns };
+        let half = turns * 2.0;
+        if half < 1.0 {
+            half_sine(half)
+        } else {
+            -half_sine(half - 1.0)
+        }
+    };
+    let turns = f32::from(turn % TURN) / f32::from(TURN);
+    let (sin, cos) = (sine(turns), sine(turns + 0.25));
+    let r = radius as f32;
+    ((cx as f32 + r * sin) as i32, (cy as f32 - r * cos) as i32)
+}
+
+/// An arc of a ring with round ends: VANA's shape for progress, charge and
+/// countdowns. Lengths are quarter pixels; the arc runs clockwise `sweep`
+/// `TURN`ths from `start`. A full sweep is a closed ring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ring {
+    pub cx: i32,
+    pub cy: i32,
+    /// The radius of the ring's centre line.
+    pub radius: i32,
+    pub width: i32,
+    pub start: u16,
+    pub sweep: u16,
+}
+
+impl Ring {
+    const fn outer(&self) -> i32 {
+        self.radius + self.width / 2
+    }
+
+    const fn inner(&self) -> i32 {
+        self.radius - self.width / 2
+    }
+
+    /// The box the ring can cover.
+    pub const fn bounds(&self) -> Rect {
+        let reach = self.outer() + 2;
+        Rect {
+            left: ((self.cx - reach) / 4) as usize,
+            top: ((self.cy - reach) / 4) as usize,
+            right: ((self.cx + reach) / 4 + 1) as usize,
+            bottom: ((self.cy + reach) / 4 + 1) as usize,
+        }
+    }
+
+    /// The round ends' centres, in quarter pixels.
+    pub fn ends(&self) -> [(i32, i32); 2] {
+        let end = (u32::from(self.start) + u32::from(self.sweep)) % u32::from(TURN);
+        [
+            on_circle(self.cx, self.cy, self.radius, self.start),
+            on_circle(self.cx, self.cy, self.radius, end as u16),
+        ]
+    }
+
+    /// Coverage 0..=15 at pixel (x, y); `ends` from `Ring::ends`.
+    pub fn coverage(&self, x: usize, y: usize, ends: &[(i32, i32); 2]) -> u8 {
+        if self.sweep == 0 {
+            return 0;
+        }
+        let band = disc(x, y, self.cx, self.cy, self.outer())
+            .min(15 - disc(x, y, self.cx, self.cy, self.inner()));
+        if band == 0 || self.sweep >= TURN {
+            return band;
+        }
+        let dx = 4 * x as i32 + 2 - self.cx;
+        let dy = 4 * y as i32 + 2 - self.cy;
+        let along = (angle(dx, dy) + TURN - self.start % TURN) % TURN;
+        if along < self.sweep {
+            return band;
+        }
+        let cap = self.width / 2;
+        let [a, b] = *ends;
+        disc(x, y, a.0, a.1, cap).max(disc(x, y, b.0, b.1, cap))
+    }
+
+    /// Paint the ring's row in `color` over what the row holds. Only the
+    /// band between its two circles is worked out, a pixel at a time.
+    pub fn paint(&self, row: &mut Row, ends: &[(i32, i32); 2], color: u16) {
+        if self.sweep == 0 {
+            return;
+        }
+        let y = row.y();
+        let (_, touched) = disc_row(y, self.cx, self.cy, self.outer());
+        if touched.is_empty() {
+            return;
+        }
+        let (hole, _) = disc_row(y, self.cx, self.cy, self.inner() - 4);
+        let pixel = |x: usize, under: u16| match self.coverage(x, y, ends) {
+            0 => None,
+            coverage => Some(blend(color, under, coverage)),
+        };
+        if hole.is_empty() {
+            row.each_over(touched, pixel);
+        } else {
+            row.each_over(touched.start..hole.start, pixel);
+            row.each_over(hole.end..touched.end, pixel);
+        }
+    }
+}
+
 /// The ride state the status bar marks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mark {
@@ -401,7 +547,84 @@ const MARK_ICON: usize = 10;
 /// Battery icon: a 19 × 10 pill with a nub.
 const BATTERY_WIDTH: usize = 19;
 /// Below this the percentage shows in place of the icon.
-const LOW_BATTERY: u8 = 20;
+pub const LOW_BATTERY: u8 = 20;
+/// At or below this the battery's fill turns amber.
+pub const ATTENTION_BATTERY: u8 = 30;
+/// The charging bolt left of the icon, and the space after it.
+const BOLT_WIDTH: usize = 7;
+const BOLT_GAP: usize = 2;
+/// A charging battery's fill climbs from its level to full in this many
+/// frames, then starts again.
+pub const CHARGE_STEPS: u8 = 4;
+
+/// The charging bolt, 7 × 11, as 4-bit coverage: `#` solid, `+` half.
+const BOLT: [&[u8; BOLT_WIDTH]; 11] = [
+    b"...+##.", b"...##+.", b"..+##..", b"..##+..", b".+#####", b".####+.", b"...##+.", b"..+##..",
+    b"..##+..", b".+#+...", b".#+....",
+];
+
+/// Coverage of the bolt whose top-left is (`left`, `top`) at (x, y).
+pub const fn bolt(left: usize, top: usize, x: usize, y: usize) -> u8 {
+    if x < left || y < top || x >= left + BOLT_WIDTH || y >= top + BOLT.len() {
+        return 0;
+    }
+    match BOLT[y - top][x - left] {
+        b'#' => 15,
+        b'+' => 8,
+        _ => 0,
+    }
+}
+
+/// What the status bar knows about the battery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Battery {
+    /// Charge, 0 to 100, as the device reports it.
+    pub percent: u8,
+    /// USB power is connected and the device reports charging.
+    pub charging: bool,
+    /// The charging animation's frame, 0 to `CHARGE_STEPS - 1`.
+    pub phase: u8,
+}
+
+impl Battery {
+    pub const fn level(percent: u8) -> Self {
+        Self {
+            percent,
+            charging: false,
+            phase: 0,
+        }
+    }
+
+    /// The share of the icon to fill, 0 to 100: the level, or while
+    /// charging a fill that climbs from the level to full and starts again.
+    pub const fn fill(self) -> u8 {
+        let level = if self.percent > 100 {
+            100
+        } else {
+            self.percent
+        };
+        if !self.charging {
+            return level;
+        }
+        let step = (self.phase % CHARGE_STEPS) as u16;
+        let rise = (100 - level as u16) * step / (CHARGE_STEPS as u16 - 1);
+        (level as u16 + rise) as u8
+    }
+
+    /// The fill's colour: green while charging, red once low, amber at 30%
+    /// or less, white otherwise.
+    pub const fn color(self) -> u16 {
+        if self.charging {
+            GREEN
+        } else if self.percent < LOW_BATTERY {
+            RED
+        } else if self.percent <= ATTENTION_BATTERY {
+            AMBER
+        } else {
+            WHITE
+        }
+    }
+}
 /// The least space between two status bar items.
 const GAP: usize = 6;
 /// Anti-aliased text may cover this many columns past its advance width.
@@ -424,8 +647,8 @@ const fn small(text: &[u8], x: usize, align: Align, color: u16) -> Small {
 #[derive(Clone, Copy)]
 pub struct StatusBar {
     clock: Small,
-    /// The battery level, when its icon fits.
-    battery: Option<u8>,
+    /// The battery, when its icon fits.
+    battery: Option<Battery>,
     battery_left: usize,
     percent: Option<Small>,
     gps: Option<Small>,
@@ -447,6 +670,12 @@ impl Default for StatusBar {
 
 impl StatusBar {
     pub fn new(clock: &Text<16>, gps: Gps, battery: Option<u8>, mark: Mark) -> Self {
+        Self::with_battery(clock, gps, battery.map(Battery::level), mark)
+    }
+
+    /// The bar with a battery that may be charging: a green bolt then
+    /// shows left of the icon, and the icon stays even when low.
+    pub fn with_battery(clock: &Text<16>, gps: Gps, battery: Option<Battery>, mark: Mark) -> Self {
         let line = Line::new(&BODY, clock.as_bytes());
         let top = MIDDLE - BODY.top as usize - BODY.cap as usize / 2;
         let clock = Label::new(line, WIDTH - EDGE, top, Align::Right, WHITE);
@@ -475,9 +704,11 @@ impl StatusBar {
         let mark_end = bar.mark_end();
         let fits = |left: usize| left >= mark_end + GAP;
         let battery_left = clock.left.saturating_sub(GAP + BATTERY_WIDTH);
-        match battery.map(|b| b.min(100)) {
+        let bolt_left = battery_left.saturating_sub(BOLT_GAP + BOLT_WIDTH);
+        match battery {
             // A low battery shows as its red percentage in place of the icon.
-            Some(level) if level < LOW_BATTERY => {
+            Some(battery) if !battery.charging && battery.percent < LOW_BATTERY => {
+                let level = battery.percent;
                 let mut text = Text::<4>::new();
                 let _ = core::fmt::Write::write_fmt(&mut text, format_args!("{level}%"));
                 let label = small(text.as_bytes(), clock.left - GAP, Align::Right, RED);
@@ -486,8 +717,16 @@ impl StatusBar {
                     bar.percent = Some(label);
                 }
             }
-            Some(level) if fits(battery_left) => {
-                bar.battery = Some(level);
+            Some(battery) if battery.charging && fits(bolt_left) => {
+                bar.battery = Some(battery);
+                bar.battery_left = battery_left;
+                bar.right_limit = bolt_left;
+            }
+            Some(battery) if fits(battery_left) => {
+                bar.battery = Some(Battery {
+                    charging: false,
+                    ..battery
+                });
                 bar.battery_left = battery_left;
                 bar.right_limit = battery_left;
             }
@@ -555,10 +794,7 @@ impl StatusBar {
             label.paint(row);
         }
         if shapes && self.battery.is_some() {
-            let left = self.battery_left;
-            row.each(left..left + BATTERY_WIDTH, |x| {
-                Some(self.battery_pixel(x, y))
-            });
+            row.each(self.battery_columns(), |x| Some(self.battery_pixel(x, y)));
         }
         self.clock.paint(row);
         if shapes {
@@ -576,9 +812,7 @@ impl StatusBar {
         if let Some(pixel) = text(&self.clock) {
             return pixel;
         }
-        if self.battery.is_some()
-            && (self.battery_left..self.battery_left + BATTERY_WIDTH).contains(&x)
-        {
+        if self.battery.is_some() && self.battery_columns().contains(&x) {
             return self.battery_pixel(x, y);
         }
         for label in [&self.percent, &self.gps].into_iter().flatten() {
@@ -613,10 +847,7 @@ impl StatusBar {
             items.push(("percent", text(percent)));
         }
         if self.battery.is_some() {
-            items.push((
-                "battery",
-                self.battery_left..self.battery_left + BATTERY_WIDTH,
-            ));
+            items.push(("battery", self.battery_columns()));
         }
         items.push(("clock", text(&self.clock)));
         items
@@ -643,9 +874,22 @@ impl StatusBar {
         blend(self.mark_label.color, BLACK, coverage)
     }
 
+    /// The battery icon's columns, its bolt included while charging.
+    fn battery_columns(&self) -> Range<usize> {
+        let charging = self.battery.is_some_and(|b| b.charging);
+        let bolt = if charging { BOLT_GAP + BOLT_WIDTH } else { 0 };
+        self.battery_left - bolt..self.battery_left + BATTERY_WIDTH
+    }
+
     fn battery_pixel(&self, x: usize, y: usize) -> u16 {
-        let percent = usize::from(self.battery.unwrap_or(0));
+        let battery = self.battery.unwrap_or_default();
         let left = self.battery_left;
+        if x < left {
+            let top = MIDDLE - BOLT.len() / 2;
+            let coverage = bolt(left - BOLT_GAP - BOLT_WIDTH, top, x, y);
+            return blend(GREEN, BLACK, coverage);
+        }
+        let percent = usize::from(battery.fill());
         let body = Rect {
             left,
             top: MIDDLE - 5,
@@ -661,11 +905,7 @@ impl StatusBar {
         if nub.contains(x, y) {
             return SECONDARY;
         }
-        let color = match percent {
-            0..=19 => RED,
-            20..=30 => AMBER,
-            _ => WHITE,
-        };
+        let color = battery.color();
         let fill = Rect {
             left: body.left + 2,
             top: body.top + 2,
@@ -963,6 +1203,85 @@ mod tests {
         assert!(lit(&paused, AMBER, 0..70));
         assert!(!lit(&paused, RED, 0..240));
         assert!(paused.percent.is_none());
+    }
+
+    #[test]
+    fn a_charging_battery_shows_a_bolt_and_a_climbing_fill() {
+        let charging = |percent, phase| {
+            StatusBar::with_battery(
+                &clock("9:41"),
+                Gps::Fixed,
+                Some(Battery {
+                    percent,
+                    charging: true,
+                    phase,
+                }),
+                Mark::Recording,
+            )
+        };
+        // Even a low battery keeps its icon while charging, in green.
+        let low = charging(12, 0);
+        assert!(low.percent.is_none() && low.battery.is_some());
+        check_status_bar(&low, "charging 12%");
+        let green = |bar: &StatusBar| {
+            (0..STATUS_BAR.bottom)
+                .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+                .filter(|&(x, y)| bar.pixel(x, y) == GREEN)
+                .count()
+        };
+        let first = green(&low);
+        let last = green(&charging(12, CHARGE_STEPS - 1));
+        assert!(last > first + 20, "the fill climbs: {first} then {last}");
+        assert!(!lit(&low, RED, 140..240), "no red while charging");
+        assert_eq!(Battery::level(64).fill(), 64);
+        let full = Battery {
+            percent: 100,
+            charging: true,
+            phase: 1,
+        };
+        assert_eq!(full.fill(), 100);
+    }
+
+    #[test]
+    fn angles_run_clockwise_from_twelve_and_rings_paint_their_reference() {
+        assert_eq!(angle(0, -10), 0);
+        assert_eq!(angle(10, 0), 1024);
+        assert_eq!(angle(0, 10), 2048);
+        assert_eq!(angle(-10, 0), 3072);
+        let diagonal = angle(10, -10);
+        assert!(diagonal.abs_diff(512) <= 2, "{diagonal}");
+        let (x, y) = on_circle(0, 0, 400, 1024);
+        assert!((x - 400).abs() <= 2 && y.abs() <= 2, "{x},{y}");
+        let ring = Ring {
+            cx: 4 * 60,
+            cy: 4 * 60,
+            radius: 4 * 40,
+            width: 4 * 8,
+            start: 512,
+            sweep: 1024,
+        };
+        let ends = ring.ends();
+        const UNDER: u16 = 0x0841;
+        let mut lit = 0;
+        for y in 0..120 {
+            let mut pixels = [UNDER; 120];
+            ring.paint(&mut Row::new(y, &mut pixels), &ends, WHITE);
+            for (x, &pixel) in pixels.iter().enumerate() {
+                let coverage = ring.coverage(x, y, &ends);
+                let want = if coverage == 0 {
+                    UNDER
+                } else {
+                    blend(WHITE, UNDER, coverage)
+                };
+                assert_eq!(pixel, want, "{x},{y}");
+                lit += usize::from(pixel == WHITE);
+            }
+        }
+        // A quarter of the band, from 1:30 to 4:30, with round ends.
+        assert!(ring.coverage(60 + 40, 60, &ends) == 15, "3 o'clock");
+        assert_eq!(ring.coverage(60, 20, &ends), 0, "12 o'clock");
+        assert_eq!(ring.coverage(60, 100, &ends), 0, "6 o'clock");
+        assert!((300..700).contains(&lit), "{lit}");
     }
 
     #[test]

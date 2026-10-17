@@ -9,8 +9,8 @@
 #[cfg(test)]
 use super::chrome::disc;
 use super::chrome::{
-    Align, CAPTION, Label, Line, Rect, Row, SECONDARY, blend, paint_disc_over, paint_rounded_over,
-    rounded,
+    Align, CAPTION, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over,
+    paint_rounded_over, rounded,
 };
 use firmware_shell::rendering::font::{Face, SPILL};
 use heapless::Vec;
@@ -42,6 +42,13 @@ pub enum Shape {
         radius: i32,
         color: u16,
     },
+    /// An arc of a ring with round ends (`chrome::Ring`); `ends` caches
+    /// where its ends are, so painting needs no trigonometry.
+    Ring {
+        ring: Ring,
+        ends: [(i32, i32); 2],
+        color: u16,
+    },
 }
 
 impl Shape {
@@ -55,6 +62,16 @@ impl Shape {
                 right: ((cx + radius + 2) / 4 + 1) as usize,
                 bottom: ((cy + radius + 2) / 4 + 1) as usize,
             },
+            Self::Ring { ring, .. } => ring.bounds(),
+        }
+    }
+
+    /// A ring arc in `color`.
+    pub fn ring(ring: Ring, color: u16) -> Self {
+        Self::Ring {
+            ring,
+            ends: ring.ends(),
+            color,
         }
     }
 
@@ -84,6 +101,7 @@ impl Shape {
             } => paint_disc_over(row, (cx, cy, radius), color, |_, coverage, under| {
                 Some(blend(color, under, coverage))
             }),
+            Self::Ring { ring, ends, color } => ring.paint(row, &ends, color),
         }
     }
 
@@ -106,6 +124,7 @@ impl Shape {
                 radius,
                 color,
             } => (disc(x, y, cx, cy, radius), color),
+            Self::Ring { ring, ends, color } => (ring.coverage(x, y, &ends), color),
         };
         (coverage > 0).then(|| blend(color, under, coverage))
     }
@@ -297,7 +316,7 @@ mod tests {
                         Shape::Bar { rect, radius, .. } => {
                             rounded(rect, fitted(rect, radius), x, y)
                         }
-                        Shape::Panel { .. } => 0,
+                        Shape::Panel { .. } | Shape::Ring { .. } => 0,
                     })
                     .max()
                     .unwrap_or(0);

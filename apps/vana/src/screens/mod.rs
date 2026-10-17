@@ -1,3 +1,4 @@
+pub mod brand;
 pub mod canvas;
 pub mod chrome;
 pub mod gesture;

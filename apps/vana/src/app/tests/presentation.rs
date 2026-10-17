@@ -128,7 +128,14 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     // The brand flashes from VANA's first frame, whenever the device lets it run.
     assert!(screen.present(&mut runtime, &radio, 3000));
     assert!(runtime.navigation.page == Page::Boot);
-    assert!(!screen.present(&mut runtime, &radio, 3399));
+    // The reveal moves at the motion cadence, then Home opens on time.
+    assert!(!screen.present(&mut runtime, &radio, 3039));
+    let reveal = (3040..3400)
+        .step_by(10)
+        .filter(|&now| screen.present(&mut runtime, &radio, now))
+        .count();
+    assert_eq!(reveal, 9, "ten reveal frames in 400 ms");
+    assert!(runtime.navigation.page == Page::Boot);
     // Home opens as the flash ends and then redraws once a second.
     assert!(screen.present(&mut runtime, &radio, 3400));
     assert!(runtime.navigation.page == Page::Home);

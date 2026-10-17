@@ -31,6 +31,8 @@ struct Backlight {
     percent: u8,
 }
 static BRIGHTNESS: AtomicU8 = AtomicU8::new(0);
+/// The backlight composition asks for while charging standby shows the charge.
+static STANDBY_LIGHT: AtomicU8 = AtomicU8::new(0);
 static LIGHT_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Accept a brightness target. The sole LEDC owner applies it on its next tick;
@@ -45,6 +47,16 @@ pub fn brightness(percent: u8) -> Result<(), Error> {
     }
     BRIGHTNESS.store(percent, Ordering::Release);
     Ok(())
+}
+/// Charging standby: the device rests on USB power with normal work closed.
+/// Only the display stays open, so the application can show the charge.
+pub fn standby() -> bool {
+    status().state == State::Charging
+}
+/// The backlight to show during charging standby, 0 for dark. It applies
+/// only in standby; waking restores the selected brightness.
+pub fn standby_light(percent: u8) {
+    STANDBY_LIGHT.store(percent.min(100), Ordering::Release);
 }
 pub fn light_available() -> bool {
     !LIGHT_FAILED.load(Ordering::Acquire)
@@ -192,6 +204,14 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
         if status().ready && !ACCESS.closed() && light.percent != BRIGHTNESS.load(Ordering::Acquire)
         {
             let _ = backlight(&mut light, false);
+        }
+        let standby = STANDBY_LIGHT.load(Ordering::Acquire);
+        if status().state == State::Charging && light.percent != standby {
+            let result = light.channel.set_duty(standby).map_err(|_| Error::Failed);
+            LIGHT_FAILED.store(result.is_err(), Ordering::Release);
+            if result.is_ok() {
+                light.percent = standby;
+            }
         }
         TRANSITION.lock(|t| t.borrow_mut().tick(now));
         match status().state {

@@ -235,7 +235,13 @@ impl DisplayCapability for Display<'_> {
         }
     }
     fn submit(&mut self, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
-        let _access = crate::capabilities::power::ACCESS.enter()?;
+        // Charging standby closes work admission but keeps the panel open,
+        // so the application can show the charge; nothing waits on it.
+        let _access = match crate::capabilities::power::ACCESS.enter() {
+            Ok(lease) => Some(lease),
+            Err(_) if crate::capabilities::power::standby() => None,
+            Err(error) => return Err(error),
+        };
         // Every path in `frame` returns the bus and both buffers, and `submit`
         // is not re-entrant, so they are always present here.
         let (bus, buffer) = self

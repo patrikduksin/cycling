@@ -1,8 +1,9 @@
 //! Turning off: the confirm sheet, the idle policy and the device hand-over.
 use super::presentation::Screen;
 use super::*;
-use crate::app::power::Sheet;
+use crate::app::power::{FAREWELL_MS, Sheet};
 use crate::ride::log::Status;
+use crate::screens::brand::DONE;
 use crate::screens::power::Sheet as View;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::HEART_RATE;
@@ -160,11 +161,27 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
     runtime.input(press(Button::TopLeft), 2_500, &mut radio);
     runtime.input(press(Button::BottomRight), 3_000, &mut radio);
     assert_eq!(runtime.power.sheet, super::super::power::TURNING_OFF);
-    // The request waits until "TURNING OFF" reached the panel.
+    // The request waits until the farewell's last frame reached the panel.
     runtime.power(&mut screen.shell, &mut switch, 3_000);
     assert!(switch.requests.is_empty());
     pass(&mut runtime, &mut screen, &radio, &mut switch, 3_010);
-    assert!(screen.panel.shows_sheet(View::TurningOff));
+    assert!(screen.panel.shows_sheet(View::TurningOff { progress: 0 }));
+    assert!(switch.requests.is_empty(), "the farewell plays first");
+    pass(&mut runtime, &mut screen, &radio, &mut switch, 3_250);
+    assert!(screen.panel.shows_sheet(View::TurningOff { progress: 500 }));
+    assert!(switch.requests.is_empty());
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut switch,
+        3_010 + FAREWELL_MS,
+    );
+    assert!(
+        screen
+            .panel
+            .shows_sheet(View::TurningOff { progress: DONE })
+    );
     assert_eq!(switch.requests, [Operation::Shutdown]);
     assert!(runtime.turning_off());
     // Nothing else is drawn or requested while the device turns off.
@@ -183,6 +200,13 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
     runtime.input(press(Button::TopLeft), 1_000, &mut radio);
     runtime.input(press(Button::BottomRight), 1_500, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_500);
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut refusing,
+        1_500 + FAREWELL_MS,
+    );
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_600);
     assert_eq!(runtime.home_status(1_600), ("CANNOT TURN OFF", true));
@@ -192,6 +216,13 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
     runtime.input(press(Button::TopLeft), 10_000, &mut radio);
     runtime.input(press(Button::BottomRight), 10_500, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 10_500);
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut switch,
+        10_500 + FAREWELL_MS,
+    );
     assert!(runtime.turning_off());
     switch.status.state = State::Failed;
     switch.status.ready = true;
@@ -276,6 +307,14 @@ fn an_unanswered_sheet_closes_and_an_idle_device_warns_then_turns_off() {
         &radio,
         &mut switch,
         AUTO_OFF_MS + 10,
+    );
+    assert!(switch.requests.is_empty(), "the farewell plays first");
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut switch,
+        AUTO_OFF_MS + 10 + FAREWELL_MS,
     );
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
@@ -419,10 +458,24 @@ fn a_rejected_turning_off_frame_is_drawn_again_before_shutdown() {
         switch.requests.is_empty(),
         "shut down with the old screen visible"
     );
-    assert!(!screen.panel.shows_sheet(View::TurningOff));
-    // The retry follows at once and, once accepted, hands over.
+    assert!(!screen.panel.shows_sheet(View::TurningOff { progress: 0 }));
+    // The retry follows at once; once the farewell ends on the panel, VANA
+    // hands over.
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_510);
-    assert!(screen.panel.shows_sheet(View::TurningOff));
+    assert!(screen.panel.shows_sheet(View::TurningOff { progress: 20 }));
+    assert!(switch.requests.is_empty());
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut switch,
+        1_500 + FAREWELL_MS,
+    );
+    assert!(
+        screen
+            .panel
+            .shows_sheet(View::TurningOff { progress: DONE })
+    );
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 
@@ -585,6 +638,13 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
     runtime.input(press(Button::TopLeft), 1_200, &mut radio);
     runtime.input(press(Button::BottomRight), 1_600, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_600);
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut switch,
+        1_600 + FAREWELL_MS,
+    );
     assert!(switch.requests.is_empty(), "turned off and lost the edit");
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     assert_eq!(
@@ -597,6 +657,13 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
     runtime.input(press(Button::TopLeft), 3_000, &mut radio);
     runtime.input(press(Button::BottomRight), 3_400, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 3_400);
+    pass(
+        &mut runtime,
+        &mut screen,
+        &radio,
+        &mut switch,
+        3_400 + FAREWELL_MS,
+    );
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 

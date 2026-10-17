@@ -1735,7 +1735,8 @@ fn turning_off_from_home_asks_first_and_the_top_left_hold_turns_it_back_on() {
     sim.press(Button::TopLeft);
     sim.expect_text("READY TO RIDE");
     sim.press(Button::TopLeft);
-    sim.press(Button::BottomRight);
+    sim.report(Button::BottomRight);
+    sim.advance(80);
     sim.expect_text("TURNING OFF");
     sim.checkpoint("turning off");
     sim.advance(seconds(1));
@@ -1764,6 +1765,110 @@ fn turning_off_from_home_asks_first_and_the_top_left_hold_turns_it_back_on() {
     sim.hold(Button::TopLeft, seconds(2));
     assert!(!sim.is_off(), "a top-left hold did not turn the device on");
     sim.wait_usable();
+}
+
+/// Power on closes the VANA ring round the wordmark while Home gets ready;
+/// turning off unwinds it to black before the device powers down.
+#[test]
+fn the_brand_ring_closes_on_power_on_and_unwinds_on_power_off() {
+    use vana::screens::chrome::ACCENT;
+    let accent = |sim: &Sim| {
+        let screen = sim.screen();
+        screen.pixels.iter().filter(|&&p| p == ACCENT).count()
+    };
+    let mut sim = Sim::new();
+    let lit = wait_lit(&mut sim);
+    sim.expect_text("VANA");
+    sim.checkpoint("reveal: the first lit frame");
+    let first = accent(&sim);
+    sim.advance(200);
+    let half = accent(&sim);
+    sim.checkpoint("reveal: the ring half closed");
+    assert!(half > first + 300, "the ring closes: {first} then {half}");
+    let usable = sim.wait_usable();
+    assert!(
+        usable + 200 <= 500,
+        "Home {} ms after the first frame",
+        usable + 200
+    );
+    let _ = lit;
+    sim.expect_text("READY TO RIDE");
+
+    sim.press(Button::TopLeft);
+    sim.report(Button::BottomRight);
+    sim.advance(80);
+    sim.expect_text("TURNING OFF");
+    let start = accent(&sim);
+    sim.advance(200);
+    sim.checkpoint("farewell: the ring unwinding");
+    let unwinding = accent(&sim);
+    assert!(
+        unwinding + 300 < start,
+        "the ring unwinds: {start} then {unwinding}"
+    );
+    assert!(
+        !sim.is_off(),
+        "the farewell plays before the device turns off"
+    );
+    sim.advance(seconds(1));
+    assert!(sim.is_off());
+}
+
+/// Charging shows as a green bolt and a climbing fill; off on USB power,
+/// the charge shows on a ring until the screen goes dark.
+#[test]
+fn charging_while_off_shows_the_charge_then_goes_dark() {
+    use vana::app::STANDBY_LIT_MS;
+    let mut sim = Sim::new().boot();
+    sim.set_battery(64, false);
+    sim.advance(seconds(2));
+    sim.set_battery(64, true);
+    sim.advance(seconds(1));
+    sim.expect_text("CHARGING 64%");
+    sim.checkpoint("plugged in: charging toast and bolt");
+    sim.advance(seconds(4));
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "VANA stays on while charging");
+    assert!(sim.device.standby_lit(), "charging standby is dark");
+    sim.expect_text("64%");
+    sim.expect_text("CHARGING");
+    sim.checkpoint("off on USB: the charge");
+    sim.set_battery(100, true);
+    sim.advance(seconds(1));
+    sim.expect_text("CHARGED");
+    sim.checkpoint("off on USB: charged");
+    sim.advance(STANDBY_LIT_MS);
+    assert!(!sim.device.standby_lit(), "standby stays lit");
+    assert!(sim.screen().pixels.iter().all(|&p| p == 0));
+    sim.checkpoint("off on USB: dark");
+    sim.turn_on();
+    sim.expect_text("READY TO RIDE");
+}
+
+/// Falling charge is announced once at 20%, then urgently at 10% and 5%,
+/// on whatever page shows, ride pages included.
+#[test]
+fn a_falling_battery_warns_once_per_level_during_a_ride() {
+    let mut sim = rider();
+    sim.set_battery(40, false);
+    sim.pair(&["POWER METER"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.advance(seconds(10));
+    sim.set_battery(20, false);
+    sim.wait_for("LOW BATTERY 20%", seconds(2)).unwrap();
+    sim.checkpoint("low battery during a ride");
+    sim.advance(seconds(6));
+    sim.expect_no_text("LOW BATTERY");
+    sim.set_battery(19, false);
+    sim.advance(seconds(6));
+    sim.expect_no_text("BATTERY");
+    sim.set_battery(10, false);
+    sim.wait_for("CHARGE SOON 10%", seconds(2)).unwrap();
+    sim.checkpoint("critical battery during a ride");
+    sim.stop_ride();
 }
 
 #[test]

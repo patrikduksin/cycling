@@ -16,12 +16,13 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 OWNERS = {
     "device-api": ("packages/device-api", set()),
+    "terrain": ("packages/terrain", set()),
     "firmware-services": ("packages/services", {"device-api"}),
     "firmware-shell": ("packages/shell", {"device-api", "firmware-services"}),
     "firmware-console": ("packages/console", {"device-api", "firmware-services", "firmware-shell"}),
-    "vana": ("apps/vana", {"device-api", "firmware-services", "firmware-shell"}),
-    "c606-firmware": ("devices/c606", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana"}),
-    "shell-simulator": ("tools/simulator", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana"}),
+    "vana": ("apps/vana", {"device-api", "firmware-services", "firmware-shell", "terrain"}),
+    "c606-firmware": ("devices/c606", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana", "terrain"}),
+    "shell-simulator": ("tools/simulator", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana", "terrain"}),
 }
 HARDWARE = {"esp_hal", "esp32s3", "esp_radio", "esp_rtos", "esp_storage", "esp_alloc", "esp_println", "esp_backtrace", "esp_bootloader_esp_idf", "c606_firmware", "shell_simulator"}
 CONSUMERS = {"firmware_shell", "firmware_console", "vana", "shell_simulator"}

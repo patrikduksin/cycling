@@ -1,6 +1,6 @@
 [workspace]
-members = ["packages/device-api", "packages/services", "packages/shell", "packages/console", "apps/vana", "devices/c606", "tools/simulator"]
-default-members = ["packages/device-api", "packages/services", "packages/shell", "packages/console", "apps/vana", "tools/simulator"]
+members = ["packages/device-api", "packages/services", "packages/terrain", "packages/shell", "packages/console", "apps/vana", "devices/c606", "tools/simulator"]
+default-members = ["packages/device-api", "packages/services", "packages/terrain", "packages/shell", "packages/console", "apps/vana", "tools/simulator"]
 exclude = ["vendor/trouble-host"]
 resolver = "3"
 
@@ -36,4 +36,6 @@ opt-level = 2
 [profile.dev.package.firmware-shell]
 opt-level = 2
 [profile.dev.package.firmware-services]
+opt-level = 2
+[profile.dev.package.terrain]
 opt-level = 2

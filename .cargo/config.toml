@@ -1,5 +1,6 @@
 [target.xtensa-esp32s3-none-elf]
-rustflags = ["-C", "link-arg=-Tlinkall.x", "-C", "force-frame-pointers=yes"]
+# The linker script is added by devices/c606/build.rs; repeated flags here break nested checkouts.
+rustflags = ["-C", "force-frame-pointers=yes"]
 
 [unstable]
 build-std = ["core", "alloc"]

@@ -6,6 +6,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 
 
+def main_checkout(root=ROOT):
+    """The primary checkout that owns this repository's git directory.
+
+    Linked worktrees (such as agent worktrees) have no private .local of their own.
+    The device is one physical resource, so its lock, backup and toolchain export
+    live in the primary checkout and every worktree uses them.
+    """
+    try:
+        common = subprocess.run(
+            ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except OSError, subprocess.CalledProcessError:
+        return root
+    return Path(common).parent
+
+
+# Device-wide private state shared by every checkout of this repository.
+DEVICE_LOCAL = main_checkout() / '.local'
+
+
 def private_path(value):
     """Resolve value and require it strictly inside the git-ignored ROOT/.local.
 

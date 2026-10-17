@@ -330,7 +330,7 @@ class SharedUsbLockTests(unittest.TestCase):
     def test_firmware_cannot_start_while_terminal_holds_existing_lock(self):
         from cycling_devtools.terminal import usb
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(usb, 'ROOT', Path(directory)):
+        with tempfile.TemporaryDirectory() as directory, patch.object(usb, 'DEVICE_LOCAL', Path(directory) / '.local'):
             with usb.acquire_lock(), patch.object(device, 'main') as operation:
                 with self.assertRaisesRegex(RuntimeError, 'Another cycling device task'):
                     device.run_locked()
@@ -341,7 +341,7 @@ class SharedUsbLockTests(unittest.TestCase):
         from cycling_devtools.device import mmc_maintenance
         from cycling_devtools.terminal import logs, usb
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(usb, 'ROOT', Path(directory)):
+        with tempfile.TemporaryDirectory() as directory, patch.object(usb, 'DEVICE_LOCAL', Path(directory) / '.local'):
 
             def operation():
                 for acquire in (usb.acquire_lock, logs.acquire_lock, mmc_maintenance.acquire_lock):

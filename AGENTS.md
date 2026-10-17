@@ -40,7 +40,8 @@ access or device tests. It owns the procedure; these rules always apply:
   `mise run stock`.
 - Preserve stock ota_0, bootloader, partition table, eFuses and existing
   persisted data. No vendor filesystem writes.
-- Serialize all device access.
+- Serialize all device access. Linked worktrees share the primary checkout's
+  `.local` device lock, backup and toolchain export.
 - Validate changed hardware access or display timing on hardware, and report
   what was actually observed.
 - Restore a harness-enabled base on the development device after tests.

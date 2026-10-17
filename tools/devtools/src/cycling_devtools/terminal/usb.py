@@ -14,12 +14,13 @@ import time
 import tty
 from pathlib import Path
 
-from cycling_devtools.workspace import ROOT
+from cycling_devtools.workspace import DEVICE_LOCAL
 
 
 def acquire_lock():
-    (ROOT / '.local').mkdir(exist_ok=True)
-    lock = (ROOT / '.local/usb.lock').open('a')
+    # One lock for the device across all checkouts, including linked worktrees.
+    DEVICE_LOCAL.mkdir(exist_ok=True)
+    lock = (DEVICE_LOCAL / 'usb.lock').open('a')
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BaseException:

@@ -82,7 +82,12 @@ fn init() -> Resources {
         ),
     }
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
-    esp_alloc::heap_allocator!(size: 96 * 1024);
+    // Internal DRAM left after statics and this heap is the main stack, where
+    // every task polls and VANA prepares its frames. With Wi-Fi online the
+    // heap's sampled peak use is about 87 KB of these 144 KB (#167); 16 KB
+    // more stack gives frames room. build.sh fails when statics squeeze the
+    // stack below its budget.
+    esp_alloc::heap_allocator!(size: 80 * 1024);
     let psram = psram::init(p.PSRAM);
     println!(
         "CYCLING_PSRAM ready mode=quad ram_mhz=40 capacity={} tested={} passes={} internal_before={} internal_after={} external_free={} allocator_probe={} allocator_alignment={}",

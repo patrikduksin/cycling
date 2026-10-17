@@ -412,6 +412,7 @@ impl Runtime {
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
         view.sample = self.readings.live;
+        view.power_3s = self.readings.power_3s_watts;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
         view.radar = self.readings.radar.snapshot(now);

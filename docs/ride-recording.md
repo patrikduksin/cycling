@@ -324,9 +324,16 @@ Training profile:
   table exactly and keep Z5 heart rate from 185 bpm.
 - The main ride page shows each zone number in black on a band of the zone
   colour (Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple),
-  with a gauge of the reading's place within the zone. The stats page shows the
-  recorded time in each power and heart rate zone as two bars. Time in zone is
-  kept in memory with the other ride totals; it is not part of the ride record.
+  with a gauge of the reading's place within the zone. Its power, and the
+  power zone, are the 3 s average: the mean of the last reading in each of the
+  last three seconds, zeros included, cleared when the meter goes quiet. The
+  stats page shows the recorded time in each power and heart rate zone as two
+  bars. Time in zone is kept in memory with the other ride totals; it is not
+  part of the ride record.
+- The stats page also shows live intensity factor (`IF`, normalized power over
+  FTP) and training stress score (`TSS`: seconds with power × NP² / (FTP² ×
+  36), so an hour at FTP is 100). Both wait for normalized power's first 30 s
+  and use the FTP of the profile.
 - `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record

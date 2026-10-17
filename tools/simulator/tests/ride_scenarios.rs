@@ -583,6 +583,30 @@ fn ride_page(sim: &mut Sim, indicator: &str) {
 }
 
 #[test]
+fn main_page_power_is_a_three_second_average() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(seconds(30));
+    sim.expect_field("W", "200");
+    // A sprint: the reading climbs over three seconds instead of jumping.
+    sim.ride_at(30.0, 500.0, 140.0, 90.0);
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        sim.advance(500);
+        seen.push(reading(&sim, "W") as u32);
+    }
+    sim.checkpoint("3 s power during a sprint");
+    assert!(
+        seen.iter().any(|w| (250..450).contains(w)),
+        "no step between 200 and 500 W: {seen:?}"
+    );
+    assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    assert_eq!(seen.last(), Some(&500), "{seen:?}");
+}
+
+#[test]
 fn stats_page_totals_a_steady_ten_minutes() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
@@ -604,10 +628,11 @@ fn stats_page_totals_a_steady_ten_minutes() {
     expect_near(&mut sim, "AVG KM/H", 30.0, 0.2);
     expect_near(&mut sim, "MAX KM/H", 30.0, 0.3);
     sim.expect_field("AVG W", "200");
-    sim.expect_field("MAX W", "200");
     sim.expect_field("NP W", "200");
+    // Against the default FTP of 215 W: IF 200/215, TSS 10 min × 0.93² / 60 × 100.
+    sim.expect_field("IF", "0.93");
+    sim.expect_field("TSS", "14");
     sim.expect_field("AVG BPM", "140");
-    sim.expect_field("AVG RPM", "90");
     let moving = sim.screen().field("MOVING").unwrap();
     assert!(
         moving.starts_with("09:5") || moving == "10:00",
@@ -664,7 +689,7 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
 
 #[test]
 fn pause_leaves_the_totals_untouched() {
-    const TOTALS: [&str; 6] = ["DIST KM", "MOVING", "AVG W", "MAX W", "NP W", "AVG BPM"];
+    const TOTALS: [&str; 7] = ["DIST KM", "MOVING", "AVG W", "NP W", "IF", "TSS", "AVG BPM"];
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.start_ride();
@@ -685,7 +710,7 @@ fn pause_leaves_the_totals_untouched() {
     for (label, before) in TOTALS.iter().zip(&before) {
         assert_eq!(&screen.field(label), before, "{label} changed while paused");
     }
-    sim.expect_field("MAX W", "250");
+    sim.expect_field("NP W", "250");
     sim.checkpoint("stats after five paused minutes");
 
     sim.resume_ride();

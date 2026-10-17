@@ -134,6 +134,15 @@ run = [
   "{{vars.devtools}} python -m cycling_devtools.sim.report .local/sim/pr --pr \"${usage_pr}\"",
 ]
 
+[tasks.sim-compare]
+description = "Run simulator scenarios here and on a base ref; report changed screens Before | After, optionally on a pull request"
+usage = '''
+flag "--base <ref>" default="main" help="git ref to compare against"
+flag "--pr <pr>" help="pull request to comment on"
+flag "--filter <name>" help="cargo test name filter, applied to both runs"
+'''
+run = '{{vars.devtools}} python -m cycling_devtools.sim.compare --base "${usage_base}" ${usage_pr:+--pr "$usage_pr"} ${usage_filter:+--filter "$usage_filter"}'
+
 [tasks.sim-live]
 description = "Open a window onto the simulated device; the session is recorded to .local/sim/live"
 run = "SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features cycling,debug-harness,live --bin sim-live"

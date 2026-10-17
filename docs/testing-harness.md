@@ -38,6 +38,26 @@ mise run latency -- --press top-left --count 20        # On Home
 mise run latency -- --press bottom-left --count 21     # During a ride: steps through the pages
 ```
 
+`mise run startup-timing` measures how fast VANA turns on and starts riding. VANA
+keeps the device uptime of each first milestone per boot (first frame, Home,
+companion, ride storage, GNSS fix, each sensor's first live data, ride-start
+press and confirmed recording, press-to-frame latency) and reports them with
+`RIDE TIMING`, so nothing is lost before USB attaches. Uptime starts at the
+main-CPU reset, not at the top-left press.
+
+```sh
+mise run startup-timing -- --sim                 # Simulator scenario `startup_timing`; modelled timings
+mise run startup-timing                          # Prompts to turn the C606 on, then polls it (SDK build)
+mise run startup-timing -- --restart --ride      # Main-CPU restart; then start, pause and save a short ride
+```
+
+The table and evidence go to `.local/timing/`. `--ride` records one short ride and
+needs a harness build; `--gnss` also waits for a fix. `--ride` and `--restart`
+refuse while a ride is open. `--ride` presses only from Home, checks `RIDE STATUS`
+(`page`, `state`) after every press, and fails unless the ride ends saved.
+`mise run startup-timing -- --summarize .local/timing/<run>...` prints the median
+and nearest-rank p90 of each milestone and step over repeated runs.
+
 | Recipe | Checks |
 | --- | --- |
 | `input-screen` | Tap, hold, swipe and button input, then a screenshot |

@@ -183,6 +183,11 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn dimmed(&self) -> bool {
         self.idle.dimmed()
     }
+    /// Time since the last input or reported activity. The shell owns this
+    /// inactivity clock; applications combine it with their own work state.
+    pub fn inactive_ms(&self, now: u64) -> u64 {
+        self.idle.age_ms(now)
+    }
     pub fn observe_position(
         &mut self,
         positioning: &impl device_api::positioning::Positioning,
@@ -289,7 +294,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 self.pressed_at.get_or_insert(at);
             }
             if self.app_active {
-                self.app_input.push(now, input);
+                self.app_input.push(at, input);
                 return;
             }
             if matches!(input, Input::Button { button, code: 1 } if Some(button) == self.next_button)

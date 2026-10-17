@@ -298,6 +298,16 @@ impl Runtime {
             };
             self.ride.settled = Some((sample, step, None));
         }
+        // Stamp milestones after the synchronous write, so its cost shows.
+        let done = clock.map_or(now, |clock| clock()).max(now);
+        let status = self.ride.recorder.status();
+        if before == Status::Scanning && status != Status::Scanning {
+            self.timing
+                .storage(done, status.name(), status != Status::Error);
+        }
+        if self.ride.recorder.status() == Status::Recording {
+            self.timing.recording(done);
+        }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);
         }

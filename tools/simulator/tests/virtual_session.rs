@@ -1,4 +1,4 @@
-use shell_simulator::session::Session;
+use shell_simulator::session::{COMPANION_BOOT_MS, Session};
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
@@ -358,14 +358,14 @@ fn power_cycle_of_a_running_device_brings_the_companion_back_ready() {
     use device_api::observation::Availability;
     use device_api::sensors::Startup;
     let mut s = Session::device().unwrap();
-    s.step(3_000);
+    s.step(COMPANION_BOOT_MS + 500);
     assert_eq!(
         (s.startup, s.ant.availability),
         (Startup::Ready, Availability::Ready)
     );
     s.power_cycle().unwrap();
     assert_eq!(s.ant.availability, Availability::Initializing);
-    s.step(3_000);
+    s.step(COMPANION_BOOT_MS + 500);
     assert_eq!(
         (s.startup, s.ant.availability),
         (Startup::Ready, Availability::Ready)
@@ -381,9 +381,37 @@ fn cpu_restart_while_the_companion_boots_lets_it_finish() {
     assert_eq!(s.startup, Startup::Probing);
     s.restart().unwrap();
     assert_eq!(s.ant.availability, Availability::Initializing);
-    s.step(1_100);
+    s.step(COMPANION_BOOT_MS - 400);
     assert_eq!(
         (s.startup, s.ant.availability),
         (Startup::Ready, Availability::Ready)
     );
+}
+
+#[test]
+fn an_app_edge_keeps_the_time_the_device_received_it() {
+    use device_api::input::{Button, Input};
+    use device_api::observation::Availability;
+    use firmware_shell::shell::Shell;
+    use shell_simulator::devices::{DisplayDevice, InputDevice, Memory, PowerDevice};
+    let input = InputDevice::new(&[Button::BottomLeft], Availability::Ready);
+    let mut shell = Shell::new(
+        DisplayDevice::new(32, 24),
+        input.clone(),
+        PowerDevice::new(Availability::Ready),
+        Memory::default(),
+        0,
+    )
+    .unwrap();
+    shell.set_app_active(true);
+    let press = Input::Button {
+        button: Button::BottomLeft,
+        code: 1,
+    };
+    input.push(1_000, press);
+    // The shell gets to it late, behind slow work.
+    shell.tick(1_800);
+    let edge = shell.take_app_input().expect("routed to the app");
+    assert_eq!(edge.input, press);
+    assert_eq!(edge.received_ms, 1_000);
 }

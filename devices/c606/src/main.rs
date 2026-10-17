@@ -2,6 +2,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![no_main]
 use c606_firmware as device;
+mod bringup;
 mod commands;
 mod logging;
 use esp_backtrace as _;
@@ -116,61 +117,24 @@ async fn console(
         let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
         system.draw_canvas(240, 320, |row| view.paint(row));
     }
+    // Only VANA selects a saved BLE peer at startup.
     #[cfg(feature = "cycling")]
-    use device_api::ble_transport::Ble as _;
-    use device_api::network::Network as _;
-    if let Some(configuration) = system.settings.wifi {
-        if devices
-            .network
-            .request(device_api::connectivity::WifiOperation::Configure(Some(
-                configuration,
-            )))
-            .is_ok()
-        {
-            let _ = embassy_time::with_timeout(embassy_time::Duration::from_secs(3), async {
-                while devices.network.control().operation
-                    == device_api::connectivity::Operation::Pending
-                {
-                    embassy_time::Timer::after_millis(10).await;
-                }
-            })
-            .await;
-            if devices.network.control().operation == device_api::connectivity::Operation::Completed
-            {
-                let _ = devices
-                    .network
-                    .request(device_api::connectivity::WifiOperation::Connect);
-            }
-        }
-    }
-    #[cfg(feature = "cycling")]
-    if let Some(selection) = system.settings.ble.and_then(|saved| {
+    let ble_selection = system.settings.ble.and_then(|saved| {
         vana::sensors::ble::selection(
             vana::sensors::ble_profile::Profile::from_u8(system.settings.ble_profile),
             saved.name.bytes(),
             saved.address,
         )
-    }) {
-        if devices
-            .ble
-            .request(device_api::ble_transport::Operation::Select(Some(
-                selection,
-            )))
-            .is_ok()
-        {
-            let _ = embassy_time::with_timeout(embassy_time::Duration::from_secs(3), async {
-                while devices.ble.control().operation
-                    == device_api::connectivity::Operation::Pending
-                {
-                    embassy_time::Timer::after_millis(10).await;
-                }
-            })
-            .await;
-            let _ = devices
-                .ble
-                .request(device_api::ble_transport::Operation::Connect);
-        }
-    }
+    });
+    #[cfg(not(feature = "cycling"))]
+    let ble_selection = None;
+    let mut bringup = bringup::Bringup::start(
+        embassy_time::Instant::now().as_millis(),
+        system.settings.wifi,
+        &mut devices.network,
+        ble_selection,
+        &mut devices.ble,
+    );
     #[cfg(feature = "cycling")]
     system.set_app_active(sdk.input_active());
     let started = embassy_time::Instant::now();
@@ -179,9 +143,17 @@ async fn console(
     loop {
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
+        bringup.poll(now, &mut devices.network, &mut devices.ble);
+        let power = device_api::power::PowerControl::status(&devices.power);
+        // While the companion starts, VANA scans its ride journal so Home
+        // opens with storage ready. Charging standby and transitions skip it.
+        #[cfg(feature = "cycling")]
+        if power.state == device_api::power::State::Initializing {
+            sdk.prepare(&mut system.data_storage(), now);
+        }
         // Diagnostic power requests enter only with no active domain work.
         // Keep USB observations alive while device owners complete the transition.
-        if device_api::power::PowerControl::status(&devices.power).ready {
+        if power.ready {
             #[cfg(feature = "cycling")]
             {
                 sdk.set_startup_status(device_api::sensors::Sensors::startup_status(
@@ -195,7 +167,7 @@ async fn console(
                 let Some(edge) = system.take_app_input() else {
                     break;
                 };
-                sdk.input(edge.input, now, &mut devices.ant);
+                sdk.input_received(edge.input, edge.received_ms, now, &mut devices.ant);
             }
             system.observe_position(&devices.position, now);
             let started = embassy_time::Instant::now();
@@ -220,6 +192,10 @@ async fn console(
             sdk.save_preferences(&mut system, now);
             #[cfg(feature = "cycling")]
             sdk.alert(&mut devices.sound, now);
+            // After VANA's "TURNING OFF" frame, the device's coordinated
+            // shutdown takes over; this loop then only serves the terminal.
+            #[cfg(feature = "cycling")]
+            sdk.power(&mut system, &mut devices.power, now);
         }
         terminal.pump(logging::take, || embassy_time::Instant::now().as_micros());
         if let Some(panic) = terminal.reboot_due(now) {

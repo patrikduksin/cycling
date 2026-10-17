@@ -12,6 +12,8 @@ use device_api::ant::Ant;
 use device_api::input::{Button, Input};
 
 const DEBOUNCE_MS: u64 = 350;
+/// Held buttons repeat about every 100 ms; a longer gap means a new press.
+const HOLD_GAP_MS: u64 = 250;
 
 impl Runtime {
     pub fn input_active(&self) -> bool {
@@ -19,12 +21,44 @@ impl Runtime {
     }
 
     pub fn input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
+        self.input_received(input, now, now, ant);
+    }
+
+    /// `input` as the device received it at `received_ms`, handled at `now`.
+    /// Press-to-frame latency starts at reception, so time the edge spent
+    /// queued behind rendering or storage work counts.
+    pub fn input_received(&mut self, input: Input, received_ms: u64, now: u64, ant: &mut impl Ant) {
         // A lift ends the touch wherever it lands, so a finger still down
         // while a button changes page cannot swallow the next tap.
         if matches!(input, Input::Release | Input::Cancel) {
             self.navigation.touching = false;
         }
         if !self.display.is_active() {
+            return;
+        }
+        // The companion repeats reports while a button is held. A report soon
+        // after the previous one of that button continues a hold, such as the
+        // power-on hold of TopLeft, rather than starting a new press.
+        let held = match input {
+            Input::Button { button, code: 1 } => {
+                let last = &mut self.navigation.last_report[button.index().min(2)];
+                let held = last.is_some_and(|at| now.saturating_sub(at) < HOLD_GAP_MS);
+                *last = Some(now);
+                held
+            }
+            _ => false,
+        };
+        // A power sheet covers every page and takes buttons first; touch never
+        // turns the device off.
+        if self.power.view().is_some() {
+            if let Input::Button { button, code: 1 } = input
+                && !held
+                && now.saturating_sub(self.navigation.last_press) >= DEBOUNCE_MS
+                && self.power_input(button)
+            {
+                self.navigation.last_press = now;
+                self.display.redraw();
+            }
             return;
         }
         if self.navigation.page == Page::Sensors {
@@ -44,10 +78,15 @@ impl Runtime {
         self.navigation.last_press = now;
         self.display.redraw();
         match self.navigation.page {
-            Page::Home => self.home_input(button, now, ant),
-            Page::Ride => self.ride_input(button, now),
+            Page::Home => self.home_input(button, now, ant, held),
+            Page::Ride => {
+                self.timing.press(received_ms.min(now));
+                self.ride_input(button, now)
+            }
             Page::Settings => self.settings_input(button, now),
-            Page::Boot | Page::Sensors | Page::Preflight => {}
+            // A press during the brand flash opens Home straight away.
+            Page::Boot => self.navigation.page = Page::Home,
+            Page::Sensors | Page::Preflight => {}
         }
     }
 
@@ -72,7 +111,7 @@ impl Runtime {
         self.display.redraw();
     }
 
-    fn home_input(&mut self, button: Button, now: u64, ant: &mut impl Ant) {
+    fn home_input(&mut self, button: Button, now: u64, ant: &mut impl Ant, held: bool) {
         match button {
             Button::BottomLeft => {
                 self.navigation.home_cursor = (self.navigation.home_cursor + 1) % HOME.len()
@@ -92,6 +131,8 @@ impl Runtime {
                     }
                 }
             }
+            // BACK on Home asks to turn off; Home is never reachable mid-ride.
+            Button::TopLeft if !held => self.open_power_sheet(now),
             _ => {}
         }
     }
@@ -218,6 +259,9 @@ impl Runtime {
             .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
         {
             self.ride.auto.manual();
+            if action == RideAction::Start {
+                self.timing.ride_press(now);
+            }
             self.ride.message = RideMessage::Ready;
             self.ride.disarm_stop();
         } else {

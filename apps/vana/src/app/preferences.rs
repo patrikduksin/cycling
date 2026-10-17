@@ -138,6 +138,9 @@ pub(super) struct Preferences {
     changed_at: Option<u64>,
     retry_at: u64,
     failed: bool,
+    /// Counts edits this boot, so a warning about one edit is not taken for
+    /// a later one.
+    edit: u32,
 }
 
 impl Default for Preferences {
@@ -150,6 +153,7 @@ impl Default for Preferences {
             changed_at: None,
             retry_at: 0,
             failed: false,
+            edit: 0,
         }
     }
 }
@@ -193,6 +197,7 @@ impl Preferences {
         self.profile = profile;
         if !self.locked {
             self.changed_at = Some(now);
+            self.edit = self.edit.wrapping_add(1);
         }
     }
 
@@ -205,6 +210,7 @@ impl Preferences {
         self.sensors = sensors;
         if !self.locked {
             self.changed_at = Some(now.saturating_sub(DEBOUNCE_MS));
+            self.edit = self.edit.wrapping_add(1);
         }
     }
 
@@ -212,6 +218,17 @@ impl Preferences {
     pub(super) fn overwrite(&mut self, now: u64) {
         self.locked = false;
         self.changed_at = Some(now.saturating_sub(DEBOUNCE_MS));
+        self.edit = self.edit.wrapping_add(1);
+    }
+
+    /// The edit waiting for its write, if any.
+    pub(super) fn unsaved_edit(&self) -> Option<u32> {
+        self.pending().then_some(self.edit)
+    }
+
+    /// An edit is waiting for its write.
+    fn pending(&self) -> bool {
+        self.changed_at.is_some() && !self.locked
     }
 
     fn due(&self, now: u64) -> bool {
@@ -234,16 +251,34 @@ impl Runtime {
         system: &mut Shell<D, I, P, B>,
         now: u64,
     ) {
-        let preferences = &mut self.preferences;
-        if !preferences.due(now) {
-            return;
+        if self.preferences.due(now) {
+            self.write_preferences(system, now);
         }
+    }
+
+    /// Write a pending edit now, without waiting for it to settle, as before
+    /// turning off. Returns whether nothing is left unsaved.
+    pub(super) fn flush_preferences<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
+        &mut self,
+        system: &mut Shell<D, I, P, B>,
+        now: u64,
+    ) -> bool {
+        !self.preferences.pending() || self.write_preferences(system, now)
+    }
+
+    fn write_preferences<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
+        &mut self,
+        system: &mut Shell<D, I, P, B>,
+        now: u64,
+    ) -> bool {
+        let preferences = &mut self.preferences;
         // The record always fits the application area.
         let Some(app) = AppPreferences::new(&encode(preferences.profile, &preferences.sensors))
         else {
-            return;
+            return false;
         };
-        if system.save_app_preferences(app) {
+        let saved = system.save_app_preferences(app);
+        if saved {
             preferences.changed_at = None;
             preferences.failed = false;
             preferences.stored = Stored::Current;
@@ -252,6 +287,7 @@ impl Runtime {
             preferences.retry_at = now.saturating_add(RETRY_MS);
         }
         self.display.redraw();
+        saved
     }
 
     /// The training profile zones use.

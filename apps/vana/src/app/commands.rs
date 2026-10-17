@@ -53,6 +53,10 @@ impl Runtime {
             (Some("RIDE"), Some("SENSORS"), None) => self.ble_sensors(now, output),
             (Some("RIDE"), Some("STATUS"), None) => self.ride_status(now, output),
             (Some("RIDE"), Some("HISTORY"), None) => self.ride_history(output),
+            (Some("RIDE"), Some("TIMING"), None) => {
+                self.timing.report(output);
+                "OK"
+            }
             (Some("RIDE"), Some(action @ ("START" | "PAUSE" | "RESUME" | "FINISH")), None) => {
                 let action = match action {
                     "START" => Action::Start,
@@ -199,7 +203,7 @@ impl Runtime {
         };
         if write!(
             output,
-            "state={} slot={} rides={} active_ms={} samples={} dropped={} free_s={} pending={}",
+            "state={} slot={} rides={} active_ms={} samples={} dropped={} free_s={} page={} home_cursor={} pending={}",
             recorder.status().name(),
             recorder.next_slot(),
             recorder.completed(),
@@ -207,6 +211,12 @@ impl Runtime {
             recorder.written_samples(),
             recorder.dropped_samples(),
             recorder.remaining_secs(),
+            if self.power.view().is_some() {
+                "power"
+            } else {
+                self.navigation.page.name()
+            },
+            self.navigation.home_cursor,
             pending
         )
         .is_err()

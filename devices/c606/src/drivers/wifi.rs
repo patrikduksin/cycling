@@ -1,4 +1,6 @@
-//! Wi-Fi station with bounded recovery and a public HTTP connectivity check.
+//! Wi-Fi station with bounded recovery and a public HTTP connectivity check,
+//! and a soft access point for the phone companion that takes the radio from
+//! the station while it is up.
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
@@ -24,12 +26,12 @@ use esp_radio::wifi::Config;
 use esp_radio::wifi::ControllerConfig;
 use esp_radio::wifi::Interface;
 use esp_radio::wifi::WifiController;
+use esp_radio::wifi::ap::AccessPointConfig as RadioAccessPoint;
 use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
 use firmware_services::connectivity::Reconnect;
 use firmware_services::network_time::ParseError;
 use firmware_services::network_time::Timestamp;
-use static_cell::StaticCell;
 
 use crate::drivers::radio_control::DISCOVERIES;
 use crate::drivers::radio_control::Shared;
@@ -132,7 +134,83 @@ static GENERATION: AtomicU32 = AtomicU32::new(0);
 static ASSOCIATIONS: AtomicU32 = AtomicU32::new(0);
 static PROBE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
 static PROBE_FAILURES: AtomicU32 = AtomicU32::new(0);
-static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+/// DHCP, DNS, the connectivity probe and SNTP, the two phone server
+/// listeners and one spare. Both sets live in PSRAM, so room costs no
+/// internal RAM.
+const RESOURCES: StackResources<7> = StackResources::new();
+/// Embassy's DNS socket, the access point's DHCP server and the two phone
+/// server listeners.
+const AP_RESOURCES: StackResources<4> = StackResources::new();
+/// The access point's own address; its DHCP server hands out the rest of the /24.
+pub const AP_ADDRESS: [u8; 4] = [192, 168, 4, 1];
+
+/// A pending access point request, taken by the connection owner.
+#[derive(Clone, Copy)]
+enum ApCommand {
+    Start(device_api::server::AccessPointConfig),
+    Stop,
+}
+static AP_COMMAND: Mutex<RefCell<Option<ApCommand>>> = Mutex::new(RefCell::new(None));
+static AP_STATE: AtomicU8 = AtomicU8::new(0);
+/// Stations holding a DHCP lease, as the access point's DHCP server counts them.
+pub static AP_CLIENTS: AtomicU8 = AtomicU8::new(0);
+
+fn ap_store(state: device_api::server::AccessPointState) {
+    use device_api::server::AccessPointState as S;
+    AP_STATE.store(
+        match state {
+            S::Off | S::Unsupported => 0,
+            S::Starting => 1,
+            S::Up { .. } => 2,
+            S::Stopping => 3,
+            S::Failed => 4,
+        },
+        Ordering::Release,
+    );
+}
+
+pub fn access_point_state() -> device_api::server::AccessPointState {
+    use device_api::server::AccessPointState as S;
+    match AP_STATE.load(Ordering::Acquire) {
+        0 => S::Off,
+        1 => S::Starting,
+        2 => S::Up {
+            clients: AP_CLIENTS.load(Ordering::Relaxed),
+        },
+        3 => S::Stopping,
+        _ => S::Failed,
+    }
+}
+
+/// Ask the connection owner to start or stop the access point.
+pub fn access_point_request(
+    start: Option<device_api::server::AccessPointConfig>,
+) -> Result<(), Error> {
+    if start.is_some() && (suspended() || CONTROL.power() != PeripheralState::Running) {
+        return Err(Error::Unavailable);
+    }
+    if access_point_state() == device_api::server::AccessPointState::Failed {
+        return Err(Error::Failed);
+    }
+    let command = match start {
+        Some(config) => ApCommand::Start(config),
+        None => ApCommand::Stop,
+    };
+    critical_section::with(|cs| *AP_COMMAND.borrow_ref_mut(cs) = Some(command));
+    CONTROL.notify();
+    Ok(())
+}
+
+fn ap_pending() -> bool {
+    critical_section::with(|cs| AP_COMMAND.borrow_ref(cs).is_some())
+}
+
+/// The station and access point stacks. Either exists without a link.
+#[derive(Clone, Copy)]
+pub struct Stacks {
+    pub station: Stack<'static>,
+    pub access_point: Stack<'static>,
+}
 
 pub fn state() -> WifiState {
     match Link::load() {
@@ -179,7 +257,7 @@ pub fn online() -> bool {
 /// socket. The four-socket pool is shared with DHCP, DNS, probe and time clients;
 /// additional consumers must coordinate socket use rather than assume capacity.
 /// Consuming WIFI prevents a second initialization through the safe interface.
-pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<Stack<'static>> {
+pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<Stacks> {
     let station = StationConfig::default();
     let controller = match WifiController::new(
         peripheral,
@@ -201,14 +279,31 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
     let (stack, runner) = embassy_net::new(
         Interface::station(),
         embassy_net::Config::dhcpv4(Default::default()),
-        RESOURCES.init(StackResources::new()),
+        // External RAM, like the access point's: only network tasks touch it.
+        crate::drivers::psram::place(RESOURCES)?,
         seed,
+    );
+    let [a, b, c, d] = AP_ADDRESS;
+    let (access_point, ap_runner) = embassy_net::new(
+        Interface::access_point(),
+        embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+            address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(a, b, c, d), 24),
+            gateway: None,
+            dns_servers: Default::default(),
+        }),
+        // External RAM: only the network tasks touch it.
+        crate::drivers::psram::place(AP_RESOURCES)?,
+        seed.rotate_left(17) ^ u64::from(rng.random()),
     );
     CONTROL.set_ready();
     spawner.spawn(connection(controller).unwrap());
     spawner.spawn(network(runner).unwrap());
+    spawner.spawn(access_point_network(ap_runner).unwrap());
     spawner.spawn(verify(stack).unwrap());
-    Some(stack)
+    Some(Stacks {
+        station: stack,
+        access_point,
+    })
 }
 
 /// Association generation used by existing probe/SNTP recovery validation.
@@ -221,7 +316,10 @@ pub fn connection_generation() -> u32 {
 /// power transition needs the owner's attention.
 async fn next_command() -> Option<(WifiOperation, bool)> {
     loop {
-        if CONTROL.with(|c| c.suspended() || c.power() == PeripheralState::Pending) {
+        if CONTROL.with(|c| c.suspended() || c.power() == PeripheralState::Pending)
+            || ap_pending()
+            || ap_active()
+        {
             return None;
         }
         if let Some(operation) = CONTROL.take_command() {
@@ -253,6 +351,26 @@ fn request_recovery(generation: u32) {
 async fn connection(mut controller: WifiController<'static>) {
     let mut retry = Reconnect::default();
     loop {
+        if let Some(command) = critical_section::with(|cs| AP_COMMAND.borrow_ref_mut(cs).take()) {
+            match command {
+                ApCommand::Start(config) if !suspended() => {
+                    start_access_point(&mut controller, config).await
+                }
+                ApCommand::Start(_) => {}
+                ApCommand::Stop => stop_access_point(&mut controller, &mut retry).await,
+            }
+            continue;
+        }
+        if ap_active() {
+            // The station waits, its commands stay queued, until the access
+            // point stops or the device suspends Wi-Fi.
+            if suspended() && power_status() == PeripheralState::Pending {
+                stop_access_point(&mut controller, &mut retry).await;
+            } else {
+                CONTROL.changed().await;
+            }
+            continue;
+        }
         if suspended() {
             if power_status() == PeripheralState::Pending {
                 quiesce(&mut controller).await;
@@ -273,6 +391,95 @@ async fn connection(mut controller: WifiController<'static>) {
             continue;
         }
         perform(&mut controller, &mut retry, command, automatic).await;
+    }
+}
+
+fn ap_active() -> bool {
+    matches!(
+        access_point_state(),
+        device_api::server::AccessPointState::Up { .. }
+            | device_api::server::AccessPointState::Starting
+    )
+}
+
+fn station_config(config: Option<WifiConfig>) -> StationConfig {
+    match config {
+        Some(config) => StationConfig::default()
+            .with_ssid(config.ssid.text())
+            .with_password(config.password.text().into())
+            .with_auth_method(if config.wpa3 {
+                AuthenticationMethod::Wpa3Personal
+            } else {
+                AuthenticationMethod::Wpa2Personal
+            }),
+        None => StationConfig::default(),
+    }
+}
+
+/// Leave any association and turn the radio into a WPA2 access point.
+async fn start_access_point(
+    controller: &mut WifiController<'static>,
+    config: device_api::server::AccessPointConfig,
+) {
+    use device_api::server::AccessPointState;
+    ap_store(AccessPointState::Starting);
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+    Probe::Waiting.store();
+    if controller.is_connected()
+        && !matches!(
+            with_timeout(Duration::from_secs(5), controller.disconnect_async()).await,
+            Ok(Ok(_))
+        )
+    {
+        CONTROL.mark_uncertain();
+        Link::Failed.store();
+        ap_store(AccessPointState::Failed);
+        log::warn!(target: "wifi", "CYCLING_AP start_failed kind=disconnect");
+        return;
+    }
+    Link::Unconfigured.store();
+    AP_CLIENTS.store(0, Ordering::Relaxed);
+    let access_point = RadioAccessPoint::default()
+        .with_ssid(config.ssid.text())
+        .with_password(config.password.text().into())
+        .with_auth_method(AuthenticationMethod::Wpa2Personal)
+        .with_channel(6)
+        .with_max_connections(4);
+    match controller.set_config(&Config::AccessPoint(access_point)) {
+        Ok(()) => {
+            ap_store(AccessPointState::Up { clients: 0 });
+            log::info!(target: "wifi", "CYCLING_AP up heap_free={}", esp_alloc::HEAP.free());
+        }
+        Err(_) => {
+            ap_store(AccessPointState::Failed);
+            log::warn!(target: "wifi", "CYCLING_AP start_failed kind=config");
+        }
+    }
+}
+
+/// Return the radio to the station and reconnect it when it has a network.
+async fn stop_access_point(controller: &mut WifiController<'static>, retry: &mut Reconnect) {
+    use device_api::server::AccessPointState;
+    if access_point_state() == AccessPointState::Off {
+        return;
+    }
+    ap_store(AccessPointState::Stopping);
+    let config = critical_section::with(|cs| *CONFIGURATION.borrow_ref(cs));
+    if controller
+        .set_config(&Config::Station(station_config(config)))
+        .is_err()
+    {
+        ap_store(AccessPointState::Failed);
+        Link::Failed.store();
+        log::warn!(target: "wifi", "CYCLING_AP stop_failed");
+        return;
+    }
+    AP_CLIENTS.store(0, Ordering::Relaxed);
+    ap_store(AccessPointState::Off);
+    log::info!(target: "wifi", "CYCLING_AP off");
+    if config.is_some() && !suspended() {
+        retry.connect();
+        connect(controller, retry, true).await;
     }
 }
 
@@ -422,16 +629,11 @@ fn configure(
     config: Option<WifiConfig>,
     automatic: bool,
 ) {
-    if let Some(config) = config {
-        let station = StationConfig::default()
-            .with_ssid(config.ssid.text())
-            .with_password(config.password.text().into())
-            .with_auth_method(if config.wpa3 {
-                AuthenticationMethod::Wpa3Personal
-            } else {
-                AuthenticationMethod::Wpa2Personal
-            });
-        if controller.set_config(&Config::Station(station)).is_err() {
+    if config.is_some() {
+        if controller
+            .set_config(&Config::Station(station_config(config)))
+            .is_err()
+        {
             CONTROL.finish(automatic, Some(ControlError::ConfigurationFailed));
             return;
         }
@@ -485,6 +687,52 @@ async fn connect(controller: &mut WifiController<'static>, retry: &mut Reconnect
 #[embassy_executor::task]
 async fn network(mut runner: Runner<'static, Interface>) {
     runner.run().await
+}
+
+#[embassy_executor::task]
+async fn access_point_network(mut runner: Runner<'static, Interface>) {
+    runner.run().await
+}
+
+/// DHCP for phones on the access point: addresses only, no router or DNS,
+/// so a phone keeps its cellular route for everything else.
+#[embassy_executor::task]
+pub async fn access_point_dhcp(stack: Stack<'static>) {
+    let mut rx_meta = [PacketMetadata::EMPTY; 2];
+    let mut tx_meta = [PacketMetadata::EMPTY; 2];
+    // One DHCP message each way, in external RAM.
+    const MESSAGE: usize = 640;
+    const REPLY: usize = firmware_services::dhcp_server::REPLY_SIZE;
+    let Some(block) = crate::drivers::psram::zeroed(3 * MESSAGE + REPLY) else {
+        log::warn!(target: "wifi", "CYCLING_AP dhcp_no_memory");
+        return;
+    };
+    let (rx, rest) = block.split_at_mut(MESSAGE);
+    let (tx, rest) = rest.split_at_mut(MESSAGE);
+    let (request, reply) = rest.split_at_mut(MESSAGE);
+    let Ok(reply) = <&mut [u8; REPLY]>::try_from(reply) else {
+        return;
+    };
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, rx, &mut tx_meta, tx);
+    if socket.bind(67).is_err() {
+        log::warn!(target: "wifi", "CYCLING_AP dhcp_bind_failed");
+        return;
+    }
+    let mut server = firmware_services::dhcp_server::Server::new(AP_ADDRESS);
+    let broadcast =
+        embassy_net::IpEndpoint::new(embassy_net::IpAddress::v4(255, 255, 255, 255), 68);
+    loop {
+        let Ok((length, _)) = socket.recv_from(request).await else {
+            continue;
+        };
+        let now = Instant::now().as_millis();
+        if let Some(n) = server.handle(&request[..length], now, reply)
+            && socket.send_to(&reply[..n], broadcast).await.is_err()
+        {
+            log::warn!(target: "wifi", "CYCLING_AP dhcp_send_failed");
+        }
+        AP_CLIENTS.store(server.bound(now).min(255) as u8, Ordering::Relaxed);
+    }
 }
 
 #[embassy_executor::task]

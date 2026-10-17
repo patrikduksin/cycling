@@ -125,6 +125,41 @@ pub fn init(peripheral: PSRAM<'static>) -> Report {
     }
 }
 
+/// `len` zeroed bytes of external RAM for the program's lifetime, for
+/// buffers only tasks touch (never interrupts: flash writes disable the
+/// cache, but they also block the executor).
+pub fn zeroed(len: usize) -> Option<&'static mut [u8]> {
+    let layout = Layout::from_size_align(len, 4).ok()?;
+    // SAFETY: callers pass a non-zero size; the block is never freed.
+    let pointer = unsafe { allocate_external(layout) };
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: the allocator returned `len` writable bytes, zeroed here; the
+    // block is never deallocated and this is its only reference.
+    Some(unsafe {
+        ptr::write_bytes(pointer, 0, len);
+        core::slice::from_raw_parts_mut(pointer, len)
+    })
+}
+
+/// `value` moved into external RAM for the program's lifetime. Pass a
+/// constant, so a large value is copied from flash, not built on the stack.
+pub fn place<T>(value: T) -> Option<&'static mut T> {
+    let layout = Layout::new::<T>();
+    // SAFETY: callers place non-zero-sized values; the block is never freed.
+    let pointer = unsafe { allocate_external(layout) }.cast::<T>();
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: the block is aligned and sized for one `T`, initialized here,
+    // never freed and only referenced through this exclusive borrow.
+    Some(unsafe {
+        pointer.write(value);
+        &mut *pointer
+    })
+}
+
 pub fn external_free() -> usize {
     EXTERNAL_HEAP.free_caps(MemoryCapability::External.into())
 }

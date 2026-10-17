@@ -34,11 +34,15 @@ run = ["cargo fmt --all", "{{vars.devtools}} ruff format tools/devtools", "{{var
 
 [tasks.check]
 description = "Check formatting and lint host code"
-run = ["uv run --script tools/check-boundaries.py", "{{vars.devtools}} ruff format --check tools/devtools", "{{vars.devtools}} ruff check tools/devtools", "{{vars.terrain}} ruff format --check tools/terrain", "{{vars.terrain}} ruff check tools/terrain", "cargo check -p device-api --locked --features network-stack", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling,shell-simulator/live -- -D warnings", "cargo fmt --all -- --check"]
+run = ["uv run --script tools/check-boundaries.py", "uv run --script apps/vana/web/build.py --check", "{{vars.devtools}} ruff format --check tools/devtools", "{{vars.devtools}} ruff check tools/devtools", "{{vars.terrain}} ruff format --check tools/terrain", "{{vars.terrain}} ruff check tools/terrain", "cargo check -p device-api --locked --features network-stack", "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings", "cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling,shell-simulator/live -- -D warnings", "cargo fmt --all -- --check"]
 
 [tasks.terrain]
 description = "Build, validate or trace offline terrain packs (docs/terrain.md)"
 run = "{{vars.terrain}} cycling-terrain"
+
+[tasks.web]
+description = "Build the phone web client the device serves (apps/vana/web)"
+run = "uv run --script apps/vana/web/build.py"
 
 [tasks.backup]
 description = "Read and verify a private full-flash backup from stock"

@@ -105,6 +105,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 sound: board.sound,
                 sensors: board.sensors,
                 network: board.network,
+                server: board.server,
+                access_point: board.access_point,
                 input: board.input_observation,
                 power: board.power_control,
             },
@@ -178,6 +180,14 @@ async fn console(
                 sdk.attach_terrain(terrain);
             }
         }
+        // The phone session's indexes and response state live in external
+        // RAM, copied from a constant, so they cost no task stack.
+        const PHONE_WORK: vana::app::PhoneWork = vana::app::PhoneWork::new();
+        if let Some(work) = device::drivers::psram::place(PHONE_WORK) {
+            sdk.attach_phone(work);
+        }
+        let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
+        system.draw_canvas(240, 320, |row| view.paint(row));
     }
     #[cfg(feature = "cycling")]
     let mut terrain_step_max_us = 0u64;
@@ -270,6 +280,14 @@ async fn console(
                 sdk.look_ahead(&mut devices.bulk, now);
                 terrain_step_max_us = terrain_step_max_us.max(started.elapsed().as_micros());
             }
+            #[cfg(feature = "cycling")]
+            sdk.serve_phone(
+                &mut devices.server,
+                &mut devices.access_point,
+                &mut system.data_storage(),
+                &mut devices.bulk,
+                now,
+            );
             #[cfg(feature = "cycling")]
             sdk.present(&mut system, now, &devices.ant, &devices.position);
             #[cfg(feature = "cycling")]

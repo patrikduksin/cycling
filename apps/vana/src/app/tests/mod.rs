@@ -9,6 +9,7 @@ use device_api::observation::{Availability, Observation};
 use std::vec::Vec;
 
 mod commands;
+mod phone;
 mod power;
 mod presentation;
 mod recording;

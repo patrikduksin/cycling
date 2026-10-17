@@ -3,6 +3,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::night::NIGHT_PERCENT;
 use super::recording::{Medium, Request, RideMessage};
+use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
 use crate::screens::chrome::CONTENT;
@@ -316,8 +317,9 @@ impl Runtime {
     }
 
     /// Sound the cues and alarms due: the latest ride moment's cue, a closed
-    /// lap, and a vehicle closing from behind while on the ride screen,
-    /// which wins over any cue. A cue waits for the buzzer to be free, for
+    /// lap, a vehicle closing from behind while on the ride screen, which
+    /// wins over any cue, and the rider's alerts (`ride::alerts`), each with
+    /// a toast on the ride pages. A cue waits for the buzzer to be free, for
     /// up to a second. Call once per loop.
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
         if core::mem::take(&mut self.ride.lap_chime) {
@@ -328,13 +330,43 @@ impl Runtime {
         }
         // A workout's step cue says more than the lap or ride chime it echoes.
         self.workout_cue();
+        let radar = self.readings.radar.snapshot(now);
+        let settings = self.alert_settings();
+        let alert = self.alerts.update(
+            now,
+            &settings,
+            self.ride.active().status(),
+            self.ride.active_ms(now),
+            &self.readings.live,
+            radar,
+        );
         if self.navigation.page == Page::Ride {
-            let radar = self.readings.radar.snapshot(now);
             if self.readings.radar_alert.update(radar, now) {
                 self.cue(Cue::RadarApproach, now);
             }
+            if let Some(alert) = alert {
+                self.ride_alert(alert, now);
+            }
         }
         self.cues.play(sound, now);
+    }
+
+    /// Show `alert` as a toast and raise its cue.
+    fn ride_alert(&mut self, alert: Alert, now: u64) {
+        let tone = match alert {
+            Alert::Fuel => Tone::Info,
+            Alert::RadarClear => Tone::Good,
+            _ => Tone::Warn,
+        };
+        self.navigation
+            .show(Toast::new(alert.text().as_str(), tone), TOAST_MS, now);
+        let cue = match alert.cue() {
+            Some(AlertSound::Band) => Cue::BandAlert,
+            Some(AlertSound::Fuel) => Cue::Fuel,
+            Some(AlertSound::RadarClear) => Cue::RadarClear,
+            None => return,
+        };
+        self.cue(cue, now);
     }
 
     /// Raise `cue`, unless the rider muted cues and it is no safety alarm.
@@ -955,6 +987,19 @@ impl Runtime {
                 }
                 write!(value, "{}", on(options.sounds))
             }
+            Row::RadarAlerts => {
+                let _ = write!(note, "APPROACH ALARM STAYS ON");
+                write!(value, "{}", on(self.alert_settings().radar))
+            }
+            Row::FuelAlert => match self.alert_settings().fuel_every_min {
+                0 => write!(value, "OFF"),
+                min => write!(value, "EVERY {min} MIN"),
+            },
+            Row::CadenceLow => limit(value, self.alert_settings().cadence_low_rpm.into(), "RPM"),
+            Row::HeartHigh => limit(value, self.alert_settings().heart_high_bpm.into(), "BPM"),
+            Row::HeartLow => limit(value, self.alert_settings().heart_low_bpm.into(), "BPM"),
+            Row::PowerHigh => limit(value, self.alert_settings().power_high_w, "W"),
+            Row::PowerLow => limit(value, self.alert_settings().power_low_w, "W"),
             Row::Sensors => match self.preferences.sensors.peers().count() {
                 0 => write!(value, "NONE SAVED"),
                 count => write!(value, "{count} SAVED"),
@@ -1011,5 +1056,13 @@ fn radar_reports(readings: &super::readings::Readings, now: u64) -> super::motio
     super::motion::Reports {
         snapshot: readings.radar.snapshot(now),
         received_ms: readings.radar.received_ms(),
+    }
+}
+
+/// An alert limit's value: "OFF", or the limit in its unit.
+fn limit(value: &mut Text<38>, limit: u16, unit: &str) -> core::fmt::Result {
+    match limit {
+        0 => write!(value, "OFF"),
+        limit => write!(value, "{limit} {unit}"),
     }
 }

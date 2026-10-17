@@ -412,6 +412,36 @@ impl Runtime {
                     options.daylight,
                 )
             }
+            Row::RadarAlerts
+            | Row::FuelAlert
+            | Row::CadenceLow
+            | Row::HeartHigh
+            | Row::HeartLow
+            | Row::PowerHigh
+            | Row::PowerLow => {
+                use crate::ride::alerts as a;
+                let mut alerts = self.alert_settings();
+                match row {
+                    Row::RadarAlerts => alerts.radar = !alerts.radar,
+                    Row::FuelAlert => {
+                        alerts.fuel_every_min = after(&a::FUEL_MINUTES, alerts.fuel_every_min)
+                    }
+                    Row::CadenceLow => {
+                        alerts.cadence_low_rpm = after(&a::CADENCE_LOW_RPM, alerts.cadence_low_rpm)
+                    }
+                    Row::HeartHigh => {
+                        alerts.heart_high_bpm = after(&a::HEART_HIGH_BPM, alerts.heart_high_bpm)
+                    }
+                    Row::HeartLow => {
+                        alerts.heart_low_bpm = after(&a::HEART_LOW_BPM, alerts.heart_low_bpm)
+                    }
+                    Row::PowerHigh => {
+                        alerts.power_high_w = after(&a::POWER_HIGH_W, alerts.power_high_w)
+                    }
+                    _ => alerts.power_low_w = after(&a::POWER_LOW_W, alerts.power_low_w),
+                }
+                options.alerts = alerts.encode();
+            }
             _ => return,
         }
         if display != self.preferences.display {

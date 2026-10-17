@@ -69,6 +69,7 @@ pub struct Runtime {
     /// The look-ahead's state lives in the block composition gives it.
     lookahead: Option<&'static mut lookahead::Terrain>,
     motion: motion::Motion,
+    alerts: crate::ride::alerts::Alerts,
 }
 
 impl Runtime {
@@ -94,7 +95,30 @@ impl Runtime {
             night: night::Night::default(),
             lookahead: None,
             motion: motion::Motion::default(),
+            alerts: crate::ride::alerts::Alerts::default(),
         }
+    }
+
+    /// The rider's alert choices, from the preferences record; the defaults
+    /// if the stored bytes do not decode.
+    pub fn alert_settings(&self) -> crate::ride::alerts::Settings {
+        crate::ride::alerts::Settings::decode(&self.preferences.options.alerts).unwrap_or_default()
+    }
+
+    /// Use these alert choices and save them once edits settle. Invalid
+    /// settings are refused and the current ones kept.
+    pub fn set_alert_settings(
+        &mut self,
+        settings: crate::ride::alerts::Settings,
+        now: u64,
+    ) -> bool {
+        let valid = settings.valid();
+        if valid {
+            let mut options = self.preferences.options;
+            options.alerts = settings.encode();
+            self.set_options(options, now);
+        }
+        valid
     }
 
     /// Supply the monotonic clock used to measure synchronous recording work.

@@ -231,7 +231,15 @@ Only one toast shows at a time. From highest priority to lowest:
    page: CHARGING 64% (`Good`) when USB power arrives, LOW BATTERY 20% (`Warn`) as the charge falls to
    20%, and CHARGE SOON 10% (`Alert`) at 10% and again at 5%. Each level is
    announced once per discharge; charging re-arms them. A device switched on
-   already low says so only in its status bar.
+   already low says so only in its status bar. Ride alerts (`ride/alerts.rs`,
+   chosen under Settings ALERTS and LIMITS) show here on ride pages, each with
+   its cue: a limit broken for 10 s, HR HIGH 172, HR LOW 95, POWER HIGH 400W,
+   POWER LOW 120W or CADENCE LOW 60, is `Warn` and repeats every 2 min while it
+   lasts. EAT AND DRINK (`Info`) comes every chosen interval of ride time. The
+   radar count names each new vehicle behind, 2 VEHICLES (`Warn`, no cue: the
+   approach alarm already sounds), and ALL CLEAR (`Good`) follows 2 s after the
+   last one passed. All are off by default except the radar count. Limits
+   and reminders keep 3 s apart; radar alerts never wait.
 4. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
    hidden: the only one item 5 may replace is the bulk failure that moved

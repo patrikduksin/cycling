@@ -147,13 +147,14 @@ pub(super) fn toast(lap: Option<Lap>) -> Text<19> {
     toast
 }
 
-/// The status row under the content: a lap toast, the end-ride
-/// confirmation, or the recorder state. No button labels.
+/// The status row under the content: the end-ride confirmation, a lap
+/// toast, or the recorder state. No button labels.
 fn status_pixel(view: &View, x: usize, y: usize) -> u16 {
     if y <= CONTENT_BOTTOM {
         return 0;
     }
-    if !view.toast.as_bytes().is_empty() {
+    // An armed end ride outranks a lap toast: the next press saves.
+    if !view.stop_confirm && !view.toast.as_bytes().is_empty() {
         return if text(x, y, 6, STATUS_TEXT_TOP, 2, view.toast.as_bytes()) {
             0
         } else {

@@ -407,6 +407,11 @@ mod tests {
         view.stop_confirm = true;
         view.prepare();
         assert!(shows(&view, 6, 296, 2, b"PRESS AGAIN TO SAVE", 0xffe0));
+
+        // An armed end ride outranks a lap toast still showing.
+        two_laps(&mut view, 10, 250, 9000);
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"PRESS AGAIN TO SAVE", 0xffe0));
     }
 
     #[test]

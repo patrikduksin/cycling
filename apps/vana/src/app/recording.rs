@@ -106,6 +106,8 @@ impl Ride {
     pub(super) fn arm_stop(&mut self, now: u64) {
         self.stop_armed = Some(now);
         self.message = RideMessage::ConfirmStop;
+        // The confirmation replaces any lap toast still showing.
+        self.lap_toast = None;
     }
 
     pub(super) fn disarm_stop(&mut self) {

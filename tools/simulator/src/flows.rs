@@ -64,18 +64,30 @@ impl Sim {
 
     pub fn pause_ride(&mut self) {
         self.press(Button::BottomRight);
-        self.wait_for("PAUSED", seconds(2)).unwrap();
+        // A lap toast may cover the status row for up to two seconds.
+        self.wait_for("PAUSED", seconds(3)).unwrap();
     }
 
     pub fn resume_ride(&mut self) {
         self.press(Button::BottomRight);
-        self.wait_for("RECORDING", seconds(2)).unwrap();
+        self.wait_for("RECORDING", seconds(3)).unwrap();
+    }
+
+    /// The recorder state from `RIDE STATUS`, such as "recording"; the
+    /// status row can be showing a toast instead.
+    pub fn ride_state(&mut self) -> String {
+        let (_, status) = self.command("RIDE STATUS");
+        status
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix("state="))
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// Pause if still recording (only a paused ride ends), then press TopLeft
     /// twice, confirming on "PRESS AGAIN TO SAVE", and wait for the save.
     pub fn stop_ride(&mut self) {
-        if self.screen().run("RECORDING").is_some() {
+        if self.ride_state() == "recording" {
             self.pause_ride();
         }
         self.press(Button::TopLeft);
@@ -88,8 +100,9 @@ impl Sim {
     /// "LAP 1 05:00 200W".
     #[track_caller]
     pub fn lap(&mut self, number: u16) -> String {
-        assert!(
-            self.screen().run("RECORDING").is_some(),
+        assert_eq!(
+            self.ride_state(),
+            "recording",
             "TopLeft laps only a recording ride; screen:\n{}",
             self.screen().text()
         );

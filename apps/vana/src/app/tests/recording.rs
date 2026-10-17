@@ -351,3 +351,20 @@ fn totals_stop_at_an_accepted_finish_while_its_flush_is_pending() {
     assert_eq!(runtime.ride.recorder.status(), Status::Saved);
     assert_eq!(runtime.ride.totals.work_kj(), Some(2));
 }
+
+#[test]
+fn arming_end_ride_replaces_a_showing_lap_toast() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 1000);
+    runtime.input(press(Button::TopLeft), 5000, &mut radio);
+    assert!(runtime.ride.lap_toast(5000).is_some());
+    pause(&mut runtime, &mut journal, &mut radio, 5400);
+    // Within the toast's two seconds: the prompt must show, not the lap.
+    runtime.input(press(Button::TopLeft), 5800, &mut radio);
+    assert!(runtime.ride.stop_confirming(5800));
+    assert_eq!(runtime.ride.lap_toast(5800), None);
+}

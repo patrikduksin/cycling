@@ -760,3 +760,30 @@ fn ending_a_ride_needs_a_pause_first() {
     sim.press(Button::TopLeft);
     sim.expect_text("READY TO RIDE");
 }
+
+#[test]
+fn ending_a_ride_right_after_a_lap_shows_the_prompt() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(1));
+    sim.lap(1);
+    // The lap toast still covers the status row; pause and end anyway.
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.ride_state(), "paused");
+    sim.press(Button::TopLeft);
+    sim.expect_text("PRESS AGAIN TO SAVE");
+    sim.expect_no_text("LAP 1 ");
+    sim.checkpoint("end ride armed over a lap toast");
+    sim.press(Button::TopLeft);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+
+    // The helpers cope with a toast too: lap, then stop at once.
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(seconds(10));
+    sim.lap(1);
+    sim.stop_ride();
+    assert_eq!(sim.rides().len(), 2);
+}

@@ -135,7 +135,8 @@ fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
     for (at, page) in [
         (1400, RidePage::Stats),
         (1800, RidePage::Lap),
-        (2200, RidePage::Main),
+        (2200, RidePage::Climb),
+        (2600, RidePage::Main),
     ] {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
         assert!(runtime.navigation.page == Page::Ride);
@@ -181,10 +182,12 @@ fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
     runtime.input(press(Button::BottomLeft), 14_800, &mut radio);
     assert_eq!(runtime.navigation.ride_page, RidePage::Lap);
     runtime.input(press(Button::BottomLeft), 15_200, &mut radio);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    runtime.input(press(Button::BottomLeft), 15_600, &mut radio);
     assert!(runtime.navigation.page == Page::Ride);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-    runtime.input(press(Button::BottomLeft), 15_600, &mut radio);
-    runtime.input(press(Button::TopLeft), 16_000, &mut radio);
+    runtime.input(press(Button::BottomLeft), 16_000, &mut radio);
+    runtime.input(press(Button::TopLeft), 16_400, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
 }
@@ -367,4 +370,49 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
     runtime.input(press(Button::TopLeft), 5800, &mut radio);
     assert!(runtime.ride.stop_confirming(5800));
     assert_eq!(runtime.ride.lap_toast(5800), None);
+}
+
+#[test]
+fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
+    use crate::ride::climb::{Event as Climb, Summary};
+    let finished = Climb::Finished(Summary {
+        start_altitude_dm: 0,
+        gain_dm: 900,
+        length_mm: 1_500_000,
+        time_ms: 450_000,
+    });
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
+
+    // A climb shows the climb page; its end goes back to the stats.
+    runtime.navigation.follow_climb(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    runtime.navigation.follow_climb(finished);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
+
+    // Paging during a climb keeps the rider's choice when it ends.
+    runtime.navigation.follow_climb(Climb::Confirmed);
+    runtime.input(press(Button::BottomLeft), 2000, &mut radio);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    runtime.navigation.follow_climb(finished);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+
+    // Already on the climb page: it stays there after the climb.
+    for at in [3000, 3400, 3800] {
+        runtime.input(press(Button::BottomLeft), at, &mut radio);
+    }
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    runtime.navigation.follow_climb(Climb::Confirmed);
+    runtime.navigation.follow_climb(finished);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+
+    // Away from the ride screen climbs change nothing.
+    runtime.navigation.page = Page::Home;
+    runtime.navigation.ride_page = RidePage::Main;
+    runtime.navigation.follow_climb(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
 }

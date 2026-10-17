@@ -1,5 +1,6 @@
 //! Ride recorder ownership, request tokens and bounded recording work.
 use super::Runtime;
+use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::Step;
@@ -55,6 +56,8 @@ pub(super) struct Ride {
     lap_toast: Option<(u64, Lap)>,
     /// Time in each training zone, kept and reset with `totals`.
     pub(super) zone_time: ZoneTime,
+    /// Climb detection and the elevation profile, fed and reset with `totals`.
+    pub(super) climbs: Climbs,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
 }
@@ -72,6 +75,7 @@ impl Default for Ride {
             laps: Laps::default(),
             lap_toast: None,
             zone_time: ZoneTime::default(),
+            climbs: Climbs::default(),
             clock: None,
         }
     }
@@ -121,7 +125,8 @@ impl Ride {
     /// Add an odometer step to the totals, clipped to the active time the
     /// recorder accrued since the last step. An accepted pause or finish
     /// freezes active time at once, though the status stays Recording until
-    /// its flush completes; nothing after that moment counts.
+    /// its flush completes; nothing after that moment counts. Climbs follow
+    /// the totals' smoothed altitude; returns what changed about climbing.
     pub(super) fn count(
         &mut self,
         now: u64,
@@ -129,23 +134,28 @@ impl Ride {
         sample: &Sample,
         pressure_centi_pa: Option<u32>,
         profile: &TrainingProfile,
-    ) {
+    ) -> Option<ClimbEvent> {
         if self.recorder.status() != Status::Recording {
-            return;
+            return None;
         }
         let active = self.recorder.active_ms(now);
         let credited = active.saturating_sub(self.counted_ms).min(step.elapsed_ms);
         self.counted_ms = active;
         if credited == 0 {
-            return;
+            return None;
         }
         let distance_mm = step.distance_mm * credited / step.elapsed_ms;
         self.totals
             .add(credited, distance_mm, sample, pressure_centi_pa);
         self.zone_time.add(credited, sample, profile);
+        // Only a fresh reading is altitude for the climbs; the totals keep
+        // their last one through a gap, which would read as a level road.
+        let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
+        let climb = self.climbs.add(credited, distance_mm, altitude);
         if let Some(lap) = self.laps.add(credited, distance_mm, sample, now) {
             self.lap_closed(lap, now);
         }
+        climb
     }
 
     /// Show a finished lap in the status row.
@@ -187,6 +197,8 @@ impl Runtime {
             self.ride.laps = Laps::default();
             self.ride.lap_toast = None;
             self.ride.zone_time = ZoneTime::default();
+            self.ride.climbs = Climbs::default();
+            self.navigation.climb_return = None;
         }
         if let Some(result) = self.ride.recorder.take_result() {
             self.ride.request = Request::Completed(result);

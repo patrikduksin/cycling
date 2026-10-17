@@ -223,6 +223,7 @@ impl Runtime {
     /// BottomLeft steps through the ride pages, wrapping after the last.
     fn next_ride_page(&mut self) {
         let navigation = &mut self.navigation;
-        navigation.ride_page = navigation.ride_page.next().unwrap_or(RidePage::Main);
+        let next = navigation.ride_page.next().unwrap_or(RidePage::Main);
+        navigation.ride_page_chosen(next);
     }
 }

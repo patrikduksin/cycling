@@ -1,3 +1,4 @@
+pub mod climb;
 pub mod control;
 pub mod laps;
 pub mod log;

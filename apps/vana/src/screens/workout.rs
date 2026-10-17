@@ -1,5 +1,6 @@
 //! VANA workout rendering.
-use super::ride::{self, Marks, RidePage, Values};
+use super::ride::{self, ClimbFrame, Marks, RidePage, Values};
+use crate::ride::climb::Climbs;
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
 use crate::ride::totals::Totals;
@@ -39,6 +40,8 @@ pub struct View {
     /// A just-finished lap the status row announces.
     pub lap_toast: Option<Lap>,
     pub ride_page: RidePage,
+    /// Climbs and the elevation profile; only the climb page reads them.
+    pub climbs: Climbs,
     /// What the ride page prepared for this frame.
     pub(super) values: Values,
     /// The status-row lap announcement prepared for this frame, if any.
@@ -52,6 +55,8 @@ pub struct View {
     pub profile: TrainingProfile,
     /// Zone colours and gauges prepared for this frame.
     pub(super) marks: Marks,
+    /// The climb page's chart, prepared with `values`.
+    pub(super) climb: ClimbFrame,
     pub page: Page,
     /// The highlighted Home choice, or the selected Settings field.
     pub cursor: usize,
@@ -91,6 +96,7 @@ impl View {
             lap_toast: None,
             ride_page: RidePage::Main,
             storage_left_s: None,
+            climbs: Climbs::default(),
             values: core::array::from_fn(|_| Text::new()),
             zone_time: ZoneTime::default(),
             profile: TrainingProfile::default(),
@@ -98,6 +104,7 @@ impl View {
             toast: Text::new(),
             state_text: Text::new(),
             state_warns: false,
+            climb: ClimbFrame::default(),
             page,
             cursor,
             editing: false,
@@ -213,7 +220,7 @@ impl View {
     }
     pub fn prepare(&mut self) {
         if self.page == Page::Ride {
-            self.values = ride::prepare(self);
+            ride::prepare(self);
             self.toast = ride::toast(self.lap_toast);
             self.prepare_state();
             self.marks = ride::marks(self);
@@ -325,7 +332,7 @@ mod tests {
         view.active_secs = 3725;
         view.state = Status::Recording;
         view.prepare();
-        assert!(shows(&view, 72, 7, 2, b"1/3", 0x8410));
+        assert!(shows(&view, 72, 7, 2, b"1/4", 0x8410));
         assert!(shows(&view, 38, 54, 6, b"29.9", WHITE));
         assert!(shows(&view, 38, 124, 4, b"250", WHITE));
         // 250 W is Z5 at the default FTP: black on an orange chip, and the
@@ -371,7 +378,7 @@ mod tests {
         }
         view.state = Status::Paused;
         view.prepare();
-        assert!(shows(&view, 72, 7, 2, b"2/3", 0x8410));
+        assert!(shows(&view, 72, 7, 2, b"2/4", 0x8410));
         assert!(shows(&view, 34, 36, 1, b"DISTANCE KM", 0x8410));
         assert!(shows(&view, 34, 46, 3, b"5.00", WHITE));
         assert!(shows(&view, 141, 49, 2, b"00:10:00", WHITE));
@@ -432,7 +439,7 @@ mod tests {
         two_laps(&mut view, 125, 250, 9000);
         view.lap_toast = None;
         view.prepare();
-        assert!(shows(&view, 72, 7, 2, b"3/3", 0x8410));
+        assert!(shows(&view, 72, 7, 2, b"3/4", 0x8410));
         assert!(shows(&view, 38, 38, 1, b"LAP TIME", 0x8410));
         assert!(shows(&view, 146, 34, 2, b"LAP 2", CYAN));
         assert!(shows(&view, 38, 54, 6, b"02:05", WHITE));

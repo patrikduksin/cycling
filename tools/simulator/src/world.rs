@@ -31,6 +31,8 @@ pub struct World {
     pub vehicles: Vec<Vehicle>,
     /// Barometric pressure follows elevation when set; a route with elevation sets it.
     pub elevation_m: Option<f64>,
+    /// The barometer stops reporting while set.
+    pub barometer_lost: bool,
     /// Where the rider is, by distance along this route.
     pub route: Option<Route>,
 }
@@ -62,6 +64,9 @@ impl World {
 
     /// Standard-atmosphere pressure at the current elevation, in centipascals.
     pub fn pressure_centi_pa(&self) -> Option<u32> {
+        if self.barometer_lost {
+            return None;
+        }
         let elevation = self.elevation_m?;
         let pascal = 101_325.0 * (1.0 - 2.255_77e-5 * elevation).powf(5.255_88);
         Some((pascal * 100.0) as u32)

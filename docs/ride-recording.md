@@ -98,7 +98,10 @@ laps or ends a ride.
 | Recording | Pause | Next page, wrapping | Lap |
 | Paused | Resume | Next page, wrapping | End ride: a second press within three seconds (toast `PRESS AGAIN TO SAVE`) finishes and commits the final samples; wait for `saved` before powering off |
 
-The pages are live, totals and lap; the header shows `1/3`.
+The pages are live, totals, lap and climb; the header shows `1/4`. A
+confirmed climb (3% over 200 m that gains 20 m) brings up the climb page, and
+its end returns to the previous page unless the rider changed page during the
+climb.
 
 Laps:
 

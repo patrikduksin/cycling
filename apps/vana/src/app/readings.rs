@@ -244,7 +244,9 @@ impl Runtime {
         };
         if let Some(step) = step {
             let profile = self.preferences.profile;
-            self.ride.count(now, step, &sample, pressure, &profile);
+            if let Some(event) = self.ride.count(now, step, &sample, pressure, &profile) {
+                self.navigation.follow_climb(event);
+            }
         }
         self.readings.live = sample;
         sample

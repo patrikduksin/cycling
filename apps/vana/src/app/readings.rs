@@ -63,6 +63,101 @@ pub(super) struct Readings {
     pub(super) radar: Radar,
     pub(super) radar_alert: Alert,
     epochs: [Option<Epoch>; Decoded::ALL.len()],
+    pub(super) battery: BatteryWatch,
+}
+
+/// Battery levels the rider is told about once per discharge, and whether
+/// each is critical.
+pub(super) const BATTERY_WARNINGS: [(u8, bool); 3] = [(20, false), (10, true), (5, true)];
+
+/// News about the battery worth a toast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BatteryNews {
+    /// USB power arrived; the charge it started from.
+    Charging(u8),
+    /// The charge fell to this level.
+    Low(u8),
+    /// The charge fell to this level and a ride may not last.
+    Critical(u8),
+}
+
+impl BatteryNews {
+    pub(super) fn toast(self) -> crate::screens::chrome::Toast {
+        use crate::screens::chrome::{Toast, Tone};
+        use core::fmt::Write;
+        let mut text = crate::screens::workout::Text::<20>::new();
+        let tone = match self {
+            Self::Charging(percent) => {
+                let _ = write!(text, "CHARGING {percent}%");
+                Tone::Good
+            }
+            Self::Low(percent) => {
+                let _ = write!(text, "LOW BATTERY {percent}%");
+                Tone::Warn
+            }
+            Self::Critical(percent) => {
+                let _ = write!(text, "CHARGE SOON {percent}%");
+                Tone::Alert
+            }
+        };
+        Toast::new(text.as_str(), tone)
+    }
+}
+
+/// The battery as the device last reported it, and which warnings this
+/// discharge has given. Warnings fire once as the charge falls through each
+/// level and are given again only after charging.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct BatteryWatch {
+    percent: Option<u8>,
+    charging: Option<bool>,
+    /// The lowest warning level already given since the last charge.
+    warned: Option<u8>,
+}
+
+impl BatteryWatch {
+    /// USB power is connected: stock reads companion power status zero as
+    /// charging.
+    pub(super) fn charging(&self) -> bool {
+        self.charging == Some(true)
+    }
+
+    /// Take a new report; returns news for the rider, if any. The first
+    /// report only sets the scene: a device switched on low or on USB says
+    /// so in its status bar, not with a toast.
+    pub(super) fn observe(
+        &mut self,
+        percent: Option<u8>,
+        charging: Option<bool>,
+    ) -> Option<BatteryNews> {
+        let first = self.percent.is_none();
+        let plugged = charging == Some(true) && self.charging == Some(false);
+        if charging.is_some() {
+            self.charging = charging;
+        }
+        if percent.is_some() {
+            self.percent = percent;
+        }
+        let percent = self.percent?;
+        if self.charging() {
+            self.warned = None;
+            return plugged.then_some(BatteryNews::Charging(percent));
+        }
+        // Levels already below on the first report count as told.
+        let due = BATTERY_WARNINGS
+            .iter()
+            .filter(|(level, _)| percent <= *level)
+            .rfind(|(level, _)| self.warned.is_none_or(|warned| *level < warned))
+            .copied();
+        let (level, critical) = due?;
+        self.warned = Some(level);
+        let news = if critical {
+            BatteryNews::Critical(percent)
+        } else {
+            BatteryNews::Low(percent)
+        };
+        (!first).then_some(news)
+    }
 }
 
 impl Default for Readings {
@@ -78,6 +173,7 @@ impl Default for Readings {
             radar: Radar::new(),
             radar_alert: Alert::default(),
             epochs: [None; Decoded::ALL.len()],
+            battery: BatteryWatch::default(),
         }
     }
 }
@@ -258,5 +354,52 @@ impl Runtime {
         }
         self.readings.live = sample;
         sample
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatteryNews, BatteryWatch};
+
+    #[test]
+    fn each_low_level_warns_once_per_discharge_and_charging_rearms_them() {
+        let mut watch = BatteryWatch::default();
+        let mut feed = |percent, charging| watch.observe(Some(percent), Some(charging));
+        // Switched on low: the status bar says so, no toast.
+        assert_eq!(feed(18, false), None);
+        assert_eq!(feed(15, false), None, "20% was already passed");
+        assert_eq!(feed(10, false), Some(BatteryNews::Critical(10)));
+        assert_eq!(feed(9, false), None);
+        assert_eq!(feed(4, false), Some(BatteryNews::Critical(4)));
+        assert_eq!(feed(3, false), None);
+        assert_eq!(feed(3, true), Some(BatteryNews::Charging(3)));
+        assert_eq!(feed(30, true), None);
+        assert_eq!(feed(30, false), None, "unplugging is quiet");
+        assert_eq!(feed(20, false), Some(BatteryNews::Low(20)));
+        // A sudden drop past two levels gives only the more urgent one.
+        assert_eq!(feed(9, false), Some(BatteryNews::Critical(9)));
+        assert_eq!(feed(5, false), Some(BatteryNews::Critical(5)));
+    }
+
+    #[test]
+    fn missing_reports_keep_the_last_known_state() {
+        let mut watch = BatteryWatch::default();
+        assert_eq!(watch.observe(None, None), None);
+        assert!(!watch.charging());
+        assert_eq!(watch.observe(Some(50), Some(false)), None);
+        assert_eq!(
+            watch.observe(None, Some(true)),
+            Some(BatteryNews::Charging(50))
+        );
+        assert!(watch.charging());
+        assert_eq!(watch.observe(Some(51), None), None);
+        assert!(watch.charging());
+    }
+
+    #[test]
+    fn battery_toasts_read_as_news() {
+        assert_eq!(BatteryNews::Charging(64).toast().text(), b"CHARGING 64%");
+        assert_eq!(BatteryNews::Low(20).toast().text(), b"LOW BATTERY 20%");
+        assert_eq!(BatteryNews::Critical(5).toast().text(), b"CHARGE SOON 5%");
     }
 }

@@ -368,6 +368,7 @@ impl Session {
     /// One pass of the firmware loop, in the order C606 composition runs it.
     pub fn tick(&mut self) {
         if self.off {
+            self.standby();
             return;
         }
         if let Some((at, ant)) = self.companion_boot_ms
@@ -468,8 +469,34 @@ impl Session {
             self.sdk.power(&mut self.shell, &mut self.switch, self.now);
         }
     }
+    /// Off on USB power the C606 rests in charging standby: VANA shows the
+    /// charge for a while, then the panel goes dark. Off on battery, nothing
+    /// runs at all.
+    fn standby(&mut self) {
+        let charging = self.battery.charging;
+        if !charging {
+            self.power.0.borrow_mut().brightness = 0;
+        }
+        #[cfg(feature = "cycling")]
+        if charging {
+            self.power.0.borrow_mut().battery = self
+                .battery
+                .level
+                .map(|(percent, mv)| (percent, mv, self.now));
+            let lit = self.sdk.standby(&mut self.shell, &self.battery, self.now);
+            self.power.0.borrow_mut().brightness = if lit {
+                self.shell.settings.brightness
+            } else {
+                0
+            };
+        }
+    }
+    /// The panel shows something while the device is off: charging standby.
+    pub fn standby_lit(&self) -> bool {
+        self.off && self.power.0.borrow().brightness > 0
+    }
     /// The coordinated shutdown finished: the backlight is dark and nothing
-    /// runs. On USB the C606 rests in charging standby, which looks the same.
+    /// runs, unless USB power keeps the device in charging standby.
     fn turn_off(&mut self) {
         self.off = true;
         self.power.0.borrow_mut().brightness = 0;

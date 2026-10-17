@@ -4,7 +4,7 @@ use super::recording::{Medium, Request, RideMessage};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
 use crate::screens::chrome::CONTENT;
-use crate::screens::chrome::{Gps, Toast, Tone};
+use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Toast, Tone};
 use crate::screens::gesture::Gestures;
 use crate::screens::home::{Home, last_ride};
 use crate::screens::power::Sheet as PowerSheet;
@@ -32,11 +32,16 @@ pub(super) const BRAND_MS: u64 = 400;
 /// The connection check yields to the ride page after this long.
 const PREFLIGHT_MS: u64 = 2500;
 const ANIMATED_FRAME_MS: u64 = 500;
+/// Motion (the brand reveal, the farewell) draws at this cadence: a frame
+/// takes about 25 ms on the C606, so this leaves the loop free between them.
+pub(super) const MOTION_FRAME_MS: u64 = 40;
 const STATIC_FRAME_MS: u64 = 1000;
 /// Radar alerts use the longest pattern that still fits between radar pages.
 const ALERT_PATTERN_MAX_MS: u16 = 300;
 /// How long a confirmation or hint stays over the content.
 pub(super) const TOAST_MS: u64 = 2000;
+/// Battery news stays a little longer than a confirmation.
+pub(super) const BATTERY_TOAST_MS: u64 = 4000;
 /// How long a ride without wheel speed notes that auto-pause is off.
 const NO_SPEED_NOTE_MS: u64 = 8000;
 
@@ -70,6 +75,11 @@ impl Navigation {
     /// Show `message` over the content for a moment, replacing any other.
     pub(super) fn toast(&mut self, message: &str, tone: Tone, now: u64) {
         self.toast = Some((Toast::new(message, tone), now.saturating_add(TOAST_MS)));
+    }
+
+    /// Show `toast` for `ms`, replacing any other.
+    pub(super) fn show(&mut self, toast: Toast, ms: u64, now: u64) {
+        self.toast = Some((toast, now.saturating_add(ms)));
     }
 
     /// Announce a recorder state change, from any source, once.
@@ -185,9 +195,15 @@ impl Runtime {
         if now < *next_frame_ms {
             return;
         }
-        let animated = matches!(self.navigation.page, Page::Boot | Page::Ride)
-            || matches!(self.power.view(), Some(PowerSheet::Warning { .. }));
-        *next_frame_ms = now.saturating_add(if animated {
+        let sheet = self.power.view();
+        let motion = matches!(sheet, Some(PowerSheet::TurningOff { .. }))
+            || (sheet.is_none() && self.navigation.page == Page::Boot);
+        let animated = self.navigation.page == Page::Ride
+            || sheet.is_some_and(PowerSheet::animated)
+            || self.readings.battery.charging();
+        *next_frame_ms = now.saturating_add(if motion {
+            MOTION_FRAME_MS
+        } else if animated {
             ANIMATED_FRAME_MS
         } else {
             STATIC_FRAME_MS
@@ -253,6 +269,7 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
+        self.power.animate(now);
         if let Some(sheet) = self.power.view() {
             let canvas = sheet.canvas();
             system.draw_canvas(240, 320, |row| PowerSheet::paint(&canvas, row));
@@ -319,7 +336,11 @@ impl Runtime {
             Some(_) => Gps::Searching,
         };
         view.battery = match system.battery {
-            Observation::Fresh { value, .. } | Observation::Stale { value, .. } => Some(value.0),
+            Observation::Fresh { value, .. } | Observation::Stale { value, .. } => Some(Battery {
+                percent: value.0,
+                charging: self.readings.battery.charging(),
+                phase: (now / ANIMATED_FRAME_MS % u64::from(CHARGE_STEPS)) as u8,
+            }),
             Observation::Unavailable => None,
         };
         if page != Page::Boot {
@@ -334,7 +355,10 @@ impl Runtime {
             }
         });
         match page {
-            Page::Boot => self.boot_lines(&mut view, now, ant, gps_status),
+            Page::Boot => {
+                let shown = now.saturating_sub(first_frame).min(BRAND_MS);
+                view.reveal = (shown * u64::from(crate::screens::brand::DONE) / BRAND_MS) as u16;
+            }
             Page::Preflight => self.preflight_lines(&mut view, now, ant, gps_status),
             Page::Ride => {
                 // Keep the screen lit while riding; a finished ride may dim and idle off.
@@ -528,20 +552,6 @@ impl Runtime {
             _ => return None,
         };
         Some(Toast::new(text, Tone::Info))
-    }
-
-    fn boot_lines(&self, view: &mut View, now: u64, ant: &impl Ant, gps_status: &str) {
-        let line = &mut view.lines[0];
-        let _ = match (now / 1000) % 3 {
-            0 => write!(line, "COMPANION {}", self.startup_status),
-            1 => write!(line, "RADIO {:?} / GPS {}", ant.availability(), gps_status),
-            _ => write!(
-                line,
-                "STORAGE {} {}",
-                self.ride.medium().label(),
-                self.ride.active().status().name()
-            ),
-        };
     }
 
     pub(super) fn preflight_lines(

@@ -24,7 +24,12 @@ const TURNING_OFF_ATTEMPTS: u8 = 3;
 /// GPS movement beyond this (about 30 m, in 1e-7 degrees) counts as activity.
 const MOVED_E7: i32 = 2_700;
 
+/// The farewell runs this long before VANA asks the device to turn off.
+pub const FAREWELL_MS: u64 = 480;
+
 pub(super) const TURNING_OFF: Sheet = Sheet::TurningOff {
+    started: None,
+    progress: 0,
     drawn: false,
     failed: 0,
 };
@@ -36,8 +41,12 @@ pub(super) enum Sheet {
     Confirm {
         since: u64,
     },
-    /// "TURNING OFF" is on its way to the panel; the request follows once drawn.
+    /// The farewell is on its way to the panel; the request follows once
+    /// its last, black frame is drawn. `progress` is in thousandths of
+    /// `FAREWELL_MS` from the first frame, `started`.
     TurningOff {
+        started: Option<u64>,
+        progress: u16,
         drawn: bool,
         failed: u8,
     },
@@ -129,6 +138,7 @@ pub(super) struct Power {
     /// The unsaved edit the rider was told about; turning off again discards
     /// that edit only. A later edit is reported again.
     unsaved_warned: Option<u32>,
+    pub(super) standby: Standby,
 }
 
 impl Default for Power {
@@ -141,6 +151,7 @@ impl Default for Power {
             last_activity_ms: 0,
             anchor_e7: None,
             unsaved_warned: None,
+            standby: Standby::default(),
         }
     }
 }
@@ -191,12 +202,29 @@ impl Power {
     pub(super) fn view(&self) -> Option<View> {
         match self.sheet {
             Sheet::Confirm { .. } => Some(View::Confirm),
-            Sheet::TurningOff { .. } | Sheet::Requested { .. } => Some(View::TurningOff),
+            Sheet::TurningOff { progress, .. } => Some(View::TurningOff { progress }),
+            Sheet::Requested { .. } => Some(View::TurningOff {
+                progress: crate::screens::brand::DONE,
+            }),
             Sheet::Closed => match self.auto {
                 AutoOff::Warning { seconds } => Some(View::Warning { seconds }),
-                AutoOff::Due => Some(View::TurningOff),
+                AutoOff::Due => Some(View::TurningOff { progress: 0 }),
                 AutoOff::Awake => None,
             },
+        }
+    }
+}
+
+impl Power {
+    /// Move the farewell on to `now`, before its frame is drawn.
+    pub(super) fn animate(&mut self, now: u64) {
+        if let Sheet::TurningOff {
+            started, progress, ..
+        } = &mut self.sheet
+        {
+            let since = *started.get_or_insert(now);
+            let elapsed = now.saturating_sub(since).min(FAREWELL_MS);
+            *progress = (elapsed * u64::from(crate::screens::brand::DONE) / FAREWELL_MS) as u16;
         }
     }
 }
@@ -228,13 +256,20 @@ impl Runtime {
     }
 
     /// A sheet frame was submitted; `ok` is whether the panel accepted it.
-    /// A rejected TURNING OFF frame is drawn again before shutdown proceeds.
+    /// The farewell is done once its last frame is on the panel; a rejected
+    /// frame is drawn again before shutdown proceeds.
     pub(super) fn power_drawn(&mut self, ok: bool) {
         // A frame VANA could not draw at all (another owner has the panel)
         // counts as a failed attempt, so shutdown is still bounded.
-        if let Sheet::TurningOff { drawn, failed } = &mut self.power.sheet {
+        if let Sheet::TurningOff {
+            drawn,
+            failed,
+            progress,
+            ..
+        } = &mut self.power.sheet
+        {
             if ok {
-                *drawn = true;
+                *drawn |= *progress >= crate::screens::brand::DONE;
             } else {
                 *failed = failed.saturating_add(1);
                 *drawn = *failed >= TURNING_OFF_ATTEMPTS;
@@ -337,5 +372,78 @@ impl Runtime {
         if self.power.view() != before {
             self.display.redraw();
         }
+    }
+}
+
+/// While VANA is off on USB power the charge shows for this long, then the
+/// screen goes dark until the rider turns VANA on.
+pub const STANDBY_LIT_MS: u64 = 20_000;
+/// Charging standby frames: often enough for the charging animation.
+const STANDBY_FRAME_MS: u64 = 500;
+
+/// Charging standby as VANA draws it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Standby {
+    /// When standby began; `None` while VANA runs.
+    since: Option<u64>,
+    next_frame_ms: u64,
+    /// The dark frame after the lit period is on the panel.
+    dark: bool,
+}
+
+impl Runtime {
+    /// Draw charging standby: the device rests on USB power with VANA off
+    /// (`device_api::power::State::Charging`), and nothing else runs.
+    /// Composition calls this each pass in that state and keeps the
+    /// backlight on while it returns `true`; afterwards the screen is dark.
+    pub fn standby<D, I, P, B>(
+        &mut self,
+        system: &mut Shell<D, I, P, B>,
+        input: &impl device_api::input::InputObservation,
+        now: u64,
+    ) -> bool
+    where
+        D: device_api::display::Display,
+        I: device_api::input::InputSource,
+        P: device_api::power::Power,
+        B: device_api::storage::OwnedFlash,
+    {
+        let standby = &mut self.power.standby;
+        let since = *standby.since.get_or_insert(now);
+        let lit = now.saturating_sub(since) < STANDBY_LIT_MS;
+        if !lit {
+            if !standby.dark {
+                system.draw_canvas(240, 320, |row| row.fill(crate::screens::chrome::BLACK));
+                standby.dark = !system.display_error;
+            }
+            return false;
+        }
+        if now < standby.next_frame_ms {
+            return true;
+        }
+        standby.next_frame_ms = now.saturating_add(STANDBY_FRAME_MS);
+        let snapshot = input.snapshot(now);
+        let percent = snapshot.and_then(|s| match s.battery {
+            Observation::Fresh { value, .. } | Observation::Stale { value, .. } => Some(value.0),
+            Observation::Unavailable => None,
+        });
+        let charging = snapshot.is_some_and(|s| {
+            matches!(
+                s.power,
+                Observation::Fresh { value: 0, .. } | Observation::Stale { value: 0, .. }
+            )
+        });
+        let sheet = View::Charging {
+            battery: crate::screens::chrome::Battery {
+                percent: percent.unwrap_or(0),
+                charging,
+                phase: (now / STANDBY_FRAME_MS % u64::from(crate::screens::chrome::CHARGE_STEPS))
+                    as u8,
+            },
+            known: percent.is_some(),
+        };
+        let canvas = sheet.canvas();
+        system.draw_canvas(240, 320, |row| View::paint(&canvas, row));
+        true
     }
 }

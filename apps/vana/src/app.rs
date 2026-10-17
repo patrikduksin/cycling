@@ -22,7 +22,9 @@ mod sensor_links;
 mod tests;
 mod timing;
 
-pub use power::{AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, Idle, auto_off};
+pub use power::{
+    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
+};
 
 /// Observations recorded with each ride sample, beyond the radios VANA drives.
 pub struct Observations<'a, P, I> {
@@ -158,6 +160,20 @@ impl Runtime {
                 channel.link == device_api::ant::LinkState::Connected && !channel.stale
             });
         self.power.observe(now, &sample, live_sensors, power_status);
+        let charging = match power_status {
+            device_api::observation::Observation::Fresh { value, .. }
+            | device_api::observation::Observation::Stale { value, .. } => Some(value == 0),
+            device_api::observation::Observation::Unavailable => None,
+        };
+        if let Some(news) = self
+            .readings
+            .battery
+            .observe(sample.battery_percent, charging)
+        {
+            self.navigation
+                .show(news.toast(), presentation::BATTERY_TOAST_MS, now);
+            self.display.redraw();
+        }
         self.note_milestones(now, ant, &sample);
         self.record(store, bulk, now, sample);
     }

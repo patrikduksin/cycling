@@ -432,12 +432,12 @@ impl Runtime {
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
         let mut radar = radar_reports(&self.readings, now);
-        let mut shown = shown_sample(&self.readings);
-        self.motion.show(&mut shown, &mut radar, now);
-        view.power_3s = shown.power_watts;
+        let mut sample = shown_sample(&self.readings);
+        self.motion.show(&mut sample, &mut radar, now);
+        view.power_3s = sample.power_watts;
         view.sample = crate::ride::log::Sample {
             power_watts: self.readings.live.power_watts,
-            ..shown
+            ..sample
         };
         view.radar = radar.snapshot;
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();

@@ -10,6 +10,7 @@ use device_api::{
 };
 
 mod commands;
+mod cues;
 mod input;
 mod power;
 mod preferences;
@@ -50,6 +51,7 @@ pub struct Runtime {
     preferences: preferences::Preferences,
     power: power::Power,
     timing: timing::Timing,
+    cues: cues::Cues,
 }
 
 impl Runtime {
@@ -68,6 +70,7 @@ impl Runtime {
             preferences: preferences::Preferences::default(),
             power: power::Power::default(),
             timing: timing::Timing::default(),
+            cues: cues::Cues::default(),
         }
     }
 
@@ -172,6 +175,9 @@ impl Runtime {
         {
             self.navigation
                 .show(news.toast(), presentation::BATTERY_TOAST_MS, now);
+            if news.warning() {
+                self.cue(cues::Cue::LowBattery, now);
+            }
             self.display.redraw();
         }
         self.note_milestones(now, ant, &sample);

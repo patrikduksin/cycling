@@ -267,6 +267,8 @@ impl View {
             }
             Page::Settings => {
                 self.canvas = super::settings::prepare(self);
+                let (section, _) = super::settings::section(self.cursor);
+                self.bar.set_pages(section, super::settings::SECTIONS.len());
                 &[]
             }
             Page::Ready => {

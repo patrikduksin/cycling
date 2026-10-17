@@ -268,7 +268,7 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     run(&mut runtime, &mut radio, 6200, 120_000);
     assert_eq!(radio.connects(heart), connects);
     // A restart with the saved record does not reconnect it either.
-    let record = preferences::encode(runtime.preferences.profile, &runtime.preferences.sensors);
+    let record = preferences::encode(&runtime.preferences.record());
     let mut restarted = Runtime::new(Profile::HeartRate);
     restarted.load_preferences(&firmware_shell::preferences::AppPreferences::new(&record).unwrap());
     let mut fresh = Radio::new();

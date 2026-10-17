@@ -91,6 +91,8 @@ pub(super) struct Ride {
     counted_ms: u64,
     /// This ride's laps, reset with the totals.
     pub(super) laps: Laps,
+    /// Lap distance that closes an automatic lap, from the rider's options.
+    pub(super) auto_lap_mm: Option<u64>,
     /// The last finished lap and when it closed, for the status-row toast.
     lap_toast: Option<(u64, Lap)>,
     /// Time in each training zone, kept and reset with `totals`.
@@ -145,6 +147,7 @@ impl Default for Ride {
             totals: Totals::default(),
             counted_ms: 0,
             laps: Laps::default(),
+            auto_lap_mm: Some(crate::ride::laps::AUTO_LAP_MM),
             lap_toast: None,
             zone_time: ZoneTime::default(),
             efforts: Efforts::default(),
@@ -366,7 +369,10 @@ impl Ride {
         if let Some(ClimbEvent::Finished(_)) = climb {
             self.climbs_done = self.climbs_done.saturating_add(1);
         }
-        if let Some(lap) = self.laps.add(credited, distance_mm, &sample, now) {
+        if let Some(lap) =
+            self.laps
+                .add_every(credited, distance_mm, &sample, now, self.auto_lap_mm)
+        {
             self.lap_closed(lap, now);
         }
         climb
@@ -442,6 +448,9 @@ impl Runtime {
     /// Pause, resume or start the ride from its speed source (see `ride::auto`),
     /// through the same request path as the buttons.
     pub(super) fn auto_control(&mut self, now: u64) {
+        if !self.preferences.options.auto_pause {
+            return;
+        }
         // A ride moving to internal media keeps its automatic pause: the
         // continuation passes through Ready and Recording before it pauses.
         if self.ride.pending() || self.ride.host_completion_unread() || self.ride.moving() {

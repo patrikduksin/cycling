@@ -6,7 +6,7 @@
 //! main page shows; average speed is distance over moving time, as in the
 //! totals. A rider's lap closes the current lap unless another lap closed less
 //! than `DEBOUNCE_MS` before; an automatic lap closes it every `AUTO_LAP_MM`
-//! of lap distance. Both count in one numbered list, and the latest `HISTORY`
+//! of lap distance, or the distance the rider chose (`add_every`). Both count in one numbered list, and the latest `HISTORY`
 //! summaries are kept. Laps live in RAM only: the ride journal has no lap
 //! record that older readers would skip, so power-off loses them.
 use crate::ride::log::Sample;
@@ -121,8 +121,22 @@ impl Laps {
         sample: &Sample,
         now_ms: u64,
     ) -> Option<Lap> {
+        self.add_every(elapsed_ms, distance_mm, sample, now_ms, Some(AUTO_LAP_MM))
+    }
+
+    /// `add` with automatic laps every `every_mm` of lap distance, or none.
+    pub fn add_every(
+        &mut self,
+        elapsed_ms: u64,
+        distance_mm: u64,
+        sample: &Sample,
+        now_ms: u64,
+        every_mm: Option<u64>,
+    ) -> Option<Lap> {
         self.current.add(elapsed_ms, distance_mm, sample);
-        (self.current.distance_mm >= AUTO_LAP_MM).then(|| self.close(Trigger::Auto, now_ms))
+        every_mm
+            .is_some_and(|every| self.current.distance_mm >= every)
+            .then(|| self.close(Trigger::Auto, now_ms))
     }
 
     /// The rider's lap: close the current lap unless one closed within

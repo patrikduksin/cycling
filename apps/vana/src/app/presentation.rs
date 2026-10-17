@@ -1,5 +1,6 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
+use super::cues::Cue;
 use super::recording::{Medium, Request, RideMessage};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
@@ -36,8 +37,6 @@ const ANIMATED_FRAME_MS: u64 = 500;
 /// takes about 25 ms on the C606, so this leaves the loop free between them.
 pub(super) const MOTION_FRAME_MS: u64 = 40;
 const STATIC_FRAME_MS: u64 = 1000;
-/// Radar alerts use the longest pattern that still fits between radar pages.
-const ALERT_PATTERN_MAX_MS: u16 = 300;
 /// How long a confirmation or hint stays over the content.
 pub(super) const TOAST_MS: u64 = 2000;
 /// Battery news stays a little longer than a confirmation.
@@ -80,20 +79,7 @@ pub(super) struct Navigation {
     /// The summary page shown after a ride.
     pub(super) summary_page: usize,
     /// A sound the next `alert` plays.
-    pub(super) chime: Option<Chime>,
-}
-
-/// Short sounds that mark ride moments, so the rider need not look.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Chime {
-    /// Recording started or resumed: the highest tone.
-    Go,
-    /// Paused: the lowest tone.
-    Pause,
-    /// A lap: the shortest tick.
-    Lap,
-    /// The ride is saved: the highest tone.
-    Saved,
+    pub(super) chime: Option<Cue>,
 }
 
 impl Navigation {
@@ -118,12 +104,12 @@ impl Navigation {
         let (message, tone) = match (before, status) {
             (Status::Paused, Status::Recording) => {
                 self.paused_since = None;
-                self.chime = Some(Chime::Go);
+                self.chime = Some(Cue::Resume);
                 ("RESUMED", Tone::Good)
             }
             (_, Status::Recording) => {
                 self.paused_since = None;
-                self.chime = Some(Chime::Go);
+                self.chime = Some(Cue::Start);
                 // A ride started by rolling off, or from the terminal, shows.
                 if self.page == Page::Ready {
                     self.open_ride();
@@ -135,7 +121,7 @@ impl Navigation {
                 self.paused_since = Some(now);
                 self.pause_hidden = false;
                 self.pause_wrapped = false;
-                self.chime = Some(Chime::Pause);
+                self.chime = Some(Cue::Pause);
                 return;
             }
             // A full journal or a failure mid-ride stays on the ride screen,
@@ -143,7 +129,7 @@ impl Navigation {
             (_, Status::Saved)
                 if riding && matches!(self.page, Page::Ride | Page::EndRide | Page::Summary) =>
             {
-                self.chime = Some(Chime::Saved);
+                self.chime = Some(Cue::Saved);
                 self.page = Page::Summary;
                 self.summary_page = 0;
                 return;
@@ -298,45 +284,29 @@ impl Runtime {
         }
     }
 
-    /// Sound a radar alert on the ride screen, or else the latest ride
-    /// moment's chime. A radar alert always wins: the chime is dropped.
-    /// While the buzzer is still busy (a chime and its guard) nothing is
-    /// decided: a radar alert is not spent on a buzzer that would refuse it,
-    /// and sounds as soon as the buzzer is free.
+    /// Sound the cues and alarms due: the latest ride moment's cue, a closed
+    /// lap, and a vehicle closing from behind while on the ride screen,
+    /// which wins over any cue. A cue waits for the buzzer to be free, for
+    /// up to a second. Call once per loop.
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
         if core::mem::take(&mut self.ride.lap_chime) {
-            self.navigation.chime = Some(Chime::Lap);
+            self.cue(Cue::Lap, now);
         }
-        if now < sound.snapshot().until_ms {
-            return;
+        if let Some(cue) = self.navigation.chime.take() {
+            self.cue(cue, now);
         }
-        let chime = self.navigation.chime.take();
         if self.navigation.page == Page::Ride {
             let radar = self.readings.radar.snapshot(now);
-            if self.readings.radar_alert.update(radar, now)
-                && let Some(pattern) = sound
-                    .patterns()
-                    .iter()
-                    .filter(|p| p.nominal_ms <= ALERT_PATTERN_MAX_MS)
-                    .max_by_key(|p| p.nominal_ms)
-            {
-                let _ = sound.play(pattern.id, now);
-                return;
+            if self.readings.radar_alert.update(radar, now) {
+                self.cue(Cue::RadarApproach, now);
             }
         }
-        let Some(chime) = chime else {
-            return;
-        };
-        // Short patterns only: a chime never holds the buzzer from an alert.
-        let short = sound.patterns().iter().filter(|p| p.nominal_ms <= 150);
-        let pattern = match chime {
-            Chime::Go | Chime::Saved => short.max_by_key(|p| (p.frequency_hz, p.nominal_ms)),
-            Chime::Pause => short.min_by_key(|p| (p.frequency_hz, u16::MAX - p.nominal_ms)),
-            Chime::Lap => short.min_by_key(|p| p.nominal_ms),
-        };
-        if let Some(pattern) = pattern {
-            let _ = sound.play(pattern.id, now);
-        }
+        self.cues.play(sound, now);
+    }
+
+    /// Raise `cue`, unless the rider muted cues and it is no safety alarm.
+    pub(super) fn cue(&mut self, cue: Cue, now: u64) {
+        self.cues.raise(cue, !self.preferences.options.sounds, now);
     }
 
     pub fn set_startup_status(&mut self, status: Startup) {
@@ -812,22 +782,91 @@ impl Runtime {
 
     fn settings_lines(&self, view: &mut View) {
         use super::preferences::Persistence;
-        let preferences = &self.preferences;
-        let profile = preferences.profile;
-        let lines = &mut view.lines;
-        let _ = lines[settings::TITLE].push_str("TRAINING PROFILE");
-        let _ = write!(lines[settings::VALUES], "{}", profile.ftp_watts);
-        let _ = write!(lines[settings::VALUES + 1], "{}", profile.lthr_bpm);
-        // Threshold zones: where FTP and LTHR put the rider's limit.
-        let (low, high) = profile.power_range(4);
-        let _ = write!(lines[settings::ANCHORS], "Z4 {}-{} W", low, high - 1);
-        let (low, _) = profile.heart_range(5);
-        let _ = write!(lines[settings::ANCHORS + 1], "Z5 FROM {} BPM", low);
-        let _ = lines[settings::STATUS].push_str(match preferences.persistence() {
+        use crate::screens::settings::{Kind, NOTES, Row, SECTIONS, STATUS, VALUES};
+        let cursor = view.cursor;
+        let row = Row::at(cursor);
+        let editor = [row];
+        let shown: &[Row] = if view.editing && row.kind() == Kind::Number {
+            &editor
+        } else {
+            SECTIONS[settings::section(cursor).0].1
+        };
+        let (values, notes) = view.lines[VALUES..].split_at_mut(NOTES - VALUES);
+        for ((row, value), note) in shown.iter().zip(values).zip(notes) {
+            self.setting_line(*row, value, note);
+        }
+        let _ = view.lines[STATUS].push_str(match self.preferences.persistence() {
             Persistence::Saved => "SAVED",
             Persistence::Pending => "SAVING",
             Persistence::Failed => "SAVE FAILED, RETRYING",
             Persistence::Locked => "NOT SAVED: DATA KEPT",
         });
+    }
+
+    /// A Settings row's value and the note beside it.
+    fn setting_line(&self, row: settings::Row, value: &mut Text<38>, note: &mut Text<38>) {
+        use crate::screens::settings::Row;
+        let options = self.preferences.options;
+        let profile = self.preferences.profile;
+        let display = self.preferences.display;
+        let on = |on: bool| if on { "ON" } else { "OFF" };
+        let _ = match row {
+            Row::Ftp => {
+                // Threshold zones: where FTP and LTHR put the rider's limit.
+                let (low, high) = profile.power_range(4);
+                let _ = write!(note, "Z4 {}-{} W", low, high - 1);
+                write!(value, "{}", profile.ftp_watts)
+            }
+            Row::Threshold => {
+                let (low, _) = profile.heart_range(5);
+                let _ = write!(note, "Z5 FROM {} BPM", low);
+                write!(value, "{}", profile.lthr_bpm)
+            }
+            Row::Brightness => write!(value, "{}%", display.brightness),
+            Row::AutoDim => match display.dim_secs {
+                0 => write!(value, "NEVER"),
+                secs @ ..60 => write!(value, "{secs} S"),
+                secs => write!(value, "{} MIN", secs / 60),
+            },
+            Row::AutoPause => {
+                let _ = write!(note, "WHEN STOPPED");
+                write!(value, "{}", on(options.auto_pause))
+            }
+            Row::AutoLap => match options.auto_lap_km {
+                0 => write!(value, "OFF"),
+                km => write!(value, "EVERY {km} KM"),
+            },
+            Row::Sounds => {
+                if !options.sounds {
+                    let _ = write!(note, "RADAR STAYS ON");
+                }
+                write!(value, "{}", on(options.sounds))
+            }
+            Row::Sensors => match self.preferences.sensors.peers().count() {
+                0 => write!(value, "NONE SAVED"),
+                count => write!(value, "{count} SAVED"),
+            },
+            // The PHONE COMPANION workstream replaces this placeholder.
+            Row::Phone => write!(value, "COMING SOON"),
+            Row::Storage => {
+                if self.ride.bulk.status() != Status::Unsupported {
+                    let _ = write!(note, "{}", self.ride.medium().label());
+                }
+                let recorder = self.ride.recorder(self.ride.medium());
+                match recorder.status() {
+                    Status::Ready | Status::Saved | Status::Recovered => {
+                        let secs = recorder.remaining_secs();
+                        let hours = secs / 3600;
+                        if hours >= 100 {
+                            write!(value, "{hours}H LEFT")
+                        } else {
+                            write!(value, "{hours}:{:02} LEFT", secs / 60 % 60)
+                        }
+                    }
+                    status => write!(value, "{}", status.name()),
+                }
+            }
+            Row::Firmware => write!(value, "VANA {}", env!("CARGO_PKG_VERSION")),
+        };
     }
 }

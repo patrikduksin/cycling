@@ -103,6 +103,11 @@ const RIDING: usize = HEADLINE + 20;
 const FIRST: usize = CONTENT.top + 74;
 const PITCH: usize = 47;
 
+/// A tap on what the ride will be, under the headline, changes the workout.
+pub fn riding_at(y: usize) -> bool {
+    (HEADLINE + 4..FIRST - 6).contains(&y)
+}
+
 /// The line under a tap, if any.
 pub fn line_at(y: usize) -> Option<Line> {
     let index = y.checked_sub(FIRST - 6)? / PITCH;

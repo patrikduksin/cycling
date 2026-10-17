@@ -606,7 +606,7 @@ impl Session {
             ) {
                 out.push_str(" ordinary=HELP,INFO,STATUS,POSITION,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,STORAGE,DISPLAY,WIFI,BLE,RESTART");
                 #[cfg(feature = "cycling")]
-                out.push_str(",RIDE,EXPORT,RADAR,PROFILE");
+                out.push_str(",RIDE,EXPORT,RADAR,PROFILE,WORKOUT");
             }
             return status;
         }

@@ -25,6 +25,10 @@ pub enum Cue {
     Lap,
     Saved,
     LowBattery,
+    /// One of a workout step's last seconds.
+    Countdown,
+    /// A workout step began, the workout ended or a test measured FTP.
+    Step,
     /// A vehicle closing from behind.
     RadarApproach,
 }
@@ -47,6 +51,8 @@ impl Cue {
             Self::Lap => &[Middle],
             Self::Saved => &[Low, Middle, High],
             Self::LowBattery => &[Low, Low],
+            Self::Countdown => &[Low],
+            Self::Step => &[High, High],
             Self::RadarApproach => &[Alarm],
         }
     }

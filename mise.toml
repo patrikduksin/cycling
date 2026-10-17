@@ -82,6 +82,10 @@ run = "{{vars.devtools}} python -m cycling_devtools.rides.export"
 description = "Clear the owned ride journal after verifying a named complete export"
 run = "{{vars.devtools}} python -m cycling_devtools.rides.clear"
 
+[tasks.workout-load]
+description = "Load a workout JSON file onto the device's workout picker over USB (--dry-run prints the commands)"
+run = "{{vars.devtools}} python -m cycling_devtools.workouts.load"
+
 [tasks.gps-stress]
 description = "Check GNSS progress and transport counters under repeated USB state replies"
 run = "{{vars.devtools}} python -m cycling_devtools.harness.stress gps .local/tests/gps-stress-$(date +%s)"

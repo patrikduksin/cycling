@@ -73,6 +73,8 @@ pub(super) struct Navigation {
     pub(super) paused_since: Option<u64>,
     /// The rider paged from the paused screen to the ride pages.
     pub(super) pause_hidden: bool,
+    /// The ride page a ride opens on.
+    pub(super) first_page: RidePage,
     /// The paused screen came back by paging past either end of the ride
     /// pages, so MOVE continues at the first page and a swipe back at the
     /// last, rather than at the page the rider left.
@@ -145,7 +147,7 @@ impl Navigation {
     /// Show the ride screen's first page.
     pub(super) fn open_ride(&mut self) {
         self.page = Page::Ride;
-        self.ride_page_chosen(RidePage::Main);
+        self.ride_page_chosen(self.first_page);
         self.pause_hidden = false;
     }
 }
@@ -168,6 +170,7 @@ impl Default for Navigation {
             announced: Status::Ready,
             paused_since: None,
             pause_hidden: false,
+            first_page: RidePage::Main,
             pause_wrapped: false,
             summary_page: 0,
             chime: None,
@@ -323,6 +326,8 @@ impl Runtime {
         if let Some(cue) = self.navigation.chime.take() {
             self.cue(cue, now);
         }
+        // A workout's step cue says more than the lap or ride chime it echoes.
+        self.workout_cue();
         if self.navigation.page == Page::Ride {
             let radar = self.readings.radar.snapshot(now);
             if self.readings.radar_alert.update(radar, now) {
@@ -387,12 +392,27 @@ impl Runtime {
         if navigation.page == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
             navigation.page = Page::Home;
         }
+        // A ride opens on its first page: the workout page during a workout.
+        let first = self.first_ride_page();
+        let navigation = &mut self.navigation;
+        navigation.first_page = first;
         let status = self.ride.active().status();
         if navigation.page != Page::Boot {
             navigation.announce(status, now);
         }
         self.follow_ride(status);
+        let pages = self.workout_pages();
+        let shown = match self.navigation.page {
+            Page::Ride => self.shown_workout(&self.preferences.profile),
+            _ => None,
+        };
+        let ftp_offer = self.ftp_sheet();
+        let picker = (self.navigation.page == Page::Workouts).then(|| self.picker());
         let navigation = &mut self.navigation;
+        // The workout page goes with the workout.
+        if navigation.ride_page == RidePage::Workout && !pages {
+            navigation.ride_page_chosen(RidePage::Main);
+        }
         let page = navigation.page;
         let gps = position.snapshot(now);
         let utc = self.readings.live.utc_ms.map(|v| v / 1000).or_else(|| {
@@ -436,6 +456,20 @@ impl Runtime {
         }
         view.zone_time = self.ride.zone_time;
         view.profile = self.preferences.profile;
+        if page == Page::Ride {
+            view.training = shown;
+            if view.ride_page == RidePage::Workout
+                && let Some(player) = &self.ride.workout
+            {
+                view.chart = crate::screens::ride::workout_chart(player, &view.profile);
+            }
+        }
+        // The sheet shows wherever it takes the buttons, as after a test
+        // started from the terminal while Home is open.
+        view.ftp_offer = ftp_offer;
+        if let Some(picker) = picker {
+            view.picker = picker;
+        }
         if view.ride_page == RidePage::Climb {
             view.climbs = self.ride.climbs.clone();
         }
@@ -486,6 +520,7 @@ impl Runtime {
                 }
             }
             Page::Settings => self.settings_lines(&mut view),
+            Page::Workouts => {}
         }
         if view.ride_page == RidePage::Climb {
             // Borrowed from the look-ahead's own block, not copied.
@@ -493,8 +528,10 @@ impl Runtime {
         }
         view.prepare();
         let menu = &self.menu;
+        // The FTP sheet covers the Sensors menu too, as it takes the buttons.
+        let sheet = view.ftp_offer;
         system.draw_canvas(240, 320, |row| {
-            if page == Page::Sensors && row.y() >= CONTENT.top {
+            if page == Page::Sensors && sheet.is_none() && row.y() >= CONTENT.top {
                 menu.paint(row);
                 view.paint_toast(row);
             } else {
@@ -546,17 +583,20 @@ impl Runtime {
 
     fn home(&self, gps_fix: bool, now: u64) -> Home {
         let last = self.rides_line();
-        let mut profile = Text::<12>::new();
-        let _ = write!(profile, "FTP {} W", self.preferences.profile.ftp_watts);
         let mut home = Home::new(
             self.navigation.home_cursor,
             gps_fix,
             &self.menu.glance(),
-            profile.as_bytes(),
             last,
         );
         let (status, problem) = self.home_status(now);
-        home.set_status(status.as_bytes(), problem);
+        match self.chosen_name() {
+            // A workout waiting to be ridden names itself on the ride card.
+            Some(name) if !problem && status == "READY TO RIDE" => {
+                home.set_status(name.as_bytes(), false)
+            }
+            _ => home.set_status(status.as_bytes(), problem),
+        }
         home
     }
 
@@ -719,6 +759,9 @@ impl Runtime {
     /// plain words with what to do when something needs the rider.
     pub(super) fn readiness(&self, gps: Gps, battery: Option<Battery>) -> Readiness {
         let mut readiness = Readiness::default();
+        if let Some(name) = self.chosen_name() {
+            let _ = readiness.riding.push_str(name.as_str());
+        }
         let checks = &mut readiness.checks;
         checks[ReadyLine::Gps as usize] = match gps {
             Gps::Fixed => Check::new(Level::Good, "GPS LOCKED", ""),

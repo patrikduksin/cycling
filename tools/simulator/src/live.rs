@@ -408,7 +408,7 @@ mod tests {
         // The focused Home card has a white title.
         let train = |live: &Live| {
             let screen = live.sim.screen();
-            ["RIDE", "SENSORS", "SETTINGS"]
+            ["RIDE", "SENSORS", "TRAIN", "SETTINGS"]
                 .into_iter()
                 .position(|tile| screen.run(tile).is_some_and(|run| run.color == 0xffff))
         };

@@ -1,5 +1,5 @@
-//! Home: one big RIDE card, the sensors at a glance, settings, and the
-//! saved rides with the last one's numbers.
+//! Home: one big RIDE card, the sensors at a glance, TRAIN (workouts) and
+//! settings side by side, and the saved rides with the last one's numbers.
 //!
 //! MOVE (BottomLeft) moves focus down the cards, ACT (BottomRight) opens the
 //! focused one and a tap opens the card under the finger.
@@ -21,6 +21,7 @@ use heapless::Vec;
 pub enum Tile {
     Ride,
     Sensors,
+    Workouts,
     Settings,
     Rides,
 }
@@ -40,12 +41,22 @@ pub const SENSORS_TILE: Rect = Rect {
     right: CONTENT.right - MARGIN,
     bottom: RIDE_TILE.bottom + GAP + 78,
 };
-pub const SETTINGS_TILE: Rect = Rect {
+/// TRAIN (the workouts) and SETTINGS share a row, TRAIN first in MOVE
+/// order; each card is as wide as its title needs.
+pub const WORKOUTS_TILE: Rect = Rect {
     left: MARGIN,
     top: SENSORS_TILE.bottom + GAP,
-    right: CONTENT.right - MARGIN,
+    right: MARGIN + 90,
     bottom: SENSORS_TILE.bottom + GAP + 40,
 };
+pub const SETTINGS_TILE: Rect = Rect {
+    left: WORKOUTS_TILE.right + GAP,
+    top: WORKOUTS_TILE.top,
+    right: CONTENT.right - MARGIN,
+    bottom: WORKOUTS_TILE.bottom,
+};
+/// Text inside the half-width cards keeps this far from their edges.
+const SMALL_INSET: usize = INSET;
 /// The saved rides, as a slim card under settings.
 pub const RIDES_TILE: Rect = Rect {
     left: MARGIN,
@@ -94,22 +105,15 @@ pub struct Home {
     none: Option<Small>,
     sensors: Vec<Glance, ICONS>,
     names: Vec<Small, ICONS>,
+    workouts_title: Small,
     settings_title: Small,
-    profile: Small,
     rides_title: Small,
     last: Small,
 }
 
 impl Home {
-    /// `profile` summarises the training profile, such as "FTP 250 W";
-    /// `last` the saved rides, such as the last one's "5.00 KM  0:10:00".
-    pub fn new(
-        cursor: usize,
-        gps_fix: bool,
-        glance: &[Glance],
-        profile: &[u8],
-        last: Text<20>,
-    ) -> Self {
+    /// `last` sums up the saved rides, such as the last one's "5.00 KM".
+    pub fn new(cursor: usize, gps_fix: bool, glance: &[Glance], last: Text<20>) -> Self {
         let sensors: Vec<Glance, ICONS> = glance.iter().take(ICONS).copied().collect();
         let names = sensors
             .iter()
@@ -143,7 +147,7 @@ impl Home {
         let count_color = if live > 0 { GREEN } else { SECONDARY };
         let gps_top = PLAY.1 + 10;
         let rides_top = RIDES_TILE.top + (RIDES_TILE.height() - BODY.height as usize) / 2;
-        let rides_title = label(b"RIDES", &BODY, left, rides_top, Align::Left, title(3));
+        let rides_title = label(b"RIDES", &BODY, left, rides_top, Align::Left, title(4));
         // The last ride keeps its numbers: they step down a size to fit.
         let room = right - (rides_title.right() + SPILL + GAP);
         let line = Line::fit(&[&CAPTION], last.as_bytes(), room);
@@ -181,22 +185,8 @@ impl Home {
             }),
             sensors,
             names,
-            settings_title: label(
-                b"SETTINGS",
-                &BODY,
-                left,
-                settings_top,
-                Align::Left,
-                title(2),
-            ),
-            profile: label(
-                profile,
-                &CAPTION,
-                right,
-                settings_top + 3,
-                Align::Right,
-                SECONDARY,
-            ),
+            workouts_title: small_title(b"TRAIN", WORKOUTS_TILE, settings_top, title(2)),
+            settings_title: small_title(b"SETTINGS", SETTINGS_TILE, settings_top, title(3)),
             rides_title,
             last,
         }
@@ -217,6 +207,8 @@ impl Home {
             Some(Tile::Ride)
         } else if SENSORS_TILE.contains(x, y) {
             Some(Tile::Sensors)
+        } else if WORKOUTS_TILE.contains(x, y) {
+            Some(Tile::Workouts)
         } else if SETTINGS_TILE.contains(x, y) {
             Some(Tile::Settings)
         } else if RIDES_TILE.contains(x, y) {
@@ -274,14 +266,16 @@ impl Home {
             self.count.paint(row);
             self.sensors_title.paint(row);
         } else if y < SETTINGS_TILE.bottom {
-            let focused = self.cursor == 2;
-            paint_rounded(row, SETTINGS_TILE, RADIUS, ring(focused), |x, y| {
-                Self::surface(focused, SETTINGS_TILE, x, y)
-            });
-            self.profile.paint(row);
+            for (index, tile) in [(2, WORKOUTS_TILE), (3, SETTINGS_TILE)] {
+                let focused = self.cursor == index;
+                paint_rounded(row, tile, RADIUS, ring(focused), |x, y| {
+                    Self::surface(focused, tile, x, y)
+                });
+            }
+            self.workouts_title.paint(row);
             self.settings_title.paint(row);
         } else {
-            let focused = self.cursor == 3;
+            let focused = self.cursor == 4;
             paint_rounded(row, RIDES_TILE, RIDES_RADIUS, ring(focused), |x, y| {
                 Self::surface_of(focused, RIDES_TILE, RIDES_RADIUS, x, y)
             });
@@ -328,17 +322,17 @@ impl Home {
             return self.sensors_pixel(x, y);
         }
         if y < SETTINGS_TILE.bottom {
-            let Some(fill) = Self::surface(self.cursor == 2, SETTINGS_TILE, x, y) else {
+            let (index, tile, title) = if x < SETTINGS_TILE.left {
+                (2, WORKOUTS_TILE, &self.workouts_title)
+            } else {
+                (3, SETTINGS_TILE, &self.settings_title)
+            };
+            let Some(fill) = Self::surface(self.cursor == index, tile, x, y) else {
                 return BLACK;
             };
-            for label in [&self.settings_title, &self.profile] {
-                if let Some(color) = label.pixel(x, y, fill) {
-                    return color;
-                }
-            }
-            return fill;
+            return title.pixel(x, y, fill).unwrap_or(fill);
         }
-        let Some(fill) = Self::surface_of(self.cursor == 3, RIDES_TILE, RIDES_RADIUS, x, y) else {
+        let Some(fill) = Self::surface_of(self.cursor == 4, RIDES_TILE, RIDES_RADIUS, x, y) else {
             return BLACK;
         };
         for label in [&self.rides_title, &self.last] {
@@ -417,6 +411,14 @@ impl Home {
     }
 }
 
+/// A half-width card's title: `BODY`, or a caption where `BODY` is too wide.
+fn small_title(text: &[u8], tile: Rect, top: usize, color: u16) -> Small {
+    let width = tile.width() - 2 * SMALL_INSET;
+    let line = Line::fit(&[&BODY, &CAPTION], text, width);
+    let top = top + (BODY.height - line.face().height) as usize / 2;
+    Label::new(line, tile.left + SMALL_INSET, top, Align::Left, color)
+}
+
 /// A sensor's name short enough to sit under its icon on Home.
 pub(crate) fn short_name(kind: u8) -> &'static [u8] {
     use crate::sensors::ant::device_type;
@@ -449,7 +451,7 @@ mod tests {
 
     #[test]
     fn focus_raises_and_rings_the_card_and_taps_find_cards() {
-        let home = Home::new(0, true, &[], b"FTP 250 W", Text::new());
+        let home = Home::new(0, true, &[], Text::new());
         let inside = (RIDE_TILE.right - 24, RIDE_TILE.bottom - 24);
         assert_eq!(home.pixel(inside.0, inside.1), RAISED);
         assert_eq!(home.pixel(RIDE_TILE.center_x(), RIDE_TILE.top), ACCENT);
@@ -459,7 +461,7 @@ mod tests {
         assert_eq!(home.pixel(PLAY.0 + 20, PLAY.1), GREEN);
         assert_eq!(home.pixel(PLAY.0, PLAY.1), BLACK, "play triangle");
         assert_eq!(home.ride.color, WHITE);
-        let sensors = Home::new(1, true, &[], b"", Text::new());
+        let sensors = Home::new(1, true, &[], Text::new());
         assert_eq!(sensors.ride.color, MUTED);
         let top = (SENSORS_TILE.center_x(), SENSORS_TILE.top);
         assert_eq!(sensors.pixel(top.0, top.1), ACCENT);
@@ -473,7 +475,16 @@ mod tests {
             Home::tile_at(120, SETTINGS_TILE.top + 2),
             Some(Tile::Settings)
         );
-        let settings = Home::new(2, true, &[], b"", Text::new());
+        assert_eq!(
+            Home::tile_at(WORKOUTS_TILE.left + 4, WORKOUTS_TILE.top + 20),
+            Some(Tile::Workouts)
+        );
+        let workouts = Home::new(2, true, &[], Text::new());
+        let top = (WORKOUTS_TILE.center_x(), WORKOUTS_TILE.top);
+        assert_eq!(workouts.pixel(top.0, top.1), ACCENT);
+        assert_eq!(workouts.workouts_title.color, WHITE);
+        assert_eq!(workouts.settings_title.color, MUTED);
+        let settings = Home::new(3, true, &[], Text::new());
         let top = (SETTINGS_TILE.center_x(), SETTINGS_TILE.top);
         assert_eq!(settings.pixel(top.0, top.1), ACCENT);
         assert_eq!(settings.settings_title.color, WHITE);
@@ -496,23 +507,23 @@ mod tests {
         ];
         let last = last_ride(4_999_800);
         assert_eq!(last.as_bytes(), b"5.00 KM");
-        let home = Home::new(0, false, &glance, b"", last);
+        let home = Home::new(0, false, &glance, last);
         assert_eq!(home.count.line.text(), b"1/2 LIVE");
         let left = SENSORS_TILE.left + INSET;
         assert_eq!(home.pixel(left + 25, ICON_TOP), GREEN);
         assert_eq!(home.pixel(left + ICON_PITCH + 25, ICON_TOP), 0xfd20);
         assert_eq!(home.last.line.text(), b"5.00 KM");
         assert_eq!(home.rides_title.line.text(), b"RIDES");
-        let none = Home::new(0, false, &[], b"", Text::new());
+        let none = Home::new(0, false, &[], Text::new());
         assert!(none.none.is_some() && none.last.line.text().is_empty());
         // The RIDES card takes the focus and a tap.
-        let rides = Home::new(3, false, &[], b"", Text::new());
+        let rides = Home::new(4, false, &[], Text::new());
         assert_eq!(rides.pixel(RIDES_TILE.center_x(), RIDES_TILE.top), ACCENT);
         assert_eq!(Home::tile_at(120, RIDES_TILE.top + 4), Some(Tile::Rides));
     }
 
     /// What each card shows, as named boxes, for the layout sweep.
-    fn cards(home: &Home) -> [(Rect, std::vec::Vec<(std::string::String, Rect)>); 3] {
+    fn cards(home: &Home) -> [(Rect, std::vec::Vec<(std::string::String, Rect)>); 4] {
         use crate::screens::chrome::layout::text;
         let (cx, cy, r) = PLAY;
         let play = Rect {
@@ -543,14 +554,17 @@ mod tests {
             };
             sensors.push((std::format!("icon {slot}"), icon));
         }
-        let settings = [&home.settings_title, &home.profile]
-            .into_iter()
-            .filter_map(text)
-            .collect();
         [
             (RIDE_TILE, ride),
             (SENSORS_TILE, sensors),
-            (SETTINGS_TILE, settings),
+            (
+                WORKOUTS_TILE,
+                text(&home.workouts_title).into_iter().collect(),
+            ),
+            (
+                SETTINGS_TILE,
+                text(&home.settings_title).into_iter().collect(),
+            ),
         ]
     }
 
@@ -577,21 +591,16 @@ mod tests {
         for count in [0, 1, 4, 6] {
             for distance_mm in [0, 15_000_000, 150_000_000, 1_000_000_000] {
                 for moving_s in [0, 3_600, 359_999] {
-                    for profile in [&b"FTP 99 W"[..], b"FTP 999 W", b"FTP 2000 W"] {
-                        for cursor in 0..3 {
+                    {
+                        for cursor in 0..5 {
                             let last = if distance_mm == 0 {
                                 Text::new()
                             } else {
                                 last_ride(distance_mm + moving_s)
                             };
-                            let mut home =
-                                Home::new(cursor, true, &glances[..count], profile, last.clone());
+                            let mut home = Home::new(cursor, true, &glances[..count], last.clone());
                             home.set_status(b"SENSORS UNAVAILABLE", true);
-                            let what = std::format!(
-                                "{count} sensors, {:?}, {:?}",
-                                last.as_str(),
-                                core::str::from_utf8(profile)
-                            );
+                            let what = std::format!("{count} sensors, {:?}", last.as_str());
                             let mut all = std::vec::Vec::new();
                             for (card, items) in cards(&home) {
                                 assert_apart(&items, card.inset(4), &what);
@@ -605,7 +614,7 @@ mod tests {
                             if !last.as_bytes().is_empty() {
                                 assert_shown(&last_items, &[last.as_str()], &what);
                             }
-                            assert_shown(&all, &[core::str::from_utf8(profile).unwrap()], &what);
+                            assert_shown(&all, &["TRAIN", "SETTINGS"], &what);
                         }
                     }
                 }

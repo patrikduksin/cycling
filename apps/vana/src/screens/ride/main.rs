@@ -1,7 +1,8 @@
 //! The main ride page, stacked like a workout view: elapsed time and grade,
 //! then speed as the hero number, power and heart rate with zone gauges,
 //! then cadence and distance. Each value has its signature colour and a
-//! small unit beside it; there are no boxes or dividers.
+//! small unit beside it; there are no boxes or dividers. During a workout a
+//! white bar under the power (or heart-rate) gauge spans the step's target.
 use super::zones::GAUGE_WIDTH;
 use super::{BODY, Labels, Smooth, Text, elapsed, kilometres, speed, whole};
 use crate::screens::chrome::{
@@ -23,6 +24,9 @@ const LOWER_TOP: usize = BODY.top + 228;
 const GAUGES: [usize; 2] = [POWER_TOP + 47, HEART_TOP + 47];
 const GAUGE_HEIGHT: usize = 5;
 const GAUGE_GAP: usize = 3;
+/// The workout target sits this far under its gauge, this tall.
+const BAND_GAP: usize = 2;
+const BAND_HEIGHT: usize = 2;
 /// Power has seven zones, heart rate five.
 const SEGMENTS: [usize; 2] = [7, 5];
 
@@ -152,6 +156,7 @@ pub(super) fn prepare(view: &View) -> Smooth {
             .heart_bpm
             .map_or(0, |bpm| view.profile.heart_zone(bpm)),
     ];
+    smooth.band = target_band(view);
     let watts = value(&|v| whole(v, view.power_3s));
     let bpm = value(&|v| whole(v, sample.heart_bpm));
     let rows = [
@@ -201,9 +206,51 @@ pub(super) fn prepare(view: &View) -> Smooth {
     smooth
 }
 
+/// Where a reading falls on gauge `i`: the zone it is in, and the share of
+/// that zone's segment below it.
+fn gauge_x(view: &View, i: usize, value: u16) -> usize {
+    let profile = &view.profile;
+    let (zone, (low, high)) = if i == 0 {
+        let zone = profile.power_zone(value);
+        (zone, profile.power_range(zone))
+    } else {
+        let zone = profile.heart_zone(value);
+        (zone, profile.heart_range(zone))
+    };
+    let pitch = (RIGHT - LEFT + GAUGE_GAP) / SEGMENTS[i];
+    let width = pitch - GAUGE_GAP;
+    let within = u32::from(value).clamp(low, high) - low;
+    LEFT + usize::from(zone - 1) * pitch + width * within as usize / (high - low).max(1) as usize
+}
+
+/// The step's target band under its gauge, while a workout step has one.
+fn target_band(view: &View) -> Option<(usize, core::ops::Range<usize>)> {
+    use crate::workout::model::Metric;
+    let training = view.training.as_ref().filter(|t| !t.done)?;
+    let band = training.now.band?;
+    let i = match band.metric {
+        Metric::Power => 0,
+        Metric::Heart => 1,
+        Metric::Cadence => return None,
+    };
+    let from = gauge_x(view, i, band.low);
+    let to = gauge_x(view, i, band.high).max(from + 3).min(RIGHT);
+    Some((i, from..to))
+}
+
+fn band_rows(i: usize) -> core::ops::Range<usize> {
+    let top = GAUGES[i] + GAUGE_HEIGHT + BAND_GAP;
+    top..top + BAND_HEIGHT
+}
+
 /// Paint a body row: a gauge row, or the labels that cover it.
 pub(super) fn paint(view: &View, row: &mut Row) {
     let y = row.y();
+    if let Some((i, columns)) = &view.smooth.band
+        && band_rows(*i).contains(&y)
+    {
+        row.span(columns.clone(), WHITE);
+    }
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i];
@@ -220,6 +267,12 @@ pub(super) fn paint(view: &View, row: &mut Row) {
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
+    if let Some((i, columns)) = &view.smooth.band
+        && band_rows(*i).contains(&y)
+        && columns.contains(&x)
+    {
+        return WHITE;
+    }
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i];
@@ -364,7 +417,47 @@ mod tests {
             };
             items.push((std::format!("gauge {i}"), rect));
         }
+        if let Some((i, columns)) = &view.smooth.band {
+            let rows = band_rows(*i);
+            let rect = Rect {
+                left: columns.start,
+                top: rows.start,
+                right: columns.end,
+                bottom: rows.end,
+            };
+            items.push(("band".into(), rect));
+        }
         items
+    }
+
+    /// A workout's target sits under the gauge of its metric, over the
+    /// watts it asks for, clear of every reading.
+    #[test]
+    fn a_workout_target_spans_its_watts_under_the_power_gauge() {
+        use crate::screens::ride::Training;
+        use crate::workout::library::{ENDURANCE, VO2_MAX};
+        use crate::workout::player::Player;
+        for workout in [VO2_MAX, ENDURANCE] {
+            let mut player = Player::new(workout);
+            player.skip();
+            for case in cases() {
+                let mut view = view(case);
+                view.training = Some(Training::of(&player, &view.profile));
+                view.prepare();
+                let (gauge, columns) = view.smooth.band.clone().expect("a power target");
+                assert_eq!(gauge, 0);
+                let band = player.now(&view.profile).band.unwrap();
+                assert_eq!(columns.start, gauge_x(&view, 0, band.low));
+                assert!(columns.end > columns.start + 2);
+                let bounds = Rect {
+                    left: BODY.left,
+                    top: BODY.top,
+                    right: BODY.right,
+                    bottom: BODY.bottom,
+                };
+                assert_apart(&items(&view), bounds, "workout band");
+            }
+        }
     }
 
     /// Every case: the widest of everything, then each extreme of one

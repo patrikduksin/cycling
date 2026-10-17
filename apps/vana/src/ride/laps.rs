@@ -99,6 +99,9 @@ pub struct Laps {
     finished: u16,
     /// When the last lap closed, for the rider's debounce.
     closed_at_ms: Option<u64>,
+    /// Laps close every `AUTO_LAP_MM`; a workout turns this off, as its
+    /// steps close the laps instead.
+    pub by_distance: bool,
 }
 
 impl Default for Laps {
@@ -108,6 +111,7 @@ impl Default for Laps {
             history: [Lap::default(); HISTORY],
             finished: 0,
             closed_at_ms: None,
+            by_distance: true,
         }
     }
 }
@@ -134,9 +138,13 @@ impl Laps {
         every_mm: Option<u64>,
     ) -> Option<Lap> {
         self.current.add(elapsed_ms, distance_mm, sample);
-        every_mm
-            .is_some_and(|every| self.current.distance_mm >= every)
+        (self.by_distance && every_mm.is_some_and(|every| self.current.distance_mm >= every))
             .then(|| self.close(Trigger::Auto, now_ms))
+    }
+
+    /// Close the current lap automatically, as a workout step ends.
+    pub fn split(&mut self, now_ms: u64) -> Lap {
+        self.close(Trigger::Auto, now_ms)
     }
 
     /// The rider's lap: close the current lap unless one closed within
@@ -208,6 +216,19 @@ mod tests {
             closed.extend(laps.add(1000, speed, &sample, now));
         }
         (closed, now)
+    }
+
+    #[test]
+    fn workouts_split_laps_by_step_instead_of_distance() {
+        let mut laps = Laps {
+            by_distance: false,
+            ..Laps::default()
+        };
+        let (closed, now) = ride(&mut laps, 0, 700, riding(8000, 200, 140));
+        assert!(closed.is_empty(), "5.6 km without a distance lap");
+        let lap = laps.split(now);
+        assert_eq!((lap.number, lap.trigger), (1, Trigger::Auto));
+        assert_eq!(laps.current().number, 2);
     }
 
     #[test]

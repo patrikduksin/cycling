@@ -28,12 +28,14 @@ mod main;
 pub(super) mod paused;
 mod stats;
 pub mod summary;
+mod workout;
 mod zones;
 
 pub(super) use zones::{Marks, marks};
 
 pub use climb::Frame as ClimbFrame;
 pub use lap::{LapBar, LapBars};
+pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
 pub(super) use chrome::{RED, WHITE};
@@ -78,28 +80,72 @@ pub enum RidePage {
     Lap,
     /// Grade, the climb under way or the last one, and the elevation profile.
     Climb,
+    /// The workout step on now; first, and only while a workout is chosen.
+    Workout,
 }
 
 impl RidePage {
+    /// The pages of a free ride.
     pub const ALL: [Self; 4] = [Self::Main, Self::Stats, Self::Lap, Self::Climb];
+    /// The pages while a workout is chosen or running.
+    pub const TRAINING: [Self; 5] = [
+        Self::Workout,
+        Self::Main,
+        Self::Stats,
+        Self::Lap,
+        Self::Climb,
+    ];
 
+    pub const fn pages(workout: bool) -> &'static [Self] {
+        if workout { &Self::TRAINING } else { &Self::ALL }
+    }
+
+    /// A number unique to the page, for touch ownership.
     pub fn index(self) -> usize {
         self as usize
     }
 
-    /// The page after this one; none after the last.
+    /// Where the page sits in `pages(workout)`, for the page dots; a page
+    /// that is not there counts as the first.
+    pub fn position(self, workout: bool) -> usize {
+        Self::pages(workout)
+            .iter()
+            .position(|page| *page == self)
+            .unwrap_or(0)
+    }
+
+    /// The page after this one in `pages(workout)`, wrapping.
+    pub fn following_in(self, workout: bool) -> Self {
+        let pages = Self::pages(workout);
+        pages[(self.position(workout) + 1) % pages.len()]
+    }
+
+    /// The page before this one in `pages(workout)`, wrapping.
+    pub fn preceding_in(self, workout: bool) -> Self {
+        let pages = Self::pages(workout);
+        pages[(self.position(workout) + pages.len() - 1) % pages.len()]
+    }
+
+    /// The free-ride page after this one; none after the last.
     pub fn next(self) -> Option<Self> {
-        Self::ALL.get(self.index() + 1).copied()
+        Self::ALL.get(self.position(false) + 1).copied()
     }
 
-    /// The page after this one, wrapping to the first.
+    /// The page after this one in `pages(workout)`; none after the last.
+    pub fn next_in(self, workout: bool) -> Option<Self> {
+        Self::pages(workout)
+            .get(self.position(workout) + 1)
+            .copied()
+    }
+
+    /// The free-ride page after this one, wrapping to the first.
     pub fn following(self) -> Self {
-        self.next().unwrap_or(Self::ALL[0])
+        self.following_in(false)
     }
 
-    /// The page before this one, wrapping to the last.
+    /// The free-ride page before this one, wrapping to the last.
     pub fn preceding(self) -> Self {
-        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+        self.preceding_in(false)
     }
 }
 
@@ -111,6 +157,8 @@ pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 pub struct Smooth {
     pub(super) labels: Labels,
     pub(super) zones: [u8; 2],
+    /// A workout target under a gauge: which gauge and its columns.
+    pub(super) band: Option<(usize, core::ops::Range<usize>)>,
 }
 
 /// Prepare the shown page once per frame: the main page's labels, or the
@@ -124,6 +172,8 @@ pub(super) fn prepare(view: &mut View) {
             view.climb = climb::frame(view);
             view.canvas = climb::prepare(view);
         }
+        // The app lays out the chart from its player: the workout stays there.
+        RidePage::Workout => view.canvas = workout::prepare(view),
     }
 }
 
@@ -184,6 +234,10 @@ fn paint_page(view: &View, row: &mut Row) {
     match view.ride_page {
         RidePage::Main => main::paint(view, row),
         RidePage::Stats | RidePage::Lap => view.canvas.paint(row),
+        RidePage::Workout => {
+            workout::paint_chart(&view.chart, row);
+            view.canvas.paint(row);
+        }
         RidePage::Climb => {
             climb::paint_chart(&view.climb, row);
             view.canvas.paint(row);
@@ -254,6 +308,9 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     match view.ride_page {
         RidePage::Main => main::reference_pixel(view, x, y),
         RidePage::Stats | RidePage::Lap => view.canvas.pixel(x, y, BLACK),
+        RidePage::Workout => view
+            .canvas
+            .pixel(x, y, workout::chart_pixel(&view.chart, x, y)),
         RidePage::Climb => view
             .canvas
             .pixel(x, y, climb::chart_pixel(&view.climb, x, y)),
@@ -370,6 +427,12 @@ mod tests {
         assert_eq!(RidePage::Climb.following(), RidePage::Main);
         assert_eq!(RidePage::Main.preceding(), RidePage::Climb);
         assert_eq!(RidePage::Stats.preceding(), RidePage::Main);
+        // A workout puts its page first.
+        assert_eq!(RidePage::Workout.following_in(true), RidePage::Main);
+        assert_eq!(RidePage::Climb.following_in(true), RidePage::Workout);
+        assert_eq!(RidePage::Workout.preceding_in(true), RidePage::Climb);
+        assert_eq!(RidePage::Main.position(true), 1);
+        assert_eq!(RidePage::Workout.position(false), 0);
     }
 
     /// Radar alerts are safety-critical: even the farthest target is drawn

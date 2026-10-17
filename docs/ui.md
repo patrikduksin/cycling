@@ -8,8 +8,8 @@ lives in `apps/vana/src/screens/chrome.rs` (geometry, palette, shapes, status
 bar, toasts), `apps/vana/src/screens/canvas.rs` (a prepared screen of text
 runs and shapes) and `packages/shell/src/rendering/font` (type).
 
-Every screen uses it: Home, Sensors, Ready, the four ride pages, the paused
-screen, End ride, the ride summary, Settings, the brand reveal, the power
+Every screen uses it: Home, Sensors, Workouts, Ready, the ride pages, the
+paused screen, End ride, the ride summary, Settings, the brand reveal, the power
 sheets and the charge shown while the device is off on USB power. None draws
 in the 5 × 7 bitmap font. The screens a ride passes through, in order, are
 set out in [UX flows](ux-flows.md).
@@ -292,6 +292,8 @@ Applied to the cycling-specific charts:
 | Zone gauge (main page) | One segment per zone, 5 px. Zones below the current one are lit in their colours. The current zone fills left to right as the reading moves through it. Zones above are `TERTIARY`. The zone chip (`Z4`) beside the reading is `BODY` in the zone colour, `Z-` without a zone. |
 | Time in zone (stats) | One 8 px bar per metric, `PWR` and `HR` captions on its left, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. A `TERTIARY` track before any time is recorded. |
 | Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade, on one `TERTIARY` baseline. A 5 px bar under the hero shows the current grade's steepness colour. **Without a map** it covers the last 4 km in full colour, with a 6 px `WHITE` disc on the newest column; the cells above carry the gain and length, and a `SECONDARY` "NO MAP" caption marks a missing terrain pack. **With a map** (`docs/terrain.md`) two rows of cells leave the profile a taller third row. "CLIMB AHEAD" runs from the rider to past the top, with the road before the foot at 25%. "TO THE TOP" keeps what was climbed at 25% behind the rider's disc, with the road ahead in full colour, and says "AND MORE" when the map's horizon ends before the top. |
+| Workout (workout page) | One bar per played step across the content width, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity, and a ramp rises across its width. The colour is the zone of the target's middle, `CADENCE` for cadence and `TERTIARY` without a target. Steps done and on now are full colour, steps ahead 25%. A `WHITE` bar under the chart marks the step on now. Above the chart, the step's band gauge: a `TERTIARY` track, the target band in its metric colour, and a `WHITE` disc at the 3 s reading. |
+| Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
 | Lap comparison (laps) | One vertical bar per lap across the page's full width, each centred in an equal slot, up to 24 px wide with at least 3 px between bars, on one `TERTIARY` baseline. Height is proportional to the lap's average power, or its speed on a ride without power, in that metric's colour. Finished laps are drawn at 25%, the open lap in full colour, and the best lap gets a 2 px `WHITE` cap. The oldest lap is on the left and the open lap on the right; the 16 kept laps and the open one fit. |
 
 The time-in-zone bars, the profile and the lap bars reach into the toast band.
@@ -380,6 +382,8 @@ middle and high notes by pitch. Rising runs mean go, falling ones stop.
 | Lap | middle |
 | Ride saved | low, middle, high |
 | Battery low or critical | low, low |
+| Workout step's last three seconds | low, once a second |
+| Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |
 | Vehicle closing from behind | the long alarm pattern |
 
 Each note waits for the previous one's guard. A newer cue replaces one in
@@ -390,21 +394,21 @@ mutes cues; the radar alarm always sounds and nothing replaces it.
 
 Three buttons control everything. Touch is a shortcut for navigation only.
 
-| Button | Home | Sensors | Settings | Ride |
-| --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Act on the focused tile | Act on the row (edit, step a choice, open); while editing, raise it | Pause, resume |
-| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Next page (wraps); while paused, the paused screen is one of the pages |
-| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | LAP while recording; asks END RIDE? while paused |
+| Button | Home | Sensors | Settings | Workouts | Ride |
+| --- | --- | --- | --- | --- | --- |
+| BottomRight (ACT) | Open the focused card | Act on the focused tile | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
+| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Focus the next workout (wraps) | Next page (wraps); while paused, the paused screen is one of the pages |
+| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
 | Button | Ready | End ride? | Summary | Rides | Saved ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone |
 | BottomLeft (MOVE) | — | — | Next page (wraps) | Focus the next ride (wraps) | Next page (wraps) |
-| TopLeft (BACK) | Home | Keep the ride, paused | Home | Home | Back to Rides |
+| TopLeft (BACK) | Home, dropping a chosen workout | Keep the ride, paused | Home | Home | Back to Rides |
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors. Tiles own their bounds; the search button's wider touch margin takes only spare space |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout under the finger is chosen. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings |
 | Settings rows | Tap | Act on the row, as ACT does |
 | Settings pads | Act on contact | Step the edited value |

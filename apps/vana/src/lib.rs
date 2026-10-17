@@ -6,3 +6,4 @@ pub mod daylight;
 pub mod ride;
 pub mod screens;
 pub mod sensors;
+pub mod workout;

@@ -3,7 +3,7 @@ use super::{Observations, Runtime};
 use crate::ride::auto::{Motion, Source};
 use crate::ride::gps_speed::{GpsSpeed, Ground};
 use crate::ride::log::Sample;
-use crate::ride::metrics::{Gradient, Odometer, Speed};
+use crate::ride::metrics::{Gradient, Odometer, Power3s, Speed};
 use crate::sensors::ant::{Epoch, HeartRate, Power, device_type};
 use crate::sensors::ble_profile::{self, Profile};
 use crate::sensors::radar::{Alert, Radar};
@@ -64,6 +64,9 @@ pub(super) struct Readings {
     gradient: Gradient,
     pub(super) heart: Option<Timed<HeartRate>>,
     pub(super) power: Option<Timed<Power>>,
+    power_3s: Power3s,
+    /// 3 s power at the last sample, for the ride page.
+    pub(super) power_3s_watts: Option<u16>,
     pub(super) radar: Radar,
     pub(super) radar_alert: Alert,
     epochs: [Option<Epoch>; Decoded::ALL.len()],
@@ -180,6 +183,8 @@ impl Default for Readings {
             gradient: Gradient::default(),
             heart: None,
             power: None,
+            power_3s: Power3s::default(),
+            power_3s_watts: None,
             radar: Radar::new(),
             radar_alert: Alert::default(),
             epochs: [None; Decoded::ALL.len()],
@@ -383,6 +388,7 @@ impl Runtime {
                 self.navigation.follow_climb(event);
             }
         }
+        self.readings.power_3s_watts = self.readings.power_3s.update(now, sample.power_watts);
         self.readings.live = sample;
         sample
     }

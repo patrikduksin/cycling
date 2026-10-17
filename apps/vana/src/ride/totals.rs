@@ -226,6 +226,24 @@ impl Totals {
         })
     }
 
+    /// Intensity factor in hundredths: normalized power over FTP.
+    pub fn intensity_hundredths(&self, ftp_watts: u16) -> Option<u16> {
+        let np = u32::from(self.normalized_power()?);
+        let ftp = u32::from(ftp_watts);
+        (ftp != 0).then(|| ((np * 100 + ftp / 2) / ftp).min(u32::from(u16::MAX)) as u16)
+    }
+
+    /// Training stress score: an hour at FTP is 100. Seconds with power ×
+    /// NP² / (FTP² × 36), so it grows with time and with intensity squared.
+    pub fn stress_score(&self, ftp_watts: u16) -> Option<u32> {
+        let np = u64::from(self.normalized_power()?);
+        let ftp = u64::from(ftp_watts);
+        (ftp != 0).then(|| {
+            let scale = ftp * ftp * 36_000;
+            ((self.power_ms * np * np + scale / 2) / scale).min(u64::from(u32::MAX)) as u32
+        })
+    }
+
     /// Mechanical work in kilojoules.
     pub fn work_kj(&self) -> Option<u32> {
         (self.power_ms != 0).then(|| ((self.energy_mj + 500_000) / 1_000_000) as u32)
@@ -573,6 +591,27 @@ mod tests {
         // The rolling average spends a quarter at 400 W, a quarter at 0 W and
         // half on ramps: NP = 400 * (1/4 + 1/10)^(1/4).
         assert_eq!(totals.normalized_power(), Some(308));
+        // 40 minutes of that against FTP 250: IF 308/250, TSS 40/60 × 100 × IF².
+        assert_eq!(totals.intensity_hundredths(250), Some(123));
+        assert_eq!(totals.stress_score(250), Some(101));
+    }
+
+    #[test]
+    fn an_hour_at_ftp_is_one_hundred_stress() {
+        let mut totals = Totals::default();
+        assert_eq!(
+            (totals.intensity_hundredths(215), totals.stress_score(215)),
+            (None, None)
+        );
+        ride(&mut totals, 1800, riding(8000, 215, 0, 0), None);
+        assert_eq!(totals.intensity_hundredths(215), Some(100));
+        assert_eq!(totals.stress_score(215), Some(50));
+        ride(&mut totals, 1800, riding(8000, 215, 0, 0), None);
+        assert_eq!(totals.stress_score(215), Some(100));
+        // Half the FTP: a quarter of the stress for the same hour.
+        assert_eq!(totals.intensity_hundredths(430), Some(50));
+        assert_eq!(totals.stress_score(430), Some(25));
+        assert_eq!(totals.stress_score(0), None);
     }
 
     #[test]

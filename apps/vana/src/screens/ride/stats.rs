@@ -3,13 +3,13 @@
 use super::zones::{BAR_WIDTH, Bar, COLOURS};
 use super::{CELL_PITCH, LEFT, RIGHT, cell, kilometres, lap_time, speed, whole};
 use crate::screens::canvas::{Canvas, Shape};
-use crate::screens::chrome::{Align, CADENCE, GRADE, HEART, POWER, Rect, SPEED, TERTIARY, WHITE};
+use crate::screens::chrome::{Align, GRADE, HEART, POWER, Rect, SPEED, TERTIARY, WHITE};
 use crate::screens::workout::{Text, View};
 use firmware_shell::rendering::font::SPILL;
 
-/// The first band's caption top; five bands of two cells follow. Work and
-/// peak heart rate stay in the saved ride; the page keeps room between
-/// readings instead.
+/// The first band's caption top; five bands of two cells follow. Work, peak
+/// power and peak heart rate stay in the saved ride, and the main page shows
+/// cadence live; the page keeps room between readings instead.
 const FIRST: usize = 25;
 /// Time-in-zone bars, in the toast band: a toast covers them for a moment.
 const POWER_BAR: usize = 286;
@@ -32,10 +32,10 @@ const CELLS: [(&[u8], u16); 10] = [
     (b"AVG KM/H", SPEED),
     (b"MAX KM/H", SPEED),
     (b"AVG W", POWER),
-    (b"MAX W", POWER),
     (b"NP W", POWER),
+    (b"IF", POWER),
+    (b"TSS", POWER),
     (b"AVG BPM", HEART),
-    (b"AVG RPM", CADENCE),
     (b"ASCENT M", GRADE),
 ];
 
@@ -48,10 +48,10 @@ pub(super) fn prepare(view: &View) -> Canvas {
         avg_speed,
         max_speed,
         avg_power,
-        max_power,
         np,
+        intensity,
+        stress,
         avg_heart,
-        cadence,
         ascent,
     ] = &mut values;
     kilometres(distance, totals.distance_mm());
@@ -59,10 +59,11 @@ pub(super) fn prepare(view: &View) -> Canvas {
     speed(avg_speed, totals.avg_speed_mm_s());
     speed(max_speed, totals.max_speed_mm_s());
     whole(avg_power, totals.avg_power());
-    whole(max_power, totals.max_power());
     whole(np, totals.normalized_power());
+    let ftp = view.profile.ftp_watts;
+    hundredths(intensity, totals.intensity_hundredths(ftp));
+    whole(stress, totals.stress_score(ftp));
     whole(avg_heart, totals.avg_heart_bpm());
-    whole(cadence, totals.avg_cadence_rpm());
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
 
     let mut canvas = Canvas::default();
@@ -93,6 +94,15 @@ pub(super) fn prepare(view: &View) -> Canvas {
         marks.heart_time,
     );
     canvas
+}
+
+/// "1.23", or "--" without a value.
+fn hundredths(value: &mut Text<12>, reading: Option<u16>) {
+    use core::fmt::Write;
+    let _ = match reading {
+        Some(v) => write!(value, "{}.{:02}", v / 100, v % 100),
+        None => value.push_str("--"),
+    };
 }
 
 /// A caption at `caption_left`, then from `bar_left` one segment per zone
@@ -188,7 +198,6 @@ mod tests {
         assert_eq!(color("29.9"), Some(SPEED));
         assert_eq!(color("200"), Some(POWER));
         assert_eq!(color("140"), Some(HEART));
-        assert_eq!(color("90"), Some(CADENCE));
         // Ten minutes at 200 W and 140 bpm: all Z4 power, all Z1 heart rate,
         // each one solid bar.
         let bars: std::vec::Vec<_> = canvas
@@ -206,6 +215,8 @@ mod tests {
                 (HEART_BAR, BAR_WIDTH, zone_color(1))
             ]
         );
+        assert_eq!(color("0.93"), Some(POWER), "IF at the default FTP of 215 W");
+        assert_eq!(color("14"), Some(POWER), "TSS");
         canvas.assert_laid_out(BODY, &["DIST KM", "ASCENT M", "PWR", "HR"], "stats");
     }
 

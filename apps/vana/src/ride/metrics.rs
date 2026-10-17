@@ -211,9 +211,79 @@ impl Gradient {
     }
 }
 
+/// The 3 s power a rider reads: the mean of the last reading in each of the
+/// last three seconds, zeros included. A lost meter clears it, so the value
+/// never outlives the readings it averages.
+#[derive(Default)]
+pub struct Power3s {
+    /// The last reading of each sampled second, and that second.
+    slots: [Option<(u32, u16)>; 3],
+    next: u8,
+}
+
+impl Power3s {
+    pub fn update(&mut self, now_ms: u64, watts: Option<u16>) -> Option<u16> {
+        let Some(watts) = watts else {
+            self.slots = [None; 3];
+            return None;
+        };
+        let second = (now_ms / 1000) as u32;
+        let last = usize::from((self.next + 2) % 3);
+        if matches!(self.slots[last], Some((at, _)) if at == second) {
+            // A later reading in the same second replaces that second's.
+            self.slots[last] = Some((second, watts));
+        } else {
+            self.slots[usize::from(self.next)] = Some((second, watts));
+            self.next = (self.next + 1) % 3;
+        }
+        // Seconds skipped without a sample (ticks suspended) leave their
+        // older buckets out of the window.
+        let (sum, len) = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|(at, _)| second - at < 3)
+            .fold((0u32, 0u32), |(sum, len), (_, w)| {
+                (sum + u32::from(*w), len + 1)
+            });
+        Some(((sum + len / 2) / len) as u16)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_second_power_averages_one_reading_per_second() {
+        let mut power = Power3s::default();
+        assert_eq!(power.update(0, Some(300)), Some(300));
+        // A second reading in the same second replaces the first.
+        assert_eq!(power.update(500, Some(240)), Some(240));
+        assert_eq!(power.update(1_000, Some(120)), Some(180));
+        assert_eq!(power.update(2_000, Some(0)), Some(120));
+        // The oldest second drops out.
+        assert_eq!(power.update(3_000, Some(600)), Some(240));
+        assert_eq!(power.update(3_250, Some(0)), Some(40));
+        // A lost meter clears the average; it restarts from the next reading.
+        assert_eq!(power.update(4_000, None), None);
+        assert_eq!(power.update(5_000, Some(200)), Some(200));
+        assert_eq!(power.update(6_000, Some(2_000)), Some(1_100));
+    }
+
+    #[test]
+    fn three_second_power_forgets_seconds_without_a_sample() {
+        let mut power = Power3s::default();
+        for second in 0..3 {
+            power.update(second * 1000, Some(600));
+        }
+        // Ticks stopped for seven seconds: the old buckets are out of the window.
+        assert_eq!(power.update(10_000, Some(0)), Some(0));
+        // One second skipped: only the bucket from two seconds ago remains.
+        assert_eq!(power.update(12_000, Some(300)), Some(150));
+        // The zero from second 10 has left the window.
+        assert_eq!(power.update(13_000, Some(300)), Some(300));
+    }
     fn packet(time: u16, rev: u16, at: u64, loss: u32) -> device_api::ant::Packet {
         let mut data = [0; 8];
         data[4..6].copy_from_slice(&time.to_le_bytes());

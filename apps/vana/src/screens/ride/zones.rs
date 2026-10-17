@@ -35,7 +35,7 @@ pub(in crate::screens) fn marks(view: &View) -> Marks {
     let profile: &TrainingProfile = &view.profile;
     let time: &ZoneTime = &view.zone_time;
     Marks {
-        power: view.sample.power_watts.map(|watts| {
+        power: view.power_3s.map(|watts| {
             let zone = profile.power_zone(watts);
             mark(u32::from(watts), profile.power_range(zone))
         }),
@@ -82,6 +82,17 @@ mod tests {
         assert_eq!(at(500), GAUGE_WIDTH);
         assert_eq!(mark(2000, profile.power_range(7)).fill, GAUGE_WIDTH);
         assert_eq!(mark(0, profile.power_range(1)).fill, 1);
+    }
+
+    #[test]
+    fn the_power_gauge_follows_three_second_power() {
+        let mut view = View::new(crate::screens::workout::Page::Ride, 0, None);
+        view.sample.power_watts = Some(500);
+        view.power_3s = Some(211);
+        let fill = marks(&view).power.map(|mark| mark.fill);
+        assert_eq!(fill, Some(GAUGE_WIDTH / 2), "Z4 half full, not Z7's 500 W");
+        view.power_3s = None;
+        assert!(marks(&view).power.is_none());
     }
 
     #[test]

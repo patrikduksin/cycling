@@ -146,14 +146,13 @@ pub(super) fn prepare(view: &View) -> Smooth {
     );
 
     smooth.zones = [
-        sample
-            .power_watts
+        view.power_3s
             .map_or(0, |watts| view.profile.power_zone(watts)),
         sample
             .heart_bpm
             .map_or(0, |bpm| view.profile.heart_zone(bpm)),
     ];
-    let watts = value(&|v| whole(v, sample.power_watts));
+    let watts = value(&|v| whole(v, view.power_3s));
     let bpm = value(&|v| whole(v, sample.heart_bpm));
     let rows = [
         (watts, &b"W"[..], POWER_TOP, POWER),
@@ -349,6 +348,7 @@ mod tests {
         };
         view.totals.add(1000, case.distance_mm, &sample, None);
         view.sample = sample;
+        view.power_3s = case.watts;
         view.prepare();
         view
     }

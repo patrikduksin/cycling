@@ -65,6 +65,9 @@ pub const HOME: [&[u8]; 4] = [b"RIDE", b"SENSORS", b"SETTINGS", b"RIDES"];
 pub struct View {
     pub now_ms: u64,
     pub sample: Sample,
+    /// Power over the last 3 s, which the ride page shows instead of the
+    /// jumpy one-second reading.
+    pub power_3s: Option<u16>,
     pub active_secs: u64,
     pub state: Status,
     pub radar: radar::Snapshot,
@@ -135,6 +138,7 @@ impl View {
         let mut view = Self {
             now_ms: 0,
             sample: Sample::default(),
+            power_3s: None,
             active_secs: 0,
             state: Status::Ready,
             radar: radar::Snapshot::default(),
@@ -438,6 +442,7 @@ mod tests {
             gradient_tenths: Some(-35),
             ..Sample::default()
         };
+        view.power_3s = Some(250);
         view.totals.add(1000, 12_345, &view.sample, None);
         view.active_secs = 3725;
         view.state = Status::Recording;

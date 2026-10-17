@@ -53,6 +53,9 @@ pub struct Snapshot {
     /// epoch from different sentences share it.
     pub epoch_ms: Option<u32>,
     pub utc: Option<[u8; 6]>,
+    /// The UTC date of the last fix as ASCII `ddmmyy`, when the receiver
+    /// reported one.
+    pub date: Option<[u8; 6]>,
     pub age_ms: Option<u64>,
     pub bytes: u32,
     pub valid_sentences: u32,
@@ -75,6 +78,7 @@ impl Default for Snapshot {
             speed_mm_s: None,
             epoch_ms: None,
             utc: None,
+            date: None,
             age_ms: None,
             bytes: 0,
             valid_sentences: 0,

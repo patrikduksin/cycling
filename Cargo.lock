@@ -2525,6 +2525,7 @@ dependencies = [
  "firmware-services",
  "firmware-shell",
  "heapless 0.9.3",
+ "libm",
  "log",
 ]
 

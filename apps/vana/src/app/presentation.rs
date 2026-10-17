@@ -1,6 +1,7 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
 use super::cues::Cue;
+use super::night::NIGHT_PERCENT;
 use super::recording::{Medium, Request, RideMessage};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
@@ -237,6 +238,7 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
+        self.follow_daylight(system, now, position);
         // Once the device accepted turning off, the last frame stays.
         if system.foreground == Screen::Blank || self.turning_off() {
             return;
@@ -829,7 +831,32 @@ impl Runtime {
                 let _ = write!(note, "Z5 FROM {} BPM", low);
                 write!(value, "{}", profile.lthr_bpm)
             }
-            Row::Brightness => write!(value, "{}%", display.brightness),
+            Row::Brightness => {
+                if self.night.is_night() && display.brightness > NIGHT_PERCENT {
+                    let _ = write!(note, "NIGHT {NIGHT_PERCENT}%");
+                }
+                write!(value, "{}%", display.brightness)
+            }
+            Row::Daylight => {
+                use super::preferences::Daylight;
+                if options.daylight == Daylight::Auto {
+                    let now = if self.night.is_night() {
+                        "NIGHT"
+                    } else {
+                        "DAY"
+                    };
+                    let _ = write!(note, "{now} NOW");
+                }
+                write!(
+                    value,
+                    "{}",
+                    match options.daylight {
+                        Daylight::Auto => "AUTO",
+                        Daylight::Day => "DAY",
+                        Daylight::Night => "NIGHT",
+                    }
+                )
+            }
             Row::AutoDim => match display.dim_secs {
                 0 => write!(value, "NEVER"),
                 secs @ ..60 => write!(value, "{secs} S"),

@@ -15,4 +15,5 @@ device-api = { path = "../../packages/device-api" }
 firmware-shell = { path = "../../packages/shell" }
 firmware-services = { path = "../../packages/services" }
 heapless.workspace = true
+libm = "0.2.16"
 log = { version = "=0.4.34", default-features = false }

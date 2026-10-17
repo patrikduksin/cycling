@@ -13,6 +13,7 @@ mod commands;
 mod cues;
 mod history;
 mod input;
+mod night;
 mod power;
 mod preferences;
 mod presentation;
@@ -54,6 +55,7 @@ pub struct Runtime {
     timing: timing::Timing,
     cues: cues::Cues,
     history: history::History,
+    night: night::Night,
 }
 
 impl Runtime {
@@ -74,6 +76,7 @@ impl Runtime {
             timing: timing::Timing::default(),
             cues: cues::Cues::default(),
             history: history::History::default(),
+            night: night::Night::default(),
         }
     }
 

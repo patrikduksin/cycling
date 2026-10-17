@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-if [[ ! -f .local/export-esp.sh ]]; then
+# Linked worktrees use the toolchain export of the primary checkout.
+export_esp=".local/export-esp.sh"
+if [[ ! -f "$export_esp" ]]; then
+  export_esp="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/export-esp.sh"
+fi
+if [[ ! -f "$export_esp" ]]; then
   echo "Run mise run setup first." >&2
   exit 1
 fi
@@ -21,7 +26,8 @@ case "${CYCLING_BULK_MAINTENANCE:-0}" in
   *) echo "CYCLING_BULK_MAINTENANCE must be 0 or 1." >&2; exit 1 ;;
 esac
 echo "Building with USB test harness=${CYCLING_HARNESS:-1}"
-source .local/export-esp.sh
+mkdir -p .local
+source "$export_esp"
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
 export CYCLING_BUILD_COMMIT
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then

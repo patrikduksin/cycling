@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-from cycling_devtools.workspace import ROOT
+from cycling_devtools.workspace import DEVICE_LOCAL
 
 
 class DiscoveryError(ValueError):
@@ -26,7 +26,7 @@ def normalize_identity(value):
     return normalized
 
 
-def resolve_port(sysfs=Path('/sys/class/tty'), manifest=ROOT / '.local/device/manifest.json'):
+def resolve_port(sysfs=Path('/sys/class/tty'), manifest=DEVICE_LOCAL / 'device/manifest.json'):
     try:
         original = normalize_identity(json.loads(Path(manifest).read_text())['identity'])
     except OSError, ValueError, KeyError, TypeError:

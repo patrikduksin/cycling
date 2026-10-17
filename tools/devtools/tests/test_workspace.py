@@ -86,5 +86,38 @@ class HelperTests(unittest.TestCase):
                 reader(data, offset)
 
 
+class MainCheckoutTests(unittest.TestCase):
+    def test_linked_worktree_shares_the_primary_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            primary = Path(directory) / 'primary'
+            linked = primary / '.claude/worktrees/agent'
+
+            def git(*args, cwd=primary):
+                subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True)
+
+            primary.mkdir()
+            git('init', '-q')
+            git(
+                '-c',
+                'user.name=t',
+                '-c',
+                'user.email=t@t',
+                '-c',
+                'commit.gpgsign=false',
+                'commit',
+                '-q',
+                '--allow-empty',
+                '-m',
+                'root',
+            )
+            git('worktree', 'add', '-q', str(linked))
+            self.assertEqual(workspace.main_checkout(primary).resolve(), primary.resolve())
+            self.assertEqual(workspace.main_checkout(linked).resolve(), primary.resolve())
+
+    def test_outside_git_falls_back_to_the_given_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(workspace.main_checkout(Path(directory)), Path(directory))
+
+
 if __name__ == '__main__':
     unittest.main()

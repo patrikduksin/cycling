@@ -13,9 +13,9 @@ import zlib
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import acquire_lock
-from cycling_devtools.workspace import ROOT
+from cycling_devtools.workspace import DEVICE_LOCAL, ROOT
 
-LOCAL = ROOT / '.local/device'
+LOCAL = DEVICE_LOCAL / 'device'
 FLASH_SIZE = 0x1000000
 SLOT_SIZE = 0x73A000
 SETTINGS_SIZE = 0x2000

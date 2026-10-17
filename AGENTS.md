@@ -36,10 +36,14 @@ Use mise tasks and commit `Cargo.lock`.
 Read the [C606 skill](.agents/skills/c606/SKILL.md) before flashing, serial
 access or device tests. It owns the procedure; these rules always apply:
 
-- Change device firmware only through `mise run backup`, `mise run flash` and
-  `mise run stock`.
-- Preserve stock ota_0, bootloader, partition table, eFuses and existing
-  persisted data. No vendor filesystem writes.
+- Change device firmware only through `mise run backup`, `mise run flash`,
+  `mise run rollback`, `mise run stock`, `mise run stock-select` and
+  `mise run restore-owned`.
+- Stock lives in the verified private backup, not on the device (owner
+  decision, 2026-10-17): cycling may occupy both A/B application slots, and
+  `mise run stock` restores the complete backup. Never touch eFuses. Preserve
+  the bootloader and partition table, and persisted cycling settings and rides
+  across flashes. No vendor filesystem writes outside that full restore.
 - Serialize all device access. Linked worktrees share the primary checkout's
   `.local` device lock, backup and toolchain export.
 - Validate changed hardware access or display timing on hardware, and report

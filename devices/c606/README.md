@@ -19,7 +19,8 @@ power sequencing when changing hardware code.
 `build.sh` (run by `mise run build`) selects features from `CYCLING_SDK`,
 `CYCLING_HARNESS` and `CYCLING_BULK_MAINTENANCE` (the MMC maintenance image; see
 [storage research](research/storage.md)) and writes `.local/cycling.bin`
-for slot B (`ota_1`). `partitions.csv` matches the device layout; never flash it
+for either application slot; `mise run flash` picks the slot that is not
+selected. `partitions.csv` matches the device layout; never flash it
 or a generated bootloader.
 
 Device access, flashing and hardware validation follow

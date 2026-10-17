@@ -327,8 +327,9 @@ and [device storage](../../os/src/device/storage.rs), with host boundary tests.
 The stock partition table describes the original slots, not the smaller application
 extent after those reservations.
 
-Routine safe flashes preserve both journals. A tool that writes all of `ota_1`
-can erase them. Settings use alternating committed sectors with CRC validation;
+Routine safe flashes preserve both journals; images in either slot stop before
+them. A tool that writes all of `ota_1` can erase them, and the full stock
+restore replaces them after saving a private copy. Settings use alternating committed sectors with CRC validation;
 ride compatibility and recovery belong to the SDK. See
 [ride recording](../../../docs/ride-recording.md) for export and explicit reclaim.
 Unknown settings content refuses writes rather than initializing over data.

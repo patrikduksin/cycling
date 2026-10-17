@@ -1,6 +1,7 @@
 pub mod ant_protocol;
 #[cfg(feature = "hardware")]
 pub mod bluetooth;
+pub mod boot_slot;
 #[cfg(all(feature = "hardware", feature = "bulk-maintenance"))]
 pub mod bulk_maintenance;
 pub mod companion;

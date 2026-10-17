@@ -39,14 +39,26 @@ description = "Read and verify a private full-flash backup from stock"
 run = "{{vars.devtools}} python -m cycling_devtools.device.firmware backup"
 
 [tasks.flash]
-description = "Verify stock, flash cycling to slot B, and boot it"
+description = "Flash cycling into the inactive A/B slot, boot it, and reselect the old slot if its console stays silent"
 depends = ["build"]
 run = "{{vars.devtools}} python -m cycling_devtools.device.firmware flash"
 
+[tasks.rollback]
+description = "Boot the previous cycling image in the other A/B slot after validating it"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware rollback"
+
 [tasks.stock]
-alias = "boot-stock"
-description = "Verify and boot preserved stock firmware"
+description = "Restore the complete verified 16 MiB stock backup (confirmation required; saves cycling rides/settings first)"
 run = "{{vars.devtools}} python -m cycling_devtools.device.firmware stock"
+
+[tasks.restore-owned]
+description = "Write a saved ride/settings snapshot back under running cycling firmware, with verified readback"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware restore-owned"
+
+[tasks.stock-select]
+alias = "boot-stock"
+description = "Boot stock in slot A without rewriting flash, while slot A still holds the verified stock image"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware stock-select"
 
 [tasks.monitor]
 description = "Read USB logs without resetting the device"

@@ -2,6 +2,7 @@
 //! above bars of the time spent in each power and heart rate zone.
 use super::zones::{BAR_WIDTH, bar_pixel};
 use super::{Cell, DIM, GRID, Values, clock, kilometres, speed, whole};
+use crate::screens::rounded;
 use crate::screens::workout::View;
 use firmware_shell::rendering::text::text;
 
@@ -104,7 +105,8 @@ fn zones_pixel(view: &View, x: usize, y: usize) -> u16 {
         if text(x, y, COLUMNS[0], top, 1, label) {
             return DIM;
         }
-        if (BAR_LEFT..BAR_LEFT + BAR_WIDTH).contains(&x) {
+        let bounds = (BAR_LEFT, top, BAR_LEFT + BAR_WIDTH, top + BAR_HEIGHT);
+        if rounded(x, y, bounds, BAR_HEIGHT / 2) {
             return if top == POWER_BAR {
                 bar_pixel(marks.power_time, BAR_LEFT, x)
             } else {

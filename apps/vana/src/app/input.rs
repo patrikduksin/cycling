@@ -19,6 +19,11 @@ impl Runtime {
     }
 
     pub fn input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
+        // A lift ends the touch wherever it lands, so a finger still down
+        // while a button changes page cannot swallow the next tap.
+        if matches!(input, Input::Release | Input::Cancel) {
+            self.navigation.touching = false;
+        }
         if !self.display.is_active() {
             return;
         }

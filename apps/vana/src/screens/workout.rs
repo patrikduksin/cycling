@@ -282,7 +282,7 @@ mod tests {
         // gauge lit to its place in 227..259 W.
         const ORANGE: u16 = 0xfc60;
         assert!(shows(&view, 38, 157, 2, b"Z5", 0));
-        assert_eq!(view.pixel(35, 155), ORANGE);
+        assert_eq!(view.pixel(36, 164), ORANGE);
         assert_eq!(view.pixel(74, 164), ORANGE);
         assert_eq!(view.pixel(113, 164), ORANGE);
         assert_eq!(view.pixel(114, 164), 0x39e7);
@@ -296,7 +296,7 @@ mod tests {
         view.profile = crate::ride::zones::TrainingProfile::new(300, 185).unwrap();
         view.prepare();
         assert!(shows(&view, 38, 157, 2, b"Z3", 0));
-        assert_eq!(view.pixel(35, 155), 0x07e0);
+        assert_eq!(view.pixel(36, 164), 0x07e0);
         assert!(shows(&view, 38, 192, 3, b"90", WHITE));
         assert!(shows(&view, 146, 192, 3, b"0.01", WHITE));
         assert!(shows(&view, 38, 234, 2, b"01:02:05", WHITE));

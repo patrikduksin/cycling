@@ -6,6 +6,7 @@
 //! finishes. Touch does the same directly: tap a field to edit it, then tap
 //! the large minus and plus pads. The runtime prepares the lines; this draws
 //! them and maps touches to `Target`s.
+use super::rounded;
 use super::workout::View;
 use firmware_shell::rendering::text::text;
 
@@ -13,6 +14,9 @@ const CYAN: u16 = 0x07ff;
 const WHITE: u16 = 0xffff;
 const DIM: u16 = 0x8410;
 const YELLOW: u16 = 0xffe0;
+/// A soft fill that groups without drawing borders.
+const RAISED: u16 = 0x2124;
+const RADIUS: usize = 12;
 
 /// Editable fields, in BottomLeft order, with their units.
 pub const FIELDS: [&[u8]; 2] = [b"FTP WATTS", b"LTHR BPM"];
@@ -92,19 +96,12 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
         if text(x, y, 130, top + 46, 1, lines[ANCHORS + i].as_bytes()) {
             return label_ink;
         }
-        if filled {
-            return CYAN;
+        // The selected field sits on a soft panel, cyan while it is edited;
+        // the others float on black.
+        if !selected || !rounded(x, y, (LEFT, top, RIGHT, top + BOX_HEIGHT), RADIUS) {
+            return 0;
         }
-        // The selected field has a heavy cyan frame; others a thin dim one.
-        let edge = (x - LEFT)
-            .min(RIGHT - 1 - x)
-            .min(y - top)
-            .min(top + BOX_HEIGHT - 1 - y);
-        return match (selected, edge) {
-            (true, 0..=2) => CYAN,
-            (false, 0) => DIM,
-            _ => 0,
-        };
+        return if filled { CYAN } else { RAISED };
     }
     if view.editing && inside && (PAD_TOP..PAD_TOP + PAD_HEIGHT).contains(&y) {
         let (left, right, label): (usize, usize, &[u8]) = if x < PAD_SPLIT {
@@ -119,11 +116,8 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
         if text(x, y, middle - 24, PAD_TOP + 15, 4, label) {
             return WHITE;
         }
-        let edge = (x - left)
-            .min(right - 1 - x)
-            .min(y - PAD_TOP)
-            .min(PAD_TOP + PAD_HEIGHT - 1 - y);
-        return if edge == 0 { CYAN } else { 0 };
+        let pad = rounded(x, y, (left, PAD_TOP, right, PAD_TOP + PAD_HEIGHT), RADIUS);
+        return if pad { RAISED } else { 0 };
     }
     if text(x, y, LEFT, STATUS_TOP, 1, lines[STATUS].as_bytes()) {
         return if lines[STATUS].as_bytes().starts_with(b"NOT") {
@@ -159,10 +153,9 @@ mod tests {
     #[test]
     fn frames_the_selected_field_and_fills_it_while_editing() {
         let moving = view(1, false);
-        assert_eq!(moving.pixel(12, BOX_TOP + 1), DIM);
-        assert_eq!(moving.pixel(13, BOX_TOP + 1), 0);
-        assert_eq!(moving.pixel(14, BOX_TOP + BOX_PITCH + 10), CYAN);
-        assert_eq!(moving.pixel(20, BOX_TOP + BOX_PITCH + 10), 0);
+        assert_eq!(moving.pixel(20, BOX_TOP + 4), 0, "unselected: no box");
+        assert_eq!(moving.pixel(20, BOX_TOP + BOX_PITCH + 4), RAISED);
+        assert_eq!(moving.pixel(LEFT, BOX_TOP + BOX_PITCH), 0, "rounded corner");
         assert!(lit(&moving, 22, BOX_TOP + 28, 5, b"215", WHITE));
         // No pads, and no permanent button labels.
         assert_eq!(moving.pixel(60, PAD_TOP), 0);
@@ -180,7 +173,7 @@ mod tests {
         ));
         assert!(lit(&editing, 40, PAD_TOP + 15, 4, b"-5", WHITE));
         assert!(lit(&editing, 152, PAD_TOP + 15, 4, b"+5", WHITE));
-        assert_eq!(editing.pixel(LEFT, PAD_TOP + 5), CYAN);
+        assert_eq!(editing.pixel(LEFT + 2, PAD_TOP + 20), RAISED);
     }
 
     #[test]

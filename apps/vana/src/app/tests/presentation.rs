@@ -227,3 +227,24 @@ fn radar_alerts_sound_only_on_the_ride_page() {
     runtime.alert(&mut speaker, 1250);
     assert_eq!(speaker.0, [2], "the longest pattern that fits");
 }
+
+#[test]
+fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut radio = Radio::new();
+    let touch = |x, y| Input::Touch(device_api::input::Point { x, y });
+    runtime.navigation.page = Page::Settings;
+    // A finger on FTP edits it, and stays down while TopLeft finishes and
+    // TopLeft leaves Settings; it lifts on Home.
+    runtime.input(touch(120, 86), 1000, &mut radio);
+    assert!(runtime.navigation.settings_editing);
+    runtime.input(press(Button::TopLeft), 2000, &mut radio);
+    runtime.input(press(Button::TopLeft), 3000, &mut radio);
+    assert!(runtime.navigation.page == Page::Home);
+    runtime.input(Input::Release, 3500, &mut radio);
+    // Back in Settings, the first tap counts.
+    runtime.navigation.page = Page::Settings;
+    runtime.input(touch(120, 164), 4000, &mut radio);
+    assert_eq!(runtime.navigation.settings_field, 1);
+    assert!(runtime.navigation.settings_editing);
+}

@@ -2,6 +2,7 @@
 //! then cadence, distance, active time and grade.
 use super::zones::{GAUGE_WIDTH, Mark, gauge_pixel};
 use super::{Cell, DIM, GRID, Values, clock, kilometres, speed, whole};
+use crate::screens::rounded;
 use crate::screens::workout::View;
 use core::fmt::Write;
 use firmware_shell::rendering::text::text;
@@ -130,9 +131,11 @@ fn zone_pixel(mark: Option<Mark>, left: usize, label: &[u8], x: usize, y: usize)
         return ink.then_some(DIM);
     };
     if (left..left + CHIP_WIDTH).contains(&x) {
-        return Some(if ink { 0 } else { mark.colour });
+        // A pill of the zone colour behind the black zone number.
+        let pill = rounded(x, y, (left, CHIP_TOP, left + CHIP_WIDTH, CHIP_BOTTOM), 7);
+        return pill.then_some(if ink { 0 } else { mark.colour });
     }
     let gauge = left + CHIP_WIDTH + 6;
-    ((gauge..gauge + GAUGE_WIDTH).contains(&x) && (GAUGE_TOP..GAUGE_BOTTOM).contains(&y))
-        .then(|| gauge_pixel(mark, gauge, x))
+    let bounds = (gauge, GAUGE_TOP, gauge + GAUGE_WIDTH, GAUGE_BOTTOM);
+    rounded(x, y, bounds, 3).then(|| gauge_pixel(mark, gauge, x))
 }

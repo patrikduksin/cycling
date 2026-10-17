@@ -10,7 +10,9 @@ use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
 use critical_section::Mutex;
 use embassy_futures::select::Either;
+use embassy_futures::select::Either3;
 use embassy_futures::select::select;
+use embassy_futures::select::select3;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::Duration;
@@ -283,7 +285,7 @@ async fn application<'s>(
             requested
         };
         if let Some(operation) = operation {
-            central = perform(operation, automatic, &mut session, stack, central).await;
+            central = perform(operation, automatic, &mut session, stack, central, server).await;
         }
         if !CONTROL.ready() {
             return;
@@ -331,6 +333,7 @@ async fn perform<'s>(
     session: &mut Session,
     stack: &'s BleStack<'s>,
     central: BleCentral<'s>,
+    server: &Server<'_>,
 ) -> BleCentral<'s> {
     match operation {
         BleOperation::Select(selection) => {
@@ -364,7 +367,7 @@ async fn perform<'s>(
             CONTROL.finish(automatic, (!success).then_some(ControlError::ScanFailed));
             central
         }
-        BleOperation::Connect => connect(automatic, session, stack, central).await,
+        BleOperation::Connect => connect(automatic, session, stack, central, server).await,
     }
 }
 
@@ -373,6 +376,7 @@ async fn connect<'s>(
     session: &mut Session,
     stack: &'s BleStack<'s>,
     central: BleCentral<'s>,
+    server: &Server<'_>,
 ) -> BleCentral<'s> {
     if !automatic {
         session.retry.connect();
@@ -396,7 +400,7 @@ async fn connect<'s>(
     };
     set_link(Link::Connecting);
     let before = snapshot().connections;
-    let result = client_attempt(stack, &mut central, target, selection, !automatic).await;
+    let result = client_attempt(stack, &mut central, server, target, selection, !automatic).await;
     if snapshot().connections != before {
         session.retry.recovered();
         disconnected();
@@ -487,6 +491,7 @@ where
 async fn client_attempt<'stack, C>(
     stack: &'stack Stack<'stack, C, DefaultPacketPool>,
     central: &mut Central<'stack, C, DefaultPacketPool>,
+    server: &Server<'_>,
     target: Address,
     selection: Selection,
     report_completion: bool,
@@ -515,33 +520,69 @@ where
             .map_err(|_| ControlError::ConnectFailed)?;
     update_state(|state| state.connections = state.connections.saturating_add(1));
     log::info!(target: "ble", "CYCLING_BLE transport_connected");
+    // Serve the peer too: it may be a GATT client of ours (BlueZ discovers
+    // every LE peer) and drops the link when a request stays unanswered for
+    // the 30 s ATT transaction timeout. This also observes the disconnect.
+    let connection = connection
+        .with_attribute_server(server)
+        .map_err(|_| ControlError::GattFailed)?;
     let exchange = async {
         let client = embassy_time::with_timeout(
             Duration::from_secs(10),
-            GattClient::<C, DefaultPacketPool, 12>::new(stack, &connection),
+            GattClient::<C, DefaultPacketPool, 12>::new(stack, connection.raw()),
         )
         .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
-        match select(
+        .map_err(|_| ControlError::GattFailed)?
+        .map_err(|_| ControlError::GattFailed)?;
+        match select3(
             client.task(),
             data_protocol(&client, selection, report_completion),
+            serve_peer(stack, &connection),
         )
         .await
         {
-            Either::First(_) => Err(()),
-            Either::Second(result) => result,
+            Either3::First(_) => Err(ControlError::GattFailed),
+            Either3::Second(result) => result.map_err(|_| ControlError::GattFailed),
+            Either3::Third(error) => Err(error),
         }
     };
     let result = match select(exchange, CONTROL.work_pending()).await {
-        Either::First(result) => result.map_err(|_| ControlError::GattFailed),
+        Either::First(result) => result,
         Either::Second(()) => Ok(()),
     };
-    connection.disconnect();
-    if !wait_disconnected(&connection).await {
+    connection.raw().disconnect();
+    if !wait_disconnected(connection.raw()).await {
         return Err(ControlError::DisconnectTimeout);
     }
     result
+}
+
+/// Answer the peer's ATT requests and connection parameter requests until the
+/// link ends. Returns only when the peer or controller ended the link.
+async fn serve_peer<C>(
+    stack: &Stack<'_, C, DefaultPacketPool>,
+    connection: &GattConnection<'_, '_, DefaultPacketPool>,
+) -> ControlError
+where
+    C: Controller,
+{
+    loop {
+        match connection.next().await {
+            GattConnectionEvent::Disconnected { reason } => {
+                log::info!(target: "ble", "CYCLING_BLE link_lost reason={:?}", reason);
+                return ControlError::LinkLost;
+            }
+            GattConnectionEvent::Gatt { event } => {
+                if let Ok(reply) = event.accept() {
+                    reply.send().await;
+                }
+            }
+            GattConnectionEvent::RequestConnectionParams(request) => {
+                let _ = request.accept(None, stack).await;
+            }
+            _ => {}
+        }
+    }
 }
 
 async fn data_protocol<C>(

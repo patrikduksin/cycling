@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cycling_devtools.harness.runner as harness
 from cycling_devtools.harness.connectivity import scenarios
@@ -104,9 +105,35 @@ class ConnectivityTests(unittest.TestCase):
             if s.get('command') == 'RIDE SENSORS' and s.get('equals', {}).get('cadence') == 'Some(600)'
         ]
         self.assertEqual(len(cadence_checks), 2)
+        late = ble['steps'].index({'op': 'command', 'command': 'BLE', 'baseline': 'heart_after_att_timeout'})
+        self.assertGreater(sum(s['seconds'] for s in ble['steps'][:late] if s['op'] == 'delay'), 30)
         restore = harness.connectivity_restore_steps('ble', ble['connectivity_restore']['ble'])
         self.assertEqual([s['action'] for s in restore], ['select', 'echo'])
         self.assertEqual(restore[0]['mode'], 'authorized-heart')
+
+    def att_timeout_hold(self, snapshots):
+        """Run the BLE command checks from the first heart baseline through the hold."""
+        steps = scenarios(Path('/private/profile.json'))['connectivity-ble']['steps']
+        start = steps.index({'op': 'command', 'command': 'BLE', 'baseline': 'heart'})
+        end = next(i for i, s in enumerate(steps) if i > start and s.get('action') == 'disconnect')
+        checks = [s for s in steps[start:end] if s['op'] == 'command' and s['command'] == 'BLE']
+        self.assertEqual(len(checks), len(snapshots))
+        runner = object.__new__(harness.Runner)
+        runner.observations = {}
+        replies = [
+            {'notifications': str(n), 'dropped': '0', 'connections': str(c), 'disconnections': str(d)}
+            for n, c, d in snapshots
+        ]
+        with patch.object(runner, 'command', side_effect=replies):
+            for index, step in enumerate(checks):
+                runner.run_command(step, index)
+
+    def test_ble_hold_past_att_timeout_passes_on_one_continuous_link(self):
+        self.att_timeout_hold([(10, 1, 0), (16, 1, 0), (80, 1, 0), (86, 1, 0), (87, 1, 0)])
+
+    def test_ble_hold_past_att_timeout_fails_on_a_reconnect_during_the_hold(self):
+        with self.assertRaisesRegex(AssertionError, 'acquisition failed progress/loss assertions'):
+            self.att_timeout_hold([(10, 1, 0), (16, 1, 0), (30, 2, 1), (36, 2, 1), (37, 2, 1)])
 
 
 if __name__ == '__main__':

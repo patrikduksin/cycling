@@ -73,6 +73,59 @@ impl Sim {
         self.wait_for("RECORDING", seconds(3)).unwrap();
     }
 
+    /// From Home, open Settings and set the training profile with buttons:
+    /// BottomLeft moves to a field, BottomRight edits it, BottomLeft/Right
+    /// step it by five and TopLeft finishes. Ends on Settings.
+    #[track_caller]
+    pub fn edit_profile(&mut self, ftp_watts: u16, lthr_bpm: u16) {
+        self.home("SETTINGS");
+        for (index, target) in [ftp_watts, lthr_bpm].into_iter().enumerate() {
+            if index > 0 {
+                self.press(Button::BottomLeft);
+            }
+            self.press(Button::BottomRight);
+            self.step_profile_field(index, target, |sim, raise| {
+                sim.press(if raise {
+                    Button::BottomRight
+                } else {
+                    Button::BottomLeft
+                })
+            });
+            self.press(Button::TopLeft);
+        }
+    }
+
+    /// From Home, open Settings and set the training profile by touch: tap a
+    /// field, then the minus or plus pad. TopLeft finishes. Ends on Settings.
+    #[track_caller]
+    pub fn edit_profile_by_touch(&mut self, ftp_watts: u16, lthr_bpm: u16) {
+        self.home("SETTINGS");
+        for (index, target) in [ftp_watts, lthr_bpm].into_iter().enumerate() {
+            self.tap(120, 86 + 78 * index as u16);
+            self.step_profile_field(index, target, |sim, raise| {
+                sim.tap(if raise { 176 } else { 64 }, 237)
+            });
+            self.press(Button::TopLeft);
+        }
+    }
+
+    #[track_caller]
+    fn step_profile_field(&mut self, index: usize, target: u16, step: impl Fn(&mut Self, bool)) {
+        let label = ["FTP WATTS", "LTHR BPM"][index];
+        for _ in 0..200 {
+            let screen = self.screen();
+            let value: u16 = screen
+                .field(label)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("no {label}; screen:\n{}", screen.text()));
+            if value == target {
+                break;
+            }
+            step(self, value < target);
+        }
+        self.expect_field(label, &target.to_string());
+    }
+
     /// The recorder state from `RIDE STATUS`, such as "recording"; the
     /// status row can be showing a toast instead.
     pub fn ride_state(&mut self) -> String {

@@ -1,11 +1,22 @@
-//! The ride totals page: what this ride has added up so far, kept after stop.
-use super::{BODY_BOTTOM, Cell, GRID, Values, clock, kilometres, speed, whole};
+//! The ride totals page: what this ride has added up so far, kept after stop,
+//! above bars of the time spent in each power and heart rate zone.
+use super::zones::{BAR_WIDTH, bar_pixel};
+use super::{BODY_BOTTOM, Cell, DIM, GRID, Values, clock, kilometres, speed, whole};
+use crate::screens::rounded;
 use crate::screens::workout::View;
+use firmware_shell::rendering::text::text;
 
 const COLUMNS: [usize; 2] = [34, 141];
 const DIVIDER: usize = 135;
 const FIRST_ROW: usize = 33;
 const ROW_PITCH: usize = 37;
+const ROWS: usize = 6;
+/// Time-in-zone bars, below the totals: label, then the bar.
+const ZONES_TOP: usize = FIRST_ROW + ROWS * ROW_PITCH;
+const BAR_LEFT: usize = 58;
+const POWER_BAR: usize = HEART_BAR - 12;
+const HEART_BAR: usize = BODY_BOTTOM - 4 - BAR_HEIGHT;
+const BAR_HEIGHT: usize = 8;
 
 /// Labels in reading order, two per row; each reading has its own unit.
 const LABELS: [&[u8]; 12] = [
@@ -56,6 +67,9 @@ pub(super) fn prepare(view: &View, values: &mut Values) {
 }
 
 pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
+    if y >= ZONES_TOP {
+        return zones_pixel(view, x, y);
+    }
     if x == DIVIDER {
         return GRID;
     }
@@ -63,7 +77,7 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
         return 0;
     };
     let top = FIRST_ROW + row * ROW_PITCH;
-    if y == top + ROW_PITCH - 1 && y < BODY_BOTTOM - ROW_PITCH {
+    if y == top + ROW_PITCH - 1 {
         return GRID;
     }
     let column = usize::from(x > DIVIDER);
@@ -80,4 +94,25 @@ pub(super) fn pixel(view: &View, x: usize, y: usize) -> u16 {
         value_scale: if index == TIME { 2 } else { 3 },
     };
     cell.pixel(&view.values[index], x, y).unwrap_or(0)
+}
+
+fn zones_pixel(view: &View, x: usize, y: usize) -> u16 {
+    let marks = &view.marks;
+    for (top, label) in [(POWER_BAR, b"PWR".as_slice()), (HEART_BAR, b"HR")] {
+        if !(top..top + BAR_HEIGHT).contains(&y) {
+            continue;
+        }
+        if text(x, y, COLUMNS[0], top, 1, label) {
+            return DIM;
+        }
+        let bounds = (BAR_LEFT, top, BAR_LEFT + BAR_WIDTH, top + BAR_HEIGHT);
+        if rounded(x, y, bounds, BAR_HEIGHT / 2) {
+            return if top == POWER_BAR {
+                bar_pixel(marks.power_time, BAR_LEFT, x)
+            } else {
+                bar_pixel(marks.heart_time, BAR_LEFT, x)
+            };
+        }
+    }
+    0
 }

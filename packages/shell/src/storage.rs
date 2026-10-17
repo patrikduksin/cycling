@@ -71,6 +71,17 @@ impl<B: OwnedFlash> Store<B> {
         }
     }
 
+    /// Replace only the application's preferences in the stored record, so
+    /// temporary display preferences are not persisted along with them.
+    pub fn save_app(
+        &mut self,
+        app: crate::preferences::AppPreferences,
+    ) -> Result<Record, Error<B::Error>> {
+        let mut settings = self.load()?.settings;
+        settings.app = app;
+        self.save(settings)
+    }
+
     /// Connectivity provisioning must not accidentally persist temporary display preferences.
     pub fn save_connectivity(
         &mut self,
@@ -97,7 +108,7 @@ mod tests {
         use crate::preferences::Settings;
         use crate::preferences::Source;
         for (payload, source) in [
-            (b"cycling\x06".as_slice(), Source::Unsupported),
+            (b"cycling\x07".as_slice(), Source::Unsupported),
             (b"unrecognized".as_slice(), Source::Malformed),
             (b"cycling\x04".as_slice(), Source::Malformed),
         ] {
@@ -143,6 +154,28 @@ mod tests {
         assert_eq!(store.load().unwrap().settings.wifi, settings.wifi);
         assert_eq!(store.load().unwrap().settings.brightness, 75);
         let _ = Settings::default();
+    }
+
+    #[test]
+    fn application_save_keeps_stored_preferences_and_refuses_unrecognized_records() {
+        use crate::preferences::{AppPreferences, Settings};
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
+        let stored = Settings::new(75).unwrap();
+        journal.save(&stored.encode()).unwrap();
+        let mut store = Store { journal };
+        let app = AppPreferences::new(&[1, 2, 3]).unwrap();
+        store.save_app(app).unwrap();
+        let loaded = store.load().unwrap().settings;
+        assert_eq!(loaded.brightness, 75);
+        assert_eq!(loaded.app, app);
+        // Shell saves carry the application bytes forward.
+        store.save(loaded.with_brightness(60).unwrap()).unwrap();
+        assert_eq!(store.load().unwrap().settings.app, app);
+
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
+        journal.save(b"cycling\x07").unwrap();
+        let mut store = Store { journal };
+        assert_eq!(store.save_app(app), Err(Error::UnrecognizedSettings));
     }
 
     #[test]

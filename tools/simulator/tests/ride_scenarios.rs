@@ -366,8 +366,9 @@ fn gps_tunnel_records_samples_without_a_position() {
     sim.advance(seconds(30));
     let gps = sim.screen().run("GPS").unwrap();
     assert_ne!(gps.color, 0x07ff, "GPS still shown as fixed in the tunnel");
-    // Wheel speed keeps working without satellites.
-    sim.expect_field("SPEED", "30.0");
+    // Wheel speed keeps working without satellites. The truncated decimal
+    // depends on where the sample lands between wheel revolutions.
+    expect_near(&mut sim, "SPEED", 30.0, 0.15);
     sim.checkpoint("in the tunnel");
 
     sim.set_gps_fix(true);
@@ -687,6 +688,200 @@ fn pause_leaves_the_totals_untouched() {
     sim.checkpoint("main page after resuming");
 }
 
+const ZONE_GREY: u16 = 0x8410;
+const ZONE_BLUE: u16 = 0x249f;
+const ZONE_GREEN: u16 = 0x07e0;
+const ZONE_YELLOW: u16 = 0xffe0;
+const ZONE_ORANGE: u16 = 0xfc60;
+const ZONE_RED: u16 = 0xf800;
+const ZONE_PURPLE: u16 = 0xa21f;
+
+fn pixel(sim: &Sim, x: usize, y: usize) -> u16 {
+    let screen = sim.screen();
+    screen.pixels[y * screen.width + x]
+}
+
+/// The main page's power (left) or heart rate (right) zone chip: its label
+/// and the band colour behind it.
+#[track_caller]
+fn zone_chip(sim: &Sim, right: bool) -> (String, u16) {
+    let screen = sim.screen();
+    let run = screen
+        .frame()
+        .read()
+        .into_iter()
+        .find(|run| run.text.starts_with('Z') && run.y > 150 && (run.x > 135) == right)
+        .unwrap_or_else(|| panic!("no zone chip; screen:\n{}", screen.text()));
+    assert_eq!(run.color, 0, "zone numbers are black on their band");
+    let band = pixel(sim, run.x - 2, run.y);
+    (run.text, band)
+}
+
+#[track_caller]
+fn expect_chip(sim: &mut Sim, right: bool, zone: &str, colour: u16) {
+    let (text, band) = zone_chip(sim, right);
+    assert_eq!((text.as_str(), band), (zone, colour), "zone chip");
+    sim.note(NoteKind::Check, format!("{zone} chip in {colour:#06x}"));
+}
+
+/// TopLeft until Home: past the last ride page, or out of Settings.
+#[track_caller]
+fn go_home(sim: &mut Sim) {
+    for _ in 0..4 {
+        if sim.screen().contains("READY TO RIDE") {
+            return;
+        }
+        sim.press(Button::TopLeft);
+    }
+    panic!("not Home; screen:\n{}", sim.screen().text());
+}
+
+#[test]
+fn zone_chips_take_the_colour_of_each_power_zone() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    // Default profile: FTP 215 W, LTHR 185 bpm.
+    for (watts, bpm, power, heart) in [
+        (100.0, 120.0, ("Z1", ZONE_GREY), ("Z1", ZONE_GREY)),
+        (150.0, 155.0, ("Z2", ZONE_BLUE), ("Z2", ZONE_BLUE)),
+        (180.0, 170.0, ("Z3", ZONE_GREEN), ("Z3", ZONE_GREEN)),
+        (210.0, 178.0, ("Z4", ZONE_YELLOW), ("Z4", ZONE_YELLOW)),
+        (245.0, 188.0, ("Z5", ZONE_ORANGE), ("Z5", ZONE_ORANGE)),
+        (300.0, 190.0, ("Z6", ZONE_RED), ("Z5", ZONE_ORANGE)),
+        (450.0, 192.0, ("Z7", ZONE_PURPLE), ("Z5", ZONE_ORANGE)),
+    ] {
+        sim.ride_at(30.0, watts, bpm, 90.0);
+        sim.advance(seconds(5));
+        sim.expect_field("WATTS", &format!("{watts}"));
+        expect_chip(&mut sim, false, power.0, power.1);
+        expect_chip(&mut sim, true, heart.0, heart.1);
+        sim.checkpoint(&format!("{watts} W in {}", power.0));
+    }
+    // A lost reading leaves a dim Z- and no band.
+    sim.set_present(device_type::POWER, POWER, false);
+    sim.advance(seconds(5));
+    sim.expect_field("WATTS", "--");
+    sim.expect_text("Z-");
+    sim.checkpoint("no power, no zone colour");
+}
+
+#[test]
+fn raising_ftp_in_settings_moves_the_same_watts_down_a_zone() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 250.0, 0.0, 90.0);
+    sim.advance(seconds(10));
+    expect_chip(&mut sim, false, "Z5", ZONE_ORANGE);
+    sim.checkpoint("250 W at FTP 215");
+    sim.stop_ride();
+    go_home(&mut sim);
+
+    sim.home("SETTINGS");
+    sim.expect_field("FTP WATTS", "215");
+    sim.expect_field("LTHR BPM", "185");
+    sim.expect_text("Z4 195-226 W");
+    sim.checkpoint("settings with the default profile");
+    // BottomRight edits the selected field: it fills and the touch pads appear.
+    sim.press(Button::BottomRight);
+    sim.expect_text("+5");
+    sim.checkpoint("editing FTP");
+    sim.press(Button::TopLeft);
+    sim.expect_no_text("+5");
+    go_home(&mut sim);
+
+    sim.edit_profile(250, 185);
+    sim.expect_text("Z4 226-263 W");
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    sim.checkpoint("settings with FTP 250");
+    go_home(&mut sim);
+
+    sim.start_ride();
+    sim.advance(seconds(10));
+    sim.expect_field("WATTS", "250");
+    expect_chip(&mut sim, false, "Z4", ZONE_YELLOW);
+    sim.checkpoint("250 W at FTP 250");
+}
+
+#[test]
+fn training_profile_survives_power_loss() {
+    let mut sim = rider();
+    let (_, before) = sim.command("PROFILE");
+    assert_eq!(
+        before, "ftp=215 lthr=185 stored=missing persistence=saved",
+        "a fresh device has the defaults"
+    );
+    // Edited by touch this time: tap a field, then the minus/plus pads.
+    sim.edit_profile_by_touch(280, 170);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    sim.checkpoint("profile saved");
+
+    sim.power_loss();
+    let (status, after) = sim.command("PROFILE");
+    assert_eq!(status, "OK");
+    assert_eq!(after, "ftp=280 lthr=170 stored=current persistence=saved");
+    sim.home("SETTINGS");
+    sim.expect_field("FTP WATTS", "280");
+    sim.expect_field("LTHR BPM", "170");
+    sim.checkpoint("profile after power loss");
+
+    // The terminal edits the same profile; an edit that never settled before
+    // power was cut is not saved.
+    let (status, reply) = sim.command("PROFILE LTHR 175");
+    assert_eq!(status, "OK");
+    assert_eq!(reply, "ftp=280 lthr=175 stored=current persistence=pending");
+    assert_eq!(sim.command("PROFILE FTP 9000").0, "INVALID");
+    sim.power_loss();
+    assert_eq!(
+        sim.command("PROFILE").1,
+        "ftp=280 lthr=170 stored=current persistence=saved"
+    );
+    sim.command("PROFILE LTHR 175");
+    sim.advance(seconds(3));
+    sim.power_loss();
+    assert_eq!(
+        sim.command("PROFILE").1,
+        "ftp=280 lthr=175 stored=current persistence=saved"
+    );
+    // Shell preferences saved later keep the profile.
+    assert_eq!(sim.command("BRIGHTNESS 70").0, "OK");
+    assert_eq!(sim.command("SAVE").0, "OK");
+    sim.power_loss();
+    assert!(sim.command("SETTINGS").1.contains("brightness=70"));
+    assert_eq!(
+        sim.command("PROFILE").1,
+        "ftp=280 lthr=175 stored=current persistence=saved"
+    );
+}
+
+#[test]
+fn stats_page_splits_time_between_two_power_zones() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    // Five minutes of endurance (Z2), then five of VO2 (Z5); heart rate in Z1.
+    sim.ride_at(30.0, 150.0, 130.0, 90.0);
+    sim.advance(minutes(5));
+    sim.ride_at(30.0, 250.0, 130.0, 90.0);
+    sim.advance(minutes(5));
+    ride_page(&mut sim, "2/3");
+    sim.expect_text("PWR");
+    // The power bar spans x 58..238 at y 261..269; the heart bar sits below.
+    let bar: Vec<u16> = (58..238).map(|x| pixel(&sim, x, 264)).collect();
+    let blue = bar.iter().filter(|&&c| c == ZONE_BLUE).count();
+    let orange = bar.iter().filter(|&&c| c == ZONE_ORANGE).count();
+    assert_eq!(blue + orange, bar.len(), "only Z2 and Z5: {bar:x?}");
+    assert!(blue.abs_diff(orange) <= 4, "{blue} blue, {orange} orange");
+    assert_eq!(bar[0], ZONE_BLUE, "lower zones first");
+    assert!((58..238).all(|x| pixel(&sim, x, 276) == ZONE_GREY));
+    sim.note(
+        NoteKind::Check,
+        format!("power bar {blue} px Z2, {orange} px Z5; heart all Z1"),
+    );
+    sim.checkpoint("time in zone after two power levels");
+}
+
 /// The text run that reads exactly `text`, and its colour.
 #[track_caller]
 fn color_of(sim: &Sim, text: &str) -> u16 {
@@ -825,7 +1020,8 @@ fn paused_time_is_not_lap_time() {
     sim.ride_at(30.0, 200.0, 0.0, 90.0);
     sim.advance(minutes(1));
     let lap = sim.screen().field("LAP TIME").unwrap();
-    assert!(lap.starts_with("03:0"), "{lap}");
+    // Whole seconds: where the frame falls within a second can show 02:59.
+    assert!(lap.starts_with("03:0") || lap == "02:59", "{lap}");
     sim.checkpoint("lap time after resuming");
 }
 

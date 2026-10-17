@@ -1,4 +1,4 @@
-//! Cycling speed, distance, gradient and training-zone policy.
+//! Cycling speed, distance and gradient policy. Training zones live in `zones`.
 use crate::sensors::ant::Epoch;
 use device_api::ant::Packet;
 
@@ -179,27 +179,6 @@ impl Gradient {
     }
 }
 
-pub fn power_zone(w: u16) -> u8 {
-    match w {
-        0..=118 => 1,
-        119..=161 => 2,
-        162..=194 => 3,
-        195..=226 => 4,
-        227..=258 => 5,
-        259..=323 => 6,
-        _ => 7,
-    }
-}
-pub fn heart_zone(b: u16) -> u8 {
-    match b {
-        0..=138 => 1,
-        139..=153 => 2,
-        154..=171 => 3,
-        172..=184 => 4,
-        _ => 5,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,36 +285,5 @@ mod tests {
         gradient.update(Some(SEA_LEVEL), 400_000, Some(5000));
         gradient.update(Some(SEA_LEVEL - 60_000), 500_000, Some(5000));
         assert_eq!(gradient.tenths(), None);
-    }
-    #[test]
-    fn zones_cover_boundaries() {
-        for (v, z) in [
-            (118, 1),
-            (119, 2),
-            (161, 2),
-            (162, 3),
-            (194, 3),
-            (195, 4),
-            (226, 4),
-            (227, 5),
-            (258, 5),
-            (259, 6),
-            (323, 6),
-            (324, 7),
-        ] {
-            assert_eq!(power_zone(v), z);
-        }
-        for (v, z) in [
-            (138, 1),
-            (139, 2),
-            (153, 2),
-            (154, 3),
-            (171, 3),
-            (172, 4),
-            (184, 4),
-            (185, 5),
-        ] {
-            assert_eq!(heart_zone(v), z);
-        }
     }
 }

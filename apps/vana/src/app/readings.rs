@@ -243,7 +243,8 @@ impl Runtime {
             gradient_tenths: readings.gradient.tenths(),
         };
         if let Some(step) = step {
-            self.ride.count(now, step, &sample, pressure);
+            let profile = self.preferences.profile;
+            self.ride.count(now, step, &sample, pressure, &profile);
         }
         self.readings.live = sample;
         sample

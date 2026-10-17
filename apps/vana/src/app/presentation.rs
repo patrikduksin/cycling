@@ -2,9 +2,9 @@
 use super::Runtime;
 use super::recording::Request;
 use crate::ride::log::Status;
-use crate::ride::metrics::{heart_zone, power_zone};
 use crate::screens::ride::RidePage;
 use crate::screens::sensors::{MenuMessage, connection_status};
+use crate::screens::settings;
 use crate::screens::workout::{Page, View};
 use crate::sensors::ant::device_type;
 use core::fmt::Write;
@@ -32,8 +32,14 @@ pub(super) struct Navigation {
     pub(super) page: Page,
     /// The ride page shown while `page` is the ride screen.
     pub(super) ride_page: RidePage,
-    /// Home highlights Sensors rather than Train.
-    pub(super) home_cursor: bool,
+    /// The highlighted Home choice, an index into `workout::HOME`.
+    pub(super) home_cursor: usize,
+    /// The selected Settings field, an index into `settings::FIELDS`.
+    pub(super) settings_field: usize,
+    /// The selected Settings field is being changed.
+    pub(super) settings_editing: bool,
+    /// A touch is down; taps act on contact, once, until release.
+    pub(super) touching: bool,
     pub(super) page_since: u64,
     pub(super) last_press: u64,
 }
@@ -43,7 +49,10 @@ impl Default for Navigation {
         Self {
             page: Page::Boot,
             ride_page: RidePage::Main,
-            home_cursor: false,
+            home_cursor: 0,
+            settings_field: 0,
+            settings_editing: false,
+            touching: false,
             page_since: 0,
             last_press: 0,
         }
@@ -164,7 +173,13 @@ impl Runtime {
                     + u64::from((v[2] - b'0') * 10 + v[3] - b'0') * 60
             })
         });
-        let mut view = View::new(page, navigation.home_cursor, utc);
+        let cursor = if page == Page::Settings {
+            navigation.settings_field
+        } else {
+            navigation.home_cursor
+        };
+        let mut view = View::new(page, cursor, utc);
+        view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
         view.sample = self.readings.live;
         view.active_secs = self.ride.recorder.active_ms(now) / 1000;
@@ -181,6 +196,8 @@ impl Runtime {
         view.lap = self.ride.laps.current();
         view.previous_lap = self.ride.laps.previous();
         view.lap_toast = self.ride.lap_toast(now);
+        view.zone_time = self.ride.zone_time;
+        view.profile = self.preferences.profile;
         view.gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         let gps_status = gps.map_or("OFF", |p| {
             if p.gps.state == FixState::Fresh {
@@ -197,6 +214,7 @@ impl Runtime {
                 system.activity(now);
             }
             Page::Home => {}
+            Page::Settings => self.settings_lines(&mut view),
             Page::Sensors => self.menu.refresh(
                 ant.discoveries(),
                 ant.channels(now),
@@ -272,6 +290,27 @@ impl Runtime {
         };
     }
 
+    fn settings_lines(&self, view: &mut View) {
+        use super::preferences::Persistence;
+        let preferences = &self.preferences;
+        let profile = preferences.profile;
+        let lines = &mut view.lines;
+        let _ = lines[settings::TITLE].push_str("> SETTINGS / TRAINING PROFILE");
+        let _ = write!(lines[settings::VALUES], "{}", profile.ftp_watts);
+        let _ = write!(lines[settings::VALUES + 1], "{}", profile.lthr_bpm);
+        // Threshold zones: where FTP and LTHR put the rider's limit.
+        let (low, high) = profile.power_range(4);
+        let _ = write!(lines[settings::ANCHORS], "Z4 {}-{} W", low, high - 1);
+        let (low, _) = profile.heart_range(5);
+        let _ = write!(lines[settings::ANCHORS + 1], "Z5 FROM {} BPM", low);
+        let _ = lines[settings::STATUS].push_str(match preferences.persistence() {
+            Persistence::Saved => "SAVED",
+            Persistence::Pending => "SAVING",
+            Persistence::Failed => "SAVE FAILED, RETRYING",
+            Persistence::Locked => "NOT SAVED - UNREADABLE DATA KEPT",
+        });
+    }
+
     fn ride_lines(&self, view: &mut View, now: u64, gps_status: &str) {
         let live = self.readings.live;
         let recorder = &self.ride.recorder;
@@ -310,11 +349,12 @@ impl Runtime {
             ),
             None => lines[5].push_str("GRADE --"),
         };
+        let profile = self.preferences.profile;
         let _ = write!(
             lines[6],
             "POWER Z{}  HR Z{}",
-            live.power_watts.map_or(0, power_zone),
-            live.heart_bpm.map_or(0, heart_zone)
+            live.power_watts.map_or(0, |w| profile.power_zone(w)),
+            live.heart_bpm.map_or(0, |b| profile.heart_zone(b))
         );
         let _ = write!(
             lines[7],

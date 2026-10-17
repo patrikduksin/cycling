@@ -182,6 +182,17 @@ impl Sim {
         self.advance(PRESS_GAP_MS);
     }
 
+    /// A finger touches the panel at (`x`, `y`) and lifts, then enough time
+    /// passes for the next input to count.
+    pub fn tap(&mut self, x: u16, y: u16) {
+        self.note(NoteKind::Input, format!("tap {x},{y}"));
+        let now = self.device.now;
+        let input = &self.device.input;
+        input.push(now, Input::Touch(device_api::input::Point { x, y }));
+        input.push(now, Input::Release);
+        self.advance(PRESS_GAP_MS);
+    }
+
     /// One companion report of `button` down, now, without waiting.
     pub fn report(&mut self, button: Button) {
         self.device

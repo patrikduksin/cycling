@@ -19,6 +19,9 @@ use firmware_shell::rendering::text::text;
 mod lap;
 mod main;
 mod stats;
+mod zones;
+
+pub(super) use zones::{Marks, marks};
 
 pub(super) const WHITE: u16 = 0xffff;
 pub(super) const CYAN: u16 = 0x07ff;

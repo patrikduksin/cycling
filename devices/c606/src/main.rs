@@ -172,29 +172,22 @@ async fn console(
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
     #[cfg(feature = "cycling")]
-    let sdk = external(vana::app::Runtime::new(profile));
+    let sdk = external(|| vana::app::Runtime::new(profile));
     #[cfg(feature = "cycling")]
     {
         // Every saved ride of both journals, for ride history: about 20 KB
         // per journal, in PSRAM; VANA keeps only the pointer.
         use vana::ride::directory::{ENTRY, RIDES, RideIndex};
-        let index = external(RideIndex::new(
-            external_bytes(RIDES * ENTRY),
-            external_bytes(RIDES * ENTRY),
-        ));
+        let index = external(|| {
+            RideIndex::new(external_bytes(RIDES * ENTRY), external_bytes(RIDES * ENTRY))
+        });
         sdk.attach_ride_index(index);
     }
     #[cfg(feature = "cycling")]
     {
         sdk.load_preferences(&system.settings.app);
         sdk.set_clock(|| embassy_time::Instant::now().as_millis());
-        {
-            // Its own scope: the view must not live across the awaits below,
-            // or the console task's static future grows by its size.
-            let view =
-                vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-            system.draw_canvas(240, 320, |row| view.paint(row));
-        }
+        boot_frame(&mut system);
         // The terrain look-ahead's tile cache lives in PSRAM. Without it
         // the climb page says "NO MAP" and keeps to the barometer.
         let layout =
@@ -411,11 +404,25 @@ async fn console(
     }
 }
 
+/// Draws VANA's first frame. Not inlined: the view is about 10 KB, and in the
+/// console task's poll frame it would sit under every later frame's
+/// preparation on the main stack (#167).
+#[cfg(feature = "cycling")]
+#[inline(never)]
+fn boot_frame(system: &mut FirmwareShell) {
+    let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
+    system.draw_canvas(240, 320, |row| view.paint(row));
+}
+
 /// Moves long-lived state into PSRAM so it stays out of the console task
 /// future. Task futures are internal DRAM statics, and every byte there comes
-/// out of the main stack (#167).
+/// out of the main stack (#167). Not inlined, so the value is built in this
+/// frame, which is gone before the task's loop, rather than in the console
+/// task's poll frame, which stays under every frame VANA prepares.
 #[cfg(feature = "cycling")]
-fn external<T>(value: T) -> &'static mut T {
+#[inline(never)]
+fn external<T>(make: impl FnOnce() -> T) -> &'static mut T {
+    let value = make();
     let layout = core::alloc::Layout::new::<T>();
     // SAFETY: `T` is a sized, non-zero-size state type, so the layout is
     // non-zero; the block is never freed.

@@ -170,19 +170,31 @@ pub struct Smooth {
 /// other pages' canvas and the climb page's chart.
 pub(super) fn prepare(view: &mut View) {
     match view.ride_page {
-        RidePage::Main => view.smooth = main::prepare(view),
-        RidePage::Stats => view.canvas = stats::prepare(view),
-        RidePage::Lap => view.canvas = lap::prepare(view),
+        RidePage::Main => smooth(view),
+        RidePage::Stats => super::workout::fill(view, stats::prepare),
+        RidePage::Lap => super::workout::fill(view, lap::prepare),
         RidePage::Climb => {
-            view.climb = climb::frame(view);
-            view.canvas = climb::prepare(view);
+            climb_frame(view);
+            super::workout::fill(view, climb::prepare);
         }
         // The app lays out the chart from its player: the workout stays there.
-        RidePage::Workout => view.canvas = workout::prepare(view),
-        RidePage::Back => {
-            view.canvas = back::prepare(view);
-        }
+        RidePage::Workout => super::workout::fill(view, workout::prepare),
+        RidePage::Back => super::workout::fill(view, back::prepare),
     }
+}
+
+/// The main page's gauges, prepared in their own frame (#167).
+#[inline(never)]
+fn smooth(view: &mut View) {
+    let smooth = main::prepare(view);
+    view.smooth = smooth;
+}
+
+/// The climb chart, prepared in its own frame (#167).
+#[inline(never)]
+fn climb_frame(view: &mut View) {
+    let climb = climb::frame(view);
+    view.climb = climb;
 }
 
 /// A caption over its value in `column` (0 or 1) of the band whose caption

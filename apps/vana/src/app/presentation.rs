@@ -243,9 +243,20 @@ impl Runtime {
         if system.foreground == Screen::Blank || self.turning_off() {
             return;
         }
+        let visible = self.motion_visible();
         let Display::Active { next_frame_ms } = &mut self.display else {
             return;
         };
+        // A new sample starts its glide on the next motion frame rather than
+        // waiting for the page's usual pace.
+        if let Some(due) = self.motion.due(
+            visible,
+            &shown_sample(&self.readings),
+            &radar_reports(&self.readings, now),
+            MOTION_FRAME_MS,
+        ) {
+            *next_frame_ms = (*next_frame_ms).min(due);
+        }
         if now < *next_frame_ms {
             return;
         }
@@ -277,6 +288,21 @@ impl Runtime {
             STATIC_FRAME_MS
         });
         self.workout_display(system, now, ant, position);
+        let visible = self.motion_visible();
+        if self.navigation.page == Page::Ride
+            && let Display::Active { next_frame_ms } = &mut self.display
+        {
+            // Readings gliding to their latest sample draw as motion does.
+            if self.motion.moving(visible, now) {
+                *next_frame_ms = (*next_frame_ms).min(now + MOTION_FRAME_MS);
+            }
+            // Motion frames shift the frame phase, so the ride clock asks for
+            // a frame when its next second turns rather than up to a frame late.
+            let active_ms = self.ride.active_ms(now);
+            if self.ride.active_ms(now + 1000) > active_ms {
+                *next_frame_ms = (*next_frame_ms).min(now + 1000 - active_ms % 1000);
+            }
+        }
         // Open Home exactly when the brand flash ends, not on the next animation frame.
         if self.navigation.page == Page::Boot
             && let (Some(first), Display::Active { next_frame_ms }) =
@@ -383,11 +409,17 @@ impl Runtime {
         let mut view = View::new(page, cursor, utc);
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
-        view.sample = self.readings.live;
-        view.power_3s = self.readings.power_3s_watts;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
-        view.radar = self.readings.radar.snapshot(now);
+        let mut radar = radar_reports(&self.readings, now);
+        let mut shown = shown_sample(&self.readings);
+        self.motion.show(&mut shown, &mut radar, now);
+        view.power_3s = shown.power_watts;
+        view.sample = crate::ride::log::Sample {
+            power_watts: self.readings.live.power_watts,
+            ..shown
+        };
+        view.radar = radar.snapshot;
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
@@ -906,5 +938,35 @@ impl Runtime {
             }
             Row::Firmware => write!(value, "VANA {}", env!("CARGO_PKG_VERSION")),
         };
+    }
+}
+
+impl Runtime {
+    /// What the next frame shows of gliding values: none of them on other
+    /// pages or the paused screen, readings only on the main ride page.
+    fn motion_visible(&self) -> super::motion::Visible {
+        let navigation = &self.navigation;
+        let riding = navigation.page == Page::Ride
+            && !(self.ride.active().status() == Status::Paused && !navigation.pause_hidden);
+        super::motion::Visible {
+            readings: riding && navigation.ride_page == RidePage::Main,
+            radar: riding,
+        }
+    }
+}
+
+/// The readings the ride page shows, to glide: power is its 3 s average.
+fn shown_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
+    crate::ride::log::Sample {
+        power_watts: readings.power_3s_watts,
+        ..readings.live
+    }
+}
+
+/// Radar targets with the times their reports arrived, for gliding markers.
+fn radar_reports(readings: &super::readings::Readings, now: u64) -> super::motion::Reports {
+    super::motion::Reports {
+        snapshot: readings.radar.snapshot(now),
+        received_ms: readings.radar.received_ms(),
     }
 }

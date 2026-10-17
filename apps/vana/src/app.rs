@@ -14,6 +14,7 @@ mod cues;
 mod history;
 mod input;
 mod lookahead;
+mod motion;
 mod night;
 pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
 mod power;
@@ -60,6 +61,7 @@ pub struct Runtime {
     night: night::Night,
     /// The look-ahead's state lives in the block composition gives it.
     lookahead: Option<&'static mut lookahead::Terrain>,
+    motion: motion::Motion,
 }
 
 impl Runtime {
@@ -82,6 +84,7 @@ impl Runtime {
             history: history::History::default(),
             night: night::Night::default(),
             lookahead: None,
+            motion: motion::Motion::default(),
         }
     }
 

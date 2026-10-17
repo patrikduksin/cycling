@@ -129,6 +129,12 @@ impl Radar {
         true
     }
 
+    /// When each half of the snapshot's slots (0..4, 4..8) was last
+    /// reported, so a repeated identical report still counts as fresh.
+    pub fn received_ms(&self) -> [Option<u64>; 2] {
+        self.pages.map(|page| page.received_ms)
+    }
+
     /// Each half expires independently, including when the sensor stops sending
     /// page B after its number of targets drops. Poll even when no data arrives.
     pub fn snapshot(&self, now_ms: u64) -> Snapshot {

@@ -16,6 +16,7 @@ mod preferences;
 mod presentation;
 mod readings;
 mod recording;
+pub use recording::Medium;
 mod sensor_links;
 #[cfg(test)]
 mod tests;
@@ -73,12 +74,20 @@ impl Runtime {
         self.ride.clock = Some(clock);
     }
 
-    /// Scan the ride journal ahead of the first `tick`, while the device is
-    /// still starting, so Home opens with storage ready. Does nothing once the
-    /// scan is done; formatting, recovery and recording wait for `tick`.
-    pub fn prepare(&mut self, store: &mut impl crate::ride::storage::RideStorage, now: u64) {
-        if self.ride.recorder.status() == crate::ride::log::Status::Scanning {
-            self.record(store, now, crate::ride::log::Sample::default());
+    /// Scan both ride journals ahead of the first `tick`, while the device
+    /// is still starting, so Home opens with storage ready. Does nothing once
+    /// the scans are done; formatting, recovery and recording wait for `tick`.
+    pub fn prepare(
+        &mut self,
+        store: &mut impl crate::ride::storage::RideStorage,
+        bulk: &mut impl device_api::bulk::ReadWrite,
+        now: u64,
+    ) {
+        use crate::ride::log::Status;
+        if self.ride.internal.status() == Status::Scanning
+            || self.ride.bulk.status() == Status::Scanning
+        {
+            self.record(store, bulk, now, crate::ride::log::Sample::default());
         }
     }
 
@@ -115,10 +124,12 @@ impl Runtime {
         self.navigation.page
     }
 
-    /// Advance sensor links, take new sensor data and service the ride recorder.
+    /// Advance sensor links, take new sensor data and service both ride
+    /// recorders: the internal journal in `store` and the log on `bulk`.
     pub fn tick(
         &mut self,
         store: &mut impl crate::ride::storage::RideStorage,
+        bulk: &mut impl device_api::bulk::ReadWrite,
         now: u64,
         ant: &mut impl Ant,
         ble: &mut impl Ble,
@@ -148,6 +159,6 @@ impl Runtime {
             });
         self.power.observe(now, &sample, live_sensors, power_status);
         self.note_milestones(now, ant, &sample);
-        self.record(store, now, sample);
+        self.record(store, bulk, now, sample);
     }
 }

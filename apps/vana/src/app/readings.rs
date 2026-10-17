@@ -173,7 +173,7 @@ impl Runtime {
     ) -> Sample {
         let ble = self.sensors.snapshot(now);
         let (ble_heart_bpm, cadence_tenths) =
-            ble_profile::ride_fields(ble, self.ride.recorder.source());
+            ble_profile::ride_fields(ble, self.ride.active().source());
         let location_e7 = observations.position.snapshot(now).and_then(|snapshot| {
             (snapshot.gps.state == FixState::Fresh)
                 .then(|| Some((snapshot.gps.latitude_e7?, snapshot.gps.longitude_e7?)))

@@ -4,6 +4,7 @@ use device_api::ant::{LinkState, Request};
 use device_api::ble_transport::Link;
 use device_api::input::Button;
 use shell_simulator::ant::device_type;
+use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
@@ -1828,4 +1829,453 @@ fn each_unsaved_profile_edit_is_reported_before_turning_off() {
     assert!(sim.is_off());
     sim.turn_on();
     assert!(sim.command("PROFILE").1.starts_with("ftp=250 "));
+}
+
+fn bulk_rider() -> Sim {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    equip(sim.boot())
+}
+
+#[test]
+fn unformatted_bulk_media_records_internally_until_initialized() {
+    let mut sim = bulk_rider();
+    sim.pair(&["HEART RATE"]);
+    sim.home("TRAIN");
+    sim.expect_text("INT 4:32 LEFT");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("READY INT");
+    sim.checkpoint("unformatted MMC: rides go to internal flash");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(
+        status.contains("medium=internal") && status.contains("fallback=1"),
+        "{status}"
+    );
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    assert!(bulk.contains("state=needs_init"), "{bulk}");
+    assert_eq!(sim.device.bulk.writes(), 0, "never formatted implicitly");
+
+    sim.init_bulk();
+    // Ten metadata sectors (superblocks and ring), not the 3 GB region.
+    assert_eq!(sim.device.bulk.writes(), 10);
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    sim.home("TRAIN");
+    sim.expect_text("MMC 6419H LEFT");
+    sim.checkpoint("formatted MMC: 6,419 hours left");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("READY");
+    sim.expect_no_text("READY INT");
+}
+
+#[test]
+fn bulk_media_keeps_a_long_ride_through_power_loss() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    // Longer than the whole 4.5 h internal journal.
+    for _ in 0..5 {
+        sim.advance(minutes(60));
+    }
+    sim.expect_field("ACTIVE TIME", "05:00:00");
+    sim.checkpoint("five hours recorded on MMC");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(
+        status.contains("medium=bulk") && status.contains("dropped=0"),
+        "{status}"
+    );
+
+    let reads = sim.device.bulk.reads();
+    sim.power_loss();
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    assert!(status.contains("state=recovered"), "{status}");
+    // Boot read metadata and the records after the last checkpoint only.
+    let boot_reads: u32 = status
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("boot_reads="))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(boot_reads <= 75, "{boot_reads} boot reads");
+    assert!(sim.device.bulk.reads() - reads < 200);
+    sim.checkpoint("booted after power loss");
+
+    let rides = sim.bulk_rides();
+    assert_eq!(rides.len(), 1);
+    let samples = rides[0].samples().count();
+    assert!(samples >= 5 * 3600 - 4, "{samples} samples");
+    assert_eq!(rides[0].kinds().last(), Some(&Kind::Recovered));
+    assert!(sim.rides().is_empty(), "the internal journal is untouched");
+
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("RECOVERED");
+    sim.checkpoint("recovered MMC ride named on the ride screen");
+}
+
+#[test]
+fn bulk_failure_mid_ride_continues_on_internal_flash() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.advance(minutes(10));
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    let before: usize = status
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("samples="))
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // The next MMC write tears and the controller stays failed.
+    sim.fail_bulk(0, 100);
+    sim.advance(seconds(10));
+    sim.expect_text("RECORDING INT");
+    sim.checkpoint("MMC failed: the ride continues on internal flash");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert!(
+        status.contains("medium=internal")
+            && status.contains("state=recording")
+            && status.contains("moved=1"),
+        "{status}"
+    );
+    sim.advance(minutes(5));
+    // Ride time and totals carry on across the move.
+    let active = sim.screen().field("ACTIVE TIME").unwrap();
+    assert!(active.starts_with("00:15:"), "{active}");
+    sim.stop_ride();
+    sim.checkpoint("continued ride saved internally");
+
+    let internal = sim.rides();
+    assert_eq!(internal.len(), 1);
+    assert_eq!(internal[0].kinds().last(), Some(&Kind::Finish));
+    let continued = internal[0].samples().count();
+    assert!(continued >= 5 * 60 + 5, "{continued} samples");
+
+    // After reboot the MMC part is recovered and exported, with no torn data.
+    sim.power_loss();
+    let rides = sim.bulk_rides();
+    assert_eq!(rides.len(), 1);
+    assert_eq!(rides[0].samples().count(), before);
+    assert_eq!(rides[0].kinds().last(), Some(&Kind::Recovered));
+}
+
+#[test]
+fn missing_bulk_media_is_shown_and_rides_record_internally() {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Missing);
+    let mut sim = equip(sim.boot());
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.expect_text("RECORDING INT");
+    sim.checkpoint("MMC missing: recording on internal flash");
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    assert_eq!(sim.rides().len(), 1);
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    assert!(status.contains("state=unavailable"), "{status}");
+}
+
+fn status_field(status: &str, name: &str) -> String {
+    status
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix(name)?.strip_prefix('='))
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn bulk_failure_on_resume_continues_the_ride_on_internal_flash() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.advance(minutes(5));
+    sim.pause_ride();
+    // Nothing is written while paused; the RESUME record is the first to fail.
+    sim.fail_bulk(0, 0);
+    sim.advance(seconds(30));
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING INT", seconds(3)).unwrap();
+    sim.checkpoint("MMC failed on resume: the ride continues on internal flash");
+    sim.advance(minutes(2));
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "medium"), "internal", "{status}");
+    assert_eq!(status_field(&status, "state"), "recording", "{status}");
+    assert_eq!(status_field(&status, "moved"), "1", "{status}");
+    let samples: u32 = status_field(&status, "samples").parse().unwrap();
+    assert!(samples >= 100, "the continuation records: {status}");
+    let active = sim.screen().field("ACTIVE TIME").unwrap();
+    assert!(active.starts_with("00:07:"), "{active}");
+}
+
+#[test]
+fn bulk_failure_while_pausing_continues_paused_on_internal_flash() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.advance(minutes(5));
+    sim.fail_bulk(0, 0);
+    sim.press(Button::BottomRight);
+    sim.wait_for("PAUSED INT", seconds(3)).unwrap();
+    sim.checkpoint("MMC failed while pausing: the ride stays paused on internal flash");
+    sim.advance(minutes(1));
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "medium"), "internal", "{status}");
+    assert_eq!(status_field(&status, "state"), "paused", "{status}");
+    sim.resume_ride();
+    sim.expect_text("RECORDING INT");
+    sim.stop_ride();
+    assert_eq!(sim.rides().len(), 1);
+}
+
+#[test]
+fn a_second_ride_cannot_start_on_the_other_medium() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.advance(seconds(10));
+    for command in ["RIDE INTERNAL START", "RIDE START", "RIDE BULK START"] {
+        let (result, _) = sim.command(command);
+        assert_eq!(result, "STATE", "{command}");
+    }
+    let (_, internal) = sim.command("RIDE INTERNAL STATUS");
+    assert_eq!(status_field(&internal, "state"), "ready", "{internal}");
+    sim.stop_ride();
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    assert_eq!(status_field(&bulk, "state"), "saved", "{bulk}");
+}
+
+#[test]
+fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal() {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    // Ten records: room for one short ride and nothing more after it.
+    sim.device.bulk.set_sectors(16 + 10);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.press(Button::BottomRight);
+    // The countdown replaces RECORDING: there is room for 32 seconds.
+    sim.wait_for("REC 0M LEFT", seconds(2)).unwrap();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    sim.checkpoint("the MMC ride is saved though the MMC has no room left");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "medium"), "bulk", "{status}");
+    assert_eq!(status_field(&status, "state"), "saved", "{status}");
+    assert_eq!(status_field(&status, "free_s"), "0", "{status}");
+    assert_eq!(status_field(&status, "fallback"), "1", "{status}");
+    sim.expect_no_text("INT");
+    let active = sim.screen().field("ACTIVE TIME").unwrap();
+    assert_eq!(active, "00:00:20");
+
+    // The next ride goes to internal flash, and the screen says so.
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING INT", seconds(3)).unwrap();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "medium"), "internal", "{status}");
+    sim.stop_ride();
+
+    // After a reboot nothing is shown from the MMC ride: rides go internal.
+    sim.power_loss();
+    sim.home("TRAIN");
+    sim.expect_text("INT 4:32 LEFT");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("READY INT");
+    sim.checkpoint("an MMC without room: rides record internally");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "fallback"), "1", "{status}");
+}
+
+#[test]
+fn bulk_rides_without_superblocks_are_kept_out_of_export_and_clear() {
+    let mut sim = bulk_rider();
+    // Never formatted: nothing to export, and clear does not format it.
+    assert_eq!(sim.command("EXPORT BULK INFO").0, "STATE");
+    assert_eq!(sim.command("RIDE BULK CLEAR CONFIRM 0").0, "STATE");
+    assert_eq!(sim.device.bulk.writes(), 0);
+
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    // Both superblock copies are lost; the ride's records remain.
+    sim.device.bulk.corrupt(0);
+    sim.device.bulk.corrupt(1);
+    sim.power_loss();
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    assert_eq!(status_field(&status, "state"), "corrupt", "{status}");
+    let writes = sim.device.bulk.writes();
+    // Not offered as an empty journal to export or reclaim.
+    assert_ne!(sim.command("EXPORT BULK INFO").0, "OK");
+    assert_ne!(sim.command("RIDE BULK CLEAR CONFIRM 0").0, "ACCEPTED");
+    sim.advance(seconds(5));
+    assert_eq!(
+        sim.device.bulk.writes(),
+        writes,
+        "the records stay for diagnosis"
+    );
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.expect_text("READY INT");
+    sim.checkpoint("MMC metadata lost: kept, and rides record internally");
+}
+
+#[test]
+fn a_continuation_that_cannot_start_does_not_count_the_bulk_ride_twice() {
+    use device_api::storage::{OwnedFlash, Region};
+    let mut sim = Sim::new();
+    // Internal flash has no room for another ride.
+    sim.device
+        .media
+        .program(Region::Data, 0, &old_ride_leaving(0))
+        .unwrap();
+    sim.fit_bulk(Presence::Ready);
+    // The MMC holds START and ten sample batches, then fills mid-ride.
+    sim.device.bulk.set_sectors(16 + 12);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.press(Button::BottomRight);
+    sim.wait_for("REC 0M LEFT", seconds(2)).unwrap();
+    sim.advance(seconds(60));
+    sim.expect_text("STORAGE FULL");
+    sim.checkpoint("MMC and internal flash both full: the ride ends");
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    let recorded: u64 = status_field(&bulk, "active_ms").parse().unwrap();
+    assert!((30_000..60_000).contains(&recorded), "{bulk}");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "moved"), "0", "{status}");
+    // The screen shows the bulk ride's time once, not twice.
+    let shown = sim.screen().field("ACTIVE TIME").unwrap();
+    let seconds_shown = shown.split(':').fold(0u64, |total, part| {
+        total * 60 + part.parse::<u64>().unwrap()
+    });
+    assert_eq!(seconds_shown, recorded / 1000, "{shown}");
+}
+
+#[test]
+fn an_auto_pause_the_mmc_fails_to_record_still_resumes_by_itself() {
+    // Whichever write the MMC fails on around the stop (the last sample
+    // batch, the pause itself or the checkpoint after it), the ride ends up
+    // auto-paused on internal flash and rolls on.
+    for after in 0..3 {
+        let mut sim = bulk_rider();
+        sim.init_bulk();
+        sim.pair(&["SPEED/CAD"]);
+        sim.ride_at(28.0, 0.0, 0.0, 0.0);
+        sim.start_ride();
+        sim.advance(seconds(30));
+        sim.fail_bulk(after, 0);
+        sim.ride_at(0.0, 0.0, 0.0, 0.0);
+        sim.wait_for("AUTO PAUSED INT", seconds(15))
+            .unwrap_or_else(|error| panic!("failing after {after}: {error}"));
+        if after == 0 {
+            sim.checkpoint("MMC failed at the stop: auto-paused on internal flash");
+        }
+        sim.advance(seconds(20));
+        sim.ride_at(28.0, 0.0, 0.0, 0.0);
+        sim.wait_for("RECORDING INT", seconds(10))
+            .unwrap_or_else(|error| panic!("failing after {after}: {error}"));
+        let (_, status) = sim.command("RIDE STATUS");
+        assert_eq!(status_field(&status, "medium"), "internal", "{status}");
+        assert_eq!(status_field(&status, "moved"), "1", "{status}");
+    }
+}
+
+#[test]
+fn a_bulk_ride_that_fails_with_internal_flash_full_stays_on_screen() {
+    use device_api::storage::{OwnedFlash, Region};
+    let mut sim = Sim::new();
+    // Internal flash has no room for the continuation.
+    sim.device
+        .media
+        .program(Region::Data, 0, &old_ride_leaving(0))
+        .unwrap();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.advance(seconds(30));
+    sim.fail_bulk(0, 0);
+    sim.advance(seconds(10));
+    sim.expect_text("STORAGE ERROR");
+    sim.checkpoint("MMC failed and internal flash is full: the failed ride stays shown");
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    assert_eq!(status_field(&bulk, "state"), "error", "{bulk}");
+    let recorded: u64 = status_field(&bulk, "active_ms").parse().unwrap();
+    assert!(recorded >= 30_000, "{bulk}");
+    let shown = sim.screen().field("ACTIVE TIME").unwrap();
+    let seconds_shown = shown.split(':').fold(0u64, |total, part| {
+        total * 60 + part.parse::<u64>().unwrap()
+    });
+    assert_eq!(seconds_shown, recorded / 1000, "{shown}");
+}
+
+#[test]
+fn clearing_the_internal_journal_drops_a_moved_rides_carried_time() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.advance(minutes(1));
+    sim.fail_bulk(0, 0);
+    sim.wait_for("RECORDING INT", seconds(10)).unwrap();
+    sim.advance(seconds(5));
+    sim.stop_ride();
+    let (_, internal) = sim.command("RIDE INTERNAL STATUS");
+    assert_eq!(status_field(&internal, "state"), "saved", "{internal}");
+    let upper = status_field(&internal, "slot");
+    assert_eq!(
+        sim.command(&format!("RIDE CLEAR CONFIRM {upper}")).0,
+        "ACCEPTED"
+    );
+    sim.advance(seconds(10));
+    let (_, internal) = sim.command("RIDE INTERNAL STATUS");
+    assert_eq!(status_field(&internal, "slot"), "0", "{internal}");
+    sim.checkpoint("internal journal cleared after a moved ride: no carried time");
+    assert_eq!(sim.screen().field("ACTIVE TIME").unwrap(), "00:00:00");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "moved"), "0", "{status}");
+}
+
+#[test]
+fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
+    let mut sim = bulk_rider();
+    sim.pair(&["HEART RATE"]);
+    // An internal ride is saved before the MMC is initialized.
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    sim.expect_text("SAVED INT");
+    sim.advance(seconds(2));
+    sim.command("RIDE STATUS");
+    sim.init_bulk();
+    // The MMC's first write, the START record, fails.
+    sim.fail_bulk(0, 0);
+    let (result, _) = sim.command("RIDE START");
+    assert_eq!(result, "ACCEPTED");
+    sim.advance(seconds(2));
+    sim.expect_text("STORAGE ERROR");
+    sim.expect_no_text("SAVED INT");
+    sim.checkpoint("the MMC fails its first START: the error shows, not the saved internal ride");
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "medium"), "bulk", "{status}");
+    assert_eq!(status_field(&status, "state"), "error", "{status}");
 }

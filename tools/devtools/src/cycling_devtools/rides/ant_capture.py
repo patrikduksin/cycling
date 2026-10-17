@@ -164,9 +164,11 @@ def decode_slot(data):
 def export(source, output, start_slot=0):
     if type(start_slot) is not int or not 0 <= start_slot <= MAX_SLOTS:
         raise ValueError('invalid capture range lower bound')
-    data = source.read_bytes()
-    if len(data) % SLOT_SIZE or len(data) > MAX_SLOTS * SLOT_SIZE:
+    # Bounded before reading: a bulk ride-slots.bin can be gigabytes.
+    size = source.stat().st_size
+    if size % SLOT_SIZE or size > MAX_SLOTS * SLOT_SIZE:
         raise ValueError('input must be a complete raw journal prefix of at most 4096 slots')
+    data = source.read_bytes()
     upper = len(data) // SLOT_SIZE
     if start_slot > upper:
         raise ValueError('capture range starts beyond input prefix')

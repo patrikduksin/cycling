@@ -1,4 +1,10 @@
-"""Read the immutable ride-slot prefix over USB and create JSON/GPX exports."""
+"""Read the immutable ride-slot prefix over USB and create JSON/GPX exports.
+
+`--medium bulk` reads the ride log on the owned MMC region instead of the
+internal journal. Its slots are the same version-1 records; each sits in a
+sector container the device validates. Invalid containers are exported as zero
+slots, listed in the manifest, and their raw sectors are kept for diagnosis.
+"""
 
 import argparse
 import datetime as dt
@@ -17,28 +23,49 @@ from cycling_devtools.workspace import ROOT
 SLOT_SIZE = 256
 COMMIT = 0x434F4D54
 MAX_SLOTS = 4096
+# Relative owned MMC sector of bulk record 0 (after superblocks and checkpoints).
+BULK_DATA_START = 16
+MEDIA = ('internal', 'bulk')
 
 
-def export_command(connection, command):
-    reply = connection.terminal_command(f'EXPORT {command}')
+def prefix(medium):
+    if medium not in MEDIA:
+        raise ValueError(f'unknown medium {medium}')
+    return 'EXPORT BULK' if medium == 'bulk' else 'EXPORT'
+
+
+def export_command(connection, command, medium='internal'):
+    reply = connection.terminal_command(f'{prefix(medium)} {command}')
     if reply['status'] != 'OK':
         raise RuntimeError(f'export rejected: {reply["status"]}')
     return ['CYCLING_EXPORT', str(reply['id']), *reply['data'].split()]
 
 
-def info(connection):
-    parts = export_command(connection, 'INFO')
-    if len(parts) != 7 or parts[2] != 'INFO':
+def info(connection, medium='internal'):
+    parts = export_command(connection, 'INFO', medium)
+    bulk = medium == 'bulk'
+    if len(parts) != (10 if bulk else 7) or parts[2] != 'INFO':
         raise ValueError('malformed export info')
     version, slot_size, upper = map(int, parts[3:6])
-    if version != 1 or slot_size != SLOT_SIZE or not 0 <= upper <= MAX_SLOTS:
+    metadata = {'version': version, 'slot_size': slot_size, 'upper_bound': upper, 'status': parts[6]}
+    limit = MAX_SLOTS
+    if bulk:
+        try:
+            int(parts[7], 16)
+            metadata.update(medium='bulk', store_id=parts[7], generation=int(parts[8]), capacity=int(parts[9]))
+        except ValueError as error:
+            raise ValueError('malformed bulk export info') from error
+        limit = metadata['capacity']
+    if version != 1 or slot_size != SLOT_SIZE or not 0 <= upper <= limit:
         raise ValueError('unsupported or out-of-bounds export info')
-    return {'version': version, 'slot_size': slot_size, 'upper_bound': upper, 'status': parts[6]}
+    return metadata
 
 
-def read_slot(connection, index):
-    parts = export_command(connection, f'SLOT {index}')
-    if len(parts) != 6 or parts[2] != 'SLOT' or int(parts[3]) != index:
+def read_slot(connection, index, medium='internal'):
+    """One slot; bulk returns (slot, container_valid)."""
+    parts = export_command(connection, f'SLOT {index}', medium)
+    bulk = medium == 'bulk'
+    if len(parts) != (7 if bulk else 6) or parts[2] != 'SLOT' or int(parts[3]) != index:
         raise ValueError('wrong slot response')
     try:
         data = bytes.fromhex(parts[5])
@@ -47,14 +74,45 @@ def read_slot(connection, index):
         raise ValueError('malformed slot response') from error
     if len(data) != SLOT_SIZE or zlib.crc32(data) != expected:
         raise ValueError('short or corrupt slot response')
+    if not bulk:
+        return data
+    if parts[6] not in ('valid', 'invalid'):
+        raise ValueError('malformed slot container state')
+    return data, parts[6] == 'valid'
+
+
+def read_owned_sector(connection, sector):
+    """A raw owned MMC sector, in two CRC-checked chunks, for diagnosis."""
+    data = b''
+    for offset in (0, 256):
+        reply = connection.terminal_command(f'MMC OWNED READ {sector} {offset} 256')
+        if reply['status'] != 'OK':
+            raise RuntimeError(f'owned read rejected: {reply["status"]}')
+        try:
+            fields = dict(field.split('=', 1) for field in reply['data'].split())
+            chunk = bytes.fromhex(fields['data'])
+            ok = int(fields['sector']) == sector and zlib.crc32(chunk) == int(fields['crc32'], 16)
+        except (KeyError, ValueError) as error:
+            raise ValueError('malformed owned sector response') from error
+        if not ok or len(chunk) != 256:
+            raise ValueError('short or corrupt owned sector response')
+        data += chunk
     return data
 
 
-def download_prefix(connection, partial, upper):
+def download_prefix(connection, partial, upper, medium='internal'):
+    """Write the slot prefix; return indices whose bulk container was invalid."""
+    invalid = []
     with Path(partial).open('wb') as raw:
         for index in range(upper):
-            raw.write(read_slot(connection, index))
+            slot = read_slot(connection, index, medium)
+            if medium == 'bulk':
+                slot, valid = slot
+                if not valid:
+                    invalid.append(index)
+            raw.write(slot)
             raw.flush()
+    return invalid
 
 
 def decode_slot(data):
@@ -134,8 +192,16 @@ def date_run(ride, anchor):
 
 
 def rides_from_slots(slots):
-    rides, current, seen = [], None, set()
     invalid = []
+    return list(iter_rides(slots, invalid)), invalid
+
+
+def iter_rides(slots, invalid):
+    """Yield each ride once it ends, from any iterable of slots; `invalid` collects bad slot indices.
+
+    Only the ride being decoded is held, so memory follows the longest ride, not the prefix.
+    """
+    current, seen = None, set()
     for index, raw in enumerate(slots):
         try:
             entry = decode_slot(raw)
@@ -159,7 +225,8 @@ def rides_from_slots(slots):
             if current:
                 current['terminal'] = 'interrupted'
                 current['gap'] = True
-                rides.append(current)
+                current['segments'] = [segment for segment in current['segments'] if segment]
+                yield current
             seen.add(entry['ride_id'])
             current = {
                 'ride_id': entry['ride_id'],
@@ -174,6 +241,7 @@ def rides_from_slots(slots):
                 'next_sequence': entry['sequence'] + 1,
                 'active_ms': 0,
                 '_last_utc': None,
+                '_start_identity': hashlib.sha256(raw).hexdigest(),
             }
             new_run(current)
             continue
@@ -230,14 +298,13 @@ def rides_from_slots(slots):
             current['terminal'] = {5: 'saved', 6: 'recovered', 7: 'full'}[entry['kind']]
             current['end_slot'] = index
             current['segments'] = [segment for segment in current['segments'] if segment]
-            rides.append(current)
+            yield current
             current = None
     if current:
         current['terminal'] = 'interrupted'
         current['gap'] = True
         current['segments'] = [segment for segment in current['segments'] if segment]
-        rides.append(current)
-    return rides, invalid
+        yield current
 
 
 def write_gpx(ride, path):
@@ -282,55 +349,92 @@ def write_gpx(ride, path):
     return None
 
 
-def export(port, output):
+def export(port, output, medium='internal'):
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     partial = output / 'ride-slots.bin.partial'
     with UsbConnection(port, output / 'usb.log') as connection:
-        metadata = info(connection)
-        download_prefix(connection, partial, metadata['upper_bound'])
-        if info(connection) != metadata:
+        metadata = info(connection, medium)
+        invalid_containers = download_prefix(connection, partial, metadata['upper_bound'], medium)
+        invalid_sectors = []
+        for index in invalid_containers:
+            sector = BULK_DATA_START + index
+            raw_sector = read_owned_sector(connection, sector)
+            name = f'invalid-sector-{sector}.bin'
+            (output / name).write_bytes(raw_sector)
+            invalid_sectors.append(
+                {'index': index, 'sector': sector, 'file': name, 'sha256': hashlib.sha256(raw_sector).hexdigest()}
+            )
+        if info(connection, medium) != metadata:
             raise RuntimeError('ride prefix changed during export')
     canonical = output / 'ride-slots.bin'
     partial.replace(canonical)
-    data = canonical.read_bytes()
-    slots = [data[index : index + SLOT_SIZE] for index in range(0, len(data), SLOT_SIZE)]
-    rides, invalid = rides_from_slots(slots)
-    summaries = []
-    for ride in rides:
-        public = {key: value for key, value in ride.items() if key != 'segments' and not key.startswith('_')}
-        json_path = output / f'ride-{ride["ride_id"]}.json'
-        json_path.write_text(json.dumps(public, indent=2) + '\n')
-        gpx_path = output / f'ride-{ride["ride_id"]}.gpx'
-        error = write_gpx(ride, gpx_path)
-        summaries.append(
-            {
+    extra = {'invalid_containers': invalid_containers, 'invalid_sectors': invalid_sectors} if medium == 'bulk' else {}
+    return write_exports(output, canonical, {**metadata, **extra})
+
+
+def read_slots(path, digest):
+    """Slots of a raw prefix file, one at a time, hashing the bytes as they are read."""
+    with Path(path).open('rb') as raw:
+        while chunk := raw.read(SLOT_SIZE):
+            digest.update(chunk)
+            yield chunk
+
+
+def write_exports(output, canonical, header):
+    """Decode `canonical` ride by ride into JSON/GPX files and a manifest, in bounded memory.
+
+    Each ride's files and manifest entry are written as soon as it ends; the manifest is
+    assembled from those entries at the end. Returns the manifest without its ride list.
+    """
+    digest = hashlib.sha256()
+    invalid = []
+    entries = output / 'manifest-rides.partial'
+    count = 0
+    with entries.open('w') as pending:
+        for ride in iter_rides(read_slots(canonical, digest), invalid):
+            public = {key: value for key, value in ride.items() if key != 'segments' and not key.startswith('_')}
+            json_path = output / f'ride-{ride["ride_id"]}.json'
+            json_path.write_text(json.dumps(public, indent=2) + '\n')
+            gpx_path = output / f'ride-{ride["ride_id"]}.gpx'
+            error = write_gpx(ride, gpx_path)
+            entry = {
                 'ride_id': ride['ride_id'],
                 'source': ride['source'],
                 'terminal': ride['terminal'],
                 'samples': len(ride['samples']),
                 'gpx': None if error else gpx_path.name,
                 'gpx_error': error,
-                'start_identity': hashlib.sha256(slots[ride['start_slot']]).hexdigest(),
+                'start_identity': ride['_start_identity'],
             }
-        )
-    manifest = {
-        **metadata,
-        'raw_file': canonical.name,
-        'raw_sha256': hashlib.sha256(data).hexdigest(),
-        'invalid_slots': invalid,
-        'rides': summaries,
-    }
-    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    return manifest
+            pending.write(json.dumps(entry) + '\n')
+            count += 1
+    manifest = {**header, 'raw_file': canonical.name, 'raw_sha256': digest.hexdigest(), 'invalid_slots': invalid}
+    partial = output / 'manifest.json.partial'
+    with partial.open('w') as out, entries.open() as pending:
+        head = json.dumps({**manifest, 'rides': []}, indent=2)
+        tail = '"rides": []\n}'
+        if not head.endswith(tail):
+            raise AssertionError('manifest layout')
+        out.write(head[: -len(tail)] + '"rides": [')
+        for number, line in enumerate(pending):
+            body = json.dumps(json.loads(line), indent=2).replace('\n', '\n    ')
+            out.write((',' if number else '') + '\n    ' + body)
+        out.write('\n  ]\n}\n' if count else ']\n}\n')
+    partial.replace(output / 'manifest.json')
+    entries.unlink()
+    return {**manifest, 'ride_count': count}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_port_argument(parser)
     parser.add_argument('--output', type=Path, default=ROOT / '.local/exports' / str(time.time_ns()))
+    parser.add_argument('--medium', choices=MEDIA, default='internal', help='ride journal to read (default internal)')
     args = parser.parse_args()
-    manifest = export(selected_port(parser, args.port), args.output)
-    print(json.dumps(manifest, indent=2))
+    summary = export(selected_port(parser, args.port), args.output, args.medium)
+    keep = ('medium', 'store_id', 'generation', 'upper_bound', 'status', 'raw_sha256', 'ride_count')
+    print(json.dumps({key: summary[key] for key in keep if key in summary}, indent=2))
+    print(f'Rides and their files are listed in {args.output / "manifest.json"}')
     print(f'Private export: {args.output}')
 
 

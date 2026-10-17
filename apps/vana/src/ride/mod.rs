@@ -1,6 +1,8 @@
 pub mod auto;
+pub mod bulk;
 pub mod climb;
 pub mod control;
+pub mod journal;
 pub mod laps;
 pub mod log;
 pub mod metrics;

@@ -551,6 +551,56 @@ impl Sim {
         };
     }
 
+    /// Fit the C606 owned MMC region, as it is before VANA formats it.
+    pub fn fit_bulk(&mut self, presence: crate::bulk::Presence) {
+        self.note(NoteKind::Device, format!("bulk media {presence:?}"));
+        self.device.bulk.set_presence(presence);
+    }
+
+    /// Fail the bulk write after `after` succeed, tearing it after `partial` bytes.
+    pub fn fail_bulk(&mut self, after: u32, partial: usize) {
+        self.note(
+            NoteKind::Device,
+            format!("bulk media fails after {after} writes"),
+        );
+        self.device
+            .bulk
+            .fail(crate::bulk::BulkFault { after, partial });
+    }
+
+    /// Explicitly format the bulk ride log, as a host would, and wait for it.
+    #[cfg(feature = "cycling")]
+    #[track_caller]
+    pub fn init_bulk(&mut self) {
+        let (status, out) = self.command("RIDE BULK INIT");
+        assert_eq!(status, "ACCEPTED", "RIDE BULK INIT: {out}");
+        self.advance(100);
+        let (_, out) = self.command("RIDE BULK STATUS");
+        assert!(
+            out.contains("state=ready") && out.contains("result=OK"),
+            "{out}"
+        );
+    }
+
+    /// Rides on the bulk log, read through `EXPORT BULK` as a host would.
+    #[cfg(feature = "cycling")]
+    pub fn bulk_rides(&mut self) -> Vec<crate::rides::Ride> {
+        let (status, info) = self.command("EXPORT BULK INFO");
+        assert_eq!(status, "OK", "EXPORT BULK INFO: {info}");
+        let upper: usize = info.split_whitespace().nth(3).unwrap().parse().unwrap();
+        let mut bytes = Vec::new();
+        for index in 0..upper {
+            let (status, out) = self.command(&format!("EXPORT BULK SLOT {index}"));
+            assert_eq!(status, "OK", "{out}");
+            let hex = out.split_whitespace().nth(3).unwrap();
+            for pair in hex.as_bytes().chunks(2) {
+                let text = std::str::from_utf8(pair).unwrap();
+                bytes.push(u8::from_str_radix(text, 16).unwrap());
+            }
+        }
+        crate::rides::read(&bytes)
+    }
+
     /// Recorded ride journal bytes, as `EXPORT` would read them.
     pub fn ride_media(&mut self) -> Vec<u8> {
         self.device.media.contents(Region::Data)

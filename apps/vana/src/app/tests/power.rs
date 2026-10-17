@@ -85,6 +85,7 @@ fn tick_with(
 ) {
     runtime.tick(
         journal,
+        &mut NoBulk,
         now,
         radio,
         &mut Absent,
@@ -221,7 +222,7 @@ fn turning_off_is_out_of_reach_while_a_ride_is_open() {
     for step in 0..20 {
         tick(&mut runtime, &mut journal, &mut radio, 1_000 + step * 100);
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     // BACK during a recording ride does not leave the ride.
     runtime.input(press(Button::TopLeft), 4_000, &mut radio);
     assert_eq!(runtime.navigation.page, Page::Ride);
@@ -312,6 +313,7 @@ fn sensor_data_and_usb_power_keep_vana_on() {
     let now = AUTO_OFF_MS * 3;
     runtime.tick(
         &mut journal,
+        &mut NoBulk,
         now,
         &mut radio,
         &mut Absent,
@@ -473,7 +475,7 @@ fn recording_is_confirmed_after_the_start_write_finishes() {
     // The pass starts at 1 000 ms; the start write and commit end 300 ms later.
     WRITE_CLOCK.store(1_300, Ordering::Relaxed);
     let mut step = 0;
-    while runtime.ride.recorder.status() != Status::Recording {
+    while runtime.ride.internal.status() != Status::Recording {
         assert!(step < 50, "never recording");
         tick(&mut runtime, &mut journal, &mut radio, 1_000);
         step += 1;
@@ -491,12 +493,12 @@ fn storage_is_ready_when_its_scan_finishes_not_when_vana_first_ticks() {
     let mut runtime = Runtime::new(Profile::HeartRate);
     // The journal is scanned while the companion still starts.
     let mut now = 100;
-    while runtime.ride.recorder.status() == Status::Scanning {
+    while runtime.ride.internal.status() == Status::Scanning {
         assert!(
             now < 100 + crate::ride::log::SECTORS as u64 * 10,
             "scan never ended"
         );
-        runtime.prepare(&mut journal, now);
+        runtime.prepare(&mut journal, &mut NoBulk, now);
         now += 5;
     }
     let scanned = now - 5;
@@ -661,6 +663,7 @@ fn a_ble_cadence_sensor_reports_its_first_live_data() {
     };
     runtime.tick(
         &mut journal,
+        &mut NoBulk,
         2_000,
         &mut radio,
         &mut ble,
@@ -681,12 +684,12 @@ fn a_ble_cadence_sensor_reports_its_first_live_data() {
 fn a_failed_journal_scan_is_reported_not_stamped_as_ready() {
     let mut runtime = Runtime::new(Profile::HeartRate);
     let mut now = 100;
-    while runtime.ride.recorder.status() == Status::Scanning {
+    while runtime.ride.internal.status() == Status::Scanning {
         assert!(now < 10_000, "scan never ended");
-        runtime.prepare(&mut Absent, now);
+        runtime.prepare(&mut Absent, &mut NoBulk, now);
         now += 5;
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Error);
+    assert_eq!(runtime.ride.internal.status(), Status::Error);
     let mut report = std::string::String::new();
     runtime.timing.report(&mut report);
     assert!(report.contains("storage_ms=- "), "{report}");
@@ -783,7 +786,7 @@ fn ride_start_latency_starts_when_the_device_received_the_press() {
     // Received at 7 900 ms, handled at 8 700 ms behind slow work.
     runtime.input_received(press(Button::BottomRight), 7_900, 8_700, &mut radio);
     let mut step = 0;
-    while runtime.ride.recorder.status() != Status::Recording {
+    while runtime.ride.internal.status() != Status::Recording {
         assert!(step < 50, "never recording");
         tick(&mut runtime, &mut journal, &mut radio, 8_700);
         step += 1;

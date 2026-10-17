@@ -236,7 +236,8 @@ impl Runtime {
         if self.ride.pending() {
             return;
         }
-        let status = self.ride.recorder.status();
+        let medium = self.ride.medium();
+        let status = self.ride.recorder(medium).status();
         let action = match (button, status) {
             (Button::BottomRight, Status::Recording) => RideAction::Pause,
             (Button::BottomRight, Status::Paused) => RideAction::Resume,
@@ -265,10 +266,9 @@ impl Runtime {
             return;
         }
         self.ride.request = Request::Idle;
-        if self
-            .ride
-            .submit(|recorder, token| recorder.request(action, Source::Live, now, token))
-        {
+        if self.ride.submit(medium, |recorder, token| {
+            recorder.request(action, Source::Live, now, token)
+        }) {
             self.ride.auto.manual();
             if action == RideAction::Start {
                 self.timing.ride_press(received);

@@ -4,6 +4,7 @@ import io
 import json
 import struct
 import tempfile
+import tracemalloc
 import unittest
 import zlib
 from pathlib import Path
@@ -223,6 +224,17 @@ class AntCaptureTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'complete raw journal prefix'):
                     ant_capture.export(source, output)
                 self.assertFalse(output.exists())
+            # A bulk-sized ride-slots.bin is refused from its size, before it is read.
+            with source.open('r+b') as raw:
+                raw.truncate(2 * 2**30)
+            tracemalloc.start()
+            try:
+                with self.assertRaisesRegex(ValueError, 'complete raw journal prefix'):
+                    ant_capture.export(source, output)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertLess(peak, 2**20)
 
     def test_empty_range_and_existing_output_preserve_input(self):
         with tempfile.TemporaryDirectory() as directory:

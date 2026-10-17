@@ -60,9 +60,18 @@ pub const fn free_slots(used: usize) -> usize {
 
 /// Optimistic 1 Hz sample time, reserving START and terminal event slots.
 pub const fn estimated_seconds(used: usize) -> u32 {
-    free_slots(used)
-        .saturating_sub(2)
-        .saturating_mul(SAMPLES_PER_BATCH) as u32
+    estimated_seconds_in(SLOTS, used)
+}
+
+/// `estimated_seconds` for a journal of `slots` slots, saturating at `u32::MAX`.
+pub const fn estimated_seconds_in(slots: usize, used: usize) -> u32 {
+    let free = slots.saturating_sub(if used > slots { slots } else { used });
+    let seconds = (free.saturating_sub(2) as u64).saturating_mul(SAMPLES_PER_BATCH as u64);
+    if seconds > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        seconds as u32
+    }
 }
 
 pub const fn request_allowed(

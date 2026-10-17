@@ -1,6 +1,7 @@
 import hashlib
 import json
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -30,7 +31,49 @@ class ClearRidesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'digest'):
                 verified_manifest(root)
 
-    def run_clear(self, export, output, raw, infos, replies=None):
+    def test_a_bulk_sized_export_is_verified_in_bounded_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / 'ride-slots.bin'
+            block = bytes(range(256)) * 4096
+            digest = hashlib.sha256()
+            with raw.open('wb') as out:
+                for _ in range(32):
+                    out.write(block)
+                    digest.update(block)
+            slots = raw.stat().st_size // 256
+            manifest = {
+                'raw_file': raw.name,
+                'upper_bound': slots,
+                'slot_size': 256,
+                'raw_sha256': digest.hexdigest(),
+                'medium': 'bulk',
+                'capacity': 5_777_391,
+                'invalid_containers': [],
+                'invalid_sectors': [],
+            }
+            (root / 'manifest.json').write_text(json.dumps(manifest))
+            tracemalloc.start()
+            try:
+                self.assertEqual(verified_manifest(root)['upper_bound'], slots)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            # 32 MiB of slots; reading the file whole needed more than that.
+            self.assertLess(peak, 4 * 2**20, f'{peak / 2**20:.1f} MiB peak')
+            # A file of the wrong length is refused from its size, before any read.
+            with raw.open('r+b') as out:
+                out.truncate(4 * 2**30)
+            tracemalloc.start()
+            try:
+                with self.assertRaisesRegex(ValueError, 'length'):
+                    verified_manifest(root)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertLess(peak, 4 * 2**20)
+
+    def run_clear(self, export, output, raw, infos, replies=None, medium='internal', invalid=(), sectors=None):
         connection = MagicMock()
         context = MagicMock()
         context.__enter__.return_value = connection
@@ -45,12 +88,16 @@ class ClearRidesTests(unittest.TestCase):
             patch('cycling_devtools.rides.clear.info', side_effect=infos),
             patch(
                 'cycling_devtools.rides.clear.read_slot',
-                side_effect=[raw[i : i + 256] for i in range(0, len(raw), 256)],
+                side_effect=[
+                    (raw[i : i + 256], i // 256 not in invalid) if medium == 'bulk' else raw[i : i + 256]
+                    for i in range(0, len(raw), 256)
+                ],
             ),
+            patch('cycling_devtools.rides.clear.read_owned_sector', side_effect=lambda _, sector: sectors[sector]),
             patch('cycling_devtools.rides.clear.time.sleep'),
         ):
             self.connection, self.factory, self.context = connection, factory, context
-            return clear('/dev/test', export, output)
+            return clear('/dev/test', export, output, medium)
 
     def test_current_prefix_and_info_must_match_before_command(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,13 +127,130 @@ class ClearRidesTests(unittest.TestCase):
             self.context.__enter__.assert_called_once()
             self.context.__exit__.assert_called_once()
             commands = [call.args[0] for call in self.connection.terminal_command.call_args_list]
-            self.assertEqual(commands, ['RIDE CLEAR CONFIRM 2', 'RIDE STATUS', 'RIDE STATUS'])
+            self.assertEqual(commands, ['RIDE CLEAR CONFIRM 2', 'RIDE INTERNAL STATUS', 'RIDE INTERNAL STATUS'])
             for replies in [[TimeoutError()], [{'status': 'ACCEPTED', 'data': 'token=7'}, TimeoutError()]]:
                 with self.assertRaisesRegex(RuntimeError, 'uncertain'):
                     self.run_clear(export, root / f'timeout{len(replies)}', raw, [info, info], replies)
                 commands = [call.args[0] for call in self.connection.terminal_command.call_args_list]
                 self.assertEqual(commands.count('RIDE CLEAR CONFIRM 2'), 1)
-                self.assertTrue(all(command == 'RIDE STATUS' for command in commands[1:]))
+                self.assertTrue(all(command == 'RIDE INTERNAL STATUS' for command in commands[1:]))
+
+    def bulk_fixture(self, root, raw):
+        manifest = self.fixture(root, raw)
+        manifest.update(
+            medium='bulk',
+            store_id='00000000000000ab',
+            generation=1,
+            capacity=5_777_391,
+            invalid_containers=[],
+            invalid_sectors=[],
+        )
+        (root / 'manifest.json').write_text(json.dumps(manifest))
+        return manifest
+
+    def test_bulk_clear_verifies_the_raw_sectors_behind_invalid_containers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            export = root / 'export'
+            export.mkdir()
+            raw = b'x' * 256 + bytes(256)
+            manifest = self.bulk_fixture(export, raw)
+            kept = b'\xa5' * 512
+            (export / 'invalid-sector-17.bin').write_bytes(kept)
+            manifest.update(
+                invalid_containers=[1],
+                invalid_sectors=[
+                    {
+                        'index': 1,
+                        'sector': 17,
+                        'file': 'invalid-sector-17.bin',
+                        'sha256': hashlib.sha256(kept).hexdigest(),
+                    }
+                ],
+            )
+            (export / 'manifest.json').write_text(json.dumps(manifest))
+            info = {
+                'version': 1,
+                'slot_size': 256,
+                'upper_bound': 2,
+                'status': 'ready',
+                'medium': 'bulk',
+                'store_id': '00000000000000ab',
+                'generation': 1,
+                'capacity': 5_777_391,
+            }
+            # The device sector changed after export: no clear is sent.
+            with self.assertRaisesRegex(RuntimeError, 'invalid sectors do not match'):
+                self.run_clear(
+                    export, root / 'changed', raw, [info, info], medium='bulk', invalid={1}, sectors={17: b'\0' * 512}
+                )
+            self.connection.terminal_command.assert_not_called()
+            # A container that became valid, or a new invalid one, also differs.
+            with self.assertRaisesRegex(RuntimeError, 'invalid sectors do not match'):
+                self.run_clear(export, root / 'valid', raw, [info, info], medium='bulk', sectors={17: kept})
+            self.connection.terminal_command.assert_not_called()
+            # Matching raw sectors clear.
+            self.run_clear(
+                export,
+                root / 'ok',
+                raw,
+                [info, info, {**info, 'upper_bound': 0}],
+                medium='bulk',
+                invalid={1},
+                sectors={17: kept},
+            )
+            commands = [call.args[0] for call in self.connection.terminal_command.call_args_list]
+            self.assertEqual(commands[0], 'RIDE BULK CLEAR CONFIRM 2')
+            # A deleted or edited raw sector file fails verification before any device access.
+            (export / 'invalid-sector-17.bin').write_bytes(b'edited')
+            with self.assertRaisesRegex(ValueError, 'does not match its manifest'):
+                verified_manifest(export)
+            (export / 'invalid-sector-17.bin').unlink()
+            with self.assertRaisesRegex(ValueError, 'lacks raw sector 17'):
+                verified_manifest(export)
+            manifest.pop('invalid_sectors')
+            (export / 'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, 'invalid container list'):
+                verified_manifest(export)
+
+    def test_bulk_clear_targets_the_bulk_log_of_the_exported_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            export = root / 'export'
+            export.mkdir()
+            raw = b'x' * 512
+            self.bulk_fixture(export, raw)
+            info = {
+                'version': 1,
+                'slot_size': 256,
+                'upper_bound': 2,
+                'status': 'ready',
+                'medium': 'bulk',
+                'store_id': '00000000000000ab',
+                'generation': 1,
+                'capacity': 5_777_391,
+            }
+            summary = self.run_clear(export, root / 'ok', raw, [info, info, {**info, 'upper_bound': 0}], medium='bulk')
+            self.assertEqual(summary['medium'], 'bulk')
+            commands = [call.args[0] for call in self.connection.terminal_command.call_args_list]
+            self.assertEqual(commands, ['RIDE BULK CLEAR CONFIRM 2', 'RIDE BULK STATUS', 'RIDE BULK STATUS'])
+            # A reformatted store is a different epoch even with equal contents.
+            other = {**info, 'store_id': '00000000000000cd'}
+            with self.assertRaisesRegex(RuntimeError, 'store changed'):
+                self.run_clear(export, root / 'other', raw, [other, other], medium='bulk')
+            self.connection.terminal_command.assert_not_called()
+            # Media of different exports are never mixed up.
+            with self.assertRaisesRegex(ValueError, 'not a internal export'):
+                self.run_clear(export, root / 'mixed', raw, [info, info])
+
+    def test_bulk_export_bounds_use_the_store_capacity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self.bulk_fixture(root, b'x' * 512)
+            manifest['capacity'] = 1
+            (root / 'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, 'bounds'):
+                verified_manifest(root)
 
     def test_rejected_failed_missing_and_wrong_completion_are_not_retried(self):
         for replies in [

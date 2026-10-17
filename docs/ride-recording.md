@@ -58,6 +58,64 @@ mise run ride-clear -- .local/exports/<export-id>
   again before deciding whether to clear. Never automatically resend clear; a
   power interruption can leave part of the old journal intact.
 
+## Bulk MMC storage
+
+When the owned MMC partition from #108 is present and initialized, rides record
+there instead of internal flash. Each version-1 slot sits in its own 512-byte
+sector container, so the export format is the same as for internal flash. The
+mechanism is [`sector_log`](../packages/services/src/sector_log.rs) and the
+VANA format is [ride/bulk.rs](../apps/vana/src/ride/bulk.rs).
+
+```sh
+mise run ride-export -- --medium bulk          # Bulk export; adds store_id, generation, capacity
+mise run ride-clear -- --medium bulk .local/exports/<export-id>
+```
+
+- `RIDE BULK INIT` formats explicitly: it writes ten metadata sectors. Media
+  that is unformatted, foreign or corrupt is never formatted implicitly. A
+  corrupt store stays untouched and `corrupt` until someone runs `RIDE BULK INIT`.
+  A store whose superblocks were lost while records remain is `corrupt`, not
+  unformatted. Export and clear refuse an MMC without a recovered store
+  (`STATE`); a store recovered as corrupt exports but never clears. New stores are named from the hardware random source, so a
+  reformat never revives an older store's records.
+- `RIDE`/`EXPORT` take an optional `BULK` or `INTERNAL` word. Ride control,
+  `STATUS` and `HISTORY` default to the medium of the ride on screen, and START
+  to the medium the next ride will use; `INIT`, `CLEAR` and `EXPORT` default to
+  internal. START is refused while a ride is open on either medium. Bulk status adds `capacity`, `store`,
+  `generation` and `boot_reads`.
+- The 3 GB region holds 5,777,391 records, about 6,419 h at 1 Hz, so the
+  connection check shows `MMC nH LEFT`.
+- Records are append-only and never overwrite a valid record of the current
+  store. A checkpoint with the catalog is written every 32 records, after each
+  ride ends, and at boot before anything else when one is overdue, so at most
+  32 records ever follow the newest checkpoint. Boot reads the two superblocks,
+  the eight-slot checkpoint ring and 64 sectors past the newest checkpoint
+  (75 reads), never the whole region.
+- Boot only trusts an end it can prove: the ring holds every checkpoint it
+  should, every record after the newest checkpoint is intact and was written
+  after it, and no valid record lies further on within those 64 sectors.
+  Otherwise the store is `corrupt` but readable: export covers every record
+  seen (damaged ones as invalid containers), and nothing is written or cleared
+  until `RIDE BULK INIT`. A damaged tail that reads exactly like a power cut
+  before those writes is recovered as that cut.
+- Rides record to internal flash when the MMC is missing (`NOMEDIA`),
+  unformatted, corrupt, failed or without room for another ride. The ride
+  screen then shows a yellow `READY INT`/`RECORDING INT`, and `RIDE STATUS`
+  reports `fallback=1`. A ride that just filled the MMC still shows as `SAVED`
+  until the next one starts. If MMC writes fail during a ride, including on
+  pause or resume, the ride continues on internal flash as a new ride with its
+  active time and totals carried over (`moved=1`), paused if the rider was
+  pausing, and automatically resumed if it was auto-paused. If internal flash
+  cannot take the continuation either, the failed MMC ride stays on screen as
+  `STORAGE ERROR`. A failed finish ends the ride. The MMC part is recovered on the next
+  boot. Internal rides are never migrated.
+- Bulk export lists invalid sector containers in `invalid_containers`, exports
+  them as zero slots and saves each raw sector as `invalid-sector-N.bin`, with
+  its SHA-256 in `invalid_sectors`. Clear refuses unless those files are present
+  and intact and the device's raw sectors still match them.
+- The store is bound to its region size and accepts a region that later grows
+  at its end, so an explicit, owner-run migration can extend it.
+
 ## Historical ANT captures
 
 Historical ANT diagnostic records remain occupied slots, preserved by recovery and
@@ -245,5 +303,9 @@ VANA branding and the brief glitch animation appear only on the splash screen.
   timestamp, and pause events do not preserve wall-clock pause duration. A
   timestamped upload then needs a supplied start time and cannot recover time
   spent paused.
+- Bulk MMC recording is proven on the host and in the simulator only. Endurance,
+  latency at 20 MHz, power-cut recovery and coexistence with GNSS, display and
+  radios still need hardware validation. The harness `MMC OWNED TEST` writes
+  owned sectors and can damage a bulk store.
 - Gradient is an approximate barometric grade, not calibrated elevation.
 - A grey radar rail does not imply an empty road.

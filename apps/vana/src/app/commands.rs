@@ -1,11 +1,17 @@
 //! Application commands, completion reporting and ride export.
+//!
+//! `RIDE` and `EXPORT` take an optional medium, `BULK` or `INTERNAL`. Without
+//! one, ride control and `RIDE STATUS`/`HISTORY` address the medium the rider's
+//! ride uses, while `INIT`, `CLEAR` and `EXPORT` keep addressing the internal
+//! journal, so existing tools never act on bulk media by accident.
 use super::Runtime;
-use super::recording::Request;
+use super::recording::{Medium, Request};
 use crate::ride::control::Action;
 use crate::ride::log::{SLOT_SIZE, Slot, Source, VERSION, transport_checksum};
 use crate::ride::recorder::Recorder;
 use crate::ride::storage::RideStorage;
 use core::fmt::Write;
+use device_api::bulk::ReadWrite;
 
 /// Terminal replies older than this report no current sensor reading.
 const SENSOR_REPLY_FRESH_MS: u64 = 3000;
@@ -17,11 +23,20 @@ impl Runtime {
         &mut self,
         words: &str,
         store: &mut impl RideStorage,
+        bulk: &mut impl ReadWrite,
         now: u64,
         output: &mut impl Write,
     ) -> &'static str {
-        let mut words = words.split_ascii_whitespace();
+        let mut words = words.split_ascii_whitespace().peekable();
         let domain = words.next();
+        let named = match words.peek() {
+            Some(&"BULK") => Some(Medium::Bulk),
+            Some(&"INTERNAL") => Some(Medium::Internal),
+            _ => None,
+        };
+        if named.is_some() {
+            words.next();
+        }
         let operation = words.next();
         let argument = words.next();
         let bound = words.next();
@@ -29,30 +44,45 @@ impl Runtime {
             return "INVALID";
         }
         if domain == Some("RADAR") {
-            if argument.is_some() || bound.is_some() {
+            if named.is_some() || argument.is_some() || bound.is_some() {
                 return "INVALID";
             }
             return self.radar_command(operation, now, output);
         }
+        let stored = named.unwrap_or(Medium::Internal);
         if (domain, operation, argument) == (Some("RIDE"), Some("CLEAR"), Some("CONFIRM")) {
             let Some(bound) = bound.and_then(|value| value.parse::<usize>().ok()) else {
                 return "INVALID";
             };
-            return self.submit(output, |recorder, token| recorder.clear(bound, token));
+            if !self.verified_store(stored) {
+                return "STATE";
+            }
+            return self.submit(stored, output, |recorder, token| {
+                recorder.clear(bound, token)
+            });
         }
         if bound.is_some() {
             return "INVALID";
         }
         if domain == Some("PROFILE") {
+            if named.is_some() {
+                return "INVALID";
+            }
             return self.profile_command(operation, argument, now, output);
         }
+        // Status and control address the ride the rider sees; a new ride
+        // goes where the next ride will be recorded.
+        let riding = named.unwrap_or(self.ride.shown());
+        let next = named.unwrap_or(self.ride.medium());
         match (domain, operation, argument) {
             (Some("RIDE"), Some("INIT"), None) => {
-                self.submit(output, |recorder, token| recorder.initialize(token))
+                self.submit(stored, output, |recorder, token| recorder.initialize(token))
             }
-            (Some("RIDE"), Some("SENSORS"), None) => self.ble_sensors(now, output),
-            (Some("RIDE"), Some("STATUS"), None) => self.ride_status(now, output),
-            (Some("RIDE"), Some("HISTORY"), None) => self.ride_history(output),
+            (Some("RIDE"), Some("SENSORS"), None) if named.is_none() => {
+                self.ble_sensors(now, output)
+            }
+            (Some("RIDE"), Some("STATUS"), None) => self.ride_status(riding, now, output),
+            (Some("RIDE"), Some("HISTORY"), None) => self.ride_history(riding, output),
             (Some("RIDE"), Some("TIMING"), None) => {
                 self.timing.report(output);
                 "OK"
@@ -64,12 +94,23 @@ impl Runtime {
                     "RESUME" => Action::Resume,
                     _ => Action::Finish,
                 };
-                self.submit(output, |recorder, token| {
+                if action == Action::Start && self.ride.open() {
+                    // One ride at a time, whichever medium it is on.
+                    return "STATE";
+                }
+                let medium = if action == Action::Start {
+                    next
+                } else {
+                    riding
+                };
+                self.submit(medium, output, |recorder, token| {
                     recorder.request(action, Source::Live, now, token)
                 })
             }
-            (Some("EXPORT"), Some("INFO"), None) => self.export_info(output),
-            (Some("EXPORT"), Some("SLOT"), Some(index)) => self.export_slot(index, store, output),
+            (Some("EXPORT"), Some("INFO"), None) => self.export_info(stored, output),
+            (Some("EXPORT"), Some("SLOT"), Some(index)) => {
+                self.export_slot(stored, index, store, bulk, output)
+            }
             _ => "INVALID",
         }
     }
@@ -78,6 +119,7 @@ impl Runtime {
     /// an undersized reply cannot hide that a command was queued.
     fn submit(
         &mut self,
+        medium: Medium,
         output: &mut impl Write,
         start: impl FnOnce(&mut Recorder, u32) -> bool,
     ) -> &'static str {
@@ -88,7 +130,7 @@ impl Runtime {
             return "OUTPUT";
         }
         let token = self.ride.next_token();
-        if !self.ride.submit(start) {
+        if !self.ride.submit(medium, start) {
             return "STATE";
         }
         self.ride.host_token = Some(token);
@@ -195,15 +237,15 @@ impl Runtime {
     }
 
     /// Reports and then clears a retained completion.
-    fn ride_status(&mut self, now: u64, output: &mut impl Write) -> &'static str {
-        let recorder = &self.ride.recorder;
+    fn ride_status(&mut self, medium: Medium, now: u64, output: &mut impl Write) -> &'static str {
+        let recorder = self.ride.recorder(medium);
         let pending = match self.ride.request {
             Request::Pending(token) => token,
             Request::Idle | Request::Completed(_) => 0,
         };
         if write!(
             output,
-            "state={} slot={} rides={} active_ms={} samples={} dropped={} free_s={} page={} home_cursor={} pending={}",
+            "state={} slot={} rides={} active_ms={} samples={} dropped={} free_s={} medium={} write_ms={}",
             recorder.status().name(),
             recorder.next_slot(),
             recorder.completed(),
@@ -211,6 +253,34 @@ impl Runtime {
             recorder.written_samples(),
             recorder.dropped_samples(),
             recorder.remaining_secs(),
+            medium.name(),
+            recorder.max_write_ms(),
+        )
+        .is_err()
+        {
+            return "OUTPUT";
+        }
+        if medium == Medium::Bulk {
+            let log = self.ride.bulk_media.log();
+            if write!(
+                output,
+                " capacity={} store={:016x} generation={} boot_reads={}",
+                recorder.slots(),
+                log.map_or(0, |log| log.store_id()),
+                log.map_or(0, |log| log.generation()),
+                self.ride.bulk_media.boot_reads()
+            )
+            .is_err()
+            {
+                return "OUTPUT";
+            }
+        }
+        let fallback = self.ride.fallback();
+        if write!(
+            output,
+            " fallback={} moved={} page={} home_cursor={} pending={}",
+            u8::from(fallback),
+            u8::from(self.ride.moved),
             if self.power.view().is_some() {
                 "power"
             } else {
@@ -233,8 +303,8 @@ impl Runtime {
         "OK"
     }
 
-    fn ride_history(&self, output: &mut impl Write) -> &'static str {
-        let recorder = &self.ride.recorder;
+    fn ride_history(&self, medium: Medium, output: &mut impl Write) -> &'static str {
+        let recorder = self.ride.recorder(medium);
         if write!(output, "count={}", recorder.summary_count()).is_err() {
             return "OUTPUT";
         }
@@ -257,8 +327,20 @@ impl Runtime {
         "OK"
     }
 
-    fn export_info(&self, output: &mut impl Write) -> &'static str {
-        let recorder = &self.ride.recorder;
+    /// `INFO version slot_size upper state`; bulk adds its epoch identity and
+    /// capacity so a host can tell epochs apart across a clear.
+    /// Export and reclaim need a store whose extent is known: a bulk log
+    /// without a recovered epoch (unformatted, or its metadata lost) has no
+    /// verifiable upper bound, so it is neither empty nor clearable.
+    fn verified_store(&self, medium: Medium) -> bool {
+        medium == Medium::Internal || self.ride.bulk_media.log().is_some()
+    }
+
+    fn export_info(&self, medium: Medium, output: &mut impl Write) -> &'static str {
+        let recorder = self.ride.recorder(medium);
+        if !self.verified_store(medium) {
+            return "STATE";
+        }
         if !recorder.exportable() {
             return "BUSY";
         }
@@ -274,16 +356,37 @@ impl Runtime {
         {
             return "OUTPUT";
         }
+        if medium == Medium::Bulk {
+            let log = self.ride.bulk_media.log();
+            if write!(
+                output,
+                " {:016x} {} {}",
+                log.map_or(0, |log| log.store_id()),
+                log.map_or(0, |log| log.generation()),
+                recorder.slots()
+            )
+            .is_err()
+            {
+                return "OUTPUT";
+            }
+        }
         "OK"
     }
 
+    /// `SLOT index crc hex`; bulk adds `valid` or `invalid` for the sector
+    /// container, whose invalid slots are exported as zero bytes.
     fn export_slot(
-        &self,
+        &mut self,
+        medium: Medium,
         index: &str,
         store: &mut impl RideStorage,
+        bulk: &mut impl ReadWrite,
         output: &mut impl Write,
     ) -> &'static str {
-        let recorder = &self.ride.recorder;
+        let recorder = self.ride.recorder(medium);
+        if !self.verified_store(medium) {
+            return "STATE";
+        }
         if !recorder.exportable() {
             return "BUSY";
         }
@@ -294,9 +397,9 @@ impl Runtime {
             return "BOUNDS";
         }
         let mut slot = Slot::default();
-        if store.ride_read_slot(index, &mut slot).is_err() {
+        let Some(valid) = self.ride.read_slot(medium, store, bulk, index, &mut slot) else {
             return "READ";
-        }
+        };
         if write!(
             output,
             "SLOT {} {:08x} ",
@@ -311,6 +414,11 @@ impl Runtime {
             if write!(output, "{byte:02x}").is_err() {
                 return "OUTPUT";
             }
+        }
+        if medium == Medium::Bulk
+            && write!(output, " {}", if valid { "valid" } else { "invalid" }).is_err()
+        {
+            return "OUTPUT";
         }
         "OK"
     }

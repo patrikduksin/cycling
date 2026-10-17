@@ -43,11 +43,28 @@ pub enum Status {
     Recovered,
     Full,
     Error,
+    /// The device has no such medium.
+    Unsupported,
+    /// The medium should exist but cannot be reached.
+    Unavailable,
+    /// Rides are there but recovery metadata cannot be trusted; kept untouched.
+    Corrupt,
 }
 
 impl Status {
+    /// The journal can start or continue a ride, room permitting.
+    pub const fn usable(self) -> bool {
+        matches!(
+            self,
+            Self::Ready | Self::Recording | Self::Paused | Self::Saved | Self::Recovered
+        )
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Unsupported => "unsupported",
+            Self::Unavailable => "unavailable",
+            Self::Corrupt => "corrupt",
             Self::Scanning => "scanning",
             Self::NeedsInit => "needs_init",
             Self::Formatting => "formatting",
@@ -75,6 +92,9 @@ impl Status {
             Self::Recovered => b"RECOV",
             Self::Full => b"FULL",
             Self::Error => b"ERROR",
+            Self::Unsupported => b"NONE",
+            Self::Unavailable => b"NOMEDIA",
+            Self::Corrupt => b"CORRUPT",
         }
     }
 }
@@ -347,14 +367,15 @@ pub struct Summary {
     pub active_ms: u64,
     pub first_utc_ms: Option<u64>,
     pub distance_mm: Option<u64>,
-    pub gps_samples: u16,
+    pub gps_samples: u32,
     pub heart_average: Option<u16>,
     pub cadence_average: Option<u16>,
     demo_speed_mm_s: Option<u32>,
-    heart_sum: u32,
-    heart_count: u16,
-    cadence_sum: u32,
-    cadence_count: u16,
+    // Wide enough for a ride as long as the bulk log (thousands of hours).
+    heart_sum: u64,
+    heart_count: u32,
+    cadence_sum: u64,
+    cadence_count: u32,
 }
 
 impl Summary {
@@ -370,17 +391,85 @@ impl Summary {
         self.first_utc_ms = self.first_utc_ms.or(sample.utc_ms);
         self.gps_samples = self
             .gps_samples
-            .saturating_add(u16::from(sample.location_e7.is_some()));
+            .saturating_add(u32::from(sample.location_e7.is_some()));
         self.demo_speed_mm_s = self.demo_speed_mm_s.or(sample.demo_speed_mm_s);
         if let Some(value) = sample.heart_bpm {
-            self.heart_sum = self.heart_sum.saturating_add(u32::from(value));
+            self.heart_sum = self.heart_sum.saturating_add(u64::from(value));
             self.heart_count = self.heart_count.saturating_add(1);
         }
         if let Some(value) = sample.cadence_tenths {
-            self.cadence_sum = self.cadence_sum.saturating_add(u32::from(value));
+            self.cadence_sum = self.cadence_sum.saturating_add(u64::from(value));
             self.cadence_count = self.cadence_count.saturating_add(1);
         }
         self.active_ms = sample.active_ms;
+    }
+
+    /// Persisted size of one summary in a bulk checkpoint.
+    pub const ENCODED: usize = 72;
+
+    /// Encode for a bulk checkpoint, including the running sums an open ride
+    /// needs to keep averaging after reboot.
+    pub fn encode(&self, bytes: &mut [u8]) {
+        bytes[..Self::ENCODED].fill(0);
+        put_u32(bytes, 0, self.ride_id);
+        bytes[4] = self.source.map_or(0, |s| s as u8);
+        let options = [
+            self.first_utc_ms.is_some(),
+            self.distance_mm.is_some(),
+            self.heart_average.is_some(),
+            self.cadence_average.is_some(),
+            self.demo_speed_mm_s.is_some(),
+            self.recovered,
+            self.full,
+            self.gap,
+        ];
+        bytes[5] = options
+            .iter()
+            .enumerate()
+            .fold(0, |flags, (bit, set)| flags | (u8::from(*set) << bit));
+        put_u64(bytes, 8, self.active_ms);
+        put_u64(bytes, 16, self.first_utc_ms.unwrap_or(0));
+        put_u64(bytes, 24, self.distance_mm.unwrap_or(0));
+        put_u16(bytes, 32, self.heart_average.unwrap_or(0));
+        put_u16(bytes, 34, self.cadence_average.unwrap_or(0));
+        put_u32(bytes, 36, self.demo_speed_mm_s.unwrap_or(0));
+        put_u32(bytes, 40, self.gps_samples);
+        put_u32(bytes, 44, self.heart_count);
+        put_u32(bytes, 48, self.cadence_count);
+        put_u64(bytes, 56, self.heart_sum);
+        put_u64(bytes, 64, self.cadence_sum);
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let flags = bytes[5];
+        let source = match bytes[4] {
+            0 => None,
+            1 => Some(Source::Demo),
+            2 => Some(Source::Live),
+            _ => return None,
+        };
+        if bytes[6..8] != [0, 0] || bytes[52..56] != [0; 4] {
+            return None;
+        }
+        let has = |bit: u8| flags & (1 << bit) != 0;
+        Some(Self {
+            ride_id: get_u32(bytes, 0),
+            source,
+            recovered: has(5),
+            full: has(6),
+            gap: has(7),
+            active_ms: get_u64(bytes, 8),
+            first_utc_ms: has(0).then(|| get_u64(bytes, 16)),
+            distance_mm: has(1).then(|| get_u64(bytes, 24)),
+            gps_samples: get_u32(bytes, 40),
+            heart_average: has(2).then(|| get_u16(bytes, 32)),
+            cadence_average: has(3).then(|| get_u16(bytes, 34)),
+            demo_speed_mm_s: has(4).then(|| get_u32(bytes, 36)),
+            heart_sum: get_u64(bytes, 56),
+            heart_count: get_u32(bytes, 44),
+            cadence_sum: get_u64(bytes, 64),
+            cadence_count: get_u32(bytes, 48),
+        })
     }
 
     pub fn finish(&mut self, kind: Kind, active_ms: u64, gap: bool) {
@@ -391,10 +480,11 @@ impl Summary {
         self.distance_mm = self
             .demo_speed_mm_s
             .map(|speed| active_ms.saturating_mul(u64::from(speed)) / 1_000);
-        self.heart_average =
-            (self.heart_count != 0).then(|| (self.heart_sum / u32::from(self.heart_count)) as u16);
-        self.cadence_average = (self.cadence_count != 0)
-            .then(|| (self.cadence_sum / u32::from(self.cadence_count)) as u16);
+        let average = |sum: u64, count: u32| {
+            (count != 0).then(|| (sum / u64::from(count)).min(u64::from(u16::MAX)) as u16)
+        };
+        self.heart_average = average(self.heart_sum, self.heart_count);
+        self.cadence_average = average(self.cadence_sum, self.cadence_count);
     }
 }
 
@@ -456,28 +546,62 @@ impl Scanner {
     pub fn accept(&mut self, sector: &Sector) {
         let base = self.sector * SLOTS_PER_SECTOR;
         for index in 0..SLOTS_PER_SECTOR {
-            let bytes = &sector.0[index * SLOT_SIZE..][..SLOT_SIZE];
-            if erased(bytes) {
-                continue;
-            }
-            self.next_slot = base + index + 1;
-            let mut slot = Slot::default();
-            slot.0.copy_from_slice(bytes);
-            let Some(entry) = decode(&slot) else {
-                self.torn_first |= base + index == 0 && torn_append(bytes);
-                self.invalid_slots = self.invalid_slots.saturating_add(1);
-                if let Some(open) = self.open.as_mut() {
-                    open.gap = true;
-                }
-                continue;
-            };
-            self.apply(entry);
+            self.accept_slot(base + index, &sector.0[index * SLOT_SIZE..][..SLOT_SIZE]);
         }
         self.sector += 1;
     }
 
-    pub fn finish(&self) -> Option<Catalog> {
-        (self.sector == SECTORS).then_some(Catalog {
+    /// Continue from a catalog persisted at `catalog.next_slot`, as if every
+    /// earlier slot had been scanned.
+    pub fn resume(catalog: &Catalog) -> Self {
+        Self {
+            sector: SECTORS,
+            next_slot: catalog.next_slot,
+            completed: catalog.completed,
+            invalid_slots: catalog.invalid_slots,
+            valid_slots: catalog.valid_slots,
+            open: catalog.recovery,
+            summaries: catalog.summaries,
+            summary_count: catalog.summary_count,
+            max_ride_id: catalog.next_ride_id.saturating_sub(1),
+            torn_first: catalog.torn_first,
+        }
+    }
+
+    /// Scan one slot at `index`; erased slots are unused, not gaps.
+    pub fn accept_slot(&mut self, index: usize, bytes: &[u8]) {
+        if erased(bytes) {
+            return;
+        }
+        self.next_slot = index + 1;
+        let mut slot = Slot::default();
+        slot.0.copy_from_slice(bytes);
+        let Some(entry) = decode(&slot) else {
+            self.torn_first |= index == 0 && torn_append(bytes);
+            self.gap(1);
+            return;
+        };
+        self.apply(entry);
+    }
+
+    /// Slots `from..to` are occupied but unreadable as records.
+    pub fn skip(&mut self, from: usize, to: usize) {
+        self.next_slot = self.next_slot.max(to);
+        self.gap(to.saturating_sub(from));
+    }
+
+    fn gap(&mut self, slots: usize) {
+        self.invalid_slots = self
+            .invalid_slots
+            .saturating_add(slots.min(usize::from(u16::MAX)) as u16);
+        if let Some(open) = self.open.as_mut() {
+            open.gap = true;
+        }
+    }
+
+    /// The catalog of everything accepted so far.
+    pub fn catalog(&self) -> Catalog {
+        Catalog {
             next_slot: self.next_slot,
             next_ride_id: self.max_ride_id.wrapping_add(1).max(1),
             completed: self.completed,
@@ -487,7 +611,11 @@ impl Scanner {
             summaries: self.summaries,
             summary_count: self.summary_count,
             torn_first: self.torn_first,
-        })
+        }
+    }
+
+    pub fn finish(&self) -> Option<Catalog> {
+        (self.sector == SECTORS).then(|| self.catalog())
     }
 
     fn apply(&mut self, entry: Entry) {

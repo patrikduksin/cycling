@@ -1,6 +1,6 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
-use super::recording::Request;
+use super::recording::{Medium, Request};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
 use crate::screens::power::Sheet as PowerSheet;
@@ -249,13 +249,14 @@ impl Runtime {
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
         view.sample = self.readings.live;
-        view.active_secs = self.ride.recorder.active_ms(now) / 1000;
-        view.state = self.ride.recorder.status();
-        view.storage_left_s = matches!(
-            view.state,
-            Status::Ready | Status::Saved | Status::Recovered | Status::Recording | Status::Paused
-        )
-        .then(|| self.ride.recorder.remaining_secs());
+        let recorder = self.ride.active();
+        view.active_secs = self.ride.active_ms(now) / 1000;
+        view.state = recorder.status();
+        // Room for the open ride, or for the next one wherever it will go.
+        let next = self.ride.recorder(self.ride.medium());
+        view.storage_left_s =
+            (view.state.usable() && next.status().usable()).then(|| next.remaining_secs());
+        view.storage_fallback = self.ride.fallback() && self.ride.shown() == Medium::Internal;
         view.auto_paused = self.ride.auto.paused();
         view.auto_toast = self.ride.toast(now);
         view.radar = self.readings.radar.snapshot(now);
@@ -319,7 +320,9 @@ impl Runtime {
         let line = &mut view.lines[0];
         let status = if let Some(notice) = self.power.notice(now) {
             notice.text()
-        } else if self.ride.recorder.status() == Status::Scanning {
+        } else if self.ride.internal.status() == Status::Scanning
+            || self.ride.bulk.status() == Status::Scanning
+        {
             "CHECKING STORAGE"
         } else if matches!(
             self.startup,
@@ -351,7 +354,12 @@ impl Runtime {
                 ant.availability(),
                 gps_status
             ),
-            _ => write!(line, "> STORAGE {}", self.ride.recorder.status().name()),
+            _ => write!(
+                line,
+                "> STORAGE {} {}",
+                self.ride.medium().label(),
+                self.ride.active().status().name()
+            ),
         };
     }
 
@@ -388,18 +396,25 @@ impl Runtime {
             };
         }
         let _ = write!(view.lines[6], "GPS {}", gps_status);
-        let recorder = &self.ride.recorder;
+        // Name the medium only on boards that have bulk storage.
+        let medium = match self.ride.bulk.status() {
+            Status::Unsupported => "STORAGE",
+            _ => self.ride.medium().label(),
+        };
+        // The connection check is about the ride about to start.
+        let recorder = self.ride.recorder(self.ride.medium());
+        let line = &mut view.lines[7];
         let _ = match recorder.status() {
             Status::Ready | Status::Saved | Status::Recovered => {
-                let minutes = recorder.remaining_secs() / 60;
-                write!(
-                    view.lines[7],
-                    "STORAGE {}:{:02} LEFT",
-                    minutes / 60,
-                    minutes % 60
-                )
+                let hours = recorder.remaining_secs() / 3600;
+                if hours >= 100 {
+                    write!(line, "{medium} {hours}H LEFT")
+                } else {
+                    let minutes = recorder.remaining_secs() / 60 % 60;
+                    write!(line, "{medium} {hours}:{minutes:02} LEFT")
+                }
             }
-            status => write!(view.lines[7], "STORAGE {}", status.name()),
+            status => write!(line, "{medium} {}", status.name()),
         };
         let _ = match self.discovery.scan.overview_message() {
             Some(message) => view.lines[8].push_str(message.text()),
@@ -430,7 +445,7 @@ impl Runtime {
 
     fn ride_lines(&self, view: &mut View, now: u64, gps_status: &str) {
         let live = self.readings.live;
-        let recorder = &self.ride.recorder;
+        let recorder = self.ride.active();
         let lines = &mut view.lines;
         let _ = write!(lines[0], "> {}", recorder.status().name());
         let _ = match live.speed_mm_s {
@@ -448,7 +463,7 @@ impl Runtime {
             Some(v) => write!(lines[3], "{} W", v),
             None => lines[3].push_str("-- W"),
         };
-        let seconds = recorder.active_ms(now) / 1000;
+        let seconds = self.ride.active_ms(now) / 1000;
         let _ = write!(
             lines[4],
             "TIME {:02}:{:02}:{:02}",
@@ -487,6 +502,7 @@ impl Runtime {
                 Request::Completed(_) => "WRITE FAILED",
                 Request::Pending(_) => "SAVING",
                 Request::Idle => match recorder.status() {
+                    Status::Recording if self.ride.moved => "RECORDING / INTERNAL",
                     Status::Recording => "RECORDING / TOP LEFT LAPS",
                     Status::Paused => "PAUSED / TOP LEFT ENDS",
                     Status::Saved => "SAVED / TOP LEFT HOME",

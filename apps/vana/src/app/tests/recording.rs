@@ -102,25 +102,25 @@ fn a_recording_ride_writes_samples_until_finished() {
         tick(&mut runtime, &mut journal, &mut radio, now);
         now += 250;
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
-    assert!(runtime.ride.recorder.written_samples() >= 4);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    assert!(runtime.ride.internal.written_samples() >= 4);
 
     pause(&mut runtime, &mut journal, &mut radio, now);
     runtime.input(press(Button::TopLeft), now + 400, &mut radio);
     runtime.input(press(Button::TopLeft), now + 800, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, now + 800);
-    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert!(!runtime.recording());
 }
 
 /// Press BottomRight on a recording ride and let the pause land.
 fn pause(runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, now: u64) {
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     runtime.input(press(Button::BottomRight), now, radio);
     for step in 0..4 {
         tick(runtime, journal, radio, now + step * 50);
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
         runtime.input(press(Button::TopLeft), at, &mut radio);
         tick(&mut runtime, &mut journal, &mut radio, at);
         assert!(!runtime.ride.stop_confirming(at));
-        assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+        assert_eq!(runtime.ride.internal.status(), Status::Recording);
     }
     assert_eq!(runtime.ride.laps.count(), 1, "the second lap is debounced");
 
@@ -158,11 +158,11 @@ fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
     // Resuming disarms it; TopLeft laps again.
     runtime.input(press(Button::BottomRight), 4800, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 4800);
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     assert!(!runtime.ride.stop_confirming(4800));
     runtime.input(press(Button::TopLeft), 7000, &mut radio);
     assert_eq!(runtime.ride.laps.count(), 2);
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
 
     pause(&mut runtime, &mut journal, &mut radio, 7400);
     runtime.input(press(Button::TopLeft), 7800, &mut radio);
@@ -170,10 +170,10 @@ fn ending_a_ride_needs_a_pause_then_a_second_press_within_three_seconds() {
     // Too late: the second press only re-arms.
     runtime.input(press(Button::TopLeft), 10_801, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 10_801);
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     runtime.input(press(Button::TopLeft), 13_000, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 13_000);
-    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert!(!runtime.ride.stop_confirming(15_000));
 
     // Saved, the pages still show the ride and wrap; TopLeft goes Home.
@@ -218,7 +218,7 @@ fn totals_count_recorded_seconds_survive_pause_and_restart_with_a_new_ride() {
 
     runtime.input(press(Button::BottomRight), 25_000, &mut radio);
     ride(&mut runtime, &mut journal, &mut radio, 25_000, 65_000);
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert_eq!(runtime.ride.totals.work_kj(), work, "paused seconds count");
     runtime.input(press(Button::BottomRight), 65_000, &mut radio);
     ride(&mut runtime, &mut journal, &mut radio, 65_000, 85_000);
@@ -229,7 +229,7 @@ fn totals_count_recorded_seconds_survive_pause_and_restart_with_a_new_ride() {
     runtime.input(press(Button::TopLeft), 85_400, &mut radio);
     runtime.input(press(Button::TopLeft), 85_800, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 85_800);
-    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert_eq!(
         runtime.ride.totals.work_kj(),
         Some(resumed),
@@ -238,7 +238,7 @@ fn totals_count_recorded_seconds_survive_pause_and_restart_with_a_new_ride() {
 
     runtime.input(press(Button::BottomRight), 90_000, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 90_000);
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     assert!(runtime.ride.totals.work_kj().unwrap_or(0) <= 1, "new ride");
 }
 
@@ -275,7 +275,7 @@ fn laps_split_the_recorded_seconds_and_restart_with_a_new_ride() {
     runtime.input(press(Button::TopLeft), 45_400, &mut radio);
     runtime.input(press(Button::TopLeft), 45_800, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, 45_800);
-    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert_eq!(runtime.ride.laps.count(), 1, "kept after stop");
 
     runtime.input(press(Button::BottomRight), 50_000, &mut radio);
@@ -294,10 +294,10 @@ fn ride_buttons_wait_for_the_previous_request() {
     // Still pending: a pause press is ignored rather than queued.
     runtime.input(press(Button::BottomRight), 1400, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1400);
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     runtime.input(press(Button::BottomRight), 1800, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1800);
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
 }
 
 /// Power-only page 0x10 with 2000 W, so a second of it is two kilojoules.
@@ -317,13 +317,13 @@ fn delayed_stop(stop: impl FnOnce(&mut Runtime, &mut Radio)) -> Runtime {
         tick(&mut runtime, &mut journal, &mut radio, now);
     }
     stop(&mut runtime, &mut radio);
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     for now in [5000, 6000] {
         radio.data(POWER, POWER_2000, now);
         tick(&mut runtime, &mut journal, &mut radio, now);
     }
     settle(&mut runtime, &mut journal, &mut radio, 6000);
-    assert_eq!(runtime.ride.recorder.active_ms(6000), 1100);
+    assert_eq!(runtime.ride.internal.active_ms(6000), 1100);
     runtime
 }
 
@@ -332,7 +332,7 @@ fn totals_stop_at_an_accepted_pause_while_its_flush_is_pending() {
     let runtime = delayed_stop(|runtime, radio| {
         runtime.input(press(Button::BottomRight), 2100, radio);
     });
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     // 1.1 active seconds at 2000 W, not the five seconds until the flush.
     assert_eq!(runtime.ride.totals.work_kj(), Some(2));
     assert_eq!(runtime.ride.totals.avg_power(), Some(2000));
@@ -342,16 +342,20 @@ fn totals_stop_at_an_accepted_pause_while_its_flush_is_pending() {
 fn totals_stop_at_an_accepted_finish_while_its_flush_is_pending() {
     // Buttons end only a paused ride; a host finish can land while recording.
     let runtime = delayed_stop(|runtime, _| {
-        assert!(runtime.ride.submit(|recorder, token| {
-            recorder.request(
-                crate::ride::control::Action::Finish,
-                crate::ride::log::Source::Live,
-                2100,
-                token,
-            )
-        }));
+        assert!(
+            runtime
+                .ride
+                .submit(crate::app::Medium::Internal, |recorder, token| {
+                    recorder.request(
+                        crate::ride::control::Action::Finish,
+                        crate::ride::log::Source::Live,
+                        2100,
+                        token,
+                    )
+                })
+        );
     });
-    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
     assert_eq!(runtime.ride.totals.work_kj(), Some(2));
 }
 
@@ -474,7 +478,7 @@ fn a_stop_auto_pauses_and_riding_on_auto_resumes() {
         10,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
 
     // The wheel needs four seconds to read zero, then three more to pause.
     at = roll(
@@ -484,9 +488,9 @@ fn a_stop_auto_pauses_and_riding_on_auto_resumes() {
         20,
         false,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert!(runtime.ride.auto.paused());
-    let frozen = runtime.ride.recorder.active_ms(at);
+    let frozen = runtime.ride.internal.active_ms(at);
     at = roll(
         (&mut runtime, &mut journal, &mut radio),
         &mut wheel,
@@ -494,7 +498,7 @@ fn a_stop_auto_pauses_and_riding_on_auto_resumes() {
         20,
         false,
     );
-    assert_eq!(runtime.ride.recorder.active_ms(at), frozen, "stop excluded");
+    assert_eq!(runtime.ride.internal.active_ms(at), frozen, "stop excluded");
 
     at = roll(
         (&mut runtime, &mut journal, &mut radio),
@@ -503,9 +507,9 @@ fn a_stop_auto_pauses_and_riding_on_auto_resumes() {
         6,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     assert!(!runtime.ride.auto.paused());
-    assert!(runtime.ride.recorder.active_ms(at) > frozen);
+    assert!(runtime.ride.internal.active_ms(at) > frozen);
 }
 
 #[test]
@@ -539,7 +543,7 @@ fn a_manual_pause_stays_paused_while_the_bike_moves() {
         60,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert!(!runtime.ride.auto.paused());
 }
 
@@ -575,7 +579,7 @@ fn acting_on_an_auto_pause_makes_it_manual_and_the_next_press_resumes() {
         30,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused, "now manual");
+    assert_eq!(runtime.ride.internal.status(), Status::Paused, "now manual");
     runtime.input(press(Button::BottomRight), at, &mut radio);
     roll(
         (&mut runtime, &mut journal, &mut radio),
@@ -584,7 +588,7 @@ fn acting_on_an_auto_pause_makes_it_manual_and_the_next_press_resumes() {
         1,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
 }
 
 #[test]
@@ -616,12 +620,12 @@ fn a_lost_wheel_sensor_never_pauses_and_releases_an_auto_pause() {
     for step in 0..40 {
         tick(&mut runtime, &mut journal, &mut radio, at + step * 250);
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     // Recording without any speed reading is never paused.
     for step in 40..400 {
         tick(&mut runtime, &mut journal, &mut radio, at + step * 250);
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
 }
 
 #[test]
@@ -639,7 +643,7 @@ fn riding_off_auto_starts_and_storage_not_ready_does_not() {
         6,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     assert_eq!(runtime.ride.toast(at), "AUTO START");
 
     // Off the ride screen nothing starts.
@@ -655,7 +659,7 @@ fn riding_off_auto_starts_and_storage_not_ready_does_not() {
         20,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Ready);
+    assert_eq!(runtime.ride.internal.status(), Status::Ready);
 
     // Storage still scanning: the request is refused and reported, not forced.
     let mut journal = Journal::erased();
@@ -664,7 +668,7 @@ fn riding_off_auto_starts_and_storage_not_ready_does_not() {
     on_ride_page(&mut runtime);
     radio.connected(SPEED, 0);
     let mut wheel = Wheel { time: 0, count: 0 };
-    runtime.ride.recorder = crate::ride::recorder::Recorder::default();
+    runtime.ride.internal = crate::ride::recorder::Recorder::default();
     roll(
         (&mut runtime, &mut journal, &mut radio),
         &mut wheel,
@@ -672,7 +676,7 @@ fn riding_off_auto_starts_and_storage_not_ready_does_not() {
         20,
         true,
     );
-    assert_ne!(runtime.ride.recorder.status(), Status::Recording);
+    assert_ne!(runtime.ride.internal.status(), Status::Recording);
 }
 
 #[test]
@@ -695,7 +699,7 @@ fn readings_after_an_accepted_pause_do_not_reach_the_totals() {
         tick(&mut runtime, &mut journal, &mut radio, now);
     }
     settle(&mut runtime, &mut journal, &mut radio, 7000);
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert_eq!(runtime.ride.totals.avg_power(), Some(200));
     assert_eq!(runtime.ride.totals.max_power(), Some(200));
 }
@@ -716,7 +720,7 @@ fn a_start_mid_step_counts_its_first_fraction() {
         radio.data(POWER, POWER_2000, now);
         tick(&mut runtime, &mut journal, &mut radio, now);
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     assert_eq!(runtime.ride.totals.max_power(), Some(2000));
 }
 
@@ -729,7 +733,7 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
     radio.connected(SPEED, 0);
     let mut wheel = Wheel { time: 0, count: 0 };
     let mut output = String::new();
-    let status = runtime.command("RIDE START", &mut journal, 1000, &mut output);
+    let status = runtime.command("RIDE START", &mut journal, &mut NoBulk, 1000, &mut output);
     assert_eq!(status, "ACCEPTED");
     let token = output.clone();
     let mut at = roll(
@@ -740,10 +744,10 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
         false,
     );
     // The stop waits: the host has not read its completion yet.
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     output.clear();
     assert_eq!(
-        runtime.command("RIDE STATUS", &mut journal, at, &mut output),
+        runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, at, &mut output),
         "OK"
     );
     let token = token.trim_start_matches("token=");
@@ -758,7 +762,7 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
         10,
         false,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused, "{at}");
+    assert_eq!(runtime.ride.internal.status(), Status::Paused, "{at}");
 }
 
 #[test]
@@ -794,10 +798,10 @@ fn saving_an_auto_paused_ride_is_not_undone_by_movement() {
         2,
         true,
     );
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     runtime.input(press(Button::TopLeft), at, &mut radio);
     settle(&mut runtime, &mut journal, &mut radio, at);
-    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
 }
 
 #[test]
@@ -820,10 +824,10 @@ fn a_resume_and_pause_inside_one_step_use_the_resumed_readings() {
         tick(&mut runtime, &mut journal, &mut radio, now);
         now += 100;
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     let work = runtime.ride.totals.work_kj();
     runtime.input(press(Button::BottomRight), now, &mut radio);
-    while runtime.ride.recorder.status() != Status::Recording {
+    while runtime.ride.internal.status() != Status::Recording {
         radio.data(POWER, POWER_0, now);
         tick(&mut runtime, &mut journal, &mut radio, now);
         now += 50;
@@ -836,7 +840,7 @@ fn a_resume_and_pause_inside_one_step_use_the_resumed_readings() {
         tick(&mut runtime, &mut journal, &mut radio, later);
     }
     settle(&mut runtime, &mut journal, &mut radio, now + 1200);
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert_eq!(runtime.ride.totals.work_kj(), work, "no stale 2000 W");
 }
 
@@ -853,12 +857,12 @@ fn a_new_ride_paused_before_its_first_step_still_counts_its_seconds() {
     for now in [1000, 1100, 1200] {
         tick(&mut runtime, &mut journal, &mut radio, now);
     }
-    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
     runtime.input(press(Button::BottomRight), 1400, &mut radio);
     radio.data(POWER, POWER_2000, 2000);
     tick(&mut runtime, &mut journal, &mut radio, 2000);
     settle(&mut runtime, &mut journal, &mut radio, 2000);
-    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert_eq!(runtime.ride.totals.avg_power(), Some(2000), "first 400 ms");
 }
 
@@ -903,6 +907,182 @@ fn one_turn_after_a_long_auto_pause_is_not_a_lost_sensor() {
             1,
             false,
         );
-        assert_eq!(runtime.ride.recorder.status(), Status::Paused, "{at}");
+        assert_eq!(runtime.ride.internal.status(), Status::Paused, "{at}");
     }
+}
+
+/// In-memory bulk media whose writes can be made to fail.
+struct FlakyBulk {
+    sectors: std::collections::BTreeMap<u64, [u8; 512]>,
+    fail: bool,
+}
+
+impl device_api::bulk::ReadWrite for FlakyBulk {
+    fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
+        Ok(device_api::bulk::OwnedInfo {
+            start_sector: 0,
+            sectors: 16 + 10_000,
+            sector_size: 512,
+        })
+    }
+    fn owned_read(
+        &mut self,
+        index: u64,
+        out: &mut [u8; 512],
+    ) -> Result<(), device_api::bulk::Error> {
+        *out = self.sectors.get(&index).copied().unwrap_or([0; 512]);
+        Ok(())
+    }
+    fn owned_write(&mut self, index: u64, data: &[u8; 512]) -> Result<(), device_api::bulk::Error> {
+        if self.fail {
+            return Err(device_api::bulk::Error::Failed);
+        }
+        self.sectors.insert(index, *data);
+        Ok(())
+    }
+}
+
+fn tick_with(runtime: &mut Runtime, journal: &mut Journal, bulk: &mut FlakyBulk, now: u64) {
+    runtime.tick(
+        journal,
+        bulk,
+        now,
+        &mut Radio::new(),
+        &mut Absent,
+        Observations {
+            position: &Absent,
+            network_online: false,
+            input: &Absent,
+            physical: no_physical_sensors(),
+        },
+    );
+}
+
+#[test]
+fn a_ride_moving_to_internal_flash_counts_as_active_work() {
+    let mut journal = Journal::erased();
+    let mut bulk = FlakyBulk {
+        sectors: std::collections::BTreeMap::new(),
+        fail: false,
+    };
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut now = 0;
+    while runtime.ride.internal.status() == Status::Scanning
+        || runtime.ride.bulk.status() == Status::Scanning
+    {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    let mut out = String::new();
+    assert_eq!(
+        runtime.command("RIDE BULK INIT", &mut journal, &mut bulk, now, &mut out),
+        "ACCEPTED"
+    );
+    while runtime.ride.bulk.status() != Status::Ready {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    // Reading the status consumes the INIT completion.
+    runtime.command("RIDE BULK STATUS", &mut journal, &mut bulk, now, &mut out);
+    assert_eq!(
+        runtime.command("RIDE START", &mut journal, &mut bulk, now, &mut out),
+        "ACCEPTED"
+    );
+    while runtime.ride.bulk.status() != Status::Recording {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    bulk.fail = true;
+    let mut window = false;
+    while runtime.ride.internal.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        assert!(now < 60_000, "the continuation never started");
+        if runtime.ride.bulk.status() == Status::Error
+            && runtime.ride.internal.status() != Status::Recording
+        {
+            // The internal start is queued but not yet written: a terminal
+            // shutdown or sleep must still see active work.
+            window = true;
+            assert!(runtime.recording(), "at {now} ms");
+        }
+    }
+    assert!(window, "no tick between the failure and the continuation");
+    assert!(runtime.recording());
+}
+
+#[test]
+fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
+    let mut journal = Journal::erased();
+    let mut bulk = FlakyBulk {
+        sectors: std::collections::BTreeMap::new(),
+        fail: false,
+    };
+    let mut out = String::new();
+    // An internal ride is open when the power fails; the MMC holds a store.
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut now = 0;
+    while runtime.ride.internal.status() == Status::Scanning
+        || runtime.ride.bulk.status() == Status::Scanning
+    {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert_eq!(
+        runtime.command("RIDE BULK INIT", &mut journal, &mut bulk, now, &mut out),
+        "ACCEPTED"
+    );
+    while runtime.ride.bulk.status() != Status::Ready {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    runtime.command("RIDE BULK STATUS", &mut journal, &mut bulk, now, &mut out);
+    assert_eq!(
+        runtime.command(
+            "RIDE INTERNAL START",
+            &mut journal,
+            &mut bulk,
+            now,
+            &mut out
+        ),
+        "ACCEPTED"
+    );
+    while now < 10_000 {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+
+    // After the restart the MMC is ready first, and a ride starts there.
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut now = 0;
+    while runtime.ride.bulk.status() == Status::Scanning {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert_eq!(runtime.ride.internal.status(), Status::Scanning);
+    assert_eq!(
+        runtime.command("RIDE START", &mut journal, &mut bulk, now, &mut out),
+        "ACCEPTED"
+    );
+    while runtime.ride.bulk.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    // The MMC fails while internal flash still scans and has the interrupted
+    // ride to close: the continuation waits for both, then starts.
+    bulk.fail = true;
+    while runtime.ride.bulk.status() != Status::Error {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert_eq!(runtime.ride.internal.status(), Status::Scanning);
+    let mut recovered = false;
+    while runtime.ride.internal.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        recovered |= runtime.ride.internal.status() == Status::Recovered;
+        assert!(now < 300_000, "the continuation never started");
+    }
+    assert!(
+        recovered,
+        "the interrupted internal ride was recovered first"
+    );
+    assert!(runtime.ride.moved);
+    assert_eq!(runtime.ride.internal.completed(), 1);
 }

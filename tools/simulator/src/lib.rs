@@ -1,5 +1,6 @@
 pub mod ant;
 pub mod artifacts;
+pub mod bulk;
 pub mod devices;
 #[cfg(feature = "cycling")]
 mod flows;

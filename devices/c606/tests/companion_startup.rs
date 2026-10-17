@@ -29,13 +29,7 @@ fn report(startup: &mut startup::Startup, reason: u8, at: u64) {
 
 fn prepare(startup: &mut startup::Startup, result: Result<usize, ()>) {
     startup.begin(0);
-    assert!(startup.probe(
-        State::default().snapshot(3000, 5000),
-        3000,
-        true,
-        true,
-        false
-    ));
+    assert!(startup.probe(State::default().snapshot(3000, 5000), 3000, true, 0, false));
     startup.submitted(result, 3100);
 }
 
@@ -203,9 +197,9 @@ fn passive_healthy_startup_preserves_running_companion() {
     let mut startup = startup::Startup::new();
     startup.begin(100);
     assert!(!startup.ant_allowed());
-    assert!(!startup.probe(sample(200), 200, true, true, false));
+    assert!(!startup.probe(sample(200), 200, true, 0, false));
     startup.begin(2000);
-    assert!(!startup.probe(sample(3100), 3100, true, true, false));
+    assert!(!startup.probe(sample(3100), 3100, true, 0, false));
     assert_eq!(startup.status(), Startup::AlreadyRunning);
     assert!(startup.ant_allowed());
     startup.submitted(Ok(16), 3200);
@@ -222,8 +216,8 @@ fn partial_invalid_sensor_or_radio_traffic_suppresses_ack() {
             startup.report(16, &[0xf1, 2], 200);
         }
         let empty = State::default().snapshot(200, 5000);
-        assert!(!startup.probe(empty, 200, true, true, radio));
-        assert!(!startup.probe(empty, 3100, true, true, false));
+        assert!(!startup.probe(empty, 200, true, 0, radio));
+        assert!(!startup.probe(empty, 3100, true, 0, false));
         assert_eq!(startup.status(), Startup::RunningDegraded);
         assert!(startup.ant_allowed());
     }
@@ -231,8 +225,8 @@ fn partial_invalid_sensor_or_radio_traffic_suppresses_ack() {
     startup.begin(100);
     let mut partial = sample(200);
     partial.motion[1] = Observation::Unavailable;
-    assert!(!startup.probe(partial, 200, true, true, false));
-    assert!(!startup.probe(partial, 3100, true, true, false));
+    assert!(!startup.probe(partial, 200, true, 0, false));
+    assert!(!startup.probe(partial, 3100, true, 0, false));
     assert_eq!(startup.status(), Startup::RunningDegraded);
 }
 
@@ -241,26 +235,109 @@ fn cold_silent_companion_gets_one_ack_without_waiting_for_battery_reports() {
     let mut startup = startup::Startup::new();
     let empty = State::default().snapshot(0, 5000);
     startup.begin(0);
-    assert!(!startup.probe(empty, 2999, false, true, false));
+    assert!(!startup.probe(empty, 2999, false, 0, false));
     // A cold companion can withhold battery/power reports until this acknowledgment.
-    assert!(startup.probe(empty, 3000, false, true, false));
+    assert!(startup.probe(empty, 3000, false, 0, false));
     assert_eq!(startup.status(), Startup::Pending);
-    assert!(!startup.probe(empty, 3001, false, true, false));
+    assert!(!startup.probe(empty, 3001, false, 0, false));
     startup.submitted(Ok(16), 3001);
-    assert!(!startup.probe(empty, 6000, false, true, false));
-    assert!(!startup.probe(empty, 6001, true, true, false));
+    assert!(!startup.probe(empty, 6000, false, 0, false));
+    assert!(!startup.probe(empty, 6001, true, 0, false));
     assert_eq!(startup.status(), Startup::Waiting);
 }
 
 #[test]
-fn transient_transport_loss_forbids_ack() {
+fn transient_transport_loss_forbids_ack_until_a_clean_window() {
     let mut startup = startup::Startup::new();
     let empty = State::default().snapshot(0, 5000);
     startup.begin(0);
-    assert!(!startup.probe(empty, 100, false, false, false));
-    assert!(!startup.probe(empty, 3000, true, true, false));
+    // The fault count is cumulative: one fault at 100 ms, none after it.
+    assert!(!startup.probe(empty, 0, false, 0, false));
+    assert!(!startup.probe(empty, 100, false, 1, false));
+    // The window that saw it is observed again, never acknowledged.
+    assert!(!startup.probe(empty, 3000, true, 1, false));
+    assert_eq!(startup.status(), Startup::Probing);
+    assert!(!startup.probe(empty, 8999, true, 1, false));
+    // The second, six-second window is clean: a silent companion gets its ACK.
+    assert!(startup.probe(empty, 9000, true, 1, false));
+    assert_eq!(startup.status(), Startup::Pending);
+}
+
+/// Probe every 100 ms; `faults(now)` is the cumulative fault count.
+fn run(
+    startup: &mut startup::Startup,
+    span: core::ops::Range<u64>,
+    snapshot: impl Fn(u64) -> Snapshot,
+    faults: impl Fn(u64) -> u32,
+) -> bool {
+    let mut acknowledge = false;
+    for now in span.step_by(100) {
+        acknowledge |= startup.probe(snapshot(now), now, true, faults(now), false);
+    }
+    acknowledge
+}
+
+#[test]
+fn faults_counted_before_the_check_do_not_taint_it() {
+    let mut startup = startup::Startup::new();
+    startup.begin(0);
+    assert!(!run(&mut startup, 0..3200, sample, |_| 1));
+    assert_eq!(startup.status(), Startup::AlreadyRunning);
+}
+
+#[test]
+fn one_fault_while_a_running_companion_is_checked_is_not_fatal() {
+    // Observed on hardware: a software restart, one UART fault during the check.
+    let mut startup = startup::Startup::new();
+    startup.begin(0);
+    let faults = |now| u32::from(now >= 500);
+    assert!(!run(&mut startup, 0..3100, sample, faults));
+    assert_eq!(startup.status(), Startup::Probing);
+    assert!(!run(&mut startup, 3100..9300, sample, faults));
+    assert_eq!(startup.status(), Startup::AlreadyRunning);
+}
+
+#[test]
+fn a_fault_on_the_retry_tick_belongs_to_the_window_it_ends() {
+    // The first window ends at 3000 ms; a fault counted on that very tick
+    // retries, and the next window, clean from then on, finds the companion.
+    let mut startup = startup::Startup::new();
+    startup.begin(0);
+    let faults = |now| u32::from(now >= 3000);
+    assert!(!run(&mut startup, 0..3100, sample, faults));
+    assert_eq!(startup.status(), Startup::Probing);
+    assert!(!run(&mut startup, 3100..9100, sample, faults));
+    assert_eq!(startup.status(), Startup::AlreadyRunning);
+}
+
+#[test]
+fn faults_on_every_retry_tick_still_end_with_a_clean_window() {
+    // A fault on each window's last tick, then none: four retries would give
+    // up, so the counts must not leak into the windows they end.
+    let mut startup = startup::Startup::new();
+    startup.begin(0);
+    // Windows of 3, 6 and 12 seconds end at 3, 9 and 21 s; the fourth is clean.
+    let ends = [3000, 9000, 21_000];
+    let faults = |now: u64| ends.iter().filter(|end| now >= **end).count() as u32;
+    assert!(!run(&mut startup, 0..21_100, sample, faults));
+    assert_eq!(startup.status(), Startup::Probing);
+    assert!(!run(&mut startup, 21_100..45_100, sample, faults));
+    assert_eq!(startup.status(), Startup::AlreadyRunning);
+}
+
+#[test]
+fn persistent_transport_faults_give_up_after_bounded_windows() {
+    let mut startup = startup::Startup::new();
+    let empty = State::default().snapshot(0, 5000);
+    startup.begin(0);
+    // A new fault every tick: windows of 3, 6, 12 and 24 seconds.
+    let faults = |now: u64| (now / 100) as u32;
+    assert!(!run(&mut startup, 0..44_900, |_| empty, faults));
+    assert_eq!(startup.status(), Startup::Probing);
+    assert!(!run(&mut startup, 44_900..45_300, |_| empty, faults));
     assert_eq!(startup.status(), Startup::Unavailable);
-    assert!(!startup.probe(empty, 6000, true, true, false));
+    // A companion it could not observe cleanly is never acknowledged.
+    assert!(!run(&mut startup, 45_300..60_000, |_| empty, faults));
 }
 
 #[test]
@@ -272,11 +349,11 @@ fn silent_sensors_allow_exactly_one_guarded_recovery_dispatch() {
     startup.begin(100);
     startup.report(16, &[0xf1, 4], 200);
     startup.report(1, &[0xf1, 1], 200);
-    assert!(!startup.probe(empty, 3099, true, true, false));
-    assert!(startup.probe(empty, 3100, true, true, false));
+    assert!(!startup.probe(empty, 3099, true, 0, false));
+    assert!(startup.probe(empty, 3100, true, 0, false));
     assert_eq!(startup.status(), Startup::Pending);
     assert!(!startup.ant_allowed());
-    assert!(!startup.probe(empty, 3200, true, true, false));
+    assert!(!startup.probe(empty, 3200, true, 0, false));
     startup.submitted(Ok(16), 3200);
     report(&mut startup, 4, 3300);
     assert!(!startup.ant_allowed());
@@ -314,12 +391,12 @@ fn charging_allows_one_wake_then_requires_new_operating_reason_and_sample_progre
         let empty = State::default().snapshot(0, 5000);
         let mut startup = charging_startup();
         startup.request_wake().unwrap();
-        assert!(!startup.wake(empty, false, true, false));
+        assert!(!startup.wake(empty, false, 0, false));
         assert_eq!(startup.status(), Startup::Charging);
-        assert!(startup.wake(empty, true, true, false));
+        assert!(startup.wake(empty, true, 0, false));
         assert_eq!(startup.status(), Startup::WakePending);
         assert!(!startup.ant_allowed());
-        assert!(!startup.wake(empty, true, true, false));
+        assert!(!startup.wake(empty, true, 0, false));
         startup.wake_submitted(Ok(16), 3500);
         startup.observe(sample(3510), 3510);
         startup.observe(sample(3520), 3520);
@@ -338,7 +415,7 @@ fn charging_allows_one_wake_then_requires_new_operating_reason_and_sample_progre
         startup.observe(sample(3630), 3630);
         assert_eq!(startup.status(), Startup::Ready);
         assert!(startup.ant_allowed());
-        assert!(!startup.wake(empty, true, true, false));
+        assert!(!startup.wake(empty, true, 0, false));
     }
 }
 
@@ -348,7 +425,7 @@ fn wake_missing_reason_or_partial_submission_never_retries_or_claims_ready() {
     for result in [Err(()), Ok(0), Ok(15), Ok(16)] {
         let mut startup = charging_startup();
         startup.request_wake().unwrap();
-        assert!(startup.wake(empty, true, true, false));
+        assert!(startup.wake(empty, true, 0, false));
         startup.wake_submitted(result, 3500);
         // Repeated completion calls cannot restart or repair a failed submission.
         startup.wake_submitted(Ok(16), 4000);
@@ -365,7 +442,7 @@ fn wake_missing_reason_or_partial_submission_never_retries_or_claims_ready() {
             }
         );
         assert!(!startup.ant_allowed());
-        assert!(!startup.wake(empty, true, true, false));
+        assert!(!startup.wake(empty, true, 0, false));
         report(&mut startup, 5, 14000);
         startup.observe(sample(14010), 14010);
         startup.observe(sample(14020), 14020);
@@ -386,16 +463,20 @@ fn existing_sensor_or_radio_activity_and_transport_loss_suppress_wake() {
             2 => startup.report(16, &[0xf1, 3], 3210),
             _ => {}
         }
-        assert!(!startup.wake(observation, true, source != 4, source == 3));
+        let faults = u32::from(source == 4);
+        assert!(!startup.wake(observation, true, faults, source == 3));
         assert_eq!(
             startup.status(),
             if source == 4 {
-                Startup::Unavailable
+                // A fault postpones the decision; it is not final.
+                Startup::Charging
             } else {
                 Startup::RunningDegraded
             }
         );
-        assert!(!startup.wake(empty, true, true, false));
+        // A fault-free tick lets the authorized wake proceed exactly once.
+        assert_eq!(startup.wake(empty, true, faults, false), source == 4);
+        assert!(!startup.wake(empty, true, faults, false));
     }
 }
 
@@ -406,7 +487,7 @@ fn sensor_activity_while_waiting_for_ack_suppresses_later_wake() {
     startup.report(16, &[0xf1, 2], 3150);
     report(&mut startup, 4, 3200);
     startup.request_wake().unwrap();
-    assert!(!startup.wake(State::default().snapshot(3201, 5000), true, true, false));
+    assert!(!startup.wake(State::default().snapshot(3201, 5000), true, 0, false));
     assert_eq!(startup.status(), Startup::RunningDegraded);
 }
 
@@ -414,6 +495,6 @@ fn sensor_activity_while_waiting_for_ack_suppresses_later_wake() {
 fn charging_standby_does_not_automatically_return_to_normal_operation() {
     let mut startup = charging_startup();
     let empty = State::default().snapshot(3201, 5000);
-    assert!(!startup.wake(empty, true, true, false));
+    assert!(!startup.wake(empty, true, 0, false));
     assert_eq!(startup.status(), Startup::Charging);
 }

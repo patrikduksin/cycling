@@ -12,13 +12,25 @@ pub fn wake_frame() -> [u8; 16] {
     crate::drivers::companion::command(16, [0xe2, 2, 0, 0, 0, 7, 0, 0])
 }
 
+/// The startup check watches companion traffic this long before deciding.
+const PROBE_WINDOW_MS: u64 = 3000;
+/// Windows observed again, each twice as long, after a transport fault
+/// before the companion is reported unavailable.
+const PROBE_RETRIES: u8 = 3;
+
 pub struct Startup {
     status: Phase,
     started_ms: u64,
     first: Option<[u64; 3]>,
     reason: Option<u8>,
     activity: bool,
+    /// A transport fault was counted during the current probe window.
     transport_lost: bool,
+    /// Transport fault count when the current observation began; only
+    /// faults after it make an observation unreliable.
+    faults_at: Option<u32>,
+    /// Probe windows restarted after a transport fault.
+    retries: u8,
     wake_requested: bool,
     wake_authorized: bool,
 }
@@ -37,6 +49,8 @@ impl Startup {
             reason: None,
             activity: false,
             transport_lost: false,
+            faults_at: None,
+            retries: 0,
             wake_requested: false,
             wake_authorized: false,
         }
@@ -56,21 +70,31 @@ impl Startup {
         )
     }
 
+    /// Whether transport faults were counted since the current observation
+    /// began. `faults` is the cumulative UART, CRC and framing-loss count,
+    /// each fault counted in full on the tick it occurs; a fault spread over
+    /// two ticks would taint the window that follows it.
+    fn faulted(&mut self, faults: u32) -> bool {
+        faults != *self.faults_at.get_or_insert(faults)
+    }
+
     /// Observe before considering a single startup acknowledgment. Any sensor
     /// or radio traffic preserves the running companion, even if degraded.
+    /// A transport fault hides traffic, so the window is observed again a
+    /// bounded number of times before the companion is called unavailable.
     pub fn probe(
         &mut self,
         sample: device_api::sensors::Snapshot,
         now: u64,
         _bridge_fresh: bool,
-        transport_clean: bool,
+        faults: u32,
         radio_seen: bool,
     ) -> bool {
         if self.status != Phase::Probing {
             return false;
         }
         self.activity |= radio_seen;
-        self.transport_lost |= !transport_clean;
+        self.transport_lost |= self.faulted(faults);
         if !matches!(sample.pressure, Observation::Unavailable)
             || sample
                 .motion
@@ -80,10 +104,20 @@ impl Startup {
             self.activity = true;
         }
         let advancing = self.advancing(sample, now);
-        if now.saturating_sub(self.started_ms) < 3000 {
+        if now.saturating_sub(self.started_ms) < PROBE_WINDOW_MS << self.retries {
+            return false;
+        }
+        if self.transport_lost && self.retries < PROBE_RETRIES {
+            self.retries += 1;
+            self.started_ms = now;
+            self.first = None;
+            self.transport_lost = false;
+            self.faults_at = Some(faults);
+            log::warn!(target: "companion", "startup check saw a transport fault; observing again {}/{}", self.retries, PROBE_RETRIES);
             return false;
         }
         if self.transport_lost {
+            log::warn!(target: "companion", "startup check unavailable after {} transport faults", PROBE_RETRIES + 1);
             self.status = Phase::Unavailable;
         } else if self.activity {
             self.status = if advancing {
@@ -110,12 +144,13 @@ impl Startup {
     }
 
     /// Charging standby is stable until an explicit request or physical startup.
-    /// Never reinitialize a companion that has shown sensor or radio activity.
+    /// Never reinitialize a companion that has shown sensor or radio activity,
+    /// and never decide while transport faults are being counted.
     pub fn wake(
         &mut self,
         sample: device_api::sensors::Snapshot,
         bridge_fresh: bool,
-        transport_clean: bool,
+        faults: u32,
         radio_seen: bool,
     ) -> bool {
         if !self.wake_authorized
@@ -131,11 +166,11 @@ impl Startup {
                 .motion
                 .iter()
                 .any(|value| !matches!(value, Observation::Unavailable));
-        self.transport_lost |= !transport_clean;
         if self.activity {
             self.status = Phase::RunningDegraded;
-        } else if self.transport_lost {
-            self.status = Phase::Unavailable;
+        } else if self.faulted(faults) {
+            // Traffic may have been missed; wait for a fault-free tick.
+            self.faults_at = Some(faults);
         } else if bridge_fresh {
             self.wake_requested = true;
             self.status = Phase::WakePending;

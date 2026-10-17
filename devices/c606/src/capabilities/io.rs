@@ -170,7 +170,9 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                 }
             },
         );
-        super::sensors::tick(now);
+        // Startup compares fault counts between ticks: give it this tick's,
+        // counted together with the framing losses decoded above.
+        super::sensors::tick(now, state.uart_errors.saturating_add(decoder.bad_crc));
         super::ant::tick(now);
         super::sound::tick(now);
         super::position_control::tick(now);

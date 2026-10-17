@@ -245,6 +245,12 @@ pub fn execute(
                 system.press_frame_max_ms,
                 system.press_frames
             );
+            let (frame_us, wait_us, frame_max_us) =
+                crate::device::drivers::display::TIMING.snapshot();
+            let _ = write!(
+                output,
+                "display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} "
+            );
             let logs = crate::logging::stats();
             let _ = write!(
                 output,

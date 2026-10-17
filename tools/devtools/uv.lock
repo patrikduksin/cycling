@@ -186,6 +186,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fitdecode" },
+    { name = "garmin-fit-sdk" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -195,6 +197,8 @@ requires-dist = [{ name = "esptool", specifier = "==5.4.0" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fitdecode", specifier = "==0.11.0" },
+    { name = "garmin-fit-sdk", specifier = "==21.218.0" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.17.0" },
 ]
@@ -239,6 +243,24 @@ dependencies = [
     { name = "rich-click" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2c/43/1a2ae2dd8ae97bf1ec9991db097e52626d35b57d242f9687c9314eac5b57/esptool-5.4.0.tar.gz", hash = "sha256:fd756598db0a26c9975fa18511b08687c54bf2ce7322ede80cf1f5117dad1f50", size = 513549, upload-time = "2026-09-02T10:32:32.76Z" }
+
+[[package]]
+name = "fitdecode"
+version = "0.11.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/19/1bde056f443d8ce890dbc0f0bd8a216cc9ebfda4221619767f80cf1835e2/fitdecode-0.11.0.tar.gz", hash = "sha256:52d920e50eaa76eb065b20bfd4e42f72195e894a079098dacc1cafa908cd4b83", size = 107149, upload-time = "2025-08-06T08:08:42.105Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/7b/75829f9b77b2546f955ec265de10de993939bf3218b5d957ca79803a2d28/fitdecode-0.11.0-py3-none-any.whl", hash = "sha256:a1bdb9b4d1e9ebac0001fc58c22fe07a3f9967ca4e13258c6ef99cdb8d697a78", size = 109961, upload-time = "2025-08-06T08:08:39.033Z" },
+]
+
+[[package]]
+name = "garmin-fit-sdk"
+version = "21.218.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/b2/c7e1984d828332e7d36d75044f91f2113de246c206931d185e5ed224fc62/garmin_fit_sdk-21.218.0.tar.gz", hash = "sha256:70dc8c39cec3483871f966415ee786a12e121af2a1729b5719f430078d2de495", size = 216076, upload-time = "2026-10-06T17:30:49.952Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/82/2d2c84c316186bb0cd055d96068395705e8d4d70eeb0085943b5cffd8895/garmin_fit_sdk-21.218.0-py3-none-any.whl", hash = "sha256:7b912cde3b0b8f4acd7b543c202d15ac94f6b37b58eab5bad2186ca787b9ab37", size = 238238, upload-time = "2026-10-06T17:30:48.026Z" },
+]
 
 [[package]]
 name = "iniconfig"

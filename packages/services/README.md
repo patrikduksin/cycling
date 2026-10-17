@@ -12,6 +12,8 @@ board, the shell or the cycling application.
   validation and clock synchronization.
 - `storage` owns the two-sector journal format. `bulk` validates explicitly owned
   media regions. Neither module owns physical flash addresses.
+- `fit` writes Garmin FIT files as a stream: header, definitions, records and
+  CRC, with no profile policy. The application chooses messages and fields.
 - `input` owns bounded edge delivery and cancellation after loss. `sound` tracks
   request submission and elapsed time without claiming acoustic acknowledgment.
 

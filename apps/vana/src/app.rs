@@ -26,6 +26,7 @@ mod sensor_links;
 #[cfg(test)]
 mod tests;
 mod timing;
+mod training;
 
 pub use power::{
     AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
@@ -55,6 +56,7 @@ pub struct Runtime {
     preferences: preferences::Preferences,
     power: power::Power,
     timing: timing::Timing,
+    training: training::Training,
     cues: cues::Cues,
     history: history::History,
     night: night::Night,
@@ -78,6 +80,7 @@ impl Runtime {
             preferences: preferences::Preferences::default(),
             power: power::Power::default(),
             timing: timing::Timing::default(),
+            training: training::Training::default(),
             cues: cues::Cues::default(),
             history: history::History::default(),
             night: night::Night::default(),

@@ -1,0 +1,12 @@
+{
+  "name": "CADENCE PYRAMID",
+  "steps": [
+    {"intensity": "warmup", "minutes": 10, "ftp": [50, 65]},
+    {"intensity": "work", "minutes": 2, "cadence": [90, 95]},
+    {"intensity": "work", "minutes": 2, "cadence": [100, 105]},
+    {"intensity": "work", "minutes": 1, "cadence": [110, 120], "note": "SMOOTH"},
+    {"intensity": "recovery", "open": true, "note": "MARK WHEN READY"},
+    {"intensity": "work", "minutes": 10, "watts": [180, 200]},
+    {"intensity": "cooldown", "minutes": 5}
+  ]
+}

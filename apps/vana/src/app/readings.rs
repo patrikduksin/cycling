@@ -387,6 +387,9 @@ impl Runtime {
             if let Some(event) = self.ride.count(now, step, &sample, pressure, &profile) {
                 self.ride_climb_event(event);
             }
+            if !self.ride.workout_events.is_empty() {
+                self.workout_events(now);
+            }
         }
         self.readings.power_3s_watts = self.readings.power_3s.update(now, sample.power_watts);
         self.readings.live = sample;

@@ -1,0 +1,15 @@
+{
+  "name": "OVER UNDERS 3X3",
+  "steps": [
+    {"intensity": "warmup", "minutes": 12, "ftp": [50, 70]},
+    {
+      "repeat": 3,
+      "steps": [
+        {"intensity": "work", "minutes": 2, "ftp": [92, 96], "note": "UNDER, SEATED"},
+        {"intensity": "work", "minutes": 1, "ftp": [104, 108], "note": "OVER"},
+        {"intensity": "recovery", "minutes": 4, "ftp": [45, 55]}
+      ]
+    },
+    {"intensity": "cooldown", "km": 3, "heart_zone": 1}
+  ]
+}

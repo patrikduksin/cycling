@@ -2801,6 +2801,331 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
     sim.checkpoint("still recording after taps");
 }
 
+// Structured training: workouts, the player, uploads and both FTP tests,
+// ridden with simulated power.
+
+/// A rider with power and speed paired, riding 30 km/h at an easy 120 W.
+fn training_rider() -> Sim {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(30.0, 120.0, 0.0, 90.0);
+    sim
+}
+
+/// The device's beeps since `from` (uptime), as pattern ids.
+fn beeps_since(sim: &Sim, from: u64) -> Vec<u8> {
+    sim.device
+        .speaker
+        .played
+        .iter()
+        .filter(|(at, _)| *at >= from)
+        .map(|(_, id)| *id)
+        .collect()
+}
+
+/// The step's target band from `WORKOUT STATUS`.
+fn target(sim: &mut Sim) -> Option<(f64, f64)> {
+    let status = sim.workout();
+    let (low, high) = status.get("target")?.split_once('-')?;
+    Some((low.parse().ok()?, high.parse().ok()?))
+}
+
+/// Ride `seconds`, each second at the watts `effort` picks for the target.
+fn follow(sim: &mut Sim, seconds: u64, effort: impl Fn(Option<(f64, f64)>) -> f64) {
+    for _ in 0..seconds {
+        let watts = effort(target(sim));
+        sim.world().power_w = watts;
+        sim.advance(1000);
+    }
+}
+
+/// The middle of the band, or an easy spin without one.
+fn on_target(band: Option<(f64, f64)>) -> f64 {
+    band.map_or(150.0, |(low, high)| ((low + high) / 2.0).round())
+}
+
+/// Ride to the start of the next step, following `effort`.
+#[track_caller]
+fn ride_step(sim: &mut Sim, effort: impl Fn(Option<(f64, f64)>) -> f64) {
+    let step = sim.workout()["step"].clone();
+    for _ in 0..4000 {
+        follow(sim, 1, &effort);
+        let status = sim.workout();
+        if status["step"] != step || status["done"] == "1" {
+            return;
+        }
+    }
+    panic!("step {step} never ended");
+}
+
+/// MARK on a recording workout, then wait out the lap debounce.
+fn next_step(sim: &mut Sim) {
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(3));
+}
+
+#[test]
+fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
+    let mut sim = training_rider();
+    sim.home("TRAIN");
+    sim.expect_text("WORKOUTS");
+    sim.expect_text("FREE RIDE");
+    sim.checkpoint("workout picker");
+    go_home(&mut sim);
+    sim.choose_workout("VO2 MAX 5X3");
+    sim.checkpoint("workout ready to start");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    // The workout page leads the ride pages.
+    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    sim.expect_text("STEP 1/12");
+
+    // Warm up to its last seconds: three countdown beeps, then the step's.
+    follow(&mut sim, 12 * 60 - 8, on_target);
+    assert_eq!(sim.workout()["step"], "1/12");
+    let before = sim.now();
+    follow(&mut sim, 5, on_target);
+    sim.checkpoint("warm up counting down");
+    ride_step(&mut sim, on_target);
+    assert_eq!(sim.workout()["step"], "2/12");
+    sim.advance(500);
+    let beeps = beeps_since(&sim, before);
+    // Low notes count down; two high notes start the step.
+    assert_eq!(
+        beeps,
+        [21, 21, 21, 10, 10],
+        "three countdown beeps, then the step"
+    );
+    sim.expect_text("WORK 1/5 3:00");
+    sim.checkpoint("next step announced");
+    assert_eq!(sim.workout()["laps"], "1", "the step closed a lap");
+
+    // On target: 106-120 % of 215 W.
+    follow(&mut sim, 20, on_target);
+    assert_eq!(sim.workout()["target"], "228-258");
+    assert_eq!(sim.screen().run("ON TARGET").unwrap().color, GREEN);
+    sim.checkpoint("interval on target");
+    // The main page draws the same target under its power gauge.
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("2/5"));
+    sim.checkpoint("main page with the target band");
+    sim.ride_page("1/5");
+    ride_step(&mut sim, on_target);
+    ride_step(&mut sim, on_target);
+
+    // The second interval ridden too easy reads UNDER, in amber.
+    assert_eq!(sim.workout()["step"], "4/12");
+    follow(&mut sim, 20, |band| band.unwrap().0 * 0.8);
+    assert_eq!(sim.screen().run("UNDER").unwrap().color, AMBER);
+    sim.checkpoint("interval under target");
+    ride_step(&mut sim, |band| band.unwrap().0 * 0.8);
+
+    // MARK ends the recovery early: its lap closes and the next step starts.
+    follow(&mut sim, 30, on_target);
+    let laps: u32 = sim.workout()["laps"].parse().unwrap();
+    next_step(&mut sim);
+    let status = sim.workout();
+    assert_eq!(status["step"], "6/12");
+    assert_eq!(status["laps"], (laps + 1).to_string(), "one lap, not two");
+    assert_eq!(status["skipped"], "1");
+
+    // A tap on the time left adds a minute to the interval.
+    follow(&mut sim, 10, on_target);
+    let left: u64 = sim.workout()["left_s"].parse().unwrap();
+    let y = vana::screens::ride::EXTEND_ROWS.start as u16 + 12;
+    sim.tap(120, y);
+    sim.expect_text("+1 MIN");
+    let extended: u64 = sim.workout()["left_s"].parse().unwrap();
+    assert!(extended >= left + 59, "{left} s then {extended} s");
+    assert_eq!(
+        sim.ride_state(),
+        "recording",
+        "touch never controls the ride"
+    );
+    sim.checkpoint("interval extended by a tap");
+
+    // The rest of the workout, then free riding.
+    while sim.workout()["done"] == "0" {
+        ride_step(&mut sim, on_target);
+    }
+    sim.expect_text("WORKOUT DONE");
+    sim.checkpoint("workout done");
+    let status = sim.workout();
+    assert_eq!(status["laps"], "12", "one lap per step");
+    let in_pct: i32 = status["in_pct"].parse().unwrap();
+    assert!((60..100).contains(&in_pct), "{in_pct}% on target");
+    sim.stop_ride();
+    sim.checkpoint("workout ride saved");
+}
+
+#[test]
+fn twenty_minute_ftp_test_offers_and_saves_the_new_ftp() {
+    let mut sim = training_rider();
+    sim.choose_workout("FTP TEST 20 MIN");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    // Skip to the twenty minutes with MARK.
+    follow(&mut sim, 30, on_target);
+    sim.world().power_w = 260.0;
+    for _ in 0..10 {
+        next_step(&mut sim);
+    }
+    assert_eq!(sim.workout()["step"], "11/12");
+    sim.expect_text("ALL OUT");
+    follow(&mut sim, 5 * 60, |_| 260.0);
+    sim.expect_text("AVG 260 W");
+    sim.checkpoint("twenty minutes all out");
+    let before = sim.now();
+    ride_step(&mut sim, |_| 260.0);
+    // 95 % of 260 W.
+    sim.wait_for("NEW FTP", seconds(2)).unwrap();
+    sim.expect_text("247");
+    sim.expect_text("NOW 215 W");
+    sim.expect_text("SAVE?");
+    let beeps = beeps_since(&sim, before);
+    assert!(beeps.contains(&10), "the step cue: {beeps:?}");
+    assert_eq!(
+        sim.ride_state(),
+        "recording",
+        "the ride goes on under the sheet"
+    );
+    sim.checkpoint("new FTP offered");
+    sim.press(Button::BottomRight);
+    sim.expect_text("FTP 247 W SAVED");
+    sim.checkpoint("new FTP saved");
+    assert_eq!(
+        sim.ride_state(),
+        "recording",
+        "ACT on the sheet does not pause"
+    );
+    let (_, profile) = sim.command("PROFILE");
+    assert!(profile.starts_with("ftp=247 "), "{profile}");
+    // The cool down now targets the new FTP: 40-55 % of 247 W.
+    assert_eq!(sim.workout()["target"], "99-136");
+    sim.stop_ride();
+}
+
+#[test]
+fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
+    let mut sim = training_rider();
+    sim.choose_workout("FTP RAMP TEST");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    follow(&mut sim, 20, on_target);
+    next_step(&mut sim);
+    assert_eq!(sim.workout()["step"], "2/3");
+    // The rider holds every minute up to 300 W, then fades.
+    let effort = |band: Option<(f64, f64)>| {
+        let low = band.map_or(100.0, |(low, _)| low);
+        if low <= 300.0 { low + 5.0 } else { 250.0 }
+    };
+    follow(&mut sim, 5 * 60 + 30, effort);
+    sim.expect_text("HOLD 200 W");
+    sim.checkpoint("ramp at 200 W");
+    let before = sim.now();
+    ride_step(&mut sim, effort);
+    // 75 % of the best minute, 305 W.
+    sim.wait_for("NEW FTP", seconds(2)).unwrap();
+    sim.expect_text("229");
+    let beeps = beeps_since(&sim, before);
+    assert!(beeps.contains(&10), "the step cue: {beeps:?}");
+    sim.checkpoint("ramp result offered");
+    assert_eq!(sim.workout()["step"], "3/3", "cool down after the ramp");
+    sim.press(Button::TopLeft);
+    sim.expect_text("FTP KEPT 215 W");
+    assert_eq!(
+        sim.ride_state(),
+        "recording",
+        "BACK on the sheet neither laps nor stops"
+    );
+    let (_, profile) = sim.command("PROFILE");
+    assert!(profile.starts_with("ftp=215 "), "{profile}");
+    sim.stop_ride();
+}
+
+#[test]
+fn an_uploaded_workout_appears_in_the_picker_and_rides() {
+    use vana::workout::codec::encode;
+    use vana::workout::model::{Block, Intensity, Length, Step, Target, Workout};
+    const STEPS: &[Step] = &[
+        Step::new(
+            Intensity::Warmup,
+            Length::Time(300),
+            Target::Ftp { low: 50, high: 65 },
+        ),
+        Step::new(
+            Intensity::Work,
+            Length::Time(120),
+            Target::Ftp { low: 92, high: 96 },
+        ),
+        Step::new(
+            Intensity::Work,
+            Length::Time(60),
+            Target::Ftp {
+                low: 104,
+                high: 108,
+            },
+        ),
+        Step::new(
+            Intensity::Cooldown,
+            Length::Distance(2000),
+            Target::HeartZone(1),
+        ),
+    ];
+    const BLOCKS: &[Block] = &[Block {
+        first: 1,
+        len: 2,
+        count: 3,
+    }];
+    let workout = Workout::new("OVER UNDERS", STEPS, BLOCKS, None);
+    let bytes = encode(&workout);
+    let crc = firmware_services::checksum::crc32(&bytes);
+    let upload = |sim: &mut Sim, bytes: &[u8]| {
+        let (status, out) = sim.command(&format!("WORKOUT BEGIN 0 {} {crc:08x}", bytes.len()));
+        assert_eq!(status, "OK", "{out}");
+        for (i, chunk) in bytes.chunks(48).enumerate() {
+            let hex: String = chunk.iter().map(|b| format!("{b:02x}")).collect();
+            let (status, out) = sim.command(&format!("WORKOUT DATA {} {hex}", i * 48));
+            assert_eq!(status, "OK", "{out}");
+        }
+        sim.command("WORKOUT COMMIT")
+    };
+    let mut sim = training_rider();
+    // A transfer damaged on the way is refused and stores nothing.
+    let mut damaged = bytes.to_vec();
+    damaged[10] ^= 1;
+    assert_ne!(upload(&mut sim, &damaged).0, "OK");
+    let (_, list) = sim.command("WORKOUT LIST");
+    assert!(list.contains("slot0=-"), "{list}");
+    let (status, out) = upload(&mut sim, &bytes);
+    assert_eq!((status, out.as_str()), ("OK", "slot=0 name=OVER_UNDERS"));
+    sim.home("TRAIN");
+    for _ in 0..8 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("OVER UNDERS");
+    sim.expect_text("8 STEPS");
+    sim.checkpoint("uploaded workout in the picker");
+    go_home(&mut sim);
+    sim.choose_workout("OVER UNDERS");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    follow(&mut sim, 5, on_target);
+    next_step(&mut sim);
+    follow(&mut sim, 10, on_target);
+    assert_eq!(sim.workout()["step"], "2/8");
+    // 92-96 % of 215 W.
+    assert_eq!(sim.workout()["target"], "198-206");
+    sim.checkpoint("uploaded workout riding");
+    sim.stop_ride();
+    sim.done();
+    assert_eq!(
+        sim.workout()["workout"],
+        "none",
+        "the next ride is free again"
+    );
+}
+
 /// The whole ride lifecycle as a rider meets it: Ready, the start, a lap,
 /// pausing and paging, a change of mind at "End ride?", then saving, the
 /// summary pages and Done back Home.
@@ -2880,7 +3205,13 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.stop_ride();
     assert_eq!(sim.vana_page(), "summary");
     sim.expect_text("RIDE SAVED");
-    sim.expect_field("AVG W", "220");
+    // The second before 220 W was set rides at the lead-in power; where it
+    // falls in the sampling second moves the average by a watt.
+    let average = sim.screen().field("AVG W");
+    assert!(
+        matches!(average.as_deref(), Some("219" | "220")),
+        "AVG W {average:?}"
+    );
     sim.checkpoint("summary: ride saved");
     sim.swipe_next();
     sim.expect_field("NP W", "220");

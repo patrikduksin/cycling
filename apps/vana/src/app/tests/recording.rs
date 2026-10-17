@@ -113,6 +113,56 @@ fn a_recording_ride_writes_samples_until_finished() {
     assert!(!runtime.recording());
 }
 
+#[test]
+fn an_update_across_workout_steps_puts_each_part_in_its_steps_lap() {
+    use crate::ride::metrics::Step as Odometer;
+    use crate::workout::model::{Intensity, Length, Step, Target, Workout};
+    use crate::workout::player::{Event, Player};
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    let mut now = 1000;
+    while now < 5000 {
+        tick(&mut runtime, &mut journal, &mut radio, now);
+        now += 250;
+    }
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    const STEPS: [Step; 4] = [
+        Step::new(Intensity::Work, Length::Distance(100), Target::Free),
+        Step::new(Intensity::Work, Length::Distance(100), Target::Free),
+        Step::new(Intensity::Work, Length::Distance(100), Target::Free),
+        Step::new(Intensity::Work, Length::Open, Target::Free),
+    ];
+    runtime.ride.workout = Some(Player::new(Workout::new("D", &STEPS, &[], None)));
+    let laps_before = runtime.ride.laps.count();
+    let profile = runtime.preferences.profile;
+    // Three seconds over 300 m: each 100 m step ends in its own lap.
+    runtime.ride.count(
+        now + 3000,
+        Odometer {
+            elapsed_ms: 3000,
+            distance_mm: 300_000,
+        },
+        &crate::ride::log::Sample::default(),
+        None,
+        &profile,
+    );
+    assert_eq!(runtime.ride.laps.count(), laps_before + 3);
+    for back in 0..3 {
+        let lap = runtime.ride.laps.finished(back).unwrap();
+        assert_eq!(lap.distance_mm, 100_000, "lap {back}: {lap:?}");
+    }
+    let started = runtime
+        .ride
+        .workout_events
+        .iter()
+        .filter(|event| matches!(event, Event::Started(_)))
+        .count();
+    assert_eq!(started, 3, "no step event lost");
+}
+
 /// Press BottomRight on a recording ride and let the pause land.
 fn pause(runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, now: u64) {
     assert_eq!(runtime.ride.internal.status(), Status::Recording);

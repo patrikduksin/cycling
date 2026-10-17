@@ -149,7 +149,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             Command::Harness(firmware_shell::harness::parse(&mut words).ok_or(Error::Invalid)?)
         }
         #[cfg(feature = "cycling")]
-        "RIDE" | "EXPORT" | "RADAR" | "PROFILE" => {
+        "RIDE" | "EXPORT" | "RADAR" | "PROFILE" | "WORKOUT" => {
             let text = &line[line.find(verb).ok_or(Error::Invalid)?..];
             let mut bytes = [0; 128];
             if text.len() > bytes.len() {

@@ -34,6 +34,8 @@ pub enum Page {
     /// Saving, then the saved ride's summary.
     Summary,
     Settings,
+    /// The workout picker.
+    Workouts,
     /// Placeholder for connecting a phone (rides to the phone, FIT export).
     Phone,
     /// The saved rides, newest first.
@@ -53,6 +55,7 @@ impl Page {
             Self::EndRide => "end_ride",
             Self::Summary => "summary",
             Self::Settings => "settings",
+            Self::Workouts => "workouts",
             Self::Phone => "phone",
             Self::History => "history",
             Self::PastRide => "past_ride",
@@ -61,7 +64,7 @@ impl Page {
 }
 
 /// Home cards, in MOVE order.
-pub const HOME: [&[u8]; 4] = [b"RIDE", b"SENSORS", b"SETTINGS", b"RIDES"];
+pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDES"];
 
 pub struct View<'a> {
     pub now_ms: u64,
@@ -105,6 +108,15 @@ pub struct View<'a> {
     pub(super) marks: Marks,
     /// The climb page's chart, prepared with `canvas`.
     pub(super) climb: ClimbFrame,
+    /// The workout chosen or running, for the workout page and the target
+    /// band on the main page.
+    pub training: Option<ride::Training>,
+    /// The workout page's chart, prepared with `canvas`.
+    pub chart: ride::WorkoutChart,
+    /// The workout picker's rows.
+    pub picker: super::workouts::Picker,
+    /// A test's FTP waiting for the rider's answer, and the FTP in force.
+    pub ftp_offer: Option<(u16, u16)>,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -152,7 +164,7 @@ impl View<'_> {
             battery: None,
             reveal: 0,
             toast: None,
-            home: Home::new(cursor, false, &[], b"", Text::new()),
+            home: Home::new(cursor, false, &[], Text::new()),
             bar: StatusBar::default(),
             totals: Totals::default(),
             lap: Laps::default().current(),
@@ -167,6 +179,10 @@ impl View<'_> {
             profile: TrainingProfile::default(),
             marks: Marks::default(),
             climb: ClimbFrame::default(),
+            training: None,
+            chart: ride::WorkoutChart::default(),
+            picker: super::workouts::Picker::default(),
+            ftp_offer: None,
             page,
             cursor,
             editing: false,
@@ -216,7 +232,7 @@ impl View<'_> {
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
         row.fill(BLACK);
-        if self.page == Page::Boot {
+        if self.page == Page::Boot || self.ftp_offer.is_some() {
             self.canvas.paint(row);
             return;
         }
@@ -257,7 +273,7 @@ impl View<'_> {
     /// The per-pixel original of `paint`, kept as the reference it must match.
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
-        if self.page == Page::Boot {
+        if self.page == Page::Boot || self.ftp_offer.is_some() {
             return self.canvas.pixel(x, y, BLACK);
         }
         if y < CONTENT.top && !self.full_screen() {
@@ -328,6 +344,10 @@ impl View<'_> {
                 self.canvas = super::phone::prepare(self.phone_ride);
                 &[]
             }
+            Page::Workouts => {
+                self.canvas = super::workouts::prepare(self);
+                &[]
+            }
             // The runtime prepares the list with `set_canvas`.
             Page::History => &[],
             Page::PastRide => {
@@ -345,8 +365,11 @@ impl View<'_> {
                 &ride::paused::CUES
             }
             Page::Ride => {
-                self.bar
-                    .set_pages(self.ride_page.index(), RidePage::ALL.len());
+                let training = self.training.is_some();
+                self.bar.set_pages(
+                    self.ride_page.position(training),
+                    RidePage::pages(training).len(),
+                );
                 self.marks = ride::marks(self);
                 ride::prepare(self);
                 &[]
@@ -354,6 +377,12 @@ impl View<'_> {
             Page::Home | Page::Sensors => &[],
         };
         self.cues = cues.iter().copied().collect();
+        // The FTP sheet covers whatever page it shows over.
+        if let Some((new, old)) = self.ftp_offer {
+            self.canvas = super::workouts::ftp_sheet(new, old);
+            self.cues.clear();
+            self.badge = None;
+        }
     }
 }
 
@@ -532,7 +561,7 @@ mod tests {
     #[test]
     fn home_highlights_the_selected_tile() {
         let mut view = View::new(Page::Home, 1, None);
-        view.home = Home::new(1, false, &[], b"", Text::new());
+        view.home = Home::new(1, false, &[], Text::new());
         view.prepare();
         assert_eq!(view.pixel(200, 215), RAISED, "Sensors is raised");
         assert_ne!(view.pixel(200, 120), RAISED, "Ride is not");
@@ -579,12 +608,12 @@ mod tests {
                 color: AMBER,
             },
         ];
-        for cursor in 0..3 {
+        for cursor in 0..5 {
             let mut view = View::new(Page::Home, cursor, Some(1_000_000));
             view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
             let last = last_ride(4_999_800);
-            view.home = Home::new(cursor, cursor == 1, &glance[..cursor], b"FTP 215 W", last);
+            view.home = Home::new(cursor, cursor == 1, &glance[..cursor.min(2)], last);
             view.toast = (cursor == 2).then(|| Toast::new("RIDE SAVED", Tone::Good));
             view.prepare();
             assert_paints_reference(&view, "home");

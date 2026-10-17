@@ -129,6 +129,11 @@ pub(super) struct Ride {
     last: Option<Medium>,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
+    /// The workout this ride plays, kept after it ends until the rider
+    /// leaves the ride screen or starts the next ride.
+    pub(super) workout: Option<crate::workout::player::Player>,
+    /// What the player reported during the last steps, for the runtime.
+    pub(super) workout_events: crate::workout::player::Events,
 }
 
 impl Default for Ride {
@@ -164,6 +169,8 @@ impl Default for Ride {
             pause_continuation: false,
             last: None,
             clock: None,
+            workout: None,
+            workout_events: crate::workout::player::Events::new(),
         }
     }
 }
@@ -369,11 +376,40 @@ impl Ride {
         if let Some(ClimbEvent::Finished(_)) = climb {
             self.climbs_done = self.climbs_done.saturating_add(1);
         }
-        if let Some(lap) =
-            self.laps
-                .add_every(credited, distance_mm, &sample, now, self.auto_lap_mm)
-        {
-            self.lap_closed(lap, now);
+        let Some(player) = &mut self.workout else {
+            if let Some(lap) =
+                self.laps
+                    .add_every(credited, distance_mm, &sample, now, self.auto_lap_mm)
+            {
+                self.lap_closed(lap, now);
+            }
+            return climb;
+        };
+        // Each workout step's part of this update goes in that step's lap.
+        player.read(&sample);
+        let (mut ms, mut mm) = (credited, distance_mm);
+        for _ in 0..=crate::workout::model::MAX_PLAYED {
+            if ms == 0 {
+                break;
+            }
+            let (part_ms, part_mm) = player.until_end(ms, mm);
+            ms -= part_ms;
+            mm -= part_mm;
+            // A workout ride has no distance laps; its steps close them.
+            let _ = self.laps.add(part_ms, part_mm, &sample, now);
+            let events = player.ride_part(part_ms, part_mm, &sample, profile);
+            if events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::workout::player::Event::Started(_)
+                        | crate::workout::player::Event::Finished
+                )
+            }) {
+                let _ = self.laps.split(now);
+            }
+            for event in events {
+                let _ = self.workout_events.push(event);
+            }
         }
         climb
     }
@@ -539,6 +575,7 @@ impl Runtime {
     ) {
         let clock = self.ride.clock;
         let clock = &|| clock.map_or(now, |clock| clock());
+        let player = self.chosen_player();
         let ride = &mut self.ride;
         let before = ride.active().status();
         let was_scanning =
@@ -613,6 +650,12 @@ impl Runtime {
                 ride.climbs_done = 0;
                 ride.climbs = Climbs::default();
                 self.navigation.climb_return = None;
+                // The chosen workout starts with the ride; its steps lap it.
+                ride.workout = player;
+                ride.workout_events.clear();
+                // The last workout's summary belongs to the ride it ended with.
+                self.training.last = None;
+                ride.laps.by_distance = ride.workout.is_none();
             }
             ride.counted_ms = 0;
         }

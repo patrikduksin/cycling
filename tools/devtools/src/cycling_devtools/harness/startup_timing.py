@@ -53,8 +53,8 @@ SENSOR_NAMES = {
     40: 'ANT radar',
 }
 BUTTON = {'top-left': 0, 'bottom-left': 1, 'bottom-right': 2}
-# Home choices in bottom-left order; RIDE is 0.
-HOME_CHOICES = 4
+# Home cards in bottom-left order; RIDE is 0.
+HOME_CHOICES = 5
 IDLE_STATES = ('ready', 'saved', 'recovered')
 # VANA ignores a press sooner than 350 ms after the previous one.
 PRESS_SETTLE_S = 0.5

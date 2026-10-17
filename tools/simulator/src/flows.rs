@@ -3,11 +3,12 @@ use crate::sim::{NoteKind, Sim, seconds};
 use device_api::input::Button;
 
 impl Sim {
-    /// Choose a Home card, such as RIDE or RIDES; the focused one has a white
-    /// title. One extra press covers a dimmed screen, which a press only wakes.
+    /// Choose a Home card, such as RIDE, SENSORS, TRAIN or RIDES; the focused
+    /// one has a white title. One extra press covers a dimmed screen, which a
+    /// press only wakes.
     #[track_caller]
     pub fn home(&mut self, label: &str) {
-        for _ in 0..5 {
+        for _ in 0..crate::sim::HOME_CARDS + 2 {
             if self
                 .screen()
                 .run(label)
@@ -229,6 +230,40 @@ impl Sim {
             .find_map(|part| part.strip_prefix("state="))
             .unwrap_or_default()
             .to_string()
+    }
+
+    /// From Home, open TRAIN and choose the workout named `name` (or FREE
+    /// RIDE): MOVE until its card is focused, then ACT. Ends on Ready, which
+    /// names it.
+    #[track_caller]
+    pub fn choose_workout(&mut self, name: &str) {
+        self.home("TRAIN");
+        self.expect_text("WORKOUTS");
+        for _ in 0..16 {
+            if self
+                .screen()
+                .run(name)
+                .is_some_and(|run| run.color == 0xffff)
+            {
+                self.press(Button::BottomRight);
+                assert_eq!(self.vana_page(), "ready");
+                self.expect_text(name);
+                return;
+            }
+            self.press(Button::BottomLeft);
+        }
+        panic!("no workout {name:?}; screen:\n{}", self.screen().text());
+    }
+
+    /// `WORKOUT STATUS` as fields, such as `step` = "3/12".
+    #[cfg(feature = "cycling")]
+    pub fn workout(&mut self) -> std::collections::HashMap<String, String> {
+        let (status, out) = self.command("WORKOUT STATUS");
+        assert_eq!(status, "OK", "WORKOUT STATUS: {out}");
+        out.split_whitespace()
+            .filter_map(|part| part.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     /// Pause if still recording (only a paused ride ends), then TopLeft asks

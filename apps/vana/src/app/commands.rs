@@ -27,6 +27,10 @@ impl Runtime {
         now: u64,
         output: &mut impl Write,
     ) -> &'static str {
+        let mut workout = words.split_ascii_whitespace();
+        if workout.next() == Some("WORKOUT") {
+            return self.workout_command(&mut workout, now, output);
+        }
         let mut words = words.split_ascii_whitespace().peekable();
         let domain = words.next();
         let named = match words.peek() {

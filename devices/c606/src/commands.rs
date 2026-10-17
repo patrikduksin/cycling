@@ -123,7 +123,7 @@ pub fn execute(
             );
             #[cfg(feature = "cycling")]
             {
-                let _ = write!(output, ",RIDE,EXPORT,RADAR,PROFILE");
+                let _ = write!(output, ",RIDE,EXPORT,RADAR,PROFILE,WORKOUT");
             }
         }
         match request.command {

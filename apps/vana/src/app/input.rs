@@ -77,6 +77,19 @@ impl Runtime {
             }
             return;
         }
+        // The FTP sheet after a test takes the buttons next; touch never
+        // answers it.
+        if self.training.ftp_offer.is_some() {
+            if let Input::Button { button, code: 1 } = input
+                && !held
+                && received.saturating_sub(self.navigation.last_press) >= DEBOUNCE_MS
+                && self.ftp_input(button, now)
+            {
+                self.navigation.last_press = received;
+                self.display.redraw();
+            }
+            return;
+        }
         // Settings pads act on contact, not on a finished gesture.
         if self.navigation.page == Page::Settings
             && self.navigation.settings_editing
@@ -125,6 +138,7 @@ impl Runtime {
             Page::History => self.history_input(button),
             Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant),
+            Page::Workouts => self.workouts_input(button, now),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = Page::Home,
             Page::Sensors => {}
@@ -158,9 +172,14 @@ impl Runtime {
                 let section = settings::section(navigation.settings_field).0 as u32;
                 u32::from(navigation.settings_editing) | section << 1
             }
-            Page::Boot | Page::Home | Page::Ready | Page::EndRide | Page::Phone => 0,
+            Page::Boot
+            | Page::Home
+            | Page::Ready
+            | Page::EndRide
+            | Page::Phone
+            | Page::Workouts => 0,
         };
-        let sheet = u32::from(self.power.view().is_some());
+        let sheet = u32::from(self.power.view().is_some() || self.training.ftp_offer.is_some());
         let dark = u32::from(!self.display.is_active());
         Owner(page | subview << 4 | sheet << 12 | dark << 13)
     }
@@ -174,12 +193,17 @@ impl Runtime {
                 self.navigation.home_cursor = match tile {
                     Tile::Ride => 0,
                     Tile::Sensors => 1,
-                    Tile::Settings => 2,
-                    Tile::Rides => 3,
+                    Tile::Workouts => 2,
+                    Tile::Settings => 3,
+                    Tile::Rides => 4,
                 };
                 self.open_home_tile(now, ant);
             }
             // A tap on the sensors line of Ready pairs sensors.
+            // A tap on the workout line under the headline changes it.
+            (Page::Ready, Gesture::Tap(point)) if ready::riding_at(usize::from(point.y)) => {
+                self.navigation.page = Page::Workouts;
+            }
             (Page::Ready, Gesture::Tap(point)) => {
                 if ready::line_at(usize::from(point.y)) != Some(ready::Line::Sensors) {
                     return;
@@ -205,9 +229,23 @@ impl Runtime {
                 let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
                 self.sensors_action(action, now, ant);
             }
+            (Page::Workouts, Gesture::Tap(point)) => {
+                let picker = self.picker();
+                let Some(row) = picker.row_at(usize::from(point.x), usize::from(point.y)) else {
+                    return;
+                };
+                self.choose_workout(row, now);
+            }
             // Changing the page is safe while riding; ride control is not.
             (Page::Ride, Gesture::Next) => self.next_ride_page(),
             (Page::Ride, Gesture::Previous) => self.previous_ride_page(),
+            // Adding a minute to a step changes no ride state, so a tap may.
+            (Page::Ride, Gesture::Tap(point))
+                if self.navigation.ride_page == RidePage::Workout
+                    && crate::screens::ride::EXTEND_ROWS.contains(&usize::from(point.y)) =>
+            {
+                self.extend_step(now)
+            }
             (Page::Settings, Gesture::Tap(point)) => {
                 let navigation = &self.navigation;
                 if let Some(settings::Target::Row(row)) = settings::target(
@@ -290,7 +328,8 @@ impl Runtime {
                 self.navigation.page = Page::Sensors;
                 self.request_search(ant, now);
             }
-            3 => self.open_history(),
+            2 => self.navigation.page = Page::Workouts,
+            4 => self.open_history(),
             _ => {
                 self.navigation.page = Page::Settings;
                 self.navigation.settings_field = 0;
@@ -416,7 +455,11 @@ impl Runtime {
     /// MOVE does nothing here: there is one thing to do.
     fn ready_input(&mut self, button: Button, received: u64, now: u64) {
         match button {
-            Button::TopLeft => self.navigation.page = Page::Home,
+            // Home, and the next ride is free unless a workout is chosen again.
+            Button::TopLeft => {
+                self.navigation.page = Page::Home;
+                self.leave_workout();
+            }
             Button::BottomRight => {
                 // Rolling off may have started the ride a moment before the
                 // press: then ACT only shows it, never pauses it.
@@ -491,6 +534,7 @@ impl Runtime {
             Button::BottomRight | Button::TopLeft if !held && !saving => {
                 self.navigation.ride_page = RidePage::Main;
                 self.navigation.page = Page::Home;
+                self.leave_workout();
             }
             _ => {}
         }
@@ -514,6 +558,7 @@ impl Runtime {
         if button == Button::TopLeft && !self.recording() {
             self.navigation.ride_page = RidePage::Main;
             self.navigation.page = Page::Home;
+            self.leave_workout();
             return;
         }
         if self.ride.pending() {
@@ -529,7 +574,11 @@ impl Runtime {
             }
             (Button::TopLeft, Status::Recording) => {
                 self.ride.disarm_stop();
-                if let Some(lap) = self.ride.laps.lap(now) {
+                // During a workout the lap ends the step, which names the
+                // next step rather than the lap.
+                if let Some(lap) = self.ride.laps.lap(now)
+                    && !self.workout_lap(now)
+                {
                     self.ride.lap_closed(lap, now);
                 }
                 return;
@@ -569,41 +618,44 @@ impl Runtime {
     /// rider was on, and from the last page back to it.
     fn next_ride_page(&mut self) {
         let paused = self.ride.active().status() == Status::Paused;
+        let workout = self.workout_pages();
         let navigation = &mut self.navigation;
         if paused && !navigation.pause_hidden {
             navigation.pause_hidden = true;
             if core::mem::take(&mut navigation.pause_wrapped) {
-                navigation.ride_page_chosen(RidePage::Main);
+                navigation.ride_page_chosen(RidePage::pages(workout)[0]);
             }
             return;
         }
-        match navigation.ride_page.next() {
+        match navigation.ride_page.next_in(workout) {
             Some(next) => navigation.ride_page_chosen(next),
             None if paused => {
                 navigation.pause_hidden = false;
                 navigation.pause_wrapped = true;
             }
-            None => navigation.ride_page_chosen(RidePage::Main),
+            None => navigation.ride_page_chosen(RidePage::pages(workout)[0]),
         }
     }
 
     /// A swipe back: the mirror of `next_ride_page`.
     pub(super) fn previous_ride_page(&mut self) {
         let paused = self.ride.active().status() == Status::Paused;
+        let workout = self.workout_pages();
         let navigation = &mut self.navigation;
         if paused && !navigation.pause_hidden {
             navigation.pause_hidden = true;
             if core::mem::take(&mut navigation.pause_wrapped) {
-                navigation.ride_page_chosen(RidePage::ALL[RidePage::ALL.len() - 1]);
+                let pages = RidePage::pages(workout);
+                navigation.ride_page_chosen(pages[pages.len() - 1]);
             }
             return;
         }
-        if paused && navigation.ride_page == RidePage::Main {
+        if paused && navigation.ride_page == RidePage::pages(workout)[0] {
             navigation.pause_hidden = false;
             navigation.pause_wrapped = true;
             return;
         }
-        let page = navigation.ride_page.preceding();
+        let page = navigation.ride_page.preceding_in(workout);
         navigation.ride_page_chosen(page);
     }
 }

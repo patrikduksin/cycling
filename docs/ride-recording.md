@@ -165,7 +165,7 @@ Controls:
 
 | Screen | Control |
 | --- | --- |
-| Menu | Opens training, sensor status or settings |
+| Menu | Opens a ride, sensor status, the workout picker (TRAIN) or settings |
 | Ride | Opens Ready (GPS, sensors, battery and storage in plain words); ACT or rolling off starts the ride, and the ride buttons below apply. See [UX flows](ux-flows.md). |
 | Settings | Bottom-left moves to the next field (FTP, LTHR), bottom-right edits it, top-left returns home. While editing, bottom-left lowers and bottom-right raises it by 5 and top-left finishes. Touch: tap a field to edit it, then tap the large minus or plus pad. Edits apply at once and are saved two seconds after the last change. |
 | Sensors | Bottom-left moves, bottom-right selects, top-left returns. Choosing a nearby sensor saves it; choosing another of a saved type asks to replace it. A saved sensor opens a page whose only action is Disconnect, which removes it. |
@@ -193,7 +193,8 @@ Laps:
 
 - A lap press closes the current lap; another within three seconds is ignored.
   An automatic lap closes every 5 km of lap distance (fixed in this build), and
-  a lap press restarts that count. Both share one numbered list.
+  a lap press restarts that count. During a workout each step closes a lap
+  instead, and there is no 5 km lap. Both share one numbered list.
 - For two seconds a toast in the status row shows `LAP n`, the finished lap's
   time and its average power.
 - Lap time is recorded time, so a pause adds none. Lap averages follow the ride
@@ -352,6 +353,56 @@ Radar uses the left edge of the workout screen:
   the rail grey.
 
 VANA branding and the brief glitch animation appear only on the splash screen.
+
+## Structured training
+
+The TRAIN card on Home opens the workout picker: FREE RIDE, the built-ins,
+then uploads. MOVE focuses the next workout, ACT chooses it and opens Ready,
+and BACK returns Home. Ready names the chosen workout under its headline, and
+a tap on that line opens the picker again to change it. A chosen workout plays
+on the next ride; BACK from Ready drops it.
+
+Built-ins ship in flash: SWEET SPOT 2X20, VO2 MAX 5X3, THRESHOLD 4X8,
+ENDURANCE Z2, OPENERS, FTP TEST 20 MIN and FTP RAMP TEST. A workout is a list
+of steps (warm up, work, recovery, cool down or test), each lasting a time, a
+distance or until MARK, with a target: % FTP, watts, heart zone, % LTHR,
+cadence, a ramp or none. Repeat blocks play a run of steps several times.
+Targets follow the training profile, so a new FTP moves every power band.
+
+While riding a workout, the ride pages gain a workout page first (`1/5`). It
+shows the step and its target, the 3 s reading against the band (UNDER, ON
+TARGET, OVER), the time or distance left, the next step and the whole
+workout as a chart. The main page draws the band under its power or heart
+gauge. Three low cues count down a step's last seconds and two high ones mark the
+next; a toast names it (`WORK 2/5 3:00`). Each step closes a lap.
+
+| Control | Effect |
+| --- | --- |
+| MARK (TopLeft) while recording | Closes the lap and ends the step: the next step |
+| Tap on the time left | One more minute, or 500 m on a distance step |
+
+`WORKOUT STATUS` reports the step, target, reading, compliance, laps and the
+time on target; `Runtime::workout_summary()` gives the last workout's summary
+to other features.
+
+FTP tests end on a NEW FTP sheet while the ride keeps recording: ACT saves the
+new FTP to the profile, BACK keeps the old one.
+
+- 20 minutes: FTP is 95% of the test step's average power. Skipping the test
+  step gives no result.
+- Ramp: one-minute steps 20 W apart from 100 W. The test ends when 3 s power
+  stays under 90% of the step for 10 s, or at MARK. FTP is 75% of the best
+  full minute.
+
+Load a workout from JSON with `mise run workout-load <file> [--slot 0..3]`;
+`--dry-run` prints the commands. Examples are in `tools/devtools/workouts/`
+and the format is described in `cycling_devtools.workouts.load`. The host
+writes codec version 1 (`apps/vana/src/workout/codec.rs`) in 48-byte chunks:
+`WORKOUT BEGIN slot length crc`, `WORKOUT DATA offset hex` in order, then
+`WORKOUT COMMIT`, which checks the CRC and the workout before it installs.
+`WORKOUT LIST`, `SELECT row` and `DELETE slot` manage the four slots. In this
+build uploads stay in RAM: a power-off forgets them. Persistent storage
+belongs behind `WorkoutStore`.
 
 ## What this does not prove
 

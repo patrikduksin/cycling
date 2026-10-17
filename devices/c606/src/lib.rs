@@ -7,3 +7,5 @@ pub mod board;
 #[cfg(feature = "hardware")]
 pub mod capabilities;
 pub mod drivers;
+#[cfg(feature = "hardware")]
+pub mod stack;

@@ -1,6 +1,6 @@
 //! Sensor data intake and the live ride sample built from it.
 use super::{Observations, Runtime};
-use crate::ride::log::{Sample, Status};
+use crate::ride::log::Sample;
 use crate::ride::metrics::{Gradient, Odometer, Speed};
 use crate::sensors::ant::{Epoch, HeartRate, Power, device_type};
 use crate::sensors::ble_profile::{self, Profile};
@@ -242,13 +242,8 @@ impl Runtime {
                 .map(|power| power.watts),
             gradient_tenths: readings.gradient.tenths(),
         };
-        // Totals take the same once-per-second cadence as distance, only while recording.
-        if let Some(step) = step
-            && self.ride.recorder.status() == Status::Recording
-        {
-            self.ride
-                .totals
-                .add(step.elapsed_ms, step.distance_mm, &sample, pressure);
+        if let Some(step) = step {
+            self.ride.count(now, step, &sample, pressure);
         }
         self.readings.live = sample;
         sample

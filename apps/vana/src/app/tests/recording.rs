@@ -211,3 +211,48 @@ fn ride_buttons_wait_for_the_previous_request() {
     tick(&mut runtime, &mut journal, &mut radio, 1800);
     assert_eq!(runtime.ride.recorder.status(), Status::Paused);
 }
+
+/// Power-only page 0x10 with 2000 W, so a second of it is two kilojoules.
+const POWER_2000: [u8; 8] = [0x10, 1, 0, 90, 0, 0, 0xd0, 0x07];
+
+/// Record one active second at 2000 W from 1000 ms, then press `stop` at 2100 ms
+/// and service the accepted request only at 5000 and 6000 ms.
+fn delayed_stop(stop: &[(Button, u64)]) -> Runtime {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    for now in (1000..=2000).step_by(250) {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    for &(button, at) in stop {
+        runtime.input(press(button), at, &mut radio);
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    for now in [5000, 6000] {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    settle(&mut runtime, &mut journal, &mut radio, 6000);
+    assert_eq!(runtime.ride.recorder.active_ms(6000), 1100);
+    runtime
+}
+
+#[test]
+fn totals_stop_at_an_accepted_pause_while_its_flush_is_pending() {
+    let runtime = delayed_stop(&[(Button::BottomLeft, 2100)]);
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    // 1.1 active seconds at 2000 W, not the five seconds until the flush.
+    assert_eq!(runtime.ride.totals.work_kj(), Some(2));
+    assert_eq!(runtime.ride.totals.avg_power(), Some(2000));
+}
+
+#[test]
+fn totals_stop_at_an_accepted_finish_while_its_flush_is_pending() {
+    let runtime = delayed_stop(&[(Button::BottomRight, 1700), (Button::BottomRight, 2100)]);
+    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+    assert_eq!(runtime.ride.totals.work_kj(), Some(2));
+}

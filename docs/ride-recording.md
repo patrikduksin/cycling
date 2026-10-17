@@ -148,6 +148,24 @@ Sensors:
   an unreadable stored record shows SAVED SENSORS UNREADABLE and is kept.
 - BLE transport loss or stale/disconnected measurements invalidate sensor values.
 
+Auto-pause and auto-start (on by default, constants in `ride/auto.rs`):
+
+- Wheel speed only; there is no GPS speed. Without a fresh wheel reading nothing
+  pauses or starts, and the ride page says `NO SPEED: AUTO PAUSE OFF`.
+- Pause: below 3 km/h for 1 s. Wheel speed decays once a revolution is overdue
+  (at most one circumference per time since it), so it is below 3 km/h about 3 s
+  after the last revolution and the ride pauses about 4 s after standing. Resume: at or
+  above 4.5 km/h for 1 s. The 1 s debounce stays in active time; time paused is
+  excluded like a manual pause.
+- Start: on the ride screen with the ride Ready, at or above 6 km/h for 3 s, through
+  the ordinary start request (refused while storage is not ready). Only a Ready
+  ride starts itself, not one that is Saved or Recovered.
+- Journal: the same Pause, Resume and Start events as the buttons; the record
+  format and export are unchanged. The screen says `AUTO PAUSED`.
+- A manual pause never auto-resumes. ACT on an auto-pause keeps the ride paused
+  as a manual pause; the next ACT resumes. If the wheel sensor is lost during an
+  auto-pause for 3 s, the ride resumes.
+
 Recording:
 
 - Live rides sample once per second, on the grid of the start or resume press,

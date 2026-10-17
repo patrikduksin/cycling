@@ -17,6 +17,7 @@
 //! `Navigation::follow_climb`).
 use super::workout::{Text, View};
 use crate::ride::laps::Lap;
+use crate::ride::log::Status;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::rendering::row::Row;
@@ -174,6 +175,10 @@ fn paint_status(view: &View, row: &mut Row) {
     // End-ride confirmation, storage warning or recorder state, prepared once.
     let color = if view.state_warns { YELLOW } else { CYAN };
     row.text(6, STATUS_TEXT_TOP, 2, view.state_text.as_bytes(), color);
+    // Under the state: the honest note that auto-pause has no wheel speed.
+    if view.state == Status::Recording && view.sample.speed_mm_s.is_none() {
+        row.text(6, 287, 1, b"NO SPEED: AUTO PAUSE OFF", DIM);
+    }
 }
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
@@ -256,6 +261,13 @@ fn reference_status_pixel(view: &View, x: usize, y: usize) -> u16 {
     // End-ride confirmation, storage warning or recorder state, prepared once.
     if text(x, y, 6, STATUS_TEXT_TOP, 2, view.state_text.as_bytes()) {
         return if view.state_warns { YELLOW } else { CYAN };
+    }
+    // Under the state: the honest note that auto-pause has no wheel speed.
+    if view.state == Status::Recording
+        && view.sample.speed_mm_s.is_none()
+        && text(x, y, 6, 287, 1, b"NO SPEED: AUTO PAUSE OFF")
+    {
+        return DIM;
     }
     0
 }

@@ -38,6 +38,10 @@ pub struct View {
     pub radar: radar::Snapshot,
     pub gps_fix: bool,
     pub stop_confirm: bool,
+    /// The pause came from auto-pause, not the rider.
+    pub auto_paused: bool,
+    /// Brief notice of an automatic action; empty when none.
+    pub auto_toast: &'static str,
     pub totals: Totals,
     /// The open lap and the last finished one.
     pub lap: Lap,
@@ -95,6 +99,8 @@ impl View {
             radar: radar::Snapshot::default(),
             gps_fix: false,
             stop_confirm: false,
+            auto_paused: false,
+            auto_toast: "",
             totals: Totals::default(),
             lap: Laps::default().current(),
             previous_lap: None,
@@ -232,7 +238,7 @@ impl View {
     fn prepare_state(&mut self) {
         let mut state = Text::new();
         let low = self.storage_left_s.filter(|left| *left < LOW_STORAGE_S);
-        self.state_warns = self.stop_confirm || low.is_some();
+        self.state_warns = self.stop_confirm || !self.auto_toast.is_empty() || low.is_some();
         let label = match self.state {
             Status::Recording => "REC",
             Status::Paused => "PAUSED",
@@ -240,9 +246,12 @@ impl View {
         };
         let _ = match low {
             _ if self.stop_confirm => state.push_str("PRESS AGAIN TO SAVE"),
+            // A fresh automatic action replaces the state for a moment.
+            _ if !self.auto_toast.is_empty() => state.push_str(self.auto_toast),
             Some(left) => write!(state, "{label} {}M LEFT", left / 60),
             None => state.push_str(match self.state {
                 Status::Recording => "RECORDING",
+                Status::Paused if self.auto_paused => "AUTO PAUSED",
                 Status::Paused => "PAUSED",
                 Status::Saved => "SAVED",
                 Status::Recovered => "RECOVERED",
@@ -503,6 +512,38 @@ mod tests {
         two_laps(&mut view, 10, 250, 9000);
         view.prepare();
         assert!(shows(&view, 6, 296, 2, b"PRESS AGAIN TO SAVE", 0xffe0));
+    }
+
+    #[test]
+    fn status_row_names_automatic_pauses_and_actions() {
+        let mut view = View::new(Page::Ride, 0, None);
+        view.state = Status::Paused;
+        view.auto_paused = true;
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"AUTO PAUSED", CYAN));
+        view.auto_paused = false;
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"PAUSED", CYAN));
+        assert!(!shows(&view, 6, 296, 2, b"AUTO PAUSED", CYAN));
+
+        view.state = Status::Recording;
+        view.auto_toast = "AUTO RESUME";
+        view.prepare();
+        assert!(shows(&view, 6, 296, 2, b"AUTO RESUME", 0xffe0));
+        view.auto_toast = "";
+        view.prepare();
+        // No wheel speed: auto-pause says it is off, in the small line below.
+        assert!(shows(&view, 6, 287, 1, b"NO SPEED: AUTO PAUSE OFF", 0x8410));
+        view.sample.speed_mm_s = Some(5_000);
+        view.prepare();
+        assert!(!shows(
+            &view,
+            6,
+            287,
+            1,
+            b"NO SPEED: AUTO PAUSE OFF",
+            0x8410
+        ));
     }
 
     #[test]

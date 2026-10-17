@@ -3,6 +3,7 @@ use crate::ride::log::Status;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER, SPEED};
+use std::{format, string::String};
 
 const HEART_72: [u8; 8] = [0, 0, 0, 0, 0, 0, 1, 72];
 /// Power-only page 0x10 with 250 W instantaneous power.
@@ -76,13 +77,12 @@ fn wheel_speed_counts_only_while_its_sensor_is_connected_and_fresh() {
         runtime.readings.live.speed_mm_s,
         Some(crate::ride::metrics::WHEEL_MM)
     );
+    // Repeat packets show the wheel has not turned: the speed decays to its bound.
+    radio.data(SPEED, wheel(1024, 1), 4900);
     tick(&mut runtime, &mut journal, &mut radio, 4999);
-    assert_eq!(
-        runtime.readings.live.speed_mm_s,
-        Some(crate::ride::metrics::WHEEL_MM)
-    );
+    assert_eq!(runtime.readings.live.speed_mm_s, Some(821));
     // The transport marks the channel stale before the decoder would.
-    let stale = 2000 + device_api::ant::STALE_MS;
+    let stale = 4900 + device_api::ant::STALE_MS;
     tick(&mut runtime, &mut journal, &mut radio, stale);
     assert!(radio.channel(SPEED, stale).unwrap().stale);
     assert_eq!(runtime.readings.live.speed_mm_s, None);
@@ -415,4 +415,494 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     runtime.navigation.ride_page = RidePage::Main;
     runtime.navigation.follow_climb(Climb::Confirmed);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+/// A wheel turning once per second (7.7 km/h), or standing still, each second.
+struct Wheel {
+    time: u16,
+    count: u16,
+}
+
+impl Wheel {
+    fn second(&mut self, radio: &mut Radio, now: u64, turning: bool) {
+        if turning {
+            self.time = self.time.wrapping_add(1024);
+            self.count = self.count.wrapping_add(1);
+        }
+        radio.data(SPEED, wheel(self.time, self.count), now);
+    }
+}
+
+/// Run `seconds` of wheel data and ticks from `from`, returning the end.
+fn roll(
+    (runtime, journal, radio): (&mut Runtime, &mut Journal, &mut Radio),
+    wheel: &mut Wheel,
+    from: u64,
+    seconds: u64,
+    turning: bool,
+) -> u64 {
+    for step in 0..seconds * 4 {
+        let now = from + step * 250;
+        if step % 4 == 0 {
+            wheel.second(radio, now, turning);
+        }
+        tick(runtime, journal, radio, now);
+    }
+    from + seconds * 1000
+}
+
+#[test]
+fn a_stop_auto_pauses_and_riding_on_auto_resumes() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        10,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+
+    // The wheel needs four seconds to read zero, then three more to pause.
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        20,
+        false,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert!(runtime.ride.auto.paused());
+    let frozen = runtime.ride.recorder.active_ms(at);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        20,
+        false,
+    );
+    assert_eq!(runtime.ride.recorder.active_ms(at), frozen, "stop excluded");
+
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        6,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert!(!runtime.ride.auto.paused());
+    assert!(runtime.ride.recorder.active_ms(at) > frozen);
+}
+
+#[test]
+fn a_manual_pause_stays_paused_while_the_bike_moves() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        5,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        60,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert!(!runtime.ride.auto.paused());
+}
+
+#[test]
+fn acting_on_an_auto_pause_makes_it_manual_and_the_next_press_resumes() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        25,
+        false,
+    );
+    assert!(runtime.ride.auto.paused());
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        30,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused, "now manual");
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        1,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+}
+
+#[test]
+fn a_lost_wheel_sensor_never_pauses_and_releases_an_auto_pause() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    let sensor = radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        25,
+        false,
+    );
+    assert!(runtime.ride.auto.paused());
+    // The sensor drops out: the auto-pause lets go rather than hold forever.
+    radio.channels.receive(Event::Disconnected(sensor), at);
+    for step in 0..40 {
+        tick(&mut runtime, &mut journal, &mut radio, at + step * 250);
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    // Recording without any speed reading is never paused.
+    for step in 40..400 {
+        tick(&mut runtime, &mut journal, &mut radio, at + step * 250);
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+}
+
+#[test]
+fn riding_off_auto_starts_and_storage_not_ready_does_not() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        6,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.toast(at), "AUTO START");
+
+    // Off the ride screen nothing starts.
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        20,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Ready);
+
+    // Storage still scanning: the request is refused and reported, not forced.
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    runtime.ride.recorder = crate::ride::recorder::Recorder::default();
+    roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        20,
+        true,
+    );
+    assert_ne!(runtime.ride.recorder.status(), Status::Recording);
+}
+
+#[test]
+fn readings_after_an_accepted_pause_do_not_reach_the_totals() {
+    const POWER_200: [u8; 8] = [0x10, 1, 0, 90, 0, 0, 200, 0];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    for now in (1000..=4000).step_by(250) {
+        radio.data(POWER, POWER_200, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    runtime.input(press(Button::BottomRight), 4100, &mut radio);
+    // The flush is delayed; the power meter now reports 2000 W.
+    for now in [6000, 7000] {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    settle(&mut runtime, &mut journal, &mut radio, 7000);
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.totals.avg_power(), Some(200));
+    assert_eq!(runtime.ride.totals.max_power(), Some(200));
+}
+
+#[test]
+fn a_start_mid_step_counts_its_first_fraction() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    for now in (250..=1250).step_by(250) {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    runtime.input(press(Button::BottomRight), 1250, &mut radio);
+    for now in (1500..=3000).step_by(250) {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    assert_eq!(runtime.ride.totals.max_power(), Some(2000));
+}
+
+#[test]
+fn an_automatic_action_leaves_an_unread_host_completion_alone() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut output = String::new();
+    let status = runtime.command("RIDE START", &mut journal, 1000, &mut output);
+    assert_eq!(status, "ACCEPTED");
+    let token = output.clone();
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        30,
+        false,
+    );
+    // The stop waits: the host has not read its completion yet.
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    output.clear();
+    assert_eq!(
+        runtime.command("RIDE STATUS", &mut journal, at, &mut output),
+        "OK"
+    );
+    let token = token.trim_start_matches("token=");
+    assert!(
+        output.contains(&format!("completed={token} result=OK")),
+        "{output}"
+    );
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        10,
+        false,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused, "{at}");
+}
+
+#[test]
+fn saving_an_auto_paused_ride_is_not_undone_by_movement() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        25,
+        false,
+    );
+    assert!(runtime.ride.auto.paused());
+    // First save press arms; the bike then moves on, which must not resume.
+    runtime.input(press(Button::TopLeft), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        2,
+        true,
+    );
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    runtime.input(press(Button::TopLeft), at, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, at);
+    assert_eq!(runtime.ride.recorder.status(), Status::Saved);
+}
+
+#[test]
+fn a_resume_and_pause_inside_one_step_use_the_resumed_readings() {
+    const POWER_0: [u8; 8] = [0x10, 1, 0, 90, 0, 0, 0, 0];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    for now in (1000..=3000).step_by(250) {
+        radio.data(POWER, POWER_2000, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    runtime.input(press(Button::BottomRight), 3100, &mut radio);
+    let mut now = 3100;
+    while now < 9000 {
+        radio.data(POWER, POWER_0, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+        now += 100;
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    let work = runtime.ride.totals.work_kj();
+    runtime.input(press(Button::BottomRight), now, &mut radio);
+    while runtime.ride.recorder.status() != Status::Recording {
+        radio.data(POWER, POWER_0, now);
+        tick(&mut runtime, &mut journal, &mut radio, now);
+        now += 50;
+    }
+    now += 350;
+    runtime.input(press(Button::BottomRight), now, &mut radio);
+    // The next odometer step covers the resumed half second.
+    for later in [now + 600, now + 1200] {
+        radio.data(POWER, POWER_0, later);
+        tick(&mut runtime, &mut journal, &mut radio, later);
+    }
+    settle(&mut runtime, &mut journal, &mut radio, now + 1200);
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.totals.work_kj(), work, "no stale 2000 W");
+}
+
+#[test]
+fn a_new_ride_paused_before_its_first_step_still_counts_its_seconds() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(POWER, 0);
+    radio.data(POWER, POWER_2000, 900);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    radio.data(POWER, POWER_2000, 1000);
+    for now in [1000, 1100, 1200] {
+        tick(&mut runtime, &mut journal, &mut radio, now);
+    }
+    assert_eq!(runtime.ride.recorder.status(), Status::Recording);
+    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    radio.data(POWER, POWER_2000, 2000);
+    tick(&mut runtime, &mut journal, &mut radio, 2000);
+    settle(&mut runtime, &mut journal, &mut radio, 2000);
+    assert_eq!(runtime.ride.recorder.status(), Status::Paused);
+    assert_eq!(runtime.ride.totals.avg_power(), Some(2000), "first 400 ms");
+}
+
+#[test]
+fn one_turn_after_a_long_auto_pause_is_not_a_lost_sensor() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        90,
+        false,
+    );
+    assert!(runtime.ride.auto.paused());
+    // One turn, then still: the reference had expired, so the speed is unknown
+    // while fresh packets keep arriving. That is no reason to resume.
+    at = roll(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        at,
+        1,
+        true,
+    );
+    for _ in 0..10 {
+        at = roll(
+            (&mut runtime, &mut journal, &mut radio),
+            &mut wheel,
+            at,
+            1,
+            false,
+        );
+        assert_eq!(runtime.ride.recorder.status(), Status::Paused, "{at}");
+    }
 }

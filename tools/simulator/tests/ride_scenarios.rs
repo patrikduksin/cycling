@@ -52,10 +52,15 @@ fn paired_sensors_pass_the_connection_check() {
 fn ride_shows_live_metrics_and_records_the_gps_track() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.start_ride();
     sim.ride_at(28.0, 210.0, 142.0, 88.0);
+    sim.start_ride();
     sim.advance(minutes(5));
-    sim.expect_field("SPEED", "28.0");
+    // Wheel events arrive in quarter-second packets, so the last digit wobbles.
+    let speed = sim.screen().field("SPEED").unwrap();
+    assert!(
+        ["27.9", "28.0", "28.1"].contains(&speed.as_str()),
+        "{speed}"
+    );
     sim.expect_field("WATTS", "210");
     sim.expect_field("BPM", "142");
     sim.expect_field("ACTIVE TIME", "00:05:00");
@@ -362,8 +367,8 @@ fn storage_failure_mid_ride_is_shown_and_the_prefix_recovers_after_reboot() {
 fn gps_tunnel_records_samples_without_a_position() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
-    sim.start_ride();
     sim.ride_at(30.0, 0.0, 0.0, 85.0);
+    sim.start_ride();
     sim.advance(seconds(30));
     let gps = sim.screen().run("GPS").unwrap();
     assert_eq!(gps.color, 0x07ff, "GPS shown as fixed");
@@ -503,8 +508,8 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
 fn pause_excludes_time_and_two_hour_ride_keeps_every_sample() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.start_ride();
     sim.ride_at(30.0, 220.0, 145.0, 90.0);
+    sim.start_ride();
     sim.advance(minutes(60));
     sim.checkpoint("one hour in");
 
@@ -1512,4 +1517,100 @@ fn saved_sensors_keep_the_training_profile() {
         "ftp=250 lthr=175 stored=current persistence=saved"
     );
     wait_connected(&mut sim, device_type::POWER, seconds(5));
+}
+
+#[test]
+fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    // Rolling already, so the start does not read as a stop.
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(30));
+    sim.expect_field("ACTIVE TIME", "00:00:30");
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    let latency = sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
+    assert!(latency <= seconds(5), "auto-pause took {latency} ms");
+    println!("auto-pause latency {latency} ms");
+    sim.checkpoint("auto paused at the light");
+    sim.advance(seconds(60));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.wait_for("RECORDING", seconds(10)).unwrap();
+    sim.checkpoint("auto resumed when the light turns green");
+    sim.advance(seconds(20));
+    let after = sim.screen().field("ACTIVE TIME").unwrap();
+    // About 30 + 7 + 20 s riding; the 60 s wait is not in there.
+    let parts: Vec<u64> = after.split(':').map(|v| v.parse().unwrap()).collect();
+    let secs = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    assert!((50..=75).contains(&secs), "active {after}");
+    sim.stop_ride();
+    let kinds = sim.rides()[0].kinds();
+    assert!(kinds.contains(&Kind::Pause) && kinds.contains(&Kind::Resume));
+}
+
+#[test]
+fn riding_off_starts_the_ride_by_itself() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.home("TRAIN");
+    sim.wait_for("ACTIVE TIME", seconds(5)).unwrap();
+    sim.advance(seconds(5));
+    assert!(sim.rides().is_empty());
+    sim.checkpoint("waiting at standstill");
+    sim.ride_at(20.0, 0.0, 0.0, 0.0);
+    sim.wait_for("RECORDING", seconds(15)).unwrap();
+    sim.checkpoint("auto started");
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+}
+
+#[test]
+fn a_manual_pause_does_not_resume_when_the_bike_moves() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(10));
+    sim.pause_ride();
+    sim.advance(seconds(60));
+    assert!(sim.screen().contains("PAUSED"));
+    assert!(!sim.screen().contains("AUTO PAUSED"));
+    sim.checkpoint("manual pause while riding");
+}
+
+#[test]
+fn a_speed_sensor_dropout_does_not_pause_the_ride() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(10));
+    sim.set_present(device_type::SPEED_CADENCE, SPEED, false);
+    sim.advance(minutes(2));
+    assert!(sim.screen().contains("RECORDING"));
+    sim.checkpoint("speed sensor lost, still recording");
+    sim.set_present(device_type::SPEED_CADENCE, SPEED, true);
+    sim.advance(seconds(10));
+    assert!(sim.screen().contains("RECORDING"));
+}
+
+#[test]
+fn slow_steep_climbing_never_auto_pauses() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(5.0, 180.0, 0.0, 50.0);
+    sim.start_ride();
+    sim.advance(minutes(5));
+    assert!(sim.screen().contains("RECORDING"));
+    sim.checkpoint("five minutes at 5 km/h, still recording");
+    sim.ride_at(3.6, 180.0, 0.0, 40.0);
+    sim.advance(minutes(2));
+    assert!(sim.screen().contains("RECORDING"));
+    sim.stop_ride();
+    // Only the pause that stop_ride itself presses.
+    let pauses = sim.rides()[0]
+        .kinds()
+        .iter()
+        .filter(|kind| **kind == Kind::Pause)
+        .count();
+    assert_eq!(pauses, 1);
 }

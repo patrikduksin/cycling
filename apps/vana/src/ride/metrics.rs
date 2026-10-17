@@ -7,8 +7,11 @@ pub const WHEEL_MM: u32 = 2136;
 const MAX_SPEED_MM_S: u64 = 40_000;
 /// Speed is unknown once the sensor has been silent this long.
 const SPEED_SILENT_MS: u64 = 3000;
-/// Packets keep arriving but no new revolution: the wheel has stopped.
-const WHEEL_STOPPED_MS: u64 = 4000;
+/// Revolutions reach us in packets about every 250 ms; a revolution can wait
+/// that long, and a little more, before it is seen.
+const PACKET_SLACK_MS: u64 = 300;
+/// Below this (2 km/h) a wheel that has not completed a revolution is stopped.
+const WHEEL_STOPPED_MM_S: u64 = 556;
 /// A revolution this old cannot anchor a new speed measurement.
 const REVOLUTION_EXPIRED_MS: u64 = 60_000;
 
@@ -27,6 +30,8 @@ pub struct Speed {
     previous: Option<Revolution>,
     epoch: Option<Epoch>,
     value: Option<u32>,
+    /// The wheel has stood so long that its last revolution is no reference.
+    standing: bool,
     received: u64,
 }
 
@@ -47,8 +52,19 @@ impl Speed {
         if let Some(previous) = self.previous {
             let dt = current.event_time.wrapping_sub(previous.event_time);
             let dr = current.count.wrapping_sub(previous.count);
-            if current.received_ms.saturating_sub(previous.received_ms) > REVOLUTION_EXPIRED_MS {
-                self.value = None;
+            let repeat = dt == 0 && dr == 0;
+            if self.standing {
+                // The reference is a minute old or more: the wheel stands. Keep
+                // reading zero rather than lose the sensor, until a new
+                // revolution anchors a measurement. Its event time is stale, so
+                // no speed comes from comparing with it.
+                self.value = repeat.then_some(0);
+                self.standing = repeat;
+            } else if current.received_ms.saturating_sub(previous.received_ms)
+                > REVOLUTION_EXPIRED_MS
+            {
+                self.value = repeat.then_some(0);
+                self.standing = repeat;
             } else if dt != 0 && dr != 0 {
                 let speed = u64::from(dr) * u64::from(WHEEL_MM) * 1024 / u64::from(dt);
                 self.value = (speed <= MAX_SPEED_MM_S).then_some(speed as u32);
@@ -60,17 +76,33 @@ impl Speed {
         self.previous = Some(current);
     }
 
+    /// The wheel speed now. Once the time since the last revolution exceeds
+    /// what the last measurement implies, the wheel cannot be going faster
+    /// than one circumference per that time, so the reading decays with it
+    /// instead of holding until the wheel is declared stopped. The age is
+    /// measured from when the packet carrying the last revolution arrived, so a
+    /// lost repeat packet does not create a decay. Under 2 km/h it reads zero.
     pub fn value(&self, now: u64) -> Option<u32> {
         if now.saturating_sub(self.received) > SPEED_SILENT_MS {
             return None;
         }
-        self.previous.and_then(|previous| {
-            if now.saturating_sub(previous.received_ms) > WHEEL_STOPPED_MS {
-                Some(0)
-            } else {
-                self.value
-            }
-        })
+        let previous = self.previous?;
+        // Measured to the latest packet, not the clock: only packets that repeat the
+        // old revolution show the wheel has not turned. Silence proves nothing.
+        let age_ms = self.received.saturating_sub(previous.received_ms).max(1);
+        // A newer revolution may sit in a packet not yet received.
+        let overdue_ms = age_ms.saturating_sub(PACKET_SLACK_MS).max(1);
+        let bound = u64::from(WHEEL_MM) * 1000 / overdue_ms;
+        let speed = match self.value {
+            Some(speed) => u64::from(speed).min(bound),
+            None => bound,
+        };
+        if speed < WHEEL_STOPPED_MM_S {
+            return Some(0);
+        }
+        // Without a measured speed the bound is only a ceiling: unknown, not
+        // moving, until a revolution is measured or the wheel is plainly stopped.
+        self.value.map(|_| speed as u32)
     }
 }
 
@@ -205,11 +237,128 @@ mod tests {
         assert_eq!(speed.value(100), None);
         speed.receive(packet(488, 0, 1100, 0));
         assert_eq!(speed.value(1100), Some(WHEEL_MM));
-        speed.receive(packet(488, 0, 5200, 0));
-        assert_eq!(speed.value(5200), Some(0));
-        assert_eq!(speed.value(8300), None);
+        speed.receive(packet(488, 0, 5300, 0));
+        assert_eq!(speed.value(5300), Some(0));
+        assert_eq!(speed.value(8400), None);
         speed.receive(packet(1512, 1, 8500, 1));
         assert_eq!(speed.value(8500), None);
+    }
+    #[test]
+    fn speed_decays_when_braking_and_reads_zero_when_stopped() {
+        let mut speed = Speed::default();
+        // One revolution per second: 7.7 km/h.
+        speed.receive(packet(0, 0, 0, 0));
+        speed.receive(packet(1024, 1, 1000, 0));
+        assert_eq!(speed.value(1000), Some(WHEEL_MM));
+        // Repeat packets within a revolution period change nothing.
+        speed.receive(packet(1024, 1, 1250, 0));
+        assert_eq!(speed.value(1250), Some(WHEEL_MM));
+        assert_eq!(speed.value(1999), Some(WHEEL_MM));
+        // Overdue: bounded by one circumference per elapsed time.
+        speed.receive(packet(1024, 1, 2500, 0));
+        assert_eq!(speed.value(2500), Some(WHEEL_MM * 1000 / 1200));
+        speed.receive(packet(1024, 1, 3000, 0));
+        let at_three = speed.value(3000).unwrap();
+        assert!(at_three < WHEEL_MM * 1000 / 1200, "{at_three}");
+        // Under 2 km/h (556 mm/s) is zero, a little under four seconds on.
+        speed.receive(packet(1024, 1, 4900, 0));
+        assert!(speed.value(4900).unwrap() > 0);
+        speed.receive(packet(1024, 1, 5200, 0));
+        assert_eq!(speed.value(5300), Some(0));
+    }
+    #[test]
+    fn repeated_packets_after_a_connect_are_unknown_then_stopped_never_fast() {
+        let mut speed = Speed::default();
+        for at in (0..4000).step_by(250) {
+            speed.receive(packet(1024, 5, at, 0));
+            let value = speed.value(at);
+            assert!(value.is_none() || value == Some(0), "{value:?} at {at}");
+        }
+        speed.receive(packet(1024, 5, 4250, 0));
+        assert_eq!(speed.value(4250), Some(0));
+    }
+    #[test]
+    fn a_wheel_standing_for_minutes_keeps_reading_zero() {
+        let mut speed = Speed::default();
+        speed.receive(packet(0, 0, 0, 0));
+        speed.receive(packet(1024, 1, 1000, 0));
+        let mut zero_from = None;
+        for at in (1250..400_000).step_by(250) {
+            speed.receive(packet(1024, 1, at, 0));
+            let value = speed.value(at);
+            if value == Some(0) {
+                zero_from.get_or_insert(at);
+            }
+            if zero_from.is_some() {
+                assert_eq!(value, Some(0), "{value:?} at {at}");
+            }
+        }
+        assert!(zero_from.is_some());
+        // Pedalling off again is measured from the next revolution.
+        speed.receive(packet(2048, 2, 400_500, 0));
+        speed.receive(packet(3072, 3, 401_500, 0));
+        assert_eq!(speed.value(401_500), Some(WHEEL_MM));
+    }
+    #[test]
+    fn one_revolution_after_a_long_stand_is_not_a_speed() {
+        let mut speed = Speed::default();
+        speed.receive(packet(0, 0, 0, 0));
+        speed.receive(packet(1024, 1, 1000, 0));
+        for at in (1250..65_000).step_by(250) {
+            speed.receive(packet(1024, 1, at, 0));
+        }
+        assert_eq!(speed.value(64_750), Some(0));
+        // One revolution 64.25 s on (the 16-bit event time wraps), then still.
+        speed.receive(packet(1280, 2, 65_250, 0));
+        assert_eq!(speed.value(65_250), None);
+        for at in (65_500..70_000).step_by(250) {
+            speed.receive(packet(1280, 2, at, 0));
+            let value = speed.value(at);
+            assert!(value.is_none() || value == Some(0), "{value:?} at {at}");
+        }
+        // The next revolution anchors a real measurement.
+        speed.receive(packet(2304, 3, 71_000, 0));
+        assert_eq!(speed.value(71_000), Some(WHEEL_MM));
+    }
+    #[test]
+    fn a_dropout_during_a_slow_revolution_is_not_a_stop() {
+        let mut speed = Speed::default();
+        // 3.6 km/h: a revolution every 2136 ms, packets every 250 ms.
+        let mut at = 0;
+        let mut count = 0u16;
+        let mut event = 0u32;
+        while at < 20_000 {
+            if at >= (u64::from(count) + 1) * 2136 {
+                count += 1;
+                event = u32::from(count) * 2187;
+            }
+            speed.receive(packet(event as u16, count, at, 0));
+            at += 250;
+        }
+        let silent_from = at - 250;
+        let before = speed.value(silent_from).unwrap();
+        assert!(before > 833, "{before}");
+        // Packets stop late in a revolution: the clock alone is no evidence.
+        for now in (silent_from..silent_from + 3000).step_by(100) {
+            let value = speed.value(now).unwrap();
+            assert!(
+                value > 833,
+                "{value} mm/s {} ms into the dropout",
+                now - silent_from
+            );
+        }
+        assert_eq!(speed.value(silent_from + 3100), None);
+    }
+    #[test]
+    fn a_lost_packet_does_not_fake_a_decay() {
+        let mut speed = Speed::default();
+        speed.receive(packet(0, 0, 0, 0));
+        speed.receive(packet(1024, 1, 1000, 0));
+        // Packets at 1250 and 1500 are lost; the revolution at 2024 arrives late.
+        speed.receive(packet(2048, 2, 2100, 0));
+        assert_eq!(speed.value(2100), Some(WHEEL_MM));
+        speed.receive(packet(3072, 3, 3100, 0));
+        assert_eq!(speed.value(3100), Some(WHEEL_MM));
     }
     #[test]
     fn speed_rejects_implausible_and_expired_revolutions() {

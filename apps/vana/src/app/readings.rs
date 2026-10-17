@@ -54,6 +54,8 @@ pub(super) struct Readings {
     /// The sample most recently offered to the recorder.
     pub(super) live: Sample,
     speed: Speed,
+    /// A wheel sensor is connected and sending fresh packets.
+    pub(super) wheel_fresh: bool,
     odometer: Odometer,
     gradient: Gradient,
     pub(super) heart: Option<Timed<HeartRate>>,
@@ -68,6 +70,7 @@ impl Default for Readings {
         Self {
             live: Sample::default(),
             speed: Speed::default(),
+            wheel_fresh: false,
             odometer: Odometer::default(),
             gradient: Gradient::default(),
             heart: None,
@@ -198,12 +201,14 @@ impl Runtime {
                 } => Some(percent),
                 Observation::Unavailable => None,
             });
-        let speed_mm_s = [device_type::SPEED, device_type::SPEED_CADENCE]
+        let wheel_fresh = [device_type::SPEED, device_type::SPEED_CADENCE]
             .into_iter()
             .any(|kind| {
                 ant.channel(kind, now)
                     .is_some_and(|s| s.link == LinkState::Connected && !s.stale)
-            })
+            });
+        self.readings.wheel_fresh = wheel_fresh;
+        let speed_mm_s = wheel_fresh
             .then(|| self.readings.speed.value(now))
             .flatten();
         let pressure = match observations.physical.pressure {

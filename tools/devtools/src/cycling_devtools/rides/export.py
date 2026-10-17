@@ -433,7 +433,8 @@ def write_exports(output, canonical, header):
 def fit_command(canonical, output, start_utc_ms=None):
     """The firmware's own FIT encoder, built for the host (`apps/vana/src/bin/ride-fit.rs`)."""
     command = ['cargo', 'run', '--quiet', '--release', '--locked', '-p', 'vana', '--bin', 'ride-fit', '--']
-    command += [str(canonical), str(output)]
+    # Cargo runs from the workspace root, so relative paths would move.
+    command += [str(Path(canonical).resolve()), str(Path(output).resolve())]
     if start_utc_ms is not None:
         command += ['--start-utc-ms', str(start_utc_ms)]
     return command

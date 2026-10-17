@@ -20,6 +20,36 @@ impl firmware_services::fit::Sink for Out {
     }
 }
 
+/// Slots `next..end` read on demand by position, so each pass over a ride
+/// restarts without holding the prefix in memory.
+#[derive(Clone)]
+struct Slots<'f> {
+    file: &'f std::fs::File,
+    next: u64,
+    end: u64,
+}
+
+impl Iterator for Slots<'_> {
+    type Item = Slot;
+
+    fn next(&mut self) -> Option<Slot> {
+        use std::os::unix::fs::FileExt;
+        if self.next >= self.end {
+            return None;
+        }
+        let mut slot = Slot([0; SLOT_SIZE]);
+        if let Err(error) = self
+            .file
+            .read_exact_at(&mut slot.0, self.next * SLOT_SIZE as u64)
+        {
+            eprintln!("slot {}: {error}", self.next);
+            std::process::exit(1);
+        }
+        self.next += 1;
+        Some(slot)
+    }
+}
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
@@ -39,8 +69,15 @@ fn main() -> ExitCode {
             }
         }
     }
-    let raw = match std::fs::read(&input) {
-        Ok(raw) if raw.len() % SLOT_SIZE == 0 => raw,
+    let file = match std::fs::File::open(&input) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("{input}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let count = match file.metadata() {
+        Ok(meta) if meta.len() % SLOT_SIZE as u64 == 0 => meta.len() / SLOT_SIZE as u64,
         Ok(_) => {
             eprintln!("{input}: not a whole number of {SLOT_SIZE}-byte slots");
             return ExitCode::FAILURE;
@@ -50,12 +87,6 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let slots: Vec<Slot> = raw
-        .as_chunks::<SLOT_SIZE>()
-        .0
-        .iter()
-        .map(|chunk| Slot(*chunk))
-        .collect();
     let output = PathBuf::from(output);
     if let Err(error) = std::fs::create_dir_all(&output) {
         eprintln!("{}: {error}", output.display());
@@ -64,13 +95,22 @@ fn main() -> ExitCode {
     let mut failed = false;
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
-    for (index, slot) in slots.iter().enumerate() {
-        let Some(entry) = decode(slot) else { continue };
+    let all = Slots {
+        file: &file,
+        next: 0,
+        end: count,
+    };
+    for (index, slot) in all.clone().enumerate() {
+        let Some(entry) = decode(&slot) else { continue };
         if entry.kind != Kind::Start || only.is_some_and(|id| id != entry.ride_id) {
             continue;
         }
+        let ride = Slots {
+            next: index as u64,
+            ..all.clone()
+        };
         let mut out = Out(Vec::new());
-        let line = match write_all(slots[index..].iter(), entry.ride_id, start_utc_ms, &mut out) {
+        let line = match write_all(ride, entry.ride_id, start_utc_ms, &mut out) {
             Ok(plan) => {
                 let name = format!("ride-{}.fit", entry.ride_id);
                 if let Err(error) = std::fs::write(output.join(&name), &out.0) {

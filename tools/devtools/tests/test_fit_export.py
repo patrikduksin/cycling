@@ -175,7 +175,9 @@ class FitExportTests(unittest.TestCase):
     def test_command_uses_the_firmware_encoder(self):
         command = fit_command(Path('in.bin'), Path('out'), 5)
         self.assertEqual(command[command.index('--bin') + 1], 'ride-fit')
-        self.assertEqual(command[-5:], ['--', 'in.bin', 'out', '--start-utc-ms', '5'])
+        # Absolute, because cargo runs from the workspace root.
+        here = Path.cwd()
+        self.assertEqual(command[-5:], ['--', str(here / 'in.bin'), str(here / 'out'), '--start-utc-ms', '5'])
 
 
 if __name__ == '__main__':

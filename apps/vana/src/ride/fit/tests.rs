@@ -391,3 +391,15 @@ fn a_start_outside_fit_dates_is_refused() {
         );
     }
 }
+
+#[test]
+fn a_later_stretch_outside_fit_dates_is_refused() {
+    // The resumed stretch carries a clock far past FIT's last date.
+    for pause_wall_ms in [u64::MAX / 2, 200 * 365 * 86_400_000] {
+        assert_eq!(
+            file(&ride(true, pause_wall_ms), None).unwrap_err(),
+            Refusal::BadClock,
+            "{pause_wall_ms}"
+        );
+    }
+}

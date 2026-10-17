@@ -233,6 +233,8 @@ pub struct Plan {
     /// Stretch number and offset of stretches dated part way.
     late: [(u32, u64); LATE_STRETCHES],
     late_count: usize,
+    /// Lowest and highest offset any stretch dated itself with.
+    offsets: Option<(u64, u64)>,
 }
 
 impl Plan {
@@ -278,6 +280,7 @@ pub struct Export {
     plan: Option<Plan>,
     late: [(u32, u64); LATE_STRETCHES],
     late_count: usize,
+    offsets: Option<(u64, u64)>,
     /// The latest sample, whose readings hold until the next one or a pause.
     last_sample: Option<Sample>,
     /// A start or resume waiting for the next sample to date it.
@@ -318,6 +321,7 @@ impl Export {
             plan: plan.copied(),
             late: [(0, 0); LATE_STRETCHES],
             late_count: 0,
+            offsets: None,
             last_sample: None,
             pending_start: None,
             paused: false,
@@ -509,6 +513,9 @@ impl Export {
                 self.offset_ms = offset;
                 self.stretch_dated = true;
                 self.first_offset_ms.get_or_insert(offset);
+                self.offsets = Some(self.offsets.map_or((offset, offset), |(low, high)| {
+                    (low.min(offset), high.max(offset))
+                }));
                 if self.stretch_untimed && self.late_count < LATE_STRETCHES {
                     self.late[self.late_count] = (self.stretch, offset);
                     self.late_count += 1;
@@ -681,6 +688,7 @@ impl Export {
             active_ms: self.active_ms,
             late: self.late,
             late_count: self.late_count,
+            offsets: self.offsets,
         }
     }
 }
@@ -703,17 +711,22 @@ pub fn clock_for(plan: &Plan, start_utc_ms: Option<u64>) -> Result<Option<u64>, 
         return Err(Refusal::Empty);
     }
     let clock = plan.clock(start_utc_ms).ok_or(Refusal::NoClock)?;
-    let end = clock.checked_add(plan.active_ms).ok_or(Refusal::BadClock)?;
-    if fit::timestamp(clock).is_none() || fit::timestamp(end).is_none() {
+    // Every sample is dated by the clock or a stretch's own offset, plus an
+    // active time no later than the ride's.
+    let (low, high) = plan.offsets.map_or((clock, clock), |(low, high)| {
+        (low.min(clock), high.max(clock))
+    });
+    let end = high.checked_add(plan.active_ms).ok_or(Refusal::BadClock)?;
+    if fit::timestamp(low).is_none() || fit::timestamp(end).is_none() {
         return Err(Refusal::BadClock);
     }
     Ok(Some(clock))
 }
 
-/// Both passes over slots held in memory, for hosts and tests: the file of
-/// the ride whose START is `slots[0]`.
-pub fn write_all<'a>(
-    slots: impl Iterator<Item = &'a Slot> + Clone,
+/// Both passes over a restartable slot source, for hosts and tests: the file
+/// of the ride whose START is the first slot.
+pub fn write_all<S: core::borrow::Borrow<Slot>>(
+    slots: impl Iterator<Item = S> + Clone,
     ride_id: u32,
     start_utc_ms: Option<u64>,
     out: &mut impl Sink,
@@ -721,7 +734,7 @@ pub fn write_all<'a>(
     let mut counter = Counter::default();
     let mut sizing = Export::start(ride_id, None, None, &mut counter);
     for slot in slots.clone() {
-        if sizing.slot(slot, &mut counter) == Flow::End {
+        if sizing.slot(slot.borrow(), &mut counter) == Flow::End {
             break;
         }
     }
@@ -729,7 +742,7 @@ pub fn write_all<'a>(
     let clock = clock_for(&plan, start_utc_ms)?;
     let mut export = Export::start(ride_id, Some(&plan), clock, out);
     for slot in slots {
-        if export.slot(slot, out) == Flow::End {
+        if export.slot(slot.borrow(), out) == Flow::End {
             break;
         }
     }

@@ -29,6 +29,8 @@ struct Shared {
     power_active: bool,
     restore: [Option<Identity>; device_api::ant::CHANNEL_CAPACITY],
     reconnect_sent: [bool; device_api::ant::CHANNEL_CAPACITY],
+    /// Channels this suspension closed, so a close that times out is never sent again.
+    close_sent: [bool; device_api::ant::CHANNEL_CAPACITY],
     power_deadline: u64,
 }
 static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
@@ -43,6 +45,7 @@ static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefC
     power_active: false,
     restore: [None; device_api::ant::CHANNEL_CAPACITY],
     reconnect_sent: [false; device_api::ant::CHANNEL_CAPACITY],
+    close_sent: [false; device_api::ant::CHANNEL_CAPACITY],
     power_deadline: 0,
 }));
 
@@ -105,6 +108,7 @@ pub fn power_request(suspend: bool, now: u64) -> Result<(), Error> {
                     .and_then(|snapshot| snapshot.selected)
             });
             s.reconnect_sent.fill(false);
+            s.close_sent.fill(false);
         } else if s.power == PeripheralState::Running {
             return Ok(());
         } else if s.power_active && !s.suspending {
@@ -169,22 +173,36 @@ impl Shared {
                 ScanOwnership::Uncertain => failed = true,
                 ScanOwnership::Idle => {}
             }
-            for snapshot in self.state.snapshots(now).into_iter().flatten() {
+            for (index, snapshot) in self.state.snapshots(now).into_iter().enumerate() {
+                let Some(snapshot) = snapshot else {
+                    continue;
+                };
+                // A sensor that stopped answering (asleep after a ride) leaves
+                // its search timed out; VANA closes such channels too, and the
+                // radio confirms that close. Only a close of ours timing out,
+                // or a lost transport, leaves the channel uncertain.
                 match snapshot.link {
-                    LinkState::Connecting | LinkState::Connected => {
-                        if !failed {
-                            self.pending = self
-                                .state
-                                .disconnect(snapshot.selected.unwrap().device_type, now);
-                            if self.pending.is_some() {
-                                return;
-                            }
-                            waiting = true;
-                        }
+                    LinkState::Connecting | LinkState::Connected => {}
+                    LinkState::TimedOut if !self.close_sent[index] => {}
+                    LinkState::TimedOut | LinkState::TransportLost => {
+                        failed = true;
+                        continue;
                     }
-                    LinkState::Disconnecting => waiting = true,
-                    LinkState::TimedOut | LinkState::TransportLost => failed = true,
-                    LinkState::Idle | LinkState::Disconnected => {}
+                    LinkState::Disconnecting => {
+                        waiting = true;
+                        continue;
+                    }
+                    LinkState::Idle | LinkState::Disconnected => continue,
+                }
+                if !failed {
+                    self.close_sent[index] = true;
+                    self.pending = self
+                        .state
+                        .disconnect(snapshot.selected.unwrap().device_type, now);
+                    if self.pending.is_some() {
+                        return;
+                    }
+                    waiting = true;
                 }
             }
         } else {
@@ -202,6 +220,10 @@ impl Shared {
                 match snapshot.link {
                     LinkState::Connected if snapshot.selected == Some(identity) => {}
                     LinkState::Connecting | LinkState::Disconnecting => waiting = true,
+                    // The radio runs again; a sensor that no longer answers
+                    // is VANA's to retry, not a failed recovery.
+                    LinkState::TimedOut | LinkState::Disconnected if self.reconnect_sent[index] => {
+                    }
                     LinkState::Disconnected if !self.reconnect_sent[index] && self.scan.idle() => {
                         self.reconnect_sent[index] = true;
                         match self.state.connect(identity, now) {
@@ -505,6 +527,7 @@ mod power_tests {
             power_active: true,
             restore: [None; device_api::ant::CHANNEL_CAPACITY],
             reconnect_sent: [false; device_api::ant::CHANNEL_CAPACITY],
+            close_sent: [false; device_api::ant::CHANNEL_CAPACITY],
             power_deadline: 12_000,
         }
     }
@@ -563,6 +586,60 @@ mod power_tests {
         s.progress_power(6);
         assert_eq!(s.power, PeripheralState::Running);
         assert!(s.state.channel(PEER.device_type, 6).unwrap().stale);
+    }
+
+    /// A saved sensor asleep after a ride leaves a timed-out search behind.
+    fn timed_out() -> Shared {
+        let mut s = shared();
+        s.state.connect(PEER, 0).unwrap();
+        s.state.receive(Event::Timeout(PEER), 1);
+        assert_eq!(s.state.channel(120, 1).unwrap().link, LinkState::TimedOut);
+        s
+    }
+
+    #[test]
+    fn timed_out_search_is_closed_once_before_quiescence() {
+        let mut s = timed_out();
+        s.progress_power(2);
+        assert_eq!(
+            s.pending.take(),
+            Some(Request::Disconnect { identity: PEER })
+        );
+        s.progress_power(3);
+        assert_eq!(s.power, PeripheralState::Pending);
+        s.state.receive(Event::Disconnected(PEER), 4);
+        s.progress_power(4);
+        assert_eq!(s.power, PeripheralState::Quiescent);
+    }
+
+    #[test]
+    fn timed_out_close_is_not_sent_again() {
+        let mut s = timed_out();
+        s.progress_power(2);
+        assert!(s.pending.take().is_some());
+        let expired = 2 + device_api::ant::CONNECT_TIMEOUT_MS;
+        s.state.tick(expired);
+        s.progress_power(expired);
+        assert!(s.pending.is_none());
+        assert_eq!(s.power, PeripheralState::Failed);
+    }
+
+    #[test]
+    fn restored_sensor_that_stays_silent_does_not_fail_recovery() {
+        let mut s = shared();
+        s.state.connect(PEER, 0).unwrap();
+        s.state.receive(Event::Connected(PEER), 1);
+        s.restore[0] = Some(PEER);
+        s.progress_power(2);
+        assert!(s.pending.take().is_some());
+        s.state.receive(Event::Disconnected(PEER), 3);
+        s.suspending = false;
+        s.progress_power(4);
+        assert_eq!(s.pending.take(), Some(Request::Connect { identity: PEER }));
+        s.state.receive(Event::Timeout(PEER), 5);
+        s.progress_power(5);
+        assert_eq!(s.power, PeripheralState::Running);
+        assert!(s.pending.is_none());
     }
 
     #[test]

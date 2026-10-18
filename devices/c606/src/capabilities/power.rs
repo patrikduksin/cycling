@@ -226,6 +226,15 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
             }
             State::Quiescing => prepare(&mut work, &mut light, now),
             State::Recovering => recover(&mut work, &mut light, now),
+            // Admission never reopened after the failed recovery, so once
+            // accepted IO drains nothing else can drive the hardware.
+            State::Failed
+                if TRANSITION.lock(|t| t.borrow().unrecovered_shutdown()) && ACCESS.drained() =>
+            {
+                log::warn!(target: "power", "recovery failed; turning off anyway");
+                let _ = backlight(&mut light, true);
+                submit_shutdown(now);
+            }
             _ => {}
         }
         let current = status();
@@ -360,6 +369,10 @@ fn prepare(work: &mut Work, light: &mut Backlight, now: u64) {
         });
         return;
     }
+    submit_shutdown(now);
+}
+
+fn submit_shutdown(now: u64) {
     super::sensors::loss();
     super::ant::loss(now);
     super::positioning::invalidate();

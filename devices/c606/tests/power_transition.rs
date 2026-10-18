@@ -197,6 +197,33 @@ fn preparation_and_recovery_deadlines_fail_closed() {
 }
 
 #[test]
+fn shutdown_that_cannot_recover_turns_off_anyway() {
+    let mut t = Transition::new();
+    t.request(Operation::Shutdown, 0).unwrap();
+    t.quiescing(1);
+    t.abort(Failure::Ant, 2);
+    assert!(!t.unrecovered_shutdown());
+    t.submitted(Ok(()), 3);
+    assert_eq!(t.status().state, State::Recovering);
+    t.recovery_failed();
+    assert!(t.unrecovered_shutdown());
+    t.submitted(Ok(()), 4);
+    assert_eq!(t.status().state, State::Submitted);
+    assert!(!t.status().ready);
+    assert!(!t.unrecovered_shutdown());
+
+    // Wake and sleep keep failing closed: they never turn the device off.
+    let mut t = Transition::new();
+    t.begin_charging(0);
+    t.charging(1);
+    t.wake(2).unwrap();
+    t.recovery_failed();
+    assert!(!t.unrecovered_shutdown());
+    t.submitted(Ok(()), 3);
+    assert_eq!(t.status().state, State::Failed);
+}
+
+#[test]
 fn shutdown_is_one_fixed_stock_operation() {
     let frame = transition::shutdown_frame();
     assert_eq!(

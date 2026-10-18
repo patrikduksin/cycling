@@ -116,7 +116,7 @@ impl Transition {
     /// The command might have reached hardware even on a short/failed write.
     /// Neither result establishes shutdown, and neither permits an automatic retry.
     pub fn submitted(&mut self, result: Result<(), ()>, now: u64) {
-        if self.status.state != State::Quiescing
+        if !(self.status.state == State::Quiescing || self.unrecovered_shutdown())
             || self.status.operation != Some(Operation::Shutdown)
         {
             return;
@@ -177,6 +177,14 @@ impl Transition {
             self.status.ready = false;
             self.status.failure = Some(Failure::Recovery);
         }
+    }
+    /// A shutdown that aborted and then failed to recover can neither return
+    /// to service nor admit work again. The owner finishes turning off
+    /// instead of leaving the device gated, lit and drawing nothing.
+    pub fn unrecovered_shutdown(&self) -> bool {
+        self.status.state == State::Failed
+            && self.status.operation == Some(Operation::Shutdown)
+            && self.status.failure == Some(Failure::Recovery)
     }
     pub fn tick(&mut self, now: u64) {
         let elapsed = now.saturating_sub(self.status.at_ms);

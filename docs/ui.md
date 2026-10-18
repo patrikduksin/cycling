@@ -441,6 +441,12 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | Settings rows | Tap | Act on the row, as ACT does |
 | Settings pads | Act on contact | Step the edited value |
 
+Holding TopLeft for 10 s reboots the device from any state, even one that
+draws nothing. The device firmware watches for it below VANA, so a stuck
+screen cannot swallow it. The hold's first report still acts as a press
+(LAP, or the TURN OFF sheet on Home); a ride in progress resumes as a
+recovered ride.
+
 Touch never starts, pauses, laps or ends a ride. Wet gloves, rain and bumps
 cause stray contacts, and a ride must not depend on them. Anything touch can do,
 a button can do too.

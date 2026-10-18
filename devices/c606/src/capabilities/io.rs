@@ -109,6 +109,7 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
     let mut decoder = Decoder::default();
     let mut last_rx = Instant::now().as_millis();
     let mut contact = TouchContact::default();
+    let mut hold = crate::drivers::hold_reboot::Hold::default();
     log::info!(target: "input", "acquisition started poll_ms=10 edges=16");
     loop {
         let now = Instant::now().as_millis();
@@ -169,6 +170,10 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                         Event::Power { status } => state.power = Some((status, now)),
                         Event::Button { button, code } => {
                             log::info!(target: "button", "id={} code={}", button.index(), code);
+                            if hold.report(button, code, now) {
+                                log::warn!(target: "input", "reboot hold");
+                                esp_hal::system::software_reset();
+                            }
                             if edge(now, Input::Button { button, code }) {
                                 contact.cancel(now);
                             }

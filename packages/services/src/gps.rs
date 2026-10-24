@@ -1212,4 +1212,50 @@ mod tests {
             assert_eq!(fix.valid_sentences, before + 1, "seed {seed}");
         }
     }
+
+    use std::vec::Vec;
+    /// A checksummed sentence with its `$`, `*hh` and the given ending.
+    fn checksummed(value: &[u8], ending: &[u8]) -> Vec<u8> {
+        let sum = value.iter().fold(0, |sum, &byte| sum ^ byte);
+        let mut line =
+            std::format!("${}*{sum:02X}", std::str::from_utf8(value).unwrap()).into_bytes();
+        line.extend_from_slice(ending);
+        line
+    }
+    const GGA: &[u8] = b"GNGGA,075848.000,,,,,0,00,25.5,,M,,M,,";
+    const GSV: &[u8] = b"GPGSV,3,1,12,01,40,083,,02,17,308,,03,07,344,,04,22,228,";
+    fn stream(p: &mut Parser, bytes: &[u8]) {
+        for &byte in bytes {
+            p.push(byte, 1);
+        }
+    }
+
+    #[test]
+    fn a_dollar_inside_a_long_binary_frame_is_not_a_line_overflow() {
+        // Issue #134's suspected shape: a `$` early in a frame, then hundreds of
+        // bytes with no LF.
+        let mut p = Parser::default();
+        let mut input = checksummed(GGA, b"\r\n");
+        input.extend_from_slice(&[0xBA, 0xCE, 0x00, 0x04, b'$']);
+        input.extend((0..1024).map(|i| if i % 5 == 4 { 0x01 } else { b'A' }));
+        input.extend(checksummed(GGA, b"\r\n"));
+        stream(&mut p, &input);
+        let s = p.snapshot(1);
+        assert_eq!((s.valid_sentences, s.line_overflows), (2, 0));
+    }
+
+    #[test]
+    fn carriage_return_alone_ends_a_sentence() {
+        for ending in [&b"\r"[..], b"\n", b"\r\n", b"\n\r", b"\r\r\n"] {
+            let mut p = Parser::default();
+            let mut input = Vec::new();
+            for _ in 0..4 {
+                input.extend(checksummed(GGA, ending));
+                input.extend(checksummed(GSV, ending));
+            }
+            stream(&mut p, &input);
+            let s = p.snapshot(1);
+            assert_eq!((s.valid_sentences, s.parse_errors), (8, 0), "{ending:?}");
+        }
+    }
 }

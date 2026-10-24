@@ -1212,7 +1212,10 @@ mod tests {
             state ^= state << 5;
             (state % 2001) as f32 / 1000.0 - 1.0
         };
-        let (phase_e, phase_n) = (next() * 3.14, next() * 3.14);
+        let (phase_e, phase_n) = (
+            next() * core::f32::consts::PI,
+            next() * core::f32::consts::PI,
+        );
         let mut route = vec![(0.0, -off), (0.0, 0.0)];
         for _ in 0..laps {
             route.extend_from_slice(&corners[1..]);

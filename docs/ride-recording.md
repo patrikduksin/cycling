@@ -329,8 +329,10 @@ Recording:
   and every earlier ride stay exportable.
 - After power loss, the open ride is closed with a RECOVERED record at its last
   committed active time and the ride screen shows `RECOVERED`; the next START is
-  a new ride. Power lost during the very first write of an empty journal leaves
-  one occupied invalid slot and recording stays available.
+  a new ride. That ride reads the recovered ride's positions back from the
+  journal for back to start and AT START laps (`ride::homing::rebuild`); its
+  totals and laps start from zero. Power lost during the very first write of an
+  empty journal leaves one occupied invalid slot and recording stays available.
 - Sampling continues with missing sensors or GPS; unavailable measurements stay
   absent. Location-free rides are valid, and export does not invent coordinates,
   satellite metadata, speed or distance.

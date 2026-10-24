@@ -111,14 +111,27 @@ IDLE = 'status=Status { state: Idle, ready: true }'
 
 
 class UsbStandby:
-    """A USB-powered C606 after POWER SHUTDOWN, as measured on aca9b77.
+    """A USB-powered C606 after POWER SHUTDOWN, as measured on aca9b77 and 4113dbf.
 
-    It resets in software into charging standby and stays there. POWER WAKE
+    It resets in software, and POWER passes through Initializing and
+    Quiescing before charging standby, which it keeps. POWER WAKE
     starts recovery, and a few STATUS polls later the companion cuts power:
     the session drops and the C606 boots with a power-on reset.
     """
 
     PHASES = {
+        'starting': {
+            'STATUS': ('OK', 'uptime_ms=10031 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Initializing, ready: false }'),
+            'COMPANION': ('OK', 'startup=probing'),
+            'CRASH': ('BUSY', 'starting companion=probing'),
+        },
+        'quiescing': {
+            'STATUS': ('OK', 'uptime_ms=11000 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Quiescing, ready: false }'),
+            'COMPANION': ('OK', 'startup=charging'),
+            'CRASH': ('BUSY', 'power transition'),
+        },
         'standby': {
             'STATUS': ('OK', 'uptime_ms=10000 reset=software crash=none'),
             'POWER': ('OK', 'status=Status { state: Charging, ready: false }'),
@@ -139,8 +152,9 @@ class UsbStandby:
         },
     }
 
-    def __init__(self, polls_until_reset=3):
-        self.phase = 'standby'
+    def __init__(self, polls_until_reset=3, settles=True):
+        self.phase = 'starting'
+        self.ahead = ['quiescing', 'standby'] if settles else []
         self.boot = 0
         self.polls_until_reset = polls_until_reset
         self.commands = []
@@ -163,6 +177,8 @@ class UsbStandby:
                 self.boot += 1
                 raise RuntimeError('device rebooted during command')
         status, data = self.PHASES[self.phase][command]
+        if command == 'POWER' and self.ahead:
+            self.phase = self.ahead.pop(0)
         return dict(status=status, data=data, ms=1)
 
 
@@ -241,6 +257,20 @@ class PowerCycleTests(unittest.TestCase):
             power_cycle('port', None)
         self.assertEqual(device.commands.count('POWER WAKE'), 1)
         self.assertLessEqual(device.commands.count('STATUS'), 8)
+
+    def test_a_standby_that_never_arrives_stops_at_the_deadline(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
+        device = UsbStandby(settles=False)
+        sessions = iter([before, device.connect()])
+        with (
+            patch('cycling_devtools.harness.base.reopen', side_effect=lambda *unused: next(sessions)),
+            patch('cycling_devtools.harness.base.time.monotonic', side_effect=itertools.count(0, 10)),
+            patch('time.sleep'),
+            self.assertRaisesRegex(TimeoutError, 'Initializing'),
+        ):
+            power_cycle('port', None)
+        self.assertNotIn('POWER WAKE', device.commands)
+        self.assertLessEqual(device.commands.count('POWER'), 5)
 
     def test_an_early_idle_before_the_companion_starts_is_not_settled(self):
         connection = ScriptedConnection(

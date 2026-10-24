@@ -457,13 +457,23 @@ impl Sim {
     ) -> Result<u64, String> {
         let start = self.now();
         let mut submissions = u32::MAX;
+        // `done` reads only pixels, and reading text is most of a long
+        // scenario's time: a resubmitted frame identical to the last one
+        // read cannot change the answer.
+        let mut read: Option<Vec<u16>> = None;
         loop {
             let current = self.device.display.0.borrow().submissions;
             if current != submissions {
                 submissions = current;
-                let screen = self.screen();
-                if done(&screen) {
-                    return Ok(self.now() - start);
+                let unchanged = read
+                    .as_deref()
+                    .is_some_and(|pixels| *pixels == *self.device.display.0.borrow().pixels);
+                if !unchanged {
+                    let screen = self.screen();
+                    if done(&screen) {
+                        return Ok(self.now() - start);
+                    }
+                    read = Some(screen.pixels);
                 }
             }
             if self.now() - start >= timeout_ms {

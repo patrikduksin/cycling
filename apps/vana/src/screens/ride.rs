@@ -118,56 +118,137 @@ impl RidePage {
         Self::Back,
     ];
 
-    pub const fn pages(workout: bool) -> &'static [Self] {
-        if workout { &Self::TRAINING } else { &Self::ALL }
-    }
-
     /// A number unique to the page, for touch ownership.
     pub fn index(self) -> usize {
         self as usize
     }
 
-    /// Where the page sits in `pages(workout)`, for the page dots; a page
-    /// that is not there counts as the first.
-    pub fn position(self, workout: bool) -> usize {
-        Self::pages(workout)
+    /// The bit that hides the page in a [`PageChoice`]; none for the pages
+    /// that are always on.
+    const fn hide_bit(self) -> Option<u8> {
+        match self {
+            Self::Main | Self::Workout => None,
+            Self::Stats => Some(1 << 0),
+            Self::Lap => Some(1 << 1),
+            Self::Climb => Some(1 << 2),
+            Self::Back => Some(1 << 3),
+            Self::Map => Some(1 << 4),
+        }
+    }
+}
+
+/// Which optional pages the rider turned off. Everything is on by default,
+/// and the bits are stored as they are (see `app::preferences`): the main
+/// page and the workout page have no bit and cannot be hidden.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PageChoice(u8);
+
+impl PageChoice {
+    /// The bits a record may carry.
+    pub const BITS: u8 = 0b1_1111;
+
+    /// The optional pages, in the order Settings lists them.
+    pub const OPTIONAL: [RidePage; 5] = [
+        RidePage::Stats,
+        RidePage::Lap,
+        RidePage::Climb,
+        RidePage::Map,
+        RidePage::Back,
+    ];
+
+    /// The choice a record's hidden bits stand for; none when it holds bits
+    /// that mean nothing.
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::BITS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub const fn shows(self, page: RidePage) -> bool {
+        match page.hide_bit() {
+            Some(bit) => self.0 & bit == 0,
+            None => true,
+        }
+    }
+
+    /// Show or hide `page`; the always-on pages stay on.
+    pub fn toggled(self, page: RidePage) -> Self {
+        match page.hide_bit() {
+            Some(bit) => Self(self.0 ^ bit),
+            None => self,
+        }
+    }
+}
+
+/// The pages MOVE steps through, in order: the workout page first while a
+/// workout is chosen, then every page the rider left on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pages {
+    list: [RidePage; RidePage::TRAINING.len()],
+    len: usize,
+}
+
+impl Pages {
+    pub fn new(workout: bool, choice: PageChoice) -> Self {
+        let mut list = [RidePage::Main; RidePage::TRAINING.len()];
+        let mut len = 0;
+        for page in RidePage::TRAINING {
+            if (workout || page != RidePage::Workout) && choice.shows(page) {
+                list[len] = page;
+                len += 1;
+            }
+        }
+        Self { list, len }
+    }
+
+    pub fn as_slice(&self) -> &[RidePage] {
+        &self.list[..self.len]
+    }
+
+    pub fn count(&self) -> usize {
+        self.len
+    }
+
+    pub fn first(&self) -> RidePage {
+        self.list[0]
+    }
+
+    pub fn last(&self) -> RidePage {
+        self.list[self.len - 1]
+    }
+
+    pub fn contains(&self, page: RidePage) -> bool {
+        self.as_slice().contains(&page)
+    }
+
+    /// Where `page` sits, for the page dots; a page that is not there
+    /// counts as the first.
+    pub fn position(&self, page: RidePage) -> usize {
+        self.as_slice()
             .iter()
-            .position(|page| *page == self)
+            .position(|shown| *shown == page)
             .unwrap_or(0)
     }
 
-    /// The page after this one in `pages(workout)`, wrapping.
-    pub fn following_in(self, workout: bool) -> Self {
-        let pages = Self::pages(workout);
-        pages[(self.position(workout) + 1) % pages.len()]
+    /// The page after `page`, wrapping.
+    pub fn following(&self, page: RidePage) -> RidePage {
+        self.list[(self.position(page) + 1) % self.len]
     }
 
-    /// The page before this one in `pages(workout)`, wrapping.
-    pub fn preceding_in(self, workout: bool) -> Self {
-        let pages = Self::pages(workout);
-        pages[(self.position(workout) + pages.len() - 1) % pages.len()]
+    /// The page before `page`, wrapping.
+    pub fn preceding(&self, page: RidePage) -> RidePage {
+        self.list[(self.position(page) + self.len - 1) % self.len]
     }
 
-    /// The free-ride page after this one; none after the last.
-    pub fn next(self) -> Option<Self> {
-        Self::ALL.get(self.position(false) + 1).copied()
-    }
-
-    /// The page after this one in `pages(workout)`; none after the last.
-    pub fn next_in(self, workout: bool) -> Option<Self> {
-        Self::pages(workout)
-            .get(self.position(workout) + 1)
-            .copied()
-    }
-
-    /// The free-ride page after this one, wrapping to the first.
-    pub fn following(self) -> Self {
-        self.following_in(false)
-    }
-
-    /// The free-ride page before this one, wrapping to the last.
-    pub fn preceding(self) -> Self {
-        self.preceding_in(false)
+    /// The page after `page`; none after the last.
+    pub fn next(&self, page: RidePage) -> Option<RidePage> {
+        self.as_slice().get(self.position(page) + 1).copied()
     }
 }
 
@@ -473,27 +554,106 @@ pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Displa
 mod tests {
     use super::*;
 
+    fn choice(hidden: &[RidePage]) -> PageChoice {
+        hidden
+            .iter()
+            .fold(PageChoice::default(), |choice, page| choice.toggled(*page))
+    }
+
     #[test]
     fn pages_step_in_order_and_wrap_both_ways() {
+        let free = Pages::new(false, PageChoice::default());
+        assert_eq!(free.as_slice(), RidePage::ALL);
         assert_eq!(RidePage::default(), RidePage::Main);
-        assert_eq!(RidePage::Main.next(), Some(RidePage::Stats));
-        assert_eq!(RidePage::Stats.next(), Some(RidePage::Lap));
-        assert_eq!(RidePage::Lap.next(), Some(RidePage::Climb));
-        assert_eq!(RidePage::Climb.next(), Some(RidePage::Map));
-        assert_eq!(RidePage::Map.next(), Some(RidePage::Back));
-        assert_eq!(RidePage::Back.next(), None);
-        assert_eq!(RidePage::Back.following(), RidePage::Main);
-        assert_eq!(RidePage::Main.preceding(), RidePage::Back);
-        assert_eq!(RidePage::Stats.preceding(), RidePage::Main);
-        // A workout puts its page first.
-        assert_eq!(RidePage::Workout.following_in(true), RidePage::Main);
-        assert_eq!(RidePage::Climb.following_in(true), RidePage::Map);
-        assert_eq!(RidePage::Map.following_in(true), RidePage::Back);
-        assert_eq!(RidePage::Back.preceding_in(true), RidePage::Map);
-        assert_eq!(RidePage::Back.following_in(true), RidePage::Workout);
-        assert_eq!(RidePage::Workout.preceding_in(true), RidePage::Back);
-        assert_eq!(RidePage::Main.position(true), 1);
-        assert_eq!(RidePage::Workout.position(false), 0);
+        assert_eq!(free.next(RidePage::Main), Some(RidePage::Stats));
+        assert_eq!(free.next(RidePage::Stats), Some(RidePage::Lap));
+        assert_eq!(free.next(RidePage::Lap), Some(RidePage::Climb));
+        assert_eq!(free.next(RidePage::Climb), Some(RidePage::Map));
+        assert_eq!(free.next(RidePage::Map), Some(RidePage::Back));
+        assert_eq!(free.next(RidePage::Back), None);
+        assert_eq!(free.following(RidePage::Back), RidePage::Main);
+        assert_eq!(free.preceding(RidePage::Main), RidePage::Back);
+        assert_eq!(free.preceding(RidePage::Stats), RidePage::Main);
+        let training = Pages::new(true, PageChoice::default());
+        assert_eq!(training.as_slice(), RidePage::TRAINING);
+        assert_eq!(training.following(RidePage::Workout), RidePage::Main);
+        assert_eq!(training.following(RidePage::Climb), RidePage::Map);
+        assert_eq!(training.following(RidePage::Map), RidePage::Back);
+        assert_eq!(training.preceding(RidePage::Back), RidePage::Map);
+        assert_eq!(training.following(RidePage::Back), RidePage::Workout);
+        assert_eq!(training.preceding(RidePage::Workout), RidePage::Back);
+        assert_eq!(training.position(RidePage::Main), 1);
+        assert_eq!(free.position(RidePage::Workout), 0);
+    }
+
+    #[test]
+    fn every_subset_of_optional_pages_makes_a_walkable_list() {
+        for bits in 0..1u8 << PageChoice::OPTIONAL.len() {
+            let hidden: std::vec::Vec<RidePage> = PageChoice::OPTIONAL
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| bits >> i & 1 == 1)
+                .map(|(_, page)| page)
+                .collect();
+            for workout in [false, true] {
+                let pages = Pages::new(workout, choice(&hidden));
+                let list = pages.as_slice();
+                assert!(list.contains(&RidePage::Main), "{hidden:?}");
+                assert_eq!(list.contains(&RidePage::Workout), workout);
+                assert_eq!(list.len(), pages.count());
+                assert!(hidden.iter().all(|page| !pages.contains(*page)));
+                assert_eq!(
+                    list.len(),
+                    1 + usize::from(workout) + PageChoice::OPTIONAL.len() - hidden.len()
+                );
+                let mut page = pages.first();
+                for (i, shown) in list.iter().enumerate() {
+                    assert_eq!(page, *shown);
+                    assert_eq!(pages.position(page), i);
+                    assert_eq!(pages.next(page), list.get(i + 1).copied());
+                    assert_eq!(pages.preceding(pages.following(page)), page);
+                    page = pages.following(page);
+                }
+                assert_eq!(page, pages.first(), "a full lap returns");
+                assert_eq!(pages.following(pages.last()), pages.first());
+                assert_eq!(pages.preceding(pages.first()), pages.last());
+            }
+        }
+    }
+
+    #[test]
+    fn with_everything_hidden_only_main_remains() {
+        let all_off = choice(&PageChoice::OPTIONAL);
+        let pages = Pages::new(false, all_off);
+        assert_eq!(pages.as_slice(), [RidePage::Main]);
+        assert_eq!(pages.following(RidePage::Main), RidePage::Main);
+        assert_eq!(pages.preceding(RidePage::Main), RidePage::Main);
+        assert_eq!(pages.next(RidePage::Main), None);
+        assert_eq!(
+            Pages::new(true, all_off).as_slice(),
+            [RidePage::Workout, RidePage::Main]
+        );
+    }
+
+    #[test]
+    fn main_and_workout_cannot_be_hidden_and_toggling_twice_restores() {
+        let default = PageChoice::default();
+        assert_eq!(default.bits(), 0);
+        for page in [RidePage::Main, RidePage::Workout] {
+            assert_eq!(default.toggled(page), default);
+            assert!(default.shows(page));
+        }
+        for page in PageChoice::OPTIONAL {
+            let off = default.toggled(page);
+            assert!(!off.shows(page));
+            assert_eq!(off.bits().count_ones(), 1);
+            assert_eq!(off.toggled(page), default);
+        }
+        assert_eq!(
+            PageChoice::from_bits(0b1_1111).map(PageChoice::bits),
+            Some(0b1_1111)
+        );
+        assert_eq!(PageChoice::from_bits(0b10_0000), None);
     }
 
     /// Radar alerts are safety-critical: even the farthest target is drawn

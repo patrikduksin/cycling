@@ -403,7 +403,7 @@ totals and alerts use readings as they arrive. The mechanism is
 ## Settings
 
 Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, DISPLAY, CLOCK, RIDE, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
+bar: PROFILE, DISPLAY, CLOCK, RIDE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
 headline and at most four rows. A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
 `SECONDARY` at the right of the value line. A note that does not fit whole is
@@ -416,7 +416,7 @@ Acting on a row does one of three things:
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
-  km/at start, wheel mode auto/manual, sounds on/off);
+  km/at start, wheel mode auto/manual, ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS) or a flow (PHONE, a placeholder until the
   phone companion lands).
 
@@ -449,6 +449,14 @@ starts them over. A failed clear says CLEAR FAILED in a toast.
 On the ride summary, a new best has the reading's metric colour and `BEST` in
 its caption: BEST TIME and BEST KM (`SPEED`), BEST ASC M (`GRADE`) on page 1,
 and a `POWER` `BEST` caption under each new best-power bar on page 3.
+
+RIDE PAGES (STATS, LAP, CLIMB) and MORE PAGES (MAP, BACK TO START) list one row per optional ride page; five rows do not fit one section above the save status. The ride screen's page dots
+count the pages that are on, and a page that is off never takes a dot, a MOVE
+press or a swipe. The `TITLE` falls back to `BODY` when a section name is too
+wide, as `RIDE PAGES` is. The CLIMB row's note, NO CLIMB POP-UP, shows while it
+is off. The choice is stored as hidden-page bits in the flags byte of VANA's
+preference record (`app::preferences`), so riders who hide nothing keep a
+record identical to the one before.
 
 ## First-run setup
 

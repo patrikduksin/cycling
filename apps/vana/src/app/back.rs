@@ -11,7 +11,7 @@ use super::cues::Cue;
 use crate::ride::homing::{Event, Homing};
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{Back, MapKey, Track, update_map};
+use crate::screens::ride::{Back, MapKey, RidePage, Track, update_map};
 
 pub use crate::ride::homing::Crumb;
 
@@ -58,6 +58,9 @@ impl Runtime {
             state.homing.reset();
         }
         state.riding = riding;
+        state
+            .homing
+            .set_auto_follow(self.preferences.options.ride_pages.shows(RidePage::Back));
         if !riding {
             return;
         }

@@ -254,6 +254,9 @@ pub struct Homing<'a> {
     /// before the first of them.
     retrace: u8,
     retrace_len: usize,
+    /// Riding back along the breadcrumb starts following by itself; off
+    /// while the back-to-start page is, since its pad could not stop it.
+    auto_follow: bool,
     off: bool,
     arrived: bool,
     pass: StartPass,
@@ -288,6 +291,7 @@ impl<'a> Homing<'a> {
             matched: None,
             retrace: 0,
             retrace_len: 0,
+            auto_follow: true,
             off: false,
             arrived: false,
             pass: StartPass::Spent,
@@ -367,6 +371,16 @@ impl<'a> Homing<'a> {
         self.guide
     }
 
+    /// Whether riding back over the breadcrumb starts following it. Turning
+    /// it off also stops a follow already under way, so no OFF TRACK
+    /// reminder can outlive the page that would stop it.
+    pub fn set_auto_follow(&mut self, on: bool) {
+        if !on && self.auto_follow {
+            self.stop_following();
+        }
+        self.auto_follow = on;
+    }
+
     /// The ride's position, if fresh, once per main-loop pass. A receiver
     /// reports about once a second, so only a new position is a new fix.
     pub fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
@@ -411,7 +425,7 @@ impl<'a> Homing<'a> {
         if self.following {
             return self.update(p, now);
         }
-        if self.retracing(p) {
+        if self.auto_follow && self.retracing(p) {
             // The fixes since the turn ran back over the breadcrumb.
             self.len = self.retrace_len;
             self.window_len = 0;
@@ -948,6 +962,40 @@ mod tests {
         homing.observe(Some((0, -1_799_998_000)), 2_000);
         let guide = homing.guide().unwrap();
         assert!((40..=50).contains(&guide.direct_m), "{guide:?}");
+    }
+
+    #[test]
+    fn retracing_never_follows_while_auto_follow_is_off() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        homing.set_auto_follow(false);
+        let mut now = 0;
+        let out = path(&[(0.0, 0.0), (0.0, 1000.0), (1000.0, 1000.0)], 7.0);
+        let back = path(&[(1000.0, 1000.0), (400.0, 1000.0)], 7.0);
+        let away = path(&[(400.0, 1000.0), (400.0, 2000.0)], 10.0);
+        for points in [&out, &back, &away] {
+            assert!(ride(&mut homing, points, &mut now).is_empty());
+        }
+        assert!(!homing.following());
+    }
+
+    #[test]
+    fn turning_auto_follow_off_ends_a_follow_and_silences_off_track() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        let out = path(&[(0.0, 0.0), (0.0, 1000.0), (1000.0, 1000.0)], 7.0);
+        let back = path(&[(1000.0, 1000.0), (400.0, 1000.0)], 7.0);
+        let away = path(&[(400.0, 1000.0), (400.0, 4000.0)], 10.0);
+        for points in [&out, &back] {
+            ride(&mut homing, points, &mut now);
+        }
+        assert!(homing.following());
+        homing.set_auto_follow(false);
+        assert!(!homing.following());
+        let events = ride(&mut homing, &away, &mut now);
+        assert!(events.is_empty(), "{events:?}");
+        assert!(!homing.following());
     }
 
     #[test]

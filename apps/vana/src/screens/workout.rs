@@ -98,6 +98,8 @@ pub struct View<'a> {
     pub lap: Lap,
     pub previous_lap: Option<Lap>,
     pub ride_page: RidePage,
+    /// The optional ride pages the rider left on, for the page dots.
+    pub ride_pages: ride::PageChoice,
     /// Climbs and the elevation profile; only the climb page reads them.
     pub climbs: Climbs,
     /// The road ahead from the map, borrowed: it is 1 KB and main's stack
@@ -194,6 +196,7 @@ impl View<'_> {
             lap: Laps::default().current(),
             previous_lap: None,
             ride_page: RidePage::Main,
+            ride_pages: ride::PageChoice::default(),
             climbs: Climbs::default(),
             forecast: &Forecast::NONE,
             lap_bars: ride::LapBars::new(),
@@ -440,10 +443,9 @@ impl View<'_> {
             }
             Page::Ride => {
                 let training = self.training.is_some();
-                self.bar.set_pages(
-                    self.ride_page.position(training),
-                    RidePage::pages(training).len(),
-                );
+                let pages = ride::Pages::new(training, self.ride_pages);
+                self.bar
+                    .set_pages(pages.position(self.ride_page), pages.count());
                 self.marks = ride::marks(self);
                 ride::prepare(self);
                 &[]

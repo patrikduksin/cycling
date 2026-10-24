@@ -13,6 +13,7 @@ use super::chrome::{
     ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, Line, RAISED, Rect, SECONDARY, TITLE, VALUE,
     WHITE,
 };
+use super::ride::RidePage;
 use super::workout::View;
 
 /// Every row, in BottomLeft order.
@@ -30,6 +31,11 @@ pub enum Row {
     AutoLap,
     Wheel,
     WheelMode,
+    PageStats,
+    PageLap,
+    PageClimb,
+    PageMap,
+    PageBack,
     Sounds,
     RadarAlerts,
     FuelAlert,
@@ -70,7 +76,7 @@ pub enum SettingsAction {
 }
 
 /// Sections in order, each with its title and the rows it holds.
-pub const SECTIONS: [(&str, &[Row]); 8] = [
+pub const SECTIONS: [(&str, &[Row]); 10] = [
     ("PROFILE", &[Row::Ftp, Row::Threshold, Row::Bests]),
     (
         "DISPLAY",
@@ -81,6 +87,11 @@ pub const SECTIONS: [(&str, &[Row]); 8] = [
         "RIDE",
         &[Row::AutoPause, Row::AutoLap, Row::Wheel, Row::WheelMode],
     ),
+    (
+        "RIDE PAGES",
+        &[Row::PageStats, Row::PageLap, Row::PageClimb],
+    ),
+    ("MORE PAGES", &[Row::PageMap, Row::PageBack]),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
@@ -153,6 +164,11 @@ impl Row {
             Self::AutoLap => "AUTO LAP",
             Self::Wheel => "WHEEL",
             Self::WheelMode => "WHEEL MODE",
+            Self::PageStats => "STATS",
+            Self::PageLap => "LAP",
+            Self::PageClimb => "CLIMB",
+            Self::PageMap => "MAP",
+            Self::PageBack => "BACK TO START",
             Self::Sounds => "SOUNDS",
             Self::RadarAlerts => "RADAR COUNT",
             Self::FuelAlert => "EAT AND DRINK",
@@ -166,6 +182,18 @@ impl Row {
             Self::Phone => "PHONE",
             Self::Storage => "STORAGE",
             Self::Firmware => "FIRMWARE",
+        }
+    }
+
+    /// The ride page a `RIDE PAGES` row switches.
+    pub const fn ride_page(self) -> Option<RidePage> {
+        match self {
+            Self::PageStats => Some(RidePage::Stats),
+            Self::PageLap => Some(RidePage::Lap),
+            Self::PageClimb => Some(RidePage::Climb),
+            Self::PageMap => Some(RidePage::Map),
+            Self::PageBack => Some(RidePage::Back),
+            _ => None,
         }
     }
 
@@ -189,6 +217,11 @@ impl Row {
             | Self::AutoPause
             | Self::AutoLap
             | Self::WheelMode
+            | Self::PageStats
+            | Self::PageLap
+            | Self::PageClimb
+            | Self::PageMap
+            | Self::PageBack
             | Self::Sounds
             | Self::RadarAlerts
             | Self::FuelAlert
@@ -306,7 +339,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         editor(&mut canvas, view, title, row);
     } else {
         canvas.fit(
-            &[&TITLE],
+            &[&TITLE, &BODY],
             title.as_bytes(),
             RIGHT - LEFT,
             LEFT,
@@ -491,7 +524,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 25);
+        assert_eq!(ROWS, 30);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -500,8 +533,8 @@ mod tests {
         }
         assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
         assert_eq!(section(Row::TimeZone.index()), (2, Row::TimeZone.index()));
-        assert_eq!(section(Row::Sounds.index()), (4, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (6, Row::HeartHigh.index()));
+        assert_eq!(section(Row::Sounds.index()), (6, Row::Sounds.index()));
+        assert_eq!(section(Row::PowerLow.index()), (8, Row::HeartHigh.index()));
         assert_eq!(first_of(SECTIONS.len()), 0);
     }
 

@@ -17,7 +17,7 @@ use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
 use crate::screens::ride::summary::{After, Saving, SummaryPage};
-use crate::screens::ride::{self, RidePage};
+use crate::screens::ride::{self, PageChoice, RidePage};
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
@@ -227,9 +227,10 @@ impl Default for Navigation {
 impl Navigation {
     /// The ride screen follows climbs: a confirmed climb shows the climb page,
     /// and its end returns to the page the rider was on, unless they changed
-    /// page during the climb (`ride_page_chosen`).
-    pub(super) fn follow_climb(&mut self, event: ClimbEvent) {
-        if self.page != Page::Ride {
+    /// page during the climb (`ride_page_chosen`). With the climb page turned
+    /// off a climb changes nothing: the climb has no toast to fall back on.
+    pub(super) fn follow_climb(&mut self, event: ClimbEvent, choice: PageChoice) {
+        if self.page != Page::Ride || !choice.shows(RidePage::Climb) {
             return;
         }
         match event {
@@ -563,7 +564,7 @@ impl Runtime {
         if status == Status::Recording {
             self.history_ride_started();
         }
-        let pages = self.workout_pages();
+        let pages = self.ride_pages();
         let shown = match self.navigation.page {
             Page::Ride => self.shown_workout(&self.preferences.profile),
             _ => None,
@@ -571,8 +572,9 @@ impl Runtime {
         let ftp_offer = self.ftp_sheet();
         let picker = (self.navigation.page == Page::Workouts).then(|| self.picker());
         let navigation = &mut self.navigation;
-        // The workout page goes with the workout.
-        if navigation.ride_page == RidePage::Workout && !pages {
+        // A page the rider turned off, or the workout page once its workout
+        // is gone, gives way to the main page.
+        if !pages.contains(navigation.ride_page) {
             navigation.ride_page_chosen(RidePage::Main);
         }
         let page = navigation.page;
@@ -612,6 +614,7 @@ impl Runtime {
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
+        view.ride_pages = self.preferences.options.ride_pages;
         view.totals = self.ride.totals;
         view.lap = self.ride.laps.current();
         view.previous_lap = self.ride.laps.previous();
@@ -1224,6 +1227,15 @@ impl Runtime {
                         "AUTO"
                     }
                 )
+            }
+            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap | Row::PageBack => {
+                let shown = row
+                    .ride_page()
+                    .is_none_or(|page| options.ride_pages.shows(page));
+                if row == Row::PageClimb && !shown {
+                    let _ = write!(note, "NO CLIMB POP-UP");
+                }
+                write!(value, "{}", on(shown))
             }
             Row::Sounds => {
                 if !options.sounds {

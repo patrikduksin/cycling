@@ -456,6 +456,11 @@ impl Runtime {
             Row::AutoLap => options.auto_lap = after(&AUTO_LAP, options.auto_lap),
             Row::TimeZone => options.zone = after(&ZONES, options.zone),
             Row::WheelMode => options.wheel.manual = !options.wheel.manual,
+            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap | Row::PageBack => {
+                if let Some(page) = row.ride_page() {
+                    options.ride_pages = options.ride_pages.toggled(page);
+                }
+            }
             Row::Sounds => options.sounds = !options.sounds,
             Row::SunsetAlert => options.sunset_alert = !options.sunset_alert,
             Row::Daylight => {
@@ -588,44 +593,43 @@ impl Runtime {
     /// rider was on, and from the last page back to it.
     fn next_ride_page(&mut self) {
         let paused = self.ride.active().status() == Status::Paused;
-        let workout = self.workout_pages();
+        let pages = self.ride_pages();
         let navigation = &mut self.navigation;
         if paused && !navigation.pause_hidden {
             navigation.pause_hidden = true;
             if core::mem::take(&mut navigation.pause_wrapped) {
-                navigation.ride_page_chosen(RidePage::pages(workout)[0]);
+                navigation.ride_page_chosen(pages.first());
             }
             return;
         }
-        match navigation.ride_page.next_in(workout) {
+        match pages.next(navigation.ride_page) {
             Some(next) => navigation.ride_page_chosen(next),
             None if paused => {
                 navigation.pause_hidden = false;
                 navigation.pause_wrapped = true;
             }
-            None => navigation.ride_page_chosen(RidePage::pages(workout)[0]),
+            None => navigation.ride_page_chosen(pages.first()),
         }
     }
 
     /// A swipe back: the mirror of `next_ride_page`.
     pub(super) fn previous_ride_page(&mut self) {
         let paused = self.ride.active().status() == Status::Paused;
-        let workout = self.workout_pages();
+        let pages = self.ride_pages();
         let navigation = &mut self.navigation;
         if paused && !navigation.pause_hidden {
             navigation.pause_hidden = true;
             if core::mem::take(&mut navigation.pause_wrapped) {
-                let pages = RidePage::pages(workout);
-                navigation.ride_page_chosen(pages[pages.len() - 1]);
+                navigation.ride_page_chosen(pages.last());
             }
             return;
         }
-        if paused && navigation.ride_page == RidePage::pages(workout)[0] {
+        if paused && navigation.ride_page == pages.first() {
             navigation.pause_hidden = false;
             navigation.pause_wrapped = true;
             return;
         }
-        let page = navigation.ride_page.preceding_in(workout);
+        let page = pages.preceding(navigation.ride_page);
         navigation.ride_page_chosen(page);
     }
 }

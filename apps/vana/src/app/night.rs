@@ -9,7 +9,7 @@
 //! brightness stays as it was.
 use super::Runtime;
 use super::preferences::Daylight;
-use crate::daylight::{night_at, night_by_clock, sun_altitude, unix_seconds};
+use crate::daylight::{night_at, night_by_clock, sun_altitude};
 use device_api::display::Display;
 use device_api::gps::FixState;
 use device_api::input::InputSource;
@@ -162,10 +162,10 @@ impl Runtime {
         });
         // The receiver's time is current only with a fresh fix.
         let read = fresh.and_then(|gps| {
-            let time = gps.utc?;
-            if let Some(seconds) = gps.date.and_then(|date| unix_seconds(date, time)) {
-                return Some((seconds, true));
+            if let Some(ms) = gps.utc_ms {
+                return Some(((ms / 1000) as i64, true));
             }
+            let time = gps.utc?;
             let pair = |at: usize| i64::from((time[at] - b'0') * 10 + time[at + 1] - b'0');
             time.iter()
                 .all(u8::is_ascii_digit)
@@ -205,6 +205,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use firmware_services::gps::unix_seconds;
 
     #[test]
     fn night_ramps_the_ceiling_down_from_what_shows_and_back_up() {

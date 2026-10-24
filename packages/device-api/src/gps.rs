@@ -52,10 +52,15 @@ pub struct Snapshot {
     /// UTC time of day of the exposed fix's epoch, in ms. Fixes of the same
     /// epoch from different sentences share it.
     pub epoch_ms: Option<u32>,
+    /// UTC time of day of the last fix (GGA or RMC) as ASCII `hhmmss`: a display
+    /// and night fallback for receivers that never date a fix. It has no date;
+    /// for UTC use `utc_ms`.
     pub utc: Option<[u8; 6]>,
-    /// The UTC date of the last fix as ASCII `ddmmyy`, when the receiver
-    /// reported one.
-    pub date: Option<[u8; 6]>,
+    /// UTC now in ms since the Unix epoch, by the receiver: read from its dated
+    /// RMC fixes and carried on by uptime, so it keeps going through a lost
+    /// fix. Never steps back by less than a second. None until a plausible
+    /// dated fix since the last control boundary.
+    pub utc_ms: Option<u64>,
     pub age_ms: Option<u64>,
     pub bytes: u32,
     pub valid_sentences: u32,
@@ -78,7 +83,7 @@ impl Default for Snapshot {
             speed_mm_s: None,
             epoch_ms: None,
             utc: None,
-            date: None,
+            utc_ms: None,
             age_ms: None,
             bytes: 0,
             valid_sentences: 0,

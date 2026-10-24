@@ -415,13 +415,15 @@ VANA branding and the brief glitch animation appear only on the splash screen.
 ## Structured training
 
 The TRAIN card on Home opens the workout picker: FREE RIDE, the built-ins,
-then uploads. MOVE focuses the next workout, ACT chooses it and opens Ready,
+then uploads. MOVE focuses the next workout (held, the next page of four), ACT chooses it and opens Ready,
 and BACK returns Home. Ready names the chosen workout under its headline, and
 a tap on that line opens the picker again to change it. A chosen workout plays
 on the next ride; BACK from Ready drops it.
 
-Built-ins ship in flash: SWEET SPOT 2X20, VO2 MAX 5X3, THRESHOLD 4X8,
-ENDURANCE Z2, OPENERS, FTP TEST 20 MIN and FTP RAMP TEST. A workout is a list
+Built-ins ship in flash, by rising intensity: RECOVERY SPIN 30, ENDURANCE Z2 60
+and 90, TEMPO 2X20, SWEET SPOT 3X12 and 2X20, THRESHOLD 4X8, OVER UNDER 2X20,
+VO2 MAX 5X3, 6X4 and 30-30S, ANAEROBIC 6X1, SPRINTS 10X10S, OPENERS, FTP TEST
+20 MIN and FTP RAMP TEST. A workout is a list
 of steps (warm up, work, recovery, cool down or test), each lasting a time, a
 distance or until MARK, with a target: % FTP, watts, heart zone, % LTHR,
 cadence, a ramp or none. Repeat blocks play a run of steps several times.

@@ -17,7 +17,8 @@ use super::workout::{Text, View};
 use crate::workout::model::Name;
 use core::fmt::Write;
 
-const VISIBLE: usize = 4;
+/// Cards in view; held MOVE pages by this many.
+pub const VISIBLE: usize = 4;
 const MARGIN: usize = 10;
 const INSET: usize = 16;
 const RADIUS: usize = 12;

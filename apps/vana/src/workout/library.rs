@@ -16,6 +16,9 @@ const fn ftp(low: u8, high: u8) -> Target {
 const fn min(minutes: u16) -> Length {
     Length::Time(minutes * 60)
 }
+const fn secs(seconds: u16) -> Length {
+    Length::Time(seconds)
+}
 const fn block(first: u8, len: u8, count: u8) -> Block {
     Block { first, len, count }
 }
@@ -57,13 +60,131 @@ pub const THRESHOLD: Workout = Workout::new(
 );
 
 pub const ENDURANCE: Workout = Workout::new(
-    "ENDURANCE Z2",
+    "ENDURANCE Z2 60",
     &[
         Step::new(Warmup, min(10), ftp(50, 60)),
         Step::new(Work, min(60), ftp(65, 75)).note("CONVERSATIONAL"),
         Step::new(Cooldown, min(5), ftp(40, 55)),
     ],
     &[],
+    None,
+);
+
+/// Easy legs: spin loosely under the aerobic floor.
+pub const RECOVERY: Workout = Workout::new(
+    "RECOVERY SPIN 30",
+    &[
+        Step::new(Warmup, min(5), ftp(40, 50)),
+        Step::new(Work, min(30), ftp(45, 55)).note("LIGHT, 90+ RPM"),
+        Step::new(Cooldown, min(5), ftp(40, 50)),
+    ],
+    &[],
+    None,
+);
+
+pub const ENDURANCE_LONG: Workout = Workout::new(
+    "ENDURANCE Z2 90",
+    &[
+        Step::new(Warmup, min(10), ftp(50, 60)),
+        Step::new(Work, min(90), ftp(65, 75)).note("EAT AND DRINK"),
+        Step::new(Cooldown, min(5), ftp(40, 55)),
+    ],
+    &[],
+    None,
+);
+
+pub const TEMPO: Workout = Workout::new(
+    "TEMPO 2X20",
+    &[
+        Step::new(Warmup, min(12), ftp(50, 70)),
+        Step::new(Work, min(20), ftp(80, 88)).note("SMOOTH, 85-90 RPM"),
+        Step::new(Recovery, min(5), ftp(45, 55)),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 2)],
+    None,
+);
+
+pub const SWEET_SPOT_SHORT: Workout = Workout::new(
+    "SWEET SPOT 3X12",
+    &[
+        Step::new(Warmup, min(12), ftp(50, 70)),
+        Step::new(Work, min(12), ftp(88, 94)).note("STEADY, SEATED"),
+        Step::new(Recovery, min(4), ftp(45, 55)),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 3)],
+    None,
+);
+
+/// Two sets of five: two minutes just under threshold, two just over.
+pub const OVER_UNDERS: Workout = Workout::new(
+    "OVER UNDER 2X20",
+    &[
+        Step::new(Warmup, min(12), ftp(50, 70)),
+        Step::new(Work, min(2), ftp(93, 97)).note("UNDER, SETTLE IN"),
+        Step::new(Work, min(2), ftp(103, 107)).note("OVER, HOLD ON"),
+        Step::new(Recovery, min(5), ftp(45, 55)),
+        Step::new(Work, min(2), ftp(93, 97)).note("UNDER, SETTLE IN"),
+        Step::new(Work, min(2), ftp(103, 107)).note("OVER, HOLD ON"),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 5), block(4, 2, 5)],
+    None,
+);
+
+pub const VO2_LONG: Workout = Workout::new(
+    "VO2 MAX 6X4",
+    &[
+        Step::new(Warmup, min(12), ftp(50, 70)),
+        Step::new(Work, min(4), ftp(105, 115)).note("STRONG, EVEN PACE"),
+        Step::new(Recovery, min(4), ftp(40, 55)),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 6)],
+    None,
+);
+
+/// Three sets of ten: thirty seconds hard, thirty easy, five minutes between.
+pub const VO2_THIRTY: Workout = Workout::new(
+    "VO2 MAX 30-30S",
+    &[
+        Step::new(Warmup, min(12), ftp(50, 70)),
+        Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
+        Step::new(Recovery, secs(30), ftp(40, 50)),
+        Step::new(Recovery, min(5), ftp(45, 55)),
+        Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
+        Step::new(Recovery, secs(30), ftp(40, 50)),
+        Step::new(Recovery, min(5), ftp(45, 55)),
+        Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
+        Step::new(Recovery, secs(30), ftp(40, 50)),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 10), block(4, 2, 10), block(7, 2, 10)],
+    None,
+);
+
+pub const ANAEROBIC: Workout = Workout::new(
+    "ANAEROBIC 6X1",
+    &[
+        Step::new(Warmup, min(15), ftp(50, 70)),
+        Step::new(Work, min(1), ftp(150, 170)).note("ALL IN"),
+        Step::new(Recovery, min(4), ftp(40, 55)),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 6)],
+    None,
+);
+
+pub const SPRINTS: Workout = Workout::new(
+    "SPRINTS 10X10S",
+    &[
+        Step::new(Warmup, min(15), ftp(50, 70)),
+        Step::new(Work, secs(10), ftp(200, 250)).note("MAX, FROM A ROLL"),
+        Step::new(Recovery, secs(120), ftp(40, 55)),
+        Step::new(Cooldown, min(10), ftp(40, 55)),
+    ],
+    &[block(1, 2, 10)],
     None,
 );
 
@@ -121,12 +242,21 @@ pub const FTP_RAMP: Workout = Workout::new(
     Some(Test::Ramp),
 );
 
-/// Built-in workouts in picker order: training first, then the tests.
-pub const BUILT_IN: [&Workout; 7] = [
-    &SWEET_SPOT,
-    &VO2_MAX,
-    &THRESHOLD,
+/// Built-in workouts in picker order: by rising intensity, then the tests.
+pub const BUILT_IN: [&Workout; 16] = [
+    &RECOVERY,
     &ENDURANCE,
+    &ENDURANCE_LONG,
+    &TEMPO,
+    &SWEET_SPOT_SHORT,
+    &SWEET_SPOT,
+    &THRESHOLD,
+    &OVER_UNDERS,
+    &VO2_MAX,
+    &VO2_LONG,
+    &VO2_THIRTY,
+    &ANAEROBIC,
+    &SPRINTS,
     &OPENERS,
     &FTP_TWENTY,
     &FTP_RAMP,
@@ -350,6 +480,7 @@ fn read(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::super::model::{MAX_PLAYED, NAME_BYTES};
     use super::*;
     use device_api::bulk::{Error as MediaError, OwnedInfo};
     use std::collections::BTreeMap;
@@ -372,11 +503,102 @@ pub(crate) mod tests {
         }
         assert_eq!(SWEET_SPOT.planned_secs(), 70 * 60);
         assert_eq!(VO2_MAX.played_len(), 12);
+        assert_eq!(VO2_THIRTY.played_len(), 64);
         assert_eq!(OPENERS.played_len(), 14);
         assert_eq!(
             FTP_TWENTY.planned_secs(),
             (10 + 6 + 3 + 5 + 5 + 20 + 10) * 60
         );
+    }
+
+    /// Each built-in's name token, and the seconds its name promises at the
+    /// hard part: work steps, or the measured step of a test. A ramp has no
+    /// fixed length.
+    const PROMISED: [(&Workout, &str, u32); 16] = [
+        (&RECOVERY, "SPIN 30", 30 * 60),
+        (&ENDURANCE, "Z2 60", 60 * 60),
+        (&ENDURANCE_LONG, "Z2 90", 90 * 60),
+        (&TEMPO, "2X20", 2 * 20 * 60),
+        (&SWEET_SPOT_SHORT, "3X12", 3 * 12 * 60),
+        (&SWEET_SPOT, "2X20", 2 * 20 * 60),
+        (&THRESHOLD, "4X8", 4 * 8 * 60),
+        (&OVER_UNDERS, "2X20", 2 * 20 * 60),
+        (&VO2_MAX, "5X3", 5 * 3 * 60),
+        (&VO2_LONG, "6X4", 6 * 4 * 60),
+        (&VO2_THIRTY, "30-30S", 3 * 10 * 30),
+        (&ANAEROBIC, "6X1", 6 * 60),
+        (&SPRINTS, "10X10S", 10 * 10),
+        (&OPENERS, "OPENERS", 3 * 75),
+        (&FTP_TWENTY, "20 MIN", 20 * 60),
+        (&FTP_RAMP, "RAMP", 0),
+    ];
+
+    #[test]
+    fn every_built_in_is_listed_once_and_promises_what_it_rides() {
+        assert_eq!(PROMISED.len(), BUILT_IN.len());
+        for (index, (workout, token, promised)) in PROMISED.iter().enumerate() {
+            let name = workout.name.as_str();
+            assert!(core::ptr::eq(*workout, BUILT_IN[index]), "{name}: order");
+            assert!(name.contains(token), "{name} lacks {token}");
+            assert!(name.len() <= 16, "{name} is too long for a card");
+            for other in &BUILT_IN[..index] {
+                assert_ne!(other.name, workout.name, "{name} twice");
+            }
+            let steps = workout.steps();
+            assert_eq!(steps[0].intensity, Warmup, "{name}: starts warm");
+            assert_eq!(
+                steps[steps.len() - 1].intensity,
+                Cooldown,
+                "{name}: ends cool"
+            );
+            let measured = if workout.test.is_some() { Test } else { Work };
+            let mut hard = 0;
+            let mut planned = 0;
+            for played in workout.played() {
+                let step = played.step;
+                assert!(step.note.as_bytes().len() < NAME_BYTES, "{name}: note cut");
+                match (step.length, step.target) {
+                    (Length::Time(secs), _) => {
+                        assert!(secs > 0, "{name}: empty step");
+                        planned += u32::from(secs);
+                        if step.intensity == measured {
+                            hard += u32::from(secs);
+                        }
+                    }
+                    (Length::Open, Target::Ramp { .. }) => {}
+                    other => panic!("{name}: {other:?}"),
+                }
+                if let Target::Ftp { low, high } = step.target {
+                    assert!(
+                        (35..=250).contains(&low) && low <= high && high <= 250,
+                        "{name}"
+                    );
+                    match step.intensity {
+                        Work => assert!(low >= 45, "{name}: work too easy"),
+                        Recovery | Warmup | Cooldown => {
+                            assert!(high <= 70, "{name}: {:?} too hard", step.intensity)
+                        }
+                        Test => assert!(low >= 100, "{name}: test too easy"),
+                    }
+                } else {
+                    assert!(
+                        matches!(step.target, Target::Free | Target::Ramp { .. })
+                            && step.intensity == Test,
+                        "{name}: only tests ride free or ramp"
+                    );
+                }
+            }
+            assert_eq!(hard, *promised, "{name}: hard seconds");
+            assert_eq!(planned, workout.planned_secs(), "{name}: planned");
+            assert!(
+                planned <= 3 * 3600 && workout.played_len() <= MAX_PLAYED,
+                "{name}"
+            );
+            assert!(
+                planned >= 20 * 60 || workout.has_untimed_steps(),
+                "{name}: too short to be a session"
+            );
+        }
     }
 
     /// A sparse owned region that starts blank.
@@ -450,7 +672,7 @@ pub(crate) mod tests {
             Some((THRESHOLD.name, Outline::of(&THRESHOLD)))
         );
         assert_eq!(library.load(Id::Uploaded(1), &mut region), Ok(VO2_MAX));
-        assert_eq!(library.load(Id::BuiltIn(0), &mut region), Ok(SWEET_SPOT));
+        assert_eq!(library.load(Id::BuiltIn(5), &mut region), Ok(SWEET_SPOT));
         assert_eq!(
             library.find(&files::Name::new("workouts/b.vw").unwrap()),
             Some(Id::Uploaded(1))

@@ -3239,6 +3239,44 @@ fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
 }
 
 #[test]
+fn a_long_workout_list_pages_with_held_move_and_a_thirty_thirty_runs() {
+    let mut sim = training_rider();
+    sim.home("TRAIN");
+    sim.expect_text("1/17");
+    // Held MOVE turns a page of four cards; a tap of MOVE moves one.
+    sim.hold(Button::BottomLeft, 500);
+    sim.expect_text("6/17");
+    sim.checkpoint("workout picker paged");
+    sim.hold(Button::BottomLeft, 500);
+    sim.hold(Button::BottomLeft, 500);
+    sim.expect_text("16/17");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("17/17");
+    sim.expect_text("FTP RAMP TEST");
+    sim.checkpoint("workout picker last card");
+    // Past the last card MOVE wraps to the first.
+    sim.press(Button::BottomLeft);
+    sim.expect_text("1/17");
+    go_home(&mut sim);
+    sim.choose_workout("VO2 MAX 30-30S");
+    sim.checkpoint("thirty thirty ready");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    assert_eq!(sim.workout()["step"], "1/64");
+    next_step(&mut sim);
+    assert_eq!(sim.workout()["step"], "2/64");
+    // Thirty seconds at 120-130 % of the default 215 W FTP.
+    assert_eq!(target(&mut sim), Some((258.0, 280.0)));
+    follow(&mut sim, 10, on_target);
+    sim.checkpoint("thirty thirty hard");
+    ride_step(&mut sim, on_target);
+    assert_eq!(sim.workout()["step"], "3/64");
+    sim.expect_text("RECOVER");
+    assert_eq!(target(&mut sim), Some((86.0, 108.0)));
+    sim.checkpoint("thirty thirty easy");
+}
+
+#[test]
 fn twenty_minute_ftp_test_offers_and_saves_the_new_ftp() {
     let mut sim = training_rider();
     sim.choose_workout("FTP TEST 20 MIN");
@@ -3375,7 +3413,7 @@ fn an_uploaded_workout_appears_in_the_picker_and_rides() {
     // The host puts the workout on FILES; opening the picker lists it.
     sim.put_file("workouts/over-unders.vw", &bytes);
     sim.home("TRAIN");
-    for _ in 0..8 {
+    for _ in 0..17 {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("OVER UNDERS");

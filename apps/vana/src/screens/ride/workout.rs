@@ -219,6 +219,14 @@ pub(super) fn prepare(view: &View) -> Canvas {
     } else {
         write!(count, "STEP {}/{}", now.position + 1, now.steps)
     };
+    // A long name keeps its room: the count drops its word before the name is cut.
+    if !training.done
+        && CAPTION.width(training.name.as_bytes()) + CAPTION.width(count.as_bytes()) + 8 + 2 * SPILL
+            > width
+    {
+        count = Text::new();
+        let _ = write!(count, "{}/{}", now.position + 1, now.steps);
+    }
     let count = canvas.caption(
         count.as_bytes(),
         width / 2,
@@ -247,10 +255,11 @@ pub(super) fn prepare(view: &View) -> Canvas {
         target_text(&mut target, now.played, now, training.test);
     }
     let target_color = if now.band.is_some() { color } else { SECONDARY };
+    let name_room = CAPTION.width(name.as_bytes()) + 8 + 2 * SPILL;
     let target = canvas.fit(
         &[&BODY_FACE, &CAPTION],
         target.as_bytes(),
-        width * 3 / 5,
+        (width * 3 / 5).min(width.saturating_sub(name_room)),
         RIGHT - SPILL,
         STEP_BASE,
         Align::Right,
@@ -711,6 +720,23 @@ mod tests {
                         PAGE,
                         &[],
                         &std::format!("{:?} {watts:?}", workout.name),
+                    );
+                }
+                if !player.done() {
+                    let mut step = Text::<24>::new();
+                    step_name(&mut step, player.now(&Default::default()).played);
+                    let view = page(&player, Some(240));
+                    assert!(
+                        view.canvas.shows(step.as_str()),
+                        "{:?}: {} cut",
+                        workout.name,
+                        step.as_str()
+                    );
+                    assert!(
+                        view.canvas.shows(workout.name.as_str()),
+                        "{:?} cut at {}",
+                        workout.name,
+                        step.as_str()
                     );
                 }
                 if player.done() {

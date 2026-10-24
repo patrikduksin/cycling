@@ -20,8 +20,9 @@
 //!
 //! A saved ride from the ride list shows on the same pages, read back from
 //! its journal: its start replaces RIDE SAVED, BACK returns to the list and
-//! ACT sends it to the phone. What the journal does not keep shows as --:
-//! climbs, and the laps of a ride recorded before laps were kept. Ascent,
+//! ACT sends it to the phone. Climbs and the heart rate recovery come from
+//! the ride's facts on FILES; without them climbs show as --, as do the laps
+//! of a ride recorded before laps were kept, and there is no recovery. Ascent,
 //! descent and the profile come from the recorded altitude; a ride recorded
 //! without it keeps its pages as they were, with ascent estimated from the
 //! gradient.
@@ -80,7 +81,7 @@ pub struct After {
     pub saving: Saving,
     /// Best average watts over `EFFORT_SECONDS`.
     pub best: [Option<u16>; 4],
-    /// Unknown for a saved ride read back.
+    /// Unknown for a saved ride read back without its facts.
     pub climbs: Option<u16>,
     /// Unknown for a saved ride recorded without lap marks.
     pub laps: Option<u16>,
@@ -92,8 +93,8 @@ pub struct After {
     pub found: Found,
     /// The FTP on offer as the last page.
     pub offer: Option<FtpOffer>,
-    /// Heart-rate recovery after the finish; none for a saved ride, which
-    /// does not keep it.
+    /// Heart-rate recovery after the finish; for a saved ride, from its
+    /// facts.
     pub recovery: Option<Recovery>,
 }
 

@@ -50,9 +50,9 @@ pub(super) struct History {
     weeks: core::cell::Cell<Option<(WeeksKey, Weeks)>>,
 }
 
-/// The minute, the zone, the FTP, and each journal's rides, last id and how
-/// many of them the index has read.
-type WeeksKey = (u64, Zone, u16, [(usize, Option<u32>, usize); 2]);
+/// The minute, the zone, the FTP, the ride facts kept, and each journal's
+/// rides, last id and how many of them the index has read.
+type WeeksKey = (u64, Zone, u16, u32, [(usize, Option<u32>, usize); 2]);
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
 /// only when both start times are known and BULK's is later, so undated rides
@@ -323,7 +323,8 @@ impl Runtime {
     /// This week and last, from the start times, active times and distances
     /// of the saved rides of both journals, or none until the clock is known.
     /// Training stress comes from the index's rides with power, at the FTP
-    /// now; rides the index has not read yet carry none.
+    /// each ride's facts kept, else the FTP now; rides the index has not read
+    /// yet carry none.
     /// A ride that moved from the MMC onto internal flash is two journal
     /// rides, as the list shows it: their times and distances do not overlap,
     /// so the totals are right, and the ride count counts each part.
@@ -342,6 +343,7 @@ impl Runtime {
             utc_ms / 60_000,
             self.preferences.options.zone,
             self.preferences.profile.ftp_watts,
+            self.facts.revision,
             [ids(Medium::Internal), ids(Medium::Bulk)],
         );
         if let Some((cached, weeks)) = self.history.weeks.get()
@@ -356,12 +358,18 @@ impl Runtime {
         for medium in [Medium::Internal, Medium::Bulk] {
             for index in 0..self.journal_len(medium) {
                 if let Some(ride) = self.journal_ride(medium, index) {
+                    let stress = self.journal_effort(medium, index).and_then(|effort| {
+                        let then = self
+                            .facts
+                            .find(medium, ride.ride_id, ride.first_utc_ms)
+                            .and_then(|facts| facts.profile);
+                        effort.stress_score(then.map_or(ftp, |profile| profile.ftp_watts))
+                    });
                     weeks.add_stress(
                         ride.first_utc_ms,
                         ride.active_ms,
                         ride.distance_mm,
-                        self.journal_effort(medium, index)
-                            .and_then(|effort| effort.stress_score(ftp)),
+                        stress,
                         &offset,
                     );
                 }
@@ -416,9 +424,12 @@ impl Runtime {
 
     /// The open ride on the summary's pages.
     pub(super) fn past_view<'a>(&'a self, view: &mut View<'a>) {
-        let Some((_, replay, summary)) = &self.history.open else {
+        let Some((medium, replay, summary)) = &self.history.open else {
             return;
         };
+        let facts = self
+            .facts
+            .find(*medium, summary.ride_id, summary.first_utc_ms);
         view.past_title = title(
             summary,
             self.history_count().saturating_sub(self.history.cursor),
@@ -438,10 +449,15 @@ impl Runtime {
             page: self.navigation.summary_page,
             saving,
             best: self.ride.efforts.best(),
-            climbs: None,
+            climbs: facts
+                .and_then(|facts| facts.climbing)
+                .map(|climbing| climbing.count),
             laps: replay.laps(),
             past: true,
             elevation: self.has_elevation(),
+            recovery: facts
+                .and_then(|facts| facts.recovery_bpm)
+                .map(crate::ride::recovery::Reading::Recovered),
             ..After::default()
         };
         self.show_elevation(view);

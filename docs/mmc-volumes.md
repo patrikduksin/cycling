@@ -7,7 +7,7 @@ so code using one volume cannot reach another one or the table.
 | Volume | Default size | Owner | Holds |
 | --- | --- | --- | --- |
 | `RIDES` | 1 GiB, about 2,330 h | VANA (`apps/vana/src/ride/bulk.rs`) | The sector log of bulk rides ([ride recording](ride-recording.md)) |
-| `FILES` | 256 MiB | `firmware_services::files` | Up to 128 named files of at most 1 MiB: workouts, companion settings |
+| `FILES` | 256 MiB | `firmware_services::files` | Up to 128 named files of at most 1 MiB: workouts, workout records, ride facts, bests, companion settings |
 | `TERRAIN` | 1.25 GiB | `firmware_services::pack` | One opaque pack written by the host and read by the firmware |
 | unallocated | about 260 MiB | | Room for later volumes |
 

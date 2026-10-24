@@ -10,7 +10,8 @@
 //! `ENTRY` bytes each; when it is full the oldest entry makes room.
 //!
 //! Each line also holds the ride's normalized power and power time (four
-//! bytes, in 8 s units that saturate at 145 h), so its training stress can be worked out at the current FTP.
+//! bytes, in 8 s units that saturate at 145 h), so its training stress can be
+//! worked out against an FTP when it is shown.
 //!
 //! Nothing is persisted: the index is rebuilt after every boot.
 use super::load::{Effort, PowerLoad};

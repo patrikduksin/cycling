@@ -8,9 +8,9 @@
 //! the minute, or without a live sensor at the stop or a minute later,
 //! shows nothing rather than a number from another moment.
 //!
-//! The result lives in RAM for the summary only. The journal has no field
-//! for it, and adding one would be a format change, so a ride read back
-//! from the list shows none.
+//! The journal has no field for the result, so it is kept with the ride's
+//! facts (`ride::facts`) once measured, and a ride read back from the list
+//! shows it from there.
 
 /// Time from the finish to the second reading.
 pub const WINDOW_MS: u64 = 60_000;

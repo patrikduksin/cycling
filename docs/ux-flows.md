@@ -254,7 +254,8 @@ The summary opens with a green check and RIDE SAVED, and pages through:
    minute is up, then the fall (-28 BPM). A rider who waits more than five
    seconds past the minute before ending the ride, a sensor that is silent at
    either moment (ANT+ or BLE, ride open or not), or leaving the summary
-   before the minute is up shows nothing. It is not saved with the ride.
+   before the minute is up shows nothing. Once measured it is saved with the
+   ride's facts (see Saved rides).
 3. Elevation, only for a ride that recorded altitude: ASCENT M, DESCENT M,
    MIN M and MAX M in amber over a filled chart of altitude across the whole
    distance, each stretch in its climb steepness colour. A ride without
@@ -326,8 +327,8 @@ dated by the GPS receiver counts too.
 
 TSS adds each ride's training stress, worked out when the ride index reads
 the ride (normalized power over 30 s, as the live ride's TSS) against the
-FTP set now: the FTP at the time of the ride is not stored, so changing FTP
-restates past weeks. A ride without a power meter, or with under 30 s of
+FTP the ride was saved with, so changing FTP does not restate past weeks. A
+ride without facts (below) counts at the FTP set now. A ride without a power meter, or with under 30 s of
 power, adds nothing; a week with no ride that had power shows no TSS
 rather than 0; more than 9999 reads 9999+. Rides the index has not read yet carry none, and nothing is
 saved: the stress is rebuilt with the index after every boot. A 7-day against
@@ -337,12 +338,21 @@ distance, the bars and LAST WEEK.
 A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
 read. Laps read back from the ride (a ride recorded before laps were kept
-reads --); climbs are not kept, so they read --. Ascent and the
+reads --). Climbs and HR RECOVERY come from the ride's facts. Ascent and the
 elevation profile come from the altitude recorded with the ride, with the same
 3 m band as a live ride; a ride saved before altitude was recorded estimates
 its ascent from the recorded gradient and shows no profile. MOVE or a swipe turns the page, BACK returns to
 the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
 record cannot be read says RIDE UNREADABLE.
+
+A ride's facts are what its journal does not hold: the FTP and LTHR in force
+when it was saved, its HR RECOVERY once measured, and the climbs it finished.
+They are a small file beside the ride on the FILES volume
+(`ride-recording.md`, "Ride facts"), written when the ride is saved. The
+newest 64 are kept. A ride without them reads as before: TSS at the FTP set
+now, CLIMBS --, and no HR RECOVERY. That is a ride saved with no card, FILES
+volume or formatted store, one recovered after a power cut, one older than the
+newest 64, and one saved by firmware from before facts were kept.
 
 The list holds every saved ride of both journals (internal flash and the
 memory card's RIDES volume), newest first. A ride index, kept in PSRAM and

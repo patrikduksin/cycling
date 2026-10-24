@@ -8,8 +8,8 @@
 //! slots, so a long ride never holds up a frame. Reading is read-only.
 //!
 //! Laps come from the lap marks on samples (`log::LapStart`); a ride recorded
-//! before lap marks has none, and its laps stay unknown. What the journal
-//! does not keep stays unknown too: climbs live only in RAM during a ride.
+//! before lap marks has none, and its laps stay unknown. Climbs are not in
+//! the journal: a ride's count comes from its facts (`ride::facts`).
 //! Ascent and descent follow the recorded altitude with a live ride's rules;
 //! a ride recorded without altitude estimates its ascent from the recorded
 //! gradient over the distance ridden.

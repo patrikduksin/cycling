@@ -417,8 +417,9 @@ Training profile:
   and use the FTP of the profile.
 - The ride index also keeps each saved ride's normalized power and time with
   power (four bytes, in memory, rebuilt after every boot) and works out its TSS
-  at the profile's FTP now, for the rides list's TSS. The FTP at the time of
-  the ride is not stored. A ride without power has no effort and adds nothing.
+  for the rides list's TSS, at the FTP the ride's facts kept (see Ride facts),
+  else at the profile's FTP now. A ride without power has no effort and adds
+  nothing.
 - `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
@@ -534,6 +535,50 @@ deletes its records, as its ride ids start over. It is a versioned 70-byte
 record (`apps/vana/src/workout/history.rs`) that later versions only extend.
 The newest 32 are kept. `WORKOUT HISTORY INTERNAL|BULK id` reports one. A
 ride recovered after a power cut has no record.
+
+### Ride facts
+
+When a ride is saved, VANA writes what the journal does not hold beside it as
+`rides/<i|b><ride id>.facts` on FILES (`apps/vana/src/ride/facts.rs`): the FTP
+and LTHR in force, the climbs it finished and their gain, and its start time.
+Once the summary has measured the heart-rate recovery, the file is written
+again with it. The rides list's TSS uses the kept FTP, and a saved ride read
+back shows the recovery and the climbs. After boot VANA reads the files into
+memory, a few directory slots per tick while no ride is open.
+
+- A file applies to a journal ride only when its journal, ride id and start
+  second match. Clearing or initializing a journal deletes its files, as its
+  ride ids start over. Firmware from before facts clears a journal without
+  deleting them, and the start time keeps those files off the new rides.
+- The newest 64 are kept; saving another deletes the oldest. The FILES
+  directory holds 128 files: 64 facts, the 32 workout records, `bests.dat` and
+  the 8 uploads the picker lists leave 23 for the host. 64 rides cover the two
+  weeks the rides list totals at up to four rides a day.
+- Without a card, a FILES volume or a store the host formatted, nothing is
+  written and every reader shows what it showed before facts were kept. A
+  write the store refuses is logged and the ride is not held up for it.
+- A file is written in one atomic commit. One that is torn, fails its CRC,
+  holds a profile out of range or names another ride than its file name is
+  ignored. Firmware from before facts lists only `.workout` files under
+  `rides/`, so it leaves `.facts` files alone.
+
+It is a versioned 34-byte record that later versions only extend:
+
+| Bytes | Field |
+| --- | --- |
+| 0..4 | magic `VFCT` |
+| 4 | version, 1 |
+| 5 | body length `n` before the CRC: 30 in version 1 |
+| 6 | journal: `i` internal, `b` bulk |
+| 7 | flags: 1 start time known, 2 profile, 4 HR recovery, 8 climbs |
+| 8..12 | ride id |
+| 12..20 | ride start, UTC ms |
+| 20..24 | FTP (W) and LTHR (BPM), u16 each |
+| 24..26 | HR recovery, BPM fallen (i16) |
+| 26..30 | climbs finished and their gain in m, u16 each |
+| n..n+4 | CRC32 of bytes 0..n |
+
+The reader takes up to 259 bytes, as much as a one-byte body length allows.
 
 ## What this does not prove
 

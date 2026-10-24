@@ -16,7 +16,8 @@
 //! due sample late, never backfills, and counts wholly skipped periods as
 //! dropped. Reset can lose three buffered samples, or four during commit.
 //! A lap mark waits for the next stored sample: the ride's first sample
-//! carries `LapStart::Ride`, and each later lap its trigger.
+//! carries `LapStart::Ride`, and each later lap its trigger. A pause or finish
+//! with a lap waiting stores one more sample, at the stop, to carry it.
 //! One operation and its unconsumed completion exclude further mutations.
 
 use crate::ride::control::Action;
@@ -391,6 +392,21 @@ impl Recorder {
             self.next_sample = self
                 .next_sample
                 .saturating_add(missed.saturating_add(1).saturating_mul(1_000));
+        }
+
+        // A lap that closed since the last sample has no later sample to
+        // begin on once recording stops, so the stop stores one more.
+        if self.stopping()
+            && self.sample_count < self.samples.len()
+            && self
+                .next_lap_mark
+                .is_some_and(|start| start != LapStart::Ride)
+        {
+            let mut sample = sample.for_source(self.source);
+            sample.active_ms = self.active_ms(now);
+            sample.lap = self.next_lap_mark.take();
+            self.samples[self.sample_count] = sample;
+            self.sample_count += 1;
         }
 
         if self.status == Status::Recovered
@@ -941,6 +957,37 @@ mod tests {
         scan(&mut reopened, &mut media);
         assert_eq!(reopened.completed(), 1);
         assert!(reopened.exportable());
+    }
+    #[test]
+    fn a_lap_closed_since_the_last_sample_begins_on_a_sample_at_the_finish() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        assert!(recorder.take_result().unwrap().ok);
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        recorder.mark_lap(LapStart::Manual);
+        assert!(recorder.request(Action::Finish, Source::Live, 900, 2));
+        for _ in 0..3 {
+            recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert_eq!(recorder.status(), Status::Saved);
+        let samples: Vec<(u64, Option<LapStart>)> = media
+            .bytes
+            .as_chunks::<{ crate::ride::log::SLOT_SIZE }>()
+            .0
+            .iter()
+            .filter_map(|bytes| crate::ride::log::decode(&Slot(*bytes)))
+            .filter(|entry| entry.kind == Kind::Samples)
+            .flat_map(|entry| entry.samples.into_iter().take(usize::from(entry.count)))
+            .map(|sample| (sample.active_ms, sample.lap))
+            .collect();
+        assert_eq!(
+            samples,
+            [(0, Some(LapStart::Ride)), (800, Some(LapStart::Manual))]
+        );
     }
     #[test]
     fn odd_and_out_of_range_altitudes_pass_the_internal_read_back_check() {

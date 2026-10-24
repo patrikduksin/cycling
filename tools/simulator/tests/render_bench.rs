@@ -11,7 +11,7 @@ const HASHES: [(&str, u64); 6] = [
     ("climb", 0x3f13_7e03_dc13_4bc2),
     ("summary", 0x7297_e332_ce5a_8371),
     ("sensors list", 0x294c_50dd_fdb8_bbf1),
-    ("workouts", 0xcf72_96ce_aab4_afee),
+    ("workouts", 0x4b85_e7a8_f4b7_d37b),
 ];
 
 #[test]

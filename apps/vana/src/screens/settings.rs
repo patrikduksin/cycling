@@ -28,6 +28,8 @@ pub enum Row {
     TimeZone,
     AutoPause,
     AutoLap,
+    Wheel,
+    WheelMode,
     Sounds,
     RadarAlerts,
     FuelAlert,
@@ -75,7 +77,10 @@ pub const SECTIONS: [(&str, &[Row]); 8] = [
         &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
     ),
     ("CLOCK", &[Row::TimeZone]),
-    ("RIDE", &[Row::AutoPause, Row::AutoLap]),
+    (
+        "RIDE",
+        &[Row::AutoPause, Row::AutoLap, Row::Wheel, Row::WheelMode],
+    ),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
@@ -146,6 +151,8 @@ impl Row {
             Self::TimeZone => "TIME ZONE",
             Self::AutoPause => "AUTO PAUSE",
             Self::AutoLap => "AUTO LAP",
+            Self::Wheel => "WHEEL",
+            Self::WheelMode => "WHEEL MODE",
             Self::Sounds => "SOUNDS",
             Self::RadarAlerts => "RADAR COUNT",
             Self::FuelAlert => "EAT AND DRINK",
@@ -173,7 +180,7 @@ impl Row {
 
     pub const fn kind(self) -> Kind {
         match self {
-            Self::Ftp | Self::Threshold => Kind::Number,
+            Self::Ftp | Self::Threshold | Self::Wheel => Kind::Number,
             Self::Brightness
             | Self::AutoDim
             | Self::Daylight
@@ -181,6 +188,7 @@ impl Row {
             | Self::TimeZone
             | Self::AutoPause
             | Self::AutoLap
+            | Self::WheelMode
             | Self::Sounds
             | Self::RadarAlerts
             | Self::FuelAlert
@@ -216,7 +224,7 @@ pub fn first_of(section: usize) -> usize {
         .sum()
 }
 
-/// Each press or tap moves a number by this much.
+/// Each press or tap moves a number by this much: watts, bpm or a wheel's mm.
 pub const STEP: u16 = 5;
 
 /// Lines the runtime prepares for this page.
@@ -483,7 +491,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 23);
+        assert_eq!(ROWS, 25);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -579,7 +587,7 @@ mod tests {
             Some(Target::Row(device + 3))
         );
         assert_eq!(target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false), None);
-        let ride = Row::AutoPause.index();
+        let ride = Row::TimeZone.index();
         assert_eq!(target(30, PAD_TOP + 10, ride, false), None);
         assert_eq!(target(30, PAD_TOP + 10, 0, true), Some(Target::Lower));
         assert_eq!(target(200, PAD_TOP + 10, 0, true), Some(Target::Raise));

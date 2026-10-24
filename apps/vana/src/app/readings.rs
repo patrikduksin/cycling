@@ -2,8 +2,9 @@
 use super::{Observations, Runtime};
 use crate::ride::auto::{Motion, Source};
 use crate::ride::gps_speed::{GpsSpeed, Ground};
-use crate::ride::log::Sample;
+use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::{Gradient, Odometer, Power3s, Speed};
+use crate::ride::wheel_size::{self, Calibrator};
 use crate::sensors::ant::{Epoch, HeartRate, Power, device_type};
 use crate::sensors::ble_profile::{self, Profile};
 use crate::sensors::radar::{Alert, Radar};
@@ -57,6 +58,17 @@ pub(super) struct Readings {
     /// The sample most recently offered to the recorder.
     pub(super) live: Sample,
     speed: Speed,
+    /// Learns the wheel's circumference from GPS while riding.
+    wheel_size: Calibrator,
+    /// The fix epoch `wheel_size` last took, so each is offered once.
+    wheel_epoch: Option<u32>,
+    /// A size the calibration set, to tell the rider once the ride is over.
+    pub(super) wheel_news: Option<u16>,
+    /// A size the calibration settled on mid-ride, stored when the ride ends.
+    wheel_pending: Option<u16>,
+    /// The saved speed sensors the calibration is learning, to start over
+    /// when one is replaced.
+    wheel_sensors: [Option<device_api::ant::Identity>; 2],
     /// Ground speed from GPS, the fallback when no wheel sensor measures.
     gps: GpsSpeed,
     /// What the speed sources said at the last sample, for auto-pause.
@@ -178,6 +190,11 @@ impl Default for Readings {
         Self {
             live: Sample::default(),
             speed: Speed::default(),
+            wheel_size: Calibrator::default(),
+            wheel_epoch: None,
+            wheel_news: None,
+            wheel_pending: None,
+            wheel_sensors: [None; 2],
             gps: GpsSpeed::default(),
             motion: Motion::Lost,
             odometer: Odometer::default(),
@@ -195,6 +212,11 @@ impl Default for Readings {
 }
 
 impl Readings {
+    /// The circumference the wheel speed is measured with now, in mm.
+    pub(super) fn speed_wheel_mm(&self) -> u32 {
+        self.speed.wheel_mm()
+    }
+
     fn restart(&mut self, decoded: Decoded) {
         match decoded {
             Decoded::Radar => self.radar.reset(),
@@ -247,7 +269,119 @@ fn motion(wheel_fresh: bool, wheel: Option<u32>, ground: Ground) -> Motion {
     }
 }
 
+/// A fix good enough to measure distance against: few satellites or a poor
+/// horizontal dilution (3.0) make metres of error over a segment. Stricter
+/// than for speed, and a fix that does not say either is not trusted.
+const WHEEL_MAX_HDOP_TENTHS: u16 = 30;
+const WHEEL_MIN_SATELLITES: u8 = 6;
+
 impl Runtime {
+    /// Take what the calibration learned and use the stored circumference.
+    /// Both wait until no ride is open, so a ride's distance never jumps and
+    /// the preference record is written between rides.
+    pub(super) fn settle_wheel(&mut self, now: u64) {
+        if self.ride.open() {
+            return;
+        }
+        if let Some(learned) = self.readings.wheel_pending.take() {
+            let mut options = self.preferences.options;
+            if !options.wheel.manual
+                && !self.preferences.locked()
+                && wheel_size::worth_applying(options.wheel.size_mm(), learned)
+            {
+                options.wheel.mm = Some(learned);
+                self.set_options(options, now);
+                self.readings.wheel_news = Some(learned);
+            }
+        }
+        let wheel = self.preferences.options.wheel.size_mm();
+        let speed = &mut self.readings.speed;
+        if speed.wheel_mm() != u32::from(wheel) {
+            speed.set_wheel_mm(u32::from(wheel));
+        }
+    }
+
+    /// Offer the latest fix to the circumference calibration. What it learns
+    /// waits in `wheel_pending` for the end of the ride.
+    fn calibrate_wheel(
+        &mut self,
+        now: u64,
+        wheel_fresh: bool,
+        gps: Option<&device_api::gps::Snapshot>,
+    ) {
+        let wheel = self.preferences.options.wheel;
+        let saved = &self.preferences.sensors;
+        let sensors = [device_type::SPEED, device_type::SPEED_CADENCE]
+            .map(|kind| saved.of_type(kind).map(|(_, identity)| identity));
+        let readings = &mut self.readings;
+        if sensors != readings.wheel_sensors {
+            readings.wheel_sensors = sensors;
+            readings.wheel_size.reset();
+            readings.wheel_pending = None;
+        }
+        let fix = gps
+            .filter(|gps| gps.state == FixState::Fresh)
+            .and_then(|gps| Some((gps, gps.latitude_e7?, gps.longitude_e7?, gps.epoch_ms?)));
+        let Some((gps, latitude_e7, longitude_e7, epoch_ms)) = fix else {
+            readings.wheel_epoch = None;
+            readings.wheel_size.observe(None);
+            return;
+        };
+        let (Some(hdop), Some(satellites)) = (gps.hdop_tenths, gps.satellites) else {
+            // The geometry of this epoch may still arrive.
+            return;
+        };
+        if readings.wheel_epoch == Some(epoch_ms) {
+            return;
+        }
+        readings.wheel_epoch = Some(epoch_ms);
+        let riding = self.ride.active().status() == Status::Recording;
+        let good = riding
+            && !wheel.manual
+            && wheel_fresh
+            && hdop <= WHEEL_MAX_HDOP_TENTHS
+            && satellites >= WHEEL_MIN_SATELLITES;
+        let readings = &mut self.readings;
+        readings
+            .wheel_size
+            .observe(good.then_some(wheel_size::Sample {
+                at_ms: now,
+                latitude_e7,
+                longitude_e7,
+                revolutions: readings.speed.revolutions(),
+                speed_mm_s: gps.speed_mm_s,
+            }));
+        if good {
+            readings.wheel_pending = readings
+                .wheel_size
+                .estimate()
+                .filter(|learned| wheel_size::worth_applying(wheel.size_mm(), *learned));
+        }
+    }
+
+    /// The wheel size in force, its mode and what the calibration holds, for
+    /// the terminal: a silent receiver shows as no windows.
+    pub(super) fn wheel_status(&self, output: &mut impl core::fmt::Write) -> core::fmt::Result {
+        let wheel = self.preferences.options.wheel;
+        let readings = &self.readings;
+        write!(
+            output,
+            "wheel_mm={} stored_mm={} mode={} windows={}",
+            readings.speed.wheel_mm(),
+            wheel.size_mm(),
+            if wheel.manual { "manual" } else { "auto" },
+            readings.wheel_size.windows(),
+        )?;
+        match readings.wheel_size.estimate() {
+            Some(mm) => write!(output, " estimate_mm={mm}")?,
+            None => write!(output, " estimate_mm=-")?,
+        }
+        match readings.wheel_pending {
+            Some(mm) => write!(output, " pending_mm={mm}"),
+            None => write!(output, " pending_mm=-"),
+        }
+    }
+
     pub fn select_profile(&mut self, profile: Profile, previous_connection: u32) {
         self.sensors.select_profile(profile, previous_connection);
     }
@@ -328,6 +462,8 @@ impl Runtime {
                 ant.channel(kind, now)
                     .is_some_and(|s| s.link == LinkState::Connected && !s.stale)
             });
+        self.settle_wheel(now);
+        self.calibrate_wheel(now, wheel_fresh, position.as_ref().map(|s| &s.gps));
         let wheel = wheel_fresh
             .then(|| self.readings.speed.value(now))
             .flatten();

@@ -2,6 +2,8 @@
 use crate::sensors::ant::Epoch;
 use device_api::ant::Packet;
 
+/// The circumference assumed until the rider or the calibration says
+/// otherwise (`ride::wheel_size`).
 pub const WHEEL_MM: u32 = 2136;
 /// Speeds above this are treated as decoding noise (144 km/h).
 const MAX_SPEED_MM_S: u64 = 40_000;
@@ -25,8 +27,12 @@ struct Revolution {
     received_ms: u64,
 }
 
-#[derive(Default)]
 pub struct Speed {
+    /// Wheel circumference in mm, which turns revolutions into distance. It
+    /// changes only between rides, so a ride's distance never jumps.
+    wheel_mm: u32,
+    /// Revolutions counted since the sensor session began.
+    revolutions: u64,
     previous: Option<Revolution>,
     epoch: Option<Epoch>,
     value: Option<u32>,
@@ -35,12 +41,44 @@ pub struct Speed {
     received: u64,
 }
 
+impl Default for Speed {
+    fn default() -> Self {
+        Self {
+            wheel_mm: WHEEL_MM,
+            revolutions: 0,
+            previous: None,
+            epoch: None,
+            value: None,
+            standing: false,
+            received: 0,
+        }
+    }
+}
+
 impl Speed {
+    /// Measure with this circumference from now on.
+    pub fn set_wheel_mm(&mut self, wheel_mm: u32) {
+        self.wheel_mm = wheel_mm;
+    }
+
+    pub fn wheel_mm(&self) -> u32 {
+        self.wheel_mm
+    }
+
+    /// Wheel revolutions counted since the sensor session began, to compare
+    /// with GPS distance.
+    pub fn revolutions(&self) -> u64 {
+        self.revolutions
+    }
+
     pub fn receive(&mut self, packet: Packet) {
         let epoch = Epoch::of(&packet);
         if self.epoch != Some(epoch) {
-            *self = Self::default();
-            self.epoch = Some(epoch);
+            *self = Self {
+                wheel_mm: self.wheel_mm,
+                epoch: Some(epoch),
+                ..Self::default()
+            };
         }
         let data = packet.data;
         let current = Revolution {
@@ -53,6 +91,10 @@ impl Speed {
             let dt = current.event_time.wrapping_sub(previous.event_time);
             let dr = current.count.wrapping_sub(previous.count);
             let repeat = dt == 0 && dr == 0;
+            // Only a real event counts; a repeat or a stray count does not.
+            if dt != 0 {
+                self.revolutions += u64::from(dr);
+            }
             if self.standing {
                 // The reference is a minute old or more: the wheel stands. Keep
                 // reading zero rather than lose the sensor, until a new
@@ -66,7 +108,7 @@ impl Speed {
                 self.value = repeat.then_some(0);
                 self.standing = repeat;
             } else if dt != 0 && dr != 0 {
-                let speed = u64::from(dr) * u64::from(WHEEL_MM) * 1024 / u64::from(dt);
+                let speed = u64::from(dr) * u64::from(self.wheel_mm) * 1024 / u64::from(dt);
                 self.value = (speed <= MAX_SPEED_MM_S).then_some(speed as u32);
             } else {
                 // Repeated event: keep timing from the last real revolution.
@@ -92,7 +134,7 @@ impl Speed {
         let age_ms = self.received.saturating_sub(previous.received_ms).max(1);
         // A newer revolution may sit in a packet not yet received.
         let overdue_ms = age_ms.saturating_sub(PACKET_SLACK_MS).max(1);
-        let bound = u64::from(WHEEL_MM) * 1000 / overdue_ms;
+        let bound = u64::from(self.wheel_mm) * 1000 / overdue_ms;
         let speed = match self.value {
             Some(speed) => u64::from(speed).min(bound),
             None => bound,
@@ -313,6 +355,27 @@ mod tests {
         speed.receive(packet(1512, 1, 8500, 1));
         assert_eq!(speed.value(8500), None);
     }
+    #[test]
+    fn revolutions_count_across_the_wrap_and_the_size_scales_speed() {
+        let mut speed = Speed::default();
+        speed.receive(packet(0, 65534, 0, 0));
+        speed.receive(packet(1024, 1, 1000, 0));
+        assert_eq!(speed.revolutions(), 3);
+        // A repeated event adds nothing.
+        speed.receive(packet(1024, 1, 1250, 0));
+        assert_eq!(speed.revolutions(), 3);
+        speed.set_wheel_mm(2200);
+        speed.receive(packet(2048, 4, 2000, 0));
+        assert_eq!(speed.revolutions(), 6);
+        assert_eq!(speed.value(2000), Some(3 * 2200));
+        // A new sensor session restarts the count but keeps the size.
+        let mut other = packet(0, 9, 3000, 0);
+        other.generation = 2;
+        speed.receive(other);
+        assert_eq!(speed.revolutions(), 0);
+        assert_eq!(speed.wheel_mm(), 2200);
+    }
+
     #[test]
     fn speed_decays_when_braking_and_reads_zero_when_stopped() {
         let mut speed = Speed::default();

@@ -5,6 +5,7 @@
 use super::Runtime;
 use crate::clock::Zone;
 use crate::ride::log::Status;
+use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::gesture::{Gesture, Owner};
 use crate::screens::home::{Home, Tile};
@@ -405,7 +406,10 @@ impl Runtime {
         use settings::{Kind, Row, SettingsAction};
         let row = Row::at(self.navigation.settings_field);
         match (row.kind(), row.action()) {
-            (Kind::Number, _) => self.navigation.settings_editing = true,
+            (Kind::Number, _) => {
+                self.navigation.settings_editing = true;
+                self.navigation.wheel_edit = Some(self.preferences.options.wheel);
+            }
             (Kind::Choice, _) => self.next_choice(row, now),
             (_, Some(SettingsAction::Sensors)) => {
                 self.navigation.page = Page::Sensors;
@@ -443,6 +447,7 @@ impl Runtime {
             Row::AutoPause => options.auto_pause = !options.auto_pause,
             Row::AutoLap => options.auto_lap_km = after(&AUTO_LAP_KM, options.auto_lap_km),
             Row::TimeZone => options.zone = after(&ZONES, options.zone),
+            Row::WheelMode => options.wheel.manual = !options.wheel.manual,
             Row::Sounds => options.sounds = !options.sounds,
             Row::SunsetAlert => options.sunset_alert = !options.sunset_alert,
             Row::Daylight => {
@@ -514,6 +519,33 @@ impl Runtime {
 
     /// Move the edited number by `step`, within its range.
     fn adjust_setting(&mut self, step: i32, now: u64) {
+        if settings::Row::at(self.navigation.settings_field) == settings::Row::Wheel {
+            // The next multiple of five mm in the direction of the press, so
+            // common sizes are reachable from any start. Setting the size by
+            // hand takes it out of the calibration's hands, unless the edit
+            // comes back to where it began.
+            let mut options = self.preferences.options;
+            let current = i32::from(options.wheel.size_mm());
+            let grid = i32::from(settings::STEP);
+            let target = if step > 0 {
+                (current / grid + 1) * grid
+            } else {
+                ((current + grid - 1) / grid - 1) * grid
+            };
+            let range = PLAUSIBLE_MM;
+            let size = target.clamp(i32::from(*range.start()), i32::from(*range.end())) as u16;
+            let origin = self.navigation.wheel_edit.unwrap_or(options.wheel);
+            options.wheel = if size == origin.size_mm() {
+                origin
+            } else {
+                super::preferences::Wheel {
+                    mm: Some(size),
+                    manual: true,
+                }
+            };
+            self.set_options(options, now);
+            return;
+        }
         let mut profile = self.preferences.profile;
         let (value, range) = match settings::Row::at(self.navigation.settings_field) {
             settings::Row::Ftp => (&mut profile.ftp_watts, TrainingProfile::FTP_WATTS),

@@ -7,7 +7,7 @@
 //!
 //! | Byte | Field | Since |
 //! | --- | --- | --- |
-//! | 0 | Record version, 5 | 1 |
+//! | 0 | Record version, 6 | 1 |
 //! | 1..3 | FTP in watts, little-endian | 1 |
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
@@ -19,14 +19,20 @@
 //! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) | 3 |
 //! | then | Theme: 0 dark, 1 light, 2 automatic | 4 |
 //! | then | Time zone, 2 bytes owned by `clock::Zone`: 0 0 for Chile | 5 |
+//! | then | Wheel circumference in mm, little-endian, 0 for never set | 6 |
+//! | then | Wheel size mode: 0 automatic (learned from GPS), 1 manual | 6 |
 //!
 //! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
 //! Both load with the default options and setup done, since a rider already
-//! used them, and the next save rewrites them as version 5. A version 3
+//! used them, and the next save rewrites them as version 6. A version 3
 //! record is `19 + 4 * count` bytes and loads with the dark theme; a version 4
 //! record is `20 + 4 * count` bytes. Both load with the Chile time zone, the
 //! zone the clock meant before it had a choice. A version 5 record is
-//! `22 + 4 * count` bytes, at most 62.
+//! `22 + 4 * count` bytes. Versions 3 to 5 load with the default wheel size,
+//! learned automatically. A version 6 record is `25 + 4 * count` bytes, at most
+//! 65 of the shell's 96. The wheel size is global, not per sensor: the saved
+//! ANT sensors are one per kind and VANA rides one bike's wheel; a sensor moved
+//! to another wheel is relearned on the next ride.
 //!
 //! An empty area means nothing was saved yet: the defaults apply, first-run
 //! setup is due, and the first change writes a record. A record VANA cannot
@@ -35,6 +41,7 @@
 //! (`PROFILE OVERWRITE`).
 use super::Runtime;
 use crate::clock::Zone;
+use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
 use device_api::display::Display;
@@ -44,10 +51,15 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
+/// The circumference assumed until one is set or learned.
+pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
-const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V4 + 2;
+const WHEEL_LENGTH: usize = 3;
+const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V5 + WHEEL_LENGTH;
+/// Options as version 5 stored them, without the wheel.
+const OPTIONS_LENGTH_V5: usize = OPTIONS_LENGTH_V4 + 2;
 /// Options as version 4 stored them, without the time zone.
 const OPTIONS_LENGTH_V4: usize = OPTIONS_LENGTH_V3 + 1;
 /// Options as version 3 stored them, without the theme.
@@ -137,6 +149,42 @@ impl Theme {
     }
 }
 
+/// The wheel circumference speed and distance are measured with, and who
+/// chose it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Wheel {
+    /// The size in mm; none until the rider or the calibration sets one.
+    pub mm: Option<u16>,
+    /// The rider chose the size: the calibration leaves it alone.
+    pub manual: bool,
+}
+
+impl Wheel {
+    /// The circumference in force: the one set, else the default.
+    pub fn size_mm(self) -> u16 {
+        self.mm.unwrap_or(DEFAULT_WHEEL_MM)
+    }
+
+    fn encode(self) -> [u8; WHEEL_LENGTH] {
+        let [low, high] = self.mm.unwrap_or(0).to_le_bytes();
+        [low, high, u8::from(self.manual)]
+    }
+
+    fn decode([low, high, manual]: [u8; WHEEL_LENGTH]) -> Option<Self> {
+        let mm = match u16::from_le_bytes([low, high]) {
+            0 => None,
+            mm if PLAUSIBLE_MM.contains(&mm) => Some(mm),
+            _ => return None,
+        };
+        let manual = match manual {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        Some(Self { mm, manual })
+    }
+}
+
 /// Ride, display and sound choices, and how far first-run setup got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -149,6 +197,7 @@ pub struct Options {
     pub daylight: Daylight,
     pub theme: Theme,
     pub zone: Zone,
+    pub wheel: Wheel,
     /// The first-run setup step to resume, 0 when setup is done.
     pub setup: u8,
     /// Ride alert settings, carried for `ride::alerts`.
@@ -166,6 +215,7 @@ impl Default for Options {
             daylight: Daylight::Auto,
             theme: Theme::Dark,
             zone: Zone::Chile,
+            wheel: Wheel::default(),
             setup: 0,
             alerts: ALERTS_DEFAULT,
             sunset_alert: true,
@@ -192,15 +242,24 @@ impl Options {
         bytes[..4].copy_from_slice(&[flags, self.auto_lap_km, self.daylight.byte(), self.setup]);
         bytes[4..OPTIONS_LENGTH_V3].copy_from_slice(&self.alerts);
         bytes[OPTIONS_LENGTH_V3] = self.theme.byte();
-        bytes[OPTIONS_LENGTH_V4..].copy_from_slice(&self.zone.encode());
+        bytes[OPTIONS_LENGTH_V4..OPTIONS_LENGTH_V5].copy_from_slice(&self.zone.encode());
+        bytes[OPTIONS_LENGTH_V5..].copy_from_slice(&self.wheel.encode());
         bytes
     }
 
     /// Decode the options of record `version`.
     fn decode(bytes: &[u8], version: u8) -> Option<Self> {
+        let (bytes, wheel) = match version {
+            3..=5 => (bytes, Wheel::default()),
+            6 => {
+                let (bytes, wheel) = bytes.split_last_chunk::<WHEEL_LENGTH>()?;
+                (bytes, Wheel::decode(*wheel)?)
+            }
+            _ => return None,
+        };
         let (bytes, zone) = match version {
             3 | 4 => (bytes, Zone::Chile),
-            5 => {
+            5 | 6 => {
                 let (bytes, zone) = bytes.split_last_chunk()?;
                 (bytes, Zone::decode(*zone)?)
             }
@@ -225,6 +284,7 @@ impl Options {
             daylight: Daylight::from_byte(daylight)?,
             theme,
             zone,
+            wheel,
             setup,
             alerts,
             sunset_alert: flags & SUNSET_OFF == 0,
@@ -444,6 +504,11 @@ impl Preferences {
         self.retry_at = now.saturating_add(RETRY_MS);
     }
 
+    /// Unreadable stored data is kept, so edits do not persist.
+    pub(super) fn locked(&self) -> bool {
+        self.locked
+    }
+
     pub(super) fn persistence(&self) -> Persistence {
         let display = self.display_edit;
         if self.locked {
@@ -539,6 +604,7 @@ impl Runtime {
         self.preferences = Preferences::load(app.bytes());
         self.links.saved = self.preferences.sensors;
         self.apply_options();
+        self.settle_wheel(0);
     }
 
     /// Use these options from now on; they are saved once edits settle.
@@ -684,14 +750,14 @@ mod tests {
     }
 
     #[test]
-    fn version_five_layout_is_pinned() {
+    fn version_six_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
         let defaults = record(profile, none, Options::default());
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                5, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0
+                6, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -709,6 +775,10 @@ mod tests {
             daylight: Daylight::Night,
             theme: Theme::Auto,
             zone: Zone::utc(-3),
+            wheel: Wheel {
+                mm: Some(2105),
+                manual: true,
+            },
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
             sunset_alert: true,
@@ -718,8 +788,8 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                5, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
-                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4
+                6, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -730,11 +800,66 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 62);
+        assert_eq!(bytes.len(), 65);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
         // A later version may place its fields differently: never guess.
         assert_eq!(Options::decode(&options.encode(), VERSION + 1), None);
+    }
+
+    /// A version 5 record has no wheel: its rider gets the default size, set
+    /// automatically, and every other field stays.
+    #[test]
+    fn version_five_migrates_with_an_automatic_default_wheel() {
+        let bytes = [
+            5, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1, 0b10, 10, 2, 3, 50, 180, 100, 0, 0x2c, 1, 70,
+            30, 0, 1, 1, 0xf4,
+        ];
+        let (migrated, stored) = decode(&bytes);
+        assert_eq!(stored, Stored::Migrated);
+        assert_eq!(migrated.options.wheel, Wheel::default());
+        assert_eq!(migrated.options.wheel.size_mm(), 2136);
+        assert!(!migrated.options.wheel.manual);
+        assert_eq!(migrated.options.zone, Zone::utc(-3));
+        assert_eq!(migrated.options.theme, Theme::Light);
+        assert_eq!(migrated.options.auto_lap_km, 10);
+        assert_eq!(migrated.sensors.peers().count(), 1);
+        assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
+    }
+
+    #[test]
+    fn a_learned_wheel_is_stored_and_a_damaged_one_is_not_trusted() {
+        let mut learned = Record::default();
+        learned.options.wheel = Wheel {
+            mm: Some(2200),
+            manual: false,
+        };
+        let bytes = encode(&learned);
+        assert_eq!(&bytes[bytes.len() - 3..], [0x98, 0x08, 0]);
+        assert_eq!(decode(&bytes), (learned, Stored::Current));
+        assert_eq!(learned.options.wheel.size_mm(), 2200);
+        for tail in [
+            [0xdb, 0x05, 0],
+            [0x61, 0x09, 0],
+            [1, 0, 0],
+            [0, 0, 2],
+            [0x98, 0x08, 255],
+        ] {
+            let mut damaged = bytes.to_vec();
+            let at = damaged.len() - 3;
+            damaged[at..].copy_from_slice(&tail);
+            assert_eq!(
+                decode(&damaged),
+                (Record::default(), Stored::Malformed),
+                "{tail:?}"
+            );
+        }
+        for mm in [1500u16, 2400] {
+            let mut edge = bytes.to_vec();
+            let at = edge.len() - 3;
+            edge[at..at + 2].copy_from_slice(&mm.to_le_bytes());
+            assert_eq!(decode(&edge).0.options.wheel.mm, Some(mm));
+        }
     }
 
     #[test]
@@ -751,7 +876,7 @@ mod tests {
             [50, 180, 100, 0, 0x2c, 1, 70, 30, 0]
         );
         assert_eq!(migrated.options.zone, Zone::Chile);
-        // The next save writes version 5 and keeps the rest.
+        // The next save writes version 6 and keeps the rest.
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
 
@@ -802,7 +927,7 @@ mod tests {
             )
         );
         assert_eq!(Options::default().setup, 0);
-        // The next save writes version 5 with the same profile and sensors.
+        // The next save writes version 6 with the same profile and sensors.
         let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
@@ -815,7 +940,7 @@ mod tests {
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         // A newer version, even one that appended fields.
         assert_eq!(
-            decode(&[6, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
+            decode(&[7, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
             (defaults, Stored::Unsupported)
         );
         assert_eq!(decode(&[0xff]), (defaults, Stored::Unsupported));
@@ -836,12 +961,17 @@ mod tests {
             &[3, 250, 0, 170, 0],
             &[4, 250, 0, 170, 0, 0],
             &[5, 250, 0, 170, 0, 0],
+            &[6, 250, 0, 170, 0, 0],
+            // Version 5 options under version 6: the wheel is missing.
+            &[
+                6, 250, 0, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+            ],
             // Version 4 options under version 5: the zone is missing.
             &[
                 5, 250, 0, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,
             ],
             // A sensor count that runs past the record.
-            &[5, 250, 0, 170, 0, 2, 120, 1, 0, 1],
+            &[6, 250, 0, 170, 0, 2, 120, 1, 0, 1],
         ] {
             assert_eq!(
                 decode(damaged),
@@ -862,7 +992,7 @@ mod tests {
                 .unwrap()
                 .sunset_alert
         );
-        // Version 5 options: one byte short or long, an unknown flag, too
+        // Version 6 options: one byte short or long, an unknown flag, too
         // long a lap, an unknown day/night, theme or zone, and an impossible FTP.
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
@@ -878,10 +1008,11 @@ mod tests {
             ([250, 0], with(2, 3)),
             ([250, 0], with(OPTIONS_LENGTH_V3, 3)),
             ([250, 0], with(OPTIONS_LENGTH_V4, 2)),
-            ([250, 0], with(OPTIONS_LENGTH - 1, 57)),
+            ([250, 0], with(OPTIONS_LENGTH_V5, 0xdb)),
+            ([250, 0], with(OPTIONS_LENGTH - 1, 2)),
             ([0, 0], good.to_vec()),
         ] {
-            let damaged = [&[5, profile[0], profile[1], 170, 0, 0][..], &options].concat();
+            let damaged = [&[6, profile[0], profile[1], 170, 0, 0][..], &options].concat();
             assert_eq!(
                 decode(&damaged),
                 (defaults, Stored::Malformed),
@@ -964,6 +1095,10 @@ mod tests {
             setup: rng.byte(),
             alerts: core::array::from_fn(|_| rng.byte()),
             sunset_alert: rng.one_in(2),
+            wheel: Wheel {
+                mm: rng.one_in(2).then(|| rng.range(1_500, 2_400) as u16),
+                manual: rng.one_in(2),
+            },
             zone: if rng.one_in(3) {
                 Zone::Chile
             } else {

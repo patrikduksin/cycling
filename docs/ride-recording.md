@@ -369,9 +369,16 @@ Fixed settings in this build:
 
 | Setting | Value |
 | --- | --- |
-| Wheel circumference | 2136 mm (stock RC520 700x28c) |
 | Display clock | Settings TIME ZONE, Chile's summer time rule by default (`clock::Zone`); recorded UTC is unmodified |
 | Clock source | Wi-Fi SNTP since boot, else the GNSS receiver's dated fixes (carried on through a lost fix); GNSS time of day as a display fallback |
+
+Wheel circumference starts at 2136 mm (stock RC520 700x28c) and is stored in
+the preference record. In WHEEL MODE AUTO, a ride with a speed sensor and a good
+GPS fix compares wheel revolutions with GPS distance over windows of about 1 km
+(`ride::wheel_size`), and a size that differs by more than 0.5 % and lies within
+1500 to 2400 mm replaces the stored one. It applies from the next ride, so a
+ride's distance never jumps, and a toast tells the rider once the ride is
+saved. MANUAL keeps the size the rider set.
 
 Training profile:
 

@@ -48,11 +48,16 @@ hand.
 ## Crashes
 
 `STATUS` reports `reset=` and `crash=` after a panic; `CYCLING_RESET` in the
-boot log says why the device restarted. A panic prints its message and
-`Backtrace: 0x42…` on the USB console, so it is only seen if logs were being
-captured: reproduce with `mise run device logs --seconds N` running.
+boot log says why the device restarted. A panic also keeps a record in RTC
+memory that outlives its reset (not power loss): `CRASH` reads it back with
+the build commit, uptime, file and line, the start of the message and up to
+24 return addresses, and `this_boot=true` when it caused this boot's reset.
+It stays until the next panic or `CRASH CLEAR`, so a crash on a ride can be
+read when the device is next plugged in, without logs running at the time.
 
-Decode with `mise run backtrace <log>` (or pipe the text in). It uses
-`.local/cycling.elf`, which `build.sh` keeps beside every image, so decode in
-the checkout that built the image that crashed; rebuilding a different commit
-replaces it. Post the decoded frames, not raw addresses, in the issue or PR.
+Decode with `mise run device terminal CRASH | mise run backtrace`, or
+`mise run backtrace <log>` for a captured panic print. `build.sh` keeps every
+build's ELF as `.local/elf/<commit>.elf` (and the last as
+`.local/cycling.elf`); a `commit=` in the input picks its own, so decode in a
+checkout that built that commit. Post the decoded frames, not raw addresses,
+in the issue or PR. Watchdog and brownout resets leave no record.

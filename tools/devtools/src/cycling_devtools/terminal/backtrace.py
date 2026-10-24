@@ -1,11 +1,15 @@
 """Decode code addresses in device logs into functions, files and lines.
 
     mise run backtrace [log ...] [--elf PATH]     # stdin when no log is given
+    mise run device terminal CRASH | mise run backtrace
 
-esp-backtrace prints the panic message and `0x42xxxxxx` return addresses on
-the USB console. Each line that holds code addresses is followed by what they
-are in the ELF the image came from: build.sh keeps it as .local/cycling.elf,
-so decode on the machine that built the image that crashed.
+A panic prints its message and `0x42xxxxxx` return addresses on the USB
+console, and keeps them in the device's crash record, which `CRASH` reads
+back after the reset. Each line that holds code addresses is followed by what
+they are in the ELF the image came from. build.sh keeps every build's ELF as
+.local/elf/<commit>.elf and the last one as .local/cycling.elf; a `commit=`
+in the input (a CRASH reply) picks its own, so decode on the machine that
+built the image that crashed.
 """
 
 import argparse
@@ -68,15 +72,33 @@ def decode(lines, elf):
                     yield f'    {address} {frame}' if not frame.startswith('(') else f'        {frame}'
 
 
+COMMIT = re.compile(r'\bcommit=([0-9a-f]{7,40})\b')
+
+
+def choose_elf(lines, archive):
+    """The ELF built from the commit the input names, else the last build's."""
+    for line in lines:
+        match = COMMIT.search(line)
+        if match:
+            commit = match.group(1)
+            for name in (f'{commit}.elf', f'{commit}-dirty.elf'):
+                if (archive / name).is_file():
+                    return archive / name
+            print(f'no ELF kept for commit {commit}; decoding with the last build', file=sys.stderr)
+            break
+    return ROOT / '.local/cycling.elf'
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('logs', nargs='*', type=Path)
-    parser.add_argument('--elf', type=Path, default=ROOT / '.local/cycling.elf')
+    parser.add_argument('--elf', type=Path, help='default: the ELF of the commit= in the input, else .local/cycling.elf')
     args = parser.parse_args(argv)
-    if not args.elf.is_file():
-        sys.exit(f'{args.elf} is missing: build the image that crashed first (mise run build)')
     lines = [line for log in args.logs for line in log.read_text(errors='replace').splitlines(True)] or list(sys.stdin)
-    for line in decode(lines, args.elf):
+    elf = args.elf or choose_elf(lines, ROOT / '.local/elf')
+    if not elf.is_file():
+        sys.exit(f'{elf} is missing: build the image that crashed first (mise run build)')
+    for line in decode(lines, elf):
         print(line)
 
 

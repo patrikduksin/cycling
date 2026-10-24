@@ -233,7 +233,7 @@ pub fn execute(
             );
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm|OVERWRITE] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|TEST n"
+                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm|OVERWRITE] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|CRASH [CLEAR]|TEST n"
             );
         }
         Command::Info => {
@@ -515,6 +515,39 @@ pub fn execute(
         Command::Restart => {
             terminal.schedule_reboot(now, false);
             status = "ACCEPTED";
+        }
+        Command::Crash => match crate::device::drivers::crash_rtc::last() {
+            None => {
+                let _ = write!(output, "none");
+            }
+            Some(record) => {
+                let _ = write!(
+                    output,
+                    "kind={} this_boot={} version={} commit={} uptime_ms={} location={}:{} frames={} pcs=",
+                    record.kind.name(),
+                    // Boot marks the record reported, so ask what this boot's
+                    // reset was blamed on.
+                    matches!(system.crash, device_api::crash::Marker::Valid(_)),
+                    record.version(),
+                    if record.commit().is_empty() {
+                        "unknown"
+                    } else {
+                        record.commit()
+                    },
+                    record.uptime_ms,
+                    record.file(),
+                    record.line,
+                    record.pcs().len(),
+                );
+                for (index, pc) in record.pcs().iter().enumerate() {
+                    let _ = write!(output, "{}0x{pc:08x}", if index == 0 { "" } else { "," });
+                }
+                // Last, so a reader can take the rest of the line as it is.
+                let _ = write!(output, " message={}", record.message());
+            }
+        },
+        Command::CrashClear => {
+            crate::device::drivers::crash_rtc::clear();
         }
         Command::Test(n) => {
             #[cfg(feature = "debug-harness")]

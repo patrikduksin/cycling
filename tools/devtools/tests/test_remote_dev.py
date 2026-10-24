@@ -91,6 +91,22 @@ class BacktraceTests(unittest.TestCase):
         )
 
 
+    def test_a_crash_record_picks_the_elf_of_its_commit(self):
+        reply = ['{"status": "OK", "data": "kind=panic this_boot=true commit=15178ed1119a pcs=0x42001234,0x42005678"}\n']
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory)
+            self.assertEqual(backtrace.choose_elf(reply, archive), backtrace.ROOT / '.local/cycling.elf')
+            (archive / '15178ed1119a-dirty.elf').touch()
+            self.assertEqual(backtrace.choose_elf(reply, archive), archive / '15178ed1119a-dirty.elf')
+            (archive / '15178ed1119a.elf').touch()
+            self.assertEqual(backtrace.choose_elf(reply, archive), archive / '15178ed1119a.elf')
+        with patch.object(backtrace, 'addr2line', return_value=Path('addr2line')):
+            with patch.object(backtrace.subprocess, 'run') as run:
+                run.return_value.stdout = ''
+                list(backtrace.decode(reply, Path('cycling.elf')))
+        self.assertEqual(run.call_args.args[0][-2:], ['0x42001234', '0x42005678'])
+
+
 class VerifyTests(unittest.TestCase):
     def test_a_failed_step_stops_its_lane_only(self):
         lane = [verify.Step('first', 'exit 3'), verify.Step('second', 'true')]

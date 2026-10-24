@@ -59,3 +59,11 @@ espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-s
   "$elf" "$image_dir/cycling.bin"
 # Keep the matching ELF beside the image: crash decoding needs its symbols.
 cp "$elf" "$image_dir/cycling.elf"
+# And one per commit, so a crash record's commit= finds its symbols after
+# later builds replace the image (mise run backtrace).
+mkdir -p .local/elf
+if [[ "$CYCLING_BUILD_DIRTY" == 1 ]]; then
+  cp "$elf" ".local/elf/$CYCLING_BUILD_COMMIT-dirty.elf"
+else
+  cp "$elf" ".local/elf/$CYCLING_BUILD_COMMIT.elf"
+fi

@@ -8,9 +8,18 @@ from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.stress import PREFERENCES, read, validate
-from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
+
+
+def crash_record(connection):
+    """CRASH's fields; the message is the rest of the reply and may hold spaces."""
+    reply = connection.terminal_command('CRASH')
+    if reply.get('status') != 'OK':
+        raise AssertionError(f'terminal rejected CRASH: {reply.get("status")}')
+    head, _, message = reply['data'].partition(' message=')
+    return dict(reply_fields(head), message=message)
 
 def expect(connection, command, status):
     if status == 'INVALID':
@@ -212,6 +221,15 @@ def run(args):
                 crash = read(connection, 'STATUS')
                 if crash['crash'] != 'controlled' or crash['reset'] != 'software':
                     raise AssertionError('controlled crash marker not observed')
+                record = crash_record(connection)
+                if (
+                    record.get('kind') != 'controlled'
+                    or record.get('this_boot') != 'true'
+                    or 'src/drivers/crash_rtc.rs:' not in record.get('location', '')
+                    or int(record.get('frames', '0')) == 0
+                    or record.get('message') != 'controlled crash test'
+                ):
+                    raise AssertionError(f'controlled crash record incomplete: {record}')
                 expect(connection, 'RESTART', 'ACCEPTED')
                 connection.__exit__(None, None, None)
                 connection = None
@@ -219,6 +237,12 @@ def run(args):
                 connection = reopen(args.port, directory, 'panic-clean', 30)
                 if read(connection, 'STATUS')['crash'] != 'none':
                     raise AssertionError('crash marker replayed after clean restart')
+                kept = crash_record(connection)
+                if kept.get('this_boot') != 'false' or kept.get('location') != record['location']:
+                    raise AssertionError(f'crash record not kept across a clean restart: {kept}')
+                expect(connection, 'CRASH CLEAR', 'OK')
+                if connection.terminal_command('CRASH').get('data') != 'none':
+                    raise AssertionError('CRASH CLEAR left a record')
                 preserved(original, read(connection, 'SETTINGS'))
         if args.write_settings:
             changed = True

@@ -81,6 +81,16 @@ fn init() -> Resources {
             crash.name()
         ),
     }
+    if let (device_api::crash::Marker::Valid(_), Some(record)) = (crash, crash_rtc::last()) {
+        println!(
+            "CYCLING_CRASH commit={} uptime_ms={} location={}:{} message={}",
+            record.commit(),
+            record.uptime_ms,
+            record.file(),
+            record.line,
+            record.message()
+        );
+    }
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
     // Internal DRAM left after statics and this heap is the main stack, where
     // every task polls and VANA prepares its frames. With Wi-Fi online the

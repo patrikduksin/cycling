@@ -99,6 +99,11 @@ its `manifest.json`; keep the separate copy too.
   next frame submitted to the panel (harness builds). It is PR proof of rendered
   pixels, not of panel output. A `BUSY power transition` reply after flashing
   means charging standby; `POWER` shows it and `POWER WAKE` leaves it.
+- After boot or `RESTART`, `INFO` answers at once but other work is refused
+  with `BUSY starting companion=<phase>` until the companion startup check
+  ends (3 s, longer after transport faults). It ran nothing, so ask again;
+  the harness runner, screenshot and cleanup wait for it with read-only
+  `SETTINGS`.
 - `mise run latency -- --press BUTTON` times synthetic presses to the end of the
   next frame submission and reports idle frame rate and time (harness builds).
   It does not observe the panel or physical switches.

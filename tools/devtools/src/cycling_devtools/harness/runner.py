@@ -365,6 +365,14 @@ def preflight(scenario):
         raise ValueError('capture kinds must be unique camera/microphone')
 
 
+# C606 probes its companion for 3 s after boot. Probe retries after transport
+# faults and the wait for sensor samples can take about 55 s before it gives up.
+READY_TIMEOUT_S = 60
+# Companion startup phases that never end in ready.
+FAILED_STARTUP = {'companion=timed_out', 'companion=unavailable', 'companion=uncertain'}
+READY_POLL_S = 0.25
+
+
 class Runner:
     def __init__(self, transport, output):
         self.transport, self.output = transport, output
@@ -380,6 +388,15 @@ class Runner:
         self.ant_stop_sent = False
 
     def command(self, command, statuses=('OK',), timeout=30):
+        reply = self.request(command, timeout)
+        if reply['status'] not in statuses:
+            if reply['status'] in ('UNSUPPORTED', 'UNAVAILABLE'):
+                raise Unsupported(reply['status'])
+            raise RuntimeError(f'{command.split()[0]} returned {reply["status"]}')
+        return reply_fields(reply['data'])
+
+    def request(self, command, timeout=30):
+        """Send once and trace the reply, whatever its status."""
         request = f'CMD {self.transport.request_id + 1} {command}'
         if len(request.encode('ascii')) > 256 or any(c in command for c in '\n\r\x00'):
             raise ValueError('invalid command framing')
@@ -404,11 +421,45 @@ class Runner:
             + '\n'
         )
         self.trace.flush()
-        if reply['status'] not in statuses:
-            if reply['status'] in ('UNSUPPORTED', 'UNAVAILABLE'):
-                raise Unsupported(reply['status'])
-            raise RuntimeError(f'{command.split()[0]} returned {reply["status"]}')
-        return reply_fields(reply['data'])
+        return reply
+
+    def await_ready(self):
+        """Wait until the device admits work after boot and return SETTINGS.
+
+        Until its companion startup check finishes, C606 refuses most commands
+        with `BUSY starting` before running them. Only the read-only SETTINGS
+        probe repeats, so no mutation is ever replayed.
+        """
+        stop = time.monotonic() + READY_TIMEOUT_S
+        while True:
+            reply = self.request('SETTINGS')
+            if reply['status'] == 'OK':
+                return reply_fields(reply['data'])
+            if reply['status'] != 'BUSY':
+                raise RuntimeError(f'SETTINGS returned {reply["status"]}')
+            if FAILED_STARTUP & set(reply['data'].split()):
+                raise RuntimeError(f'device startup failed ({reply["data"]}); inspect POWER and COMPANION')
+            if not self.starting(reply['data']):
+                raise RuntimeError(
+                    f'device is in a power transition ({reply["data"]}), not starting; charging standby after a '
+                    'reset? Inspect `mise run terminal -- POWER`; `POWER WAKE` leaves charging standby'
+                )
+            if time.monotonic() >= stop:
+                raise TimeoutError(
+                    f'device still starting after {READY_TIMEOUT_S} s ({reply["data"]}); inspect POWER and COMPANION'
+                )
+            self.transport.delay(READY_POLL_S)
+
+    def starting(self, detail):
+        """Older firmware says `BUSY power transition` while starting too; POWER
+        then tells startup (`state: Initializing`) from charging standby, which
+        waiting does not end."""
+        if detail.split()[:1] == ['starting']:
+            return True
+        if detail != 'power transition':
+            return False
+        reply = self.request('POWER')
+        return reply['status'] == 'OK' and 'state: Initializing' in reply['data']
 
     def operation(self, command, statuses=('OK',)):
         result = self.command(f'HARNESS {self.session} {command}', statuses)
@@ -697,6 +748,7 @@ class Runner:
             self.operation('CLOSE')
             self.session = None
         result = self.transport.recover(mode, float(step.get('seconds', 1)))
+        self.await_ready()
         caps = self.command('HARNESS CAPS')
         self.boot = caps.get('boot')
         if caps.get('input') == 'supported':
@@ -901,6 +953,7 @@ def run_scenario(args, scenario, output, report, state):
     state.transport = open_transport(args, output)
     state.transport.__enter__()
     state.runner = Runner(state.transport, output)
+    state.runner.await_ready()
     record_originals(state, scenario, report)
     needed = check_capabilities(state.runner, scenario, report)
     if needed or report['capabilities'].get('input') == 'supported':
@@ -972,7 +1025,7 @@ def radio_restorer(radio):
 
 def restore_preferences(runner, state, _scenario):
     original = state.original_settings
-    actual = runner.command('SETTINGS')
+    actual = runner.await_ready()
     if actual.get('brightness') != original.get('brightness'):
         runner.command(f'BRIGHTNESS {original["brightness"]}')
     if actual.get('timezone') != original.get('timezone'):

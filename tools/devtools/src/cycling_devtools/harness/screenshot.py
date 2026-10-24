@@ -32,14 +32,8 @@ def button(value):
 def screenshot(runner, output, scale=1, presses=(), settle_ms=500):
     """Press buttons, capture one frame and write it; return a JSON-ready summary."""
     started = time.monotonic()
-    try:
-        caps = runner.command('HARNESS CAPS')
-    except RuntimeError as error:
-        if 'BUSY' in str(error):
-            raise RuntimeError(
-                'device is in a power transition (charging standby after reset?); inspect `mise run terminal -- POWER`'
-            ) from None
-        raise
+    runner.await_ready()
+    caps = runner.command('HARNESS CAPS')
     if caps.get('capture') != 'supported':
         raise RuntimeError(f'frame capture is {caps.get("capture", "unsupported")}; flash a CYCLING_HARNESS=1 build')
     runner.open_session()

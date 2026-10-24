@@ -487,8 +487,12 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'charging standby'):
             recover(fake)
         self.assertNotIn('HARNESS CAPS', fake.commands)
+        fake = Starting(['starting companion=timed_out'])
+        with self.assertRaisesRegex(RuntimeError, 'startup failed'):
+            recover(fake)
+        self.assertEqual(fake.delays, [])
         with patch('cycling_devtools.harness.runner.READY_TIMEOUT_S', 0):
-            fake = Starting(['starting companion=timed_out'])
+            fake = Starting(['starting companion=probing'])
             with self.assertRaisesRegex(TimeoutError, 'still starting'):
                 recover(fake)
 

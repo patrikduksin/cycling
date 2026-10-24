@@ -7,6 +7,7 @@ from cycling_devtools.harness.base import (
     expect,
     power_cycle,
     preserved,
+    settle,
     transport_recovery,
     wifi_failures,
 )
@@ -73,16 +74,40 @@ class PowerCycleTests(unittest.TestCase):
 
     def test_switches_off_once_and_wakes_charging_standby_before_reading_flash(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('UNAVAILABLE', ''), ('ACCEPTED', '')]})
+        idle = 'status=Status { state: Idle, ready: true }'
         after = ScriptedConnection(
             {
                 'STATUS': [('OK', 'reset=power crash=none')],
-                'CRASH': [('UNAVAILABLE', ''), ('UNAVAILABLE', ''), ('OK', 'kind=controlled source=flash')],
-                'POWER WAKE': [('ACCEPTED', '')],
+                'COMPANION': [
+                    ('OK', 'startup=probing'),
+                    ('OK', 'startup=charging'),
+                    ('OK', 'startup=charging'),
+                    ('OK', 'startup=ready'),
+                ],
+                'POWER': [
+                    ('OK', idle),
+                    ('OK', 'status=Status { state: Charging, ready: false }'),
+                    ('OK', 'status=Status { state: Charging, ready: false }'),
+                    ('OK', idle),
+                ],
+                'POWER WAKE': [('UNAVAILABLE', ''), ('ACCEPTED', '')],
             }
         )
         self.assertIs(self.cycle(before, after), after)
         self.assertEqual(before.commands, ['POWER SHUTDOWN', 'POWER SHUTDOWN'])
-        self.assertEqual(after.commands.count('POWER WAKE'), 1)
+        self.assertEqual(after.commands.count('POWER WAKE'), 2)
+        self.assertEqual(after.commands[-2:], ['COMPANION', 'POWER'])
+
+    def test_an_early_idle_before_the_companion_starts_is_not_settled(self):
+        connection = ScriptedConnection(
+            {
+                'COMPANION': [('OK', 'startup=waiting'), ('OK', 'startup=ready')],
+                'POWER': [('OK', 'status=Status { state: Idle, ready: true }')],
+            }
+        )
+        with patch('time.sleep'):
+            settle(connection)
+        self.assertEqual(connection.commands, ['COMPANION', 'POWER', 'COMPANION', 'POWER'])
 
     def test_a_reset_that_kept_rtc_memory_fails(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})

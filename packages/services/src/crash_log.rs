@@ -51,6 +51,9 @@ pub enum Error<E> {
 }
 
 /// The newest committed record, if any.
+// Out of line, so callers such as the console's command handler do not
+// carry its slot buffers in their own frames.
+#[inline(never)]
 pub fn newest<B: OwnedFlash>(flash: &mut RegionAccess<'_, B>) -> Result<Option<Entry>, B::Error> {
     let mut newest: Option<Entry> = None;
     for slot in 0..SLOTS {
@@ -104,14 +107,27 @@ pub fn keep<B: OwnedFlash>(
     Ok(true)
 }
 
-/// Erase both slots, the older first, so a cut between the two erases
-/// leaves the newest record rather than an older one.
+/// Erase the committed slots, the older first, so a cut between the two
+/// erases leaves the newest record rather than an older one. Clearing an
+/// empty journal writes nothing.
 pub fn clear<B: OwnedFlash>(flash: &mut RegionAccess<'_, B>) -> Result<(), B::Error> {
-    let older = newest(flash)?.map_or(0, |entry| SLOTS - 1 - entry.slot);
-    flash.erase(older * SLOT_SIZE, SLOT_SIZE)?;
-    flash.erase((SLOTS - 1 - older) * SLOT_SIZE, SLOT_SIZE)
+    let mut committed = [None; SLOTS];
+    for (slot, sequence) in committed.iter_mut().enumerate() {
+        *sequence = read(flash, slot)?.map(|entry| entry.sequence);
+    }
+    let order = match committed {
+        [Some(first), Some(second)] if newer(first, second) => [1, 0],
+        _ => [0, 1],
+    };
+    for slot in order {
+        if committed[slot].is_some() {
+            flash.erase(slot * SLOT_SIZE, SLOT_SIZE)?;
+        }
+    }
+    Ok(())
 }
 
+#[inline(never)]
 fn read<B: OwnedFlash>(
     flash: &mut RegionAccess<'_, B>,
     slot: usize,
@@ -297,6 +313,20 @@ mod tests {
         clear(&mut RegionAccess::new(&mut media, Region::Crash)).unwrap();
         assert_eq!(newest_words(&mut media), None);
         assert!(media.bytes.iter().all(|byte| *byte == 0xff));
+    }
+
+    #[test]
+    fn clearing_touches_only_committed_slots() {
+        let mut media = Media::new();
+        media.bytes[SLOT_SIZE..].fill(0x5a);
+        clear(&mut RegionAccess::new(&mut media, Region::Crash)).unwrap();
+        assert_eq!(media.writes, 0);
+        assert_eq!(kept(&mut media, &record(1)), Ok(true));
+        let writes = media.writes;
+        clear(&mut RegionAccess::new(&mut media, Region::Crash)).unwrap();
+        assert_eq!(media.writes, writes + 1);
+        assert_eq!(newest_words(&mut media), None);
+        assert!(media.bytes[SLOT_SIZE..].iter().all(|byte| *byte == 0x5a));
     }
 
     #[test]

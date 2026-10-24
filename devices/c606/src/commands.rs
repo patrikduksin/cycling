@@ -503,7 +503,8 @@ pub fn execute(
         Command::Crash => {
             let last = crate::device::drivers::crash_rtc::last(&mut system.crash_storage());
             match last {
-                Err(_) => status = "UNAVAILABLE",
+                Err(device_api::storage::AccessError::Unavailable) => status = "UNAVAILABLE",
+                Err(_) => status = "FAILED",
                 Ok(None) => {
                     let _ = write!(output, "none");
                 }
@@ -540,9 +541,11 @@ pub fn execute(
             }
         }
         Command::CrashClear => {
-            if crate::device::drivers::crash_rtc::clear(&mut system.crash_storage()).is_err() {
-                status = "FAILED";
-            }
+            status = match crate::device::drivers::crash_rtc::clear(&mut system.crash_storage()) {
+                Ok(()) => "OK",
+                Err(device_api::storage::AccessError::Unavailable) => "UNAVAILABLE",
+                Err(_) => "FAILED",
+            };
         }
         Command::Test(n) => {
             #[cfg(feature = "debug-harness")]

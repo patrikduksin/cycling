@@ -93,6 +93,7 @@ impl Source {
 /// The last panic recorded, reported or not, until `clear` or the next panic.
 /// A valid RTC record is the newest: flash holds only copies of RTC records,
 /// and a later panic replaces the RTC record before boot copies it.
+#[inline(never)]
 pub fn last<B: OwnedFlash>(
     flash: &mut RegionAccess<'_, B>,
 ) -> Result<Option<(device_api::crash::Record, Source)>, B::Error> {
@@ -104,10 +105,13 @@ pub fn last<B: OwnedFlash>(
         .map(|record| (record, Source::Flash)))
 }
 
-/// Forget the recorded panic, in RTC memory and in flash.
+/// Forget the recorded panic, in flash and then in RTC memory. A flash
+/// failure, including closed storage in charging standby, keeps both, so the
+/// record never resurfaces from flash after a clear that reported success.
 pub fn clear<B: OwnedFlash>(flash: &mut RegionAccess<'_, B>) -> Result<(), B::Error> {
+    crash_log::clear(flash)?;
     clear_rtc();
-    crash_log::clear(flash)
+    Ok(())
 }
 
 fn clear_rtc() {

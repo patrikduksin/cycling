@@ -626,6 +626,22 @@ class ReviewFixTests(Workspace):
             self.main('restore-owned')
 
 
+class CrashJournalTests(Workspace):
+    def test_a_written_crash_journal_never_blocks_or_meets_flash_rollback_and_stock(self):
+        journal = b'CRJ1' + bytes(range(256)) * 31 + b'\xa5' * 0x1000
+        self.fake.memory[0x1E000:0x20000] = journal[:0x2000]
+        self.candidate(image(marker=1))
+        self.main('flash')
+        self.candidate(image(marker=2))
+        self.main('flash')
+        self.main('rollback')
+        self.assertEqual(bytes(self.fake.memory[0x1E000:0x20000]), journal[:0x2000])
+        for address, length in self.fake.writes:
+            self.assertTrue(address + length <= 0x1E000 or address >= 0x20000)
+        self.main('stock', '--confirm-restore')
+        self.assertEqual(bytes(self.fake.memory), self.backup)
+
+
 class RollbackTests(Workspace):
     def test_rollback_returns_to_the_other_cycling_image_without_writing_slots(self):
         old = self.candidate(image(marker=1))

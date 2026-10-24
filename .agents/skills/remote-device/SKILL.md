@@ -56,6 +56,9 @@ The next boot also copies it to flash, so it stays until the next panic or
 `CRASH CLEAR`, even after the device is switched off; no logs need to have
 been running at the time. `source=rtc` means RTC memory still held it,
 `source=flash` that a power-off cleared RTC memory and the flash copy answered.
+Firmware from before this copy neither reads nor clears it, so after a
+rollback to such firmware and back, an older flash record can reappear;
+run `CRASH CLEAR` on current firmware to drop it.
 `mise run device crash-test --power-off` adds a power cycle to the crash
 test (on USB the C606 comes back in charging standby; off USB, switch it on).
 

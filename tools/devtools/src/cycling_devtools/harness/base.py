@@ -91,14 +91,32 @@ def power_cycle(port, directory):
     system = read(connection, 'STATUS')
     if system['reset'] != 'power' or system['crash'] != 'none':
         raise AssertionError(f'expected a power-on reset without a crash marker, got {system}')
-    if connection.terminal_command('CRASH')['status'] == 'UNAVAILABLE':
-        expect(connection, 'POWER WAKE', 'ACCEPTED')
-        deadline = time.monotonic() + 20
-        while connection.terminal_command('CRASH')['status'] == 'UNAVAILABLE':
-            if time.monotonic() >= deadline:
-                raise TimeoutError('storage stayed closed after POWER WAKE')
-            time.sleep(0.5)
+    settle(connection)
     return connection
+
+
+def settle(connection, seconds=60):
+    """Wait until the companion has started and storage is open, waking charging standby.
+
+    INFO answers before the companion reports charging, so an early ready
+    state proves nothing; only a finished companion startup does.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        startup = read(connection, 'COMPANION').get('startup')
+        power = expect(connection, 'POWER', 'OK')['data']
+        if startup == 'charging':
+            # UNAVAILABLE until standby has finished preparing; a refused wake changed nothing.
+            connection.terminal_command('POWER WAKE')
+        elif (
+            startup in ('ready', 'already_running')
+            and 'ready: true' in power
+            and re.search(r'state: (Idle|Completed)\b', power)
+        ):
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f'device did not settle: startup={startup} {power}')
+        time.sleep(0.5)
 
 
 def wifi_failures(connection):

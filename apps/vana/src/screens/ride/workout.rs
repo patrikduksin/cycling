@@ -188,8 +188,12 @@ fn unit_str(metric: Metric) -> &'static str {
 
 /// The step's name: its intensity, the run of its block when repeated, and
 /// its note when there is room.
-fn step_name(value: &mut Text<24>, played: Played) {
-    let _ = value.push_str(played.step.intensity.label());
+fn step_name(value: &mut Text<24>, played: Played, short: bool) {
+    let _ = value.push_str(if short {
+        played.step.intensity.short_label()
+    } else {
+        played.step.intensity.label()
+    });
     if played.of > 1 {
         let _ = write!(value, " {}/{}", played.repetition + 1, played.of);
     }
@@ -214,19 +218,19 @@ pub(super) fn prepare(view: &View) -> Canvas {
 
     // The workout and where in it the rider is.
     let mut count = Text::<24>::new();
+    // Decided on the widest count, so the format holds all workout long.
+    let mut widest = Text::<24>::new();
+    let _ = write!(widest, "STEP {}/{}", now.steps, now.steps);
+    let word =
+        CAPTION.width(training.name.as_bytes()) + CAPTION.width(widest.as_bytes()) + 8 + 2 * SPILL
+            <= width;
     let _ = if training.done {
         count.push_str("DONE")
-    } else {
+    } else if word {
         write!(count, "STEP {}/{}", now.position + 1, now.steps)
+    } else {
+        write!(count, "{}/{}", now.position + 1, now.steps)
     };
-    // A long name keeps its room: the count drops its word before the name is cut.
-    if !training.done
-        && CAPTION.width(training.name.as_bytes()) + CAPTION.width(count.as_bytes()) + 8 + 2 * SPILL
-            > width
-    {
-        count = Text::new();
-        let _ = write!(count, "{}/{}", now.position + 1, now.steps);
-    }
     let count = canvas.caption(
         count.as_bytes(),
         width / 2,
@@ -251,21 +255,31 @@ pub(super) fn prepare(view: &View) -> Canvas {
         let _ = name.push_str("WORKOUT DONE");
         let _ = target.push_str("FREE RIDE");
     } else {
-        step_name(&mut name, now.played);
+        step_name(&mut name, now.played, false);
         target_text(&mut target, now.played, now, training.test);
     }
     let target_color = if now.band.is_some() { color } else { SECONDARY };
     let name_room = CAPTION.width(name.as_bytes()) + 8 + 2 * SPILL;
+    // The target is never cut: it keeps at least its smallest size.
+    let target_floor = CAPTION.width(target.as_bytes()) + SPILL;
     let target = canvas.fit(
         &[&BODY_FACE, &CAPTION],
         target.as_bytes(),
-        (width * 3 / 5).min(width.saturating_sub(name_room)),
+        (width * 3 / 5)
+            .min(width.saturating_sub(name_room))
+            .max(target_floor),
         RIGHT - SPILL,
         STEP_BASE,
         Align::Right,
         target_color,
     );
     let name_color = if training.done { GREEN } else { WHITE };
+    if !training.done
+        && CAPTION.width(name.as_bytes()) + SPILL > target.left.saturating_sub(LEFT + 8)
+    {
+        name = Text::new();
+        step_name(&mut name, now.played, true);
+    }
     canvas.fit(
         &[&BODY_FACE, &CAPTION],
         name.as_bytes(),
@@ -600,7 +614,16 @@ mod tests {
     use crate::workout::player::Player;
 
     fn page(player: &Player, watts: Option<u16>) -> View<'static> {
+        page_at(
+            player,
+            watts,
+            crate::ride::zones::TrainingProfile::default().ftp_watts,
+        )
+    }
+
+    fn page_at(player: &Player, watts: Option<u16>, ftp: u16) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, None);
+        view.profile.ftp_watts = ftp;
         view.ride_page = RidePage::Workout;
         view.state = Status::Recording;
         view.sample.power_watts = watts;
@@ -673,7 +696,7 @@ mod tests {
         assert_eq!(canvas.find("228-258 W").map(|r| r.color), Some(POWER));
         assert_eq!(canvas.find("240").map(|r| r.color), Some(POWER));
         assert_eq!(canvas.find("ON TARGET").map(|r| r.color), Some(GREEN));
-        assert!(canvas.shows("WORK 1/5") && canvas.shows("STEP 2/12"));
+        assert!(canvas.shows("WORK 1/5") && canvas.shows("2/12"));
         assert!(canvas.shows("2:30") && canvas.shows("NEXT"));
         assert!(canvas.shows("3:00 RECOVER"));
         canvas.assert_laid_out(PAGE, &["VO2 MAX 5X3", "228-258 W", "240"], "interval");
@@ -723,21 +746,36 @@ mod tests {
                     );
                 }
                 if !player.done() {
-                    let mut step = Text::<24>::new();
-                    step_name(&mut step, player.now(&Default::default()).played);
+                    let mut full = Text::<24>::new();
+                    step_name(&mut full, player.now(&Default::default()).played, false);
+                    let mut short = Text::<24>::new();
+                    step_name(&mut short, player.now(&Default::default()).played, true);
                     let view = page(&player, Some(240));
                     assert!(
-                        view.canvas.shows(step.as_str()),
+                        view.canvas.shows(full.as_str()) || view.canvas.shows(short.as_str()),
                         "{:?}: {} cut",
                         workout.name,
-                        step.as_str()
+                        full.as_str()
                     );
                     assert!(
                         view.canvas.shows(workout.name.as_str()),
                         "{:?} cut at {}",
                         workout.name,
-                        step.as_str()
+                        full.as_str()
                     );
+                    for ftp in [215, 300, 400] {
+                        let view = page_at(&player, Some(240), ftp);
+                        let training = view.training.as_ref().unwrap();
+                        let mut target = Text::<24>::new();
+                        let played = training.now.played;
+                        target_text(&mut target, played, &training.now, training.test);
+                        assert!(
+                            view.canvas.shows(target.as_str()),
+                            "{:?}: {} cut at {ftp} W",
+                            workout.name,
+                            target.as_str()
+                        );
+                    }
                 }
                 if player.done() {
                     break;

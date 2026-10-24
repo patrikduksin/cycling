@@ -137,7 +137,7 @@ pub const VO2_LONG: Workout = Workout::new(
     "VO2 MAX 6X4",
     &[
         Step::new(Warmup, min(12), ftp(50, 70)),
-        Step::new(Work, min(4), ftp(105, 115)).note("STRONG, EVEN PACE"),
+        Step::new(Work, min(4), ftp(106, 115)).note("STRONG, EVEN PACE"),
         Step::new(Recovery, min(4), ftp(40, 55)),
         Step::new(Cooldown, min(10), ftp(40, 55)),
     ],
@@ -145,22 +145,23 @@ pub const VO2_LONG: Workout = Workout::new(
     None,
 );
 
-/// Three sets of ten: thirty seconds hard, thirty easy, five minutes between.
+/// Two sets of ten: thirty seconds hard, thirty easy, the last easy half
+/// minute of a set joined to the five-minute break. Three sets would need
+/// more steps than a workout holds.
 pub const VO2_THIRTY: Workout = Workout::new(
     "VO2 MAX 30-30S",
     &[
         Step::new(Warmup, min(12), ftp(50, 70)),
         Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
         Step::new(Recovery, secs(30), ftp(40, 50)),
+        Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
         Step::new(Recovery, min(5), ftp(45, 55)),
         Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
         Step::new(Recovery, secs(30), ftp(40, 50)),
-        Step::new(Recovery, min(5), ftp(45, 55)),
         Step::new(Work, secs(30), ftp(120, 130)).note("HARD, 100+ RPM"),
-        Step::new(Recovery, secs(30), ftp(40, 50)),
         Step::new(Cooldown, min(10), ftp(40, 55)),
     ],
-    &[block(1, 2, 10), block(4, 2, 10), block(7, 2, 10)],
+    &[block(1, 2, 9), block(5, 2, 9)],
     None,
 );
 
@@ -168,7 +169,7 @@ pub const ANAEROBIC: Workout = Workout::new(
     "ANAEROBIC 6X1",
     &[
         Step::new(Warmup, min(15), ftp(50, 70)),
-        Step::new(Work, min(1), ftp(150, 170)).note("ALL IN"),
+        Step::new(Work, min(1), ftp(130, 150)).note("ALL IN"),
         Step::new(Recovery, min(4), ftp(40, 55)),
         Step::new(Cooldown, min(10), ftp(40, 55)),
     ],
@@ -180,7 +181,7 @@ pub const SPRINTS: Workout = Workout::new(
     "SPRINTS 10X10S",
     &[
         Step::new(Warmup, min(15), ftp(50, 70)),
-        Step::new(Work, secs(10), ftp(200, 250)).note("MAX, FROM A ROLL"),
+        Step::new(Work, secs(10), Target::Free).note("MAX, FROM A ROLL"),
         Step::new(Recovery, secs(120), ftp(40, 55)),
         Step::new(Cooldown, min(10), ftp(40, 55)),
     ],
@@ -503,7 +504,7 @@ pub(crate) mod tests {
         }
         assert_eq!(SWEET_SPOT.planned_secs(), 70 * 60);
         assert_eq!(VO2_MAX.played_len(), 12);
-        assert_eq!(VO2_THIRTY.played_len(), 64);
+        assert_eq!(VO2_THIRTY.played_len(), 41);
         assert_eq!(OPENERS.played_len(), 14);
         assert_eq!(
             FTP_TWENTY.planned_secs(),
@@ -525,7 +526,7 @@ pub(crate) mod tests {
         (&OVER_UNDERS, "2X20", 2 * 20 * 60),
         (&VO2_MAX, "5X3", 5 * 3 * 60),
         (&VO2_LONG, "6X4", 6 * 4 * 60),
-        (&VO2_THIRTY, "30-30S", 3 * 10 * 30),
+        (&VO2_THIRTY, "30-30S", 2 * 10 * 30),
         (&ANAEROBIC, "6X1", 6 * 60),
         (&SPRINTS, "10X10S", 10 * 10),
         (&OPENERS, "OPENERS", 3 * 75),
@@ -582,9 +583,12 @@ pub(crate) mod tests {
                     }
                 } else {
                     assert!(
-                        matches!(step.target, Target::Free | Target::Ramp { .. })
-                            && step.intensity == Test,
-                        "{name}: only tests ride free or ramp"
+                        (matches!(step.target, Target::Free | Target::Ramp { .. })
+                            && step.intensity == Test)
+                            || (step.target == Target::Free
+                                && step.intensity == Work
+                                && !step.note.is_empty()),
+                        "{name}: only tests and noted sprints ride free"
                     );
                 }
             }

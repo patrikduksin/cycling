@@ -18,7 +18,7 @@ const fn luma(pixel: u16) -> i32 {
 }
 
 /// The most a saturated colour's luma may be on the light background, about
-/// 4.5:1 against white.
+/// 4:1 against white.
 const INK_LUMA: i32 = 90;
 
 /// `pixel` with its luminance inverted and its hue kept: greys swap ends

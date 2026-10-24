@@ -488,6 +488,88 @@ fn lapped_ride() -> Vec<Slot> {
     slots
 }
 
+/// Ride 3 as a journal can hold it: batches whose clock arrives late, jumps
+/// or never comes, pauses of any wall time, damaged slots, another ride's
+/// records, and any end.
+fn arbitrary_ride(rng: &mut crate::testing::Rng) -> Vec<Slot> {
+    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    let mut sequence = 1;
+    let mut active_ms = 0;
+    let mut offset_ms = T0 + rng.below(86_400_000);
+    for _ in 0..rng.range(0, 40) {
+        match rng.below(10) {
+            0..=5 => {
+                let samples: Vec<Sample> = (0..rng.range(1, 4))
+                    .map(|_| {
+                        active_ms += rng.pick(&[0, 1, 999, 1_000, 1_001, 30_000]);
+                        let mut sample = rng.sample();
+                        sample.active_ms = active_ms;
+                        sample.utc_ms = match rng.below(8) {
+                            0 => None,
+                            1 => Some(offset_ms.saturating_sub(rng.below(600_000)) + active_ms),
+                            2 => sample.utc_ms,
+                            _ => Some(offset_ms + active_ms),
+                        };
+                        sample
+                    })
+                    .collect();
+                slots.push(slot(
+                    &Entry::batch(Source::Live, 3, sequence, &samples).unwrap(),
+                ));
+            }
+            6 => {
+                slots.push(slot(&Entry::event(
+                    Kind::Pause,
+                    Source::Live,
+                    3,
+                    sequence,
+                    active_ms,
+                )));
+                sequence += 1;
+                let any = rng.below(86_400_000);
+                offset_ms += rng.pick(&[0, 1_000, 3_600_000, any]);
+                slots.push(slot(&Entry::event(
+                    Kind::Resume,
+                    Source::Live,
+                    3,
+                    sequence,
+                    active_ms,
+                )));
+            }
+            7 => slots.push(Slot(core::array::from_fn(|_| rng.byte()))),
+            8 => {
+                let mut other = slot(&Entry::batch(Source::Live, 9, 1, &[rng.sample()]).unwrap());
+                if rng.one_in(2) {
+                    let at = rng.below(252) as usize;
+                    other.0[at] ^= 1 << rng.below(8);
+                }
+                slots.push(other);
+            }
+            _ => sequence += 1,
+        }
+        sequence += 1;
+    }
+    let end = rng.pick(&[
+        Kind::Finish,
+        Kind::Recovered,
+        Kind::Full,
+        Kind::Start,
+        Kind::Samples,
+    ]);
+    match end {
+        Kind::Start => slots.push(slot(&Entry::event(Kind::Start, Source::Live, 4, 0, 0))),
+        Kind::Samples => {}
+        kind => slots.push(slot(&Entry::event(
+            kind,
+            Source::Live,
+            3,
+            sequence,
+            active_ms,
+        ))),
+    }
+    slots
+}
+
 #[test]
 fn each_marked_lap_becomes_a_lap_message() {
     let (plan, bytes) = file(&lapped_ride(), None).unwrap();
@@ -618,5 +700,55 @@ fn lap_ascent_and_descent_add_up_to_the_session() {
         let sum: u64 = laps.iter().map(|lap| lap.get(in_lap).unwrap()).sum();
         assert!(session.get(in_session).unwrap() > 0);
         assert_eq!(Some(sum), session.get(in_session), "lap field {in_lap}");
+    }
+}
+
+#[test]
+fn any_ride_becomes_a_valid_file_of_its_planned_size_with_ordered_times() {
+    let (mut written, mut refused) = (0, 0);
+    for seed in 0..1_500 {
+        let mut rng = crate::testing::Rng::new(seed);
+        let slots = arbitrary_ride(&mut rng);
+        let start = rng.option(|rng| T0 + rng.below(1_000_000));
+        // `file` checks the planned size against the bytes written.
+        let Ok((plan, bytes)) = file(&slots, start) else {
+            refused += 1;
+            continue;
+        };
+        written += 1;
+        // The reader checks both CRCs and the declared size.
+        let messages = decode(&bytes);
+        let records = messages.iter().filter(|m| m.global == 20).count();
+        assert_eq!(records as u32, plan.samples, "seed {seed}");
+        let times: Vec<u64> = messages
+            .iter()
+            .filter(|m| matches!(m.global, 20 | 21))
+            .map(|m| m.get(253).expect("timestamped"))
+            .collect();
+        assert!(
+            times.windows(2).all(|pair| pair[0] <= pair[1]),
+            "seed {seed}: {times:?}"
+        );
+    }
+    assert!(
+        written > 1_000 && refused > 0,
+        "{written} written, {refused} refused"
+    );
+}
+
+#[test]
+fn arbitrary_slots_never_break_the_export() {
+    for seed in 0..1_000 {
+        let mut rng = crate::testing::Rng::new(seed);
+        let mut slots = arbitrary_ride(&mut rng);
+        for _ in 0..rng.range(1, 8) {
+            let index = rng.below(slots.len() as u64) as usize;
+            let at = rng.below(256) as usize;
+            slots[index].0[at] = rng.byte();
+        }
+        if let Ok((plan, bytes)) = file(&slots, Some(T0)) {
+            decode(&bytes);
+            assert_eq!(plan.size as usize, bytes.len(), "seed {seed}");
+        }
     }
 }

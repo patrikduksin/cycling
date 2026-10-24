@@ -524,6 +524,83 @@ mod tests {
             }))
         );
     }
+
+    #[test]
+    fn arbitrary_lines_never_panic_and_each_newline_answers_once() {
+        const WORDS: &[&str] = &[
+            "CMD",
+            "ANT",
+            "BLE",
+            "WIFI",
+            "RIDE",
+            "SETTINGS",
+            "FILES",
+            "TERRAIN",
+            "WORKOUT",
+            "STORAGE",
+            "VOLUME",
+            "SCAN",
+            "CONNECT",
+            "SEND",
+            "SELECT",
+            "CONFIG",
+            "EXPORT",
+            "READ",
+            "SAVE",
+            "STATUS",
+            "TIME",
+            "TIMEZONE",
+            "BRIGHTNESS",
+            "HRS",
+            "CSC",
+            "WPA2",
+            "WPA3",
+            "-",
+            "0",
+            "1",
+            "60",
+            "255",
+            "256",
+            "65535",
+            "4294967295",
+            "4294967296",
+            "-1",
+            "ff",
+            "54657374",
+            "70617373776f7264",
+            "060504030201",
+            "zz",
+            "",
+        ];
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut below = |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.wrapping_mul(0x2545_f491_4f6c_dd1d) % n
+        };
+        let mut lines = Lines::default();
+        let (mut newlines, mut answers) = (0, 0);
+        for _ in 0..20_000 {
+            let mut line = std::vec::Vec::new();
+            if below(5) == 0 {
+                line.extend((0..below(300)).map(|_| below(256) as u8));
+            } else {
+                for _ in 0..below(12) {
+                    let word = WORDS[below(WORDS.len() as u64) as usize];
+                    line.extend_from_slice(word.as_bytes());
+                    line.push(if below(10) == 0 { b'\t' } else { b' ' });
+                }
+            }
+            let _ = parse(&line);
+            line.push(b'\n');
+            for &byte in &line {
+                newlines += usize::from(byte == b'\n');
+                answers += usize::from(lines.push(byte).is_some());
+            }
+        }
+        assert_eq!(answers, newlines);
+    }
 }
 
 #[cfg(test)]

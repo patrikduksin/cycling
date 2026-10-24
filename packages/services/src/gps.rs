@@ -1062,4 +1062,154 @@ mod tests {
         body(&mut parser, b"PDTINFO,model", 3);
         assert_eq!(parser.snapshot(3).identity, Identity::Conflicting);
     }
+
+    const NMEA: &[u8] = b"$$,,,**\r\n\n0123456789.ABCDEFGNPRSWLMTV-";
+
+    /// Bytes a noisy UART delivers: mostly NMEA's alphabet, sometimes any byte.
+    fn noise(rng: &mut crate::testing::Rng, length: usize) -> std::vec::Vec<u8> {
+        (0..length)
+            .map(|_| match rng.below(4) {
+                0 => rng.next() as u8,
+                _ => NMEA[rng.below(NMEA.len() as u64) as usize],
+            })
+            .collect()
+    }
+
+    /// A checksum-valid sentence of plausible fields in any order and count.
+    fn sentence(rng: &mut crate::testing::Rng) -> std::vec::Vec<u8> {
+        const KINDS: &[&[u8]] = &[b"GNGGA", b"GPRMC", b"GNVTG", b"GLGSV", b"PAIR020", b"GPGGA"];
+        const FIELDS: &[&[u8]] = &[
+            b"",
+            b"0",
+            b"1",
+            b"A",
+            b"V",
+            b"N",
+            b"S",
+            b"E",
+            b"W",
+            b"K",
+            b"M",
+            b"T",
+            b"D",
+            b"075848.086",
+            b"235959.99",
+            b"3321.8814",
+            b"9000.0000",
+            b"07030.9348",
+            b"18000.0",
+            b"110926",
+            b"999999",
+            b"12.5",
+            b"99.9",
+            b"-1",
+            b"4294967296",
+        ];
+        let mut value = KINDS[rng.below(KINDS.len() as u64) as usize].to_vec();
+        for _ in 0..rng.below(20) {
+            value.push(b',');
+            value.extend_from_slice(FIELDS[rng.below(FIELDS.len() as u64) as usize]);
+        }
+        value
+    }
+
+    /// Lines the parser completes, as its framing rules define them.
+    fn completed_lines(bytes: &[u8]) -> (u32, u32) {
+        let (mut lines, mut overlong, mut length) = (0, 0, None);
+        for &byte in bytes {
+            length = match (byte, length) {
+                (b'$', _) => Some(1),
+                (_, None) | (b'\r', _) => length,
+                (b'\n', Some(_)) => {
+                    lines += 1;
+                    None
+                }
+                (_, Some(LINE)) => {
+                    overlong += 1;
+                    None
+                }
+                (_, Some(n)) => Some(n + 1),
+            };
+        }
+        (lines, overlong)
+    }
+
+    #[test]
+    fn arbitrary_input_never_panics_and_every_line_is_counted_once() {
+        for seed in 0..1_000 {
+            let mut rng = crate::testing::Rng(seed * 2 + 1);
+            let mut parser = Parser::default();
+            let mut fed = std::vec::Vec::new();
+            for _ in 0..rng.below(30) {
+                let mut chunk = if rng.below(2) == 0 {
+                    let length = rng.below(700) as usize;
+                    noise(&mut rng, length)
+                } else {
+                    let value = sentence(&mut rng);
+                    let sum = value.iter().fold(0, |sum, &byte| sum ^ byte);
+                    let mut line = std::vec![b'$'];
+                    line.extend_from_slice(&value);
+                    line.extend_from_slice(std::format!("*{sum:02X}\r\n").as_bytes());
+                    line
+                };
+                if rng.below(4) == 0 && !chunk.is_empty() {
+                    let at = rng.below(chunk.len() as u64) as usize;
+                    chunk[at] = rng.next() as u8;
+                }
+                for &byte in &chunk {
+                    parser.push(byte, fed.len() as u64);
+                    fed.push(byte);
+                }
+                parser.snapshot(fed.len() as u64 + rng.below(10_000));
+            }
+            let snapshot = parser.snapshot(fed.len() as u64);
+            let (lines, overlong) = completed_lines(&fed);
+            assert_eq!(snapshot.bytes as usize, fed.len(), "seed {seed}");
+            assert_eq!(
+                snapshot.valid_sentences + snapshot.checksum_errors + snapshot.parse_errors,
+                lines,
+                "seed {seed}"
+            );
+            assert_eq!(snapshot.line_overflows, overlong, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn valid_fixes_among_garbage_still_parse() {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for seed in 0..1_000 {
+            let mut rng = crate::testing::Rng(seed * 2 + 1);
+            let mut parser = Parser::default();
+            let length = rng.below(2_000) as usize;
+            for &byte in &noise(&mut rng, length) {
+                parser.push(byte, 1);
+            }
+            let degrees = rng.below(90);
+            let minutes = rng.below(600_000);
+            let value = std::format!(
+                "GPRMC,010203.00,A,{degrees:02}{:02}.{:04},S,07030.9348,W,0,0,110926,,,A",
+                minutes / 10_000,
+                minutes % 10_000
+            );
+            let sum = value.bytes().fold(0, |sum, byte| sum ^ byte);
+            let before = parser.snapshot(2).valid_sentences;
+            parser.push(b'$', 2);
+            for byte in value.bytes() {
+                parser.push(byte, 2);
+            }
+            for byte in [
+                b'*',
+                HEX[usize::from(sum >> 4)],
+                HEX[usize::from(sum & 15)],
+                b'\n',
+            ] {
+                parser.push(byte, 2);
+            }
+            let fix = parser.snapshot(2);
+            let expected = degrees * 10_000_000 + minutes * 1_000 / 60;
+            assert_eq!(fix.state, FixState::Fresh, "seed {seed}");
+            assert_eq!(fix.latitude_e7, Some(-(expected as i32)), "seed {seed}");
+            assert_eq!(fix.valid_sentences, before + 1, "seed {seed}");
+        }
+    }
 }

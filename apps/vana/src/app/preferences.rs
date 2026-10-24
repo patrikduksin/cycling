@@ -941,4 +941,61 @@ mod tests {
             "saved with the profile"
         );
     }
+
+    fn arbitrary_record(rng: &mut crate::testing::Rng) -> Record {
+        let profile =
+            TrainingProfile::new(rng.range(50, 600) as u16, rng.range(80, 220) as u16).unwrap();
+        let mut sensors = Saved::default();
+        for _ in 0..rng.below(12) {
+            let any = rng.byte();
+            let device_type = rng.pick(&[120, 11, 121, 122, 123, 17, 40, any]);
+            sensors.select(device_api::ant::Identity {
+                device_type,
+                device_number: rng.range(1, 65_535) as u16,
+                transmission_type: rng.range(1, 255) as u8,
+            });
+        }
+        let options = Options {
+            auto_pause: rng.one_in(2),
+            sounds: rng.one_in(2),
+            auto_lap_km: rng.range(0, u64::from(AUTO_LAP_MAX_KM)) as u8,
+            daylight: rng.pick(&[Daylight::Auto, Daylight::Day, Daylight::Night]),
+            theme: rng.pick(&[Theme::Dark, Theme::Light, Theme::Auto]),
+            setup: rng.byte(),
+            alerts: core::array::from_fn(|_| rng.byte()),
+            sunset_alert: rng.one_in(2),
+            zone: if rng.one_in(3) {
+                Zone::Chile
+            } else {
+                Zone::Fixed(rng.range(0, 104) as i8 - 48)
+            },
+        };
+        record(profile, sensors, options)
+    }
+
+    #[test]
+    fn damaged_records_are_never_read_as_other_preferences() {
+        for seed in 0..3_000 {
+            let mut rng = crate::testing::Rng::new(seed);
+            let saved = arbitrary_record(&mut rng);
+            let encoded = encode(&saved);
+            assert_eq!(decode(&encoded), (saved, Stored::Current), "seed {seed}");
+            let payload = rng.mutate(encoded.to_vec());
+            let (decoded, stored) = decode(&payload);
+            match stored {
+                // Every byte of a current record is meaningful, so a damaged
+                // one reads only if it is exactly another valid record.
+                Stored::Current => assert_eq!(encode(&decoded)[..], payload[..], "seed {seed}"),
+                Stored::Migrated => assert_eq!(
+                    decode(&encode(&decoded)),
+                    (decoded, Stored::Current),
+                    "seed {seed}"
+                ),
+                Stored::Malformed | Stored::Unsupported => {
+                    assert_eq!(decoded, Record::default(), "seed {seed}")
+                }
+                Stored::Missing => assert!(payload.is_empty(), "seed {seed}"),
+            }
+        }
+    }
 }

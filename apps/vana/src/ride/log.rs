@@ -443,9 +443,6 @@ pub struct Summary {
     pub active_ms: u64,
     pub first_utc_ms: Option<u64>,
     pub distance_mm: Option<u64>,
-    /// Normalized power and power time, found only by an index scan
-    /// (`Scanner::indexing`); never persisted, so a decoded summary has none.
-    pub effort: Option<Effort>,
     pub gps_samples: u32,
     pub heart_average: Option<u16>,
     pub cadence_average: Option<u16>,
@@ -553,7 +550,6 @@ impl Summary {
             active_ms: get_u64(bytes, 8),
             first_utc_ms: has(0).then(|| get_u64(bytes, 16)),
             distance_mm: has(1).then(|| get_u64(bytes, 24)),
-            effort: None,
             gps_samples: get_u32(bytes, 40),
             heart_average: has(2).then(|| get_u16(bytes, 32)),
             cadence_average: has(3).then(|| get_u16(bytes, 34)),
@@ -644,26 +640,24 @@ pub struct Scanner {
     torn_first: bool,
     /// The ride the last accepted slot completed, for the ride index.
     completed_now: Option<Summary>,
-    /// The open ride's power, kept only by an index scan.
-    load: Option<PowerLoad>,
 }
 
 impl Scanner {
-    /// A scanner for the ride index: it also finds each ride's `Effort`. The
-    /// catalog scanners skip that work.
-    pub fn indexing() -> Self {
-        Self {
-            load: Some(PowerLoad::default()),
-            ..Self::default()
-        }
-    }
-
     /// Scan one slot, as `accept_slot`, and return the summary of the ride
-    /// it completed, if it completed one.
-    pub fn accept_completing(&mut self, index: usize, bytes: &[u8]) -> Option<Summary> {
+    /// it completed, if it completed one, with that ride's power. The caller
+    /// lends the `load` that follows the open ride's power; only the ride
+    /// index does, so the catalog scanners skip that work and its memory.
+    pub fn accept_completing(
+        &mut self,
+        index: usize,
+        bytes: &[u8],
+        load: &mut PowerLoad,
+    ) -> Option<(Summary, Option<Effort>)> {
         self.completed_now = None;
-        self.accept_slot(index, bytes);
-        self.completed_now.take()
+        self.accept_with(index, bytes, Some(&mut *load));
+        self.completed_now
+            .take()
+            .map(|summary| (summary, load.effort()))
     }
 
     pub fn next_sector(&self) -> Option<usize> {
@@ -693,12 +687,15 @@ impl Scanner {
             last_ride_id: catalog.next_ride_id.wrapping_sub(1),
             torn_first: catalog.torn_first,
             completed_now: None,
-            load: None,
         }
     }
 
     /// Scan one slot at `index`; erased slots are unused, not gaps.
     pub fn accept_slot(&mut self, index: usize, bytes: &[u8]) {
+        self.accept_with(index, bytes, None);
+    }
+
+    fn accept_with(&mut self, index: usize, bytes: &[u8], load: Option<&mut PowerLoad>) {
         if erased(bytes) {
             return;
         }
@@ -710,7 +707,7 @@ impl Scanner {
             self.gap(1);
             return;
         };
-        self.apply(entry);
+        self.apply(entry, load);
     }
 
     /// Slots `from..to` are occupied but unreadable as records.
@@ -747,7 +744,7 @@ impl Scanner {
         (self.sector == SECTORS).then(|| self.catalog())
     }
 
-    fn apply(&mut self, entry: Entry) {
+    fn apply(&mut self, entry: Entry, mut load: Option<&mut PowerLoad>) {
         self.valid_slots = self.valid_slots.saturating_add(1);
         self.last_ride_id = entry.ride_id;
         match entry.kind {
@@ -760,7 +757,7 @@ impl Scanner {
                     gap: false,
                     summary: Summary::started(entry.ride_id, entry.source),
                 });
-                if let Some(load) = self.load.as_mut() {
+                if let Some(load) = load.as_deref_mut() {
                     *load = PowerLoad::default();
                 }
             }
@@ -781,7 +778,7 @@ impl Scanner {
                     for sample in &entry.samples[..usize::from(entry.count)] {
                         let elapsed = open.summary.add_sample(*sample);
                         if let (Some(load), Some(watts), true) =
-                            (self.load.as_mut(), sample.power_watts, elapsed > 0)
+                            (load.as_deref_mut(), sample.power_watts, elapsed > 0)
                         {
                             load.add(elapsed, watts);
                         }
@@ -797,7 +794,6 @@ impl Scanner {
                     self.completed = self.completed.saturating_add(1);
                     let mut summary = open.summary;
                     summary.finish(entry.kind, entry.active_ms, open.gap);
-                    summary.effort = self.load.as_ref().and_then(PowerLoad::effort);
                     self.push_summary(summary);
                     self.open = None;
                 } else if let Some(open) = self.open.as_mut() {

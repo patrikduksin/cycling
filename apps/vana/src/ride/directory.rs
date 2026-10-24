@@ -9,11 +9,11 @@
 //! (cleared or formatted). Entries live in storage the composition lends,
 //! `ENTRY` bytes each; when it is full the oldest entry makes room.
 //!
-//! Each line also holds the ride's normalized power and power time, four
-//! bytes, so its training stress can be worked out at the current FTP.
+//! Each line also holds the ride's normalized power and power time (four
+//! bytes, in 8 s units that saturate at 145 h), so its training stress can be worked out at the current FTP.
 //!
 //! Nothing is persisted: the index is rebuilt after every boot.
-use super::load::Effort;
+use super::load::{Effort, PowerLoad};
 use super::log::{Scanner, Slot, Summary};
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 
@@ -38,7 +38,7 @@ pub enum Read {
 }
 
 /// A ride's line in the index.
-fn encode(summary: &Summary, bytes: &mut [u8]) {
+fn encode(summary: &Summary, effort: Option<Effort>, bytes: &mut [u8]) {
     put_u32(bytes, 0, summary.ride_id);
     put_u32(
         bytes,
@@ -55,7 +55,7 @@ fn encode(summary: &Summary, bytes: &mut [u8]) {
     bytes[18] =
         flag(summary.recovered, RECOVERED) | flag(summary.full, FULL) | flag(summary.gap, GAP);
     bytes[19] = 0;
-    let effort = summary.effort.unwrap_or(Effort {
+    let effort = effort.unwrap_or(Effort {
         np_watts: 0,
         power_units: 0,
     });
@@ -72,15 +72,19 @@ fn decode(bytes: &[u8]) -> Summary {
     summary.distance_mm = known(get_u32(bytes, 12), 1000);
     let heart = get_u16(bytes, 16);
     summary.heart_average = (heart != 0).then_some(heart);
-    let np_watts = get_u16(bytes, 20);
-    summary.effort = (np_watts != 0).then(|| Effort {
-        np_watts,
-        power_units: get_u16(bytes, 22),
-    });
     summary.recovered = bytes[18] & RECOVERED != 0;
     summary.full = bytes[18] & FULL != 0;
     summary.gap = bytes[18] & GAP != 0;
     summary
+}
+
+/// The power a ride's line holds; none for zero watts.
+fn decode_effort(bytes: &[u8]) -> Option<Effort> {
+    let np_watts = get_u16(bytes, 20);
+    (np_watts != 0).then(|| Effort {
+        np_watts,
+        power_units: get_u16(bytes, 22),
+    })
 }
 
 /// The index of one journal.
@@ -92,6 +96,8 @@ pub struct Journal {
     /// The next slot to read.
     next: usize,
     scanner: Scanner,
+    /// The power of the ride being read.
+    load: PowerLoad,
 }
 
 impl Journal {
@@ -102,7 +108,8 @@ impl Journal {
             head: 0,
             len: 0,
             next: 0,
-            scanner: Scanner::indexing(),
+            scanner: Scanner::default(),
+            load: PowerLoad::default(),
         }
     }
 
@@ -132,6 +139,15 @@ impl Journal {
         })
     }
 
+    /// The normalized power and power time of the `index`-th indexed ride, if
+    /// it had power.
+    pub fn effort(&self, index: usize) -> Option<Effort> {
+        (index < self.len).then(|| {
+            let at = (self.head + index) % self.capacity();
+            decode_effort(&self.entries[at * ENTRY..][..ENTRY])
+        })?
+    }
+
     /// The newest indexed ride's id.
     pub fn last_ride_id(&self) -> Option<u32> {
         self.len
@@ -145,10 +161,11 @@ impl Journal {
         self.head = 0;
         self.len = 0;
         self.next = 0;
-        self.scanner = Scanner::indexing();
+        self.scanner = Scanner::default();
+        self.load = PowerLoad::default();
     }
 
-    fn push(&mut self, summary: &Summary) {
+    fn push(&mut self, summary: &Summary, effort: Option<Effort>) {
         let capacity = self.capacity();
         if capacity == 0 {
             return;
@@ -161,7 +178,7 @@ impl Journal {
             self.head = (self.head + 1) % capacity;
             at
         };
-        encode(summary, &mut self.entries[at * ENTRY..][..ENTRY]);
+        encode(summary, effort, &mut self.entries[at * ENTRY..][..ENTRY]);
     }
 
     /// Read up to `budget` more slots below `upper` (the journal's next
@@ -184,7 +201,9 @@ impl Journal {
             }
             let index = self.next;
             let completed = match read(index, slot) {
-                Read::Slot => self.scanner.accept_completing(index, &slot.0),
+                Read::Slot => self
+                    .scanner
+                    .accept_completing(index, &slot.0, &mut self.load),
                 Read::Invalid => {
                     self.scanner.skip(index, index + 1);
                     None
@@ -192,8 +211,8 @@ impl Journal {
                 Read::Failed => break,
             };
             self.next += 1;
-            if let Some(summary) = completed {
-                self.push(&summary);
+            if let Some((summary, effort)) = completed {
+                self.push(&summary, effort);
                 added = true;
             }
         }

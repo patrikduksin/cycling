@@ -259,10 +259,11 @@ Without a saved ride the list says NO RIDES YET.
 
 While the focus is on the first three rides, a header sits above the cards:
 THIS WEEK and the number of rides, the week's distance (KM) with its moving
-time under it, a small bar for each day (Monday to Sunday, every other day
-named; ridden days white, today's ride blue, other days a dark stub) and, in
-grey, LAST WEEK with its distance, and at the right of that line TSS: the
-training stress of the week's rides that had power. From the fourth ride on the header gives
+time under it, then the week's TSS in the power colour (the training stress
+of this week's rides that had power, on its own line under the time), a small
+bar for each day (Monday to Sunday, every other day named; ridden days white,
+today's ride blue, other days a dark stub) and, in grey, LAST WEEK with its
+distance. From the fourth ride on the header gives
 way to the RIDES headline and a fourth card. A week runs Monday 00:00 to the
 next Monday in the status-bar clock's zone, and a ride counts in the week and
 day it started. Rides without a start time (the clock was unknown) are in no
@@ -281,7 +282,7 @@ the ride (normalized power over 30 s, as the live ride's TSS) against the
 FTP set now: the FTP at the time of the ride is not stored, so changing FTP
 restates past weeks. A ride without a power meter, or with under 30 s of
 power, adds nothing; a week with no ride that had power shows no TSS
-rather than 0. Rides the index has not read yet carry none, and nothing is
+rather than 0; more than 9999 reads 9999+. Rides the index has not read yet carry none, and nothing is
 saved: the stress is rebuilt with the index after every boot. A 7-day against
 42-day load line was left out: the header has no room for it beside the
 distance, the bars and LAST WEEK.

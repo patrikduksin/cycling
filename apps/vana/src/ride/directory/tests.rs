@@ -199,7 +199,7 @@ fn a_rides_stress_matches_the_live_totals_and_a_ride_without_power_has_none() {
         totals.add(1000, 0, sample, None);
     }
     for ftp in [150, 215, 250, 400] {
-        let effort = index.get(0).unwrap().effort.expect("a ride with power");
+        let effort = index.effort(0).expect("a ride with power");
         assert_eq!(effort.np_watts, totals.normalized_power().unwrap());
         assert_eq!(
             effort.stress_score(ftp),
@@ -207,7 +207,7 @@ fn a_rides_stress_matches_the_live_totals_and_a_ride_without_power_has_none() {
             "ftp {ftp}"
         );
     }
-    assert_eq!(index.get(1).unwrap().effort, None);
+    assert_eq!(index.effort(1), None);
 }
 
 #[test]
@@ -215,5 +215,5 @@ fn a_ride_too_short_for_normalized_power_has_no_effort() {
     let (slots, _) = powered(1, |_| Some(300), 29);
     let mut index = Journal::new(storage(RIDES));
     run(&mut index, &slots, 16);
-    assert_eq!(index.get(0).unwrap().effort, None);
+    assert_eq!(index.effort(0), None);
 }

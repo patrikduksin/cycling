@@ -18,7 +18,7 @@ use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
 use crate::screens::ride::summary::{After, Saving, SummaryPage};
 use crate::screens::ride::{self, PageChoice, RidePage};
-use crate::screens::sensors::MenuMessage;
+use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
 use crate::screens::settings;
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::{BatteryStatus, device_type};
@@ -827,17 +827,31 @@ impl Runtime {
         (status, false)
     }
 
+    /// The sensors Home and Ready summarise: the saved ANT sensors, then the
+    /// selected BLE sensor unless an ANT sensor already serves its role.
+    fn glance(&self, now: u64) -> heapless::Vec<Glance, GLANCES> {
+        use crate::sensors::ble_profile::{Link, Profile};
+        let mut glance = self.menu.glance();
+        let ble = self.sensors.snapshot(now);
+        let kind = match ble.profile {
+            Profile::HeartRate => device_type::HEART_RATE,
+            Profile::Cadence => device_type::CADENCE,
+            Profile::Echo => return glance,
+        };
+        if ble.link != Link::Off && self.links.saved.of_type(kind).is_none() {
+            let battery = ble.battery.map(|battery| battery.status);
+            // Cannot fail: the capacity holds every ANT slot and this one.
+            let _ = glance.push(Glance::ble(kind, ble.link == Link::Connected, battery));
+        }
+        glance
+    }
+
     fn home(&self, gps_fix: bool, now: u64) -> Home {
         let last = self.rides_line();
-        let mut home = Home::new(
-            self.navigation.home_cursor,
-            gps_fix,
-            &self.menu.glance(),
-            last,
-        );
+        let glance = self.glance(now);
+        let mut home = Home::new(self.navigation.home_cursor, gps_fix, &glance, last);
         let (status, problem) = self.home_status(now);
-        let warning = BatteryWarning::of(&self.menu.glance())
-            .filter(|_| !problem && status == "READY TO RIDE");
+        let warning = BatteryWarning::of(&glance).filter(|_| !problem && status == "READY TO RIDE");
         match (self.chosen_name(), warning) {
             (_, Some(warning)) => {
                 let color = if warning.critical { RED } else { AMBER };
@@ -1019,7 +1033,7 @@ impl Runtime {
             Gps::Searching => Check::new(Level::Wait, "FINDING GPS", "YOU CAN START ANYWAY"),
             Gps::Off => Check::new(Level::Off, "NO GPS", "RECORDS WITHOUT A MAP"),
         };
-        checks[ReadyLine::Sensors as usize] = self.sensors_check();
+        checks[ReadyLine::Sensors as usize] = self.sensors_check(now);
         checks[ReadyLine::Battery as usize] = match battery {
             None => Check::new(Level::Off, "BATTERY", ""),
             Some(Battery {
@@ -1056,14 +1070,14 @@ impl Runtime {
         readiness
     }
 
-    fn sensors_check(&self) -> Check {
+    fn sensors_check(&self, now: u64) -> Check {
         if matches!(
             self.startup,
             Startup::Uncertain | Startup::TimedOut | Startup::Unavailable
         ) {
             return Check::new(Level::Wait, "SENSORS UNAVAILABLE", "TURN VANA OFF AND ON");
         }
-        let glance = self.menu.glance();
+        let glance = self.glance(now);
         if glance.is_empty() {
             return Check::new(Level::Off, "NO SENSORS", "TAP HERE TO PAIR ONE");
         }

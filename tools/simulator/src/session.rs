@@ -58,9 +58,13 @@ use device_api::ble_transport::Link;
 #[derive(Default)]
 pub struct BleStrap {
     pub present: bool,
+    /// The raw Battery Level the strap reports, or none when it has no
+    /// Battery Service. The raw byte so hostile values can be sent.
+    pub battery: Option<u8>,
     phase: Phase,
     retry: firmware_services::connectivity::Reconnect,
     next_ms: u64,
+    battery_due_ms: u64,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -78,6 +82,8 @@ enum Phase {
 const SCAN_MS: u64 = 10_000;
 const CONNECT_MS: u64 = 1_500;
 const SUPERVISION_MS: u64 = 4_000;
+/// The C606 BLE client re-reads Battery Level this often.
+const BATTERY_REREAD_MS: u64 = 60_000;
 /// The C606 BLE client queues this many packets and drops newer ones.
 const PACKET_QUEUE: usize = 4;
 impl BleStrap {
@@ -141,6 +147,8 @@ impl BleStrap {
                     ble.snapshot.link = Link::Connected;
                     ble.snapshot.connections += 1;
                     ble.packets.clear();
+                    ble.battery = None;
+                    self.battery_due_ms = now;
                 } else {
                     self.back_off(now, ble);
                 }
@@ -157,6 +165,16 @@ impl BleStrap {
         }
         if self.phase != Phase::Connected || world.time_ms < self.next_ms {
             return;
+        }
+        if now >= self.battery_due_ms {
+            self.battery_due_ms = now + BATTERY_REREAD_MS;
+            ble.battery = self
+                .battery
+                .map(|raw| device_api::ble_transport::BatteryLevel {
+                    connection: ble.snapshot.connections,
+                    raw,
+                    received_ms: now,
+                });
         }
         self.next_ms = world.time_ms - world.time_ms % 1000 + 1000;
         ble.snapshot.notifications += 1;
@@ -180,6 +198,7 @@ impl BleStrap {
 pub struct BleFixture {
     pub snapshot: device_api::ble_transport::Snapshot,
     pub packets: std::collections::VecDeque<device_api::ble_transport::Packet>,
+    pub battery: Option<device_api::ble_transport::BatteryLevel>,
 }
 impl Ble for BleFixture {
     fn availability(&self) -> Availability {
@@ -190,6 +209,9 @@ impl Ble for BleFixture {
     }
     fn take_packet(&mut self) -> Option<device_api::ble_transport::Packet> {
         self.packets.pop_front()
+    }
+    fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
+        self.battery.take()
     }
     fn reconnect(&mut self) -> Result<(), Error> {
         Err(Error::Unsupported)

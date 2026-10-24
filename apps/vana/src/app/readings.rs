@@ -429,6 +429,9 @@ impl Runtime {
             };
             self.sensors.packet(packet);
         }
+        if let Some(level) = ble.take_battery() {
+            self.sensors.battery_level(level);
+        }
     }
 
     /// The live heart rate from ANT+ or BLE, whether or not a ride is open,

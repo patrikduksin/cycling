@@ -13,7 +13,7 @@ use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::fit::Refusal;
 use vana::ride::log::{
-    Entry, Kind, SLOT_SIZE, SLOTS, Sample, Slot, Source, commit_word, decode, encode,
+    Entry, Kind, LapStart, SLOT_SIZE, SLOTS, Sample, Slot, Source, commit_word, decode, encode,
 };
 use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, ZONES};
 
@@ -4709,6 +4709,56 @@ fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
     sim.expect_text("BEST POWER W");
     sim.expect_field("LAPS", "3");
     sim.checkpoint("saved ride keeps its laps");
+}
+
+/// A lap pressed a moment before the pause that ends the ride starts a lap
+/// no later sample would carry; the saved ride and its FIT file keep it.
+#[test]
+fn a_lap_just_before_the_finish_is_kept_with_the_ride() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD", "HEART RATE"]);
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.lap(1);
+    sim.pause_ride();
+    sim.stop_ride();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.swipe_next();
+    let live = sim.screen().field("LAPS").unwrap();
+    sim.checkpoint("the summary counts the last lap");
+    sim.done();
+
+    let ride = sim.rides().pop().unwrap();
+    let marks: Vec<_> = ride.samples().filter_map(|s| s.lap).collect();
+    let fit = fit_lap_triggers(&ride.fit(Some(1_789_000_000_000)).unwrap());
+    sim.home("RIDES");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.expect_text("BEST POWER W");
+    let saved = sim.screen().field("LAPS").unwrap();
+    sim.checkpoint("the saved ride keeps the last lap");
+    sim.note(
+        NoteKind::Check,
+        format!(
+            "laps: summary {live}, saved ride {saved}, FIT {}",
+            fit.len()
+        ),
+    );
+    assert_eq!(
+        (live.as_str(), saved.as_str(), fit.as_slice()),
+        ("2", "2", [0, 7].as_slice()),
+        "summary, saved ride, FIT lap triggers (manual, session end)"
+    );
+    assert_eq!(
+        marks,
+        [LapStart::Ride, LapStart::Manual],
+        "journal lap marks"
+    );
 }
 
 /// A saved MMC ride on a card that later fails says it cannot be read,

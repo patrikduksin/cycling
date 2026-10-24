@@ -30,6 +30,7 @@ in
 pkgs.mkShell {
   packages = with pkgs; [
     rust
+    cargo-nextest
     python
     uv
     mise

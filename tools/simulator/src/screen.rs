@@ -107,6 +107,8 @@ struct Template {
     offset: (i32, i32),
     size: (usize, usize),
     solid: Vec<bool>,
+    /// The solid box pixels, so a mismatch is found in a few reads.
+    solids: Vec<usize>,
     /// Coverage 0..=15 of every box pixel.
     coverage: Vec<u8>,
     /// Box pixels the glyph only partly covers, and those it leaves clear.
@@ -157,7 +159,8 @@ fn templates() -> &'static Templates {
                 let down = (anchor.1..h)
                     .take_while(|&y| solid[y * w + anchor.0])
                     .count();
-                let ink = solid.iter().filter(|&&s| s).count() as u32;
+                let solids: Vec<usize> = (0..w * h).filter(|&i| solid[i]).collect();
+                let ink = solids.len() as u32;
                 let edges = (0..w * h)
                     .filter(|&i| (1..15).contains(&coverage[i]))
                     .collect();
@@ -169,6 +172,7 @@ fn templates() -> &'static Templates {
                     offset: (i32::from(glyph.x), i32::from(glyph.y)),
                     size: (w, h),
                     solid,
+                    solids,
                     coverage,
                     edges,
                     clear,
@@ -313,10 +317,11 @@ impl Frame<'_> {
 
     /// Every position where a 5x7 glyph of `scale` matches, claimed or not.
     fn candidates(&self, lookup: &[(u64, u8)], scale: usize) -> Vec<Glyph> {
+        let dots = Dots::new(self.width, scale);
         let mut candidates = Vec::new();
         for y in 0..=self.height - 7 * scale {
             for x in 0..=self.width - 5 * scale {
-                candidates.extend(self.glyph_at(lookup, x, y, scale));
+                candidates.extend(self.glyph_at(lookup, &dots, x, y));
             }
         }
         candidates
@@ -355,10 +360,11 @@ impl Frame<'_> {
             .copied()
             .filter(|g| !is_stale(g.x, g.y))
             .collect();
+        let dots = Dots::new(self.width, s);
         for (y, span) in stale.iter().enumerate() {
             if let Some((from, to)) = *span {
                 for x in from..=to {
-                    candidates.extend(self.glyph_at(lookup, x, y, s));
+                    candidates.extend(self.glyph_at(lookup, &dots, x, y));
                 }
             }
         }
@@ -444,6 +450,15 @@ impl Frame<'_> {
         if left + w > self.width || top + h > self.height {
             return None;
         }
+        // Most anchors are lone edge pixels that no template's other solid
+        // pixels fit; the full comparison below would read most of the box.
+        if template
+            .solids
+            .iter()
+            .any(|&i| self.at(left + i % w, top + i / w) != color)
+        {
+            return None;
+        }
         for row in 0..h {
             for col in 0..w {
                 let (px, py) = (left + col, top + row);
@@ -501,13 +516,16 @@ impl Frame<'_> {
         })
     }
 
-    fn glyph_at(&self, lookup: &[(u64, u8)], x: usize, y: usize, s: usize) -> Option<Glyph> {
-        let sample = |index: usize| self.at(x + (index % 5) * s, y + (index / 5) * s);
+    fn glyph_at(&self, lookup: &[(u64, u8)], dots: &Dots, x: usize, y: usize) -> Option<Glyph> {
+        let s = dots.scale;
+        let base = y * self.width + x;
+        let sample = |index: usize| self.pixels[base + dots.dots[index]];
         let first = sample(0);
         if s > 1
-            && [(s - 1, 0), (0, s - 1), (s - 1, s - 1)]
+            && dots
+                .corners
                 .iter()
-                .any(|&(dx, dy)| self.at(x + dx, y + dy) != first)
+                .any(|&offset| self.pixels[base + offset] != first)
         {
             return None;
         }
@@ -634,6 +652,26 @@ impl Frame<'_> {
             last = Some(glyph);
         }
         runs
+    }
+}
+
+/// Pixel offsets from a 5x7 cell's top-left pixel at one scale: each dot's
+/// top-left pixel, and the other three corners of the first dot. Most scanned
+/// positions are rejected on a few of these, so they are computed once a scan.
+struct Dots {
+    scale: usize,
+    dots: [usize; 35],
+    corners: [usize; 3],
+}
+
+impl Dots {
+    fn new(width: usize, scale: usize) -> Self {
+        let edge = scale - 1;
+        Self {
+            scale,
+            dots: std::array::from_fn(|index| (index / 5) * scale * width + (index % 5) * scale),
+            corners: [edge, edge * width, edge * width + edge],
+        }
     }
 }
 

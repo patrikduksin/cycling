@@ -34,6 +34,8 @@ pub enum Row {
     AutoLap,
     Wheel,
     WheelMode,
+    MainLeft,
+    MainRight,
     PageStats,
     PageLap,
     PageClimb,
@@ -79,7 +81,7 @@ pub enum SettingsAction {
 }
 
 /// Sections in order, each with its title and the rows it holds.
-pub const SECTIONS: [(&str, &[Row]); 11] = [
+pub const SECTIONS: [(&str, &[Row]); 12] = [
     ("PROFILE", &[Row::Ftp, Row::Threshold, Row::Bests]),
     ("BODY", &[Row::Weight, Row::Age, Row::Sex]),
     (
@@ -91,6 +93,7 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
         "RIDE",
         &[Row::AutoPause, Row::AutoLap, Row::Wheel, Row::WheelMode],
     ),
+    ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
     (
         "RIDE PAGES",
         &[Row::PageStats, Row::PageLap, Row::PageClimb],
@@ -171,6 +174,8 @@ impl Row {
             Self::AutoLap => "AUTO LAP",
             Self::Wheel => "WHEEL",
             Self::WheelMode => "WHEEL MODE",
+            Self::MainLeft => "LOWER LEFT",
+            Self::MainRight => "LOWER RIGHT",
             Self::PageStats => "STATS",
             Self::PageLap => "LAP",
             Self::PageClimb => "CLIMB",
@@ -224,6 +229,8 @@ impl Row {
             | Self::AutoPause
             | Self::AutoLap
             | Self::WheelMode
+            | Self::MainLeft
+            | Self::MainRight
             | Self::PageStats
             | Self::PageLap
             | Self::PageClimb
@@ -555,7 +562,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 33);
+        assert_eq!(ROWS, 35);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -566,8 +573,8 @@ mod tests {
         assert_eq!(section(Row::Weight.index()), (1, Row::Weight.index()));
         assert_eq!(section(Row::Sex.index()), (1, Row::Weight.index()));
         assert_eq!(section(Row::TimeZone.index()), (3, Row::TimeZone.index()));
-        assert_eq!(section(Row::Sounds.index()), (7, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (9, Row::HeartHigh.index()));
+        assert_eq!(section(Row::Sounds.index()), (8, Row::Sounds.index()));
+        assert_eq!(section(Row::PowerLow.index()), (10, Row::HeartHigh.index()));
         assert_eq!(first_of(SECTIONS.len()), 0);
     }
 

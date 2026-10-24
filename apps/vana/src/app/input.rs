@@ -462,6 +462,8 @@ impl Runtime {
                     options.ride_pages = options.ride_pages.toggled(page);
                 }
             }
+            Row::MainLeft => options.main_slots.left = options.main_slots.left.next(),
+            Row::MainRight => options.main_slots.right = options.main_slots.right.next(),
             Row::Sex => options.rider = options.rider.next_sex(),
             Row::Sounds => options.sounds = !options.sounds,
             Row::SunsetAlert => options.sunset_alert = !options.sunset_alert,

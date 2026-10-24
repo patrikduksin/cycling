@@ -32,6 +32,7 @@ mod lap;
 mod main;
 mod map;
 pub(super) mod paused;
+pub mod slots;
 mod stats;
 pub mod summary;
 mod workout;

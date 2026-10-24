@@ -576,6 +576,20 @@ impl Sim {
         assert_eq!(status, "ACCEPTED", "BLE SELECT: {out}");
     }
 
+    /// The raw Battery Level (0x2A19) the BLE heart strap reports on its next
+    /// connection and each minute after, or none for a strap without the
+    /// Battery Service.
+    pub fn ble_heart_strap_battery(&mut self, raw: Option<u8>) {
+        self.note(
+            NoteKind::World,
+            format!("BLE heart strap battery level {raw:?}"),
+        );
+        self.device
+            .ble_strap
+            .get_or_insert_with(crate::session::BleStrap::new)
+            .battery = raw;
+    }
+
     /// A BLE heart-rate strap worn by the rider, in range or not. It only
     /// connects once selected.
     pub fn ble_heart_strap(&mut self, present: bool) {

@@ -12,7 +12,7 @@ mod slot;
 mod tests;
 
 pub(crate) use icons::row as icon_row;
-pub use menu::{Action, Diagnostics, Glance, Menu};
+pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu};
 pub use message::MenuMessage;
 
 pub use slot::{Connection, Selected};

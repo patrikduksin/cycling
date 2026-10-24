@@ -71,6 +71,16 @@ impl Packet {
     }
 }
 
+/// The peer's Battery Level (0x2A19) as last read, unvalidated: the raw byte is
+/// a percent only when it is at most 100. It carries its connection so a value
+/// from a previous link is never attributed to the current one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatteryLevel {
+    pub connection: u32,
+    pub raw: u8,
+    pub received_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Operation {
     Scan,
@@ -101,5 +111,10 @@ pub trait Ble {
     fn availability(&self) -> Availability;
     fn snapshot(&self) -> crate::ble_transport::Snapshot;
     fn take_packet(&mut self) -> Option<crate::ble_transport::Packet>;
+    /// The newest Battery Level read since the last call. A peer without the
+    /// Battery Service, or a transport that does not read it, yields none.
+    fn take_battery(&mut self) -> Option<crate::ble_transport::BatteryLevel> {
+        None
+    }
     fn reconnect(&mut self) -> Result<(), Error>;
 }

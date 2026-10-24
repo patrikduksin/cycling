@@ -33,7 +33,36 @@ pub struct Glance {
     pub battery: Option<BatteryStatus>,
 }
 
+/// Saved ANT sensors and the one selected BLE sensor.
+pub const GLANCES: usize = CHANNEL_CAPACITY + 1;
+
 impl Glance {
+    fn of(kind: u8, status: LinkStatus, battery: Option<BatteryStatus>) -> Self {
+        let live = status == LinkStatus::Live;
+        let low = battery.is_some_and(BatteryStatus::is_low);
+        Self {
+            kind,
+            live,
+            // A live sensor with a weak battery needs a look too.
+            color: if live && low {
+                super::render::AMBER
+            } else {
+                status.color()
+            },
+            battery,
+        }
+    }
+
+    /// The BLE sensor the rider selected, live while its link is connected.
+    pub fn ble(kind: u8, connected: bool, battery: Option<BatteryStatus>) -> Self {
+        let status = if connected {
+            LinkStatus::Live
+        } else {
+            LinkStatus::Waiting
+        };
+        Self::of(kind, status, battery)
+    }
+
     /// A low or critical battery the rider should deal with.
     pub fn battery_low(&self) -> bool {
         self.battery.is_some_and(BatteryStatus::is_low)
@@ -217,24 +246,11 @@ impl Menu {
     }
 
     /// Selected sensors in tile order, for Home.
-    pub fn glance(&self) -> heapless::Vec<Glance, CHANNEL_CAPACITY> {
+    pub fn glance(&self) -> heapless::Vec<Glance, GLANCES> {
         self.selected_peers()
             .map(|s| {
-                let status = s.link_status();
                 let battery = s.battery.map(|battery| battery.status);
-                let live = status == LinkStatus::Live;
-                let low = battery.is_some_and(BatteryStatus::is_low);
-                Glance {
-                    kind: s.identity.device_type,
-                    live,
-                    // A live sensor with a weak battery needs a look too.
-                    color: if live && low {
-                        super::render::AMBER
-                    } else {
-                        status.color()
-                    },
-                    battery,
-                }
+                Glance::of(s.identity.device_type, s.link_status(), battery)
             })
             .collect()
     }

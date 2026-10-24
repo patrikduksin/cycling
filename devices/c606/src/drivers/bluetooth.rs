@@ -24,6 +24,7 @@ use trouble_host::prelude::*;
 
 use crate::drivers::radio_control::DISCOVERIES;
 use crate::drivers::radio_control::Shared;
+use device_api::ble_transport::BatteryLevel;
 use device_api::ble_transport::Discovery;
 use device_api::ble_transport::Link;
 use device_api::ble_transport::Operation as BleOperation;
@@ -67,6 +68,20 @@ static PACKETS: Channel<CriticalSectionRawMutex, Packet, 4> = Channel::new();
 pub fn take_packet() -> Option<Packet> {
     PACKETS.try_receive().ok()
 }
+
+/// The newest Battery Level read; one value, since it changes over hours.
+static BATTERY: Mutex<RefCell<Option<BatteryLevel>>> = Mutex::new(RefCell::new(None));
+pub fn take_battery() -> Option<BatteryLevel> {
+    critical_section::with(|cs| BATTERY.borrow_ref_mut(cs).take())
+}
+
+const BATTERY_SERVICE: u16 = 0x180f;
+const BATTERY_LEVEL: u16 = 0x2a19;
+/// A battery drains over hours, so a minute-old reading is as good as a
+/// notification and costs no second subscription.
+const BATTERY_REREAD_MS: u64 = 60_000;
+/// One bound for each battery step, so a slow peer cannot starve notifications.
+const BATTERY_STEP: Duration = Duration::from_secs(2);
 
 const CONNECTIONS: usize = 1;
 const CHANNELS: usize = 2;
@@ -340,6 +355,7 @@ async fn perform<'s>(
             session.retry.disconnect();
             critical_section::with(|cs| *SELECTION.borrow_ref_mut(cs) = selection);
             while PACKETS.try_receive().is_ok() {}
+            critical_section::with(|cs| *BATTERY.borrow_ref_mut(cs) = None);
             session.echo = false;
             set_link(Link::Off);
             CONTROL.finish(automatic, None);
@@ -615,11 +631,22 @@ where
     .await
     .map_err(|_| ())?
     .map_err(|_| ())?;
+    let mut battery = find_battery(client).await;
+    let mut battery_due_ms = 0;
     set_link(Link::Connected);
     if report_completion {
         CONTROL.complete(None);
     }
     loop {
+        if let Some(characteristic) = &battery {
+            let now = embassy_time::Instant::now().as_millis();
+            if now >= battery_due_ms {
+                battery_due_ms = now.saturating_add(BATTERY_REREAD_MS);
+                if !read_battery(client, characteristic).await {
+                    battery = None;
+                }
+            }
+        }
         let Ok(notification) =
             embassy_time::with_timeout(Duration::from_secs(1), subscription.next()).await
         else {
@@ -648,6 +675,61 @@ where
             update_state(|state| state.dropped = state.dropped.saturating_add(1));
         }
     }
+}
+
+/// The peer's Battery Level characteristic, when it has one. Any failure means
+/// no battery reading, never a failed connection.
+async fn find_battery<C>(
+    client: &GattClient<'_, C, DefaultPacketPool, 12>,
+) -> Option<Characteristic<[u8]>>
+where
+    C: Controller,
+{
+    let services = embassy_time::with_timeout(
+        BATTERY_STEP,
+        client.services_by_uuid(&Uuid::new_short(BATTERY_SERVICE)),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let service = services.first()?.clone();
+    embassy_time::with_timeout(
+        BATTERY_STEP,
+        client.characteristic_by_uuid(&service, &Uuid::new_short(BATTERY_LEVEL)),
+    )
+    .await
+    .ok()?
+    .ok()
+}
+
+/// Read the level once. Returns false after a timeout: trouble-host's
+/// `request` is not cancel-safe, so a timed-out read leaves its reply queued
+/// and the next request on this connection would take that stale reply for its
+/// own. No request of any kind may follow a timed-out one, so the caller stops
+/// reading for the rest of the connection; a new connection starts clean.
+async fn read_battery<C>(
+    client: &GattClient<'_, C, DefaultPacketPool, 12>,
+    characteristic: &Characteristic<[u8]>,
+) -> bool
+where
+    C: Controller,
+{
+    let mut value = [0u8; 4];
+    let read = embassy_time::with_timeout(
+        BATTERY_STEP,
+        client.read_characteristic(characteristic, &mut value),
+    )
+    .await;
+    let Ok(Ok(1)) = read else {
+        return read.is_ok();
+    };
+    let level = BatteryLevel {
+        connection: snapshot().connections,
+        raw: value[0],
+        received_ms: embassy_time::Instant::now().as_millis(),
+    };
+    critical_section::with(|cs| *BATTERY.borrow_ref_mut(cs) = Some(level));
+    true
 }
 
 async fn advertise_and_echo<C>(

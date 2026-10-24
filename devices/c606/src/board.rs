@@ -416,6 +416,9 @@ impl device_api::ble_transport::Ble for Ble {
     fn take_packet(&mut self) -> Option<device_api::ble_transport::Packet> {
         crate::drivers::bluetooth::take_packet()
     }
+    fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
+        crate::drivers::bluetooth::take_battery()
+    }
     fn reconnect(&mut self) -> Result<(), device_api::observation::Error> {
         let _access = crate::capabilities::power::ACCESS.enter()?;
         crate::drivers::bluetooth::request(device_api::ble_transport::Operation::Connect)

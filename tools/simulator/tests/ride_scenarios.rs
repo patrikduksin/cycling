@@ -5978,3 +5978,101 @@ fn reserved_battery_values_and_battery_pages_never_disturb_readings() {
         "battery pages leaked into the recording"
     );
 }
+
+fn connected_strap(sim: &mut Sim, level: Option<u8>) {
+    sim.ble_heart_strap(true);
+    sim.ble_heart_strap_battery(level);
+    sim.select_ble_heart_strap();
+    sim.advance(seconds(15));
+}
+
+#[test]
+fn a_low_ble_strap_battery_turns_home_and_ready_amber() {
+    let mut sim = rider();
+    connected_strap(&mut sim, Some(12));
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+    assert_eq!(run_color(&sim, "HR LOW"), AMBER);
+    assert_eq!(run_color(&sim, "1/1 LIVE"), AMBER);
+    sim.checkpoint("home with a low ble heart strap battery");
+
+    sim.home("RIDE");
+    sim.expect_text("HR LOW BATTERY");
+    sim.expect_text("CHANGE IT SOON");
+    sim.checkpoint("ready with a low ble heart strap battery");
+}
+
+#[test]
+fn a_critical_ble_strap_battery_is_red_and_the_next_read_clears_it() {
+    let mut sim = rider();
+    connected_strap(&mut sim, Some(3));
+    assert_eq!(run_color(&sim, "HR CRITICAL"), RED);
+    sim.home("RIDE");
+    sim.expect_text("HR CRITICAL BATTERY");
+    sim.expect_text("CHANGE IT BEFORE RIDING");
+    sim.checkpoint("ready with a critical ble heart strap battery");
+    sim.press(Button::TopLeft);
+
+    // A fresh cell shows on the strap's next minute re-read.
+    sim.ble_heart_strap_battery(Some(100));
+    sim.advance(seconds(65));
+    sim.expect_no_text("CRITICAL");
+    assert_ne!(run_color(&sim, "1/1 LIVE"), AMBER);
+    sim.checkpoint("home after the strap's battery was replaced");
+}
+
+#[test]
+fn a_healthy_hostile_or_missing_ble_battery_level_warns_of_nothing() {
+    for level in [Some(80), Some(101), Some(255), None] {
+        let mut sim = rider();
+        connected_strap(&mut sim, level);
+        sim.home("RIDE");
+        sim.expect_text("1 SENSOR LIVE");
+        sim.expect_no_text("LOW BATTERY");
+        sim.expect_no_text("CRITICAL BATTERY");
+    }
+}
+
+#[test]
+fn a_ble_strap_that_is_still_connecting_is_waited_for_not_blamed_for_its_battery() {
+    let mut sim = rider();
+    sim.ble_heart_strap(true);
+    sim.ble_heart_strap_battery(Some(12));
+    sim.select_ble_heart_strap();
+    sim.advance(seconds(3));
+    sim.home("RIDE");
+    sim.expect_text("SENSORS WAKING UP");
+    sim.expect_no_text("LOW BATTERY");
+}
+
+#[test]
+fn a_live_ant_heart_strap_stands_for_the_role_and_a_silent_one_does_not() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE"]);
+    connected_strap(&mut sim, Some(12));
+    sim.expect_text("1/1 LIVE");
+    sim.expect_no_text("LOW BATTERY");
+
+    sim.set_present(device_type::HEART_RATE, HEART, false);
+    sim.advance(seconds(20));
+    sim.expect_text("1/2 LIVE");
+    sim.checkpoint("home with a silent ant strap and a live ble strap");
+    sim.home("RIDE");
+    sim.expect_text("SENSORS WAKING UP");
+    sim.press(Button::TopLeft);
+
+    sim.set_present(device_type::HEART_RATE, HEART, true);
+    sim.advance(seconds(40));
+    sim.expect_text("1/1 LIVE");
+}
+
+#[test]
+fn a_failed_ble_link_is_left_off_home_and_ready() {
+    let mut sim = rider();
+    sim.ble_heart_strap(false);
+    sim.select_ble_heart_strap();
+    sim.advance(seconds(15));
+    sim.device.ble.snapshot.link = Link::Failed;
+    sim.advance(seconds(1));
+    sim.home("RIDE");
+    sim.expect_text("NO SENSORS");
+}

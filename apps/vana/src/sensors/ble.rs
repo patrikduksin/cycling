@@ -6,6 +6,7 @@ use crate::sensors::ble_profile::CscMeasurement;
 use crate::sensors::ble_profile::HeartRate;
 use crate::sensors::ble_profile::Profile;
 
+use device_api::ble_transport::BatteryLevel;
 use device_api::ble_transport::Packet;
 use device_api::ble_transport::Selection;
 
@@ -34,6 +35,7 @@ pub struct Client {
     dropped: u32,
     invalid: u32,
     rr_dropped: u32,
+    battery: Option<crate::sensors::ant::Battery>,
 }
 impl Client {
     pub fn new(profile: Profile) -> Self {
@@ -47,6 +49,7 @@ impl Client {
             dropped: 0,
             invalid: 0,
             rr_dropped: 0,
+            battery: None,
         }
     }
     /// A selection change cannot interpret queued bytes from the previous peer/profile.
@@ -75,8 +78,27 @@ impl Client {
         {
             self.reset_readings();
         }
+        // A battery level belongs to one connection, not to a run of packets.
+        if transport.connections != self.transport.connections
+            || transport.link != device_api::ble_transport::Link::Connected
+        {
+            self.battery = None;
+        }
         self.dropped = transport.dropped;
         self.transport = transport;
+    }
+    /// Keep a Battery Level read on this connection. A value over 100 or one
+    /// from another connection is ignored.
+    pub fn battery_level(&mut self, level: BatteryLevel) {
+        if self.transport.link != device_api::ble_transport::Link::Connected
+            || level.connection != self.transport.connections
+        {
+            return;
+        }
+        let previous = self.battery.map(|battery| battery.status);
+        if let Some(battery) = crate::sensors::ble_profile::battery(level.raw, previous) {
+            self.battery = Some(battery);
+        }
     }
     pub fn packet(&mut self, packet: Packet) {
         if self.transport.link != device_api::ble_transport::Link::Connected
@@ -159,6 +181,7 @@ impl Client {
             notifications: self.transport.notifications,
             invalid: self.invalid,
             rr_dropped: self.rr_dropped,
+            battery: self.battery,
         }
     }
 }
@@ -258,6 +281,64 @@ mod tests {
         client.update(state(8, 0));
         client.packet(packet(8, 3, 0, 102, &[0, 77]));
         assert_eq!(client.snapshot(102).heart_bpm, Some(77));
+    }
+    fn level(connection: u32, raw: u8) -> BatteryLevel {
+        BatteryLevel {
+            connection,
+            raw,
+            received_ms: 0,
+        }
+    }
+    #[test]
+    fn battery_belongs_to_a_connected_link_and_ignores_hostile_values() {
+        let status = |client: &Client| client.snapshot(0).battery.map(|b| b.status);
+        let mut client = Client::new(Profile::HeartRate);
+        client.battery_level(level(1, 10));
+        assert_eq!(status(&client), None);
+        client.update(state(1, 0));
+        client.battery_level(level(0, 10));
+        assert_eq!(status(&client), None);
+        client.battery_level(level(1, 10));
+        assert_eq!(
+            status(&client),
+            Some(crate::sensors::ant::BatteryStatus::Low)
+        );
+        for raw in [101, 200, 255] {
+            client.battery_level(level(1, raw));
+            assert_eq!(
+                status(&client),
+                Some(crate::sensors::ant::BatteryStatus::Low)
+            );
+        }
+        client.battery_level(level(1, 80));
+        assert_eq!(
+            status(&client),
+            Some(crate::sensors::ant::BatteryStatus::Good)
+        );
+        client.update(state(1, 3));
+        assert_eq!(
+            status(&client),
+            Some(crate::sensors::ant::BatteryStatus::Good)
+        );
+        client.update(state(2, 3));
+        assert_eq!(status(&client), None);
+        client.battery_level(level(1, 3));
+        assert_eq!(status(&client), None);
+        client.battery_level(level(2, 3));
+        client.update(device_api::ble_transport::Snapshot {
+            link: device_api::ble_transport::Link::Retrying,
+            ..state(2, 3)
+        });
+        assert_eq!(status(&client), None);
+    }
+    #[test]
+    fn a_new_selection_forgets_the_old_peers_battery() {
+        let mut client = Client::new(Profile::HeartRate);
+        client.update(state(1, 0));
+        client.battery_level(level(1, 10));
+        client.select_profile(Profile::HeartRate, 1);
+        client.update(state(1, 0));
+        assert_eq!(client.snapshot(0).battery, None);
     }
     #[test]
     fn profile_selection_is_explicit_and_preserves_uuid_pairs() {

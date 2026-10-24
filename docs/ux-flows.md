@@ -71,6 +71,15 @@ sensor with several batteries counts as its weakest. Levels are read from the
 sensor's battery page as it sends it, kept only while VANA runs, and never
 stored.
 
+The selected BLE heart-rate or cadence sensor joins the same line, count and
+status once it is selected (live while connected, left out when the radio
+failed). A live saved ANT+ heart-rate sensor stands for the role and hides it,
+as the ride prefers that sensor; ANT+ cadence is never read, so it never hides
+BLE cadence. Its battery is the standard Battery Level, read when it connects
+and every minute after: under 20 % is low and under 5 % critical, a warning
+needs 2 % more to clear, and a value over 100 or a sensor without the Battery
+Service says nothing. There is no detail page for it.
+
 ### Recording
 
 Starting switches straight to the ride pages, shows a RECORDING toast and

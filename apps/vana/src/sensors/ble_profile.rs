@@ -1,5 +1,7 @@
 //! Bounded parsers and snapshots for standard Heart Rate and Cycling Speed and Cadence sensors.
 
+use crate::sensors::ant::{Battery, BatteryStatus};
+
 pub const STALE_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -65,6 +67,40 @@ pub struct Snapshot {
     pub notifications: u32,
     pub invalid: u32,
     pub rr_dropped: u32,
+    /// The peer's Battery Service level on this connection, if it has one.
+    pub battery: Option<Battery>,
+}
+
+/// Below this percentage a BLE sensor's battery is low: the device's own
+/// low-battery line, and for a coin cell days rather than weeks.
+const LOW_PERCENT: u8 = 20;
+/// Below this percentage it is critical: it can drop out mid-ride.
+const CRITICAL_PERCENT: u8 = 5;
+/// A level this far above a threshold does not clear a warning already shown,
+/// so a strap hovering at the line does not flap with every re-read.
+const HYSTERESIS: u8 = 2;
+
+/// A Battery Level characteristic value as a battery. Anything over 100 is not
+/// a percentage. `previous` is the status last reported on this connection.
+pub fn battery(raw: u8, previous: Option<BatteryStatus>) -> Option<Battery> {
+    let status = match raw {
+        101.. => return None,
+        0..CRITICAL_PERCENT => BatteryStatus::Critical,
+        _ if previous == Some(BatteryStatus::Critical) && raw < CRITICAL_PERCENT + HYSTERESIS => {
+            BatteryStatus::Critical
+        }
+        CRITICAL_PERCENT..LOW_PERCENT => BatteryStatus::Low,
+        _ if previous.is_some_and(BatteryStatus::is_low) && raw < LOW_PERCENT + HYSTERESIS => {
+            BatteryStatus::Low
+        }
+        LOW_PERCENT..50 => BatteryStatus::Ok,
+        50..=100 => BatteryStatus::Good,
+    };
+    Some(Battery {
+        status,
+        millivolts: None,
+        identifier: 0,
+    })
 }
 
 pub const fn fresh_u16(value: u16, received_ms: u64, now_ms: u64) -> (Option<u16>, Option<u64>) {
@@ -256,6 +292,41 @@ fn take_u32(value: &[u8], at: &mut usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn battery_levels_map_to_statuses_and_over_100_is_ignored() {
+        let status = |raw| battery(raw, None).map(|battery| battery.status);
+        assert_eq!(status(0), Some(BatteryStatus::Critical));
+        assert_eq!(status(4), Some(BatteryStatus::Critical));
+        assert_eq!(status(5), Some(BatteryStatus::Low));
+        assert_eq!(status(19), Some(BatteryStatus::Low));
+        assert_eq!(status(20), Some(BatteryStatus::Ok));
+        assert_eq!(status(49), Some(BatteryStatus::Ok));
+        assert_eq!(status(50), Some(BatteryStatus::Good));
+        assert_eq!(status(100), Some(BatteryStatus::Good));
+        for raw in 101..=255 {
+            assert_eq!(battery(raw, None), None, "{raw}");
+            assert_eq!(battery(raw, Some(BatteryStatus::Low)), None, "{raw}");
+        }
+        assert_eq!(battery(60, None).unwrap().millivolts, None);
+    }
+
+    #[test]
+    fn a_warning_already_shown_needs_two_percent_to_clear() {
+        let after = |raw, previous| battery(raw, previous).map(|battery| battery.status);
+        let low = Some(BatteryStatus::Low);
+        let critical = Some(BatteryStatus::Critical);
+        assert_eq!(after(20, low), Some(BatteryStatus::Low));
+        assert_eq!(after(21, low), Some(BatteryStatus::Low));
+        assert_eq!(after(22, low), Some(BatteryStatus::Ok));
+        assert_eq!(after(20, Some(BatteryStatus::Ok)), Some(BatteryStatus::Ok));
+        assert_eq!(after(5, critical), Some(BatteryStatus::Critical));
+        assert_eq!(after(6, critical), Some(BatteryStatus::Critical));
+        assert_eq!(after(7, critical), Some(BatteryStatus::Low));
+        assert_eq!(after(5, None), Some(BatteryStatus::Low));
+        assert_eq!(after(21, critical), Some(BatteryStatus::Low));
+        assert_eq!(after(22, critical), Some(BatteryStatus::Ok));
+    }
 
     #[test]
     fn readings_become_stale_at_a_bounded_age() {

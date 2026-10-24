@@ -50,6 +50,10 @@ pkgs.mkShell {
     CYCLING_ESP_TOOLCHAIN = "${esp-rust}";
     UV_PYTHON = "${python}/bin/python3";
     UV_PYTHON_DOWNLOADS = "never";
+    # This Python, even where the machine prefers uv-managed ones (omni-devbox
+    # sets only-managed): otherwise every uv run recreates the venv, and
+    # parallel lanes delete modules under each other.
+    UV_PYTHON_PREFERENCE = "only-system";
     RUSTC_WRAPPER = "sccache";
     LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
   };

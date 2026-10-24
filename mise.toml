@@ -17,7 +17,15 @@ run = "bash devices/c606/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling", "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked", "{{vars.devtools}} pytest tools/devtools", "{{vars.terrain}} pytest tools/terrain"]
+depends = ["test-rust", "test-python"]
+
+[tasks.test-rust]
+description = "Rust host tests (one target dir, so the passes run in turn)"
+run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling", "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked"]
+
+[tasks.test-python]
+description = "Device tool and terrain tests, spread over worker processes"
+run = ["{{vars.devtools}} pytest -q -n auto --maxprocesses=8 tools/devtools", "{{vars.terrain}} pytest -q tools/terrain"]
 
 [tasks.verify]
 description = "Run every PR gate in parallel (test, check, simulate, 4 builds, harness-virtual); --fast for the inner loop, --pr N to post results"

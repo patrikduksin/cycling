@@ -5673,12 +5673,11 @@ fn a_saved_ride_keeps_its_ftp_heart_rate_recovery_and_climbs() {
     sim.press(Button::BottomRight);
     sim.done();
 
-    let (journal, bytes) = ["rides/b1.facts", "rides/i1.facts"]
+    let record = b"bi"
         .iter()
-        .find_map(|name| Some((*name, sim.file(name)?)))
-        .expect("a facts file for the saved ride");
-    let record = vana::ride::facts::decode(&bytes).expect("the facts decode");
-    println!("{journal}: {record:?}");
+        .find_map(|&journal| facts_of(&mut sim, journal, 1))
+        .expect("the saved ride's facts in the table");
+    println!("{record:?}");
     let facts = record.facts;
     assert_eq!(facts.profile.map(|p| p.ftp_watts), Some(250));
     assert_eq!(facts.recovery_bpm, Some(28));
@@ -5772,9 +5771,11 @@ fn files_rider() -> Sim {
     sim
 }
 
-fn facts_of(sim: &mut Sim, name: &str) -> Option<vana::ride::facts::Record> {
-    let bytes = sim.file(name)?;
-    Some(vana::ride::facts::decode(&bytes).expect("the facts decode"))
+/// The facts the table on FILES keeps for ride `ride_id` of `journal`.
+fn facts_of(sim: &mut Sim, journal: u8, ride_id: u32) -> Option<vana::ride::facts::Record> {
+    let bytes = sim.file(vana::ride::facts::TABLE)?;
+    vana::ride::facts::decode_table(&bytes)
+        .find(|record| (record.journal, record.ride_id) == (journal, ride_id))
 }
 
 /// A ride the host ends saves before the summary starts measuring; the
@@ -5788,11 +5789,11 @@ fn a_ride_the_host_ends_keeps_its_heart_rate_recovery() {
     ride_command(&mut sim, "RIDE BULK PAUSE");
     ride_command(&mut sim, "RIDE BULK FINISH");
     sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
-    let saved = facts_of(&mut sim, "rides/b1.facts").expect("facts written on save");
+    let saved = facts_of(&mut sim, b'b', 1).expect("facts written on save");
     assert_eq!(saved.facts.recovery_bpm, None, "still measuring");
     sim.ride_at(0.0, 0.0, 140.0, 0.0);
     sim.advance(seconds(75));
-    let measured = facts_of(&mut sim, "rides/b1.facts").unwrap();
+    let measured = facts_of(&mut sim, b'b', 1).unwrap();
     assert_eq!(measured.facts.recovery_bpm, Some(25));
 }
 
@@ -5808,7 +5809,7 @@ fn a_cleared_journal_forgets_its_facts_and_the_next_ride_one_keeps_its_own() {
     sim.ride_at(0.0, 0.0, 140.0, 0.0);
     sim.advance(seconds(75));
     assert_eq!(
-        facts_of(&mut sim, "rides/b1.facts").and_then(|r| r.facts.recovery_bpm),
+        facts_of(&mut sim, b'b', 1).and_then(|r| r.facts.recovery_bpm),
         Some(25)
     );
     sim.press(Button::BottomRight);
@@ -5820,7 +5821,7 @@ fn a_cleared_journal_forgets_its_facts_and_the_next_ride_one_keeps_its_own() {
     assert_eq!(accepted, "ACCEPTED", "{out}");
     sim.advance(seconds(10));
     assert!(
-        sim.file("rides/b1.facts").is_none(),
+        facts_of(&mut sim, b'b', 1).is_none(),
         "forgotten with its ride"
     );
 
@@ -5829,7 +5830,7 @@ fn a_cleared_journal_forgets_its_facts_and_the_next_ride_one_keeps_its_own() {
     sim.advance(minutes(3));
     sim.stop_ride();
     sim.done();
-    let again = facts_of(&mut sim, "rides/b1.facts").expect("the new ride 1");
+    let again = facts_of(&mut sim, b'b', 1).expect("the new ride 1");
     assert_eq!(again.facts.recovery_bpm, None);
     sim.home("RIDES");
     sim.advance(seconds(5));

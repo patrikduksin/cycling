@@ -225,6 +225,8 @@ async fn console(
             RideIndex::new(external_bytes(RIDES * ENTRY), external_bytes(RIDES * ENTRY))
         });
         sdk.attach_ride_index(index);
+        // Each saved ride's facts, 32 KB in PSRAM.
+        sdk.attach_ride_facts(external_bytes(vana::ride::facts::SHELF_BYTES));
     }
     #[cfg(feature = "cycling")]
     {

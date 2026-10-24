@@ -55,6 +55,68 @@ fn the_ride_log_from_before_volumes_is_reported_until_initialized_again() {
     assert!(volumes.contains("rides=2048+2097152:log"), "{volumes}");
 }
 
+fn files_entries(sim: &mut Sim) -> usize {
+    use firmware_services::{files, volume};
+    let mut sector = [0u8; 512];
+    let mut store = volume::open(&mut sim.device.bulk, &volume::FILES, &mut sector).unwrap();
+    files::mount(&mut store, &mut sector).unwrap().len()
+}
+
+/// The 64 facts files older firmware keeps, one per ride, beside the host's
+/// files: after boot they are one table with every ride's facts, the entries
+/// they took are free for the host, and the host's files are as they were.
+#[test]
+fn facts_files_from_older_firmware_fold_into_one_table_that_frees_their_entries() {
+    use vana::ride::facts::{self, Facts, Record};
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    for host in 0..40 {
+        sim.put_file(&format!("host/{host}.bin"), b"host");
+    }
+    let records: Vec<Record> = (1..=64)
+        .map(|ride| Record {
+            journal: b'b',
+            ride_id: ride,
+            started_utc_ms: 1_760_000_000_000 + u64::from(ride) * 86_400_000,
+            facts: Facts {
+                profile: vana::ride::zones::TrainingProfile::new(200 + ride as u16, 170),
+                recovery_bpm: Some(ride as i16),
+                ..Facts::default()
+            },
+        })
+        .collect();
+    for record in &records {
+        let name = facts::file(record.journal, record.ride_id);
+        sim.put_file(name.as_str(), &facts::encode(record));
+    }
+    assert_eq!(files_entries(&mut sim), 104);
+
+    let mut sim = sim.boot();
+    sim.advance(seconds(10));
+    let table = sim.file(facts::TABLE).expect("the facts table");
+    let mut folded: Vec<Record> = facts::decode_table(&table).collect();
+    folded.sort_by_key(|record| record.ride_id);
+    assert_eq!(
+        folded, records,
+        "every ride's facts, as the files held them"
+    );
+    assert_eq!(files_entries(&mut sim), 41, "one entry for 64 rides");
+    for host in 0..40 {
+        assert_eq!(
+            sim.file(&format!("host/{host}.bin")).as_deref(),
+            Some(&b"host"[..])
+        );
+    }
+    for host in 40..120 {
+        sim.put_file(&format!("host/{host}.bin"), b"host");
+    }
+    assert_eq!(
+        files_entries(&mut sim),
+        121,
+        "the freed entries hold host files"
+    );
+}
+
 #[test]
 fn terrain_and_files_installed_by_the_host_live_beside_bulk_rides() {
     let mut sim = Sim::new();

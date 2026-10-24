@@ -5,8 +5,8 @@
 //! breadcrumb keeps a point only where the road bends: a streaming window
 //! simplification keeps the last point before any point in the window would
 //! stray more than the tolerance from a straight line. When the caller's
-//! buffer fills, the breadcrumb is thinned again in place at twice the
-//! tolerance, so a ride of any length fits. The buffer is the caller's
+//! buffer fills, the breadcrumb is thinned again in place as the course is
+//! (`ride::thin`), so a ride of any length fits. The buffer is the caller's
 //! (PSRAM on the device); this state is small.
 //!
 //! Following the breadcrumb back freezes it and steers to a point a little
@@ -40,7 +40,7 @@
 //! away, and counts once until they are away again; that gap is the
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
-use crate::ride::course;
+use crate::ride::{course, thin};
 use libm::{atan2f, cosf, sqrtf};
 
 /// Metres per 1e-7 degree of latitude, on a sphere of the mean Earth radius.
@@ -48,7 +48,7 @@ const M_PER_E7: f32 = 0.011_119_508;
 /// Fixes closer than this to the last one add nothing to the breadcrumb.
 const MIN_STEP_M: f32 = 5.0;
 /// A kept point may sit this far off the straight line it replaces; doubled
-/// on each thinning.
+/// when a thinning pass frees too little.
 const TOLERANCE_M: f32 = 6.0;
 /// Fixes since the last kept point, the most the window holds.
 const WINDOW: usize = 48;
@@ -785,29 +785,12 @@ impl<'a> Homing<'a> {
         self.len += 1;
     }
 
-    /// Thin the full breadcrumb in place at twice the tolerance, until a
-    /// quarter of it is free; past any sensible tolerance, every other
-    /// point goes. Only while recording, so no match index moves.
+    /// Thin the full breadcrumb in place until a quarter of it is free,
+    /// per `ride::thin`. Only while recording, so no match index moves.
     fn thin(&mut self) {
-        let target = self.crumbs.len() * 3 / 4;
-        let mut rounds = 0;
-        while self.len > target {
-            rounds += 1;
-            self.tolerance *= 2.0;
-            let mut kept = 1;
-            for i in 1..self.len - 1 {
-                let point = |c: Crumb| (c.east, c.north);
-                let a = point(self.crumbs[kept - 1]);
-                let b = point(self.crumbs[i + 1]);
-                let p = point(self.crumbs[i]);
-                if rounds > 8 && i % 2 == 0 || off_segment(p, a, b) > self.tolerance {
-                    self.crumbs[kept] = self.crumbs[i];
-                    kept += 1;
-                }
-            }
-            self.crumbs[kept] = self.crumbs[self.len - 1];
-            self.len = kept + 1;
-        }
+        self.len = thin::thin(self.crumbs, self.len, &mut self.tolerance, |c| {
+            (c.east, c.north)
+        });
         // Distances along follow the thinned line.
         for i in 1..self.len {
             let (a, b) = (self.crumbs[i - 1], self.crumbs[i]);
@@ -1114,6 +1097,85 @@ mod tests {
         assert!((23_800..=24_300).contains(&guide.track_m), "{guide:?}");
         let crumbs = &homing.crumbs[..homing.len()];
         assert!(crumbs.windows(2).all(|w| w[1].along > w[0].along));
+    }
+
+    /// The fixes a receiver reports riding `road`: each `white` metres off at
+    /// most, about a bias that wanders up to `bias` metres.
+    fn received(road: &[course::Point], white: f32, bias: f32, seed: u64) -> Vec<(i32, i32)> {
+        let mut rng = crate::testing::Rng::new(seed);
+        let mut unit = move || rng.below(2001) as f32 / 1000.0 - 1.0;
+        let (mut east, mut north) = (0.0f32, 0.0f32);
+        road.iter()
+            .map(|fix| {
+                east = (east * 0.98 + unit() * bias * 0.2).clamp(-bias, bias);
+                north = (north * 0.98 + unit() * bias * 0.2).clamp(-bias, bias);
+                let (e, n) = (east + unit() * white, north + unit() * white);
+                (
+                    fix.lat_e7 + (n / M_PER_E7) as i32,
+                    fix.lon_e7 + (e / east_per_e7(fix.lat_e7)) as i32,
+                )
+            })
+            .collect()
+    }
+
+    /// How far the breadcrumb strays from the road ridden: the worst
+    /// distance, in metres, of any point of `road` from the stretch that
+    /// replaced its fix. Riding without following, the breadcrumb keeps a
+    /// subsequence of the fixes, so each fix up to the last kept one lies
+    /// between two of them.
+    fn deviation(homing: &Homing, road: &[course::Point], fixes: &[(i32, i32)]) -> f32 {
+        let kept = homing.crumbs();
+        let xy = |c: Crumb| (c.east, c.north);
+        let (mut worst, mut k) = (0.0f32, 0);
+        for (truth, &(lat, lon)) in road.iter().zip(fixes) {
+            if k + 1 == kept.len() {
+                break;
+            }
+            if homing.frame(lat, lon) == xy(kept[k + 1]) {
+                k += 1;
+            }
+            let p = homing.frame(truth.lat_e7, truth.lon_e7);
+            let b = xy(kept[(k + 1).min(kept.len() - 1)]);
+            worst = worst.max(off_segment(p, xy(kept[k]), b));
+        }
+        assert_eq!(k + 1, kept.len(), "every kept point is a fix");
+        worst
+    }
+
+    /// Long winding rides, clean and with a receiver's error, keep their
+    /// breadcrumb within about the tolerance it reaches as it thins.
+    #[test]
+    fn a_long_winding_ride_keeps_its_breadcrumb_on_the_road() {
+        let cases = [
+            ("200 km @ 8 m", 200.0, 8.0, 0.0, 0.0, 10.0),
+            ("600 km @ 8 m", 600.0, 8.0, 0.0, 0.0, 30.0),
+            ("1200 km @ 8 m", 1200.0, 8.0, 0.0, 0.0, 130.0),
+            ("200 km @ 8 m, GPS 3 m", 200.0, 8.0, 3.0, 5.0, 15.0),
+            ("400 km @ 6 m, GPS 3 m", 400.0, 6.0, 3.0, 5.0, 33.0),
+        ];
+        let mut off = Vec::new();
+        for (seed, (name, km, step, white, bias, limit)) in cases.into_iter().enumerate() {
+            let road = course::tests::road(km, step, seed as u64 + 1);
+            let fixes = received(&road, white, bias, seed as u64 + 1);
+            let mut crumbs = vec![Crumb::default(); 4096];
+            let mut homing = Homing::new(&mut crumbs);
+            homing.set_auto_follow(false);
+            let mut now = 0;
+            for &fix in &fixes {
+                now += 1_000;
+                homing.observe(Some(fix), now);
+            }
+            let worst = deviation(&homing, &road, &fixes);
+            std::eprintln!(
+                "| {name} | {} | {:.0} m | {worst:.0} m |",
+                homing.len(),
+                homing.tolerance
+            );
+            if worst > limit {
+                off.push(name);
+            }
+        }
+        assert!(off.is_empty(), "too far off the road: {off:?}");
     }
 
     #[test]

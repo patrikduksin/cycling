@@ -34,6 +34,7 @@
 //! A file with more points than a reader holds reads as damaged, never as
 //! part of a course. Firmware from before courses never opens `course.dat`,
 //! so the file disturbs neither it nor the rides and files beside it.
+use crate::ride::thin;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
@@ -51,8 +52,6 @@ const MIN_STEP_M: f32 = 5.0;
 /// A point may sit this far off the line that replaces it on the first
 /// thinning; doubled on each one after.
 const TOLERANCE_M: f32 = 4.0;
-/// A kept point replaces at most this many points before the next.
-const SPAN: usize = 256;
 /// Metres per 1e-7 degree of latitude, as in `ride::homing`.
 const M_PER_E7: f32 = 0.011_119_508;
 const LAT_MAX_E7: u32 = 900_000_000;
@@ -183,19 +182,6 @@ fn metres(a: Point, b: Point, east_per_e7: f32) -> (f32, f32) {
     (east as f32 * east_per_e7, north as f32 * M_PER_E7)
 }
 
-/// How far `p` lies from the segment `a`-`b`, all in metres.
-fn off_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let length = dx * dx + dy * dy;
-    let t = if length > 0.0 {
-        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let (x, y) = (a.0 + t * dx - p.0, a.1 + t * dy - p.1);
-    sqrtf(x * x + y * y)
-}
-
 /// Builds a course from points as they stream in, of any count.
 #[derive(Clone, Copy, Debug)]
 pub struct Builder {
@@ -252,66 +238,12 @@ impl Builder {
 
     fn keep(&mut self, course: &mut Course, point: Point) {
         if course.len as usize == POINTS {
-            self.thin(course);
+            let (origin, scale) = (course.points[0], self.east_per_e7);
+            let at = |p: &Point| metres(origin, *p, scale);
+            course.len = thin::thin(&mut course.points, POINTS, &mut self.tolerance, at) as u32;
         }
         course.points[course.len as usize] = point;
         course.len += 1;
-    }
-
-    /// Thin the full list in place until a quarter of it is free: a pass at
-    /// the tolerance in force, and while a pass frees less than that, another
-    /// at twice the tolerance. Past any sensible tolerance every other point
-    /// goes.
-    fn thin(&mut self, course: &mut Course) {
-        let target = POINTS * 3 / 4;
-        let mut rounds = 0;
-        loop {
-            self.simplify(course, rounds > 16);
-            if course.len as usize <= target {
-                return;
-            }
-            rounds += 1;
-            self.tolerance *= 2.0;
-        }
-    }
-
-    /// One pass: from each kept point, the line runs on to the farthest
-    /// point whose chord passes within the tolerance of every point it
-    /// replaces, at most `SPAN` points on.
-    fn simplify(&self, course: &mut Course, halve: bool) {
-        let len = course.len as usize;
-        let origin = course.points[0];
-        let at = |i: usize| metres(origin, course.points[i], self.east_per_e7);
-        let mut keep = [0u64; POINTS / 64];
-        let mut mark = |i: usize| keep[i / 64] |= 1 << (i % 64);
-        mark(0);
-        mark(len - 1);
-        let mut anchor = 0;
-        while anchor + 1 < len - 1 {
-            if halve {
-                anchor = (anchor + 2).min(len - 1);
-                mark(anchor);
-                continue;
-            }
-            let mut end = anchor + 2;
-            while end < len && end - anchor <= SPAN {
-                let (a, b) = (at(anchor), at(end));
-                if !(anchor + 1..end).all(|j| off_segment(at(j), a, b) <= self.tolerance) {
-                    break;
-                }
-                end += 1;
-            }
-            anchor = end - 1;
-            mark(anchor);
-        }
-        let mut kept = 0;
-        for i in 0..len {
-            if keep[i / 64] >> (i % 64) & 1 == 1 {
-                course.points[kept] = course.points[i];
-                kept += 1;
-            }
-        }
-        course.len = kept as u32;
     }
 }
 

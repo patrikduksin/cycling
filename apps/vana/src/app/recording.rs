@@ -722,9 +722,9 @@ impl Runtime {
             None
         };
         ride.continue_internally(now);
-        if let Some(trigger) = ride.laps.take_closed() {
-            ride.internal.mark_lap(trigger.into());
-            ride.bulk.mark_lap(trigger.into());
+        while let Some(start) = ride.laps.take_closed() {
+            ride.internal.mark_lap(start);
+            ride.bulk.mark_lap(start);
         }
         ride.internal.service(
             &mut Internal::new(&mut ride.internal_media, store),

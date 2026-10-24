@@ -24,7 +24,7 @@
 //! | then | Rider weight in kg, 0 for unset, else 30 to 200 | 7 |
 //! | then | Rider age in years, 0 for unset, else 10 to 99 | 7 |
 //! | then | Rider sex: 0 unset, 1 male, 2 female | 7 |
-//! | then | Main page lower line: reading id of the left slot, then of the right (`screens::ride::slots`), 0 and 1 (cadence, distance) by default; an id the firmware does not know reads as a damaged record | 8 |
+//! | then | Main page lower line: reading id of the left slot, then of the right (`screens::ride::slots`), 0 and 1 (cadence, distance) by default; an id the firmware does not know reads as a damaged record, so a new reading id needs a record version bump: firmware from before it would read the record as malformed, not unsupported | 8 |
 //!
 //! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
 //! Both load with the default options and setup done, since a rider already

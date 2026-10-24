@@ -518,9 +518,9 @@ mod tests {
     }
 
     /// The widest value each reading can plausibly take, by stored id: a
-    /// 5 digit total, a 1999 W reading, 220 bpm, 120 km/h, 29 999 m of climb.
+    /// 9999 kcal, a 1999 W reading, 220 bpm, 120 km/h, 29 999 m of climb.
     const WIDEST_VALUES: [&str; 9] = [
-        "180", "1000.0", "1999", "1999", "220", "120.0", "99K", "99999", "29999",
+        "255", "1000.0", "1999", "1999", "220", "120.0", "9999", "99999", "29999",
     ];
 
     /// Every reading in either slot, against every reading in the other, at

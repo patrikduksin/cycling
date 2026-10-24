@@ -134,7 +134,7 @@ impl Reading {
             Self::AvgSpeed => speed(value, totals.avg_speed_mm_s()),
             Self::Kcal => thousands(value, totals.kcal_for(view.rider)),
             Self::Work => whole(value, totals.work_kj()),
-            Self::Ascent => whole(value, Some(totals.ascent_dm() / 10)),
+            Self::Ascent => whole(value, Some((totals.ascent_dm() + 5) / 10)),
         }
     }
 

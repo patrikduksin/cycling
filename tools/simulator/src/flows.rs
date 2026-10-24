@@ -186,17 +186,21 @@ impl Sim {
     /// row until it reads `value`. Ends on that section.
     #[track_caller]
     pub fn set_option(&mut self, label: &str, value: &str) {
-        for _ in 0..12 {
+        for _ in 0..16 {
             if self.screen().run(label).is_some() {
                 break;
             }
             self.swipe_next();
         }
-        for _ in 0..8 {
+        const TAPS: usize = 12;
+        for tap in 0..=TAPS {
             let screen = self.screen();
             if screen.field(label).as_deref() == Some(value) {
                 self.note(NoteKind::Check, format!("{label} shows {value}"));
                 return;
+            }
+            if tap == TAPS {
+                break;
             }
             let run = screen
                 .run(label)

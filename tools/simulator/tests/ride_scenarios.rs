@@ -4025,6 +4025,35 @@ fn a_receiver_date_outside_the_plausible_window_leaves_the_ride_undated() {
     sim.expect_no_text("OCT");
 }
 
+/// At 16:00 UTC on `date`, the status bar and the rides list read `local`.
+fn clock_reads(date: (u8, u8, u8), local: &str, listed: &str) {
+    let mut sim = rider();
+    sim.set_gps_clock(16 * 3600, date);
+    sim.advance(seconds(5));
+    sim.expect_text(local);
+    sim.checkpoint(&format!("home at 16:00 UTC, {listed}"));
+    cyclist(&mut sim);
+    press_start(&mut sim);
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.expect_text(&format!("{listed}  {local}"));
+    sim.checkpoint(&format!("rides list, {listed}"));
+}
+
+/// Santiago keeps UTC-4 in winter.
+#[test]
+fn the_clock_reads_santiago_winter_time_in_june() {
+    clock_reads((21, 6, 26), "12:00", "JUN 21");
+}
+
+/// Santiago keeps UTC-3 in summer.
+#[test]
+fn the_clock_reads_santiago_summer_time_in_december() {
+    clock_reads((21, 12, 26), "1:00", "DEC 21");
+}
+
 /// Numbers glide between quarter-second ANT+ samples: a step in power is
 /// drawn through values in between, never past the new reading, and lands on
 /// it exactly.

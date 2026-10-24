@@ -328,8 +328,8 @@ dated by the GPS receiver counts too.
 TSS adds each ride's training stress, worked out when the ride index reads
 the ride (normalized power over 30 s, as the live ride's TSS) against the
 FTP the ride was saved with, so changing FTP does not restate past weeks. A
-ride without facts (below) counts at the FTP set now. A ride without a power meter, or with under 30 s of
-power, adds nothing; a week with no ride that had power shows no TSS
+ride without facts (below) counts at the FTP set now. A ride without a
+power meter, or with under 30 s of power, adds nothing; a week with no ride that had power shows no TSS
 rather than 0; more than 9999 reads 9999+. Rides the index has not read yet carry none, and nothing is
 saved: the stress is rebuilt with the index after every boot. A 7-day against
 42-day load line was left out: the header has no room for it beside the
@@ -351,8 +351,10 @@ They are a small file beside the ride on the FILES volume
 (`ride-recording.md`, "Ride facts"), written when the ride is saved. The
 newest 64 are kept. A ride without them reads as before: TSS at the FTP set
 now, CLIMBS --, and no HR RECOVERY. That is a ride saved with no card, FILES
-volume or formatted store, one recovered after a power cut, one older than the
-newest 64, and one saved by firmware from before facts were kept.
+volume or formatted store, one saved without a clock, one recovered after a
+power cut, one older than the newest 64, and one saved by firmware from before
+facts were kept. A ride that moved from the MMC onto internal flash keeps its
+facts with its internal part.
 
 The list holds every saved ride of both journals (internal flash and the
 memory card's RIDES volume), newest first. A ride index, kept in PSRAM and

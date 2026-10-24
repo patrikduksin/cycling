@@ -10,9 +10,9 @@
 //! | 4 | version, 1 |
 //! | 5 | body length `n` before the CRC: 30 in version 1 |
 //! | 6 | journal: `i` internal, `b` bulk |
-//! | 7 | flags: 1 start time known, 2 profile, 4 HR recovery, 8 climbs |
+//! | 7 | flags: 1 profile, 2 HR recovery, 4 climbs |
 //! | 8..12 | ride id in that journal |
-//! | 12..20 | ride start, UTC ms (0 when unknown) |
+//! | 12..20 | ride start, UTC ms |
 //! | 20..22 | FTP at the ride, W |
 //! | 22..24 | LTHR at the ride, BPM |
 //! | 24..26 | HR recovery: the fall over the minute after, BPM (i16) |
@@ -25,8 +25,9 @@
 //! up to [`READ_MAX`] bytes, as many as a one-byte body length allows. Ride
 //! ids restart when a journal is cleared or initialized, and `forget` then
 //! deletes that journal's files; the start time guards the rest, as firmware
-//! from before these files clears a journal without deleting them. Only the
-//! newest [`KEEP`] files stay.
+//! from before these files clears a journal without deleting them. So a ride
+//! whose start time is unknown has no facts. A profile out of range reads as
+//! none and leaves the other fields. Only the newest [`KEEP`] files stay.
 use super::zones::TrainingProfile;
 use core::fmt::Write;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
@@ -49,10 +50,9 @@ pub const READ_MAX: usize = u8::MAX as usize + 4;
 /// the rides list totals at up to four rides a day.
 pub const KEEP: usize = 64;
 
-const DATED: u8 = 1;
-const PROFILE: u8 = 2;
-const RECOVERY: u8 = 4;
-const CLIMBS: u8 = 8;
+const PROFILE: u8 = 1;
+const RECOVERY: u8 = 2;
+const CLIMBS: u8 = 4;
 
 /// The climbs a ride finished.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,17 +87,18 @@ pub struct Record {
     /// `b'i'` for the internal journal, `b'b'` for the bulk log.
     pub journal: u8,
     pub ride_id: u32,
-    pub started_utc_ms: Option<u64>,
+    pub started_utc_ms: u64,
     pub facts: Facts,
 }
 
 impl Record {
     /// Whether this is the record of a journal ride that started at
-    /// `started_utc_ms`. The ride index keeps whole seconds.
+    /// `started_utc_ms`; never of an undated ride. The ride index keeps whole
+    /// seconds.
     pub fn of(&self, journal: u8, ride_id: u32, started_utc_ms: Option<u64>) -> bool {
         self.journal == journal
             && self.ride_id == ride_id
-            && self.started_utc_ms.map(|ms| ms / 1000) == started_utc_ms.map(|ms| ms / 1000)
+            && started_utc_ms.is_some_and(|ms| ms / 1000 == self.started_utc_ms / 1000)
     }
 }
 
@@ -119,7 +120,6 @@ impl From<files::Error> for Error {
     }
 }
 
-/// The file of ride `ride_id` in `journal`.
 pub fn file(journal: u8, ride_id: u32) -> files::Name {
     let mut text = heapless::String::<{ files::NAME }>::new();
     let _ = write!(
@@ -142,12 +142,11 @@ pub fn encode(record: &Record) -> [u8; SIZE] {
     bytes[4] = VERSION;
     bytes[5] = BODY_V1 as u8;
     bytes[6] = record.journal;
-    bytes[7] = flag(record.started_utc_ms.is_some(), DATED)
-        | flag(facts.profile.is_some(), PROFILE)
+    bytes[7] = flag(facts.profile.is_some(), PROFILE)
         | flag(facts.recovery_bpm.is_some(), RECOVERY)
         | flag(facts.climbing.is_some(), CLIMBS);
     put_u32(&mut bytes, 8, record.ride_id);
-    put_u64(&mut bytes, 12, record.started_utc_ms.unwrap_or(0));
+    put_u64(&mut bytes, 12, record.started_utc_ms);
     let profile = facts.profile.unwrap_or(TrainingProfile {
         ftp_watts: 0,
         lthr_bpm: 0,
@@ -176,20 +175,14 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
     }
     let flags = bytes[7];
     let has = |bit: u8| flags & bit != 0;
-    let profile = if has(PROFILE) {
-        Some(TrainingProfile::new(
-            get_u16(bytes, 20),
-            get_u16(bytes, 22),
-        )?)
-    } else {
-        None
-    };
     Some(Record {
         journal: bytes[6],
         ride_id: get_u32(bytes, 8),
-        started_utc_ms: has(DATED).then(|| get_u64(bytes, 12)),
+        started_utc_ms: get_u64(bytes, 12),
         facts: Facts {
-            profile,
+            profile: has(PROFILE)
+                .then(|| TrainingProfile::new(get_u16(bytes, 20), get_u16(bytes, 22)))
+                .flatten(),
             recovery_bpm: has(RECOVERY).then(|| get_u16(bytes, 24) as i16),
             climbing: has(CLIMBS).then(|| Climbing {
                 count: get_u16(bytes, 26),
@@ -258,38 +251,34 @@ pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), Error> {
     }
 }
 
-/// Directory slots `read` visits per call.
-pub const SLOTS_PER_READ: usize = 8;
-
-/// Visit the records in directory slots `first..first + SLOTS_PER_READ`,
-/// skipping files that do not decode or name another ride than their own.
-/// Returns the next slot, or `None` once every slot was read.
+/// Visit the records listed in directory sector `index`, one sector's
+/// entries per call so a scan never holds up a tick for long. Files that do
+/// not decode or name another ride than their own are skipped. Returns the
+/// next sector, or `None` after the last.
 pub fn read(
     media: &mut impl ReadWrite,
-    first: usize,
+    index: usize,
     mut visit: impl FnMut(Record),
 ) -> Result<Option<usize>, Error> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector)?;
     let dir = files::mount(&mut store, &mut sector)?;
-    let end = (first + SLOTS_PER_READ).min(files::CAPACITY);
+    let entries = dir.entries(&mut store, index, &mut sector)?;
     let mut bytes = [0; READ_MAX];
-    for slot in first..end {
-        let Some(entry) = dir.entry(&mut store, slot, &mut sector)? else {
-            continue;
-        };
+    for entry in entries.iter().flatten() {
         if !is_facts(&entry.name) {
             continue;
         }
         let length = (entry.length as usize).min(READ_MAX);
-        let length = dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)?;
+        let length = dir.read(&mut store, entry, 0, &mut bytes[..length], &mut sector)?;
         if let Some(record) = decode(&bytes[..length])
             && file(record.journal, record.ride_id) == entry.name
         {
             visit(record);
         }
     }
-    Ok((end < files::CAPACITY).then_some(end))
+    let next = index + 1;
+    Ok((next < files::DIR_SECTORS).then_some(next))
 }
 
 #[cfg(test)]
@@ -302,7 +291,7 @@ mod tests {
         Record {
             journal: b'b',
             ride_id,
-            started_utc_ms: Some(1_760_000_000_000 + u64::from(ride_id) * 3_600_000),
+            started_utc_ms: 1_760_000_000_000 + u64::from(ride_id) * 3_600_000,
             facts: Facts {
                 profile: TrainingProfile::new(250, 172),
                 recovery_bpm: Some(-4),
@@ -318,7 +307,7 @@ mod tests {
         Record {
             journal: rng.pick(b"ib"),
             ride_id: rng.next() as u32,
-            started_utc_ms: rng.option(Rng::next),
+            started_utc_ms: rng.next(),
             facts: Facts {
                 profile: rng.option(|rng| {
                     TrainingProfile::new(rng.range(50, 600) as u16, rng.range(80, 220) as u16)
@@ -361,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn hostile_bytes_never_panic_and_a_resealed_profile_out_of_range_is_refused() {
+    fn hostile_bytes_never_panic_and_a_profile_out_of_range_reads_as_none() {
         let mut decoded = 0;
         for seed in 0..5_000 {
             let mut rng = Rng::new(seed);
@@ -383,7 +372,9 @@ mod tests {
         put_u16(&mut bytes, 20, 0);
         let crc = crc32(&bytes[..BODY_V1]);
         put_u32(&mut bytes, BODY_V1, crc);
-        assert_eq!(decode(&bytes), None, "FTP 0 is no profile");
+        let read = decode(&bytes).expect("the other fields survive");
+        assert_eq!(read.facts.profile, None, "FTP 0 is no profile");
+        assert_eq!(read.facts.climbing, record(1).facts.climbing);
     }
 
     #[test]
@@ -401,7 +392,7 @@ mod tests {
     #[test]
     fn a_record_names_its_ride_by_journal_id_and_start_second() {
         let saved = record(7);
-        let start = saved.started_utc_ms;
+        let start = Some(saved.started_utc_ms);
         assert!(saved.of(b'b', 7, start));
         assert!(
             saved.of(b'b', 7, start.map(|ms| ms + 999)),

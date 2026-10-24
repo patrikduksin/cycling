@@ -5395,6 +5395,91 @@ fn without_files_a_saved_ride_reads_as_it_did_before() {
     sim.wait_gone("READING", seconds(5)).unwrap();
     sim.press(Button::BottomLeft);
     sim.expect_no_text("HR RECOVERY");
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_text("BEST POWER W");
+    sim.expect_field("CLIMBS", "--");
+}
+
+/// A card with a formatted FILES store, the sensors paired and the clock set.
+fn files_rider() -> Sim {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.init_volumes();
+    sim.put_file("notes.txt", b"x");
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.set_gps_clock(15 * 3600, (21, 10, 26));
+    sim
+}
+
+fn facts_of(sim: &mut Sim, name: &str) -> Option<vana::ride::facts::Record> {
+    let bytes = sim.file(name)?;
+    Some(vana::ride::facts::decode(&bytes).expect("the facts decode"))
+}
+
+/// A ride the host ends saves before the summary starts measuring; the
+/// recovery still reaches its facts a minute later.
+#[test]
+fn a_ride_the_host_ends_keeps_its_heart_rate_recovery() {
+    let mut sim = files_rider();
+    sim.start_ride();
+    sim.ride_at(25.0, 200.0, 165.0, 90.0);
+    sim.advance(minutes(5));
+    ride_command(&mut sim, "RIDE BULK PAUSE");
+    ride_command(&mut sim, "RIDE BULK FINISH");
+    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
+    let saved = facts_of(&mut sim, "rides/b1.facts").expect("facts written on save");
+    assert_eq!(saved.facts.recovery_bpm, None, "still measuring");
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
+    sim.advance(seconds(75));
+    let measured = facts_of(&mut sim, "rides/b1.facts").unwrap();
+    assert_eq!(measured.facts.recovery_bpm, Some(25));
+}
+
+/// Clearing a journal deletes its facts with its rides, so the ride that
+/// takes id 1 again reads only its own.
+#[test]
+fn a_cleared_journal_forgets_its_facts_and_the_next_ride_one_keeps_its_own() {
+    let mut sim = files_rider();
+    sim.start_ride();
+    sim.ride_at(25.0, 200.0, 165.0, 90.0);
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
+    sim.advance(seconds(75));
+    assert_eq!(
+        facts_of(&mut sim, "rides/b1.facts").and_then(|r| r.facts.recovery_bpm),
+        Some(25)
+    );
+    sim.press(Button::BottomRight);
+    sim.done();
+
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    let upper = status_field(&status, "slot");
+    let (accepted, out) = sim.command(&format!("RIDE BULK CLEAR CONFIRM {upper}"));
+    assert_eq!(accepted, "ACCEPTED", "{out}");
+    sim.advance(seconds(10));
+    assert!(
+        sim.file("rides/b1.facts").is_none(),
+        "forgotten with its ride"
+    );
+
+    sim.start_ride();
+    sim.ride_at(25.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.done();
+    let again = facts_of(&mut sim, "rides/b1.facts").expect("the new ride 1");
+    assert_eq!(again.facts.recovery_bpm, None);
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    sim.expect_text("1/1");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.press(Button::BottomLeft);
+    sim.expect_no_text("HR RECOVERY");
 }
 
 /// The QR code on the panel, read back as a phone camera would.

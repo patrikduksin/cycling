@@ -733,11 +733,12 @@ impl Runtime {
         }
         // A cleared or initialized journal numbers its rides from 1 again:
         // its old workout records and facts would name rides that are gone.
+        // One that failed keeps its rides and their ids.
         for (reset, medium) in [
             (internal_reset, Medium::Internal),
             (bulk_reset, Medium::Bulk),
         ] {
-            if reset && !resetting(ride.recorder(medium).status()) {
+            if reset && ride.recorder(medium).status() == Status::Ready {
                 if let Err(error) = crate::workout::history::forget(bulk, medium.journal()) {
                     log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
                 }

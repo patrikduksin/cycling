@@ -543,13 +543,19 @@ When a ride is saved, VANA writes what the journal does not hold beside it as
 and LTHR in force, the climbs it finished and their gain, and its start time.
 Once the summary has measured the heart-rate recovery, the file is written
 again with it. The rides list's TSS uses the kept FTP, and a saved ride read
-back shows the recovery and the climbs. After boot VANA reads the files into
-memory, a few directory slots per tick while no ride is open.
+back shows the recovery and the climbs. After boot, and each time the card
+becomes ready, VANA reads the files into memory, one directory sector per
+tick while no ride is open or being written.
 
 - A file applies to a journal ride only when its journal, ride id and start
-  second match. Clearing or initializing a journal deletes its files, as its
-  ride ids start over. Firmware from before facts clears a journal without
-  deleting them, and the start time keeps those files off the new rides.
+  second match. Clearing or initializing a journal deletes its files once the
+  clear succeeds, as its ride ids start over; a clear that fails keeps them
+  with the rides. Firmware from before facts clears a journal without deleting
+  them, and the start time keeps those files off the new rides. So a ride
+  whose start time is unknown (no clock) gets no facts.
+- A ride that moved from the MMC onto internal flash is two journal rides.
+  Its facts go with the part that finished on internal flash; the MMC part
+  counts at the FTP now.
 - The newest 64 are kept; saving another deletes the oldest. The FILES
   directory holds 128 files: 64 facts, the 32 workout records, `bests.dat` and
   the 8 uploads the picker lists leave 23 for the host. 64 rides cover the two
@@ -559,7 +565,8 @@ memory, a few directory slots per tick while no ride is open.
   write the store refuses is logged and the ride is not held up for it.
 - A file is written in one atomic commit. One that is torn, fails its CRC,
   holds a profile out of range or names another ride than its file name is
-  ignored. Firmware from before facts lists only `.workout` files under
+  ignored, except a profile out of range, which reads as none and leaves the
+  other fields. Firmware from before facts lists only `.workout` files under
   `rides/`, so it leaves `.facts` files alone.
 
 It is a versioned 34-byte record that later versions only extend:
@@ -570,7 +577,7 @@ It is a versioned 34-byte record that later versions only extend:
 | 4 | version, 1 |
 | 5 | body length `n` before the CRC: 30 in version 1 |
 | 6 | journal: `i` internal, `b` bulk |
-| 7 | flags: 1 start time known, 2 profile, 4 HR recovery, 8 climbs |
+| 7 | flags: 1 profile, 2 HR recovery, 4 climbs |
 | 8..12 | ride id |
 | 12..20 | ride start, UTC ms |
 | 20..24 | FTP (W) and LTHR (BPM), u16 each |

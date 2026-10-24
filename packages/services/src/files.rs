@@ -31,7 +31,8 @@ pub const MAGIC: &[u8; 16] = b"CYCLING-FILES\0\0\0";
 pub const VERSION: u16 = 1;
 pub const NAME: usize = 40;
 const ENTRY: usize = 64;
-const PER_SECTOR: usize = SECTOR_SIZE / ENTRY;
+/// Entry slots in each directory sector.
+pub const PER_SECTOR: usize = SECTOR_SIZE / ENTRY;
 pub const DIR_SECTORS: usize = 16;
 /// Files the store can hold.
 pub const CAPACITY: usize = DIR_SECTORS * PER_SECTOR;
@@ -312,13 +313,17 @@ impl Dir {
         self.data
     }
 
-    /// Entry sector `index` of this directory, verified against the header.
-    fn entries(
+    /// Entry sector `index` (`0..DIR_SECTORS`) of this directory, one sector
+    /// read, verified against the header.
+    pub fn entries(
         &self,
         media: &mut impl ReadWrite,
         index: usize,
         sector: &mut Sector,
     ) -> Result<[Option<Entry>; PER_SECTOR], Error> {
+        if index >= DIR_SECTORS {
+            return Err(Error::Range);
+        }
         media.owned_read(base(self.copy) + 1 + index as u64, sector)?;
         if crc32(sector) != self.crcs[index] {
             return Err(Error::Corrupt);

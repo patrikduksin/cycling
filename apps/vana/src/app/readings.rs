@@ -355,7 +355,7 @@ impl Runtime {
             .power
             .filter(|power| fresh(power.received_ms))
             .map(|power| power.value);
-        let sample = Sample {
+        let mut sample = Sample {
             active_ms: 0,
             utc_ms,
             location_e7,
@@ -378,6 +378,7 @@ impl Runtime {
                 .filter(|power| power.watts != u16::MAX)
                 .map(|power| power.watts),
             gradient_tenths: readings.gradient.tenths(),
+            altitude: None,
         };
         if let Some(step) = step {
             let profile = self.preferences.profile;
@@ -388,6 +389,7 @@ impl Runtime {
                 self.workout_events(now);
             }
         }
+        sample.altitude = self.ride.recorded_altitude(pressure);
         self.readings.power_3s_watts = self.readings.power_3s.update(now, sample.power_watts);
         self.readings.live = sample;
         sample

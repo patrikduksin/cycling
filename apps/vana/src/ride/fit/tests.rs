@@ -317,9 +317,70 @@ fn an_hour_at_one_hertz_stays_small() {
     )));
     let (plan, bytes) = file(&slots, None).unwrap();
     assert_eq!(plan.samples, 3600);
-    assert!(bytes.len() < 100_000, "{} bytes", bytes.len());
+    assert!(bytes.len() < 140_000, "{} bytes", bytes.len());
     let session = decode(&bytes).into_iter().find(|m| m.global == 18).unwrap();
     assert_eq!(session.get(34), Some(200), "normalized power");
+}
+
+#[test]
+fn altitude_fills_records_and_ascent_and_descent() {
+    // 100 m up to 130 m in 10 m steps, then back down, with one sample
+    // in the middle that has no reading.
+    let at = |active_ms: u64, dm: Option<i32>| Sample {
+        altitude: dm.map(log::Altitude::from_dm),
+        ..sample(active_ms, true)
+    };
+    let up: Vec<Sample> = (1..=4)
+        .map(|i| at(i * 1000, Some(1000 + (i as i32 - 1) * 100)))
+        .collect();
+    let down: Vec<Sample> = (5..=8)
+        .map(|i| at(i * 1000, (i != 6).then_some(1300 - (i as i32 - 4) * 100)))
+        .collect();
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &up).unwrap()),
+        slot(&Entry::batch(Source::Live, 3, 2, &down).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 3, 8_000)),
+    ];
+    let (plan, bytes) = file(&slots, None).unwrap();
+    assert_eq!(bytes.len() as u32, plan.size);
+    let messages = decode(&bytes);
+    let records: Vec<&Decoded> = messages.iter().filter(|m| m.global == 20).collect();
+    // (metres + 500) * 5: 100 m is 3000, 130 m is 3150.
+    let altitudes: Vec<Option<u64>> = records.iter().map(|r| r.get(2)).collect();
+    assert_eq!(
+        altitudes,
+        [
+            Some(3000),
+            Some(3050),
+            Some(3100),
+            Some(3150),
+            Some(3100),
+            None,
+            Some(3000),
+            Some(2950)
+        ]
+    );
+    let enhanced: Vec<Option<u64>> = records.iter().map(|r| r.get(78)).collect();
+    assert_eq!(enhanced, altitudes);
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    assert_eq!((session.get(22), session.get(23)), (Some(30), Some(40)));
+    let lap = messages.iter().find(|m| m.global == 19).unwrap();
+    assert_eq!((lap.get(21), lap.get(22)), (Some(30), Some(40)));
+}
+
+#[test]
+fn a_ride_without_altitude_has_none_and_no_ascent() {
+    let (_, bytes) = file(&ride(true, 0), None).unwrap();
+    let messages = decode(&bytes);
+    assert!(
+        messages
+            .iter()
+            .filter(|m| m.global == 20)
+            .all(|r| r.get(2).is_none() && r.get(78).is_none())
+    );
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    assert_eq!((session.get(22), session.get(23)), (None, None));
 }
 
 fn record_times(bytes: &[u8]) -> Vec<u64> {

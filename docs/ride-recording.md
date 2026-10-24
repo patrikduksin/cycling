@@ -60,7 +60,7 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
 - [ride/fit.rs](../apps/vana/src/ride/fit.rs) turns a ride into a FIT
   activity (cycling): file_id, device_info, timer start, stop and resume
   events, one record per sample with time, position, distance, speed, heart
-  rate, cadence, power and grade, then one lap, the session (with normalized
+  rate, cadence, power, grade and altitude, then one lap, the session (with normalized
   power) and the activity. The host uses the same encoder as the device
   (`ride-fit` binary), and `tools/devtools/tests/test_fit_export.py` reads its
   files with Garmin's FIT SDK and fitdecode.
@@ -70,8 +70,11 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
   during the ride. A ride with no UTC at all has no FIT until `--start-utc-ms`
   gives its start.
 - Distance comes from wheel speed only. Without a wheel sensor the file has
-  none and readers use GPS. The journal holds no altitude and no laps, so the
-  file has one lap and no elevation; Strava fills elevation from its own map.
+  none and readers use GPS. The journal holds no laps, so the file has one lap.
+  Altitude is the barometric one (below); rides recorded before it was kept
+  have no elevation, and readers such as Strava fill it from their own map.
+  Lap and session `total_ascent` and `total_descent` follow the recorded
+  altitudes with the ride page's rules, and are left out without any.
 
 ## Explicit reclaim
 
@@ -314,6 +317,14 @@ Recording:
   40, power in watts at byte 38 and signed gradient in tenths of a percent at byte
   44. Old slots and the version-1 envelope stay readable; use the current exporter
   for these fields.
+- Sample bytes 46..48 hold the smoothed barometric altitude (the ride page's
+  `Totals` altitude, only with a fresh pressure reading) as FIT's `altitude`
+  field: u16 of (metres + 500) * 5, 0.2 m resolution, 0xFFFF for none. It has
+  no flag bit: decoders reject unknown flags, so a flag would break reading new
+  rides after a firmware rollback. Older samples left the bytes erased, and
+  older firmware and host tools never read them, so version 1 is unchanged and
+  both directions stay readable. The host JSON has `altitude_m` and the GPX
+  `<ele>`.
 - Gradient estimates the pressure change over at least 30 metres of wheel
   distance and needs fresh pressure and moving wheel data.
 
@@ -451,4 +462,7 @@ ride recovered after a power cut has no record.
   radios still need hardware validation. The harness `MMC OWNED TEST` writes
   owned sectors and can damage a bulk store.
 - Gradient is an approximate barometric grade, not calibrated elevation.
+- Altitude is the standard atmosphere, not calibrated to sea level: weather can
+  shift absolute altitude by tens of metres, while changes within a ride are
+  good. The history page still estimates ascent from the recorded gradient.
 - A grey radar rail does not imply an empty road.

@@ -43,10 +43,26 @@ impl Ride {
             .samples()
             .filter_map(|s| {
                 let (lat, lon) = s.location_e7?;
-                Some((from_e7(lat, lon), s.utc_ms.map(|ms| ms / 1000)))
+                let mut point = from_e7(lat, lon);
+                point.ele = s.altitude.map(|a| f64::from(a.dm()) / 10.0);
+                Some((point, s.utc_ms.map(|ms| ms / 1000)))
             })
             .collect();
         to_gpx(&format!("VANA ride {}", self.id), &points)
+    }
+
+    /// The ride as the FIT activity file the device exports, or why it has none;
+    /// `start_utc_ms` dates a ride recorded without a clock.
+    pub fn fit(&self, start_utc_ms: Option<u64>) -> Result<Vec<u8>, Refusal> {
+        struct Out(Vec<u8>);
+        impl firmware_services::fit::Sink for Out {
+            fn put(&mut self, bytes: &[u8]) {
+                self.0.extend_from_slice(bytes);
+            }
+        }
+        let mut out = Out(Vec::new());
+        fit::write_all(self.slots.iter(), self.id, start_utc_ms, &mut out)?;
+        Ok(out.0)
     }
 
     /// Distance along the recorded track, in metres.
@@ -88,7 +104,7 @@ pub fn summary(ride: &Ride) -> RideSummary {
         let field = |value: Option<String>| value.unwrap_or_else(|| "null".into());
         let _ = write!(
             samples,
-            "{}\n    {{\"active_ms\": {}, \"lat\": {}, \"lon\": {}, \"speed_kmh\": {}, \"power_w\": {}, \"heart_bpm\": {}, \"cadence_rpm\": {}, \"gradient_pct\": {}, \"battery_pct\": {}}}",
+            "{}\n    {{\"active_ms\": {}, \"lat\": {}, \"lon\": {}, \"speed_kmh\": {}, \"power_w\": {}, \"heart_bpm\": {}, \"cadence_rpm\": {}, \"gradient_pct\": {}, \"battery_pct\": {}, \"altitude_m\": {}}}",
             if samples.is_empty() { "" } else { "," },
             sample.active_ms,
             field(
@@ -119,6 +135,11 @@ pub fn summary(ride: &Ride) -> RideSummary {
                     .map(|v| format!("{:.1}", f64::from(v) / 10.0))
             ),
             field(sample.battery_percent.map(|v| v.to_string())),
+            field(
+                sample
+                    .altitude
+                    .map(|a| format!("{:.1}", f64::from(a.dm()) / 10.0))
+            ),
         );
     }
     let kinds: Vec<String> = ride.kinds().iter().map(|k| format!("{k:?}")).collect();

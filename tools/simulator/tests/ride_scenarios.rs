@@ -805,6 +805,94 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     // The 3 m band and smoothing may leave the last metres of the final climb.
     expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
     sim.checkpoint("stats after one hilly lap");
+
+    // The exports carry the barometric elevation: a 600 m start, up to 650 m,
+    // down to 550 m, and the session's ascent and descent.
+    sim.stop_ride();
+    let rides = sim.rides();
+    let ride = &rides[0];
+    let metres: Vec<f64> = ride
+        .samples()
+        .filter_map(|s| s.altitude)
+        .map(|a| f64::from(a.dm()) / 10.0)
+        .collect();
+    assert!(metres.len() > 500, "{} samples with altitude", metres.len());
+    let (low, high) = metres
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), m| (l.min(*m), h.max(*m)));
+    assert!(
+        low > 540.0 && high < 660.0 && high - low > 95.0,
+        "{low} {high}"
+    );
+    let gpx = ride.gpx();
+    assert!(gpx.matches("<ele>").count() > 500, "GPX elevation");
+    let fit = ride.fit(Some(1_789_000_000_000)).expect("a FIT file");
+    let records = fit_messages(&fit, 20);
+    let altitudes: Vec<f64> = records
+        .iter()
+        .filter_map(|r| r.get(&2))
+        .map(|&v| v as f64 / 5.0 - 500.0)
+        .collect();
+    assert_eq!(altitudes.len(), metres.len(), "FIT records with altitude");
+    let session = &fit_messages(&fit, 18)[0];
+    let (ascent, descent) = (session[&22], session[&23]);
+    assert!((90..=110).contains(&ascent), "FIT ascent {ascent} m");
+    assert!((90..=110).contains(&descent), "FIT descent {descent} m");
+}
+
+/// Valid fields by number of every data message with this global number,
+/// from a FIT file of the firmware's own encoder (little endian, no
+/// compressed timestamps).
+fn fit_messages(bytes: &[u8], global: u16) -> Vec<std::collections::BTreeMap<u8, u64>> {
+    use std::collections::BTreeMap;
+    /// Global number and (field, size, base type) of each defined field.
+    type Definition = (u16, Vec<(u8, usize, u8)>);
+    let end = 14 + u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let mut definitions: BTreeMap<u8, Definition> = BTreeMap::new();
+    let (mut at, mut found) = (14, Vec::new());
+    while at < end {
+        let header = bytes[at];
+        let local = header & 0xf;
+        at += 1;
+        if header & 0x40 != 0 {
+            let number = u16::from_le_bytes([bytes[at + 2], bytes[at + 3]]);
+            let count = usize::from(bytes[at + 4]);
+            at += 5;
+            let fields = (0..count)
+                .map(|i| {
+                    let f = &bytes[at + 3 * i..];
+                    (f[0], usize::from(f[1]), f[2])
+                })
+                .collect();
+            at += 3 * count;
+            definitions.insert(local, (number, fields));
+            continue;
+        }
+        let (number, fields) = &definitions[&local];
+        let mut values = BTreeMap::new();
+        for &(field, size, base) in fields {
+            let raw = &bytes[at..at + size];
+            at += size;
+            if base == 0x07 {
+                continue;
+            }
+            let mut wide = [0u8; 8];
+            wide[..size].copy_from_slice(raw);
+            let value = u64::from_le_bytes(wide);
+            let invalid = match base {
+                0x84 => 0xffff,
+                0x86 => 0xffff_ffff,
+                _ => u64::MAX,
+            };
+            if value != invalid {
+                values.insert(field, value);
+            }
+        }
+        if *number == global {
+            found.push(values);
+        }
+    }
+    found
 }
 
 #[test]

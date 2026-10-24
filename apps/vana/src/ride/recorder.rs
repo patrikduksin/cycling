@@ -919,6 +919,41 @@ mod tests {
         assert!(reopened.exportable());
     }
     #[test]
+    fn odd_and_out_of_range_altitudes_pass_the_internal_read_back_check() {
+        use crate::ride::log::Altitude;
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        assert!(recorder.take_result().unwrap().ok);
+        // Four seconds of altitudes that are not on the 0.2 m grid, or past its range.
+        for (second, dm) in [(1u64, 1_235), (2, -9_001), (3, i32::MAX), (4, 7)] {
+            let now = 100 + second * 1000;
+            let sample = Sample {
+                speed_mm_s: Some(8000),
+                altitude: Some(Altitude::from_dm(dm)),
+                ..Sample::default()
+            };
+            recorder.service(&mut media, now, sample, &|| now);
+        }
+        assert!(recorder.request(Action::Finish, Source::Live, 4100, 2));
+        for _ in 0..3 {
+            recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert_eq!(recorder.status(), Status::Saved);
+        // A failed read-back would have stopped the ride in an error instead.
+        assert!(
+            recorder.written_samples() >= 3,
+            "{}",
+            recorder.written_samples()
+        );
+        let mut reopened = Recorder::default();
+        scan(&mut reopened, &mut media);
+        assert_eq!(reopened.completed(), 1);
+    }
+    #[test]
     fn ambiguous_append_stops_without_retrying_or_erasing() {
         let mut media = Memory::default();
         let mut recorder = Recorder::default();

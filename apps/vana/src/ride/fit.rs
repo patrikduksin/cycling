@@ -20,10 +20,16 @@
 //! its pause counts as no time. A ride with no UTC at all needs a start time
 //! from the caller. Timestamps never go backwards.
 //!
-//! What the journal does not have stays out: there is no altitude (pressure
-//! is not recorded), no laps (they live in RAM only) and no distance without
-//! a recorded speed (wheel or GPS), so readers fall back to GPS for distance and their own
-//! elevation data. Totals use the ride page's rules (`Totals`).
+//! Altitude is the barometric one the journal keeps per sample (smoothed,
+//! standard atmosphere, 0.2 m steps), written as `altitude` and
+//! `enhanced_altitude`; samples without it leave both invalid in the single
+//! record definition. Total ascent and descent follow those altitudes with
+//! the ride page's rules (`Totals`), and are left out of a ride without any.
+//! Rides recorded before altitude was kept have none.
+//!
+//! What the journal does not have stays out: no laps (they live in RAM only)
+//! and no distance without a recorded speed (wheel or GPS), so readers fall
+//! back to GPS for distance. Other totals use the ride page's rules too.
 
 use crate::ride::log::{self, Entry, Kind, Sample, Slot};
 use crate::ride::totals::Totals;
@@ -124,6 +130,8 @@ const RECORD: Message = Message {
         Field::new(4, BaseType::Uint8),
         Field::new(7, BaseType::Uint16),
         Field::new(9, BaseType::Sint16),
+        Field::new(2, BaseType::Uint16),
+        Field::new(78, BaseType::Uint32),
     ],
 };
 
@@ -150,6 +158,8 @@ const LAP: Message = Message {
         Field::new(17, BaseType::Uint8),
         Field::new(19, BaseType::Uint16),
         Field::new(20, BaseType::Uint16),
+        Field::new(21, BaseType::Uint16),
+        Field::new(22, BaseType::Uint16),
         Field::new(24, BaseType::Enum),
         Field::new(25, BaseType::Enum),
     ],
@@ -178,6 +188,8 @@ const SESSION: Message = Message {
         Field::new(18, BaseType::Uint8),
         Field::new(20, BaseType::Uint16),
         Field::new(21, BaseType::Uint16),
+        Field::new(22, BaseType::Uint16),
+        Field::new(23, BaseType::Uint16),
         Field::new(25, BaseType::Uint16),
         Field::new(26, BaseType::Uint16),
         Field::new(28, BaseType::Enum),
@@ -210,7 +222,7 @@ const DEFINITIONS: [&Message; 7] = [
 
 /// Largest output of one [`Export::slot`] call: a resume, four records and
 /// a pause. Sinks that drain between calls need at least this much room.
-pub const MAX_SLOT_OUTPUT: usize = 2 * 7 + log::SAMPLES_PER_BATCH * 25;
+pub const MAX_SLOT_OUTPUT: usize = 2 * 7 + log::SAMPLES_PER_BATCH * 31;
 /// Output of [`Export::start`]: header, definitions, `file_id` and `device_info`.
 pub const MAX_START_OUTPUT: usize = 384;
 /// Output of [`Export::finish`]: the closing event, lap, session, activity and CRC.
@@ -545,6 +557,9 @@ impl Export {
             self.distance_mm = Some(self.distance_mm.unwrap_or(0) + step);
         }
         self.totals.add(elapsed, step.unwrap_or(0), sample, None);
+        if let Some(altitude) = sample.altitude {
+            self.totals.follow_altitude_dm(altitude.dm());
+        }
         let position = sample.location_e7.filter(|(lat, lon)| {
             (-900_000_000..=900_000_000).contains(lat)
                 && (-1_800_000_000..=1_800_000_000).contains(lon)
@@ -554,6 +569,7 @@ impl Export {
             self.last_position = position;
         }
         self.samples += 1;
+        let altitude = sample.altitude.map(log::Altitude::fit);
         let ts = self.advance(sample.active_ms);
         self.writer.record(
             out,
@@ -580,6 +596,8 @@ impl Export {
                         .map(|g| g.saturating_mul(10))
                         .filter(|g| *g != i16::MAX),
                 ),
+                Value::U16(altitude),
+                Value::U32(altitude.map(u32::from)),
             ],
         );
     }
@@ -608,6 +626,9 @@ impl Export {
         let (avg_hr, max_hr) = (byte(totals.avg_heart_bpm()), byte(totals.max_heart_bpm()));
         let avg_cadence = byte(totals.avg_cadence_rpm());
         let (avg_power, max_power) = (totals.avg_power(), totals.max_power());
+        let metres = |dm: u32| ((dm + 5) / 10).min(u32::from(u16::MAX - 1)) as u16;
+        let ascent = totals.altitude_dm().map(|_| metres(totals.ascent_dm()));
+        let descent = totals.altitude_dm().map(|_| metres(totals.descent_dm()));
         let first = self.first_position;
         let last = self.last_position;
         let lat = |p: Option<(i32, i32)>| p.map(|(lat, _)| semicircles(lat));
@@ -635,6 +656,8 @@ impl Export {
                 Value::U8(avg_cadence),
                 Value::U16(avg_power),
                 Value::U16(max_power),
+                Value::U16(ascent),
+                Value::U16(descent),
                 Value::Enum(Some(LAP_TRIGGER_SESSION_END)),
                 Value::Enum(Some(SPORT_CYCLING)),
             ],
@@ -662,6 +685,8 @@ impl Export {
                 Value::U8(avg_cadence),
                 Value::U16(avg_power),
                 Value::U16(max_power),
+                Value::U16(ascent),
+                Value::U16(descent),
                 Value::U16(Some(0)),
                 Value::U16(Some(1)),
                 Value::Enum(Some(SESSION_TRIGGER_ACTIVITY_END)),

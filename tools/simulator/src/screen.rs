@@ -107,6 +107,8 @@ struct Template {
     offset: (i32, i32),
     size: (usize, usize),
     solid: Vec<bool>,
+    /// The solid box pixels, so a mismatch is found in a few reads.
+    solids: Vec<usize>,
     /// Coverage 0..=15 of every box pixel.
     coverage: Vec<u8>,
     /// Box pixels the glyph only partly covers, and those it leaves clear.
@@ -157,7 +159,8 @@ fn templates() -> &'static Templates {
                 let down = (anchor.1..h)
                     .take_while(|&y| solid[y * w + anchor.0])
                     .count();
-                let ink = solid.iter().filter(|&&s| s).count() as u32;
+                let solids: Vec<usize> = (0..w * h).filter(|&i| solid[i]).collect();
+                let ink = solids.len() as u32;
                 let edges = (0..w * h)
                     .filter(|&i| (1..15).contains(&coverage[i]))
                     .collect();
@@ -169,6 +172,7 @@ fn templates() -> &'static Templates {
                     offset: (i32::from(glyph.x), i32::from(glyph.y)),
                     size: (w, h),
                     solid,
+                    solids,
                     coverage,
                     edges,
                     clear,
@@ -442,6 +446,15 @@ impl Frame<'_> {
         let top = y.checked_sub(template.anchor.1)?;
         let (w, h) = template.size;
         if left + w > self.width || top + h > self.height {
+            return None;
+        }
+        // Most anchors are lone edge pixels that no template's other solid
+        // pixels fit; the full comparison below would read most of the box.
+        if template
+            .solids
+            .iter()
+            .any(|&i| self.at(left + i % w, top + i / w) != color)
+        {
             return None;
         }
         for row in 0..h {

@@ -32,7 +32,7 @@ const CRC: usize = RECORD + WORDS * 4;
 const COMMIT: usize = CRC + 4;
 const LENGTH: usize = COMMIT + 4;
 
-const _: () = assert!(LENGTH <= SLOT_SIZE && COMMIT % 4 == 0);
+const _: () = assert!(LENGTH <= SLOT_SIZE && COMMIT.is_multiple_of(4));
 
 #[repr(C, align(4))]
 struct Bytes([u8; LENGTH]);

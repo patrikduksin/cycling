@@ -4,8 +4,9 @@
 //!
 //! A journal holds rides one after another, so slot ride ids never fall.
 //! The replay finds the ride's first slot by bisection, then reads its slots
-//! in order until the ride ends. Each `step` reads at most a given number of
-//! slots, so a long ride never holds up a frame. Reading is read-only.
+//! in order until the ride ends (`Walk`, which the breadcrumb's rebuild after
+//! a restart shares). Each `step` reads at most a given number of slots, so a
+//! long ride never holds up a frame. Reading is read-only.
 //!
 //! Laps come from the lap marks on samples (`log::LapStart`); a ride recorded
 //! before lap marks has none, and its laps stay unknown. Climbs are not in
@@ -36,6 +37,98 @@ enum Phase {
         next: usize,
     },
     Done,
+}
+
+/// A walk over a journal from a ride's first slot: it finds that slot by
+/// bisection, then reads on in order, a budget of slots at a time. It hands
+/// on every readable entry of the ride and of any ride after it, until told
+/// to stop; an entry is never handed on twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Walk {
+    ride_id: u32,
+    phase: Phase,
+}
+
+impl Walk {
+    /// Walk from ride `ride_id` in a journal whose slots below `upper` are
+    /// written.
+    pub fn new(ride_id: u32, upper: usize) -> Self {
+        Self {
+            ride_id,
+            phase: Phase::Find { lo: 0, hi: upper },
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.phase = Phase::Done;
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.phase == Phase::Done
+    }
+
+    /// Every slot below `upper` is read.
+    pub fn caught_up(&self, upper: usize) -> bool {
+        matches!(self.phase, Phase::Read { next } if next >= upper)
+    }
+
+    /// Read up to `budget` slots below `upper` through `read`, which returns
+    /// the decoded entry of a slot, or `None` for one that cannot be read or
+    /// decoded. `visit` takes each entry of the ride or a later one, and
+    /// returns false to stop the walk.
+    pub fn step(
+        &mut self,
+        upper: usize,
+        budget: usize,
+        mut read: impl FnMut(usize) -> Option<Entry>,
+        mut visit: impl FnMut(&Entry) -> bool,
+    ) {
+        let mut left = budget;
+        while left > 0 {
+            match self.phase {
+                Phase::Done => break,
+                Phase::Find { lo, hi } if lo >= hi => {
+                    self.phase = Phase::Read { next: lo };
+                }
+                Phase::Find { lo, hi } => {
+                    let mid = lo + (hi - lo) / 2;
+                    // An unreadable slot: the next readable one decides.
+                    let mut probe = mid;
+                    let mut entry = None;
+                    while probe < hi && probe < mid + PROBES && left > 0 {
+                        left -= 1;
+                        entry = read(probe);
+                        if entry.is_some() {
+                            break;
+                        }
+                        probe += 1;
+                    }
+                    if left == 0 && entry.is_none() && probe < hi && probe < mid + PROBES {
+                        // Out of budget mid-probe: try this bisection again.
+                        break;
+                    }
+                    self.phase = match entry {
+                        Some(entry) if entry.ride_id < self.ride_id => {
+                            Phase::Find { lo: probe + 1, hi }
+                        }
+                        _ => Phase::Find { lo, hi: mid },
+                    };
+                }
+                Phase::Read { next } if next >= upper => break,
+                Phase::Read { next } => {
+                    left -= 1;
+                    self.phase = Phase::Read { next: next + 1 };
+                    // Before the ride's first readable slot nothing is lost.
+                    let Some(entry) = read(next).filter(|e| e.ride_id >= self.ride_id) else {
+                        continue;
+                    };
+                    if !visit(&entry) {
+                        self.phase = Phase::Done;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// How far a replay has got.
@@ -71,7 +164,7 @@ impl Sums<'_> {
 pub struct Replay {
     ride_id: u32,
     upper: usize,
-    phase: Phase,
+    walk: Walk,
     found: bool,
     /// The active time each sample, pause and the finish covers, as the FIT
     /// export counts it.
@@ -92,7 +185,7 @@ impl Replay {
         Self {
             ride_id,
             upper,
-            phase: Phase::Find { lo: 0, hi: upper },
+            walk: Walk::new(ride_id, upper),
             found: false,
             timeline: Timeline::default(),
             rise_mm: 0,
@@ -109,15 +202,16 @@ impl Replay {
 
     /// Stop: the journal cannot be read. The ride counts as missing.
     pub fn abandon(&mut self) {
-        self.phase = Phase::Done;
+        self.walk.stop();
         self.found = false;
     }
 
     pub fn progress(&self) -> Progress {
-        match self.phase {
-            Phase::Done if self.found => Progress::Done,
-            Phase::Done => Progress::Missing,
-            _ => Progress::Reading,
+        let done = self.walk.stopped() || self.walk.caught_up(self.upper);
+        match done {
+            true if self.found => Progress::Done,
+            true => Progress::Missing,
+            false => Progress::Reading,
         }
     }
 
@@ -129,75 +223,35 @@ impl Replay {
         budget: usize,
         profile: &TrainingProfile,
         sums: &mut Sums<'_>,
-        mut read: impl FnMut(usize) -> Option<Entry>,
+        read: impl FnMut(usize) -> Option<Entry>,
     ) -> Progress {
-        let mut left = budget;
-        while left > 0 {
-            match self.phase {
-                Phase::Done => break,
-                Phase::Find { lo, hi } if lo >= hi => {
-                    self.phase = Phase::Read { next: lo };
+        let (ride_id, mut walk) = (self.ride_id, self.walk);
+        walk.step(self.upper, budget, read, |entry| {
+            // Past the ride, it has ended.
+            if entry.ride_id != ride_id {
+                return false;
+            }
+            self.found = true;
+            self.active_ms = self.active_ms.max(entry.active_ms);
+            match entry.kind {
+                Kind::Samples => {
+                    for sample in &entry.samples[..usize::from(entry.count)] {
+                        self.add(sample, profile, sums);
+                    }
                 }
-                Phase::Find { lo, hi } => {
-                    let mid = lo + (hi - lo) / 2;
-                    // An unreadable slot: the next readable one decides.
-                    let mut probe = mid;
-                    let mut entry = None;
-                    while probe < hi && probe < mid + PROBES && left > 0 {
-                        left -= 1;
-                        entry = read(probe);
-                        if entry.is_some() {
-                            break;
-                        }
-                        probe += 1;
-                    }
-                    if left == 0 && entry.is_none() && probe < hi && probe < mid + PROBES {
-                        // Out of budget mid-probe: try this bisection again.
-                        break;
-                    }
-                    self.phase = match entry {
-                        Some(entry) if entry.ride_id < self.ride_id => {
-                            Phase::Find { lo: probe + 1, hi }
-                        }
-                        _ => Phase::Find { lo, hi: mid },
-                    };
+                Kind::Start | Kind::Resume => self.timeline.start(entry.active_ms),
+                Kind::Pause => {
+                    self.hold(entry.active_ms, profile, sums);
+                    self.timeline.pause();
                 }
-                Phase::Read { next } if next >= self.upper => self.phase = Phase::Done,
-                Phase::Read { next } => {
-                    left -= 1;
-                    self.phase = Phase::Read { next: next + 1 };
-                    let Some(entry) = read(next) else {
-                        continue;
-                    };
-                    if entry.ride_id != self.ride_id {
-                        // Before the ride's first readable slot nothing is
-                        // lost; past the ride, it has ended.
-                        if entry.ride_id > self.ride_id {
-                            self.phase = Phase::Done;
-                        }
-                        continue;
-                    }
-                    self.found = true;
-                    self.active_ms = self.active_ms.max(entry.active_ms);
-                    match entry.kind {
-                        Kind::Samples => {
-                            for sample in &entry.samples[..usize::from(entry.count)] {
-                                self.add(sample, profile, sums);
-                            }
-                        }
-                        Kind::Start | Kind::Resume => self.timeline.start(entry.active_ms),
-                        Kind::Pause => {
-                            self.hold(entry.active_ms, profile, sums);
-                            self.timeline.pause();
-                        }
-                        Kind::Finish | Kind::Recovered | Kind::Full => {
-                            self.hold(entry.active_ms, profile, sums);
-                            self.phase = Phase::Done;
-                        }
-                    }
+                Kind::Finish | Kind::Recovered | Kind::Full => {
+                    self.hold(entry.active_ms, profile, sums);
+                    return false;
                 }
             }
-        }
+            true
+        });
+        self.walk = walk;
         self.progress()
     }
 

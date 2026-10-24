@@ -20,7 +20,7 @@ use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
 use crate::screens::history::{self, List, Row};
 use crate::screens::ride::summary::{After, Saving};
-use crate::screens::workout::{Page, Text, UTC_OFFSET_S, View};
+use crate::screens::workout::{Page, Text, View};
 use core::fmt::Write;
 use device_api::input::Button;
 
@@ -49,7 +49,7 @@ pub(super) struct History {
     weeks: core::cell::Cell<Option<(WeeksKey, Weeks)>>,
 }
 
-type WeeksKey = (u64, (usize, Option<u32>), (usize, Option<u32>));
+type WeeksKey = (u64, Zone, (usize, Option<u32>), (usize, Option<u32>));
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
 /// only when both start times are known and BULK's is later, so undated rides
@@ -321,13 +321,19 @@ impl Runtime {
                     .map(|r| r.ride_id),
             )
         };
-        let key = (utc_ms / 60_000, ids(Medium::Internal), ids(Medium::Bulk));
+        let key = (
+            utc_ms / 60_000,
+            self.preferences.options.zone,
+            ids(Medium::Internal),
+            ids(Medium::Bulk),
+        );
         if let Some((cached, weeks)) = self.history.weeks.get()
             && cached == key
         {
             return Some(weeks);
         }
-        let offset = |_| -(UTC_OFFSET_S as i64);
+        let zone = self.preferences.options.zone;
+        let offset = |utc_s| zone.offset_s(utc_s);
         let mut weeks = Weeks::new(utc_ms, &offset);
         for medium in [Medium::Internal, Medium::Bulk] {
             for index in 0..self.journal_len(medium) {

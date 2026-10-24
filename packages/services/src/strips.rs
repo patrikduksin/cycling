@@ -113,11 +113,16 @@ pub fn window(first: usize, last: usize) -> [u8; 4] {
     ]
 }
 
-/// Two interleaved FxHash lanes over 32-bit words, so the multiplies do not
-/// wait on each other. Exact equality is all the caller needs.
+/// Two interleaved lanes over 32-bit words, so the multiplies do not wait on
+/// each other. Each step is a bijection of the word, so a strip that differs
+/// in one word always hashes differently. The shift folds high bits down,
+/// which a multiply alone never does; Xtensa has no rotate instruction.
 pub fn hash(words: impl IntoIterator<Item = u32>) -> u32 {
     const K: u32 = 0x9e37_79b9;
-    let mix = |hash: u32, word: u32| (hash.rotate_left(5) ^ word).wrapping_mul(K);
+    let mix = |hash: u32, word: u32| {
+        let hash = (hash ^ word).wrapping_mul(K);
+        hash ^ (hash >> 15)
+    };
     let mut words = words.into_iter();
     let (mut a, mut b) = (0, K);
     while let Some(word) = words.next() {

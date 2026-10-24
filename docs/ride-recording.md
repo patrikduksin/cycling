@@ -414,6 +414,10 @@ Training profile:
   FTP) and training stress score (`TSS`: seconds with power × NP² / (FTP² ×
   36), so an hour at FTP is 100). Both wait for normalized power's first 30 s
   and use the FTP of the profile.
+- The ride index also keeps each saved ride's normalized power and time with
+  power (four bytes, in memory, rebuilt after every boot) and works out its TSS
+  at the profile's FTP now, for the rides list's TSS. The FTP at the time of
+  the ride is not stored. A ride without power has no effort and adds nothing.
 - `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record

@@ -14,6 +14,7 @@ pub mod homing;
 pub mod index;
 pub mod journal;
 pub mod laps;
+pub mod load;
 pub mod log;
 pub mod metrics;
 pub mod reclaim;

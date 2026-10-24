@@ -152,3 +152,68 @@ fn an_unfinished_ride_is_not_listed() {
     run(&mut index, &slots, 4);
     assert_eq!(index.len(), 1);
 }
+
+/// One ride of a second-by-second `watts` pattern, as a journal records it.
+fn powered(
+    ride: u32,
+    watts: impl Fn(u64) -> Option<u16>,
+    seconds: u64,
+) -> (Vec<Vec<u8>>, Vec<Sample>) {
+    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, ride, 0, 0))];
+    let samples: Vec<Sample> = (1..=seconds)
+        .map(|s| Sample {
+            power_watts: watts(s),
+            ..sample(s * 1000, 1_789_000_000_000 + s * 1000, 120)
+        })
+        .collect();
+    for (batch, chunk) in samples.chunks(4).enumerate() {
+        let sequence = batch as u32 + 1;
+        slots.push(slot(
+            &Entry::batch(Source::Live, ride, sequence, chunk).unwrap(),
+        ));
+    }
+    let sequence = samples.len().div_ceil(4) as u32 + 1;
+    slots.push(slot(&Entry::event(
+        Kind::Finish,
+        Source::Live,
+        ride,
+        sequence,
+        seconds * 1000,
+    )));
+    (slots, samples)
+}
+
+#[test]
+fn a_rides_stress_matches_the_live_totals_and_a_ride_without_power_has_none() {
+    use crate::ride::totals::Totals;
+    // Alternating minutes at 400 W and 0 W: normalized power far above the mean.
+    let surging = |s: u64| Some(if (s / 60).is_multiple_of(2) { 400 } else { 0 });
+    let (mut slots, samples) = powered(1, surging, 2_400);
+    slots.extend(powered(2, |_| None, 600).0);
+    let mut index = Journal::new(storage(RIDES));
+    run(&mut index, &slots, 16);
+    assert_eq!(index.len(), 2);
+
+    let mut totals = Totals::default();
+    for sample in &samples {
+        totals.add(1000, 0, sample, None);
+    }
+    for ftp in [150, 215, 250, 400] {
+        let effort = index.get(0).unwrap().effort.expect("a ride with power");
+        assert_eq!(effort.np_watts, totals.normalized_power().unwrap());
+        assert_eq!(
+            effort.stress_score(ftp),
+            totals.stress_score(ftp),
+            "ftp {ftp}"
+        );
+    }
+    assert_eq!(index.get(1).unwrap().effort, None);
+}
+
+#[test]
+fn a_ride_too_short_for_normalized_power_has_no_effort() {
+    let (slots, _) = powered(1, |_| Some(300), 29);
+    let mut index = Journal::new(storage(RIDES));
+    run(&mut index, &slots, 16);
+    assert_eq!(index.get(0).unwrap().effort, None);
+}

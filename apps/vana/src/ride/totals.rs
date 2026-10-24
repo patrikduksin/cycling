@@ -5,14 +5,13 @@
 //! distance or zeros to the averages. Totals survive pause and stop, and the
 //! caller resets them when a new ride starts. Power-off loses them; the ride
 //! journal stays the record of truth.
+use crate::ride::load::PowerLoad;
 use crate::ride::log::Sample;
 
 /// The wheel sensor cannot measure below about 1.9 km/h (one 2136 mm
 /// revolution per its 4 s stop timeout), so anything it reports at or above
 /// 1.8 km/h is rolling and counts as moving time.
 pub const MOVING_MIN_MM_S: u32 = 500;
-/// Normalized power smooths power over this many samples (seconds).
-const NP_WINDOW: usize = 30;
 /// Altitude must leave a band this wide (3.0 m) around the last turning point
 /// before a climb or descent counts, so barometric noise adds no ascent.
 pub const ELEVATION_BAND_DM: i32 = 30;
@@ -78,16 +77,9 @@ pub struct Totals {
     max_speed_mm_s: Option<u32>,
     /// Watt-milliseconds and the time they cover; zeros count.
     energy_mj: u64,
-    power_ms: u64,
     max_power: Option<u16>,
-    /// The last `NP_WINDOW` power samples and their sum.
-    window: [u16; NP_WINDOW],
-    window_len: usize,
-    window_next: usize,
-    window_sum: u32,
-    /// Sum of (window sum)^4 over every full window, and how many there were.
-    np_sum: u128,
-    np_count: u32,
+    /// Rolling power for normalized power, and the time power covers.
+    load: PowerLoad,
     heart: Mean,
     max_heart: Option<u16>,
     /// Cadence tenths while pedalling; coasting zeros are excluded.
@@ -122,9 +114,8 @@ impl Totals {
             self.energy_mj = self
                 .energy_mj
                 .saturating_add(u64::from(watts).saturating_mul(elapsed_ms));
-            self.power_ms = self.power_ms.saturating_add(elapsed_ms);
             self.max_power = self.max_power.max(Some(watts));
-            self.smooth(watts);
+            self.load.add(elapsed_ms, watts);
         }
         if let Some(bpm) = sample.heart_bpm {
             self.heart.add(u64::from(bpm));
@@ -135,23 +126,6 @@ impl Totals {
         }
         if let Some(pressure) = pressure_centi_pa {
             self.climb(altitude_dm(pressure));
-        }
-    }
-
-    fn smooth(&mut self, watts: u16) {
-        if self.window_len == NP_WINDOW {
-            self.window_sum -= u32::from(self.window[self.window_next]);
-        } else {
-            self.window_len += 1;
-        }
-        self.window[self.window_next] = watts;
-        self.window_sum += u32::from(watts);
-        self.window_next = (self.window_next + 1) % NP_WINDOW;
-        if self.window_len == NP_WINDOW {
-            self.np_sum = self
-                .np_sum
-                .saturating_add(u128::from(self.window_sum).pow(4));
-            self.np_count += 1;
         }
     }
 
@@ -223,8 +197,8 @@ impl Totals {
 
     /// Time-weighted mean over every second with power, zeros included.
     pub fn avg_power(&self) -> Option<u16> {
-        (self.power_ms != 0).then(|| {
-            (self.energy_mj.saturating_add(self.power_ms / 2) / self.power_ms)
+        (self.load.power_ms() != 0).then(|| {
+            (self.energy_mj.saturating_add(self.load.power_ms() / 2) / self.load.power_ms())
                 .min(u64::from(u16::MAX)) as u16
         })
     }
@@ -234,12 +208,9 @@ impl Totals {
     }
 
     /// Fourth root of the mean fourth power of 30 s rolling power; none until
-    /// the first 30 power samples.
+    /// 30 s of power.
     pub fn normalized_power(&self) -> Option<u16> {
-        (self.np_count != 0).then(|| {
-            let root = (self.np_sum / u128::from(self.np_count)).isqrt().isqrt();
-            ((root + NP_WINDOW as u128 / 2) / NP_WINDOW as u128).min(u128::from(u16::MAX)) as u16
-        })
+        self.load.normalized_power()
     }
 
     /// Intensity factor in hundredths: normalized power over FTP.
@@ -252,17 +223,12 @@ impl Totals {
     /// Training stress score: an hour at FTP is 100. Seconds with power ×
     /// NP² / (FTP² × 36), so it grows with time and with intensity squared.
     pub fn stress_score(&self, ftp_watts: u16) -> Option<u32> {
-        let np = u64::from(self.normalized_power()?);
-        let ftp = u64::from(ftp_watts);
-        (ftp != 0).then(|| {
-            let scale = ftp * ftp * 36_000;
-            ((self.power_ms * np * np + scale / 2) / scale).min(u64::from(u32::MAX)) as u32
-        })
+        self.load.stress_score(ftp_watts)
     }
 
     /// Mechanical work in kilojoules.
     pub fn work_kj(&self) -> Option<u32> {
-        (self.power_ms != 0).then(|| {
+        (self.load.power_ms() != 0).then(|| {
             (self.energy_mj.saturating_add(500_000) / 1_000_000).min(u64::from(u32::MAX)) as u32
         })
     }

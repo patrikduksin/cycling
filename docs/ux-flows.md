@@ -261,7 +261,8 @@ While the focus is on the first three rides, a header sits above the cards:
 THIS WEEK and the number of rides, the week's distance (KM) with its moving
 time under it, a small bar for each day (Monday to Sunday, every other day
 named; ridden days white, today's ride blue, other days a dark stub) and, in
-grey, LAST WEEK with its distance. From the fourth ride on the header gives
+grey, LAST WEEK with its distance, and at the right of that line TSS: the
+training stress of the week's rides that had power. From the fourth ride on the header gives
 way to the RIDES headline and a fourth card. A week runs Monday 00:00 to the
 next Monday in the status-bar clock's zone, and a ride counts in the week and
 day it started. Rides without a start time (the clock was unknown) are in no
@@ -274,6 +275,16 @@ the index is still reading, the header shows what it has found, or -- before
 it has found anything; without a clock (network time, or the GPS receiver's
 date from its last fix) it shows -- and no last week. Ride start times use the same clock, so a ride
 dated by the GPS receiver counts too.
+
+TSS adds each ride's training stress, worked out when the ride index reads
+the ride (normalized power over 30 s, as the live ride's TSS) against the
+FTP set now: the FTP at the time of the ride is not stored, so changing FTP
+restates past weeks. A ride without a power meter, or with under 30 s of
+power, adds nothing; a week with no ride that had power shows no TSS
+rather than 0. Rides the index has not read yet carry none, and nothing is
+saved: the stress is rebuilt with the index after every boot. A 7-day against
+42-day load line was left out: the header has no room for it beside the
+distance, the bars and LAST WEEK.
 
 A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is

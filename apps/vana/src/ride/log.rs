@@ -27,6 +27,7 @@
 //! space. Scanning recovers an open ride at its last committed active duration,
 //! excluding downtime. The final slot is reserved for a terminal record.
 
+use crate::ride::load::{Effort, PowerLoad};
 use firmware_services::checksum::crc32;
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
 
@@ -442,6 +443,9 @@ pub struct Summary {
     pub active_ms: u64,
     pub first_utc_ms: Option<u64>,
     pub distance_mm: Option<u64>,
+    /// Normalized power and power time, found only by an index scan
+    /// (`Scanner::indexing`); never persisted, so a decoded summary has none.
+    pub effort: Option<Effort>,
     pub gps_samples: u32,
     pub heart_average: Option<u16>,
     pub cadence_average: Option<u16>,
@@ -462,7 +466,12 @@ impl Summary {
         }
     }
 
-    pub fn add_sample(&mut self, sample: Sample) {
+    /// Account one sample; returns the active time it covers.
+    pub fn add_sample(&mut self, sample: Sample) -> u64 {
+        let elapsed = step_ms(
+            (self.active_ms != 0).then_some(self.active_ms),
+            sample.active_ms,
+        );
         self.first_utc_ms = self.first_utc_ms.or(sample.utc_ms);
         self.gps_samples = self
             .gps_samples
@@ -477,10 +486,6 @@ impl Summary {
             self.cadence_count = self.cadence_count.saturating_add(1);
         }
         if let Some(speed) = sample.speed_mm_s {
-            let elapsed = step_ms(
-                (self.active_ms != 0).then_some(self.active_ms),
-                sample.active_ms,
-            );
             self.distance_mm = Some(
                 self.distance_mm
                     .unwrap_or(0)
@@ -488,6 +493,7 @@ impl Summary {
             );
         }
         self.active_ms = sample.active_ms;
+        elapsed
     }
 
     /// Persisted size of one summary in a bulk checkpoint.
@@ -547,6 +553,7 @@ impl Summary {
             active_ms: get_u64(bytes, 8),
             first_utc_ms: has(0).then(|| get_u64(bytes, 16)),
             distance_mm: has(1).then(|| get_u64(bytes, 24)),
+            effort: None,
             gps_samples: get_u32(bytes, 40),
             heart_average: has(2).then(|| get_u16(bytes, 32)),
             cadence_average: has(3).then(|| get_u16(bytes, 34)),
@@ -637,9 +644,20 @@ pub struct Scanner {
     torn_first: bool,
     /// The ride the last accepted slot completed, for the ride index.
     completed_now: Option<Summary>,
+    /// The open ride's power, kept only by an index scan.
+    load: Option<PowerLoad>,
 }
 
 impl Scanner {
+    /// A scanner for the ride index: it also finds each ride's `Effort`. The
+    /// catalog scanners skip that work.
+    pub fn indexing() -> Self {
+        Self {
+            load: Some(PowerLoad::default()),
+            ..Self::default()
+        }
+    }
+
     /// Scan one slot, as `accept_slot`, and return the summary of the ride
     /// it completed, if it completed one.
     pub fn accept_completing(&mut self, index: usize, bytes: &[u8]) -> Option<Summary> {
@@ -675,6 +693,7 @@ impl Scanner {
             last_ride_id: catalog.next_ride_id.wrapping_sub(1),
             torn_first: catalog.torn_first,
             completed_now: None,
+            load: None,
         }
     }
 
@@ -741,6 +760,9 @@ impl Scanner {
                     gap: false,
                     summary: Summary::started(entry.ride_id, entry.source),
                 });
+                if let Some(load) = self.load.as_mut() {
+                    *load = PowerLoad::default();
+                }
             }
             Kind::Samples | Kind::Pause | Kind::Resume => {
                 let Some(open) = self.open.as_mut() else {
@@ -757,7 +779,12 @@ impl Scanner {
                 open.active_ms = entry.active_ms;
                 if entry.kind == Kind::Samples {
                     for sample in &entry.samples[..usize::from(entry.count)] {
-                        open.summary.add_sample(*sample);
+                        let elapsed = open.summary.add_sample(*sample);
+                        if let (Some(load), Some(watts), true) =
+                            (self.load.as_mut(), sample.power_watts, elapsed > 0)
+                        {
+                            load.add(elapsed, watts);
+                        }
                     }
                 }
             }
@@ -770,6 +797,7 @@ impl Scanner {
                     self.completed = self.completed.saturating_add(1);
                     let mut summary = open.summary;
                     summary.finish(entry.kind, entry.active_ms, open.gap);
+                    summary.effort = self.load.as_ref().and_then(PowerLoad::effort);
                     self.push_summary(summary);
                     self.open = None;
                 } else if let Some(open) = self.open.as_mut() {

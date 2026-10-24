@@ -4,7 +4,8 @@
 //! a tap opens the ride under the finger. Each card names the ride by its
 //! start (OCT 17  7:12) and says how long, how far and how hard it was.
 //! Above the first cards sits this week at a glance: distance, moving time,
-//! rides, last week's distance and a bar for each day. Scrolled past the
+//! rides, last week's distance, the week's training stress (TSS, from the rides
+//! that had power) and a bar for each day. Scrolled past the
 //! first cards, the header gives way to the RIDES headline and a fourth card.
 //! Without a saved ride the screen says how one gets here.
 use super::canvas::{Canvas, Shape};
@@ -66,6 +67,8 @@ const BARS_HIGH: usize = 30;
 const BAR_WIDE: usize = 10;
 const BAR_PITCH: usize = 14;
 const BARS_LEFT: usize = RIGHT - 4 - (DAYS - 1) * BAR_PITCH - BAR_WIDE;
+/// The most training stress the header names: the line has room for three digits.
+const STRESS_MOST: u32 = 999;
 /// Every other day is named: the letters are as wide as the bars are apart.
 const DAY_LETTERS: [&[u8]; DAYS] = [b"M", b"", b"W", b"", b"F", b"", b"S"];
 
@@ -305,7 +308,20 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             "LAST WEEK {} KM",
             (weeks.last.distance_mm + 500_000) / 1_000_000
         );
-        canvas.caption(last.as_bytes(), RIGHT - left, left, LAST_BASE, Align::Left);
+        let last = canvas.caption(last.as_bytes(), RIGHT - left, left, LAST_BASE, Align::Left);
+        // Training stress of the rides that had power; a week without any
+        // power says nothing rather than 0.
+        if let Some(weeks) = known.filter(|weeks| weeks.this.powered > 0) {
+            let mut stress = Text::<16>::new();
+            let _ = write!(stress, "TSS {}", weeks.this.stress.min(STRESS_MOST));
+            canvas.caption(
+                stress.as_bytes(),
+                (RIGHT - 4).saturating_sub(last.right() + 8),
+                RIGHT - 4,
+                LAST_BASE,
+                Align::Right,
+            );
+        }
     }
     // One bar a day, Monday first: dark stubs for days without a ride, white
     // for ridden days (blue for today), tall in proportion to the most.
@@ -551,5 +567,23 @@ mod tests {
         );
         list.weeks = Some(big);
         prepare(&list).assert_laid_out(bounds(), &["THIS WEEK", "1234.5"], "big");
+    }
+
+    #[test]
+    fn training_stress_shows_only_for_a_week_with_power() {
+        let mut list = list(ROWS, 0);
+        list.weeks = Some(week());
+        assert!(!prepare(&list).shows("TSS"));
+        let zone = |_| -3 * 3600;
+        for stress in [87, u32::MAX] {
+            let mut weeks = week();
+            let tuesday = (20_746 * 86_400 + 15 * 3600) * 1000;
+            weeks.add_stress(Some(tuesday), 1, Some(1), Some(stress), &zone);
+            list.weeks = Some(weeks);
+            let canvas = prepare(&list);
+            let text = std::format!("TSS {}", weeks.this.stress.min(STRESS_MOST));
+            assert!(canvas.shows(&text), "{text}");
+            canvas.assert_laid_out(bounds(), &["LAST WEEK 84 KM", &text], "stress");
+        }
     }
 }

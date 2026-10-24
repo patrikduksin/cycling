@@ -9,12 +9,16 @@
 //! (cleared or formatted). Entries live in storage the composition lends,
 //! `ENTRY` bytes each; when it is full the oldest entry makes room.
 //!
+//! Each line also holds the ride's normalized power and power time, four
+//! bytes, so its training stress can be worked out at the current FTP.
+//!
 //! Nothing is persisted: the index is rebuilt after every boot.
+use super::load::Effort;
 use super::log::{Scanner, Slot, Summary};
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 
 /// Bytes per indexed ride.
-pub const ENTRY: usize = 20;
+pub const ENTRY: usize = 24;
 /// Rides per journal the composition is expected to lend room for.
 pub const RIDES: usize = 1000;
 
@@ -51,6 +55,12 @@ fn encode(summary: &Summary, bytes: &mut [u8]) {
     bytes[18] =
         flag(summary.recovered, RECOVERED) | flag(summary.full, FULL) | flag(summary.gap, GAP);
     bytes[19] = 0;
+    let effort = summary.effort.unwrap_or(Effort {
+        np_watts: 0,
+        power_units: 0,
+    });
+    put_u16(bytes, 20, effort.np_watts);
+    put_u16(bytes, 22, effort.power_units);
 }
 
 fn decode(bytes: &[u8]) -> Summary {
@@ -62,6 +72,11 @@ fn decode(bytes: &[u8]) -> Summary {
     summary.distance_mm = known(get_u32(bytes, 12), 1000);
     let heart = get_u16(bytes, 16);
     summary.heart_average = (heart != 0).then_some(heart);
+    let np_watts = get_u16(bytes, 20);
+    summary.effort = (np_watts != 0).then(|| Effort {
+        np_watts,
+        power_units: get_u16(bytes, 22),
+    });
     summary.recovered = bytes[18] & RECOVERED != 0;
     summary.full = bytes[18] & FULL != 0;
     summary.gap = bytes[18] & GAP != 0;
@@ -87,7 +102,7 @@ impl Journal {
             head: 0,
             len: 0,
             next: 0,
-            scanner: Scanner::default(),
+            scanner: Scanner::indexing(),
         }
     }
 
@@ -130,7 +145,7 @@ impl Journal {
         self.head = 0;
         self.len = 0;
         self.next = 0;
-        self.scanner = Scanner::default();
+        self.scanner = Scanner::indexing();
     }
 
     fn push(&mut self, summary: &Summary) {

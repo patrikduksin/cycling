@@ -9,6 +9,10 @@
 //! start time (the clock was unknown) is in no week, and neither is one that
 //! starts after the current week ended.
 //!
+//! A ride's training stress counts in its week when the ride had power; a ride
+//! without power adds nothing to the week's stress, and `powered` says how many
+//! rides did, so a week with none shows no stress rather than a zero.
+//!
 //! Pure arithmetic: callers feed each ride once and read the totals.
 
 const DAY_S: i64 = 86_400;
@@ -20,6 +24,10 @@ pub const DAYS: usize = 7;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Week {
     pub rides: u32,
+    /// Training stress of the rides that had power, saturating.
+    pub stress: u32,
+    /// Rides that had power.
+    pub powered: u16,
     pub distance_mm: u64,
     pub active_ms: u64,
     /// Distance ridden each day, Monday first.
@@ -29,9 +37,13 @@ pub struct Week {
 }
 
 impl Week {
-    fn add(&mut self, day: usize, active_ms: u64, distance_mm: Option<u64>) {
+    fn add(&mut self, day: usize, active_ms: u64, distance_mm: Option<u64>, stress: Option<u32>) {
         let distance = distance_mm.unwrap_or(0);
         self.rides = self.rides.saturating_add(1);
+        if let Some(stress) = stress {
+            self.stress = self.stress.saturating_add(stress);
+            self.powered = self.powered.saturating_add(1);
+        }
         self.distance_mm = self.distance_mm.saturating_add(distance);
         self.active_ms = self.active_ms.saturating_add(active_ms);
         self.day_mm[day] = self.day_mm[day].saturating_add(distance);
@@ -70,12 +82,25 @@ impl Weeks {
         }
     }
 
-    /// Count one ride by when it started.
+    /// Count one ride without power by when it started.
     pub fn add(
         &mut self,
         start_utc_ms: Option<u64>,
         active_ms: u64,
         distance_mm: Option<u64>,
+        offset_at: &impl Fn(i64) -> i64,
+    ) {
+        self.add_stress(start_utc_ms, active_ms, distance_mm, None, offset_at);
+    }
+
+    /// Count one ride by when it started, with its training stress if it had
+    /// power.
+    pub fn add_stress(
+        &mut self,
+        start_utc_ms: Option<u64>,
+        active_ms: u64,
+        distance_mm: Option<u64>,
+        stress: Option<u32>,
         offset_at: &impl Fn(i64) -> i64,
     ) {
         let Some(start_ms) = start_utc_ms else {
@@ -85,8 +110,8 @@ impl Weeks {
         let since = local_day(start_s, offset_at) - self.monday;
         let day = since.rem_euclid(7) as usize;
         match since {
-            0..=6 => self.this.add(day, active_ms, distance_mm),
-            -7..=-1 => self.last.add(day, active_ms, distance_mm),
+            0..=6 => self.this.add(day, active_ms, distance_mm, stress),
+            -7..=-1 => self.last.add(day, active_ms, distance_mm, stress),
             _ => {}
         }
     }
@@ -248,6 +273,24 @@ mod tests {
         changed.add(Some(utc(2026, 9, 6, 4, 0)), 1, None, &zone);
         changed.add(Some(utc(2026, 9, 7, 2, 59)), 1, None, &zone);
         assert_eq!(changed.last.day_rides, [0, 0, 0, 0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn stress_counts_only_rides_with_power_and_saturates() {
+        let zone = fixed(SUMMER);
+        let mut weeks = Weeks::new(utc(2026, 10, 21, 15, 0), &zone);
+        let at = utc(2026, 10, 20, 12, 0);
+        weeks.add_stress(Some(at), 1, Some(1), Some(60), &zone);
+        weeks.add_stress(Some(at), 1, Some(1), None, &zone);
+        weeks.add_stress(Some(at), 1, Some(1), Some(40), &zone);
+        weeks.add_stress(Some(utc(2026, 10, 13, 12, 0)), 1, Some(1), Some(7), &zone);
+        assert_eq!(
+            (weeks.this.rides, weeks.this.stress, weeks.this.powered),
+            (3, 100, 2)
+        );
+        assert_eq!((weeks.last.stress, weeks.last.powered), (7, 1));
+        weeks.add_stress(Some(at), 1, None, Some(u32::MAX), &zone);
+        assert_eq!(weeks.this.stress, u32::MAX);
     }
 
     #[test]

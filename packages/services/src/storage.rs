@@ -532,8 +532,7 @@ pub(crate) mod tests {
                     assert_eq!(journal.flash.bytes[0], torn, "{case}");
                 }
 
-                let mut rebooted = Journal::new(journal.flash.clone(), Region::Configuration);
-                let record = rebooted.load(&mut output).expect(&case).unwrap();
+                let record = reboot(&journal).load(&mut output).expect(&case).unwrap();
                 assert_eq!(&output[..record.length], b"retry", "{case}");
             }
         }
@@ -602,14 +601,7 @@ pub(crate) mod tests {
                     // Two torn first saves in a row fill both sectors.
                     (Err(_), Err(Error::UnrecognizedJournal)) => {
                         assert!(newest.is_none(), "seed {seed}");
-                        assert!(
-                            journal
-                                .flash
-                                .bytes
-                                .iter()
-                                .all(|sector| sector.iter().any(|byte| *byte != 0xff)),
-                            "seed {seed}"
-                        );
+                        assert!(no_free_sector(&journal), "seed {seed}");
                         break;
                     }
                     (Err(_), Err(error)) => panic!("seed {seed}: {error:?}"),
@@ -645,6 +637,14 @@ pub(crate) mod tests {
             }
         }
     }
+    fn no_free_sector(journal: &Journal<Memory>) -> bool {
+        journal
+            .flash
+            .bytes
+            .iter()
+            .all(|sector| sector.iter().any(|byte| *byte != 0xff))
+    }
+
     /// Power returns: the same flash bytes under a journal that remembers
     /// nothing of the cut save.
     fn reboot(journal: &Journal<Memory>) -> Journal<Memory> {
@@ -683,10 +683,11 @@ pub(crate) mod tests {
                         possible = std::vec![payload];
                     }
                     Err(Error::Flash(())) => possible.push(payload),
-                    // A first save cut in half leaves the journal occupied
-                    // but unreadable, and then it is kept as it is.
+                    // Only two first saves cut in a row leave no sector free,
+                    // and then the journal is kept as it is.
                     Err(Error::UnrecognizedJournal) => {
                         assert!(!acknowledged, "seed {seed}");
+                        assert!(no_free_sector(&journal), "seed {seed}");
                         assert_eq!(journal.flash.bytes, bytes, "seed {seed}");
                         break;
                     }
@@ -708,7 +709,10 @@ pub(crate) mod tests {
                         assert!(!acknowledged, "seed {seed}");
                         possible.clear();
                     }
-                    Err(Error::UnrecognizedJournal) => assert!(!acknowledged, "seed {seed}"),
+                    Err(Error::UnrecognizedJournal) => {
+                        assert!(!acknowledged, "seed {seed}");
+                        assert!(no_free_sector(&journal), "seed {seed}");
+                    }
                     Err(error) => panic!("seed {seed}: {error:?}"),
                 }
             }
@@ -721,8 +725,10 @@ pub(crate) mod tests {
                         "seed {seed}"
                     );
                 }
-                Ok(None) | Err(Error::UnrecognizedJournal) => {
-                    assert!(!acknowledged, "seed {seed}")
+                Ok(None) => assert!(!acknowledged, "seed {seed}"),
+                Err(Error::UnrecognizedJournal) => {
+                    assert!(!acknowledged, "seed {seed}");
+                    assert!(no_free_sector(&journal), "seed {seed}");
                 }
                 Err(error) => panic!("seed {seed}: {error:?}"),
             }

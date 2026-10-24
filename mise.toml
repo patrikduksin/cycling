@@ -31,6 +31,10 @@ run = ["{{vars.devtools}} pytest -q -n auto --maxprocesses=8 tools/devtools", "{
 description = "Run every PR gate in parallel (test, check, simulate, 4 builds, harness-virtual); --fast for the inner loop, --pr N to post results"
 run = "{{vars.devtools}} python -m cycling_devtools.verify"
 
+[tasks.clean]
+description = "Free disk: remove merged, clean, idle worktrees and idle build dirs; dry run unless --apply, --idle-hours N (default 24)"
+run = "{{vars.devtools}} python -m cycling_devtools.clean"
+
 [tasks.fmt]
 description = "Format Rust and Python code"
 run = ["cargo fmt --all", "{{vars.devtools}} ruff format tools/devtools", "{{vars.terrain}} ruff format tools/terrain"]

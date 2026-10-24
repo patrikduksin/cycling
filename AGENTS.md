@@ -30,6 +30,10 @@ tool; [dev-setup](docs/dev-setup.md) sets up a machine with one command.
   about 20 s once sccache is warm.
 - Before opening or updating a PR: `mise run verify --pr <n>` (all gates in
   parallel, results posted on the PR).
+- Disk: every worktree carries about 4.5 GB of `.local` build targets. Run
+  `mise run clean` for a dry-run table of what it would free; `--apply` removes
+  merged, clean, quiet worktrees nobody is working in, and idle build dirs.
+  Verify and sim-compare warn when the disk runs low.
 
 - Firmware changes: `mise run test`, `mise run check` (includes boundary checks
   and ruff) and `mise run build`. Host tasks cover base and cycling builds.

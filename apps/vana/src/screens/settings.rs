@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 20);
+        assert_eq!(ROWS, 21);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);

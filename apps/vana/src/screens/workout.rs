@@ -125,7 +125,7 @@ pub struct View<'a> {
     /// The back-to-start page's guide; its arrow is placed as it paints.
     pub back: ride::Back,
     /// When the light ends, for the back-to-start page.
-    pub light: ride::Light,
+    pub sunset: ride::Light,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -199,7 +199,7 @@ impl View<'_> {
             picker: super::workouts::Picker::default(),
             ftp_offer: None,
             back: ride::Back::default(),
-            light: ride::Light::default(),
+            sunset: ride::Light::default(),
             page,
             cursor,
             editing: false,

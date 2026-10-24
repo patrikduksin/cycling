@@ -814,9 +814,9 @@ mod tests {
             ..Options::default()
         };
         assert_eq!(off.encode()[0], 0b111);
-        assert_eq!(Options::decode(&off.encode()), Some(off));
+        assert_eq!(Options::decode(&off.encode(), VERSION), Some(off));
         assert!(
-            Options::decode(&Options::default().encode())
+            Options::decode(&Options::default().encode(), VERSION)
                 .unwrap()
                 .sunset_alert
         );

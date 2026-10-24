@@ -328,7 +328,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     );
     // The light, under the pad: grey, white once it is dark.
     let mut light = Text::<14>::new();
-    let color = match view.light {
+    let color = match view.sunset {
         Light::Unknown => None,
         Light::SetsAt(local) => {
             let _ = write!(light, "SUNSET {:02}:{:02}", local / 3600, local / 60 % 60);
@@ -432,7 +432,7 @@ mod tests {
             (Light::SetsAt(5 * 60), "SUNSET 00:05"),
             (Light::Dark, "DARK"),
         ] {
-            view.light = light;
+            view.sunset = light;
             view.prepare();
             view.canvas
                 .assert_laid_out(PAGE, &["BACK TO START", text], text);

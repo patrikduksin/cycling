@@ -559,7 +559,7 @@ impl Runtime {
         }
         if view.ride_page == RidePage::Back {
             view.back = super::back::view_of(&self.back);
-            view.light = match self.night.sun(now) {
+            view.sunset = match self.night.sun(now) {
                 Some((Sun::Up { sets_at }, _)) => crate::screens::ride::Light::SetsAt(
                     (sets_at - crate::screens::workout::UTC_OFFSET_S as i64).rem_euclid(86_400)
                         as u32,

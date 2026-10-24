@@ -21,7 +21,7 @@ use crate::ride::totals::MOVING_MIN_MM_S;
 
 /// An automatic lap closes after this much lap distance (5 km).
 pub const AUTO_LAP_MM: u64 = 5_000_000;
-/// A pass of the start closes no lap shorter than this.
+/// The first pass of the start closes no lap shorter than this.
 pub const AT_START_MIN_MM: u64 = 500_000;
 /// Nor one shorter than this, in recorded time.
 pub const AT_START_MIN_MS: u64 = 60_000;
@@ -232,12 +232,14 @@ impl Laps {
             .then(|| self.close(Trigger::Auto, now_ms))
     }
 
-    /// The rider passed the start: close the current lap if it has run
-    /// `AT_START_MIN_MM` and `AT_START_MIN_MS`, so a pass soon after the last
-    /// lap, or soon after the start, is no lap.
+    /// The rider passed the start: close the current lap. The first must have
+    /// run `AT_START_MIN_MM` and `AT_START_MIN_MS`, so a pass soon after the
+    /// start is no lap; later ones are guarded by the pass itself, which
+    /// needs the rider 75 m away first, so a short loop laps every time.
     pub fn at_start(&mut self, now_ms: u64) -> Option<Lap> {
-        let long_enough =
-            self.current.distance_mm >= AT_START_MIN_MM && self.current.time_ms >= AT_START_MIN_MS;
+        let long_enough = self.finished > 0
+            || (self.current.distance_mm >= AT_START_MIN_MM
+                && self.current.time_ms >= AT_START_MIN_MS);
         (self.by_distance && long_enough).then(|| self.close(Trigger::Position, now_ms))
     }
 
@@ -457,13 +459,19 @@ mod tests {
         assert_eq!((lap.number, lap.trigger), (1, Trigger::Position));
         assert_eq!(laps.take_closed(), Some(Trigger::Position));
         assert_eq!(laps.current().number, 2);
-        // 1 m/s for two minutes is time enough, 120 m is not far enough.
+        // Later laps have no minimum: a 120 m loop at 1 m/s laps each time.
         let (_, now) = ride(&mut laps, now, 120, riding(1_000, 100, 100));
-        assert_eq!(laps.at_start(now), None, "120 m");
-        // 499 m is short; the lap carries on from there.
-        let (_, now) = ride(&mut laps, now, 379, riding(1_000, 100, 100));
-        assert_eq!(laps.at_start(now), None, "499 m");
-        let (_, now) = ride(&mut laps, now, 1, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now).map(|lap| lap.distance_mm), Some(120_000));
+        let (_, now) = ride(&mut laps, now, 120, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now).map(|lap| lap.number), Some(3));
+    }
+
+    #[test]
+    fn the_first_pass_of_the_start_waits_for_five_hundred_metres() {
+        let mut laps = Laps::default();
+        let (_, now) = ride(&mut laps, 0, 379, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now), None, "379 m");
+        let (_, now) = ride(&mut laps, now, 121, riding(1_000, 100, 100));
         assert_eq!(laps.at_start(now).map(|lap| lap.distance_mm), Some(500_000));
     }
 

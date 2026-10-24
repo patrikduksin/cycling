@@ -483,7 +483,11 @@ impl Ride {
     /// The rider passed the ride's start: close a lap if they chose laps
     /// there and no workout is playing.
     pub(super) fn passed_start(&mut self, now: u64) {
-        if self.auto_lap != AutoLap::AtStart || self.workout.is_some() {
+        // A paused ride is standing still: a pass then is not a lap.
+        if self.auto_lap != AutoLap::AtStart
+            || self.workout.is_some()
+            || self.active().status() != crate::ride::log::Status::Recording
+        {
             return;
         }
         if let Some(lap) = self.laps.at_start(now) {

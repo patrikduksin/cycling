@@ -51,7 +51,7 @@ pub const CONFIRM_CUES: [Cue; 2] = [
     Cue::new(Corner::BottomRight, Icon::Check),
 ];
 
-fn centred(
+pub(super) fn centred(
     canvas: &mut Canvas,
     faces: &[&'static firmware_shell::rendering::font::Face],
     text: &[u8],

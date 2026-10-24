@@ -149,6 +149,7 @@ impl Runtime {
             }
             Page::Summary => self.ride_press(button, held, received, now),
             Page::Bests => self.bests_input(button, held),
+            Page::Form => self.form_input(button, held),
             Page::Phone => self.phone_input(button, held),
             Page::History => self.history_input(button, held),
             Page::PastRide => self.past_ride_input(button, held),
@@ -195,6 +196,7 @@ impl Runtime {
             | Page::EndRide
             | Page::Phone
             | Page::Bests
+            | Page::Form
             | Page::Workouts => 0,
         };
         let sheet = u32::from(self.power.view().is_some() || self.training.ftp_offer.is_some());
@@ -426,6 +428,7 @@ impl Runtime {
                 self.request_search(ant, now);
             }
             (_, Some(SettingsAction::Bests)) => self.open_bests(now),
+            (_, Some(SettingsAction::Form)) => self.open_form(now),
             (_, Some(SettingsAction::ConnectPhone)) => {
                 self.enter_phone();
                 self.navigation.page_since = now;

@@ -3,6 +3,7 @@ pub mod brand;
 pub mod canvas;
 pub mod chrome;
 pub mod cue;
+pub mod form;
 pub mod gesture;
 pub mod history;
 pub mod home;

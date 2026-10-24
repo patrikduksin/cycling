@@ -36,6 +36,8 @@ pub enum Page {
     Settings,
     /// The rider's personal bests, opened from Settings.
     Bests,
+    /// Fitness, fatigue and form, opened from Settings.
+    Form,
     /// The workout picker.
     Workouts,
     /// Connect phone: rides to the phone over Wi-Fi, as FIT files.
@@ -60,6 +62,7 @@ impl Page {
             Self::Summary => "summary",
             Self::Settings => "settings",
             Self::Bests => "bests",
+            Self::Form => "form",
             Self::Workouts => "workouts",
             Self::Phone => "phone",
             Self::History => "history",
@@ -137,6 +140,8 @@ pub struct View<'a> {
     /// The rider's personal bests, for the BESTS page.
     pub bests: Bests,
     pub bests_mode: super::bests::Mode,
+    /// What the FORM page shows.
+    pub form: super::form::Mode,
     /// The back-to-start page's guide; its arrow is placed as it paints.
     pub back: ride::Back,
     /// When the light ends, for the back-to-start page.
@@ -220,6 +225,7 @@ impl View<'_> {
             ftp_offer: None,
             bests: Bests::default(),
             bests_mode: super::bests::Mode::List,
+            form: super::form::Mode::Reading,
             back: ride::Back::default(),
             sunset: ride::Light::default(),
             map: None,
@@ -426,6 +432,10 @@ impl View<'_> {
                     super::bests::Mode::Confirm => &super::bests::CONFIRM_CUES,
                     _ => &[],
                 }
+            }
+            Page::Form => {
+                fill(self, super::form::prepare);
+                &[]
             }
             Page::Workouts => {
                 fill(self, super::workouts::prepare);
@@ -773,6 +783,7 @@ mod tests {
             (Page::Sensors, false),
             (Page::Phone, false),
             (Page::Bests, false),
+            (Page::Form, false),
         ] {
             let mut view = View::new(page, 1, None);
             view.editing = editing;

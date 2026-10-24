@@ -22,6 +22,7 @@ pub enum Row {
     Ftp,
     Threshold,
     Bests,
+    Form,
     Weight,
     Age,
     Sex,
@@ -78,11 +79,16 @@ pub enum SettingsAction {
     ConnectPhone,
     /// The rider's personal bests.
     Bests,
+    /// Fitness, fatigue and form.
+    Form,
 }
 
 /// Sections in order, each with its title and the rows it holds.
 pub const SECTIONS: [(&str, &[Row]); 12] = [
-    ("PROFILE", &[Row::Ftp, Row::Threshold, Row::Bests]),
+    (
+        "PROFILE",
+        &[Row::Ftp, Row::Threshold, Row::Bests, Row::Form],
+    ),
     ("BODY", &[Row::Weight, Row::Age, Row::Sex]),
     (
         "DISPLAY",
@@ -162,6 +168,7 @@ impl Row {
             Self::Ftp => "FTP WATTS",
             Self::Threshold => "LTHR BPM",
             Self::Bests => "BESTS",
+            Self::Form => "FORM",
             Self::Weight => "WEIGHT KG",
             Self::Age => "AGE YEARS",
             Self::Sex => "SEX",
@@ -214,6 +221,7 @@ impl Row {
             Self::Sensors => Some(SettingsAction::Sensors),
             Self::Phone => Some(SettingsAction::ConnectPhone),
             Self::Bests => Some(SettingsAction::Bests),
+            Self::Form => Some(SettingsAction::Form),
             _ => None,
         }
     }
@@ -246,7 +254,7 @@ impl Row {
             | Self::PowerHigh
             | Self::PowerLow
             | Self::Sex => Kind::Choice,
-            Self::Sensors | Self::Phone | Self::Bests => Kind::Open,
+            Self::Sensors | Self::Phone | Self::Bests | Self::Form => Kind::Open,
             Self::Storage | Self::Firmware => Kind::Info,
         }
     }
@@ -562,7 +570,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 35);
+        assert_eq!(ROWS, 36);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -582,7 +590,7 @@ mod tests {
     fn rings_the_focused_row_and_fills_the_edited_number() {
         let moving = profile(1, false);
         let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
-        assert_eq!(colors, [CARD, ACCENT, RAISED, CARD], "no pads");
+        assert_eq!(colors, [CARD, ACCENT, RAISED, CARD, CARD], "no pads");
         assert_eq!(moving.pixel(LEFT, ROW_TOP), 0, "rounded corner");
         let second = row_rect(1);
         assert_eq!(moving.pixel(LEFT + 1, second.top + 20), ACCENT, "ring");
@@ -665,11 +673,7 @@ mod tests {
         assert_eq!(target(100, row(0), 0, false), Some(Target::Row(0)));
         assert_eq!(target(200, row(1), 0, false), Some(Target::Row(1)));
         assert_eq!(target(100, row(2), 0, false), Some(Target::Row(2)));
-        assert_eq!(
-            target(100, row(3), 0, false),
-            None,
-            "profile has three rows"
-        );
+        assert_eq!(target(100, row(3), 0, false), Some(Target::Row(3)));
         let device = Row::Sensors.index();
         assert_eq!(
             target(100, row(3), device, false),

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.runner import STARTUP_STOPPED
-from cycling_devtools.harness.stress import PREFERENCES, read, validate
+from cycling_devtools.harness.stress import PREFERENCES, fields, read, validate
 from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
@@ -84,7 +84,12 @@ def reopen(port, directory, label, deadline=20):
         try:
             connection.__enter__()
             entered = True
-            read(connection, 'INFO')
+            reply = connection.terminal_command('INFO')
+            if reply.get('id') == 0 and reply['status'] == 'INVALID':
+                # After a reset the device rejects the line the reset cut off, and
+                # that id-0 reply answers the first request. INFO only reads.
+                reply = connection.terminal_command('INFO')
+            fields(reply)
             return connection
         except OSError, RuntimeError, TimeoutError:
             if entered:
@@ -94,11 +99,51 @@ def reopen(port, directory, label, deadline=20):
             time.sleep(0.25)
 
 
+POWER_SETTLE_TIMEOUT_S = 30
+WAKE_TIMEOUT_S = 60
+
+
+def poll_across_resets(connection, port, directory, label, seconds, probe):
+    """Poll until `probe` is done, reconnecting whenever the C606 resets and the session drops.
+
+    `probe` returns (done, observation). Gives up `seconds` after the start
+    with the last observation.
+    """
+    deadline = time.monotonic() + seconds
+    attempt = 0
+    last = None
+    while True:
+        try:
+            done, last = probe(connection)
+            if done:
+                return connection, last
+        except OSError, RuntimeError, TimeoutError:
+            connection.__exit__(None, None, None)
+            attempt += 1
+            connection = reopen(port, directory, f'{label}-{attempt}', max(deadline - time.monotonic(), 0))
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f'{label}: gave up after {seconds} s: {last}')
+        time.sleep(0.5)
+
+
+def out_of_startup(connection):
+    """After a software reset, POWER passes Initializing, then Quiescing on the way to charging standby."""
+    system = read(connection, 'STATUS')
+    if system['reset'] != 'software':
+        return True, (system, None)
+    power = expect(connection, 'POWER', 'OK')['data']
+    return not re.search(r'state: (Initializing|Quiescing)\b', power), (system, power)
+
+
+def booted_from_power_on(connection):
+    system = read(connection, 'STATUS')
+    return system['reset'] != 'software', system
+
+
 def power_cycle(port, directory):
     """Switch off, then reconnect after power returns; RTC memory must not survive.
 
-    On USB the companion cuts power and the C606 starts again in charging
-    standby, where storage stays closed until a wake.
+    On USB the companion cuts power only after a wake from charging standby.
     """
     connection = reopen(port, directory, 'power-off')
     try:
@@ -115,7 +160,16 @@ def power_cycle(port, directory):
     print('Shutdown accepted. Without USB power, switch the C606 on again.', flush=True)
     time.sleep(5)
     connection = reopen(port, directory, 'power-on', 180)
-    system = read(connection, 'STATUS')
+    connection, (system, power) = poll_across_resets(
+        connection, port, directory, 'power-settling', POWER_SETTLE_TIMEOUT_S, out_of_startup
+    )
+    if power is not None and 'state: Charging' in power:
+        # Charging standby follows a software reset and keeps RTC memory; a
+        # wake makes the companion cut power, and the C606 boots from power-on.
+        expect(connection, 'POWER WAKE', 'ACCEPTED')
+        connection, system = poll_across_resets(
+            connection, port, directory, 'woken', WAKE_TIMEOUT_S, booted_from_power_on
+        )
     if system['reset'] != 'power' or system['crash'] != 'none':
         raise AssertionError(f'expected a power-on reset without a crash marker, got {system}')
     settle(connection)

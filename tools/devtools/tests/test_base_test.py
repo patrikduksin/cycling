@@ -1,4 +1,6 @@
+import itertools
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cycling_devtools.harness.base import (
@@ -98,9 +100,122 @@ class ScriptedConnection:
 
     def terminal_command(self, command):
         self.commands.append(command)
-        answers = self.replies[command]
+        answers = self.replies.get(command, [('OK', '')] if command == 'INFO' else None)
         status, data = answers.pop(0) if len(answers) > 1 else answers[0]
         return dict(status=status, data=data, ms=1)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *unused):
+        pass
+
+
+IDLE = 'status=Status { state: Idle, ready: true }'
+
+
+class UsbStandby:
+    """A USB-powered C606 after POWER SHUTDOWN, as measured on aca9b77 and 4113dbf.
+
+    It resets in software, and POWER passes through Initializing and
+    Quiescing before charging standby, which it keeps. On the way, at
+    79f579f, the session dropped with EIO mid-poll. After each reset the
+    device rejects the line the reset cut off with an id-0 INVALID, which
+    answers the first request of the new session (af92370). POWER WAKE
+    starts recovery, and a few STATUS polls later the companion cuts power:
+    the session drops and the C606 boots with a power-on reset.
+    """
+
+    PHASES = {
+        'starting': {
+            'STATUS': ('OK', 'uptime_ms=10031 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Initializing, ready: false }'),
+            'COMPANION': ('OK', 'startup=probing'),
+            'CRASH': ('BUSY', 'starting companion=probing'),
+        },
+        'quiescing': {
+            'STATUS': ('OK', 'uptime_ms=11000 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Quiescing, ready: false }'),
+            'COMPANION': ('OK', 'startup=charging'),
+            'CRASH': ('BUSY', 'power transition'),
+        },
+        'standby': {
+            'STATUS': ('OK', 'uptime_ms=10000 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Charging, ready: false }'),
+            'COMPANION': ('OK', 'startup=charging'),
+            'CRASH': ('BUSY', 'power transition'),
+        },
+        'recovering': {
+            'STATUS': ('OK', 'uptime_ms=12000 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Recovering, ready: false }'),
+            'COMPANION': ('OK', 'startup=charging'),
+            'CRASH': ('BUSY', 'power transition'),
+        },
+        'on': {
+            'STATUS': ('OK', 'uptime_ms=3000 reset=power crash=none'),
+            'POWER': ('OK', IDLE),
+            'COMPANION': ('OK', 'startup=ready'),
+            'CRASH': ('OK', 'kind=controlled this_boot=false source=flash message=controlled crash test'),
+        },
+    }
+
+    def __init__(self, polls_until_reset=3, settles=True, resets_on_the_way=1):
+        self.phase = 'starting'
+        self.ahead = ['quiescing', 'standby'] if settles else []
+        self.resets_on_the_way = resets_on_the_way
+        self.boot = 0
+        self.polls_until_reset = polls_until_reset
+        self.commands = []
+
+    def connect(self):
+        return UsbStandbySession(self, self.boot)
+
+    def answer(self, command):
+        self.commands.append(command)
+        if command == 'INFO':
+            return dict(status='OK', data='', ms=1)
+        if command == 'POWER WAKE':
+            if self.phase != 'standby':
+                return dict(status='UNAVAILABLE', data='', ms=1)
+            self.phase = 'recovering'
+            return dict(status='ACCEPTED', data='', ms=1)
+        if self.phase == 'quiescing' and command == 'POWER' and self.resets_on_the_way:
+            self.resets_on_the_way -= 1
+            self.phase = 'starting'
+            self.ahead = ['quiescing', 'standby']
+            self.boot += 1
+            raise OSError(5, 'Input/output error')
+        if self.phase == 'recovering' and command == 'STATUS':
+            if self.polls_until_reset is not None:
+                self.polls_until_reset -= 1
+            if self.polls_until_reset == 0:
+                self.phase = 'on'
+                self.boot += 1
+                raise RuntimeError('device rebooted during command')
+        status, data = self.PHASES[self.phase][command]
+        if command == 'POWER' and self.ahead:
+            self.phase = self.ahead.pop(0)
+        return dict(status=status, data=data, ms=1)
+
+
+class UsbStandbySession:
+    def __init__(self, device, boot):
+        self.device = device
+        self.boot = boot
+        self.request_id = 1
+        self.cut_line_rejection = boot > 0
+
+    def terminal_command(self, command):
+        if self.boot != self.device.boot:
+            raise OSError(5, 'Input/output error')
+        if self.cut_line_rejection:
+            self.cut_line_rejection = False
+            self.device.commands.append(command)
+            return dict(id=0, status='INVALID', data='malformed command', ms=1)
+        return self.device.answer(command)
+
+    def __enter__(self):
+        return self
 
     def __exit__(self, *unused):
         pass
@@ -113,7 +228,6 @@ class PowerCycleTests(unittest.TestCase):
 
     def test_switches_off_once_and_wakes_charging_standby_before_reading_flash(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('UNAVAILABLE', ''), ('ACCEPTED', '')]})
-        idle = 'status=Status { state: Idle, ready: true }'
         after = ScriptedConnection(
             {
                 'STATUS': [('OK', 'reset=power crash=none')],
@@ -124,10 +238,10 @@ class PowerCycleTests(unittest.TestCase):
                     ('OK', 'startup=ready'),
                 ],
                 'POWER': [
-                    ('OK', idle),
+                    ('OK', IDLE),
                     ('OK', 'status=Status { state: Charging, ready: false }'),
                     ('OK', 'status=Status { state: Charging, ready: false }'),
-                    ('OK', idle),
+                    ('OK', IDLE),
                 ],
                 'POWER WAKE': [('UNAVAILABLE', ''), ('ACCEPTED', '')],
             }
@@ -136,6 +250,58 @@ class PowerCycleTests(unittest.TestCase):
         self.assertEqual(before.commands, ['POWER SHUTDOWN', 'POWER SHUTDOWN'])
         self.assertEqual(after.commands.count('POWER WAKE'), 2)
         self.assertEqual(after.commands[-2:], ['COMPANION', 'POWER'])
+
+    def test_wakes_usb_charging_standby_before_judging_the_reset(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('UNAVAILABLE', ''), ('ACCEPTED', '')]})
+        device = UsbStandby()
+        sessions = iter([before])
+        with (
+            patch(
+                'cycling_devtools.harness.base.UsbConnection',
+                side_effect=lambda *unused: next(sessions, None) or device.connect(),
+            ),
+            patch('time.sleep'),
+        ):
+            connection = power_cycle('port', Path('captures'))
+            record = crash_record(connection)
+        self.assertEqual(device.commands.count('POWER WAKE'), 1)
+        self.assertEqual(device.phase, 'on')
+        self.assertEqual(record['source'], 'flash')
+
+    def test_a_wake_without_a_power_on_reset_stops_at_the_deadline(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
+        device = UsbStandby(polls_until_reset=None, resets_on_the_way=0)
+        sessions = iter([before])
+        with (
+            patch(
+                'cycling_devtools.harness.base.reopen',
+                side_effect=lambda *unused: next(sessions, None) or device.connect(),
+            ),
+            patch('cycling_devtools.harness.base.time.monotonic', side_effect=itertools.count(0, 10)),
+            patch('time.sleep'),
+            self.assertRaisesRegex(TimeoutError, 'woken: gave up'),
+        ):
+            power_cycle('port', None)
+        self.assertEqual(device.commands.count('POWER WAKE'), 1)
+        woken = device.commands[device.commands.index('POWER WAKE') :]
+        self.assertLessEqual(woken.count('STATUS'), 7)
+
+    def test_a_standby_that_never_arrives_stops_at_the_deadline(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
+        device = UsbStandby(settles=False)
+        sessions = iter([before])
+        with (
+            patch(
+                'cycling_devtools.harness.base.reopen',
+                side_effect=lambda *unused: next(sessions, None) or device.connect(),
+            ),
+            patch('cycling_devtools.harness.base.time.monotonic', side_effect=itertools.count(0, 10)),
+            patch('time.sleep'),
+            self.assertRaisesRegex(TimeoutError, 'power-settling: gave up.*Initializing'),
+        ):
+            power_cycle('port', None)
+        self.assertNotIn('POWER WAKE', device.commands)
+        self.assertLessEqual(device.commands.count('POWER'), 5)
 
     def test_an_early_idle_before_the_companion_starts_is_not_settled(self):
         connection = ScriptedConnection(
@@ -150,7 +316,7 @@ class PowerCycleTests(unittest.TestCase):
 
     def test_a_reset_that_kept_rtc_memory_fails(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
-        after = ScriptedConnection({'STATUS': [('OK', 'reset=software crash=none')]})
+        after = ScriptedConnection({'STATUS': [('OK', 'reset=software crash=none')], 'POWER': [('OK', IDLE)]})
         with self.assertRaisesRegex(AssertionError, 'power-on reset'):
             self.cycle(before, after)
 

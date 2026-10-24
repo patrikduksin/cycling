@@ -99,6 +99,21 @@ mod tests {
         assert_eq!(stale.gps.age_ms, Some(3001));
     }
     #[test]
+    fn readers_get_receiver_utc_at_their_own_time_without_publication() {
+        let mut state = Acquisition::default();
+        sentence(
+            &mut state,
+            "GPRMC,100000.00,A,4807.038,N,01131.000,E,0,0,141026,,,A",
+            5_000,
+        );
+        let published = state.clone();
+        let at = |now| published.snapshot(now).gps.utc_ms;
+        assert_eq!(at(6_000).unwrap() - at(5_000).unwrap(), 1_000);
+        assert_eq!(at(60_000).unwrap() - at(5_000).unwrap(), 55_000);
+        state.control_boundary();
+        assert_eq!(state.snapshot(6_000).gps.utc_ms, None);
+    }
+    #[test]
     fn no_fix_is_distinct_from_loss_and_clean_receive_recovers() {
         let mut state = Acquisition::default();
         assert_eq!(state.snapshot(0).transport, Transport::Unavailable);

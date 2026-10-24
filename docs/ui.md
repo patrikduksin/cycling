@@ -82,11 +82,12 @@ so it is not used: alerts keep their full contrast at night.
 DAY / NIGHT in Settings → Display chooses AUTO, DAY or NIGHT. In AUTO the sun
 decides: night begins once it is 4° below the horizon at the last fixed
 position (mid civil twilight) and ends once it is back above 2° below, so a
-reading near the line cannot flicker. The time is network time, or the GPS
-receiver's date and time. Without a position, the local clock decides (night
-from 20:00 to 7:00); with no clock at all, the last answer stays. The night
-cap goes through the shell's backlight ceiling (`Shell::set_ceiling`), which
-is never stored, so the rider's chosen brightness is unchanged.
+reading near the line cannot flicker. The time is the recorded UTC: network
+time, else the GPS receiver's clock. Without a position, the local clock
+decides (night from 20:00 to 7:00); with no clock at all, the last answer
+stays. The night cap goes through the shell's backlight ceiling
+(`Shell::set_ceiling`), which is never stored, so the rider's chosen
+brightness is unchanged.
 
 ### Light
 

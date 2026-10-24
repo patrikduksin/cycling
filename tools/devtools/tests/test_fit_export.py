@@ -52,8 +52,8 @@ def slot(kind, ride_id, sequence, active_ms, samples=()):
     return bytes(data)
 
 
-def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True):
-    """A ride at 1 Hz heading north at 8 m/s, paused once."""
+def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, utc_from_s=1):
+    """A ride at 1 Hz heading north at 8 m/s, paused once. Its UTC starts at second `utc_from_s`."""
     slots, sequence, batch = [slot(1, ride_id, 0, 0)], 1, []
 
     def flush():
@@ -69,7 +69,7 @@ def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True):
         batch.append(
             {
                 'active_ms': active,
-                'utc_ms': T0_MS + wall if utc else None,
+                'utc_ms': T0_MS + wall if utc and second >= utc_from_s else None,
                 'location': (LAT0 + second * 720, LON0),
                 'heart': 120 + second % 40,
                 'cadence': 850 + second % 100,
@@ -171,6 +171,28 @@ class FitExportTests(unittest.TestCase):
         messages, errors = Decoder(Stream.from_file(str(directory / 'ride-1.fit'))).read()
         self.assertEqual(errors, [])
         self.assertEqual(messages['session_mesgs'][0]['total_elapsed_time'], 20.0)
+
+    def test_a_clock_found_part_way_dates_the_start(self):
+        def start_and_first_record(slots):
+            directory, rides = self.convert(slots)
+            self.assertTrue(rides[0]['dated'])
+            path = directory / 'ride-1.fit'
+            messages, errors = Decoder(Stream.from_file(str(path))).read(convert_datetimes_to_dates=True)
+            self.assertEqual(errors, [])
+            with fitdecode.FitReader(path, check_crc=fitdecode.CrcCheck.RAISE) as reader:
+                frames = [frame for frame in reader if isinstance(frame, fitdecode.FitDataMessage)]
+            session = next(frame for frame in frames if frame.name == 'session')
+            record = next(frame for frame in frames if frame.name == 'record')
+            self.assertEqual(session.get_value('start_time'), messages['session_mesgs'][0]['start_time'])
+            self.assertEqual(record.get_value('timestamp'), messages['record_mesgs'][0]['timestamp'])
+            return session.get_value('start_time'), record.get_value('timestamp')
+
+        dated = start_and_first_record(ride())
+        late = start_and_first_record(ride(utc_from_s=61))
+        self.assertEqual(late, dated, 'the clock arriving at second 61 still dates the first second')
+        start = dt.datetime.fromtimestamp(T0_MS / 1000, dt.UTC)
+        self.assertEqual(late[0].astimezone(dt.UTC), start)
+        self.assertEqual(late[1] - late[0], dt.timedelta(seconds=1))
 
     def test_command_uses_the_firmware_encoder(self):
         command = fit_command(Path('in.bin'), Path('out'), 5)

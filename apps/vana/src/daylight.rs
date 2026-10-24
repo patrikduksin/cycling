@@ -16,34 +16,6 @@ pub const DAY_ABOVE_DEG: f64 = -2.0;
 pub const EVENING_HOUR: u64 = 20;
 pub const MORNING_HOUR: u64 = 7;
 
-/// Days from 1970-01-01 to a proleptic Gregorian date.
-pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let of_era = year - era * 400;
-    let month = i64::from(month);
-    let of_year =
-        (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + i64::from(day) - 1;
-    let of_era_days = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
-    era * 146_097 + of_era_days - 719_468
-}
-
-/// Unix seconds from a receiver's ASCII `ddmmyy` date and `hhmmss` time.
-pub fn unix_seconds(date: [u8; 6], time: [u8; 6]) -> Option<i64> {
-    let pair = |bytes: &[u8]| -> Option<u32> {
-        let [tens, ones] = bytes else { return None };
-        (tens.is_ascii_digit() && ones.is_ascii_digit())
-            .then(|| u32::from(tens - b'0') * 10 + u32::from(ones - b'0'))
-    };
-    let (day, month, year) = (pair(&date[0..2])?, pair(&date[2..4])?, pair(&date[4..6])?);
-    let (hour, minute, second) = (pair(&time[0..2])?, pair(&time[2..4])?, pair(&time[4..6])?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
-        return None;
-    }
-    let days = days_from_civil(2000 + i64::from(year), month, day);
-    Some(days * 86_400 + i64::from(hour * 3600 + minute * 60 + second.min(60)))
-}
-
 /// The sun's altitude above the horizon in degrees, at `unix_seconds`, seen
 /// from `latitude` and `longitude` in degrees (east positive).
 pub fn sun_altitude(unix_seconds: i64, latitude: f64, longitude: f64) -> f64 {
@@ -83,17 +55,9 @@ pub fn night_by_clock(local_seconds: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use firmware_services::gps::unix_seconds;
 
     const SANTIAGO: (f64, f64) = (-33.45, -70.66);
-
-    #[test]
-    fn dates_and_receiver_times_become_unix_seconds() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
-        assert_eq!(unix_seconds(*b"141026", *b"231000"), Some(1_792_019_400));
-        assert_eq!(unix_seconds(*b"141326", *b"231000"), None);
-        assert_eq!(unix_seconds(*b"14a026", *b"231000"), None);
-    }
 
     /// Santiago's sun sets about 19:51 local (22:51 UTC) on 14 October 2026,
     /// as NOAA's calculator has it: well up at 22:00, dark by 23:20.

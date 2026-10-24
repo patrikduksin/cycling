@@ -45,6 +45,21 @@ pub(super) struct History {
     pub(super) home_last: Option<u64>,
 }
 
+/// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
+/// only when both start times are known and BULK's is later, so undated rides
+/// list INTERNAL's first.
+fn newer_head(internal: Option<&Summary>, bulk: Option<&Summary>) -> Option<usize> {
+    match (internal, bulk) {
+        (Some(a), Some(b)) => match (a.first_utc_ms, b.first_utc_ms) {
+            (Some(a), Some(b)) if b > a => Some(1),
+            _ => Some(0),
+        },
+        (Some(_), None) => Some(0),
+        (None, Some(_)) => Some(1),
+        (None, None) => None,
+    }
+}
+
 impl Runtime {
     /// Lend storage for the ride index, so the list holds every saved ride.
     pub fn attach_ride_index(&mut self, index: &'static mut RideIndex) {
@@ -117,15 +132,7 @@ impl Runtime {
                     .and_then(|i| self.journal_ride(media[at], i))
             };
             let (internal, bulk) = (head(0), head(1));
-            let pick = match (&internal, &bulk) {
-                (Some(a), Some(b)) => match (a.first_utc_ms, b.first_utc_ms) {
-                    (Some(a), Some(b)) if b > a => 1,
-                    _ => 0,
-                },
-                (Some(_), None) => 0,
-                (None, Some(_)) => 1,
-                (None, None) => return None,
-            };
+            let pick = newer_head(internal.as_ref(), bulk.as_ref())?;
             if taken == n {
                 return [internal, bulk][pick].map(|summary| (media[pick], summary));
             }
@@ -386,5 +393,32 @@ fn title(summary: &Summary, number: usize) -> Text<20> {
             let _ = write!(text, "RIDE {number}");
             text
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ride::log::Source;
+
+    fn started(utc_ms: Option<u64>) -> Summary {
+        let mut summary = Summary::started(1, Source::Live);
+        summary.first_utc_ms = utc_ms;
+        summary
+    }
+
+    #[test]
+    fn the_later_start_is_listed_first_and_undated_rides_list_internal_first() {
+        let (early, late) = (started(Some(1_000)), started(Some(2_000)));
+        let undated = started(None);
+        assert_eq!(newer_head(Some(&early), Some(&late)), Some(1));
+        assert_eq!(newer_head(Some(&late), Some(&early)), Some(0));
+        assert_eq!(newer_head(Some(&early), Some(&early)), Some(0));
+        assert_eq!(newer_head(Some(&undated), Some(&late)), Some(0));
+        assert_eq!(newer_head(Some(&early), Some(&undated)), Some(0));
+        assert_eq!(newer_head(Some(&undated), Some(&undated)), Some(0));
+        assert_eq!(newer_head(None, Some(&undated)), Some(1));
+        assert_eq!(newer_head(Some(&undated), None), Some(0));
+        assert_eq!(newer_head(None, None), None);
     }
 }

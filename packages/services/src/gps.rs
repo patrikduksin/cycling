@@ -3,6 +3,21 @@
 const LINE: usize = 512;
 use device_api::gps::*;
 
+/// A reading less than this far behind the clock is the same clock read late
+/// (sentence latency, a 10 ms poll). Further behind may be a correction the
+/// receiver made, such as learning the leap seconds.
+const RESYNC_MS: u64 = 1_000;
+/// Readings, each at least `CONFIRM_GAP_MS` after the last, that must all be
+/// `RESYNC_MS` behind before the clock is stepped back. A stalled executor
+/// drains old sentences within a few 10 ms polls, which looks like a
+/// correction until the next on-time one; a real correction lasts.
+const CONFIRM: u8 = 3;
+const CONFIRM_GAP_MS: u64 = 500;
+/// RMC two-digit years read as 2026..=2079. Earlier years are a GPS week
+/// rollover (2006/2007) or a stale receiver RTC. 80 and later is the 1980 GPS
+/// epoch default (`060180`) or a textbook sentence (`230394`), not 2080 or 2094.
+const PLAUSIBLE_YEARS: core::ops::Range<u32> = 26..80;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Epoch {
     utc: [u8; 6],
@@ -40,9 +55,21 @@ struct Decoder {
     /// Ground speed in mm/s and the epoch it describes (ms of the UTC day).
     speed: Option<(u32, u32)>,
     utc: Option<[u8; 6]>,
-    date: Option<[u8; 6]>,
     current_epoch: Option<Epoch>,
     identity: Identity,
+    clock: Option<Clock>,
+}
+
+/// Receiver UTC at uptime zero, in ms: the latest `fix utc - uptime its RMC
+/// was read at` over dated fixes. Each value is a lower bound, because a
+/// sentence is read after its epoch. Uptime drifts from the receiver's clock
+/// by about a second after many hours awake, which is one accepted step back.
+#[derive(Clone, Copy, Debug)]
+struct Clock {
+    at_zero_ms: u64,
+    /// Readings in a row at least `RESYNC_MS` behind, `CONFIRM_GAP_MS` apart.
+    behind: u8,
+    behind_at: u64,
 }
 
 impl Default for Parser {
@@ -69,9 +96,9 @@ impl Default for Parser {
                 hdop: None,
                 speed: None,
                 utc: None,
-                date: None,
                 current_epoch: None,
                 identity: Identity::Unknown,
+                clock: None,
             },
         }
     }
@@ -85,6 +112,8 @@ impl Parser {
         self.overflows = self.overflows.saturating_add(count);
     }
     /// Explicit stream control invalidates a previously fresh fix immediately.
+    /// It also forgets the clock: sleep or a receiver power cycle may have
+    /// stopped uptime.
     pub fn control_boundary(&mut self) {
         self.data_loss();
         self.decoder.current_fix = false;
@@ -95,6 +124,7 @@ impl Parser {
         self.decoder.hdop = None;
         self.decoder.speed = None;
         self.decoder.current_epoch = None;
+        self.decoder.clock = None;
     }
     pub fn data_loss(&mut self) {
         self.len = 0;
@@ -175,7 +205,7 @@ impl Parser {
                 .map(|(speed, _)| speed),
             epoch_ms,
             utc: self.decoder.utc,
-            date: self.decoder.date,
+            utc_ms: self.decoder.clock.map(|clock| clock.at_zero_ms + now),
             age_ms: age,
             bytes: self.bytes,
             valid_sentences: self.decoder.valid,
@@ -242,6 +272,7 @@ impl Decoder {
                 let parsed = self.rmc(&values[..n], now);
                 if parsed {
                     self.rmc_speed(&values[..n]);
+                    self.rmc_clock(&values[..n], now);
                 }
                 parsed
             }
@@ -301,7 +332,6 @@ impl Decoder {
         }
         if self.set_fix(f[2], f[3], f[4], f[5], now) {
             self.utc = Some(epoch.utc);
-            self.date = Some(date);
             self.current_epoch = Some(epoch);
             true
         } else {
@@ -336,6 +366,29 @@ impl Decoder {
     fn rmc_speed(&mut self, f: &[&[u8]]) {
         if self.current_fix && parse_epoch(f[0]) == self.current_epoch {
             self.ground_speed(decimal_milli(f[6]).and_then(knots_mm_s));
+        }
+    }
+
+    /// The receiver clock from an RMC that just set the fix. Date and time come
+    /// from this one sentence, so GGA's new-day time never meets yesterday's
+    /// date. Out of line for the same reason.
+    #[inline(never)]
+    fn rmc_clock(&mut self, f: &[&[u8]], now: u64) {
+        if !self.current_fix {
+            return;
+        }
+        let Some(epoch) = self.current_epoch else {
+            return;
+        };
+        let Ok(date) = <[u8; 6]>::try_from(f[8]) else {
+            return;
+        };
+        let Some(observed) = dated_ms(date, epoch).and_then(|ms| ms.checked_sub(now)) else {
+            return;
+        };
+        match &mut self.clock {
+            Some(clock) => clock.read(observed, now),
+            clock => *clock = Some(Clock::new(observed)),
         }
     }
 
@@ -389,6 +442,101 @@ impl Epoch {
         let minutes = digit(2) * 10 + digit(3);
         let seconds = digit(4) * 10 + digit(5);
         ((hours * 60 + minutes) * 60 + seconds) * 1000 + self.nanos / 1_000_000
+    }
+}
+
+impl Clock {
+    fn new(observed: u64) -> Self {
+        Self {
+            at_zero_ms: observed,
+            behind: 0,
+            behind_at: 0,
+        }
+    }
+
+    /// One more reading, taken at uptime `now`. A later reading (less latency,
+    /// or uptime running slow) moves the clock forward. One less than
+    /// `RESYNC_MS` behind is ignored, so jitter never steps it back. One
+    /// further behind is a correction only once `CONFIRM` of them arrive
+    /// `CONFIRM_GAP_MS` apart in a row, and then the latest is taken.
+    fn read(&mut self, observed: u64, now: u64) {
+        let behind = self.at_zero_ms.saturating_sub(observed);
+        if behind < RESYNC_MS {
+            self.at_zero_ms = self.at_zero_ms.max(observed);
+            self.behind = 0;
+        } else {
+            if self.behind == 0 || now >= self.behind_at + CONFIRM_GAP_MS {
+                self.behind += 1;
+                self.behind_at = now;
+            }
+            if self.behind >= CONFIRM {
+                self.at_zero_ms = observed;
+                self.behind = 0;
+            }
+        }
+    }
+}
+
+/// Unix ms of an RMC epoch, fraction included, when `ddmmyy` is a real day in
+/// `PLAUSIBLE_YEARS`.
+fn dated_ms(date: [u8; 6], epoch: Epoch) -> Option<u64> {
+    if !PLAUSIBLE_YEARS.contains(&digit_pair(&date[4..6])?) {
+        return None;
+    }
+    let seconds = u64::try_from(unix_seconds(date, epoch.utc)?).ok()?;
+    Some(seconds * 1000 + u64::from(epoch.nanos / 1_000_000))
+}
+
+fn digit_pair(bytes: &[u8]) -> Option<u32> {
+    let [tens, ones] = bytes else { return None };
+    (tens.is_ascii_digit() && ones.is_ascii_digit())
+        .then(|| u32::from(tens - b'0') * 10 + u32::from(ones - b'0'))
+}
+
+/// Days from 1970-01-01 to a proleptic Gregorian date.
+pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year - era * 400;
+    let month = i64::from(month);
+    let of_year =
+        (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let of_era_days = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
+    era * 146_097 + of_era_days - 719_468
+}
+
+/// Unix seconds from a receiver's ASCII `ddmmyy` date and `hhmmss` time, for a
+/// day that exists in 2000..=2099.
+pub fn unix_seconds(date: [u8; 6], time: [u8; 6]) -> Option<i64> {
+    let (day, month, year) = (
+        digit_pair(&date[0..2])?,
+        digit_pair(&date[2..4])?,
+        digit_pair(&date[4..6])?,
+    );
+    let (hour, minute, second) = (
+        digit_pair(&time[0..2])?,
+        digit_pair(&time[2..4])?,
+        digit_pair(&time[4..6])?,
+    );
+    let year = 2000 + i64::from(year);
+    if !(1..=12).contains(&month)
+        || day == 0
+        || day > month_days(year, month)
+        || hour > 23
+        || minute > 59
+    {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + i64::from(hour * 3600 + minute * 60 + second.min(60)))
+}
+
+fn month_days(year: i64, month: u32) -> u32 {
+    match month {
+        2 if year % 4 == 0 => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
     }
 }
 
@@ -523,6 +671,7 @@ fn coordinate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
     fn feed(p: &mut Parser, s: &str, now: u64) {
         for b in s.bytes() {
             p.push(b, now)
@@ -552,7 +701,7 @@ mod tests {
         );
         assert_eq!(p.snapshot(10).state, FixState::Fresh);
         assert_eq!(p.snapshot(10).latitude_e7, Some(-333646900));
-        assert_eq!(p.snapshot(10).date, Some(*b"110926"));
+        assert_eq!(p.snapshot(10).utc_ms, Some(1_789_113_528_000));
         assert_eq!(p.snapshot(3011).state, FixState::Stale);
         feed(&mut p, "$GPRMC,0*00\n", 20);
         assert_eq!(p.decoder.checksum_errors, 1)
@@ -705,6 +854,190 @@ mod tests {
         assert_eq!(
             (lost.speed_mm_s, lost.hdop_tenths, lost.epoch_ms),
             (None, None, None)
+        );
+    }
+
+    const FIX: &str = "3321.8814,S,07030.9348,W";
+    fn rmc(p: &mut Parser, time: &str, date: &str, now: u64) {
+        let line = format!("GNRMC,{time},A,{FIX},0,0,{date},,,A");
+        body(p, line.as_bytes(), now);
+    }
+    fn gga(p: &mut Parser, time: &str, now: u64) {
+        let line = format!("GNGGA,{time},{FIX},1,09,1.0,545.4,M,,M,,");
+        body(p, line.as_bytes(), now);
+    }
+    /// Unix ms of 14 October 2026 at `hhmmss`.
+    fn oct14(time: &[u8; 6]) -> u64 {
+        unix_seconds(*b"141026", *time).unwrap() as u64 * 1000
+    }
+
+    #[test]
+    fn rmc_dates_the_clock_and_gga_never_does() {
+        let mut p = Parser::default();
+        gga(&mut p, "100000.00", 4_000);
+        assert_eq!(p.snapshot(4_000).utc_ms, None, "GGA has no date");
+        body(&mut p, b"GNRMC,100000.00,V,,,,,,,141026,,,N", 4_500);
+        assert_eq!(p.snapshot(4_500).utc_ms, None, "no fix, no clock");
+        rmc(&mut p, "100000.00", "141026", 5_000);
+        assert_eq!(p.snapshot(6_000).utc_ms, Some(oct14(b"100001")));
+    }
+
+    #[test]
+    fn midnight_gga_before_rmc_keeps_the_day() {
+        let mut p = Parser::default();
+        rmc(&mut p, "235959.50", "141026", 1_000);
+        gga(&mut p, "000000.50", 2_000);
+        let midnight = unix_seconds(*b"151026", *b"000000").unwrap() as u64 * 1000;
+        assert_eq!(p.snapshot(2_000).utc_ms, Some(midnight + 500));
+        rmc(&mut p, "000000.50", "151026", 2_000);
+        assert_eq!(p.snapshot(2_000).utc_ms, Some(midnight + 500));
+    }
+
+    #[test]
+    fn latency_jitter_never_steps_back() {
+        let mut p = Parser::default();
+        let mut last = 0;
+        for (second, late) in [(0u64, 300), (1, 120), (2, 450), (3, 120)] {
+            let read_at = second * 1000 + late;
+            let time = format!("1000{second:02}.00");
+            rmc(&mut p, &time, "141026", read_at);
+            let utc = p.snapshot(read_at).utc_ms.unwrap();
+            assert!(utc >= last, "step back at second {second}: {utc} < {last}");
+            last = utc;
+        }
+        assert_eq!(last, oct14(b"100000") - 120 + 3_120);
+    }
+
+    #[test]
+    fn a_second_or_more_behind_is_a_correction_once_confirmed() {
+        let after = |times: [&str; 3]| {
+            let mut p = Parser::default();
+            rmc(&mut p, "100020.00", "141026", 20_000);
+            for (time, read_at) in times.iter().zip([40_000, 41_000, 42_000]) {
+                rmc(&mut p, time, "141026", read_at);
+            }
+            p.snapshot(42_000).utc_ms.unwrap() - 42_000
+        };
+        let uptime_zero = oct14(b"100000");
+        assert_eq!(
+            after(["100040.50", "100041.50", "100042.50"]),
+            uptime_zero + 500,
+            "ahead is taken at once"
+        );
+        assert_eq!(
+            after(["100039.50", "100040.50", "100041.50"]),
+            uptime_zero,
+            "under a second behind is ignored"
+        );
+        assert_eq!(
+            after(["100000.00", "100001.00", "100002.00"]),
+            uptime_zero - 40_000,
+            "20 s behind, three times, is taken"
+        );
+        assert_eq!(
+            after(["100039.00", "100040.00", "100041.00"]),
+            uptime_zero - 1_000,
+            "1 s behind, three times, is taken"
+        );
+        assert_eq!(
+            after(["100000.00", "100001.00", "100042.00"]),
+            uptime_zero,
+            "an on-time reading resets the count"
+        );
+        assert_eq!(
+            after(["100000.00", "100041.50", "100002.00"]),
+            uptime_zero + 500,
+            "so does one ahead"
+        );
+    }
+
+    #[test]
+    fn a_stall_drained_late_never_steps_the_clock_back() {
+        let mut p = Parser::default();
+        let mut last = 0;
+        let mut check = |p: &Parser, now: u64| {
+            let utc = p.snapshot(now).utc_ms.unwrap();
+            assert!(utc >= last, "step back at {now}: {utc} < {last}");
+            last = utc;
+        };
+        for second in 0..5u64 {
+            let now = second * 1000 + 100;
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
+            check(&p, now);
+        }
+        // The executor stalls for 3 s and then drains the buffered RMCs over
+        // consecutive 10 ms polls, each one late by its age.
+        check(&p, 8_100);
+        for second in 5..9u64 {
+            let now = 8_100 + (second - 5) * 10;
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
+            check(&p, now);
+        }
+        for second in 9..12u64 {
+            let now = second * 1000 + 100;
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
+            check(&p, now);
+        }
+        assert_eq!(last, oct14(b"100011"), "ends on time");
+    }
+
+    #[test]
+    fn a_repeated_reading_changes_nothing() {
+        let mut p = Parser::default();
+        rmc(&mut p, "100000.00", "141026", 5_000);
+        let once = p.snapshot(5_000).utc_ms;
+        rmc(&mut p, "100000.00", "141026", 5_000);
+        assert_eq!(p.snapshot(5_000).utc_ms, once);
+    }
+
+    #[test]
+    fn implausible_dates_never_set_the_clock() {
+        for date in [
+            "230394", "060180", "140406", "310226", "290227", "000126", "151326",
+        ] {
+            let mut p = Parser::default();
+            rmc(&mut p, "100000.00", date, 5_000);
+            assert_eq!(p.snapshot(5_000).state, FixState::Fresh, "{date}");
+            assert_eq!(p.snapshot(5_000).utc_ms, None, "{date}");
+        }
+        let mut p = Parser::default();
+        rmc(&mut p, "100000.00", "290228", 5_000);
+        assert!(p.snapshot(5_000).utc_ms.is_some(), "29 Feb 2028 exists");
+    }
+
+    #[test]
+    fn the_clock_outlives_the_fix_but_not_a_boundary() {
+        let mut p = Parser::default();
+        rmc(&mut p, "100000.00", "141026", 1_000);
+        let at = |p: &Parser, now| p.snapshot(now).utc_ms;
+        body(&mut p, b"GNRMC,100001.00,V,,,,,,,141026,,,N", 2_000);
+        assert_eq!(p.snapshot(2_000).state, FixState::NoFix);
+        assert_eq!(at(&p, 10_000), Some(oct14(b"100009")));
+        body(&mut p, b"GNGGA,100002.00,,,,,0,00,,,M,,M,,", 3_000);
+        assert_eq!(at(&p, 10_000), Some(oct14(b"100009")));
+        p.overflow(1);
+        p.data_loss();
+        assert_eq!(at(&p, 10_000), Some(oct14(b"100009")));
+        p.control_boundary();
+        assert_eq!(at(&p, 10_000), None);
+        rmc(&mut p, "100020.00", "141026", 11_000);
+        assert_eq!(at(&p, 11_000), Some(oct14(b"100020")));
+    }
+
+    #[test]
+    fn calendar_days_are_real() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+        assert_eq!(unix_seconds(*b"141026", *b"231000"), Some(1_792_019_400));
+        assert_eq!(unix_seconds(*b"141326", *b"231000"), None);
+        assert_eq!(unix_seconds(*b"14a026", *b"231000"), None);
+        assert_eq!(unix_seconds(*b"000126", *b"231000"), None);
+        assert_eq!(unix_seconds(*b"310426", *b"231000"), None);
+        assert!(unix_seconds(*b"290228", *b"231000").is_some());
+        assert_eq!(unix_seconds(*b"290227", *b"231000"), None);
+        assert!(
+            unix_seconds(*b"290200", *b"231000").is_some(),
+            "2000 is a leap year"
         );
     }
 

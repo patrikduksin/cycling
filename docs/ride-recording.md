@@ -40,12 +40,15 @@ mise run ride-export                          # Writes .local/exports/<id>/ by d
   interrupted export from zero.
 - Output: raw bytes, SHA-256, manifest, reconstructed ride JSON and GPX. Ride IDs
   restart after clear, so exported identity includes START-slot and raw content hashes.
-- GPX contains only recorded locations and available system UTC. When the clock
-  synchronizes mid-ride, earlier samples of the same running stretch (no pause,
-  gap or invalid record between) are dated from the first timed sample by active
-  time and marked `utc_derived` in JSON. Pause/resume,
-  invalid records, missing locations, sequence gaps and backward UTC split
-  segments. A location-free ride keeps raw/JSON and records why GPX is unavailable.
+- GPX contains only recorded locations and recorded UTC (Wi-Fi SNTP, else the
+  GNSS receiver's clock). When the clock arrives mid-ride, earlier samples of
+  the same running stretch (no pause, gap or invalid record between) are dated
+  from the first timed sample by active time and marked `utc_derived` in JSON.
+  Pause/resume, invalid records, missing locations, sequence gaps and backward
+  UTC split segments. A ride whose Wi-Fi time arrives mid-ride switches from
+  receiver to network time with a sub-second step, which can split a GPX
+  segment (FIT is unaffected). A location-free ride keeps raw/JSON and records
+  why GPX is unavailable.
 
 ### FIT activities
 
@@ -63,8 +66,9 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
   files with Garmin's FIT SDK and fitdecode.
 - Samples are dated like GPX: each running stretch from its first UTC sample;
   a stretch without UTC keeps the previous offset, so its pause counts as no
-  time. A ride with no UTC at all has no FIT until `--start-utc-ms` gives its
-  start.
+  time. A ride is dated once the receiver reports a dated RMC fix, before or
+  during the ride. A ride with no UTC at all has no FIT until `--start-utc-ms`
+  gives its start.
 - Distance comes from wheel speed only. Without a wheel sensor the file has
   none and readers use GPS. The journal holds no altitude and no laps, so the
   file has one lap and no elevation; Strava fills elevation from its own map.
@@ -319,7 +323,7 @@ Fixed settings in this build:
 | --- | --- |
 | Wheel circumference | 2136 mm (stock RC520 700x28c) |
 | Display clock | Santiago summer time, UTC-3; recorded UTC is unmodified |
-| Clock source | Wi-Fi SNTP, with GNSS time of day as a display fallback |
+| Clock source | Wi-Fi SNTP since boot, else the GNSS receiver's dated fixes (carried on through a lost fix); GNSS time of day as a display fallback |
 
 Training profile:
 
@@ -431,10 +435,17 @@ ride recovered after a power cut has no record.
 
 - A sudden power loss or reset can lose the uncommitted batch of up to four samples.
 - Battery percentage has no recorded age and may be stale.
-- Without a synchronized clock, samples have active elapsed time but no calendar
+- Without Wi-Fi time or a GNSS fix, samples have active elapsed time but no calendar
   timestamp, and pause events do not preserve wall-clock pause duration. A
   timestamped upload then needs a supplied start time and cannot recover time
   spent paused.
+- Receiver UTC trails true UTC by the receiver's output latency (under a
+  second). Whether the C606 receiver reports status A with
+  leap-second-uncorrected time before it has UTC parameters is unverified on
+  hardware; the clock follows a correction of a second or more, once three
+  readings half a second apart confirm it, with one step back. A stall whose
+  buffered sentences drain within half a second cannot step it back. Uptime
+  drift can still cause one step back of a second after many hours awake.
 - Bulk MMC recording is proven on the host and in the simulator only. Endurance,
   latency at 20 MHz, power-cut recovery and coexistence with GNSS, display and
   radios still need hardware validation. The harness `MMC OWNED TEST` writes

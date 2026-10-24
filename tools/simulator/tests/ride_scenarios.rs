@@ -2,12 +2,16 @@
 #![cfg(feature = "cycling")]
 use device_api::ant::{LinkState, Request};
 use device_api::ble_transport::Link;
+use device_api::gps::FixState;
 use device_api::input::Button;
+use device_api::positioning::Positioning;
+use firmware_services::gps::unix_seconds;
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
+use vana::ride::fit::Refusal;
 use vana::ride::log::{Entry, Kind, SLOT_SIZE, SLOTS, Sample, Source, commit_word, encode};
 use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, ZONES};
 
@@ -3803,6 +3807,136 @@ fn night_comes_on_time_after_the_gps_fix_is_lost() {
     sim.checkpoint("night without a fix");
 }
 
+/// Receiver UTC in ms at simulated time `t_ms`, for a receiver left on its
+/// default clock: 10:00 UTC on 14 October 2026 at t=0.
+fn receiver_utc_ms(t_ms: u64) -> u64 {
+    unix_seconds(*b"141026", *b"100000").unwrap() as u64 * 1000 + t_ms
+}
+
+/// A rider at speed, so the ride is never auto-paused.
+fn cyclist(sim: &mut Sim) {
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 150.0, 130.0, 80.0);
+}
+
+/// Press START on the ready screen; returns the simulated time of the press.
+fn press_start(sim: &mut Sim) -> u64 {
+    sim.home("RIDE");
+    sim.expect_text("READY");
+    let pressed = sim.now();
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    pressed
+}
+
+/// The ride's start, as the FIT export counts it back from the first dated sample.
+fn fit_start_ms(ride: &shell_simulator::rides::Ride) -> u64 {
+    ride.fit_plan()
+        .expect("the ride is dated")
+        .offset_ms
+        .expect("the plan has a start")
+}
+
+#[test]
+fn a_ride_without_wifi_is_dated_by_the_gps_receiver() {
+    let mut sim = rider();
+    cyclist(&mut sim);
+    let pressed = press_start(&mut sim);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    let ride = sim.rides().pop().unwrap();
+    let utc: Vec<_> = ride.samples().map(|s| s.utc_ms).collect();
+    assert!(utc.iter().all(Option::is_some), "every sample is dated");
+    assert!(
+        utc.windows(2).all(|w| w[0] < w[1]),
+        "time only moves forward"
+    );
+    let start = fit_start_ms(&ride);
+    let expected = receiver_utc_ms(pressed);
+    assert!(
+        start.abs_diff(expected) < 1_000,
+        "the FIT starts at {start}, the rider pressed START at {expected}"
+    );
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.expect_text("OCT 14");
+    sim.checkpoint("the ride is listed by its date");
+}
+
+#[test]
+fn a_fix_found_after_the_start_dates_the_ride_from_its_start() {
+    let mut sim = rider();
+    sim.set_gps_fix(false);
+    cyclist(&mut sim);
+    let pressed = press_start(&mut sim);
+    sim.advance(minutes(3));
+    sim.set_gps_fix(true);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    let ride = sim.rides().pop().unwrap();
+    let samples: Vec<_> = ride.samples().collect();
+    let first_dated = samples.iter().position(|s| s.utc_ms.is_some()).unwrap();
+    assert!(first_dated > 150, "undated for the first 3 minutes");
+    assert!(
+        samples[first_dated..].iter().all(|s| s.utc_ms.is_some()),
+        "dated from the first fix on"
+    );
+    assert!(samples[..first_dated].iter().all(|s| s.utc_ms.is_none()));
+    let start = fit_start_ms(&ride);
+    let expected = receiver_utc_ms(pressed);
+    assert!(
+        start.abs_diff(expected) < 1_000,
+        "the FIT starts at {start}, not at the fix: the rider pressed START at {expected}"
+    );
+}
+
+#[test]
+fn a_ride_through_utc_midnight_keeps_going_forward() {
+    let mut sim = rider();
+    sim.set_gps_clock(23 * 3600 + 59 * 60, (14, 10, 26));
+    cyclist(&mut sim);
+    sim.advance(seconds(5));
+    press_start(&mut sim);
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    let ride = sim.rides().pop().unwrap();
+    let utc: Vec<_> = ride.samples().map(|s| s.utc_ms.unwrap()).collect();
+    assert!(
+        utc.windows(2).all(|w| w[0] < w[1]),
+        "UTC steps back at midnight"
+    );
+    let day = |ms: u64| ms / 86_400_000;
+    let (before, after) = (day(utc[0]), day(*utc.last().unwrap()));
+    assert_eq!(after, before + 1, "the ride rolls into the next UTC day");
+    assert_eq!(
+        after,
+        unix_seconds(*b"151026", *b"000000").unwrap() as u64 / 86_400
+    );
+}
+
+#[test]
+fn a_receiver_date_outside_the_plausible_window_leaves_the_ride_undated() {
+    let mut sim = rider();
+    // A GPS week rollover reports 2006 for today.
+    sim.set_gps_clock(10 * 3600, (14, 10, 6));
+    sim.advance(seconds(5));
+    let gps = sim.device.position.snapshot(sim.now()).unwrap().gps;
+    assert_eq!(gps.state, FixState::Fresh);
+    assert_eq!(gps.utc_ms, None, "the receiver never takes the date");
+    cyclist(&mut sim);
+    sim.advance(seconds(5));
+    press_start(&mut sim);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    let ride = sim.rides().pop().unwrap();
+    assert!(ride.samples().all(|s| s.utc_ms.is_none()));
+    assert_eq!(ride.fit_plan().err(), Some(Refusal::NoClock));
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.expect_text("RIDE 1");
+    sim.expect_no_text("OCT");
+}
+
 /// Numbers glide between quarter-second ANT+ samples: a step in power is
 /// drawn through values in between, never past the new reading, and lands on
 /// it exactly.
@@ -4009,12 +4143,14 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("44/44");
-    // The oldest ride, outside every catalog, reads back.
+    // The oldest ride, outside every catalog, reads back. Dated by the
+    // receiver, the rides list by start time, so the oldest is INTERNAL's first
+    // ride; its first sample still reads the 72 bpm resting rate, hence 98.
     sim.press(Button::BottomRight);
     assert_eq!(sim.vana_page(), "past_ride");
     sim.wait_gone("READING", seconds(5)).unwrap();
     sim.expect_text("SAVED RIDE");
-    sim.expect_field("AVG BPM", "100");
+    sim.expect_field("AVG BPM", "98");
     sim.checkpoint("the oldest ride read back");
     sim.press(Button::TopLeft);
     sim.press(Button::TopLeft);

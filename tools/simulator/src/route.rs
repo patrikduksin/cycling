@@ -1,5 +1,6 @@
 //! Simulated GPS route and NMEA epoch generator for host scenarios.
 
+use firmware_services::gps::days_from_civil;
 use std::fmt::Write;
 
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
@@ -226,8 +227,8 @@ fn attribute(tag: &str, name: &str) -> Option<f64> {
 }
 
 pub struct Nmea {
-    utc_start_s: u32,
-    date: (u8, u8, u8),
+    /// Receiver UTC in ms since the Unix epoch at simulated t=0.
+    start_ms: i64,
     /// RMC carries the ground speed; without it the field is empty.
     pub doppler: bool,
     /// Horizontal dilution of precision reported in GGA.
@@ -237,23 +238,37 @@ pub struct Nmea {
 impl Nmea {
     /// `utc_start_s` is seconds since midnight UTC at simulated t=0; `date` is (day, month, year2).
     pub fn new(utc_start_s: u32, date: (u8, u8, u8)) -> Self {
+        Self::reading(utc_start_s, date, 0)
+    }
+
+    /// A receiver whose clock reads `utc_s` seconds after midnight UTC on
+    /// `date` (day, month, year2) at simulated time `now_ms`.
+    pub fn reading(utc_s: u32, date: (u8, u8, u8), now_ms: u64) -> Self {
+        let (day, month, year) = date;
+        let days = days_from_civil(2000 + i64::from(year), u32::from(month), u32::from(day));
         Self {
-            utc_start_s,
-            date,
+            start_ms: (days * 86_400 + i64::from(utc_s)) * 1000 - now_ms as i64,
             doppler: true,
             hdop: 0.9,
         }
     }
 
-    fn time(&self, now_ms: u64) -> String {
-        let total = (u64::from(self.utc_start_s) * 1000 + now_ms) % 86_400_000;
-        let (s, ms) = (total / 1000, total % 1000);
-        format!(
-            "{:02}{:02}{:02}.{:02}",
-            s / 3600,
-            s / 60 % 60,
-            s % 60,
-            ms / 10
+    /// The receiver's `hhmmss.cc` and `ddmmyy` at simulated time `now_ms`: one
+    /// instant, so the date turns at UTC midnight with the time.
+    fn stamp(&self, now_ms: u64) -> (String, String) {
+        let ms = self.start_ms + now_ms as i64;
+        let (year, month, day) = civil_from_days(ms.div_euclid(86_400_000));
+        let of_day = ms.rem_euclid(86_400_000);
+        let (s, ms) = (of_day / 1000, of_day % 1000);
+        (
+            format!(
+                "{:02}{:02}{:02}.{:02}",
+                s / 3600,
+                s / 60 % 60,
+                s % 60,
+                ms / 10
+            ),
+            format!("{day:02}{month:02}{:02}", year % 100),
         )
     }
 
@@ -266,7 +281,7 @@ impl Nmea {
         course_deg: f64,
         satellites: u8,
     ) -> Vec<u8> {
-        let time = self.time(now_ms);
+        let (time, date) = self.stamp(now_ms);
         let (lat, ns) = coordinate(point.lat, 2, 'N', 'S');
         let (lon, ew) = coordinate(point.lon, 3, 'E', 'W');
         let ele = point.ele.unwrap_or(0.0);
@@ -277,7 +292,6 @@ impl Nmea {
         };
         let hdop = self.hdop;
         let course = course_deg.rem_euclid(360.0);
-        let (d, m, y) = self.date;
         let mut out = String::new();
         sentence(
             &mut out,
@@ -287,25 +301,38 @@ impl Nmea {
         );
         sentence(
             &mut out,
-            &format!(
-                "GNRMC,{time},A,{lat},{ns},{lon},{ew},{knots},{course:.1},{d:02}{m:02}{y:02},,,A"
-            ),
+            &format!("GNRMC,{time},A,{lat},{ns},{lon},{ew},{knots},{course:.1},{date},,,A"),
         );
         out.into_bytes()
     }
 
     /// A no-fix epoch: GNGGA quality 0 and GNRMC status V, both without position.
     pub fn no_fix(&self, now_ms: u64) -> Vec<u8> {
-        let time = self.time(now_ms);
-        let (d, m, y) = self.date;
+        let (time, date) = self.stamp(now_ms);
         let mut out = String::new();
         sentence(&mut out, &format!("GNGGA,{time},,,,,0,00,,,M,,M,,"));
-        sentence(
-            &mut out,
-            &format!("GNRMC,{time},V,,,,,,,{d:02}{m:02}{y:02},,,N"),
-        );
+        sentence(&mut out, &format!("GNRMC,{time},V,,,,,,,{date},,,N"));
         out.into_bytes()
     }
+}
+
+/// The (year, month, day) of a day count from 1970-01-01, the inverse of
+/// `days_from_civil`.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let of_era = z.rem_euclid(146_097);
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * of_year + 2) / 153;
+    let day = (of_year - (153 * month_index + 2) / 5 + 1) as u32;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    } as u32;
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
 }
 
 fn coordinate(value: f64, degree_digits: usize, positive: char, negative: char) -> (String, char) {
@@ -417,9 +444,25 @@ mod tests {
         let point = Point::new(10.999_999_9, -20.0);
         let text = String::from_utf8(nmea.fix(1500, point, 0.0, 0.0, 5)).unwrap();
         assert!(text.contains("GNGGA,000000.50,1100.0000,N,02000.0000,W,"));
+        assert!(
+            text.contains(",020127,,,A*"),
+            "the date turns with the time"
+        );
         let mut acq = Acquisition::default();
         acq.ingest(0, text.as_bytes(), 0, 0);
         assert_eq!(acq.snapshot(0).gps.state, FixState::Fresh);
+    }
+
+    #[test]
+    fn the_date_follows_the_clock_through_months_and_leap_days() {
+        let date = |start: (u32, (u8, u8, u8)), now_ms| {
+            let (time, date) = Nmea::new(start.0, start.1).stamp(now_ms);
+            format!("{date} {time}")
+        };
+        assert_eq!(date((86_399, (31, 12, 26)), 1_000), "010127 000000.00");
+        assert_eq!(date((86_399, (28, 2, 28)), 1_000), "290228 000000.00");
+        assert_eq!(date((86_399, (29, 2, 28)), 1_000), "010328 000000.00");
+        assert_eq!(date((0, (14, 10, 26)), 0), "141026 000000.00");
     }
 
     #[test]

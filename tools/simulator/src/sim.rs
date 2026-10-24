@@ -650,9 +650,9 @@ impl Sim {
                 date.2
             ),
         );
-        let elapsed = (self.device.world.time_ms / 1000 % 86_400) as u32;
+        let now_ms = self.device.world.time_ms;
         if let Some(gps) = &mut self.device.gps {
-            let mut nmea = crate::route::Nmea::new((utc_s + 86_400 - elapsed) % 86_400, date);
+            let mut nmea = crate::route::Nmea::reading(utc_s, date, now_ms);
             nmea.doppler = gps.nmea.doppler;
             nmea.hdop = gps.nmea.hdop;
             gps.nmea = nmea;

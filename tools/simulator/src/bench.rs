@@ -106,7 +106,7 @@ fn cpu_ns() -> u64 {
 }
 
 #[cfg(feature = "cycling")]
-pub use scenes::{SCENES, Scene, measure};
+pub use scenes::{Bus, SCENES, Scene, bus, measure};
 
 #[cfg(feature = "cycling")]
 mod scenes {
@@ -148,6 +148,72 @@ mod scenes {
             reach: workouts,
         },
     ];
+
+    /// What the C606 driver puts on the display bus for each frame a screen
+    /// submits, when it sends only the strips the panel does not show.
+    #[derive(Clone, Debug, Default)]
+    pub struct Bus {
+        /// Pixel bytes of each frame, in submission order.
+        pub bytes: Vec<usize>,
+        /// Commands of all frames: window settings, writes and continues.
+        pub commands: usize,
+        /// Host CPU nanoseconds spent hashing strips, over all frames.
+        pub hash_ns: u64,
+    }
+
+    /// The driver's strip geometry: 20 strips of 16 rows.
+    const STRIP_ROWS: usize = 16;
+
+    /// Run the screen for `ms` and send every frame it submits through the
+    /// driver's strip plan, after one frame to fill the panel.
+    pub fn bus(sim: &mut Sim, ms: u64) -> Bus {
+        use firmware_services::strips::{Send, Shown};
+        let shown = Shown::<20>::new();
+        let display = sim.device.display.clone();
+        let mut bus = Bus::default();
+        let mut submitted = display.0.borrow().submissions;
+        let mut primed = false;
+        for _ in 0..ms / 10 {
+            sim.advance(10);
+            let frame = display.0.borrow();
+            if frame.submissions == submitted {
+                continue;
+            }
+            assert_eq!(frame.submissions, submitted + 1, "a frame went unseen");
+            submitted = frame.submissions;
+            let width = frame.geometry.width;
+            let mut plan = shown.frame(STRIP_ROWS);
+            let (mut bytes, mut commands) = (0, usize::from(plan.full()));
+            let started = super::cpu_ns();
+            let sends: Vec<Send> = frame
+                .pixels
+                .chunks_exact(width * STRIP_ROWS)
+                .enumerate()
+                .map(|(strip, pixels)| {
+                    let words = pixels.as_chunks::<2>().0.iter();
+                    let words = words.map(|&[low, high]| u32::from(low) | u32::from(high) << 16);
+                    plan.send(strip, words)
+                })
+                .collect();
+            let hashed = super::cpu_ns().saturating_sub(started);
+            for send in sends {
+                let (strip_commands, strip_bytes) = match send {
+                    Send::Skip => (0, 0),
+                    Send::Start { .. } => (2, width * STRIP_ROWS * 2),
+                    Send::Continue => (1, width * STRIP_ROWS * 2),
+                };
+                commands += strip_commands;
+                bytes += strip_bytes;
+            }
+            if primed {
+                bus.bytes.push(bytes);
+                bus.commands += commands;
+                bus.hash_ns += hashed;
+            }
+            primed = true;
+        }
+        bus
+    }
 
     /// Paint the next frame `frames` times, plus once counted.
     #[track_caller]

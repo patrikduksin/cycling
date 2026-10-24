@@ -23,6 +23,7 @@ pub mod positioning;
 pub mod sector_log;
 pub mod sound;
 pub mod storage;
+pub mod strips;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod volume;

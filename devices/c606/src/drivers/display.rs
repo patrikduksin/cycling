@@ -9,6 +9,9 @@ use esp_hal::delay::Delay;
 use esp_hal::dma::DmaTxBuf;
 use esp_hal::lcd_cam::lcd::i8080::I8080;
 use esp_hal::lcd_cam::lcd::i8080::I8080Transfer;
+use firmware_services::strips;
+use firmware_services::strips::Send;
+use firmware_services::strips::Shown;
 
 const PANEL_WIDTH: usize = 240;
 const PANEL_HEIGHT: usize = 320;
@@ -17,6 +20,16 @@ const PANEL_HEIGHT: usize = 320;
 const STRIP_ROWS: usize = 16;
 pub const STRIP_BYTES: usize = PANEL_WIDTH * STRIP_ROWS * 2;
 const _: () = assert!(PANEL_HEIGHT % STRIP_ROWS == 0);
+const STRIPS: usize = PANEL_HEIGHT / STRIP_ROWS;
+
+/// What the panel shows, kept static so the main stack does not carry it.
+static SHOWN: Shown<STRIPS> = Shown::new();
+
+/// The panel may not show the last frame any more (a power transition, a
+/// backlight change); the next frame sends every strip.
+pub fn forget() {
+    SHOWN.forget();
+}
 
 /// Fill a strip of `STRIP_ROWS` rows starting at panel row `top`. Rows render
 /// in place when the DMA buffer is 2-byte aligned (it is word-aligned), else
@@ -121,10 +134,10 @@ impl<'d> Display<'d> {
     }
 
     /// Render each strip straight into `next` while the previous strip
-    /// transfers. The panel window covers all rows once, so the first strip
+    /// transfers, and send only the strips the panel does not already show.
+    /// A run of strips to send sets its row window once: its first strip
     /// starts a memory write (RAMWR) and every later one continues it
-    /// (RAMWRC) with no per-strip addressing. Returns the bus and both
-    /// buffers in every case.
+    /// (RAMWRC). Returns the bus and both buffers in every case.
     fn frame(
         bus: Bus<'d>,
         buffer: DmaTxBuf,
@@ -133,29 +146,44 @@ impl<'d> Display<'d> {
     ) -> (Result<(), Error>, Bus<'d>, DmaTxBuf, DmaTxBuf) {
         let started = Instant::now();
         let mut waited = 0;
-        let (result, bus, buffer) =
-            Self::command(bus, buffer, 0x2a, &[0, 0, 0, (PANEL_WIDTH - 1) as u8]);
-        if result.is_err() {
-            return (result, bus, buffer, next);
-        }
-        let bottom = PANEL_HEIGHT - 1;
-        let window = [0, 0, (bottom >> 8) as u8, bottom as u8];
-        let (result, bus, buffer) = Self::command(bus, buffer, 0x2b, &window);
-        if result.is_err() {
-            return (result, bus, buffer, next);
-        }
+        let mut plan = SHOWN.frame(STRIP_ROWS);
+        let (bus, buffer) = if plan.full() {
+            let columns = strips::window(0, PANEL_WIDTH - 1);
+            let (result, bus, buffer) = Self::command(bus, buffer, strips::COLUMN_WINDOW, &columns);
+            if result.is_err() {
+                return (result, bus, buffer, next);
+            }
+            (bus, buffer)
+        } else {
+            (bus, buffer)
+        };
         let mut link = Link::Idle(bus, buffer);
-        for top in (0..PANEL_HEIGHT).step_by(STRIP_ROWS) {
+        for (strip, top) in (0..PANEL_HEIGHT).step_by(STRIP_ROWS).enumerate() {
             next.set_length(STRIP_BYTES);
-            render(&mut next.as_mut_slice()[..STRIP_BYTES], top, row);
+            let pixels = &mut next.as_mut_slice()[..STRIP_BYTES];
+            render(pixels, top, row);
+            let window = match Self::plan(&mut plan, strip, pixels) {
+                Send::Skip => continue,
+                Send::Start { rows } => Some(rows),
+                Send::Continue => None,
+            };
             let blocked = Instant::now();
             let (result, bus, free) = link.settle();
-            waited += blocked.elapsed().as_micros();
             if result.is_err() {
                 return (result, bus, free, next);
             }
-            let command: u16 = if top == 0 { 0x2c } else { 0x3c };
-            match bus.send(command, 0, next) {
+            let (command, bus, free) = match window {
+                Some(rows) => {
+                    let (result, bus, free) = Self::command(bus, free, strips::ROW_WINDOW, &rows);
+                    if result.is_err() {
+                        return (result, bus, free, next);
+                    }
+                    (strips::WRITE, bus, free)
+                }
+                None => (strips::WRITE_CONTINUE, bus, free),
+            };
+            waited += blocked.elapsed().as_micros();
+            match bus.send(u16::from(command), 0, next) {
                 Ok(transfer) => {
                     link = Link::Busy(transfer);
                     next = free;
@@ -168,6 +196,19 @@ impl<'d> Display<'d> {
         waited += blocked.elapsed().as_micros();
         TIMING.record(started.elapsed().as_micros(), waited);
         (result, bus, buffer, next)
+    }
+
+    /// Plan a rendered strip from the 32-bit words the bus sends.
+    fn plan(plan: &mut strips::Frame<'_, STRIPS>, strip: usize, bytes: &[u8]) -> Send {
+        // SAFETY: every bit pattern is a valid u32, and `align_to` keeps the
+        // middle slice inside `bytes` with u32 alignment.
+        let (prefix, words, suffix) = unsafe { bytes.align_to::<u32>() };
+        if prefix.is_empty() && suffix.is_empty() {
+            return plan.send(strip, words.iter().copied());
+        }
+        let words = bytes.as_chunks::<4>().0.iter();
+        let words = words.map(|&word| u32::from_le_bytes(word));
+        plan.send(strip, words)
     }
 
     fn send(&mut self, command: u8, bytes: &[u8]) -> Result<(), Error> {
@@ -225,6 +266,7 @@ impl<'d> Display<'d> {
                 .expect("panel configuration at startup");
             delay.delay_millis(2);
         }
+        SHOWN.forget();
     }
 }
 impl DisplayCapability for Display<'_> {
@@ -253,6 +295,9 @@ impl DisplayCapability for Display<'_> {
             .take()
             .expect("display strip buffer is returned after each frame");
         let (result, bus, buffer, spare) = Self::frame(bus, buffer, spare, &mut row);
+        if result.is_err() {
+            SHOWN.forget();
+        }
         self.resources = Some((bus, buffer));
         self.spare = Some(spare);
         result

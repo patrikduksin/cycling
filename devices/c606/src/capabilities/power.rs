@@ -67,6 +67,9 @@ fn backlight(light: &mut Backlight, suspend: bool) -> Result<(), Error> {
     } else {
         BRIGHTNESS.load(Ordering::Acquire)
     };
+    // Sleep, wake and standby all change the backlight, and the panel is not
+    // known to keep its contents across them.
+    crate::drivers::display::forget();
     let result = light.channel.set_duty(percent).map_err(|_| Error::Failed);
     LIGHT_FAILED.store(result.is_err(), Ordering::Release);
     if result.is_ok() {
@@ -207,6 +210,7 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
         }
         let standby = STANDBY_LIGHT.load(Ordering::Acquire);
         if status().state == State::Charging && light.percent != standby {
+            crate::drivers::display::forget();
             let result = light.channel.set_duty(standby).map_err(|_| Error::Failed);
             LIGHT_FAILED.store(result.is_err(), Ordering::Release);
             if result.is_ok() {

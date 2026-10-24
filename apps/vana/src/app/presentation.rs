@@ -832,8 +832,9 @@ impl Runtime {
     /// The sensors Home and Ready summarise: the saved ANT sensors, then the
     /// selected BLE sensor. A live ANT heart-rate sensor stands for the role,
     /// as the ride prefers it; with none live the rider is on the BLE strap.
-    /// ANT cadence is never read, so BLE cadence always shows. A failed radio
-    /// has no strap to speak of.
+    /// The ride prefers BLE cadence, so a live ANT cadence sensor (cadence-only
+    /// or combined) stands for the role only while the BLE sensor is not
+    /// connected. A failed radio has no strap to speak of.
     fn glance(&self, now: u64) -> heapless::Vec<Glance, GLANCES> {
         use crate::sensors::ble_profile::{Link, Profile};
         let mut glance = self.menu.glance();
@@ -843,8 +844,7 @@ impl Runtime {
             Profile::Cadence => device_type::CADENCE,
             Profile::Echo => return glance,
         };
-        let ant_serves =
-            kind == device_type::HEART_RATE && glance.iter().any(|g| g.kind == kind && g.live);
+        let ant_serves = ant_stands_for(kind, ble.link == Link::Connected, &glance);
         if !matches!(ble.link, Link::Off | Link::Failed) && !ant_serves {
             let battery = ble.battery.map(|battery| battery.status);
             // Cannot fail: the capacity holds every ANT slot and this one.
@@ -1462,9 +1462,42 @@ fn utc_offset(text: &mut Text<38>, offset_s: i64) -> core::fmt::Result {
     }
 }
 
+/// A live saved ANT sensor serves the role of the BLE sensor of `kind`: heart
+/// rate always, as the ride prefers it; cadence (from a cadence-only or a
+/// combined sensor) only while the BLE sensor is not connected, as the ride
+/// prefers that one.
+fn ant_stands_for(kind: u8, ble_connected: bool, glance: &[Glance]) -> bool {
+    let live = |kinds: &[u8]| glance.iter().any(|g| g.live && kinds.contains(&g.kind));
+    match kind {
+        device_type::HEART_RATE => live(&[kind]),
+        _ => !ble_connected && live(&[device_type::CADENCE, device_type::SPEED_CADENCE]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
+        let ant = |kind, live| Glance::ble(kind, live, None);
+        let cad = device_type::CADENCE;
+        let hr = device_type::HEART_RATE;
+        let combined = device_type::SPEED_CADENCE;
+        for ant_cadence in [cad, combined] {
+            assert!(ant_stands_for(cad, false, &[ant(ant_cadence, true)]));
+            assert!(!ant_stands_for(cad, true, &[ant(ant_cadence, true)]));
+            assert!(!ant_stands_for(cad, false, &[ant(ant_cadence, false)]));
+        }
+        assert!(!ant_stands_for(
+            cad,
+            false,
+            &[ant(device_type::SPEED, true)]
+        ));
+        assert!(!ant_stands_for(cad, false, &[]));
+        assert!(ant_stands_for(hr, true, &[ant(hr, true)]));
+        assert!(!ant_stands_for(hr, false, &[ant(cad, true)]));
+    }
     use crate::daylight::sun_state;
     use firmware_services::gps::unix_seconds;
 

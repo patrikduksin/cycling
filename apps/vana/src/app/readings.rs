@@ -3,9 +3,9 @@ use super::{Observations, Runtime};
 use crate::ride::auto::{Motion, Source};
 use crate::ride::gps_speed::{GpsSpeed, Ground};
 use crate::ride::log::{Sample, Status};
-use crate::ride::metrics::{Gradient, Odometer, Power3s, Speed};
+use crate::ride::metrics::{Cadence, Gradient, Odometer, Power3s, Speed};
 use crate::ride::wheel_size::{self, Calibrator};
-use crate::sensors::ant::{Epoch, HeartRate, Power, device_type};
+use crate::sensors::ant::{Crank, Epoch, HeartRate, Power, device_type};
 use crate::sensors::ble_profile::{self, Profile};
 use crate::sensors::radar::{Alert, Radar};
 use device_api::ant::{Ant, CHANNEL_CAPACITY, LinkState, PACKET_CAPACITY, Packet};
@@ -34,16 +34,28 @@ enum Decoded {
     Radar,
     Heart,
     Power,
+    /// The cadence-only sensor.
+    Crank,
+    /// The speed and cadence sensor, whose wheel half `Speed` reads.
+    Combined,
 }
 
 impl Decoded {
-    const ALL: [Self; 3] = [Self::Radar, Self::Heart, Self::Power];
+    const ALL: [Self; 5] = [
+        Self::Radar,
+        Self::Heart,
+        Self::Power,
+        Self::Crank,
+        Self::Combined,
+    ];
 
     const fn device_type(self) -> u8 {
         match self {
             Self::Radar => device_type::RADAR,
             Self::Heart => device_type::HEART_RATE,
             Self::Power => device_type::POWER,
+            Self::Crank => device_type::CADENCE,
+            Self::Combined => device_type::SPEED_CADENCE,
         }
     }
 
@@ -77,6 +89,9 @@ pub(super) struct Readings {
     gradient: Gradient,
     pub(super) heart: Option<Timed<HeartRate>>,
     pub(super) power: Option<Timed<Power>>,
+    /// Crank cadence from the cadence-only sensor and from the combined one.
+    crank: Cadence,
+    combined_crank: Cadence,
     power_3s: Power3s,
     /// 3 s power at the last sample, for the ride page.
     pub(super) power_3s_watts: Option<u16>,
@@ -205,6 +220,8 @@ impl Default for Readings {
             gradient: Gradient::default(),
             heart: None,
             power: None,
+            crank: Cadence::default(),
+            combined_crank: Cadence::default(),
             power_3s: Power3s::default(),
             power_3s_watts: None,
             radar: Radar::new(),
@@ -228,14 +245,26 @@ impl Readings {
             Decoded::Radar => self.radar.reset(),
             Decoded::Heart => self.heart = None,
             Decoded::Power => self.power = None,
+            Decoded::Crank => self.crank.reset(),
+            Decoded::Combined => self.combined_crank.reset(),
         }
+    }
+
+    /// The ANT+ cadence sensor's cadence in tenths of rpm: the cadence-only
+    /// sensor first, then the combined one.
+    fn crank_tenths(&self, now: u64) -> Option<u16> {
+        self.crank
+            .tenths(now)
+            .or_else(|| self.combined_crank.tenths(now))
     }
 
     fn receive(&mut self, packet: Packet) {
         let kind = packet.identity.device_type;
         if matches!(kind, device_type::SPEED | device_type::SPEED_CADENCE) {
             self.speed.receive(packet);
-            return;
+            if kind == device_type::SPEED {
+                return;
+            }
         }
         let Some(decoded) = Decoded::of(kind) else {
             return;
@@ -258,6 +287,15 @@ impl Readings {
             Decoded::Power => {
                 if let Some(value) = Power::decode(packet.data) {
                     self.power = Some(Timed { value, received_ms });
+                }
+            }
+            Decoded::Crank | Decoded::Combined => {
+                if let Some(crank) = Crank::decode(kind, packet.data) {
+                    let cadence = match decoded {
+                        Decoded::Crank => &mut self.crank,
+                        _ => &mut self.combined_crank,
+                    };
+                    cadence.receive(crank, received_ms);
                 }
             }
         }
@@ -514,6 +552,7 @@ impl Runtime {
             .power
             .filter(|power| fresh(power.received_ms))
             .map(|power| power.value);
+        let ant_cadence = readings.crank_tenths(now);
         let mut sample = Sample {
             active_ms: 0,
             utc_ms,
@@ -525,8 +564,9 @@ impl Runtime {
                 .and_then(|heart| heart.value.bpm)
                 .map(u16::from)
                 .or(ble_heart_bpm),
-            // A power meter's crank cadence stands in when no BLE sensor reports one.
-            cadence_tenths: cadence_tenths.or_else(|| {
+            // BLE cadence first, then an ANT+ cadence sensor, then the power
+            // meter's own crank.
+            cadence_tenths: cadence_tenths.or(ant_cadence).or_else(|| {
                 power
                     .and_then(|power| power.cadence_rpm)
                     .map(|rpm| u16::from(rpm) * 10)

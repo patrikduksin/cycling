@@ -461,14 +461,16 @@ and a `POWER` `BEST` caption under each new best-power bar on page 3.
 FORM, the fourth row of PROFILE, opens fitness, fatigue and form
 (`screens::form`, numbers from `ride::fitness`): FITNESS and FATIGUE as `CAPTION`
 over a `BODY` value in `POWER` (training stress is power's colour), and FORM
-beside its verdict, both in the verdict's colour: `GREEN` FRESH, `WHITE` EVEN,
-`AMBER` TIRED, `RED` VERY TIRED. Six 24 px bars, one per week, stand on a
-`TERTIARY` zero line, up for positive form and down for negative, in the colour
-of their own week's verdict and to a fixed scale (50 points is 36 px) so weeks
-compare. `CAPTION`s name only the ends, 6 WEEKS AGO and NOW, and a grey note says rides
-without power are left out. Where there is nothing to show the page says why in
-a `BODY` headline and a grey line (READING RIDES, NO DATE YET, NO POWER RIDES).
-The page has no cues.
+beside its verdict. Only the ends of the range take a colour: `GREEN` FRESH
+(+5 to +25) and `RED` VERY TIRED (below -30). RESTED (above +25), EVEN (-10 to
++4) and BUILDING (-30 to -11) are `WHITE`, since the cost of training is not a
+warning. Six 24 px bars, one per week, stand on a `TERTIARY` zero line, up for
+positive form and down for negative, in the colour of their own week's verdict
+and to a fixed scale (50 points is 36 px) so weeks compare. `CAPTION`s name
+only the ends, 6 WEEKS AGO and NOW, and a grey note says rides without power
+are left out, only when some were. Where there is nothing to show the page says
+why in a `BODY` headline and a grey line (READING RIDES, NO DATE YET with GET A
+GPS FIX, NO POWER RIDES with NEEDS A POWER METER). The page has no cues.
 
 MAIN PAGE has two rows, LOWER LEFT and LOWER RIGHT, one for each reading on the
 main page's last line. Each steps through CADENCE, DISTANCE, NP, AVG POWER,

@@ -395,24 +395,32 @@ once Settings, BODY holds a weight; BACK returns to Settings.
 
 ## Form
 
-Settings, PROFILE, FORM (its row reads FITNESS) opens the rider's training
-load from the last seven weeks of rides with power. FITNESS is the 42-day
+Settings, PROFILE, FORM opens the rider's training load from the last four
+months of rides with power. Its row reads the form number and word as of the
+last time the page was open, or OPEN TO SEE before that. FITNESS is the 42-day
 average of the daily training stress, FATIGUE the 7-day one, and FORM is
-fitness minus fatigue, with a word for it: FRESH from +5, EVEN down to -10,
-TIRED down to -30 and VERY TIRED below. Under them one bar a week shows how
-form stood at the end of each of the last six weeks, up for rested and down for
-tired, from 6 WEEKS AGO to NOW. The page says RIDES WITHOUT POWER ARE LEFT OUT.
-BACK returns to Settings.
+fitness minus fatigue, with a word for it: RESTED above +25 (white), FRESH
+from +5 to +25 (green), EVEN from -10 to +4 (white), BUILDING from -30 to -11
+(white, the normal cost of training) and VERY TIRED below -30 (red). Under them one bar
+a week shows how form stood at the end of each of the last six weeks, up for
+positive and down for negative, from 6 WEEKS AGO to NOW. BACK returns to
+Settings.
 
 - The stress is each ride's TSS (see the rides list), at the FTP the ride was
   saved with where its facts are still kept, else the FTP now, added up by the
   day the ride started in the status-bar clock's zone. A day with no ride
-  counts zero, so both averages decay. Both start at the mean of the window's
-  first week, so a steady rider reads EVEN rather than tired. Rides older than
-  49 days do not count.
+  counts zero, so both averages decay. A ride without power counts for
+  nothing, and when there were any in the window the page says RIDES WITHOUT
+  POWER ARE LEFT OUT.
+- The averages need a starting value, and the first week of the 120 days
+  gives it (its mean stress). Its effect fades with the 42-day average, so the
+  numbers match the whole history to within a point once the rider has about
+  four months of rides, and are an estimate before that. Rides older than 120
+  days do not count.
 - Opening FORM starts the ride index if nothing has yet, and the page says
   READING RIDES until both journals are read. Without a date it says NO DATE
-  YET, and with no ride with power in the window, NO POWER RIDES.
+  YET and GET A GPS FIX, and with no ride with power in the window, NO POWER
+  RIDES and NEEDS A POWER METER.
 - Nothing is saved: the page is rebuilt from the ride index and the facts
   after every boot.
 

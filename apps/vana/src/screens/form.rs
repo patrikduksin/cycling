@@ -287,10 +287,7 @@ mod tests {
         for (mode, want) in [
             (Mode::Reading, ["READING RIDES", "FORM SHOWS WHEN DONE"]),
             (Mode::NoClock, ["NO DATE YET", "GET A GPS FIX"]),
-            (
-                Mode::NoPower,
-                ["NO POWER RIDES", "NEEDS A POWER METER"],
-            ),
+            (Mode::NoPower, ["NO POWER RIDES", "NEEDS A POWER METER"]),
         ] {
             let view = view(mode);
             view.canvas.assert_laid_out(full(), &want, "state");

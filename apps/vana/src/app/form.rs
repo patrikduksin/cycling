@@ -14,12 +14,15 @@ use super::history::WeeksKey;
 use crate::ride::fitness::Daily;
 use crate::screens::form::{Mode, signed, verdict};
 use crate::screens::workout::{Page, Text};
+use core::cell::RefCell;
 use core::fmt::Write;
 use device_api::input::Button;
 
 #[derive(Default)]
 pub(super) struct Kept {
-    daily: Daily,
+    /// Behind a `RefCell` so the fold can fill it in place while it reads
+    /// the rides through `&self`, with no 256 byte copy on the tick's stack.
+    daily: RefCell<Daily>,
     /// What the rides read as of the last fold, and when.
     folded: Option<(WeeksKey, Mode)>,
     /// What the page shows.
@@ -85,7 +88,7 @@ impl Runtime {
         }
         let zone = self.preferences.options.zone;
         let offset = |utc_s| zone.offset_s(utc_s);
-        let mut daily = core::mem::take(&mut self.form.daily);
+        let mut daily = self.form.daily.borrow_mut();
         daily.reset(utc_ms, &offset);
         self.each_ride(|ride, stress| daily.add(ride.first_utc_ms, stress, &offset));
         let mode = if daily.powered == 0 {
@@ -96,7 +99,6 @@ impl Runtime {
                 left_out: daily.unpowered != 0,
             }
         };
-        self.form.daily = daily;
         self.form.folded = Some((key, mode));
         mode
     }

@@ -72,6 +72,17 @@ impl Edge {
     }
 }
 
+/// One tile's bytes: where on the grid, and which version of them. A pack
+/// transfer can put other bytes under the same key, so an edge or point
+/// number holds only for the tile it was read from. The edge count keeps
+/// every edge number in range even for a pack forged to keep the CRC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileId {
+    pub key: TileKey,
+    pub crc: u32,
+    pub edges: u16,
+}
+
 /// A checked view of a tile's bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct Tile<'a> {
@@ -137,6 +148,14 @@ impl<'a> Tile<'a> {
             edges: usize::from(u16_at(bytes, 10)),
             vertices: u32_at(bytes, 12) as usize,
             lon_um: u32_at(bytes, 16),
+        }
+    }
+
+    pub fn id(&self) -> TileId {
+        TileId {
+            key: self.key,
+            crc: u32_at(self.bytes, 24),
+            edges: self.edges as u16,
         }
     }
 

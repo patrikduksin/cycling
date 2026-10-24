@@ -11,7 +11,7 @@ use crate::geo::{self, Point};
 use crate::matcher::{Matched, Matcher};
 use crate::pack::{Error, HEADER_BYTES, Header, Source, TileKey};
 pub use crate::predict::{End, MAX_SAMPLES, SAMPLE_M};
-use crate::predict::{Prediction, predict};
+use crate::predict::{Need, Prediction, predict};
 
 /// Movement that sets a new heading: under it, GPS noise dominates.
 const HEADING_MOVE_M: f32 = 15.0;
@@ -350,7 +350,12 @@ impl<'a> Lookahead<'a> {
             };
             let mut samples = [0i16; MAX_SAMPLES];
             match predict(&self.cache, &header, &matched, self.horizon_m, &mut samples) {
-                Err(key) => {
+                Err(Need::Match) => {
+                    self.matcher.reset();
+                    self.match_due = true;
+                    return Status::Working;
+                }
+                Err(Need::Tile(key)) => {
                     if self.reload(key) {
                         return Status::Working;
                     }

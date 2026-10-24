@@ -179,7 +179,7 @@ fn ride(pack: &[u8], route: Vec<(i32, i32, i32)>, group: u16) -> Ride {
         let result = ahead.ahead();
         if second > 5 {
             let matched = result.matched.expect("matched on the road");
-            let tile = tile_at(pack, &header, matched.tile);
+            let tile = tile_at(pack, &header, matched.tile.key);
             on_road += u32::from(tile.edge(matched.edge).group == group);
             forks += u32::from(result.end == End::Fork);
             // How far the prediction follows the road's real profile.

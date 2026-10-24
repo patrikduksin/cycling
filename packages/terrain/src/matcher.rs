@@ -12,7 +12,7 @@
 use crate::cache::{Cache, Lookup};
 use crate::geo::{self, Point};
 use crate::pack::{Header, TileKey};
-use crate::tile::{Tile, flag};
+use crate::tile::{Tile, TileId, flag};
 
 pub const RADIUS_M: f32 = 40.0;
 const DISTANCE_M: f32 = 15.0;
@@ -36,7 +36,7 @@ const KEEP: usize = 8;
 /// The rider's place on the road graph.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Matched {
-    pub tile: TileKey,
+    pub tile: TileId,
     pub edge: u16,
     /// The point index the projection lies after (segment `segment` to
     /// `segment + 1`) and how far along that segment, 0..1.
@@ -79,7 +79,7 @@ struct Candidate {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Matcher {
     current: Option<Matched>,
-    challenger: Option<(TileKey, u16, u8)>,
+    challenger: Option<(TileId, u16, u8)>,
     misses: u8,
 }
 
@@ -240,6 +240,7 @@ impl Matcher {
         heading: Option<f32>,
         best: &mut [Option<Candidate>; KEEP],
     ) {
+        let id = tile.id();
         let lon_um = tile.lon_um;
         let here = (0.0, 0.0);
         for number in 0..tile.edge_count() as u16 {
@@ -295,7 +296,7 @@ impl Matcher {
                 // over the last 15 m cuts the corner by up to 90 degrees.
                 let held = self
                     .current
-                    .filter(|m| m.tile == tile.key && m.edge == number)
+                    .filter(|m| m.tile == id && m.edge == number)
                     .and_then(|m| m.forward);
                 let keep_forward = match held {
                     Some(true) => ahead <= REVERSE_DEG,
@@ -325,9 +326,9 @@ impl Matcher {
             }
             let mut joined = false;
             if let Some(current) = self.current {
-                if current.tile == tile.key && current.edge == number {
+                if current.tile == id && current.edge == number {
                     cost -= SAME_BONUS;
-                } else if current.tile == tile.key {
+                } else if current.tile == id {
                     let was = tile.edge(current.edge);
                     if [was.from, was.to]
                         .iter()
@@ -341,7 +342,7 @@ impl Matcher {
             let za = geo::z_dm(tile.point(&edge, usize::from(segment)));
             let zb = geo::z_dm(tile.point(&edge, usize::from(segment) + 1));
             let found = Matched {
-                tile: tile.key,
+                tile: id,
                 edge: number,
                 segment,
                 fraction,

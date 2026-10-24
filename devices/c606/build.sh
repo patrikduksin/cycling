@@ -75,4 +75,6 @@ archive="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.
 mkdir -p "$archive"
 cp "$elf" "$archive/.$CYCLING_BUILD_COMMIT$suffix-$variant.elf.$$"
 mv -f "$archive/.$CYCLING_BUILD_COMMIT$suffix-$variant.elf.$$" "$archive/$CYCLING_BUILD_COMMIT$suffix-$variant.elf"
-ls -1t "$archive"/*.elf | tail -n +25 | xargs -r rm -f
+# Best effort: a concurrent build in another worktree may prune a file between
+# the glob and ls, which must not fail this build.
+{ ls -1t "$archive"/*.elf 2>/dev/null | tail -n +25 | xargs -r rm -f; } || true

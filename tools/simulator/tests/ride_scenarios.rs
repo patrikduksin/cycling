@@ -4521,6 +4521,7 @@ fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
     let plan = vana::ride::fit::write_all(
         slots[start..].iter(),
         ride,
+        Default::default(),
         Some(1_789_000_000_000),
         &mut fit,
     )

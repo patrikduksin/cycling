@@ -286,7 +286,7 @@ fn read(region: &mut Region, name: &str) -> Vec<u8> {
 /// A winding road of `km` with a fix every `step` metres: the heading turns
 /// by a curvature that wanders, with a hairpin now and then, as roads in the
 /// hills do.
-fn road(km: f64, step: f64, seed: u64) -> Vec<Point> {
+pub(crate) fn road(km: f64, step: f64, seed: u64) -> Vec<Point> {
     let mut rng = Rng::new(seed);
     let (mut east, mut north, mut heading, mut curve) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mut points = std::vec![at(0.0, 0.0)];

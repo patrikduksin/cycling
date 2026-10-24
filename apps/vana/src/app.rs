@@ -11,7 +11,7 @@ use device_api::{
 
 mod back;
 mod bests;
-pub use back::{BACK_CRUMBS, BackToStart, Crumb};
+pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
 mod cues;
 mod history;

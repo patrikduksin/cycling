@@ -122,7 +122,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 /// Without PSRAM the back-to-start page says NO TRACK.
 #[cfg(feature = "cycling")]
 async fn attach_back(sdk: &mut vana::app::Runtime) {
-    use vana::app::{BACK_CRUMBS, BackToStart, Crumb};
+    use vana::app::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
     let Ok(layout) = core::alloc::Layout::array::<Crumb>(BACK_CRUMBS) else {
         return;
     };
@@ -145,6 +145,25 @@ async fn attach_back(sdk: &mut vana::app::Runtime) {
     // alignment for `Crumb`, all zero bytes, which is a valid `Crumb`. It is
     // never deallocated and this is its only reference.
     let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), BACK_CRUMBS) };
+    // The map's track is zero bytes to begin with too: nothing shown yet.
+    let frame = core::alloc::Layout::new::<MapFrame>();
+    // SAFETY: `MapFrame` has a non-zero size; the block is never freed.
+    let map = unsafe { device::drivers::psram::allocate_external(frame) };
+    if map.is_null() {
+        log::warn!("back to start: no PSRAM for the map");
+        return;
+    }
+    for offset in (0..frame.size()).step_by(4096) {
+        let len = (frame.size() - offset).min(4096);
+        // SAFETY: the allocator returned `frame.size()` writable bytes at
+        // `map`; `offset + len` stays within them.
+        unsafe { core::ptr::write_bytes(map.add(offset), 0, len) };
+        embassy_futures::yield_now().await;
+    }
+    // SAFETY: the block holds a `MapFrame` at its alignment, all zero bytes,
+    // which is a valid `MapFrame`. It is never deallocated and this is its
+    // only reference.
+    let map = unsafe { &mut *map.cast::<MapFrame>() };
     let state = core::alloc::Layout::new::<BackToStart>();
     // SAFETY: `BackToStart` has a non-zero size; the block is never freed.
     let back = unsafe { device::drivers::psram::allocate_external(state) }.cast::<BackToStart>();
@@ -156,7 +175,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) {
     // alignment. It is initialized by this write, never deallocated, and
     // this is its only reference.
     let back = unsafe {
-        back.write(BackToStart::new(crumbs));
+        back.write(BackToStart::new(crumbs, map));
         &mut *back
     };
     sdk.attach_back(back);

@@ -24,7 +24,7 @@ use crate::screens::chrome::{
 use crate::screens::workout::{Text, View};
 use core::f32::consts::TAU;
 use firmware_shell::rendering::font::blend;
-use libm::{cosf, sinf, sqrtf};
+use libm::{cosf, powf, sinf, sqrtf};
 
 /// What the page draws: the breadcrumb and where the rider is on it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -101,6 +101,43 @@ impl Track<'_> {
     }
 }
 
+/// What a frame was filled from: refill it only when this changes, about
+/// once a second, not on every radar redraw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Key {
+    available: bool,
+    crumbs: usize,
+    newest: u32,
+    here: Option<(u32, u32)>,
+    heading: Option<u16>,
+    home: Option<(usize, Option<(u32, u32)>)>,
+}
+
+impl Track<'_> {
+    fn key(&self) -> Key {
+        let bits = |(x, y): Point| (x.to_bits(), y.to_bits());
+        Key {
+            available: self.available,
+            crumbs: self.crumbs.len(),
+            newest: self.crumbs.last().map_or(0, |c| c.along.to_bits()),
+            here: self.here.map(bits),
+            heading: self.heading,
+            home: self
+                .home
+                .map(|(segment, matched)| (segment, matched.map(bits))),
+        }
+    }
+}
+
+/// Refill `frame` from `track` unless `held` says it already shows it.
+pub fn update(frame: &mut Frame, held: &mut Option<Key>, track: &Track) {
+    let key = track.key();
+    if *held != Some(key) {
+        fill(frame, track);
+        *held = Some(key);
+    }
+}
+
 /// The header baseline, as on the back-to-start page.
 const HEAD: usize = 40;
 /// Where the track is drawn: the rider's column, and rows from `TOP` to
@@ -133,22 +170,38 @@ const RIDER_RADIUS: i32 = 7;
 const BAR_MAX_PX: f32 = 56.0;
 const BAR_THICKNESS: usize = 3;
 
-/// Points kept after projection, and so segments one fewer.
-const MAX_POINTS: usize = 161;
-/// Points closer than this to the last kept are dropped.
+/// Segments kept after projection.
+const MAX_SEGMENTS: usize = 255;
+/// Points closer than this to the last kept are dropped, widening to
+/// `MAX_STEP` when the segments do not fit.
 const MIN_STEP: f32 = 2.0;
+const MAX_STEP: f32 = 24.0;
+/// Laps over the same road are drawn once: the page is divided into cells
+/// this many pixels wide, and a segment over cells already drawn is skipped.
+const CELL: usize = 4;
+const CELLS_ACROSS: usize = super::BODY
+    .right
+    .saturating_sub(super::BODY.left)
+    .div_ceil(CELL);
+const CELLS_DOWN: usize = super::BODY
+    .bottom
+    .saturating_sub(super::BODY.top)
+    .div_ceil(CELL);
+const GRID_BYTES: usize = (CELLS_ACROSS * CELLS_DOWN).div_ceil(8);
+/// A point farther than this from the rider is a glitch, not part of the fit.
+const GLITCH_M: f32 = 100_000.0;
 /// Rows per bucket, from the top of the body.
 const BAND: usize = 16;
 const BANDS: usize = (super::BODY.bottom - super::BODY.top).div_ceil(BAND);
 /// Entries across all buckets: a segment sits in each band it reaches.
-const ITEMS: usize = 1024;
+const ITEMS: usize = 1536;
 /// Columns a row of the page covers.
 const SPAN: usize = super::BODY.right - super::BODY.left;
 
 const _: () = assert!(BOTTOM <= crate::screens::chrome::TOAST.top);
 const _: () = assert!(HEAD + 12 < TOP);
 const _: () = assert!(RIDER_Y > TOP && RIDER_Y < BOTTOM);
-const _: () = assert!(MAX_POINTS - 1 < 256, "segments are bucketed as bytes");
+const _: () = assert!(MAX_SEGMENTS < 256, "segments are bucketed as bytes");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Show {
@@ -160,25 +213,37 @@ enum Show {
     Track,
 }
 
-/// The track in screen space for one frame.
+/// One drawn stretch of the track, in pixels.
+#[derive(Clone, Copy, Default)]
+struct Segment {
+    a: Point,
+    b: Point,
+    /// On the far side of the way home.
+    far: bool,
+}
+
+/// The track in screen space: refilled when the rider or the breadcrumb
+/// moves, painted every frame until then. Composition places it in PSRAM,
+/// zeroed, so all zero bytes are a valid `Frame`: nothing shown yet.
 #[derive(Clone)]
 pub struct Frame {
     show: Show,
-    points: [Point; MAX_POINTS],
+    segments: [Segment; MAX_SEGMENTS],
     count: usize,
-    /// Segments from this one on are the far part of the track.
-    far: usize,
-    colors: [u16; 2],
+    /// Two or more points to draw: the page never says it has no track.
+    has_track: bool,
     /// Where each band's segments start in `items`, and the segments.
     starts: [u16; BANDS + 1],
     items: [u8; ITEMS],
-    /// The chevron: tip, left wing, right wing, when heading up.
-    chevron: Option<[Point; 3]>,
+    /// The chevron: tip, left wing, right wing; drawn when heading up.
+    chevron: [Point; 3],
     /// The rider is drawn as a disc, or not at all without a fix.
     rider: bool,
     start: Point,
-    /// Pixels per metre.
+    /// Pixels per metre, and the zoom step it is.
     scale: f32,
+    /// The zoom step plus one; zero before the first fill.
+    zoom_held: usize,
     following: bool,
     heading_up: bool,
     /// No fresh fix: the track is where it was.
@@ -189,16 +254,16 @@ impl Default for Frame {
     fn default() -> Self {
         Self {
             show: Show::Unavailable,
-            points: [(0.0, 0.0); MAX_POINTS],
+            segments: [Segment::default(); MAX_SEGMENTS],
             count: 0,
-            far: usize::MAX,
-            colors: [WHITE; 2],
+            has_track: false,
             starts: [0; BANDS + 1],
             items: [0; ITEMS],
-            chevron: None,
+            chevron: [(0.0, 0.0); 3],
             rider: false,
             start: (0.0, 0.0),
-            scale: 1.0,
+            scale: 0.0,
+            zoom_held: 0,
             following: false,
             heading_up: false,
             lost: false,
@@ -208,15 +273,25 @@ impl Default for Frame {
 
 impl Frame {
     fn segments(&self) -> usize {
-        self.count.saturating_sub(1)
+        self.count
     }
 
     fn segment(&self, i: usize) -> (Point, Point) {
-        (self.points[i], self.points[i + 1])
+        (self.segments[i].a, self.segments[i].b)
     }
 
     fn color(&self, segment: usize) -> usize {
-        usize::from(segment >= self.far)
+        usize::from(self.segments[segment].far)
+    }
+
+    /// The near and far parts of the track: the way home is green while
+    /// following, and what is left behind grey.
+    fn colors(&self) -> [u16; 2] {
+        if self.following {
+            [GREEN, SECONDARY]
+        } else {
+            [WHITE; 2]
+        }
     }
 }
 
@@ -255,10 +330,15 @@ impl Reach {
     }
 }
 
-/// How many pixels a metre is: the closest step of the zoom ladder that
-/// keeps `reach` on the page, within 500 m across to the widest. Steps
-/// are 20% apart, so a heading that wobbles rarely changes the zoom.
-fn zoom(reach: Reach) -> f32 {
+/// The span in metres across the page at zoom `step` of the ladder.
+fn span(step: usize) -> f32 {
+    MIN_SPAN_M * powf(STEP, step as f32)
+}
+
+/// The step of the zoom ladder that keeps `reach` on the page, from 500 m
+/// across to the widest. Steps are 20% apart, and a zoom that has stepped
+/// out steps back in only once the track fits 90% of the closer step.
+fn zoom(reach: Reach, held: Option<usize>) -> usize {
     let needed = [
         (reach.side, SIDE_PX),
         (reach.ahead, AHEAD_PX),
@@ -267,18 +347,16 @@ fn zoom(reach: Reach) -> f32 {
     .into_iter()
     .map(|(metres, room)| WIDTH_PX * metres / room)
     .fold(0.0, f32::max);
-    let mut span = MIN_SPAN_M;
-    for _ in 0..MAX_STEPS {
-        if span >= needed {
-            break;
-        }
-        span *= STEP;
+    let fitting = (0..MAX_STEPS).find(|&step| span(step) >= needed);
+    let fitting = fitting.unwrap_or(MAX_STEPS);
+    match held {
+        Some(held) if fitting < held && needed > 0.9 * span(held - 1) => held,
+        _ => fitting,
     }
-    WIDTH_PX / span
 }
 
 /// Project the track and thin it to what a frame can paint.
-pub(super) fn fill(frame: &mut Frame, track: &Track) {
+fn fill(frame: &mut Frame, track: &Track) {
     frame.show = if !track.available {
         Show::Unavailable
     } else if track.centre().is_none() {
@@ -287,87 +365,135 @@ pub(super) fn fill(frame: &mut Frame, track: &Track) {
         Show::Track
     };
     frame.count = 0;
-    frame.chevron = None;
+    frame.has_track = false;
     frame.rider = false;
-    frame.far = usize::MAX;
-    frame.colors = [WHITE; 2];
+    frame.heading_up = false;
+    frame.following = false;
     frame.starts = [0; BANDS + 1];
     let Some(centre) = track.centre().filter(|_| frame.show == Show::Track) else {
+        frame.zoom_held = 0;
         return;
     };
     let total = track.total();
     let heading = track.heading.filter(|_| track.here.is_some());
     let turn = rotation(heading);
     let mut reach = Reach::default();
-    let mut include = |p: Point| reach.include(axes(p, centre, turn));
+    let mut include = |p: Point| {
+        let (right, ahead) = axes(p, centre, turn);
+        if right * right + ahead * ahead < GLITCH_M * GLITCH_M {
+            reach.include((right, ahead));
+        }
+    };
     include((0.0, 0.0));
     (0..total).for_each(|i| include(track.at(i)));
-    let scale = zoom(reach);
+    let step = zoom(reach, frame.zoom_held.checked_sub(1));
+    frame.zoom_held = step + 1;
+    let scale = WIDTH_PX / span(step);
     frame.scale = scale;
     frame.start = project((0.0, 0.0), centre, turn, scale);
     frame.following = track.home.is_some();
     frame.heading_up = heading.is_some();
     frame.lost = track.here.is_none();
     frame.rider = track.here.is_some() && heading.is_none();
-    if track.home.is_some() {
-        frame.colors = [GREEN, SECONDARY];
-    }
-    if heading.is_some() {
-        let (x, y) = (CX as f32, RIDER_Y as f32);
-        frame.chevron = Some([(x, y - 9.0), (x - 8.0, y + 8.0), (x + 8.0, y + 8.0)]);
-    }
+    let (x, y) = (CX as f32, RIDER_Y as f32);
+    frame.chevron = [(x, y - 9.0), (x - 8.0, y + 8.0), (x + 8.0, y + 8.0)];
     let home_end = track.home_end();
     let mut step = MIN_STEP;
     loop {
-        let fits = thin(frame, track, centre, turn, step, home_end) && bucket(frame);
-        if fits || step > 1_000.0 {
+        // At the widest step what does not fit is the oldest of the track.
+        let last_try = step >= MAX_STEP;
+        let fits = thin(frame, track, (centre, turn), step, home_end, last_try) && bucket(frame);
+        if fits || last_try {
             break;
         }
-        step *= 1.5;
+        step = (step * 1.5).min(MAX_STEP);
+    }
+    frame.has_track = frame.count > 0 || track.crumbs.len() >= 2;
+}
+
+/// The cells a segment crosses, as (column, row) while on the page.
+fn cells(a: Point, b: Point, mut visit: impl FnMut(Option<usize>)) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let samples = ((sqrtf(dx * dx + dy * dy) * 2.0 / CELL as f32) as usize).clamp(1, 400);
+    for k in 0..=samples {
+        let t = k as f32 / samples as f32;
+        let (x, y) = (
+            a.0 + t * dx - super::BODY.left as f32,
+            a.1 + t * dy - super::BODY.top as f32,
+        );
+        let inside = x >= 0.0 && y >= 0.0;
+        let (column, row) = ((x / CELL as f32) as usize, (y / CELL as f32) as usize);
+        visit(
+            (inside && column < CELLS_ACROSS && row < CELLS_DOWN)
+                .then_some(row * CELLS_ACROSS + column),
+        );
     }
 }
 
-/// Keep the points at least `step` pixels apart, the first, the last and
-/// the end of the way home always. False when they do not fit.
+/// Project the track into segments at least `step` pixels long, each end
+/// kept where the road bends, skipping what an earlier lap already drew.
+/// The track's first and last points and the end of the way home stay.
+/// False when the segments do not fit; with `newest_first` the newest
+/// segments are kept and it does not fail.
 fn thin(
     frame: &mut Frame,
     track: &Track,
-    centre: Point,
-    turn: (f32, f32),
+    (centre, turn): (Point, (f32, f32)),
     step: f32,
     home_end: Option<usize>,
+    newest_first: bool,
 ) -> bool {
     let total = track.total();
-    let (mut count, mut last) = (0, (f32::MAX, f32::MAX));
-    let mut forced = false;
-    for i in 0..total {
-        let p = project(track.at(i), centre, turn, frame.scale);
-        let (dx, dy) = (p.0 - last.0, p.1 - last.1);
-        let wanted =
-            i == 0 || i + 1 == total || Some(i) == home_end || dx * dx + dy * dy >= step * step;
+    frame.count = 0;
+    if total < 2 {
+        return true;
+    }
+    let project_at = |i: usize| project(track.at(i), centre, turn, frame.scale);
+    let order = |k: usize| if newest_first { total - 1 - k } else { k };
+    let mut grid = [0u8; GRID_BYTES];
+    let mut anchor = project_at(order(0));
+    for k in 1..total {
+        let i = order(k);
+        let p = project_at(i);
+        let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
+        if dx * dx + dy * dy < 0.01 {
+            continue;
+        }
+        let wanted = k + 1 == total || Some(i) == home_end || dx * dx + dy * dy >= step * step;
         if !wanted {
             continue;
         }
-        // The last point stands in for a kept one it all but repeats, or is
-        // dropped when that one has to stay.
-        if i + 1 == total && dx * dx + dy * dy < step * step && Some(i) != home_end {
-            if forced {
-                continue;
+        let drawn = {
+            let mut seen = 0;
+            let mut total_cells = 0;
+            cells(anchor, p, |cell| {
+                total_cells += 1;
+                seen += usize::from(cell.is_some_and(|c| grid[c / 8] >> (c % 8) & 1 == 1));
+            });
+            seen == total_cells
+        };
+        let far = home_end.is_some_and(|end| i.max(order(k - 1)) > end);
+        if !drawn {
+            if frame.count == MAX_SEGMENTS {
+                if newest_first {
+                    break;
+                }
+                return false;
             }
-            count -= 1;
+            frame.segments[frame.count] = Segment {
+                a: anchor,
+                b: p,
+                far,
+            };
+            frame.count += 1;
+            cells(anchor, p, |cell| {
+                if let Some(c) = cell {
+                    grid[c / 8] |= 1 << (c % 8);
+                }
+            });
         }
-        forced = i == 0 || Some(i) == home_end;
-        if count == MAX_POINTS {
-            return false;
-        }
-        if Some(i) == home_end {
-            frame.far = count;
-        }
-        frame.points[count] = p;
-        count += 1;
-        last = p;
+        anchor = p;
     }
-    frame.count = count;
     true
 }
 
@@ -493,7 +619,8 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         }
         touch(range);
     }
-    if let Some([tip, left, right]) = frame.chevron {
+    if frame.heading_up {
+        let [tip, left, right] = frame.chevron;
         for (a, b) in [(left, tip), (tip, right)] {
             let Some(range) = columns(a, b, CHEVRON_HALF, y) else {
                 continue;
@@ -509,11 +636,12 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         return;
     }
     let left = super::BODY.left;
+    let colors = frame.colors();
     row.each_over(left + first..left + last, |x, under| {
         let held = track[x - left];
         let mut color = match held & 15 {
             0 => under,
-            c => blend(frame.colors[usize::from(held >> 4)], under, c),
+            c => blend(colors[usize::from(held >> 4)], under, c),
         };
         if rider[x - left] > 0 {
             color = blend(ACCENT, color, rider[x - left]);
@@ -535,9 +663,10 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
     }
     let mut color = match held & 15 {
         0 => under,
-        c => blend(frame.colors[usize::from(held >> 4)], under, c),
+        c => blend(frame.colors()[usize::from(held >> 4)], under, c),
     };
-    if let Some([tip, left, right]) = frame.chevron {
+    if frame.heading_up {
+        let [tip, left, right] = frame.chevron;
         let c = [(left, tip), (tip, right)]
             .into_iter()
             .map(|(a, b)| coverage(a, b, CHEVRON_HALF, x, y))
@@ -579,11 +708,23 @@ fn length(text: &mut Text<12>, metres: u32) {
 
 /// The text, the scale and the marks that lie over the track.
 pub(super) fn prepare(view: &View) -> Canvas {
-    let frame = &view.map;
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
     canvas.caption(b"MAP", width, LEFT, HEAD, Align::Left);
-    match frame.show {
+    let show = view.map.map_or(Show::Unavailable, |frame| frame.show);
+    let Some(frame) = view.map else {
+        canvas.fit(
+            &[&BODY_FACE],
+            b"NO TRACK",
+            width,
+            CX,
+            RIDER_Y,
+            Align::Center,
+            WHITE,
+        );
+        return canvas;
+    };
+    match show {
         Show::Unavailable => {
             canvas.fit(
                 &[&BODY_FACE],
@@ -665,7 +806,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
             color: ACCENT,
         });
     }
-    if frame.segments() == 0 {
+    if !frame.has_track {
         canvas.caption(b"DRAWS AS YOU RIDE", width, CX, RIDER_Y + 36, Align::Center);
     }
     // The footer: the scale bar and its length, and the ride's distance.
@@ -748,8 +889,8 @@ mod tests {
         assert!(frame.start.0 < CX as f32 && frame.start.1 > RIDER_Y as f32);
         assert!((frame.start.0 - (CX as f32 - 100.0 * s)).abs() < 0.01);
         assert!((frame.start.1 - (RIDER_Y as f32 + 100.0 * s)).abs() < 0.01);
-        assert_eq!(frame.count, 3);
-        assert!(frame.rider && frame.chevron.is_none() && !frame.heading_up);
+        assert_eq!(frame.count, 2);
+        assert!(frame.rider && !frame.heading_up);
     }
 
     #[test]
@@ -778,7 +919,7 @@ mod tests {
         let mut t = track(&c);
         t.heading = Some(0);
         let frame = filled(&t);
-        assert!(frame.chevron.is_some() && !frame.rider && frame.heading_up);
+        assert!(!frame.rider && frame.heading_up);
         // Riding north, the track runs straight down from the rider.
         let (a, b) = frame.segment(0);
         assert!((a.0 - b.0).abs() < 0.01 && a.1 > b.1);
@@ -791,23 +932,24 @@ mod tests {
             ahead: metres,
             behind: 0.0,
         };
-        let near = zoom(ahead(40.0));
-        assert!((near * 500.0 - WIDTH_PX).abs() < 0.01, "{near}");
+        let scale = |step| WIDTH_PX / span(step);
+        assert_eq!(zoom(ahead(40.0), None), 0);
+        assert!((scale(0) * 500.0 - WIDTH_PX).abs() < 0.01);
         // A track reaching 3 km ahead fits, within one 20% step of filling.
-        let far = zoom(ahead(3_000.0));
-        assert!(3_000.0 * far <= AHEAD_PX + 0.01, "{far}");
-        assert!(
-            3_000.0 * far > AHEAD_PX / STEP - 0.01,
-            "closest step: {far}"
-        );
+        let far = zoom(ahead(3_000.0), None);
+        assert!(3_000.0 * scale(far) <= AHEAD_PX + 0.01);
+        assert!(3_000.0 * scale(far) > AHEAD_PX / STEP - 0.01);
         // Behind has less room than ahead, and each axis counts.
-        let behind = zoom(Reach {
-            behind: 3_000.0,
-            ..Reach::default()
-        });
-        assert!(behind < far);
-        assert!(zoom(ahead(30_000.0)) < far);
-        assert_eq!(zoom(ahead(1e9)), zoom(ahead(2e9)));
+        let behind = zoom(
+            Reach {
+                behind: 3_000.0,
+                ..Reach::default()
+            },
+            None,
+        );
+        assert!(behind > far);
+        assert!(zoom(ahead(30_000.0), None) > far);
+        assert_eq!(zoom(ahead(1e9), None), zoom(ahead(2e9), None));
         // Every point of a track is inside the page at the zoom.
         let c = crumbs(&[
             (0.0, 0.0),
@@ -816,10 +958,44 @@ mod tests {
             (400.0, -900.0),
         ]);
         let frame = filled(&track(&c));
-        for &(x, y) in &frame.points[..frame.count] {
-            assert!((LEFT as f32..RIGHT as f32).contains(&x), "{x}");
-            assert!((TOP as f32..BOTTOM as f32).contains(&y), "{y}");
+        for i in 0..frame.segments() {
+            let (a, b) = frame.segment(i);
+            for (x, y) in [a, b] {
+                assert!((LEFT as f32..RIGHT as f32).contains(&x), "{x}");
+                assert!((TOP as f32..BOTTOM as f32).contains(&y), "{y}");
+            }
         }
+    }
+
+    #[test]
+    fn the_zoom_steps_back_in_only_once_the_track_fits_the_closer_step() {
+        let ahead = |metres| Reach {
+            side: 0.0,
+            ahead: metres,
+            behind: 0.0,
+        };
+        let metres_at = |step: usize, share: f32| share * span(step) * AHEAD_PX / WIDTH_PX;
+        // Stepped out to 5, the track now needs step 4 but only just fits it.
+        assert_eq!(zoom(ahead(metres_at(4, 0.98)), Some(5)), 5);
+        // Well inside step 4: step in.
+        assert_eq!(zoom(ahead(metres_at(4, 0.85)), Some(5)), 4);
+        // Outgrowing a step always steps out at once.
+        assert_eq!(zoom(ahead(metres_at(5, 0.99)), Some(4)), 5);
+        // A change of several steps is followed at once.
+        assert_eq!(zoom(ahead(metres_at(2, 0.95)), Some(6)), 2);
+    }
+
+    #[test]
+    fn a_stray_fix_far_away_does_not_shrink_the_ride() {
+        let ride = [(0.0, 0.0), (0.0, 400.0), (300.0, 600.0)];
+        let c = crumbs(&ride);
+        let normal = filled(&track(&c)).scale;
+        let mut with_stray = ride.to_vec();
+        with_stray.insert(2, (3.6e6, 1.0e6));
+        let c = crumbs(&with_stray);
+        let frame = filled(&track(&c));
+        assert_eq!(frame.scale, normal);
+        assert!(frame.has_track && frame.segments() >= 2);
     }
 
     #[test]
@@ -829,14 +1005,13 @@ mod tests {
         let c = crumbs(&line);
         let frame = filled(&track(&c));
         assert!(frame.count < 100, "{}", frame.count);
-        let first = frame.points[0];
-        let last = frame.points[frame.count - 1];
-        assert!(first.0 < last.0, "the ends stay");
-        for pair in frame.points[..frame.count - 1].windows(2) {
-            let (dx, dy) = (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1);
+        assert!(frame.segment(0).0.0 < frame.segment(frame.count - 1).1.0);
+        for i in 0..frame.count - 1 {
+            let (a, b) = frame.segment(i);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
             assert!(dx * dx + dy * dy >= MIN_STEP * MIN_STEP - 0.01);
         }
-        // A wandering 4,096-point track still fits points and buckets.
+        // A wandering 4,096-point track still fits segments and buckets.
         let wander: std::vec::Vec<_> = (0..4096)
             .map(|i| {
                 let a = i as f32 * 0.37;
@@ -845,7 +1020,7 @@ mod tests {
             .collect();
         let c = crumbs(&wander);
         let frame = filled(&track(&c));
-        assert!(frame.count <= MAX_POINTS);
+        assert!(frame.count <= MAX_SEGMENTS);
         assert!(usize::from(frame.starts[BANDS]) <= ITEMS);
         // Each band holds only segments that reach it.
         for band in 0..BANDS {
@@ -860,6 +1035,57 @@ mod tests {
     }
 
     #[test]
+    fn many_laps_of_a_short_loop_draw_the_loop_once() {
+        let lap = |noise: f32| {
+            (0..4096).map(move |i| {
+                let a = (i % 120) as f32 * TAU / 120.0;
+                let jitter = noise * sinf(i as f32 * 12.9898);
+                (sinf(a) * 175.0 + jitter, (cosf(a) - 1.0) * 175.0 + jitter)
+            })
+        };
+        let exact: std::vec::Vec<_> = lap(0.0).collect();
+        let c = crumbs(&exact);
+        let one_lap = filled(&track(&c[..120]));
+        let frame = filled(&track(&c));
+        assert!(frame.has_track && frame.segments() >= one_lap.segments() / 2);
+        assert!(
+            frame.segments() <= one_lap.segments() + 2,
+            "{}",
+            frame.segments()
+        );
+        // Wobble between laps costs more segments, never the whole track.
+        let noisy: std::vec::Vec<_> = lap(4.0).collect();
+        let c = crumbs(&noisy);
+        let frame = filled(&track(&c));
+        assert!(
+            frame.has_track && frame.segments() >= 10,
+            "{}",
+            frame.segments()
+        );
+        assert!(frame.segments() <= MAX_SEGMENTS);
+        assert!(usize::from(frame.starts[BANDS]) > 0);
+    }
+
+    #[test]
+    fn the_frame_is_refilled_only_when_the_track_changes() {
+        let c = crumbs(&[(0.0, 0.0), (0.0, 300.0), (200.0, 500.0)]);
+        let mut frame = Frame::default();
+        let mut held = None;
+        let t = track(&c);
+        update(&mut frame, &mut held, &t);
+        let drawn = frame.count;
+        assert!(drawn > 0);
+        // The same track again is left alone, even if the frame was spoiled.
+        frame.count = 0;
+        update(&mut frame, &mut held, &t);
+        assert_eq!(frame.count, 0);
+        let mut moved = t;
+        moved.heading = Some(100);
+        update(&mut frame, &mut held, &moved);
+        assert_eq!(frame.count, drawn);
+    }
+
+    #[test]
     fn following_paints_the_way_home_green_to_the_matched_point() {
         let c = crumbs(&[(0.0, 0.0), (0.0, 100.0), (0.0, 200.0), (100.0, 200.0)]);
         let mut t = track(&c);
@@ -867,10 +1093,9 @@ mod tests {
         t.home = Some((2, Some((0.0, 150.0))));
         t.here = Some((5.0, 150.0));
         let frame = filled(&t);
-        assert_eq!(frame.colors, [GREEN, SECONDARY]);
+        assert_eq!(frame.colors(), [GREEN, SECONDARY]);
         // Points: start, first bend, the matched point, second bend, end.
-        assert_eq!(frame.count, 5);
-        assert_eq!(frame.far, 2);
+        assert_eq!(frame.count, 4);
         assert_eq!(frame.color(1), 0);
         assert_eq!(frame.color(2), 1);
         // Frozen: the rider's fix is not a point of the track.
@@ -878,8 +1103,7 @@ mod tests {
         // Without a match yet, the whole track is the way home.
         t.home = Some((3, None));
         let frame = filled(&t);
-        assert_eq!(frame.count, 4);
-        assert_eq!(frame.far, 3);
+        assert_eq!(frame.count, 3);
         assert_eq!(frame.color(2), 0);
     }
 
@@ -921,53 +1145,48 @@ mod tests {
         }
     }
 
-    fn page(track: Track<'_>, distance_mm: u64) -> View<'_> {
+    fn page<'a>(frame: Option<&'a Frame>) -> View<'a> {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Map;
         view.radar_paired = true;
-        view.track = track;
+        view.map = frame;
         view.totals.add(1000, 8333, &Default::default(), None);
-        let _ = distance_mm;
         view.prepare();
         view
     }
 
     #[test]
     fn every_state_lays_out_its_text() {
-        let none = Track::default();
-        page(none, 0)
+        let check = |track: &Track, want: &[&str], what: &str| {
+            let frame = filled(track);
+            page(Some(&frame)).canvas.assert_laid_out(PAGE, want, what);
+        };
+        page(None)
             .canvas
             .assert_laid_out(PAGE, &["MAP", "NO TRACK"], "unavailable");
+        check(&Track::default(), &["MAP", "NO TRACK"], "no memory");
         let waiting = Track {
             available: true,
             ..Track::default()
         };
-        page(waiting, 0).canvas.assert_laid_out(
-            PAGE,
+        check(
+            &waiting,
             &["MAP", "NO GPS YET", "MAP STARTS WITH GPS"],
             "no gps",
         );
         let c = crumbs(&[(0.0, 0.0), (0.0, 800.0), (300.0, 900.0)]);
         let mut t = track(&c);
-        page(t, 0)
-            .canvas
-            .assert_laid_out(PAGE, &["MAP", "N UP", "600 M", "0.01 KM"], "still");
+        check(&t, &["MAP", "N UP", "600 M", "0.01 KM"], "still");
         t.heading = Some(0);
-        page(t, 0)
-            .canvas
-            .assert_laid_out(PAGE, &["MAP", "600 M", "0.01 KM"], "riding");
+        check(&t, &["MAP", "600 M", "0.01 KM"], "riding");
         t.home = Some((2, None));
         t.heading = None;
-        page(t, 0)
-            .canvas
-            .assert_laid_out(PAGE, &["MAP", "FOLLOWING  N UP"], "following");
+        check(&t, &["MAP", "FOLLOWING  N UP"], "following");
         t.here = None;
-        page(t, 0)
-            .canvas
-            .assert_laid_out(PAGE, &["MAP", "NO GPS"], "fix lost");
+        check(&t, &["MAP", "NO GPS"], "fix lost");
         let start = crumbs(&[(0.0, 0.0)]);
-        page(track(&start), 0).canvas.assert_laid_out(
-            PAGE,
+        check(
+            &track(&start),
             &["MAP", "DRAWS AS YOU RIDE", "150 M"],
             "first fix",
         );

@@ -43,7 +43,7 @@ pub use back::{Arrow, Back, Light};
 pub use climb::Frame as ClimbFrame;
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
-pub use map::{Frame as MapFrame, Track};
+pub use map::{Frame as MapFrame, Key as MapKey, Track, update as update_map};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
@@ -196,19 +196,9 @@ pub(super) fn prepare(view: &mut View) {
         }
         // The app lays out the chart from its player: the workout stays there.
         RidePage::Workout => super::workout::fill(view, workout::prepare),
-        RidePage::Map => {
-            map_frame(view);
-            super::workout::fill(view, map::prepare);
-        }
+        RidePage::Map => super::workout::fill(view, map::prepare),
         RidePage::Back => super::workout::fill(view, back::prepare),
     }
-}
-
-/// The map's track projected for this frame, in its own frame of the stack
-/// and in place: it is 2 KB.
-#[inline(never)]
-fn map_frame(view: &mut View) {
-    map::fill(&mut view.map, &view.track);
 }
 
 /// The main page's gauges, prepared in their own frame (#167).
@@ -290,7 +280,9 @@ fn paint_page(view: &View, row: &mut Row) {
             view.canvas.paint(row);
         }
         RidePage::Map => {
-            map::paint(&view.map, row);
+            if let Some(frame) = view.map {
+                map::paint(frame, row);
+            }
             view.canvas.paint(row);
         }
         RidePage::Back => {
@@ -369,7 +361,12 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
         RidePage::Climb => view
             .canvas
             .pixel(x, y, climb::chart_pixel(&view.climb, x, y)),
-        RidePage::Map => view.canvas.pixel(x, y, map::pixel(&view.map, x, y, BLACK)),
+        RidePage::Map => view.canvas.pixel(
+            x,
+            y,
+            view.map
+                .map_or(BLACK, |frame| map::pixel(frame, x, y, BLACK)),
+        ),
         RidePage::Back => {
             back::arrow_pixel(&back::frame(view), x, y, view.canvas.pixel(x, y, BLACK))
         }

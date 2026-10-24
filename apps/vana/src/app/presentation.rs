@@ -672,8 +672,8 @@ impl Runtime {
         let light = self.light();
         view.light = light;
         if view.ride_page == RidePage::Map {
-            // Borrowed from the breadcrumb, not copied.
-            view.track = super::back::track_of(&self.back);
+            super::back::refresh_map(&mut self.back);
+            view.map = super::back::map_of(&self.back);
         }
         view.prepare();
         let menu = &self.menu;

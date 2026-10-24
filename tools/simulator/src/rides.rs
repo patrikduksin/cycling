@@ -1,15 +1,24 @@
 //! Rides read back from simulated media with VANA's own journal decoder.
 use crate::recording::{RideSummary, json};
 use crate::route::{Point, from_e7, to_gpx};
+use firmware_services::fit::Counter;
 use std::fmt::Write as _;
+use vana::ride::fit::{self, Plan, Refusal};
 use vana::ride::log::{Entry, Kind, SLOT_SIZE, Sample, Slot, decode};
 
 pub struct Ride {
     pub id: u32,
     pub entries: Vec<Entry>,
+    slots: Vec<Slot>,
 }
 
 impl Ride {
+    /// What the FIT export finds in this ride when the phone gives no start:
+    /// its start time, or why the file is refused.
+    pub fn fit_plan(&self) -> Result<Plan, Refusal> {
+        fit::write_all(self.slots.iter(), self.id, None, &mut Counter::default())
+    }
+
     pub fn samples(&self) -> impl Iterator<Item = &Sample> {
         self.entries
             .iter()
@@ -58,10 +67,14 @@ pub fn read(media: &[u8]) -> Vec<Ride> {
             continue;
         };
         match rides.last_mut() {
-            Some(ride) if ride.id == entry.ride_id => ride.entries.push(entry),
+            Some(ride) if ride.id == entry.ride_id => {
+                ride.entries.push(entry);
+                ride.slots.push(Slot(*bytes));
+            }
             _ => rides.push(Ride {
                 id: entry.ride_id,
                 entries: vec![entry],
+                slots: vec![Slot(*bytes)],
             }),
         }
     }

@@ -225,11 +225,25 @@ impl Runtime {
             | device_api::observation::Observation::Stale { value, .. } => Some(value == 0),
             device_api::observation::Observation::Unavailable => None,
         };
+        // A stale report is no news about the discharge: skipping it lets the
+        // estimate lapse after `STALE_MS` without forgetting what it learned.
+        let battery_fresh = observations.input.snapshot(now).is_some_and(|s| {
+            matches!(
+                s.battery,
+                device_api::observation::Observation::Fresh { .. }
+            )
+        });
+        if battery_fresh || charging == Some(true) {
+            self.readings
+                .battery_life
+                .observe(now, sample.battery_percent, charging);
+        }
         if let Some(news) = self
             .readings
             .battery
             .observe(sample.battery_percent, charging)
         {
+            self.readings.battery_news_ms = Some(now);
             self.navigation
                 .show(news.toast(), presentation::BATTERY_TOAST_MS, now);
             if news.warning() {

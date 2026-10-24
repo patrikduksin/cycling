@@ -1,6 +1,6 @@
 //! Ride alerts: heart rate and power outside a band, low cadence, an eat and
-//! drink reminder, and radar vehicle counts. Each alert is a short sound and
-//! a toast.
+//! drink reminder, a battery that may not last, and radar vehicle counts.
+//! Each alert is a short sound and a toast.
 //!
 //! Pure policy: the caller feeds the live sample, the ride state and the radar
 //! once per tick, then plays and shows what `update` returns. Band alerts
@@ -27,6 +27,11 @@ pub const SPACING_MS: u64 = 3_000;
 /// The radar must stay empty this long before ALL CLEAR, so a target that
 /// flickers out and back does not call it.
 pub const CLEAR_AFTER_MS: u64 = 2_000;
+/// With no workout length known, the battery warns below this many minutes.
+pub const BATTERY_HOUR_MIN: u32 = 60;
+/// The estimate must stay under its threshold this long before it warns: it
+/// is least reliable just after it first appears.
+pub const BATTERY_HOLD_MS: u64 = 5 * 60_000;
 /// Bytes in an encoded `Settings`.
 pub const SETTINGS_BYTES: usize = 9;
 /// Allowed reminder intervals, in minutes.
@@ -133,6 +138,8 @@ pub enum Cue {
     RadarClear,
     /// The light is about to end, or has.
     Sunset,
+    /// The battery may not last the ride.
+    Battery,
 }
 
 /// One alert to play and show.
@@ -144,6 +151,8 @@ pub enum Alert {
     PowerLow(u16),
     CadenceLow(u16),
     Fuel,
+    /// The battery may not last: the minutes it should.
+    BatteryLeft(u16),
     /// More vehicles behind than before: the count now.
     Vehicles(u8),
     RadarClear,
@@ -161,6 +170,7 @@ impl Alert {
             Self::Fuel => Some(Cue::Fuel),
             Self::RadarClear => Some(Cue::RadarClear),
             Self::SunsetSoon | Self::SunsetNow => Some(Cue::Sunset),
+            Self::BatteryLeft(_) => Some(Cue::Battery),
             Self::Vehicles(_) => None,
             _ => Some(Cue::Band),
         }
@@ -177,6 +187,11 @@ impl Alert {
             Self::PowerLow(watts) => write!(text, "POWER LOW {watts}W"),
             Self::CadenceLow(rpm) => write!(text, "CADENCE LOW {rpm}"),
             Self::Fuel => write!(text, "EAT AND DRINK"),
+            Self::BatteryLeft(minutes) => write!(
+                text,
+                "BATTERY {} LEFT",
+                crate::ride::battery_life::about(minutes)
+            ),
             Self::Vehicles(1) => write!(text, "1 VEHICLE"),
             Self::Vehicles(count) => write!(text, "{count} VEHICLES"),
             Self::RadarClear => write!(text, "ALL CLEAR"),
@@ -250,6 +265,10 @@ pub struct Alerts {
     peak: u8,
     empty_since: Option<u64>,
     sunset: SunsetWatch,
+    /// The battery warning was given this ride.
+    battery_told: bool,
+    /// Since when the battery estimate has been under its threshold.
+    battery_short_since: Option<u64>,
 }
 
 /// The sunset warning is due this long before sunset, and still given until
@@ -429,6 +448,46 @@ impl Alerts {
         self.sunset.given(alert);
         self.last = Some(now);
         Some(alert)
+    }
+
+    /// Once per ride, warn that the battery may not last: its estimated
+    /// minutes left stay under a quarter more than the workout still planned
+    /// (an hour at least) for `BATTERY_HOLD_MS`. Call after `update`, which
+    /// starts a new ride's count; it waits its turn behind other alerts.
+    /// `held` keeps the warning back (a battery toast is on) without
+    /// restarting the wait.
+    pub fn battery(
+        &mut self,
+        now: u64,
+        status: Status,
+        left_min: Option<u16>,
+        ride_left_min: Option<u32>,
+        held: bool,
+    ) -> Option<Alert> {
+        let needed = ride_left_min.unwrap_or(0).max(BATTERY_HOUR_MIN) * 5 / 4;
+        let short = left_min.filter(|&left| u32::from(left) < needed);
+        let (Some(left), Status::Recording, false) = (short, status, self.battery_told) else {
+            self.battery_short_since = None;
+            return None;
+        };
+        let since = *self.battery_short_since.get_or_insert(now);
+        if held
+            || now.saturating_sub(since) < BATTERY_HOLD_MS
+            || self
+                .last
+                .is_some_and(|last| now.saturating_sub(last) < SPACING_MS)
+        {
+            return None;
+        }
+        self.battery_told = true;
+        self.last = Some(now);
+        Some(Alert::BatteryLeft(left))
+    }
+
+    /// The rider left the ride pages: the wait starts over when they return,
+    /// for a warning they could not see was never given.
+    pub fn battery_away(&mut self) {
+        self.battery_short_since = None;
     }
 
     /// More vehicles than at any time since the road was last clear, or
@@ -950,5 +1009,98 @@ mod tests {
             alerts.update(0, &off, Status::Recording, 0, &sample, vehicles(2)),
             None
         );
+    }
+
+    #[test]
+    fn a_battery_that_may_not_last_warns_once_per_ride_after_holding() {
+        let mut alerts = Alerts::default();
+        let rec = Status::Recording;
+        let hold = BATTERY_HOLD_MS;
+        // Enough for the ride (with a quarter to spare), or for over 75 min.
+        assert_eq!(alerts.battery(0, rec, Some(150), Some(120), false), None);
+        assert_eq!(alerts.battery(hold, rec, Some(150), Some(120), false), None);
+        assert_eq!(alerts.battery(hold, rec, Some(76), None, false), None);
+        // No estimate: quiet, never a guess.
+        assert_eq!(alerts.battery(hold, rec, None, Some(120), false), None);
+        // Not recording: quiet.
+        assert_eq!(
+            alerts.battery(hold, Status::Paused, Some(30), None, false),
+            None
+        );
+        // Short, but not for long enough yet.
+        assert_eq!(alerts.battery(0, rec, Some(90), Some(120), false), None);
+        assert_eq!(
+            alerts.battery(hold - 1, rec, Some(90), Some(120), false),
+            None
+        );
+        // A recovered estimate restarts the wait.
+        assert_eq!(alerts.battery(hold, rec, Some(200), Some(120), false), None);
+        assert_eq!(
+            alerts.battery(hold + 1, rec, Some(90), Some(120), false),
+            None
+        );
+        let at = 2 * hold + 1;
+        assert_eq!(
+            alerts.battery(at, rec, Some(90), Some(120), false),
+            Some(Alert::BatteryLeft(90))
+        );
+        assert_eq!(
+            alerts.battery(at + 1, rec, Some(30), None, false),
+            None,
+            "once"
+        );
+        // A new ride tells again.
+        let sample = Sample::default();
+        alerts.update(0, &Settings::default(), rec, 5_000, &sample, quiet());
+        alerts.update(10_000, &Settings::default(), rec, 0, &sample, quiet());
+        assert_eq!(alerts.battery(20_000, rec, Some(59), None, false), None);
+        assert_eq!(
+            alerts.battery(20_000 + hold, rec, Some(59), None, false),
+            Some(Alert::BatteryLeft(59))
+        );
+    }
+
+    #[test]
+    fn a_held_battery_warning_keeps_its_wait_and_leaving_the_page_resets_it() {
+        let mut alerts = Alerts::default();
+        let rec = Status::Recording;
+        let hold = BATTERY_HOLD_MS;
+        assert_eq!(alerts.battery(0, rec, Some(40), None, false), None);
+        // Held past the wait by a toast: due the moment it is released.
+        assert_eq!(
+            alerts.battery(hold + 1_000, rec, Some(40), None, true),
+            None
+        );
+        assert_eq!(
+            alerts.battery(hold + 2_000, rec, Some(40), None, false),
+            Some(Alert::BatteryLeft(40))
+        );
+        let mut alerts = Alerts::default();
+        assert_eq!(alerts.battery(0, rec, Some(40), None, false), None);
+        alerts.battery_away();
+        assert_eq!(alerts.battery(hold, rec, Some(40), None, false), None);
+    }
+
+    #[test]
+    fn the_battery_warning_waits_its_turn_and_reads_in_words() {
+        let mut alerts = Alerts {
+            last: Some(BATTERY_HOLD_MS + 10_000),
+            ..Alerts::default()
+        };
+        let rec = Status::Recording;
+        assert_eq!(alerts.battery(0, rec, Some(40), None, false), None);
+        let now = BATTERY_HOLD_MS + 11_000;
+        assert_eq!(
+            alerts.battery(now, rec, Some(40), None, false),
+            None,
+            "spacing"
+        );
+        let alert = alerts
+            .battery(now + SPACING_MS, rec, Some(40), None, false)
+            .unwrap();
+        assert_eq!(alert.text().as_str(), "BATTERY 40 MIN LEFT");
+        assert_eq!(Alert::BatteryLeft(60).text().as_str(), "BATTERY 1 H LEFT");
+        assert_eq!(Alert::BatteryLeft(90).text().as_str(), "BATTERY 1 H LEFT");
+        assert_eq!(alert.cue(), Some(Cue::Battery));
     }
 }

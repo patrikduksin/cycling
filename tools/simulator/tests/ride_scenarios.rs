@@ -2326,6 +2326,57 @@ fn a_falling_battery_warns_once_per_level_during_a_ride() {
     sim.stop_ride();
 }
 
+/// Ready names the time left once the charge has fallen long enough to know
+/// the rate; then a ride that drains faster warns once, before the low-battery
+/// levels, that the battery may not last an hour more.
+#[test]
+fn the_battery_estimate_shows_on_ready_and_warns_during_a_fast_drain() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER"]);
+    sim.set_battery(90, false);
+    sim.home("RIDE");
+    assert_eq!(sim.vana_page(), "ready");
+    sim.expect_text("BATTERY 90%");
+    sim.expect_no_text("LEFT");
+    // 10 %/h on Ready: a point every 6 minutes; the estimate waits for 40.
+    for percent in (82..90).rev() {
+        sim.advance(minutes(6));
+        sim.set_battery(percent, false);
+    }
+    sim.advance(seconds(2));
+    sim.expect_text("BATTERY 82%");
+    sim.expect_text("ABOUT 8 H LEFT");
+    sim.checkpoint("ready: battery with time left");
+
+    // A ride drains at 40 %/h, a point every 90 seconds.
+    // The screen dimmed while Ready waited; the first press only wakes it.
+    sim.press(Button::BottomRight);
+    if sim.wait_for("RECORDING", seconds(1)).is_err() {
+        sim.press(Button::BottomRight);
+        sim.wait_for("RECORDING", seconds(2)).unwrap();
+    }
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    let mut percent = 82;
+    let mut shown = false;
+    while percent > 12 && !shown {
+        // The warning comes on its own tick, so wait for it between points.
+        shown = sim.wait_for(" LEFT", seconds(90)).is_ok();
+        if !shown {
+            percent -= 1;
+            sim.set_battery(percent, false);
+        }
+    }
+    assert!(shown, "warned before the battery ran out, at {percent}%");
+    sim.checkpoint("ride: the battery may not last another hour");
+    // Once: not again while the ride goes on.
+    sim.advance(seconds(10));
+    sim.expect_no_text(" LEFT");
+    sim.set_battery(percent - 1, false);
+    sim.advance(seconds(150));
+    sim.expect_no_text(" LEFT");
+    sim.stop_ride();
+}
+
 #[test]
 fn a_ride_must_end_before_the_device_can_turn_off() {
     let mut sim = rider();

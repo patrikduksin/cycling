@@ -8,6 +8,7 @@
 mod faces;
 
 use super::row::Row;
+use super::work;
 
 pub use faces::{BODY, CAPTION, HERO, LARGE, TITLE, VALUE};
 
@@ -324,6 +325,12 @@ impl<const N: usize> Label<N> {
                 *pixel = blend(self.color, *pixel, a);
             }
         }
+        work::add(|work| {
+            work.label_rows += 1;
+            work.glyph_columns += span.len() as u64;
+            work.glyph_pixels += span.iter().filter(|&&a| a > 0).count() as u64;
+            work.mixes += span.iter().filter(|&&a| a > 0 && a < 15).count() as u64;
+        });
     }
 
     /// The label over `background`, or none where it has no ink.

@@ -3,6 +3,7 @@
 //! earlier ones, so paint backgrounds first. Coordinates stay those of the
 //! whole row; writes outside its clip range are dropped.
 use super::text::glyph;
+use super::work;
 use core::ops::Range;
 
 pub struct Row<'a> {
@@ -55,6 +56,10 @@ impl<'a> Row<'a> {
         let end = x.end.min(self.pixels.len());
         if start < end {
             self.pixels[start..end].fill(color);
+            work::add(|work| {
+                work.spans += 1;
+                work.span_pixels += (end - start) as u64;
+            });
         }
     }
     pub fn set(&mut self, x: usize, color: u16) {
@@ -97,6 +102,7 @@ impl<'a> Row<'a> {
     pub fn each(&mut self, x: Range<usize>, mut pixel: impl FnMut(usize) -> Option<u16>) {
         let start = x.start.max(self.start);
         let end = x.end.min(self.pixels.len());
+        work::add(|work| work.evaluations += end.saturating_sub(start) as u64);
         for x in start..end {
             if let Some(color) = pixel(x) {
                 self.pixels[x] = color;
@@ -108,6 +114,7 @@ impl<'a> Row<'a> {
     pub fn each_over(&mut self, x: Range<usize>, mut pixel: impl FnMut(usize, u16) -> Option<u16>) {
         let start = x.start.max(self.start);
         let end = x.end.min(self.pixels.len());
+        work::add(|work| work.evaluations += end.saturating_sub(start) as u64);
         for x in start..end {
             if let Some(color) = pixel(x, self.pixels[x]) {
                 self.pixels[x] = color;

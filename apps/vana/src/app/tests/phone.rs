@@ -15,6 +15,9 @@ const ROOM: usize = 4096;
 struct Transport {
     listening: bool,
     request: Option<Request>,
+    /// The body still to be read, and the most each `read` hands over.
+    body: Vec<u8>,
+    piece: usize,
     pending: Vec<u8>,
     finished: bool,
     next_id: u32,
@@ -29,6 +32,7 @@ impl Transport {
         request.query.push_str(query).unwrap();
         request.session.push_str(session).unwrap();
         self.request = Some(request);
+        self.body.clear();
         self.pending.clear();
         self.finished = false;
     }
@@ -37,6 +41,15 @@ impl Transport {
 impl Server for Transport {
     fn listen(&mut self, on: bool) {
         self.listening = on;
+    }
+    fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
+        if self.finished || self.request.as_ref().is_none_or(|r| r.id != id) {
+            return 0;
+        }
+        let n = out.len().min(self.piece).min(self.body.len());
+        out[..n].copy_from_slice(&self.body[..n]);
+        self.body.drain(..n);
+        n
     }
     fn request(&self) -> Option<Request> {
         self.request.clone().filter(|_| !self.finished)

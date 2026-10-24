@@ -1,8 +1,10 @@
 //! Local HTTP transport for the phone companion: accepts connections on port
 //! 80 of the access point and station stacks while the application listens,
 //! parses one request head per connection and hands it over through one
-//! shared exchange. The application writes the whole response into the
-//! exchange's buffer; these tasks drain it into the socket and close.
+//! shared exchange. A request body moves from the socket into the exchange's
+//! inbox as the application makes room by reading it. The application writes
+//! the whole response into the exchange's buffer; these tasks drain it into
+//! the socket and close.
 //!
 //! One request is answered at a time. Each stack has two listeners, so one
 //! accepts the client's next request while the other is still closing; a
@@ -22,6 +24,8 @@ use firmware_services::http::{Head, Parse, parse};
 
 /// Response bytes the application can queue ahead of the socket.
 const BUFFER: usize = 4096;
+/// Request body bytes held for the application to read.
+const INBOX: usize = 4096;
 /// Connections waiting for the exchange give up after this long.
 const QUEUE_MS: u64 = 15_000;
 /// A request head must arrive within this time.
@@ -36,6 +40,11 @@ struct Exchange {
     /// In external RAM, installed by the first transport task.
     buffer: &'static mut [u8],
     queued: usize,
+    /// Body bytes received and not yet read, in external RAM like `buffer`.
+    inbox: &'static mut [u8],
+    held: usize,
+    /// Body bytes still to come from the socket.
+    unreceived: u32,
     finished: bool,
     served: u32,
     refused: u32,
@@ -48,6 +57,9 @@ static EXCHANGE: Mutex<RefCell<Exchange>> = Mutex::new(RefCell::new(Exchange {
     next_id: 1,
     buffer: &mut [],
     queued: 0,
+    inbox: &mut [],
+    held: 0,
+    unreceived: 0,
     finished: false,
     served: 0,
     refused: 0,
@@ -72,6 +84,18 @@ impl device_api::server::Server for Server {
     }
     fn request(&self) -> Option<Request> {
         with(|e| e.request.clone().filter(|_| !e.finished))
+    }
+    fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
+        with(|e| {
+            if e.finished || e.request.as_ref().is_none_or(|r| r.id != id) {
+                return 0;
+            }
+            let n = out.len().min(e.held);
+            out[..n].copy_from_slice(&e.inbox[..n]);
+            e.inbox.copy_within(n..e.held, 0);
+            e.held -= n;
+            n
+        })
     }
     fn room(&self) -> usize {
         with(|e| {
@@ -121,7 +145,8 @@ async fn refuse(socket: &mut TcpSocket<'_>, status: u16) {
 }
 
 /// Claim the exchange for `request`, waiting for an earlier one to finish.
-async fn claim(mut request: Request) -> Option<u32> {
+/// `early` is the start of its body, read with the head.
+async fn claim(mut request: Request, early: &[u8]) -> Option<u32> {
     let deadline = Instant::now() + Duration::from_millis(QUEUE_MS);
     loop {
         let claimed = with(|e| {
@@ -131,10 +156,18 @@ async fn claim(mut request: Request) -> Option<u32> {
             if e.request.is_some() {
                 return None;
             }
+            if request.body > 0 && e.inbox.is_empty() {
+                return Some(None);
+            }
             request.id = e.next_id;
             e.next_id = e.next_id.wrapping_add(1).max(1);
             e.queued = 0;
             e.finished = false;
+            // Bytes past the declared body are not this request's.
+            let early = &early[..early.len().min(request.body as usize).min(e.inbox.len())];
+            e.inbox[..early.len()].copy_from_slice(early);
+            e.held = early.len();
+            e.unreceived = request.body - early.len() as u32;
             e.request = Some(request.clone());
             Some(Some(request.id))
         });
@@ -151,6 +184,8 @@ fn release(id: u32, complete: bool) {
         if e.request.as_ref().is_some_and(|r| r.id == id) {
             e.request = None;
             e.queued = 0;
+            e.held = 0;
+            e.unreceived = 0;
             e.finished = false;
             if complete {
                 e.served += 1;
@@ -161,10 +196,32 @@ fn release(id: u32, complete: bool) {
     });
 }
 
-/// Move queued response bytes to the socket until the application finishes.
+/// Move the request body into the inbox as it has room, and queued response
+/// bytes to the socket, until the application finishes.
 async fn respond(socket: &mut TcpSocket<'_>, id: u32, chunk: &mut [u8]) -> bool {
     let mut idle_since = Instant::now();
     loop {
+        let wanted = with(|e| {
+            let room = e.inbox.len() - e.held;
+            (e.unreceived as usize).min(room).min(chunk.len())
+        });
+        if wanted > 0 && socket.can_recv() {
+            let n = match socket.read(&mut chunk[..wanted]).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => n,
+            };
+            with(|e| {
+                e.inbox[e.held..e.held + n].copy_from_slice(&chunk[..n]);
+                e.held += n;
+                e.unreceived -= n as u32;
+            });
+            idle_since = Instant::now();
+            continue;
+        }
+        if wanted > 0 && !socket.may_recv() {
+            // The client closed before sending the body it declared.
+            return false;
+        }
         let (n, finished) = with(|e| {
             let n = e.queued.min(chunk.len());
             chunk[..n].copy_from_slice(&e.buffer[..n]);
@@ -190,7 +247,7 @@ async fn respond(socket: &mut TcpSocket<'_>, id: u32, chunk: &mut [u8]) -> bool 
     }
 }
 
-/// Socket receive bytes: requests are one small head.
+/// Socket receive bytes: a head, or a stretch of an upload's body.
 const RX: usize = 1024;
 /// Socket send bytes: two segments, so the phone acknowledges promptly.
 const TX: usize = 2920;
@@ -211,6 +268,11 @@ pub async fn serve(stack: Stack<'static>) {
             && let Some(buffer) = crate::drivers::psram::zeroed(BUFFER)
         {
             e.buffer = buffer;
+        }
+        if e.inbox.is_empty()
+            && let Some(inbox) = crate::drivers::psram::zeroed(INBOX)
+        {
+            e.inbox = inbox;
         }
     });
     let (rx, rest) = block.split_at_mut(RX);
@@ -251,7 +313,10 @@ pub async fn serve(stack: Stack<'static>) {
         })
         .await;
         match parsed {
-            Ok(Some(Parse::Request(request))) => match claim(request).await {
+            Ok(Some(Parse::Request {
+                request,
+                head: length,
+            })) => match claim(request, &head[length..used]).await {
                 Some(id) => {
                     let complete = respond(&mut socket, id, chunk).await;
                     release(id, complete);

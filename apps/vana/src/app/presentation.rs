@@ -343,7 +343,6 @@ impl Runtime {
         });
     }
 
-    #[inline(never)]
     pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         system: &mut Shell<D, I, P, B>,

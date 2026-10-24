@@ -327,11 +327,12 @@ impl Runtime {
         {
             return Some(weeks);
         }
-        let mut weeks = Weeks::new(utc_ms, -(UTC_OFFSET_S as i64));
+        let offset = |_| -(UTC_OFFSET_S as i64);
+        let mut weeks = Weeks::new(utc_ms, &offset);
         for medium in [Medium::Internal, Medium::Bulk] {
             for index in 0..self.journal_len(medium) {
                 if let Some(ride) = self.journal_ride(medium, index) {
-                    weeks.add(ride.first_utc_ms, ride.active_ms, ride.distance_mm);
+                    weeks.add(ride.first_utc_ms, ride.active_ms, ride.distance_mm, &offset);
                 }
             }
         }

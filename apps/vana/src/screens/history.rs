@@ -410,11 +410,12 @@ mod tests {
     /// Wednesday 2026-10-21, with rides Monday and Tuesday and last week's.
     fn week() -> Weeks {
         let day = |d: i64| ((20_746 + d) * 86_400 + 15 * 3600) as u64 * 1000;
-        let mut weeks = Weeks::new(day(2), -3 * 3600);
-        weeks.add(Some(day(0)), 5_400_000, Some(42_000_000));
-        weeks.add(Some(day(1)), 3_600_000, Some(30_000_000));
-        weeks.add(Some(day(1) + 1000), 3_600_000, Some(12_300_000));
-        weeks.add(Some(day(-3)), 3_600_000, Some(84_000_000));
+        let zone = |_| -3 * 3600;
+        let mut weeks = Weeks::new(day(2), &zone);
+        weeks.add(Some(day(0)), 5_400_000, Some(42_000_000), &zone);
+        weeks.add(Some(day(1)), 3_600_000, Some(30_000_000), &zone);
+        weeks.add(Some(day(1) + 1000), 3_600_000, Some(12_300_000), &zone);
+        weeks.add(Some(day(-3)), 3_600_000, Some(84_000_000), &zone);
         weeks
     }
 
@@ -526,7 +527,7 @@ mod tests {
         // Monday and Tuesday white (today is Wednesday), the rest dark.
         assert_eq!((lit(WHITE), lit(ACCENT), lit(TERTIARY)), (2, 0, 5));
         // Still reading with nothing found: not a quiet week yet.
-        list.weeks = Some(Weeks::new(1_789_000_000_000, -3 * 3600));
+        list.weeks = Some(Weeks::new(1_789_000_000_000, &|_| -3 * 3600));
         list.reading = true;
         let reading = prepare(&list);
         assert!(reading.shows("--") && !reading.shows("0.0"));
@@ -541,11 +542,12 @@ mod tests {
         assert!(unknown.shows("--") && !unknown.shows("LAST WEEK 0 KM"));
         unknown.assert_laid_out(bounds(), &["THIS WEEK"], "no clock");
         // A long week in a big number still fits.
-        let mut big = Weeks::new(1_789_000_000_000, -3 * 3600);
+        let mut big = Weeks::new(1_789_000_000_000, &|_| -3 * 3600);
         big.add(
             Some(1_788_900_000_000),
             400 * 3_600_000,
             Some(1_234_500_000),
+            &|_| -3 * 3600,
         );
         list.weeks = Some(big);
         prepare(&list).assert_laid_out(bounds(), &["THIS WEEK", "1234.5"], "big");

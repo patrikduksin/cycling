@@ -18,6 +18,7 @@ use crate::ride::course::Course;
 use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Event, Homing};
 use crate::ride::log::{Slot, Status, decode};
+use crate::ride::turn_back::Leg;
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
 use crate::screens::ride::{Back, MapKey, RidePage, Track, update_map};
@@ -99,6 +100,15 @@ impl BackToStart {
             kept: super::course::Kept::default(),
             resume: Resume::None,
         }
+    }
+
+    /// The way home to warn about: none while a recovered ride's track is
+    /// still being read, as its length so far is not the way home.
+    pub(super) fn leg(&self, speed_mm_s: Option<u32>, moving_ms: u64) -> Option<Leg> {
+        if matches!(self.resume, Resume::Reading { .. }) {
+            return None;
+        }
+        Leg::of(&self.homing.guide()?, speed_mm_s, moving_ms)
     }
 
     /// Follow the course as it is now, or nothing once it is cleared.

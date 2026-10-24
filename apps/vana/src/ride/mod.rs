@@ -28,6 +28,7 @@ pub mod rider;
 pub mod storage;
 pub mod thin;
 pub mod totals;
+pub mod turn_back;
 pub mod week;
 pub mod wheel_size;
 pub mod zones;

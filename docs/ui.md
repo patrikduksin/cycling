@@ -285,7 +285,9 @@ Only one toast shows at a time. From highest priority to lowest:
    (Settings ALERTS, SUNSET, on by default) is `Warn` with the band cue:
    SUNSET IN 30 MIN once, and SUNSET - LIGHTS ON once when the sun sets
    mid-ride (the font is ASCII, so a dash stands for a dot). Details in
-   [ux-flows](ux-flows.md#sunset).
+   [ux-flows](ux-flows.md#sunset). TURN BACK BY 17:40 (or TURN BACK NOW) is
+   the same `Warn` with the band cue, under the same SUNSET setting, once per
+   ride: the latest time to start home and be there by sunset.
 4. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
    hidden: the only one item 5 may replace is the bulk failure that moved

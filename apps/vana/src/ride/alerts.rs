@@ -13,8 +13,10 @@
 //!
 //! The rider's choices are `Settings`, stored with the VANA preferences.
 //! 0 turns a limit off.
+use crate::clock::Zone;
 use crate::daylight::Sun;
 use crate::ride::log::{Sample, Status};
+use crate::ride::turn_back::{self, Turn};
 use crate::sensors::radar::{self, Snapshot};
 
 /// A reading must stay outside its band this long to alert, and back inside
@@ -136,7 +138,7 @@ pub enum Cue {
     Fuel,
     /// The last vehicle passed.
     RadarClear,
-    /// The light is about to end, or has.
+    /// The light is about to end, or has; the last turn home is near.
     Sunset,
     /// The battery may not last the ride.
     Battery,
@@ -160,6 +162,11 @@ pub enum Alert {
     SunsetSoon,
     /// The sun has set: lights on.
     SunsetNow,
+    /// The latest turn home that is still home by sunset: minutes after local
+    /// midnight.
+    TurnBackBy(u16),
+    /// That turn has passed.
+    TurnBackNow,
 }
 
 impl Alert {
@@ -169,7 +176,9 @@ impl Alert {
         match self {
             Self::Fuel => Some(Cue::Fuel),
             Self::RadarClear => Some(Cue::RadarClear),
-            Self::SunsetSoon | Self::SunsetNow => Some(Cue::Sunset),
+            Self::SunsetSoon | Self::SunsetNow | Self::TurnBackBy(_) | Self::TurnBackNow => {
+                Some(Cue::Sunset)
+            }
             Self::BatteryLeft(_) => Some(Cue::Battery),
             Self::Vehicles(_) => None,
             _ => Some(Cue::Band),
@@ -198,6 +207,15 @@ impl Alert {
             // The font is ASCII: a dash stands for the middle dot.
             Self::SunsetSoon => write!(text, "SUNSET IN 30 MIN"),
             Self::SunsetNow => write!(text, "SUNSET - LIGHTS ON"),
+            Self::TurnBackBy(minute) => {
+                write!(
+                    text,
+                    "TURN BACK BY {:02}:{:02}",
+                    minute / 60 % 24,
+                    minute % 60
+                )
+            }
+            Self::TurnBackNow => write!(text, "TURN BACK NOW"),
         };
         text
     }
@@ -265,6 +283,7 @@ pub struct Alerts {
     peak: u8,
     empty_since: Option<u64>,
     sunset: SunsetWatch,
+    turn_back: turn_back::Watch,
     /// The battery warning was given this ride.
     battery_told: bool,
     /// Since when the battery estimate has been under its threshold.
@@ -448,6 +467,38 @@ impl Alerts {
         self.sunset.given(alert);
         self.last = Some(now);
         Some(alert)
+    }
+
+    /// TURN BACK BY, once per ride (`ride::turn_back` says when it re-arms):
+    /// `turn` is the latest turn from the sun and the way home, `None` when it
+    /// cannot be said (no fix, no sunset ahead, riding home, a recovered ride
+    /// still reading its track). Local time follows `zone`. Needs a recording
+    /// ride, the SUNSET setting on and `shown`, as `sunset` does, and goes
+    /// after it on the same tick.
+    pub fn turn_back(
+        &mut self,
+        now: u64,
+        enabled: bool,
+        status: Status,
+        shown: bool,
+        turn: Option<Turn>,
+        zone: Zone,
+    ) -> Option<Alert> {
+        let turn = turn.filter(|_| enabled && status == Status::Recording);
+        let spaced = self
+            .last
+            .is_none_or(|last| now.saturating_sub(last) >= SPACING_MS);
+        if !self.turn_back.due(now, turn, !shown || !spaced) {
+            return None;
+        }
+        let turn = turn?;
+        self.last = Some(now);
+        Some(if turn.left_s <= 0 {
+            Alert::TurnBackNow
+        } else {
+            let local = zone.local(turn.by.max(0) as u64).of_day();
+            Alert::TurnBackBy((local / 60) as u16)
+        })
     }
 
     /// Once per ride, warn that the battery may not last: its estimated
@@ -806,6 +857,89 @@ mod tests {
                     .map(|alert| (t, alert))
             })
             .collect()
+    }
+
+    fn turn(left_s: i64) -> Option<Turn> {
+        Some(Turn {
+            by: 1_000_000 + left_s,
+            left_s,
+        })
+    }
+
+    #[test]
+    fn turn_back_names_the_local_time_and_needs_its_conditions() {
+        // 1_000_000 s is 13:46:40 UTC on day 11; Chile is UTC-3 then.
+        let zone = Zone::utc(-3);
+        let mut alerts = Alerts::default();
+        let rec = Status::Recording;
+        assert_eq!(alerts.turn_back(0, false, rec, true, turn(60), zone), None);
+        assert_eq!(
+            alerts.turn_back(1, true, Status::Paused, true, turn(60), zone),
+            None
+        );
+        assert_eq!(alerts.turn_back(2, true, rec, false, turn(60), zone), None);
+        assert_eq!(alerts.turn_back(3, true, rec, true, None, zone), None);
+        let alert = alerts
+            .turn_back(4, true, rec, true, turn(60), zone)
+            .unwrap();
+        assert_eq!(alert, Alert::TurnBackBy(10 * 60 + 47));
+        assert_eq!(alert.text().as_str(), "TURN BACK BY 10:47");
+        assert_eq!(alert.cue(), Some(Cue::Sunset));
+        assert_eq!(
+            alerts.turn_back(10_000, true, rec, true, turn(60), zone),
+            None
+        );
+    }
+
+    #[test]
+    fn turn_back_says_now_once_the_turn_has_passed() {
+        let mut alerts = Alerts::default();
+        let alert = alerts
+            .turn_back(0, true, Status::Recording, true, turn(-30), Zone::utc(0))
+            .unwrap();
+        assert_eq!(alert, Alert::TurnBackNow);
+        assert_eq!(alert.text().as_str(), "TURN BACK NOW");
+    }
+
+    #[test]
+    fn turn_back_keeps_its_distance_from_another_alert_and_a_new_ride_rearms_it() {
+        let zone = Zone::utc(0);
+        let rec = Status::Recording;
+        let mut alerts = Alerts {
+            last: Some(1_000),
+            ..Alerts::default()
+        };
+        assert_eq!(
+            alerts.turn_back(2_000, true, rec, true, turn(60), zone),
+            None
+        );
+        assert!(
+            alerts
+                .turn_back(4_000, true, rec, true, turn(60), zone)
+                .is_some()
+        );
+        let sample = Sample::default();
+        alerts.update(
+            10_000,
+            &Settings::default(),
+            rec,
+            60_000,
+            &sample,
+            Snapshot::default(),
+        );
+        alerts.update(
+            20_000,
+            &Settings::default(),
+            rec,
+            0,
+            &sample,
+            Snapshot::default(),
+        );
+        assert!(
+            alerts
+                .turn_back(30_000, true, rec, true, turn(60), zone)
+                .is_some()
+        );
     }
 
     #[test]

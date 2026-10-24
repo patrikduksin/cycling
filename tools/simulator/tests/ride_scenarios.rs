@@ -6543,6 +6543,101 @@ fn no_sunset_alert_when_off_or_when_the_ride_starts_after_dark() {
     sim.expect_no_text("LIGHTS ON");
 }
 
+/// A straight road `km` north of the start and back, for rides whose way home
+/// is the way they came.
+fn straight_out_and_back_gpx(km: f64) -> String {
+    gpx_through(
+        "straight out and back",
+        &[(0.0, 0.0), (0.0, km * 1000.0), (0.0, 0.0)],
+    )
+}
+
+/// Advance `minutes` a second at a time, so no two-second toast can pass
+/// unseen, and fail if `needle` shows.
+#[track_caller]
+fn expect_quiet(sim: &mut Sim, minutes: u64, needle: &str) {
+    for _ in 0..minutes * 60 {
+        sim.advance(seconds(1));
+        sim.expect_no_text(needle);
+    }
+}
+
+/// Santiago on 14 October 2026 (UTC-3, sunset 19:55 local, 22:55 UTC), riding
+/// out at 25 km/h from 90 minutes before sunset. The way home takes as long as
+/// the ride so far, so after t minutes the margin is 90 - 2t: it drops under
+/// 15 minutes at 37.5, and the last turn is then 22:17:30 UTC, 19:17 here.
+#[test]
+fn riding_out_toward_dusk_says_when_to_turn_back() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_route(Route::from_gpx(&straight_out_and_back_gpx(40.0)).unwrap());
+    sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(minutes(20));
+    sim.expect_no_text("TURN BACK");
+    let latency = sim.wait_for("TURN BACK BY", minutes(30)).unwrap();
+    // 37.5 minutes after the start, less the 20 spent already.
+    assert!(
+        (minutes(17)..=minutes(18)).contains(&latency),
+        "told after {latency} ms"
+    );
+    sim.expect_text("TURN BACK BY 19:17");
+    sim.advance(seconds(1));
+    let ids = played_since(&sim, 0);
+    assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
+    sim.checkpoint("toast: turn back by 19:17");
+    // Once: the margin holds while riding on, and the toast does not return,
+    // not at the sunset warning, nor at sunset, nor in the dark after it.
+    expect_quiet(&mut sim, 3, "TURN BACK");
+    sim.wait_for("SUNSET IN 30 MIN", minutes(30)).unwrap();
+    expect_quiet(&mut sim, 5, "TURN BACK");
+    sim.wait_for("LIGHTS ON", minutes(40)).unwrap();
+    expect_quiet(&mut sim, 10, "TURN BACK");
+    sim.stop_ride();
+}
+
+/// Riding home already says nothing, even when slow riding home shrinks the
+/// margin under 15 minutes: out 12.5 km at 25 km/h, 60 minutes from sunset,
+/// then back at 10 km/h. Without the guard it would speak after about 15
+/// minutes. A ride in the dark and one with SUNSET off say nothing either.
+#[test]
+fn no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_route(Route::from_gpx(&straight_out_and_back_gpx(12.5)).unwrap());
+    sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(minutes(29));
+    sim.expect_no_text("TURN BACK");
+    sim.ride_at(10.0, 0.0, 0.0, 0.0);
+    expect_quiet(&mut sim, 28, "TURN BACK");
+    sim.checkpoint("riding home slowly, no turn back toast");
+    sim.stop_ride();
+
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.set_gps_clock(23 * 3600 + 30 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    expect_quiet(&mut sim, 30, "TURN BACK");
+
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.home("SETTINGS");
+    sim.set_option("SUNSET", "OFF");
+    sim.press(Button::TopLeft);
+    sim.set_gps_clock(21 * 3600 + 25 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    expect_quiet(&mut sim, 50, "TURN BACK");
+}
+
 /// The light caption on BACK TO START draws in the light theme too, before
 /// and after sunset (the light theme cannot be read as text, so it is checked
 /// by colour and by the screenshots).

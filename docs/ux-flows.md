@@ -250,6 +250,19 @@ minutes old, never repeats the warning either. A pause across the
 30-minute mark gives the warning on resume, if 20 minutes or more remain.
 Polar day and night have no sunset and no alert.
 
+A second amber toast with the same chime, TURN BACK BY 17:40 in local time,
+says when to start home to be there by sunset. It speaks once per ride, on
+the ride pages, when less than 15 minutes remain before that time; if the time
+has already passed it says TURN BACK NOW. The time home is TRACK KM, or TO END
+KM while following a course, over the ride's moving average speed, so it waits
+for 5 minutes of moving and for 5 km/h or more. It is part of ALERTS SUNSET, with
+no setting of its own. It says nothing in polar day or night, after sunset,
+without a position or time, while paused, when riding towards the start
+(following the track back, or heading within a quarter turn of it), at the
+start, or on a recovered ride until its track has been read back. Riding home
+keeps the margin where it was, so it speaks again only after the margin has
+stayed above 30 minutes for 10 minutes, as when a shorter course is loaded.
+
 ### Paused
 
 A pause, by ACT or by auto-pause, fills the screen: two amber bars, PAUSED or

@@ -9,6 +9,7 @@ use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
+use crate::ride::turn_back::Turn;
 use crate::screens::chrome::CONTENT;
 use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
 use crate::screens::gesture::Gestures;
@@ -456,6 +457,24 @@ impl Runtime {
             self.navigation.page == Page::Ride,
             self.night.sun(now),
         );
+        let sun = self.night.sun(now);
+        let leg = self.back.as_deref().and_then(|back| {
+            back.leg(
+                self.ride.totals.avg_speed_mm_s(),
+                self.ride.totals.moving_ms(),
+            )
+        });
+        let turn = sun
+            .zip(leg)
+            .and_then(|((sun, unix), leg)| Turn::new(sun, unix, leg));
+        let turn_back = self.alerts.turn_back(
+            now,
+            self.preferences.options.sunset_alert,
+            self.ride.active().status(),
+            self.navigation.page == Page::Ride,
+            turn,
+            self.preferences.options.zone,
+        );
         if self.navigation.page == Page::Ride {
             if self.readings.radar_alert.update(radar, now) {
                 self.cue(Cue::RadarApproach, now);
@@ -479,7 +498,7 @@ impl Runtime {
                     after_news,
                 )
             });
-            if let Some(alert) = alert.or(sunset) {
+            if let Some(alert) = alert.or(sunset).or(turn_back) {
                 self.ride_alert(alert, now);
             }
         } else {

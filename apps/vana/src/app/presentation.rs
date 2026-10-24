@@ -97,6 +97,10 @@ pub(super) struct Navigation {
     pub(super) summary_page: usize,
     /// A sound the next `alert` plays.
     pub(super) chime: Option<Cue>,
+    /// The personal bests the ride set, announced when its summary opens.
+    pub(super) best_news: Option<Text<24>>,
+    /// The bests toast on screen, so leaving the summary can take it away.
+    best_shown: Option<Text<24>>,
 }
 
 impl Navigation {
@@ -124,6 +128,7 @@ impl Navigation {
             }
             (_, Status::Recording) => {
                 self.paused_since = None;
+                self.best_news = None;
                 self.chime = Some(Cue::Start);
                 ("RECORDING", Tone::Good)
             }
@@ -136,7 +141,17 @@ impl Navigation {
                 return;
             }
             (_, Status::Saved) if riding && self.page == Page::Summary => {
-                self.chime = Some(Cue::Saved);
+                // New bests take the saved chime's place, with a toast.
+                let news = self.best_news.take();
+                self.chime = Some(if news.is_some() {
+                    Cue::Best
+                } else {
+                    Cue::Saved
+                });
+                if let Some(news) = news {
+                    self.toast(news.as_str(), Tone::Good, now);
+                    self.best_shown = Some(news);
+                }
                 return;
             }
             (_, Status::Saved) if riding => ("RIDE SAVED", Tone::Good),
@@ -144,6 +159,21 @@ impl Navigation {
             _ => return,
         };
         self.toast(message, tone, now);
+    }
+
+    /// The toast of new bests belongs to the summary: leaving it takes that
+    /// toast away, and only that one.
+    pub(super) fn leave_summary(&mut self) {
+        let Some(shown) = self.best_shown.take() else {
+            return;
+        };
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|(toast, _)| toast.text() == Toast::new(shown.as_str(), Tone::Good).text())
+        {
+            self.toast = None;
+        }
     }
 
     /// Show the ride screen's first page.
@@ -181,6 +211,8 @@ impl Default for Navigation {
             pause_wrapped: false,
             summary_page: 0,
             chime: None,
+            best_news: None,
+            best_shown: None,
         }
     }
 }
@@ -604,6 +636,10 @@ impl Runtime {
                 view.after = self.after();
                 self.show_elevation(&mut view);
             }
+            Page::Bests => {
+                view.bests = self.bests.bests;
+                view.bests_mode = self.bests.mode();
+            }
             Page::PastRide => self.past_view(&mut view),
             Page::Phone => {
                 view.phone_ride = self.history.phone.is_some();
@@ -861,6 +897,8 @@ impl Runtime {
             laps: Some(self.ride.laps.count().saturating_add(1)),
             past: false,
             elevation: self.has_elevation(),
+            found: self.ride.bests_found,
+            offer: self.summary_offer(),
         }
     }
 
@@ -1120,6 +1158,7 @@ impl Runtime {
                 count => write!(value, "{count} SAVED"),
             },
             Row::Phone => write!(value, "SEND RIDES"),
+            Row::Bests => value.push_str(self.bests.summary().as_str()),
             Row::Storage => {
                 if self.ride.bulk.status() != Status::Unsupported {
                     let _ = write!(note, "{}", self.ride.medium().label());

@@ -32,7 +32,7 @@ Home ── RIDE ──> Ready ── ACT or roll off ──> Ride pages (record
                                           END RIDE? ── BACK ──> Paused screen
                                               │ ACT
                                               v
-                                         Saving ──> Ride saved summary (3 or 4 pages)
+                                         Saving ──> Ride saved summary (3 or 4 pages, one more with an FTP offer)
                                                        │ ACT (Done) or BACK
                                                        v
                                                       Home
@@ -154,6 +154,24 @@ The summary opens with a green check and RIDE SAVED, and pages through:
 MOVE or a swipe turns the page, wrapping, and the page dots count three or four; ACT (Done) or BACK goes Home. If the last
 write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED.
 
+A ride recorded live that sets a personal best (see Bests below) opens its
+summary with one toast and the best chime: `BEST 5 MIN 312 W` for one,
+`3 NEW BESTS` for more. Each new best says BEST in its caption and takes its
+metric colour.
+
+**FTP offer.** When the ride's new 20 min best times 0.95 is at least 3% above
+the stored FTP, the summary gets a fourth, last page: `FTP 245 W?`, over the
+20 min best it comes from and `NOW 215 W`. It is a page, not a sheet, so the
+other three pages keep their buttons: ACT and BACK still go Home. On the
+offer, ACT (check cue) takes it (`FTP 245 W SAVED`) and BACK (back cue) keeps
+the FTP in force (`FTP KEPT 215 W`); both then go Home. Pressing Done on an
+earlier page declines it, and the offer is never shown again for that ride.
+The four page dots show that it is there. It is reached only going forward
+(MOVE from the last page): a swipe back from the first page lands on page 3,
+where ACT is Done as everywhere else. It is dropped when the suggestion no
+longer beats the FTP in force by 3%. It is not offered for a saved ride read
+back from the list.
+
 The 5 s and 1 min bests are exact. The 5 and 20 min bests use 10 s buckets, so
 they can read slightly low but never high.
 
@@ -188,6 +206,34 @@ per tick once the list was first opened, about 20 bytes per ride and up to 1,000
 oldest drop out beyond that). Until it has read a journal, the last four rides
 each journal's catalog keeps still show, and a newly saved ride appears at
 once.
+
+## Bests
+
+The rider's all-time bests are 5 s, 1, 5 and 20 min power, the longest ride
+by distance and by time, and the most ascent. Settings, PROFILE, BESTS lists
+each with its value and the day it was set; BACK returns to Settings.
+
+- Only a ride recorded live that finishes counts. A demo ride never does.
+  Rides under 10 minutes can set a power best but not a distance, time or
+  ascent one, so a test press is not the longest ride.
+- A best is replaced only by a higher value; a tie keeps the older day.
+- A power above what a person holds for that length (2,500 W for 5 s,
+  1,500 W for 1 min, 800 W for 5 min, 600 W for 20 min) is a sensor glitch and
+  never a best.
+- They are ride history, not settings: a small file on the FILES volume
+  beside the workout outcomes (`ride-recording.md`, "Personal bests"), saved
+  when the ride is. VANA never formats the store: where there is no card, no
+  FILES volume or no formatted store (formatting is the host's, behind
+  `--confirm`, and erases the bests), they are not kept: BESTS says BESTS
+  NOT KEPT, and a ride is never held up for it. A device that never recorded
+  one shows NONE YET.
+- If the store would not take a write (full or failing), BESTS says BESTS NOT
+  SAVED; the bests merged so far stay in memory and the next write keeps them.
+  A read that failed only this time is tried again with the ride waiting.
+- A file that cannot be read says BESTS FILE DAMAGED and is left alone.
+- ACT on BESTS asks CLEAR BESTS?: ACT (check cue) clears them, replacing a
+  damaged file too, and BACK (back cue) keeps them. A failed clear says CLEAR
+  FAILED.
 
 ## Other routes
 

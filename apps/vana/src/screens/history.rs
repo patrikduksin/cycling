@@ -150,11 +150,23 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
     canvas
 }
 
+const MONTHS: [&str; 12] = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+];
+
+/// "OCT 17 2026" for a day count since 1970-01-01 on the local clock.
+pub fn date(days: u16) -> Text<20> {
+    let (year, month, day) = civil(i64::from(days));
+    let mut text = Text::new();
+    let _ = core::fmt::Write::write_fmt(
+        &mut text,
+        format_args!("{} {} {}", MONTHS[usize::from(month - 1)], day, year),
+    );
+    text
+}
+
 /// "OCT 17  7:12", a local start time.
 pub fn started(local: Local) -> Text<20> {
-    const MONTHS: [&str; 12] = [
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
-    ];
     let (_, month, day) = civil((local.0 / 86_400) as i64);
     let seconds = local.of_day();
     let (hour, minute) = (seconds / 3600, seconds / 60 % 60);

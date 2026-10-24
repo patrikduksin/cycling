@@ -20,6 +20,7 @@ use super::workout::View;
 pub enum Row {
     Ftp,
     Threshold,
+    Bests,
     Brightness,
     AutoDim,
     Daylight,
@@ -62,11 +63,13 @@ pub enum SettingsAction {
     Sensors,
     /// Connect phone: send rides to a phone over Wi-Fi.
     ConnectPhone,
+    /// The rider's personal bests.
+    Bests,
 }
 
 /// Sections in order, each with its title and the rows it holds.
 pub const SECTIONS: [(&str, &[Row]); 8] = [
-    ("PROFILE", &[Row::Ftp, Row::Threshold]),
+    ("PROFILE", &[Row::Ftp, Row::Threshold, Row::Bests]),
     (
         "DISPLAY",
         &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
@@ -135,6 +138,7 @@ impl Row {
         match self {
             Self::Ftp => "FTP WATTS",
             Self::Threshold => "LTHR BPM",
+            Self::Bests => "BESTS",
             Self::Brightness => "BRIGHTNESS",
             Self::AutoDim => "DIM AFTER",
             Self::Daylight => "DAY / NIGHT",
@@ -162,6 +166,7 @@ impl Row {
         match self {
             Self::Sensors => Some(SettingsAction::Sensors),
             Self::Phone => Some(SettingsAction::ConnectPhone),
+            Self::Bests => Some(SettingsAction::Bests),
             _ => None,
         }
     }
@@ -185,7 +190,7 @@ impl Row {
             | Self::HeartLow
             | Self::PowerHigh
             | Self::PowerLow => Kind::Choice,
-            Self::Sensors | Self::Phone => Kind::Open,
+            Self::Sensors | Self::Phone | Self::Bests => Kind::Open,
             Self::Storage | Self::Firmware => Kind::Info,
         }
     }
@@ -456,7 +461,11 @@ mod tests {
         let values: &[(&str, &str)] = if editing {
             &[("215", "Z4 195-226 W")]
         } else {
-            &[("215", "Z4 195-226 W"), ("185", "Z5 FROM 170 BPM")]
+            &[
+                ("215", "Z4 195-226 W"),
+                ("185", "Z5 FROM 170 BPM"),
+                ("NONE YET", ""),
+            ]
         };
         view(cursor, editing, values, "SAVED")
     }
@@ -474,7 +483,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 22);
+        assert_eq!(ROWS, 23);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -492,7 +501,7 @@ mod tests {
     fn rings_the_focused_row_and_fills_the_edited_number() {
         let moving = profile(1, false);
         let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
-        assert_eq!(colors, [CARD, ACCENT, RAISED], "no pads");
+        assert_eq!(colors, [CARD, ACCENT, RAISED, CARD], "no pads");
         assert_eq!(moving.pixel(LEFT, ROW_TOP), 0, "rounded corner");
         let second = row_rect(1);
         assert_eq!(moving.pixel(LEFT + 1, second.top + 20), ACCENT, "ring");
@@ -558,14 +567,20 @@ mod tests {
         let row = |slot| ROW_TOP + slot * ROW_PITCH + 10;
         assert_eq!(target(100, row(0), 0, false), Some(Target::Row(0)));
         assert_eq!(target(200, row(1), 0, false), Some(Target::Row(1)));
-        assert_eq!(target(100, row(2), 0, false), None, "profile has two rows");
+        assert_eq!(target(100, row(2), 0, false), Some(Target::Row(2)));
+        assert_eq!(
+            target(100, row(3), 0, false),
+            None,
+            "profile has three rows"
+        );
         let device = Row::Sensors.index();
         assert_eq!(
             target(100, row(3), device, false),
             Some(Target::Row(device + 3))
         );
         assert_eq!(target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false), None);
-        assert_eq!(target(30, PAD_TOP + 10, 0, false), None);
+        let ride = Row::AutoPause.index();
+        assert_eq!(target(30, PAD_TOP + 10, ride, false), None);
         assert_eq!(target(30, PAD_TOP + 10, 0, true), Some(Target::Lower));
         assert_eq!(target(200, PAD_TOP + 10, 0, true), Some(Target::Raise));
         assert_eq!(target(100, row(0), 0, true), None);

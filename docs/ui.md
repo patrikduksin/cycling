@@ -174,6 +174,9 @@ does, so the cue reads at a glance.
 | Stop | `RAISED`, white icon | End the ride: asks first (BACK) |
 | Back | `RAISED`, white icon | No, go back (BACK) |
 
+The summary's FTP offer uses two of them at once: Check beside ACT takes the
+suggested FTP, Back beside BACK keeps the one in force.
+
 Only Ready, the paused screen, End ride, the summary and a saved ride show
 cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the cue
@@ -401,7 +404,7 @@ Acting on a row does one of three things:
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km, sounds on/off);
-- an action opens a page (SENSORS) or a flow (PHONE, a placeholder until the
+- an action opens a page (SENSORS, BESTS) or a flow (PHONE, a placeholder until the
   phone companion lands).
 
 Storage and firmware rows only show facts. The save status sits in the
@@ -415,6 +418,24 @@ time: UTC-3 from the first Saturday of September at 24:00 to the first
 Saturday of April at 24:00, UTC-4 otherwise. Its note says which is in force,
 such as UTC-4 NOW. UTC-3 (Magallanes, Aysén) and UTC-4 hold all year. The
 shell's own `TIMEZONE` terminal setting does not move VANA's clock.
+### Bests
+
+BESTS, the last row of PROFILE, opens the rider's all-time bests (`screens::bests`):
+5 s, 1, 5 and 20 min power in `POWER`, then the longest ride, the longest
+ride time and the most ascent in their own colours, each a `CAPTION` over the
+day it was set, with the value in `BODY` at the right. A best not set shows
+`--` in `TERTIARY`; one set before the clock was known shows no day. The page
+has no cues; BACK returns to Settings. The row's value counts the bests set
+(7 SET, NONE YET, or a problem). A problem replaces the list with an `AMBER`
+headline and a grey line: BESTS NOT KEPT where there is no place to keep them,
+BESTS FILE DAMAGED for a file that cannot be read, and BESTS NOT SAVED when
+the store would not take a write. ACT asks CLEAR BESTS? with the check cue
+beside ACT to clear and the back cue beside BACK to keep; on a damaged file it
+starts them over. A failed clear says CLEAR FAILED in a toast.
+
+On the ride summary, a new best has the reading's metric colour and `BEST` in
+its caption: BEST TIME and BEST KM (`SPEED`), BEST ASC M (`GRADE`) on page 1,
+and a `POWER` `BEST` caption under each new best-power bar on page 3.
 
 ## First-run setup
 

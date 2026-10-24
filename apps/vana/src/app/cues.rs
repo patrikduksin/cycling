@@ -26,6 +26,8 @@ pub enum Cue {
     Saved,
     /// Riding on while the ride is still paused.
     StillPaused,
+    /// The saved ride set a personal best.
+    Best,
     LowBattery,
     /// One of a workout step's last seconds.
     Countdown,
@@ -65,6 +67,8 @@ impl Cue {
             Self::Lap => &[Middle],
             Self::Saved => &[Low, Middle, High],
             Self::StillPaused => &[Middle, Middle, High],
+            // The saved run, topped with a held high note.
+            Self::Best => &[Middle, High, High],
             Self::LowBattery => &[Low, Low],
             Self::Countdown => &[Low],
             Self::Step => &[High, High],
@@ -180,6 +184,7 @@ mod tests {
         assert_eq!(ids(Cue::Resume), [10]);
         assert_eq!(ids(Cue::Lap), [0]);
         assert_eq!(ids(Cue::Saved), [21, 0, 10]);
+        assert_eq!(ids(Cue::Best), [0, 10, 10]);
         assert_eq!(ids(Cue::LowBattery), [21, 21]);
         assert_eq!(ids(Cue::RadarApproach), [22]);
         assert_eq!(ids(Cue::RadarClear), [21, 10]);

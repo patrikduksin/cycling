@@ -8,6 +8,7 @@
 //! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
 use crate::ride::auto::Auto;
+use crate::ride::bests::Found;
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
@@ -111,6 +112,11 @@ pub(super) struct Ride {
     pub(super) trace: Trace,
     /// The summary's chart of `trace`, charted when the page opens.
     pub(super) chart: ElevationChart,
+    /// The personal bests this ride set, and the FTP its 20 min best
+    /// suggests while the rider has not answered. Kept after stop until the
+    /// next ride starts.
+    pub(super) bests_found: Found,
+    pub(super) ftp_suggestion: Option<u16>,
     /// Climbs finished this ride.
     pub(super) climbs_done: u16,
     /// A lap closed since the last chime.
@@ -171,6 +177,8 @@ impl Default for Ride {
             efforts: Efforts::default(),
             trace: Trace::default(),
             chart: ElevationChart::default(),
+            bests_found: Found::default(),
+            ftp_suggestion: None,
             climbs_done: 0,
             lap_chime: false,
             climbs: Climbs::default(),
@@ -737,6 +745,8 @@ impl Runtime {
                 ride.zone_time = ZoneTime::default();
                 ride.efforts = Efforts::default();
                 ride.trace = Trace::default();
+                ride.bests_found = Found::default();
+                ride.ftp_suggestion = None;
                 ride.climbs_done = 0;
                 ride.climbs = Climbs::default();
                 self.navigation.climb_return = None;
@@ -792,6 +802,16 @@ impl Runtime {
             } else if !result.ok {
                 ride.give_up_continuation();
             }
+        }
+        if let Some(medium) = finished {
+            super::bests::settle(
+                ride,
+                &mut self.bests,
+                bulk,
+                medium,
+                self.preferences.options.zone,
+                now,
+            );
         }
         // A saved ride keeps how its workout went beside it on FILES.
         if let (Some(medium), Some(player)) = (finished, ride.workout.as_ref())

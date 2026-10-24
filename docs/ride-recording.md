@@ -443,6 +443,34 @@ next; a toast names it (`WORK 2/5 3:00`). Each step closes a lap.
 time on target; `Runtime::workout_summary()` gives the last workout's summary
 to other features.
 
+### Personal bests
+
+The rider's all-time bests (5 s, 1, 5 and 20 min power, longest ride by
+distance and by time, most ascent) are ride history, so they live in
+`bests.dat` on the FILES volume (`ride::bests`), not in the preference record.
+When a live ride finishes, VANA reads the file, merges the ride and writes it
+back with the same synchronous write as the workout outcome; a ride that
+cannot be stored claims no best. VANA never formats the store: without a
+card, a FILES volume or a store the host formatted, bests are not kept (the
+host's `files format` erases them). A file that does not decode is never
+merged into; only CLEAR BESTS replaces it. A write the store refuses leaves
+the merged bests in memory for the next write, and a read that failed only
+this time is retried with the ride's outcome waiting (one outcome is kept).
+The reader takes at most 84 bytes of the file, so a later version must keep
+the whole file within 84 bytes or raise the reader first.
+
+| Bytes | Field |
+| --- | --- |
+| 0..4 | magic `VBST` |
+| 4 | version, 1 |
+| 5 | body length `n` before the CRC: 38 in version 1 |
+| 6..38 | four power marks (watts and day, u16 each), distance in metres (u32) and day (u16), time in seconds (u32) and day (u16), ascent in metres (u16) and day (u16), little-endian |
+| n..n+4 | CRC32 of bytes 0..n |
+
+A day is days since 1970-01-01 in the clock's time zone, 0 when the clock was
+unknown; a value of 0 is no best. Later versions only append fields before the
+CRC and raise the version, within the 84 bytes above.
+
 FTP tests end on a NEW FTP sheet while the ride keeps recording: ACT saves the
 new FTP to the profile, BACK keeps the old one.
 

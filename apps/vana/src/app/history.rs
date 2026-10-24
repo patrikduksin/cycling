@@ -366,6 +366,7 @@ impl Runtime {
             laps: replay.laps(),
             past: true,
             elevation: self.has_elevation(),
+            ..After::default()
         };
         self.show_elevation(view);
     }

@@ -131,7 +131,15 @@ impl Runtime {
                 self.ride_press(button, held, received, now);
             }
             Page::Summary if button == Button::BottomLeft => self.next_summary_page(1),
+            // The FTP offer's answer, then the press ends the summary as on any page.
+            Page::Summary if self.offer_shown() => {
+                if !held {
+                    self.answer_ftp_offer(button, now);
+                }
+                self.ride_press(button, held, received, now);
+            }
             Page::Summary => self.ride_press(button, held, received, now),
+            Page::Bests => self.bests_input(button, held),
             Page::Phone => self.phone_input(button, held),
             Page::History => self.history_input(button, held),
             Page::PastRide => self.past_ride_input(button, held),
@@ -177,6 +185,7 @@ impl Runtime {
             | Page::Ready
             | Page::EndRide
             | Page::Phone
+            | Page::Bests
             | Page::Workouts => 0,
         };
         let sheet = u32::from(self.power.view().is_some() || self.training.ftp_offer.is_some());
@@ -221,10 +230,7 @@ impl Runtime {
                 }
             }
             (Page::Summary | Page::PastRide, Gesture::Next) => self.next_summary_page(1),
-            (Page::Summary | Page::PastRide, Gesture::Previous) => {
-                let last = summary::pages(self.has_elevation()) - 1;
-                self.next_summary_page(last)
-            }
+            (Page::Summary | Page::PastRide, Gesture::Previous) => self.previous_summary_page(),
             (Page::History, Gesture::Tap(point)) => {
                 let (x, y) = (usize::from(point.x), usize::from(point.y));
                 let count = self.history_count();
@@ -406,6 +412,7 @@ impl Runtime {
                 self.navigation.page_since = now;
                 self.request_search(ant, now);
             }
+            (_, Some(SettingsAction::Bests)) => self.open_bests(now),
             (_, Some(SettingsAction::ConnectPhone)) => {
                 self.enter_phone();
                 self.navigation.page_since = now;
@@ -519,9 +526,21 @@ impl Runtime {
     }
 
     pub(super) fn next_summary_page(&mut self, step: usize) {
-        let pages = summary::pages(self.has_elevation());
+        let pages = self.summary_pages();
         let navigation = &mut self.navigation;
         navigation.summary_page = (navigation.summary_page + step) % pages;
+    }
+
+    /// One page back. The FTP offer is reached only going forward, so a
+    /// swipe back from the first page lands on the last page every ride has,
+    /// where ACT is Done as it is everywhere else.
+    fn previous_summary_page(&mut self) {
+        let last = summary::pages(self.has_elevation()) - 1;
+        let navigation = &mut self.navigation;
+        navigation.summary_page = match navigation.summary_page {
+            0 => last,
+            page => (page - 1).min(last),
+        };
     }
 
     /// BottomLeft steps through the ride pages, wrapping after the last.

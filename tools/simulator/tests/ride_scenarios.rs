@@ -3538,6 +3538,118 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.checkpoint("home after the ride");
 }
 
+/// Two rides: the first sets every best, the second beats them and offers a
+/// higher FTP as the summary's last page. BESTS lists them under Settings.
+#[test]
+fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    // A card with no volumes has no place for bests, and BESTS says so.
+    sim.home("SETTINGS");
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_field("BESTS", "NOT KEPT");
+    sim.press(Button::BottomRight);
+    sim.expect_text("BESTS NOT KEPT");
+    sim.checkpoint("BESTS where nothing can be kept");
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    sim.init_bulk();
+    sim.init_volumes();
+    // The host formats the FILES store with its first file; VANA never does.
+    sim.put_file("notes.txt", b"x");
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(22));
+    let chimes = sim.device.speaker.played.len();
+    sim.stop_ride();
+    sim.expect_text("7 NEW BESTS");
+    sim.advance(seconds(1));
+    assert!(sim.device.speaker.played.len() >= chimes + 3, "best chime");
+    sim.checkpoint("first ride: seven new bests");
+    sim.expect_text("BEST");
+    // 95% of 200 W is under the FTP in force: no offer, three pages.
+    for _ in 0..4 {
+        if sim.screen().contains("RIDE SAVED") {
+            break;
+        }
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("RIDE SAVED");
+    sim.expect_no_text("FTP");
+    sim.done();
+    sim.expect_no_text("NEW BESTS");
+
+    sim.ride_at(32.0, 260.0, 150.0, 92.0);
+    sim.start_ride();
+    sim.advance(minutes(25));
+    sim.stop_ride();
+    sim.expect_text("NEW BESTS");
+    sim.checkpoint("second ride: new bests toast on the summary");
+    sim.expect_text("BEST");
+    sim.checkpoint("summary: time and distance marked BEST");
+    // Backwards from the first page never lands on the FTP offer.
+    sim.swipe_previous();
+    sim.expect_text("BEST POWER W");
+    sim.expect_no_text("FTP 24");
+    sim.expect_text("BEST");
+    sim.checkpoint("summary: best power marked BEST");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("FTP 24");
+    sim.expect_text("NOW 215 W");
+    sim.checkpoint("summary: FTP offer");
+    sim.press(Button::BottomRight);
+    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.expect_text("SAVED");
+    assert!(sim.command("PROFILE").1.contains("ftp=247"));
+    sim.checkpoint("home: FTP saved");
+
+    // The bests are in a file, so they outlive a power loss.
+    sim.power_loss();
+    sim.home("SETTINGS");
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_field("BESTS", "7 SET");
+    sim.checkpoint("settings: BESTS row");
+    sim.press(Button::BottomRight);
+    sim.expect_text("LONGEST RIDE");
+    sim.expect_text("MOST ASCENT");
+    sim.expect_text("260 W");
+    sim.checkpoint("the BESTS view");
+    // ACT asks first; BACK keeps them.
+    sim.press(Button::BottomRight);
+    sim.expect_text("CLEAR BESTS?");
+    sim.checkpoint("clear the bests?");
+    sim.press(Button::TopLeft);
+    sim.expect_text("LONGEST RIDE");
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    sim.expect_no_text("260 W");
+    sim.expect_text("--");
+    sim.press(Button::TopLeft);
+    sim.expect_field("BESTS", "NONE YET");
+
+    // A file that does not decode is left alone until the rider clears it.
+    sim.put_file("bests.dat", b"not a bests file");
+    sim.press(Button::BottomRight);
+    sim.expect_text("BESTS FILE DAMAGED");
+    sim.checkpoint("BESTS file damaged");
+    sim.press(Button::BottomRight);
+    sim.expect_text("CLEAR BESTS?");
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(1));
+    sim.expect_text("--");
+    sim.expect_no_text("DAMAGED");
+    assert_eq!(
+        sim.file("bests.dat").map(|bytes| bytes.len()),
+        Some(42),
+        "cleared in place"
+    );
+}
+
 /// Rolling off from Ready starts the ride, and a stop at a light shows the
 /// whole-screen automatic pause until the rider rolls on.
 #[test]
@@ -3608,8 +3720,9 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_field("FTP WATTS", "215");
     sim.checkpoint("settings open on the profile");
     // MOVE walks the rows, past the last profile row into Display.
-    sim.press(Button::BottomLeft);
-    sim.press(Button::BottomLeft);
+    for _ in 0..3 {
+        sim.press(Button::BottomLeft);
+    }
     sim.expect_text("DISPLAY");
     sim.expect_field("BRIGHTNESS", "50%");
     sim.expect_field("DIM AFTER", "30 S");

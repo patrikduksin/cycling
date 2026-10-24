@@ -91,6 +91,9 @@ pub struct Lap {
     power_ms: u64,
     heart_sum: u32,
     heart_count: u32,
+    /// Heart rate in the seconds without power, for their calories.
+    heart_unpowered_sum: u32,
+    heart_unpowered_count: u32,
     max_speed_mm_s: Option<u32>,
     max_power: Option<u16>,
     max_heart: Option<u16>,
@@ -126,6 +129,10 @@ impl Lap {
         if let Some(bpm) = sample.heart_bpm {
             self.heart_sum = self.heart_sum.saturating_add(u32::from(bpm));
             self.heart_count = self.heart_count.saturating_add(1);
+            if sample.power_watts.is_none() {
+                self.heart_unpowered_sum = self.heart_unpowered_sum.saturating_add(u32::from(bpm));
+                self.heart_unpowered_count = self.heart_unpowered_count.saturating_add(1);
+            }
             self.max_heart = self.max_heart.max(Some(bpm));
         }
         if let Some(cadence) = sample.cadence_tenths.filter(|&c| c != 0) {
@@ -145,9 +152,8 @@ impl Lap {
     pub fn kcal_for(&self, rider: Rider) -> Option<u32> {
         calories(
             self.kcal(),
-            self.power_ms,
-            u64::from(self.heart_sum),
-            self.heart_count,
+            u64::from(self.heart_unpowered_sum),
+            self.heart_unpowered_count,
             rider,
         )
     }
@@ -341,6 +347,25 @@ mod tests {
             ..Lap::default()
         };
         assert_eq!(lap.avg_heart_bpm(), Some(65_534));
+    }
+
+    #[test]
+    fn heart_rate_without_power_saturates_its_sum() {
+        let mut lap = Lap {
+            heart_unpowered_sum: u32::MAX - 1,
+            ..Lap::default()
+        };
+        let hostile = Sample {
+            heart_bpm: Some(u16::MAX),
+            ..Sample::default()
+        };
+        lap.add(1000, 0, &hostile);
+        lap.add(1000, 0, &hostile);
+        let body = Rider::decode([200, 10, 1]).unwrap();
+        assert_eq!(
+            lap.kcal_for(body),
+            body.heart_rate_kcal(u64::from(u32::MAX), 2)
+        );
     }
 
     /// `seconds` one-second steps at a steady sample, from `now`; returns the

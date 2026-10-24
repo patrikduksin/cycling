@@ -36,11 +36,12 @@
 //! Rides recorded before altitude was kept have none.
 //!
 //! Laps and session carry `total_calories` (field 11, kcal) as the summary
-//! shows it (`totals::calories`): the power meter's work, or the heart-rate
-//! estimate once the rider's body is set. Each lap applies the rule to its
-//! own seconds, so a lap's rounding or half-coverage choice can differ from
-//! the session's, and laps may not add up to it. Without power, or heart
-//! rate and a body, they are invalid.
+//! shows it (`totals::calories`): the power meter's work, plus the
+//! heart-rate estimate for the seconds without power once the rider's body
+//! is set. Each lap applies the rule to its own seconds, so laps add up to
+//! the session but for rounding. Without power, or heart rate and a body,
+//! they are invalid. The session steps through the journal as the saved
+//! ride's summary does (`log::Timeline`), so the two agree.
 //!
 //! What the journal does not have stays out: no distance without a
 //! recorded speed (wheel or GPS), so readers fall back to GPS for distance.
@@ -48,7 +49,7 @@
 //! lap; a lap's ascent and descent are the session's over its time).
 
 use crate::ride::laps::Lap;
-use crate::ride::log::{self, Entry, Kind, LapStart, MAX_STEP_MS, Sample, Slot};
+use crate::ride::log::{self, Entry, Kind, LapStart, Sample, Slot, Timeline};
 use crate::ride::rider::Rider;
 use crate::ride::totals::Totals;
 use firmware_services::fit::{
@@ -337,14 +338,10 @@ pub struct Export {
     late: [(u32, u64); LATE_STRETCHES],
     late_count: usize,
     offsets: Option<(u64, u64)>,
-    /// The latest sample, whose readings hold until the next one or a pause.
-    last_sample: Option<Sample>,
-    /// A start or resume waiting for the next sample to date it.
-    pending_start: Option<u64>,
-    paused: bool,
+    /// The active time each sample, pause and the finish covers.
+    timeline: Timeline,
     start_ts: Option<u32>,
     last_ts: u32,
-    previous_active_ms: Option<u64>,
     active_ms: u64,
     samples: u32,
     first_position: Option<(i32, i32)>,
@@ -389,12 +386,9 @@ impl Export {
             late: [(0, 0); LATE_STRETCHES],
             late_count: 0,
             offsets: None,
-            last_sample: None,
-            pending_start: None,
-            paused: false,
+            timeline: Timeline::default(),
             start_ts: None,
             last_ts: 0,
-            previous_active_ms: None,
             active_ms: 0,
             samples: 0,
             first_position: None,
@@ -483,27 +477,17 @@ impl Export {
     /// Account the readings of the last sample up to `active_ms`, as the
     /// live totals do for the time between a sample and a pause or the end.
     fn settle(&mut self, active_ms: u64) {
-        let (Some(previous), Some(last)) = (self.previous_active_ms, self.last_sample) else {
+        let Some((elapsed, held)) = self.timeline.hold(active_ms) else {
             return;
         };
-        let elapsed = active_ms.saturating_sub(previous).min(MAX_STEP_MS);
-        if elapsed == 0 {
-            return;
-        }
-        let step = last
+        let step = held
             .speed_mm_s
             .map(|speed| u64::from(speed) * elapsed / 1000);
         if let Some(step) = step {
             self.distance_mm = Some(self.distance_mm.unwrap_or(0) + step);
         }
-        let held = Sample {
-            speed_mm_s: last.speed_mm_s,
-            power_watts: last.power_watts,
-            ..Sample::default()
-        };
         self.totals.add(elapsed, step.unwrap_or(0), &held, None);
         self.lap.add(elapsed, step.unwrap_or(0), &held);
-        self.previous_active_ms = Some(active_ms);
     }
 
     /// Feed one slot. Returns [`Flow::End`] once the ride's terminal record,
@@ -542,7 +526,7 @@ impl Export {
             Kind::Start => {
                 self.started = true;
                 self.new_stretch();
-                self.pending_start = Some(entry.active_ms);
+                self.timeline.start(entry.active_ms);
             }
             _ if !self.started => {}
             Kind::Samples => {
@@ -551,26 +535,21 @@ impl Export {
                 }
             }
             Kind::Pause => {
-                if !self.paused && self.pending_start.is_none() {
-                    self.settle(entry.active_ms);
-                }
+                let running = self.timeline.running();
+                self.settle(entry.active_ms);
                 self.active_ms = self.active_ms.max(entry.active_ms);
                 // A pause right after a resume, with no sample between, adds nothing.
-                if self.pending_start.take().is_none() && !self.paused {
+                if running {
                     self.event(out, entry.active_ms, EVENT_TYPE_STOP_ALL);
                 }
-                self.paused = true;
+                self.timeline.pause();
             }
             Kind::Resume => {
-                self.paused = false;
-                self.last_sample = None;
                 self.new_stretch();
-                self.pending_start = Some(entry.active_ms);
+                self.timeline.start(entry.active_ms);
             }
             Kind::Finish | Kind::Recovered | Kind::Full => {
-                if !self.paused && self.pending_start.is_none() {
-                    self.settle(entry.active_ms);
-                }
+                self.settle(entry.active_ms);
                 self.active_ms = self.active_ms.max(entry.active_ms);
                 self.ended = true;
                 return Flow::End;
@@ -607,17 +586,10 @@ impl Export {
         {
             self.write_lap(out, trigger, self.lap.time_ms);
         }
-        if let Some(active) = self.pending_start.take() {
+        let (started, elapsed) = self.timeline.sample(sample);
+        if let Some(active) = started {
             self.event(out, active, EVENT_TYPE_START);
-            self.previous_active_ms = Some(active);
-            self.paused = false;
         }
-        let elapsed = sample
-            .active_ms
-            .saturating_sub(self.previous_active_ms.unwrap_or(sample.active_ms))
-            .min(MAX_STEP_MS);
-        self.previous_active_ms = Some(sample.active_ms);
-        self.last_sample = Some(*sample);
         self.active_ms = self.active_ms.max(sample.active_ms);
         let step = sample
             .speed_mm_s
@@ -755,7 +727,7 @@ impl Export {
     /// Close the ride: the last timer stop, then the last lap, session,
     /// activity and the file CRC. Returns what the sizing pass learned.
     pub fn finish(mut self, out: &mut impl Sink) -> Plan {
-        if self.pending_start.is_none() && !self.paused && self.started {
+        if self.timeline.running() && self.started {
             self.event(out, self.active_ms, EVENT_TYPE_STOP_ALL);
         }
         // The last lap takes what the others left, so the laps add up to the session.

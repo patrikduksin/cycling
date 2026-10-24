@@ -1,6 +1,10 @@
 use super::*;
+use crate::ride::elevation::Trace;
 use crate::ride::log::{LapStart, Source, commit_word, encode};
+use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::rider::Rider;
+use crate::ride::totals::Efforts;
+use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::testing::Draw;
 use firmware_services::fit::{FIT_EPOCH_UNIX_S, crc16};
 use std::collections::BTreeMap;
@@ -371,16 +375,28 @@ fn body() -> Rider {
     Rider::decode([75, 30, 1]).unwrap()
 }
 
-/// The ride's samples as the summary sees them: one recorded second each.
-fn summary_totals(samples: &[Sample]) -> Totals {
+/// The ride's totals as its saved summary adds them up, through the replay.
+fn summary_totals(slots: &[Slot]) -> Totals {
+    let entries: Vec<Entry> = slots
+        .iter()
+        .map(|slot| log::decode(slot).unwrap())
+        .collect();
     let mut totals = Totals::default();
-    for sample in samples {
-        totals.add(1000, 0, sample, None);
-    }
-    totals
+    let mut sums = Sums {
+        totals: &mut totals,
+        zone_time: &mut ZoneTime::default(),
+        efforts: &mut Efforts::default(),
+        trace: &mut Trace::default(),
+    };
+    let mut replay = Replay::new(3, entries.len());
+    let profile = TrainingProfile::default();
+    while replay.step(64, &profile, &mut sums, |index| entries.get(index).copied())
+        == Progress::Reading
+    {}
+    replay.totals(totals)
 }
 
-fn file_for(samples: &[Sample], rider: Rider) -> Vec<Decoded> {
+fn journal(samples: &[Sample]) -> Vec<Slot> {
     let end = samples.last().map_or(0, |s| s.active_ms);
     let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
     for (index, batch) in samples.chunks(4).enumerate() {
@@ -390,6 +406,10 @@ fn file_for(samples: &[Sample], rider: Rider) -> Vec<Decoded> {
         ));
     }
     slots.push(slot(&Entry::event(Kind::Finish, Source::Live, 3, 99, end)));
+    slots
+}
+
+fn file_for(slots: &[Slot], rider: Rider) -> Vec<Decoded> {
     let mut out = Bytes(Vec::new());
     let plan = write_all(slots.iter(), 3, rider, None, &mut out).unwrap();
     assert_eq!(plan.size as usize, out.0.len());
@@ -413,22 +433,31 @@ fn kinds(heart: bool, powered: u64) -> Vec<Sample> {
 
 #[test]
 fn session_and_lap_calories_are_the_summary_kcal_for_every_kind_of_ride() {
-    let keytel = body().heart_rate_kcal(140 * 8, 8).map(u64::from);
-    // 200 W for 8 s is 1.6 kJ.
+    let keytel = |seconds: u32| {
+        body()
+            .heart_rate_kcal(140 * u64::from(seconds), seconds)
+            .unwrap()
+    };
+    // 200 W for 8 s is 1.6 kJ, for 3 s 0.6 kJ.
     let rides = [
-        ("heart rate only", kinds(true, 0), keytel),
+        ("heart rate only", kinds(true, 0), Some(keytel(8))),
         ("power only", kinds(false, 8), Some(2)),
         ("power covers the heart rate", kinds(true, 8), Some(2)),
-        ("power under half of it", kinds(true, 3), keytel),
+        (
+            "power under half of it",
+            kinds(true, 3),
+            Some(1 + keytel(5)),
+        ),
     ];
     for (name, samples, with_body) in rides {
+        let slots = journal(&samples);
         for (rider, pinned) in [(Rider::default(), None), (body(), with_body)] {
-            let expected = summary_totals(&samples).kcal_for(rider).map(u64::from);
-            let messages = file_for(&samples, rider);
+            let expected = summary_totals(&slots).kcal_for(rider);
+            let messages = file_for(&slots, rider);
             for global in [18, 19] {
                 assert_eq!(
                     message(&messages, global).get(11),
-                    expected,
+                    expected.map(u64::from),
                     "{name} {global}"
                 );
             }
@@ -438,25 +467,91 @@ fn session_and_lap_calories_are_the_summary_kcal_for_every_kind_of_ride() {
         }
     }
     // Without a body the heart-rate-only ride keeps no calories, as before.
-    let messages = file_for(&kinds(true, 0), Rider::default());
+    let messages = file_for(&journal(&kinds(true, 0)), Rider::default());
     assert_eq!(message(&messages, 18).get(11), None);
 }
 
 #[test]
-fn each_lap_takes_its_own_calories_from_its_own_seconds() {
-    // Power for the first lap's four seconds only, heart rate throughout.
-    let mut samples = kinds(true, 4);
+fn each_lap_adds_its_work_and_its_heart_rate_without_power() {
+    // Heart rate throughout; power for the first lap and half the second.
+    let mut samples: Vec<Sample> = (1..=12)
+        .map(|i| Sample {
+            power_watts: (i <= 6).then_some(500),
+            ..sample(i * 1000, true)
+        })
+        .collect();
     samples[0].lap = Some(LapStart::Ride);
     samples[4].lap = Some(LapStart::Manual);
-    let messages = file_for(&samples, body());
-    let laps: Vec<_> = messages.iter().filter(|m| m.global == 19).collect();
-    assert_eq!(laps.len(), 2);
-    // 200 W for 4 s is 0.8 kJ; the second lap has heart rate alone.
-    assert_eq!(laps[0].get(11), Some(1), "lap with power");
-    let keytel = body().heart_rate_kcal(4 * 140, 4).map(u64::from);
-    assert_eq!(laps[1].get(11), keytel, "lap without power");
-    // Power covers exactly half of the ride's heart-rate seconds.
-    assert_eq!(message(&messages, 18).get(11), Some(1));
+    samples[8].lap = Some(LapStart::Manual);
+    let messages = file_for(&journal(&samples), body());
+    let laps: Vec<_> = messages
+        .iter()
+        .filter(|m| m.global == 19)
+        .map(|m| m.get(11).unwrap())
+        .collect();
+    let keytel = |seconds: u32| {
+        u64::from(
+            body()
+                .heart_rate_kcal(140 * u64::from(seconds), seconds)
+                .unwrap(),
+        )
+    };
+    // 500 W for 4 s is 2 kJ, for 2 s 1 kJ, for 6 s 3 kJ.
+    assert_eq!(laps, [2, 1 + keytel(2), keytel(4)]);
+    let session = message(&messages, 18).get(11).unwrap();
+    assert_eq!(session, 3 + keytel(6), "the ride's work and its heart rate");
+    assert_eq!(laps.iter().sum::<u64>(), session);
+    let messages = file_for(&journal(&samples), Rider::default());
+    let laps: Vec<_> = messages
+        .iter()
+        .filter(|m| m.global == 19)
+        .map(|m| m.get(11))
+        .collect();
+    assert_eq!(laps, [Some(2), Some(1), None], "without a body, the work");
+    assert_eq!(message(&messages, 18).get(11), Some(3));
+}
+
+/// A pause and the finish each come 900 ms after the last sample, and one
+/// sample repeats its time with heart rate alone.
+#[test]
+fn the_export_adds_up_the_seconds_the_saved_summary_does() {
+    let first: Vec<Sample> = (1..=4)
+        .map(|i| Sample {
+            power_watts: Some(450),
+            ..sample(i * 1000, true)
+        })
+        .collect();
+    let mut second: Vec<Sample> = (0..4)
+        .map(|i| Sample {
+            power_watts: Some(100),
+            ..sample(5_900 + i * 1000, true)
+        })
+        .collect();
+    second.push(Sample {
+        power_watts: None,
+        heart_bpm: Some(180),
+        ..second[3]
+    });
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &first).unwrap()),
+        slot(&Entry::event(Kind::Pause, Source::Live, 3, 2, 4_900)),
+        slot(&Entry::event(Kind::Resume, Source::Live, 3, 3, 4_900)),
+        slot(&Entry::batch(Source::Live, 3, 4, &second[..4]).unwrap()),
+        slot(&Entry::batch(Source::Live, 3, 5, &second[4..]).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 6, 9_800)),
+    ];
+    let summary = summary_totals(&slots);
+    for rider in [Rider::default(), body()] {
+        let messages = file_for(&slots, rider);
+        let session = message(&messages, 18);
+        let kcal = summary.kcal_for(rider).map(u64::from);
+        assert_eq!(session.get(11), kcal, "calories, {rider:?}");
+        assert_eq!(session.get(20), summary.avg_power().map(u64::from));
+        assert_eq!(session.get(16), summary.avg_heart_bpm().map(u64::from));
+    }
+    // 450 W for 4.9 s and 100 W for 4 s is 2.605 kJ.
+    assert_eq!(summary.kcal_for(Rider::default()), Some(3));
 }
 
 #[test]
@@ -469,7 +564,7 @@ fn calories_stay_inside_the_field_for_hostile_readings() {
             ..sample(i * 1000, true)
         })
         .collect();
-    let messages = file_for(&samples, rider);
+    let messages = file_for(&journal(&samples), rider);
     for global in [18, 19] {
         let kcal = message(&messages, global).get(11);
         assert!(

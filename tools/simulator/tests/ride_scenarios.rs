@@ -2,7 +2,9 @@
 #![cfg(feature = "cycling")]
 use device_api::ant::{LinkState, Request};
 use device_api::ble_transport::Link;
+use device_api::gps::FixState;
 use device_api::input::Button;
+use device_api::positioning::Positioning;
 use firmware_services::gps::unix_seconds;
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
@@ -3917,6 +3919,10 @@ fn a_receiver_date_outside_the_plausible_window_leaves_the_ride_undated() {
     let mut sim = rider();
     // A GPS week rollover reports 2006 for today.
     sim.set_gps_clock(10 * 3600, (14, 10, 6));
+    sim.advance(seconds(5));
+    let gps = sim.device.position.snapshot(sim.now()).unwrap().gps;
+    assert_eq!(gps.state, FixState::Fresh);
+    assert_eq!(gps.utc_ms, None, "the receiver never takes the date");
     cyclist(&mut sim);
     sim.advance(seconds(5));
     press_start(&mut sim);
@@ -4137,9 +4143,9 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("44/44");
-    // The oldest ride, outside every catalog, reads back. The rides are dated
-    // by the receiver, so start times order the journals: the oldest is the
-    // first ride, on INTERNAL (undated rides listed INTERNAL's first).
+    // The oldest ride, outside every catalog, reads back. Dated by the
+    // receiver, the rides list by start time, so the oldest is INTERNAL's first
+    // ride; its first sample still reads the 72 bpm resting rate, hence 98.
     sim.press(Button::BottomRight);
     assert_eq!(sim.vana_page(), "past_ride");
     sim.wait_gone("READING", seconds(5)).unwrap();

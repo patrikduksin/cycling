@@ -192,36 +192,75 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
     })
 }
 
-/// Save `record`, replacing the file of the same ride and deleting the
-/// oldest once [`KEEP`] are stored. Returns the file it deleted.
-pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<Option<files::Name>, Error> {
-    let mut sector = [0; SECTOR_SIZE];
-    let mut store = volume::open(media, &volume::FILES, &mut sector)?;
-    let name = file(record.journal, record.ride_id);
-    let dir = files::mount(&mut store, &mut sector)?;
-    let mut kept = 0;
-    let mut replaces = false;
+/// What the store holds beside the file `name`.
+struct Census {
+    /// Facts files.
+    kept: usize,
+    /// Files of any kind.
+    stored: usize,
+    replaces: bool,
+    /// The oldest facts file other than `name`.
+    oldest: Option<files::Name>,
+}
+
+fn census<M: ReadWrite>(
+    store: &mut volume::Volume<'_, M>,
+    sector: &mut files::Sector,
+    name: &files::Name,
+) -> Result<(files::Dir, Census), Error> {
+    let dir = files::mount(store, sector)?;
+    let mut census = Census {
+        kept: 0,
+        stored: 0,
+        replaces: false,
+        oldest: None,
+    };
     let mut oldest: Option<files::Entry> = None;
-    dir.list(&mut store, &mut sector, |entry| {
+    dir.list(store, sector, |entry| {
+        census.stored += 1;
         if !is_facts(&entry.name) {
             return;
         }
-        kept += 1;
-        replaces |= entry.name == name;
-        if oldest.is_none_or(|old| entry.revision < old.revision) {
+        census.kept += 1;
+        census.replaces |= entry.name == *name;
+        if entry.name != *name && oldest.is_none_or(|old| entry.revision < old.revision) {
             oldest = Some(*entry);
         }
     })?;
-    let mut deleted = None;
-    if !replaces
-        && kept >= KEEP
-        && let Some(oldest) = oldest
-    {
-        dir.delete(&mut store, &oldest.name, &mut sector)?;
-        deleted = Some(oldest.name);
+    census.oldest = oldest.map(|entry| entry.name);
+    Ok((dir, census))
+}
+
+/// Save `record`, replacing the file of the same ride and deleting the
+/// oldest once [`KEEP`] are stored. Facts give way to the files beside them:
+/// a new one never takes the last free directory entry, which the next
+/// workout record or the host may need, and one the store refuses as full
+/// deletes the oldest and tries once more.
+pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), Error> {
+    let mut sector = [0; SECTOR_SIZE];
+    let mut store = volume::open(media, &volume::FILES, &mut sector)?;
+    let name = file(record.journal, record.ride_id);
+    loop {
+        let (dir, census) = census(&mut store, &mut sector, &name)?;
+        let crowded =
+            !census.replaces && (census.kept >= KEEP || census.stored + 1 >= files::CAPACITY);
+        match census.oldest {
+            Some(oldest) if crowded => {
+                dir.delete(&mut store, &oldest, &mut sector)?;
+            }
+            _ => break,
+        }
     }
-    files::write(&mut store, &name, &encode(record), &mut sector)?;
-    Ok(deleted)
+    match files::write(&mut store, &name, &encode(record), &mut sector) {
+        Err(files::Error::Full) => {
+            let (dir, census) = census(&mut store, &mut sector, &name)?;
+            let oldest = census.oldest.ok_or(files::Error::Full)?;
+            dir.delete(&mut store, &oldest, &mut sector)?;
+            files::write(&mut store, &name, &encode(record), &mut sector)?;
+            Ok(())
+        }
+        written => written.map(|_| ()).map_err(Error::from),
+    }
 }
 
 /// Delete every file of `journal`, as its ride ids start over.
@@ -270,7 +309,9 @@ pub fn read(
             continue;
         }
         let length = (entry.length as usize).min(READ_MAX);
-        let length = dir.read(&mut store, entry, 0, &mut bytes[..length], &mut sector)?;
+        let Ok(length) = dir.read(&mut store, entry, 0, &mut bytes[..length], &mut sector) else {
+            continue;
+        };
         if let Some(record) = decode(&bytes[..length])
             && file(record.journal, record.ride_id) == entry.name
         {
@@ -408,6 +449,42 @@ mod tests {
     }
 
     #[test]
+    fn a_full_directory_keeps_the_workout_records_and_facts_give_way() {
+        use crate::workout::history;
+        let mut region = formatted();
+        for host in 0..70 {
+            put(&mut region, &std::format!("host/{host}"), b"x");
+        }
+        for ride in 1..=60 {
+            let workout = history::Record {
+                journal: b'b',
+                ride_id: ride,
+                started_utc_ms: None,
+                name: crate::workout::model::Name::new("ENDURANCE"),
+                test: None,
+                summary: crate::workout::player::Summary::default(),
+            };
+            assert_eq!(history::save(&mut region, &workout), Ok(()), "ride {ride}");
+            assert!(save(&mut region, &record(ride)).is_ok(), "ride {ride}");
+        }
+        let kept = all(&mut region);
+        let room = files::CAPACITY - 70 - history::KEEP - 1;
+        assert_eq!(kept.len(), room);
+        assert_eq!(kept.last(), Some(&record(60)));
+        assert_eq!(kept[0], record(60 - room as u32 + 1));
+
+        let mut full = formatted();
+        for host in 0..files::CAPACITY {
+            put(&mut full, &std::format!("host/{host}"), b"x");
+        }
+        assert_eq!(
+            save(&mut full, &record(1)),
+            Err(Error::Files(files::Error::Full)),
+            "with no facts to give way, the save fails and deletes nothing"
+        );
+    }
+
+    #[test]
     fn records_save_per_ride_the_oldest_go_and_a_clear_forgets_its_journal() {
         let mut region = formatted();
         put(&mut region, "rides/b1.workout", b"a workout record");
@@ -419,22 +496,17 @@ mod tests {
             [],
             "damaged or misnamed files are skipped"
         );
-        let mut deleted = std::vec::Vec::new();
         for ride in 4..=KEEP as u32 + 4 {
-            deleted.extend(save(&mut region, &record(ride)).unwrap());
+            save(&mut region, &record(ride)).unwrap();
         }
-        let names: std::vec::Vec<_> = deleted.iter().map(files::Name::as_str).collect();
-        assert_eq!(
-            names,
-            ["rides/b2.facts", "rides/b3.facts", "rides/b4.facts"]
-        );
         let kept = all(&mut region);
         assert_eq!(kept.len(), KEEP);
         assert_eq!(kept[0], record(5));
         // Saving a ride again replaces its file and deletes nothing.
         let mut again = record(5);
         again.facts.recovery_bpm = Some(31);
-        assert_eq!(save(&mut region, &again), Ok(None));
+        assert_eq!(save(&mut region, &again), Ok(()));
+        assert_eq!(all(&mut region).len(), KEEP);
         assert_eq!(all(&mut region)[0], again);
         // Clearing the bulk journal forgets its files, not the others'.
         let internal = Record {

@@ -559,7 +559,10 @@ tick while no ride is open or being written.
 - The newest 64 are kept; saving another deletes the oldest. The FILES
   directory holds 128 files: 64 facts, the 32 workout records, `bests.dat` and
   the 8 uploads the picker lists leave 23 for the host. 64 rides cover the two
-  weeks the rides list totals at up to four rides a day.
+  weeks the rides list totals at up to four rides a day. Facts give way to
+  every other file: a ride saves its workout record first, a new facts file
+  never takes the last free directory entry, and one the store refuses as
+  full deletes the oldest facts file and tries once more.
 - Without a card, a FILES volume or a store the host formatted, nothing is
   written and every reader shows what it showed before facts were kept. A
   write the store refuses is logged and the ride is not held up for it.

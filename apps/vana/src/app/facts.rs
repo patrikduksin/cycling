@@ -75,11 +75,9 @@ impl Kept {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    fn saved(&mut self, record: Record, deleted: Option<files::Name>) {
-        self.records.retain(|kept| {
-            (kept.journal, kept.ride_id) != (record.journal, record.ride_id)
-                && deleted != Some(facts::file(kept.journal, kept.ride_id))
-        });
+    fn saved(&mut self, record: Record) {
+        self.records
+            .retain(|kept| (kept.journal, kept.ride_id) != (record.journal, record.ride_id));
         if self.records.is_full() {
             self.records.remove(0);
         }
@@ -144,7 +142,7 @@ impl Kept {
 
     fn write(&mut self, bulk: &mut impl ReadWrite, record: Record) {
         match facts::save(bulk, &record) {
-            Ok(deleted) => self.saved(record, deleted),
+            Ok(()) => self.saved(record),
             Err(error) => log::warn!(target: "sdk.facts", "save_failed error={error:?}"),
         }
     }
@@ -183,6 +181,35 @@ impl Kept {
             (Awaiting::Measuring(_), None) => None,
         };
     }
+
+    /// Read the next directory sector of facts, unless a ride is open or
+    /// being written (`busy`). A card that became ready is read from the
+    /// start.
+    fn scan_step(&mut self, bulk: &mut impl ReadWrite, now: u64, ready: bool, busy: bool) {
+        if ready && !self.card_ready {
+            self.records.clear();
+            self.changed();
+            self.scan = Scan::At(0);
+        }
+        self.card_ready = ready;
+        if busy {
+            return;
+        }
+        let index = match self.scan {
+            Scan::Done | Scan::Absent => return,
+            Scan::Retry { at } if now < at => return,
+            Scan::Retry { .. } => 0,
+            Scan::At(index) => index,
+        };
+        self.scan = match facts::read(bulk, index, |record| self.read(record)) {
+            Ok(Some(next)) => Scan::At(next),
+            Ok(None) => Scan::Done,
+            Err(error) if absent(error) => Scan::Absent,
+            Err(_) => Scan::Retry {
+                at: now.saturating_add(RETRY_MS),
+            },
+        };
+    }
 }
 
 /// Whether a read failed because there is no card or no store to read,
@@ -211,30 +238,8 @@ impl Runtime {
         let riding = self.ride.active().riding();
         self.facts.follow(bulk, self.recovery.reading(now), riding);
         let ready = self.ride.bulk.status().usable();
-        let kept = &mut self.facts;
-        if ready && !kept.card_ready {
-            kept.records.clear();
-            kept.changed();
-            kept.scan = Scan::At(0);
-        }
-        kept.card_ready = ready;
-        if self.ride.pending() || self.ride.open() {
-            return;
-        }
-        let slot = match kept.scan {
-            Scan::Done | Scan::Absent => return,
-            Scan::Retry { at } if now < at => return,
-            Scan::Retry { .. } => 0,
-            Scan::At(slot) => slot,
-        };
-        kept.scan = match facts::read(bulk, slot, |record| kept.read(record)) {
-            Ok(Some(next)) => Scan::At(next),
-            Ok(None) => Scan::Done,
-            Err(error) if absent(error) => Scan::Absent,
-            Err(_) => Scan::Retry {
-                at: now.saturating_add(RETRY_MS),
-            },
-        };
+        let busy = self.ride.pending() || self.ride.open();
+        self.facts.scan_step(bulk, now, ready, busy);
     }
 }
 
@@ -257,9 +262,9 @@ mod tests {
     }
 
     #[test]
-    fn a_save_outranks_the_file_read_and_drops_the_record_it_deleted() {
+    fn a_save_outranks_the_file_read() {
         let mut kept = Kept::default();
-        kept.saved(record(2, Some(30)), None);
+        kept.saved(record(2, Some(30)));
         kept.read(record(2, None));
         kept.read(record(1, None));
         let find = |kept: &Kept, ride| kept.find(Medium::Bulk, ride, Some(START)).copied();
@@ -268,10 +273,33 @@ mod tests {
         assert!(kept.find(Medium::Internal, 1, Some(START)).is_none());
         assert!(kept.find(Medium::Bulk, 1, None).is_none(), "undated");
         let revision = kept.revision;
-        kept.saved(record(3, None), Some(facts::file(b'b', 1)));
-        assert!(find(&kept, 1).is_none());
+        kept.saved(record(3, None));
         assert!(find(&kept, 3).is_some());
         assert_ne!(kept.revision, revision);
+    }
+
+    #[test]
+    fn the_scan_waits_for_an_idle_ride_stops_without_a_store_and_restarts_with_the_card() {
+        use crate::workout::library::tests::{Region, formatted};
+        let mut blank = Region::default();
+        let mut kept = Kept::default();
+        kept.scan_step(&mut blank, 0, false, true);
+        assert_eq!(kept.scan, Scan::At(0), "nothing read while a ride is busy");
+        kept.scan_step(&mut blank, 0, false, false);
+        assert_eq!(kept.scan, Scan::Absent, "no volumes on the card");
+        kept.scan_step(&mut blank, RETRY_MS * 10, false, false);
+        assert_eq!(kept.scan, Scan::Absent, "not retried");
+
+        let mut card = formatted();
+        facts::save(&mut card, &record(7, Some(12))).unwrap();
+        kept.scan_step(&mut card, 0, true, true);
+        assert_eq!(kept.scan, Scan::At(0), "a ready card starts over");
+        for _ in 0..files::DIR_SECTORS {
+            kept.scan_step(&mut card, 0, true, false);
+        }
+        assert_eq!(kept.scan, Scan::Done);
+        let found = kept.find(Medium::Bulk, 7, Some(START));
+        assert_eq!(found.and_then(|f| f.recovery_bpm), Some(12));
     }
 
     #[test]

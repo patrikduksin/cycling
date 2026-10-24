@@ -841,15 +841,6 @@ impl Runtime {
                 now,
             );
         }
-        if let Some(medium) = finished {
-            self.facts.ride_saved(
-                bulk,
-                ride,
-                medium,
-                self.preferences.profile,
-                self.recovery.reading(now),
-            );
-        }
         // A saved ride keeps how its workout went beside it on FILES.
         if let (Some(medium), Some(player)) = (finished, ride.workout.as_ref())
             && let Some(saved) = ride.recorder(medium).summaries().iter().flatten().last()
@@ -865,6 +856,16 @@ impl Runtime {
             if let Err(error) = crate::workout::history::save(bulk, &record) {
                 log::warn!(target: "sdk.workout", "history_failed error={}", error.name());
             }
+        }
+        // After the workout record: facts give way when FILES is full.
+        if let Some(medium) = finished {
+            self.facts.ride_saved(
+                bulk,
+                ride,
+                medium,
+                self.preferences.profile,
+                self.recovery.reading(now),
+            );
         }
         // A ride lost while paused continues paused; automation waits until
         // it is, so an automatic pause stays automatic.

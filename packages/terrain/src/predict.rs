@@ -102,27 +102,45 @@ struct Way {
     forward: bool,
 }
 
+/// What `predict` needs before it can follow the road.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Need {
+    /// A tile not cached yet.
+    Tile(TileKey),
+    /// A new match: the cache now holds other bytes, or no roads, for the
+    /// start's tile, as after a pack transfer.
+    Match,
+}
+
+impl From<TileKey> for Need {
+    fn from(key: TileKey) -> Self {
+        Self::Tile(key)
+    }
+}
+
 struct Choice {
     way: Way,
     cost: f32,
 }
 
 /// Follow the road from `start` for up to `horizon_m`, writing elevations
-/// relative to the rider into `samples`. `Err(key)` asks for a tile first.
+/// relative to the rider into `samples`.
 pub fn predict(
     cache: &Cache<'_>,
     header: &Header,
     start: &Matched,
     horizon_m: f32,
     samples: &mut [i16; MAX_SAMPLES],
-) -> Result<Prediction, TileKey> {
+) -> Result<Prediction, Need> {
     let Some(forward) = start.forward else {
         return Ok(Prediction {
             end: End::Uncertain,
             ..Prediction::default()
         });
     };
-    let tile = ready(cache, start.tile)?.ok_or(start.tile)?;
+    let Some(tile) = ready(cache, start.tile.key)?.filter(|tile| tile.id() == start.tile) else {
+        return Err(Need::Match);
+    };
     let edge = tile.edge(start.edge);
     let z0 = start.z_dm;
     let mut sampler = Sampler {
@@ -143,7 +161,7 @@ pub fn predict(
     let mut history_len = 1usize;
     let mut confidence = f32::from(start.confidence) / 100.0;
     let mut way = Way {
-        tile: start.tile,
+        tile: start.tile.key,
         edge: start.edge,
         forward,
     };
@@ -338,7 +356,7 @@ pub fn predict(
                 continue;
             };
             match cache.get(key) {
-                Lookup::Absent => return Err(key),
+                Lookup::Absent => return Err(Need::Tile(key)),
                 Lookup::Missing => blocked_edge = true,
                 Lookup::Ready(other) => {
                     if let Some(twin) = other.node_at(nx, ny) {

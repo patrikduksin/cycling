@@ -1,6 +1,9 @@
 //! Synthetic road layouts, encoded the way `tools/terrain` encodes packs,
 //! for the junction rules the sample pack cannot isolate.
-use crate::pack::{HEADER_BYTES, MAGIC};
+use crate::cache::Cache;
+use crate::geo::Point;
+use crate::matcher::Matcher;
+use crate::pack::{HEADER_BYTES, Header, MAGIC, TileKey};
 use crate::tile::{class, crc32, flag};
 use crate::{End, Fix, Lookahead, PAGE_BYTES, Status};
 use std::vec;
@@ -44,6 +47,48 @@ fn z(metres: f64) -> u16 {
 
 /// A one-tile pack (1 x 1 grid) holding `roads`; junctions are shared ends.
 fn pack(roads: &[Road]) -> Vec<u8> {
+    row_pack(&[roads])
+}
+
+/// A pack of one row of tiles from the west, each holding its `roads`
+/// drawn from its own middle.
+fn row_pack(tiles: &[&[Road]]) -> Vec<u8> {
+    let tiles: Vec<Vec<u8>> = (0..tiles.len())
+        .map(|col| tile(tiles[col], col as u16))
+        .collect();
+    let cols = tiles.len() as u16;
+    let directory = HEADER_BYTES as u32;
+    let data = directory + 8 * u32::from(cols);
+    let total = data + tiles.iter().map(|t| t.len() as u32).sum::<u32>();
+    let mut out = vec![0u8; HEADER_BYTES];
+    out[..16].copy_from_slice(MAGIC);
+    out[16..18].copy_from_slice(&crate::pack::VERSION.to_le_bytes());
+    out[18..20].copy_from_slice(&1u16.to_le_bytes());
+    out[20..24].copy_from_slice(&(TILE as u32).to_le_bytes());
+    out[24..28].copy_from_slice(&SOUTH.to_le_bytes());
+    out[28..32].copy_from_slice(&WEST.to_le_bytes());
+    out[32..34].copy_from_slice(&1u16.to_le_bytes());
+    out[34..36].copy_from_slice(&cols.to_le_bytes());
+    out[36..40].copy_from_slice(&directory.to_le_bytes());
+    out[40..44].copy_from_slice(&data.to_le_bytes());
+    out[44..48].copy_from_slice(&total.to_le_bytes());
+    out[48..52].copy_from_slice(&u32::from(cols).to_le_bytes());
+    let crc = crc32(&out[..HEADER_BYTES - 4]);
+    out[HEADER_BYTES - 4..].copy_from_slice(&crc.to_le_bytes());
+    let mut offset = data;
+    for tile in &tiles {
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.extend_from_slice(&(tile.len() as u32).to_le_bytes());
+        offset += tile.len() as u32;
+    }
+    for tile in tiles {
+        out.extend(tile);
+    }
+    out
+}
+
+/// The bytes of tile `col` in row 0.
+fn tile(roads: &[Road], col: u16) -> Vec<u8> {
     let mut nodes: Vec<((u16, u16), u16)> = Vec::new();
     for road in roads {
         for &(e, n, h) in [road.points[0], *road.points.last().unwrap()].iter() {
@@ -93,6 +138,7 @@ fn pack(roads: &[Road]) -> Vec<u8> {
     }
     let mut tile = vec![0u8; 32];
     tile[..4].copy_from_slice(&[b'V', b'T', 1, 0]);
+    tile[6..8].copy_from_slice(&col.to_le_bytes());
     tile[8..10].copy_from_slice(&(nodes.len() as u16).to_le_bytes());
     tile[10..12].copy_from_slice(&(roads.len() as u16).to_le_bytes());
     tile[12..16].copy_from_slice(&((vertices.len() / 6) as u32).to_le_bytes());
@@ -103,28 +149,7 @@ fn pack(roads: &[Road]) -> Vec<u8> {
     tile.extend(vertices);
     let crc = crc32(&tile);
     tile[24..28].copy_from_slice(&crc.to_le_bytes());
-
-    let directory = HEADER_BYTES as u32;
-    let data = directory + 8;
-    let mut out = vec![0u8; HEADER_BYTES];
-    out[..16].copy_from_slice(MAGIC);
-    out[16..18].copy_from_slice(&crate::pack::VERSION.to_le_bytes());
-    out[18..20].copy_from_slice(&1u16.to_le_bytes());
-    out[20..24].copy_from_slice(&(TILE as u32).to_le_bytes());
-    out[24..28].copy_from_slice(&SOUTH.to_le_bytes());
-    out[28..32].copy_from_slice(&WEST.to_le_bytes());
-    out[32..34].copy_from_slice(&1u16.to_le_bytes());
-    out[34..36].copy_from_slice(&1u16.to_le_bytes());
-    out[36..40].copy_from_slice(&directory.to_le_bytes());
-    out[40..44].copy_from_slice(&data.to_le_bytes());
-    out[44..48].copy_from_slice(&(data + tile.len() as u32).to_le_bytes());
-    out[48..52].copy_from_slice(&1u32.to_le_bytes());
-    let crc = crc32(&out[..HEADER_BYTES - 4]);
-    out[HEADER_BYTES - 4..].copy_from_slice(&crc.to_le_bytes());
-    out.extend_from_slice(&data.to_le_bytes());
-    out.extend_from_slice(&(tile.len() as u32).to_le_bytes());
-    out.extend(tile);
-    out
+    tile
 }
 
 /// Ride `path` (metres) at 5 m/s with a fix a second; the last result.
@@ -582,4 +607,197 @@ fn a_tile_counting_more_vertices_than_usize_holds_is_corrupt() {
         Tile::parse(&tile, key, TILE as u32).map(|_| ()),
         Err(Error::Corrupt)
     );
+}
+
+/// Fixes in `ride_through_a_rewrite`, and how many of them a switch may
+/// precede so that later fixes still see the new pack.
+const REWRITE_FIXES: usize = 16;
+const SWITCH_FIXES: usize = 12;
+
+/// A ride east along a road that crosses into the next tile, with an arena
+/// of one page so the two tiles evict each other. The source switches from
+/// `before` to `after` ahead of step `switch_at`, as a pack transfer
+/// rewrites the volume under the engine. The last result, and the step each
+/// fix arrived at.
+fn ride_through_a_rewrite(
+    before: &[u8],
+    after: &[u8],
+    switch_at: usize,
+) -> (crate::Ahead, [usize; REWRITE_FIXES]) {
+    let mut arena = vec![0u8; PAGE_BYTES];
+    let mut ahead = Lookahead::new(&mut arena, 10_000.0);
+    let mut steps = 0;
+    let mut arrivals = [0; REWRITE_FIXES];
+    for (second, arrival) in arrivals.iter_mut().enumerate() {
+        *arrival = steps;
+        let (x, y) = local(-250.0 + second as f64 * 5.0, 0.0);
+        ahead.fix(Fix {
+            lat: SOUTH + i32::from(y),
+            lon: WEST + i32::from(x),
+            at_ms: second as u64 * 1000,
+        });
+        loop {
+            let mut source: &[u8] = if steps < switch_at { before } else { after };
+            steps += 1;
+            assert!(steps < 100_000);
+            if ahead.step(&mut source) != Status::Working {
+                break;
+            }
+        }
+    }
+    (ahead.ahead().clone(), arrivals)
+}
+
+/// One row of two tiles, before and after a pack transfer rewrites the
+/// first: the road east along it is the tile's third edge before and its
+/// only edge after, 200 m higher.
+fn rewritten_packs() -> (Vec<u8>, Vec<u8>) {
+    let boundary = (f64::from(TILE) - MIDDLE.0) * LON_UM * 1e-6;
+    let next = [road(
+        &[(-boundary, 0.0, 140.0), (300.0, 0.0, 150.0)],
+        class::SECONDARY,
+        7,
+    )];
+    let before = row_pack(&[
+        &[
+            road(
+                &[(-300.0, 500.0, 90.0), (-100.0, 500.0, 90.0)],
+                class::RESIDENTIAL,
+                0,
+            ),
+            road(
+                &[(300.0, -500.0, 90.0), (300.0, -300.0, 90.0)],
+                class::RESIDENTIAL,
+                0,
+            ),
+            road(
+                &[
+                    (-300.0, 0.0, 100.0),
+                    (-150.0, 0.0, 110.0),
+                    (boundary, 0.0, 140.0),
+                ],
+                class::SECONDARY,
+                7,
+            ),
+        ],
+        &next,
+    ]);
+    let after = row_pack(&[
+        &[road(
+            &[(-300.0, 0.0, 300.0), (boundary, 0.0, 340.0)],
+            class::SECONDARY,
+            7,
+        )],
+        &next,
+    ]);
+    (before, after)
+}
+
+/// The bytes of the first tile in a `row_pack`.
+fn first_tile(pack: &mut [u8]) -> &mut [u8] {
+    let entry = &pack[HEADER_BYTES..HEADER_BYTES + 8];
+    let offset = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+    let len = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
+    &mut pack[offset..offset + len]
+}
+
+/// Set a tile's reserved bytes 28..32 so that its CRC comes out as `crc`,
+/// as a hostile pack could. The CRC is affine in those bits, so the patch
+/// solves a 32 x 32 system over GF(2).
+fn forge_crc(tile: &mut [u8], crc: u32) {
+    let check = |tile: &[u8]| {
+        let mut zeroed = tile.to_vec();
+        zeroed[24..28].fill(0);
+        crc32(&zeroed)
+    };
+    tile[28..32].fill(0);
+    let base = check(tile);
+    let mut rows: Vec<(u32, u32)> = (0..32)
+        .map(|bit| {
+            tile[28..32].copy_from_slice(&(1u32 << bit).to_le_bytes());
+            (check(tile) ^ base, 1u32 << bit)
+        })
+        .collect();
+    for bit in 0..32 {
+        let pivot = (bit..32).find(|&r| rows[r].0 >> bit & 1 == 1).unwrap();
+        rows.swap(bit, pivot);
+        let (value, patch) = rows[bit];
+        for (r, row) in rows.iter_mut().enumerate() {
+            if r != bit && row.0 >> bit & 1 == 1 {
+                *row = (row.0 ^ value, row.1 ^ patch);
+            }
+        }
+    }
+    let want = crc ^ base;
+    let patch = (0..32)
+        .filter(|bit| want >> bit & 1 == 1)
+        .fold(0, |patch, bit| patch ^ rows[bit].1);
+    tile[28..32].copy_from_slice(&patch.to_le_bytes());
+    tile[24..28].copy_from_slice(&crc.to_le_bytes());
+    assert_eq!(check(tile), crc);
+}
+
+#[test]
+fn a_tile_rewritten_under_the_engine_is_never_read_with_the_old_tiles_indices() {
+    let (mut before, rewritten) = rewritten_packs();
+    let old_crc = u32::from_le_bytes(first_tile(&mut before)[24..28].try_into().unwrap());
+    let mut forged = rewritten.clone();
+    forge_crc(first_tile(&mut forged), old_crc);
+    let mut corrupt = rewritten.clone();
+    first_tile(&mut corrupt)[40] ^= 0xff;
+    let (ridden, arrivals) = ride_through_a_rewrite(&before, &before, usize::MAX);
+    assert!(ridden.matched.is_some_and(|m| m.z_dm < 2000));
+    let switches = arrivals[SWITCH_FIXES];
+    // The new road is 200 m higher; a corrupt tile has no road.
+    let cases: [(&str, &[u8], bool); 3] = [
+        ("rewritten", &rewritten, true),
+        ("rewritten, same CRC", &forged, true),
+        ("corrupt", &corrupt, false),
+    ];
+    let mut outcomes = Vec::new();
+    for (name, after, road) in cases {
+        let mut panics = 0;
+        let mut stale = 0;
+        for switch_at in 0..switches {
+            match std::panic::catch_unwind(|| ride_through_a_rewrite(&before, after, switch_at)) {
+                Err(_) => panics += 1,
+                Ok((last, _)) if last.matched.is_some_and(|m| m.z_dm > 3000) != road => stale += 1,
+                Ok(_) => {}
+            }
+        }
+        outcomes.push((name, panics, stale));
+    }
+    assert_eq!(
+        outcomes,
+        [
+            ("rewritten", 0, 0),
+            ("rewritten, same CRC", 0, 0),
+            ("corrupt", 0, 0)
+        ],
+        "(pack, panics, stale results) of {switches} switch points"
+    );
+}
+
+#[test]
+fn a_match_on_a_rewritten_tile_is_not_read_from_the_new_one() {
+    let (before, after) = rewritten_packs();
+    let (x, y) = local(-200.0, 0.0);
+    let fix = Point {
+        lat: SOUTH + i32::from(y),
+        lon: WEST + i32::from(x),
+    };
+    let key = TileKey { row: 0, col: 0 };
+    let mut arena = vec![0u8; PAGE_BYTES];
+    let mut cache = Cache::new(&mut arena);
+    let mut matcher = Matcher::default();
+    let mut matched = Vec::new();
+    for pack in [&before, &after] {
+        let header = Header::parse(pack[..HEADER_BYTES].try_into().unwrap()).unwrap();
+        let mut source: &[u8] = pack;
+        cache.clear();
+        while !cache.load(&mut source, &header, key).unwrap() {}
+        let found = matcher.update(&cache, &header, fix, Some(90.0)).unwrap();
+        matched.push(found.map(|m| (m.edge, m.z_dm / 10)));
+    }
+    assert_eq!(matched, [Some((2, 106)), Some((0, 303))]);
 }

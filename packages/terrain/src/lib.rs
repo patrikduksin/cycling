@@ -33,3 +33,4 @@ pub use cache::{Cache, MAX_TILE_BYTES, PAGE_BYTES};
 pub use engine::{Ahead, End, Fix, Lookahead, MAX_SAMPLES, SAMPLE_M, Status};
 pub use matcher::Matched;
 pub use pack::{Error, Header, Source, TileKey};
+pub use tile::TileId;

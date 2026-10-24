@@ -256,7 +256,11 @@ pub(crate) mod tests {
             ahead.samples[index] = (road(index as f64 * 20.0) * 10.0).round() as i16;
         }
         ahead.matched = Some(terrain::Matched {
-            tile: terrain::TileKey { row: 0, col: 0 },
+            tile: terrain::TileId {
+                key: terrain::TileKey { row: 0, col: 0 },
+                crc: 0,
+                edges: 1,
+            },
             edge: 0,
             segment: 0,
             fraction: 0.0,

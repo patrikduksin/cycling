@@ -141,9 +141,13 @@ fn store(words: &[u32; device_api::crash::WORDS]) {
     };
 }
 
+const fn is_one(value: Option<&str>) -> bool {
+    matches!(value, Some(text) if text.len() == 1 && text.as_bytes()[0] == b'1')
+}
+
 /// How this image was built, for finding its symbols.
 const BUILD: device_api::crash::Build = device_api::crash::Build {
-    dirty: matches!(option_env!("CYCLING_BUILD_DIRTY"), Some("1")),
+    dirty: is_one(option_env!("CYCLING_BUILD_DIRTY")),
     cycling: cfg!(feature = "cycling"),
     harness: cfg!(feature = "debug-harness"),
     maintenance: cfg!(feature = "bulk-maintenance"),

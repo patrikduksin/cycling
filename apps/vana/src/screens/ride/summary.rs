@@ -116,7 +116,6 @@ pub fn effort_label(index: usize) -> Text<12> {
     };
     label
 }
-}
 
 const LEFT: usize = 16;
 const RIGHT: usize = WIDTH - 16;

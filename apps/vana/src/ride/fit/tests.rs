@@ -833,3 +833,31 @@ fn a_stored_cadence_past_the_sensor_range_exports_capped() {
     let record = decode(&bytes).into_iter().find(|m| m.global == 20).unwrap();
     assert_eq!(record.get(4), Some(254));
 }
+
+/// Ride 3: a sample at 1 s, then one `jump_ms` of active time later.
+fn gap(jump_ms: u64) -> [Slot; 3] {
+    let mut first = sample(1_000, false);
+    first.speed_mm_s = Some(u32::MAX);
+    first.power_watts = Some(65_534);
+    let later = Sample {
+        active_ms: jump_ms,
+        ..first
+    };
+    [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &[first, later]).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, jump_ms)),
+    ]
+}
+
+#[test]
+fn a_journal_gap_counts_no_more_than_the_odometer_step() {
+    let (_, bytes) = file(&gap(1 << 40), Some(T0)).unwrap();
+    let messages = decode(&bytes);
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    // 1 s from the start and 3 s across the gap, at u32::MAX mm/s, in cm.
+    assert_eq!(session.get(9), Some(u64::from(u32::MAX) * 4 / 10));
+    let lap = messages.iter().find(|m| m.global == 19).unwrap();
+    assert_eq!(lap.get(9), session.get(9));
+    assert_eq!(file(&gap(1 << 50), Some(T0)).err(), Some(Refusal::BadClock));
+}

@@ -395,7 +395,7 @@ fn operations_read_and_write_a_bounded_number_of_sectors() {
 }
 
 #[test]
-fn a_header_count_below_its_entries_is_corrupt_on_delete() {
+fn a_delete_repairs_a_header_count_below_its_entries() {
     let mut media = Media::new(DATA + 64);
     let mut s = sector();
     format(&mut media, 1, &mut s).unwrap();
@@ -406,5 +406,6 @@ fn a_header_count_below_its_entries_is_corrupt_on_delete() {
     let checksum = crc32(&header[..CRC]);
     header[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(base(dir.copy), header);
-    assert_eq!(delete(&mut media, &name("a"), &mut s), Err(Error::Corrupt));
+    assert_eq!(delete(&mut media, &name("a"), &mut s), Ok(()));
+    assert!(snapshot(&mut media).unwrap().is_empty());
 }

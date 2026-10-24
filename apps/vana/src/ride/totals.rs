@@ -434,6 +434,29 @@ mod tests {
     const SEA_LEVEL: u32 = 10_132_500;
 
     #[test]
+    fn sums_that_reach_their_limit_still_average() {
+        let mut totals = Totals::default();
+        let sample = Sample {
+            speed_mm_s: Some(u32::MAX),
+            power_watts: Some(65_534),
+            ..Sample::default()
+        };
+        totals.add(1 << 50, u64::MAX, &sample, None);
+        assert_eq!(totals.distance_mm(), u64::MAX);
+        assert_eq!(totals.avg_speed_mm_s(), Some(16_383_999));
+        assert_eq!(totals.avg_power(), Some(16_383));
+        assert_eq!(totals.work_kj(), Some(u32::MAX));
+        // A journal alternating the lowest and highest recorded altitudes.
+        for step in 0..70_000 {
+            totals.follow_altitude_dm(if step % 2 == 0 { -5_000 } else { 126_068 });
+        }
+        assert_eq!(
+            (totals.ascent_dm(), totals.descent_dm()),
+            (u32::MAX, u32::MAX)
+        );
+    }
+
+    #[test]
     fn long_steps_count_for_every_second_they_cover() {
         // Two 2 s bursts at 900 W around one 3 s step at 100 W: the best
         // 5 s is (900 + 900 + 100 * 3) / 5 = 420 W, not 740 W.

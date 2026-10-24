@@ -258,6 +258,25 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_gap_counts_no_more_than_the_odometer_step() {
+        let fast = |active_ms| Sample {
+            speed_mm_s: Some(u32::MAX),
+            ..sample(active_ms)
+        };
+        let mut index = Index::default();
+        for entry in [
+            Entry::event(Kind::Start, Source::Live, 1, 0, 0),
+            Entry::batch(Source::Live, 1, 1, &[fast(1_000), fast(1 << 40)]).unwrap(),
+            Entry::event(Kind::Finish, Source::Live, 1, 2, 1 << 40),
+        ] {
+            index.accept(Some(&slot(&entry)));
+        }
+        index.finish();
+        let ride = index.rides().next().unwrap();
+        assert_eq!(ride.distance_mm, Some(u64::from(u32::MAX) * 4));
+    }
+
+    #[test]
     fn keeps_the_newest_rides() {
         let mut index = Index::default();
         for ride in 0..(KEPT as u32 + 5) {

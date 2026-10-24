@@ -17,7 +17,7 @@
 //! first, so the start and the rider lie over it.
 use super::{LEFT, RIGHT, kilometres};
 use crate::ride::homing::{Crumb, TURN};
-use crate::screens::canvas::{Canvas, Shape};
+use crate::screens::canvas::{Canvas, GAP, Shape};
 use crate::screens::chrome::{
     ACCENT, AMBER, Align, BODY as BODY_FACE, CAPTION, GREEN, Rect, Row, SECONDARY, WHITE,
 };
@@ -108,17 +108,19 @@ const HEAD: usize = 40;
 const CX: usize = (LEFT + RIGHT) / 2;
 const TOP: usize = 56;
 const BOTTOM: usize = 280;
-const RIDER_Y: usize = 186;
-/// The most the track reaches from the rider, in pixels, at the fit: what
-/// is left below the rider, less a margin.
-const FIT_PX: f32 = (BOTTOM - RIDER_Y - 8) as f32;
+const RIDER_Y: usize = 196;
+/// How far the track may reach from the rider at the fit, in pixels: to
+/// each side, ahead, and behind, each less a margin for the line and dots.
+const SIDE_PX: f32 = ((RIGHT - LEFT) / 2 - 4) as f32;
+const AHEAD_PX: f32 = (RIDER_Y - TOP - 6) as f32;
+const BEHIND_PX: f32 = (BOTTOM - RIDER_Y - 8) as f32;
 /// The width a zoom step spans, in pixels.
 const WIDTH_PX: f32 = (RIGHT - LEFT - 10) as f32;
 /// The closest zoom spans this many metres across, and each step out is
 /// this much wider, up to `MAX_STEPS`.
 const MIN_SPAN_M: f32 = 500.0;
-const STEP: f32 = 1.25;
-const MAX_STEPS: usize = 22;
+const STEP: f32 = 1.2;
+const MAX_STEPS: usize = 28;
 /// The track is this wide, 3 px, and the rider's chevron 4.5 px.
 const TRACK_HALF: f32 = 1.5;
 const CHEVRON_HALF: f32 = 2.25;
@@ -128,7 +130,7 @@ const FOOT: usize = 304;
 const START_RADIUS: i32 = 4;
 const RIDER_RADIUS: i32 = 7;
 /// The scale bar is at most this long, in pixels, and 3 px thick.
-const BAR_MAX_PX: f32 = 70.0;
+const BAR_MAX_PX: f32 = 56.0;
 const BAR_THICKNESS: usize = 3;
 
 /// Points kept after projection, and so segments one fewer.
@@ -226,17 +228,45 @@ fn rotation(heading: Option<u16>) -> (f32, f32) {
 
 /// Metres east and north of the rider, as pixels on screen: the heading
 /// up, the rider at (`CX`, `RIDER_Y`).
-fn project(p: Point, centre: Point, (sin, cos): (f32, f32), scale: f32) -> Point {
-    let (east, north) = (p.0 - centre.0, p.1 - centre.1);
-    let right = east * cos - north * sin;
-    let ahead = east * sin + north * cos;
+fn project(p: Point, centre: Point, turn: (f32, f32), scale: f32) -> Point {
+    let (right, ahead) = axes(p, centre, turn);
     (CX as f32 + right * scale, RIDER_Y as f32 - ahead * scale)
 }
 
-/// How many pixels a metre is, to fit points reaching `reach` metres from
-/// the rider: the closest zoom that does, within 500 m across to the widest.
-fn zoom(reach: f32) -> f32 {
-    let needed = WIDTH_PX * reach / FIT_PX;
+/// Metres to the right of and ahead of the rider.
+fn axes(p: Point, centre: Point, (sin, cos): (f32, f32)) -> Point {
+    let (east, north) = (p.0 - centre.0, p.1 - centre.1);
+    (east * cos - north * sin, east * sin + north * cos)
+}
+
+/// How far the track reaches from the rider, in metres, on the page's axes.
+#[derive(Clone, Copy, Default)]
+struct Reach {
+    side: f32,
+    ahead: f32,
+    behind: f32,
+}
+
+impl Reach {
+    fn include(&mut self, (right, ahead): Point) {
+        self.side = self.side.max(right.abs());
+        self.ahead = self.ahead.max(ahead);
+        self.behind = self.behind.max(-ahead);
+    }
+}
+
+/// How many pixels a metre is: the closest step of the zoom ladder that
+/// keeps `reach` on the page, within 500 m across to the widest. Steps
+/// are 20% apart, so a heading that wobbles rarely changes the zoom.
+fn zoom(reach: Reach) -> f32 {
+    let needed = [
+        (reach.side, SIDE_PX),
+        (reach.ahead, AHEAD_PX),
+        (reach.behind, BEHIND_PX),
+    ]
+    .into_iter()
+    .map(|(metres, room)| WIDTH_PX * metres / room)
+    .fold(0.0, f32::max);
     let mut span = MIN_SPAN_M;
     for _ in 0..MAX_STEPS {
         if span >= needed {
@@ -268,15 +298,10 @@ pub(super) fn fill(frame: &mut Frame, track: &Track) {
     let total = track.total();
     let heading = track.heading.filter(|_| track.here.is_some());
     let turn = rotation(heading);
-    // Zoom to fit the farthest point from the rider, whichever way it faces,
-    // so the zoom does not change as the rider turns.
-    let mut reach: f32 = 0.0;
-    let mut farthest = |p: Point| {
-        let (east, north) = (p.0 - centre.0, p.1 - centre.1);
-        reach = reach.max(sqrtf(east * east + north * north));
-    };
-    farthest((0.0, 0.0));
-    (0..total).for_each(|i| farthest(track.at(i)));
+    let mut reach = Reach::default();
+    let mut include = |p: Point| reach.include(axes(p, centre, turn));
+    include((0.0, 0.0));
+    (0..total).for_each(|i| include(track.at(i)));
     let scale = zoom(reach);
     frame.scale = scale;
     frame.start = project((0.0, 0.0), centre, turn, scale);
@@ -525,15 +550,16 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
     color
 }
 
-/// The longest of 1, 2 and 5 times a power of ten metres that is no more
-/// than `limit`.
+/// The longest round length in metres, from 100 m, that is no more than
+/// `limit`: 1, 1.5, 2, 3, 5, 6 or 8 times a power of ten.
 fn nice(limit: f32) -> u32 {
-    let mut best = 1;
-    let mut decade = 1u32;
+    let mut best = 100;
+    let mut decade = 100u32;
     while decade as f32 <= limit {
-        for times in [1, 2, 5] {
-            if (decade * times) as f32 <= limit {
-                best = decade * times;
+        for tenths in [10, 15, 20, 30, 50, 60, 80] {
+            let metres = decade * tenths / 10;
+            if metres as f32 <= limit {
+                best = metres;
             }
         }
         decade *= 10;
@@ -541,13 +567,13 @@ fn nice(limit: f32) -> u32 {
     best
 }
 
-/// "100 M" or "2 KM".
+/// "600 M", "1.5 KM" or "2 KM".
 fn length(text: &mut Text<12>, metres: u32) {
     use core::fmt::Write;
-    let _ = if metres >= 1000 {
-        write!(text, "{} KM", metres / 1000)
-    } else {
-        write!(text, "{metres} M")
+    let _ = match (metres >= 1000, metres % 1000) {
+        (false, _) => write!(text, "{metres} M"),
+        (true, 0) => write!(text, "{} KM", metres / 1000),
+        (true, rest) => write!(text, "{}.{} KM", metres / 1000, rest / 100),
     };
 }
 
@@ -659,14 +685,14 @@ pub(super) fn prepare(view: &View) -> Canvas {
     });
     let mut label = Text::<12>::new();
     length(&mut label, metres);
-    canvas.caption(label.as_bytes(), 60, LEFT + bar + 10, FOOT, Align::Left);
+    let label = canvas.caption(label.as_bytes(), 60, LEFT + bar + 10, FOOT, Align::Left);
     let mut distance = Text::<12>::new();
     kilometres(&mut distance, view.totals.distance_mm());
     let _ = distance.push_str(" KM");
     canvas.fit(
         &[&CAPTION],
         distance.as_bytes(),
-        width - bar - 80,
+        RIGHT - label.right() - GAP,
         RIGHT,
         FOOT,
         Align::Right,
@@ -760,15 +786,28 @@ mod tests {
 
     #[test]
     fn the_zoom_fits_the_whole_track_and_is_never_closer_than_500_m() {
-        let near = zoom(40.0);
+        let ahead = |metres| Reach {
+            side: 0.0,
+            ahead: metres,
+            behind: 0.0,
+        };
+        let near = zoom(ahead(40.0));
         assert!((near * 500.0 - WIDTH_PX).abs() < 0.01, "{near}");
-        // A track reaching 3 km from the rider fits below them.
-        let far = zoom(3_000.0);
-        assert!(3_000.0 * far <= FIT_PX + 0.01, "{far}");
-        assert!(3_000.0 * far > FIT_PX / STEP - 0.01, "closest step: {far}");
-        // Farther is never closer; a huge track stops at the widest zoom.
-        assert!(zoom(30_000.0) < far);
-        assert_eq!(zoom(1e9), zoom(2e9));
+        // A track reaching 3 km ahead fits, within one 20% step of filling.
+        let far = zoom(ahead(3_000.0));
+        assert!(3_000.0 * far <= AHEAD_PX + 0.01, "{far}");
+        assert!(
+            3_000.0 * far > AHEAD_PX / STEP - 0.01,
+            "closest step: {far}"
+        );
+        // Behind has less room than ahead, and each axis counts.
+        let behind = zoom(Reach {
+            behind: 3_000.0,
+            ..Reach::default()
+        });
+        assert!(behind < far);
+        assert!(zoom(ahead(30_000.0)) < far);
+        assert_eq!(zoom(ahead(1e9)), zoom(ahead(2e9)));
         // Every point of a track is inside the page at the zoom.
         let c = crumbs(&[
             (0.0, 0.0),
@@ -912,11 +951,11 @@ mod tests {
         let mut t = track(&c);
         page(t, 0)
             .canvas
-            .assert_laid_out(PAGE, &["MAP", "N UP", "500 M", "0.01 KM"], "still");
+            .assert_laid_out(PAGE, &["MAP", "N UP", "600 M", "0.01 KM"], "still");
         t.heading = Some(0);
         page(t, 0)
             .canvas
-            .assert_laid_out(PAGE, &["MAP", "500 M", "0.01 KM"], "riding");
+            .assert_laid_out(PAGE, &["MAP", "600 M", "0.01 KM"], "riding");
         t.home = Some((2, None));
         t.heading = None;
         page(t, 0)
@@ -929,23 +968,27 @@ mod tests {
         let start = crumbs(&[(0.0, 0.0)]);
         page(track(&start), 0).canvas.assert_laid_out(
             PAGE,
-            &["MAP", "DRAWS AS YOU RIDE", "100 M"],
+            &["MAP", "DRAWS AS YOU RIDE", "150 M"],
             "first fix",
         );
     }
 
     #[test]
-    fn the_scale_bar_is_one_two_or_five() {
-        assert_eq!(nice(190.0), 100);
-        assert_eq!(nice(380.0), 200);
-        assert_eq!(nice(999.0), 500);
-        assert_eq!(nice(70.0 / 0.0184), 2000);
-        assert_eq!(nice(0.5), 1);
-        let mut text = Text::<12>::new();
-        length(&mut text, 500);
-        assert_eq!(text.as_bytes(), b"500 M");
-        let mut text = Text::<12>::new();
-        length(&mut text, 2000);
-        assert_eq!(text.as_bytes(), b"2 KM");
+    fn the_scale_bar_is_a_round_length() {
+        assert_eq!(nice(190.0), 150);
+        assert_eq!(nice(380.0), 300);
+        assert_eq!(nice(999.0), 800);
+        assert_eq!(nice(70.0 / 0.0184), 3000);
+        assert_eq!(nice(0.5), 100);
+        for (metres, want) in [
+            (600, "600 M"),
+            (1500, "1.5 KM"),
+            (2000, "2 KM"),
+            (10_000, "10 KM"),
+        ] {
+            let mut text = Text::<12>::new();
+            length(&mut text, metres);
+            assert_eq!(text.as_str(), want);
+        }
     }
 }

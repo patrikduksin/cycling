@@ -1,6 +1,7 @@
 use super::Runtime;
+use super::cues::Cue;
 use super::recording::{Request, RideMessage};
-use crate::ride::auto::Decision;
+use crate::ride::auto::{Call, Decision};
 use crate::ride::control::Action;
 use crate::ride::log::{Source, Status};
 use crate::screens::chrome::Tone;
@@ -20,8 +21,14 @@ impl Runtime {
         );
     }
 
-    pub(super) fn ride_auto(&mut self, decision: Decision, now: u64) {
-        self.ride_event(Event::Auto(decision), Origin::Auto(decision), now);
+    pub(super) fn ride_auto(&mut self, call: Call, now: u64) {
+        match call {
+            Call::Do(decision) => self.ride_event(Event::Auto(call), Origin::Auto(decision), now),
+            Call::Remind => {
+                let step = step(self.navigation.page, self.seen(), Event::Auto(call));
+                self.apply(step, now);
+            }
+        }
     }
 
     pub(super) fn ride_serviced(&mut self, before: Status, now: u64) {
@@ -40,7 +47,7 @@ enum Event {
         button: Button,
         held: bool,
     },
-    Auto(Decision),
+    Auto(Call),
     Serviced {
         before: Status,
     },
@@ -81,6 +88,7 @@ enum Effect {
     TakeOverPause,
     Lap,
     NotReadyToast,
+    Remind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,11 +139,12 @@ fn step(page: Page, seen: Seen, event: Event) -> Step {
             accepted,
             origin,
         } => answered(page, action, accepted, origin),
-        Event::Auto(decision) => submit(match decision {
+        Event::Auto(Call::Do(decision)) => submit(match decision {
             Decision::Pause => Action::Pause,
             Decision::Resume => Action::Resume,
             Decision::Start => Action::Start,
         }),
+        Event::Auto(Call::Remind) => effect(Effect::Remind),
         Event::Serviced { before } => serviced(page, seen, before),
     }
 }
@@ -299,6 +308,7 @@ impl Runtime {
                 }
             }
             Effect::NotReadyToast => self.navigation.toast("STORAGE NOT READY", Tone::Alert, now),
+            Effect::Remind => self.cue(Cue::StillPaused, now),
         }
     }
 
@@ -534,20 +544,38 @@ mod tests {
             (
                 Page::Ride,
                 seen(Recording),
-                Event::Auto(Decision::Pause),
+                Event::Auto(Call::Do(Decision::Pause)),
                 submit(Action::Pause),
             ),
             (
                 Page::Ride,
                 seen(Paused),
-                Event::Auto(Decision::Resume),
+                Event::Auto(Call::Do(Decision::Resume)),
                 submit(Action::Resume),
             ),
             (
                 Page::Ready,
                 seen(Ready),
-                Event::Auto(Decision::Start),
+                Event::Auto(Call::Do(Decision::Start)),
                 submit(Action::Start),
+            ),
+            (
+                Page::Ride,
+                seen(Paused),
+                Event::Auto(Call::Remind),
+                effect(Effect::Remind),
+            ),
+            (
+                Page::EndRide,
+                seen(Paused),
+                Event::Auto(Call::Remind),
+                effect(Effect::Remind),
+            ),
+            (
+                Page::Home,
+                seen(Paused),
+                Event::Auto(Call::Remind),
+                effect(Effect::Remind),
             ),
         ]);
     }

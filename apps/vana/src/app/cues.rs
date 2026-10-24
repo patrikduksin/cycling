@@ -24,6 +24,8 @@ pub enum Cue {
     Resume,
     Lap,
     Saved,
+    /// Riding on while the ride is still paused.
+    StillPaused,
     LowBattery,
     /// One of a workout step's last seconds.
     Countdown,
@@ -62,6 +64,7 @@ impl Cue {
             Self::Pause => &[High, Middle],
             Self::Lap => &[Middle],
             Self::Saved => &[Low, Middle, High],
+            Self::StillPaused => &[Middle, Middle, High],
             Self::LowBattery => &[Low, Low],
             Self::Countdown => &[Low],
             Self::Step => &[High, High],
@@ -182,6 +185,7 @@ mod tests {
         assert_eq!(ids(Cue::RadarClear), [21, 10]);
         assert_eq!(ids(Cue::BandAlert), [10, 10]);
         assert_eq!(ids(Cue::Fuel), [0, 0]);
+        assert_eq!(ids(Cue::StillPaused), [0, 0, 10]);
         // One pattern stands for every note; none leaves cues silent.
         let single = [pattern(4, 3000, 100)];
         assert_eq!(resolve(&single, Cue::Saved).to_vec(), [4, 4, 4]);

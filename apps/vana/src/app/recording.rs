@@ -630,8 +630,8 @@ impl Runtime {
         let ready = matches!(self.navigation.page, Page::Ride | Page::Ready);
         let status = self.ride.active().status();
         let motion = self.readings.motion;
-        if let Some(decision) = self.ride.auto.update(now, status, motion, ready) {
-            self.ride_auto(decision, now);
+        if let Some(call) = self.ride.auto.update(now, status, motion, ready) {
+            self.ride_auto(call, now);
         }
     }
 

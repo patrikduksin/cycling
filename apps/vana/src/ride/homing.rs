@@ -5,8 +5,8 @@
 //! breadcrumb keeps a point only where the road bends: a streaming window
 //! simplification keeps the last point before any point in the window would
 //! stray more than the tolerance from a straight line. When the caller's
-//! buffer fills, the breadcrumb is thinned again in place at twice the
-//! tolerance, so a ride of any length fits. The buffer is the caller's
+//! buffer fills, the breadcrumb is thinned again in place as the course is
+//! (`ride::thin`), so a ride of any length fits. The buffer is the caller's
 //! (PSRAM on the device); this state is small.
 //!
 //! Following the breadcrumb back freezes it and steers to a point a little
@@ -40,7 +40,7 @@
 //! away, and counts once until they are away again; that gap is the
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
-use crate::ride::course;
+use crate::ride::{course, thin};
 use libm::{atan2f, cosf, sqrtf};
 
 /// Metres per 1e-7 degree of latitude, on a sphere of the mean Earth radius.
@@ -48,7 +48,7 @@ const M_PER_E7: f32 = 0.011_119_508;
 /// Fixes closer than this to the last one add nothing to the breadcrumb.
 const MIN_STEP_M: f32 = 5.0;
 /// A kept point may sit this far off the straight line it replaces; doubled
-/// on each thinning.
+/// when a thinning pass frees too little.
 const TOLERANCE_M: f32 = 6.0;
 /// Fixes since the last kept point, the most the window holds.
 const WINDOW: usize = 48;
@@ -785,29 +785,12 @@ impl<'a> Homing<'a> {
         self.len += 1;
     }
 
-    /// Thin the full breadcrumb in place at twice the tolerance, until a
-    /// quarter of it is free; past any sensible tolerance, every other
-    /// point goes. Only while recording, so no match index moves.
+    /// Thin the full breadcrumb in place until a quarter of it is free,
+    /// per `ride::thin`. Only while recording, so no match index moves.
     fn thin(&mut self) {
-        let target = self.crumbs.len() * 3 / 4;
-        let mut rounds = 0;
-        while self.len > target {
-            rounds += 1;
-            self.tolerance *= 2.0;
-            let mut kept = 1;
-            for i in 1..self.len - 1 {
-                let point = |c: Crumb| (c.east, c.north);
-                let a = point(self.crumbs[kept - 1]);
-                let b = point(self.crumbs[i + 1]);
-                let p = point(self.crumbs[i]);
-                if rounds > 8 && i % 2 == 0 || off_segment(p, a, b) > self.tolerance {
-                    self.crumbs[kept] = self.crumbs[i];
-                    kept += 1;
-                }
-            }
-            self.crumbs[kept] = self.crumbs[self.len - 1];
-            self.len = kept + 1;
-        }
+        self.len = thin::thin(self.crumbs, self.len, &mut self.tolerance, |c| {
+            (c.east, c.north)
+        });
         // Distances along follow the thinned line.
         for i in 1..self.len {
             let (a, b) = (self.crumbs[i - 1], self.crumbs[i]);

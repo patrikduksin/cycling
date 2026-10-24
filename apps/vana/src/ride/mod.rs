@@ -26,6 +26,7 @@ pub mod recovery;
 pub mod replay;
 pub mod rider;
 pub mod storage;
+pub mod thin;
 pub mod totals;
 pub mod week;
 pub mod wheel_size;

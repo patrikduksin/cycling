@@ -1,4 +1,5 @@
 use super::*;
+use crate::ride::thin::off_segment;
 use crate::testing::Rng;
 use crate::workout::library::tests::{Region, formatted, put};
 use std::boxed::Box;

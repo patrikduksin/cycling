@@ -59,3 +59,20 @@ espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-s
   "$elf" "$image_dir/cycling.bin"
 # Keep the matching ELF beside the image: crash decoding needs its symbols.
 cp "$elf" "$image_dir/cycling.elf"
+# And one per commit and variant, named as the panic record's elf= says, in
+# the primary checkout's .local so every worktree's builds are found
+# (mise run backtrace). Written under a temporary name, then moved, so
+# parallel builds never leave a torn file; the newest 24 are kept.
+variant="sdk${CYCLING_SDK:-0}-h${CYCLING_HARNESS:-1}"
+if [[ "${CYCLING_BULK_MAINTENANCE:-0}" == 1 ]]; then
+  variant="$variant-maint"
+fi
+suffix=""
+if [[ "$CYCLING_BUILD_DIRTY" == 1 ]]; then
+  suffix="-dirty"
+fi
+archive="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/elf"
+mkdir -p "$archive"
+cp "$elf" "$archive/.$CYCLING_BUILD_COMMIT$suffix-$variant.elf.$$"
+mv -f "$archive/.$CYCLING_BUILD_COMMIT$suffix-$variant.elf.$$" "$archive/$CYCLING_BUILD_COMMIT$suffix-$variant.elf"
+ls -1t "$archive"/*.elf | tail -n +25 | xargs -r rm -f

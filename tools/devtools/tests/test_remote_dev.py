@@ -90,6 +90,27 @@ class BacktraceTests(unittest.TestCase):
             ],
         )
 
+    def test_a_crash_record_picks_the_elf_it_names_and_checks_its_commit(self):
+        reply = [
+            '{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-dirty-sdk1-h1 pcs=0x42001234,0x42005678"}\n'
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory)
+            self.assertEqual(
+                backtrace.choose_elf(reply, archive), (backtrace.ROOT / '.local/cycling.elf', '15178ed1119a')
+            )
+            (archive / '15178ed1119a-sdk1-h1.elf').write_bytes(b'15178ed1119a')
+            named = archive / '15178ed1119a-dirty-sdk1-h1.elf'
+            named.write_bytes(b'\0commit 15178ed1119a\0')
+            self.assertEqual(backtrace.choose_elf(reply, archive), (named, '15178ed1119a'))
+            self.assertTrue(backtrace.holds_commit(named, '15178ed1119a'))
+            self.assertFalse(backtrace.holds_commit(named, '0123456789ab'))
+        with patch.object(backtrace, 'addr2line', return_value=Path('addr2line')):
+            with patch.object(backtrace.subprocess, 'run') as run:
+                run.return_value.stdout = ''
+                list(backtrace.decode(reply, Path('cycling.elf')))
+        self.assertEqual(run.call_args.args[0][-2:], ['0x42001234', '0x42005678'])
+
 
 class VerifyTests(unittest.TestCase):
     def test_a_failed_step_stops_its_lane_only(self):

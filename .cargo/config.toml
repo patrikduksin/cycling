@@ -4,3 +4,7 @@ rustflags = ["-C", "force-frame-pointers=yes"]
 
 [unstable]
 build-std = ["core", "alloc"]
+
+[env]
+# Frames esp-backtrace walks; the panic record keeps up to 24 (device_api::crash::FRAMES).
+ESP_BACKTRACE_CONFIG_BACKTRACE_FRAMES = "24"

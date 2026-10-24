@@ -72,6 +72,10 @@ pub enum Command {
     Storage,
     Display(u16),
     Restart,
+    /// The last recorded panic.
+    Crash,
+    /// Forget the recorded panic.
+    CrashClear,
     Test(u8),
 }
 
@@ -293,6 +297,11 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         "ACTIVITY" => Command::Activity,
         "STORAGE" => Command::Storage,
         "RESTART" => Command::Restart,
+        "CRASH" => match words.next() {
+            None => Command::Crash,
+            Some("CLEAR") => Command::CrashClear,
+            _ => return Err(Error::Invalid),
+        },
         "WIFI" => match words.next() {
             None => Command::Wifi,
             Some("CONNECT" | "RECONNECT") => Command::WifiReconnect,
@@ -416,6 +425,16 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn crash_reads_or_clears_the_record() {
+        assert_eq!(parse(b"CMD 1 CRASH").unwrap().command, Command::Crash);
+        assert_eq!(
+            parse(b"CMD 1 CRASH CLEAR").unwrap().command,
+            Command::CrashClear
+        );
+        assert_eq!(parse(b"CMD 1 CRASH NOW"), Err(Error::Invalid));
+        assert_eq!(parse(b"CMD 1 CRASH CLEAR extra"), Err(Error::Invalid));
+    }
     #[test]
     fn ant_commands_are_bounded_and_explicit() {
         assert_eq!(

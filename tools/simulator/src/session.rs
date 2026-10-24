@@ -761,6 +761,11 @@ impl Session {
                 );
             }
             Command::Restart => return "ACCEPTED",
+            // The simulator never panics into a record.
+            Command::Crash => {
+                let _ = write!(out, "none");
+            }
+            Command::CrashClear => {}
             _ => return "UNSUPPORTED",
         }
         "OK"

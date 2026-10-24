@@ -1,6 +1,7 @@
 //! Recovers text from an RGB565 frame drawn with the shared 5x7 bitmap font
 //! or the anti-aliased faces of `firmware_shell::rendering::font`.
 use firmware_shell::rendering::font::{FACES, Face, blend};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -108,12 +109,23 @@ struct Template {
     solid: Vec<bool>,
     /// Coverage 0..=15 of every box pixel.
     coverage: Vec<u8>,
+    /// Box pixels the glyph only partly covers, and those it leaves clear.
+    edges: Vec<usize>,
+    clear: Vec<usize>,
     ink: u32,
 }
 
+/// Every face's templates, by the solid run right of and below the anchor.
+struct Templates {
+    exact: HashMap<(usize, usize), Vec<Template>>,
+    /// Keys by `down`, longest `right` first: a run that continues into the
+    /// next glyph, as in "TT", is longer than its template's own.
+    by_down: HashMap<usize, Vec<(usize, usize)>>,
+}
+
 /// Templates keyed by the solid run right of and below the anchor.
-fn templates() -> &'static HashMap<(usize, usize), Vec<Template>> {
-    static TEMPLATES: OnceLock<HashMap<(usize, usize), Vec<Template>>> = OnceLock::new();
+fn templates() -> &'static Templates {
+    static TEMPLATES: OnceLock<Templates> = OnceLock::new();
     TEMPLATES.get_or_init(|| {
         let mut map: HashMap<(usize, usize), Vec<Template>> = HashMap::new();
         for (face_index, face) in FACES.iter().enumerate() {
@@ -146,6 +158,10 @@ fn templates() -> &'static HashMap<(usize, usize), Vec<Template>> {
                     .take_while(|&y| solid[y * w + anchor.0])
                     .count();
                 let ink = solid.iter().filter(|&&s| s).count() as u32;
+                let edges = (0..w * h)
+                    .filter(|&i| (1..15).contains(&coverage[i]))
+                    .collect();
+                let clear = (0..w * h).filter(|&i| coverage[i] == 0).collect();
                 map.entry((right, down)).or_default().push(Template {
                     character,
                     face: face_index,
@@ -154,6 +170,8 @@ fn templates() -> &'static HashMap<(usize, usize), Vec<Template>> {
                     size: (w, h),
                     solid,
                     coverage,
+                    edges,
+                    clear,
                     ink,
                 });
             }
@@ -161,7 +179,17 @@ fn templates() -> &'static HashMap<(usize, usize), Vec<Template>> {
         for list in map.values_mut() {
             list.sort_by_key(|t| std::cmp::Reverse(t.ink));
         }
-        map
+        let mut by_down: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        for &(right, down) in map.keys() {
+            by_down.entry(down).or_default().push((right, down));
+        }
+        for keys in by_down.values_mut() {
+            keys.sort_unstable_by_key(|&(right, _)| std::cmp::Reverse(right));
+        }
+        Templates {
+            exact: map,
+            by_down,
+        }
     })
 }
 
@@ -218,22 +246,52 @@ impl Frame<'_> {
             .rev()
             .filter(|&scale| self.width >= 5 * scale && self.height >= 7 * scale)
             .collect();
-        // Scanning every position at every scale is most of a scenario's
-        // time; the scans are independent, so they run in parallel. Claiming
-        // stays in order, largest scale first, so the result is unchanged.
-        let candidates: Vec<Vec<Glyph>> = std::thread::scope(|threads| {
-            let scans: Vec<_> = scales
-                .iter()
-                .map(|&scale| {
-                    let lookup = &lookup;
-                    threads.spawn(move || self.candidates(lookup, scale))
-                })
-                .collect();
-            scans
-                .into_iter()
-                .map(|scan| scan.join().expect("glyph scan"))
-                .collect()
+        let pixels = &self.pixels[..self.width * self.height];
+        let previous = LAST_SCAN
+            .with(|last| last.borrow_mut().take())
+            .filter(|scan| (scan.width, scan.height) == (self.width, self.height));
+        let candidates: Vec<Vec<Glyph>> = match &previous {
+            // A frame that changed in a few places is rescanned only there.
+            Some(scan) => {
+                let changed = changed_columns(&scan.pixels, pixels, self.width);
+                scales
+                    .iter()
+                    .zip(&scan.candidates)
+                    .map(|(&scale, old)| self.rescan(&lookup, scale, &changed, old))
+                    .collect()
+            }
+            // Scanning every position at every scale is the slow part; the
+            // scans are independent, so they run in parallel.
+            None => std::thread::scope(|threads| {
+                let scans: Vec<_> = scales
+                    .iter()
+                    .map(|&scale| {
+                        let lookup = &lookup;
+                        threads.spawn(move || self.candidates(lookup, scale))
+                    })
+                    .collect();
+                scans
+                    .into_iter()
+                    .map(|scan| scan.join().expect("glyph scan"))
+                    .collect()
+            }),
+        };
+        LAST_SCAN.with(|last| {
+            *last.borrow_mut() = Some(Scan {
+                width: self.width,
+                height: self.height,
+                pixels: previous.map_or_else(
+                    || pixels.to_vec(),
+                    |mut scan| {
+                        scan.pixels.copy_from_slice(pixels);
+                        scan.pixels
+                    },
+                ),
+                candidates: candidates.clone(),
+            });
         });
+        // Claiming stays in order, largest scale first, so the result is the
+        // same however the candidates were found.
         let mut claimed = vec![false; self.width * self.height];
         let mut found = Vec::new();
         for (scale, mut candidates) in scales.into_iter().zip(candidates) {
@@ -259,6 +317,49 @@ impl Frame<'_> {
         for y in 0..=self.height - 7 * scale {
             for x in 0..=self.width - 5 * scale {
                 candidates.extend(self.glyph_at(lookup, x, y, scale));
+            }
+        }
+        candidates
+    }
+
+    /// `old` (this scale's candidates in the previous frame) with every
+    /// position whose result could differ scanned again. `glyph_at` and
+    /// `verify` read a cell, one dot beside it and the rows just above and
+    /// below: columns `x - s .. x + 6s` and rows `y - 1 ..= y + 7s`.
+    fn rescan(
+        &self,
+        lookup: &[(u64, u8)],
+        s: usize,
+        changed: &[Option<(usize, usize)>],
+        old: &[Glyph],
+    ) -> Vec<Glyph> {
+        let last_x = self.width - 5 * s;
+        let stale: Vec<Option<(usize, usize)>> = (0..=self.height - 7 * s)
+            .map(|y| {
+                let rows = y.saturating_sub(1)..(y + 7 * s + 1).min(self.height);
+                let (lo, hi) = changed[rows].iter().flatten().fold(
+                    None,
+                    |span: Option<(usize, usize)>, &(a, b)| {
+                        Some(span.map_or((a, b), |(lo, hi)| (lo.min(a), hi.max(b))))
+                    },
+                )?;
+                // The footprint meets lo..=hi when x - s <= hi and x + 6s > lo.
+                let (from, to) = ((lo + 1).saturating_sub(6 * s), (hi + s).min(last_x));
+                (from <= to).then_some((from, to))
+            })
+            .collect();
+        let is_stale =
+            |x: usize, y: usize| stale[y].is_some_and(|(from, to)| (from..=to).contains(&x));
+        let mut candidates: Vec<Glyph> = old
+            .iter()
+            .copied()
+            .filter(|g| !is_stale(g.x, g.y))
+            .collect();
+        for (y, span) in stale.iter().enumerate() {
+            if let Some((from, to)) = *span {
+                for x in from..=to {
+                    candidates.extend(self.glyph_at(lookup, x, y, s));
+                }
             }
         }
         candidates
@@ -291,11 +392,14 @@ impl Frame<'_> {
                     .count();
                 // A run that continues into the next glyph, as in "TT", is
                 // longer than the template's own.
-                let exact = templates.get(&(right, down)).into_iter().flatten();
+                let exact = templates.exact.get(&(right, down)).into_iter().flatten();
                 let joined = templates
-                    .iter()
-                    .filter(|((r, d), _)| *d == down && *r < right)
-                    .flat_map(|(_, list)| list);
+                    .by_down
+                    .get(&down)
+                    .into_iter()
+                    .flatten()
+                    .filter(|&&(r, _)| r < right)
+                    .flat_map(|key| &templates.exact[key]);
                 for template in exact.chain(joined) {
                     let Some((left, top)) = self.matches(template, x, y, color, &claimed) else {
                         continue;
@@ -360,9 +464,7 @@ impl Frame<'_> {
         // The edges must blend from the background, or this is a patch of
         // some other glyph's edge colour shaped like a small glyph.
         let pixel = |i: usize| self.at(left + i % w, top + i / w);
-        let edges: Vec<usize> = (0..w * h)
-            .filter(|&i| (1..15).contains(&template.coverage[i]))
-            .collect();
+        let edges = &template.edges;
         if edges.is_empty() {
             return Some((left, top));
         }
@@ -372,9 +474,14 @@ impl Frame<'_> {
             self.at(left + w, top)
         };
         // The commonest colour outside the glyph, since neighbours may reach in.
-        let mut counts: HashMap<u16, usize> = HashMap::new();
-        for i in (0..w * h).filter(|&i| template.coverage[i] == 0) {
-            *counts.entry(pixel(i)).or_default() += 1;
+        // A box holds a handful of colours, so a short list beats a map.
+        let mut counts: Vec<(u16, usize)> = Vec::with_capacity(8);
+        for &i in &template.clear {
+            let color = pixel(i);
+            match counts.iter_mut().find(|(c, _)| *c == color) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((color, 1)),
+            }
         }
         let background = counts
             .into_iter()
@@ -530,6 +637,33 @@ impl Frame<'_> {
     }
 }
 
+/// The last frame this thread read and its 5x7 candidates per scale.
+/// Scenarios read the same screen many times as only a clock or a reading
+/// changes, so most of a frame's candidates carry over.
+struct Scan {
+    width: usize,
+    height: usize,
+    pixels: Vec<u16>,
+    candidates: Vec<Vec<Glyph>>,
+}
+
+thread_local! {
+    static LAST_SCAN: RefCell<Option<Scan>> = const { RefCell::new(None) };
+}
+
+/// Per row, the first and last column that differ between two frames.
+fn changed_columns(before: &[u16], after: &[u16], width: usize) -> Vec<Option<(usize, usize)>> {
+    before
+        .chunks_exact(width)
+        .zip(after.chunks_exact(width))
+        .map(|(old, new)| {
+            let first = old.iter().zip(new).position(|(a, b)| a != b)?;
+            let last = old.iter().zip(new).rposition(|(a, b)| a != b)?;
+            Some((first, last))
+        })
+        .collect()
+}
+
 fn mask(rows: &[u8; 7]) -> u64 {
     let mut bits = 0;
     for (row, &value) in rows.iter().enumerate() {
@@ -617,6 +751,58 @@ mod tests {
                     pixels[py * W + px] = c;
                 }
             }
+        }
+    }
+
+    /// A read with no previous frame on this thread scans everything.
+    fn fresh(pixels: &[u16]) -> Vec<TextRun> {
+        LAST_SCAN.with(|last| last.borrow_mut().take());
+        let runs = frame(pixels).read();
+        LAST_SCAN.with(|last| last.borrow_mut().take());
+        runs
+    }
+
+    #[test]
+    fn rereading_a_changed_frame_matches_a_fresh_read() {
+        use firmware_shell::rendering::font::FACES;
+        let mut pixels = canvas(BG);
+        fill(&mut pixels, 0, 0, W, 24, CYAN);
+        draw(&mut pixels, 4, 6, 2, BG, "7:18 REC");
+        draw(&mut pixels, 10, 60, 6, WHITE, "28.0");
+        smooth(&mut pixels, 10, 140, FACES[0], GREEN, "220 W");
+        draw(&mut pixels, 200, 300, 1, RED, "Z4");
+        LAST_SCAN.with(|last| last.borrow_mut().take());
+        let steps: [fn(&mut Vec<u16>); 9] = [
+            // The clock ticks: a few changed pixels inside a bar.
+            |p| draw(p, 4, 6, 2, BG, "7:19 REC"),
+            // A large value changes, then grows into the next cell.
+            |p| {
+                fill(p, 10, 60, 160, 42, BG);
+                draw(p, 10, 60, 6, WHITE, "31.5")
+            },
+            |p| draw(p, 10, 60, 6, WHITE, "131.5"),
+            // A glyph is drawn over, then a neighbour appears beside one.
+            |p| fill(p, 22, 66, 9, 9, WHITE),
+            |p| draw(p, 212, 300, 1, RED, "X"),
+            // Text at the frame's edges and a smooth label changing.
+            |p| draw(p, 0, H - 7, 1, WHITE, "EDGE"),
+            |p| {
+                fill(p, 10, 140, 120, 40, BG);
+                smooth(p, 10, 140, FACES[0], GREEN, "235 W")
+            },
+            |p| fill(p, 0, 0, W, H, BG),
+            |p| draw(p, 30, 30, 3, CYAN, "BACK"),
+        ];
+        let first = frame(&pixels).read();
+        assert_eq!(first, fresh(&pixels));
+        frame(&pixels).read();
+        for (i, step) in steps.iter().enumerate() {
+            step(&mut pixels);
+            let incremental = frame(&pixels).read();
+            let expected = fresh(&pixels);
+            assert_eq!(incremental, expected, "step {i}");
+            // Leave this frame as the previous one for the next step.
+            frame(&pixels).read();
         }
     }
 

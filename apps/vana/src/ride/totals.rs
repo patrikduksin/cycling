@@ -10,14 +10,12 @@ use crate::ride::log::Sample;
 use crate::ride::rider::Rider;
 
 /// The calories a ride or a lap shows and exports: `power_kcal` from the
-/// meter's work when power covers at least half the `heart_count` seconds
-/// heart rate was read (`power_ms` is the time it covers), otherwise the
-/// Keytel estimate from the heart-rate sum once `rider` has set weight, age
-/// and sex, and either falls back to the other. The one rule for the
-/// summary, the laps and the FIT export.
+/// meter's work, plus the Keytel estimate for the `heart_count` seconds heart
+/// rate was read without power (`heart_sum` their sum) once `rider` has set
+/// weight, age and sex. Without a body it is the work alone. The one rule
+/// for the summary, the laps and the FIT export.
 pub fn calories(
     power_kcal: Option<u32>,
-    power_ms: u64,
     heart_sum: u64,
     heart_count: u32,
     rider: Rider,
@@ -25,11 +23,9 @@ pub fn calories(
     let heart = (heart_count != 0)
         .then(|| rider.heart_rate_kcal(heart_sum, heart_count))
         .flatten();
-    let power_covers = power_ms >= u64::from(heart_count) * 500;
-    if power_covers {
-        power_kcal.or(heart)
-    } else {
-        heart.or(power_kcal)
+    match (power_kcal, heart) {
+        (Some(power), Some(heart)) => Some(power.saturating_add(heart)),
+        (power, heart) => power.or(heart),
     }
 }
 
@@ -106,6 +102,8 @@ pub struct Totals {
     /// Rolling power for normalized power, and the time power covers.
     load: PowerLoad,
     heart: Mean,
+    /// Heart rate in the seconds without power, for their calories.
+    heart_unpowered: Mean,
     max_heart: Option<u16>,
     /// Cadence tenths while pedalling; coasting zeros are excluded.
     cadence: Mean,
@@ -144,6 +142,9 @@ impl Totals {
         }
         if let Some(bpm) = sample.heart_bpm {
             self.heart.add(u64::from(bpm));
+            if sample.power_watts.is_none() {
+                self.heart_unpowered.add(u64::from(bpm));
+            }
             self.max_heart = self.max_heart.max(Some(bpm));
         }
         if let Some(cadence) = sample.cadence_tenths.filter(|&c| c != 0) {
@@ -263,24 +264,21 @@ impl Totals {
     /// Human muscle turns about 24 % of the food energy it burns into work,
     /// and a kilocalorie is 4.184 kJ, so kcal = kJ / (0.24 x 4.184), which
     /// is within half a percent of kJ itself. Without power there is none
-    /// here: `kcal_for` adds the heart-rate estimate, which needs the rider's
-    /// body.
+    /// here: `kcal_for` adds the heart-rate estimate for the seconds without
+    /// power, which needs the rider's body.
     pub fn kcal(&self) -> Option<u32> {
         self.work_kj()
     }
 
-    /// Kilocalories from the power meter's work when power covers at least
-    /// half the seconds heart rate was read, and otherwise the Keytel
-    /// estimate from heart rate once `rider` has set weight, age and sex. A
-    /// meter that dropped early in a long ride would count only its own
-    /// minutes. Either falls back to the other. A recorded sample stands for
-    /// one second.
+    /// Kilocalories by [`calories`]: the power meter's work, plus the Keytel
+    /// estimate for the seconds heart rate was read without power once
+    /// `rider` has set weight, age and sex. A recorded sample stands for one
+    /// second.
     pub fn kcal_for(&self, rider: Rider) -> Option<u32> {
         calories(
             self.kcal(),
-            self.load.power_ms(),
-            self.heart.sum,
-            self.heart.count,
+            self.heart_unpowered.sum,
+            self.heart_unpowered.count,
             rider,
         )
     }
@@ -586,10 +584,10 @@ mod tests {
         assert_eq!(totals.ascent_dm(), 0);
     }
 
-    /// A ride with heart rate and no power gets the Keytel estimate once the
-    /// body is set; power keeps its work, and nothing set keeps no calories.
+    /// Calories are the meter's work plus, once the body is set, the Keytel
+    /// estimate for the seconds with heart rate and no power.
     #[test]
-    fn calories_come_from_power_else_from_heart_rate_and_the_body() {
+    fn calories_add_the_work_and_heart_rate_without_power() {
         use crate::ride::rider::Rider;
         let body = Rider::default()
             .step_weight(1, true)
@@ -612,17 +610,38 @@ mod tests {
         assert_eq!(powered.kcal_for(Rider::default()), Some(120));
         assert_eq!(Totals::default().kcal_for(body), None);
 
-        // A meter that dropped after five minutes of a two-hour heart-rate
-        // ride covers too little: the heart-rate estimate stands for the ride.
+        // A meter that died at 1h40 of a 3 h ride: its work for the first
+        // 100 minutes, heart rate for the last 80.
         let mut partial = Totals::default();
-        ride(&mut partial, 300, riding(8333, 200, 140, 90), None);
-        ride(&mut partial, 6900, heart_only, None);
-        let hours = partial.kcal_for(body).unwrap();
-        assert!(hours > 1_400, "{hours}");
-        assert_eq!(
-            partial.kcal_for(Rider::default()),
-            Some(partial.work_kj().unwrap())
-        );
+        ride(&mut partial, 6000, riding(8333, 200, 140, 90), None);
+        ride(&mut partial, 4800, heart_only, None);
+        let unpowered = body.heart_rate_kcal(140 * 4800, 4800).unwrap();
+        assert_eq!(partial.kcal_for(body), Some(1200 + unpowered));
+        assert_eq!(partial.kcal_for(Rider::default()), Some(1200));
+        // Five minutes of power in a two-hour ride counts the same way.
+        let mut early = Totals::default();
+        ride(&mut early, 300, riding(8333, 200, 140, 90), None);
+        ride(&mut early, 6900, heart_only, None);
+        let unpowered = body.heart_rate_kcal(140 * 6900, 6900).unwrap();
+        assert_eq!(early.kcal_for(body), Some(60 + unpowered));
+    }
+
+    #[test]
+    fn heart_rate_without_power_stays_inside_its_sums() {
+        let body = Rider::decode([200, 10, 1]).unwrap();
+        let mut totals = Totals::default();
+        let hostile = Sample {
+            heart_bpm: Some(u16::MAX),
+            power_watts: None,
+            ..Sample::default()
+        };
+        totals.heart_unpowered = Mean {
+            sum: u64::MAX - 1,
+            count: u32::MAX - 1,
+        };
+        ride(&mut totals, 3, hostile, None);
+        assert_eq!(totals.kcal_for(body), Some(u32::MAX));
+        assert_eq!(totals.kcal_for(Rider::default()), None);
     }
 
     #[test]

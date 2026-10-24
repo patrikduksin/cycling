@@ -232,6 +232,9 @@ fn triangle(x: i32, y: i32, corners: [(i32, i32); 3]) -> u8 {
     coverage
 }
 
+// `stroke` takes `edge` as zero from two quarter pixels outside on.
+const _: () = assert!(edge(-2) == 0 && edge(-1) > 0);
+
 /// A polyline `half` quarter pixels either side of its points.
 fn stroke(x: i32, y: i32, points: &[(i32, i32)], half: i32) -> u8 {
     // `edge` is zero from `reach` outside the line on, so a segment whose
@@ -251,8 +254,13 @@ fn stroke(x: i32, y: i32, points: &[(i32, i32)], half: i32) -> u8 {
         let (ex, ey) = (bx - ax, by - ay);
         let (px, py) = (x - ax, y - ay);
         let length2 = ex * ex + ey * ey;
-        let t = (px * ex + py * ey).clamp(0, length2);
-        let (qx, qy) = (ax + ex * t / length2, ay + ey * t / length2);
+        // A repeated point is a segment of no length: its nearest point is itself.
+        let (qx, qy) = if length2 == 0 {
+            (ax, ay)
+        } else {
+            let t = (px * ex + py * ey).clamp(0, length2);
+            (ax + ex * t / length2, ay + ey * t / length2)
+        };
         let (dx, dy) = (x - qx, y - qy);
         nearest2 = nearest2.min((dx * dx + dy * dy) as u32);
     }
@@ -266,6 +274,25 @@ fn stroke(x: i32, y: i32, points: &[(i32, i32)], half: i32) -> u8 {
 mod tests {
     use super::*;
     use crate::screens::chrome::WIDTH;
+
+    #[test]
+    fn strokes_through_a_repeated_point_draw_as_without_it() {
+        let line = [(-24, 0), (-8, 16), (24, -18)];
+        let repeated = [(-24, 0), (-24, 0), (-8, 16), (-8, 16), (24, -18)];
+        for y in -40..=40 {
+            for x in -40..=40 {
+                assert_eq!(
+                    stroke(x, y, &repeated, 7),
+                    stroke(x, y, &line, 7),
+                    "{x},{y}"
+                );
+            }
+        }
+        let dot = [(4, -4), (4, -4)];
+        assert_eq!(stroke(4, -4, &dot, 7), 15);
+        assert!(stroke(4 + 8, -4, &dot, 7) > 0);
+        assert_eq!(stroke(4 + 9, -4, &dot, 7), 0);
+    }
 
     #[test]
     fn cues_sit_in_their_corner_and_paint_their_reference() {

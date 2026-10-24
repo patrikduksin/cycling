@@ -37,8 +37,8 @@ pub(super) struct Night {
     next_step_ms: u64,
     /// The last fixed position, in degrees.
     place: Option<(f64, f64)>,
-    /// The time of day of a receiver that never dated a fix, at its last
-    /// fresh fix, carried on by the uptime clock.
+    /// The time of day of the last fresh fix, carried on by uptime: the
+    /// fallback when no UTC is recorded.
     clock: Option<Clock>,
 }
 
@@ -159,7 +159,7 @@ impl Runtime {
             let (latitude, longitude) = (gps.latitude_e7?, gps.longitude_e7?);
             Some((f64::from(latitude) / 1e7, f64::from(longitude) / 1e7))
         });
-        // A receiver that never dated a fix still gives the time of day.
+        // The time of day of a fresh fix, for when no UTC is recorded.
         let read = fresh.and_then(|gps| {
             let time = gps.utc?;
             let pair = |at: usize| i64::from((time[at] - b'0') * 10 + time[at + 1] - b'0');

@@ -44,9 +44,11 @@ mise run ride-export                          # Writes .local/exports/<id>/ by d
   GNSS receiver's clock). When the clock arrives mid-ride, earlier samples of
   the same running stretch (no pause, gap or invalid record between) are dated
   from the first timed sample by active time and marked `utc_derived` in JSON.
-  Pause/resume,
-  invalid records, missing locations, sequence gaps and backward UTC split
-  segments. A location-free ride keeps raw/JSON and records why GPX is unavailable.
+  Pause/resume, invalid records, missing locations, sequence gaps and backward
+  UTC split segments. A ride whose Wi-Fi time arrives mid-ride switches from
+  receiver to network time with a sub-second step, which can split a GPX
+  segment (FIT is unaffected). A location-free ride keeps raw/JSON and records
+  why GPX is unavailable.
 
 ### FIT activities
 
@@ -64,8 +66,9 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
   files with Garmin's FIT SDK and fitdecode.
 - Samples are dated like GPX: each running stretch from its first UTC sample;
   a stretch without UTC keeps the previous offset, so its pause counts as no
-  time. A ride with a GNSS fix at any point is dated. A ride with no UTC at all
-  has no FIT until `--start-utc-ms` gives its start.
+  time. A ride is dated once the receiver reports a dated RMC fix, before or
+  during the ride. A ride with no UTC at all has no FIT until `--start-utc-ms`
+  gives its start.
 - Distance comes from wheel speed only. Without a wheel sensor the file has
   none and readers use GPS. The journal holds no altitude and no laps, so the
   file has one lap and no elevation; Strava fills elevation from its own map.
@@ -439,7 +442,10 @@ ride recovered after a power cut has no record.
 - Receiver UTC trails true UTC by the receiver's output latency (under a
   second). Whether the C606 receiver reports status A with leap-second-uncorrected
   time before it has UTC parameters is unverified on hardware; the clock follows
-  a correction of a second or more with one step back.
+  a correction of a second or more, once three readings confirm it, with one
+  step back. A stalled executor reads buffered sentences late but cannot step
+  it back. Uptime drift can still cause one step back of a second after many
+  hours awake.
 - Bulk MMC recording is proven on the host and in the simulator only. Endurance,
   latency at 20 MHz, power-cut recovery and coexistence with GNSS, display and
   radios still need hardware validation. The harness `MMC OWNED TEST` writes

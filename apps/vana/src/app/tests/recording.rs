@@ -370,7 +370,13 @@ fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leav
     let (_, status) = host(&mut runtime, &mut store, 5000, "RIDE STATUS");
     assert!(status.starts_with("state=error "), "{status}");
     assert!(status.contains(" page=summary "), "{status}");
-    assert!(status.ends_with(" result=FAILED"), "{status}");
+    // The failed finish is the rider's: the host's read neither reports nor
+    // clears it.
+    assert!(status.ends_with(" pending=0"), "{status}");
+    assert!(matches!(
+        runtime.ride.request,
+        crate::app::recording::Request::Completed(result) if !result.ok
+    ));
     let mut screen = super::presentation::Screen::new();
     assert!(screen.present(&mut runtime, &radio, 5000));
     assert!(runtime.navigation.page == Page::Summary);
@@ -1073,7 +1079,7 @@ fn a_start_mid_step_counts_its_first_fraction() {
 }
 
 #[test]
-fn an_automatic_action_leaves_an_unread_host_completion_alone() {
+fn an_automatic_action_keeps_an_unread_host_completion() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -1084,15 +1090,16 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
     let status = runtime.command("RIDE START", &mut journal, &mut NoBulk, 1000, &mut output);
     assert_eq!(status, "ACCEPTED");
     let token = output.clone();
-    let mut at = roll(
+    let at = roll(
         (&mut runtime, &mut journal, &mut radio),
         &mut wheel,
         1000,
         30,
         false,
     );
-    // The stop waits: the host has not read its completion yet.
-    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    // The stop pauses the ride without waiting for the host to read its start.
+    assert!(runtime.ride.auto.paused(), "{at}");
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     output.clear();
     assert_eq!(
         runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, at, &mut output),
@@ -1100,17 +1107,96 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
     );
     let token = token.trim_start_matches("token=");
     assert!(
-        output.contains(&format!("completed={token} result=OK")),
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
         "{output}"
     );
-    at = roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        at,
-        10,
-        false,
+}
+
+/// The token a host mutation was accepted under.
+fn accepted(reply: (&'static str, String)) -> String {
+    assert_eq!(reply.0, "ACCEPTED", "{}", reply.1);
+    reply.1.trim_start_matches("token=").into()
+}
+
+#[test]
+fn a_rider_press_keeps_an_unread_host_completion() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    accepted(host(&mut runtime, &mut journal, 0, "RIDE START"));
+    settle(&mut runtime, &mut journal, &mut radio, 100);
+    host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    // The host pauses; the pause commits, but the host has not read it yet.
+    let token = accepted(host(&mut runtime, &mut journal, 3000, "RIDE PAUSE"));
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    // The rider resumes before the host reads its status.
+    runtime.input(press(Button::BottomRight), 6000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 6000);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    let (status, output) = host(&mut runtime, &mut journal, 8000, "RIDE STATUS");
+    assert_eq!(status, "OK");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
     );
-    assert_eq!(runtime.ride.internal.status(), Status::Paused, "{at}");
+    // Read once; the rider's resume is never reported as the host's.
+    let (_, output) = host(&mut runtime, &mut journal, 8000, "RIDE STATUS");
+    assert!(output.ends_with("pending=0"), "{output}");
+}
+
+#[test]
+fn a_rider_press_while_a_host_command_is_pending_is_ignored() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    accepted(host(&mut runtime, &mut journal, 0, "RIDE START"));
+    settle(&mut runtime, &mut journal, &mut radio, 100);
+    host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    let token = accepted(host(&mut runtime, &mut journal, 3000, "RIDE PAUSE"));
+    let next = runtime.ride.next_token();
+    // The recorder takes one operation at a time: a press before the host's
+    // pause commits does nothing and takes no token.
+    runtime.input(press(Button::BottomRight), 3000, &mut radio);
+    assert_eq!(runtime.ride.next_token(), next);
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    let (_, output) = host(&mut runtime, &mut journal, 5000, "RIDE STATUS");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
+    );
+    // Once it has, the next press acts.
+    runtime.input(press(Button::BottomRight), 5000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 5000);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+}
+
+#[test]
+fn a_rider_completion_neither_blocks_nor_answers_the_host() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 1000);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    // The rider's start is not the host's to read.
+    let (_, output) = host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    assert!(output.ends_with("pending=0"), "{output}");
+    // Nor does it hold up a host command while unread.
+    runtime.input(press(Button::BottomRight), 3000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    let token = accepted(host(&mut runtime, &mut journal, 5000, "RIDE RESUME"));
+    settle(&mut runtime, &mut journal, &mut radio, 5000);
+    let (_, output) = host(&mut runtime, &mut journal, 7000, "RIDE STATUS");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
+    );
 }
 
 #[test]
@@ -1504,4 +1590,150 @@ fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
     );
     assert!(runtime.ride.moved);
     assert_eq!(runtime.ride.internal.completed(), 1);
+}
+
+#[test]
+fn a_host_action_replaces_the_riders_failure_notice() {
+    use crate::app::recording::Request;
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    accepted(host(&mut runtime, &mut journal, 0, "RIDE START"));
+    settle(&mut runtime, &mut journal, &mut radio, 100);
+    host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    // A rider's write failed on internal flash; the ride page says so.
+    runtime.ride.request = Request::Completed(crate::ride::recorder::ResultEvent {
+        action: Some(crate::ride::control::Action::Pause),
+        token: 99,
+        ok: false,
+    });
+    runtime.ride.request_on = Medium::Internal;
+    assert_eq!(
+        toast_text(&mut runtime, 2100).as_deref(),
+        Some("WRITE FAILED")
+    );
+    // The host's pause then succeeds: the notice gives way, as it would to
+    // the rider's next action.
+    let token = accepted(host(&mut runtime, &mut journal, 3000, "RIDE PAUSE"));
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert!(matches!(runtime.ride.request, Request::Idle));
+    assert_ne!(
+        toast_text(&mut runtime, 5000).as_deref(),
+        Some("WRITE FAILED")
+    );
+    let (_, output) = host(&mut runtime, &mut journal, 5000, "RIDE STATUS");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
+    );
+}
+
+fn bulk_command(
+    runtime: &mut Runtime,
+    journal: &mut Journal,
+    bulk: &mut FlakyBulk,
+    now: u64,
+    words: &str,
+) -> (&'static str, String) {
+    let mut out = String::new();
+    let status = runtime.command(words, journal, bulk, now, &mut out);
+    (status, out)
+}
+
+#[test]
+fn a_failed_host_pause_on_mmc_is_the_hosts_and_the_ride_continues_internally() {
+    use crate::app::recording::Request;
+    let mut journal = Journal::erased();
+    let mut bulk = FlakyBulk {
+        sectors: std::collections::BTreeMap::new(),
+        fail: false,
+    };
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut now = 0;
+    while runtime.ride.internal.status() == Status::Scanning
+        || runtime.ride.bulk.status() == Status::Scanning
+    {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    accepted(bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE BULK INIT",
+    ));
+    while runtime.ride.bulk.status() != Status::Ready {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE BULK STATUS",
+    );
+    runtime.navigation.page = Page::Ride;
+    accepted(bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE START",
+    ));
+    while runtime.ride.bulk.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    for _ in 0..20 {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    bulk_command(&mut runtime, &mut journal, &mut bulk, now, "RIDE STATUS");
+    // The card fails as the host pauses the MMC ride.
+    bulk.fail = true;
+    let token = accepted(bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE PAUSE",
+    ));
+    while !matches!(runtime.ride.host, Request::Completed(_)) {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        assert!(now < 60_000, "the host's pause never completed");
+    }
+    let (_, output) = bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE BULK STATUS",
+    );
+    assert!(
+        output.ends_with(&format!("completed={token} result=FAILED")),
+        "{output}"
+    );
+    assert!(matches!(runtime.ride.request, Request::Idle));
+    // The ride carries on from internal flash; the rider has nothing to read.
+    while runtime.ride.internal.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        assert!(now < 60_000, "the continuation never started");
+    }
+    for _ in 0..20 {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert!(runtime.ride.internal.riding());
+    assert!(runtime.ride.moved);
+    assert_eq!(runtime.ride.shown(), Medium::Internal);
+    assert!(matches!(runtime.ride.request, Request::Idle));
+    assert_eq!(runtime.ride.request_on, Medium::Internal);
+    assert_ne!(
+        toast_text(&mut runtime, now).as_deref(),
+        Some("WRITE FAILED")
+    );
 }

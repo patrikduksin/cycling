@@ -96,9 +96,17 @@ def status_fields(reply):
 
 
 def mutate_once(connection, command, timeout=90, status='RIDE STATUS'):
-    """Accept once, then poll only status until that token completes."""
+    """Accept once, then poll only status until that token completes.
+
+    BUSY queues nothing. A host completion an earlier tool never read holds
+    off every later mutation, so one status read discards it and the command
+    is tried once more; an operation still in flight stays BUSY.
+    """
     deadline = time.monotonic() + timeout
     reply = connection.terminal_command(command, timeout=min(8, timeout))
+    if reply['status'] == 'BUSY':
+        status_fields(connection.terminal_command(status, timeout=min(8, timeout)))
+        reply = connection.terminal_command(command, timeout=min(8, timeout))
     if reply['status'] != 'ACCEPTED':
         raise RuntimeError(f'ride mutation rejected: {reply["status"]}')
     try:

@@ -274,6 +274,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_saturated_heart_sum_still_averages() {
+        // A sensor stuck at 65535 bpm for 18 h of one lap fills the sum.
+        let lap = Lap {
+            heart_sum: u32::MAX,
+            heart_count: 65_538,
+            ..Lap::default()
+        };
+        assert_eq!(lap.avg_heart_bpm(), Some(65_534));
+    }
+
     /// `seconds` one-second steps at a steady sample, from `now`; returns the
     /// laps that closed automatically and the time after.
     fn ride(laps: &mut Laps, now: u64, seconds: u64, sample: Sample) -> (Vec<Lap>, u64) {

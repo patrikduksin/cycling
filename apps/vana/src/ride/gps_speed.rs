@@ -245,6 +245,14 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
+    #[test]
+    fn a_leap_second_crosses_midnight_like_any_other() {
+        // NMEA allows 23:59:60; a 10 Hz receiver then rolls over to 00:00:00.
+        assert_eq!(since(86_400_800, 86_400_900), 100);
+        assert_eq!(since(86_400_900, 0), 100);
+        assert_eq!(since(86_399_900, 86_400_000), 100);
+    }
+
     /// A fresh fix at `epoch_ms`, received at that time on the uptime clock.
     fn fix(epoch_ms: u32, north_m: f64, east_m: f64) -> Snapshot {
         let lat = -33.45 + north_m / 111_319.49;

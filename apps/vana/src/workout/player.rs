@@ -737,6 +737,28 @@ mod tests {
     }
 
     #[test]
+    fn extending_the_longest_distance_step_an_upload_can_hold_keeps_riding() {
+        use crate::workout::model::Step;
+        let profile = TrainingProfile::default();
+        // The host tool accepts any u32 of metres; the decoder checks only 100 m.
+        let far = Workout::new(
+            "FAR",
+            &[Step::new(
+                Intensity::Work,
+                Length::Distance(u32::MAX),
+                Target::Free,
+            )],
+            &[],
+            None,
+        );
+        assert_eq!(far.validate(), Ok(()));
+        let mut player = Player::new(far);
+        assert!(player.extend());
+        player.add(1000, 8000, &riding(100), &profile);
+        assert_eq!(player.now(&profile).left, Left::Metres(u32::MAX - 8));
+    }
+
+    #[test]
     fn riding_past_a_step_end_counts_in_the_next_steps() {
         use crate::workout::model::Step;
         let profile = TrainingProfile::default();

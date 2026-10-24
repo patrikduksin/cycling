@@ -620,6 +620,37 @@ mod tests {
     };
 
     #[test]
+    fn a_chart_of_a_ramp_from_tens_of_kilowatts_still_lays_out() {
+        use crate::workout::model::{Length, Step, Workout};
+        let ramp = Target::Ramp {
+            start: 40_000,
+            step: 1,
+            every: 60,
+        };
+        let workout = Workout::new(
+            "HUGE",
+            &[Step::new(Intensity::Work, Length::Open, ramp)],
+            &[],
+            None,
+        );
+        assert_eq!(workout.validate(), Ok(()));
+        let chart = chart(&Player::new(workout), &TrainingProfile::default());
+        assert!(chart.now.1 > chart.now.0);
+    }
+
+    #[test]
+    fn a_chart_of_very_long_distance_steps_still_lays_out() {
+        use crate::workout::model::{Length, Step, Workout};
+        // Twelve steps of the most metres an upload can hold weigh more than u32.
+        let far = Step::new(Intensity::Work, Length::Distance(u32::MAX), Target::Free);
+        let workout = Workout::new("FAR", &[far; 12], &[], None);
+        assert_eq!(workout.validate(), Ok(()));
+        let player = Player::new(workout);
+        let chart = chart(&player, &TrainingProfile::default());
+        assert!(chart.now.1 > chart.now.0);
+    }
+
+    #[test]
     fn an_interval_shows_its_target_reading_verdict_and_next_step() {
         let mut player = Player::new(VO2_MAX);
         player.skip();

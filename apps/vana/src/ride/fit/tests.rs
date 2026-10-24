@@ -819,3 +819,18 @@ fn arbitrary_slots_never_break_the_export() {
         }
     }
 }
+
+#[test]
+fn a_stored_cadence_past_the_sensor_range_exports_capped() {
+    // A journal sample holds any u16 of tenths; sensors stay under 2550.
+    let mut wild = sample(1_000, true);
+    wild.cadence_tenths = Some(u16::MAX);
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &[wild]).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 1_000)),
+    ];
+    let (_, bytes) = file(&slots, None).unwrap();
+    let record = decode(&bytes).into_iter().find(|m| m.global == 20).unwrap();
+    assert_eq!(record.get(4), Some(254));
+}

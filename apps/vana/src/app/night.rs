@@ -173,18 +173,6 @@ impl Runtime {
             .is_light(self.night.is_night())
     }
 
-    /// The current Unix time: network time, else the receiver's dated clock
-    /// carried on from its last fix. None while neither was ever known.
-    pub(super) fn unix_now(&self, now: u64) -> Option<i64> {
-        let network = self.readings.live.utc_ms.map(|ms| (ms / 1000) as i64);
-        network.or_else(|| {
-            self.night
-                .clock
-                .filter(|clock| clock.dated)
-                .map(|clock| clock.at(now))
-        })
-    }
-
     /// Follow day and night with the backlight. Call once per loop.
     pub(super) fn follow_daylight<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,

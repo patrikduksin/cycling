@@ -3099,12 +3099,8 @@ fn home_shows_ride_sensors_and_the_last_ride_at_a_glance() {
     }
     sim.wait_gone("RIDE SAVED", seconds(3)).unwrap();
     sim.expect_text("RIDES");
-    let last = sim.screen().find(" KM").pop().expect("last ride distance");
-    assert!(
-        last.text.starts_with("4.9") || last.text.starts_with("5.0"),
-        "{}",
-        last.text
-    );
+    // The ride is dated by the receiver's clock, so it is this week's ride.
+    sim.wait_for("WEEK 5 KM", seconds(10)).unwrap();
     sim.checkpoint("home after a ride");
 }
 
@@ -4760,7 +4756,7 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
 }
 
 /// Rides saved on given days, as internal flash holds them after being
-/// ridden: `(start UTC seconds, minutes, km/h)`, one sample every ten seconds.
+/// ridden: `(start UTC seconds, minutes, km/h)`, one sample every three seconds.
 fn journal_of_rides(rides: &[(u64, u64, f64)]) -> Vec<u8> {
     let mut slots = Vec::new();
     let mut push = |entry: &Entry| {
@@ -4771,10 +4767,10 @@ fn journal_of_rides(rides: &[(u64, u64, f64)]) -> Vec<u8> {
     for (index, &(start_s, minutes, kmh)) in rides.iter().enumerate() {
         let id = index as u32 + 1;
         let speed = (kmh / 0.0036) as u32;
-        let samples: Vec<Sample> = (1..=minutes * 6)
+        let samples: Vec<Sample> = (1..=minutes * 20)
             .map(|n| Sample {
-                active_ms: n * 10_000,
-                utc_ms: Some(start_s * 1000 + n * 10_000),
+                active_ms: n * 3_000,
+                utc_ms: Some(start_s * 1000 + n * 3_000),
                 speed_mm_s: Some(speed),
                 ..Sample::default()
             })

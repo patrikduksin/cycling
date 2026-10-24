@@ -234,7 +234,8 @@ their times and distances without overlap and counting twice in the ride
 count. Distance is the recorded speed added up (wheel sensor or GPS). While
 the index is still reading, the header shows what it has found, or -- before
 it has found anything; without a clock (network time, or the GPS receiver's
-date from its last fix) it shows -- and no last week.
+date from its last fix) it shows -- and no last week. Ride start times use the same clock, so a ride
+dated by the GPS receiver counts too.
 
 A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is

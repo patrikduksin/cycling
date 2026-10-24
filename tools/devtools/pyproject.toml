@@ -11,6 +11,7 @@ dev = [
     "fitdecode==0.11.0",
     "garmin-fit-sdk==21.218.0",
     "pytest==9.1.1",
+    "pytest-xdist==3.8.0",
     "ruff==0.17.0",
 ]
 

@@ -407,7 +407,8 @@ class RideExportTests(unittest.TestCase):
 
 class LargeExportTests(unittest.TestCase):
     def test_a_large_prefix_exports_ride_by_ride_in_bounded_memory(self):
-        rides, batches = 60, 1000
+        # Many short rides: holding them all costs rides x samples, streaming only one ride.
+        rides, batches = 60, 250
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             canonical = output / 'ride-slots.bin'
@@ -427,8 +428,9 @@ class LargeExportTests(unittest.TestCase):
                 _, peak = tracemalloc.get_traced_memory()
             finally:
                 tracemalloc.stop()
-            # 15 MiB of slots and 240,000 samples; holding them all took well over 100 MiB.
-            self.assertLess(peak, 16 * 2**20, f'{peak / 2**20:.1f} MiB peak')
+            # 60,000 samples: streaming peaks near 1.5 MiB, while merely holding
+            # every sample takes over 12 MiB (tracemalloc, which makes this test slow).
+            self.assertLess(peak, 4 * 2**20, f'{peak / 2**20:.1f} MiB peak')
             manifest = json.loads((output / 'manifest.json').read_text())
             self.assertEqual(summary['ride_count'], rides)
             self.assertEqual(manifest['raw_sha256'], hashlib.sha256(canonical.read_bytes()).hexdigest())

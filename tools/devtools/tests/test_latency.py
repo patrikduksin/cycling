@@ -21,8 +21,9 @@ class FakeDevice:
         return self.dim_ms is not None and self.uptime - self.active >= self.dim_ms
 
     def delay(self, seconds):
+        # Two idle frames a second, counted from uptime so short waits add up.
         self.uptime += int(seconds * 1000)
-        self.submissions += int(seconds * 2)
+        self.submissions = self.uptime // 500
 
     def terminal_command(self, command, **_):
         self.commands.append(command)

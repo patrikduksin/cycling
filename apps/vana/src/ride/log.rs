@@ -12,6 +12,14 @@
 //! unreadable after a rollback. Older samples left the bytes erased (0xFFFF),
 //! and older decoders never read them, so both directions stay compatible.
 //!
+//! Sample byte 37 marks the first sample of each lap with why the lap began
+//! ([`LapStart`]); 0xFF, and any value this firmware does not know, is none.
+//! There is no flag bit and no record kind: decoders reject unknown flags and
+//! kinds, and an unknown kind would read as a gap after a rollback. Older
+//! samples left the byte erased, and older decoders never read it (only the
+//! CRC covers it), so both directions stay compatible. A ride that marks no
+//! sample predates lap marks.
+//!
 //! Occupied invalid slots consume capacity and mark gaps; they are never free
 //! space. Scanning recovers an open ride at its last committed active duration,
 //! excluding downtime. The final slot is reserved for a terminal record.
@@ -155,6 +163,48 @@ impl Source {
     }
 }
 
+/// Why a lap began, kept on its first sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum LapStart {
+    /// The ride's first sample: this ride keeps its laps. Not a boundary.
+    Ride = 0,
+    /// The rider's lap closed the lap before.
+    Manual = 1,
+    /// The automatic distance lap closed it.
+    Distance = 2,
+    /// A workout step that lasts a time, or until it is marked, ended.
+    Step = 3,
+    /// A workout step that lasts a distance ended.
+    DistanceStep = 4,
+}
+
+impl LapStart {
+    const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Ride),
+            1 => Some(Self::Manual),
+            2 => Some(Self::Distance),
+            3 => Some(Self::Step),
+            4 => Some(Self::DistanceStep),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ride => "ride",
+            Self::Manual => "manual",
+            Self::Distance => "distance",
+            Self::Step => "step",
+            Self::DistanceStep => "distance_step",
+        }
+    }
+}
+
+const LAP_BYTE: usize = 37;
+const NO_LAP: u8 = 0xff;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Sample {
     pub active_ms: u64,
@@ -168,6 +218,8 @@ pub struct Sample {
     pub power_watts: Option<u16>,
     pub gradient_tenths: Option<i16>,
     pub altitude: Option<Altitude>,
+    /// This sample is the first of a lap; see [`LapStart`].
+    pub lap: Option<LapStart>,
 }
 
 impl Sample {
@@ -216,6 +268,7 @@ impl Entry {
                 power_watts: None,
                 gradient_tenths: None,
                 altitude: None,
+                lap: None,
             }; SAMPLES_PER_BATCH],
             count: 0,
         }
@@ -744,6 +797,7 @@ fn encode_sample(sample: &Sample, bytes: &mut [u8]) {
     if let Some(value) = sample.altitude {
         put_u16(bytes, 46, value.0);
     }
+    bytes[LAP_BYTE] = sample.lap.map_or(NO_LAP, |lap| lap as u8);
     put_u32(bytes, 16, flags);
 }
 
@@ -769,6 +823,7 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
         power_watts: (flags & 128 != 0).then(|| get_u16(bytes, 38)),
         gradient_tenths: (flags & 256 != 0).then(|| get_u16(bytes, 44) as i16),
         altitude: Altitude::from_code(get_u16(bytes, 46)),
+        lap: LapStart::from_byte(bytes[LAP_BYTE]),
     })
 }
 
@@ -839,6 +894,123 @@ mod tests {
             sample(1).for_source(Source::Demo).demo_speed_mm_s,
             Some(5_000)
         );
+    }
+
+    /// Frozen copy of the decoder that shipped before lap marks (with altitude): never update it.
+    fn decode_before_lap_marks(slot: &Slot) -> Option<std::vec::Vec<Sample>> {
+        let count = usize::from(slot.0[6]);
+        let mut checked = slot.clone();
+        checked.0[28..32].fill(0);
+        if slot.0[..4] != *b"RIDE"
+            || slot.0[4] != 1
+            || !(1..=7).contains(&slot.0[5])
+            || !(1..=2).contains(&slot.0[7])
+            || count > 4
+            || get_u16(&slot.0, 24) as usize != count * 48
+            || slot.0[26..28] != [0, 0]
+            || get_u32(&slot.0, 252) != 0x434f_4d54
+            || crc32(&checked.0[..252]) != get_u32(&slot.0, 28)
+            || (slot.0[5] == 2) != (count > 0)
+        {
+            return None;
+        }
+        let mut samples = std::vec::Vec::new();
+        for index in 0..count {
+            let bytes = &slot.0[32 + index * 48..][..48];
+            let flags = get_u32(bytes, 16);
+            if flags & !0x8000_01ff != 0 || flags & 4 != 0 && flags & 0x8000_0000 == 0 {
+                return None;
+            }
+            if flags & 32 != 0 && bytes[36] > 100 {
+                return None;
+            }
+            samples.push(Sample {
+                active_ms: get_u64(bytes, 0),
+                utc_ms: (flags & 1 != 0).then(|| get_u64(bytes, 8)),
+                location_e7: (flags & 2 != 0)
+                    .then(|| (get_u32(bytes, 20) as i32, get_u32(bytes, 24) as i32)),
+                demo_speed_mm_s: (flags & 4 != 0).then(|| get_u32(bytes, 28)),
+                heart_bpm: (flags & 8 != 0).then(|| get_u16(bytes, 32)),
+                cadence_tenths: (flags & 16 != 0).then(|| get_u16(bytes, 34)),
+                battery_percent: (flags & 32 != 0).then_some(bytes[36]),
+                speed_mm_s: (flags & 64 != 0).then(|| get_u32(bytes, 40)),
+                power_watts: (flags & 128 != 0).then(|| get_u16(bytes, 38)),
+                gradient_tenths: (flags & 256 != 0).then(|| get_u16(bytes, 44) as i16),
+                altitude: Altitude::from_code(get_u16(bytes, 46)),
+                lap: None,
+            });
+        }
+        if samples
+            .last()
+            .is_some_and(|s| s.active_ms != get_u64(&slot.0, 16))
+        {
+            return None;
+        }
+        Some(samples)
+    }
+
+    fn committed(entry: &Entry) -> Slot {
+        let mut slot = encode(entry);
+        slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
+        slot
+    }
+
+    #[test]
+    fn lap_marks_round_trip_and_older_decoders_read_every_sample() {
+        let marks = [
+            Some(LapStart::Ride),
+            Some(LapStart::Manual),
+            Some(LapStart::Distance),
+            Some(LapStart::Step),
+        ];
+        let samples = marks.map(|lap| Sample {
+            lap,
+            ..sample(1_000)
+        });
+        let entry = Entry::batch(Source::Live, 2, 1, &samples).unwrap();
+        let slot = committed(&entry);
+        assert_eq!(decode(&slot), Some(entry), "the recorder's own check");
+
+        let old = decode_before_lap_marks(&slot).expect("an older decoder accepts it");
+        let unmarked: std::vec::Vec<Sample> =
+            samples.iter().map(|s| Sample { lap: None, ..*s }).collect();
+        assert_eq!(old, unmarked, "no sample lost or changed");
+
+        let plain = committed(&Entry::batch(Source::Live, 2, 1, &unmarked).unwrap());
+        let differ: std::vec::Vec<usize> = (0..SLOT_SIZE)
+            .filter(|&i| slot.0[i] != plain.0[i])
+            .filter(|i| !(28..32).contains(i))
+            .collect();
+        assert_eq!(differ, [32 + 37, 80 + 37, 128 + 37, 176 + 37]);
+
+        let ride = [
+            committed(&Entry::event(Kind::Start, Source::Live, 2, 0, 0)),
+            slot,
+            committed(&Entry::event(Kind::Finish, Source::Live, 2, 2, 1_000)),
+        ];
+        let mut scan = Scanner::default();
+        for (index, slot) in ride.iter().enumerate() {
+            assert!(decode_before_lap_marks(slot).is_some());
+            scan.accept_slot(index, &slot.0);
+        }
+        let catalog = scan.catalog();
+        assert_eq!((catalog.invalid_slots, catalog.completed), (0, 1));
+        assert!(!catalog.summaries[0].unwrap().gap);
+    }
+
+    #[test]
+    fn samples_written_before_lap_marks_have_none() {
+        let entry = Entry::batch(Source::Live, 1, 1, &[sample(1_000)]).unwrap();
+        let mut slot = committed(&entry);
+        assert_eq!(slot.0[HEADER_SIZE + LAP_BYTE], 0xff);
+        assert_eq!(decode(&slot).unwrap().samples[0].lap, None);
+        slot.0[HEADER_SIZE + LAP_BYTE] = 0x42;
+        let mut checked = slot.clone();
+        checked.0[28..32].fill(0);
+        put_u32(&mut slot.0, 28, crc32(&checked.0[..COMMIT_OFFSET]));
+        let read = decode(&slot).unwrap();
+        assert_eq!(read.samples[0].lap, None);
+        assert_eq!(read.samples[0].power_watts, Some(215));
     }
 
     #[test]

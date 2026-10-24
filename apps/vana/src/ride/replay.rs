@@ -7,13 +7,15 @@
 //! in order until the ride ends. Each `step` reads at most a given number of
 //! slots, so a long ride never holds up a frame. Reading is read-only.
 //!
-//! What the journal does not keep stays unknown: laps and climbs live only
-//! in RAM during a ride, and altitude is not recorded, so ascent comes from
-//! the recorded gradient over the distance ridden.
+//! Laps come from the lap marks on samples (`log::LapStart`); a ride recorded
+//! before lap marks has none, and its laps stay unknown. What the journal
+//! does not keep stays unknown too: climbs live only in RAM during a ride, and
+//! altitude is not recorded, so ascent comes from the recorded gradient over
+//! the distance ridden.
 //!
 //! The replay itself is a few words of position; it adds up into `Sums` the
 //! caller lends it, so the device keeps one set of ride sums, not two.
-use crate::ride::log::{Entry, Kind, Sample};
+use crate::ride::log::{Entry, Kind, LapStart, Sample};
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 
@@ -72,6 +74,8 @@ pub struct Replay {
     found: bool,
     last_ms: Option<u64>,
     rise_mm: u64,
+    samples: u32,
+    boundaries: Option<u16>,
     /// Recorded time, from the ride's last record.
     pub active_ms: u64,
 }
@@ -87,6 +91,8 @@ impl Replay {
             found: false,
             last_ms: None,
             rise_mm: 0,
+            samples: 0,
+            boundaries: None,
             active_ms: 0,
         }
     }
@@ -182,7 +188,23 @@ impl Replay {
         self.progress()
     }
 
+    /// Laps the ride had, the last one included, as the summary counts them;
+    /// `None` until the whole ride is read, and for a ride recorded without
+    /// lap marks.
+    pub fn laps(&self) -> Option<u16> {
+        if self.progress() != Progress::Done {
+            return None;
+        }
+        self.boundaries.map(|b| b.saturating_add(1))
+    }
+
     fn add(&mut self, sample: &Sample, profile: &TrainingProfile, sums: &mut Sums<'_>) {
+        if let Some(start) = sample.lap {
+            let boundary = self.samples > 0 && start != LapStart::Ride;
+            let boundaries = self.boundaries.get_or_insert(0);
+            *boundaries = boundaries.saturating_add(u16::from(boundary));
+        }
+        self.samples = self.samples.saturating_add(1);
         // Active time runs only while recording, so pauses leave no gap.
         let elapsed = match self.last_ms {
             Some(last) => sample.active_ms.saturating_sub(last),
@@ -249,6 +271,7 @@ mod tests {
             power_watts: Some(watts),
             gradient_tenths: Some(50),
             altitude: None,
+            lap: None,
         }
     }
 

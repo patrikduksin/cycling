@@ -379,6 +379,7 @@ impl Runtime {
                 .map(|power| power.watts),
             gradient_tenths: readings.gradient.tenths(),
             altitude: None,
+            lap: None,
         };
         if let Some(step) = step {
             let profile = self.preferences.profile;

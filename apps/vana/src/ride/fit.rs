@@ -4,7 +4,15 @@
 //! turns them into the messages Strava, Garmin Connect and other FIT readers
 //! expect from a cycling computer: `file_id`, `device_info`, timer events for
 //! the start, every pause and resume and the end, one `record` per sample,
-//! then one `lap`, the `session` and the `activity`.
+//! one `lap` as each lap ends, then the `session` and the `activity`.
+//!
+//! Laps: a sample marked as the first of a lap (`log::LapStart`) closes the
+//! lap before it, which ends at the record before, with the mark's trigger:
+//! manual, distance, or for a workout step time or distance (FIT has no
+//! workout-step trigger). The last lap ends with the session. A ride recorded
+//! without lap marks is one lap. Lap totals follow the session's rules, and
+//! the last lap's timer takes what the earlier ones left of the ride's, so
+//! the laps add up to the session.
 //!
 //! The FIT header carries the file's size, so a file is written in two passes
 //! over the same slots: a sizing pass into a [`Counter`], whose [`Plan`] gives
@@ -27,11 +35,13 @@
 //! the ride page's rules (`Totals`), and are left out of a ride without any.
 //! Rides recorded before altitude was kept have none.
 //!
-//! What the journal does not have stays out: no laps (they live in RAM only)
-//! and no distance without a recorded speed (wheel or GPS), so readers fall
-//! back to GPS for distance. Other totals use the ride page's rules too.
+//! What the journal does not have stays out: no distance without a
+//! recorded speed (wheel or GPS), so readers fall back to GPS for distance.
+//! Other totals use the ride page's rules too (`Totals`, and `Lap` for each
+//! lap; a lap's ascent and descent are the session's over its time).
 
-use crate::ride::log::{self, Entry, Kind, Sample, Slot};
+use crate::ride::laps::Lap;
+use crate::ride::log::{self, Entry, Kind, LapStart, Sample, Slot};
 use crate::ride::totals::Totals;
 use firmware_services::fit::{
     self, BaseType, Counter, Field, Message, Sink, Value, Writer, semicircles,
@@ -75,9 +85,21 @@ const EVENT_TYPE_STOP: u8 = 1;
 const EVENT_TYPE_STOP_ALL: u8 = 4;
 const SPORT_CYCLING: u8 = 2;
 const SUB_SPORT_GENERIC: u8 = 0;
+const LAP_TRIGGER_MANUAL: u8 = 0;
+const LAP_TRIGGER_TIME: u8 = 1;
+const LAP_TRIGGER_DISTANCE: u8 = 2;
 const LAP_TRIGGER_SESSION_END: u8 = 7;
 const SESSION_TRIGGER_ACTIVITY_END: u8 = 0;
 const ACTIVITY_MANUAL: u8 = 0;
+
+const fn lap_trigger(start: LapStart) -> Option<u8> {
+    match start {
+        LapStart::Ride => None,
+        LapStart::Manual => Some(LAP_TRIGGER_MANUAL),
+        LapStart::Distance | LapStart::DistanceStep => Some(LAP_TRIGGER_DISTANCE),
+        LapStart::Step => Some(LAP_TRIGGER_TIME),
+    }
+}
 
 const NAME: u8 = 16;
 
@@ -220,9 +242,12 @@ const DEFINITIONS: [&Message; 7] = [
     &ACTIVITY,
 ];
 
-/// Largest output of one [`Export::slot`] call: a resume, four records and
-/// a pause. Sinks that drain between calls need at least this much room.
-pub const MAX_SLOT_OUTPUT: usize = 2 * 7 + log::SAMPLES_PER_BATCH * 31;
+const LAP_RECORD: usize = 58;
+
+/// Largest output of one [`Export::slot`] call: a resume, four records each
+/// closing a lap, and a pause. Sinks that drain between calls need at least
+/// this much room.
+pub const MAX_SLOT_OUTPUT: usize = 2 * 7 + log::SAMPLES_PER_BATCH * (31 + LAP_RECORD);
 /// Output of [`Export::start`]: header, definitions, `file_id` and `device_info`.
 pub const MAX_START_OUTPUT: usize = 384;
 /// Output of [`Export::finish`]: the closing event, lap, session, activity and CRC.
@@ -240,6 +265,8 @@ pub struct Plan {
     /// UTC minus active time of the ride's first dated sample.
     pub offset_ms: Option<u64>,
     pub samples: u32,
+    /// `lap` messages of the file.
+    pub laps: u16,
     /// Recorded time of the ride.
     pub active_ms: u64,
     /// Stretch number and offset of stretches dated part way.
@@ -304,9 +331,16 @@ pub struct Export {
     active_ms: u64,
     samples: u32,
     first_position: Option<(i32, i32)>,
-    last_position: Option<(i32, i32)>,
     distance_mm: Option<u64>,
     totals: Totals,
+    lap: Lap,
+    lap_start_ts: Option<u32>,
+    lap_first_position: Option<(i32, i32)>,
+    lap_last_position: Option<(i32, i32)>,
+    laps: u16,
+    laps_timer_ms: u64,
+    /// The ride's ascent and descent when the lap being written began.
+    lap_climbed_from_dm: (u32, u32),
 }
 
 impl Export {
@@ -343,9 +377,15 @@ impl Export {
             active_ms: 0,
             samples: 0,
             first_position: None,
-            last_position: None,
             distance_mm: None,
             totals: Totals::default(),
+            lap: Lap::default(),
+            lap_start_ts: None,
+            lap_first_position: None,
+            lap_last_position: None,
+            laps: 0,
+            laps_timer_ms: 0,
+            lap_climbed_from_dm: (0, 0),
         };
         for message in DEFINITIONS {
             export.writer.define(out, message);
@@ -440,6 +480,7 @@ impl Export {
             ..Sample::default()
         };
         self.totals.add(elapsed, step.unwrap_or(0), &held, None);
+        self.lap.add(elapsed, step.unwrap_or(0), &held);
         self.previous_active_ms = Some(active_ms);
     }
 
@@ -539,6 +580,11 @@ impl Export {
             None if !self.stretch_dated => self.stretch_untimed = true,
             None => {}
         }
+        if let Some(trigger) = sample.lap.and_then(lap_trigger)
+            && self.samples > 0
+        {
+            self.write_lap(out, trigger, self.lap.time_ms);
+        }
         if let Some(active) = self.pending_start.take() {
             self.event(out, active, EVENT_TYPE_START);
             self.previous_active_ms = Some(active);
@@ -560,13 +606,15 @@ impl Export {
         if let Some(altitude) = sample.altitude {
             self.totals.follow_altitude_dm(altitude.dm());
         }
+        self.lap.add(elapsed, step.unwrap_or(0), sample);
         let position = sample.location_e7.filter(|(lat, lon)| {
             (-900_000_000..=900_000_000).contains(lat)
                 && (-1_800_000_000..=1_800_000_000).contains(lon)
         });
         if position.is_some() {
             self.first_position = self.first_position.or(position);
-            self.last_position = position;
+            self.lap_first_position = self.lap_first_position.or(position);
+            self.lap_last_position = position;
         }
         self.samples += 1;
         let altitude = sample.altitude.map(log::Altitude::fit);
@@ -602,12 +650,82 @@ impl Export {
         );
     }
 
-    /// Close the ride: the last timer stop, then lap, session, activity and
-    /// the file CRC. Returns what the sizing pass learned.
+    fn write_lap(&mut self, out: &mut impl Sink, trigger: u8, timer_ms: u64) {
+        let end = self.last_ts;
+        let started = self
+            .lap_start_ts
+            .or(self.start_ts)
+            .or_else(|| self.stamp(0));
+        let ts = started.map(|started| end.max(started));
+        let start = started.unwrap_or(end).min(end);
+        let lap = self.lap;
+        self.laps_timer_ms = self.laps_timer_ms.saturating_add(timer_ms);
+        let elapsed_ms = u64::from(end - start) * 1000;
+        let timer = Some(timer_ms.min(u64::from(u32::MAX - 1)) as u32);
+        let elapsed = Some(elapsed_ms.max(timer_ms).min(u64::from(u32::MAX - 1)) as u32);
+        let distance_mm = self.distance_mm.map(|_| lap.distance_mm);
+        let distance = distance_mm.map(|mm| (mm / 10).min(u64::from(u32::MAX - 1)) as u32);
+        let speed = |v: Option<u32>| v.map(|v| v.min(u32::from(u16::MAX - 1)) as u16);
+        let byte = |v: Option<u16>| v.map(|v| v.min(254) as u8);
+        let lat = |p: Option<(i32, i32)>| p.map(|(lat, _)| semicircles(lat));
+        let lon = |p: Option<(i32, i32)>| p.map(|(_, lon)| semicircles(lon));
+        let (first, last) = (self.lap_first_position, self.lap_last_position);
+        let totals = &self.totals;
+        let (ascent_dm, descent_dm) = (totals.ascent_dm(), totals.descent_dm());
+        let metres = |dm: u32| ((dm + 5) / 10).min(u32::from(u16::MAX - 1)) as u16;
+        let (from_ascent, from_descent) = self.lap_climbed_from_dm;
+        let ascent = totals
+            .altitude_dm()
+            .map(|_| metres(ascent_dm - from_ascent));
+        let descent = totals
+            .altitude_dm()
+            .map(|_| metres(descent_dm - from_descent));
+        self.writer.record(
+            out,
+            &LAP,
+            &[
+                Value::U32(ts),
+                Value::U16(Some(self.laps)),
+                Value::Enum(Some(EVENT_LAP)),
+                Value::Enum(Some(EVENT_TYPE_STOP)),
+                Value::U32(started),
+                Value::I32(lat(first)),
+                Value::I32(lon(first)),
+                Value::I32(lat(last)),
+                Value::I32(lon(last)),
+                Value::U32(elapsed),
+                Value::U32(timer),
+                Value::U32(distance),
+                Value::U16(speed(distance_mm.and(lap.avg_speed_mm_s()))),
+                Value::U16(speed(lap.max_speed_mm_s())),
+                Value::U8(byte(lap.avg_heart_bpm())),
+                Value::U8(byte(lap.max_heart_bpm())),
+                Value::U8(byte(lap.avg_cadence_rpm())),
+                Value::U16(lap.avg_power()),
+                Value::U16(lap.max_power()),
+                Value::U16(ascent),
+                Value::U16(descent),
+                Value::Enum(Some(trigger)),
+                Value::Enum(Some(SPORT_CYCLING)),
+            ],
+        );
+        self.laps = self.laps.saturating_add(1);
+        self.lap = Lap::default();
+        self.lap_start_ts = ts;
+        self.lap_first_position = None;
+        self.lap_last_position = None;
+        self.lap_climbed_from_dm = (ascent_dm, descent_dm);
+    }
+
+    /// Close the ride: the last timer stop, then the last lap, session,
+    /// activity and the file CRC. Returns what the sizing pass learned.
     pub fn finish(mut self, out: &mut impl Sink) -> Plan {
         if self.pending_start.is_none() && !self.paused && self.started {
             self.event(out, self.active_ms, EVENT_TYPE_STOP_ALL);
         }
+        // The last lap takes what the others left, so the laps add up to the session.
+        let rest_ms = self.active_ms.saturating_sub(self.laps_timer_ms);
+        self.write_lap(out, LAP_TRIGGER_SESSION_END, rest_ms);
         let end = self.last_ts;
         let start = self.start_ts.unwrap_or(end);
         let started = self.start_ts.or_else(|| self.stamp(0));
@@ -630,38 +748,8 @@ impl Export {
         let ascent = totals.altitude_dm().map(|_| metres(totals.ascent_dm()));
         let descent = totals.altitude_dm().map(|_| metres(totals.descent_dm()));
         let first = self.first_position;
-        let last = self.last_position;
         let lat = |p: Option<(i32, i32)>| p.map(|(lat, _)| semicircles(lat));
         let lon = |p: Option<(i32, i32)>| p.map(|(_, lon)| semicircles(lon));
-        self.writer.record(
-            out,
-            &LAP,
-            &[
-                Value::U32(ts),
-                Value::U16(Some(0)),
-                Value::Enum(Some(EVENT_LAP)),
-                Value::Enum(Some(EVENT_TYPE_STOP)),
-                Value::U32(started),
-                Value::I32(lat(first)),
-                Value::I32(lon(first)),
-                Value::I32(lat(last)),
-                Value::I32(lon(last)),
-                Value::U32(elapsed),
-                Value::U32(timer),
-                Value::U32(distance),
-                Value::U16(avg_speed),
-                Value::U16(max_speed),
-                Value::U8(avg_hr),
-                Value::U8(max_hr),
-                Value::U8(avg_cadence),
-                Value::U16(avg_power),
-                Value::U16(max_power),
-                Value::U16(ascent),
-                Value::U16(descent),
-                Value::Enum(Some(LAP_TRIGGER_SESSION_END)),
-                Value::Enum(Some(SPORT_CYCLING)),
-            ],
-        );
         self.writer.record(
             out,
             &SESSION,
@@ -688,7 +776,7 @@ impl Export {
                 Value::U16(ascent),
                 Value::U16(descent),
                 Value::U16(Some(0)),
-                Value::U16(Some(1)),
+                Value::U16(Some(self.laps)),
                 Value::Enum(Some(SESSION_TRIGGER_ACTIVITY_END)),
                 Value::U16(totals.normalized_power()),
             ],
@@ -710,6 +798,7 @@ impl Export {
             size: self.writer.written() as u32,
             offset_ms: self.first_offset_ms,
             samples: self.samples,
+            laps: self.laps,
             active_ms: self.active_ms,
             late: self.late,
             late_count: self.late_count,

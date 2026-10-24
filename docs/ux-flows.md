@@ -143,8 +143,9 @@ Without a saved ride the list says NO RIDES YET.
 
 A saved ride opens on the summary's three pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
-read. Laps and climbs are not kept with a ride, so they read --; ascent comes
-from the recorded gradient. MOVE or a swipe turns the page, BACK returns to
+read. Laps read back from the ride (a ride recorded before laps were kept
+reads --); climbs are not kept, so they read --; ascent comes from the
+recorded gradient. MOVE or a swipe turns the page, BACK returns to
 the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
 record cannot be read says RIDE UNREADABLE.
 

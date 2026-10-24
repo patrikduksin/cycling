@@ -5,6 +5,7 @@ cover the Rust encoder end to end with two independent decoders.
 """
 
 import datetime as dt
+import itertools
 import json
 import subprocess
 import tempfile
@@ -48,14 +49,16 @@ def slot(kind, ride_id, sequence, active_ms, samples=()):
         data[at + 38 : at + 40] = sample['power'].to_bytes(2, 'little')
         if sample.get('altitude_m') is not None:
             data[at + 46 : at + 48] = round((sample['altitude_m'] + 500) * 5).to_bytes(2, 'little')
+        if sample.get('lap') is not None:
+            data[at + 37] = sample['lap']
         data[at + 16 : at + 20] = flags.to_bytes(4, 'little')
     data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
     data[252:256] = COMMIT.to_bytes(4, 'little')
     return bytes(data)
 
 
-def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, utc_from_s=1):
-    """A ride at 1 Hz heading north at 8 m/s, paused once. Its UTC starts at second `utc_from_s`."""
+def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, utc_from_s=1, laps=None):
+    """A ride at 1 Hz heading north at 8 m/s, paused once. Its UTC starts at second `utc_from_s`; `laps` maps a second to its lap mark."""
     slots, sequence, batch = [slot(1, ride_id, 0, 0)], 1, []
 
     def flush():
@@ -79,6 +82,7 @@ def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, 
                 'power': 150 + (second % 60) * 2,
                 # Up 0.2 m a second to the pause, then back down.
                 'altitude_m': 100 + 0.2 * min(second, 2 * pause_at - second),
+                'lap': (laps or {}).get(second),
             }
         )
         if len(batch) == 4:
@@ -159,6 +163,27 @@ class FitExportTests(unittest.TestCase):
         )
         activity = messages['activity_mesgs'][0]
         self.assertEqual(activity['num_sessions'], 1)
+
+    def test_garmin_sdk_reads_each_marked_lap(self):
+        marks = {1: 0, 121: 1, 301: 2, 451: 3}
+        directory, rides = self.convert(ride(laps=marks))
+        self.assertEqual(rides[0]['laps'], 4)
+        messages, errors = Decoder(Stream.from_file(str(directory / 'ride-1.fit'))).read()
+        self.assertEqual(errors, [])
+        laps = messages['lap_mesgs']
+        self.assertEqual([lap['lap_trigger'] for lap in laps], ['manual', 'distance', 'time', 'session_end'])
+        self.assertEqual([lap['total_timer_time'] for lap in laps], [120.0, 180.0, 150.0, 150.0])
+        self.assertEqual(
+            [lap['total_elapsed_time'] for lap in laps], [120.0, 180.0, 270.0, 150.0], 'lap 3 began at the pause'
+        )
+        self.assertEqual([round(lap['total_distance']) for lap in laps], [960, 1440, 1200, 1200])
+        for before, after in itertools.pairwise(laps):
+            self.assertEqual(after['start_time'], before['timestamp'], 'laps meet')
+        session = messages['session_mesgs'][0]
+        self.assertEqual(session['num_laps'], 4)
+        climbs = [(lap['total_ascent'], lap['total_descent']) for lap in laps]
+        self.assertEqual(climbs, [(24, 0), (36, 0), (0, 30), (0, 30)], 'the session climbs 60 m and descends 60 m')
+        self.assertEqual(sum(lap['total_timer_time'] for lap in laps), session['total_timer_time'])
 
     def test_fitdecode_checks_crc_and_every_record(self):
         directory, _ = self.convert(ride(seconds=120, pause_at=60))

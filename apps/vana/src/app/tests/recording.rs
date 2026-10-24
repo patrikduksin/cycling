@@ -233,6 +233,63 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     assert!(runtime.navigation.page == Page::Home);
 }
 
+#[test]
+fn a_lap_is_kept_in_the_journal_and_read_back_by_replay_and_fit() {
+    use crate::ride::log::{Entry, Kind, LapStart, decode};
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    let mut now = 1000;
+    while now < 12_000 {
+        if now == 6_100 {
+            runtime.input(press(Button::TopLeft), now, &mut radio);
+        }
+        tick(&mut runtime, &mut journal, &mut radio, now);
+        now += 100;
+    }
+    assert_eq!(runtime.ride.laps.count(), 1);
+    pause(&mut runtime, &mut journal, &mut radio, now);
+    runtime.input(press(Button::TopLeft), now + 400, &mut radio);
+    runtime.input(press(Button::BottomRight), now + 800, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, now + 800);
+    assert_eq!(runtime.ride.internal.status(), Status::Saved);
+
+    let entries: std::vec::Vec<Entry> = (0..runtime.ride.internal.next_slot())
+        .map(|index| decode(&journal.slot(index)).expect("every slot reads"))
+        .collect();
+    let marks: std::vec::Vec<(u64, LapStart)> = entries
+        .iter()
+        .filter(|entry| entry.kind == Kind::Samples)
+        .flat_map(|entry| &entry.samples[..usize::from(entry.count)])
+        .filter_map(|sample| sample.lap.map(|lap| (sample.active_ms, lap)))
+        .collect();
+    assert_eq!(
+        marks,
+        [(100, LapStart::Ride), (6_000, LapStart::Manual)],
+        "{entries:?}"
+    );
+
+    let mut replay = crate::ride::replay::Replay::new(1, entries.len());
+    let mut sums = crate::ride::replay::Sums {
+        totals: &mut crate::ride::totals::Totals::default(),
+        zone_time: &mut crate::ride::zones::ZoneTime::default(),
+        efforts: &mut crate::ride::totals::Efforts::default(),
+    };
+    let profile = runtime.preferences.profile;
+    while replay.step(64, &profile, &mut sums, |i| entries.get(i).copied())
+        == crate::ride::replay::Progress::Reading
+    {}
+    assert_eq!(replay.laps(), Some(2), "as the live summary counts them");
+
+    let mut out = firmware_services::fit::Counter::default();
+    let slots = (0..entries.len()).map(|index| journal.slot(index));
+    let plan = crate::ride::fit::write_all(slots, 1, Some(1_789_000_000_000), &mut out).unwrap();
+    assert_eq!(plan.laps, 2);
+    assert_eq!(plan.size as usize, out.0);
+}
+
 struct Failing {
     journal: Journal,
     fail: bool,

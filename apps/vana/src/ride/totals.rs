@@ -586,10 +586,10 @@ mod tests {
         assert_eq!(totals.ascent_dm(), 0);
     }
 
-    /// A ride with heart rate and no power gets the Keytel estimate once the
-    /// body is set; power keeps its work, and nothing set keeps no calories.
+    /// Calories are the meter's work plus, once the body is set, the Keytel
+    /// estimate for the seconds with heart rate and no power.
     #[test]
-    fn calories_come_from_power_else_from_heart_rate_and_the_body() {
+    fn calories_add_the_work_and_heart_rate_without_power() {
         use crate::ride::rider::Rider;
         let body = Rider::default()
             .step_weight(1, true)
@@ -612,17 +612,20 @@ mod tests {
         assert_eq!(powered.kcal_for(Rider::default()), Some(120));
         assert_eq!(Totals::default().kcal_for(body), None);
 
-        // A meter that dropped after five minutes of a two-hour heart-rate
-        // ride covers too little: the heart-rate estimate stands for the ride.
+        // A meter that died at 1h40 of a 3 h ride: its work for the first
+        // 100 minutes, heart rate for the last 80.
         let mut partial = Totals::default();
-        ride(&mut partial, 300, riding(8333, 200, 140, 90), None);
-        ride(&mut partial, 6900, heart_only, None);
-        let hours = partial.kcal_for(body).unwrap();
-        assert!(hours > 1_400, "{hours}");
-        assert_eq!(
-            partial.kcal_for(Rider::default()),
-            Some(partial.work_kj().unwrap())
-        );
+        ride(&mut partial, 6000, riding(8333, 200, 140, 90), None);
+        ride(&mut partial, 4800, heart_only, None);
+        let unpowered = body.heart_rate_kcal(140 * 4800, 4800).unwrap();
+        assert_eq!(partial.kcal_for(body), Some(1200 + unpowered));
+        assert_eq!(partial.kcal_for(Rider::default()), Some(1200));
+        // Five minutes of power in a two-hour ride counts the same way.
+        let mut early = Totals::default();
+        ride(&mut early, 300, riding(8333, 200, 140, 90), None);
+        ride(&mut early, 6900, heart_only, None);
+        let unpowered = body.heart_rate_kcal(140 * 6900, 6900).unwrap();
+        assert_eq!(early.kcal_for(body), Some(60 + unpowered));
     }
 
     #[test]

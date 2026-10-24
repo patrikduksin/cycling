@@ -87,6 +87,11 @@ impl Medium {
     }
 }
 
+/// One ride as the rider rides it. A move from the card to internal memory
+/// keeps it, though the journals hold two rides.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Outing(u32);
+
 pub(super) struct Ride {
     pub(super) internal: Recorder,
     pub(super) bulk: Recorder,
@@ -156,6 +161,8 @@ pub(super) struct Ride {
     /// The medium of the latest ride, whose outcome the rider sees until the
     /// next ride starts, even when the next ride will use the other medium.
     last: Option<Medium>,
+    /// The latest ride started, open or not.
+    outing: Outing,
     /// Monotonic clock used to measure synchronous recording work.
     pub(super) clock: Option<fn() -> u64>,
     /// The workout this ride plays, kept after it ends until the rider
@@ -201,6 +208,7 @@ impl Default for Ride {
             moved: false,
             pause_continuation: false,
             last: None,
+            outing: Outing(0),
             clock: None,
             workout: None,
             workout_events: crate::workout::player::Events::new(),
@@ -279,6 +287,11 @@ impl Ride {
     /// A ride is open on either medium, or moving between them.
     pub(super) fn open(&self) -> bool {
         self.internal.riding() || self.bulk.riding() || self.continuing
+    }
+
+    /// The ride open on either medium, or moving between them.
+    pub(super) fn outing(&self) -> Option<Outing> {
+        self.open().then_some(self.outing)
     }
 
     /// The recorder of the ride the rider sees.
@@ -765,6 +778,7 @@ impl Runtime {
                 ride.carried_ms += core::mem::take(&mut ride.carry_ms);
                 ride.moved = true;
             } else {
+                ride.outing = Outing(ride.outing.0.wrapping_add(1));
                 ride.totals = Totals::default();
                 ride.carried_ms = 0;
                 ride.moved = false;

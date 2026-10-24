@@ -11,6 +11,7 @@ use device_api::{
 
 mod back;
 mod bests;
+mod calibration;
 pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
 mod cues;
@@ -61,6 +62,8 @@ pub struct Runtime {
     menu: Menu,
     discovery: sensor_links::Discovery,
     links: sensor_links::Links,
+    /// The power meter zeroing in progress; live state, never stored.
+    calibration: calibration::Phase,
     readings: readings::Readings,
     sensors: Client,
     ride: recording::Ride,
@@ -93,6 +96,7 @@ impl Runtime {
             menu: Menu::new(),
             discovery: sensor_links::Discovery::default(),
             links: sensor_links::Links::default(),
+            calibration: calibration::Phase::Idle,
             readings: readings::Readings::default(),
             sensors: Client::new(profile),
             ride: recording::Ride::default(),
@@ -202,6 +206,7 @@ impl Runtime {
     ) {
         self.service_sensor_links(ant, now);
         self.receive_ant(ant, now);
+        self.service_calibration(ant, now);
         self.receive_ble(ble);
         let sample = self.sample(now, ant, &observations);
         self.auto_control(now);

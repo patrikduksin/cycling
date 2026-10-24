@@ -13,7 +13,9 @@ loop's order and serves the terminal backend. The world and its observers:
 - `ant.rs`: a simulated ANT companion under the production `Channels`, and
   ANT+ heart-rate, power, speed/cadence and radar sensors that encode the world.
   The companion starts 1.5 s after power-on, closes a channel whose sensor has
-  been silent for its search timeout, and survives a CPU-only `RESTART`; power
+  been silent for its search timeout, takes acknowledged sends (a power meter
+  answers a zero request with an offset, a failure or silence, as its `zero`
+  field says), and survives a CPU-only `RESTART`; power
   loss restarts it too. Those timings are inferred, not measured on C606.
 - `route.rs` and `gps.rs`: GPX or synthetic routes and a receiver that emits NMEA.
 - `screen.rs`: reads text from the frame buffer with the shared 5x7 font.

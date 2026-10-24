@@ -4203,12 +4203,11 @@ fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
     );
 }
 
-/// Saved rides, one per `(days ago, watts)` (0 W: no power meter), each 30 minutes
-/// starting 12:00 UTC that day, as the journal holds them after weeks of
-/// riding. Samples are 3 s apart, the longest step the recorder counts.
-fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
-    const STEP_MS: u64 = 3_000;
-    const SAMPLES: u64 = 30 * 60 * 1_000 / STEP_MS;
+/// Saved rides, one per `(days ago, watts)` (0 W: no power meter), each
+/// `minutes` long starting 12:00 UTC that day, as the journal holds them after
+/// weeks of riding. Samples are 3 s apart, the longest step the recorder counts.
+fn training_history(plan: &[(u64, u16)], minutes: u64) -> Vec<u8> {
+    let samples = minutes * 60 * 1_000 / HISTORY_STEP_MS;
     let mut bytes = Vec::new();
     let mut push = |entry: Entry| {
         let mut slot = encode(&entry);
@@ -4217,17 +4216,16 @@ fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
     };
     for (ride, &(days_ago, watts)) in plan.iter().enumerate() {
         let ride_id = ride as u32 + 1;
-        let started = receiver_utc_ms(0) - receiver_utc_ms(0) % 86_400_000 + 12 * 3_600_000
-            - days_ago * 86_400_000;
+        let started = history_start(days_ago);
         let sample = |n: u64| Sample {
-            active_ms: n * STEP_MS,
-            utc_ms: Some(started + n * STEP_MS),
+            active_ms: n * HISTORY_STEP_MS,
+            utc_ms: Some(started + n * HISTORY_STEP_MS),
             power_watts: (watts != 0).then_some(watts),
             ..Sample::default()
         };
         push(Entry::event(Kind::Start, Source::Live, ride_id, 0, 0));
         let mut sequence = 1;
-        for batch in 0..SAMPLES / 4 {
+        for batch in 0..samples / 4 {
             let samples: Vec<_> = (1..=4).map(|i| sample(batch * 4 + i)).collect();
             push(Entry::batch(Source::Live, ride_id, sequence, &samples).unwrap());
             sequence += 1;
@@ -4237,10 +4235,17 @@ fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
             Source::Live,
             ride_id,
             sequence,
-            SAMPLES * STEP_MS,
+            samples * HISTORY_STEP_MS,
         ));
     }
     bytes
+}
+
+const HISTORY_STEP_MS: u64 = 3_000;
+
+/// When a ride of `training_history` started, `days_ago` days back.
+fn history_start(days_ago: u64) -> u64 {
+    receiver_utc_ms(0) - receiver_utc_ms(0) % 86_400_000 + 12 * 3_600_000 - days_ago * 86_400_000
 }
 
 /// Six weeks of rides with power and one ride without: a build that turns hard
@@ -4272,7 +4277,7 @@ fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
     let mut sim = Sim::new();
     sim.device
         .media
-        .program(Region::Data, 0, &training_history(&plan))
+        .program(Region::Data, 0, &training_history(&plan, 30))
         .unwrap();
     let mut sim = equip(sim.boot());
     sim.home("SETTINGS");
@@ -4296,6 +4301,110 @@ fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
     sim.checkpoint("form page: fitness, fatigue, form and six weeks");
     sim.press(Button::TopLeft);
     sim.expect_field("FORM", "+6 FRESH");
+}
+
+/// Rides of `HISTORY_RIDES` over 120 days, through two FTP changes: the first
+/// third at 160 W, the next at 190 W and the last at the 215 W set now.
+fn ftp_history() -> Vec<(u64, u16, u16)> {
+    (0..HISTORY_RIDES)
+        .map(|ride| {
+            let days_ago = 119 - ride * 119 / (HISTORY_RIDES - 1);
+            let watts = 250 + (ride % 5) as u16 * 10;
+            let ftp = match ride * 3 / HISTORY_RIDES {
+                0 => 160,
+                1 => 190,
+                _ => 215,
+            };
+            (days_ago, watts, ftp)
+        })
+        .collect()
+}
+
+const HISTORY_RIDES: u64 = 200;
+/// Power time the ride index keeps for a three-minute `training_history` ride:
+/// 22 units of 8 s, as the first sample opens the ride and adds no time.
+const HISTORY_POWER_MS: u64 = 22 * 8_000;
+
+/// Fitness, fatigue and form worked outside the firmware's facts: each ride's
+/// stress at the FTP it was ridden at, by the day it started.
+fn reference_form(plan: &[(u64, u16, u16)]) -> vana::ride::fitness::Form {
+    use vana::ride::fitness::{DAY_MAX, DAYS, fold};
+    let mut days = [0u32; DAYS];
+    for &(days_ago, watts, ftp) in plan {
+        let stress = vana::ride::load::stress_score(watts, HISTORY_POWER_MS, ftp).unwrap();
+        days[DAYS - 1 - days_ago as usize] += stress;
+    }
+    fold(&days.map(|day| day.min(DAY_MAX) as u16))
+}
+
+fn files_entries(sim: &mut Sim) -> usize {
+    use firmware_services::{files, volume};
+    let mut sector = [0u8; 512];
+    let mut store = volume::open(&mut sim.device.bulk, &volume::FILES, &mut sector).unwrap();
+    files::mount(&mut store, &mut sector).unwrap().len()
+}
+
+/// 200 rides over FORM's 120 days, through two FTP changes, each saved with
+/// its facts. FORM counts every ride at the FTP it was ridden at, as a fold
+/// worked outside the firmware does, and the facts take one FILES entry.
+#[test]
+fn form_counts_each_of_200_rides_at_the_ftp_it_was_ridden_at() {
+    use device_api::storage::{OwnedFlash, Region};
+    let plan = ftp_history();
+    let rides: Vec<(u64, u16)> = plan.iter().map(|&(days, watts, _)| (days, watts)).collect();
+    let mut sim = Sim::new();
+    sim.device
+        .media
+        .program(Region::Data, 0, &training_history(&rides, 3))
+        .unwrap();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    for (ride, &(days_ago, _, ftp)) in plan.iter().enumerate() {
+        let record = vana::ride::facts::Record {
+            journal: b'i',
+            ride_id: ride as u32 + 1,
+            started_utc_ms: history_start(days_ago) + HISTORY_STEP_MS,
+            facts: vana::ride::facts::Facts {
+                profile: vana::ride::zones::TrainingProfile::new(ftp, 172),
+                ..Default::default()
+            },
+        };
+        vana::ride::facts::save(&mut sim.device.bulk, &record).unwrap();
+    }
+    let entries = files_entries(&mut sim);
+    let mut sim = equip(sim.boot());
+    sim.home("SETTINGS");
+    for _ in 0..3 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.press(Button::BottomRight);
+    sim.wait_for("FATIGUE", seconds(120)).unwrap();
+    let reference = reference_form(&plan);
+    sim.checkpoint("form page: 200 rides through two FTP changes");
+    let screen = sim.screen();
+    let fitness = screen.field("FITNESS");
+    let fatigue = screen.field("FATIGUE");
+    sim.press(Button::TopLeft);
+    let form = sim.screen().field("FORM");
+    let shown = (
+        fitness,
+        fatigue,
+        form.and_then(|row| row.split(' ').next().map(String::from)),
+    );
+    println!(
+        "reference fitness {} fatigue {} form {:+}; shown {shown:?}; FILES entries {entries}",
+        reference.fitness, reference.fatigue, reference.form
+    );
+    assert_eq!(
+        shown,
+        (
+            Some(reference.fitness.to_string()),
+            Some(reference.fatigue.to_string()),
+            Some(format!("{:+}", reference.form)),
+        ),
+        "FORM counts each ride at the FTP it was ridden at"
+    );
+    assert_eq!(entries, 1, "the facts of 200 rides take one FILES entry");
 }
 
 /// A rider with no ride that had power gets a plain answer, not zeros.

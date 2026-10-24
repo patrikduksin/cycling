@@ -67,6 +67,40 @@ def reopen(port, directory, label, deadline=20):
             time.sleep(0.25)
 
 
+def power_cycle(port, directory):
+    """Switch off, then reconnect after power returns; RTC memory must not survive.
+
+    On USB the companion cuts power and the C606 starts again in charging
+    standby, where storage stays closed until a wake.
+    """
+    connection = reopen(port, directory, 'power-off')
+    try:
+        # UNAVAILABLE while the companion is still starting: nothing was accepted, so asking again is safe.
+        deadline = time.monotonic() + 20
+        while (status := connection.terminal_command('POWER SHUTDOWN')['status']) == 'UNAVAILABLE':
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        if status != 'ACCEPTED':
+            raise AssertionError(f'POWER SHUTDOWN: expected ACCEPTED, got {status}')
+    finally:
+        connection.__exit__(None, None, None)
+    print('Shutdown accepted. Without USB power, switch the C606 on again.', flush=True)
+    time.sleep(5)
+    connection = reopen(port, directory, 'power-on', 180)
+    system = read(connection, 'STATUS')
+    if system['reset'] != 'power' or system['crash'] != 'none':
+        raise AssertionError(f'expected a power-on reset without a crash marker, got {system}')
+    if connection.terminal_command('CRASH')['status'] == 'UNAVAILABLE':
+        expect(connection, 'POWER WAKE', 'ACCEPTED')
+        deadline = time.monotonic() + 20
+        while connection.terminal_command('CRASH')['status'] == 'UNAVAILABLE':
+            if time.monotonic() >= deadline:
+                raise TimeoutError('storage stayed closed after POWER WAKE')
+            time.sleep(0.5)
+    return connection
+
+
 def wifi_failures(connection):
     reply = expect(connection, 'WIFI', 'OK')
     match = re.search(r'stats=\((\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)', reply['data'])
@@ -225,6 +259,7 @@ def run(args):
                 if (
                     record.get('kind') != 'controlled'
                     or record.get('this_boot') != 'true'
+                    or record.get('source') != 'rtc'
                     or 'src/drivers/crash_rtc.rs:' not in record.get('location', '')
                     or int(record.get('frames', '0')) == 0
                     or record.get('message') != 'controlled crash test'
@@ -240,6 +275,18 @@ def run(args):
                 kept = crash_record(connection)
                 if kept.get('this_boot') != 'false' or kept.get('location') != record['location']:
                     raise AssertionError(f'crash record not kept across a clean restart: {kept}')
+                if args.power_off:
+                    connection.__exit__(None, None, None)
+                    connection = None
+                    connection = power_cycle(args.port, directory)
+                    flashed = crash_record(connection)
+                    if (
+                        flashed.get('source') != 'flash'
+                        or flashed.get('this_boot') != 'false'
+                        or flashed.get('location') != record['location']
+                        or flashed.get('message') != record['message']
+                    ):
+                        raise AssertionError(f'crash record not kept across power-off: {flashed}')
                 expect(connection, 'CRASH CLEAR', 'OK')
                 if connection.terminal_command('CRASH').get('data') != 'none':
                     raise AssertionError('CRASH CLEAR left a record')
@@ -296,6 +343,11 @@ def main():
     parser.add_argument('--wifi-recovery', action='store_true')
     parser.add_argument('--panic', action='store_true')
     parser.add_argument(
+        '--power-off',
+        action='store_true',
+        help='With --panic: switch off after the crash and require CRASH source=flash at power-on',
+    )
+    parser.add_argument(
         '--transport-recovery',
         action='store_true',
         help='Base firmware only: one six-second executor stall and bounded recovery check',
@@ -303,6 +355,8 @@ def main():
     args = parser.parse_args()
     if not 2 <= args.seconds <= 120:
         parser.error('--seconds must be 2..120')
+    if args.power_off and not args.panic:
+        parser.error('--power-off needs --panic')
     args.port = selected_port(parser, args.port)
     print(json.dumps(run(args), indent=2))
 

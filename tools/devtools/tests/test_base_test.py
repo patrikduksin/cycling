@@ -114,7 +114,8 @@ class UsbStandby:
     """A USB-powered C606 after POWER SHUTDOWN, as measured on aca9b77 and 4113dbf.
 
     It resets in software, and POWER passes through Initializing and
-    Quiescing before charging standby, which it keeps. POWER WAKE
+    Quiescing before charging standby, which it keeps. On the way, at
+    79f579f, the session dropped with EIO mid-poll. POWER WAKE
     starts recovery, and a few STATUS polls later the companion cuts power:
     the session drops and the C606 boots with a power-on reset.
     """
@@ -152,9 +153,10 @@ class UsbStandby:
         },
     }
 
-    def __init__(self, polls_until_reset=3, settles=True):
+    def __init__(self, polls_until_reset=3, settles=True, resets_on_the_way=1):
         self.phase = 'starting'
         self.ahead = ['quiescing', 'standby'] if settles else []
+        self.resets_on_the_way = resets_on_the_way
         self.boot = 0
         self.polls_until_reset = polls_until_reset
         self.commands = []
@@ -169,6 +171,12 @@ class UsbStandby:
                 return dict(status='UNAVAILABLE', data='', ms=1)
             self.phase = 'recovering'
             return dict(status='ACCEPTED', data='', ms=1)
+        if self.phase == 'quiescing' and command == 'POWER' and self.resets_on_the_way:
+            self.resets_on_the_way -= 1
+            self.phase = 'starting'
+            self.ahead = ['quiescing', 'standby']
+            self.boot += 1
+            raise OSError(5, 'Input/output error')
         if self.phase == 'recovering' and command == 'STATUS':
             if self.polls_until_reset is not None:
                 self.polls_until_reset -= 1
@@ -190,7 +198,7 @@ class UsbStandbySession:
 
     def terminal_command(self, command):
         if self.boot != self.device.boot:
-            raise RuntimeError('device disconnected; command outcome may be uncertain')
+            raise OSError(5, 'Input/output error')
         return self.device.answer(command)
 
     def __exit__(self, *unused):

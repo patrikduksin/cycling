@@ -180,6 +180,7 @@ def decode_slot(data):
                 'power_watts': u16(value, 38) if flags & 128 else None,
                 'gradient_tenths': i16(value, 44) if flags & 256 else None,
                 'battery_percent': battery,
+                'altitude_m': altitude_m(u16(value, 46)),
             }
         )
     active_ms = u64(data, 16)
@@ -193,6 +194,11 @@ def decode_slot(data):
         'active_ms': active_ms,
         'samples': samples,
     }
+
+
+def altitude_m(code):
+    """FIT's altitude encoding in sample bytes 46..48: (metres + 500) * 5, 0xFFFF for none."""
+    return None if code == 0xFFFF else round(code / 5 - 500, 1)
 
 
 def new_run(ride):
@@ -357,6 +363,8 @@ def write_gpx(ride, path):
             if lon == 180:
                 lon = -180
             point = ET.SubElement(xml_segment, f'{{{ns}}}trkpt', lat=f'{lat:.7f}', lon=f'{lon:.7f}')
+            if sample['altitude_m'] is not None:
+                ET.SubElement(point, f'{{{ns}}}ele').text = f'{sample["altitude_m"]:.1f}'
             if sample['utc_ms'] is not None:
                 seconds, milliseconds = divmod(sample['utc_ms'], 1000)
                 stamp = dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(

@@ -6,6 +6,12 @@
 //! program the body before `commit_word`. Demo provenance remains decodable even
 //! though ordinary terminal recording creates only live rides.
 //!
+//! Sample bytes 46..48 hold the smoothed barometric altitude as FIT's
+//! `altitude` field, (metres + 500) * 5 as u16, with 0xFFFF for none. There is
+//! no flag bit: decoders reject unknown flags, so a flag would make new rides
+//! unreadable after a rollback. Older samples left the bytes erased (0xFFFF),
+//! and older decoders never read them, so both directions stay compatible.
+//!
 //! Occupied invalid slots consume capacity and mark gaps; they are never free
 //! space. Scanning recovers an open ride at its last committed active duration,
 //! excluding downtime. The final slot is reserved for a terminal record.
@@ -161,6 +167,9 @@ pub struct Sample {
     pub speed_mm_s: Option<u32>,
     pub power_watts: Option<u16>,
     pub gradient_tenths: Option<i16>,
+    /// Smoothed barometric altitude in decimetres, kept to FIT's 0.2 m
+    /// resolution (so decoded values are even) and -500 m to about 12.6 km.
+    pub altitude_dm: Option<i32>,
 }
 
 impl Sample {
@@ -208,6 +217,7 @@ impl Entry {
                 speed_mm_s: None,
                 power_watts: None,
                 gradient_tenths: None,
+                altitude_dm: None,
             }; SAMPLES_PER_BATCH],
             count: 0,
         }
@@ -733,6 +743,9 @@ fn encode_sample(sample: &Sample, bytes: &mut [u8]) {
         flags |= 256;
         put_u16(bytes, 44, value as u16);
     }
+    if let Some(value) = sample.altitude_dm {
+        put_u16(bytes, 46, altitude_code(value));
+    }
     put_u32(bytes, 16, flags);
 }
 
@@ -757,7 +770,32 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
         speed_mm_s: (flags & 64 != 0).then(|| get_u32(bytes, 40)),
         power_watts: (flags & 128 != 0).then(|| get_u16(bytes, 38)),
         gradient_tenths: (flags & 256 != 0).then(|| get_u16(bytes, 44) as i16),
+        altitude_dm: altitude_from_code(get_u16(bytes, 46)),
     })
+}
+
+/// FIT's `altitude`: (metres + 500) * 5, so decimetres / 2 + 2500, rounded
+/// and kept below the invalid value.
+fn altitude_code(altitude_dm: i32) -> u16 {
+    ((altitude_dm + 1).div_euclid(2) + 2500).clamp(0, 0xfffe) as u16
+}
+
+fn altitude_from_code(code: u16) -> Option<i32> {
+    (code != ALTITUDE_ABSENT).then(|| (i32::from(code) - 2500) * 2)
+}
+
+/// Samples written before altitude was recorded left these bytes erased.
+const ALTITUDE_ABSENT: u16 = 0xffff;
+
+/// An altitude as the journal keeps it. Samples must hold only these, since
+/// the recorder checks a written slot decodes to the sample it wrote.
+pub fn quantize_altitude_dm(altitude_dm: i32) -> i32 {
+    (i32::from(altitude_code(altitude_dm)) - 2500) * 2
+}
+
+/// FIT's `altitude` field of a sample, or its invalid value.
+pub fn altitude_fit(altitude_dm: Option<i32>) -> Option<u16> {
+    altitude_dm.map(altitude_code)
 }
 
 pub fn transport_checksum(bytes: &[u8]) -> u32 {
@@ -799,6 +837,37 @@ mod tests {
         assert_eq!(
             sample(1).for_source(Source::Demo).demo_speed_mm_s,
             Some(5_000)
+        );
+    }
+
+    #[test]
+    fn altitude_rides_in_the_spare_sample_bytes_without_a_flag() {
+        let mut sample = sample(1_000);
+        sample.altitude_dm = Some(1_234);
+        let encoded = encode(&Entry::batch(Source::Live, 1, 1, &[sample]).unwrap());
+        // (123.4 m + 500) * 5 = 3117, in FIT's own encoding.
+        assert_eq!(get_u16(&encoded.0, HEADER_SIZE + 46), 3_117);
+        let mut committed = encoded.clone();
+        committed.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
+        let back = decode(&committed).unwrap();
+        assert_eq!(back.samples[0].altitude_dm, Some(1_234));
+        // Odd decimetres round to the 0.2 m resolution; extremes clamp.
+        assert_eq!(quantize_altitude_dm(1_235), 1_236);
+        assert_eq!(altitude_from_code(altitude_code(1_235)), Some(1_236));
+        assert_eq!(altitude_from_code(altitude_code(-5_000)), Some(-5_000));
+        assert_eq!(altitude_from_code(altitude_code(-9_000)), Some(-5_000));
+        assert_eq!(altitude_code(i32::MAX - 1), 0xfffe);
+        assert_eq!(altitude_fit(None), None);
+        // No flag bit is used, so an older decoder accepts the sample.
+        let flags = get_u32(&encoded.0, HEADER_SIZE + 16);
+        assert_eq!(flags & !0x8000_01ff, 0);
+
+        // A sample of the old layout, bytes 46..48 erased, has no altitude.
+        let mut old = committed.clone();
+        old.0[HEADER_SIZE + 46..HEADER_SIZE + 48].fill(0xff);
+        assert_eq!(
+            decode_sample(&old.0[HEADER_SIZE..]).unwrap().altitude_dm,
+            None
         );
     }
 

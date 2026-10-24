@@ -56,6 +56,8 @@ def slot(kind, source, ride_id, sequence, active_ms, samples=()):
         if sample.get('battery') is not None:
             flags |= 32
             data[at + 36] = sample['battery']
+        if sample.get('altitude_m') is not None:
+            data[at + 46 : at + 48] = round((sample['altitude_m'] + 500) * 5).to_bytes(2, 'little')
         data[at + 16 : at + 20] = flags.to_bytes(4, 'little')
     data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
     data[252:256] = COMMIT.to_bytes(4, 'little')
@@ -109,6 +111,7 @@ class RideExportTests(unittest.TestCase):
             'location': (100000000, 1800000000),
             'heart': 72,
             'battery': 90,
+            'altitude_m': 123.4,
         }
         missing = {'active_ms': 2000, 'utc_ms': None, 'location': None}
         later = {'active_ms': 3000, 'utc_ms': 1_699_999_999_000, 'location': (100000010, 200000010), 'cadence': 615}
@@ -131,10 +134,13 @@ class RideExportTests(unittest.TestCase):
         data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
         sample = decode_slot(bytes(data))['samples'][0]
         self.assertEqual((sample['speed_mm_s'], sample['power_watts'], sample['gradient_tenths']), (12345, 215, -37))
-        old = decode_slot(self.fixture()[1])['samples'][0]
+        old = decode_slot(self.fixture()[1])['samples'][1]
         self.assertIsNone(old['speed_mm_s'])
         self.assertIsNone(old['power_watts'])
         self.assertIsNone(old['gradient_tenths'])
+        # Samples written before altitude was kept have erased bytes 46..48.
+        self.assertIsNone(decode_slot(self.fixture()[1])['samples'][1]['altitude_m'])
+        self.assertEqual(decode_slot(self.fixture()[1])['samples'][0]['altitude_m'], 123.4)
 
     def test_known_fixture_decodes_values_and_segments(self):
         rides, invalid = rides_from_slots(self.fixture())
@@ -174,6 +180,10 @@ class RideExportTests(unittest.TestCase):
             points = root.findall('.//{http://www.topografix.com/GPX/1/1}trkpt')
             self.assertEqual(points[0].attrib['lon'], '-180.0000000')
             self.assertTrue(points[0].find('{http://www.topografix.com/GPX/1/1}time').text.endswith('Z'))
+            ns = '{http://www.topografix.com/GPX/1/1}'
+            self.assertEqual(points[0].find(f'{ns}ele').text, '123.4')
+            self.assertEqual([child.tag for child in points[0]], [f'{ns}ele', f'{ns}time'])
+            self.assertIsNone(points[1].find(f'{ns}ele'))
 
     def test_interrupted_download_is_partial_and_retry_restarts_exactly(self):
         slots = self.fixture()[:3]

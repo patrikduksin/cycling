@@ -248,6 +248,7 @@ mod tests {
             speed_mm_s: Some(10_000),
             power_watts: Some(watts),
             gradient_tenths: Some(50),
+            altitude_dm: None,
         }
     }
 

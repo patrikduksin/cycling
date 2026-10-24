@@ -46,6 +46,8 @@ def slot(kind, ride_id, sequence, active_ms, samples=()):
         data[at + 34 : at + 36] = sample['cadence'].to_bytes(2, 'little')
         data[at + 40 : at + 44] = sample['speed'].to_bytes(4, 'little')
         data[at + 38 : at + 40] = sample['power'].to_bytes(2, 'little')
+        if sample.get('altitude_m') is not None:
+            data[at + 46 : at + 48] = round((sample['altitude_m'] + 500) * 5).to_bytes(2, 'little')
         data[at + 16 : at + 20] = flags.to_bytes(4, 'little')
     data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
     data[252:256] = COMMIT.to_bytes(4, 'little')
@@ -75,6 +77,8 @@ def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, 
                 'cadence': 850 + second % 100,
                 'speed': 8_000,
                 'power': 150 + (second % 60) * 2,
+                # Up 0.2 m a second to the pause, then back down.
+                'altitude_m': 100 + 0.2 * min(second, 2 * pause_at - second),
             }
         )
         if len(batch) == 4:
@@ -134,6 +138,10 @@ class FitExportTests(unittest.TestCase):
         self.assertEqual(first['heart_rate'], 121)
         self.assertEqual(first['power'], 152)
         self.assertAlmostEqual(records[-1]['distance'], 4800.0)
+        self.assertAlmostEqual(first['altitude'], 100.2)
+        self.assertAlmostEqual(first['enhanced_altitude'], 100.2)
+        self.assertAlmostEqual(records[299]['altitude'], 160.0)
+        self.assertAlmostEqual(records[-1]['altitude'], 100.0)
         events = [(event['event'], event['event_type']) for event in messages['event_mesgs']]
         self.assertEqual(events, [('timer', 'start'), ('timer', 'stop_all'), ('timer', 'start'), ('timer', 'stop_all')])
         session = messages['session_mesgs'][0]
@@ -144,7 +152,11 @@ class FitExportTests(unittest.TestCase):
         self.assertAlmostEqual(session['total_distance'], 4800.0)
         self.assertEqual(session['num_laps'], 1)
         self.assertGreater(session['normalized_power'], session['avg_power'])
+        self.assertEqual((session['total_ascent'], session['total_descent']), (60, 60))
         self.assertEqual(len(messages['lap_mesgs']), 1)
+        self.assertEqual(
+            (messages['lap_mesgs'][0]['total_ascent'], messages['lap_mesgs'][0]['total_descent']), (60, 60)
+        )
         activity = messages['activity_mesgs'][0]
         self.assertEqual(activity['num_sessions'], 1)
 

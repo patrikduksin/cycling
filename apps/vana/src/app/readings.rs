@@ -355,7 +355,7 @@ impl Runtime {
             .power
             .filter(|power| fresh(power.received_ms))
             .map(|power| power.value);
-        let sample = Sample {
+        let mut sample = Sample {
             active_ms: 0,
             utc_ms,
             location_e7,
@@ -378,6 +378,7 @@ impl Runtime {
                 .filter(|power| power.watts != u16::MAX)
                 .map(|power| power.watts),
             gradient_tenths: readings.gradient.tenths(),
+            altitude_dm: None,
         };
         if let Some(step) = step {
             let profile = self.preferences.profile;
@@ -388,6 +389,11 @@ impl Runtime {
                 self.workout_events(now);
             }
         }
+        // The recorded altitude is the totals' smoothed one, as of this fresh
+        // reading (kept to the journal's resolution); none without a reading.
+        sample.altitude_dm = pressure
+            .and(self.ride.totals.altitude_dm())
+            .map(crate::ride::log::quantize_altitude_dm);
         self.readings.power_3s_watts = self.readings.power_3s.update(now, sample.power_watts);
         self.readings.live = sample;
         sample

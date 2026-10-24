@@ -154,14 +154,24 @@ impl Totals {
     }
 
     fn climb(&mut self, raw: i32) {
-        if self.altitude_dm.is_none() {
+        let altitude = if self.altitude_dm.is_none() {
             self.smoothed = raw * ALTITUDE_SMOOTHING;
-            self.altitude_dm = Some(raw);
-            self.anchor_dm = raw;
+            raw
+        } else {
+            self.smoothed += raw - self.smoothed.div_euclid(ALTITUDE_SMOOTHING);
+            self.smoothed.div_euclid(ALTITUDE_SMOOTHING)
+        };
+        self.follow_altitude_dm(altitude);
+    }
+
+    /// Follow an altitude already smoothed, such as a recorded one, with the
+    /// ascent and descent rules of a live ride.
+    pub fn follow_altitude_dm(&mut self, altitude: i32) {
+        if self.altitude_dm.is_none() {
+            self.altitude_dm = Some(altitude);
+            self.anchor_dm = altitude;
             return;
         }
-        self.smoothed += raw - self.smoothed.div_euclid(ALTITUDE_SMOOTHING);
-        let altitude = self.smoothed.div_euclid(ALTITUDE_SMOOTHING);
         self.altitude_dm = Some(altitude);
         let rise = altitude - self.anchor_dm;
         match self.trend {

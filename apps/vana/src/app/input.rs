@@ -280,6 +280,13 @@ impl Runtime {
                 }
                 self.toggle_follow(now);
             }
+            (Page::Ride, Gesture::Hold(_))
+                if self.navigation.ride_page == RidePage::Map
+                    && !(self.ride.active().status() == Status::Paused
+                        && !self.navigation.pause_hidden) =>
+            {
+                self.stop_following_from_map(now);
+            }
             // Changing the page is safe while riding; ride control is not.
             (Page::Ride, Gesture::Next) => self.next_ride_page(),
             (Page::Ride, Gesture::Previous) => self.previous_ride_page(),

@@ -358,6 +358,13 @@ impl Sim {
         self.touch(&[(x, y), (x, y)]);
     }
 
+    /// A finger held still at (`x`, `y`) for `ms`, then lifted.
+    pub fn long_press(&mut self, x: u16, y: u16, ms: u64) {
+        self.note(NoteKind::Input, format!("long press {x},{y} {ms} ms"));
+        let steps = (ms / TOUCH_STEP_MS + 1) as usize;
+        self.touch(&std::vec![(x, y); steps]);
+    }
+
     /// A finger dragged from `from` to `to` in a quarter second.
     pub fn swipe(&mut self, from: (u16, u16), to: (u16, u16)) {
         self.note(
@@ -801,9 +808,9 @@ impl Sim {
         );
     }
 
-    /// Put a file into FILES, formatting the store first if it has none, as
-    /// the host's file put would.
-    pub fn put_file(&mut self, name: &str, bytes: &[u8]) {
+    /// Format the FILES store if it has none, as the host's `files format`
+    /// would; a formatted one is left as it is.
+    pub fn format_files(&mut self) {
         use firmware_services::{files, volume};
         self.init_volumes();
         let mut sector = [0u8; 512];
@@ -812,6 +819,16 @@ impl Sim {
         if files::mount(&mut store, &mut sector) == Err(files::Error::Uninitialized) {
             files::format(&mut store, 1, &mut sector).expect("format");
         }
+    }
+
+    /// Put a file into FILES, formatting the store first if it has none, as
+    /// the host's file put would.
+    pub fn put_file(&mut self, name: &str, bytes: &[u8]) {
+        use firmware_services::{files, volume};
+        self.format_files();
+        let mut sector = [0u8; 512];
+        let media = &mut self.device.bulk;
+        let mut store = volume::open(media, &volume::FILES, &mut sector).expect("FILES");
         let name = files::Name::new(name).expect("file name");
         files::write(&mut store, &name, bytes, &mut sector).expect("file write");
         self.note(

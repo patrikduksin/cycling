@@ -5823,6 +5823,168 @@ fn map_page_shows_the_way_home_in_green_while_following_the_track_back() {
     sim.stop_ride();
 }
 
+/// The legs of the course the rider loads: the bend loop once round, back
+/// to its start.
+const COURSE_LOOP: [(f64, f64); 8] = [
+    (0.0, 0.0),
+    (0.0, 900.0),
+    (500.0, 1300.0),
+    (1300.0, 1250.0),
+    (1700.0, 600.0),
+    (1300.0, -100.0),
+    (600.0, -250.0),
+    (0.0, 0.0),
+];
+
+/// The ride: the course, with a wrong turn 400 m along its third leg, 175 m
+/// north and back, and on past the end for a little.
+fn course_ride_gpx() -> String {
+    let mut legs = COURSE_LOOP[..3].to_vec();
+    legs.extend([(900.0, 1275.0), (905.0, 1450.0), (920.0, 1274.0)]);
+    legs.extend_from_slice(&COURSE_LOOP[3..]);
+    legs.push((0.0, 300.0));
+    gpx_through("loop with a wrong turn", &legs)
+}
+
+/// Course-grey pixels on the map page's body, above the scale bar: within a
+/// step of `SECONDARY` in each RGB565 channel, as the panel's shading leaves
+/// them.
+fn course_pixels(sim: &Sim) -> usize {
+    let channels = |c: u16| {
+        [
+            i32::from(c >> 11),
+            i32::from(c >> 5 & 63),
+            i32::from(c & 31),
+        ]
+    };
+    let grey = channels(SECONDARY);
+    let screen = sim.screen();
+    (60..270)
+        .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let c = channels(screen.pixels[y * screen.width + x]);
+            c.iter().zip(grey).all(|(a, b)| (a - b).abs() <= 2)
+        })
+        .count()
+}
+
+/// A loop course loaded from the phone is followed from the ride's start:
+/// MAP draws the course ahead in grey under the ride's track, a wrong turn
+/// gives OFF TRACK and riding back onto the course BACK ON TRACK, and the
+/// course's end says so.
+#[test]
+fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_track() {
+    use device_api::server::Method;
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.format_files();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+
+    sim.ride_route(Route::from_gpx(&course_ride_gpx()).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    // Riding off along the course follows it.
+    let joined = ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
+    assert!(joined < 120.0, "{joined}");
+    // MOVE reaches MAP after the climb page.
+    for _ in 0..4 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("MAP");
+    ride_to(&mut sim, 1_400.0);
+    sim.expect_text("FOLLOWING");
+    let grey = course_pixels(&sim);
+    assert!(grey > 100, "the course ahead is drawn: {grey} pixels");
+    sim.checkpoint("the map with the course ahead in grey");
+
+    // The wrong turn: more than 50 m off the course.
+    let off = ride_until_shown(&mut sim, "OFF TRACK", 2_150.0);
+    assert!((1_960.0..2_060.0).contains(&off), "{off}");
+    sim.checkpoint("off the course on the map");
+    // Back onto the course, within 25 m of it.
+    let on = ride_until_shown(&mut sim, "BACK ON TRACK", 2_400.0);
+    assert!((2_200.0..2_340.0).contains(&on), "{on}");
+    sim.checkpoint("back on the course on the map");
+
+    // The next page follows the course to its end.
+    sim.press(Button::BottomLeft);
+    sim.expect_text("COURSE");
+    sim.expect_text("TO END KM");
+    sim.expect_text("ON TRACK");
+    sim.checkpoint("the course page");
+    let end = ride_until_shown(&mut sim, "END OF COURSE", 5_800.0);
+    assert!((5_500.0..5_700.0).contains(&end), "{end}");
+    sim.checkpoint("the end of the course");
+    // On up the course's first leg again: the course is done for this ride.
+    while sim.world().distance_m < end + 250.0 {
+        sim.advance(seconds(1));
+        sim.expect_no_text("FOLLOWING COURSE");
+    }
+    sim.stop_ride();
+}
+
+/// A tap on MAP changes nothing; a long press stops following the course
+/// mid-ride, and it does not follow again by itself: the wrong turn later
+/// gives no OFF TRACK. The BACK TO START pad follows it again.
+#[test]
+fn a_long_press_on_the_map_stops_following_the_course() {
+    use device_api::server::Method;
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.format_files();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim.ride_route(Route::from_gpx(&course_ride_gpx()).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
+    for _ in 0..4 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("MAP");
+    ride_to(&mut sim, 600.0);
+    sim.expect_text("FOLLOWING");
+    sim.tap(120, 160);
+    sim.advance(seconds(1));
+    sim.expect_no_text("STOPPED FOLLOWING");
+    sim.expect_text("FOLLOWING");
+    sim.long_press(120, 160, 1_200);
+    sim.expect_text("STOPPED FOLLOWING");
+    sim.checkpoint("following stopped from the map");
+    while sim.world().distance_m < 2_400.0 {
+        sim.advance(seconds(1));
+        let text = sim.screen().text();
+        assert!(
+            !text.contains("OFF TRACK") && !text.contains("FOLLOWING COURSE"),
+            "at {:.0} m:\n{text}",
+            sim.world().distance_m
+        );
+    }
+    // The pad follows the course again.
+    sim.press(Button::BottomLeft);
+    sim.expect_text("FOLLOW COURSE");
+    sim.tap(120, 255);
+    sim.expect_text("FOLLOWING COURSE");
+    sim.expect_text("COURSE");
+    sim.checkpoint("the pad follows the course again");
+    sim.stop_ride();
+}
+
 /// Back to start: the last ride page points the way home, straight or along
 /// the ride's own track, and following it back nudges off a wrong turn.
 #[test]

@@ -139,6 +139,34 @@ was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
 The map draws the same breadcrumb as BACK TO START (below), so a very long
 ride shows its bends thinned and a far-off start is a small dot.
 
+A loaded course (below) is drawn in grey under the ride's track: while
+following it, only what is ahead of the rider; otherwise the stretch nearest
+the rider. It does not change the zoom, so a course far from the ride does not
+show at all. While following the course or the track, the header says
+FOLLOWING, and a long press on the page (a second) stops following
+(STOPPED FOLLOWING); a tap does nothing, so rain or a glove cannot.
+
+### Course
+
+The phone page loads a course: a GPX track or route, up to 4 MB, which VANA
+keeps on its memory card until the next one replaces it or the page clears
+it. With BACK TO START on, riding along the course in its direction, within
+25 m of it for a few fixes, follows it: FOLLOWING COURSE and the rising cue.
+Crossing it, or riding it the wrong way, follows nothing, and a course far
+from the ride says nothing. While following, more than 50 m off the course
+says OFF TRACK once with a falling cue, and within 25 m again BACK ON TRACK;
+the course gives no minute reminders. 500 m off, STOPPED FOLLOWING. Near its
+end, along it, END OF COURSE. After either, or after the rider stops it, the
+course no longer follows by itself for the rest of the ride; the pad can
+still follow it, and the next ride follows it again.
+
+While following the course, the BACK TO START page says COURSE: the arrow
+points along the course a little way ahead (or back to it when off), DIRECT KM
+is straight to the course's end and TO END KM is along it, and the pad says
+STOP FOLLOWING. Otherwise the page works as below: riding back along the
+ride's own track still follows the track, and the pad says FOLLOW COURSE while
+the course is within 500 m, else FOLLOW TRACK BACK. With BACK TO START off no course is followed, as no track is.
+
 ### Choosing the main page's readings
 
 Settings has a MAIN PAGE section with LOWER LEFT and LOWER RIGHT, the two readings

@@ -1,6 +1,8 @@
 //! The back-to-start page: an arrow to ride by, how far the start is
 //! straight and back along the ride, and a pad that follows the ride's own
-//! track back.
+//! track back. With a course loaded the pad follows the course instead, and
+//! while it does the page is COURSE: the arrow points along the course and
+//! the distances are to its end.
 //!
 //! The arrow points relative to the way the rider rides, so straight up is
 //! straight on; without a heading (stopped) it points north up and says so.
@@ -28,6 +30,7 @@ pub enum Back {
     /// No recent fix; following the track back carries on regardless.
     Waiting {
         following: bool,
+        course: bool,
     },
     Guide(Guide),
 }
@@ -216,7 +219,18 @@ fn state(back: Back) -> (&'static [u8], u16) {
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
-    canvas.caption(b"BACK TO START", width, LEFT, HEAD, Align::Left);
+    let (following, course) = match view.back {
+        Back::Guide(guide) => (guide.following, guide.course),
+        Back::Waiting { following, course } => (following, course),
+        Back::Unavailable => (false, false),
+    };
+    let on_course = following && course;
+    let title: &[u8] = if on_course {
+        b"COURSE"
+    } else {
+        b"BACK TO START"
+    };
+    canvas.caption(title, width, LEFT, HEAD, Align::Left);
     let guide = match view.back {
         Back::Guide(guide) => Some(guide),
         _ => None,
@@ -297,25 +311,21 @@ pub(super) fn prepare(view: &View) -> Canvas {
         &mut canvas,
         1,
         CELLS,
-        b"TRACK KM",
+        if on_course { b"TO END KM" } else { b"TRACK KM" },
         values[1].as_bytes(),
         WHITE,
     );
 
-    let following = match view.back {
-        Back::Guide(guide) => guide.following,
-        Back::Waiting { following } => following,
-        Back::Unavailable => false,
-    };
     canvas.shape(Shape::Panel {
         rect: PAD,
         radius: 12,
         color: RAISED,
     });
-    let pad: &[u8] = if following {
-        b"STOP FOLLOWING"
-    } else {
-        b"FOLLOW TRACK BACK"
+    let course_near = matches!(view.back, Back::Guide(guide) if guide.course_near);
+    let pad: &[u8] = match (following, course_near) {
+        (true, _) => b"STOP FOLLOWING",
+        (false, true) => b"FOLLOW COURSE",
+        (false, false) => b"FOLLOW TRACK BACK",
     };
     canvas.fit(
         &[&BODY, &CAPTION],
@@ -370,6 +380,8 @@ mod tests {
         Guide {
             mode,
             following: mode != Mode::Direct,
+            course: false,
+            course_near: false,
             direct_m: 1_234,
             track_m: 2_480,
             off_m: 0,
@@ -395,11 +407,17 @@ mod tests {
                 &["BACK TO START", "NO TRACK", "FOLLOW TRACK BACK"],
             ),
             (
-                Back::Waiting { following: false },
+                Back::Waiting {
+                    following: false,
+                    course: false,
+                },
                 &["NO GPS", "DIRECT KM", "--"],
             ),
             (
-                Back::Waiting { following: true },
+                Back::Waiting {
+                    following: true,
+                    course: false,
+                },
                 &["NO GPS", "STOP FOLLOWING"],
             ),
             (
@@ -458,7 +476,13 @@ mod tests {
         assert_eq!(coverage(&spans, CX + REACH - 1), 0);
         // No arrow at the start, or without a fix.
         assert!(!frame(&page(Back::Guide(guide(Mode::Arrived, None, 0)))).shown);
-        assert!(!frame(&page(Back::Waiting { following: true })).shown);
+        assert!(
+            !frame(&page(Back::Waiting {
+                following: true,
+                course: false
+            }))
+            .shown
+        );
     }
 
     #[test]

@@ -1403,7 +1403,7 @@ fn position_laps(sim: &mut Sim) -> usize {
 #[test]
 fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
     let mut sim = at_start_rider(0.0);
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     // Two kilometres at 30 km/h is four minutes; the lap closes about 35 m past
     // the start, a few seconds on.
     sim.advance(minutes(3) + seconds(30));
@@ -1451,7 +1451,7 @@ fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
 #[test]
 fn auto_lap_at_start_counts_each_loop_once_through_gps_jitter() {
     let mut sim = at_start_rider(12.0);
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     sim.advance(minutes(12) + seconds(30));
     sim.expect_text("LAP 4");
     sim.checkpoint("lap page after three loops, noisy GPS");

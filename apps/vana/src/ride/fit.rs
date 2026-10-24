@@ -636,7 +636,11 @@ impl Export {
                         .map(|v| v.min(u32::from(u16::MAX - 1)) as u16),
                 ),
                 Value::U8(sample.heart_bpm.map(|v| v.min(254) as u8)),
-                Value::U8(sample.cadence_tenths.map(|v| ((v + 5) / 10).min(254) as u8)),
+                Value::U8(
+                    sample
+                        .cadence_tenths
+                        .map(|v| (v.saturating_add(5) / 10).min(254) as u8),
+                ),
                 Value::U16(sample.power_watts.filter(|w| *w != u16::MAX)),
                 Value::I16(
                     sample

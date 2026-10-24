@@ -18,7 +18,7 @@
 //! Lap marks wait in order, each for a stored sample of its own: the ride's
 //! first sample carries `LapStart::Ride`, and the first of each later lap its
 //! trigger. A pause or finish with laps waiting stores one more sample per
-//! lap, at the stop, to carry them.
+//! waiting mark, at the stop, to carry them.
 //! One operation and its unconsumed completion exclude further mutations.
 
 use crate::ride::control::Action;
@@ -397,13 +397,11 @@ impl Recorder {
         }
 
         // A lap that closed since the last sample has no later sample to
-        // begin on once recording stops, so the stop stores one more per lap.
+        // begin on once recording stops, so the stop stores one more per lap,
+        // and one for the ride's start if no sample has carried it yet.
         while self.stopping()
             && self.sample_count < self.samples.len()
-            && self
-                .lap_marks
-                .first()
-                .is_some_and(|start| start != LapStart::Ride)
+            && self.lap_marks.lap_waiting()
         {
             let mut sample = sample.for_source(self.source);
             sample.active_ms = self.active_ms(now);
@@ -1038,6 +1036,36 @@ mod tests {
                 (3800, Some(LapStart::Manual)),
                 (3800, Some(LapStart::Step)),
             ]
+        );
+    }
+    #[test]
+    fn a_lap_before_the_first_sample_is_kept_by_a_pause() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        assert!(recorder.take_result().unwrap().ok);
+        recorder.mark_lap(LapStart::Manual);
+        assert!(recorder.request(Action::Pause, Source::Live, 600, 2));
+        for _ in 0..3 {
+            recorder.service(&mut media, 600, Sample::default(), &|| 600);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert_eq!(recorder.status(), Status::Paused);
+        let samples: Vec<(u64, Option<LapStart>)> = media
+            .bytes
+            .as_chunks::<{ crate::ride::log::SLOT_SIZE }>()
+            .0
+            .iter()
+            .filter_map(|bytes| crate::ride::log::decode(&Slot(*bytes)))
+            .filter(|entry| entry.kind == Kind::Samples)
+            .flat_map(|entry| entry.samples.into_iter().take(usize::from(entry.count)))
+            .map(|sample| (sample.active_ms, sample.lap))
+            .collect();
+        assert_eq!(
+            samples,
+            [(500, Some(LapStart::Ride)), (500, Some(LapStart::Manual))]
         );
     }
     #[test]

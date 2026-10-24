@@ -54,8 +54,11 @@ impl Marks {
         first
     }
 
-    pub fn first(&self) -> Option<LapStart> {
-        self.starts[0]
+    /// A lap waits, not only the ride's own start.
+    pub fn lap_waiting(&self) -> bool {
+        self.starts
+            .iter()
+            .any(|start| start.is_some_and(|start| start != LapStart::Ride))
     }
 }
 

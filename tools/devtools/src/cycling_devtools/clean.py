@@ -2,29 +2,47 @@
 
 Every linked worktree carries its own .local/ build targets, about 4.5 GB each, and
 agents leave them behind. A worktree is removed only when it is provably dead: its
-branch is merged, its tree is clean and no process works inside it. Build
-directories of the worktrees that stay are deleted when nothing in them changed for
---idle-hours. The primary checkout's sources and its .local/elf archive are never touched.
+branch is merged, it has commits of its own, its tree is clean and quiet, it holds
+no ignored file outside the regenerable build dirs, it contains no other worktree
+and no process works inside it. Build directories of the worktrees that stay are
+deleted when nothing in them changed for --idle-hours. The primary checkout and
+its .local/elf archive are never touched. Every row is judged again right before
+it is deleted.
+
+Live agents are found by the cwd of each /proc/<pid>. Another user's processes
+expose no cwd to us and are not seen, so run this as the user who runs the agents.
 """
 
 import argparse
+import enum
+import fnmatch
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 
-# Under <worktree>/.local: regenerable by build.sh, simulate or verify.
-BUILD_DIR_PATTERNS = ('firmware*', 'sim', 'verify')
+# Idle-deleted under <worktree>/.local: regenerable by build.sh and verify.
+BUILD_DIR_PATTERNS = ('firmware*', 'verify')
+# Ignored content that a removed worktree may take with it. Everything else ignored
+# (agent notes, harness runs, sim/live recordings, the sim-compare checkout) blocks removal.
+CACHE_NAMES = ('__pycache__', '.pytest_cache', '.ruff_cache', '.venv')
+KEEP_IN_SIM = ('live', 'compare')
 IDLE_HOURS = 24.0
 LOW_DISK_GB = 30
 GB = 10**9
+
+
+class Action(enum.Enum):
+    REMOVE = 'remove'
+    KEEP = 'keep'
 
 
 @dataclass(frozen=True)
@@ -38,10 +56,27 @@ class Worktree:
 
 
 @dataclass(frozen=True)
+class Process:
+    pid: int
+    command: str
+    cwd: Path
+
+
+@dataclass(frozen=True)
+class Context:
+    trees: list
+    processes: list
+    current: Path
+    root: Path
+    idle_hours: float
+    now: float
+
+
+@dataclass(frozen=True)
 class Decision:
-    action: str  # 'remove' or 'keep'
+    action: Action
     reason: str
-    branch_force: bool = False  # a squash-merged branch is not an ancestor, so -D
+    branch_force: bool = False  # a squash-merged branch is not an ancestor of origin/main
 
 
 @dataclass(frozen=True)
@@ -49,23 +84,22 @@ class Row:
     kind: str  # 'worktree' or 'build dir'
     path: Path
     size: int
-    action: str  # 'remove' or 'keep'
+    action: Action
     reason: str
     branch: str | None = None
     branch_force: bool = False
 
 
-@dataclass
-class Plan:
-    rows: list[Row] = field(default_factory=list)
-
-    @property
-    def removable(self):
-        return [row for row in self.rows if row.action == 'remove']
+def keep(reason):
+    return Decision(Action.KEEP, reason)
 
 
 def run(*command, cwd=ROOT):
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=120)
+
+
+def inside(path, root):
+    return path == root or root in path.parents
 
 
 def worktrees(root=ROOT):
@@ -91,15 +125,11 @@ def worktrees(root=ROOT):
     return found
 
 
-def live_processes(trees, proc=Path('/proc')):
-    """Map each worktree to the (pid, command) of processes whose cwd is inside it.
-
-    A cwd belongs to the deepest worktree containing it, because agent worktrees are
-    nested inside the primary checkout. Fails closed when /proc cannot be read.
-    """
+def processes(proc=Path('/proc')):
+    """Every process whose cwd we can read. Fails closed when /proc cannot be read."""
     if not (proc / str(os.getpid()) / 'cwd').exists():
         raise RuntimeError(f'cannot read {proc}/<pid>/cwd, so live agents cannot be detected')
-    live = {tree.path: [] for tree in trees}
+    found = []
     for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
@@ -108,11 +138,34 @@ def live_processes(trees, proc=Path('/proc')):
             command = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace').strip()
         except OSError:
             continue
-        owners = [tree for tree in trees if tree.path == cwd or tree.path in cwd.parents]
-        if owners:
-            deepest = max(owners, key=lambda tree: len(tree.path.parts))
-            live[deepest.path].append((int(entry.name), command[:60]))
-    return live
+        found.append(Process(int(entry.name), command[:60], cwd))
+    return found
+
+
+def context(idle_hours=IDLE_HOURS, current=ROOT, root=ROOT, proc=Path('/proc'), now=None):
+    return Context(
+        worktrees(root),
+        processes(proc),
+        Path(current).resolve(),
+        root,
+        idle_hours,
+        time.time() if now is None else now,
+    )
+
+
+def occupants(path, ctx):
+    """Processes with their cwd anywhere inside path, nested worktrees included."""
+    return [process for process in ctx.processes if inside(process.cwd, path)]
+
+
+def nested_trees(tree, ctx):
+    return [other for other in ctx.trees if other.path != tree.path and inside(other.path, tree.path)]
+
+
+def direct_occupants(tree, ctx):
+    """Processes working in this worktree itself, not in a worktree nested inside it."""
+    nested = nested_trees(tree, ctx)
+    return [p for p in occupants(tree.path, ctx) if not any(inside(p.cwd, other.path) for other in nested)]
 
 
 def dirty(path):
@@ -121,15 +174,79 @@ def dirty(path):
     return out.returncode != 0 or bool(out.stdout.strip())
 
 
-def in_main(head, root=ROOT):
-    return run('git', 'merge-base', '--is-ancestor', head, 'origin/main', cwd=root).returncode == 0
+def is_build(parts):
+    """Whether a path relative to the worktree is regenerable ignored content."""
+    if any(name in CACHE_NAMES for name in parts):
+        return True
+    if parts[:1] == ('target',):
+        return True
+    if parts[:1] != ('.local',) or len(parts) < 2:
+        return False
+    if any(fnmatch.fnmatch(parts[1], pattern) for pattern in BUILD_DIR_PATTERNS):
+        return True
+    return parts[1] == 'sim' and len(parts) > 2 and parts[2] not in KEEP_IN_SIM
+
+
+def foreign(root, relative):
+    """The first ignored path under relative that a removal would destroy for good, else None."""
+    parts = relative.parts
+    if is_build(parts):
+        return None
+    path = root / relative
+    if path.is_dir() and not path.is_symlink():
+        for child in sorted(path.iterdir()):
+            if found := foreign(root, relative / child.name):
+                return found
+        return None
+    return relative
+
+
+def foreign_ignored(path):
+    """An ignored file or directory that is not regenerable, such as agent notes; None if there is none."""
+    out = run('git', 'ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z', cwd=path)
+    if out.returncode:
+        return Path('(ignored files unreadable)')
+    for entry in filter(None, out.stdout.split('\0')):
+        if found := foreign(path, Path(entry.rstrip('/'))):
+            return found
+    return None
+
+
+def newest_outside_builds(path):
+    """Newest mtime of the worktree's files other than regenerable build output."""
+    newest = 0.0
+    stack = [path]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    relative = Path(entry.path).relative_to(path).parts
+                    if relative == ('.git',) or is_build(relative):
+                        continue
+                    newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+        except OSError:
+            continue
+    return newest
+
+
+def has_own_commits(path):
+    """Whether anyone committed in this worktree; a freshly spawned agent's tree has not."""
+    out = run('git', 'reflog', 'show', '--format=%gs', 'HEAD', cwd=path)
+    return any(line.startswith('commit') for line in out.stdout.splitlines())
+
+
+def in_main(rev, root=ROOT):
+    return run('git', 'merge-base', '--is-ancestor', rev, 'origin/main', cwd=root).returncode == 0
 
 
 def merged_pull_request(branch, head, root=ROOT):
     """The number of a merged PR whose tip is HEAD or contains it, else None.
 
     Matching the tip, not just the branch name, keeps commits pushed to a reused
-    branch name after the merge from being treated as merged.
+    branch name after the merge from being treated as merged. Unreadable gh output
+    means not merged.
     """
     out = run(
         'gh', 'pr', 'list', '--state', 'merged', '--head', branch,
@@ -138,33 +255,44 @@ def merged_pull_request(branch, head, root=ROOT):
     )  # fmt: skip
     if out.returncode:
         return None
-    for pull in json.loads(out.stdout or '[]'):
-        tip = pull['headRefOid']
+    try:
+        pulls = [(pull['number'], pull['headRefOid']) for pull in json.loads(out.stdout or '[]')]
+    except ValueError, KeyError, TypeError:
+        return None
+    for number, tip in pulls:
         if tip == head or run('git', 'merge-base', '--is-ancestor', head, tip, cwd=root).returncode == 0:
-            return pull['number']
+            return number
     return None
 
 
-def judge(tree, current, live, root=ROOT):
+def judge(tree, ctx):
     """Why a worktree stays, or the proof that it is dead. The first failing rule wins."""
     if tree.primary:
-        return Decision('keep', 'primary checkout')
-    if tree.path == current:
-        return Decision('keep', 'current worktree')
-    if live[tree.path]:
-        pid, command = live[tree.path][0]
-        return Decision('keep', f'live process {pid} ({command})')
+        return keep('primary checkout')
+    if tree.path == ctx.current:
+        return keep('current worktree')
+    if live := occupants(tree.path, ctx):
+        return keep(f'live process {live[0].pid} ({live[0].command})')
+    if nested := nested_trees(tree, ctx):
+        return keep(f'contains worktree {nested[0].path.name}')
     if tree.locked:
-        return Decision('keep', 'locked')
+        return keep('locked')
     if tree.missing:
-        return Decision('keep', 'directory missing (git worktree prune)')
+        return keep('directory missing (git worktree prune)')
     if dirty(tree.path):
-        return Decision('keep', 'uncommitted or untracked changes')
-    if in_main(tree.head, root):
-        return Decision('remove', 'HEAD is in origin/main, tree clean, no live process')
-    if tree.branch and (number := merged_pull_request(tree.branch, tree.head, root)):
-        return Decision('remove', f'PR #{number} merged, tree clean, no live process', branch_force=True)
-    return Decision('keep', 'not merged')
+        return keep('uncommitted or untracked changes')
+    if found := foreign_ignored(tree.path):
+        return keep(f'ignored files outside build dirs: {found}')
+    quiet = (ctx.now - newest_outside_builds(tree.path)) / 3600
+    if quiet < ctx.idle_hours:
+        return keep(f'files changed {quiet:.1f} h ago, under {ctx.idle_hours:g} h')
+    if in_main(tree.head, ctx.root):
+        if not has_own_commits(tree.path):
+            return keep('no commits of its own (may be a new agent)')
+        return Decision(Action.REMOVE, 'HEAD is in origin/main, tree clean and quiet, no live process')
+    if tree.branch and (number := merged_pull_request(tree.branch, tree.head, ctx.root)):
+        return Decision(Action.REMOVE, f'PR #{number} merged, tree clean and quiet, no live process', True)
+    return keep('not merged')
 
 
 def measure(path):
@@ -198,40 +326,51 @@ def build_dirs(tree):
     return sorted(child for child in found if child.is_dir() and not child.is_symlink())
 
 
-def idle_rows(tree, live, idle_hours, now):
-    for directory in build_dirs(tree):
-        size, newest = measure(directory)
-        idle = (now - newest) / 3600
-        if live[tree.path]:
-            action, reason = 'keep', 'live process in worktree'
-        elif idle < idle_hours:
-            action, reason = 'keep', f'changed {idle:.1f} h ago, under {idle_hours:g} h'
-        else:
-            action, reason = 'remove', f'idle {idle:.1f} h, over {idle_hours:g} h'
-        yield Row('build dir', directory, size, action, reason)
+def judge_dir(tree, directory, ctx):
+    """(size, decision) for one build dir of a kept worktree."""
+    size, newest = measure(directory)
+    idle = (ctx.now - newest) / 3600
+    if direct_occupants(tree, ctx) or occupants(directory, ctx):
+        return size, keep('live process in worktree')
+    if idle < ctx.idle_hours:
+        return size, keep(f'changed {idle:.1f} h ago, under {ctx.idle_hours:g} h')
+    return size, Decision(Action.REMOVE, f'idle {idle:.1f} h, over {ctx.idle_hours:g} h')
 
 
-def plan(idle_hours=IDLE_HOURS, current=ROOT, root=ROOT, proc=Path('/proc'), now=None):
-    now = time.time() if now is None else now
-    trees = worktrees(root)
-    live = live_processes(trees, proc)
-    current = Path(current).resolve()
+def rejudge(row, ctx):
+    """The decision for a planned row against the machine as it is now."""
+    tree = next((tree for tree in ctx.trees if tree.path == row.path), None)
+    if row.kind == 'worktree':
+        return judge(tree, ctx) if tree else keep('no longer a registered worktree')
+    owner = next((tree for tree in ctx.trees if tree.path == row.path.parent.parent), None)
+    if owner is None or not row.path.is_dir():
+        return keep('no longer present')
+    return judge_dir(owner, row.path, ctx)[1]
 
+
+def plan(ctx):
     def inspect(tree):
-        decision = judge(tree, current, live, root)
+        decision = judge(tree, ctx)
         if tree.missing:
             return [Row('worktree', tree.path, 0, decision.action, decision.reason, tree.branch)]
-        if decision.action == 'remove':
+        if decision.action is Action.REMOVE:
             size, _ = measure(tree.path)
-            return [Row('worktree', tree.path, size, 'remove', decision.reason, tree.branch, decision.branch_force)]
+            return [
+                Row('worktree', tree.path, size, decision.action, decision.reason, tree.branch, decision.branch_force)
+            ]
         size, _ = measure(tree.path / '.local')
-        return [
-            Row('worktree', tree.path, size, 'keep', decision.reason, tree.branch),
-            *idle_rows(tree, live, idle_hours, now),
-        ]
+        rows = [Row('worktree', tree.path, size, decision.action, decision.reason, tree.branch)]
+        for directory in build_dirs(tree):
+            size, verdict = judge_dir(tree, directory, ctx)
+            rows.append(Row('build dir', directory, size, verdict.action, verdict.reason))
+        return rows
 
     with ThreadPoolExecutor(8) as pool:
-        return Plan([row for rows in pool.map(inspect, trees) for row in rows])
+        return [row for rows in pool.map(inspect, ctx.trees) for row in rows]
+
+
+def removable(rows):
+    return [row for row in rows if row.action is Action.REMOVE]
 
 
 def display(path):
@@ -240,7 +379,7 @@ def display(path):
     return '~' + text[len(home) :] if text.startswith(home + '/') else text
 
 
-def table(plan_):
+def table(rows):
     header = ('kind', 'path', 'branch', 'size', 'action', 'why')
     body = [
         (
@@ -248,10 +387,10 @@ def table(plan_):
             display(row.path),
             row.branch or '-',
             f'{row.size / GB:.2f} GB',
-            'REMOVE' if row.action == 'remove' else 'keep',
+            row.action.value.upper() if row.action is Action.REMOVE else row.action.value,
             row.reason,
         )
-        for row in plan_.rows
+        for row in rows
     ]
     widths = [max(len(line[i]) for line in [header, *body]) for i in range(len(header))]
     lines = [
@@ -261,10 +400,6 @@ def table(plan_):
     return '\n'.join(lines)
 
 
-def inside(path, root):
-    return root in path.resolve().parents
-
-
 def apply_row(row, root=ROOT):
     """Remove one planned row. Returns an error message, or None when it worked."""
     if row.kind == 'worktree':
@@ -272,13 +407,14 @@ def apply_row(row, root=ROOT):
         if out.returncode:
             return out.stderr.strip()
         if row.branch:
-            flag = '-D' if row.branch_force else '-d'
-            out = run('git', 'branch', flag, row.branch, cwd=root)
+            if not (row.branch_force or in_main(row.branch, root)):
+                return 'worktree removed, branch kept: not merged into origin/main'
+            out = run('git', 'branch', '-D', row.branch, cwd=root)
             if out.returncode:
                 return f'worktree removed, branch kept: {out.stderr.strip()}'
         return None
     local = row.path.parent
-    if row.path.is_symlink() or local.name != '.local' or not inside(row.path, local.parent):
+    if row.path.is_symlink() or local.name != '.local' or not inside(row.path.resolve(), local.parent):
         return 'refusing a path outside <worktree>/.local'
     shutil.rmtree(row.path)
     return None
@@ -293,9 +429,7 @@ def low_disk_warning(path=ROOT, minimum_gb=LOW_DISK_GB):
     free = free_gb(path)
     if free >= minimum_gb:
         return None
-    return (
-        f'warning: only {free:.0f} GB free on the repository filesystem (under {minimum_gb} GB); run `mise run clean`'
-    )
+    return f'warning: only {math.floor(free)} GB free on the repository filesystem (under {minimum_gb} GB); run `mise run clean`'
 
 
 def warn_if_low_disk():
@@ -313,17 +447,21 @@ def main(argv=None):
     if not args.no_fetch and run('git', 'fetch', 'origin', '--quiet').returncode:
         print('warning: git fetch origin failed; merges are judged against the last known origin/main', file=sys.stderr)
     before_free, before_count = free_gb(), len(worktrees())
-    plan_ = plan(args.idle_hours)
-    print(table(plan_))
-    reclaim = sum(row.size for row in plan_.removable)
+    rows = plan(context(args.idle_hours))
+    print(table(rows))
+    reclaim = sum(row.size for row in removable(rows))
     print(
-        f'\n{len(plan_.removable)} removals, {reclaim / GB:.1f} GB; {before_free:.0f} GB free, {before_count} worktrees'
+        f'\n{len(removable(rows))} removals, {reclaim / GB:.1f} GB; {before_free:.0f} GB free, {before_count} worktrees'
     )
     if not args.apply:
         print('dry run: pass --apply to remove')
         return 0
     failures = 0
-    for row in plan_.removable:
+    for row in removable(rows):
+        verdict = rejudge(row, context(args.idle_hours))
+        if verdict.action is Action.KEEP:
+            print(f'skip {row.kind} {display(row.path)}: now {verdict.reason}', flush=True)
+            continue
         error = apply_row(row)
         print(
             f'{"FAIL" if error else "ok  "} {row.kind} {display(row.path)}' + (f': {error}' if error else ''),

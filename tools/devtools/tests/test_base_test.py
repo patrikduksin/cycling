@@ -1,3 +1,4 @@
+import itertools
 import unittest
 from unittest.mock import Mock, patch
 
@@ -155,7 +156,8 @@ class UsbStandby:
             self.phase = 'recovering'
             return dict(status='ACCEPTED', data='', ms=1)
         if self.phase == 'recovering' and command == 'STATUS':
-            self.polls_until_reset -= 1
+            if self.polls_until_reset is not None:
+                self.polls_until_reset -= 1
             if self.polls_until_reset == 0:
                 self.phase = 'on'
                 self.boot += 1
@@ -186,7 +188,6 @@ class PowerCycleTests(unittest.TestCase):
 
     def test_switches_off_once_and_wakes_charging_standby_before_reading_flash(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('UNAVAILABLE', ''), ('ACCEPTED', '')]})
-        idle = 'status=Status { state: Idle, ready: true }'
         after = ScriptedConnection(
             {
                 'STATUS': [('OK', 'reset=power crash=none')],
@@ -197,10 +198,10 @@ class PowerCycleTests(unittest.TestCase):
                     ('OK', 'startup=ready'),
                 ],
                 'POWER': [
-                    ('OK', idle),
+                    ('OK', IDLE),
                     ('OK', 'status=Status { state: Charging, ready: false }'),
                     ('OK', 'status=Status { state: Charging, ready: false }'),
-                    ('OK', idle),
+                    ('OK', IDLE),
                 ],
                 'POWER WAKE': [('UNAVAILABLE', ''), ('ACCEPTED', '')],
             }
@@ -227,6 +228,20 @@ class PowerCycleTests(unittest.TestCase):
         self.assertEqual(device.phase, 'on')
         self.assertEqual(record['source'], 'flash')
 
+    def test_a_wake_without_a_power_on_reset_stops_at_the_deadline(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
+        device = UsbStandby(polls_until_reset=None)
+        sessions = iter([before, device.connect()])
+        with (
+            patch('cycling_devtools.harness.base.reopen', side_effect=lambda *unused: next(sessions)),
+            patch('cycling_devtools.harness.base.time.monotonic', side_effect=itertools.count(0, 10)),
+            patch('time.sleep'),
+            self.assertRaisesRegex(TimeoutError, 'no power-on reset'),
+        ):
+            power_cycle('port', None)
+        self.assertEqual(device.commands.count('POWER WAKE'), 1)
+        self.assertLessEqual(device.commands.count('STATUS'), 8)
+
     def test_an_early_idle_before_the_companion_starts_is_not_settled(self):
         connection = ScriptedConnection(
             {
@@ -240,7 +255,7 @@ class PowerCycleTests(unittest.TestCase):
 
     def test_a_reset_that_kept_rtc_memory_fails(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
-        after = ScriptedConnection({'STATUS': [('OK', 'reset=software crash=none')]})
+        after = ScriptedConnection({'STATUS': [('OK', 'reset=software crash=none')], 'POWER': [('OK', IDLE)]})
         with self.assertRaisesRegex(AssertionError, 'power-on reset'):
             self.cycle(before, after)
 

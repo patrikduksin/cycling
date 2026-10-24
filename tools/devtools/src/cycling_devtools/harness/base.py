@@ -94,11 +94,38 @@ def reopen(port, directory, label, deadline=20):
             time.sleep(0.25)
 
 
+WAKE_TIMEOUT_S = 60
+
+
+def wake_to_power_on(connection, port, directory):
+    """Wake charging standby, then reconnect once the C606 has booted from power-on.
+
+    On USB, POWER SHUTDOWN first resets the C606 in software into charging
+    standby, which keeps RTC memory. A wake makes the companion cut power,
+    and the C606 boots again about 20 s later; the session drops then.
+    """
+    expect(connection, 'POWER WAKE', 'ACCEPTED')
+    deadline = time.monotonic() + WAKE_TIMEOUT_S
+    attempt = 0
+    system = None
+    while True:
+        try:
+            system = read(connection, 'STATUS')
+            if system['reset'] != 'software':
+                return connection, system
+        except OSError, RuntimeError, TimeoutError:
+            connection.__exit__(None, None, None)
+            attempt += 1
+            connection = reopen(port, directory, f'woken-{attempt}', max(deadline - time.monotonic(), 0))
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f'no power-on reset {WAKE_TIMEOUT_S} s after POWER WAKE: {system}')
+        time.sleep(1)
+
+
 def power_cycle(port, directory):
     """Switch off, then reconnect after power returns; RTC memory must not survive.
 
-    On USB the companion cuts power and the C606 starts again in charging
-    standby, where storage stays closed until a wake.
+    On USB the companion cuts power only after a wake from charging standby.
     """
     connection = reopen(port, directory, 'power-off')
     try:
@@ -116,6 +143,8 @@ def power_cycle(port, directory):
     time.sleep(5)
     connection = reopen(port, directory, 'power-on', 180)
     system = read(connection, 'STATUS')
+    if system['reset'] == 'software' and 'state: Charging' in expect(connection, 'POWER', 'OK')['data']:
+        connection, system = wake_to_power_on(connection, port, directory)
     if system['reset'] != 'power' or system['crash'] != 'none':
         raise AssertionError(f'expected a power-on reset without a crash marker, got {system}')
     settle(connection)

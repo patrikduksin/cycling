@@ -13,7 +13,7 @@ use crate::ride::log::{
     LapStart, SECTOR_SIZE, SLOT_SIZE, SLOTS, Sector, Slot, commit_word, decode, encode, erased,
 };
 use crate::ride::storage::RideStorage;
-use crate::testing::Rng;
+use crate::testing::{Draw, Rng};
 use std::vec;
 use std::vec::Vec;
 

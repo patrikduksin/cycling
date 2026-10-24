@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Host test helpers (`testing`); a firmware build never enables it.
+testing = []
+
 [dependencies]
 device-api = { path = "../device-api" }
 heapless.workspace = true

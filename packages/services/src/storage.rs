@@ -494,7 +494,7 @@ pub(crate) mod tests {
     fn random_saves_cuts_and_corruption_never_load_as_empty_or_unsaved() {
         use crate::testing::Rng;
         for seed in 0..500 {
-            let mut rng = Rng(seed * 2 + 1);
+            let mut rng = Rng::new(seed);
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
             let mut saved: std::vec::Vec<std::vec::Vec<u8>> = std::vec::Vec::new();
             let mut newest: Option<std::vec::Vec<u8>> = None;

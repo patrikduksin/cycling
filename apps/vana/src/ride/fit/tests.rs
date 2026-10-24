@@ -1,5 +1,6 @@
 use super::*;
 use crate::ride::log::{LapStart, Source, commit_word, encode};
+use crate::testing::Draw;
 use firmware_services::fit::{FIT_EPOCH_UNIX_S, crc16};
 use std::collections::BTreeMap;
 use std::vec;

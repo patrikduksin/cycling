@@ -210,7 +210,7 @@ mod tests {
         use crate::preferences::tests::{Rng, arbitrary_settings, damage};
         use crate::preferences::{Source, decode};
         for seed in 0..300 {
-            let mut rng = Rng(seed * 2 + 1);
+            let mut rng = Rng::new(seed);
             let stored = arbitrary_settings(&mut rng).encode().to_vec();
             let payload = damage(&mut rng, stored);
             if !matches!(

@@ -7,7 +7,7 @@ fn sector() -> Sector {
 }
 
 fn content(length: usize, seed: u64) -> Vec<u8> {
-    let mut rng = Rng(seed | 1);
+    let mut rng = Rng::new(seed | 1);
     (0..length).map(|_| rng.next() as u8).collect()
 }
 
@@ -186,7 +186,7 @@ fn power_cuts_never_expose_a_mixed_or_unverified_pack() {
     // Cut at every write of a replacement, with every tear, then finish it.
     let old = content(3 * 512 + 9, 10);
     let new = content(4 * 512 + 100, 11);
-    let mut rng = Rng(12);
+    let mut rng = Rng::new(12);
     for at in 0..8 {
         for _ in 0..3 {
             let tear = Tear::pick(&mut rng);

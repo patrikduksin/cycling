@@ -56,7 +56,7 @@ fn files_are_written_listed_read_replaced_and_deleted() {
     let mut s = sector();
     assert_eq!(mount(&mut media, &mut s), Err(Error::Uninitialized));
     format(&mut media, 1, &mut s).unwrap();
-    let mut rng = Rng(2);
+    let mut rng = Rng::new(2);
     let first = content(1300, &mut rng);
     let entry = write(&mut media, &name("w/one.json"), &first, &mut s).unwrap();
     assert_eq!((entry.length, entry.crc), (1300, crc32(&first)));
@@ -226,7 +226,7 @@ fn allocation_reuses_freed_space_and_never_overlaps_live_files() {
     let mut media = Media::new(DATA + 40);
     let mut s = sector();
     format(&mut media, 1, &mut s).unwrap();
-    let mut rng = Rng(3);
+    let mut rng = Rng::new(3);
     let mut model = Model::new();
     for round in 0..300 {
         let key = std::format!("f{}", rng.below(6));
@@ -326,7 +326,7 @@ fn random_op(rng: &mut Rng) -> Op {
 #[test]
 fn every_power_cut_leaves_the_store_before_or_after_the_interrupted_change() {
     for case in 0..400u64 {
-        let mut rng = Rng((case << 32) | 0x5eed);
+        let mut rng = Rng::new((case << 32) | 0x5eed);
         let mut media = Media::new(DATA + 120);
         let mut s = sector();
         format(&mut media, case, &mut s).unwrap();

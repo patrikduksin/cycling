@@ -19,3 +19,6 @@ device-api = { path = "../device-api" }
 firmware-services = { path = "../services" }
 heapless.workspace = true
 log = { version = "=0.4.34", default-features = false }
+
+[dev-dependencies]
+firmware-services = { path = "../services", features = ["testing"] }

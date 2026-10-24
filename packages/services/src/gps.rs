@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn arbitrary_input_never_panics_and_every_line_is_counted_once() {
         for seed in 0..1_000 {
-            let mut rng = crate::testing::Rng(seed * 2 + 1);
+            let mut rng = crate::testing::Rng::new(seed);
             let mut parser = Parser::default();
             let mut fed = std::vec::Vec::new();
             for _ in 0..rng.below(30) {
@@ -1319,7 +1319,7 @@ mod tests {
     fn valid_fixes_among_garbage_still_parse() {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         for seed in 0..1_000 {
-            let mut rng = crate::testing::Rng(seed * 2 + 1);
+            let mut rng = crate::testing::Rng::new(seed);
             let mut parser = Parser::default();
             let length = rng.below(2_000) as usize;
             for &byte in &noise(&mut rng, length) {

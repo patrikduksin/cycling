@@ -1,4 +1,5 @@
-//! Touch gestures from raw contact edges: a tap or a horizontal swipe.
+//! Touch gestures from raw contact edges: a tap, a long press or a
+//! horizontal swipe.
 //!
 //! Policy lives with the caller: taps select, swipes change pages, and no
 //! gesture ever controls a ride.
@@ -21,6 +22,8 @@ use device_api::input::{Input, Point, STALE_CONTACT_MS};
 const TAP_SLOP: i32 = 16;
 /// Longer contacts are holds, not taps.
 const TAP_MAX_MS: u64 = 600;
+/// A contact this long, still within the tap slop, is a long press.
+pub const HOLD_MS: u64 = 1_000;
 /// A swipe travels at least this far horizontally...
 const SWIPE_MIN: i32 = 48;
 /// ...at least twice as far as vertically, within this time.
@@ -36,6 +39,9 @@ pub enum Gesture {
     /// A contact began here: controls that act on contact use this.
     Down(Point),
     Tap(Point),
+    /// A finger held still for `HOLD_MS` or more, ending as it lifts: deliberate,
+    /// so a raindrop or a bump does not make one.
+    Hold(Point),
     /// Finger moved right to left: show what comes after.
     Next,
     /// Finger moved left to right: show what came before.
@@ -171,7 +177,12 @@ fn classify(start: Point, end: Point, held_ms: u64, wandered: bool) -> Option<Ge
     let dx = i32::from(end.x) - i32::from(start.x);
     let dy = i32::from(end.y) - i32::from(start.y);
     if within_slop(start, end) {
-        return (held_ms <= TAP_MAX_MS && !wandered).then_some(Gesture::Tap(start));
+        return match (wandered, held_ms) {
+            (true, _) => None,
+            (false, ..=TAP_MAX_MS) => Some(Gesture::Tap(start)),
+            (false, HOLD_MS..) => Some(Gesture::Hold(start)),
+            _ => None,
+        };
     }
     if held_ms <= SWIPE_MAX_MS && dx.abs() >= SWIPE_MIN && dx.abs() >= 2 * dy.abs() {
         return Some(if dx < 0 {
@@ -211,8 +222,19 @@ mod tests {
             contact(&mut g, &[(100, 200), (104, 203)], 120),
             Some(Gesture::Tap(Point { x: 100, y: 200 }))
         );
-        // A long hold is not a tap.
+        // A hold between a tap and a long press is nothing.
         assert_eq!(contact(&mut g, &[(100, 200)], 900), None);
+    }
+
+    #[test]
+    fn a_still_second_is_a_long_press_and_a_wandering_one_is_nothing() {
+        let mut g = Gestures::default();
+        assert_eq!(
+            contact(&mut g, &[(100, 200), (103, 202), (101, 199)], 1_200),
+            Some(Gesture::Hold(Point { x: 100, y: 200 }))
+        );
+        let wandering = [(100, 200), (130, 200), (100, 200)];
+        assert_eq!(contact(&mut g, &wandering, 1_200), None);
     }
 
     #[test]

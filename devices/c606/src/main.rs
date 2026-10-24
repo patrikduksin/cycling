@@ -140,13 +140,13 @@ async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
     pointer
 }
 
-/// Back to start's breadcrumb (48 KiB), the loaded course (16 KiB) and their
-/// state live in PSRAM: main's stack shares DRAM with `Runtime`'s static
-/// future and cannot spare them. Without PSRAM the back-to-start page says
-/// NO TRACK and no course loads.
+/// Back to start's breadcrumb (48 KiB), the loaded course (16 KiB), the
+/// course in the ride's frame (24 KiB) and their state live in PSRAM: main's
+/// stack shares DRAM with `Runtime`'s static future and cannot spare them.
+/// Without PSRAM the back-to-start page says NO TRACK and no course loads.
 #[cfg(feature = "cycling")]
 async fn attach_back(sdk: &mut vana::app::Runtime) {
-    use vana::app::{BACK_CRUMBS, BackToStart, Course, Crumb, MapFrame};
+    use vana::app::{BACK_CRUMBS, BackToStart, COURSE_POINTS, Course, Crumb, MapFrame};
     let Ok(layout) = core::alloc::Layout::array::<Crumb>(BACK_CRUMBS) else {
         return;
     };
@@ -159,6 +159,16 @@ async fn attach_back(sdk: &mut vana::app::Runtime) {
     // alignment for `Crumb`, all zero bytes, which is a valid `Crumb`. It is
     // never deallocated and this is its only reference.
     let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), BACK_CRUMBS) };
+    let Ok(layout) = core::alloc::Layout::array::<Crumb>(COURSE_POINTS) else {
+        return;
+    };
+    let line = zeroed_external(layout).await;
+    if line.is_null() {
+        log::warn!("back to start: no PSRAM for the course's line");
+        return;
+    }
+    // SAFETY: as for the breadcrumb, with COURSE_POINTS crumbs.
+    let line = unsafe { core::slice::from_raw_parts_mut(line.cast::<Crumb>(), COURSE_POINTS) };
     // The map's track is zero bytes to begin with too: nothing shown yet.
     let map = zeroed_external(core::alloc::Layout::new::<MapFrame>()).await;
     if map.is_null() {
@@ -189,7 +199,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) {
     // alignment. It is initialized by this write, never deallocated, and
     // this is its only reference.
     let back = unsafe {
-        back.write(BackToStart::new(crumbs, map, course));
+        back.write(BackToStart::new(crumbs, line, map, course));
         &mut *back
     };
     sdk.attach_back(back);

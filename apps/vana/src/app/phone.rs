@@ -847,6 +847,7 @@ impl Runtime {
         back.kept.store = super::course::Store::Unread;
         let mut gpx = gpx::Gpx::new();
         gpx.start(back.course);
+        back.course_changed();
         log::info!(target: "phone", "VANA_PHONE course_upload bytes={}", request.body);
         self.phone.w().job = Job::Course {
             id,
@@ -909,6 +910,7 @@ impl Runtime {
         match course::save(bulk, back.course) {
             Ok(()) => {
                 back.kept.store = super::course::Store::Kept;
+                back.course_changed();
                 log::info!(
                     target: "phone",
                     "VANA_PHONE course_saved points={} distance_m={}",
@@ -941,6 +943,7 @@ impl Runtime {
             Ok(()) => {
                 back.course.clear();
                 back.kept.store = super::course::Store::Kept;
+                back.course_changed();
                 log::info!(target: "phone", "VANA_PHONE course_cleared");
                 self.display.redraw();
                 self.reply(id, 204, None);

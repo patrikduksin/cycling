@@ -767,6 +767,8 @@ mod tests {
                 view.back = ride::Back::Guide(crate::ride::homing::Guide {
                     mode: crate::ride::homing::Mode::Track,
                     following: true,
+                    course: false,
+                    course_near: false,
                     direct_m: 1_920,
                     track_m: 2_700,
                     off_m: 0,

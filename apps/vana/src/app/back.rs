@@ -1,11 +1,12 @@
 //! Back to start: the ride's breadcrumb, fed from fresh fixes, and nudges
-//! when following it back.
+//! when following it back, or when following the loaded course.
 //!
 //! Composition gives `BackToStart` a block of its own with room for
-//! `BACK_CRUMBS` points (PSRAM on the device) and the loaded course beside
-//! them, and hands it to `Runtime::attach_back`; `Runtime` keeps only the
-//! reference, so neither costs main's stack anything. Without it the
-//! back-to-start page says NO TRACK and no course can be loaded.
+//! `BACK_CRUMBS` points (PSRAM on the device), the loaded course beside them
+//! and room for it in the ride's frame, and hands it to
+//! `Runtime::attach_back`; `Runtime` keeps only the reference, so none of it
+//! costs main's stack anything. Without it the back-to-start page says NO
+//! TRACK and no course can be loaded.
 use super::Runtime;
 use super::cues::Cue;
 use crate::ride::course::Course;
@@ -34,20 +35,27 @@ pub struct BackToStart {
 }
 
 impl BackToStart {
-    /// The breadcrumb in `crumbs`, and the course; both may be zeroed memory.
+    /// The breadcrumb in `crumbs`, the course and room for it in the
+    /// ride's frame in `line`; all may be zeroed memory.
     pub fn new(
         crumbs: &'static mut [Crumb],
+        line: &'static mut [Crumb],
         map: &'static mut MapFrame,
         course: &'static mut Course,
     ) -> Self {
         Self {
-            homing: Homing::new(crumbs),
+            homing: Homing::new(crumbs).with_line(line),
             riding: false,
             map,
             map_key: None,
             course,
             kept: super::course::Kept::default(),
         }
+    }
+
+    /// Follow the course as it is now, or nothing once it is cleared.
+    pub(super) fn course_changed(&mut self) {
+        self.homing.set_course(self.course.points());
     }
 }
 
@@ -75,18 +83,26 @@ impl Runtime {
             return;
         }
         let event = state.homing.observe(self.readings.live.location_e7, now);
+        if state.homing.needs_course() {
+            state.homing.set_course(state.course.points());
+        }
         let following = state.homing.following();
+        let course = state.homing.following_course();
         if state.homing.take_pass() {
             self.ride.passed_start(now);
             self.display.redraw();
         }
         let (message, tone, cue) = match event {
+            Some(Event::Following) if course => {
+                ("FOLLOWING COURSE", Tone::Good, Some(Cue::OnTrack))
+            }
             Some(Event::Following) => ("FOLLOWING TRACK", Tone::Good, Some(Cue::OnTrack)),
             Some(Event::OffTrack) => ("OFF TRACK", Tone::Warn, Some(Cue::OffTrack)),
             Some(Event::OnTrack) => ("BACK ON TRACK", Tone::Good, Some(Cue::OnTrack)),
             Some(Event::Dropped) => ("STOPPED FOLLOWING", Tone::Info, None),
             // Riding past the start on a loop is no news unless heading back.
             Some(Event::Arrived) if following => ("BACK AT START", Tone::Good, Some(Cue::AtStart)),
+            Some(Event::CourseEnd) => ("END OF COURSE", Tone::Good, Some(Cue::AtStart)),
             _ => return,
         };
         let toast = crate::screens::chrome::Toast::new(message, tone);
@@ -97,7 +113,8 @@ impl Runtime {
         self.display.redraw();
     }
 
-    /// The tap on the page's pad: follow the breadcrumb back, or stop.
+    /// The tap on the page's pad: follow the course or the breadcrumb back,
+    /// or stop.
     pub(super) fn toggle_follow(&mut self, now: u64) {
         let Some(state) = self.back.as_deref_mut() else {
             self.navigation.toast("NO TRACK", Tone::Info, now);
@@ -107,8 +124,26 @@ impl Runtime {
         if !state.homing.set_following(follow, now) {
             self.navigation.toast("NO TRACK YET", Tone::Info, now);
         } else if follow {
-            self.navigation.toast("FOLLOWING TRACK", Tone::Good, now);
+            let message = if state.homing.following_course() {
+                "FOLLOWING COURSE"
+            } else {
+                "FOLLOWING TRACK"
+            };
+            self.navigation.toast(message, Tone::Good, now);
             self.cue(Cue::OnTrack, now);
+        }
+    }
+
+    /// A long press on MAP: stop following the course or the breadcrumb,
+    /// mid-ride. The pad on BACK TO START can follow again.
+    pub(super) fn stop_following_from_map(&mut self, now: u64) {
+        let Some(state) = self.back.as_deref_mut() else {
+            return;
+        };
+        if state.homing.following() {
+            state.homing.set_following(false, now);
+            self.navigation.toast("STOPPED FOLLOWING", Tone::Info, now);
+            self.display.redraw();
         }
     }
 }
@@ -120,6 +155,7 @@ pub(super) fn view_of(back: &Option<&'static mut BackToStart>) -> Back {
         Some(state) => state.homing.guide().map_or(
             Back::Waiting {
                 following: state.homing.following(),
+                course: state.homing.following_course(),
             },
             Back::Guide,
         ),
@@ -137,6 +173,8 @@ pub(super) fn refresh_map(back: &mut Option<&'static mut BackToStart>) {
         here: state.homing.position(),
         heading: state.homing.heading(),
         home: state.homing.route_home(),
+        course: state.homing.course(),
+        ahead: state.homing.course_ahead(),
     };
     update_map(state.map, &mut state.map_key, &track);
 }

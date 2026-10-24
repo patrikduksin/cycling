@@ -80,6 +80,7 @@ impl Runtime {
             log::warn!(target: "sdk.course", "load_failed error={error:?}");
         }
         back.kept.took(result, now);
+        back.course_changed();
         self.display.redraw();
     }
 

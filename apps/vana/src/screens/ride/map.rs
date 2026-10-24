@@ -6,21 +6,26 @@
 //! standing still it is north up and says so. The rider sits low, so more of
 //! the road behind shows than ahead. The zoom steps out as the ride grows,
 //! to fit the whole track, and never closer than 500 m across. Following the
-//! track back, the way home is green, as on the back-to-start page.
+//! track back, the way home is green, as on the back-to-start page. A loaded
+//! course is drawn grey under the track: while following it only what is
+//! ahead, else both ways from its point nearest the rider. It does not change
+//! the zoom, so a course far from the ride stays off the page.
 //!
 //! Painting a row may not walk thousands of points. `fill` projects the
 //! track into screen space once per frame, drops points closer than
 //! `MIN_STEP` pixels (wider when the budget is full), and buckets the
 //! segments by `BAND` rows, so a row tests only the segments that reach it.
-//! The track is the page's only per-row work; `prepare` lays out the text
-//! and the marks as on other canvas pages, and the page paints the track
-//! first, so the start and the rider lie over it.
+//! The course gets its own budget of segments, nearest the rider first. The
+//! lines are the page's only per-row work; `prepare` lays out the text and
+//! the marks as on other canvas pages, and the page paints the lines first,
+//! so the start and the rider lie over them.
 use super::{LEFT, RIGHT, kilometres};
 use crate::ride::homing::{Crumb, TURN};
 use crate::screens::canvas::{Canvas, GAP, Shape};
 use crate::screens::chrome::{
     ACCENT, AMBER, Align, BODY as BODY_FACE, CAPTION, GREEN, Rect, Row, SECONDARY, WHITE,
 };
+
 use crate::screens::workout::{Text, View};
 use core::f32::consts::TAU;
 use firmware_shell::rendering::font::blend;
@@ -40,9 +45,24 @@ pub struct Track<'a> {
     /// Following the track back: the first points up to this index, then
     /// the matched point if any, are the way home.
     pub home: Option<(usize, Option<(f32, f32)>)>,
+    /// The loaded course, end first; empty without one.
+    pub course: &'a [Crumb],
+    /// Following the course: what is ahead is its first points up to this
+    /// index, from its end, and then the matched point if any.
+    pub ahead: Option<(usize, Option<(f32, f32)>)>,
 }
 
 type Point = (f32, f32);
+
+/// `count` points of the course from index `from`, down towards its end or
+/// up towards its start; the first is `matched` when given.
+#[derive(Clone, Copy, Default)]
+struct Chain {
+    from: usize,
+    down: bool,
+    count: usize,
+    matched: Option<Point>,
+}
 
 impl Track<'_> {
     /// Where the matched point sits among the points drawn.
@@ -93,6 +113,67 @@ impl Track<'_> {
         })
     }
 
+    /// Where the ride began: its first kept point.
+    fn start(&self) -> Option<Point> {
+        self.crumbs.first().map(|c| (c.east, c.north))
+    }
+
+    /// The stretches of course to draw, nearest the rider first: while
+    /// following, what is ahead; otherwise both ways from its point nearest
+    /// `centre`.
+    fn course_chains(&self, centre: Point) -> [Chain; 2] {
+        let len = self.course.len();
+        let none = Chain::default();
+        if len < 2 {
+            return [none; 2];
+        }
+        if let Some((end, matched)) = self.ahead {
+            let from = end.min(len - 1);
+            let ahead = Chain {
+                from,
+                down: true,
+                count: from + 1,
+                matched,
+            };
+            return [ahead, none];
+        }
+        let gap = |c: &Crumb| {
+            let (east, north) = (c.east - centre.0, c.north - centre.1);
+            east * east + north * north
+        };
+        let nearest = (0..len)
+            .min_by(|&a, &b| gap(&self.course[a]).total_cmp(&gap(&self.course[b])))
+            .unwrap_or(0);
+        [
+            Chain {
+                from: nearest,
+                down: true,
+                count: nearest + 1,
+                matched: None,
+            },
+            Chain {
+                from: nearest,
+                down: false,
+                count: len - nearest,
+                matched: None,
+            },
+        ]
+    }
+
+    fn chain_at(&self, chain: &Chain, k: usize) -> Point {
+        match chain.matched {
+            Some(matched) if k == 0 => matched,
+            _ => {
+                let c = self.course[if chain.down {
+                    chain.from - k
+                } else {
+                    chain.from + k
+                }];
+                (c.east, c.north)
+            }
+        }
+    }
+
     /// Where the page centres: the rider, else where the track last was.
     fn centre(&self) -> Option<Point> {
         self.here
@@ -111,6 +192,9 @@ pub struct Key {
     here: Option<(u32, u32)>,
     heading: Option<u16>,
     home: Option<(usize, Option<(u32, u32)>)>,
+    course: usize,
+    course_m: u32,
+    ahead: Option<(usize, Option<(u32, u32)>)>,
 }
 
 impl Track<'_> {
@@ -124,6 +208,11 @@ impl Track<'_> {
             heading: self.heading,
             home: self
                 .home
+                .map(|(segment, matched)| (segment, matched.map(bits))),
+            course: self.course.len(),
+            course_m: self.course.last().map_or(0, |c| c.along.to_bits()),
+            ahead: self
+                .ahead
                 .map(|(segment, matched)| (segment, matched.map(bits))),
         }
     }
@@ -171,8 +260,12 @@ const RIDER_RADIUS: i32 = 7;
 const BAR_MAX_PX: f32 = 56.0;
 const BAR_THICKNESS: usize = 3;
 
-/// Segments kept after projection.
+/// The course, under the track.
+const COURSE: u16 = SECONDARY;
+/// Segments of the track kept after projection, and of the course.
 const MAX_SEGMENTS: usize = 255;
+const COURSE_SEGMENTS: usize = 96;
+const SEGMENTS: usize = MAX_SEGMENTS + COURSE_SEGMENTS;
 /// Points closer than this to the last kept are dropped, widening to
 /// `MAX_STEP` when the segments do not fit.
 const MIN_STEP: f32 = 2.0;
@@ -194,14 +287,17 @@ const GLITCH_M: f32 = 100_000.0;
 /// Rows per bucket, from the top of the body.
 const BAND: usize = 16;
 const BANDS: usize = (super::BODY.bottom - super::BODY.top).div_ceil(BAND);
-/// Entries across all buckets: a segment sits in each band it reaches.
-const ITEMS: usize = 1536;
+/// Entries across all buckets: a segment sits in each band it reaches. The
+/// course takes at most `COURSE_ITEMS` of them.
+const TRACK_ITEMS: usize = 1536;
+const COURSE_ITEMS: usize = 512;
+const ITEMS: usize = TRACK_ITEMS + COURSE_ITEMS;
 /// Columns a row of the page covers.
 const SPAN: usize = super::BODY.right - super::BODY.left;
 
 const _: () = assert!(BOTTOM <= crate::screens::chrome::TOAST.top);
 const _: () = assert!(HEAD + 12 < TOP);
-const _: () = assert!(MAX_SEGMENTS < 256, "segments are bucketed as bytes");
+const _: () = assert!(ITEMS <= u16::MAX as usize, "segments are bucketed as u16");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Show {
@@ -213,13 +309,14 @@ enum Show {
     Track,
 }
 
-/// One drawn stretch of the track, in pixels.
+/// One drawn stretch of the track or the course, in pixels.
 #[derive(Clone, Copy, Default)]
 struct Segment {
     a: Point,
     b: Point,
     /// On the far side of the way home.
     far: bool,
+    course: bool,
 }
 
 /// The track in screen space: refilled when the rider or the breadcrumb
@@ -228,13 +325,15 @@ struct Segment {
 #[derive(Clone)]
 pub struct Frame {
     show: Show,
-    segments: [Segment; MAX_SEGMENTS],
+    /// The course's segments first, then the track's.
+    segments: [Segment; SEGMENTS],
     count: usize,
+    course_count: usize,
     /// Two or more points to draw: the page never says it has no track.
     has_track: bool,
     /// Where each band's segments start in `items`, and the segments.
     starts: [u16; BANDS + 1],
-    items: [u8; ITEMS],
+    items: [u16; ITEMS],
     /// The chevron: tip, left wing, right wing; drawn when heading up.
     chevron: [Point; 3],
     /// The rider is drawn as a disc, or not at all without a fix.
@@ -247,6 +346,7 @@ pub struct Frame {
     /// The zoom step plus one; zero before the first fill.
     zoom_held: usize,
     following: bool,
+    on_course: bool,
     heading_up: bool,
     /// No fresh fix: the track is where it was.
     lost: bool,
@@ -256,8 +356,9 @@ impl Default for Frame {
     fn default() -> Self {
         Self {
             show: Show::Unavailable,
-            segments: [Segment::default(); MAX_SEGMENTS],
+            segments: [Segment::default(); SEGMENTS],
             count: 0,
+            course_count: 0,
             has_track: false,
             starts: [0; BANDS + 1],
             items: [0; ITEMS],
@@ -268,6 +369,7 @@ impl Default for Frame {
             scale: 0.0,
             zoom_held: 0,
             following: false,
+            on_course: false,
             heading_up: false,
             lost: false,
         }
@@ -423,10 +525,12 @@ fn fill(frame: &mut Frame, track: &Track) {
         Show::Track
     };
     frame.count = 0;
+    frame.course_count = 0;
     frame.has_track = false;
     frame.rider = false;
     frame.heading_up = false;
     frame.following = false;
+    frame.on_course = false;
     frame.starts = [0; BANDS + 1];
     let Some(centre) = track.centre().filter(|_| frame.show == Show::Track) else {
         frame.zoom_held = 0;
@@ -442,7 +546,8 @@ fn fill(frame: &mut Frame, track: &Track) {
             bounds.include((right, ahead));
         }
     };
-    include((0.0, 0.0));
+    let start = track.start().unwrap_or(centre);
+    include(start);
     (0..total).for_each(|i| include(track.at(i)));
     let step = zoom(bounds, frame.zoom_held.checked_sub(1));
     let scale = WIDTH_PX / span(step);
@@ -456,13 +561,15 @@ fn fill(frame: &mut Frame, track: &Track) {
         scale,
     };
     frame.scale = scale;
-    frame.start = project((0.0, 0.0), &place);
+    frame.start = project(start, &place);
     frame.following = track.home.is_some();
+    frame.on_course = track.ahead.is_some();
     frame.heading_up = heading.is_some();
     frame.lost = track.here.is_none();
     frame.rider = track.here.is_some() && heading.is_none();
     let (x, y) = place.anchor;
     frame.chevron = [(x, y - 9.0), (x - 8.0, y + 8.0), (x + 8.0, y + 8.0)];
+    thin_course(frame, track, place);
     let home_end = track.home_end();
     let mut step = MIN_STEP;
     loop {
@@ -474,7 +581,69 @@ fn fill(frame: &mut Frame, track: &Track) {
         }
         step = (step * 1.5).min(MAX_STEP);
     }
-    frame.has_track = frame.count > 0 || track.crumbs.len() >= 2;
+    frame.has_track = frame.count > frame.course_count || track.crumbs.len() >= 2;
+}
+
+/// Whether a segment can show on the page at all.
+fn visible(a: Point, b: Point) -> bool {
+    let reach = TRACK_HALF + 1.0;
+    let (left, right) = (
+        super::BODY.left as f32 - reach,
+        super::BODY.right as f32 + reach,
+    );
+    let (top, bottom) = (
+        super::BODY.top as f32 - reach,
+        super::BODY.bottom as f32 + reach,
+    );
+    a.0.max(b.0) >= left && a.0.min(b.0) <= right && a.1.max(b.1) >= top && a.1.min(b.1) <= bottom
+}
+
+/// Project the course to draw into the first segments, nearest the rider
+/// first, each at least a step long, widening the step until it fits
+/// `COURSE_SEGMENTS`; at the widest step what does not fit is the farthest.
+fn thin_course(frame: &mut Frame, track: &Track, place: Place) {
+    let chains = track.course_chains(place.centre);
+    frame.course_count = 0;
+    frame.count = 0;
+    let mut step = MIN_STEP;
+    loop {
+        let last_try = step >= MAX_STEP;
+        frame.course_count = 0;
+        let mut items = 0;
+        let mut fits = true;
+        'chains: for chain in chains.iter().filter(|chain| chain.count >= 2) {
+            let mut anchor = project(track.chain_at(chain, 0), &place);
+            for k in 1..chain.count {
+                let p = project(track.chain_at(chain, k), &place);
+                let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
+                if k + 1 < chain.count && dx * dx + dy * dy < step * step {
+                    continue;
+                }
+                if visible(anchor, p) {
+                    let reach =
+                        bands(anchor, p, TRACK_HALF).map_or(0, |(first, last)| last - first + 1);
+                    if frame.course_count == COURSE_SEGMENTS || items + reach > COURSE_ITEMS {
+                        fits = false;
+                        break 'chains;
+                    }
+                    items += reach;
+                    frame.segments[frame.course_count] = Segment {
+                        a: anchor,
+                        b: p,
+                        far: false,
+                        course: true,
+                    };
+                    frame.course_count += 1;
+                }
+                anchor = p;
+            }
+        }
+        if fits || last_try {
+            break;
+        }
+        step = (step * 1.5).min(MAX_STEP);
+    }
+    frame.count = frame.course_count;
 }
 
 /// The cells a segment crosses, as (column, row) while on the page.
@@ -510,7 +679,7 @@ fn thin(
     newest_first: bool,
 ) -> bool {
     let total = track.total();
-    frame.count = 0;
+    frame.count = frame.course_count;
     if total < 2 {
         return true;
     }
@@ -540,7 +709,7 @@ fn thin(
         };
         let far = home_end.is_some_and(|end| i.max(order(k - 1)) > end);
         if !drawn {
-            if frame.count == MAX_SEGMENTS {
+            if frame.count == frame.course_count + MAX_SEGMENTS {
                 if newest_first {
                     break;
                 }
@@ -550,6 +719,7 @@ fn thin(
                 a: anchor,
                 b: p,
                 far,
+                course: false,
             };
             frame.count += 1;
             cells(anchor, p, |cell| {
@@ -576,20 +746,22 @@ fn bands(a: Point, b: Point, half: f32) -> Option<(usize, usize)> {
 }
 
 /// Sort the segments into the bands their rows reach, in order. False when
-/// they would not fit.
+/// the track's would not fit; the course's always do.
 fn bucket(frame: &mut Frame) -> bool {
     let mut counts = [0u16; BANDS];
-    let mut total = 0;
+    let mut track = 0;
     for i in 0..frame.segments() {
         let (a, b) = frame.segment(i);
         if let Some((first, last)) = bands(a, b, TRACK_HALF) {
             for count in &mut counts[first..=last] {
                 *count += 1;
-                total += 1;
+            }
+            if i >= frame.course_count {
+                track += last - first + 1;
             }
         }
     }
-    if total > ITEMS {
+    if track > TRACK_ITEMS {
         return false;
     }
     let mut at = 0;
@@ -603,7 +775,7 @@ fn bucket(frame: &mut Frame) -> bool {
         let (a, b) = frame.segment(i);
         if let Some((first, last)) = bands(a, b, TRACK_HALF) {
             for at in &mut next[first..=last] {
-                frame.items[usize::from(*at)] = i as u8;
+                frame.items[usize::from(*at)] = i as u16;
                 *at += 1;
             }
         }
@@ -651,10 +823,30 @@ fn columns(a: Point, b: Point, half: f32, y: usize) -> Option<core::ops::Range<u
     (first < last).then_some(first..last)
 }
 
-/// A pixel's track coverage in the low bits and which colour in the fifth.
+/// A pixel's track coverage in the low four bits, which colour in the fifth,
+/// and the course's coverage, in eighths, in the top three.
 fn keep_track(held: &mut u8, coverage: u8, color: usize) {
     if coverage > *held & 15 {
-        *held = coverage | (color as u8) << 4;
+        *held = *held & 0xe0 | coverage | (color as u8) << 4;
+    }
+}
+
+fn keep_course(held: &mut u8, coverage: u8) {
+    let eighths = (coverage * 7 + 7) / 15;
+    if eighths > *held >> 5 {
+        *held = *held & 0x1f | eighths << 5;
+    }
+}
+
+/// What a pixel shows: the course over what was there, the track over both.
+fn shade(held: u8, colors: [u16; 2], under: u16) -> u16 {
+    let color = match held >> 5 {
+        0 => under,
+        eighths => blend(COURSE, under, (eighths * 15 + 3) / 7),
+    };
+    match held & 15 {
+        0 => color,
+        c => blend(colors[usize::from(held >> 4 & 1)], color, c),
     }
 }
 
@@ -681,7 +873,12 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         };
         for x in range.clone() {
             let held = &mut track[x - super::BODY.left];
-            keep_track(held, coverage(a, b, TRACK_HALF, x, y), frame.color(segment));
+            let covered = coverage(a, b, TRACK_HALF, x, y);
+            if frame.segments[segment].course {
+                keep_course(held, covered);
+            } else {
+                keep_track(held, covered, frame.color(segment));
+            }
         }
         touch(range);
     }
@@ -704,11 +901,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     let left = super::BODY.left;
     let colors = frame.colors();
     row.each_over(left + first..left + last, |x, under| {
-        let held = track[x - left];
-        let mut color = match held & 15 {
-            0 => under,
-            c => blend(colors[usize::from(held >> 4)], under, c),
-        };
+        let mut color = shade(track[x - left], colors, under);
         if rider[x - left] > 0 {
             color = blend(ACCENT, color, rider[x - left]);
         }
@@ -725,12 +918,14 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
     let mut held = 0u8;
     for i in 0..frame.segments() {
         let (a, b) = frame.segment(i);
-        keep_track(&mut held, coverage(a, b, TRACK_HALF, x, y), frame.color(i));
+        let covered = coverage(a, b, TRACK_HALF, x, y);
+        if frame.segments[i].course {
+            keep_course(&mut held, covered);
+        } else {
+            keep_track(&mut held, covered, frame.color(i));
+        }
     }
-    let mut color = match held & 15 {
-        0 => under,
-        c => blend(frame.colors()[usize::from(held >> 4)], under, c),
-    };
+    let mut color = shade(held, frame.colors(), under);
     if frame.heading_up {
         let [tip, left, right] = frame.chevron;
         let c = [(left, tip), (tip, right)]
@@ -823,7 +1018,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let color = if frame.lost {
         let _ = state.push_str("NO GPS");
         AMBER
-    } else if frame.following {
+    } else if frame.following || frame.on_course {
         let _ = state.push_str("FOLLOWING");
         GREEN
     } else {
@@ -930,6 +1125,8 @@ mod tests {
             here: crumbs.last().map(|c| (c.east, c.north)),
             heading: None,
             home: None,
+            course: &[],
+            ahead: None,
         }
     }
 
@@ -1329,5 +1526,58 @@ mod tests {
             length(&mut text, metres);
             assert_eq!(text.as_str(), want);
         }
+    }
+
+    #[test]
+    fn the_course_ahead_is_grey_under_the_track() {
+        use crate::screens::chrome::BLACK;
+        // The ride went 300 m north; the course goes on north, then east.
+        let c = crumbs(&[(0.0, 0.0), (0.0, 300.0)]);
+        // End first, as the guide keeps it.
+        let course = crumbs(&[(400.0, 900.0), (0.0, 900.0), (0.0, 0.0)]);
+        let mut t = track(&c);
+        t.course = &course;
+        t.ahead = Some((2, Some((0.0, 300.0))));
+        let frame = filled(&t);
+        assert!(frame.on_course && !frame.following);
+        assert_eq!(frame.course_count, 1, "only what is ahead and on the page");
+        let s = frame.scale;
+        let at = |north: f32| {
+            let (x, y) = frame.rider_at;
+            (x as usize, (y - (north - 300.0) * s) as usize)
+        };
+        let (x, y) = at(380.0);
+        assert_eq!(pixel(&frame, x, y, BLACK), COURSE, "ahead is grey");
+        let (x, y) = at(150.0);
+        assert_eq!(pixel(&frame, x, y, BLACK), WHITE, "the ride is white");
+        // Not following, the whole course is drawn.
+        t.ahead = None;
+        let frame = filled(&t);
+        assert_eq!(frame.course_count, 1);
+        let (x, y) = at(150.0);
+        assert_eq!(pixel(&frame, x, y, BLACK), WHITE, "the track lies over it");
+    }
+
+    #[test]
+    fn a_long_course_keeps_to_its_budget_nearest_the_rider() {
+        // A course zigzagging 40 km north from the rider, every 10 m.
+        let points: std::vec::Vec<(f32, f32)> = (0..4_000)
+            .rev()
+            .map(|i| (if i % 2 == 0 { 0.0 } else { 30.0 }, i as f32 * 10.0))
+            .collect();
+        let course = crumbs(&points);
+        let c = crumbs(&[(0.0, -100.0), (0.0, 0.0)]);
+        let mut t = track(&c);
+        t.course = &course;
+        let frame = filled(&t);
+        assert!(frame.course_count > 0 && frame.course_count <= COURSE_SEGMENTS);
+        let items: usize = (0..frame.course_count)
+            .filter_map(|i| {
+                let (a, b) = frame.segment(i);
+                bands(a, b, TRACK_HALF).map(|(first, last)| last - first + 1)
+            })
+            .sum();
+        assert!(items <= COURSE_ITEMS);
+        assert!(frame.has_track, "the track is drawn beside the course");
     }
 }

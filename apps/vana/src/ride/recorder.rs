@@ -388,7 +388,9 @@ impl Recorder {
             self.dropped_samples = self
                 .dropped_samples
                 .saturating_add(missed.min(u64::from(u32::MAX)) as u32);
-            self.next_sample += (missed + 1) * 1_000;
+            self.next_sample = self
+                .next_sample
+                .saturating_add(missed.saturating_add(1).saturating_mul(1_000));
         }
 
         if self.status == Status::Recovered

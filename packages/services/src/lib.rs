@@ -1,6 +1,6 @@
 #![no_std]
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 extern crate std;
 
 pub mod ant;
@@ -23,6 +23,6 @@ pub mod positioning;
 pub mod sector_log;
 pub mod sound;
 pub mod storage;
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod volume;

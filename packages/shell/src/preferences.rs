@@ -613,22 +613,12 @@ pub(crate) mod tests {
         assert!(!saver.ready(20_000, settings, false, false));
     }
 
-    /// xorshift64*: deterministic cases without a dependency.
-    pub(crate) struct Rng(pub(crate) u64);
+    pub(crate) use firmware_services::testing::Rng;
 
-    impl Rng {
-        pub(crate) fn below(&mut self, n: u64) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) % n
-        }
-
-        fn text(&mut self, max: u64) -> std::vec::Vec<u8> {
-            (0..self.below(max + 1))
-                .map(|_| b'!' + self.below(94) as u8)
-                .collect()
-        }
+    fn text(rng: &mut Rng, max: u64) -> std::vec::Vec<u8> {
+        (0..rng.below(max + 1))
+            .map(|_| b'!' + rng.below(94) as u8)
+            .collect()
     }
 
     pub(crate) fn arbitrary_settings(rng: &mut Rng) -> Settings {
@@ -640,14 +630,14 @@ pub(crate) mod tests {
         )
         .unwrap();
         if rng.below(2) == 0 {
-            let ssid = [&b"a"[..], &rng.text(31)].concat();
-            let password = [&b"password"[..], &rng.text(55)].concat();
+            let ssid = [&b"a"[..], &text(rng, 31)].concat();
+            let password = [&b"password"[..], &text(rng, 55)].concat();
             settings.wifi =
                 device_api::connectivity::WifiConfig::new(&ssid, &password, rng.below(2) == 0);
         }
         if rng.below(2) == 0 {
             settings.ble = Some(device_api::ble_transport::Selection {
-                name: device_api::connectivity::Text::new(&[&b"b"[..], &rng.text(31)].concat())
+                name: device_api::connectivity::Text::new(&[&b"b"[..], &text(rng, 31)].concat())
                     .unwrap(),
                 address: (rng.below(2) == 0).then(|| [rng.below(256) as u8; 6]),
                 service: rng.below(65_536) as u16,
@@ -655,7 +645,7 @@ pub(crate) mod tests {
             });
             settings.ble_profile = rng.below(256) as u8;
         }
-        settings.app = AppPreferences::new(&rng.text(APP_CAPACITY as u64)).unwrap();
+        settings.app = AppPreferences::new(&text(rng, APP_CAPACITY as u64)).unwrap();
         settings
     }
 
@@ -680,7 +670,7 @@ pub(crate) mod tests {
     #[test]
     fn damaged_records_are_never_read_as_other_settings() {
         for seed in 0..3_000 {
-            let mut rng = Rng(seed * 2 + 1);
+            let mut rng = Rng::new(seed);
             let settings = arbitrary_settings(&mut rng);
             let encoded = settings.encode();
             assert_eq!(

@@ -640,13 +640,8 @@ mod tests {
             "zz",
             "",
         ];
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let mut below = |n: u64| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state.wrapping_mul(0x2545_f491_4f6c_dd1d) % n
-        };
+        let mut rng = firmware_services::testing::Rng::new(1);
+        let mut below = |n: u64| rng.below(n);
         let mut lines = Lines::default();
         let (mut newlines, mut answers) = (0, 0);
         for _ in 0..20_000 {

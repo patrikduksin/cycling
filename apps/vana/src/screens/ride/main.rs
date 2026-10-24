@@ -388,7 +388,7 @@ mod tests {
     };
 
     fn view(case: Case) -> View<'static> {
-        let mut view = View::new(Page::Ride, 0, Some(86_399_000 / 1000));
+        let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
         view.state = case.state;
         view.active_secs = case.secs;
         let sample = Sample {

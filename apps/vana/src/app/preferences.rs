@@ -7,7 +7,7 @@
 //!
 //! | Byte | Field | Since |
 //! | --- | --- | --- |
-//! | 0 | Record version, 4 | 1 |
+//! | 0 | Record version, 5 | 1 |
 //! | 1..3 | FTP in watts, little-endian | 1 |
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
@@ -18,12 +18,15 @@
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |
 //! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) | 3 |
 //! | then | Theme: 0 dark, 1 light, 2 automatic | 4 |
+//! | then | Time zone, 2 bytes owned by `clock::Zone`: 0 0 for Chile | 5 |
 //!
 //! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
 //! Both load with the default options and setup done, since a rider already
-//! used them, and the next save rewrites them as version 4. A version 3
+//! used them, and the next save rewrites them as version 5. A version 3
 //! record is `19 + 4 * count` bytes and loads with the dark theme; a version 4
-//! record is `20 + 4 * count` bytes, at most 60.
+//! record is `20 + 4 * count` bytes. Both load with the Chile time zone, the
+//! zone the clock meant before it had a choice. A version 5 record is
+//! `22 + 4 * count` bytes, at most 62.
 //!
 //! An empty area means nothing was saved yet: the defaults apply, first-run
 //! setup is due, and the first change writes a record. A record VANA cannot
@@ -31,6 +34,7 @@
 //! but stays stored untouched until the rider explicitly overwrites it
 //! (`PROFILE OVERWRITE`).
 use super::Runtime;
+use crate::clock::Zone;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
 use device_api::display::Display;
@@ -40,12 +44,14 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
-const OPTIONS_LENGTH: usize = 4 + ALERTS_LENGTH + 1;
+const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V4 + 2;
+/// Options as version 4 stored them, without the time zone.
+const OPTIONS_LENGTH_V4: usize = OPTIONS_LENGTH_V3 + 1;
 /// Options as version 3 stored them, without the theme.
-const OPTIONS_LENGTH_V3: usize = OPTIONS_LENGTH - 1;
+const OPTIONS_LENGTH_V3: usize = 4 + ALERTS_LENGTH;
 const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY + OPTIONS_LENGTH;
 /// Edits settle this long before a flash write, so a run of presses saves once.
 const DEBOUNCE_MS: u64 = 2_000;
@@ -142,6 +148,7 @@ pub struct Options {
     pub auto_lap_km: u8,
     pub daylight: Daylight,
     pub theme: Theme,
+    pub zone: Zone,
     /// The first-run setup step to resume, 0 when setup is done.
     pub setup: u8,
     /// Ride alert settings, carried for `ride::alerts`.
@@ -158,6 +165,7 @@ impl Default for Options {
             auto_lap_km: 5,
             daylight: Daylight::Auto,
             theme: Theme::Dark,
+            zone: Zone::Chile,
             setup: 0,
             alerts: ALERTS_DEFAULT,
             sunset_alert: true,
@@ -184,11 +192,19 @@ impl Options {
         bytes[..4].copy_from_slice(&[flags, self.auto_lap_km, self.daylight.byte(), self.setup]);
         bytes[4..OPTIONS_LENGTH_V3].copy_from_slice(&self.alerts);
         bytes[OPTIONS_LENGTH_V3] = self.theme.byte();
+        bytes[OPTIONS_LENGTH_V4..].copy_from_slice(&self.zone.encode());
         bytes
     }
 
     /// Decode the options of record `version`.
     fn decode(bytes: &[u8], version: u8) -> Option<Self> {
+        let (bytes, zone) = match version {
+            3 | 4 => (bytes, Zone::Chile),
+            _ => {
+                let (bytes, zone) = bytes.split_last_chunk()?;
+                (bytes, Zone::decode(*zone)?)
+            }
+        };
         let (bytes, theme) = match version {
             3 => (bytes, Theme::Dark),
             _ => {
@@ -207,6 +223,7 @@ impl Options {
             auto_lap_km,
             daylight: Daylight::from_byte(daylight)?,
             theme,
+            zone,
             setup,
             alerts,
             sunset_alert: flags & SUNSET_OFF == 0,
@@ -666,14 +683,14 @@ mod tests {
     }
 
     #[test]
-    fn version_four_layout_is_pinned() {
+    fn version_five_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
         let defaults = record(profile, none, Options::default());
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                4, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0
+                5, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -690,6 +707,7 @@ mod tests {
             auto_lap_km: 10,
             daylight: Daylight::Night,
             theme: Theme::Auto,
+            zone: Zone::utc(-3),
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
             sunset_alert: true,
@@ -699,8 +717,8 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                4, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
-                0, 0x2c, 1, 70, 30, 0, 2
+                5, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -711,7 +729,7 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 60);
+        assert_eq!(bytes.len(), 62);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
     }
@@ -729,7 +747,23 @@ mod tests {
             migrated.options.alerts,
             [50, 180, 100, 0, 0x2c, 1, 70, 30, 0]
         );
-        // The next save writes version 4 and keeps the rest.
+        assert_eq!(migrated.options.zone, Zone::Chile);
+        // The next save writes version 5 and keeps the rest.
+        assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
+    }
+
+    /// A version 4 record predates the time zone choice: its clock meant
+    /// Santiago, so it loads with the Chile zone.
+    #[test]
+    fn version_four_migrates_with_the_chile_time_zone() {
+        let bytes = [
+            4, 2, 1, 170, 0, 0, 0b10, 10, 2, 3, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0, 1,
+        ];
+        let (migrated, stored) = decode(&bytes);
+        assert_eq!(stored, Stored::Migrated);
+        assert_eq!(migrated.options.zone, Zone::Chile);
+        assert_eq!(migrated.options.theme, Theme::Light);
+        assert_eq!(migrated.options.daylight, Daylight::Night);
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
 
@@ -765,7 +799,7 @@ mod tests {
             )
         );
         assert_eq!(Options::default().setup, 0);
-        // The next save writes version 4 with the same profile and sensors.
+        // The next save writes version 5 with the same profile and sensors.
         let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
@@ -778,7 +812,7 @@ mod tests {
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         // A newer version, even one that appended fields.
         assert_eq!(
-            decode(&[5, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
+            decode(&[6, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
             (defaults, Stored::Unsupported)
         );
         assert_eq!(decode(&[0xff]), (defaults, Stored::Unsupported));
@@ -794,12 +828,17 @@ mod tests {
             &[2, 250, 0, 170, 0, 1, 120, 0, 0, 1],
             &[2, 250, 0, 170, 0, 11],
             &[2, 0, 0, 170, 0, 0],
-            // Version 2 bytes under versions 3 and 4: the options are missing.
+            // Version 2 bytes under versions 3 to 5: the options are missing.
             &[3, 250, 0, 170, 0, 0],
             &[3, 250, 0, 170, 0],
             &[4, 250, 0, 170, 0, 0],
+            &[5, 250, 0, 170, 0, 0],
+            // Version 4 options under version 5: the zone is missing.
+            &[
+                5, 250, 0, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+            ],
             // A sensor count that runs past the record.
-            &[4, 250, 0, 170, 0, 2, 120, 1, 0, 1],
+            &[5, 250, 0, 170, 0, 2, 120, 1, 0, 1],
         ] {
             assert_eq!(
                 decode(damaged),
@@ -820,8 +859,8 @@ mod tests {
                 .unwrap()
                 .sunset_alert
         );
-        // Version 4 options: one byte short or long, an unknown flag, too
-        // long a lap, an unknown day/night or theme choice, and an impossible FTP.
+        // Version 5 options: one byte short or long, an unknown flag, too
+        // long a lap, an unknown day/night, theme or zone, and an impossible FTP.
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
             let mut options = good;
@@ -834,10 +873,12 @@ mod tests {
             ([250, 0], with(0, 8)),
             ([250, 0], with(1, AUTO_LAP_MAX_KM + 1)),
             ([250, 0], with(2, 3)),
-            ([250, 0], with(OPTIONS_LENGTH - 1, 3)),
+            ([250, 0], with(OPTIONS_LENGTH_V3, 3)),
+            ([250, 0], with(OPTIONS_LENGTH_V4, 2)),
+            ([250, 0], with(OPTIONS_LENGTH - 1, 57)),
             ([0, 0], good.to_vec()),
         ] {
-            let damaged = [&[4, profile[0], profile[1], 170, 0, 0][..], &options].concat();
+            let damaged = [&[5, profile[0], profile[1], 170, 0, 0][..], &options].concat();
             assert_eq!(
                 decode(&damaged),
                 (defaults, Stored::Malformed),

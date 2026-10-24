@@ -333,7 +333,7 @@ Fixed settings in this build:
 | Setting | Value |
 | --- | --- |
 | Wheel circumference | 2136 mm (stock RC520 700x28c) |
-| Display clock | Santiago summer time, UTC-3; recorded UTC is unmodified |
+| Display clock | Settings TIME ZONE, Chile's summer time rule by default (`clock::Zone`); recorded UTC is unmodified |
 | Clock source | Wi-Fi SNTP since boot, else the GNSS receiver's dated fixes (carried on through a lost fix); GNSS time of day as a display fallback |
 
 Training profile:

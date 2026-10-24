@@ -6,6 +6,7 @@ use super::home::Home;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
+use crate::clock::Local;
 use crate::ride::climb::Climbs;
 use crate::ride::climb_ahead::Forecast;
 use crate::ride::laps::{Lap, Laps};
@@ -17,9 +18,6 @@ use core::fmt::Write;
 
 /// Below this much recording time left, the ride page warns the rider.
 pub const LOW_STORAGE_S: u32 = 60 * 60;
-/// The clock's time zone: Santiago summer time, UTC-3, for this build.
-/// Recordings keep UTC.
-pub const UTC_OFFSET_S: u64 = 3 * 3600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -155,11 +153,10 @@ pub struct View<'a> {
     pub(super) badge: Option<Badge>,
 }
 impl View<'_> {
-    pub fn new(page: Page, cursor: usize, utc: Option<u64>) -> Self {
+    pub fn new(page: Page, cursor: usize, local: Option<Local>) -> Self {
         let mut time = Text::new();
-        // Santiago summer time for this workout build. UTC remains unchanged in recordings.
-        if let Some(utc) = utc {
-            let minutes = ((utc + 86400 - UTC_OFFSET_S) % 86400) / 60;
+        if let Some(local) = local {
+            let minutes = local.of_day() / 60;
             let hour = minutes / 60;
             let _ = write!(time, "{}:{:02}", (hour + 11) % 12 + 1, minutes % 60);
         } else {
@@ -499,11 +496,16 @@ mod tests {
 
     #[test]
     fn clock_shows_twelve_hour_local_time_without_a_suffix() {
-        let clock = |utc| View::new(Page::Home, 0, utc).time.as_bytes().to_vec();
-        assert_eq!(clock(Some(0)), b"9:00");
-        assert_eq!(clock(Some(15 * 3600)), b"12:00");
-        assert_eq!(clock(Some(3 * 3600)), b"12:00");
-        assert_eq!(clock(Some(5 * 86400 + 3 * 3600 + 59 * 60 + 59)), b"12:59");
+        let clock = |local: Option<u64>| {
+            View::new(Page::Home, 0, local.map(Local))
+                .time
+                .as_bytes()
+                .to_vec()
+        };
+        assert_eq!(clock(Some(21 * 3600)), b"9:00");
+        assert_eq!(clock(Some(12 * 3600)), b"12:00");
+        assert_eq!(clock(Some(0)), b"12:00");
+        assert_eq!(clock(Some(5 * 86400 + 59 * 60 + 59)), b"12:59");
         assert_eq!(clock(None), b"--:--");
     }
 
@@ -651,7 +653,7 @@ mod tests {
             },
         ];
         for cursor in 0..5 {
-            let mut view = View::new(Page::Home, cursor, Some(1_000_000));
+            let mut view = View::new(Page::Home, cursor, Some(Local(1_000_000)));
             view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
             let last = last_ride(4_999_800);
@@ -662,7 +664,7 @@ mod tests {
         }
         for page in RidePage::ALL {
             for radar_paired in [false, true] {
-                let mut view = View::new(Page::Ride, 0, Some(1_000_000));
+                let mut view = View::new(Page::Ride, 0, Some(Local(1_000_000)));
                 view.ride_page = page;
                 view.radar_paired = radar_paired;
                 view.sample = sample;
@@ -743,7 +745,7 @@ mod tests {
             ..Sample::default()
         };
         let ride = |page: Page| {
-            let mut view = View::new(page, 0, Some(1_000_000));
+            let mut view = View::new(page, 0, Some(Local(1_000_000)));
             view.battery = Some(Battery {
                 percent: 80,
                 ..Default::default()

@@ -9,6 +9,7 @@ use super::chrome::{
     Align, BODY, CAPTION, CARD, CONTENT, HEART, RAISED, Rect, SECONDARY, TITLE, WHITE, WIDTH,
 };
 use super::workout::Text;
+use crate::clock::{Local, civil};
 
 /// Cards on screen at once; the list scrolls to keep the focused one shown.
 pub const SHOWN: usize = 4;
@@ -149,14 +150,13 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
     canvas
 }
 
-/// "OCT 17  7:12" in the clock's time zone, from UTC milliseconds.
-pub fn started(utc_ms: u64) -> Text<20> {
+/// "OCT 17  7:12", a local start time.
+pub fn started(local: Local) -> Text<20> {
     const MONTHS: [&str; 12] = [
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
     ];
-    let local = (utc_ms / 1000).saturating_sub(super::workout::UTC_OFFSET_S);
-    let (days, seconds) = (local / 86_400, local % 86_400);
-    let (_, month, day) = civil(days);
+    let (_, month, day) = civil((local.0 / 86_400) as i64);
+    let seconds = local.of_day();
     let (hour, minute) = (seconds / 3600, seconds / 60 % 60);
     let mut text = Text::new();
     let _ = core::fmt::Write::write_fmt(
@@ -170,21 +170,6 @@ pub fn started(utc_ms: u64) -> Text<20> {
         ),
     );
     text
-}
-
-/// The proleptic Gregorian date of a day count since 1970-01-01
-/// (Howard Hinnant's `civil_from_days`).
-fn civil(days: u64) -> (u64, u8, u8) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u8;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    (year, month, day)
 }
 
 #[cfg(test)]
@@ -210,14 +195,12 @@ mod tests {
     }
 
     #[test]
-    fn dates_read_in_the_clock_time_zone() {
-        // 2026-10-17 10:12 UTC is 7:12 in the clock's zone (UTC-3).
-        let utc = (20_743 * 86_400 + 10 * 3600 + 12 * 60) * 1000;
-        assert_eq!(started(utc).as_str(), "OCT 17  7:12");
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(11_016), (2000, 2, 29));
-        // Midnight UTC is still the day before here.
-        assert_eq!(started(20_744 * 86_400_000).as_str(), "OCT 17  9:00");
+    fn starts_read_as_month_day_and_twelve_hour_time() {
+        let october_17: u64 = 20_743 * 86_400;
+        let at = |seconds| started(Local(october_17 + seconds));
+        assert_eq!(at(7 * 3600 + 12 * 60).as_str(), "OCT 17  7:12");
+        assert_eq!(at(21 * 3600).as_str(), "OCT 17  9:00");
+        assert_eq!(at(0).as_str(), "OCT 17  12:00");
     }
 
     #[test]

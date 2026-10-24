@@ -36,7 +36,7 @@ a.button, button {
   background: var(--raised); color: var(--white); border: 0; border-radius: 12px;
   font: inherit; font-size: 18px; padding: 12px 18px; text-decoration: none; cursor: pointer;
 }
-a.button.primary { background: var(--accent); }
+a.button.primary, button.primary { background: var(--accent); }
 a.button.disabled { opacity: .4; pointer-events: none; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 input[type=datetime-local] {
@@ -615,18 +615,76 @@ async function showRide(id) {
   addEventListener('resize', onResize);
 }
 
+// ---- Course: one GPX track or route, kept on the device's memory card.
+const COURSE_ERRORS = {
+  coordinates: 'A point in this file has no real position. Export the course again from your planner.',
+  no_route: 'This file has no track or route to follow. Choose a GPX course.',
+  unavailable: 'VANA keeps a course on its memory card, and it has no formatted card.',
+  full: 'The memory card has no room for the course.',
+  storage: 'The memory card did not take the course. Try again.',
+  memory: 'This VANA has no memory set aside for a course.',
+  empty: 'This file is empty.',
+};
+const COURSE_MAX = 4 * 1024 * 1024;
+
+function courseCard(course) {
+  const note = el('div', { class: 'note' });
+  const input = el('input', { type: 'file', accept: '.gpx,application/gpx+xml', style: 'display:none' });
+  const head = course.loaded
+    ? el('div', {}, el('div', { class: 'ride-date', style: 'margin-top:8px' }, course.name || 'Unnamed course'),
+      el('div', { class: 'metrics' }, metric((course.distance_m / 1000).toFixed(1), 'KM', 'var(--white)')))
+    : el('div', { class: 'note' }, course.store === 'damaged'
+      ? 'The course on the memory card cannot be read. Load another to replace it.'
+      : 'No course loaded. Load a GPX track or route to follow.');
+  const actions = el('div', { class: 'row' },
+    el('button', { type: 'button', class: 'primary', onclick: () => input.click() }, course.loaded ? 'Load another' : 'Load a course'));
+  if (course.loaded) {
+    actions.append(el('button', {
+      type: 'button',
+      onclick: async () => {
+        note.textContent = 'Clearing…';
+        try { await api('/api/course', { method: 'DELETE' }); showCourse({ loaded: false, store: 'kept' }); } catch (error) { note.textContent = error.message; }
+      },
+    }, 'Clear'));
+  }
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    if (!file) return;
+    if (file.size > COURSE_MAX) { note.textContent = 'This file is over 4 MB. Simplify the course in your planner.'; return; }
+    note.textContent = `Sending ${file.name}…`;
+    try {
+      const response = await fetch('/api/course', {
+        method: 'PUT', body: file, cache: 'no-store',
+        headers: { 'X-Session': token, 'Content-Type': 'application/gpx+xml' },
+      });
+      if (response.status === 401) throw new Error('This session ended. Open Connect phone on the device and scan again.');
+      const reply = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(COURSE_ERRORS[reply.error] || (response.status === 413 ? 'This file is over 4 MB.' : `Device answered ${response.status}`));
+      showCourse(reply);
+    } catch (error) { note.textContent = error.message; }
+  });
+  return el('div', { class: 'card', id: 'course' }, el('div', { class: 'caption' }, 'Course'), head, actions, input, note);
+}
+
+function showCourse(course) {
+  const card = courseCard(course);
+  const old = $('course');
+  if (old) old.replaceWith(card); else $('list').prepend(card);
+}
+
 let rides = [];
 async function load() {
   try {
     // One request at a time: the device serves one connection.
     const status = await api('/api/status');
     const list = await api('/api/activities');
+    const course = await api('/api/course').catch(() => null);
     profile = status;
     const battery = status.battery == null ? '' : `Battery ${status.battery}%`;
     $('status').replaceChildren(el('span', {}, `FTP ${status.ftp} W`), el('span', {}, battery));
     rides = list.activities;
     if (location.hash.startsWith('#/ride/')) return route();
-    $('list').replaceChildren(...(rides.length ? rides.map(rideCard)
+    $('list').replaceChildren(...(course ? [courseCard(course)] : []), ...(rides.length ? rides.map(rideCard)
       : [el('div', { class: 'empty caption' }, list.indexing ? 'Reading rides…' : 'No rides yet')]));
     $('foot').textContent = list.indexing ? 'Reading rides…' : `${rides.length} rides`;
     if (list.indexing || status.indexing) setTimeout(load, 700);

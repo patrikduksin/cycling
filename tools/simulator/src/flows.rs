@@ -331,6 +331,65 @@ impl Sim {
             self.screen().text()
         );
     }
+
+    /// From Home, open Connect phone (Settings, PHONE) and let a phone join
+    /// the access point, as the rider and their phone would.
+    #[cfg(feature = "cycling")]
+    #[track_caller]
+    pub fn connect_phone(&mut self) {
+        self.home("SETTINGS");
+        for _ in 0..=vana::screens::settings::SECTIONS.len() {
+            if self.screen().run("PHONE").is_some() {
+                break;
+            }
+            self.swipe_next();
+        }
+        let row = self.screen().run("PHONE").expect("phone row in Settings");
+        self.tap(row.x as u16 + 4, row.y as u16 + 4);
+        self.advance(seconds(1));
+        assert_eq!(self.vana_page(), "phone");
+        self.device.access_point.clients = 1;
+        self.advance(seconds(1));
+    }
+
+    /// A request from the phone that joined, with the session's token as its
+    /// page sends it, answered by the device: the status and the body.
+    #[cfg(feature = "cycling")]
+    #[track_caller]
+    pub fn phone_request(
+        &mut self,
+        method: device_api::server::Method,
+        path: &str,
+        body: &[u8],
+    ) -> (u16, String) {
+        let token = self
+            .device
+            .sdk
+            .phone_status()
+            .expect("a phone session")
+            .token;
+        self.note(
+            NoteKind::Device,
+            format!("phone {method:?} {path} ({} bytes)", body.len()),
+        );
+        self.device
+            .phone_server
+            .ask(method, path, token.text(), body);
+        for _ in 0..600 {
+            if let Some(response) = self.device.phone_server.response() {
+                let text = String::from_utf8_lossy(response).into_owned();
+                let status = text
+                    .split(' ')
+                    .nth(1)
+                    .and_then(|code| code.parse().ok())
+                    .unwrap_or_else(|| panic!("no status in {text:?}"));
+                let body = text.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+                return (status, body.to_string());
+            }
+            self.advance(100);
+        }
+        panic!("the device never answered {method:?} {path}");
+    }
 }
 
 /// The Sensors status line names a nearby sensor, not a saved one.

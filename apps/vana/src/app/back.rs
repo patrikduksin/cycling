@@ -2,12 +2,13 @@
 //! when following it back.
 //!
 //! Composition gives `BackToStart` a block of its own with room for
-//! `BACK_CRUMBS` points (PSRAM on the device), and hands it to
-//! `Runtime::attach_back`; `Runtime` keeps only the reference, so the
-//! breadcrumb costs main's stack nothing. Without it the back-to-start page
-//! says NO TRACK.
+//! `BACK_CRUMBS` points (PSRAM on the device) and the loaded course beside
+//! them, and hands it to `Runtime::attach_back`; `Runtime` keeps only the
+//! reference, so neither costs main's stack anything. Without it the
+//! back-to-start page says NO TRACK and no course can be loaded.
 use super::Runtime;
 use super::cues::Cue;
+use crate::ride::course::Course;
 use crate::ride::homing::{Event, Homing};
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
@@ -27,16 +28,25 @@ pub struct BackToStart {
     /// The map page's track, which `map_of` keeps up to date.
     map: &'static mut MapFrame,
     map_key: Option<MapKey>,
+    /// The loaded course and whether it matches the stored one.
+    pub(super) course: &'static mut Course,
+    pub(super) kept: super::course::Kept,
 }
 
 impl BackToStart {
-    /// The breadcrumb in `crumbs`, which may be zeroed memory.
-    pub fn new(crumbs: &'static mut [Crumb], map: &'static mut MapFrame) -> Self {
+    /// The breadcrumb in `crumbs`, and the course; both may be zeroed memory.
+    pub fn new(
+        crumbs: &'static mut [Crumb],
+        map: &'static mut MapFrame,
+        course: &'static mut Course,
+    ) -> Self {
         Self {
             homing: Homing::new(crumbs),
             riding: false,
             map,
             map_key: None,
+            course,
+            kept: super::course::Kept::default(),
         }
     }
 }

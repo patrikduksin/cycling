@@ -500,6 +500,45 @@ A day is days since 1970-01-01 in the clock's time zone, 0 when the clock was
 unknown; a value of 0 is no best. Later versions only append fields before the
 CRC and raise the version, within the 84 bytes above.
 
+### Course
+
+A course is a planned route the rider loads from the phone page (`PUT
+/api/course` with a GPX file). VANA keeps one, as `course.dat` on the FILES
+volume (`ride::course`), and reads it back at boot and when the card becomes
+ready. In memory it is up to 2,048 points in PSRAM beside the breadcrumb. The
+upload streams through `ride::course::gpx`, which takes the first track of
+two points or more (or, without one, the first such route), joins a track's
+segments and refuses the whole file when a
+point has no real latitude and longitude, or when fewer than two points
+remain. Points closer than 5 m to the last one kept are dropped, and a full
+list is thinned in place, keeping a point wherever dropping it would move the
+line more than a tolerance (4 m, doubled only when a pass frees too little), so
+a course of any length fits and keeps its shape: a 200 km winding road stays
+within 26 m of the road. The upload replaces
+the file in one atomic commit only once the whole body has read as a course;
+an upload that fails, or that the phone cuts off, leaves the stored course,
+which VANA then reads back. Body bytes count as activity, so a slow upload
+does not end the phone session as idle. `DELETE /api/course` removes it. Without a card, a
+FILES volume or a store the host formatted, no course is kept. Firmware from
+before courses never opens the file.
+
+| Bytes | Field |
+| --- | --- |
+| 0..4 | magic `VCRS` |
+| 4 | version, 1 |
+| 5 | header length `h`: 34 in version 1 |
+| 6 | point length `s`: 8 in version 1 |
+| 7 | name length, up to 24 |
+| 8..10 | points `n`, 2 to 2048 (u16) |
+| 10..34 | the name: `A-Z`, `0-9`, space and `-._'`, zero padded |
+| h.. | `n` points of `s` bytes: latitude, then longitude, in 1e-7 degrees (i32 each), little-endian |
+| h+n*s.. | CRC32 of every byte before it |
+
+Later versions may lengthen the header or each point and raise the version; a
+reader takes the fields it knows from any version at least 1. A file with more
+points than the reader holds reads as damaged and is left alone until an
+upload replaces it.
+
 FTP tests end on a NEW FTP sheet while the ride keeps recording: ACT saves the
 new FTP to the profile, BACK keeps the old one.
 

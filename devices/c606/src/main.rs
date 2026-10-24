@@ -117,23 +117,19 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     );
     core::future::pending().await
 }
-/// Back to start's breadcrumb (48 KiB) and its state live in PSRAM: main's
-/// stack shares DRAM with `Runtime`'s static future and cannot spare them.
-/// Without PSRAM the back-to-start page says NO TRACK.
+/// A block of PSRAM for `layout`, zeroed in chunks with a yield between
+/// them, as for the harness capture, so the companion UART is never starved.
+/// Null without PSRAM or for an empty layout; the block is never freed.
 #[cfg(feature = "cycling")]
-async fn attach_back(sdk: &mut vana::app::Runtime) {
-    use vana::app::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
-    let Ok(layout) = core::alloc::Layout::array::<Crumb>(BACK_CRUMBS) else {
-        return;
-    };
-    // SAFETY: the layout has a non-zero size; the block is never freed.
+async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
+    if layout.size() == 0 {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the layout has a non-zero size.
     let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
     if pointer.is_null() {
-        log::warn!("back to start: no PSRAM for the breadcrumb");
-        return;
+        return pointer;
     }
-    // Zero in chunks and yield between them, as for the harness capture, so
-    // the companion UART is never starved.
     for offset in (0..layout.size()).step_by(4096) {
         let len = (layout.size() - offset).min(4096);
         // SAFETY: the allocator returned `layout.size()` writable bytes at
@@ -141,29 +137,47 @@ async fn attach_back(sdk: &mut vana::app::Runtime) {
         unsafe { core::ptr::write_bytes(pointer.add(offset), 0, len) };
         embassy_futures::yield_now().await;
     }
+    pointer
+}
+
+/// Back to start's breadcrumb (48 KiB), the loaded course (16 KiB) and their
+/// state live in PSRAM: main's stack shares DRAM with `Runtime`'s static
+/// future and cannot spare them. Without PSRAM the back-to-start page says
+/// NO TRACK and no course loads.
+#[cfg(feature = "cycling")]
+async fn attach_back(sdk: &mut vana::app::Runtime) {
+    use vana::app::{BACK_CRUMBS, BackToStart, Course, Crumb, MapFrame};
+    let Ok(layout) = core::alloc::Layout::array::<Crumb>(BACK_CRUMBS) else {
+        return;
+    };
+    let pointer = zeroed_external(layout).await;
+    if pointer.is_null() {
+        log::warn!("back to start: no PSRAM for the breadcrumb");
+        return;
+    }
     // SAFETY: the block holds BACK_CRUMBS crumbs at the allocator's
     // alignment for `Crumb`, all zero bytes, which is a valid `Crumb`. It is
     // never deallocated and this is its only reference.
     let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), BACK_CRUMBS) };
     // The map's track is zero bytes to begin with too: nothing shown yet.
-    let frame = core::alloc::Layout::new::<MapFrame>();
-    // SAFETY: `MapFrame` has a non-zero size; the block is never freed.
-    let map = unsafe { device::drivers::psram::allocate_external(frame) };
+    let map = zeroed_external(core::alloc::Layout::new::<MapFrame>()).await;
     if map.is_null() {
         log::warn!("back to start: no PSRAM for the map");
         return;
-    }
-    for offset in (0..frame.size()).step_by(4096) {
-        let len = (frame.size() - offset).min(4096);
-        // SAFETY: the allocator returned `frame.size()` writable bytes at
-        // `map`; `offset + len` stays within them.
-        unsafe { core::ptr::write_bytes(map.add(offset), 0, len) };
-        embassy_futures::yield_now().await;
     }
     // SAFETY: the block holds a `MapFrame` at its alignment, all zero bytes,
     // which is a valid `MapFrame`. It is never deallocated and this is its
     // only reference.
     let map = unsafe { &mut *map.cast::<MapFrame>() };
+    let course = zeroed_external(core::alloc::Layout::new::<Course>()).await;
+    if course.is_null() {
+        log::warn!("back to start: no PSRAM for the course");
+        return;
+    }
+    // SAFETY: the block holds a `Course` at its alignment, all zero bytes,
+    // which is an empty `Course`. It is never deallocated and this is its
+    // only reference.
+    let course = unsafe { &mut *course.cast::<Course>() };
     let state = core::alloc::Layout::new::<BackToStart>();
     // SAFETY: `BackToStart` has a non-zero size; the block is never freed.
     let back = unsafe { device::drivers::psram::allocate_external(state) }.cast::<BackToStart>();
@@ -175,7 +189,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) {
     // alignment. It is initialized by this write, never deallocated, and
     // this is its only reference.
     let back = unsafe {
-        back.write(BackToStart::new(crumbs, map));
+        back.write(BackToStart::new(crumbs, map, course));
         &mut *back
     };
     sdk.attach_back(back);

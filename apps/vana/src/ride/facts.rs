@@ -45,9 +45,9 @@ pub const SIZE: usize = BODY_V1 + 4;
 /// The longest file any version can be: a one-byte body length and the CRC.
 pub const READ_MAX: usize = u8::MAX as usize + 4;
 /// Files kept; saving another deletes the oldest. The FILES directory holds
-/// 128 files: these, the 32 workout records, `bests.dat` and the 8 uploads
-/// the picker lists leave 23 for the host, and 64 rides cover the two weeks
-/// the rides list totals at up to four rides a day.
+/// 128 files: these, the 32 workout records, `bests.dat`, `course.dat` and
+/// the 8 uploads the picker lists leave 22 for the host, and 64 rides cover
+/// the two weeks the rides list totals at up to four rides a day.
 pub const KEEP: usize = 64;
 
 const PROFILE: u8 = 1;

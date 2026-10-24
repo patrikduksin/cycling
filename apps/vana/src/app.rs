@@ -12,8 +12,10 @@ use device_api::{
 mod back;
 mod bests;
 mod calibration;
+pub use crate::ride::course::Course;
 pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
+mod course;
 mod cues;
 mod facts;
 mod history;
@@ -271,6 +273,7 @@ impl Runtime {
         self.service_workouts(bulk);
         self.service_bests(bulk, now);
         self.service_facts(bulk, now);
+        self.service_course(bulk, now);
         self.directory_step(store, bulk);
         self.track_back(now);
     }

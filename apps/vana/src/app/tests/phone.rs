@@ -36,6 +36,15 @@ impl Transport {
         self.pending.clear();
         self.finished = false;
     }
+
+    fn upload(&mut self, method: Method, path: &str, session: &str, body: &[u8], piece: usize) {
+        self.ask(method, path, "", session);
+        if let Some(request) = self.request.as_mut() {
+            request.body = body.len() as u32;
+        }
+        self.body = body.to_vec();
+        self.piece = piece.max(1);
+    }
 }
 
 impl Server for Transport {
@@ -484,4 +493,270 @@ fn connect_phone_says_why_a_session_ended_and_a_tap_tries_again() {
     phone.runtime.phone_touch();
     phone.step();
     assert!(phone.runtime.phone_status().is_some(), "a new session");
+}
+
+/// A phone session with a memory card whose FILES store is formatted, and
+/// room for a course.
+struct Upload {
+    runtime: Runtime,
+    journal: Journal,
+    transport: Transport,
+    radio: Radio2,
+    files: crate::workout::library::tests::Region,
+    now: u64,
+}
+
+impl Upload {
+    fn new() -> Self {
+        let mut journal = Journal::erased();
+        let (mut runtime, _, now) = saved_ride(&mut journal);
+        attach(&mut runtime);
+        attach_course_room(&mut runtime);
+        runtime.open_phone(PhoneMode::Home);
+        let mut upload = Self {
+            runtime,
+            journal,
+            transport: Transport::default(),
+            radio: Radio2::default(),
+            files: crate::workout::library::tests::formatted(),
+            now,
+        };
+        upload.step();
+        upload
+    }
+
+    fn step(&mut self) {
+        self.now += 20;
+        self.runtime.serve_phone(
+            &mut self.transport,
+            &mut self.radio,
+            &mut self.journal,
+            &mut self.files,
+            self.now,
+        );
+    }
+
+    fn token(&self) -> String {
+        String::from(self.runtime.phone_status().unwrap().token.text())
+    }
+
+    /// Send `body` in reads of at most `piece` bytes: the status and the
+    /// response body.
+    fn send(&mut self, method: Method, body: &[u8], piece: usize) -> (u16, String) {
+        let token = self.token();
+        self.transport
+            .upload(method, "/api/course", &token, body, piece);
+        let mut response = Vec::new();
+        for _ in 0..200_000 {
+            self.step();
+            response.append(&mut self.transport.pending);
+            if self.transport.finished {
+                let text = String::from_utf8(response).unwrap();
+                let status = text[9..12].parse().unwrap();
+                let (_, body) = text.split_once("\r\n\r\n").unwrap();
+                return (status, String::from(body));
+            }
+        }
+        panic!("the upload never finished");
+    }
+
+    fn course(&mut self) -> String {
+        self.send(Method::Get, b"", 1).1
+    }
+
+    /// Points of the course in memory.
+    fn points(&self) -> Vec<crate::ride::course::Point> {
+        self.runtime
+            .course()
+            .map_or(Vec::new(), |course| course.points().to_vec())
+    }
+
+    /// Points of the stored course, read as a restart would.
+    fn stored(&mut self) -> Vec<crate::ride::course::Point> {
+        let mut course = std::boxed::Box::new(crate::ride::course::Course::empty());
+        crate::ride::course::load(&mut self.files, &mut course).unwrap();
+        course.points().to_vec()
+    }
+}
+
+fn attach_course_room(runtime: &mut Runtime) {
+    use std::boxed::Box;
+    let crumbs = Vec::leak(std::vec![crate::app::Crumb::default(); 64]);
+    let map = Box::leak(Box::new(crate::app::MapFrame::default()));
+    let course = Box::leak(Box::new(crate::ride::course::Course::empty()));
+    let back = crate::app::BackToStart::new(crumbs, map, course);
+    runtime.attach_back(Box::leak(Box::new(back)));
+}
+
+/// A GPX loop of `points` fixes, about 10 m apart, about Santiago.
+fn loop_gpx(name: &str, points: usize) -> String {
+    let mut gpx = std::format!(
+        "<?xml version=\"1.0\"?>\n<gpx version=\"1.1\"><trk><name>{name}</name><trkseg>\n"
+    );
+    for i in 0..points {
+        let turn = i as f64 / points as f64 * core::f64::consts::TAU;
+        let (lat, lon) = (-33.45 + 0.004 * turn.sin(), -70.66 + 0.005 * turn.cos());
+        gpx.push_str(&std::format!(
+            "<trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>530</ele></trkpt>\n"
+        ));
+    }
+    gpx.push_str("</trkseg></trk></gpx>\n");
+    gpx
+}
+
+#[test]
+fn a_phone_loads_a_course_that_is_kept_on_the_card() {
+    let mut phone = Upload::new();
+    assert!(phone.course().contains(r#""loaded":false"#));
+    let gpx = loop_gpx("Cerro loop", 300);
+    let (status, body) = phone.send(Method::Put, gpx.as_bytes(), 97);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""name":"CERRO LOOP""#), "{body}");
+    assert!(body.contains(r#""points":300"#), "{body}");
+    let points = phone.points();
+    assert_eq!(points.len(), 300);
+    assert_eq!(phone.stored(), points, "the card keeps what memory holds");
+    let listed = phone.course();
+    assert!(
+        listed.contains(r#""store":"kept","loaded":true"#),
+        "{listed}"
+    );
+
+    // After a restart the course is read back from the card.
+    let mut runtime = Runtime::new(crate::sensors::ble_profile::Profile::HeartRate);
+    attach_course_room(&mut runtime);
+    runtime.service_course(&mut phone.files, 0);
+    let restarted = runtime.course().unwrap().points().to_vec();
+    assert_eq!(restarted, points);
+}
+
+#[test]
+fn a_file_that_is_not_a_course_leaves_the_stored_one() {
+    let mut phone = Upload::new();
+    let gpx = loop_gpx("First", 50);
+    assert_eq!(phone.send(Method::Put, gpx.as_bytes(), 512).0, 200);
+    let first = phone.stored();
+    let off_earth = gpx.replacen("lat=\"-33.", "lat=\"-93.", 1);
+    let bad = [
+        (off_earth.as_str(), 422, "coordinates"),
+        ("<gpx><wpt lat=\"1\" lon=\"1\"/></gpx>", 422, "no_route"),
+        ("", 400, "empty"),
+    ];
+    for (body, want, error) in bad {
+        let (status, reply) = phone.send(Method::Put, body.as_bytes(), 64);
+        assert_eq!(status, want, "{reply}");
+        assert!(reply.contains(error), "{reply}");
+        // The course in memory is read back from the card.
+        phone.runtime.service_course(&mut phone.files, phone.now);
+        assert_eq!(phone.points(), first);
+        assert_eq!(phone.stored(), first);
+    }
+    // An upload cut off by the phone leaves the stored course too.
+    let token = phone.token();
+    let second = loop_gpx("Second", 400);
+    phone
+        .transport
+        .upload(Method::Put, "/api/course", &token, second.as_bytes(), 300);
+    for _ in 0..5 {
+        phone.step();
+    }
+    phone.transport.ask(Method::Get, "/api/status", "", &token);
+    for _ in 0..20 {
+        phone.step();
+    }
+    phone.runtime.service_course(&mut phone.files, phone.now);
+    assert_eq!(phone.points(), first);
+}
+
+#[test]
+fn the_phone_clears_the_course_from_memory_and_the_card() {
+    let mut phone = Upload::new();
+    let gpx = loop_gpx("Gone", 40);
+    assert_eq!(phone.send(Method::Put, gpx.as_bytes(), 200).0, 200);
+    assert_eq!(phone.send(Method::Delete, b"", 1).0, 204);
+    assert!(phone.points().is_empty());
+    assert!(phone.stored().is_empty());
+    assert!(phone.course().contains(r#""loaded":false"#));
+    // Clearing again is no error.
+    assert_eq!(phone.send(Method::Delete, b"", 1).0, 204);
+}
+
+#[test]
+fn without_a_formatted_card_no_course_is_kept() {
+    let mut phone = Upload::new();
+    phone.files = crate::workout::library::tests::Region::default();
+    let gpx = loop_gpx("Nowhere", 40);
+    let (status, body) = phone.send(Method::Put, gpx.as_bytes(), 512);
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("unavailable"), "{body}");
+    phone.runtime.service_course(&mut phone.files, phone.now);
+    assert!(phone.points().is_empty());
+}
+
+/// Hostile uploads: damaged GPX and random bytes, read in pieces of any
+/// size. Nothing panics, every answer is a status the page knows, and memory
+/// then holds exactly the stored course.
+#[test]
+fn hostile_uploads_never_panic_and_memory_matches_the_card() {
+    use crate::testing::Rng;
+    let mut phone = Upload::new();
+    let good = loop_gpx("Fuzz", 120).into_bytes();
+    let (mut kept, mut refused) = (0, 0);
+    for seed in 0..300 {
+        let mut rng = Rng::new(seed);
+        let mut body = match rng.below(3) {
+            0 => rng.bytes(3_000),
+            _ => {
+                let mut bytes = good.clone();
+                for _ in 0..rng.range(1, 4) {
+                    bytes = rng.mutate(bytes);
+                }
+                bytes
+            }
+        };
+        if body.is_empty() {
+            body.push(b'<');
+        }
+        let piece = rng.range(1, 700) as usize;
+        let (status, reply) = phone.send(Method::Put, &body, piece);
+        match status {
+            200 => kept += 1,
+            422 => refused += 1,
+            other => panic!("seed {seed}: {other} {reply}"),
+        }
+        phone.runtime.service_course(&mut phone.files, phone.now);
+        assert_eq!(phone.points(), phone.stored(), "seed {seed}");
+    }
+    assert!(kept > 20 && refused > 50, "{kept} kept, {refused} refused");
+}
+
+/// A slow upload keeps the session open: body progress counts as activity,
+/// even when the whole upload takes longer than the idle timeout.
+#[test]
+fn a_slow_upload_is_not_an_idle_session() {
+    let mut phone = Upload::new();
+    let gpx = loop_gpx("Slow", 300);
+    let token = phone.token();
+    phone
+        .transport
+        .upload(Method::Put, "/api/course", &token, gpx.as_bytes(), 64);
+    let mut response = Vec::new();
+    let mut minutes = 0;
+    while !phone.transport.finished {
+        // A minute between service steps: about 512 bytes a minute.
+        phone.now += 60_000;
+        minutes += 1;
+        phone.step();
+        response.append(&mut phone.transport.pending);
+        assert!(
+            phone.runtime.phone_status().is_some(),
+            "closed after {minutes} min"
+        );
+    }
+    assert!(minutes > 15, "{minutes} min");
+    assert!(
+        String::from_utf8(response)
+            .unwrap()
+            .starts_with("HTTP/1.1 200")
+    );
 }

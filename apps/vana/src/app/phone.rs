@@ -1,6 +1,6 @@
-//! Phone companion: a session that lets one phone browse and download rides
-//! over the device's own Wi-Fi access point (or the home network), with no
-//! app to install.
+//! Phone companion: a session that lets one phone browse and download rides,
+//! and load a course to follow, over the device's own Wi-Fi access point (or
+//! the home network), with no app to install.
 //!
 //! A session has a random WPA2 password and a random token. The phone joins
 //! the access point (QR code 1), opens `http://192.168.4.1/?t=<token>` (QR
@@ -9,13 +9,17 @@
 //! `IDLE_MS` without requests, or when a ride starts; then the access point
 //! stops and the station returns to the home network.
 //!
-//! The device only serves: the pre-gzipped web client, small JSON and FIT
-//! files streamed from the ride journal through `ride::fit`, two passes per
-//! file so `Content-Length` is exact. Each service step does a bounded amount
-//! of media reads and never more output than the transport has room for.
+//! The device serves the pre-gzipped web client, small JSON and FIT files
+//! streamed from the ride journal through `ride::fit`, two passes per file so
+//! `Content-Length` is exact. It takes one upload: a GPX course, `PUT
+//! /api/course`, read as it streams in through `ride::course::gpx` into the
+//! course beside the breadcrumb and then stored on FILES. Each service step
+//! does a bounded amount of media reads, reads at most `UPLOAD_READS` pieces
+//! of a body and never writes more output than the transport has room for.
 
 use super::Runtime;
 use super::recording::Medium;
+use crate::ride::course::{self, gpx};
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
 use crate::ride::index::{Activity, Index};
 use crate::ride::log::Slot;
@@ -34,6 +38,9 @@ use firmware_services::http::{Head, query_value};
 pub const IDLE_MS: u64 = 10 * 60 * 1000;
 /// Slots read per service step while indexing or sizing a file.
 const READS_PER_STEP: usize = 48;
+/// Pieces of an upload's body read per service step.
+const UPLOAD_READS: usize = 8;
+const UPLOAD_PIECE: usize = 512;
 /// The web client, built by `apps/vana/web/build.py`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!("../../web/dist/index.html.gz");
 /// Readable characters for passwords, upper case as the screen shows
@@ -168,6 +175,12 @@ enum Job {
     Fit {
         id: u32,
         job: FitJob,
+    },
+    /// A course streaming in: `received` of the request's body bytes.
+    Course {
+        id: u32,
+        received: u32,
+        gpx: gpx::Gpx,
     },
 }
 
@@ -492,7 +505,8 @@ impl Runtime {
             Job::Text { id, .. }
             | Job::Static { id, .. }
             | Job::Activities { id, .. }
-            | Job::Fit { id, .. } => Some(*id),
+            | Job::Fit { id, .. }
+            | Job::Course { id, .. } => Some(*id),
         };
         if let Some(id) = job_id
             && current.as_ref().is_none_or(|r| r.id != id)
@@ -509,9 +523,9 @@ impl Runtime {
                 session.last_request_ms = now;
                 session.status.requests += 1;
             }
-            self.route(&request);
+            self.route(&request, bulk);
         }
-        self.progress(server, store, bulk);
+        self.progress(server, store, bulk, now);
     }
 
     fn authorized(&self, request: &Request) -> bool {
@@ -544,7 +558,7 @@ impl Runtime {
         self.phone.w().job = Job::Text { id, at: 0 };
     }
 
-    fn route(&mut self, request: &Request) {
+    fn route(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
         let id = request.id;
         let path = request.path.as_str();
         match (request.method, path) {
@@ -597,6 +611,9 @@ impl Runtime {
                 };
                 self.activities_head(id);
             }
+            (Method::Get, "/api/course") => self.course_reply(id),
+            (Method::Put | Method::Post, "/api/course") => self.start_course(request),
+            (Method::Delete, "/api/course") => self.clear_course(id, bulk),
             (Method::Post, "/api/close") => {
                 self.reply(id, 204, None);
                 self.phone.wanted = Some(None);
@@ -741,6 +758,7 @@ impl Runtime {
         server: &mut impl Server,
         store: &mut impl RideStorage,
         bulk: &mut impl ReadWrite,
+        now: u64,
     ) {
         match &mut self.phone.w().job {
             Job::Idle => {}
@@ -777,6 +795,160 @@ impl Runtime {
             }
             Job::Activities { .. } => self.progress_activities(server),
             Job::Fit { .. } => self.progress_fit(server, store, bulk),
+            Job::Course { .. } => self.progress_course(server, bulk, now),
+        }
+    }
+
+    pub(super) fn phone_uploading(&self) -> bool {
+        self.phone
+            .work
+            .as_deref()
+            .is_some_and(|work| matches!(work.job, Job::Course { .. }))
+    }
+
+    fn course_reply(&mut self, id: u32) {
+        let mut json = heapless::String::<128>::new();
+        match self.back.as_deref() {
+            None => {
+                let _ = json.push_str(r#"{"store":"unavailable","loaded":false}"#);
+            }
+            Some(back) if back.course.is_empty() => {
+                let _ = write!(
+                    json,
+                    r#"{{"store":"{}","loaded":false}}"#,
+                    back.kept.store.name()
+                );
+            }
+            Some(back) => {
+                // A course name holds no character JSON escapes.
+                let _ = write!(
+                    json,
+                    r#"{{"store":"{}","loaded":true,"name":"{}","points":{},"distance_m":{}}}"#,
+                    back.kept.store.name(),
+                    back.course.name(),
+                    back.course.points().len(),
+                    back.course.length_m(),
+                );
+            }
+        }
+        self.reply(id, 200, Some(json.as_str()));
+    }
+
+    fn start_course(&mut self, request: &Request) {
+        let id = request.id;
+        if request.body == 0 {
+            return self.reply(id, 400, Some(r#"{"error":"empty"}"#));
+        }
+        let Some(back) = self.back.as_deref_mut() else {
+            return self.reply(id, 503, Some(r#"{"error":"memory"}"#));
+        };
+        // Until the upload is stored the course in memory is not the stored
+        // one; if it fails, the stored one is read back.
+        back.kept.store = super::course::Store::Unread;
+        let mut gpx = gpx::Gpx::new();
+        gpx.start(back.course);
+        log::info!(target: "phone", "VANA_PHONE course_upload bytes={}", request.body);
+        self.phone.w().job = Job::Course {
+            id,
+            received: 0,
+            gpx,
+        };
+    }
+
+    fn progress_course(&mut self, server: &mut impl Server, bulk: &mut impl ReadWrite, now: u64) {
+        let Job::Course {
+            id,
+            mut received,
+            mut gpx,
+        } = core::mem::replace(&mut self.phone.w().job, Job::Idle)
+        else {
+            return;
+        };
+        let Some(back) = self.back.as_deref_mut() else {
+            return self.reply(id, 503, Some(r#"{"error":"memory"}"#));
+        };
+        let Some(body) = server.request().filter(|r| r.id == id).map(|r| r.body) else {
+            return;
+        };
+        let before = received;
+        // A refused file is still read to its end, so the phone gets the
+        // answer rather than a connection cut while it sends.
+        {
+            let mut piece = [0u8; UPLOAD_PIECE];
+            for _ in 0..UPLOAD_READS {
+                let wanted = (body - received).min(UPLOAD_PIECE as u32) as usize;
+                let n = server.read(id, &mut piece[..wanted]);
+                if n == 0 {
+                    break;
+                }
+                received += n as u32;
+                gpx.feed(&piece[..n], back.course);
+            }
+        }
+        // A long upload is activity, not an idle session.
+        if received > before
+            && let Some(session) = self.phone.session.as_mut()
+        {
+            session.last_request_ms = now;
+        }
+        if received < body {
+            self.phone.w().job = Job::Course { id, received, gpx };
+            return;
+        }
+        if let Err(refusal) = gpx.finish(back.course) {
+            log::warn!(target: "phone", "VANA_PHONE course_refused reason={refusal:?}");
+            return self.reply(
+                id,
+                422,
+                Some(match refusal {
+                    gpx::Refusal::Coordinates => r#"{"error":"coordinates","detail":"a point of the track has no real latitude and longitude"}"#,
+                    gpx::Refusal::Empty => r#"{"error":"no_route","detail":"the file has no track or route of two points or more"}"#,
+                }),
+            );
+        }
+        match course::save(bulk, back.course) {
+            Ok(()) => {
+                back.kept.store = super::course::Store::Kept;
+                log::info!(
+                    target: "phone",
+                    "VANA_PHONE course_saved points={} distance_m={}",
+                    back.course.points().len(),
+                    back.course.length_m()
+                );
+                self.display.redraw();
+                self.course_reply(id);
+            }
+            Err(error) => {
+                log::warn!(target: "phone", "VANA_PHONE course_not_saved error={error:?}");
+                let (status, json) = match error {
+                    course::Error::Full => (507, r#"{"error":"full"}"#),
+                    course::Error::Media => (503, r#"{"error":"storage"}"#),
+                    _ => (
+                        503,
+                        r#"{"error":"unavailable","detail":"no formatted memory card to keep a course on"}"#,
+                    ),
+                };
+                self.reply(id, status, Some(json));
+            }
+        }
+    }
+
+    fn clear_course(&mut self, id: u32, bulk: &mut impl ReadWrite) {
+        let Some(back) = self.back.as_deref_mut() else {
+            return self.reply(id, 503, Some(r#"{"error":"memory"}"#));
+        };
+        match course::delete(bulk) {
+            Ok(()) => {
+                back.course.clear();
+                back.kept.store = super::course::Store::Kept;
+                log::info!(target: "phone", "VANA_PHONE course_cleared");
+                self.display.redraw();
+                self.reply(id, 204, None);
+            }
+            Err(error) => {
+                log::warn!(target: "phone", "VANA_PHONE course_not_cleared error={error:?}");
+                self.reply(id, 503, Some(r#"{"error":"storage"}"#));
+            }
         }
     }
 

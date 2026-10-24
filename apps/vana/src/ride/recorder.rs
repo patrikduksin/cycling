@@ -668,7 +668,10 @@ impl Recorder {
                 self.catalog.completed = self.catalog.completed.saturating_add(1);
                 self.open_ride = false;
             }
-            self.status = Status::Full;
+            // An uncertain FULL record is a media failure, not a closed ride.
+            if self.status != Status::Error {
+                self.status = Status::Full;
+            }
             return false;
         }
         let entry = Entry::batch(

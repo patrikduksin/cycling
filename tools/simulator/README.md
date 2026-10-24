@@ -54,7 +54,8 @@ frames at 30 fps without a window.
 
 `mise run simulate` runs the base demonstration and `mise run harness-virtual`
 the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit
-disposable `--state-dir`.
+disposable `--state-dir` and prints a `ready` line once booted; the harness builds
+the simulator first and starts its reply timeouts only after that line.
 
 Simulation checks presentation, input routing, sensor and ride behaviour, command
 compatibility and recovery from storage faults and power loss. Its companion

@@ -156,31 +156,76 @@ class Virtual:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.log = (self.directory / 'virtual.log').open('ab')
         self.errors = (self.directory / 'virtual-stderr.log').open('ab')
-        self.process = subprocess.Popen(
+        try:
+            executable = self.build()
+            self.process = subprocess.Popen(
+                [executable, '--terminal', '--state-dir', str(self.state_dir)],
+                cwd=ROOT,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self.errors,
+                bufsize=0,
+            )
+            self.await_line(
+                'ready',
+                60,
+                f'virtual backend exited before ready; no request was sent; see {self.errors.name}',
+                'virtual backend did not become ready; no request was sent',
+            )
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def build(self):
+        """Compile before any request: a build under load must not consume a reply timeout."""
+        result = subprocess.run(
             [
                 'cargo',
-                'run',
+                'build',
                 '-p',
                 'shell-simulator',
-                '--quiet',
                 '--locked',
                 '--no-default-features',
                 '--features',
                 self.features,
                 '--bin',
                 'shell-simulator',
-                '--',
-                '--terminal',
-                '--state-dir',
-                str(self.state_dir),
+                '--message-format=json-render-diagnostics',
             ],
             cwd=ROOT,
-            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.errors,
-            bufsize=0,
         )
-        return self
+        if result.returncode != 0:
+            raise RuntimeError(f'virtual backend build failed; no request was sent; see {self.errors.name}')
+        for line in result.stdout.splitlines():
+            message = json.loads(line)
+            if message.get('executable') and message['target']['name'] == 'shell-simulator':
+                return message['executable']
+        raise RuntimeError('cargo reported no shell-simulator executable; no request was sent')
+
+    def await_line(self, kind, timeout, closed, expired):
+        """The next stdout line of this type; other line types are consumed."""
+        stop = time.monotonic() + timeout
+        while time.monotonic() < stop:
+            while b'\n' in self.pending:
+                line, _, rest = self.pending.partition(b'\n')
+                self.pending[:] = rest
+                result = json.loads(line)
+                if result.get('type') == kind:
+                    return result
+            if not select.select([self.process.stdout], [], [], 0.2)[0]:
+                continue
+            data = os.read(self.process.stdout.fileno(), 65536)
+            if not data:
+                raise RuntimeError(closed)
+            self.log.write(data)
+            self.log.flush()
+            self.pending.extend(data)
+            if len(self.pending) > 4096:
+                raise ValueError(f'oversized virtual {kind} line')
+        raise TimeoutError(expired)
 
     def __exit__(self, *_):
         if self.process:
@@ -226,25 +271,7 @@ class Virtual:
         if any(c in command for c in '\r\n\x00') or len(command) > 120:
             raise ValueError('invalid fixture framing')
         self.process.stdin.write(f'FIXTURE {command}\n'.encode('ascii'))
-        stop = time.monotonic() + 10
-        while time.monotonic() < stop:
-            while b'\n' in self.pending:
-                line, _, rest = self.pending.partition(b'\n')
-                self.pending[:] = rest
-                result = json.loads(line)
-                if result.get('type') == 'fixture':
-                    return result
-            if not select.select([self.process.stdout], [], [], 0.2)[0]:
-                continue
-            data = os.read(self.process.stdout.fileno(), 65536)
-            if not data:
-                raise RuntimeError('virtual fixture stream disconnected')
-            self.log.write(data)
-            self.log.flush()
-            self.pending.extend(data)
-            if len(self.pending) > 4096:
-                raise ValueError('oversized fixture reply')
-        raise TimeoutError('fixture reply timeout')
+        return self.await_line('fixture', 10, 'virtual fixture stream disconnected', 'fixture reply timeout')
 
     def recover(self, mode, missing_seconds=1, timeout=25):
         if mode not in ('terminal', 'restart'):

@@ -560,4 +560,87 @@ pub(crate) mod tests {
             }
         }
     }
+    /// Power returns: the same flash bytes under a journal that remembers
+    /// nothing of the cut save.
+    fn reboot(journal: &Journal<Memory>) -> Journal<Memory> {
+        let mut flash = journal.flash.clone();
+        flash.fail_after = None;
+        flash.operations = 0;
+        Journal::new(flash, Region::Configuration)
+    }
+
+    #[test]
+    fn a_reboot_after_a_cut_save_keeps_the_newest_record_and_saves_again() {
+        use crate::testing::Rng;
+        use std::vec::Vec;
+        for seed in 0..500 {
+            let mut rng = Rng::new(seed);
+            let mut journal = Journal::new(Memory::default(), Region::Configuration);
+            let mut acknowledged = false;
+            // Every record the next load may return: the last acknowledged
+            // one and each cut save since, whether it landed or not.
+            let mut possible: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..rng.range(2, 14) {
+                if rng.one_in(2) {
+                    journal = reboot(&journal);
+                }
+                let payload = rng.bytes(200);
+                let bytes = journal.flash.bytes;
+                let cut = rng.one_in(2);
+                journal.flash.operations = 0;
+                journal.flash.fail_after = cut.then(|| rng.below(6) as usize);
+                journal.flash.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+                let result = journal.save(&payload);
+                journal.flash.fail_after = None;
+                match result {
+                    Ok(_) => {
+                        acknowledged = true;
+                        possible = std::vec![payload];
+                    }
+                    Err(Error::Flash(())) => possible.push(payload),
+                    // A first save cut in half leaves the journal occupied
+                    // but unreadable, and then it is kept as it is.
+                    Err(Error::UnrecognizedJournal) => {
+                        assert!(!acknowledged, "seed {seed}");
+                        assert_eq!(journal.flash.bytes, bytes, "seed {seed}");
+                        break;
+                    }
+                    Err(error) => panic!("seed {seed}: {error:?}"),
+                }
+                // Sometimes the next save starts from the torn sector as it
+                // is, with no load in between.
+                if rng.one_in(2) && result.is_err() {
+                    continue;
+                }
+                let mut output = [0; CAPACITY];
+                match journal.load(&mut output) {
+                    Ok(Some(record)) => {
+                        let loaded = output[..record.length].to_vec();
+                        assert!(possible.contains(&loaded), "seed {seed}");
+                        possible = std::vec![loaded];
+                    }
+                    Ok(None) => {
+                        assert!(!acknowledged, "seed {seed}");
+                        possible.clear();
+                    }
+                    Err(Error::UnrecognizedJournal) => assert!(!acknowledged, "seed {seed}"),
+                    Err(error) => panic!("seed {seed}: {error:?}"),
+                }
+            }
+            journal = reboot(&journal);
+            let mut output = [0; CAPACITY];
+            match journal.load(&mut output) {
+                Ok(Some(record)) => {
+                    assert!(
+                        possible.contains(&output[..record.length].to_vec()),
+                        "seed {seed}"
+                    );
+                }
+                Ok(None) | Err(Error::UnrecognizedJournal) => {
+                    assert!(!acknowledged, "seed {seed}")
+                }
+                Err(error) => panic!("seed {seed}: {error:?}"),
+            }
+        }
+    }
 }

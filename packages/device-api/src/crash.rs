@@ -17,20 +17,20 @@
 //! | 4..7 | build commit, 12 bytes |
 //! | 7 | uptime in ms, wrapping |
 //! | 8 | panic line |
-//! | 9 | file length, message length << 8, frame count << 16 |
+//! | 9 | file length, message length << 8, frame count << 16, `Build` << 24 |
 //! | 10..20 | the file path's last 40 bytes, from a `/` when cut |
-//! | 20..36 | the message's first 64 bytes |
-//! | 36..60 | up to `FRAMES` return addresses |
-//! | 60 | zero |
-//! | 61 | checksum of words 0..61 |
-//! | 62 | `REPORTED` once a boot has seen the record, else 0 |
-//! | 63 | `COMMITTED`, written last |
+//! | 20..52 | the message's first 128 bytes, control characters as spaces |
+//! | 52..76 | up to `FRAMES` return addresses |
+//! | 76 | zero |
+//! | 77 | checksum of words 0..77 |
+//! | 78 | `REPORTED` once a boot has seen the record, else 0 |
+//! | 79 | `COMMITTED`, written last |
 
-pub const WORDS: usize = 64;
+pub const WORDS: usize = 80;
 /// Return addresses a record keeps.
 pub const FRAMES: usize = 24;
 pub const FILE_BYTES: usize = 40;
-pub const MESSAGE_BYTES: usize = 64;
+pub const MESSAGE_BYTES: usize = 128;
 const VERSION_BYTES: usize = 8;
 const COMMIT_BYTES: usize = 12;
 
@@ -47,17 +47,17 @@ const LINE: usize = 8;
 const LENGTHS: usize = 9;
 const FILE: usize = 10;
 const MESSAGE: usize = 20;
-const PCS: usize = 36;
+const PCS: usize = 52;
 const RESERVED: usize = PCS + FRAMES;
-const CHECKSUM: usize = 61;
+const CHECKSUM: usize = 77;
 /// The word boot sets once it has reported the record.
-pub const SEEN: usize = 62;
+pub const SEEN: usize = 78;
 /// The validity word, written last.
-pub const VALID: usize = 63;
+pub const VALID: usize = 79;
 
 const _: () = assert!(FILE + FILE_BYTES / 4 == MESSAGE);
 const _: () = assert!(MESSAGE + MESSAGE_BYTES / 4 == PCS);
-const _: () = assert!(RESERVED <= CHECKSUM);
+const _: () = assert!(RESERVED < CHECKSUM && SEEN < VALID && VALID == WORDS - 1);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Reset {
@@ -169,10 +169,60 @@ impl Marker {
     }
 }
 
+/// How the image that panicked was built, so its symbols can be found.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Build {
+    /// Built from a checkout with uncommitted changes.
+    pub dirty: bool,
+    /// With VANA (`CYCLING_SDK=1`).
+    pub cycling: bool,
+    /// With the diagnostic harness (`CYCLING_HARNESS=1`).
+    pub harness: bool,
+    /// The bulk-maintenance image (`CYCLING_BULK_MAINTENANCE=1`).
+    pub maintenance: bool,
+}
+
+impl Build {
+    const fn bits(self) -> u32 {
+        self.dirty as u32
+            | (self.cycling as u32) << 1
+            | (self.harness as u32) << 2
+            | (self.maintenance as u32) << 3
+    }
+
+    const fn from_bits(bits: u32) -> Option<Self> {
+        if bits & !0xf != 0 {
+            return None;
+        }
+        Some(Self {
+            dirty: bits & 1 != 0,
+            cycling: bits & 2 != 0,
+            harness: bits & 4 != 0,
+            maintenance: bits & 8 != 0,
+        })
+    }
+
+    /// The variant part of the archived ELF's name, as build.sh writes it:
+    /// `sdk1-h1`, with `-maint` for a maintenance image.
+    pub const fn variant(self) -> &'static str {
+        match (self.cycling, self.harness, self.maintenance) {
+            (false, false, false) => "sdk0-h0",
+            (false, true, false) => "sdk0-h1",
+            (true, false, false) => "sdk1-h0",
+            (true, true, false) => "sdk1-h1",
+            (false, false, true) => "sdk0-h0-maint",
+            (false, true, true) => "sdk0-h1-maint",
+            (true, false, true) => "sdk1-h0-maint",
+            (true, true, true) => "sdk1-h1-maint",
+        }
+    }
+}
+
 /// A panic as it is recorded, before encoding.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Panic<'a> {
     pub kind: Kind,
+    pub build: Build,
     pub version: &'a str,
     pub commit: &'a str,
     pub uptime_ms: u32,
@@ -186,6 +236,7 @@ pub struct Panic<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Record {
     pub kind: Kind,
+    pub build: Build,
     /// A boot has already reported this record: it is not this boot's cause.
     pub reported: bool,
     pub uptime_ms: u32,
@@ -271,7 +322,14 @@ pub fn encode(panic: &Panic) -> [u32; WORDS] {
     } else {
         file
     };
-    let message = &panic.message[..panic.message.len().min(MESSAGE_BYTES)];
+    // Exceptions open their message with blank lines; keep it on one line.
+    let start = panic
+        .message
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(panic.message.len());
+    let message = &panic.message[start..];
+    let message = &message[..message.len().min(MESSAGE_BYTES)];
     let pcs = &panic.pcs[..panic.pcs.len().min(FRAMES)];
     let mut words = [0u32; WORDS];
     words[0] = MAGIC;
@@ -283,9 +341,16 @@ pub fn encode(panic: &Panic) -> [u32; WORDS] {
     pack(&mut words[COMMIT..UPTIME], commit);
     words[UPTIME] = panic.uptime_ms;
     words[LINE] = panic.line;
-    words[LENGTHS] = file.len() as u32 | ((message.len() as u32) << 8) | ((pcs.len() as u32) << 16);
+    words[LENGTHS] = file.len() as u32
+        | ((message.len() as u32) << 8)
+        | ((pcs.len() as u32) << 16)
+        | (panic.build.bits() << 24);
     pack(&mut words[FILE..MESSAGE], file);
-    pack(&mut words[MESSAGE..PCS], message);
+    let mut line = [0u8; MESSAGE_BYTES];
+    for (to, from) in line.iter_mut().zip(message) {
+        *to = if from.is_ascii_control() { b' ' } else { *from };
+    }
+    pack(&mut words[MESSAGE..PCS], &line[..message.len()]);
     words[PCS..PCS + pcs.len()].copy_from_slice(pcs);
     words[CHECKSUM] = checksum(&words[..CHECKSUM]);
     words[VALID] = COMMITTED;
@@ -319,14 +384,15 @@ pub fn record(words: &[u32; WORDS]) -> Option<Record> {
         || file_len as usize > FILE_BYTES
         || message_len as usize > MESSAGE_BYTES
         || frames as usize > FRAMES
-        || words[LENGTHS] >> 24 != 0
     {
         return None;
     }
+    let build = Build::from_bits(words[LENGTHS] >> 24)?;
     let mut pcs = [0u32; FRAMES];
     pcs.copy_from_slice(&words[PCS..PCS + FRAMES]);
     Some(Record {
         kind,
+        build,
         reported: words[SEEN] == REPORTED,
         uptime_ms: words[UPTIME],
         line: words[LINE],
@@ -371,6 +437,12 @@ mod tests {
     fn panic() -> Panic<'static> {
         Panic {
             kind: Kind::Panic,
+            build: Build {
+                dirty: true,
+                cycling: true,
+                harness: false,
+                maintenance: false,
+            },
             version: "0.1.0",
             commit: "15178ed1119a",
             uptime_ms: 3_600_123,
@@ -386,6 +458,8 @@ mod tests {
         let words = encode(&panic());
         let record = record(&words).expect("valid record");
         assert_eq!(record.kind, Kind::Panic);
+        assert_eq!(record.build.variant(), "sdk1-h0");
+        assert!(record.build.dirty);
         assert!(!record.reported);
         assert_eq!(record.version(), "0.1.0");
         assert_eq!(record.commit(), "15178ed1119a");
@@ -403,7 +477,7 @@ mod tests {
 
     #[test]
     fn long_fields_are_cut_to_their_room() {
-        let message = [b'x'; 100];
+        let message = [b'x'; 200];
         let pcs = [0x4200_0000; 40];
         let words = encode(&Panic {
             kind: Kind::Controlled,
@@ -420,11 +494,25 @@ mod tests {
         assert_eq!(record.pcs().len(), FRAMES);
         // A cut inside a character keeps only whole characters.
         let words = encode(&Panic {
-            message: "é".repeat(40).as_bytes(),
+            message: "é".repeat(80).as_bytes(),
             ..panic()
         });
         assert_eq!(record_message_len(&words), MESSAGE_BYTES);
-        assert_eq!(super::record(&words).unwrap().message(), "é".repeat(32));
+        assert_eq!(super::record(&words).unwrap().message(), "é".repeat(64));
+        let words = encode(&Panic {
+            message: "é".repeat(40).as_bytes(),
+            ..panic()
+        });
+        assert_eq!(record_message_len(&words), 80);
+        // An exception's blank lines and line breaks stay out of the record.
+        let words = encode(&Panic {
+            message: b"\n\nException occurred 'LoadProhibited'\nContext { PC: 0x42001234 }",
+            ..panic()
+        });
+        assert_eq!(
+            super::record(&words).unwrap().message(),
+            "Exception occurred 'LoadProhibited' Context { PC: 0x42001234 }"
+        );
     }
 
     fn record_message_len(words: &[u32; WORDS]) -> usize {

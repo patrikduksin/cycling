@@ -19,7 +19,7 @@ use esp_hal::rtc_cntl::SocResetReason;
 static mut PANIC_RECORD: [u32; device_api::crash::WORDS] = [0; device_api::crash::WORDS];
 
 static CONTROLLED: AtomicBool = AtomicBool::new(false);
-/// Set by the first panic; a panic inside the handler records nothing more.
+/// Set by the first panic; a panic inside the handler resets at once.
 static HOOK_ENTERED: AtomicBool = AtomicBool::new(false);
 
 fn read() -> [u32; device_api::crash::WORDS] {
@@ -141,12 +141,30 @@ fn store(words: &[u32; device_api::crash::WORDS]) {
     };
 }
 
+/// How this image was built, for finding its symbols.
+const BUILD: device_api::crash::Build = device_api::crash::Build {
+    dirty: matches!(option_env!("CYCLING_BUILD_DIRTY"), Some("1")),
+    cycling: cfg!(feature = "cycling"),
+    harness: cfg!(feature = "debug-harness"),
+    maintenance: cfg!(feature = "bulk-maintenance"),
+};
+
 /// Record where and why the firmware panicked, print it as esp-backtrace
 /// did, so `mise run backtrace` still decodes captured logs, then reset.
+///
+/// The record is stored twice: first without the message, then with it, so
+/// a panic while formatting the message (or a stack overflow that formatting
+/// runs into) still leaves where it happened. A panic inside the handler
+/// resets at once.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write as _;
-    let first = !HOOK_ENTERED.swap(true, Ordering::AcqRel);
+    // No task switch or interrupt handler runs from here to the reset.
+    // SAFETY: the matching release never runs; the reset ends the section.
+    let _ = unsafe { critical_section::acquire() };
+    if HOOK_ENTERED.swap(true, Ordering::AcqRel) {
+        esp_hal::system::software_reset()
+    }
     let backtrace = esp_backtrace::Backtrace::capture();
     let mut pcs = [0u32; device_api::crash::FRAMES];
     let mut frames = 0;
@@ -154,33 +172,35 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         *slot = frame.program_counter() as u32;
         frames += 1;
     }
-    if first {
-        let mut message = Message {
-            bytes: [0; device_api::crash::MESSAGE_BYTES],
-            len: 0,
-        };
-        let _ = write!(message, "{}", info.message());
-        let kind = if CONTROLLED.load(Ordering::Acquire) {
-            Kind::Controlled
-        } else {
-            Kind::Panic
-        };
-        let (file, line) = info
-            .location()
-            .map_or(("", 0), |location| (location.file(), location.line()));
-        store(&device_api::crash::encode(&device_api::crash::Panic {
-            kind,
-            version: env!("CARGO_PKG_VERSION"),
-            commit: option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
-            uptime_ms: esp_hal::time::Instant::now()
-                .duration_since_epoch()
-                .as_millis() as u32,
-            file,
-            line,
-            message: &message.bytes[..message.len],
-            pcs: &pcs[..frames],
-        }));
-    }
+    let kind = if CONTROLLED.load(Ordering::Acquire) {
+        Kind::Controlled
+    } else {
+        Kind::Panic
+    };
+    let (file, line) = info
+        .location()
+        .map_or(("", 0), |location| (location.file(), location.line()));
+    let mut panic = device_api::crash::Panic {
+        kind,
+        build: BUILD,
+        version: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
+        uptime_ms: esp_hal::time::Instant::now()
+            .duration_since_epoch()
+            .as_millis() as u32,
+        file,
+        line,
+        message: &[],
+        pcs: &pcs[..frames],
+    };
+    store(&device_api::crash::encode(&panic));
+    let mut message = Message {
+        bytes: [0; device_api::crash::MESSAGE_BYTES],
+        len: 0,
+    };
+    let _ = write!(message, "{}", info.message());
+    panic.message = &message.bytes[..message.len];
+    store(&device_api::crash::encode(&panic));
     esp_println::println!("");
     esp_println::println!("====================== PANIC ======================");
     esp_println::println!("{}", info);

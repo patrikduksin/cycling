@@ -83,8 +83,11 @@ fn init() -> Resources {
     }
     if let (device_api::crash::Marker::Valid(_), Some(record)) = (crash, crash_rtc::last()) {
         println!(
-            "CYCLING_CRASH commit={} uptime_ms={} location={}:{} message={}",
+            "CYCLING_CRASH commit={} elf={}{}-{} uptime_ms={} location={}:{} message={}",
             record.commit(),
+            record.commit(),
+            if record.build.dirty { "-dirty" } else { "" },
+            record.build.variant(),
             record.uptime_ms,
             record.file(),
             record.line,

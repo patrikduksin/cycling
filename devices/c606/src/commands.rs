@@ -523,7 +523,7 @@ pub fn execute(
             Some(record) => {
                 let _ = write!(
                     output,
-                    "kind={} this_boot={} version={} commit={} uptime_ms={} location={}:{} frames={} pcs=",
+                    "kind={} this_boot={} version={} commit={} elf={}{}-{} uptime_ms={} location={}:{} frames={} pcs=",
                     record.kind.name(),
                     // Boot marks the record reported, so ask what this boot's
                     // reset was blamed on.
@@ -534,6 +534,10 @@ pub fn execute(
                     } else {
                         record.commit()
                     },
+                    // The archived ELF's name, for `mise run backtrace`.
+                    record.commit(),
+                    if record.build.dirty { "-dirty" } else { "" },
+                    record.build.variant(),
                     record.uptime_ms,
                     record.file(),
                     record.line,

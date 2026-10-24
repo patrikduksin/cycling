@@ -49,15 +49,16 @@ hand.
 
 `STATUS` reports `reset=` and `crash=` after a panic; `CYCLING_RESET` in the
 boot log says why the device restarted. A panic also keeps a record in RTC
-memory that outlives its reset (not power loss): `CRASH` reads it back with
-the build commit, uptime, file and line, the start of the message and up to
-24 return addresses, and `this_boot=true` when it caused this boot's reset.
-It stays until the next panic or `CRASH CLEAR`, so a crash on a ride can be
-read when the device is next plugged in, without logs running at the time.
+memory that outlives its reset: `CRASH` reads it back with the build commit
+and archived ELF name, uptime, file and line, the start of the message and up
+to 24 return addresses, and `this_boot=true` when it caused this boot's reset.
+It stays until the next panic, `CRASH CLEAR` or the device is switched off
+(turning off cuts power, which clears RTC memory), so read it before then;
+no logs need to have been running at the time.
 
 Decode with `mise run device terminal CRASH | mise run backtrace`, or
-`mise run backtrace <log>` for a captured panic print. `build.sh` keeps every
-build's ELF as `.local/elf/<commit>.elf` (and the last as
-`.local/cycling.elf`); a `commit=` in the input picks its own, so decode in a
-checkout that built that commit. Post the decoded frames, not raw addresses,
+`mise run backtrace <log>` for a captured panic print. `build.sh` keeps the
+newest 24 builds' ELFs as `.local/elf/<commit>[-dirty]-sdkX-hY.elf` in the
+primary checkout (and the last as `.local/cycling.elf`); the record's `elf=`
+picks its own, and decoding refuses an ELF without the record's commit. Post the decoded frames, not raw addresses,
 in the issue or PR. Watchdog and brownout resets leave no record.

@@ -25,7 +25,7 @@ use super::Runtime;
 use super::cues::Cue;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
-use crate::screens::ride::{RidePage, Training as Shown};
+use crate::screens::ride::{Pages, RidePage, Training as Shown};
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
 use crate::workout::history;
@@ -355,11 +355,12 @@ impl Runtime {
 
     /// The ride page to open on the ride screen.
     pub(super) fn first_ride_page(&self) -> RidePage {
-        if self.workout_pages() {
-            RidePage::Workout
-        } else {
-            RidePage::Main
-        }
+        self.ride_pages().first()
+    }
+
+    /// The pages MOVE steps through: the workout's, the rider's choice.
+    pub(super) fn ride_pages(&self) -> Pages {
+        Pages::new(self.workout_pages(), self.preferences.options.ride_pages)
     }
 
     pub(super) fn workout_command(

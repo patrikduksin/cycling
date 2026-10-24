@@ -1772,6 +1772,75 @@ fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
     sim.checkpoint("main page again over the top");
 }
 
+/// Turn the named ride pages off in Settings, then go back Home.
+fn hide_ride_pages(sim: &mut Sim, pages: &[&str]) {
+    sim.home("SETTINGS");
+    for _ in 0..4 {
+        sim.swipe_next();
+    }
+    sim.expect_text("RIDE PAGES");
+    for label in ["STATS", "LAP", "CLIMB", "MAP", "BACK TO START"] {
+        sim.expect_field(label, "ON");
+        if pages.contains(&label) {
+            sim.press(Button::BottomRight);
+            sim.expect_field(label, "OFF");
+        }
+        if label == "CLIMB" || label == "BACK TO START" {
+            sim.checkpoint(&format!("{label} row with {} off", pages.join(" and ")));
+        }
+        sim.press(Button::BottomLeft);
+    }
+    go_home(sim);
+}
+
+#[test]
+fn turned_off_ride_pages_leave_the_dots_and_the_page_walk() {
+    let mut sim = hill_rider();
+    hide_ride_pages(&mut sim, &["STATS", "LAP"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    sim.advance(seconds(5));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/4"));
+    sim.checkpoint("main page of four");
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("2/4"));
+    sim.expect_text("CLIMB");
+    sim.checkpoint("climb page second of four");
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("3/4"));
+    sim.checkpoint("map page third of four");
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("4/4"));
+    sim.checkpoint("back to start page last of four");
+    sim.swipe_previous();
+    assert_eq!(sim.screen().page().as_deref(), Some("3/4"));
+    sim.swipe_next();
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("1/4"), "wraps to main");
+}
+
+#[test]
+fn a_climb_does_not_bring_up_a_climb_page_turned_off() {
+    let mut sim = hill_rider();
+    hide_ride_pages(&mut sim, &["CLIMB"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    ride_to(&mut sim, 1000.0);
+    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    while sim.world().distance_m < 2500.0 {
+        sim.advance(seconds(1));
+        assert_eq!(
+            sim.screen().page().as_deref(),
+            Some("1/5"),
+            "at {:.0} m",
+            sim.world().distance_m
+        );
+    }
+    sim.expect_no_text("CLIMBING");
+    sim.checkpoint("main page kept through the climb");
+}
+
 #[test]
 fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     let mut sim = hill_rider();
@@ -5221,6 +5290,31 @@ fn back_to_start_points_home_and_follows_the_track_back() {
     // A tap on the pad stops following, or starts it sooner.
     sim.tap(120, 255);
     sim.expect_text("FOLLOW TRACK BACK");
+    sim.stop_ride();
+}
+
+/// With BACK TO START off its pad cannot stop following, so riding back over
+/// the track never starts it and no OFF TRACK nudge comes.
+#[test]
+fn back_to_start_off_never_follows_or_nudges() {
+    let mut sim = rider();
+    sim.ride_route(Route::from_gpx(&out_and_back_gpx()).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    hide_ride_pages(&mut sim, &["BACK TO START"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(2));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    while sim.world().distance_m < 5_680.0 {
+        sim.advance(seconds(1));
+        let text = sim.screen().text();
+        assert!(
+            !text.contains("FOLLOWING TRACK") && !text.contains("OFF TRACK"),
+            "at {:.0} m:\n{text}",
+            sim.world().distance_m
+        );
+    }
+    sim.checkpoint("back at the start with no nudges");
     sim.stop_ride();
 }
 

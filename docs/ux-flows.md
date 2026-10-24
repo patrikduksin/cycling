@@ -102,9 +102,31 @@ was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
 The map draws the same breadcrumb as BACK TO START (below), so a very long
 ride shows its bends thinned and a far-off start is a small dot.
 
+### Choosing the ride pages
+
+Settings has RIDE PAGES and MORE PAGES sections with an ON or OFF row for each page a rider
+may not need: STATS, LAP, CLIMB, MAP and BACK TO START. All are ON by default. MAIN
+is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
+swipes step through the pages that are on, wrapping from the last to the
+first, and the page dots count only those. With every optional page off, MOVE
+has only MAIN, and with a workout only WORKOUT and MAIN.
+
+CLIMB OFF also ends the climb page's habit of coming up by itself: neither the
+ride's own climb detection nor the map's CLIMB AHEAD switches the page. A climb
+never had a toast, and none is added: the rider declined the page, and a toast
+would cover the readings they chose to look at. The CLIMB row's note
+says NO CLIMB POP-UP while it is off. The choice is read when the ride screen
+opens and applies to the next ride page the rider sees; it cannot change under
+them, since Settings is not reachable during a ride.
+
+BACK TO START OFF also means the ride never follows its track back by itself:
+the page's pad is the only way to stop following, so without the page riding
+back over the track starts nothing, and no FOLLOWING TRACK, OFF TRACK or BACK
+AT START nudge sounds. The breadcrumb is still kept, because MAP draws it.
+
 ### Back to start
 
-The page after MAP, BACK TO START, points the way to where the ride began.
+The page after MAP, BACK TO START (unless turned off), points the way to where the ride began.
 The arrow points relative to the way the rider rides, so straight up is
 straight on; standing still, it points north up and says N UP. DIRECT KM is
 the distance straight to the start, TRACK KM the distance back the way the

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ride::log::Status;
-use crate::screens::ride::RidePage;
+use crate::screens::ride::{PageChoice, RidePage};
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, POWER, SPEED};
 use std::{format, string::String};
@@ -704,16 +704,24 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
 
     // A climb shows the climb page; its end goes back to the stats.
-    runtime.navigation.follow_climb(Climb::Confirmed);
+    runtime
+        .navigation
+        .follow_climb(Climb::Confirmed, PageChoice::default());
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime.navigation.follow_climb(finished);
+    runtime
+        .navigation
+        .follow_climb(finished, PageChoice::default());
     assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
 
     // Paging during a climb keeps the rider's choice when it ends.
-    runtime.navigation.follow_climb(Climb::Confirmed);
+    runtime
+        .navigation
+        .follow_climb(Climb::Confirmed, PageChoice::default());
     runtime.input(press(Button::BottomLeft), 2000, &mut radio);
     assert_eq!(runtime.navigation.ride_page, RidePage::Map);
-    runtime.navigation.follow_climb(finished);
+    runtime
+        .navigation
+        .follow_climb(finished, PageChoice::default());
     assert_eq!(runtime.navigation.ride_page, RidePage::Map);
 
     // Already on the climb page: it stays there after the climb.
@@ -721,15 +729,100 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
     }
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime.navigation.follow_climb(Climb::Confirmed);
-    runtime.navigation.follow_climb(finished);
+    runtime
+        .navigation
+        .follow_climb(Climb::Confirmed, PageChoice::default());
+    runtime
+        .navigation
+        .follow_climb(finished, PageChoice::default());
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
 
     // Away from the ride screen climbs change nothing.
     runtime.navigation.page = Page::Home;
     runtime.navigation.ride_page = RidePage::Main;
-    runtime.navigation.follow_climb(Climb::Confirmed);
+    runtime
+        .navigation
+        .follow_climb(Climb::Confirmed, PageChoice::default());
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+fn hide(runtime: &mut Runtime, pages: &[RidePage]) {
+    let choice = pages
+        .iter()
+        .fold(PageChoice::default(), |choice, page| choice.toggled(*page));
+    runtime.preferences.options.ride_pages = choice;
+}
+
+#[test]
+fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    hide(
+        &mut runtime,
+        &[RidePage::Stats, RidePage::Lap, RidePage::Map],
+    );
+    on_ride_page(&mut runtime);
+    let mut seen = std::vec::Vec::new();
+    for at in [1000, 1400, 1800, 2200] {
+        runtime.input(press(Button::BottomLeft), at, &mut radio);
+        seen.push(runtime.navigation.ride_page);
+    }
+    assert_eq!(
+        seen,
+        [
+            RidePage::Climb,
+            RidePage::Back,
+            RidePage::Main,
+            RidePage::Climb
+        ]
+    );
+    runtime.previous_ride_page();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    runtime.previous_ride_page();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
+}
+
+#[test]
+fn a_page_turned_off_under_the_rider_gives_way_to_main() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.navigation.ride_page_chosen(RidePage::Lap);
+    hide(&mut runtime, &[RidePage::Lap]);
+    assert!(!runtime.ride_pages().contains(RidePage::Lap));
+    assert_eq!(runtime.ride_pages().first(), RidePage::Main);
+    assert_eq!(
+        runtime.ride_pages().following(RidePage::Main),
+        RidePage::Stats
+    );
+}
+
+#[test]
+fn a_climb_does_not_bring_up_a_climb_page_the_rider_turned_off() {
+    use crate::ride::climb::{Event as Climb, Summary};
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    hide(&mut runtime, &[RidePage::Climb]);
+    on_ride_page(&mut runtime);
+    runtime.ride_climb_event(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert!(runtime.navigation.toast.is_none(), "silent, no toast");
+    runtime.ride_climb_event(Climb::Finished(Summary::default()));
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+
+    climb_on_the_map(&mut runtime, 0.0);
+    runtime.follow_forecast();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert!(runtime.navigation.toast.is_none());
+
+    hide(&mut runtime, &[]);
+    runtime.forecast_mut().forget();
+    runtime.lookahead.as_deref_mut().unwrap().announced = false;
+    runtime.ride_climb_event(Climb::Confirmed);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb, "back on");
 }
 
 #[test]

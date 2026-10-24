@@ -234,13 +234,17 @@ impl Runtime {
             if !state.announced && self.navigation.page == Page::Ride {
                 state.announced = true;
                 state.on_climb = current;
-                self.navigation.follow_climb(ClimbEvent::Confirmed);
+                self.navigation
+                    .follow_climb(ClimbEvent::Confirmed, self.preferences.options.ride_pages);
             } else if state.announced {
                 state.on_climb |= current;
             }
         } else if core::mem::take(&mut state.announced) && self.ride.climbs.climbing().is_none() {
             let summary = self.ride.climbs.last_climb().unwrap_or_default();
-            self.navigation.follow_climb(ClimbEvent::Finished(summary));
+            self.navigation.follow_climb(
+                ClimbEvent::Finished(summary),
+                self.preferences.options.ride_pages,
+            );
         }
     }
 
@@ -261,7 +265,8 @@ impl Runtime {
             ClimbEvent::Finished(_) if map_climb => return,
             _ => {}
         }
-        self.navigation.follow_climb(event);
+        self.navigation
+            .follow_climb(event, self.preferences.options.ride_pages);
     }
 
     /// What the look-ahead did last: no pack, off the map, working or idle.

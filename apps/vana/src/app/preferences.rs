@@ -12,7 +12,7 @@
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type | 2 |
-//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on); other bits zero | 3 |
+//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on), bits 3..7 ride pages hidden (clear is shown: STATS, LAP, CLIMB, BACK TO START, MAP); other bits zero | 3 |
 //! | then | Auto lap: 0 off, 1 to 100 km between laps, 255 at the start point (255 reads as a damaged record before it existed) | 3 |
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |
@@ -34,6 +34,12 @@
 //! ANT sensors are one per kind and VANA rides one bike's wheel; a sensor moved
 //! to another wheel is relearned on the next ride.
 //!
+//! The hidden-page bits took spare flag bits without a version bump. A
+//! record from a rider who hid nothing is byte for byte what version 5 always
+//! wrote. Firmware from before the bits reads a record with one set as
+//! malformed (it checks that no unknown flag is set): it keeps the record
+//! untouched and runs on the defaults until the rider overwrites it.
+//!
 //! An empty area means nothing was saved yet: the defaults apply, first-run
 //! setup is due, and the first change writes a record. A record VANA cannot
 //! read, from a newer firmware or damaged, also leaves the defaults in force,
@@ -44,6 +50,7 @@ use crate::clock::Zone;
 use crate::ride::laps::AutoLap;
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
+use crate::screens::ride::PageChoice;
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
 use device_api::display::Display;
 use device_api::input::InputSource;
@@ -74,6 +81,8 @@ const SOUNDS: u8 = 1 << 1;
 /// Set when the rider turned the sunset alert off; clear (as in every record
 /// saved before it existed) means on.
 const SUNSET_OFF: u8 = 1 << 2;
+/// Where the hidden-page bits start in the flags.
+const PAGES_SHIFT: u32 = 3;
 /// The longest automatic lap a record may hold.
 pub const AUTO_LAP_MAX_KM: u8 = 100;
 /// The auto-lap byte for laps at the start point. Firmware that predates it
@@ -226,6 +235,8 @@ pub struct Options {
     pub alerts: [u8; ALERTS_LENGTH],
     /// Warn before sunset and at it, while riding.
     pub sunset_alert: bool,
+    /// Which optional ride pages are on.
+    pub ride_pages: PageChoice,
 }
 
 impl Default for Options {
@@ -241,6 +252,7 @@ impl Default for Options {
             setup: 0,
             alerts: ALERTS_DEFAULT,
             sunset_alert: true,
+            ride_pages: PageChoice::default(),
         }
     }
 }
@@ -260,6 +272,7 @@ impl Options {
         if !self.sunset_alert {
             flags |= SUNSET_OFF;
         }
+        flags |= self.ride_pages.bits() << PAGES_SHIFT;
         let mut bytes = [0; OPTIONS_LENGTH];
         bytes[..4].copy_from_slice(&[
             flags,
@@ -301,9 +314,12 @@ impl Options {
         };
         let (&[flags, auto_lap, daylight, setup], alerts) = bytes.split_first_chunk()?;
         let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
-        if flags & !(AUTO_PAUSE | SOUNDS | SUNSET_OFF) != 0 {
-            return None;
-        }
+        // Every flag bit means something now, so none can be unknown.
+        let ride_pages = match version {
+            3..=5 if flags >> PAGES_SHIFT != 0 => return None,
+            3..=6 => PageChoice::from_bits(flags >> PAGES_SHIFT)?,
+            _ => return None,
+        };
         Some(Self {
             auto_pause: flags & AUTO_PAUSE != 0,
             sounds: flags & SOUNDS != 0,
@@ -315,6 +331,7 @@ impl Options {
             setup,
             alerts,
             sunset_alert: flags & SUNSET_OFF == 0,
+            ride_pages,
         })
     }
 }
@@ -758,6 +775,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::ride::RidePage;
     use std::vec;
 
     fn sensor(device_type: u8, device_number: u16) -> device_api::ant::Identity {
@@ -809,6 +827,7 @@ mod tests {
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
             sunset_alert: true,
+            ride_pages: PageChoice::default(),
         };
         let chosen = record(profile, sensors, options);
         let bytes = encode(&chosen);
@@ -1090,7 +1109,29 @@ mod tests {
                 .unwrap()
                 .sunset_alert
         );
-        // Version 6 options: one byte short or long, an unknown flag, too
+        // Hidden ride pages are flag bits 3..7. Hiding nothing leaves the
+        // flags as they were; a hidden STATS and LAP set bits 3 and 4.
+        assert_eq!(Options::default().encode()[0], 0b011);
+        let hidden = Options {
+            ride_pages: PageChoice::default()
+                .toggled(RidePage::Stats)
+                .toggled(RidePage::Lap),
+            ..Options::default()
+        };
+        assert_eq!(hidden.encode()[0], 0b1_1011);
+        assert_eq!(Options::decode(&hidden.encode(), VERSION), Some(hidden));
+        // Versions before 6 never held page bits: a set bit is damage.
+        for old in 3..=5 {
+            let bytes = hidden.encode();
+            assert_eq!(Options::decode(&bytes[..OPTIONS_LENGTH_V5], old), None);
+        }
+        let mut every = hidden.encode();
+        every[0] |= 0b1111_1000;
+        assert_eq!(
+            Options::decode(&every, VERSION).map(|o| o.ride_pages.bits()),
+            Some(0b1_1111)
+        );
+        // Version 6 options: one byte short or long, too
         // long a lap, an unknown day/night, theme or zone, and an impossible FTP.
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
@@ -1101,7 +1142,6 @@ mod tests {
         for (profile, options) in [
             ([250, 0], good[..OPTIONS_LENGTH - 1].to_vec()),
             ([250, 0], [&good[..], &[0]].concat()),
-            ([250, 0], with(0, 8)),
             ([250, 0], with(1, AUTO_LAP_MAX_KM + 1)),
             ([250, 0], with(2, 3)),
             ([250, 0], with(OPTIONS_LENGTH_V3, 3)),
@@ -1201,6 +1241,8 @@ mod tests {
                 mm: rng.one_in(2).then(|| rng.range(1_500, 2_400) as u16),
                 manual: rng.one_in(2),
             },
+            ride_pages: PageChoice::from_bits(rng.range(0, u64::from(PageChoice::BITS)) as u8)
+                .unwrap_or_default(),
             zone: if rng.one_in(3) {
                 Zone::Chile
             } else {

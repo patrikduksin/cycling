@@ -455,16 +455,42 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn torn_first_write_is_preserved_and_cannot_be_retried_as_empty() {
-        let mut journal = Journal::new(Memory::default(), Region::Configuration);
-        journal.flash.fail_after = Some(3); // First payload program, after scan + erase.
-        journal.flash.tear_bytes = HEADER_SIZE + 1;
-        assert_eq!(journal.save(b"first"), Err(Error::Flash(())));
-        journal.flash.fail_after = None;
-        let before = journal.flash.bytes;
-        assert_eq!(journal.load(&mut [0; 8]), Err(Error::UnrecognizedJournal));
-        assert_eq!(journal.save(b"retry"), Err(Error::UnrecognizedJournal));
-        assert_eq!(journal.flash.bytes, before);
+    fn a_torn_first_save_is_preserved_and_never_blocks_the_next_save() {
+        for failed_operation in 2..6 {
+            for tear_bytes in [
+                0,
+                1,
+                2,
+                3,
+                4,
+                HEADER_SIZE,
+                HEADER_SIZE + 1,
+                2048,
+                SECTOR_SIZE,
+            ] {
+                let case =
+                    std::format!("failure at operation {failed_operation}, byte {tear_bytes}");
+                let mut journal = Journal::new(Memory::default(), Region::Configuration);
+                journal.flash.fail_after = Some(failed_operation);
+                journal.flash.tear_bytes = tear_bytes;
+                assert!(journal.save(b"first").is_err(), "{case}");
+                journal.flash.fail_after = None;
+                let mut output = [0; 8];
+                let landed = journal.load(&mut output).expect(&case);
+                if let Some(record) = landed {
+                    assert_eq!(&output[..record.length], b"first", "{case}");
+                }
+                let torn = journal.flash.bytes[0];
+                journal.save(b"retry").expect(&case);
+                if landed.is_none() && torn.iter().any(|byte| *byte != 0xff) {
+                    assert_eq!(journal.flash.bytes[0], torn, "{case}");
+                }
+
+                let mut rebooted = Journal::new(journal.flash.clone(), Region::Configuration);
+                let record = rebooted.load(&mut output).expect(&case).unwrap();
+                assert_eq!(&output[..record.length], b"retry", "{case}");
+            }
+        }
     }
 
     #[test]

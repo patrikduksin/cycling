@@ -15,10 +15,11 @@
 "<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 17864
 "<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 17812
 "cycling_os::__console_task::__console_task_inner_function::{closure#0}" = 13676
-"<vana::app::Runtime>::workout_display::<*>" = 21718
+"<vana::app::Runtime>::present::<*>" = 17512
 "<vana::app::Runtime>::draw_boot::<*>" = 13183
 "<vana::app::Runtime>::record::<*>" = 5680
 "<vana::screens::workout::View>::new" = 12092
+"<vana::screens::workout::View>::prepare" = 1296
 "vana::screens::workout::fill::<*>" = 8912
 "vana::screens::ride::climb_frame" = 4208
 "vana::screens::ride::smooth" = 3024

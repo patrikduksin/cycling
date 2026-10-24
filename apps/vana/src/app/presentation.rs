@@ -735,7 +735,7 @@ impl Runtime {
                 view.bests = self.bests.bests;
                 view.bests_mode = self.bests.mode();
             }
-            Page::Form => view.form = self.form_mode(),
+            Page::Form => view.form = self.form.mode,
             Page::PastRide => self.past_view(&mut view),
             Page::Phone => {
                 view.phone_ride = self.history.phone.is_some();
@@ -1378,7 +1378,7 @@ impl Runtime {
             },
             Row::Phone => write!(value, "SEND RIDES"),
             Row::Bests => value.push_str(self.bests.summary().as_str()),
-            Row::Form => write!(value, "FITNESS"),
+            Row::Form => value.push_str(self.form.summary().as_str()),
             Row::Storage => {
                 if self.ride.bulk.status() != Status::Unsupported {
                     let _ = write!(note, "{}", self.ride.medium().label());

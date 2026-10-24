@@ -4180,7 +4180,7 @@ fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
     );
 }
 
-/// Saved rides with power, one per `(days ago, watts)`, each 30 minutes
+/// Saved rides, one per `(days ago, watts)` (0 W: no power meter), each 30 minutes
 /// starting 12:00 UTC that day, as the journal holds them after weeks of
 /// riding. Samples are 3 s apart, the longest step the recorder counts.
 fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
@@ -4199,7 +4199,7 @@ fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
         let sample = |n: u64| Sample {
             active_ms: n * STEP_MS,
             utc_ms: Some(started + n * STEP_MS),
-            power_watts: Some(watts),
+            power_watts: (watts != 0).then_some(watts),
             ..Sample::default()
         };
         push(Entry::event(Kind::Start, Source::Live, ride_id, 0, 0));
@@ -4220,9 +4220,9 @@ fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
     bytes
 }
 
-/// Six weeks of rides with power: a build that turns hard in the fifth week
-/// and eases off in the last days. FORM reads the seven weeks, so the trend
-/// dips and then recovers.
+/// Six weeks of rides with power and one ride without: a build that turns hard
+/// in the fifth week and eases off in the last days. The trend dips and then
+/// recovers, and the ride without power is named as left out.
 #[test]
 fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
     use device_api::storage::{OwnedFlash, Region};
@@ -4244,6 +4244,7 @@ fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
         (13, 290),
         (12, 310),
         (11, 330),
+        (3, 0),
     ];
     let mut sim = Sim::new();
     sim.device
@@ -4255,21 +4256,23 @@ fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
     for _ in 0..3 {
         sim.press(Button::BottomLeft);
     }
-    sim.expect_field("FORM", "FITNESS");
+    sim.expect_field("FORM", "OPEN TO SEE");
     sim.checkpoint("settings: FORM row");
     sim.press(Button::BottomRight);
     sim.wait_for("FATIGUE", seconds(60)).unwrap();
     // Worked outside the firmware from the same rides: each ride's stress at
     // the default 215 W FTP, the seven-day seed, then CTL/ATL a day at a time.
     // Fitness 19, fatigue 13, form +6; form a week apart: -10 -13 -13 -32 -16.
-    sim.expect_text("19");
-    sim.expect_text("13");
+    // The first week of the 120-day window is empty, so both averages start
+    // at zero.
+    sim.expect_field("FITNESS", "19");
+    sim.expect_field("FATIGUE", "13");
     sim.expect_text("+6");
     sim.expect_text("FRESH");
     sim.expect_text("RIDES WITHOUT POWER");
     sim.checkpoint("form page: fitness, fatigue, form and six weeks");
     sim.press(Button::TopLeft);
-    sim.expect_field("FORM", "FITNESS");
+    sim.expect_field("FORM", "+6 FRESH");
 }
 
 /// A rider with no ride that had power gets a plain answer, not zeros.
@@ -4282,7 +4285,8 @@ fn form_page_without_rides_with_power_says_so() {
     }
     sim.press(Button::BottomRight);
     sim.wait_for("NO POWER RIDES", seconds(60)).unwrap();
-    sim.expect_text("IN THE LAST 7 WEEKS");
+    sim.expect_text("NEEDS A POWER METER");
+    sim.expect_no_text("LEFT OUT");
     sim.checkpoint("form page with no ride that had power");
 }
 

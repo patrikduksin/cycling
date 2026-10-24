@@ -6,16 +6,20 @@
 //! fitness minus fatigue. A day without a ride feeds zero, so both decay.
 //!
 //! Only the last [`DAYS`] days are folded, from the ride index and the facts,
-//! and nothing is stored. Both averages start at the mean of the first week
-//! rather than at zero, so a rider who trains steadily reads even form, not
-//! tired form, from a window that began mid-habit. A ride without power has
-//! no stress and counts for nothing. The averages are fixed point (8 fractional
-//! bits, integer division toward zero), and one day's stress is capped at
-//! [`DAY_MAX`], so no input can overflow them.
+//! and nothing is stored. The fold has to start somewhere: both averages start
+//! at the mean of the window's first week, not at zero, so a rider who trains
+//! steadily reads even form from a window that began mid-habit. The guess
+//! fades by a factor of 0.057 over 120 days of the 42-day average, so the
+//! numbers are exact to within a point of the whole history once the rider has
+//! about four months of rides, and an estimate before that. A ride without
+//! power has no stress and counts for nothing. The averages are fixed point (8
+//! fractional bits, integer division toward zero), and one day's stress is
+//! capped at [`DAY_MAX`], so no input can overflow them.
 use super::week::local_day;
 
-/// Days folded, oldest first and today last.
-pub const DAYS: usize = 49;
+/// Days folded, oldest first and today last: about three time constants of the
+/// 42-day average.
+pub const DAYS: usize = 120;
 /// Form samples kept for the trend, a week apart, today last.
 pub const TREND: usize = 6;
 /// Days between trend samples.
@@ -31,9 +35,11 @@ const ONE: i64 = 256;
 pub struct Daily {
     /// Local day number of the last entry.
     today: i64,
-    stress: [u32; DAYS],
+    stress: [u16; DAYS],
     /// Rides with power counted in.
     pub powered: u16,
+    /// Dated rides in the window that had no power.
+    pub unpowered: u16,
 }
 
 impl Default for Daily {
@@ -42,6 +48,7 @@ impl Default for Daily {
             today: 0,
             stress: [0; DAYS],
             powered: 0,
+            unpowered: 0,
         }
     }
 }
@@ -62,7 +69,7 @@ impl Daily {
         stress: Option<u32>,
         offset_at: &impl Fn(i64) -> i64,
     ) {
-        let (Some(start_ms), Some(stress)) = (start_utc_ms, stress) else {
+        let Some(start_ms) = start_utc_ms else {
             return;
         };
         let start_s = i64::try_from(start_ms / 1000).unwrap_or(i64::MAX / 2);
@@ -73,7 +80,12 @@ impl Daily {
         else {
             return;
         };
-        self.stress[slot] = self.stress[slot].saturating_add(stress);
+        let Some(stress) = stress else {
+            self.unpowered = self.unpowered.saturating_add(1);
+            return;
+        };
+        let day = u32::from(self.stress[slot]).saturating_add(stress);
+        self.stress[slot] = day.min(DAY_MAX) as u16;
         self.powered = self.powered.saturating_add(1);
     }
 
@@ -83,6 +95,7 @@ impl Daily {
         self.today = local_day(now_s, offset_at);
         self.stress.fill(0);
         self.powered = 0;
+        self.unpowered = 0;
     }
 
     pub fn form(&self) -> Form {
@@ -119,8 +132,8 @@ fn whole(q8: i64) -> i64 {
 }
 
 /// Fold `days` of stress, oldest first.
-pub fn fold(days: &[u32]) -> Form {
-    let capped = |stress: u32| i64::from(stress.min(DAY_MAX)) * ONE;
+pub fn fold(days: &[u16]) -> Form {
+    let capped = |stress: u16| i64::from(u32::from(stress).min(DAY_MAX)) * ONE;
     let first = &days[..days.len().min(WEEK)];
     let seed = first.iter().map(|&s| capped(s)).sum::<i64>() / first.len().max(1) as i64;
     let mut fitness = Average {
@@ -186,6 +199,23 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_first_week_seeds_both_averages_at_its_mean() {
+        // One 42 stress day in the first week: mean 6, so both start at
+        // 42 * 256 / 7 = 1536 (x256). Then a day at a time:
+        //   day 1, 42 -> 10752: fitness 1536 + 9216 / 42 = 1536 + 219 = 1755
+        //                       fatigue 1536 + 9216 / 7  = 1536 + 1316 = 2852
+        //   day 2, 0: fitness 1755 - 1755 / 42 = 1755 - 41 = 1714
+        //             fatigue 2852 - 2852 / 7  = 2852 - 407 = 2445
+        //   day 3 1674 / 2096, day 4 1635 / 1797, day 5 1597 / 1541,
+        //   day 6 1559 / 1321, day 7 1522 / 1133 (6.0 and 4.4 rounded).
+        // Form 1522 - 1133 = 389 -> 2. Starting from zero instead would end
+        // at fitness 1 and fatigue 4 (the day's 42 alone).
+        let form = fold(&[42, 0, 0, 0, 0, 0, 0]);
+        assert_eq!((form.fitness, form.fatigue, form.form), (6, 4, 2));
+        assert_eq!(form.trend[TREND - 1], 2);
+    }
+
+    #[test]
     fn steady_riding_reads_even_form() {
         let form = fold(&[70; DAYS]);
         assert_eq!((form.fitness, form.fatigue, form.form), (70, 70, 0));
@@ -211,16 +241,18 @@ mod tests {
         daily.add(Some(NOW_MS - 2 * 3_600_000), Some(80), &utc);
         daily.add(Some(NOW_MS - DAY_MS), Some(50), &utc);
         daily.add(Some(NOW_MS - DAY_MS), Some(10), &utc);
-        daily.add(Some(NOW_MS - 48 * DAY_MS), Some(40), &utc);
-        daily.add(Some(NOW_MS - 49 * DAY_MS), Some(999), &utc);
+        daily.add(Some(NOW_MS - 119 * DAY_MS), Some(40), &utc);
+        daily.add(Some(NOW_MS - 120 * DAY_MS), Some(999), &utc);
         daily.add(Some(NOW_MS + DAY_MS), Some(999), &utc);
         daily.add(Some(NOW_MS), None, &utc);
+        daily.add(Some(NOW_MS - 121 * DAY_MS), None, &utc);
         daily.add(None, Some(999), &utc);
         assert_eq!(daily.stress[DAYS - 1], 80);
         assert_eq!(daily.stress[DAYS - 2], 60);
         assert_eq!(daily.stress[0], 40);
         assert_eq!(daily.powered, 4);
-        assert_eq!(daily.stress.iter().sum::<u32>(), 180);
+        assert_eq!(daily.unpowered, 1, "only dated rides in the window");
+        assert_eq!(daily.stress.iter().map(|&s| u32::from(s)).sum::<u32>(), 180);
     }
 
     #[test]
@@ -245,11 +277,11 @@ mod tests {
             let form = daily.form();
             assert!(form.fatigue <= DAY_MAX as u16, "{form:?}");
         }
-        let swamped = fold(&[u32::MAX; DAYS]);
+        let swamped = fold(&[u16::MAX; DAYS]);
         assert_eq!(swamped.fitness, DAY_MAX as u16);
         assert_eq!(swamped.form, 0);
         assert_eq!(fold(&[]), Form::default());
-        assert_eq!(fold(&[u32::MAX]).fitness, DAY_MAX as u16);
+        assert_eq!(fold(&[u16::MAX]).fitness, DAY_MAX as u16);
     }
 
     #[test]
@@ -266,6 +298,6 @@ mod tests {
     #[test]
     fn what_the_screen_carries_stays_small() {
         assert!(core::mem::size_of::<Form>() <= 24);
-        assert!(core::mem::size_of::<Daily>() <= 208);
+        assert!(core::mem::size_of::<Daily>() <= 256);
     }
 }

@@ -1,29 +1,52 @@
 //! Fitness, fatigue and form in the app: the FORM page under Settings,
 //! PROFILE.
 //!
-//! The page folds the last seven weeks of saved rides with power into daily
+//! The page folds the last 120 days of saved rides with power into daily
 //! stress (`ride::fitness`) from the ride index, at the FTP each ride's facts
 //! kept. The index only reads once a list wants it, so opening FORM starts it,
 //! and the page says READING RIDES until both journals are read. Nothing is
-//! stored; the fold is redone whenever the rides, the FTP, the zone or the
-//! minute change, into one buffer `Runtime` keeps.
+//! stored. The fold runs in the service tick while FORM is open, whenever the
+//! rides, the FTP, the zone or the minute change, into the one buffer
+//! `Runtime` keeps; drawing only copies the answer, so the render path's stack
+//! does not carry the fold.
 use super::Runtime;
 use super::history::WeeksKey;
 use crate::ride::fitness::Daily;
-use crate::screens::form::Mode;
-use crate::screens::workout::Page;
-use core::cell::{Cell, RefCell};
+use crate::screens::form::{Mode, signed, verdict};
+use crate::screens::workout::{Page, Text};
+use core::fmt::Write;
 use device_api::input::Button;
 
 #[derive(Default)]
 pub(super) struct Kept {
-    daily: RefCell<Daily>,
-    shown: Cell<Option<(WeeksKey, Mode)>>,
+    daily: Daily,
+    /// What the rides read as of the last fold, and when.
+    folded: Option<(WeeksKey, Mode)>,
+    /// What the page shows.
+    pub(super) mode: Mode,
+}
+
+impl Kept {
+    /// The FORM row's value in Settings: form as of the last time the page
+    /// was open.
+    pub(super) fn summary(&self) -> Text<38> {
+        let mut text = Text::new();
+        let _ = match self.folded {
+            Some((_, Mode::Form { form, .. })) => {
+                let mut number = Text::<12>::new();
+                signed(&mut number, form.form);
+                write!(text, "{} {}", number.as_str(), verdict(form.form).0)
+            }
+            _ => text.push_str("OPEN TO SEE"),
+        };
+        text
+    }
 }
 
 impl Runtime {
     pub(super) fn open_form(&mut self, now: u64) {
         self.history.start_indexing();
+        self.form.mode = Mode::Reading;
         self.navigation.page = Page::Form;
         self.navigation.page_since = now;
     }
@@ -35,8 +58,19 @@ impl Runtime {
         }
     }
 
-    /// What the FORM page shows now.
-    pub(super) fn form_mode(&self) -> Mode {
+    /// Keep what the FORM page shows up to date while it is open.
+    pub(super) fn service_form(&mut self) {
+        if self.navigation.page != Page::Form {
+            return;
+        }
+        let mode = self.fold_form();
+        if mode != self.form.mode {
+            self.form.mode = mode;
+            self.display.redraw();
+        }
+    }
+
+    fn fold_form(&mut self) -> Mode {
         let Some(utc_ms) = self.readings.live.utc_ms else {
             return Mode::NoClock;
         };
@@ -44,22 +78,26 @@ impl Runtime {
             return Mode::Reading;
         }
         let key = self.rides_key(utc_ms);
-        if let Some((cached, mode)) = self.form.shown.get()
+        if let Some((cached, mode)) = self.form.folded
             && cached == key
         {
             return mode;
         }
         let zone = self.preferences.options.zone;
         let offset = |utc_s| zone.offset_s(utc_s);
-        let mut daily = self.form.daily.borrow_mut();
+        let mut daily = core::mem::take(&mut self.form.daily);
         daily.reset(utc_ms, &offset);
         self.each_ride(|ride, stress| daily.add(ride.first_utc_ms, stress, &offset));
         let mode = if daily.powered == 0 {
             Mode::NoPower
         } else {
-            Mode::Form(daily.form())
+            Mode::Form {
+                form: daily.form(),
+                left_out: daily.unpowered != 0,
+            }
         };
-        self.form.shown.set(Some((key, mode)));
+        self.form.daily = daily;
+        self.form.folded = Some((key, mode));
         mode
     }
 }

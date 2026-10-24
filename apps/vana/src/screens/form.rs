@@ -1,18 +1,18 @@
-//! FORM: fitness, fatigue and form from the last seven weeks of rides with
+//! FORM: fitness, fatigue and form from the last four months of rides with
 //! power. Opened from Settings, PROFILE; BACK returns there.
 //!
 //! FITNESS and FATIGUE are training stress in `POWER`, the 42-day and 7-day
-//! averages (`ride::fitness`). FORM is fitness minus fatigue, coloured by
-//! what it means for today: green when rested, white when even, amber when
-//! tired and red when very tired, with that word beside the caption. Under
-//! them one bar a week shows how form stood at the end of each of the last six
-//! weeks, up for rested and down for tired, on a baseline at zero. Rides without power do not
-//! count, and the page says so. While the ride index is still reading, or
-//! when there is no date or no ride with power, it says that instead.
+//! averages (`ride::fitness`). FORM is fitness minus fatigue, with a word for
+//! what it means today beside the caption. Only the two ends of the range
+//! draw the eye: green for FRESH, red for VERY TIRED; the rest of the normal
+//! training range stays white. Under them one bar a week shows how form stood
+//! at the end of each of the last six weeks, up for rested and down for
+//! tired, on a baseline at zero. When some rides had no power the page says
+//! they are left out. While the ride index is still reading, or when there is
+//! no date or no ride with power, it says that instead.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
-    AMBER, Align, BODY, CAPTION, CONTENT, GREEN, POWER, RED, Rect, SECONDARY, TERTIARY, WHITE,
-    WIDTH,
+    Align, BODY, CAPTION, CONTENT, GREEN, POWER, RED, Rect, SECONDARY, TERTIARY, WHITE, WIDTH,
 };
 use super::workout::{Text, View};
 use crate::ride::fitness::{Form, TREND};
@@ -42,20 +42,25 @@ pub enum Mode {
     NoClock,
     /// No ride with power in the window.
     NoPower,
-    Form(Form),
+    Form {
+        form: Form,
+        /// Some rides in the window had no power, so they do not count.
+        left_out: bool,
+    },
 }
 
 /// What form means today, and its colour.
 pub fn verdict(form: i16) -> (&'static str, u16) {
     match form {
-        5.. => ("FRESH", GREEN),
+        26.. => ("RESTED", WHITE),
+        5..=25 => ("FRESH", GREEN),
         -10..=4 => ("EVEN", WHITE),
-        -30..=-11 => ("TIRED", AMBER),
+        -30..=-11 => ("BUILDING", WHITE),
         _ => ("VERY TIRED", RED),
     }
 }
 
-fn signed(text: &mut Text<12>, value: i16) {
+pub fn signed(text: &mut Text<12>, value: i16) {
     let _ = if value > 0 {
         write!(text, "+{value}")
     } else {
@@ -65,8 +70,8 @@ fn signed(text: &mut Text<12>, value: i16) {
 
 pub fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    let form = match view.form {
-        Mode::Form(form) => form,
+    let (form, left_out) = match view.form {
+        Mode::Form { form, left_out } => (form, left_out),
         Mode::Reading => {
             super::bests::centred(&mut canvas, &[&BODY], b"READING RIDES", 150, WHITE);
             super::bests::centred(
@@ -80,13 +85,7 @@ pub fn prepare(view: &View) -> Canvas {
         }
         Mode::NoClock => {
             super::bests::centred(&mut canvas, &[&BODY], b"NO DATE YET", 150, WHITE);
-            super::bests::centred(
-                &mut canvas,
-                &[&CAPTION],
-                b"WAITING FOR THE CLOCK",
-                174,
-                SECONDARY,
-            );
+            super::bests::centred(&mut canvas, &[&CAPTION], b"GET A GPS FIX", 174, SECONDARY);
             return canvas;
         }
         Mode::NoPower => {
@@ -94,7 +93,7 @@ pub fn prepare(view: &View) -> Canvas {
             super::bests::centred(
                 &mut canvas,
                 &[&CAPTION],
-                b"IN THE LAST 7 WEEKS",
+                b"NEEDS A POWER METER",
                 174,
                 SECONDARY,
             );
@@ -175,10 +174,12 @@ pub fn prepare(view: &View) -> Canvas {
     }
     canvas.caption(b"6 WEEKS AGO", RIGHT - LEFT, LEFT, ENDS_BASE, Align::Left);
     canvas.caption(b"NOW", 60, RIGHT, ENDS_BASE, Align::Right);
-    for (line, text) in [b"RIDES WITHOUT POWER".as_slice(), b"ARE LEFT OUT"]
-        .into_iter()
-        .enumerate()
-    {
+    let note: &[&[u8]] = if left_out {
+        &[b"RIDES WITHOUT POWER", b"ARE LEFT OUT"]
+    } else {
+        &[]
+    };
+    for (line, text) in note.iter().enumerate() {
         canvas.caption(
             text,
             RIGHT - LEFT,
@@ -214,12 +215,15 @@ mod tests {
 
     #[test]
     fn the_page_names_each_number_and_what_form_means() {
-        let view = view(Mode::Form(Form {
-            fitness: 57,
-            fatigue: 71,
-            form: -14,
-            trend: [3, 8, -6, -20, -9, -14],
-        }));
+        let view = view(Mode::Form {
+            form: Form {
+                fitness: 57,
+                fatigue: 71,
+                form: -14,
+                trend: [3, 8, -6, -20, -9, -14],
+            },
+            left_out: true,
+        });
         assert!(view.cues.is_empty());
         view.canvas.assert_laid_out(
             full(),
@@ -230,7 +234,7 @@ mod tests {
                 "57",
                 "71",
                 "-14",
-                "TIRED",
+                "BUILDING",
                 "6 WEEKS AGO",
                 "NOW",
                 "RIDES WITHOUT POWER",
@@ -246,28 +250,47 @@ mod tests {
     }
 
     #[test]
+    fn the_left_out_note_shows_only_when_rides_were_left_out() {
+        let page = |left_out| {
+            view(Mode::Form {
+                form: Form::default(),
+                left_out,
+            })
+        };
+        assert!(page(true).canvas.shows("ARE LEFT OUT"));
+        assert!(!page(false).canvas.shows("LEFT OUT"));
+    }
+
+    #[test]
     fn form_reads_by_its_band() {
+        assert_eq!(verdict(26), ("RESTED", WHITE));
         assert_eq!(verdict(25), ("FRESH", GREEN));
         assert_eq!(verdict(5), ("FRESH", GREEN));
         assert_eq!(verdict(4), ("EVEN", WHITE));
         assert_eq!(verdict(-10), ("EVEN", WHITE));
-        assert_eq!(verdict(-11), ("TIRED", AMBER));
-        assert_eq!(verdict(-30), ("TIRED", AMBER));
+        assert_eq!(verdict(-11), ("BUILDING", WHITE));
+        assert_eq!(verdict(-30), ("BUILDING", WHITE));
         assert_eq!(verdict(-31), ("VERY TIRED", RED));
-        let rested = view(Mode::Form(Form {
-            form: 9,
-            ..Form::default()
-        }));
-        assert!(rested.canvas.shows("+9"));
-        assert!(rested.canvas.shows("FRESH"));
+        let fresh = view(Mode::Form {
+            form: Form {
+                form: 9,
+                ..Form::default()
+            },
+            left_out: false,
+        });
+        assert!(fresh.canvas.shows("+9"));
+        assert!(fresh.canvas.shows("FRESH"));
     }
 
     #[test]
     fn waiting_and_empty_pages_say_why_and_show_no_numbers() {
         for (mode, want) in [
             (Mode::Reading, ["READING RIDES", "FORM SHOWS WHEN DONE"]),
-            (Mode::NoClock, ["NO DATE YET", "WAITING FOR THE CLOCK"]),
-            (Mode::NoPower, ["NO POWER RIDES", "IN THE LAST 7 WEEKS"]),
+            (Mode::NoClock, ["NO DATE YET", "GET A GPS FIX"]),
+            (
+                Mode::NoPower,
+                ["NO POWER RIDES", "NEEDS A POWER METER"],
+            ),
         ] {
             let view = view(mode);
             view.canvas.assert_laid_out(full(), &want, "state");
@@ -277,10 +300,13 @@ mod tests {
 
     #[test]
     fn trend_bars_stand_on_the_zero_line_by_sign_and_stop_at_the_scale() {
-        let view = view(Mode::Form(Form {
-            trend: [i16::MAX, 0, i16::MIN, 25, -25, 5],
-            ..Form::default()
-        }));
+        let view = view(Mode::Form {
+            form: Form {
+                trend: [i16::MAX, 0, i16::MIN, 25, -25, 5],
+                ..Form::default()
+            },
+            left_out: false,
+        });
         let bars: std::vec::Vec<Rect> = view
             .canvas
             .shapes

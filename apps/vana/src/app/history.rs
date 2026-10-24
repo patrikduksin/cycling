@@ -15,7 +15,6 @@ use super::Runtime;
 use super::recording::Medium;
 use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
-use crate::ride::load::Effort;
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
@@ -121,7 +120,12 @@ impl Runtime {
 
     /// The `index`-th saved ride of one journal, oldest first.
     fn journal_ride(&self, medium: Medium, index: usize) -> Option<Summary> {
-        let (indexed, newer) = self.split(medium);
+        self.ride_in(medium, index, self.split(medium))
+    }
+
+    /// The same, for a caller that already knows the journal's `split`.
+    fn ride_in(&self, medium: Medium, index: usize, split: (usize, usize)) -> Option<Summary> {
+        let (indexed, newer) = split;
         if index < indexed {
             return self.indexed(medium)?.get(index);
         }
@@ -129,17 +133,6 @@ impl Runtime {
             .recorder(medium)
             .summary(newer + index - indexed)
             .copied()
-    }
-
-    /// The power of the `index`-th saved ride of one journal, if the ride index
-    /// has read it and it had power.
-    fn journal_effort(&self, medium: Medium, index: usize) -> Option<Effort> {
-        let (indexed, _) = self.split(medium);
-        if index < indexed {
-            self.indexed(medium)?.effort(index)
-        } else {
-            None
-        }
     }
 
     /// The `n`-th newest saved ride of both journals. Each journal's own
@@ -359,17 +352,25 @@ impl Runtime {
     pub(super) fn each_ride(&self, mut each: impl FnMut(&Summary, Option<u32>)) {
         let ftp = self.preferences.profile.ftp_watts;
         for medium in [Medium::Internal, Medium::Bulk] {
+            let split = self.split(medium);
             for index in 0..self.journal_len(medium) {
-                if let Some(ride) = self.journal_ride(medium, index) {
-                    let stress = self.journal_effort(medium, index).and_then(|effort| {
-                        let then = self
-                            .facts
-                            .find(medium, ride.ride_id, ride.first_utc_ms)
-                            .and_then(|facts| facts.profile);
-                        effort.stress_score(then.map_or(ftp, |profile| profile.ftp_watts))
-                    });
-                    each(&ride, stress);
-                }
+                let Some(ride) = self.ride_in(medium, index, split) else {
+                    continue;
+                };
+                let effort = if index < split.0 {
+                    self.indexed(medium)
+                        .and_then(|journal| journal.effort(index))
+                } else {
+                    None
+                };
+                let stress = effort.and_then(|effort| {
+                    let then = self
+                        .facts
+                        .find(medium, ride.ride_id, ride.first_utc_ms)
+                        .and_then(|facts| facts.profile);
+                    effort.stress_score(then.map_or(ftp, |profile| profile.ftp_watts))
+                });
+                each(&ride, stress);
             }
         }
     }

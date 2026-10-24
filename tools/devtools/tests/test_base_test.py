@@ -1,5 +1,6 @@
 import itertools
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cycling_devtools.harness.base import (
@@ -99,9 +100,12 @@ class ScriptedConnection:
 
     def terminal_command(self, command):
         self.commands.append(command)
-        answers = self.replies[command]
+        answers = self.replies.get(command, [('OK', '')] if command == 'INFO' else None)
         status, data = answers.pop(0) if len(answers) > 1 else answers[0]
         return dict(status=status, data=data, ms=1)
+
+    def __enter__(self):
+        return self
 
     def __exit__(self, *unused):
         pass
@@ -115,7 +119,9 @@ class UsbStandby:
 
     It resets in software, and POWER passes through Initializing and
     Quiescing before charging standby, which it keeps. On the way, at
-    79f579f, the session dropped with EIO mid-poll. POWER WAKE
+    79f579f, the session dropped with EIO mid-poll. After each reset the
+    device rejects the line the reset cut off with an id-0 INVALID, which
+    answers the first request of the new session (af92370). POWER WAKE
     starts recovery, and a few STATUS polls later the companion cuts power:
     the session drops and the C606 boots with a power-on reset.
     """
@@ -166,6 +172,8 @@ class UsbStandby:
 
     def answer(self, command):
         self.commands.append(command)
+        if command == 'INFO':
+            return dict(status='OK', data='', ms=1)
         if command == 'POWER WAKE':
             if self.phase != 'standby':
                 return dict(status='UNAVAILABLE', data='', ms=1)
@@ -195,11 +203,19 @@ class UsbStandbySession:
         self.device = device
         self.boot = boot
         self.request_id = 1
+        self.cut_line_rejection = boot > 0
 
     def terminal_command(self, command):
         if self.boot != self.device.boot:
             raise OSError(5, 'Input/output error')
+        if self.cut_line_rejection:
+            self.cut_line_rejection = False
+            self.device.commands.append(command)
+            return dict(id=0, status='INVALID', data='malformed command', ms=1)
         return self.device.answer(command)
+
+    def __enter__(self):
+        return self
 
     def __exit__(self, *unused):
         pass
@@ -241,12 +257,12 @@ class PowerCycleTests(unittest.TestCase):
         sessions = iter([before])
         with (
             patch(
-                'cycling_devtools.harness.base.reopen',
+                'cycling_devtools.harness.base.UsbConnection',
                 side_effect=lambda *unused: next(sessions, None) or device.connect(),
             ),
             patch('time.sleep'),
         ):
-            connection = power_cycle('port', None)
+            connection = power_cycle('port', Path('captures'))
             record = crash_record(connection)
         self.assertEqual(device.commands.count('POWER WAKE'), 1)
         self.assertEqual(device.phase, 'on')

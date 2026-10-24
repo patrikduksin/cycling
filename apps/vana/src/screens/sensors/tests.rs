@@ -672,20 +672,29 @@ fn detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
         (
             BatteryStatus::Good,
             Some(2_898),
-            &b"BATTERY GOOD  2.9 V"[..],
+            &b"GOOD BATTERY  2.9 V"[..],
             SECONDARY,
         ),
         (
             BatteryStatus::Low,
             Some(2_449),
-            b"BATTERY LOW  2.4 V",
+            b"LOW BATTERY  2.4 V",
             AMBER,
         ),
-        (BatteryStatus::Critical, None, b"BATTERY CRITICAL", RED),
+        (
+            BatteryStatus::Critical,
+            Some(2_100),
+            b"CRITICAL BATTERY  2.1 V",
+            RED,
+        ),
     ];
     for (status, millivolts, text, color) in cases {
         let mut tiles = saved(&[(peer(10).identity, Connection::Live)]);
-        tiles[0].as_mut().unwrap().battery = Some(Battery { status, millivolts });
+        tiles[0].as_mut().unwrap().battery = Some(Battery {
+            status,
+            millivolts,
+            identifier: 0,
+        });
         let mut menu = Menu::new();
         menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
         menu.input(press(Button::BottomLeft), 0);

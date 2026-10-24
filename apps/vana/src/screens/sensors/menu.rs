@@ -221,11 +221,19 @@ impl Menu {
         self.selected_peers()
             .map(|s| {
                 let status = s.link_status();
+                let battery = s.battery.map(|battery| battery.status);
+                let live = status == LinkStatus::Live;
+                let low = battery.is_some_and(BatteryStatus::is_low);
                 Glance {
                     kind: s.identity.device_type,
-                    live: status == LinkStatus::Live,
-                    color: status.color(),
-                    battery: s.battery.map(|battery| battery.status),
+                    live,
+                    // A live sensor with a weak battery needs a look too.
+                    color: if live && low {
+                        super::render::AMBER
+                    } else {
+                        status.color()
+                    },
+                    battery,
                 }
             })
             .collect()

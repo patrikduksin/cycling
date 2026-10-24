@@ -53,7 +53,7 @@ impl HeartRate {
     /// Every HRM page carries the common fields, regardless of page/toggle
     /// bits, except the common Battery Status page, which reuses those bytes.
     pub fn decode(data: [u8; 8]) -> Option<Self> {
-        (data[0] != COMMON_BATTERY_PAGE).then(|| Self {
+        (data[0] & 0x7f != COMMON_BATTERY_PAGE).then(|| Self {
             beat_event_time: u16::from_le_bytes([data[4], data[5]]),
             beat_count: data[6],
             bpm: (data[7] != 0).then_some(data[7]),
@@ -113,16 +113,70 @@ pub struct Battery {
     pub status: BatteryStatus,
     /// Terminal voltage, when the sensor measures one.
     pub millivolts: Option<u16>,
+    /// Which of the sensor's batteries this is, as page 0x52 numbers them.
+    pub identifier: u8,
+}
+
+/// Device types whose byte 0 is a page number. The legacy speed, cadence and
+/// combined sensors send data in byte 0, so a 0x52 there is only a value.
+const fn has_pages(kind: u8) -> bool {
+    matches!(
+        kind,
+        device_type::POWER
+            | device_type::FITNESS_EQUIPMENT
+            | device_type::SHIFTING
+            | device_type::SHIFTING_DI2
+            | device_type::BIKE_LIGHTS
+            | device_type::RADAR
+            | device_type::HEART_RATE
+    )
+}
+
+/// What one sensor last said about each of its batteries, such as the two
+/// sides of a dual-sided power meter. Alternating pages must not hide the
+/// weak one, so the sensor is as bad as its worst battery.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BatteryReports([Option<Battery>; Self::CAPACITY]);
+
+impl BatteryReports {
+    const CAPACITY: usize = 4;
+
+    pub fn note(&mut self, battery: Battery) {
+        let slot = self
+            .0
+            .iter()
+            .position(|held| held.is_some_and(|held| held.identifier == battery.identifier))
+            .or_else(|| self.0.iter().position(Option::is_none))
+            .unwrap_or_else(|| {
+                // Out of room: the healthiest report is the one to forget.
+                self.0
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, held)| held.map(|held| held.status))
+                    .map_or(0, |(slot, _)| slot)
+            });
+        self.0[slot] = Some(battery);
+    }
+
+    pub fn worst(&self) -> Option<Battery> {
+        self.0.iter().flatten().copied().reduce(|worst, next| {
+            if next.status > worst.status {
+                next
+            } else {
+                worst
+            }
+        })
+    }
 }
 
 impl Battery {
-    /// Page 0x52 from any sensor, or a heart-rate strap's own page 7. Other
-    /// pages and reserved status values are not a battery report.
+    /// Page 0x52 from a paged sensor, or a heart-rate strap's own page 7.
+    /// Other pages and reserved status values are not a battery report.
     pub fn decode(kind: u8, data: [u8; 8]) -> Option<Self> {
-        let (fraction, coarse) = if data[0] == COMMON_BATTERY_PAGE {
-            (data[6], data[7])
+        let (identifier, fraction, coarse) = if has_pages(kind) && data[0] == COMMON_BATTERY_PAGE {
+            (data[2] >> 4, data[6], data[7])
         } else if kind == device_type::HEART_RATE && data[0] & 0x7f == HEART_RATE_BATTERY_PAGE {
-            (data[2], data[3])
+            (0, data[2], data[3])
         } else {
             return None;
         };
@@ -133,7 +187,11 @@ impl Battery {
             .then(|| volts * 1000 + u32::from(fraction) * 1000 / 256)
             .filter(|&millivolts| millivolts != 0)
             .map(|millivolts| millivolts as u16);
-        Some(Self { status, millivolts })
+        Some(Self {
+            status,
+            millivolts,
+            identifier,
+        })
     }
 }
 
@@ -180,6 +238,7 @@ mod tests {
     fn battery_page_never_refreshes_heart_rate_or_power() {
         let page = [0x52, 0xff, 1, 0, 0, 0, 0x80, 0x42];
         assert_eq!(HeartRate::decode(page), None);
+        assert_eq!(HeartRate::decode([0xd2, 0, 0, 0, 0, 0, 0, 72]), None);
         assert_eq!(Power::decode(page), None);
     }
 
@@ -228,10 +287,27 @@ mod tests {
 
     #[test]
     fn only_battery_pages_report_a_battery() {
+        let paged = [
+            device_type::POWER,
+            device_type::HEART_RATE,
+            device_type::SHIFTING,
+            device_type::SHIFTING_DI2,
+            device_type::BIKE_LIGHTS,
+            device_type::RADAR,
+            device_type::FITNESS_EQUIPMENT,
+        ];
+        let unpaged = [
+            device_type::SPEED_CADENCE,
+            device_type::CADENCE,
+            device_type::SPEED,
+            0,
+            255,
+        ];
         for page in 0..=255u8 {
             let data = [page, 0xff, 0x40, 0x40, 0xff, 0xff, 0x40, 0x40];
-            for kind in [device_type::POWER, device_type::HEART_RATE, 0, 255] {
-                let wanted = page == 0x52 || (kind == device_type::HEART_RATE && page & 0x7f == 7);
+            for kind in paged.into_iter().chain(unpaged) {
+                let wanted = (paged.contains(&kind) && page == 0x52)
+                    || (kind == device_type::HEART_RATE && page & 0x7f == 7);
                 assert_eq!(
                     Battery::decode(kind, data).is_some(),
                     wanted,
@@ -239,6 +315,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn combined_speed_cadence_data_is_never_a_battery() {
+        // Byte 0 of type 121 is a cadence event time, which may be 0x52.
+        let data = [0x52, 0x10, 0x20, 0, 0, 0x30, 0x23, 0x41];
+        assert_eq!(Battery::decode(device_type::SPEED_CADENCE, data), None);
+        assert!(Battery::decode(device_type::POWER, data).is_some());
+    }
+
+    #[test]
+    fn the_worst_battery_across_identifiers_is_kept() {
+        let report = |identifier: u8, status: u8| {
+            let data = [0x52, 0xff, identifier << 4 | 2, 0, 0, 0, 0, status << 4 | 3];
+            Battery::decode(device_type::POWER, data).unwrap()
+        };
+        let mut reports = BatteryReports::default();
+        assert_eq!(reports.worst(), None);
+        for _ in 0..3 {
+            reports.note(report(0, 4));
+            reports.note(report(1, 2));
+        }
+        assert_eq!(reports.worst().unwrap().status, BatteryStatus::Low);
+        reports.note(report(0, 5));
+        assert_eq!(reports.worst().unwrap().status, BatteryStatus::Critical);
+        reports.note(report(0, 2));
+        assert_eq!(reports.worst().unwrap().status, BatteryStatus::Good);
+        reports.note(report(0, 4));
+        for identifier in 2..10 {
+            reports.note(report(identifier, 2));
+        }
+        assert_eq!(reports.worst().unwrap().status, BatteryStatus::Low);
     }
 
     #[test]

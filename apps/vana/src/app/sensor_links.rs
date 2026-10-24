@@ -9,7 +9,7 @@
 use super::Runtime;
 use super::preferences::Persistence;
 use crate::screens::sensors::{Action, Connection, MenuMessage, Selected};
-use crate::sensors::ant::Battery;
+use crate::sensors::ant::{Battery, BatteryReports};
 use crate::sensors::saved::Saved;
 use crate::sensors::scan::Scan;
 use device_api::ant::{
@@ -154,10 +154,10 @@ pub(super) struct Links {
     next: usize,
     /// Save state last shown on the sensor page.
     shown: Option<Persistence>,
-    /// What each saved slot's sensor last reported about its battery, kept
+    /// What each saved slot's sensor last reported about its batteries, kept
     /// with the peer so a replaced sensor's report never describes the new
     /// one. Live state only; never stored.
-    batteries: [Option<(Identity, Battery)>; CHANNEL_CAPACITY],
+    batteries: [Option<(Identity, BatteryReports)>; CHANNEL_CAPACITY],
 }
 
 fn channel_of(channels: &[Option<Snapshot>], kind: u8) -> Option<Snapshot> {
@@ -178,15 +178,22 @@ impl Links {
         if saved != peer {
             return;
         }
-        if let Some(battery) = Battery::decode(peer.device_type, packet.data) {
-            self.batteries[slot] = Some((peer, battery));
+        let Some(battery) = Battery::decode(peer.device_type, packet.data) else {
+            return;
+        };
+        match &mut self.batteries[slot] {
+            Some((reporter, reports)) if *reporter == peer => reports.note(battery),
+            held => {
+                let mut reports = BatteryReports::default();
+                reports.note(battery);
+                *held = Some((peer, reports));
+            }
         }
     }
 
     pub(super) fn battery(&self, slot: usize, peer: Identity) -> Option<Battery> {
-        self.batteries[slot]
-            .filter(|(reporter, _)| *reporter == peer)
-            .map(|(_, battery)| battery)
+        let (reporter, reports) = self.batteries[slot].as_ref()?;
+        (*reporter == peer).then(|| reports.worst()).flatten()
     }
 
     /// Whether a packet belongs to a sensor VANA is closing or replacing.

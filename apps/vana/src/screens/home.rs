@@ -127,10 +127,8 @@ impl Home {
             .collect();
         let live = glance.iter().filter(|g| g.live).count();
         let mut count = Text::<12>::new();
-        let battery_low = glance.iter().any(Glance::battery_low);
-        if battery_low {
-            let _ = count.push_str("BATT LOW");
-        } else if !glance.is_empty() {
+        let battery_low = glance.iter().any(|g| g.live && g.battery_low());
+        if !glance.is_empty() {
             let _ = core::fmt::Write::write_fmt(
                 &mut count,
                 format_args!("{live}/{} LIVE", glance.len()),
@@ -563,13 +561,15 @@ mod tests {
         assert_eq!(home.count.line.text(), b"1/2 LIVE");
         assert_eq!(home.count.color, GREEN);
         let mut low = glance;
+        // A dead strap is not live, so its battery is not the news.
         low[1].battery = Some(crate::sensors::ant::BatteryStatus::Critical);
+        assert_eq!(Home::new(0, false, &low, Text::new()).count.color, GREEN);
+        low[0].battery = Some(crate::sensors::ant::BatteryStatus::Low);
         let warned = Home::new(0, false, &low, Text::new());
-        assert_eq!(warned.count.line.text(), b"BATT LOW");
+        assert_eq!(warned.count.line.text(), b"1/2 LIVE");
         assert_eq!(warned.count.color, AMBER);
-        low[1].battery = Some(crate::sensors::ant::BatteryStatus::Ok);
-        let fine = Home::new(0, false, &low, Text::new());
-        assert_eq!(fine.count.line.text(), b"1/2 LIVE");
+        low[0].battery = Some(crate::sensors::ant::BatteryStatus::Ok);
+        assert_eq!(Home::new(0, false, &low, Text::new()).count.color, GREEN);
         let left = SENSORS_TILE.left + INSET;
         assert_eq!(home.pixel(left + 25, ICON_TOP), GREEN);
         assert_eq!(home.pixel(left + ICON_PITCH + 25, ICON_TOP), 0xfd20);

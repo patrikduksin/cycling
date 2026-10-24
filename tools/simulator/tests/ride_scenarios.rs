@@ -2612,7 +2612,7 @@ fn a_falling_battery_warns_once_per_level_during_a_ride() {
     sim.expect_no_text("LOW BATTERY");
     sim.set_battery(19, false);
     sim.advance(seconds(6));
-    sim.expect_no_text("BATTERY LOW");
+    sim.expect_no_text("BATTERY");
     sim.set_battery(10, false);
     sim.wait_for("CHARGE SOON 10%", seconds(2)).unwrap();
     sim.checkpoint("critical battery during a ride");
@@ -5699,25 +5699,27 @@ fn a_low_battery_turns_sensors_amber_on_home_and_ready() {
     );
     sim.advance(seconds(12));
     assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
-    assert_eq!(run_color(&sim, "BATT LOW"), AMBER);
+    assert_eq!(run_color(&sim, "HR LOW"), AMBER);
+    sim.expect_text("BATTERY");
+    assert_eq!(run_color(&sim, "2/2 LIVE"), AMBER);
     sim.checkpoint("home with a low heart rate battery");
 
     sim.home("RIDE");
     sim.expect_text("READY");
-    sim.expect_text("HR BATTERY LOW");
+    sim.expect_text("HR LOW BATTERY");
     sim.expect_text("CHANGE IT SOON");
     sim.checkpoint("ready with a low heart rate battery");
     sim.press(Button::TopLeft);
 
     sim.home("SENSORS");
     sim.open_sensor_detail("HEART RATE");
-    sim.expect_text("BATTERY LOW  2.4 V");
-    assert_eq!(run_color(&sim, "BATTERY LOW  2.4 V"), AMBER);
+    sim.expect_text("LOW BATTERY  2.4 V");
+    assert_eq!(run_color(&sim, "LOW BATTERY  2.4 V"), AMBER);
     sim.checkpoint("heart rate detail with a low battery");
     sim.press(Button::TopLeft);
     sim.open_sensor_detail("POWER METER");
-    sim.expect_text("BATTERY GOOD  2.9 V");
-    assert_eq!(run_color(&sim, "BATTERY GOOD  2.9 V"), SECONDARY);
+    sim.expect_text("GOOD BATTERY  2.9 V");
+    assert_eq!(run_color(&sim, "GOOD BATTERY  2.9 V"), SECONDARY);
     sim.checkpoint("power meter detail with a good battery");
 }
 
@@ -5733,7 +5735,7 @@ fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
     );
     sim.advance(seconds(12));
     sim.home("RIDE");
-    sim.expect_text("PWR BATTERY LOW");
+    sim.expect_text("PWR CRITICAL BATTERY");
     sim.expect_text("CHANGE IT BEFORE RIDING");
     sim.checkpoint("ready with a critical power meter battery");
     sim.press(Button::TopLeft);
@@ -5747,7 +5749,28 @@ fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
     sim.advance(seconds(12));
     sim.home("RIDE");
     sim.expect_text("1 SENSOR LIVE");
-    sim.expect_no_text("BATTERY LOW");
+    sim.expect_no_text("CRITICAL BATTERY");
+}
+
+#[test]
+fn a_sensor_that_is_not_live_is_named_before_any_battery_warning() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    battery(
+        &mut sim,
+        device_type::HEART_RATE,
+        HEART,
+        BatteryReport::new(4, 2_450),
+    );
+    sim.advance(seconds(12));
+    sim.set_present(device_type::POWER, POWER, false);
+    sim.advance(seconds(20));
+    sim.expect_text("1/2 LIVE");
+    sim.home("RIDE");
+    sim.expect_text("SENSORS WAKING UP");
+    sim.expect_text("PWR");
+    sim.expect_no_text("LOW BATTERY");
+    sim.checkpoint("ready names the missing sensor ahead of a low battery");
 }
 
 #[test]
@@ -5771,7 +5794,7 @@ fn reserved_battery_values_and_battery_pages_never_disturb_readings() {
         sim.advance(seconds(12));
         sim.home("RIDE");
         sim.expect_text("2 SENSORS LIVE");
-        sim.expect_no_text("BATTERY LOW");
+        sim.expect_no_text("LOW BATTERY");
         sim.press(Button::TopLeft);
     }
     battery(

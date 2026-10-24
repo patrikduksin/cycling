@@ -91,11 +91,11 @@ pub struct Selected {
 }
 
 impl Selected {
-    /// The caption for the detail page, such as "BATTERY LOW  2.7 V".
+    /// The caption for the detail page, such as "LOW BATTERY  2.7 V".
     pub(super) fn battery_text(self) -> Option<Text<24>> {
         let battery = self.battery?;
         let mut text = Text::<24>::new();
-        let _ = write!(text, "BATTERY {}", battery.status.text());
+        let _ = write!(text, "{} BATTERY", battery.status.text());
         if let Some(millivolts) = battery.millivolts {
             let tenths = (millivolts + 50) / 100;
             let _ = write!(text, "  {}.{} V", tenths / 10, tenths % 10);

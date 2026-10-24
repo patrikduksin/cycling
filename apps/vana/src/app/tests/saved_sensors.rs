@@ -571,6 +571,7 @@ fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
     let expected = Battery {
         status: BatteryStatus::Low,
         millivolts: Some(2500),
+        identifier: 0,
     };
     assert_eq!(links.battery(0, strap), Some(expected));
     assert_eq!(links.battery(1, meter), None);
@@ -581,4 +582,56 @@ fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
     // Replacing the sensor must not carry its report to the new one.
     links.saved.select(other);
     assert_eq!(links.battery(0, other), None);
+}
+
+#[test]
+fn a_dual_sided_meter_stays_low_while_its_other_battery_reads_good() {
+    use crate::sensors::ant::BatteryStatus;
+    let mut links = crate::app::sensor_links::Links::default();
+    let meter = peer(POWER, 9);
+    links.saved.select(meter);
+    let side = |identifier: u8, status: u8| {
+        battery_page(
+            meter,
+            [
+                0x52,
+                0xff,
+                identifier << 4 | 2,
+                0,
+                0,
+                0,
+                0x80,
+                status << 4 | 2,
+            ],
+        )
+    };
+    for _ in 0..4 {
+        links.note_battery(&side(0, 4));
+        assert_eq!(
+            links.battery(0, meter).map(|b| b.status),
+            Some(BatteryStatus::Low)
+        );
+        links.note_battery(&side(1, 2));
+        assert_eq!(
+            links.battery(0, meter).map(|b| b.status),
+            Some(BatteryStatus::Low)
+        );
+    }
+    links.note_battery(&side(0, 2));
+    assert_eq!(
+        links.battery(0, meter).map(|b| b.status),
+        Some(BatteryStatus::Good)
+    );
+}
+
+#[test]
+fn a_combined_speed_cadence_sensor_never_reports_a_battery() {
+    let mut links = crate::app::sensor_links::Links::default();
+    let sensor = peer(121, 5);
+    links.saved.select(sensor);
+    links.note_battery(&battery_page(
+        sensor,
+        [0x52, 0x10, 0x20, 0, 0, 0x30, 0x23, 0x41],
+    ));
+    assert_eq!(links.battery(0, sensor), None);
 }

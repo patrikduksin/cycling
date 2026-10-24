@@ -407,7 +407,8 @@ impl Session {
         #[cfg(feature = "cycling")]
         {
             let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::BACK_CRUMBS]);
-            let back = Box::new(vana::app::BackToStart::new(crumbs));
+            let map = Box::leak(Box::new(vana::app::MapFrame::default()));
+            let back = Box::new(vana::app::BackToStart::new(crumbs, map));
             sdk.attach_back(Box::leak(back));
         }
         Ok(Self {

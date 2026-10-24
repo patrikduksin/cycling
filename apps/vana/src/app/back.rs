@@ -10,7 +10,8 @@ use super::Runtime;
 use super::cues::Cue;
 use crate::ride::homing::{Event, Homing};
 use crate::screens::chrome::Tone;
-use crate::screens::ride::Back;
+pub use crate::screens::ride::MapFrame;
+use crate::screens::ride::{Back, MapKey, Track, update_map};
 
 pub use crate::ride::homing::Crumb;
 
@@ -23,14 +24,19 @@ const NUDGE_MS: u64 = 4_000;
 pub struct BackToStart {
     homing: Homing<'static>,
     riding: bool,
+    /// The map page's track, which `map_of` keeps up to date.
+    map: &'static mut MapFrame,
+    map_key: Option<MapKey>,
 }
 
 impl BackToStart {
     /// The breadcrumb in `crumbs`, which may be zeroed memory.
-    pub fn new(crumbs: &'static mut [Crumb]) -> Self {
+    pub fn new(crumbs: &'static mut [Crumb], map: &'static mut MapFrame) -> Self {
         Self {
             homing: Homing::new(crumbs),
             riding: false,
+            map,
+            map_key: None,
         }
     }
 }
@@ -101,4 +107,24 @@ pub(super) fn view_of(back: &Option<&'static mut BackToStart>) -> Back {
             Back::Guide,
         ),
     }
+}
+
+/// Bring the map page's track up to date with the breadcrumb.
+pub(super) fn refresh_map(back: &mut Option<&'static mut BackToStart>) {
+    let Some(state) = back.as_deref_mut() else {
+        return;
+    };
+    let track = Track {
+        available: true,
+        crumbs: state.homing.crumbs(),
+        here: state.homing.position(),
+        heading: state.homing.heading(),
+        home: state.homing.route_home(),
+    };
+    update_map(state.map, &mut state.map_key, &track);
+}
+
+/// What the map page draws: borrows `Runtime::back`'s frame.
+pub(super) fn map_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Option<&'a MapFrame> {
+    back.as_deref().map(|state| &*state.map)
 }

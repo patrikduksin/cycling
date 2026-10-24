@@ -7,6 +7,9 @@
 //! their own coordinates. Keep the least important readings at the bottom:
 //! toasts cover `chrome::TOAST` for a moment.
 //!
+//! The map page draws the ride's track per row from a frame prepared once
+//! (see `map`).
+//!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` whose `prepare` returns its canvas, dispatched below.
 //!
@@ -27,6 +30,7 @@ pub mod elevation;
 pub(super) mod end;
 mod lap;
 mod main;
+mod map;
 pub(super) mod paused;
 mod stats;
 pub mod summary;
@@ -39,6 +43,7 @@ pub use back::{Arrow, Back, Light};
 pub use climb::Frame as ClimbFrame;
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
+pub use map::{Frame as MapFrame, Key as MapKey, Track, update as update_map};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
@@ -86,20 +91,30 @@ pub enum RidePage {
     Climb,
     /// The workout step on now; first, and only while a workout is chosen.
     Workout,
+    /// The ride's own track as a breadcrumb, with the rider on it.
+    Map,
     /// The way back to the start: straight, or along the ride's own track.
     Back,
 }
 
 impl RidePage {
     /// The pages of a free ride.
-    pub const ALL: [Self; 5] = [Self::Main, Self::Stats, Self::Lap, Self::Climb, Self::Back];
+    pub const ALL: [Self; 6] = [
+        Self::Main,
+        Self::Stats,
+        Self::Lap,
+        Self::Climb,
+        Self::Map,
+        Self::Back,
+    ];
     /// The pages while a workout is chosen or running.
-    pub const TRAINING: [Self; 6] = [
+    pub const TRAINING: [Self; 7] = [
         Self::Workout,
         Self::Main,
         Self::Stats,
         Self::Lap,
         Self::Climb,
+        Self::Map,
         Self::Back,
     ];
 
@@ -181,6 +196,7 @@ pub(super) fn prepare(view: &mut View) {
         }
         // The app lays out the chart from its player: the workout stays there.
         RidePage::Workout => super::workout::fill(view, workout::prepare),
+        RidePage::Map => super::workout::fill(view, map::prepare),
         RidePage::Back => super::workout::fill(view, back::prepare),
     }
 }
@@ -263,6 +279,12 @@ fn paint_page(view: &View, row: &mut Row) {
             climb::paint_chart(&view.climb, row);
             view.canvas.paint(row);
         }
+        RidePage::Map => {
+            if let Some(frame) = view.map {
+                map::paint(frame, row);
+            }
+            view.canvas.paint(row);
+        }
         RidePage::Back => {
             view.canvas.paint(row);
             back::paint(view, row);
@@ -339,6 +361,12 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
         RidePage::Climb => view
             .canvas
             .pixel(x, y, climb::chart_pixel(&view.climb, x, y)),
+        RidePage::Map => view.canvas.pixel(
+            x,
+            y,
+            view.map
+                .map_or(BLACK, |frame| map::pixel(frame, x, y, BLACK)),
+        ),
         RidePage::Back => {
             back::arrow_pixel(&back::frame(view), x, y, view.canvas.pixel(x, y, BLACK))
         }
@@ -451,14 +479,17 @@ mod tests {
         assert_eq!(RidePage::Main.next(), Some(RidePage::Stats));
         assert_eq!(RidePage::Stats.next(), Some(RidePage::Lap));
         assert_eq!(RidePage::Lap.next(), Some(RidePage::Climb));
-        assert_eq!(RidePage::Climb.next(), Some(RidePage::Back));
+        assert_eq!(RidePage::Climb.next(), Some(RidePage::Map));
+        assert_eq!(RidePage::Map.next(), Some(RidePage::Back));
         assert_eq!(RidePage::Back.next(), None);
         assert_eq!(RidePage::Back.following(), RidePage::Main);
         assert_eq!(RidePage::Main.preceding(), RidePage::Back);
         assert_eq!(RidePage::Stats.preceding(), RidePage::Main);
         // A workout puts its page first.
         assert_eq!(RidePage::Workout.following_in(true), RidePage::Main);
-        assert_eq!(RidePage::Climb.following_in(true), RidePage::Back);
+        assert_eq!(RidePage::Climb.following_in(true), RidePage::Map);
+        assert_eq!(RidePage::Map.following_in(true), RidePage::Back);
+        assert_eq!(RidePage::Back.preceding_in(true), RidePage::Map);
         assert_eq!(RidePage::Back.following_in(true), RidePage::Workout);
         assert_eq!(RidePage::Workout.preceding_in(true), RidePage::Back);
         assert_eq!(RidePage::Main.position(true), 1);

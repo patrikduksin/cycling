@@ -539,6 +539,8 @@ pub const DOT_SIZE: usize = 6;
 pub const DOT_PITCH: usize = 11;
 /// The pitch dots close up to when the bar is crowded.
 const TIGHT_DOT_PITCH: usize = 8;
+/// One clear column between dots: the last resort before GPS gives way.
+const TIGHTEST_DOT_PITCH: usize = 7;
 
 const MIDDLE: usize = STATUS_BAR.bottom / 2;
 const EDGE: usize = 8;
@@ -656,6 +658,8 @@ pub struct StatusBar {
     mark_label: Small,
     /// The first column of the right-hand items.
     right_limit: usize,
+    /// The same without the GPS label, which gives way to page dots.
+    limit_without_gps: usize,
     /// Current page and page count; no dots below two pages.
     pages: (usize, usize),
     /// Left edge and pitch of the page dots, when they fit.
@@ -698,6 +702,7 @@ impl StatusBar {
             mark,
             mark_label,
             right_limit: clock.left,
+            limit_without_gps: clock.left,
             pages: (0, 0),
             dots: None,
         };
@@ -737,6 +742,7 @@ impl StatusBar {
             Gps::Searching => Some(TERTIARY),
             Gps::Fixed => Some(GREEN),
         };
+        bar.limit_without_gps = bar.right_limit;
         if let Some(color) = gps_color {
             let label = small(b"GPS", bar.right_limit - 6, Align::Right, color);
             if fits(label.left) {
@@ -762,14 +768,22 @@ impl StatusBar {
             Mark::None => EDGE,
             _ => self.mark_end() + GAP,
         };
-        self.dots = (count > 1)
-            .then(|| {
-                [DOT_PITCH, TIGHT_DOT_PITCH]
-                    .into_iter()
-                    .find(|pitch| left + (count - 1) * pitch + DOT_SIZE + GAP <= self.right_limit)
-            })
-            .flatten()
-            .map(|pitch| (left, pitch));
+        let pitch = |limit: usize| {
+            [DOT_PITCH, TIGHT_DOT_PITCH, TIGHTEST_DOT_PITCH]
+                .into_iter()
+                .find(|pitch| left + (count - 1) * pitch + DOT_SIZE + GAP <= limit)
+        };
+        self.dots = None;
+        if count > 1 {
+            let mut found = pitch(self.right_limit);
+            if found.is_none() && self.gps.is_some() {
+                found = pitch(self.limit_without_gps);
+                if found.is_some() {
+                    self.gps = None;
+                }
+            }
+            self.dots = found.map(|pitch| (left, pitch));
+        }
     }
 
     /// The columns the page dots cover, empty when they are not shown.
@@ -1302,7 +1316,7 @@ mod tests {
             for gps in gps {
                 for battery in batteries {
                     for clock_text in clocks {
-                        for pages in [0_usize, 1, 2, 3, 4, 5] {
+                        for pages in [0_usize, 1, 2, 3, 4, 5, 6, 7] {
                             let mut bar = StatusBar::new(&clock(clock_text), gps, battery, mark);
                             bar.set_pages(pages.saturating_sub(1), pages);
                             let what = std::format!(
@@ -1316,9 +1330,8 @@ mod tests {
                             if mark != Mark::None {
                                 assert!(bar.mark_label.line.width() > 0, "{what}: mark word");
                             }
-                            // While recording the page dots fit beside every other
-                            // item; a paused ride's longer word may push them out.
-                            if mark == Mark::Recording && (2..=4).contains(&pages) {
+                            // The page dots always show; GPS gives way to them.
+                            if (2..=7).contains(&pages) {
                                 assert!(names.contains(&"dots"), "{what}: {:?}", bar.items());
                             }
                             if battery.is_some() {

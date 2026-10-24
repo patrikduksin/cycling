@@ -7,4 +7,6 @@ pub mod daylight;
 pub mod ride;
 pub mod screens;
 pub mod sensors;
+#[cfg(test)]
+mod testing;
 pub mod workout;

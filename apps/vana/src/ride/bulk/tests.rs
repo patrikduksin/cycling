@@ -741,3 +741,76 @@ fn clear_starts_an_empty_epoch_only_for_the_exported_bound() {
     assert_ne!(device.state.log().unwrap().store_id(), old);
     assert!(device.act(Action::Start));
 }
+
+fn samples_on_media(device: &mut Device) -> u32 {
+    (0..device.recorder.next_slot())
+        .filter_map(|index| {
+            let mut slot = Slot::default();
+            Bulk::new(&mut device.state, &mut device.media)
+                .read_slot(index, &mut slot)
+                .unwrap()
+                .then(|| crate::ride::log::decode(&slot))
+                .flatten()
+        })
+        .filter(|entry| entry.kind == crate::ride::log::Kind::Samples)
+        .map(|entry| u32::from(entry.count))
+        .sum()
+}
+
+#[test]
+fn random_rides_with_power_cut_at_any_write_keep_what_was_acknowledged() {
+    use crate::testing::Rng;
+    for seed in 0..150 {
+        let mut rng = Rng::new(seed);
+        // Some media hold only a few minutes, so rides also end FULL.
+        let sectors = if rng.one_in(4) {
+            V + 16 + rng.range(4, 60)
+        } else {
+            10_000
+        };
+        let mut device = Device::initialized(sectors);
+        let (mut acknowledged, mut boots) = (0, 0);
+        for _ in 0..100 {
+            match rng.below(8) {
+                0 | 1 => {
+                    let action =
+                        rng.pick(&[Action::Start, Action::Pause, Action::Resume, Action::Finish]);
+                    device.act(action);
+                }
+                2..=4 => {
+                    let until = device.now + rng.range(1, 300) * 1_000;
+                    let step = rng.pick(&[10, 250, 1_000, 2_500]);
+                    device.run_until(until, step);
+                }
+                5 if device.media.fail_after.is_none() => {
+                    let tear = rng.pick(&[0, 1, 200, 511, 512]);
+                    device.media.fail_after = Some((rng.below(40) as u32, tear));
+                }
+                6 | 7 if device.media.off || rng.one_in(3) => {
+                    acknowledged += device.recorder.written_samples();
+                    boots += 1;
+                    device.reboot();
+                    let status = device.recorder.status();
+                    assert!(
+                        matches!(
+                            status,
+                            Status::Recovered | Status::Saved | Status::Ready | Status::Full
+                        ),
+                        "seed {seed}: {status:?}"
+                    );
+                    // Checkpoint plus replay equals a scan of everything committed.
+                    let scanned = device.full_scan();
+                    assert_eq!(*device.recorder.catalog(), scanned, "seed {seed}");
+                    // A batch may land unacknowledged before each cut.
+                    let kept = samples_on_media(&mut device);
+                    assert!(
+                        (acknowledged..=acknowledged + 4 * boots).contains(&kept),
+                        "seed {seed}: {kept} of {acknowledged} samples"
+                    );
+                    device.service();
+                }
+                _ => device.service(),
+            }
+        }
+    }
+}

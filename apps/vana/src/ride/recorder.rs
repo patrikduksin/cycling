@@ -743,6 +743,9 @@ impl Recorder {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ride::journal::{Internal, InternalState};
@@ -1121,5 +1124,55 @@ mod tests {
         assert!(!nearly.take_result().unwrap().ok);
         assert_eq!(nearly.status(), Status::Full);
         assert_eq!(nearly.next_slot(), crate::ride::log::SLOTS - 2);
+    }
+
+    #[test]
+    fn a_battery_reading_a_slot_cannot_hold_is_dropped_and_recording_goes_on() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        start(&mut recorder, &mut media, 0);
+        let sample = Sample {
+            battery_percent: Some(101),
+            power_watts: Some(180),
+            ..Sample::default()
+        };
+        for now in [0, 1_000, 2_000, 3_000, 3_000] {
+            recorder.service(&mut media, now, sample, &|| now);
+        }
+        assert_eq!(recorder.status(), Status::Recording);
+        assert_eq!(recorder.written_samples(), 4);
+        let mut slot = Slot::default();
+        media.read_slot(1, &mut slot).unwrap();
+        let batch = crate::ride::log::decode(&slot).unwrap();
+        assert_eq!(batch.samples[0].battery_percent, None);
+        assert_eq!(batch.samples[0].power_watts, Some(180));
+    }
+
+    #[test]
+    fn an_unverified_full_record_is_a_media_failure_not_a_closed_ride() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        start(&mut recorder, &mut media, 0);
+        assert!(recorder.request(Action::Finish, Source::Live, 0, 2));
+        recorder.service(&mut media, 0, Sample::default(), &|| 0);
+        assert!(recorder.take_result().unwrap().ok);
+        // Room for START, one batch and the terminal record.
+        let last = crate::ride::log::SLOTS - 3;
+        media.bytes[2 * crate::ride::log::SLOT_SIZE..last * crate::ride::log::SLOT_SIZE].fill(0);
+        let mut nearly = Recorder::default();
+        scan(&mut nearly, &mut media);
+        start(&mut nearly, &mut media, 0);
+        for now in (0..4_000).step_by(1_000) {
+            nearly.service(&mut media, now, Sample::default(), &|| now);
+        }
+        assert_eq!(nearly.next_slot(), crate::ride::log::SLOTS - 1);
+        media.fail_commit = true;
+        for now in (4_000..9_000).step_by(1_000) {
+            nearly.service(&mut media, now, Sample::default(), &|| now);
+        }
+        assert_eq!(nearly.status(), Status::Error);
+        assert!(!nearly.exportable());
     }
 }

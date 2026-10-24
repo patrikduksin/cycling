@@ -22,5 +22,6 @@ pub mod recovery;
 pub mod replay;
 pub mod storage;
 pub mod totals;
+pub mod week;
 pub mod wheel_size;
 pub mod zones;

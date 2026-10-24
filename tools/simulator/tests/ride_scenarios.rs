@@ -3099,12 +3099,8 @@ fn home_shows_ride_sensors_and_the_last_ride_at_a_glance() {
     }
     sim.wait_gone("RIDE SAVED", seconds(3)).unwrap();
     sim.expect_text("RIDES");
-    let last = sim.screen().find(" KM").pop().expect("last ride distance");
-    assert!(
-        last.text.starts_with("4.9") || last.text.starts_with("5.0"),
-        "{}",
-        last.text
-    );
+    // The ride is dated by the receiver's clock, so it is this week's ride.
+    sim.wait_for("WEEK 5 KM", seconds(10)).unwrap();
     sim.checkpoint("home after a ride");
 }
 
@@ -4757,6 +4753,102 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
     sim.advance(seconds(5));
     sim.home("RIDES");
     sim.expect_text("1/45");
+}
+
+/// Rides saved on given days, as internal flash holds them after being
+/// ridden: `(start UTC seconds, minutes, km/h)`, one sample every three seconds.
+fn journal_of_rides(rides: &[(u64, u64, f64)]) -> Vec<u8> {
+    let mut slots = Vec::new();
+    let mut push = |entry: &Entry| {
+        let mut slot = encode(entry);
+        slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
+        slots.extend_from_slice(&slot.0);
+    };
+    for (index, &(start_s, minutes, kmh)) in rides.iter().enumerate() {
+        let id = index as u32 + 1;
+        let speed = (kmh / 0.0036) as u32;
+        let samples: Vec<Sample> = (1..=minutes * 20)
+            .map(|n| Sample {
+                active_ms: n * 3_000,
+                utc_ms: Some(start_s * 1000 + n * 3_000),
+                speed_mm_s: Some(speed),
+                ..Sample::default()
+            })
+            .collect();
+        push(&Entry::event(Kind::Start, Source::Live, id, 0, 0));
+        let mut sequence = 1;
+        for batch in samples.chunks(4) {
+            push(&Entry::batch(Source::Live, id, sequence, batch).unwrap());
+            sequence += 1;
+        }
+        let active_ms = minutes * 60_000;
+        push(&Entry::event(
+            Kind::Finish,
+            Source::Live,
+            id,
+            sequence,
+            active_ms,
+        ));
+    }
+    slots
+}
+
+/// The rides list opens on this week at a glance, and Home's RIDES card
+/// names the week's distance. Rides are those of Chile's UTC-3 clock:
+/// today is Wednesday 21 October 2026, noon.
+#[test]
+fn rides_list_opens_on_this_week_and_home_names_its_distance() {
+    use device_api::storage::{OwnedFlash, Region};
+    const DAY: u64 = 86_400;
+    // Monday 2026-10-19 00:00 UTC.
+    let monday = 20_745 * DAY;
+    let rides = [
+        // Last week: Tuesday and Saturday.
+        (monday - 6 * DAY + 12 * 3600, 50, 22.0),
+        (monday - 2 * DAY + 13 * 3600, 95, 27.0),
+        // This week: Monday, Tuesday evening and Wednesday morning.
+        (monday + 10 * 3600 + 30 * 60, 45, 24.0),
+        (monday + DAY + 22 * 3600 + 30 * 60, 70, 26.0),
+        (monday + 2 * DAY + 11 * 3600, 35, 28.0),
+    ];
+    let mut sim = Sim::new();
+    sim.device
+        .media
+        .program(Region::Data, 0, &journal_of_rides(&rides))
+        .unwrap();
+    let mut sim = equip(sim.boot());
+    // Wednesday 15:00 UTC, noon in Chile.
+    sim.set_gps_clock(15 * 3600, (21, 10, 26));
+    sim.advance(seconds(20));
+    // Home reads the journal in the background and names the week.
+    sim.expect_text("WEEK 65 KM");
+    sim.checkpoint("home names the week's distance");
+
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    assert_eq!(sim.vana_page(), "history");
+    sim.expect_text("THIS WEEK");
+    sim.expect_text("3 RIDES");
+    sim.expect_text("LAST WEEK 61 KM");
+    sim.expect_text("1/5");
+    sim.checkpoint("the rides list opens on this week");
+    // The header gives way to the headline from the fourth ride on.
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_text("3/5");
+    sim.expect_text("THIS WEEK");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("4/5");
+    sim.expect_no_text("THIS WEEK");
+    sim.checkpoint("scrolled past the header");
+    // ACT opens the focused ride.
+    sim.press(Button::BottomRight);
+    assert_eq!(sim.vana_page(), "past_ride");
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_text("SAVED RIDE");
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home());
 }
 
 /// The QR code on the panel, read back as a phone camera would.

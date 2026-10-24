@@ -470,6 +470,17 @@ impl Summary {
             self.cadence_sum = self.cadence_sum.saturating_add(u64::from(value));
             self.cadence_count = self.cadence_count.saturating_add(1);
         }
+        if let Some(speed) = sample.speed_mm_s {
+            let elapsed = step_ms(
+                (self.active_ms != 0).then_some(self.active_ms),
+                sample.active_ms,
+            );
+            self.distance_mm = Some(
+                self.distance_mm
+                    .unwrap_or(0)
+                    .saturating_add(u64::from(speed) * elapsed / 1000),
+            );
+        }
         self.active_ms = sample.active_ms;
     }
 
@@ -548,13 +559,24 @@ impl Summary {
         self.gap |= gap;
         self.distance_mm = self
             .demo_speed_mm_s
-            .map(|speed| active_ms.saturating_mul(u64::from(speed)) / 1_000);
+            .map(|speed| active_ms.saturating_mul(u64::from(speed)) / 1_000)
+            .or(self.distance_mm);
         let average = |sum: u64, count: u32| {
             (count != 0).then(|| (sum / u64::from(count)).min(u64::from(u16::MAX)) as u16)
         };
         self.heart_average = average(self.heart_sum, self.heart_count);
         self.cadence_average = average(self.cadence_sum, self.cadence_count);
     }
+}
+
+/// Active time a sample covers, `last_ms` being the previous sample's (none
+/// before the first, which covers at most a second).
+pub fn step_ms(last_ms: Option<u64>, active_ms: u64) -> u64 {
+    match last_ms {
+        Some(last) => active_ms.saturating_sub(last),
+        None => active_ms.min(1000),
+    }
+    .min(MAX_STEP_MS)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1182,11 +1204,43 @@ mod tests {
         assert!(catalog.summaries[2].unwrap().recovered);
         let live = catalog.summaries[3].unwrap();
         assert_eq!(live.source, Some(Source::Live));
-        assert_eq!(live.distance_mm, None);
+        // One sample 65 s in: the first covers at most a second at 12.3 m/s.
+        assert_eq!(live.distance_mm, Some(12_345));
         assert_eq!(live.gps_samples, 1);
         assert_eq!(live.heart_average, Some(72));
         assert_eq!(live.cadence_average, Some(615));
         assert_eq!(live.first_utc_ms, Some(1_789_000_000_005));
+    }
+
+    #[test]
+    fn a_ride_adds_up_its_recorded_speed_wheel_or_gps() {
+        let at = |active_ms: u64, speed: Option<u32>| Sample {
+            active_ms,
+            speed_mm_s: speed,
+            ..Sample::default()
+        };
+        let mut summary = Summary::started(1, Source::Live);
+        // No speed yet: no distance, not zero.
+        summary.add_sample(at(1_000, None));
+        assert_eq!(summary.distance_mm, None);
+        // 1 s steps at 10 m/s, a stop, then 1 s at 5 m/s.
+        for second in 2..=4 {
+            summary.add_sample(at(second * 1_000, Some(10_000)));
+        }
+        summary.add_sample(at(5_000, Some(0)));
+        summary.add_sample(at(6_000, Some(5_000)));
+        assert_eq!(summary.distance_mm, Some(35_000));
+        // A hole in the log is ridden for the replay's longest step only.
+        summary.add_sample(at(106_000, Some(10_000)));
+        assert_eq!(summary.distance_mm, Some(65_000));
+        summary.finish(Kind::Finish, 106_000, false);
+        assert_eq!(summary.distance_mm, Some(65_000));
+        // It survives a checkpoint and keeps adding.
+        let mut bytes = [0; Summary::ENCODED];
+        summary.encode(&mut bytes);
+        let mut summary = Summary::decode(&bytes).unwrap();
+        summary.add_sample(at(107_000, Some(10_000)));
+        assert_eq!(summary.distance_mm, Some(75_000));
     }
 
     #[test]

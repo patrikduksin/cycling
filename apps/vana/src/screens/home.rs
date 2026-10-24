@@ -474,6 +474,16 @@ pub fn last_ride(distance_mm: u64) -> Text<20> {
     line
 }
 
+/// "WEEK 84 KM": the week's distance, beside RIDES (THIS WEEK is too wide).
+pub fn this_week(distance_mm: u64) -> Text<20> {
+    let mut line = Text::new();
+    let _ = core::fmt::Write::write_fmt(
+        &mut line,
+        format_args!("WEEK {} KM", (distance_mm + 500_000) / 1_000_000),
+    );
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +544,8 @@ mod tests {
                 color: 0xfd20,
             },
         ];
+        assert_eq!(this_week(84_400_000).as_bytes(), b"WEEK 84 KM");
+        assert_eq!(this_week(499_999).as_bytes(), b"WEEK 0 KM");
         let last = last_ride(4_999_800);
         assert_eq!(last.as_bytes(), b"5.00 KM");
         let home = Home::new(0, false, &glance, last);

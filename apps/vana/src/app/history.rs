@@ -17,6 +17,7 @@ use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
+use crate::ride::week::Weeks;
 use crate::screens::history::{self, List, Row};
 use crate::screens::ride::summary::{After, Saving};
 use crate::screens::workout::{Page, Text, View};
@@ -44,7 +45,11 @@ pub(super) struct History {
     /// Home's last-ride distance, kept from before a replay took over the
     /// ride sums; cleared when a new ride starts.
     pub(super) home_last: Option<u64>,
+    /// The week totals as of the last time the rides or the minute changed.
+    weeks: core::cell::Cell<Option<(WeeksKey, Weeks)>>,
 }
+
+type WeeksKey = (u64, Zone, (usize, Option<u32>), (usize, Option<u32>));
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
 /// only when both start times are known and BULK's is later, so undated rides
@@ -301,6 +306,46 @@ impl Runtime {
         }
     }
 
+    /// This week and last, from the start times, active times and distances
+    /// of the saved rides of both journals, or none until the clock is known.
+    /// A ride that moved from the MMC onto internal flash is two journal
+    /// rides, as the list shows it: their times and distances do not overlap,
+    /// so the totals are right, and the ride count counts each part.
+    pub(super) fn weeks(&self) -> Option<Weeks> {
+        let utc_ms = self.readings.live.utc_ms?;
+        let ids = |medium| {
+            let last = self.journal_len(medium).checked_sub(1);
+            (
+                self.journal_len(medium),
+                last.and_then(|i| self.journal_ride(medium, i))
+                    .map(|r| r.ride_id),
+            )
+        };
+        let key = (
+            utc_ms / 60_000,
+            self.preferences.options.zone,
+            ids(Medium::Internal),
+            ids(Medium::Bulk),
+        );
+        if let Some((cached, weeks)) = self.history.weeks.get()
+            && cached == key
+        {
+            return Some(weeks);
+        }
+        let zone = self.preferences.options.zone;
+        let offset = |utc_s| zone.offset_s(utc_s);
+        let mut weeks = Weeks::new(utc_ms, &offset);
+        for medium in [Medium::Internal, Medium::Bulk] {
+            for index in 0..self.journal_len(medium) {
+                if let Some(ride) = self.journal_ride(medium, index) {
+                    weeks.add(ride.first_utc_ms, ride.active_ms, ride.distance_mm, &offset);
+                }
+            }
+        }
+        self.history.weeks.set(Some((key, weeks)));
+        Some(weeks)
+    }
+
     /// The ride list, its cards made on demand.
     pub(super) fn history_canvas(&self) -> crate::screens::canvas::Canvas {
         let count = self.history_count();
@@ -308,6 +353,12 @@ impl Runtime {
             count,
             cursor: self.history.cursor,
             row: |index| self.history_row(index, count),
+            weeks: if count > 0 && self.history.cursor < history::HEADED {
+                self.weeks()
+            } else {
+                None
+            },
+            reading: !self.counted(),
         })
     }
 
@@ -371,8 +422,16 @@ impl Runtime {
         self.show_elevation(view);
     }
 
-    /// Home's RIDES card: the last ride's numbers, or how many are saved.
+    /// Home's RIDES card: this week's distance once the index has read every
+    /// ride, else the last ride's distance, or how many are saved.
     pub(super) fn rides_line(&self) -> Text<20> {
+        if !self.recording()
+            && self.counted()
+            && let Some(weeks) = self.weeks()
+            && weeks.this.distance_mm > 0
+        {
+            return crate::screens::home::this_week(weeks.this.distance_mm);
+        }
         let distance = self
             .history
             .home_last

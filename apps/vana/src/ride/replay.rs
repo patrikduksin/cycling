@@ -17,7 +17,7 @@
 //! The replay itself is a few words of position; it adds up into `Sums` the
 //! caller lends it, so the device keeps one set of ride sums, not two.
 use crate::ride::elevation::Trace;
-use crate::ride::log::{Entry, Kind, LapStart, MAX_STEP_MS, Sample};
+use crate::ride::log::{Entry, Kind, LapStart, Sample, step_ms};
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 
@@ -210,11 +210,7 @@ impl Replay {
         }
         self.samples = self.samples.saturating_add(1);
         // Active time runs only while recording, so pauses leave no gap.
-        let elapsed = match self.last_ms {
-            Some(last) => sample.active_ms.saturating_sub(last),
-            None => sample.active_ms.min(1000),
-        }
-        .min(MAX_STEP_MS);
+        let elapsed = step_ms(self.last_ms, sample.active_ms);
         self.last_ms = Some(sample.active_ms);
         self.active_ms = self.active_ms.max(sample.active_ms);
         if elapsed == 0 {

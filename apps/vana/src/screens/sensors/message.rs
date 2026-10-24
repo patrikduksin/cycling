@@ -88,3 +88,45 @@ impl MenuMessage {
         )
     }
 }
+
+/// How the latest power meter calibration stands, as the rider is told.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CalibrationNote {
+    Calibrating,
+    /// Asked, but a search or earlier message still holds the radio.
+    WaitingForRadio,
+    /// The offset the power meter reported, in its own units.
+    Done(i16),
+    /// The power meter refused, did not answer, or could not be asked.
+    Failed,
+    /// The radio refuses further messages until it restarts.
+    NeedsRestart,
+    NotConnected,
+    WhileRiding,
+}
+
+impl CalibrationNote {
+    /// The wording fits `CALIBRATED  OFFSET -32768` on one caption line.
+    pub fn text(self) -> heapless::String<28> {
+        use core::fmt::Write;
+        let mut text = heapless::String::new();
+        let _ = match self {
+            Self::Calibrating => text.write_str("CALIBRATING..."),
+            Self::WaitingForRadio => text.write_str("WAITING FOR RADIO"),
+            Self::NeedsRestart => text.write_str("RESTART TO CALIBRATE"),
+            Self::Done(offset) => write!(text, "CALIBRATED  OFFSET {offset}"),
+            Self::Failed => text.write_str("CALIBRATION FAILED"),
+            Self::NotConnected => text.write_str("NOT CONNECTED"),
+            Self::WhileRiding => text.write_str("NOT DURING A RIDE"),
+        };
+        text
+    }
+
+    /// A grey line saying what to do, for the failure the rider can act on.
+    pub const fn hint(self) -> Option<&'static str> {
+        match self {
+            Self::Failed => Some("CRANKS STILL, TRY AGAIN"),
+            _ => None,
+        }
+    }
+}

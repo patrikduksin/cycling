@@ -193,7 +193,7 @@ Controls:
 | Menu | Opens a ride, sensor status, the workout picker (TRAIN) or settings |
 | Ride | Opens Ready (GPS, sensors, battery and storage in plain words); ACT or rolling off starts the ride, and the ride buttons below apply. See [UX flows](ux-flows.md). |
 | Settings | Bottom-left moves to the next field (FTP, LTHR), bottom-right edits it, top-left returns home. While editing, bottom-left lowers and bottom-right raises it by 5 and top-left finishes. Touch: tap a field to edit it, then tap the large minus or plus pad. Edits apply at once and are saved two seconds after the last change. |
-| Sensors | Bottom-left moves, bottom-right selects, top-left returns. Choosing a nearby sensor saves it; choosing another of a saved type asks to replace it. A saved sensor opens a page whose only action is Disconnect, which removes it. |
+| Sensors | Bottom-left moves, bottom-right selects, top-left returns. Choosing a nearby sensor saves it; choosing another of a saved type asks to replace it. A saved sensor opens a page whose only action is Disconnect, which removes it; a power meter's page also offers Calibrate, which asks it to zero itself. |
 
 Ride buttons keep the system-wide roles: bottom-right acts, bottom-left moves,
 top-left marks or backs out. The ride screen shows no button labels; the

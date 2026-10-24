@@ -1,4 +1,4 @@
-use super::layout::DETAIL_BUTTONS;
+use super::layout::{CALIBRATION_HINT_TOP, CALIBRATION_TOP, DETAIL_BUTTONS, POWER_DETAIL_BUTTONS};
 use super::render::{AMBER, CYAN, GREEN, HEADING_TOP, STATUS_TOP, TITLE_TOP, WHITE};
 use super::*;
 use crate::screens::chrome::{Align, BODY, CAPTION, CARD, Label, Line, RAISED, VALUE};
@@ -47,6 +47,13 @@ fn peer(number: u16) -> Discovery {
         },
         rssi: -40,
         seen_ms: 0,
+    }
+}
+/// A saved heart rate strap, whose detail page has no calibrate button.
+fn strap(number: u16) -> Identity {
+    Identity {
+        device_type: 120,
+        ..peer(number).identity
     }
 }
 fn nearby(peers: &[Discovery]) -> [Option<Discovery>; DISCOVERY_CAPACITY] {
@@ -294,7 +301,7 @@ fn detail_offers_only_disconnect_and_back_whatever_the_link_state() {
         let mut menu = Menu::new();
         menu.refresh(
             [None; DISCOVERY_CAPACITY],
-            saved(&[(peer(10).identity, connection)]),
+            saved(&[(strap(10), connection)]),
             false,
         );
         menu.input(press(Button::BottomLeft), 0);
@@ -308,12 +315,12 @@ fn detail_offers_only_disconnect_and_back_whatever_the_link_state() {
         // Secondary is Back: nothing is removed.
         menu.input(press(Button::BottomLeft), 800);
         assert_eq!(menu.input(press(Button::BottomRight), 1200), None);
-        assert_eq!(menu.selected_identity(11), Some(peer(10).identity));
+        assert_eq!(menu.selected_identity(120), Some(strap(10)));
         // Primary removes the sensor.
         assert_eq!(menu.input(press(Button::BottomRight), 1600), None);
         assert_eq!(
             menu.input(press(Button::BottomRight), 2000),
-            Some(Action::Disconnect(11))
+            Some(Action::Disconnect(120))
         );
         assert_eq!(menu.diagnostics().cursor, 0);
     }
@@ -526,14 +533,14 @@ fn taps_focus_and_activate_what_is_under_the_finger() {
     assert_eq!(menu.input(press(Button::BottomRight), 600), None);
     assert_eq!(menu.tap(30, 170), Some(Action::Connect(peer(10).identity)));
     // Once saved, tapping its tile opens the detail; Back closes it.
-    let tiles = saved(&[(peer(10).identity, Connection::Searching)]);
+    let tiles = saved(&[(strap(10), Connection::Searching)]);
     menu.refresh(nearby(&[peer(10)]), tiles, false);
     assert_eq!(menu.tap(20, 70), None);
     assert!(matches!(menu.view, menu::View::Detail(0)));
     assert_eq!(menu.tap(120, 275), None);
     assert!(matches!(menu.view, menu::View::Tiles));
     assert_eq!(menu.tap(20, 70), None);
-    assert_eq!(menu.tap(120, 236), Some(Action::Disconnect(11)));
+    assert_eq!(menu.tap(120, 236), Some(Action::Disconnect(120)));
 }
 
 #[test]
@@ -719,5 +726,139 @@ fn detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
         !painted_text(&menu)
             .iter()
             .any(|(text, _)| text.contains("BATTERY"))
+    );
+}
+
+fn power_detail(connection: Connection) -> Menu {
+    let mut menu = Menu::new();
+    menu.refresh(
+        [None; DISCOVERY_CAPACITY],
+        saved(&[(peer(10).identity, connection)]),
+        false,
+    );
+    menu.input(press(Button::BottomLeft), 0);
+    assert_eq!(menu.input(press(Button::BottomRight), 400), None);
+    assert!(matches!(menu.view, menu::View::Detail(_)));
+    menu
+}
+
+#[test]
+fn a_power_meter_detail_opens_on_back_and_offers_calibrate_above_the_rest() {
+    let menu = power_detail(Connection::Live);
+    let label = |menu: &Menu, (top, height): (usize, usize), label: &[u8]| {
+        let top = top + height / 2 - usize::from(BODY.top) - usize::from(BODY.cap) / 2;
+        shows(menu, &BODY, label, 120, top, Align::Center, WHITE)
+    };
+    let [calibrate, disconnect, back] = POWER_DETAIL_BUTTONS;
+    assert!(label(&menu, calibrate, b"CALIBRATE"));
+    assert!(label(&menu, disconnect, b"DISCONNECT"));
+    assert!(label(&menu, back, b"BACK"));
+    // Two quick ACT presses must not zero a meter: ACT on the opening focus leaves.
+    let mut menu = power_detail(Connection::Live);
+    assert_eq!(menu.input(press(Button::BottomRight), 800), None);
+    assert!(matches!(menu.view, menu::View::Tiles), "back leaves");
+    // MOVE steps down and wraps: calibrate, disconnect, back.
+    let mut menu = power_detail(Connection::Live);
+    menu.input(press(Button::BottomLeft), 800);
+    assert_eq!(
+        menu.input(press(Button::BottomRight), 1200),
+        Some(Action::Calibrate)
+    );
+    assert!(matches!(menu.view, menu::View::Detail(_)));
+    menu.input(press(Button::BottomLeft), 1600);
+    assert_eq!(
+        menu.input(press(Button::BottomRight), 2000),
+        Some(Action::Disconnect(11))
+    );
+    let mut menu = power_detail(Connection::Live);
+    for step in 1..=3 {
+        menu.input(press(Button::BottomLeft), 400 * (step + 1));
+    }
+    assert_eq!(menu.input(press(Button::BottomRight), 3000), None);
+    assert!(matches!(menu.view, menu::View::Tiles), "wrapped to back");
+}
+
+#[test]
+fn a_power_meter_detail_taps_each_of_its_three_buttons() {
+    let middle = |(top, height): (usize, usize)| top + height / 2;
+    let [calibrate, disconnect, back] = POWER_DETAIL_BUTTONS;
+    let mut menu = power_detail(Connection::Live);
+    assert_eq!(menu.tap(120, middle(calibrate)), Some(Action::Calibrate));
+    assert_eq!(menu.tap(120, 160), None);
+    assert_eq!(menu.tap(120, middle(back)), None);
+    assert!(matches!(menu.view, menu::View::Tiles));
+    let mut menu = power_detail(Connection::Live);
+    assert_eq!(
+        menu.tap(120, middle(disconnect)),
+        Some(Action::Disconnect(11))
+    );
+}
+
+#[test]
+fn calibration_notes_paint_in_their_colour_and_never_collide() {
+    use crate::screens::chrome::{CONTENT, layout::assert_apart};
+    let notes = [
+        (CalibrationNote::Calibrating, "CALIBRATING...", CYAN),
+        (CalibrationNote::Done(512), "CALIBRATED  OFFSET 512", GREEN),
+        (
+            CalibrationNote::Done(i16::MIN),
+            "CALIBRATED  OFFSET -32768",
+            GREEN,
+        ),
+        (CalibrationNote::WaitingForRadio, "WAITING FOR RADIO", CYAN),
+        (CalibrationNote::Failed, "CALIBRATION FAILED", AMBER),
+        (CalibrationNote::NeedsRestart, "RESTART TO CALIBRATE", AMBER),
+        (CalibrationNote::NotConnected, "NOT CONNECTED", AMBER),
+        (CalibrationNote::WhileRiding, "NOT DURING A RIDE", AMBER),
+    ];
+    for (note, text, color) in notes {
+        let mut menu = power_detail(Connection::Live);
+        menu.set_calibration(Some(note));
+        assert_eq!(note.text().as_str(), text);
+        assert!(
+            shows(
+                &menu,
+                &CAPTION,
+                text.as_bytes(),
+                120,
+                CALIBRATION_TOP,
+                Align::Center,
+                color
+            ),
+            "{text}"
+        );
+        if let Some(hint) = note.hint() {
+            let top = CALIBRATION_HINT_TOP;
+            let hint = hint.as_bytes();
+            assert!(shows(
+                &menu,
+                &CAPTION,
+                hint,
+                120,
+                top,
+                Align::Center,
+                crate::screens::chrome::SECONDARY
+            ));
+        }
+        assert_paints_reference(&menu, text);
+        assert_apart(&painted_text(&menu), CONTENT, text);
+    }
+}
+
+#[test]
+fn a_strap_never_shows_a_calibration_note() {
+    let mut menu = Menu::new();
+    menu.refresh(
+        [None; DISCOVERY_CAPACITY],
+        saved(&[(strap(10), Connection::Live)]),
+        false,
+    );
+    menu.set_calibration(Some(CalibrationNote::Calibrating));
+    menu.input(press(Button::BottomLeft), 0);
+    menu.input(press(Button::BottomRight), 400);
+    assert!(
+        !painted_text(&menu)
+            .iter()
+            .any(|(text, _)| text.contains("CALIBRAT"))
     );
 }

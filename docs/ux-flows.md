@@ -80,6 +80,25 @@ and every minute after: under 20 % is low and under 5 % critical, a warning
 needs 2 % more to clear, and a value over 100 or a sensor without the Battery
 Service says nothing. There is no detail page for it.
 
+A saved power meter's detail page adds CALIBRATE above DISCONNECT and BACK. It
+opens on BACK, so two quick ACT presses never zero a meter under a foot. ACT on
+CALIBRATE sends the power meter a manual zero request. WAITING FOR RADIO shows
+while a search still holds the radio (up to twenty seconds), then CALIBRATING...
+while the power meter answers (up to ten). The result is CALIBRATED with the
+offset the power meter reported (OFFSET 512, in its own units), or CALIBRATION
+FAILED with a grey line, CRANKS STILL, TRY AGAIN, when it refuses, stays silent
+or cannot be reached. NOT CONNECTED says the power meter is not live, NOT DURING
+A RIDE says a recording is open (a request still waiting for the radio when a
+ride starts is dropped, and so is one left behind by leaving the page), and
+RESTART TO CALIBRATE says the radio keeps an earlier message of unknown fate
+and refuses repeats until it restarts. The result stays for ten seconds and is
+never stored.
+
+Power meters that measure at the crank with torque frequency (SRM style) answer
+a zero request with calibration ID 0x10 and their own offset page. VANA does not
+decode that answer, so such a meter shows CALIBRATION FAILED after ten seconds
+even when it zeroed.
+
 ### Recording
 
 Starting switches straight to the ride pages, shows a RECORDING toast and

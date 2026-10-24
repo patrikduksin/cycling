@@ -8,6 +8,7 @@ use device_api::input::{Button, Input};
 use device_api::observation::{Availability, Observation};
 use std::vec::Vec;
 
+mod calibration;
 mod commands;
 mod phone;
 mod power;
@@ -144,8 +145,18 @@ impl Ant for Radio {
                 }
                 Ok(device_api::ant::Admission::Accepted)
             }
-            _ => Ok(device_api::ant::Admission::Accepted),
+            AntOperation::Send { target, data } => self
+                .channels
+                .queue_send(*target, *data, now)
+                .map(device_api::ant::Admission::SendQueued),
         }
+    }
+
+    fn send_status(
+        &self,
+        id: device_api::ant::OperationId,
+    ) -> Option<device_api::ant::SendObservation> {
+        self.channels.send_status(id)
     }
 }
 

@@ -8,8 +8,8 @@
 use crate::world::{Side, World};
 use device_api::ant::{
     Admission, Ant, AntOperation, CHANNEL_CAPACITY, CONNECT_TIMEOUT_MS, Capabilities, Discovery,
-    Error, Event, Identity, LinkState, Packet, Request, SCAN_STOP_TIMEOUT_MS, ScanSnapshot,
-    ScanState, Snapshot,
+    Error, Event, Identity, LinkState, OperationId, Packet, Request, SCAN_STOP_TIMEOUT_MS,
+    ScanSnapshot, ScanState, Snapshot, Target,
 };
 use device_api::observation::Availability;
 use firmware_services::ant::Channels;
@@ -39,6 +39,21 @@ pub const SEARCH_TIMEOUT_MS: u64 = 10_000;
 const ACQUIRE_MS: u64 = 700;
 /// Wheel circumference VANA assumes, and a simulated wheel has unless set.
 const WHEEL_MM: f64 = 2136.0;
+
+/// Time a power meter takes to answer a zero request once the companion has
+/// delivered it. Chosen to be visible on screen, not measured on a real one.
+const ZERO_MS: u64 = 1_200;
+
+/// How a power meter answers a manual zero request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZeroReply {
+    /// Calibration page 0x01, ID 0xAC, carrying this offset.
+    Offset(i16),
+    /// Calibration page 0x01, ID 0xAF.
+    Failure,
+    /// Never answers.
+    Silence,
+}
 
 /// One page in this many is a battery page, as the profiles send theirs.
 const BATTERY_EVERY: u32 = 32;
@@ -81,6 +96,8 @@ pub struct AntSensor {
     /// Reports its battery now and then, in place of one page in
     /// `BATTERY_EVERY`; silent about it when `None`.
     pub battery: Option<BatteryReport>,
+    /// How it answers a manual zero request; only power meters are asked.
+    pub zero: ZeroReply,
     model: Model,
     next_page_ms: u64,
 }
@@ -118,6 +135,7 @@ impl AntSensor {
             discovery_ms: 400 + u64::from(device_number % 7) * 250,
             wheel_mm: WHEEL_MM,
             battery: None,
+            zero: ZeroReply::Offset(512),
             model: Model::default(),
             next_page_ms: 0,
         }
@@ -328,6 +346,15 @@ impl ScanOwnership {
     }
 }
 
+/// An acknowledged message the host queued and the companion has yet to deliver.
+struct Sending {
+    id: OperationId,
+    target: Target,
+    data: [u8; 8],
+    queued_ms: u64,
+    submitted: bool,
+}
+
 /// A channel the companion opened for one identity.
 struct Open {
     identity: Identity,
@@ -355,6 +382,7 @@ pub struct SimulatedAnt {
     companion_scan: Option<CompanionScan>,
     open: Vec<Open>,
     events: Vec<(u64, Event)>,
+    sending: Option<Sending>,
     /// Every request the companion received, for scenario reports.
     pub log: Vec<(u64, Request)>,
 }
@@ -377,6 +405,7 @@ impl SimulatedAnt {
             companion_scan: None,
             open: Vec::new(),
             events: Vec::new(),
+            sending: None,
             log: Vec::new(),
         }
     }
@@ -413,6 +442,7 @@ impl SimulatedAnt {
         self.pending = None;
         self.scan = ScanOwnership::Idle;
         self.events.clear();
+        self.sending = None;
     }
 
     /// The companion restarted or its UART failed: every channel is lost.
@@ -421,6 +451,7 @@ impl SimulatedAnt {
         self.open.clear();
         self.companion_scan = None;
         self.events.clear();
+        self.sending = None;
         self.state.transport_loss(now);
         if !self.scan.idle() {
             self.scan = ScanOwnership::Uncertain;
@@ -449,6 +480,7 @@ impl SimulatedAnt {
                 self.companion(request, now);
             }
         }
+        self.send(now);
         self.discover(now);
         self.link(now);
         self.broadcast(world, now);
@@ -489,6 +521,55 @@ impl SimulatedAnt {
                     .push((now + COMPANION_MS, Event::Disconnected(identity)));
             }
         }
+    }
+
+    /// The companion writes a queued message to the UART, reports the bridge
+    /// reply, and a power meter that hears a zero request answers it.
+    fn send(&mut self, now: u64) {
+        let Some(sending) = &mut self.sending else {
+            return;
+        };
+        if !sending.submitted {
+            if now > sending.queued_ms {
+                sending.submitted = true;
+                self.state.send_submitted(sending.id, now);
+            }
+            return;
+        }
+        if now < sending.queued_ms + COMPANION_MS {
+            return;
+        }
+        let Sending {
+            id, target, data, ..
+        } = self.sending.take().unwrap();
+        self.state.send_reply(id, true, now);
+        let identity = target.identity;
+        let asks_zero = identity.device_type == device_type::POWER && data[..2] == [0x01, 0xaa];
+        let heard = self
+            .open
+            .iter()
+            .any(|o| o.connected && o.identity == identity);
+        let Some(sensor) = self.sensors.iter().find(|s| s.identity == identity) else {
+            return;
+        };
+        if !asks_zero || !heard || !sensor.present || sensor.silent {
+            return;
+        }
+        let page = match sensor.zero {
+            ZeroReply::Offset(offset) => {
+                let [low, high] = offset.to_le_bytes();
+                [0x01, 0xac, 0xff, 0xff, 0xff, 0xff, low, high]
+            }
+            ZeroReply::Failure => [0x01, 0xaf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ZeroReply::Silence => return,
+        };
+        self.events.push((
+            now + ZERO_MS,
+            Event::Data {
+                device_type: identity.device_type,
+                data: page,
+            },
+        ));
     }
 
     fn discover(&mut self, now: u64) {
@@ -607,10 +688,10 @@ impl Ant for SimulatedAnt {
             connection_capacity: CHANNEL_CAPACITY as u8,
             one_peer_per_type: true,
             concurrent_scan: true,
-            acknowledged_send: false,
+            acknowledged_send: true,
             radio_delivery_feedback: false,
             burst: false,
-            max_pending_sends: 0,
+            max_pending_sends: 1,
         }
     }
 
@@ -664,7 +745,20 @@ impl Ant for SimulatedAnt {
             AntOperation::Disconnect(kind) => {
                 self.state.disconnect(kind, now).ok_or(Error::Disconnected)
             }
-            AntOperation::Send { .. } => return Err(Error::Unavailable),
+            AntOperation::Send { target, data } => {
+                if !SUPPORTED_TYPES.contains(&target.identity.device_type) {
+                    return Err(Error::UnsupportedType);
+                }
+                let id = self.state.queue_send(target, data, now)?;
+                self.sending = Some(Sending {
+                    id,
+                    target,
+                    data,
+                    queued_ms: now,
+                    submitted: false,
+                });
+                return Ok(Admission::SendQueued(id));
+            }
         };
         match result {
             Ok(request) => {
@@ -701,6 +795,10 @@ impl Ant for SimulatedAnt {
 
     fn take_diagnostic_packet(&mut self) -> Option<Packet> {
         self.state.pop_diagnostic_packet()
+    }
+
+    fn send_status(&self, id: OperationId) -> Option<device_api::ant::SendObservation> {
+        self.state.send_status(id)
     }
 }
 

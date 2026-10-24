@@ -6,7 +6,7 @@ use device_api::gps::FixState;
 use device_api::input::Button;
 use device_api::positioning::Positioning;
 use firmware_services::gps::unix_seconds;
-use shell_simulator::ant::{BatteryReport, device_type};
+use shell_simulator::ant::{BatteryReport, ZeroReply, device_type};
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
@@ -6075,4 +6075,88 @@ fn a_failed_ble_link_is_left_off_home_and_ready() {
     sim.advance(seconds(1));
     sim.home("RIDE");
     sim.expect_text("NO SENSORS");
+}
+
+/// Open the power meter's detail page. Opening Sensors starts a search, and
+/// the radio takes no message until its window closes, so `settled` waits that
+/// out; otherwise the request is made while the radio is still held.
+fn calibrate_power_meter(sim: &mut Sim, reply: ZeroReply, settled: bool) {
+    sim.ant_sensor(device_type::POWER, POWER).zero = reply;
+    sim.pair(&["POWER METER"]);
+    sim.advance(seconds(3));
+    sim.home("SENSORS");
+    sim.open_sensor_detail("POWER METER");
+    sim.expect_text("CALIBRATE");
+    sim.checkpoint("power meter detail opens on back");
+    sim.press(Button::BottomLeft);
+    sim.checkpoint("power meter detail with calibrate focused");
+    if settled {
+        sim.advance(seconds(16));
+    }
+}
+
+#[test]
+fn calibrating_a_power_meter_shows_the_offset_it_reports() {
+    let mut sim = rider();
+    calibrate_power_meter(&mut sim, ZeroReply::Offset(-37), false);
+    sim.press(Button::BottomRight);
+    sim.wait_for("WAITING FOR RADIO", seconds(1)).unwrap();
+    sim.checkpoint("power meter waiting for the radio");
+    sim.wait_for("CALIBRATING", seconds(20)).unwrap();
+    sim.checkpoint("power meter calibrating");
+    sim.wait_for("CALIBRATED", seconds(5)).unwrap();
+    sim.expect_text("OFFSET -37");
+    assert_eq!(run_color(&sim, "CALIBRATED  OFFSET -37"), GREEN);
+    sim.checkpoint("power meter calibrated with its offset");
+    sim.expect_text("DISCONNECT");
+    sim.wait_gone("CALIBRATED", seconds(12)).unwrap();
+}
+
+#[test]
+fn a_power_meter_that_refuses_to_zero_ends_in_calibration_failed() {
+    let mut sim = rider();
+    calibrate_power_meter(&mut sim, ZeroReply::Failure, true);
+    sim.press(Button::BottomRight);
+    sim.wait_for("CALIBRATION FAILED", seconds(5)).unwrap();
+    assert_eq!(run_color(&sim, "CALIBRATION FAILED"), AMBER);
+    sim.expect_text("CRANKS STILL, TRY AGAIN");
+    sim.checkpoint("power meter calibration failed");
+    sim.press(Button::BottomRight);
+    sim.wait_for("CALIBRATING", seconds(1)).unwrap();
+    sim.wait_for("CALIBRATION FAILED", seconds(5)).unwrap();
+}
+
+#[test]
+fn a_silent_power_meter_times_out_in_calibration_failed() {
+    let mut sim = rider();
+    calibrate_power_meter(&mut sim, ZeroReply::Silence, true);
+    sim.press(Button::BottomRight);
+    sim.wait_for("CALIBRATING", seconds(1)).unwrap();
+    sim.advance(seconds(8));
+    sim.expect_text("CALIBRATING");
+    sim.checkpoint("power meter still waiting for its answer");
+    sim.wait_for("CALIBRATION FAILED", seconds(4)).unwrap();
+    sim.checkpoint("power meter calibration timed out");
+}
+
+#[test]
+fn calibrating_a_power_meter_never_disturbs_a_later_ride() {
+    let mut sim = rider();
+    calibrate_power_meter(&mut sim, ZeroReply::Offset(512), true);
+    sim.press(Button::BottomRight);
+    sim.wait_for("CALIBRATED", seconds(5)).unwrap();
+    sim.press(Button::TopLeft);
+    sim.press(Button::TopLeft);
+    sim.ride_at(27.0, 205.0, 138.0, 88.0);
+    sim.home("RIDE");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(minutes(1));
+    sim.expect_field("W", "205");
+    sim.stop_ride();
+    let ride = &sim.rides()[0];
+    assert!(
+        ride.samples().skip(5).all(|s| s.power_watts == Some(205)),
+        "calibration pages leaked into the recording"
+    );
 }

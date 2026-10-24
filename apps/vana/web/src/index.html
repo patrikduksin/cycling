@@ -37,6 +37,7 @@ a.button, button {
   font: inherit; font-size: 18px; padding: 12px 18px; text-decoration: none; cursor: pointer;
 }
 a.button.primary { background: var(--accent); }
+a.button.disabled { opacity: .4; pointer-events: none; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 input[type=datetime-local] {
   background: var(--raised); color: var(--white); border: 0; border-radius: 12px;
@@ -101,26 +102,22 @@ function metric(value, unit, color) {
   return el('div', {}, el('span', { class: 'value', style: `color:${color}` }, value), el('span', { class: 'unit' }, unit));
 }
 
-function localInput(date) {
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
 function rideCard(ride) {
   const url = `/api/activities/${ride.id}.fit`;
   const actions = el('div', { class: 'row' });
   if (ride.start == null) {
-    // Rides recorded before the clock synchronized need a start time.
-    const guess = new Date(Date.now() - ride.duration_s * 1000);
-    const input = el('input', { type: 'datetime-local', value: localInput(guess) });
-    const link = el('a', { class: 'button primary', href: '#' }, 'Download .fit');
+    const input = el('input', { type: 'datetime-local' });
+    const link = el('a', { class: 'button primary' }, 'Download .fit');
     const update = () => {
       const start = Math.floor(new Date(input.value).getTime() / 1000);
-      link.href = Number.isFinite(start) ? `${url}?start=${start}` : '#';
+      const valid = Number.isFinite(start);
+      link.classList.toggle('disabled', !valid);
+      if (valid) link.href = `${url}?start=${start}`;
+      else link.removeAttribute('href');
     };
     input.addEventListener('input', update);
     update();
-    actions.append(el('div', { class: 'note' }, 'This ride has no time. When did it start?'), input, link);
+    actions.append(el('div', { class: 'note' }, 'This ride has no date: no Wi-Fi time or GPS fix reached it. When did it start?'), input, link);
   } else {
     actions.append(el('a', { class: 'button primary', href: url, download: '' }, 'Download .fit'));
   }

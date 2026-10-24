@@ -7,10 +7,17 @@
 //! `Runtime::attach_back`; `Runtime` keeps only the reference, so none of it
 //! costs main's stack anything. Without it the back-to-start page says NO
 //! TRACK and no course can be loaded.
+//!
+//! The ride started after a restart that recovered one reads the recovered
+//! ride's track and start back from the journal (`ride::homing::rebuild`), a
+//! few slots a tick, before it takes live fixes.
 use super::Runtime;
 use super::cues::Cue;
+use super::recording::{Medium, Ride};
 use crate::ride::course::Course;
+use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Event, Homing};
+use crate::ride::log::{Slot, Status, decode};
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
 use crate::screens::ride::{Back, MapKey, RidePage, Track, update_map};
@@ -21,6 +28,45 @@ pub use crate::ride::homing::Crumb;
 pub const BACK_CRUMBS: usize = 4096;
 /// The nudges stay a little longer than a confirmation.
 const NUDGE_MS: u64 = 4_000;
+/// Slots the rebuild reads per tick, as the history replay does.
+const REBUILD_INTERNAL: usize = 32;
+const REBUILD_BULK: usize = 8;
+
+/// A ride a restart cut short, whose track the next ride picks up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resume {
+    None,
+    /// A restart closed ride `ride_id` on `medium` as recovered; the next
+    /// ride there reads its track back.
+    Waiting {
+        medium: Medium,
+        ride_id: u32,
+    },
+    /// The ride under way is reading the track back from `medium`.
+    Reading {
+        medium: Medium,
+        rebuild: Rebuild,
+    },
+}
+
+impl Resume {
+    /// What the next ride on `ride`'s medium picks up, while none is open.
+    fn waiting(ride: &Ride) -> Self {
+        let medium = ride.medium();
+        let recorder = ride.recorder(medium);
+        if recorder.status() != Status::Recovered || recorder.recovering() {
+            return Self::None;
+        }
+        let last = usize::from(recorder.summary_count()).saturating_sub(1);
+        match recorder.summary(last) {
+            Some(summary) if summary.recovered => Self::Waiting {
+                medium,
+                ride_id: summary.ride_id,
+            },
+            _ => Self::None,
+        }
+    }
+}
 
 /// The breadcrumb and whether the ride it belongs to is still open.
 pub struct BackToStart {
@@ -32,6 +78,7 @@ pub struct BackToStart {
     /// The loaded course and whether it matches the stored one.
     pub(super) course: &'static mut Course,
     pub(super) kept: super::course::Kept,
+    resume: Resume,
 }
 
 impl BackToStart {
@@ -50,6 +97,7 @@ impl BackToStart {
             map_key: None,
             course,
             kept: super::course::Kept::default(),
+            resume: Resume::None,
         }
     }
 
@@ -66,21 +114,80 @@ impl Runtime {
     }
 
     /// Feed this pass's fix to the open ride's breadcrumb, and nudge on
-    /// what following it back changed. A new ride starts a new breadcrumb.
-    pub(super) fn track_back(&mut self, now: u64) {
+    /// what following it back changed. A new ride starts a new breadcrumb,
+    /// or reads back the one a restart cut short from `store` or `bulk`.
+    pub(super) fn track_back(
+        &mut self,
+        store: &mut impl crate::ride::storage::RideStorage,
+        bulk: &mut impl device_api::bulk::ReadWrite,
+        now: u64,
+    ) {
         let Some(state) = self.back.as_deref_mut() else {
             return;
         };
         let riding = self.ride.active().riding();
         if riding && !state.riding {
             state.homing.reset();
+            state.resume = match state.resume {
+                Resume::Waiting { medium, ride_id } if medium == self.ride.shown() => {
+                    let upper = self.ride.recorder(medium).next_slot();
+                    Resume::Reading {
+                        medium,
+                        rebuild: Rebuild::new(ride_id, upper),
+                    }
+                }
+                _ => Resume::None,
+            };
         }
         state.riding = riding;
         state
             .homing
             .set_auto_follow(self.preferences.options.ride_pages.shows(RidePage::Back));
         if !riding {
+            state.resume = Resume::waiting(&self.ride);
             return;
+        }
+        if let Resume::Reading {
+            medium,
+            mut rebuild,
+        } = state.resume
+        {
+            let live = &self.readings.live;
+            let fix = live.location_e7.map(|_| live.utc_ms);
+            let done = if medium != self.ride.shown() {
+                // A ride that moved to another medium has its fixes there.
+                rebuild.settle(&mut state.homing, fix.flatten());
+                true
+            } else {
+                let upper = self.ride.recorder(medium).next_slot();
+                let budget = match medium {
+                    Medium::Internal => REBUILD_INTERNAL,
+                    Medium::Bulk => REBUILD_BULK,
+                };
+                let (ride, mut slot) = (&mut self.ride, Slot::default());
+                let read = rebuild.step(&mut state.homing, upper, budget, |index| {
+                    match ride.read_slot(medium, store, bulk, index, &mut slot) {
+                        Some(true) => decode(&slot),
+                        _ => None,
+                    }
+                });
+                read || match fix {
+                    Some(utc_ms) if rebuild.caught_up(upper) => {
+                        rebuild.settle(&mut state.homing, utc_ms);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if state.homing.needs_course() {
+                state.homing.set_course(state.course.points());
+            }
+            if !done {
+                state.resume = Resume::Reading { medium, rebuild };
+                return;
+            }
+            state.homing.end_replay();
+            state.resume = Resume::None;
         }
         let event = state.homing.observe(self.readings.live.location_e7, now);
         if state.homing.needs_course() {
@@ -121,7 +228,9 @@ impl Runtime {
             return;
         };
         let follow = !state.homing.following();
-        if !state.homing.set_following(follow, now) {
+        // Half read back, the track would lose the rest when following stops.
+        let reading = matches!(state.resume, Resume::Reading { .. });
+        if reading || !state.homing.set_following(follow, now) {
             self.navigation.toast("NO TRACK YET", Tone::Info, now);
         } else if follow {
             let message = if state.homing.following_course() {

@@ -116,8 +116,8 @@ start, at a light or to refill a bottle, delays it without losing it, and
 stopping there for good takes no lap. The first lap closes no earlier than
 500 m and a minute; later laps have no minimum, so a short loop laps every
 time. A paused ride takes no lap. A pass made wholly inside a GPS gap is not
-counted. A ride resumed after a restart counts from where it resumed, not
-where it began, as the start is kept in memory only. GPS that drifts by
+counted. The ride started next after a restart that cut one short counts
+from where the cut ride began, as the track below explains. GPS that drifts by
 tens of metres between visits can miss laps; the lap count is a
 convenience, and BACK takes one by hand.
 
@@ -222,7 +222,13 @@ time, and DARK once the sun is down. It shows only with a known position and
 time, and never in polar day.
 
 The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
-points in PSRAM. Each ride starts a new one; a restart loses it.
+points in PSRAM. Each ride starts a new one. After a restart cuts a ride
+short, the ride started next reads the cut ride's track and start back from
+its journal, a few records a moment, and carries them on if its own first fix
+comes within 30 minutes of the cut ride's last. Until that is read, BACK TO
+START says NO GPS and MAP draws the track read so far; a pass of the start
+then takes no lap. Following the track or the course starts again only as on
+any ride: by riding along it, or from the pad.
 
 ### Sunset
 

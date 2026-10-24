@@ -43,6 +43,8 @@
 use crate::ride::{course, thin};
 use libm::{atan2f, cosf, sqrtf};
 
+pub mod rebuild;
+
 /// Metres per 1e-7 degree of latitude, on a sphere of the mean Earth radius.
 const M_PER_E7: f32 = 0.011_119_508;
 /// Fixes closer than this to the last one add nothing to the breadcrumb.
@@ -586,6 +588,27 @@ impl<'a> Homing<'a> {
         self.update(p, now)
     }
 
+    /// A fix from before a restart, read back from the journal, `at_ms` into
+    /// the replay: it grows the breadcrumb and moves the start pass on as a
+    /// live fix would, but follows nothing, nudges nothing and takes no lap.
+    pub fn replay(&mut self, (lat, lon): (i32, i32), at_ms: u64) {
+        if self.origin.is_none() {
+            self.origin = Some((lat, lon));
+            self.east_per_e7 = east_per_e7(lat);
+        }
+        let p = self.frame(lat, lon);
+        self.track_heading(p, at_ms);
+        self.add(p);
+        self.step_pass(p);
+    }
+
+    /// Live fixes follow the replayed ones. The replay's times are not the
+    /// clock's, so the heading starts again from the next fix.
+    pub fn end_replay(&mut self) {
+        self.heading = None;
+        self.course_from = None;
+    }
+
     /// Metres east and north of the origin; across the antimeridian the
     /// short way round is the way ridden.
     fn frame(&self, lat: i32, lon: i32) -> Point {
@@ -893,6 +916,17 @@ impl<'a> Homing<'a> {
             .map_or(p, |first| (first.east, first.north))
     }
 
+    /// Whether this position completes a pass of the start, which is where
+    /// the rider first moved.
+    fn step_pass(&mut self, p: Point) -> bool {
+        let moving = self.heading.is_some();
+        if moving && self.pass_start.is_none() {
+            self.pass_start = Some(p);
+        }
+        self.pass_start
+            .is_some_and(|from| self.pass.step(distance(p, from), moving))
+    }
+
     fn update(&mut self, p: Point, now: u64) -> Option<Event> {
         self.updated_ms = now;
         let start = self.start(p);
@@ -902,15 +936,7 @@ impl<'a> Homing<'a> {
             _ => start,
         };
         let direct = distance(p, goal);
-        let moving = self.heading.is_some();
-        if moving && self.pass_start.is_none() {
-            self.pass_start = Some(p);
-        }
-        if let Some(from) = self.pass_start
-            && self.pass.step(distance(p, from), moving)
-        {
-            self.passed = true;
-        }
+        self.passed |= self.step_pass(p);
         let mut event = None;
         let len = self.followed().len();
         let (mode, track, off, target) = if self.following.is_some() && len >= 2 {

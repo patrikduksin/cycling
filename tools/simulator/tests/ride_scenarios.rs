@@ -5823,6 +5823,138 @@ fn map_page_shows_the_way_home_in_green_while_following_the_track_back() {
     sim.stop_ride();
 }
 
+/// Lit pixels where the map page draws the track, between the title and the
+/// page dots.
+fn map_ink(sim: &Sim) -> usize {
+    let screen = sim.screen();
+    let rows = screen.height / 6..screen.height * 7 / 8;
+    rows.flat_map(|y| screen.pixels[y * screen.width..][..screen.width].iter())
+        .filter(|&&pixel| pixel != 0)
+        .count()
+}
+
+/// The next ride after a restart keeps the track and the start: a 3 km loop
+/// with AUTO LAP AT START, the power cut a lap and a half in, and the next
+/// ride started at once. MAP draws the whole track again, TRACK KM is what it
+/// was, and the next pass of the ride's start takes a lap.
+#[test]
+fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_route(Route::loop_around(Point::new(-33.45, -70.66), 3_000.0, 0.0));
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "AUTO LAP");
+    sim.set_option("AUTO LAP", "AT START");
+    sim.swipe_next();
+    go_home(&mut sim);
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    sim.start_ride();
+    ride_to(&mut sim, 4_500.0);
+    // Standing still the map turns north up, so the two maps compare.
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(20));
+    sim.ride_page("5/6");
+    sim.expect_text("N UP");
+    let before = map_ink(&sim);
+    sim.checkpoint("the map before the power cut");
+    sim.ride_page("6/6");
+    let track = sim.screen().field("TRACK KM").unwrap();
+    sim.checkpoint("back to start before the power cut");
+
+    sim.power_loss();
+    sim.home("RIDE");
+    sim.expect_text("LAST RIDE RECOVERED");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(seconds(20));
+    sim.ride_page("5/6");
+    sim.expect_text("N UP");
+    let after = map_ink(&sim);
+    sim.note(
+        NoteKind::Check,
+        format!("map ink {before} px before, {after} px after"),
+    );
+    assert!(after * 10 >= before * 9, "{after} px against {before} px");
+    sim.checkpoint("the map after the restart, the whole track");
+    sim.ride_page("6/6");
+    let again = sim.screen().field("TRACK KM").unwrap();
+    let km = |text: &str| text.parse::<f64>().unwrap();
+    assert!(
+        (km(&again) - km(&track)).abs() <= 0.02,
+        "{again} against {track}"
+    );
+    sim.checkpoint("back to start after the restart");
+
+    // On round the loop: the ride's start is where the lap closes.
+    sim.ride_page("3/6");
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    let lap = ride_until_shown(&mut sim, "LAP 1 0", 6_300.0);
+    assert!((6_000.0..6_200.0).contains(&lap), "{lap}");
+    sim.checkpoint("lap toast at the ride's start after the restart");
+    sim.stop_ride();
+    let rides = sim.rides();
+    assert_eq!(rides.len(), 2);
+    let laps = rides[1]
+        .samples()
+        .filter(|s| s.lap == Some(vana::ride::log::LapStart::Position))
+        .count();
+    assert_eq!(laps, 1);
+}
+
+/// Five hours on the card, then a power cut while riding on: the next ride
+/// reads the whole track back from the card a few records a tick, and BACK TO
+/// START gives TRACK KM again within seconds, with the ride since added on.
+#[test]
+fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 0.0, 0.0, 85.0);
+    for _ in 0..5 {
+        sim.advance(minutes(60));
+    }
+    press_to_page(&mut sim, "BACK TO START");
+    let km = |text: String| text.parse::<f64>().unwrap();
+    let track = km(sim.screen().field("TRACK KM").unwrap());
+    let cut_m = sim.world().distance_m;
+    sim.checkpoint("back to start after five hours");
+
+    sim.power_loss();
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    assert!(status.contains("state=recovered"), "{status}");
+    sim.home("RIDE");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    press_to_page(&mut sim, "BACK TO START");
+    let mut waited = 0;
+    while sim.screen().contains("NO GPS") {
+        assert!(waited < 120, "no track after {waited} s");
+        sim.advance(seconds(1));
+        waited += 1;
+    }
+    sim.note(NoteKind::Check, format!("track read back in {waited} s"));
+    let again = km(sim.screen().field("TRACK KM").unwrap());
+    let ridden = (sim.world().distance_m - cut_m) / 1000.0;
+    assert!(
+        (again - track - ridden).abs() <= 0.1,
+        "{again} km against {track} km and {ridden:.2} km since"
+    );
+    sim.checkpoint("back to start after the restart, five hours read back");
+}
+
+/// MOVE through the ride pages until one titled `title` shows.
+#[track_caller]
+fn press_to_page(sim: &mut Sim, title: &str) {
+    for _ in 0..8 {
+        if sim.screen().contains(title) {
+            return;
+        }
+        sim.press(Button::BottomLeft);
+    }
+    panic!("no {title} page; screen:\n{}", sim.screen().text());
+}
+
 /// The legs of the course the rider loads: the bend loop once round, back
 /// to its start.
 const COURSE_LOOP: [(f64, f64); 8] = [

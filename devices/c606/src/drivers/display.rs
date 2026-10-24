@@ -138,6 +138,11 @@ impl<'d> Display<'d> {
     /// A run of strips to send sets its row window once: its first strip
     /// starts a memory write (RAMWR) and every later one continues it
     /// (RAMWRC). Returns the bus and both buffers in every case.
+    ///
+    /// Kept out of line: inlined into the application's present path, its
+    /// size swayed LLVM into merging `present` and `View::prepare` into one
+    /// 19,664 B main-stack frame (#272).
+    #[inline(never)]
     fn frame(
         bus: Bus<'d>,
         buffer: DmaTxBuf,

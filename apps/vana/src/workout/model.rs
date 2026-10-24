@@ -517,7 +517,6 @@ mod tests {
         assert_eq!(ramp.ramp_watts(59), Some(100));
         assert_eq!(ramp.ramp_watts(60), Some(120));
         assert_eq!(ramp.band(&profile, 600).unwrap().low, 300);
-        // The steepest ramp an upload can hold, ridden for a day, tops out.
         let steep = Target::Ramp {
             start: 1,
             step: u16::MAX,

@@ -537,8 +537,6 @@ fn isolated_read_errors_never_add_up_to_no_pack() {
     assert!(ahead.ahead().matched.is_some());
 }
 
-/// A CRC-valid header sector for a grid of `rows` x `cols` tiles of `tile`
-/// micro-degrees from (`south`, `west`), with a directory for every tile.
 fn header(tile: u32, south: i32, west: i32, rows: u16, cols: u16) -> [u8; HEADER_BYTES] {
     let directory = HEADER_BYTES as u32;
     let data = directory + u32::from(rows) * u32::from(cols) * 8;
@@ -563,8 +561,6 @@ fn a_grid_off_the_globe_is_refused_before_a_fix_can_overflow_it() {
     use crate::pack::{Error, Header, TileKey};
     let near = Header::parse(&header(TILE as u32, SOUTH, WEST, 1, 1)).unwrap();
     assert_eq!(near.origin(TileKey { row: 0, col: 0 }), (SOUTH, WEST));
-    // CRC-valid grids that run past i32 micro-degrees: a fix at 50° N lands
-    // in row 32807 of the first, whose origin no longer fits.
     let north = header(65_535, -2_100_000_000, WEST, u16::MAX, 1);
     assert_eq!(Header::parse(&north), Err(Error::Unsupported));
     let east = header(65_535, SOUTH, 2_100_000_000, 1, u16::MAX);
@@ -575,7 +571,6 @@ fn a_grid_off_the_globe_is_refused_before_a_fix_can_overflow_it() {
 fn a_tile_counting_more_vertices_than_usize_holds_is_corrupt() {
     use crate::pack::{Error, TileKey};
     use crate::tile::Tile;
-    // 0x3000_0000 vertices of 6 bytes overflow the device's 32-bit usize.
     let mut tile = vec![0u8; 32];
     tile[..4].copy_from_slice(&[b'V', b'T', 1, 0]);
     tile[12..16].copy_from_slice(&0x3000_0000u32.to_le_bytes());

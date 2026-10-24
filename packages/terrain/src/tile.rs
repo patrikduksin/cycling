@@ -96,12 +96,10 @@ impl<'a> Tile<'a> {
             return Err(Error::Corrupt);
         }
         let tile = Self::view(bytes);
-        let length = HEADER
-            + tile.nodes * NODE
-            + 2 * tile.edges * ADJ
-            + tile.edges * EDGE
-            + tile.vertices * VERTEX;
-        if tile.key != key || length != bytes.len() || tile.lon_um == 0 {
+        // In u64: the vertex count is a raw u32 and usize is 32 bits on the device.
+        let length = (HEADER + tile.nodes * NODE + 2 * tile.edges * ADJ + tile.edges * EDGE) as u64
+            + tile.vertices as u64 * VERTEX as u64;
+        if tile.key != key || length != bytes.len() as u64 || tile.lon_um == 0 {
             return Err(Error::Corrupt);
         }
         let size = size.min(u32::from(u16::MAX)) as u16;
@@ -116,7 +114,7 @@ impl<'a> Tile<'a> {
             let edge = tile.edge(index as u16);
             if usize::from(edge.from) >= tile.nodes
                 || usize::from(edge.to) >= tile.nodes
-                || edge.first_vertex as usize + usize::from(edge.vertices) > tile.vertices
+                || u64::from(edge.first_vertex) + u64::from(edge.vertices) > tile.vertices as u64
             {
                 return Err(Error::Corrupt);
             }

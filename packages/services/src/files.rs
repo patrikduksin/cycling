@@ -527,7 +527,7 @@ impl Dir {
             count += 1;
         }
         if entry.is_none() {
-            count -= 1;
+            count = count.checked_sub(1).ok_or(Error::Corrupt)?;
         }
         next.count = count as u16;
         let mut other = [0u8; SECTOR_SIZE];

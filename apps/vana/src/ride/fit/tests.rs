@@ -822,7 +822,6 @@ fn arbitrary_slots_never_break_the_export() {
 
 #[test]
 fn a_stored_cadence_past_the_sensor_range_exports_capped() {
-    // A journal sample holds any u16 of tenths; sensors stay under 2550.
     let mut wild = sample(1_000, true);
     wild.cadence_tenths = Some(u16::MAX);
     let slots = [

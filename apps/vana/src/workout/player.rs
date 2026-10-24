@@ -222,7 +222,7 @@ impl Player {
 
     fn distance_m(&self) -> Option<u32> {
         match self.played.step.length {
-            Length::Distance(m) => Some(m + self.extra_m),
+            Length::Distance(m) => Some(m.saturating_add(self.extra_m)),
             _ => None,
         }
     }
@@ -433,7 +433,9 @@ impl Player {
     pub fn extend(&mut self) -> bool {
         match self.played.step.length {
             Length::Time(_) if !self.done => self.extra_s += EXTEND_S,
-            Length::Distance(_) if !self.done => self.extra_m += EXTEND_M,
+            Length::Distance(_) if !self.done => {
+                self.extra_m = self.extra_m.saturating_add(EXTEND_M)
+            }
             _ => return false,
         }
         true
@@ -740,7 +742,6 @@ mod tests {
     fn extending_the_longest_distance_step_an_upload_can_hold_keeps_riding() {
         use crate::workout::model::Step;
         let profile = TrainingProfile::default();
-        // The host tool accepts any u32 of metres; the decoder checks only 100 m.
         let far = Workout::new(
             "FAR",
             &[Step::new(

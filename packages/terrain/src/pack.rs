@@ -41,6 +41,10 @@ pub const MAGIC: &[u8; 16] = b"VANA-TERRAIN\0\0\0\0";
 pub const VERSION: u16 = 2;
 pub const HEADER_BYTES: usize = 512;
 pub const ENTRY_BYTES: usize = 8;
+/// How far a grid may reach from 0°, in micro-degrees: twice round the
+/// globe, so no real pack is refused, and within it tile origins and their
+/// distance to a fix fit i32.
+const GRID_LIMIT: i64 = 360_000_000;
 
 /// A tile by grid row (from the south) and column (from the west).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -91,11 +95,17 @@ impl Header {
             attribution_len: u32_at(sector, 64),
         };
         let entries = u64::from(header.rows) * u64::from(header.cols) * ENTRY_BYTES as u64;
+        let spans = |from: i32, tiles: u16| {
+            let to = i64::from(from) + i64::from(tiles) * i64::from(header.tile);
+            -GRID_LIMIT <= i64::from(from) && to <= GRID_LIMIT
+        };
         // Tile-local coordinates are u16; the grid must fit the pack.
         if header.tile == 0
             || header.tile > u32::from(u16::MAX)
             || header.rows == 0
             || header.cols == 0
+            || !spans(header.south, header.rows)
+            || !spans(header.west, header.cols)
             || u64::from(header.directory) + entries != u64::from(header.data)
             || header.data > header.total
         {

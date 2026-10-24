@@ -401,7 +401,6 @@ fn a_header_count_below_its_entries_is_corrupt_on_delete() {
     format(&mut media, 1, &mut s).unwrap();
     write(&mut media, &name("a"), b"x", &mut s).unwrap();
     let dir = mount(&mut media, &mut s).unwrap();
-    // A raw MMC write can leave a CRC-valid header that counts no files.
     let mut header = media.get(base(dir.copy));
     header[18..20].copy_from_slice(&0u16.to_le_bytes());
     let checksum = crc32(&header[..CRC]);

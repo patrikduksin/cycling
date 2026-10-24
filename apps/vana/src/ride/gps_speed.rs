@@ -191,9 +191,19 @@ impl GpsSpeed {
     }
 }
 
-/// Milliseconds from `from` to `to` within a UTC day, across midnight.
+/// Milliseconds from `from` to `to` within a UTC day, across midnight. A
+/// leap second (23:59:60) reads past `DAY_MS`: that day is a second longer.
 fn since(from: u32, to: u32) -> u32 {
-    (to + DAY_MS - from) % DAY_MS
+    let day = if from >= DAY_MS {
+        DAY_MS + 1000
+    } else {
+        DAY_MS
+    };
+    if to >= from {
+        (to - from) % DAY_MS
+    } else {
+        to + day - from
+    }
 }
 
 /// cos(latitude) in Q30, from a Taylor series good to 1e-5 within ±90°.
@@ -247,7 +257,6 @@ mod tests {
 
     #[test]
     fn a_leap_second_crosses_midnight_like_any_other() {
-        // NMEA allows 23:59:60; a 10 Hz receiver then rolls over to 00:00:00.
         assert_eq!(since(86_400_800, 86_400_900), 100);
         assert_eq!(since(86_400_900, 0), 100);
         assert_eq!(since(86_399_900, 86_400_000), 100);

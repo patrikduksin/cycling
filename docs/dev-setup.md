@@ -34,7 +34,7 @@ not interactive and never run direnv's prompt hook.
   1.97.0.0 with rust-src and Espressif's xtensa-esp-elf GCC, pinned by upstream
   release digests in place of espup. `CYCLING_ESP_TOOLCHAIN` points at it;
   `build.sh` puts it first on `PATH` for the firmware build only.
-- Python 3.14 for uv (`UV_PYTHON`, downloads off), espflash, sccache, ffmpeg,
+- Python 3.14 for uv (`UV_PYTHON`, downloads off), espflash, sccache, cargo-nextest, ffmpeg,
   gh, rsync and ssh. On NixOS, `LD_LIBRARY_PATH` carries what manylinux wheels
   and the live simulator window load.
 

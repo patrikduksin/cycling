@@ -150,20 +150,22 @@ impl Auto {
     }
 
     /// Advance one tick. `ready` is whether a ride may start now (ride screen
-    /// shown, nothing pending).
+    /// shown, nothing pending). `automatic` is the AUTO PAUSE option: off, every
+    /// pause is the rider's, so only the reminder remains.
     pub fn update(
         &mut self,
         now: u64,
         status: Status,
         motion: Motion,
         ready: bool,
+        automatic: bool,
     ) -> Option<Call> {
         if !ENABLED {
             return None;
         }
         // The caller skips ticks with a request in flight, so a ride that is
         // recording is not about to pause: any automatic pause is over.
-        if status != Status::Paused {
+        if status != Status::Paused || !automatic {
             self.paused = false;
         }
         if let Motion::Measured(source, _) = motion {
@@ -179,7 +181,7 @@ impl Auto {
         };
         let rules = source.unwrap_or(Source::Wheel).rules();
         let (condition, hold, call) = match status {
-            Status::Recording if !self.paused => (
+            Status::Recording if automatic && !self.paused => (
                 speed.is_some_and(|speed| speed < rules.pause_below),
                 rules.pause_after,
                 Call::Do(Decision::Pause),
@@ -202,7 +204,7 @@ impl Auto {
                 rules.start_after,
                 Call::Remind,
             ),
-            Status::Ready if ready => (
+            Status::Ready if ready && automatic => (
                 speed.is_some_and(|speed| speed >= rules.start_at),
                 rules.start_after,
                 Call::Do(Decision::Start),
@@ -253,7 +255,7 @@ mod tests {
         ms: u64,
     ) -> Option<(u64, Call)> {
         (from..from + ms).step_by(100).find_map(|now| {
-            auto.update(now, status, wheel, true)
+            auto.update(now, status, wheel, true, true)
                 .map(|decision| (now, decision))
         })
     }
@@ -348,6 +350,49 @@ mod tests {
         }
     }
 
+    /// With AUTO PAUSE off every pause is the rider's, including one automation
+    /// made before the option was switched off.
+    #[test]
+    fn decision_table_with_auto_pause_off() {
+        use Call::Remind;
+        // (status, paused by auto before the switch, wheel, expected)
+        type Row = (Status, bool, Motion, Option<(Call, u64)>);
+        let rows: &[Row] = &[
+            (Status::Recording, false, STOPPED, None),
+            (Status::Recording, false, RIDING, None),
+            (Status::Recording, true, STOPPED, None),
+            (
+                Status::Paused,
+                false,
+                RIDING,
+                Some((Remind, WHEEL.start_after)),
+            ),
+            (
+                Status::Paused,
+                true,
+                RIDING,
+                Some((Remind, WHEEL.start_after)),
+            ),
+            (Status::Paused, false, STOPPED, None),
+            (Status::Paused, true, STOPPED, None),
+            (Status::Paused, true, Motion::Lost, None),
+            (Status::Ready, false, RIDING, None),
+            (Status::Ready, false, STOPPED, None),
+        ];
+        for &(status, by_auto, wheel, expected) in rows {
+            let mut auto = Auto::default();
+            if by_auto {
+                auto.accepted(Decision::Pause);
+            }
+            let got = (0..10_000).step_by(100).find_map(|now| {
+                auto.update(now, status, wheel, true, false)
+                    .map(|call| (call, now))
+            });
+            assert_eq!(got, expected, "{status:?} auto={by_auto} {wheel:?}");
+            assert!(!auto.paused(), "{status:?} auto={by_auto} {wheel:?}");
+        }
+    }
+
     const GPS_STOPPED: Motion = Motion::Measured(Source::Gps, 0);
     /// Faster than the wheel's resume speed, slower than GPS needs.
     const GPS_ROLLING: Motion = Motion::Measured(Source::Gps, 1_600);
@@ -420,7 +465,7 @@ mod tests {
         for &(status, by_auto, measured_by, motion, expected) in rows {
             let mut auto = Auto::default();
             if let Some(source) = measured_by {
-                auto.update(0, Status::Saved, Motion::Measured(source, 0), true);
+                auto.update(0, Status::Saved, Motion::Measured(source, 0), true, true);
             }
             if by_auto {
                 auto.accepted(Decision::Pause);
@@ -484,7 +529,8 @@ mod tests {
         let mut auto = Auto::default();
         let mut due = [3_000, 33_000, 63_000, 93_000].into_iter();
         for now in (0..100_000).step_by(100) {
-            let reminded = auto.update(now, Status::Paused, RIDING, true) == Some(Call::Remind);
+            let reminded =
+                auto.update(now, Status::Paused, RIDING, true, true) == Some(Call::Remind);
             let expected = reminded.then(|| due.next());
             assert!(
                 !reminded || expected == Some(Some(now)),
@@ -577,13 +623,13 @@ mod tests {
         let mut auto = Auto::default();
         let blocked = (0..10_000)
             .step_by(100)
-            .find_map(|now| auto.update(now, Status::Ready, RIDING, false));
+            .find_map(|now| auto.update(now, Status::Ready, RIDING, false, true));
         assert_eq!(blocked, None);
         let first = run(&mut auto, Status::Ready, RIDING, 10_000, 5_000);
         assert_eq!(first, Some((13_000, Call::Do(Decision::Start))));
         // Storage refused: the hold starts over instead of retrying every tick.
         auto.declined();
-        assert_eq!(auto.update(13_100, Status::Ready, RIDING, true), None);
+        assert_eq!(auto.update(13_100, Status::Ready, RIDING, true, true), None);
         let retry = run(&mut auto, Status::Ready, RIDING, 13_200, 5_000);
         assert_eq!(retry, Some((16_100, Call::Do(Decision::Start))));
     }
@@ -615,7 +661,7 @@ mod tests {
     #[test]
     fn leaving_the_ride_forgets_the_automatic_pause() {
         let mut auto = auto_paused();
-        assert_eq!(auto.update(0, Status::Saved, STOPPED, true), None);
+        assert_eq!(auto.update(0, Status::Saved, STOPPED, true, true), None);
         assert!(!auto.paused());
     }
 

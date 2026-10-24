@@ -1067,6 +1067,32 @@ fn a_manual_pause_reminds_a_rider_who_rides_on_until_they_resume() {
 }
 
 #[test]
+fn with_auto_pause_off_a_manual_pause_still_reminds_and_stays_paused() {
+    const REMINDER: [u8; 3] = [0, 0, 10];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.preferences.options.auto_pause = false;
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut speaker = Speaker::default();
+    let paused = manually_paused(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+    );
+    let at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        paused,
+        10,
+        true,
+    );
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert_eq!(speaker.heard(paused + 3_000, at), REMINDER);
+}
+
+#[test]
 fn an_auto_pause_resumes_with_the_resume_cue_and_is_never_reminded() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();

@@ -100,8 +100,8 @@ rolling on resumes it with AUTO RESUME. ACT resumes (RESUMED toast and the
 start chime). Riding on after a pause by ACT never resumes the ride, but VANA
 plays a rising three-note reminder once the bike has held start speed (6 km/h
 on a wheel sensor, 10 km/h on GPS) for a few seconds, then every 30 s until the
-rider stops or presses ACT. It sounds on any page and follows the SOUNDS
-setting.
+rider stops or presses ACT. It sounds on any page, follows the SOUNDS setting
+and plays with AUTO PAUSE off too, since every pause is then the rider's.
 
 MOVE shows the ride pages from the page the rider was on, with PAUSED in the
 status bar; paging past the last page comes back to the paused screen. Swipes

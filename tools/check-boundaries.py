@@ -37,6 +37,16 @@ TEST_SOURCE_SEAMS = {
     },
 }
 
+SINGLE_WRITERS = {
+    "Page::EndRide": "apps/vana/src/app/ride_control.rs",
+    "Page::Summary": "apps/vana/src/app/ride_control.rs",
+    "RideMessage::Clear": "apps/vana/src/app/ride_control.rs",
+    "RideMessage::StorageNotReady": "apps/vana/src/app/ride_control.rs",
+}
+ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
+    re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')
+
+
 # A Rust lifetime is not a character literal; do not blank code between two
 # lifetimes such as &'a and &'b when scanning an import or qualified expression.
 STRING = re.compile(
@@ -120,6 +130,17 @@ def violations(text, forbidden, portable=False, hardware=False, allowed_paths=()
     return sorted(findings)
 
 
+def foreign_writes(text, path):
+    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
+    findings = []
+    for match in ASSIGNMENT.finditer(code):
+        value = re.sub(r'\s', '', match[1])
+        if path != SINGLE_WRITERS[value]:
+            line = code.count('\n', 0, match.start()) + 1
+            findings.append((line, f'only {SINGLE_WRITERS[value]} assigns {value}; raise its event instead'))
+    return findings
+
+
 def dependencies(manifest, workspace=None):
     """Include aliased, optional, target, development and build dependencies."""
     for key, section in manifest.items():
@@ -194,6 +215,14 @@ ui = { package = "firmware-shell", path = "../shell" }
     assert violations('use crate::{commands as dispatch};', *rules)
     assert not violations('use firmware_shell::Shell;', *source_rules('c606-firmware', Path('src/main.rs'), aliases))
     assert violations('use board::Board;', *source_rules('firmware-shell', Path('src/lib.rs'), aliases))
+    elsewhere = 'apps/vana/src/app/input.rs'
+    for source in ['self.navigation.page = Page::EndRide;', 'page = crate::screens::workout::Page::Summary;',
+                   'navigation.page=Page :: EndRide']:
+        assert foreign_writes(source, elsewhere), source
+    for source in ['if page == Page::EndRide {}', 'page != Page::Summary', '// page = Page::EndRide',
+                   'let name = "page = Page::EndRide";', 'page = Page::EndRideLater;']:
+        assert not foreign_writes(source, elsewhere), source
+    assert not foreign_writes('self.navigation.page = Page::EndRide;', SINGLE_WRITERS['Page::EndRide'])
 
 
 def main():
@@ -221,9 +250,11 @@ def main():
             failures.extend(f'{path.relative_to(ROOT)}:{line}: prohibited dependency on {item}'
                             for line, item in violations(path.read_text(), *rules,
                                 allowed_paths=TEST_SOURCE_SEAMS.get(path.relative_to(ROOT).as_posix(), ())))
+            failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
+                            for line, reason in foreign_writes(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Dependency boundaries passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Dependency boundaries and single writers passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

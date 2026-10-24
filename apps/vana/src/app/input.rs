@@ -3,9 +3,7 @@
 //! Buttons keep one role on every screen (see `docs/ui.md`). Touch selects
 //! and changes pages; it never starts, pauses, laps or stops a ride.
 use super::Runtime;
-use super::recording::{Request, RideMessage};
-use crate::ride::control::Action as RideAction;
-use crate::ride::log::{Source, Status};
+use crate::ride::log::Status;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::gesture::{Gesture, Owner};
 use crate::screens::home::{Home, Tile};
@@ -121,19 +119,16 @@ impl Runtime {
         self.display.redraw();
         match self.navigation.page {
             Page::Home => self.home_input(button, received, now, ant, held),
-            Page::Ready => {
+            Page::Ride if button == Button::BottomLeft => {
                 self.timing.press(received);
-                self.ready_input(button, received, now)
+                self.next_ride_page();
             }
-            Page::Ride => {
+            Page::Ready | Page::Ride | Page::EndRide => {
                 self.timing.press(received);
-                self.ride_input(button, received, now)
+                self.ride_press(button, held, received, now);
             }
-            Page::EndRide => {
-                self.timing.press(received);
-                self.end_ride_input(button, now)
-            }
-            Page::Summary => self.summary_input(button, held),
+            Page::Summary if button == Button::BottomLeft => self.next_summary_page(1),
+            Page::Summary => self.ride_press(button, held, received, now),
             Page::Phone => self.phone_input(button, held),
             Page::History => self.history_input(button, held),
             Page::PastRide => self.past_ride_input(button, held),
@@ -513,166 +508,9 @@ impl Runtime {
         self.preferences.set(profile, now);
     }
 
-    /// Ready: ACT starts the ride and shows its pages, BACK returns Home.
-    /// MOVE does nothing here: there is one thing to do.
-    fn ready_input(&mut self, button: Button, received: u64, now: u64) {
-        match button {
-            // Home, and the next ride is free unless a workout is chosen again.
-            Button::TopLeft => {
-                self.navigation.page = Page::Home;
-                self.leave_workout();
-            }
-            Button::BottomRight => {
-                // Rolling off may have started the ride a moment before the
-                // press: then ACT only shows it, never pauses it.
-                let started = self.ride.pending()
-                    || matches!(
-                        self.ride.active().status(),
-                        Status::Recording | Status::Paused
-                    );
-                if started {
-                    self.navigation.open_ride();
-                    return;
-                }
-                self.ride_input(button, received, now);
-                // Only a start the recorder took leaves Ready; otherwise Ready
-                // stays, its storage line saying why.
-                if self.ride.pending() || self.ride.active().status() == Status::Recording {
-                    self.navigation.open_ride();
-                } else {
-                    self.navigation.toast(
-                        "STORAGE NOT READY",
-                        crate::screens::chrome::Tone::Alert,
-                        now,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// "End ride?": ACT saves and ends the ride and shows its summary; BACK
-    /// keeps it paused.
-    fn end_ride_input(&mut self, button: Button, now: u64) {
-        match button {
-            Button::TopLeft => {
-                self.ride.disarm_stop();
-                self.ride.message = RideMessage::Ready;
-                self.navigation.page = Page::Ride;
-            }
-            Button::BottomRight => {
-                if self.ride.pending() || self.ride.active().status() != Status::Paused {
-                    return;
-                }
-                let medium = self.ride.shown();
-                self.ride.request = Request::Idle;
-                if self.ride.submit(medium, |recorder, token| {
-                    recorder.request(RideAction::Finish, Source::Live, now, token)
-                }) {
-                    self.ride.auto.manual();
-                    self.ride.message = RideMessage::Ready;
-                    self.ride.disarm_stop();
-                    self.navigation.summary_page = 0;
-                    self.navigation.page = Page::Summary;
-                } else {
-                    self.ride.message = RideMessage::StorageNotReady;
-                    self.ride.disarm_stop();
-                    self.navigation.page = Page::Ride;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// The summary: MOVE steps its pages; ACT or BACK finishes, to Home.
-    /// Nothing happens while the ride is still being saved.
-    fn summary_input(&mut self, button: Button, held: bool) {
-        let saving = matches!(
-            self.ride.active().status(),
-            Status::Recording | Status::Paused
-        ) || self.ride.pending();
-        match button {
-            Button::BottomLeft => self.next_summary_page(1),
-            Button::BottomRight | Button::TopLeft if !held && !saving => {
-                self.navigation.ride_page = RidePage::Main;
-                self.navigation.page = Page::Home;
-                self.leave_workout();
-            }
-            _ => {}
-        }
-    }
-
     pub(super) fn next_summary_page(&mut self, step: usize) {
         let navigation = &mut self.navigation;
         navigation.summary_page = (navigation.summary_page + step) % SUMMARY_PAGES;
-    }
-
-    /// Ride buttons, with one meaning system-wide: BottomRight acts (start,
-    /// pause, resume), BottomLeft moves to the next page, and TopLeft marks or
-    /// backs out: a lap while recording, "End ride?" while paused, Home when
-    /// no ride is open.
-    /// `received` times the press; `now` stamps the ride data it changes.
-    fn ride_input(&mut self, button: Button, received: u64, now: u64) {
-        if button == Button::BottomLeft {
-            self.next_ride_page();
-            return;
-        }
-        if button == Button::TopLeft && !self.recording() {
-            self.navigation.ride_page = RidePage::Main;
-            self.navigation.page = Page::Home;
-            self.leave_workout();
-            return;
-        }
-        if self.ride.pending() {
-            return;
-        }
-        let medium = self.ride.medium();
-        let status = self.ride.recorder(medium).status();
-        let action = match (button, status) {
-            (Button::BottomRight, Status::Recording) => RideAction::Pause,
-            (Button::BottomRight, Status::Paused) => RideAction::Resume,
-            (Button::BottomRight, Status::Ready | Status::Saved | Status::Recovered) => {
-                RideAction::Start
-            }
-            (Button::TopLeft, Status::Recording) => {
-                self.ride.disarm_stop();
-                // During a workout the lap ends the step, which names the
-                // next step rather than the lap.
-                if let Some(lap) = self.ride.laps.lap(now)
-                    && !self.workout_lap(now)
-                {
-                    self.ride.lap_closed(lap, now);
-                }
-                return;
-            }
-            // Only a paused ride ends, and only once "End ride?" is answered.
-            (Button::TopLeft, Status::Paused) => {
-                self.ride.arm_stop(received);
-                self.navigation.page = Page::EndRide;
-                return;
-            }
-            _ => return,
-        };
-        // ACT on an automatic pause keeps the ride paused, now by the rider.
-        if action == RideAction::Resume && self.ride.auto.take_over() {
-            return;
-        }
-        self.ride.request = Request::Idle;
-        if self.ride.submit(medium, |recorder, token| {
-            recorder.request(action, Source::Live, now, token)
-        }) {
-            self.ride.auto.manual();
-            // The rider's own action supersedes a notice of an automatic one,
-            // so PAUSED or RIDE SAVED is not hidden under AUTO RESUME.
-            self.ride.toast = None;
-            if action == RideAction::Start {
-                self.timing.ride_press(received);
-            }
-            self.ride.message = RideMessage::Ready;
-            self.ride.disarm_stop();
-        } else {
-            self.ride.message = RideMessage::StorageNotReady;
-        }
     }
 
     /// BottomLeft steps through the ride pages, wrapping after the last.

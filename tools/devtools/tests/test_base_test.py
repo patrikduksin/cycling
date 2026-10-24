@@ -106,6 +106,79 @@ class ScriptedConnection:
         pass
 
 
+IDLE = 'status=Status { state: Idle, ready: true }'
+
+
+class UsbStandby:
+    """A USB-powered C606 after POWER SHUTDOWN, as measured on aca9b77.
+
+    It resets in software into charging standby and stays there. POWER WAKE
+    starts recovery, and a few STATUS polls later the companion cuts power:
+    the session drops and the C606 boots with a power-on reset.
+    """
+
+    PHASES = {
+        'standby': {
+            'STATUS': ('OK', 'uptime_ms=10000 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Charging, ready: false }'),
+            'COMPANION': ('OK', 'startup=charging'),
+            'CRASH': ('BUSY', 'power transition'),
+        },
+        'recovering': {
+            'STATUS': ('OK', 'uptime_ms=12000 reset=software crash=none'),
+            'POWER': ('OK', 'status=Status { state: Recovering, ready: false }'),
+            'COMPANION': ('OK', 'startup=charging'),
+            'CRASH': ('BUSY', 'power transition'),
+        },
+        'on': {
+            'STATUS': ('OK', 'uptime_ms=3000 reset=power crash=none'),
+            'POWER': ('OK', IDLE),
+            'COMPANION': ('OK', 'startup=ready'),
+            'CRASH': ('OK', 'kind=controlled this_boot=false source=flash message=controlled crash test'),
+        },
+    }
+
+    def __init__(self, polls_until_reset=3):
+        self.phase = 'standby'
+        self.boot = 0
+        self.polls_until_reset = polls_until_reset
+        self.commands = []
+
+    def connect(self):
+        return UsbStandbySession(self, self.boot)
+
+    def answer(self, command):
+        self.commands.append(command)
+        if command == 'POWER WAKE':
+            if self.phase != 'standby':
+                return dict(status='UNAVAILABLE', data='', ms=1)
+            self.phase = 'recovering'
+            return dict(status='ACCEPTED', data='', ms=1)
+        if self.phase == 'recovering' and command == 'STATUS':
+            self.polls_until_reset -= 1
+            if self.polls_until_reset == 0:
+                self.phase = 'on'
+                self.boot += 1
+                raise RuntimeError('device rebooted during command')
+        status, data = self.PHASES[self.phase][command]
+        return dict(status=status, data=data, ms=1)
+
+
+class UsbStandbySession:
+    def __init__(self, device, boot):
+        self.device = device
+        self.boot = boot
+        self.request_id = 1
+
+    def terminal_command(self, command):
+        if self.boot != self.device.boot:
+            raise RuntimeError('device disconnected; command outcome may be uncertain')
+        return self.device.answer(command)
+
+    def __exit__(self, *unused):
+        pass
+
+
 class PowerCycleTests(unittest.TestCase):
     def cycle(self, before, after):
         with patch('cycling_devtools.harness.base.reopen', side_effect=[before, after]), patch('time.sleep'):
@@ -136,6 +209,23 @@ class PowerCycleTests(unittest.TestCase):
         self.assertEqual(before.commands, ['POWER SHUTDOWN', 'POWER SHUTDOWN'])
         self.assertEqual(after.commands.count('POWER WAKE'), 2)
         self.assertEqual(after.commands[-2:], ['COMPANION', 'POWER'])
+
+    def test_wakes_usb_charging_standby_before_judging_the_reset(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('UNAVAILABLE', ''), ('ACCEPTED', '')]})
+        device = UsbStandby()
+        sessions = iter([before])
+        with (
+            patch(
+                'cycling_devtools.harness.base.reopen',
+                side_effect=lambda *unused: next(sessions, None) or device.connect(),
+            ),
+            patch('time.sleep'),
+        ):
+            connection = power_cycle('port', None)
+            record = crash_record(connection)
+        self.assertEqual(device.commands.count('POWER WAKE'), 1)
+        self.assertEqual(device.phase, 'on')
+        self.assertEqual(record['source'], 'flash')
 
     def test_an_early_idle_before_the_companion_starts_is_not_settled(self):
         connection = ScriptedConnection(

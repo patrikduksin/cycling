@@ -432,6 +432,7 @@ impl Runtime {
             Row::AutoPause => options.auto_pause = !options.auto_pause,
             Row::AutoLap => options.auto_lap_km = after(&AUTO_LAP_KM, options.auto_lap_km),
             Row::Sounds => options.sounds = !options.sounds,
+            Row::SunsetAlert => options.sunset_alert = !options.sunset_alert,
             Row::Daylight => {
                 use super::preferences::Daylight;
                 options.daylight = after(

@@ -88,8 +88,29 @@ start, BACK AT START. The page's pad (FOLLOW TRACK BACK, STOP FOLLOWING) does
 the same sooner; the buttons keep their ride roles. Laps of a loop the same
 way round never follow by themselves.
 
+Under the pad a grey line says when the light ends, SUNSET 19:42 in local
+time, and DARK once the sun is down. It shows only with a known position and
+time, and never in polar day.
+
 The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
 points in PSRAM. Each ride starts a new one; a restart loses it.
+
+### Sunset
+
+Dusk catches riders out, so VANA works out the sunset (the sun's centre at
+-0.833 degrees) from the last fixed position and the GPS or network time, at
+most once a minute. While recording, with Settings ALERTS SUNSET on (the
+default, and the default for settings saved before it existed), an amber
+toast and the attention chime say SUNSET IN 30 MIN, once per ride, when
+30 to 20 minutes remain, and SUNSET - LIGHTS ON once when the sun sets. The
+alerts follow the SOUNDS setting for the chime and show on the ride pages;
+one due while another page is up waits for the rider's return. They need a
+known position and time. A ride that starts after sunset says nothing: the
+rider can see it is dark. A ride that starts less than 20 minutes before
+sunset skips the warning and gives only LIGHTS ON. A ride recovered after a restart, already more than two
+minutes old, never repeats the warning either. A pause across the
+30-minute mark gives the warning on resume, if 20 minutes or more remain.
+Polar day and night have no sunset and no alert.
 
 ### Paused
 

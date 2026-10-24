@@ -12,7 +12,7 @@
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type | 2 |
-//! | then | Flags: bit 0 auto-pause, bit 1 sounds; other bits zero | 3 |
+//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on); other bits zero | 3 |
 //! | then | Auto-lap distance in km, 0 for off, at most 100 | 3 |
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |
@@ -52,6 +52,9 @@ const DEBOUNCE_MS: u64 = 2_000;
 const RETRY_MS: u64 = 5_000;
 const AUTO_PAUSE: u8 = 1 << 0;
 const SOUNDS: u8 = 1 << 1;
+/// Set when the rider turned the sunset alert off; clear (as in every record
+/// saved before it existed) means on.
+const SUNSET_OFF: u8 = 1 << 2;
 /// The longest automatic lap a record may hold.
 pub const AUTO_LAP_MAX_KM: u8 = 100;
 
@@ -143,6 +146,8 @@ pub struct Options {
     pub setup: u8,
     /// Ride alert settings, carried for `ride::alerts`.
     pub alerts: [u8; ALERTS_LENGTH],
+    /// Warn before sunset and at it, while riding.
+    pub sunset_alert: bool,
 }
 
 impl Default for Options {
@@ -155,6 +160,7 @@ impl Default for Options {
             theme: Theme::Dark,
             setup: 0,
             alerts: ALERTS_DEFAULT,
+            sunset_alert: true,
         }
     }
 }
@@ -170,6 +176,9 @@ impl Options {
         }
         if self.sounds {
             flags |= SOUNDS;
+        }
+        if !self.sunset_alert {
+            flags |= SUNSET_OFF;
         }
         let mut bytes = [0; OPTIONS_LENGTH];
         bytes[..4].copy_from_slice(&[flags, self.auto_lap_km, self.daylight.byte(), self.setup]);
@@ -189,7 +198,7 @@ impl Options {
         };
         let (&[flags, auto_lap_km, daylight, setup], alerts) = bytes.split_first_chunk()?;
         let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
-        if flags & !(AUTO_PAUSE | SOUNDS) != 0 || auto_lap_km > AUTO_LAP_MAX_KM {
+        if flags & !(AUTO_PAUSE | SOUNDS | SUNSET_OFF) != 0 || auto_lap_km > AUTO_LAP_MAX_KM {
             return None;
         }
         Some(Self {
@@ -200,6 +209,7 @@ impl Options {
             theme,
             setup,
             alerts,
+            sunset_alert: flags & SUNSET_OFF == 0,
         })
     }
 }
@@ -682,6 +692,7 @@ mod tests {
             theme: Theme::Auto,
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
+            sunset_alert: true,
         };
         let chosen = record(profile, sensors, options);
         let bytes = encode(&chosen);
@@ -796,6 +807,19 @@ mod tests {
                 "{damaged:?}"
             );
         }
+        // A record saved before the sunset alert has its flag clear: on. Off
+        // is bit 2, and the other pinned bytes stay as they were.
+        let off = Options {
+            sunset_alert: false,
+            ..Options::default()
+        };
+        assert_eq!(off.encode()[0], 0b111);
+        assert_eq!(Options::decode(&off.encode(), VERSION), Some(off));
+        assert!(
+            Options::decode(&Options::default().encode(), VERSION)
+                .unwrap()
+                .sunset_alert
+        );
         // Version 4 options: one byte short or long, an unknown flag, too
         // long a lap, an unknown day/night or theme choice, and an impossible FTP.
         let good = Options::default().encode();
@@ -807,7 +831,7 @@ mod tests {
         for (profile, options) in [
             ([250, 0], good[..OPTIONS_LENGTH - 1].to_vec()),
             ([250, 0], [&good[..], &[0]].concat()),
-            ([250, 0], with(0, 4)),
+            ([250, 0], with(0, 8)),
             ([250, 0], with(1, AUTO_LAP_MAX_KM + 1)),
             ([250, 0], with(2, 3)),
             ([250, 0], with(OPTIONS_LENGTH - 1, 3)),

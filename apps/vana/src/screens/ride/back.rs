@@ -16,6 +16,7 @@ use crate::screens::chrome::{
     on_circle,
 };
 use crate::screens::workout::{Text, View};
+use core::fmt::Write;
 use firmware_shell::rendering::font::blend;
 
 /// What the page knows of the way back.
@@ -29,6 +30,18 @@ pub enum Back {
         following: bool,
     },
     Guide(Guide),
+}
+
+/// How much daylight is left, as the back-to-start page's caption.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Light {
+    /// No position or time yet: nothing is said.
+    #[default]
+    Unknown,
+    /// The sun sets at this local time, in seconds since local midnight.
+    SetsAt(u32),
+    /// The sun is down.
+    Dark,
 }
 
 /// The title and the state share this baseline.
@@ -47,10 +60,12 @@ const CELLS: usize = STATE + 4;
 /// The pad that follows the track back, above the toast band.
 pub const PAD: Rect = Rect {
     left: LEFT,
-    top: CELLS + 52,
+    top: CELLS + 50,
     right: RIGHT,
-    bottom: CELLS + 52 + 38,
+    bottom: CELLS + 50 + 34,
 };
+/// The light caption's baseline, under the pad, in the band a toast covers.
+const LIGHT: usize = 290;
 const _: () = assert!(PAD.bottom < crate::screens::chrome::TOAST.top);
 const _: () = assert!(HEAD + 12 < CY - RING_RADIUS - 2);
 
@@ -311,6 +326,30 @@ pub(super) fn prepare(view: &View) -> Canvas {
         Align::Center,
         if following { WHITE } else { GREEN },
     );
+    // The light, under the pad: grey, white once it is dark.
+    let mut light = Text::<14>::new();
+    let color = match view.sunset {
+        Light::Unknown => None,
+        Light::SetsAt(local) => {
+            let _ = write!(light, "SUNSET {:02}:{:02}", local / 3600, local / 60 % 60);
+            Some(SECONDARY)
+        }
+        Light::Dark => {
+            let _ = light.push_str("DARK");
+            Some(WHITE)
+        }
+    };
+    if let Some(color) = color {
+        canvas.fit(
+            &[&CAPTION],
+            light.as_bytes(),
+            width,
+            CX,
+            LIGHT,
+            Align::Center,
+            color,
+        );
+    }
     canvas
 }
 
@@ -380,6 +419,23 @@ mod tests {
             let view = page(back);
             view.canvas
                 .assert_laid_out(PAGE, want, &std::format!("{back:?}"));
+        }
+    }
+
+    #[test]
+    fn the_light_shows_beside_the_title_only_when_known() {
+        let mut view = page(Back::Unavailable);
+        view.canvas
+            .assert_laid_out(PAGE, &["BACK TO START"], "unknown");
+        for (light, text) in [
+            (Light::SetsAt(19 * 3600 + 42 * 60), "SUNSET 19:42"),
+            (Light::SetsAt(5 * 60), "SUNSET 00:05"),
+            (Light::Dark, "DARK"),
+        ] {
+            view.sunset = light;
+            view.prepare();
+            view.canvas
+                .assert_laid_out(PAGE, &["BACK TO START", text], text);
         }
     }
 

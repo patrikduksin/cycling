@@ -37,6 +37,56 @@ pub fn sun_altitude(unix_seconds: i64, latitude: f64, longitude: f64) -> f64 {
         / radians
 }
 
+/// The sun's centre this far below the horizon (degrees) is the standard
+/// sunset: the disc's upper edge touches it, with refraction.
+pub const SUNSET_DEG: f64 = -0.833;
+/// How far ahead `sun_state` looks for a sunset, and how finely.
+const LOOKAHEAD_S: i64 = 26 * 3600;
+const SCAN_S: i64 = 1800;
+/// Bisection halvings: 1800 s down to a fraction of a second.
+const BISECTIONS: u32 = 14;
+
+/// Where the sun stands for the light a rider has left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sun {
+    /// Below the horizon: after sunset, before sunrise, or polar night.
+    Down,
+    /// Above it, and sets at this Unix time.
+    Up { sets_at: i64 },
+    /// Above it with no sunset within a day: polar day.
+    Midnight,
+}
+
+/// The sun at `unix_seconds` from `latitude`, `longitude`: down, or up with
+/// the time it next sets. Scans ahead every half hour for the sun crossing
+/// `SUNSET_DEG` downward, then bisects: about 60 altitudes, so call it
+/// once a minute rather than per frame. A dip below the horizon shorter than
+/// half an hour, at the edge of polar day, can be missed.
+pub fn sun_state(unix_seconds: i64, latitude: f64, longitude: f64) -> Sun {
+    let above = |t: i64| sun_altitude(t, latitude, longitude) > SUNSET_DEG;
+    if !above(unix_seconds) {
+        return Sun::Down;
+    }
+    let mut low = unix_seconds;
+    while low - unix_seconds < LOOKAHEAD_S {
+        let high = low + SCAN_S;
+        if !above(high) {
+            let mut high = high;
+            for _ in 0..BISECTIONS {
+                let middle = low + (high - low) / 2;
+                if above(middle) {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
+            }
+            return Sun::Up { sets_at: high };
+        }
+        low = high;
+    }
+    Sun::Midnight
+}
+
 /// Whether it is night at this sun altitude, given whether it was.
 pub fn night_at(altitude: f64, was_night: bool) -> bool {
     if was_night {
@@ -76,6 +126,48 @@ mod tests {
         let london = unix_seconds(*b"211226", *b"120000").unwrap();
         let low = sun_altitude(london, 51.5, -0.13);
         assert!((12.0..17.0).contains(&low), "{low}");
+    }
+
+    /// Sunset UTC from sunrise-sunset.org (NOAA-style solar position), which
+    /// this must match to two minutes.
+    #[test]
+    fn sunset_matches_published_times_within_two_minutes() {
+        let utc = |date: &[u8; 6], h: i64, m: i64, s: i64| {
+            unix_seconds(*date, *b"000000").unwrap() + h * 3600 + m * 60 + s
+        };
+        let cases = [
+            // Santiago.
+            (SANTIAGO, utc(b"141026", 22, 54, 55)),
+            (SANTIAGO, utc(b"211226", 23, 52, 2)),
+            (SANTIAGO, utc(b"210626", 21, 42, 32)),
+            (SANTIAGO, utc(b"200326", 22, 54, 1)),
+            // London, shortest day.
+            ((51.5, -0.13), utc(b"211226", 15, 53, 34)),
+        ];
+        for ((lat, lon), want) in cases {
+            // From the morning of that day, as a rider would ask.
+            let from = want - 5 * 3600;
+            let Sun::Up { sets_at } = sun_state(from, lat, lon) else {
+                panic!("sun should be up at {from}");
+            };
+            assert!((sets_at - want).abs() <= 120, "{} s off", sets_at - want);
+        }
+    }
+
+    #[test]
+    fn sunset_is_down_at_night_and_absent_in_polar_day_and_night() {
+        let (lat, lon) = SANTIAGO;
+        let night = unix_seconds(*b"141026", *b"233000").unwrap();
+        assert_eq!(sun_state(night, lat, lon), Sun::Down);
+        // Tromso at midsummer: the sun never sets.
+        let june = unix_seconds(*b"210626", *b"100000").unwrap();
+        assert_eq!(sun_state(june, 69.65, 18.96), Sun::Midnight);
+        // And at midwinter it never rises.
+        let december = unix_seconds(*b"211226", *b"120000").unwrap();
+        assert_eq!(sun_state(december, 69.65, 18.96), Sun::Down);
+        // The next sunset after dark is a day-ish ahead, found from dusk too.
+        let after = unix_seconds(*b"141026", *b"230000").unwrap();
+        assert_eq!(sun_state(after, lat, lon), Sun::Down);
     }
 
     #[test]

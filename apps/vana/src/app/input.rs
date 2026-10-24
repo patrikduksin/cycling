@@ -332,6 +332,7 @@ impl Runtime {
             Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
                 self.request_sensor(action, ant, now)
             }
+            Some(Action::Calibrate) => self.calibrate(ant, now),
             Some(Action::Ride) => {
                 self.cancel_search(ant, now);
                 self.navigation.page = self.after_sensors();

@@ -2,8 +2,10 @@
 //!
 //! Each row paints only the items whose rows it crosses; the per-pixel
 //! original stays as the test reference the painted rows must match.
+use super::CalibrationNote;
 use super::layout::{
-    DETAIL_BUTTONS, NEARBY_GRID, REPLACE_BUTTONS, SEARCH_BUTTON, SEARCH_BUTTON_SIZE, SELECTED_GRID,
+    CALIBRATION_TOP, DETAIL_BUTTONS, NEARBY_GRID, POWER_DETAIL_BUTTONS, REPLACE_BUTTONS,
+    SEARCH_BUTTON, SEARCH_BUTTON_SIZE, SELECTED_GRID,
 };
 use super::menu::{Choice, Menu, View};
 use super::slot::{LinkStatus, Selected};
@@ -42,6 +44,17 @@ impl Selected {
             Some(BatteryStatus::Critical) => chrome::RED,
             Some(status) if status.is_low() => AMBER,
             _ => MUTED,
+        }
+    }
+}
+
+impl CalibrationNote {
+    /// Cyan while waiting, green once zeroed, amber when it did not happen.
+    fn color(self) -> u16 {
+        match self {
+            Self::Calibrating => CYAN,
+            Self::Done(_) => GREEN,
+            Self::Failed | Self::NotConnected | Self::WhileRiding => AMBER,
         }
     }
 }
@@ -148,7 +161,7 @@ impl Menu {
             View::Tiles => self.paint_tiles(row),
             View::Detail(slot) => {
                 if let Some(selected) = self.selected[slot] {
-                    self.paint_detail(row, selected);
+                    self.paint_detail(row, selected, self.calibratable(slot));
                 }
             }
             View::Replace(identity) => self.paint_replace(row, identity),
@@ -266,12 +279,32 @@ impl Menu {
         paint_text(row, &BODY, heading, MARGIN, HEADING_TOP, left, color);
     }
 
-    fn paint_detail(&self, row: &mut Row, selected: Selected) {
-        // Disconnect is the only removal; ordinary loss reconnects by itself.
-        self.paint_button(row, DETAIL_BUTTONS[1], Choice::Secondary, b"BACK");
-        self.paint_button(row, DETAIL_BUTTONS[0], Choice::Primary, b"DISCONNECT");
+    fn paint_detail(&self, row: &mut Row, selected: Selected, calibratable: bool) {
         let center = Align::Center;
         let mid = WIDTH / 2;
+        // Disconnect is the only removal; ordinary loss reconnects by itself.
+        if calibratable {
+            let [calibrate, disconnect, back] = POWER_DETAIL_BUTTONS;
+            self.paint_button(row, back, Choice::Secondary, b"BACK");
+            self.paint_button(row, disconnect, Choice::Primary, b"DISCONNECT");
+            self.paint_button(row, calibrate, Choice::Calibrate, b"CALIBRATE");
+            if let Some(note) = self.calibration {
+                let text = note.text();
+                let top = CALIBRATION_TOP;
+                paint_text(
+                    row,
+                    &CAPTION,
+                    text.as_bytes(),
+                    mid,
+                    top,
+                    center,
+                    note.color(),
+                );
+            }
+        } else {
+            self.paint_button(row, DETAIL_BUTTONS[1], Choice::Secondary, b"BACK");
+            self.paint_button(row, DETAIL_BUTTONS[0], Choice::Primary, b"DISCONNECT");
+        }
         let (identity, len) = self.identity_line();
         paint_text(row, &CAPTION, &identity[..len], mid, 162, center, MUTED);
         let status = selected.link_status();
@@ -387,7 +420,8 @@ impl Menu {
         }
         match self.view {
             View::Tiles => self.tiles_pixel(x, y),
-            View::Detail(slot) => self.selected[slot].map_or(0, |s| self.detail_pixel(x, y, s)),
+            View::Detail(slot) => self.selected[slot]
+                .map_or(0, |s| self.detail_pixel(x, y, s, self.calibratable(slot))),
             View::Replace(identity) => self.replace_pixel(x, y, identity),
         }
     }
@@ -564,7 +598,7 @@ impl Menu {
     }
 
     #[cfg(test)]
-    fn detail_pixel(&self, x: usize, y: usize, selected: Selected) -> u16 {
+    fn detail_pixel(&self, x: usize, y: usize, selected: Selected, calibratable: bool) -> u16 {
         if scaled_icon(x, y, 98, 52, selected.identity.device_type) {
             return WHITE;
         }
@@ -627,6 +661,36 @@ impl Menu {
             BLACK,
         ) {
             return c;
+        }
+        if calibratable {
+            if let Some(note) = self.calibration {
+                let text = note.text();
+                let top = CALIBRATION_TOP;
+                let color = note.color();
+                if let Some(c) = write(
+                    x,
+                    y,
+                    &CAPTION,
+                    text.as_bytes(),
+                    mid,
+                    top,
+                    center,
+                    color,
+                    BLACK,
+                ) {
+                    return c;
+                }
+            }
+            let [calibrate, disconnect, back] = POWER_DETAIL_BUTTONS;
+            let buttons = [
+                (calibrate, Choice::Calibrate, &b"CALIBRATE"[..]),
+                (disconnect, Choice::Primary, b"DISCONNECT"),
+                (back, Choice::Secondary, b"BACK"),
+            ];
+            return buttons
+                .into_iter()
+                .find_map(|(place, choice, label)| self.button_pixel(x, y, place, choice, label))
+                .unwrap_or(BLACK);
         }
         // Disconnect is the only removal; ordinary loss reconnects by itself.
         if let Some(color) =

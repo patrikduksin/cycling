@@ -1,11 +1,11 @@
 //! Sensor selection state and physical-button navigation.
-use super::MenuMessage;
 use super::layout::{
-    DETAIL_BUTTONS, Layout, NEARBY_GRID, REPLACE_BUTTONS, SEARCH_BUTTON, SEARCH_BUTTON_SIZE,
-    SELECTED_GRID,
+    DETAIL_BUTTONS, Layout, NEARBY_GRID, POWER_DETAIL_BUTTONS, REPLACE_BUTTONS, SEARCH_BUTTON,
+    SEARCH_BUTTON_SIZE, SELECTED_GRID,
 };
 use super::slot::{LinkStatus, Selected};
-use crate::sensors::ant::BatteryStatus;
+use super::{CalibrationNote, MenuMessage};
+use crate::sensors::ant::{BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::{Button, Input};
 
@@ -19,6 +19,8 @@ pub enum Action {
     Scan,
     Connect(Identity),
     Disconnect(u8),
+    /// Zero the saved power meter.
+    Calibrate,
     Ride,
 }
 
@@ -105,18 +107,22 @@ pub(super) enum View {
     Replace(Identity),
 }
 
-/// The highlighted button on a detail or replacement page.
+/// The highlighted button on a detail or replacement page. `Calibrate` exists
+/// only on a power meter's detail page, where it is the top button.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum Choice {
     Primary,
     Secondary,
+    Calibrate,
 }
 
 impl Choice {
-    const fn toggled(self) -> Self {
+    /// The next button down, wrapping; the calibrate button sits above the rest.
+    const fn toggled(self, calibrate: bool) -> Self {
         match self {
             Self::Primary => Self::Secondary,
-            Self::Secondary => Self::Primary,
+            Self::Secondary if calibrate => Self::Calibrate,
+            Self::Secondary | Self::Calibrate => Self::Primary,
         }
     }
 }
@@ -137,6 +143,8 @@ pub struct Menu {
     /// Save trouble, kept apart from discovery progress so it stays visible
     /// for as long as the problem lasts.
     pub(super) notice: Option<MenuMessage>,
+    /// How the latest power meter calibration stands, shown on its detail page.
+    pub(super) calibration: Option<CalibrationNote>,
 }
 
 impl Default for Menu {
@@ -160,6 +168,7 @@ impl Menu {
             needs_navigation: false,
             message: None,
             notice: None,
+            calibration: None,
         }
     }
 
@@ -182,6 +191,10 @@ impl Menu {
     pub fn set_notice(&mut self, notice: Option<MenuMessage>) {
         self.notice = notice;
         self.prepare_layout();
+    }
+
+    pub fn set_calibration(&mut self, calibration: Option<CalibrationNote>) {
+        self.calibration = calibration;
     }
 
     /// Begin a genuinely new bounded search without moving selected-sensor focus.
@@ -295,8 +308,19 @@ impl Menu {
                 };
                 self.cursor = cursor;
             }
-            View::Detail(_) => {
-                self.choice = if within(DETAIL_BUTTONS[0]) {
+            View::Detail(slot) => {
+                self.choice = if self.calibratable(slot) {
+                    let [calibrate, disconnect, back] = POWER_DETAIL_BUTTONS;
+                    if within(calibrate) {
+                        Choice::Calibrate
+                    } else if within(disconnect) {
+                        Choice::Primary
+                    } else if within(back) {
+                        Choice::Secondary
+                    } else {
+                        return None;
+                    }
+                } else if within(DETAIL_BUTTONS[0]) {
                     Choice::Primary
                 } else if within(DETAIL_BUTTONS[1]) {
                     Choice::Secondary
@@ -371,7 +395,10 @@ impl Menu {
                             break;
                         }
                     },
-                    _ => self.choice = self.choice.toggled(),
+                    View::Detail(slot) => {
+                        self.choice = self.choice.toggled(self.calibratable(slot));
+                    }
+                    View::Replace(_) => self.choice = self.choice.toggled(false),
                 }
                 None
             }
@@ -385,6 +412,9 @@ impl Menu {
         match self.view {
             View::Detail(slot) => {
                 let selected = self.selected[slot]?;
+                if self.choice == Choice::Calibrate && self.calibratable(slot) {
+                    return Some(Action::Calibrate);
+                }
                 self.view = View::Tiles;
                 // The secondary button is Back.
                 if self.choice == Choice::Secondary {
@@ -411,7 +441,13 @@ impl Menu {
                 }
                 Item::Selected(slot) => {
                     self.view = View::Detail(slot);
-                    self.choice = Choice::Primary;
+                    // Calibrating is harmless; disconnecting is not, so a
+                    // power meter's page opens on the former.
+                    self.choice = if self.calibratable(slot) {
+                        Choice::Calibrate
+                    } else {
+                        Choice::Primary
+                    };
                     None
                 }
                 Item::Nearby(index) => self.choose_nearby(index),
@@ -436,6 +472,11 @@ impl Menu {
             return None;
         }
         Some(Action::Connect(identity))
+    }
+
+    /// Whether this saved sensor is a power meter, which can be zeroed.
+    pub(super) fn calibratable(&self, slot: usize) -> bool {
+        self.selected[slot].is_some_and(|s| s.identity.device_type == device_type::POWER)
     }
 
     pub(super) fn visible(&self, cursor: usize) -> bool {

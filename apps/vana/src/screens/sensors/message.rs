@@ -88,3 +88,31 @@ impl MenuMessage {
         )
     }
 }
+
+/// How the latest power meter calibration stands, as the rider is told.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CalibrationNote {
+    Calibrating,
+    /// The offset the power meter reported, in its own units.
+    Done(i16),
+    /// The power meter refused, did not answer, or could not be asked.
+    Failed,
+    NotConnected,
+    WhileRiding,
+}
+
+impl CalibrationNote {
+    /// The wording fits `CALIBRATED  OFFSET -32768` on one caption line.
+    pub fn text(self) -> heapless::String<28> {
+        use core::fmt::Write;
+        let mut text = heapless::String::new();
+        let _ = match self {
+            Self::Calibrating => text.write_str("CALIBRATING..."),
+            Self::Done(offset) => write!(text, "CALIBRATED  OFFSET {offset}"),
+            Self::Failed => text.write_str("CALIBRATION FAILED"),
+            Self::NotConnected => text.write_str("NOT CONNECTED"),
+            Self::WhileRiding => text.write_str("NOT DURING A RIDE"),
+        };
+        text
+    }
+}

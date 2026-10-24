@@ -80,6 +80,15 @@ and every minute after: under 20 % is low and under 5 % critical, a warning
 needs 2 % more to clear, and a value over 100 or a sensor without the Battery
 Service says nothing. There is no detail page for it.
 
+A saved power meter's detail page adds CALIBRATE above DISCONNECT and BACK, and
+opens on it. ACT sends the power meter a manual zero request. CALIBRATING...
+shows while it works, then CALIBRATED with the offset the power meter reported
+(OFFSET 512, in its own units), or CALIBRATION FAILED when it refuses, stays
+silent for ten seconds or cannot be reached. The result stays for ten seconds
+and is never stored. NOT CONNECTED says the power meter is not live, and NOT
+DURING A RIDE says a recording is open. A search in progress holds the radio, so
+the request waits for it, up to twenty seconds.
+
 ### Recording
 
 Starting switches straight to the ride pages, shows a RECORDING toast and

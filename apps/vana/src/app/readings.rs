@@ -416,6 +416,7 @@ impl Runtime {
             // A removed or replaced sensor's pages never reach the ride.
             if !self.links.rejects(packet.identity) {
                 self.links.note_battery(&packet);
+                self.hear_calibration(&packet, now);
                 self.readings.receive(packet);
             }
         }

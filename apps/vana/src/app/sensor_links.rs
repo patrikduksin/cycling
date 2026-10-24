@@ -531,7 +531,7 @@ impl Runtime {
                 selected
             }
             Action::Disconnect(kind) => self.links.remove(kind),
-            Action::Scan | Action::Ride => false,
+            Action::Scan | Action::Calibrate | Action::Ride => false,
         };
         if changed {
             self.preferences.set_sensors(self.links.saved, now);
@@ -564,6 +564,7 @@ impl Runtime {
         let tiles = self.sensor_tiles(ant, now);
         self.menu
             .refresh(ant.discoveries(), tiles, self.discovery.scan.busy(ant));
+        self.menu.set_calibration(self.calibration.note());
     }
 
     /// Sensors saved for automatic connection, in tile order.

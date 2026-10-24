@@ -5259,6 +5259,229 @@ fn the_week_header_shows_training_stress_from_rides_with_power() {
     sim.checkpoint("the week header shows training stress");
 }
 
+/// The text of a run on screen that starts with `prefix`, such as "TSS 40".
+fn shown_with(sim: &Sim, prefix: &str) -> String {
+    let screen = sim.screen();
+    screen
+        .text()
+        .lines()
+        .flat_map(|line| line.split("  "))
+        .map(str::trim)
+        .find(|run| run.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no {prefix}; screen:\n{}", screen.text()))
+        .to_string()
+}
+
+/// A saved ride keeps the FTP it was ridden at, its heart-rate recovery and
+/// its climbs on FILES. Raising the FTP afterwards leaves the week's training
+/// stress as it was, and after a reboot the ride read back shows the recovery
+/// and the climbs.
+#[test]
+fn a_saved_ride_keeps_its_ftp_heart_rate_recovery_and_climbs() {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = sim.boot();
+    sim.init_bulk();
+    sim.init_volumes();
+    sim.put_file("notes.txt", b"x");
+    sim.ant_sensor(device_type::HEART_RATE, HEART);
+    sim.ant_sensor(device_type::POWER, POWER);
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
+    sim.ride_route(Route::profile(
+        Point::new(-33.45, -70.66),
+        &[
+            (0.0, 600.0),
+            (1000.0, 600.0),
+            (2500.0, 690.0),
+            (4000.0, 600.0),
+            (12000.0, 600.0),
+        ],
+    ));
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.set_gps_clock(15 * 3600, (21, 10, 26));
+    sim.edit_profile(250, 185);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+    sim.start_ride();
+    sim.ride_at(25.0, 250.0, 170.0, 90.0);
+    sim.advance(minutes(24));
+    sim.stop_ride();
+    sim.press(Button::BottomLeft);
+    sim.ride_at(0.0, 0.0, 142.0, 0.0);
+    sim.advance(seconds(75));
+    sim.expect_text("-28 BPM");
+    // The screen dimmed during the minute; the first press only wakes it.
+    sim.press(Button::BottomRight);
+    sim.done();
+
+    let (journal, bytes) = ["rides/b1.facts", "rides/i1.facts"]
+        .iter()
+        .find_map(|name| Some((*name, sim.file(name)?)))
+        .expect("a facts file for the saved ride");
+    let record = vana::ride::facts::decode(&bytes).expect("the facts decode");
+    println!("{journal}: {record:?}");
+    let facts = record.facts;
+    assert_eq!(facts.profile.map(|p| p.ftp_watts), Some(250));
+    assert_eq!(facts.recovery_bpm, Some(28));
+    let climbing = facts.climbing.expect("climbs kept");
+    assert_eq!(climbing.count, 1, "{climbing:?}");
+    assert!((80..=95).contains(&climbing.gain_m), "{climbing:?}");
+
+    sim.power_loss();
+    sim.set_gps_clock(16 * 3600, (21, 10, 26));
+    sim.advance(seconds(20));
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    sim.expect_text("THIS WEEK");
+    // 24 minutes at FTP is 40.
+    let ridden = shown_with(&sim, "TSS");
+    assert_eq!(ridden, "TSS 40");
+    sim.checkpoint("week stress at the FTP the ride was ridden at");
+    sim.press(Button::TopLeft);
+
+    sim.edit_profile(300, 185);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.advance(seconds(1));
+    assert_eq!(
+        shown_with(&sim, "TSS"),
+        ridden,
+        "a new FTP restates nothing"
+    );
+    sim.checkpoint("week stress unchanged after raising FTP to 300");
+
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_text("SAVED RIDE");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("HR RECOVERY");
+    sim.expect_text("-28 BPM");
+    sim.checkpoint("saved ride keeps its heart rate recovery");
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_text("BEST POWER W");
+    sim.expect_field("CLIMBS", "1");
+    sim.checkpoint("saved ride keeps its climbs");
+}
+
+/// Without a card the ride saves as before: the week's stress follows the
+/// FTP now, and the saved ride shows no recovery and no climbs.
+#[test]
+fn without_files_a_saved_ride_reads_as_it_did_before() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.set_gps_clock(15 * 3600, (21, 10, 26));
+    sim.edit_profile(250, 185);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+    sim.start_ride();
+    sim.ride_at(25.0, 250.0, 170.0, 90.0);
+    sim.advance(minutes(24));
+    sim.stop_ride();
+    sim.ride_at(0.0, 0.0, 142.0, 0.0);
+    sim.advance(seconds(75));
+    sim.press(Button::BottomRight);
+    sim.done();
+    sim.edit_profile(300, 185);
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    // 40 at 250 W is 40 x (250/300)^2 at 300 W.
+    assert_eq!(shown_with(&sim, "TSS"), "TSS 28");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.press(Button::BottomLeft);
+    sim.expect_no_text("HR RECOVERY");
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_text("BEST POWER W");
+    sim.expect_field("CLIMBS", "--");
+}
+
+/// A card with a formatted FILES store, the sensors paired and the clock set.
+fn files_rider() -> Sim {
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.init_volumes();
+    sim.put_file("notes.txt", b"x");
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.set_gps_clock(15 * 3600, (21, 10, 26));
+    sim
+}
+
+fn facts_of(sim: &mut Sim, name: &str) -> Option<vana::ride::facts::Record> {
+    let bytes = sim.file(name)?;
+    Some(vana::ride::facts::decode(&bytes).expect("the facts decode"))
+}
+
+/// A ride the host ends saves before the summary starts measuring; the
+/// recovery still reaches its facts a minute later.
+#[test]
+fn a_ride_the_host_ends_keeps_its_heart_rate_recovery() {
+    let mut sim = files_rider();
+    sim.start_ride();
+    sim.ride_at(25.0, 200.0, 165.0, 90.0);
+    sim.advance(minutes(5));
+    ride_command(&mut sim, "RIDE BULK PAUSE");
+    ride_command(&mut sim, "RIDE BULK FINISH");
+    sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
+    let saved = facts_of(&mut sim, "rides/b1.facts").expect("facts written on save");
+    assert_eq!(saved.facts.recovery_bpm, None, "still measuring");
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
+    sim.advance(seconds(75));
+    let measured = facts_of(&mut sim, "rides/b1.facts").unwrap();
+    assert_eq!(measured.facts.recovery_bpm, Some(25));
+}
+
+/// Clearing a journal deletes its facts with its rides, so the ride that
+/// takes id 1 again reads only its own.
+#[test]
+fn a_cleared_journal_forgets_its_facts_and_the_next_ride_one_keeps_its_own() {
+    let mut sim = files_rider();
+    sim.start_ride();
+    sim.ride_at(25.0, 200.0, 165.0, 90.0);
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
+    sim.advance(seconds(75));
+    assert_eq!(
+        facts_of(&mut sim, "rides/b1.facts").and_then(|r| r.facts.recovery_bpm),
+        Some(25)
+    );
+    sim.press(Button::BottomRight);
+    sim.done();
+
+    let (_, status) = sim.command("RIDE BULK STATUS");
+    let upper = status_field(&status, "slot");
+    let (accepted, out) = sim.command(&format!("RIDE BULK CLEAR CONFIRM {upper}"));
+    assert_eq!(accepted, "ACCEPTED", "{out}");
+    sim.advance(seconds(10));
+    assert!(
+        sim.file("rides/b1.facts").is_none(),
+        "forgotten with its ride"
+    );
+
+    sim.start_ride();
+    sim.ride_at(25.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.done();
+    let again = facts_of(&mut sim, "rides/b1.facts").expect("the new ride 1");
+    assert_eq!(again.facts.recovery_bpm, None);
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    sim.expect_text("1/1");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.press(Button::BottomLeft);
+    sim.expect_no_text("HR RECOVERY");
+}
+
 /// The QR code on the panel, read back as a phone camera would.
 fn scanned(sim: &Sim) -> String {
     let screen = sim.screen();

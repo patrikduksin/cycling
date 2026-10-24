@@ -15,6 +15,7 @@ mod calibration;
 pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
 mod cues;
+mod facts;
 mod history;
 mod input;
 mod lookahead;
@@ -71,6 +72,7 @@ pub struct Runtime {
     recovery: crate::ride::recovery::Recovery,
     preferences: preferences::Preferences,
     bests: bests::Kept,
+    facts: facts::Kept,
     power: power::Power,
     timing: timing::Timing,
     training: training::Training,
@@ -103,6 +105,7 @@ impl Runtime {
             recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),
             bests: bests::Kept::default(),
+            facts: facts::Kept::default(),
             power: power::Power::default(),
             timing: timing::Timing::default(),
             training: training::Training::default(),
@@ -267,6 +270,7 @@ impl Runtime {
         self.replay_step(store, bulk);
         self.service_workouts(bulk);
         self.service_bests(bulk, now);
+        self.service_facts(bulk, now);
         self.directory_step(store, bulk);
         self.track_back(now);
     }

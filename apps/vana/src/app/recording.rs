@@ -13,6 +13,7 @@ use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
 use crate::ride::elevation::Trace;
+use crate::ride::facts::Climbing;
 use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{AutoLap, Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Source, Status};
@@ -62,6 +63,14 @@ pub enum Medium {
 }
 
 impl Medium {
+    /// How workout records and ride facts on FILES name this journal.
+    pub const fn journal(self) -> u8 {
+        match self {
+            Self::Internal => b'i',
+            Self::Bulk => b'b',
+        }
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
             Self::Internal => "internal",
@@ -118,7 +127,7 @@ pub(super) struct Ride {
     pub(super) bests_found: Found,
     pub(super) ftp_suggestion: Option<u16>,
     /// Climbs finished this ride.
-    pub(super) climbs_done: u16,
+    pub(super) climbing: Climbing,
     /// A lap closed since the last chime.
     pub(super) lap_chime: bool,
     /// Climb detection and the elevation profile, fed and reset with `totals`.
@@ -179,7 +188,7 @@ impl Default for Ride {
             chart: ElevationChart::default(),
             bests_found: Found::default(),
             ftp_suggestion: None,
-            climbs_done: 0,
+            climbing: Climbing::default(),
             lap_chime: false,
             climbs: Climbs::default(),
             settled: None,
@@ -435,8 +444,8 @@ impl Ride {
         self.altitude_fresh = altitude.is_some();
         self.trace.add(self.totals.distance_mm(), altitude);
         let climb = self.climbs.add(credited, distance_mm, altitude);
-        if let Some(ClimbEvent::Finished(_)) = climb {
-            self.climbs_done = self.climbs_done.saturating_add(1);
+        if let Some(ClimbEvent::Finished(climb)) = climb {
+            self.climbing.add(climb.gain_dm);
         }
         let Some(player) = &mut self.workout else {
             if let Some(lap) = self.laps.add_every(
@@ -723,16 +732,17 @@ impl Runtime {
             ride.moved = false;
         }
         // A cleared or initialized journal numbers its rides from 1 again:
-        // its old workout records would name rides that are gone.
-        for (reset, medium, journal) in [
-            (internal_reset, Medium::Internal, b'i'),
-            (bulk_reset, Medium::Bulk, b'b'),
+        // its old workout records and facts would name rides that are gone.
+        // One that failed keeps its rides and their ids.
+        for (reset, medium) in [
+            (internal_reset, Medium::Internal),
+            (bulk_reset, Medium::Bulk),
         ] {
-            if reset
-                && !resetting(ride.recorder(medium).status())
-                && let Err(error) = crate::workout::history::forget(bulk, journal)
-            {
-                log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
+            if reset && ride.recorder(medium).status() == Status::Ready {
+                if let Err(error) = crate::workout::history::forget(bulk, medium.journal()) {
+                    log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
+                }
+                self.facts.forget(bulk, medium);
             }
         }
         if let Some(paused) = lost_paused
@@ -765,7 +775,7 @@ impl Runtime {
                 ride.trace = Trace::default();
                 ride.bests_found = Found::default();
                 ride.ftp_suggestion = None;
-                ride.climbs_done = 0;
+                ride.climbing = Climbing::default();
                 ride.climbs = Climbs::default();
                 self.navigation.climb_return = None;
                 // The chosen workout starts with the ride, its steps read
@@ -836,10 +846,7 @@ impl Runtime {
             && let Some(saved) = ride.recorder(medium).summaries().iter().flatten().last()
         {
             let record = crate::workout::history::Record {
-                journal: match medium {
-                    Medium::Internal => b'i',
-                    Medium::Bulk => b'b',
-                },
+                journal: medium.journal(),
                 ride_id: saved.ride_id,
                 started_utc_ms: saved.first_utc_ms,
                 name: player.workout().name,
@@ -849,6 +856,16 @@ impl Runtime {
             if let Err(error) = crate::workout::history::save(bulk, &record) {
                 log::warn!(target: "sdk.workout", "history_failed error={}", error.name());
             }
+        }
+        // After the workout record: facts give way when FILES is full.
+        if let Some(medium) = finished {
+            self.facts.ride_saved(
+                bulk,
+                ride,
+                medium,
+                self.preferences.profile,
+                self.recovery.reading(now),
+            );
         }
         // A ride lost while paused continues paused; automation waits until
         // it is, so an automatic pause stays automatic.

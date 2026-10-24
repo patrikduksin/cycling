@@ -1015,7 +1015,7 @@ impl Runtime {
             page: self.navigation.summary_page,
             saving,
             best: self.ride.efforts.best(),
-            climbs: Some(self.ride.climbs_done),
+            climbs: Some(self.ride.climbing.count),
             // The open lap counts: a ride without a lap press is one lap.
             laps: Some(self.ride.laps.count().saturating_add(1)),
             past: false,

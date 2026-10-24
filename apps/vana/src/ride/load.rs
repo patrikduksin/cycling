@@ -4,8 +4,9 @@
 //! Normalized power is the fourth root of the mean fourth power of 30 s
 //! rolling power. The index keeps a ride's stress as an `Effort`, its
 //! normalized power and the time it had power, so the score is worked out
-//! against the FTP that is current when it is shown: the FTP in force when a
-//! ride was recorded is not stored. A ride without power has no effort.
+//! when it is shown, against the FTP the ride's facts (`ride::facts`) kept,
+//! or the FTP now for a ride without them. A ride without power has no
+//! effort.
 
 /// Normalized power smooths power over this many samples (seconds).
 const WINDOW: usize = 30;

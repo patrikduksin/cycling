@@ -255,7 +255,7 @@ impl Totals {
         let heart = (self.heart.count != 0)
             .then(|| rider.heart_rate_kcal(self.heart.sum, self.heart.count))
             .flatten();
-        let power_covers = self.power_ms >= u64::from(self.heart.count) * 500;
+        let power_covers = self.load.power_ms() >= u64::from(self.heart.count) * 500;
         if power_covers {
             self.kcal().or(heart)
         } else {

@@ -5120,3 +5120,222 @@ fn the_sunset_caption_shows_in_the_light_theme() {
         sim.checkpoint(name);
     }
 }
+
+/// How far VANA thinks the ride went against how far the rider really went,
+/// both in km, since `start_m` on the world's odometer.
+fn distances(sim: &mut Sim, start_m: f64) -> (f64, f64) {
+    let travelled = (sim.world().distance_m - start_m) / 1000.0;
+    (reading(sim, "KM"), travelled)
+}
+
+/// Open Settings on its RIDE section, where the wheel rows are.
+fn ride_settings(sim: &mut Sim) {
+    sim.home("SETTINGS");
+    for _ in 0..3 {
+        sim.swipe_next();
+    }
+}
+
+/// Back Home from Settings. Its RIDE section's big title looks like Home's
+/// RIDE card, so `on_home` cannot tell.
+fn leave_settings(sim: &mut Sim) {
+    sim.press(Button::TopLeft);
+    assert_eq!(sim.vana_page(), "home");
+}
+
+/// `RIDE WHEEL` as fields.
+fn wheel_fields(sim: &mut Sim) -> String {
+    let (status, fields) = sim.command("RIDE WHEEL");
+    assert_eq!(status, "OK", "{fields}");
+    fields
+}
+
+#[test]
+fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
+    let mut sim = rider();
+    // The bike's wheel is 2200 mm round; VANA assumes 2136 mm, 3 % short.
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED).wheel_mm = 2200.0;
+    sim.set_gps_quality(true, 0.9, 1.5);
+    sim.pair(&["SPEED/CAD"]);
+
+    ride_settings(&mut sim);
+    sim.expect_text("2136 MM");
+    sim.expect_text("AUTO");
+    sim.checkpoint("settings: wheel 2136 mm, auto, before any ride");
+    leave_settings(&mut sim);
+
+    // Ride 1 measures with the wrong size and learns the right one, but keeps
+    // the wrong one until the ride ends, so its distance never jumps, and
+    // writes nothing to the record until then.
+    sim.ride_at(28.0, 0.0, 140.0, 85.0);
+    sim.start_ride();
+    let start = sim.world().distance_m;
+    sim.advance(minutes(4));
+    let early_speed = reading(&sim, "KM/H");
+    assert!(
+        (early_speed - 28.0 * 2136.0 / 2200.0).abs() < 0.2,
+        "{early_speed}"
+    );
+    sim.checkpoint("ride 1: a wheel 3 % off reads slow");
+    assert!(
+        wheel_fields(&mut sim).contains("windows=1"),
+        "{}",
+        wheel_fields(&mut sim)
+    );
+    sim.advance(minutes(16));
+    let late_speed = reading(&sim, "KM/H");
+    assert!(
+        (late_speed - early_speed).abs() < 0.2,
+        "a size learned mid-ride must not change speed: {early_speed} then {late_speed}"
+    );
+    let fields = wheel_fields(&mut sim);
+    assert!(
+        fields.contains("wheel_mm=2136 stored_mm=2136 mode=auto"),
+        "{fields}"
+    );
+    assert!(
+        fields.contains("estimate_mm=22") && fields.contains("pending_mm=22"),
+        "{fields}"
+    );
+    let (shown_before, true_before) = distances(&mut sim, start);
+    let error_before = (shown_before - true_before) / true_before * 100.0;
+    assert!((error_before + 2.9).abs() < 0.2, "{error_before:.2} %");
+    sim.checkpoint("ride 1: still on the old size after learning");
+    sim.stop_ride();
+    sim.wait_for("WHEEL SET 2200 MM", seconds(5)).unwrap();
+    sim.checkpoint("ride 1 over: the rider is told once");
+    assert!(
+        wheel_fields(&mut sim).contains("wheel_mm=2200 stored_mm=2200 mode=auto"),
+        "{}",
+        wheel_fields(&mut sim)
+    );
+    sim.advance(seconds(6));
+    sim.expect_no_text("WHEEL SET");
+    go_home(&mut sim);
+
+    ride_settings(&mut sim);
+    sim.expect_text("2200 MM");
+    sim.expect_text("AUTO");
+    sim.checkpoint("settings: wheel 2200 mm, auto");
+    leave_settings(&mut sim);
+
+    // Ride 2 measures with the learned size.
+    sim.start_ride();
+    let start = sim.world().distance_m;
+    sim.advance(minutes(20));
+    let speed = reading(&sim, "KM/H");
+    assert!((speed - 28.0).abs() < 0.2, "{speed}");
+    let (shown_after, true_after) = distances(&mut sim, start);
+    let error_after = (shown_after - true_after) / true_after * 100.0;
+    assert!(error_after.abs() < 0.3, "{error_after:.2} %");
+    sim.checkpoint("ride 2: the learned wheel reads right");
+    sim.stop_ride();
+    sim.advance(seconds(6));
+    sim.expect_no_text("WHEEL SET");
+    println!("| ride | wheel in force | VANA km | true km | distance error |");
+    println!("| --- | --- | --- | --- | --- |");
+    println!(
+        "| 1, before | 2136 mm | {shown_before:.2} | {true_before:.2} | {error_before:+.2} % |"
+    );
+    println!("| 2, after | 2200 mm | {shown_after:.2} | {true_after:.2} | {error_after:+.2} % |");
+}
+
+#[test]
+fn a_hilly_winding_loop_is_learned_just_as_well() {
+    let mut sim = rider();
+    // A 4 km loop bends 7.5 degrees per fix interval; it climbs 60 m.
+    sim.ride_route(Route::loop_around(
+        Point::new(-33.45, -70.66),
+        4_000.0,
+        60.0,
+    ));
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED).wheel_mm = 2200.0;
+    sim.set_gps_quality(true, 0.9, 1.5);
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(28.0, 0.0, 140.0, 85.0);
+    sim.start_ride();
+    let start = sim.world().distance_m;
+    sim.advance(minutes(20));
+    let (shown_before, true_before) = distances(&mut sim, start);
+    let error_before = (shown_before - true_before) / true_before * 100.0;
+    sim.stop_ride();
+    sim.wait_for("WHEEL SET 22", seconds(5)).unwrap();
+    let fields = wheel_fields(&mut sim);
+    let learned: f64 = fields
+        .split("stored_mm=")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|mm| mm.parse().ok())
+        .unwrap();
+    assert!((learned - 2200.0).abs() / 2200.0 < 0.005, "{fields}");
+    go_home(&mut sim);
+    sim.start_ride();
+    let start = sim.world().distance_m;
+    sim.advance(minutes(20));
+    let (shown_after, true_after) = distances(&mut sim, start);
+    let error_after = (shown_after - true_after) / true_after * 100.0;
+    assert!(error_after.abs() < 0.5, "{error_after:.2} %");
+    sim.stop_ride();
+    println!(
+        "| hilly, winding 4 km loop, ride 1 before | 2136 mm | {shown_before:.2} | {true_before:.2} | {error_before:+.2} % |"
+    );
+    println!(
+        "| same loop, ride 2 after (learned {learned} mm) | {learned} mm | {shown_after:.2} | {true_after:.2} | {error_after:+.2} % |"
+    );
+}
+
+#[test]
+fn a_manual_wheel_size_is_kept_across_rides_and_power_loss() {
+    let mut sim = rider();
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED).wheel_mm = 2200.0;
+    sim.set_gps_quality(true, 0.9, 1.5);
+    sim.pair(&["SPEED/CAD"]);
+
+    ride_settings(&mut sim);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomRight);
+    sim.expect_text("+5");
+    // Steps land on multiples of five, so 2105 or 2155 are reachable.
+    for _ in 0..4 {
+        sim.press(Button::BottomRight);
+    }
+    sim.expect_text("2155");
+    sim.expect_text("MANUAL");
+    sim.checkpoint("editing the wheel size");
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomLeft);
+    sim.expect_field("WHEEL MODE", "MANUAL");
+    sim.checkpoint("settings: wheel kept as set");
+    sim.press(Button::BottomRight);
+    sim.expect_field("WHEEL MODE", "AUTO");
+    // An edit that ends where it began changes nothing, and leaves AUTO.
+    sim.tap(120, 190);
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::TopLeft);
+    sim.expect_text("AUTO");
+    sim.expect_field("WHEEL MODE", "AUTO");
+    sim.tap(120, 242);
+    sim.expect_field("WHEEL MODE", "MANUAL");
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    leave_settings(&mut sim);
+
+    sim.ride_at(28.0, 0.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(15));
+    let speed = reading(&sim, "KM/H");
+    assert!((speed - 28.0 * 2155.0 / 2200.0).abs() < 0.2, "{speed}");
+    assert!(
+        wheel_fields(&mut sim).contains("windows=0"),
+        "no learning while manual"
+    );
+    sim.stop_ride();
+    sim.advance(seconds(6));
+    sim.expect_no_text("WHEEL SET");
+
+    sim.power_loss();
+    ride_settings(&mut sim);
+    sim.expect_text("2155 MM");
+    sim.expect_text("MANUAL");
+}

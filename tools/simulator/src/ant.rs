@@ -37,7 +37,7 @@ const COMPANION_MS: u64 = 40;
 pub const SEARCH_TIMEOUT_MS: u64 = 10_000;
 /// Time an open channel takes to acquire a sensor that is in range.
 const ACQUIRE_MS: u64 = 700;
-/// Wheel circumference VANA assumes.
+/// Wheel circumference VANA assumes, and a simulated wheel has unless set.
 const WHEEL_MM: f64 = 2136.0;
 
 /// One ANT+ sensor in radio range of the device, or not.
@@ -50,6 +50,8 @@ pub struct AntSensor {
     pub silent: bool,
     /// Delay after a scan starts before the companion reports this sensor.
     pub discovery_ms: u64,
+    /// The circumference of the wheel a speed sensor sits on, in mm.
+    pub wheel_mm: f64,
     model: Model,
     next_page_ms: u64,
 }
@@ -85,6 +87,7 @@ impl AntSensor {
             present: true,
             silent: false,
             discovery_ms: 400 + u64::from(device_number % 7) * 250,
+            wheel_mm: WHEEL_MM,
             model: Model::default(),
             next_page_ms: 0,
         }
@@ -156,7 +159,7 @@ impl AntSensor {
                 ]
             }
             device_type::SPEED | device_type::SPEED_CADENCE | device_type::CADENCE => {
-                let wheel_hz = world.speed_kmh / 3.6 * 1000.0 / WHEEL_MM;
+                let wheel_hz = world.speed_kmh / 3.6 * 1000.0 / self.wheel_mm;
                 if advance_revolutions(&mut model.wheel_revolutions, wheel_hz, elapsed) {
                     let since = model.wheel_revolutions.fract() / wheel_hz;
                     model.wheel_time = ticks(seconds - since);

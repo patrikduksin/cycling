@@ -220,23 +220,41 @@ fn cos_q30(latitude_e7: i32) -> i64 {
     sum.max(0)
 }
 
-/// Distance between two fixes in mm, on a local flat approximation of the
-/// WGS-84 sphere; within 0.1% at bicycle distances.
-fn distance_mm(a: Fix, b: Fix) -> u64 {
+/// The offset from `a` to `b` in e-7 degrees of great circle, north and east.
+fn offset_e7(a: (i32, i32), b: (i32, i32)) -> (i64, i64) {
     const TURN_E7: i64 = 3_600_000_000;
-    let north = i64::from(b.latitude_e7) - i64::from(a.latitude_e7);
-    let mut east = (i64::from(b.longitude_e7) - i64::from(a.longitude_e7)).rem_euclid(TURN_E7);
+    let north = i64::from(b.0) - i64::from(a.0);
+    let mut east = (i64::from(b.1) - i64::from(a.1)).rem_euclid(TURN_E7);
     if east > TURN_E7 / 2 {
         east -= TURN_E7;
     }
-    let middle = ((i64::from(a.latitude_e7) + i64::from(b.latitude_e7)) / 2) as i32;
-    let east = (east * cos_q30(middle)) >> 30;
+    let middle = ((i64::from(a.0) + i64::from(b.0)) / 2) as i32;
+    (north, (east * cos_q30(middle)) >> 30)
+}
+
+/// Distance between two fixes in mm, on a local flat approximation of the
+/// WGS-84 sphere; within 0.1% at bicycle distances.
+fn distance_mm(a: Fix, b: Fix) -> u64 {
+    let (north, east) = offset_e7(
+        (a.latitude_e7, a.longitude_e7),
+        (b.latitude_e7, b.longitude_e7),
+    );
     let e7 = isqrt((north * north + east * east) as u128);
     // 1e-7 degree of a great circle is 11.131949 mm.
     (e7 * 11_131_949 / 1_000_000) as u64
 }
 
-fn isqrt(value: u128) -> u128 {
+/// The offset from the position `a` to `b`, each (latitude, longitude) in
+/// e-7 degrees, as millimetres north and east, on the same flat approximation.
+pub(crate) fn offset_mm(a: (i32, i32), b: (i32, i32)) -> (i64, i64) {
+    let (north, east) = offset_e7(a, b);
+    (
+        north * 11_131_949 / 1_000_000,
+        east * 11_131_949 / 1_000_000,
+    )
+}
+
+pub(crate) fn isqrt(value: u128) -> u128 {
     if value < 2 {
         return value;
     }

@@ -90,6 +90,12 @@ impl Runtime {
             }
             (Some("RIDE"), Some("STATUS"), None) => self.ride_status(riding, now, output),
             (Some("RIDE"), Some("HISTORY"), None) => self.ride_history(riding, output),
+            (Some("RIDE"), Some("WHEEL"), None) if named.is_none() => {
+                match self.wheel_status(output) {
+                    Ok(()) => "OK",
+                    Err(_) => "OUTPUT",
+                }
+            }
             (Some("RIDE"), Some("TIMING"), None) => {
                 self.timing.report(output);
                 "OK"

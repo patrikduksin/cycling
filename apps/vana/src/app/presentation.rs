@@ -61,6 +61,9 @@ pub(super) struct Navigation {
     pub(super) settings_field: usize,
     /// The selected Settings field is being changed.
     pub(super) settings_editing: bool,
+    /// The wheel setting when its editor opened, so an edit that ends where
+    /// it began changes nothing.
+    pub(super) wheel_edit: Option<super::preferences::Wheel>,
     /// The focused card on a first-run setup page.
     pub(super) setup_cursor: usize,
     /// The Settings editor was opened from setup and returns there.
@@ -194,6 +197,7 @@ impl Default for Navigation {
             home_cursor: 0,
             settings_field: 0,
             settings_editing: false,
+            wheel_edit: None,
             setup_cursor: 0,
             setup_return: false,
             sensors_return: false,
@@ -535,6 +539,20 @@ impl Runtime {
         let status = self.ride.active().status();
         if navigation.page != Page::Boot {
             navigation.announce(status, now);
+        }
+        // The ride is over: tell the rider once what the calibration set, over
+        // the ride's own saved toast.
+        if status != Status::Saved && !self.ride.open() {
+            self.readings.wheel_news = None;
+        }
+        if status == Status::Saved
+            && navigation.page != Page::Boot
+            && let Some(learned) = self.readings.wheel_news.take()
+        {
+            let mut text = Text::<20>::new();
+            let _ = write!(text, "WHEEL SET {learned} MM");
+            self.navigation
+                .show(Toast::new(text.as_str(), Tone::Good), BATTERY_TOAST_MS, now);
         }
         // Over the ride's own news: its workout could not be read.
         if core::mem::take(&mut self.training.missing) {
@@ -1171,6 +1189,40 @@ impl Runtime {
                 0 => write!(value, "OFF"),
                 km => write!(value, "EVERY {km} KM"),
             },
+            Row::Wheel => {
+                let in_force = self.readings.speed_wheel_mm();
+                let mode = if options.wheel.manual {
+                    "MANUAL"
+                } else {
+                    "AUTO"
+                };
+                if in_force != u32::from(options.wheel.size_mm()) {
+                    let _ = write!(note, "FROM NEXT RIDE");
+                } else {
+                    let _ = write!(note, "{mode}");
+                }
+                write!(value, "{} MM", options.wheel.size_mm())
+            }
+            Row::WheelMode => {
+                let _ = write!(
+                    note,
+                    "{}",
+                    if options.wheel.manual {
+                        "YOUR SIZE"
+                    } else {
+                        "FROM GPS"
+                    }
+                );
+                write!(
+                    value,
+                    "{}",
+                    if options.wheel.manual {
+                        "MANUAL"
+                    } else {
+                        "AUTO"
+                    }
+                )
+            }
             Row::Sounds => {
                 if !options.sounds {
                     let _ = write!(note, "RADAR STAYS ON");

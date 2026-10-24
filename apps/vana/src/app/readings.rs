@@ -295,6 +295,17 @@ impl Runtime {
         }
     }
 
+    /// The live heart rate from ANT+ or BLE, whether or not a ride is open,
+    /// which `sample` withholds from a BLE strap outside one.
+    pub(super) fn live_heart_bpm(&mut self, now: u64) -> Option<u16> {
+        self.readings
+            .heart
+            .filter(|heart| now.saturating_sub(heart.received_ms) <= READING_FRESH_MS)
+            .and_then(|heart| heart.value.bpm)
+            .map(u16::from)
+            .or(self.sensors.snapshot(now).heart_bpm)
+    }
+
     pub(super) fn sample(
         &mut self,
         now: u64,

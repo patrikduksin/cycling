@@ -282,7 +282,10 @@ impl Runtime {
         }
         match step.go {
             None => {}
-            Some(Go::OpenRide) => self.navigation.open_ride(),
+            Some(Go::OpenRide) => {
+                self.recovery.clear();
+                self.navigation.open_ride();
+            }
             Some(Go::BackToRide) => self.navigation.page = Page::Ride,
             Some(Go::EndRide) => {
                 self.ride.clear_lap_toast();
@@ -291,6 +294,11 @@ impl Runtime {
             Some(Go::Summary) => {
                 self.navigation.best_news =
                     super::bests::news(&self.ride.bests_found, &self.bests.bests);
+                // Opening the summary is the finish; the save completing
+                // under it is not a second one.
+                if self.navigation.page != Page::Summary {
+                    self.recovery.finish(now);
+                }
                 self.navigation.summary_page = 0;
                 self.navigation.page = Page::Summary;
             }
@@ -298,6 +306,7 @@ impl Runtime {
                 self.navigation.leave_summary();
                 self.navigation.ride_page = RidePage::Main;
                 self.navigation.page = Page::Home;
+                self.recovery.clear();
                 self.leave_workout();
             }
         }

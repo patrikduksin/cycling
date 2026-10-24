@@ -35,6 +35,9 @@
 //! the ride page's rules (`Totals`), and are left out of a ride without any.
 //! Rides recorded before altitude was kept have none.
 //!
+//! Laps and session carry `total_calories` (field 11, kcal) from the work of
+//! a power meter, and leave it invalid without power.
+//!
 //! What the journal does not have stays out: no distance without a
 //! recorded speed (wheel or GPS), so readers fall back to GPS for distance.
 //! Other totals use the ride page's rules too (`Totals`, and `Lap` for each
@@ -91,6 +94,10 @@ const LAP_TRIGGER_DISTANCE: u8 = 2;
 const LAP_TRIGGER_SESSION_END: u8 = 7;
 const SESSION_TRIGGER_ACTIVITY_END: u8 = 0;
 const ACTIVITY_MANUAL: u8 = 0;
+
+fn kilocalories(kcal: u32) -> u16 {
+    kcal.min(u32::from(u16::MAX - 1)) as u16
+}
 
 const fn lap_trigger(start: LapStart) -> Option<u8> {
     match start {
@@ -173,6 +180,7 @@ const LAP: Message = Message {
         Field::new(7, BaseType::Uint32),
         Field::new(8, BaseType::Uint32),
         Field::new(9, BaseType::Uint32),
+        Field::new(11, BaseType::Uint16),
         Field::new(13, BaseType::Uint16),
         Field::new(14, BaseType::Uint16),
         Field::new(15, BaseType::Uint8),
@@ -203,6 +211,7 @@ const SESSION: Message = Message {
         Field::new(7, BaseType::Uint32),
         Field::new(8, BaseType::Uint32),
         Field::new(9, BaseType::Uint32),
+        Field::new(11, BaseType::Uint16),
         Field::new(14, BaseType::Uint16),
         Field::new(15, BaseType::Uint16),
         Field::new(16, BaseType::Uint8),
@@ -242,7 +251,7 @@ const DEFINITIONS: [&Message; 7] = [
     &ACTIVITY,
 ];
 
-const LAP_RECORD: usize = 58;
+const LAP_RECORD: usize = 60;
 
 /// Largest output of one [`Export::slot`] call: a resume, four records each
 /// closing a lap, and a pause. Sinks that drain between calls need at least
@@ -710,6 +719,7 @@ impl Export {
                 Value::U32(elapsed),
                 Value::U32(timer),
                 Value::U32(distance),
+                Value::U16(lap.kcal().map(kilocalories)),
                 Value::U16(speed(distance_mm.and(lap.avg_speed_mm_s()))),
                 Value::U16(speed(lap.max_speed_mm_s())),
                 Value::U8(byte(lap.avg_heart_bpm())),
@@ -781,6 +791,7 @@ impl Export {
                 Value::U32(elapsed),
                 Value::U32(timer),
                 Value::U32(distance),
+                Value::U16(totals.kcal().map(kilocalories)),
                 Value::U16(avg_speed),
                 Value::U16(max_speed),
                 Value::U8(avg_hr),

@@ -160,8 +160,16 @@ The summary opens with a green check and RIDE SAVED, and pages through:
 
 1. Time, distance, average speed, ascent, average power and average heart
    rate.
-2. Normalized, average and maximum power, work in kJ, average and maximum
-   heart rate, and power and heart-rate zone bars.
+2. Normalized and maximum power, work in kJ, KCAL (the work again, as
+   calories: 24 % efficient muscle makes kJ and kcal nearly equal; none
+   without a power meter), average and maximum heart rate, power and
+   heart-rate zone bars, and HR RECOVERY: the fall in heart rate over the
+   minute after the ride stopped recording. A ride is paused before it ends,
+   so it counts from that pause, with MEASURING and a countdown until the
+   minute is up, then the fall (-28 BPM). A rider who waits more than five
+   seconds past the minute before ending the ride, a sensor that is silent at
+   either moment (ANT+ or BLE, ride open or not), or leaving the summary
+   before the minute is up shows nothing. It is not saved with the ride.
 3. Elevation, only for a ride that recorded altitude: ASCENT M, DESCENT M,
    MIN M and MAX M in amber over a filled chart of altitude across the whole
    distance, each stretch in its climb steepness colour. A ride without

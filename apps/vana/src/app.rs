@@ -64,6 +64,8 @@ pub struct Runtime {
     readings: readings::Readings,
     sensors: Client,
     ride: recording::Ride,
+    /// The summary's heart-rate recovery, measured after the finish.
+    recovery: crate::ride::recovery::Recovery,
     preferences: preferences::Preferences,
     bests: bests::Kept,
     power: power::Power,
@@ -94,6 +96,7 @@ impl Runtime {
             readings: readings::Readings::default(),
             sensors: Client::new(profile),
             ride: recording::Ride::default(),
+            recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),
             bests: bests::Kept::default(),
             power: power::Power::default(),
@@ -202,6 +205,9 @@ impl Runtime {
         self.receive_ble(ble);
         let sample = self.sample(now, ant, &observations);
         self.auto_control(now);
+        let recording = self.ride.active().status() == crate::ride::log::Status::Recording;
+        let heart = self.live_heart_bpm(now);
+        self.recovery.track(now, recording, heart);
         let power_status = observations
             .input
             .snapshot(now)

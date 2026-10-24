@@ -4,8 +4,9 @@
 //!
 //! 1. Overview: time, distance, average speed, ascent, average power and
 //!    heart rate under a green check.
-//! 2. Effort: normalized, average and peak power, work, heart rate and the
-//!    time in each power and heart rate zone.
+//! 2. Effort: normalized and peak power, work and the calories it burned,
+//!    heart rate, the time in each power and heart rate zone and, once
+//!    the minute after the finish has passed, the heart rate recovery.
 //! 3. Elevation, only for a ride that recorded altitude: ascent, descent,
 //!    lowest and highest altitude over the ride's elevation profile.
 //! 4. Best power (page 3 without an elevation page): the best 5 s, 1, 5 and
@@ -28,6 +29,7 @@ use super::elevation::Chart;
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
 use crate::ride::bests::Found;
+use crate::ride::recovery::Reading as Recovery;
 use crate::ride::totals::EFFORT_SECONDS;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
@@ -90,6 +92,9 @@ pub struct After {
     pub found: Found,
     /// The FTP on offer as the last page.
     pub offer: Option<FtpOffer>,
+    /// Heart-rate recovery after the finish; none for a saved ride, which
+    /// does not keep it.
+    pub recovery: Option<Recovery>,
 }
 
 /// How many pages the summary has, the FTP offer included.
@@ -296,11 +301,11 @@ fn overview(view: &View, canvas: &mut Canvas) {
 fn effort(view: &View, canvas: &mut Canvas) {
     let totals = &view.totals;
     let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
-    let [np, avg, max, work, heart, max_heart] = &mut values;
+    let [np, max, work, kcal, heart, max_heart] = &mut values;
     whole(np, totals.normalized_power());
-    whole(avg, totals.avg_power());
     whole(max, totals.max_power());
     whole(work, totals.work_kj());
+    whole(kcal, totals.kcal());
     whole(heart, totals.avg_heart_bpm());
     whole(max_heart, totals.max_heart_bpm());
     let first = CONTENT.top + 8;
@@ -309,9 +314,9 @@ fn effort(view: &View, canvas: &mut Canvas) {
         first,
         &[
             reading(b"NP W", np, POWER),
-            reading(b"AVG W", avg, POWER),
             reading(b"MAX W", max, POWER),
             reading(b"WORK KJ", work, WHITE),
+            reading(b"KCAL", kcal, WHITE),
             reading(b"AVG BPM", heart, HEART),
             reading(b"MAX BPM", max_heart, HEART),
         ],
@@ -320,6 +325,44 @@ fn effort(view: &View, canvas: &mut Canvas) {
     let bars = first + 3 * super::CELL_PITCH + 12;
     zone_bar(canvas, b"PWR", (LEFT, BAR_LEFT), bars, marks.power_time);
     zone_bar(canvas, b"HR", (LEFT, BAR_LEFT), bars + 18, marks.heart_time);
+    if let Some(reading) = view.after.recovery {
+        recovery(canvas, reading, bars + 40);
+    }
+}
+
+/// The recovery cell, whose caption top is `top`.
+fn recovery(canvas: &mut Canvas, reading: Recovery, top: usize) {
+    let mut text = Text::<16>::new();
+    let color = match reading {
+        Recovery::Measuring(secs) => {
+            let _ = core::fmt::Write::write_fmt(&mut text, format_args!("MEASURING {secs} S"));
+            SECONDARY
+        }
+        // A fall is the good direction; a rise is shown plainly.
+        Recovery::Recovered(drop) => {
+            let _ = core::fmt::Write::write_fmt(
+                &mut text,
+                format_args!(
+                    "{}{} BPM",
+                    if drop > 0 { "-" } else { "+" },
+                    drop.unsigned_abs()
+                ),
+            );
+            HEART
+        }
+    };
+    // A cell as above, but across the page and in BODY: VALUE has no
+    // letters, and the measuring text is long.
+    canvas.caption(b"HR RECOVERY", RIGHT - LEFT, LEFT, top + 12, Align::Left);
+    canvas.fit(
+        &[&BODY],
+        text.as_bytes(),
+        RIGHT - LEFT,
+        LEFT,
+        top + 41,
+        Align::Left,
+        color,
+    );
 }
 
 /// The pages of the summary. A ride that recorded altitude has an elevation
@@ -516,6 +559,7 @@ mod tests {
             elevation: false,
             found: Found::default(),
             offer: None,
+            recovery: Some(Recovery::Recovered(120)),
         };
         view.prepare();
         view
@@ -533,7 +577,18 @@ mod tests {
         for saving in [Saving::Saved, Saving::Failed] {
             for (page, want) in [
                 (0, &["99:59:59", "1000.0", "1999", "220"][..]),
-                (1, &["1999", "220", "PWR", "HR"]),
+                (
+                    1,
+                    &[
+                        "1999",
+                        "220",
+                        "KCAL",
+                        "PWR",
+                        "HR",
+                        "HR RECOVERY",
+                        "-120 BPM",
+                    ],
+                ),
                 (2, &["5 S", "20 MIN", "1999", "1500", "999"]),
             ] {
                 let view = extreme(page, saving);
@@ -598,6 +653,30 @@ mod tests {
         let plain = extreme(2, Saving::Saved);
         assert!(plain.canvas.shows("BEST POWER W") && !shows_elevation(&plain));
         assert_eq!((pages(false), pages(true)), (3, 4));
+    }
+
+    #[test]
+    fn the_effort_page_shows_calories_and_the_recovery_states() {
+        let bounds = Rect {
+            left: 0,
+            top: CONTENT.top,
+            right: WIDTH,
+            bottom: HEIGHT - RADIUS + 12,
+        };
+        let with = |recovery| {
+            let mut view = extreme(1, Saving::Saved);
+            view.after.recovery = recovery;
+            view.prepare();
+            view
+        };
+        // 1999 W for a minute is 120 kJ, so 120 kcal.
+        let measuring = with(Some(Recovery::Measuring(42)));
+        let want = ["KCAL", "120", "HR RECOVERY", "MEASURING 42 S"];
+        measuring.canvas.assert_laid_out(bounds, &want, "measuring");
+        let fell = with(Some(Recovery::Recovered(28)));
+        fell.canvas.assert_laid_out(bounds, &["-28 BPM"], "fell");
+        assert!(with(Some(Recovery::Recovered(-3))).canvas.shows("+3 BPM"));
+        assert!(!with(None).canvas.shows("HR RECOVERY"));
     }
 
     #[test]

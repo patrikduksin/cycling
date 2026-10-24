@@ -98,12 +98,56 @@ impl ReadWrite for Media {
     }
 }
 
+/// The bulk journal, noting which appends it acknowledged.
+struct Probe<'a> {
+    bulk: Bulk<'a, Media>,
+    acknowledged: &'a mut Vec<(usize, crate::ride::log::Entry)>,
+}
+
+impl Journal for Probe<'_> {
+    fn slots(&self) -> usize {
+        self.bulk.slots()
+    }
+    fn scan(&mut self) -> Scan {
+        self.bulk.scan()
+    }
+    fn initialize(&mut self, step: usize, seed: u64) -> Progress {
+        self.bulk.initialize(step, seed)
+    }
+    fn clear(&mut self, step: usize, seed: u64) -> Progress {
+        self.bulk.clear(step, seed)
+    }
+    fn append(
+        &mut self,
+        index: usize,
+        entry: &crate::ride::log::Entry,
+        terminal: bool,
+    ) -> Option<bool> {
+        let appended = self.bulk.append(index, entry, terminal);
+        if appended.is_some() {
+            self.acknowledged.push((index, *entry));
+        }
+        appended
+    }
+    fn checkpoint_overdue(&self) -> bool {
+        self.bulk.checkpoint_overdue()
+    }
+    fn checkpoint(&mut self, catalog: &Catalog) -> bool {
+        self.bulk.checkpoint(catalog)
+    }
+    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
+        self.bulk.read_slot(index, output)
+    }
+}
+
 /// A C606 with bulk media: the recorder, its retained state, and the region.
 struct Device {
     recorder: Recorder,
     state: BulkState,
     media: Media,
     now: u64,
+    /// Appends the journal acknowledged since the region was initialized.
+    acknowledged: Vec<(usize, crate::ride::log::Entry)>,
 }
 
 impl Device {
@@ -113,6 +157,7 @@ impl Device {
             state: BulkState::default(),
             media: Media::new(sectors),
             now: 0,
+            acknowledged: Vec::new(),
         }
     }
 
@@ -124,7 +169,10 @@ impl Device {
             ..Sample::default()
         };
         self.recorder.service(
-            &mut Bulk::new(&mut self.state, &mut self.media),
+            &mut Probe {
+                bulk: Bulk::new(&mut self.state, &mut self.media),
+                acknowledged: &mut self.acknowledged,
+            },
             now,
             sample,
             &|| now,
@@ -590,6 +638,7 @@ fn a_reformat_after_lost_superblocks_never_revives_an_older_store() {
         state: BulkState::default(),
         media,
         now: 0,
+        acknowledged: Vec::new(),
     };
     device.reboot();
     assert_eq!(
@@ -742,19 +791,29 @@ fn clear_starts_an_empty_epoch_only_for_the_exported_bound() {
     assert!(device.act(Action::Start));
 }
 
-fn samples_on_media(device: &mut Device) -> u32 {
-    (0..device.recorder.next_slot())
-        .filter_map(|index| {
-            let mut slot = Slot::default();
-            Bulk::new(&mut device.state, &mut device.media)
-                .read_slot(index, &mut slot)
-                .unwrap()
-                .then(|| crate::ride::log::decode(&slot))
-                .flatten()
-        })
-        .filter(|entry| entry.kind == crate::ride::log::Kind::Samples)
-        .map(|entry| u32::from(entry.count))
-        .sum()
+/// What every boot must find: a scan equal to checkpoint plus replay, and
+/// every acknowledged record unchanged.
+fn check(device: &mut Device, seed: u64) {
+    let status = device.recorder.status();
+    assert!(
+        matches!(
+            status,
+            Status::Recovered | Status::Saved | Status::Ready | Status::Full
+        ),
+        "seed {seed}: {status:?}"
+    );
+    let scanned = device.full_scan();
+    assert_eq!(*device.recorder.catalog(), scanned, "seed {seed}");
+    for (index, entry) in device.acknowledged.clone() {
+        let mut slot = Slot::default();
+        let readable = Bulk::new(&mut device.state, &mut device.media).read_slot(index, &mut slot);
+        assert_eq!(readable, Some(true), "seed {seed}: slot {index}");
+        assert_eq!(
+            crate::ride::log::decode(&slot),
+            Some(entry),
+            "seed {seed}: slot {index}"
+        );
+    }
 }
 
 #[test]
@@ -769,7 +828,6 @@ fn random_rides_with_power_cut_at_any_write_keep_what_was_acknowledged() {
             10_000
         };
         let mut device = Device::initialized(sectors);
-        let (mut acknowledged, mut boots) = (0, 0);
         for _ in 0..100 {
             match rng.below(8) {
                 0 | 1 => {
@@ -783,34 +841,18 @@ fn random_rides_with_power_cut_at_any_write_keep_what_was_acknowledged() {
                     device.run_until(until, step);
                 }
                 5 if device.media.fail_after.is_none() => {
-                    let tear = rng.pick(&[0, 1, 200, 511, 512]);
+                    let tear = rng.below(513) as usize;
                     device.media.fail_after = Some((rng.below(40) as u32, tear));
                 }
                 6 | 7 if device.media.off || rng.one_in(3) => {
-                    acknowledged += device.recorder.written_samples();
-                    boots += 1;
                     device.reboot();
-                    let status = device.recorder.status();
-                    assert!(
-                        matches!(
-                            status,
-                            Status::Recovered | Status::Saved | Status::Ready | Status::Full
-                        ),
-                        "seed {seed}: {status:?}"
-                    );
-                    // Checkpoint plus replay equals a scan of everything committed.
-                    let scanned = device.full_scan();
-                    assert_eq!(*device.recorder.catalog(), scanned, "seed {seed}");
-                    // A batch may land unacknowledged before each cut.
-                    let kept = samples_on_media(&mut device);
-                    assert!(
-                        (acknowledged..=acknowledged + 4 * boots).contains(&kept),
-                        "seed {seed}: {kept} of {acknowledged} samples"
-                    );
+                    check(&mut device, seed);
                     device.service();
                 }
                 _ => device.service(),
             }
         }
+        device.reboot();
+        check(&mut device, seed);
     }
 }

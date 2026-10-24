@@ -63,7 +63,7 @@ impl Rng {
             location_e7: self.option(|rng| {
                 (
                     rng.range(0, 1_800_000_000) as i32 - 900_000_000,
-                    rng.range(0, 3_600_000_000) as u32 as i32,
+                    (rng.range(0, 3_600_000_000) as i64 - 1_800_000_000) as i32,
                 )
             }),
             demo_speed_mm_s: self.option(|rng| rng.next() as u32),

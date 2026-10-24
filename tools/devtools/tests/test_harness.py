@@ -448,6 +448,7 @@ class HarnessTests(unittest.TestCase):
 
             def __init__(self, busy, power='state: Initializing'):
                 self.busy, self.power, self.commands, self.delays = list(busy), power, [], []
+                self.timeouts = []
 
             def recover(self, *_):
                 self.commands.append('RESTART')
@@ -456,8 +457,9 @@ class HarnessTests(unittest.TestCase):
             def delay(self, seconds):
                 self.delays.append(seconds)
 
-            def terminal_command(self, command, **_):
+            def terminal_command(self, command, timeout):
                 self.commands.append(command)
+                self.timeouts.append(timeout)
                 self.request_id += 1
                 if command == 'POWER':
                     return {'status': 'OK', 'data': f'status=Status {{ {self.power}, ready: false }}'}
@@ -483,18 +485,24 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(fake.commands.count('RESTART'), 1)
                 self.assertEqual(fake.commands[-2:], ['SETTINGS', 'HARNESS CAPS'])
                 self.assertEqual(len(fake.delays), 2)
-        fake = Starting(['power transition'], power='state: Charging')
-        with self.assertRaisesRegex(RuntimeError, 'charging standby'):
-            recover(fake)
-        self.assertNotIn('HARNESS CAPS', fake.commands)
-        fake = Starting(['starting companion=timed_out'])
-        with self.assertRaisesRegex(RuntimeError, 'startup failed'):
-            recover(fake)
-        self.assertEqual(fake.delays, [])
+        for busy, power, error in (
+            ('power transition', 'state: Charging', 'charging standby.*POWER WAKE'),
+            ('starting companion=charging', 'state: Initializing', 'charging standby.*POWER WAKE'),
+            ('starting companion=timed_out', 'state: Initializing', 'startup failed'),
+            ('power transition', 'state: Sleeping', r'BUSY \(power transition\)'),
+            ('active work', 'state: Idle', r'BUSY \(active work\)'),
+        ):
+            with self.subTest(busy=busy, power=power):
+                fake = Starting([busy], power=power)
+                with self.assertRaisesRegex(RuntimeError, error):
+                    recover(fake)
+                self.assertNotIn('HARNESS CAPS', fake.commands)
+                self.assertEqual(fake.delays, [])
         with patch('cycling_devtools.harness.runner.READY_TIMEOUT_S', 0):
             fake = Starting(['starting companion=probing'])
             with self.assertRaisesRegex(TimeoutError, 'still starting'):
                 recover(fake)
+            self.assertEqual(fake.timeouts, [0.1])
 
     def test_ant_allowlist_requires_bounded_scan_and_owned_stop(self):
         scan = dict(op='ant', action='scan', seconds=10)

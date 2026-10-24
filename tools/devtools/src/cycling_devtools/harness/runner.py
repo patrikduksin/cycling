@@ -366,11 +366,26 @@ def preflight(scenario):
 
 
 # C606 probes its companion for 3 s after boot. Probe retries after transport
-# faults and the wait for sensor samples can take about 55 s before it gives up.
-READY_TIMEOUT_S = 60
-# Companion startup phases that never end in ready.
-FAILED_STARTUP = {'companion=timed_out', 'companion=unavailable', 'companion=uncertain'}
+# faults and the wait for sensor samples take up to about 55 s before it gives up.
+READY_TIMEOUT_S = 90
 READY_POLL_S = 0.25
+# The companion startup phases that never end in ready, and what each means.
+STARTUP_STOPPED = {
+    'companion=charging': 'standby',
+    'companion=timed_out': 'failed',
+    'companion=unavailable': 'failed',
+    'companion=uncertain': 'failed',
+}
+NOT_READY = {
+    'standby': 'device is in charging standby ({}); `mise run terminal -- POWER WAKE` leaves it',
+    'failed': 'device startup failed ({}); inspect `mise run terminal -- POWER` and COMPANION',
+    'busy': 'SETTINGS returned BUSY ({}); inspect `mise run terminal -- POWER`',
+}
+
+
+def remaining(stop):
+    """A request timeout that keeps a wait within its deadline."""
+    return min(30, max(0.1, stop - time.monotonic()))
 
 
 class Runner:
@@ -432,34 +447,37 @@ class Runner:
         """
         stop = time.monotonic() + READY_TIMEOUT_S
         while True:
-            reply = self.request('SETTINGS')
+            reply = self.request('SETTINGS', remaining(stop))
             if reply['status'] == 'OK':
                 return reply_fields(reply['data'])
             if reply['status'] != 'BUSY':
                 raise RuntimeError(f'SETTINGS returned {reply["status"]}')
-            if FAILED_STARTUP & set(reply['data'].split()):
-                raise RuntimeError(f'device startup failed ({reply["data"]}); inspect POWER and COMPANION')
-            if not self.starting(reply['data']):
-                raise RuntimeError(
-                    f'device is in a power transition ({reply["data"]}), not starting; charging standby after a '
-                    'reset? Inspect `mise run terminal -- POWER`; `POWER WAKE` leaves charging standby'
-                )
+            state = self.readiness(reply['data'], stop)
+            if state != 'starting':
+                raise RuntimeError(NOT_READY[state].format(reply['data']))
             if time.monotonic() >= stop:
                 raise TimeoutError(
                     f'device still starting after {READY_TIMEOUT_S} s ({reply["data"]}); inspect POWER and COMPANION'
                 )
             self.transport.delay(READY_POLL_S)
 
-    def starting(self, detail):
-        """Older firmware says `BUSY power transition` while starting too; POWER
-        then tells startup (`state: Initializing`) from charging standby, which
-        waiting does not end."""
-        if detail.split()[:1] == ['starting']:
-            return True
+    def readiness(self, detail, stop):
+        """Classify a BUSY detail as `starting` or a key of NOT_READY.
+
+        Older firmware says `BUSY power transition` while starting too; POWER
+        then tells startup (`state: Initializing`) from charging standby.
+        """
+        words = detail.split()
+        if words[:1] == ['starting']:
+            return next((STARTUP_STOPPED[word] for word in words if word in STARTUP_STOPPED), 'starting')
         if detail != 'power transition':
-            return False
-        reply = self.request('POWER')
-        return reply['status'] == 'OK' and 'state: Initializing' in reply['data']
+            return 'busy'
+        reply = self.request('POWER', remaining(stop))
+        if reply['status'] != 'OK':
+            return 'busy'
+        if 'state: Initializing' in reply['data']:
+            return 'starting'
+        return 'standby' if 'state: Charging' in reply['data'] else 'busy'
 
     def operation(self, command, statuses=('OK',)):
         result = self.command(f'HARNESS {self.session} {command}', statuses)

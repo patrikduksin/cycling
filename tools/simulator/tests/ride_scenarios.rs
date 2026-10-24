@@ -1444,7 +1444,7 @@ fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
     for centimetres in &distances[..3] {
         assert!((199_000..=207_000).contains(centimetres), "{distances:?}");
     }
-    sim.ride_page("3/3");
+    sim.ride_page("4/4");
     sim.expect_field("LAPS", "4");
 }
 

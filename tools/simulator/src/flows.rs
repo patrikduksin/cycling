@@ -181,7 +181,7 @@ impl Sim {
     /// row until it reads `value`. Ends on that section.
     #[track_caller]
     pub fn set_option(&mut self, label: &str, value: &str) {
-        for _ in 0..6 {
+        for _ in 0..8 {
             if self.screen().run(label).is_some() {
                 break;
             }

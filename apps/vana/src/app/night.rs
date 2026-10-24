@@ -9,6 +9,7 @@
 //! brightness stays as it was.
 use super::Runtime;
 use super::preferences::Daylight;
+use crate::clock::Local;
 use crate::daylight::{Sun, night_at, night_by_clock, sun_altitude, sun_state};
 use device_api::display::Display;
 use device_api::gps::FixState;
@@ -27,8 +28,6 @@ const STEP_MS: u64 = 100;
 const CHECK_MS: u64 = 10_000;
 /// How often the sunset is worked out again (about sixty sun altitudes).
 const SUN_MS: u64 = 60_000;
-/// The clock VANA shows is UTC-3 (Santiago summer time) in this build.
-const LOCAL_OFFSET_S: u64 = 3 * 3600;
 
 pub(super) struct Night {
     night: bool,
@@ -83,8 +82,7 @@ pub(super) struct Sky {
     /// Degrees latitude and longitude of a fresh fix.
     pub place: Option<(f64, f64)>,
     pub unix_seconds: Option<i64>,
-    /// Seconds since UTC midnight, when only the time of day is known.
-    pub utc_of_day: Option<u64>,
+    pub local: Option<Local>,
 }
 
 impl Night {
@@ -133,10 +131,9 @@ impl Night {
                 (Some(time), Some((latitude, longitude))) => {
                     night_at(sun_altitude(time, latitude, longitude), self.night)
                 }
-                _ => match sky.utc_of_day {
-                    Some(seconds) => night_by_clock(seconds + 86_400 - LOCAL_OFFSET_S),
-                    None => self.night,
-                },
+                _ => sky
+                    .local
+                    .map_or(self.night, |local| night_by_clock(local.of_day())),
             },
         };
     }
@@ -203,16 +200,22 @@ impl Runtime {
                 at_ms: now,
             });
         }
-        let unix = self.readings.live.utc_ms.map(|ms| (ms / 1000) as i64);
-        let utc_of_day = unix
-            .or_else(|| self.night.clock.map(|clock| clock.at(now)))
-            .map(|seconds| seconds.rem_euclid(86_400) as u64);
-        self.night.watch_sun(unix, now);
+        let utc_ms = self.readings.live.utc_ms;
+        let zone = self.preferences.options.zone;
+        let local = match utc_ms {
+            Some(ms) => Some(zone.local(ms / 1000)),
+            None => self
+                .night
+                .clock
+                .map(|clock| zone.local_of_day(clock.at(now).rem_euclid(86_400) as u64)),
+        };
+        self.night
+            .watch_sun(utc_ms.map(|ms| (ms / 1000) as i64), now);
         let was = self.night.is_night();
         let sky = Sky {
             place,
-            unix_seconds: unix,
-            utc_of_day,
+            unix_seconds: utc_ms.map(|ms| (ms / 1000) as i64),
+            local,
         };
         self.night
             .decide(self.preferences.options.daylight, sky, now);
@@ -260,7 +263,7 @@ mod tests {
         let sky = |time| Sky {
             place: santiago,
             unix_seconds: at(time),
-            utc_of_day: None,
+            local: None,
         };
         night.decide(Daylight::Auto, sky(b"220000"), 0);
         assert!(!night.is_night());
@@ -268,16 +271,15 @@ mod tests {
         assert!(!night.is_night(), "waits for the next check");
         night.decide(Daylight::Auto, sky(b"232000"), CHECK_MS);
         assert!(night.is_night());
-        // Without a date, the place is kept but the local clock decides:
-        // 10:00 UTC is 7:00 in Santiago.
+        // Without a date, the place is kept but the local clock decides.
         let clock = |seconds| Sky {
             place: None,
             unix_seconds: None,
-            utc_of_day: Some(seconds),
+            local: Some(Local(seconds)),
         };
-        night.decide(Daylight::Auto, clock(10 * 3600), 2 * CHECK_MS);
+        night.decide(Daylight::Auto, clock(7 * 3600), 2 * CHECK_MS);
         assert!(!night.is_night());
-        night.decide(Daylight::Auto, clock(0), 3 * CHECK_MS);
+        night.decide(Daylight::Auto, clock(21 * 3600), 3 * CHECK_MS);
         assert!(night.is_night(), "21:00 local");
         // Nothing known keeps the last answer.
         night.decide(Daylight::Auto, Sky::default(), 4 * CHECK_MS);

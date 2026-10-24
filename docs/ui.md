@@ -387,7 +387,7 @@ totals and alerts use readings as they arrive. The mechanism is
 ## Settings
 
 Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, DISPLAY, RIDE, SOUND and DEVICE. A section has a `TITLE`
+bar: PROFILE, DISPLAY, CLOCK, RIDE, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
 headline and at most four rows. A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
 `SECONDARY` at the right of the value line. A note that does not fit whole is
@@ -398,7 +398,7 @@ Acting on a row does one of three things:
 - a number (FTP, LTHR) opens the editor: one `ACCENT` field with the value in
   `VALUE` and the zone it anchors, over minus and plus pads;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
-  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, auto-pause on/off, auto lap off/1/2/5/10
+  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km, sounds on/off);
 - an action opens a page (SENSORS) or a flow (PHONE, a placeholder until the
   phone companion lands).
@@ -407,6 +407,13 @@ Storage and firmware rows only show facts. The save status sits in the
 bottom band, under any toast. Brightness and dimming belong to the shell, so
 VANA asks it to apply them at once and store them; the other choices are
 stored in VANA's preference record.
+
+TIME ZONE sets the clock on the status bar, ride start times and night by the
+clock (`clock::Zone`). CHILE, the default, follows mainland Chile's summer
+time: UTC-3 from the first Saturday of September at 24:00 to the first
+Saturday of April at 24:00, UTC-4 otherwise. Its note says which is in force,
+such as UTC-4 NOW. UTC-3 (Magallanes, Aysén) and UTC-4 hold all year. The
+shell's own `TIMEZONE` terminal setting does not move VANA's clock.
 
 ## First-run setup
 

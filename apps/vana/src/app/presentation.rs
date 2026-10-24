@@ -3,6 +3,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::night::NIGHT_PERCENT;
 use super::recording::{Medium, Request, RideMessage};
+use crate::clock::Zone;
 use crate::daylight::Sun;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::climb::Event as ClimbEvent;
@@ -500,18 +501,22 @@ impl Runtime {
         }
         let page = navigation.page;
         let gps = position.snapshot(now);
-        let utc = self.readings.live.utc_ms.map(|v| v / 1000).or_else(|| {
-            gps.and_then(|p| p.gps.utc).map(|v| {
-                u64::from((v[0] - b'0') * 10 + v[1] - b'0') * 3600
-                    + u64::from((v[2] - b'0') * 10 + v[3] - b'0') * 60
-            })
-        });
+        let zone = self.preferences.options.zone;
+        let local = match self.readings.live.utc_ms {
+            Some(ms) => Some(zone.local(ms / 1000)),
+            None => gps.and_then(|p| p.gps.utc).map(|v| {
+                zone.local_of_day(
+                    u64::from((v[0] - b'0') * 10 + v[1] - b'0') * 3600
+                        + u64::from((v[2] - b'0') * 10 + v[3] - b'0') * 60,
+                )
+            }),
+        };
         let cursor = match page {
             Page::Settings => navigation.settings_field,
             Page::Setup => navigation.setup_cursor,
             _ => navigation.home_cursor,
         };
-        let mut view = View::new(page, cursor, utc);
+        let mut view = View::new(page, cursor, local);
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
@@ -560,14 +565,10 @@ impl Runtime {
         }
         if view.ride_page == RidePage::Back {
             view.back = super::back::view_of(&self.back);
-            view.sunset = match self.night.sun(now) {
-                Some((Sun::Up { sets_at }, _)) => crate::screens::ride::Light::SetsAt(
-                    (sets_at - crate::screens::workout::UTC_OFFSET_S as i64).rem_euclid(86_400)
-                        as u32,
-                ),
-                Some((Sun::Down, _)) => crate::screens::ride::Light::Dark,
-                _ => crate::screens::ride::Light::Unknown,
-            };
+            view.sunset = light(
+                self.night.sun(now).map(|(sun, _)| sun),
+                self.preferences.options.zone,
+            );
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -1033,6 +1034,20 @@ impl Runtime {
                     }
                 )
             }
+            Row::TimeZone => match options.zone {
+                Zone::Chile => {
+                    if let Some(ms) = self.readings.live.utc_ms {
+                        let offset = options.zone.offset_s((ms / 1000) as i64);
+                        let _ = utc_offset(note, offset);
+                        let _ = write!(note, " NOW");
+                    }
+                    write!(value, "CHILE")
+                }
+                Zone::Fixed(_) => {
+                    let _ = write!(note, "ALL YEAR");
+                    utc_offset(value, options.zone.offset_s(0))
+                }
+            },
             Row::AutoDim => match display.dim_secs {
                 0 => write!(value, "NEVER"),
                 secs @ ..60 => write!(value, "{secs} S"),
@@ -1132,5 +1147,53 @@ fn limit(value: &mut Text<38>, limit: u16, unit: &str) -> core::fmt::Result {
     match limit {
         0 => write!(value, "OFF"),
         limit => write!(value, "{limit} {unit}"),
+    }
+}
+
+/// The back page's light caption: sunset on the `zone` clock, or dark.
+fn light(sun: Option<Sun>, zone: Zone) -> ride::Light {
+    match sun {
+        Some(Sun::Up { sets_at }) => {
+            ride::Light::SetsAt(zone.local(sets_at.max(0) as u64).of_day() as u32)
+        }
+        Some(Sun::Down) => ride::Light::Dark,
+        _ => ride::Light::Unknown,
+    }
+}
+
+/// "UTC-3", "UTC+5:30" or "UTC", from seconds east of UTC.
+fn utc_offset(text: &mut Text<38>, offset_s: i64) -> core::fmt::Result {
+    let sign = if offset_s < 0 { '-' } else { '+' };
+    let minutes = offset_s.unsigned_abs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => write!(text, "UTC"),
+        (hours, 0) => write!(text, "UTC{sign}{hours}"),
+        (hours, minutes) => write!(text, "UTC{sign}{hours}:{minutes:02}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daylight::sun_state;
+    use firmware_services::gps::unix_seconds;
+
+    /// The sun sets near 17:42 in a Santiago winter and 20:55 in summer.
+    #[test]
+    fn sunset_reads_on_the_clock_of_the_season() {
+        let sets = |date: &[u8; 6]| {
+            let noon = unix_seconds(*date, *b"160000").unwrap();
+            match light(Some(sun_state(noon, -33.45, -70.66)), Zone::Chile) {
+                ride::Light::SetsAt(local) => (local / 3600, local / 60 % 60),
+                other => panic!("{other:?}"),
+            }
+        };
+        let (hour, minute) = sets(b"210626");
+        assert_eq!(hour, 17, "June");
+        assert!((38..=46).contains(&minute), "June 17:{minute}");
+        let (hour, minute) = sets(b"211226");
+        assert_eq!(hour, 20, "December 20:{minute}");
+        assert_eq!(light(Some(Sun::Down), Zone::Chile), ride::Light::Dark);
+        assert_eq!(light(None, Zone::Chile), ride::Light::Unknown);
     }
 }

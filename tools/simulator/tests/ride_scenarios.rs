@@ -3589,6 +3589,12 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.checkpoint("brighter, dims after a minute");
 
     sim.swipe_next();
+    sim.expect_text("CLOCK");
+    sim.expect_field("TIME ZONE", "CHILE");
+    sim.expect_text("UTC-3 NOW");
+    sim.set_option("TIME ZONE", "UTC-4");
+    sim.checkpoint("clock section");
+    sim.swipe_next();
     sim.expect_text("RIDE");
     sim.expect_field("AUTO PAUSE", "ON");
     sim.expect_field("AUTO LAP", "EVERY 5 KM");
@@ -3644,6 +3650,8 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     show_setting(&mut sim, "BRIGHTNESS");
     sim.expect_field("BRIGHTNESS", "75%");
     sim.expect_field("DIM AFTER", "1 MIN");
+    show_setting(&mut sim, "TIME ZONE");
+    sim.expect_field("TIME ZONE", "UTC-4");
     show_setting(&mut sim, "AUTO PAUSE");
     sim.expect_field("AUTO PAUSE", "OFF");
     sim.expect_field("AUTO LAP", "EVERY 1 KM");
@@ -4152,6 +4160,51 @@ fn a_receiver_date_outside_the_plausible_window_leaves_the_ride_undated() {
     sim.home("RIDES");
     sim.expect_text("RIDE 1");
     sim.expect_no_text("OCT");
+}
+
+/// At 16:00 UTC on `date`, the status bar reads `local` and the rides list
+/// `listed` and `local`.
+fn clock_reads(date: (u8, u8, u8), local: &str, listed: &str) -> Sim {
+    let mut sim = rider();
+    sim.set_gps_clock(16 * 3600, date);
+    sim.advance(seconds(5));
+    sim.expect_text(local);
+    sim.checkpoint(&format!("home at 16:00 UTC, {listed}"));
+    cyclist(&mut sim);
+    press_start(&mut sim);
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.expect_text(&format!("{listed}  {local}"));
+    sim.checkpoint(&format!("rides list, {listed}"));
+    sim
+}
+
+/// Santiago keeps UTC-4 in winter. A rider in Magallanes or Aysén picks
+/// UTC-3, which holds all year.
+#[test]
+fn the_clock_reads_santiago_winter_time_in_june() {
+    let mut sim = clock_reads((21, 6, 26), "12:00", "JUN 21");
+    go_home(&mut sim);
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "TIME ZONE");
+    sim.expect_field("TIME ZONE", "CHILE");
+    sim.expect_text("UTC-4 NOW");
+    sim.checkpoint("time zone chile in winter");
+    sim.set_option("TIME ZONE", "UTC-3");
+    sim.expect_text("ALL YEAR");
+    sim.expect_text("1:00");
+    sim.checkpoint("time zone fixed at utc-3");
+    go_home(&mut sim);
+    sim.home("RIDES");
+    sim.expect_text("JUN 21  1:00");
+}
+
+/// Santiago keeps UTC-3 in summer.
+#[test]
+fn the_clock_reads_santiago_summer_time_in_december() {
+    clock_reads((21, 12, 26), "1:00", "DEC 21");
 }
 
 /// Numbers glide between quarter-second ANT+ samples: a step in power is

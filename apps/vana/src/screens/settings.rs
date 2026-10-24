@@ -24,6 +24,7 @@ pub enum Row {
     AutoDim,
     Daylight,
     Theme,
+    TimeZone,
     AutoPause,
     AutoLap,
     Sounds,
@@ -64,12 +65,13 @@ pub enum SettingsAction {
 }
 
 /// Sections in order, each with its title and the rows it holds.
-pub const SECTIONS: [(&str, &[Row]); 7] = [
+pub const SECTIONS: [(&str, &[Row]); 8] = [
     ("PROFILE", &[Row::Ftp, Row::Threshold]),
     (
         "DISPLAY",
         &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
     ),
+    ("CLOCK", &[Row::TimeZone]),
     ("RIDE", &[Row::AutoPause, Row::AutoLap]),
     ("SOUND", &[Row::Sounds]),
     (
@@ -137,6 +139,7 @@ impl Row {
             Self::AutoDim => "DIM AFTER",
             Self::Daylight => "DAY / NIGHT",
             Self::Theme => "THEME",
+            Self::TimeZone => "TIME ZONE",
             Self::AutoPause => "AUTO PAUSE",
             Self::AutoLap => "AUTO LAP",
             Self::Sounds => "SOUNDS",
@@ -170,6 +173,7 @@ impl Row {
             | Self::AutoDim
             | Self::Daylight
             | Self::Theme
+            | Self::TimeZone
             | Self::AutoPause
             | Self::AutoLap
             | Self::Sounds
@@ -470,7 +474,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 21);
+        assert_eq!(ROWS, 22);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -478,8 +482,9 @@ mod tests {
             assert!(SECTIONS[section].1.len() <= SECTION_ROWS);
         }
         assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
-        assert_eq!(section(Row::Sounds.index()), (3, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (5, Row::HeartHigh.index()));
+        assert_eq!(section(Row::TimeZone.index()), (2, Row::TimeZone.index()));
+        assert_eq!(section(Row::Sounds.index()), (4, Row::Sounds.index()));
+        assert_eq!(section(Row::PowerLow.index()), (6, Row::HeartHigh.index()));
         assert_eq!(first_of(SECTIONS.len()), 0);
     }
 

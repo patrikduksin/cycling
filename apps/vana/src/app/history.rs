@@ -13,6 +13,7 @@
 //! Home keeps the last ride's line from before the first replay.
 use super::Runtime;
 use super::recording::Medium;
+use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
@@ -315,7 +316,11 @@ impl Runtime {
         };
         let summary = &summary;
         let mut row = Row {
-            title: title(summary, count.saturating_sub(index)),
+            title: title(
+                summary,
+                count.saturating_sub(index),
+                self.preferences.options.zone,
+            ),
             ..Row::default()
         };
         let mut time = Text::<12>::new();
@@ -340,6 +345,7 @@ impl Runtime {
         view.past_title = title(
             summary,
             self.history_count().saturating_sub(self.history.cursor),
+            self.preferences.options.zone,
         );
         let summary = Some(summary);
         let saving = match replay.progress() {
@@ -385,9 +391,9 @@ impl Runtime {
 }
 
 /// When a ride started, or RIDE n when the clock was unknown.
-fn title(summary: &Summary, number: usize) -> Text<20> {
+fn title(summary: &Summary, number: usize, zone: Zone) -> Text<20> {
     match summary.first_utc_ms {
-        Some(utc) => history::started(utc),
+        Some(utc_ms) => history::started(zone.local(utc_ms / 1000)),
         None => {
             let mut text = Text::new();
             let _ = write!(text, "RIDE {number}");
@@ -420,5 +426,28 @@ mod tests {
         assert_eq!(newer_head(None, Some(&undated)), Some(1));
         assert_eq!(newer_head(Some(&undated), None), Some(0));
         assert_eq!(newer_head(None, None), None);
+    }
+
+    /// Rides started either side of a change read on the clock in force at
+    /// their start, and still list by UTC.
+    #[test]
+    fn rides_across_a_change_read_the_clock_of_their_start() {
+        let at = |date: &[u8; 6], time: &[u8; 6]| {
+            let utc_s = firmware_services::gps::unix_seconds(*date, *time).unwrap();
+            started(Some(utc_s as u64 * 1000))
+        };
+        let read = |summary: &Summary, zone| title(summary, 1, zone);
+        // The hour from 23:00 on Saturday 4 April 2026 repeats.
+        let (first, second) = (at(b"050426", b"023000"), at(b"050426", b"033000"));
+        assert_eq!(read(&first, Zone::Chile).as_str(), "APR 4  11:30");
+        assert_eq!(read(&second, Zone::Chile).as_str(), "APR 4  11:30");
+        assert_eq!(newer_head(Some(&first), Some(&second)), Some(1));
+        // The hour after Saturday 5 September 2026 at 24:00 is skipped.
+        let before = at(b"060926", b"035900");
+        let after = at(b"060926", b"040000");
+        assert_eq!(read(&before, Zone::Chile).as_str(), "SEP 5  11:59");
+        assert_eq!(read(&after, Zone::Chile).as_str(), "SEP 6  1:00");
+        assert_eq!(read(&after, Zone::utc(-4)).as_str(), "SEP 6  12:00");
+        assert_eq!(read(&started(None), Zone::Chile).as_str(), "RIDE 1");
     }
 }

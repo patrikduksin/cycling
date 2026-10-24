@@ -370,7 +370,13 @@ fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leav
     let (_, status) = host(&mut runtime, &mut store, 5000, "RIDE STATUS");
     assert!(status.starts_with("state=error "), "{status}");
     assert!(status.contains(" page=summary "), "{status}");
-    assert!(status.ends_with(" result=FAILED"), "{status}");
+    // The failed finish is the rider's: the host's read neither reports nor
+    // clears it.
+    assert!(status.ends_with(" pending=0"), "{status}");
+    assert!(matches!(
+        runtime.ride.request,
+        crate::app::recording::Request::Completed(result) if !result.ok
+    ));
     let mut screen = super::presentation::Screen::new();
     assert!(screen.present(&mut runtime, &radio, 5000));
     assert!(runtime.navigation.page == Page::Summary);
@@ -1106,17 +1112,6 @@ fn an_automatic_action_keeps_an_unread_host_completion() {
     );
 }
 
-fn host(
-    runtime: &mut Runtime,
-    journal: &mut Journal,
-    now: u64,
-    words: &str,
-) -> (&'static str, String) {
-    let mut output = String::new();
-    let status = runtime.command(words, journal, &mut NoBulk, now, &mut output);
-    (status, output)
-}
-
 /// The token a host mutation was accepted under.
 fn accepted(reply: (&'static str, String)) -> String {
     assert_eq!(reply.0, "ACCEPTED", "{}", reply.1);
@@ -1595,13 +1590,6 @@ fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
     );
     assert!(runtime.ride.moved);
     assert_eq!(runtime.ride.internal.completed(), 1);
-}
-
-/// The ride page's toast text, if any.
-fn toast_text(runtime: &mut Runtime, now: u64) -> Option<String> {
-    runtime
-        .toast(now)
-        .map(|toast| String::from_utf8(toast.text().to_vec()).unwrap())
 }
 
 #[test]

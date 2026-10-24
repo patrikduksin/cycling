@@ -6029,22 +6029,6 @@ fn a_healthy_hostile_or_missing_ble_battery_level_warns_of_nothing() {
         sim.expect_text("1 SENSOR LIVE");
         sim.expect_no_text("LOW BATTERY");
         sim.expect_no_text("CRITICAL BATTERY");
-
-/// Open the power meter's detail page. Opening Sensors starts a search, and
-/// the radio takes no message until its window closes, so `settled` waits that
-/// out; otherwise the request is made while the radio is still held.
-fn calibrate_power_meter(sim: &mut Sim, reply: ZeroReply, settled: bool) {
-    sim.ant_sensor(device_type::POWER, POWER).zero = reply;
-    sim.pair(&["POWER METER"]);
-    sim.advance(seconds(3));
-    sim.home("SENSORS");
-    sim.open_sensor_detail("POWER METER");
-    sim.expect_text("CALIBRATE");
-    sim.checkpoint("power meter detail opens on back");
-    sim.press(Button::BottomLeft);
-    sim.checkpoint("power meter detail with calibrate focused");
-    if settled {
-        sim.advance(seconds(16));
     }
 }
 
@@ -6091,7 +6075,27 @@ fn a_failed_ble_link_is_left_off_home_and_ready() {
     sim.advance(seconds(1));
     sim.home("RIDE");
     sim.expect_text("NO SENSORS");
+}
 
+/// Open the power meter's detail page. Opening Sensors starts a search, and
+/// the radio takes no message until its window closes, so `settled` waits that
+/// out; otherwise the request is made while the radio is still held.
+fn calibrate_power_meter(sim: &mut Sim, reply: ZeroReply, settled: bool) {
+    sim.ant_sensor(device_type::POWER, POWER).zero = reply;
+    sim.pair(&["POWER METER"]);
+    sim.advance(seconds(3));
+    sim.home("SENSORS");
+    sim.open_sensor_detail("POWER METER");
+    sim.expect_text("CALIBRATE");
+    sim.checkpoint("power meter detail opens on back");
+    sim.press(Button::BottomLeft);
+    sim.checkpoint("power meter detail with calibrate focused");
+    if settled {
+        sim.advance(seconds(16));
+    }
+}
+
+#[test]
 fn calibrating_a_power_meter_shows_the_offset_it_reports() {
     let mut sim = rider();
     calibrate_power_meter(&mut sim, ZeroReply::Offset(-37), false);

@@ -175,8 +175,12 @@ impl Frame<'_> {
         if self.pixels.len() < self.width * self.height {
             return Vec::new();
         }
-        let mut glyphs = self.glyphs();
-        glyphs.extend(self.smooth_glyphs());
+        let glyphs = std::thread::scope(|threads| {
+            let smooth = threads.spawn(|| self.smooth_glyphs());
+            let mut glyphs = self.glyphs();
+            glyphs.extend(smooth.join().expect("smooth glyph scan"));
+            glyphs
+        });
         let mut runs = self.group(glyphs);
         runs.retain(|run| !(run.text.len() == 1 && b"-.,:/".contains(&run.text.as_bytes()[0])));
         runs.sort_by_key(|run| (run.y, run.x));
@@ -210,18 +214,29 @@ impl Frame<'_> {
             .map(|&(character, rows)| (mask(&rows), character))
             .collect();
         lookup.sort_unstable();
+        let scales: Vec<usize> = (1..=MAX_SCALE)
+            .rev()
+            .filter(|&scale| self.width >= 5 * scale && self.height >= 7 * scale)
+            .collect();
+        // Scanning every position at every scale is most of a scenario's
+        // time; the scans are independent, so they run in parallel. Claiming
+        // stays in order, largest scale first, so the result is unchanged.
+        let candidates: Vec<Vec<Glyph>> = std::thread::scope(|threads| {
+            let scans: Vec<_> = scales
+                .iter()
+                .map(|&scale| {
+                    let lookup = &lookup;
+                    threads.spawn(move || self.candidates(lookup, scale))
+                })
+                .collect();
+            scans
+                .into_iter()
+                .map(|scan| scan.join().expect("glyph scan"))
+                .collect()
+        });
         let mut claimed = vec![false; self.width * self.height];
         let mut found = Vec::new();
-        for scale in (1..=MAX_SCALE).rev() {
-            if self.width < 5 * scale || self.height < 7 * scale {
-                continue;
-            }
-            let mut candidates = Vec::new();
-            for y in 0..=self.height - 7 * scale {
-                for x in 0..=self.width - 5 * scale {
-                    candidates.extend(self.glyph_at(&lookup, x, y, scale));
-                }
-            }
+        for (scale, mut candidates) in scales.into_iter().zip(candidates) {
             // Richer glyphs first so a partial match cannot shadow ':' or similar.
             candidates.sort_by_key(|g| (std::cmp::Reverse(g.ink), g.y, g.x));
             for glyph in candidates {
@@ -236,6 +251,17 @@ impl Frame<'_> {
             }
         }
         found
+    }
+
+    /// Every position where a 5x7 glyph of `scale` matches, claimed or not.
+    fn candidates(&self, lookup: &[(u64, u8)], scale: usize) -> Vec<Glyph> {
+        let mut candidates = Vec::new();
+        for y in 0..=self.height - 7 * scale {
+            for x in 0..=self.width - 5 * scale {
+                candidates.extend(self.glyph_at(lookup, x, y, scale));
+            }
+        }
+        candidates
     }
 
     /// Anti-aliased glyphs: each starts at a solid pixel with no solid pixel of

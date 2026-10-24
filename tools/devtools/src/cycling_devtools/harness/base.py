@@ -7,14 +7,41 @@ import time
 from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.harness.runner import STARTUP_STOPPED
 from cycling_devtools.harness.stress import PREFERENCES, read, validate
 from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
 
+def idle_frames_allowed(build, elapsed_ms):
+    """Frames an idle device may submit in `elapsed_ms`.
+
+    Base firmware draws only on change. VANA keeps drawing while awake: once a
+    second on still pages, twice while something animates, as the battery does
+    on USB. A state change pulls one frame forward, and the window may start
+    just before a frame is due.
+    """
+    if build.get('cycling') == 'false':
+        return 0
+    return int(elapsed_ms) * 2 // 1000 + 2
+
+
+CRASH_READY_TIMEOUT_S = 30
+
+
 def crash_record(connection):
-    """CRASH's fields; the message is the rest of the reply and may hold spaces."""
-    reply = connection.terminal_command('CRASH')
+    """CRASH's fields; the message is the rest of the reply and may hold spaces.
+
+    Right after a reset the device answers BUSY until its companion has
+    started. CRASH only reads, so asking again is safe.
+    """
+    stop = time.monotonic() + CRASH_READY_TIMEOUT_S
+    while (reply := connection.terminal_command('CRASH')).get('status') == 'BUSY':
+        detail = reply.get('data', '')
+        stopped = any(word in STARTUP_STOPPED for word in detail.split())
+        if stopped or time.monotonic() >= stop:
+            raise AssertionError(f'terminal rejected CRASH: BUSY {detail}')
+        time.sleep(0.5)
     if reply.get('status') != 'OK':
         raise AssertionError(f'terminal rejected CRASH: {reply.get("status")}')
     head, _, message = reply['data'].partition(' message=')
@@ -221,8 +248,13 @@ def run(args):
         report['position_delta'] = validate('POSITION', position, read(connection, 'POSITION'))
         report['input_delta'] = validate('INPUT', inputs, read(connection, 'INPUT'))
         after = read(connection, 'STATUS')
-        if after['display_submissions'] != baseline['display_submissions']:
-            raise AssertionError('display submitted during no-render acquisition window')
+        submitted = int(after['display_submissions']) - int(baseline['display_submissions'])
+        allowed = idle_frames_allowed(build, int(after['uptime_ms']) - int(baseline['uptime_ms']))
+        report['idle_frames'] = dict(submitted=submitted, allowed=allowed)
+        if submitted > allowed:
+            raise AssertionError(
+                f'display submitted {submitted} frames during no-render acquisition window, at most {allowed}'
+            )
         if after['storage_ops'] != baseline['storage_ops']:
             raise AssertionError('storage operation during read-only acquisition window')
         connection.__exit__(None, None, None)

@@ -1,10 +1,12 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cycling_devtools.harness.base import (
     apply,
     check_overlong,
+    crash_record,
     expect,
+    idle_frames_allowed,
     power_cycle,
     preserved,
     settle,
@@ -27,6 +29,43 @@ class Connection:
 
 
 class BaseTests(unittest.TestCase):
+    def test_crash_record_waits_out_startup_busy(self):
+        replies = [
+            dict(status='BUSY', data='starting companion=probing'),
+            dict(status='BUSY', data='starting companion=probing'),
+            dict(status='OK', data='kind=controlled this_boot=true message=controlled crash test'),
+        ]
+        connection = Mock(terminal_command=Mock(side_effect=replies))
+        with patch('cycling_devtools.harness.base.time.sleep') as sleep:
+            record = crash_record(connection)
+        self.assertEqual(record, dict(kind='controlled', this_boot='true', message='controlled crash test'))
+        self.assertEqual(connection.terminal_command.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_crash_record_gives_up_when_startup_stopped(self):
+        connection = Mock(terminal_command=Mock(return_value=dict(status='BUSY', data='starting companion=charging')))
+        with patch('cycling_devtools.harness.base.time.sleep'), self.assertRaises(AssertionError):
+            crash_record(connection)
+        self.assertEqual(connection.terminal_command.call_count, 1)
+
+    def test_crash_record_stops_retrying_after_the_deadline(self):
+        connection = Mock(terminal_command=Mock(return_value=dict(status='BUSY', data='starting companion=probing')))
+        with (
+            patch('cycling_devtools.harness.base.time.sleep'),
+            patch('cycling_devtools.harness.base.time.monotonic', side_effect=[0, 1, 31]),
+            self.assertRaises(AssertionError),
+        ):
+            crash_record(connection)
+        self.assertEqual(connection.terminal_command.call_count, 2)
+
+    def test_base_firmware_draws_nothing_while_idle(self):
+        self.assertEqual(idle_frames_allowed(dict(cycling='false'), 60_000), 0)
+
+    def test_vana_may_draw_twice_a_second_while_idle(self):
+        self.assertEqual(idle_frames_allowed(dict(cycling='true'), 5_400), 12)
+        self.assertEqual(idle_frames_allowed(dict(cycling='true'), 10_900), 23)
+        self.assertLess(idle_frames_allowed(dict(cycling='true'), 10_900), 26)
+
     def test_ambiguous_save_is_not_replayed(self):
         connection = Connection()
         settings = dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='-180')

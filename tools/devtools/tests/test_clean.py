@@ -102,6 +102,20 @@ class ProcessTests(CleanCase):
         (entry / 'cmdline').write_bytes(b'x')
         self.assertTrue(clean.occupants(inner, self.ctx()))
 
+    def test_processes_with_an_unreadable_cwd_are_counted(self):
+        (self.proc / '77').mkdir()
+        real = os.readlink
+
+        def readlink(path):
+            if '/77/' in str(path):
+                raise PermissionError(path)
+            return real(path)
+
+        with patch.object(clean.os, 'readlink', readlink):
+            found, unreadable = clean.processes(self.proc)
+        self.assertEqual(unreadable, 1)
+        self.assertTrue(found)
+
     def test_unreadable_proc_fails_closed(self):
         with self.assertRaisesRegex(RuntimeError, 'live agents cannot be detected'):
             clean.processes(self.base / 'no-proc')
@@ -188,6 +202,14 @@ class JudgeTests(CleanCase):
         decision = self.judge(self.add_worktree('fresh'))
         self.assertEqual(decision.action, K)
         self.assertIn('no commits of its own', decision.reason)
+
+    def test_a_commit_reset_away_to_main_keeps_the_worktree(self):
+        path = self.add_worktree('reset', commit=True)
+        git(path, 'reset', '-q', '--hard', 'origin/main')
+        self.assertTrue(clean.in_main(self.tree(path).head, self.primary))
+        decision = self.judge(path)
+        self.assertEqual(decision.action, K)
+        self.assertIn('reflog holds', decision.reason)
 
     def test_head_in_origin_main_with_own_commits_is_merged(self):
         decision = self.judge(self.merged_worktree())

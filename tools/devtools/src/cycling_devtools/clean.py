@@ -64,12 +64,13 @@ class Process:
 
 @dataclass(frozen=True)
 class Context:
-    trees: list
-    processes: list
+    trees: list[Worktree]
+    processes: list[Process]
     current: Path
     root: Path
     idle_hours: float
     now: float
+    unreadable: int = 0  # processes whose cwd we may not read (other users)
 
 
 @dataclass(frozen=True)
@@ -126,30 +127,35 @@ def worktrees(root=ROOT):
 
 
 def processes(proc=Path('/proc')):
-    """Every process whose cwd we can read. Fails closed when /proc cannot be read."""
+    """(processes whose cwd we can read, count of those we cannot). Fails closed when /proc is unreadable."""
     if not (proc / str(os.getpid()) / 'cwd').exists():
         raise RuntimeError(f'cannot read {proc}/<pid>/cwd, so live agents cannot be detected')
-    found = []
+    found, unreadable = [], 0
     for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
         try:
             cwd = Path(os.readlink(entry / 'cwd').removesuffix(' (deleted)'))
             command = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace').strip()
+        except PermissionError:
+            unreadable += 1
+            continue
         except OSError:
             continue
         found.append(Process(int(entry.name), command[:60], cwd))
-    return found
+    return found, unreadable
 
 
 def context(idle_hours=IDLE_HOURS, current=ROOT, root=ROOT, proc=Path('/proc'), now=None):
+    found, unreadable = processes(proc)
     return Context(
         worktrees(root),
-        processes(proc),
+        found,
         Path(current).resolve(),
         root,
         idle_hours,
         time.time() if now is None else now,
+        unreadable,
     )
 
 
@@ -237,6 +243,28 @@ def has_own_commits(path):
     return any(line.startswith('commit') for line in out.stdout.splitlines())
 
 
+def unmerged_history(tree, root=ROOT):
+    """A commit once at HEAD or the branch tip that origin/main lacks, else None.
+
+    A commit followed by a reset to main leaves HEAD in origin/main but the commit
+    reachable only from a reflog, which removing the worktree discards. Unreadable
+    history counts as unmerged.
+    """
+    revs = ['HEAD', f'refs/heads/{tree.branch}'] if tree.branch else ['HEAD']
+    hashes = set()
+    for rev in revs:
+        out = run('git', 'reflog', 'show', '--format=%H', rev, cwd=tree.path)
+        if out.returncode:
+            return 'unreadable reflog'
+        hashes.update(out.stdout.split())
+    if not hashes:
+        return None
+    out = run('git', 'rev-list', *sorted(hashes), '--not', 'origin/main', cwd=root)
+    if out.returncode:
+        return 'unreadable history'
+    return out.stdout.split()[0][:7] if out.stdout.strip() else None
+
+
 def in_main(rev, root=ROOT):
     return run('git', 'merge-base', '--is-ancestor', rev, 'origin/main', cwd=root).returncode == 0
 
@@ -289,6 +317,8 @@ def judge(tree, ctx):
     if in_main(tree.head, ctx.root):
         if not has_own_commits(tree.path):
             return keep('no commits of its own (may be a new agent)')
+        if lost := unmerged_history(tree, ctx.root):
+            return keep(f'reflog holds {lost}, which origin/main lacks')
         return Decision(Action.REMOVE, 'HEAD is in origin/main, tree clean and quiet, no live process')
     if tree.branch and (number := merged_pull_request(tree.branch, tree.head, ctx.root)):
         return Decision(Action.REMOVE, f'PR #{number} merged, tree clean and quiet, no live process', True)
@@ -447,8 +477,11 @@ def main(argv=None):
     if not args.no_fetch and run('git', 'fetch', 'origin', '--quiet').returncode:
         print('warning: git fetch origin failed; merges are judged against the last known origin/main', file=sys.stderr)
     before_free, before_count = free_gb(), len(worktrees())
-    rows = plan(context(args.idle_hours))
+    ctx = context(args.idle_hours)
+    rows = plan(ctx)
     print(table(rows))
+    if ctx.unreadable:
+        print(f'note: {ctx.unreadable} processes of other users have an unreadable cwd and are not checked')
     reclaim = sum(row.size for row in removable(rows))
     print(
         f'\n{len(removable(rows))} removals, {reclaim / GB:.1f} GB; {before_free:.0f} GB free, {before_count} worktrees'

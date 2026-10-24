@@ -443,7 +443,13 @@ impl Runtime {
             known: percent.is_some(),
         };
         let canvas = sheet.canvas();
-        system.draw_canvas(240, 320, |row| View::paint(&canvas, row));
+        let light = self.light();
+        system.draw_canvas(240, 320, |row| {
+            View::paint(&canvas, row);
+            if light {
+                crate::screens::look::apply(row.pixels_mut());
+            }
+        });
         true
     }
 }

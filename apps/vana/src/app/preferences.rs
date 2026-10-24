@@ -7,7 +7,7 @@
 //!
 //! | Byte | Field | Since |
 //! | --- | --- | --- |
-//! | 0 | Record version, 3 | 1 |
+//! | 0 | Record version, 4 | 1 |
 //! | 1..3 | FTP in watts, little-endian | 1 |
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
@@ -17,11 +17,13 @@
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |
 //! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) | 3 |
+//! | then | Theme: 0 dark, 1 light, 2 automatic | 4 |
 //!
 //! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
 //! Both load with the default options and setup done, since a rider already
-//! used them, and the next save rewrites them as version 3. A version 3
-//! record is `19 + 4 * count` bytes, at most 59.
+//! used them, and the next save rewrites them as version 4. A version 3
+//! record is `19 + 4 * count` bytes and loads with the dark theme; a version 4
+//! record is `20 + 4 * count` bytes, at most 60.
 //!
 //! An empty area means nothing was saved yet: the defaults apply, first-run
 //! setup is due, and the first change writes a record. A record VANA cannot
@@ -38,10 +40,12 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
-const OPTIONS_LENGTH: usize = 4 + ALERTS_LENGTH;
+const OPTIONS_LENGTH: usize = 4 + ALERTS_LENGTH + 1;
+/// Options as version 3 stored them, without the theme.
+const OPTIONS_LENGTH_V3: usize = OPTIONS_LENGTH - 1;
 const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY + OPTIONS_LENGTH;
 /// Edits settle this long before a flash write, so a run of presses saves once.
 const DEBOUNCE_MS: u64 = 2_000;
@@ -85,6 +89,45 @@ impl Daylight {
     }
 }
 
+/// Which look the screens have: the dark palette as painted, or the same
+/// screens with luminance inverted (`screens::look`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+    /// Light by day, dark at night.
+    Auto,
+}
+
+impl Theme {
+    const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Dark),
+            1 => Some(Self::Light),
+            2 => Some(Self::Auto),
+            _ => None,
+        }
+    }
+
+    const fn byte(self) -> u8 {
+        match self {
+            Self::Dark => 0,
+            Self::Light => 1,
+            Self::Auto => 2,
+        }
+    }
+
+    /// Whether the light look is in force, given whether it is night.
+    pub const fn is_light(self, night: bool) -> bool {
+        match self {
+            Self::Dark => false,
+            Self::Light => true,
+            Self::Auto => !night,
+        }
+    }
+}
+
 /// Ride, display and sound choices, and how far first-run setup got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -95,6 +138,7 @@ pub struct Options {
     /// Kilometres between automatic laps; 0 is off.
     pub auto_lap_km: u8,
     pub daylight: Daylight,
+    pub theme: Theme,
     /// The first-run setup step to resume, 0 when setup is done.
     pub setup: u8,
     /// Ride alert settings, carried for `ride::alerts`.
@@ -108,6 +152,7 @@ impl Default for Options {
             sounds: true,
             auto_lap_km: 5,
             daylight: Daylight::Auto,
+            theme: Theme::Dark,
             setup: 0,
             alerts: ALERTS_DEFAULT,
         }
@@ -128,11 +173,20 @@ impl Options {
         }
         let mut bytes = [0; OPTIONS_LENGTH];
         bytes[..4].copy_from_slice(&[flags, self.auto_lap_km, self.daylight.byte(), self.setup]);
-        bytes[4..].copy_from_slice(&self.alerts);
+        bytes[4..OPTIONS_LENGTH_V3].copy_from_slice(&self.alerts);
+        bytes[OPTIONS_LENGTH_V3] = self.theme.byte();
         bytes
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    /// Decode the options of record `version`.
+    fn decode(bytes: &[u8], version: u8) -> Option<Self> {
+        let (bytes, theme) = match version {
+            3 => (bytes, Theme::Dark),
+            _ => {
+                let (&theme, bytes) = bytes.split_last()?;
+                (bytes, Theme::from_byte(theme)?)
+            }
+        };
         let (&[flags, auto_lap_km, daylight, setup], alerts) = bytes.split_first_chunk()?;
         let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
         if flags & !(AUTO_PAUSE | SOUNDS) != 0 || auto_lap_km > AUTO_LAP_MAX_KM {
@@ -143,6 +197,7 @@ impl Options {
             sounds: flags & SOUNDS != 0,
             auto_lap_km,
             daylight: Daylight::from_byte(daylight)?,
+            theme,
             setup,
             alerts,
         })
@@ -252,7 +307,10 @@ pub fn decode(bytes: &[u8]) -> (Record, Stored) {
             let length = rest.first().map_or(0, |&count| 1 + 4 * usize::from(count));
             rest.split_at_checked(length)
                 .and_then(|(sensors, options)| {
-                    Some((Saved::decode(sensors).ok()?, Options::decode(options)?))
+                    Some((
+                        Saved::decode(sensors).ok()?,
+                        Options::decode(options, version)?,
+                    ))
                 })
         }
     };
@@ -598,13 +656,15 @@ mod tests {
     }
 
     #[test]
-    fn version_three_layout_is_pinned() {
+    fn version_four_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
         let defaults = record(profile, none, Options::default());
         assert_eq!(
             encode(&defaults).as_slice(),
-            [3, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+            [
+                4, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0
+            ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
         let mut sensors = Saved::default();
@@ -619,6 +679,7 @@ mod tests {
             sounds: true,
             auto_lap_km: 10,
             daylight: Daylight::Night,
+            theme: Theme::Auto,
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
         };
@@ -627,8 +688,8 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                3, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
-                0, 0x2c, 1, 70, 30, 0
+                4, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0, 2
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -639,9 +700,36 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 59);
+        assert_eq!(bytes.len(), 60);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
+    }
+
+    #[test]
+    fn version_three_migrates_with_the_dark_theme() {
+        let bytes = [
+            3, 2, 1, 170, 0, 0, 0b10, 10, 2, 3, 50, 180, 100, 0, 0x2c, 1, 70, 30, 0,
+        ];
+        let (migrated, stored) = decode(&bytes);
+        assert_eq!(stored, Stored::Migrated);
+        assert_eq!(migrated.options.theme, Theme::Dark);
+        assert_eq!(migrated.options.daylight, Daylight::Night);
+        assert_eq!(
+            migrated.options.alerts,
+            [50, 180, 100, 0, 0x2c, 1, 70, 30, 0]
+        );
+        // The next save writes version 4 and keeps the rest.
+        assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
+    }
+
+    #[test]
+    fn the_light_look_follows_the_theme_and_night() {
+        for night in [false, true] {
+            assert!(!Theme::Dark.is_light(night));
+            assert!(Theme::Light.is_light(night));
+        }
+        assert!(Theme::Auto.is_light(false));
+        assert!(!Theme::Auto.is_light(true));
     }
 
     /// Older records keep every field they had, take the default options and
@@ -666,7 +754,7 @@ mod tests {
             )
         );
         assert_eq!(Options::default().setup, 0);
-        // The next save writes version 3 with the same profile and sensors.
+        // The next save writes version 4 with the same profile and sensors.
         let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
@@ -679,7 +767,7 @@ mod tests {
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         // A newer version, even one that appended fields.
         assert_eq!(
-            decode(&[4, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
+            decode(&[5, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
             (defaults, Stored::Unsupported)
         );
         assert_eq!(decode(&[0xff]), (defaults, Stored::Unsupported));
@@ -695,11 +783,12 @@ mod tests {
             &[2, 250, 0, 170, 0, 1, 120, 0, 0, 1],
             &[2, 250, 0, 170, 0, 11],
             &[2, 0, 0, 170, 0, 0],
-            // Version 2 bytes under version 3: the options are missing.
+            // Version 2 bytes under versions 3 and 4: the options are missing.
             &[3, 250, 0, 170, 0, 0],
             &[3, 250, 0, 170, 0],
+            &[4, 250, 0, 170, 0, 0],
             // A sensor count that runs past the record.
-            &[3, 250, 0, 170, 0, 2, 120, 1, 0, 1],
+            &[4, 250, 0, 170, 0, 2, 120, 1, 0, 1],
         ] {
             assert_eq!(
                 decode(damaged),
@@ -707,8 +796,8 @@ mod tests {
                 "{damaged:?}"
             );
         }
-        // Version 3 options: one byte short or long, an unknown flag, too
-        // long a lap, an unknown day/night choice, and an impossible FTP.
+        // Version 4 options: one byte short or long, an unknown flag, too
+        // long a lap, an unknown day/night or theme choice, and an impossible FTP.
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
             let mut options = good;
@@ -721,9 +810,10 @@ mod tests {
             ([250, 0], with(0, 4)),
             ([250, 0], with(1, AUTO_LAP_MAX_KM + 1)),
             ([250, 0], with(2, 3)),
+            ([250, 0], with(OPTIONS_LENGTH - 1, 3)),
             ([0, 0], good.to_vec()),
         ] {
-            let damaged = [&[3, profile[0], profile[1], 170, 0, 0][..], &options].concat();
+            let damaged = [&[4, profile[0], profile[1], 170, 0, 0][..], &options].concat();
             assert_eq!(
                 decode(&damaged),
                 (defaults, Stored::Malformed),
@@ -740,7 +830,7 @@ mod tests {
         assert_eq!(preferences.stored, Stored::Migrated);
         preferences.set_sensors(sensors, 10_000);
         assert!(preferences.due(10_000));
-        let mut locked = Preferences::load(&[4, 9]);
+        let mut locked = Preferences::load(&[5, 9]);
         locked.set_sensors(sensors, 10_000);
         assert_eq!(locked.sensors, sensors);
         assert!(!locked.due(60_000));

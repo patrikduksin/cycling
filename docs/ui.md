@@ -54,7 +54,8 @@ Every face costs flash: all six take about 50 KB together.
 
 ## Palette
 
-The background is always `BLACK`.
+Screens paint on `BLACK`. The light look (see Light below) turns the whole frame
+white on its way to the panel; no screen paints a second palette.
 
 | Name | Meaning |
 | --- | --- |
@@ -86,6 +87,28 @@ receiver's date and time. Without a position, the local clock decides (night
 from 20:00 to 7:00); with no clock at all, the last answer stays. The night
 cap goes through the shell's backlight ceiling (`Shell::set_ceiling`), which
 is never stored, so the rider's chosen brightness is unchanged.
+
+### Light
+
+THEME in Settings → Display chooses DARK, LIGHT or AUTO. DARK is the default.
+In AUTO the light look follows the day and night decision above: light by day,
+dark at night. The row's note says LIGHT NOW or DARK NOW.
+
+The light look is a transform at the output, not a second palette. Screens
+paint as usual, then every painted row goes through `screens::look::light`.
+It inverts luminance and keeps hue: `Y = (2r + 5g + b) / 8`, then each channel
+moves by `255 - 2Y` and is clamped. Greys swap ends (`BLACK` becomes white,
+`WHITE` becomes black). Bright colours such as `POWER` and `SPEED` turn dark
+enough to read on white. Mid-bright colours such as `RED`, `HEART` and
+`ACCENT` barely move under the inversion, so a saturated colour is also pulled
+down towards a luma of 90, about 4:1 against white, in proportion to its
+chroma. Greys keep the plain inversion, and anti-aliased edges stay
+continuous. The brand frame at power on takes the look too. Dark mode runs no
+pass at all.
+
+QR codes stay dark modules on a light panel. The Connect phone screen paints
+its panel and modules pre-inverted in the light look, so the transform turns
+them back.
 
 ### Metric colours
 
@@ -367,7 +390,7 @@ Acting on a row does one of three things:
 - a number (FTP, LTHR) opens the editor: one `ACCENT` field with the value in
   `VALUE` and the zone it anchors, over minus and plus pads;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
-  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, auto-pause on/off, auto lap off/1/2/5/10
+  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, auto-pause on/off, auto lap off/1/2/5/10
   km, sounds on/off);
 - an action opens a page (SENSORS) or a flow (PHONE, a placeholder until the
   phone companion lands).

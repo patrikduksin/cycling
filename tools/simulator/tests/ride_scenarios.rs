@@ -457,6 +457,55 @@ fn radar_names_new_vehicles_and_calls_all_clear_when_they_pass() {
     );
 }
 
+/// The panel's top-left pixel, which no screen paints over.
+fn corner(sim: &Sim) -> u16 {
+    sim.screen().pixels[0]
+}
+
+/// Whether any pixel of the panel is exactly `color`.
+fn shows(sim: &Sim, color: u16) -> bool {
+    sim.screen().pixels.contains(&color)
+}
+
+/// The simulator's text reader matches light text on black, so it cannot read
+/// these screens; the checks are on the colours the light look must produce.
+#[test]
+fn the_light_theme_turns_every_screen_white_and_keeps_its_colours() {
+    use vana::screens::chrome::{POWER, SPEED, WHITE};
+    use vana::screens::look::light;
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    assert_eq!(corner(&sim), 0, "dark by default");
+    sim.home("SETTINGS");
+    sim.swipe_next();
+    for _ in 0..3 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_field("THEME", "DARK");
+    sim.press(Button::BottomRight);
+    assert_eq!(corner(&sim), WHITE, "Settings turns white at once");
+    assert!(shows(&sim, light(WHITE)), "dark text on the white page");
+    sim.checkpoint("settings in the light theme");
+    sim.press(Button::TopLeft);
+    assert_eq!(corner(&sim), WHITE);
+    assert!(shows(&sim, light(GREEN)), "the RIDE card's green");
+    sim.checkpoint("home in the light theme");
+    sim.ride_at(28.0, 210.0, 142.0, 88.0);
+    // MOVE goes on from SETTINGS past RIDES and wraps to RIDE.
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(20));
+    assert_eq!(corner(&sim), WHITE);
+    assert!(shows(&sim, light(SPEED)) && shows(&sim, light(POWER)));
+    sim.checkpoint("ride page in the light theme");
+    sim.swipe_next();
+    sim.advance(seconds(1));
+    assert_eq!(corner(&sim), WHITE);
+    sim.checkpoint("second ride page in the light theme");
+}
+
 #[test]
 fn heart_rate_band_and_eat_and_drink_alerts_sound_and_show() {
     let mut sim = rider();

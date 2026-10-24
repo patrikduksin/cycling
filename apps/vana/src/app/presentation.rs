@@ -10,6 +10,7 @@ use crate::screens::chrome::CONTENT;
 use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Toast, Tone};
 use crate::screens::gesture::Gestures;
 use crate::screens::home::Home;
+use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
 use crate::screens::ride::summary::{After, Saving};
@@ -238,6 +239,24 @@ impl Display {
 }
 
 impl Runtime {
+    /// Draw the brand's first frame in the rider's look, before the runtime
+    /// presents. Not inlined: the view is about 10 KB, and in the caller's
+    /// poll frame it would sit under every later frame's preparation (#167).
+    #[inline(never)]
+    pub fn draw_boot<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
+        &self,
+        system: &mut Shell<D, I, P, B>,
+    ) {
+        let view = View::new(Page::Boot, 0, None);
+        let light = self.light();
+        system.draw_canvas(240, 320, |row| {
+            view.paint(row);
+            if light {
+                look::apply(row.pixels_mut());
+            }
+        });
+    }
+
     pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         system: &mut Shell<D, I, P, B>,
@@ -415,7 +434,13 @@ impl Runtime {
         self.power.animate(now);
         if let Some(sheet) = self.power.view() {
             let canvas = sheet.canvas();
-            system.draw_canvas(240, 320, |row| PowerSheet::paint(&canvas, row));
+            let light = self.light();
+            system.draw_canvas(240, 320, |row| {
+                PowerSheet::paint(&canvas, row);
+                if light {
+                    look::apply(row.pixels_mut());
+                }
+            });
             self.power_drawn(!system.display_error);
             if !system.display_error {
                 self.timing.frame(self.drawn_at(now));
@@ -585,6 +610,8 @@ impl Runtime {
             // Borrowed from the look-ahead's own block, not copied.
             view.forecast = super::lookahead::forecast_of(&self.lookahead);
         }
+        let light = self.light();
+        view.light = light;
         view.prepare();
         let menu = &self.menu;
         // The FTP sheet covers the Sensors menu too, as it takes the buttons.
@@ -595,6 +622,9 @@ impl Runtime {
                 view.paint_toast(row);
             } else {
                 view.paint(row)
+            }
+            if light {
+                look::apply(row.pixels_mut());
             }
         });
         // Only a frame the panel accepted is a milestone or answers a press;
@@ -962,6 +992,26 @@ impl Runtime {
                         Daylight::Auto => "AUTO",
                         Daylight::Day => "DAY",
                         Daylight::Night => "NIGHT",
+                    }
+                )
+            }
+            Row::Theme => {
+                use super::preferences::Theme;
+                if options.theme == Theme::Auto {
+                    let now = if self.night.is_night() {
+                        "DARK"
+                    } else {
+                        "LIGHT"
+                    };
+                    let _ = write!(note, "{now} NOW");
+                }
+                write!(
+                    value,
+                    "{}",
+                    match options.theme {
+                        Theme::Dark => "DARK",
+                        Theme::Light => "LIGHT",
+                        Theme::Auto => "AUTO",
                     }
                 )
             }

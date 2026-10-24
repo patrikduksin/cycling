@@ -7,7 +7,8 @@
 //! session and returns Home. The runtime prepares the lines and the code;
 //! this lays them out.
 use super::canvas::{Canvas, Shape};
-use super::chrome::{AMBER, Align, BODY, CAPTION, Rect, TITLE, WHITE, WIDTH};
+use super::chrome::{AMBER, Align, BLACK, BODY, CAPTION, Rect, TITLE, WHITE, WIDTH};
+use super::look::light;
 use super::qr::{Placed, Qr};
 use super::workout::View;
 
@@ -35,7 +36,17 @@ const CODE_WIDTH: usize = 168;
 const RADIUS: usize = 10;
 /// A light panel: phone cameras want dark modules on light.
 const PAPER: u16 = WHITE;
-const INK: u16 = super::chrome::BLACK;
+const INK: u16 = BLACK;
+
+/// The panel and module colours to paint: the light look inverts the whole
+/// frame, so these are pre-inverted to come out dark on light.
+fn code_colors(view: &View) -> (u16, u16) {
+    if view.light {
+        (light(PAPER), light(INK))
+    } else {
+        (PAPER, INK)
+    }
+}
 
 /// Where the code sits for `qr`.
 pub fn place(qr: Qr) -> Placed {
@@ -79,7 +90,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
             canvas.shape(Shape::Bar {
                 rect: code.panel(),
                 radius: RADIUS,
-                color: PAPER,
+                color: code_colors(view).0,
             });
             code.panel().bottom
         }
@@ -116,7 +127,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
 /// The code's modules over the panel the canvas painted.
 pub(super) fn paint(view: &View, row: &mut super::chrome::Row) {
     if let Some(code) = &view.qr {
-        code.paint(row, INK);
+        code.paint(row, code_colors(view).1);
     }
 }
 
@@ -177,6 +188,27 @@ mod tests {
         );
         assert!(on_code(WIDTH / 2, CODE_TOP + 40));
         assert!(!on_code(WIDTH / 2, CODE_TOP + CODE_WIDTH + 10));
+    }
+
+    #[test]
+    fn the_light_look_keeps_dark_modules_on_a_light_panel() {
+        let mut view = view(Some("WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;"), false);
+        view.light = true;
+        view.prepare();
+        let code = view.qr.unwrap();
+        let panel = code.panel();
+        let shown = |x: usize, y: usize| {
+            let mut pixels = [0u16; WIDTH];
+            view.paint(&mut crate::screens::chrome::Row::new(y, &mut pixels));
+            crate::screens::look::apply(&mut pixels);
+            pixels[x]
+        };
+        // The quiet zone, the panel's corner and the page around it are
+        // light; the top-left finder's corner module is dark.
+        assert_eq!(shown(panel.left + 4, panel.top + 4 + RADIUS), WHITE);
+        assert_eq!(shown(panel.left, panel.top), WHITE);
+        assert_eq!(shown(panel.left - 2, panel.top + 20), WHITE);
+        assert_eq!(shown(code.left + 1, code.top + 1), BLACK);
     }
 
     #[test]

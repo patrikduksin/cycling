@@ -23,6 +23,7 @@ pub enum Row {
     Brightness,
     AutoDim,
     Daylight,
+    Theme,
     AutoPause,
     AutoLap,
     Sounds,
@@ -64,7 +65,10 @@ pub enum SettingsAction {
 /// Sections in order, each with its title and the rows it holds.
 pub const SECTIONS: [(&str, &[Row]); 7] = [
     ("PROFILE", &[Row::Ftp, Row::Threshold]),
-    ("DISPLAY", &[Row::Brightness, Row::AutoDim, Row::Daylight]),
+    (
+        "DISPLAY",
+        &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
+    ),
     ("RIDE", &[Row::AutoPause, Row::AutoLap]),
     ("SOUND", &[Row::Sounds]),
     (
@@ -126,6 +130,7 @@ impl Row {
             Self::Brightness => "BRIGHTNESS",
             Self::AutoDim => "DIM AFTER",
             Self::Daylight => "DAY / NIGHT",
+            Self::Theme => "THEME",
             Self::AutoPause => "AUTO PAUSE",
             Self::AutoLap => "AUTO LAP",
             Self::Sounds => "SOUNDS",
@@ -157,6 +162,7 @@ impl Row {
             Self::Brightness
             | Self::AutoDim
             | Self::Daylight
+            | Self::Theme
             | Self::AutoPause
             | Self::AutoLap
             | Self::Sounds
@@ -456,7 +462,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 19);
+        assert_eq!(ROWS, 20);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);

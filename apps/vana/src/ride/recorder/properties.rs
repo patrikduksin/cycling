@@ -383,7 +383,8 @@ impl Rig {
             if entry.kind == Kind::Start {
                 assert!(
                     last_ride == 0 || entry.ride_id == next_ride_id(last_ride),
-                    "seed {seed}: slot {index}"
+                    "seed {seed}: slot {index} ride {} after {last_ride}",
+                    entry.ride_id
                 );
                 assert!(
                     open.is_none(),
@@ -806,13 +807,16 @@ fn ride_ids_count_on_past_the_largest_id() {
             rig.service();
         }
         if rig.recorder.status() == Status::Recording {
-            let id = rig.probe.history.last().map(|entry| entry.ride_id).unwrap();
-            let before = rig.probe.history.len() - 1;
-            assert!(
-                rig.probe.history[..before]
-                    .iter()
-                    .all(|entry| entry.ride_id != id),
-                "seed {seed}: ride {id} again"
+            let starts: Vec<u32> = (0..SLOTS)
+                .filter_map(|index| decode(&rig.probe.nor.slot(index)))
+                .filter(|entry| entry.kind == Kind::Start)
+                .map(|entry| entry.ride_id)
+                .collect();
+            let id = *starts.last().unwrap();
+            assert_eq!(
+                starts.iter().filter(|&&other| other == id).count(),
+                1,
+                "seed {seed}: ride {id} again in {starts:?}"
             );
         }
     }

@@ -371,8 +371,13 @@ impl<'a> Homing<'a> {
         self.guide
     }
 
-    /// Whether riding back over the breadcrumb starts following it.
+    /// Whether riding back over the breadcrumb starts following it. Turning
+    /// it off also stops a follow already under way, so no OFF TRACK
+    /// reminder can outlive the page that would stop it.
     pub fn set_auto_follow(&mut self, on: bool) {
+        if !on && self.auto_follow {
+            self.stop_following();
+        }
         self.auto_follow = on;
     }
 
@@ -971,6 +976,25 @@ mod tests {
         for points in [&out, &back, &away] {
             assert!(ride(&mut homing, points, &mut now).is_empty());
         }
+        assert!(!homing.following());
+    }
+
+    #[test]
+    fn turning_auto_follow_off_ends_a_follow_and_silences_off_track() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        let out = path(&[(0.0, 0.0), (0.0, 1000.0), (1000.0, 1000.0)], 7.0);
+        let back = path(&[(1000.0, 1000.0), (400.0, 1000.0)], 7.0);
+        let away = path(&[(400.0, 1000.0), (400.0, 4000.0)], 10.0);
+        for points in [&out, &back] {
+            ride(&mut homing, points, &mut now);
+        }
+        assert!(homing.following());
+        homing.set_auto_follow(false);
+        assert!(!homing.following());
+        let events = ride(&mut homing, &away, &mut now);
+        assert!(events.is_empty(), "{events:?}");
         assert!(!homing.following());
     }
 

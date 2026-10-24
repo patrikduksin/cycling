@@ -1785,7 +1785,10 @@ fn hide_ride_pages(sim: &mut Sim, pages: &[&str]) {
             sim.press(Button::BottomRight);
             sim.expect_field(label, "OFF");
         }
-        if label == "CLIMB" || label == "BACK TO START" {
+        if label == "CLIMB" && pages.contains(&label) {
+            sim.expect_text("NO CLIMB POP-UP");
+        }
+        if matches!(label, "CLIMB" | "MAP" | "BACK TO START") {
             sim.checkpoint(&format!("{label} row with {} off", pages.join(" and ")));
         }
         sim.press(Button::BottomLeft);
@@ -1817,6 +1820,24 @@ fn turned_off_ride_pages_leave_the_dots_and_the_page_walk() {
     sim.swipe_next();
     sim.press(Button::BottomLeft);
     assert_eq!(sim.screen().page().as_deref(), Some("1/4"), "wraps to main");
+}
+
+#[test]
+fn a_map_page_turned_off_leaves_the_walk_from_climb_to_back() {
+    let mut sim = hill_rider();
+    hide_ride_pages(&mut sim, &["MAP"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    sim.advance(seconds(5));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    for _ in 0..3 {
+        sim.press(Button::BottomLeft);
+    }
+    assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
+    sim.expect_text("CLIMB");
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("5/5"));
+    sim.checkpoint("back to start page right after climb");
 }
 
 #[test]

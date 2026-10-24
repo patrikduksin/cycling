@@ -318,7 +318,7 @@ impl Options {
         let ride_pages = match version {
             3..=5 if flags >> PAGES_SHIFT != 0 => return None,
             3..=6 => PageChoice::from_bits(flags >> PAGES_SHIFT)?,
-            _ => return None,
+            0..=2 | 7..=u8::MAX => return None,
         };
         Some(Self {
             auto_pause: flags & AUTO_PAUSE != 0,

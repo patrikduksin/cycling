@@ -122,7 +122,8 @@ them, since Settings is not reachable during a ride.
 BACK TO START OFF also means the ride never follows its track back by itself:
 the page's pad is the only way to stop following, so without the page riding
 back over the track starts nothing, and no FOLLOWING TRACK, OFF TRACK or BACK
-AT START nudge sounds. The breadcrumb is still kept, because MAP draws it.
+AT START nudge sounds, and OFF TRACK never repeats its toast and chime every
+minute. The breadcrumb is still kept, because MAP draws it.
 
 ### Back to start
 

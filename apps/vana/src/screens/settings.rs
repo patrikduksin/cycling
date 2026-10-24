@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 28);
+        assert_eq!(ROWS, 30);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);

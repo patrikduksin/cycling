@@ -489,4 +489,75 @@ pub(crate) mod tests {
             }
         }
     }
+
+    #[test]
+    fn random_saves_cuts_and_corruption_never_load_as_empty_or_unsaved() {
+        use crate::testing::Rng;
+        for seed in 0..500 {
+            let mut rng = Rng(seed * 2 + 1);
+            let mut journal = Journal::new(Memory::default(), Region::Configuration);
+            let mut saved: std::vec::Vec<std::vec::Vec<u8>> = std::vec::Vec::new();
+            let mut newest: Option<std::vec::Vec<u8>> = None;
+            for _ in 0..rng.below(12) + 1 {
+                let length = rng.below(200) as usize;
+                let payload: std::vec::Vec<u8> = (0..length).map(|_| rng.next() as u8).collect();
+                saved.push(payload.clone());
+                let cut = rng.below(3) == 0;
+                journal.flash.operations = 0;
+                journal.flash.fail_after = cut.then(|| rng.below(6) as usize);
+                journal.flash.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+                let result = journal.save(&payload);
+                journal.flash.fail_after = None;
+                let mut output = [0; CAPACITY];
+                match (result, journal.load(&mut output)) {
+                    (Ok(_), loaded) => {
+                        let record = loaded.unwrap().unwrap();
+                        assert_eq!(&output[..record.length], payload, "seed {seed}");
+                        newest = Some(payload);
+                    }
+                    (Err(_), Ok(Some(record))) => {
+                        // The old record, or the new one if it landed whole.
+                        let recovered = &output[..record.length];
+                        assert!(
+                            recovered == payload || Some(recovered) == newest.as_deref(),
+                            "seed {seed}"
+                        );
+                        newest = Some(recovered.to_vec());
+                    }
+                    // Only a first save may leave nothing readable, and then
+                    // the journal is occupied, never empty.
+                    (Err(_), Ok(None)) => assert!(newest.is_none(), "seed {seed}"),
+                    (Err(_), Err(Error::UnrecognizedJournal)) => {
+                        assert!(newest.is_none(), "seed {seed}");
+                        break;
+                    }
+                    (Err(_), Err(error)) => panic!("seed {seed}: {error:?}"),
+                }
+            }
+            // Bit rot anywhere: whatever loads was saved, and occupied
+            // flash never loads as nothing saved.
+            for _ in 0..rng.below(4) {
+                let sector = rng.below(SECTOR_COUNT as u64) as usize;
+                let at = rng.below(SECTOR_SIZE as u64) as usize;
+                journal.flash.bytes[sector][at] ^= 1 << rng.below(8);
+            }
+            let occupied = journal
+                .flash
+                .bytes
+                .iter()
+                .flatten()
+                .any(|byte| *byte != 0xff);
+            let mut output = [0; CAPACITY];
+            match journal.load(&mut output) {
+                Ok(Some(record)) => assert!(
+                    saved
+                        .iter()
+                        .any(|payload| payload[..] == output[..record.length]),
+                    "seed {seed}"
+                ),
+                Ok(None) => assert!(!occupied, "seed {seed}"),
+                Err(error) => assert_eq!(error, Error::UnrecognizedJournal, "seed {seed}"),
+            }
+        }
+    }
 }

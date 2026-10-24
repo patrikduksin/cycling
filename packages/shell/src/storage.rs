@@ -200,6 +200,39 @@ mod tests {
             assert_eq!(loaded.settings, settings);
         }
     }
+
+    #[test]
+    fn a_damaged_record_is_never_replaced_by_a_save() {
+        use crate::preferences::tests::{Rng, arbitrary_settings, damage};
+        use crate::preferences::{Source, decode};
+        for seed in 0..300 {
+            let mut rng = Rng(seed * 2 + 1);
+            let stored = arbitrary_settings(&mut rng).encode().to_vec();
+            let payload = damage(&mut rng, stored);
+            if !matches!(
+                decode(Some(&payload)).1,
+                Source::Malformed | Source::Unsupported
+            ) {
+                continue;
+            }
+            let mut journal = Journal::new(Memory::default(), Region::Configuration);
+            journal.save(&payload).unwrap();
+            let mut store = Store { journal };
+            let before = store.journal.flash_mut().bytes;
+            let edit = arbitrary_settings(&mut rng);
+            assert_eq!(
+                store.save(edit),
+                Err(Error::UnrecognizedSettings),
+                "seed {seed}"
+            );
+            assert_eq!(
+                store.save_app(edit.app),
+                Err(Error::UnrecognizedSettings),
+                "seed {seed}"
+            );
+            assert_eq!(store.journal.flash_mut().bytes, before, "seed {seed}");
+        }
+    }
 }
 
 #[cfg(test)]

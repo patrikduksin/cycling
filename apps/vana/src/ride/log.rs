@@ -224,10 +224,14 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// The readings a slot of a `source` ride holds. A battery reading above
+    /// 100 % is dropped: `decode` refuses it, so the batch would not read
+    /// back and recording would stop as a media failure.
     pub fn for_source(mut self, source: Source) -> Self {
         if source == Source::Live {
             self.demo_speed_mm_s = None;
         }
+        self.battery_percent = self.battery_percent.filter(|percent| *percent <= 100);
         self
     }
 }

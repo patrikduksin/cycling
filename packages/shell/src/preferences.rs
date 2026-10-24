@@ -415,7 +415,7 @@ impl Saver {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -611,5 +611,99 @@ mod tests {
         assert!(saver.ready(6_000, settings, false, false));
         saver.saved(settings);
         assert!(!saver.ready(20_000, settings, false, false));
+    }
+
+    /// xorshift64*: deterministic cases without a dependency.
+    pub(crate) struct Rng(pub(crate) u64);
+
+    impl Rng {
+        pub(crate) fn below(&mut self, n: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) % n
+        }
+
+        fn text(&mut self, max: u64) -> std::vec::Vec<u8> {
+            (0..self.below(max + 1))
+                .map(|_| b'!' + self.below(94) as u8)
+                .collect()
+        }
+    }
+
+    pub(crate) fn arbitrary_settings(rng: &mut Rng) -> Settings {
+        let mut settings = Settings::with_values(
+            5 + rng.below(96) as u8,
+            rng.below(3_601) as u16,
+            5 + rng.below(96) as u8,
+            (rng.below(53) as i16 - 24) * 30,
+        )
+        .unwrap();
+        if rng.below(2) == 0 {
+            let ssid = [&b"a"[..], &rng.text(31)].concat();
+            let password = [&b"password"[..], &rng.text(55)].concat();
+            settings.wifi =
+                device_api::connectivity::WifiConfig::new(&ssid, &password, rng.below(2) == 0);
+        }
+        if rng.below(2) == 0 {
+            settings.ble = Some(device_api::ble_transport::Selection {
+                name: device_api::connectivity::Text::new(&[&b"b"[..], &rng.text(31)].concat())
+                    .unwrap(),
+                address: (rng.below(2) == 0).then(|| [rng.below(256) as u8; 6]),
+                service: rng.below(65_536) as u16,
+                characteristic: rng.below(65_536) as u16,
+            });
+            settings.ble_profile = rng.below(256) as u8;
+        }
+        settings.app = AppPreferences::new(&rng.text(APP_CAPACITY as u64)).unwrap();
+        settings
+    }
+
+    pub(crate) fn damage(rng: &mut Rng, mut payload: std::vec::Vec<u8>) -> std::vec::Vec<u8> {
+        for _ in 0..1 + rng.below(3) {
+            match rng.below(4) {
+                0 if !payload.is_empty() => {
+                    let at = rng.below(payload.len() as u64) as usize;
+                    payload[at] ^= 1 << rng.below(8);
+                }
+                1 if !payload.is_empty() => {
+                    let at = rng.below(payload.len() as u64) as usize;
+                    payload[at] = rng.below(256) as u8;
+                }
+                2 => payload.truncate(rng.below(payload.len() as u64 + 1) as usize),
+                _ => payload.push(rng.below(256) as u8),
+            }
+        }
+        payload
+    }
+
+    #[test]
+    fn damaged_records_are_never_read_as_other_settings() {
+        for seed in 0..3_000 {
+            let mut rng = Rng(seed * 2 + 1);
+            let settings = arbitrary_settings(&mut rng);
+            let encoded = settings.encode();
+            assert_eq!(
+                decode(Some(&encoded)),
+                (settings, Source::Current),
+                "seed {seed}"
+            );
+            let payload = damage(&mut rng, encoded.to_vec());
+            let (decoded, source) = decode(Some(&payload));
+            match source {
+                // Every byte of a current record is meaningful, so a damaged
+                // one reads only if it is exactly another valid record.
+                Source::Current => assert_eq!(decoded.encode()[..], payload[..], "seed {seed}"),
+                Source::Migrated => assert_eq!(
+                    decode(Some(&decoded.encode())),
+                    (decoded, Source::Current),
+                    "seed {seed}"
+                ),
+                Source::Malformed | Source::Unsupported => {
+                    assert_eq!(decoded, Settings::default(), "seed {seed}")
+                }
+                Source::Missing | Source::LegacyDefaults => panic!("seed {seed}: {source:?}"),
+            }
+        }
     }
 }

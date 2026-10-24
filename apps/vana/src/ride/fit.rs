@@ -341,6 +341,8 @@ pub struct Export {
     laps_timer_ms: u64,
     /// The ride's ascent and descent when the lap being written began.
     lap_climbed_from_dm: (u32, u32),
+    /// The ride's distance when the current lap began.
+    lap_distance_from_mm: u64,
 }
 
 impl Export {
@@ -386,6 +388,7 @@ impl Export {
             laps: 0,
             laps_timer_ms: 0,
             lap_climbed_from_dm: (0, 0),
+            lap_distance_from_mm: 0,
         };
         for message in DEFINITIONS {
             export.writer.define(out, message);
@@ -636,7 +639,11 @@ impl Export {
                         .map(|v| v.min(u32::from(u16::MAX - 1)) as u16),
                 ),
                 Value::U8(sample.heart_bpm.map(|v| v.min(254) as u8)),
-                Value::U8(sample.cadence_tenths.map(|v| ((v + 5) / 10).min(254) as u8)),
+                Value::U8(
+                    sample
+                        .cadence_tenths
+                        .map(|v| (v.saturating_add(5) / 10).min(254) as u8),
+                ),
                 Value::U16(sample.power_watts.filter(|w| *w != u16::MAX)),
                 Value::I16(
                     sample
@@ -664,7 +671,11 @@ impl Export {
         let timer = Some(timer_ms.min(u64::from(u32::MAX - 1)) as u32);
         let elapsed = Some(elapsed_ms.max(timer_ms).min(u64::from(u32::MAX - 1)) as u32);
         let distance_mm = self.distance_mm.map(|_| lap.distance_mm);
-        let distance = distance_mm.map(|mm| (mm / 10).min(u64::from(u32::MAX - 1)) as u32);
+        let centimetres = |mm: u64| (mm / 10).min(u64::from(u32::MAX - 1)) as u32;
+        // Differences of the rounded running total, so the laps add up to the session.
+        let distance = self
+            .distance_mm
+            .map(|total| centimetres(total).saturating_sub(centimetres(self.lap_distance_from_mm)));
         let speed = |v: Option<u32>| v.map(|v| v.min(u32::from(u16::MAX - 1)) as u16);
         let byte = |v: Option<u16>| v.map(|v| v.min(254) as u8);
         let lat = |p: Option<(i32, i32)>| p.map(|(lat, _)| semicircles(lat));
@@ -717,6 +728,7 @@ impl Export {
         self.lap_first_position = None;
         self.lap_last_position = None;
         self.lap_climbed_from_dm = (ascent_dm, descent_dm);
+        self.lap_distance_from_mm = self.distance_mm.unwrap_or(0);
     }
 
     /// Close the ride: the last timer stop, then the last lap, session,

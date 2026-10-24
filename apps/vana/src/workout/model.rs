@@ -197,7 +197,9 @@ impl Target {
             return None;
         };
         let stage = elapsed_s / u32::from(every.max(1));
-        Some((u32::from(start) + stage * u32::from(step)).min(u32::from(u16::MAX)) as u16)
+        Some(
+            (u64::from(start) + u64::from(stage) * u64::from(step)).min(u64::from(u16::MAX)) as u16,
+        )
     }
 }
 
@@ -515,6 +517,17 @@ mod tests {
         assert_eq!(ramp.ramp_watts(59), Some(100));
         assert_eq!(ramp.ramp_watts(60), Some(120));
         assert_eq!(ramp.band(&profile, 600).unwrap().low, 300);
+    }
+
+    #[test]
+    fn a_steep_uploaded_ramp_tops_out_instead_of_overflowing() {
+        let ramp = Target::Ramp {
+            start: 1,
+            step: u16::MAX,
+            every: 1,
+        };
+        assert_eq!(ramp.ramp_watts(65_537), Some(u16::MAX));
+        assert_eq!(ramp.ramp_watts(u32::MAX), Some(u16::MAX));
     }
 
     #[test]

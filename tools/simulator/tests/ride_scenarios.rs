@@ -4761,6 +4761,72 @@ fn a_lap_just_before_the_finish_is_kept_with_the_ride() {
     );
 }
 
+/// A lap pressed a moment before AUTO LAP AT START closes one at the start:
+/// two laps within a second, and the saved ride and its FIT file keep both.
+#[test]
+fn a_lap_pressed_just_before_the_start_keeps_both_laps() {
+    let pass_ms = {
+        let mut sim = at_start_rider(0.0);
+        sim.wait_for("LAP 1 04:", minutes(5)).unwrap();
+        sim.now()
+    };
+    let mut sim = at_start_rider(0.0);
+    sim.advance(pass_ms - 300 - sim.now());
+    sim.report(Button::TopLeft);
+    sim.advance(10);
+    sim.expect_text("LAP 1 ");
+    let second = sim.wait_for("LAP 2 ", seconds(1)).unwrap();
+    sim.checkpoint("a lap pressed, then the start closes one");
+    sim.advance(seconds(30));
+    sim.pause_ride();
+    sim.stop_ride();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.swipe_next();
+    let live = sim.screen().field("LAPS").unwrap();
+    sim.done();
+
+    let ride = sim.rides().pop().unwrap();
+    let marks: Vec<_> = ride
+        .samples()
+        .enumerate()
+        .filter_map(|(index, s)| s.lap.map(|lap| (index, lap)))
+        .collect();
+    let fit = fit_lap_triggers(&ride.fit(Some(1_789_000_000_000)).unwrap());
+    sim.home("RIDES");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.expect_text("BEST POWER W");
+    let saved = sim.screen().field("LAPS").unwrap();
+    sim.checkpoint("the saved ride keeps both laps");
+    sim.note(
+        NoteKind::Check,
+        format!(
+            "second lap toast {second} ms after the first; laps: summary {live}, saved ride {saved}, \
+             FIT {fit:?}, journal {marks:?}"
+        ),
+    );
+    assert_eq!(
+        (live.as_str(), saved.as_str(), fit.as_slice()),
+        ("3", "3", [0, 3, 7].as_slice()),
+        "summary, saved ride, FIT lap triggers (manual, position start, session end)"
+    );
+    let starts: Vec<_> = marks.iter().map(|&(_, lap)| lap).collect();
+    assert_eq!(
+        starts,
+        [LapStart::Ride, LapStart::Manual, LapStart::Position],
+        "journal lap marks"
+    );
+    assert_eq!(
+        marks[2].0,
+        marks[1].0 + 1,
+        "the two laps begin on consecutive samples"
+    );
+}
+
 /// A saved MMC ride on a card that later fails says it cannot be read,
 /// rather than reading forever; the internal rides around it still read.
 #[test]

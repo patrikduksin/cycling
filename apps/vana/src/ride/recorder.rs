@@ -15,14 +15,16 @@
 //! stays on the 1 Hz grid of the start/resume press; late service takes the
 //! due sample late, never backfills, and counts wholly skipped periods as
 //! dropped. Reset can lose three buffered samples, or four during commit.
-//! A lap mark waits for the next stored sample: the ride's first sample
-//! carries `LapStart::Ride`, and each later lap its trigger. A pause or finish
-//! with a lap waiting stores one more sample, at the stop, to carry it.
+//! Lap marks wait in order, each for a stored sample of its own: the ride's
+//! first sample carries `LapStart::Ride`, and the first of each later lap its
+//! trigger. A pause or finish with laps waiting stores one more sample per
+//! waiting mark, at the stop, to carry them.
 //! One operation and its unconsumed completion exclude further mutations.
 
 use crate::ride::control::Action;
 
 use crate::ride::journal::{Journal, Progress, Scan};
+use crate::ride::laps::Marks;
 use crate::ride::log::Catalog;
 use crate::ride::log::Entry;
 use crate::ride::log::Kind;
@@ -70,7 +72,7 @@ pub struct Recorder {
     summary: Summary,
     samples: [Sample; crate::ride::log::SAMPLES_PER_BATCH],
     sample_count: usize,
-    next_lap_mark: Option<LapStart>,
+    lap_marks: Marks,
     next_sample: u64,
     written_samples: u32,
     dropped_samples: u32,
@@ -99,7 +101,7 @@ impl Default for Recorder {
             summary: Summary::default(),
             samples: [Sample::default(); crate::ride::log::SAMPLES_PER_BATCH],
             sample_count: 0,
-            next_lap_mark: None,
+            lap_marks: Marks::default(),
             next_sample: 0,
             written_samples: 0,
             dropped_samples: 0,
@@ -286,11 +288,11 @@ impl Recorder {
         true
     }
 
-    /// A lap closed: the next sample this ride stores begins a new one.
-    /// Nothing is marked without an open ride.
+    /// A lap closed: a sample this ride stores, after those of laps already
+    /// waiting, begins a new one. Nothing is marked without an open ride.
     pub fn mark_lap(&mut self, start: LapStart) {
         if self.riding() {
-            self.next_lap_mark = Some(start);
+            self.lap_marks.push(start);
         }
     }
 
@@ -377,7 +379,7 @@ impl Recorder {
             if self.sample_count < self.samples.len() {
                 let mut sample = sample.for_source(self.source);
                 sample.active_ms = self.active_ms(now);
-                sample.lap = self.next_lap_mark.take();
+                sample.lap = self.lap_marks.pop();
                 self.samples[self.sample_count] = sample;
                 self.sample_count += 1;
             } else {
@@ -395,16 +397,15 @@ impl Recorder {
         }
 
         // A lap that closed since the last sample has no later sample to
-        // begin on once recording stops, so the stop stores one more.
-        if self.stopping()
+        // begin on once recording stops, so the stop stores one more per lap,
+        // and one for the ride's start if no sample has carried it yet.
+        while self.stopping()
             && self.sample_count < self.samples.len()
-            && self
-                .next_lap_mark
-                .is_some_and(|start| start != LapStart::Ride)
+            && self.lap_marks.lap_waiting()
         {
             let mut sample = sample.for_source(self.source);
             sample.active_ms = self.active_ms(now);
-            sample.lap = self.next_lap_mark.take();
+            sample.lap = self.lap_marks.pop();
             self.samples[self.sample_count] = sample;
             self.sample_count += 1;
         }
@@ -494,7 +495,8 @@ impl Recorder {
                         self.stop_at = None;
                         self.source = source;
                         self.open_ride = true;
-                        self.next_lap_mark = Some(LapStart::Ride);
+                        self.lap_marks = Marks::default();
+                        self.lap_marks.push(LapStart::Ride);
                         self.summary = Summary::started(self.ride_id, source);
                         self.status = Status::Recording;
                         // As a scan would see it once START is committed.
@@ -515,7 +517,7 @@ impl Recorder {
                         self.accumulated_ms = active_ms;
                         self.stop_at = None;
                         self.open_ride = false;
-                        self.next_lap_mark = None;
+                        self.lap_marks = Marks::default();
                         self.status = Status::Saved;
                         self.summary.finish(Kind::Finish, active_ms, false);
                         self.catalog.push_summary(self.summary);
@@ -987,6 +989,83 @@ mod tests {
         assert_eq!(
             samples,
             [(0, Some(LapStart::Ride)), (800, Some(LapStart::Manual))]
+        );
+    }
+    #[test]
+    fn laps_closed_within_one_sample_begin_on_samples_of_their_own() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        assert!(recorder.take_result().unwrap().ok);
+        recorder.mark_lap(LapStart::Manual);
+        for now in [100, 1100] {
+            recorder.service(&mut media, now, Sample::default(), &|| now);
+        }
+        recorder.mark_lap(LapStart::Manual);
+        recorder.mark_lap(LapStart::Position);
+        for now in [2100, 3100] {
+            recorder.service(&mut media, now, Sample::default(), &|| now);
+        }
+        recorder.mark_lap(LapStart::Manual);
+        recorder.mark_lap(LapStart::Step);
+        assert!(recorder.request(Action::Finish, Source::Live, 3900, 2));
+        for _ in 0..3 {
+            recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert_eq!(recorder.status(), Status::Saved);
+        let samples: Vec<(u64, Option<LapStart>)> = media
+            .bytes
+            .as_chunks::<{ crate::ride::log::SLOT_SIZE }>()
+            .0
+            .iter()
+            .filter_map(|bytes| crate::ride::log::decode(&Slot(*bytes)))
+            .filter(|entry| entry.kind == Kind::Samples)
+            .flat_map(|entry| entry.samples.into_iter().take(usize::from(entry.count)))
+            .map(|sample| (sample.active_ms, sample.lap))
+            .collect();
+        assert_eq!(
+            samples,
+            [
+                (0, Some(LapStart::Ride)),
+                (1000, Some(LapStart::Manual)),
+                (2000, Some(LapStart::Manual)),
+                (3000, Some(LapStart::Position)),
+                (3800, Some(LapStart::Manual)),
+                (3800, Some(LapStart::Step)),
+            ]
+        );
+    }
+    #[test]
+    fn a_lap_before_the_first_sample_is_kept_by_a_pause() {
+        let mut media = Memory::default();
+        let mut recorder = Recorder::default();
+        scan(&mut recorder, &mut media);
+        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        recorder.service(&mut media, 100, Sample::default(), &|| 100);
+        assert!(recorder.take_result().unwrap().ok);
+        recorder.mark_lap(LapStart::Manual);
+        assert!(recorder.request(Action::Pause, Source::Live, 600, 2));
+        for _ in 0..3 {
+            recorder.service(&mut media, 600, Sample::default(), &|| 600);
+        }
+        assert!(recorder.take_result().unwrap().ok);
+        assert_eq!(recorder.status(), Status::Paused);
+        let samples: Vec<(u64, Option<LapStart>)> = media
+            .bytes
+            .as_chunks::<{ crate::ride::log::SLOT_SIZE }>()
+            .0
+            .iter()
+            .filter_map(|bytes| crate::ride::log::decode(&Slot(*bytes)))
+            .filter(|entry| entry.kind == Kind::Samples)
+            .flat_map(|entry| entry.samples.into_iter().take(usize::from(entry.count)))
+            .map(|sample| (sample.active_ms, sample.lap))
+            .collect();
+        assert_eq!(
+            samples,
+            [(500, Some(LapStart::Ride)), (500, Some(LapStart::Manual))]
         );
     }
     #[test]

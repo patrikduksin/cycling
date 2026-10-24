@@ -12,10 +12,10 @@
 //! breadcrumb reports a pass, if the lap is long enough. All count in one
 //! numbered list, and the latest `HISTORY` summaries are kept.
 //!
-//! Each closed lap waits in `take_closed` for the recorder, which marks the
-//! next recorded sample as the first of a new lap (`log::LapStart`). So the
-//! journal keeps where laps began, to the second, and exports and saved rides
-//! read them back; the summaries here stay in RAM.
+//! Each closed lap waits in `take_closed` for the recorder, which marks a
+//! recorded sample of its own as the first of a new lap (`log::LapStart`). So
+//! the journal keeps where laps began, to the second, and exports and saved
+//! rides read them back; the summaries here stay in RAM.
 use crate::ride::log::{LapStart, Sample};
 use crate::ride::rider::Rider;
 use crate::ride::totals::{MOVING_MIN_MM_S, calories};
@@ -30,6 +30,37 @@ pub const AT_START_MIN_MS: u64 = 60_000;
 pub const DEBOUNCE_MS: u64 = 3000;
 /// Finished laps whose summaries are kept, newest last.
 pub const HISTORY: usize = 16;
+/// Lap starts that may wait for samples to carry them.
+pub const WAITING: usize = 4;
+
+/// Lap starts waiting, oldest first, each for a sample of its own. Two laps
+/// can close within one sample period, but not many more, so few wait; past
+/// `WAITING` the newest replaces the last.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Marks {
+    starts: [Option<LapStart>; WAITING],
+}
+
+impl Marks {
+    pub fn push(&mut self, start: LapStart) {
+        let free = self.starts.iter().position(Option::is_none);
+        self.starts[free.unwrap_or(WAITING - 1)] = Some(start);
+    }
+
+    pub fn pop(&mut self) -> Option<LapStart> {
+        let first = self.starts[0];
+        self.starts.copy_within(1.., 0);
+        self.starts[WAITING - 1] = None;
+        first
+    }
+
+    /// A lap waits, not only the ride's own start.
+    pub fn lap_waiting(&self) -> bool {
+        self.starts
+            .iter()
+            .any(|start| start.is_some_and(|start| start != LapStart::Ride))
+    }
+}
 
 /// What closes laps by itself, as the rider chose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,7 +241,7 @@ pub struct Laps {
     /// Laps close every `AUTO_LAP_MM`; a workout turns this off, as its
     /// steps close the laps instead.
     pub by_distance: bool,
-    unmarked: Option<Trigger>,
+    unmarked: Marks,
 }
 
 impl Default for Laps {
@@ -221,7 +252,7 @@ impl Default for Laps {
             finished: 0,
             closed_at_ms: None,
             by_distance: true,
-            unmarked: None,
+            unmarked: Marks::default(),
         }
     }
 }
@@ -293,14 +324,13 @@ impl Laps {
         self.finished = self.finished.saturating_add(1);
         self.current = Lap::numbered(lap.number.saturating_add(1));
         self.closed_at_ms = Some(now_ms);
-        self.unmarked = Some(trigger);
+        self.unmarked.push(trigger.into());
         lap
     }
 
-    /// How the last lap closed, once, for the recorder to mark the next
-    /// sample. Laps closing within one sample share its mark: the latest wins.
-    pub fn take_closed(&mut self) -> Option<Trigger> {
-        self.unmarked.take()
+    /// How the oldest lap not yet handed to the recorder closed, once.
+    pub fn take_closed(&mut self) -> Option<LapStart> {
+        self.unmarked.pop()
     }
 
     /// The open lap.
@@ -382,6 +412,44 @@ mod tests {
     }
 
     #[test]
+    fn laps_closed_before_the_recorder_takes_them_are_handed_over_in_order() {
+        let mut laps = Laps::default();
+        let (_, now) = ride(&mut laps, 0, 60, riding(8000, 200, 140));
+        laps.lap(now).unwrap();
+        laps.split(now + 300, false);
+        assert_eq!(laps.take_closed(), Some(LapStart::Manual));
+        assert_eq!(laps.take_closed(), Some(LapStart::Step));
+        assert_eq!(laps.take_closed(), None);
+    }
+
+    #[test]
+    fn marks_past_the_queue_replace_the_newest() {
+        let mut marks = Marks::default();
+        for start in [
+            LapStart::Ride,
+            LapStart::Manual,
+            LapStart::Step,
+            LapStart::Step,
+            LapStart::Position,
+        ] {
+            marks.push(start);
+        }
+        let mut taken = Vec::new();
+        while let Some(start) = marks.pop() {
+            taken.push(start);
+        }
+        assert_eq!(
+            taken,
+            [
+                LapStart::Ride,
+                LapStart::Manual,
+                LapStart::Step,
+                LapStart::Position
+            ]
+        );
+    }
+
+    #[test]
     fn workouts_split_laps_by_step_instead_of_distance() {
         let mut laps = Laps {
             by_distance: false,
@@ -391,7 +459,7 @@ mod tests {
         assert!(closed.is_empty(), "5.6 km without a distance lap");
         let lap = laps.split(now, false);
         assert_eq!((lap.number, lap.trigger), (1, Trigger::Step));
-        assert_eq!(laps.take_closed(), Some(Trigger::Step));
+        assert_eq!(laps.take_closed(), Some(LapStart::Step));
         assert_eq!(laps.take_closed(), None, "handed over once");
         assert_eq!(laps.current().number, 2);
         assert_eq!(laps.split(now, true).trigger, Trigger::DistanceStep);
@@ -496,7 +564,7 @@ mod tests {
         let (_, now) = ride(&mut laps, now, 1, riding(10_000, 200, 140));
         let lap = laps.at_start(now).expect("60 s and 600 m");
         assert_eq!((lap.number, lap.trigger), (1, Trigger::Position));
-        assert_eq!(laps.take_closed(), Some(Trigger::Position));
+        assert_eq!(laps.take_closed(), Some(LapStart::Position));
         assert_eq!(laps.current().number, 2);
         // Later laps have no minimum: a 120 m loop at 1 m/s laps each time.
         let (_, now) = ride(&mut laps, now, 120, riding(1_000, 100, 100));

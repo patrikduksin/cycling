@@ -543,3 +543,42 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     runtime.input(press(Button::BottomRight), 2000, &mut radio);
     assert!(saved(&runtime), "ACT after lost input changes nothing");
 }
+
+fn battery_page(identity: Identity, data: [u8; 8]) -> device_api::ant::Packet {
+    device_api::ant::Packet {
+        identity,
+        data,
+        received_ms: 0,
+        generation: 1,
+        loss_count: 0,
+    }
+}
+
+#[test]
+fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
+    use crate::sensors::ant::{Battery, BatteryStatus};
+    let mut links = crate::app::sensor_links::Links::default();
+    let strap = peer(HEART, 7);
+    let other = peer(HEART, 8);
+    let meter = peer(POWER, 9);
+    links.saved.select(strap);
+    links.saved.select(meter);
+    let low = [0x52, 0xff, 1, 0, 0, 0, 0x80, 0x42];
+    links.note_battery(&battery_page(other, low));
+    links.note_battery(&battery_page(peer(34, 1), low));
+    assert!(links.battery(0, strap).is_none() && links.battery(1, meter).is_none());
+    links.note_battery(&battery_page(strap, low));
+    let expected = Battery {
+        status: BatteryStatus::Low,
+        millivolts: Some(2500),
+    };
+    assert_eq!(links.battery(0, strap), Some(expected));
+    assert_eq!(links.battery(1, meter), None);
+    // A reserved status or an ordinary page keeps what was reported.
+    links.note_battery(&battery_page(strap, [0x52, 0xff, 1, 0, 0, 0, 0, 0x62]));
+    links.note_battery(&battery_page(strap, [0x10, 0, 0, 0, 0, 0, 0, 0x22]));
+    assert_eq!(links.battery(0, strap), Some(expected));
+    // Replacing the sensor must not carry its report to the new one.
+    links.saved.select(other);
+    assert_eq!(links.battery(0, other), None);
+}

@@ -5,6 +5,7 @@ use super::layout::{
     SELECTED_GRID,
 };
 use super::slot::{LinkStatus, Selected};
+use crate::sensors::ant::BatteryStatus;
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::{Button, Input};
 
@@ -28,6 +29,15 @@ pub struct Glance {
     pub live: bool,
     /// The status colour the sensor tiles use.
     pub color: u16,
+    /// The battery status it last reported, if any.
+    pub battery: Option<BatteryStatus>,
+}
+
+impl Glance {
+    /// A low or critical battery the rider should deal with.
+    pub fn battery_low(&self) -> bool {
+        self.battery.is_some_and(BatteryStatus::is_low)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -215,6 +225,7 @@ impl Menu {
                     kind: s.identity.device_type,
                     live: status == LinkStatus::Live,
                     color: status.color(),
+                    battery: s.battery.map(|battery| battery.status),
                 }
             })
             .collect()

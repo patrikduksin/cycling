@@ -127,7 +127,10 @@ impl Home {
             .collect();
         let live = glance.iter().filter(|g| g.live).count();
         let mut count = Text::<12>::new();
-        if !glance.is_empty() {
+        let battery_low = glance.iter().any(Glance::battery_low);
+        if battery_low {
+            let _ = count.push_str("BATT LOW");
+        } else if !glance.is_empty() {
             let _ = core::fmt::Write::write_fmt(
                 &mut count,
                 format_args!("{live}/{} LIVE", glance.len()),
@@ -146,7 +149,13 @@ impl Home {
         let settings_top = SETTINGS_TILE.top + (SETTINGS_TILE.height() - BODY.height as usize) / 2;
         let left = SENSORS_TILE.left + INSET;
         let right = SENSORS_TILE.right - INSET;
-        let count_color = if live > 0 { GREEN } else { SECONDARY };
+        let count_color = if battery_low {
+            AMBER
+        } else if live > 0 {
+            GREEN
+        } else {
+            SECONDARY
+        };
         let gps_top = PLAY.1;
         let rides_top = RIDES_TILE.top + (RIDES_TILE.height() - BODY.height as usize) / 2;
         let rides_title = label(b"RIDES", &BODY, left, rides_top, Align::Left, title(4));
@@ -537,11 +546,13 @@ mod tests {
                 kind: 120,
                 live: true,
                 color: GREEN,
+                battery: None,
             },
             Glance {
                 kind: 11,
                 live: false,
                 color: 0xfd20,
+                battery: None,
             },
         ];
         assert_eq!(this_week(84_400_000).as_bytes(), b"WEEK 84 KM");
@@ -550,6 +561,15 @@ mod tests {
         assert_eq!(last.as_bytes(), b"5.00 KM");
         let home = Home::new(0, false, &glance, last);
         assert_eq!(home.count.line.text(), b"1/2 LIVE");
+        assert_eq!(home.count.color, GREEN);
+        let mut low = glance;
+        low[1].battery = Some(crate::sensors::ant::BatteryStatus::Critical);
+        let warned = Home::new(0, false, &low, Text::new());
+        assert_eq!(warned.count.line.text(), b"BATT LOW");
+        assert_eq!(warned.count.color, AMBER);
+        low[1].battery = Some(crate::sensors::ant::BatteryStatus::Ok);
+        let fine = Home::new(0, false, &low, Text::new());
+        assert_eq!(fine.count.line.text(), b"1/2 LIVE");
         let left = SENSORS_TILE.left + INSET;
         assert_eq!(home.pixel(left + 25, ICON_TOP), GREEN);
         assert_eq!(home.pixel(left + ICON_PITCH + 25, ICON_TOP), 0xfd20);
@@ -623,10 +643,12 @@ mod tests {
         ];
         let glances: std::vec::Vec<Glance> = kinds
             .iter()
-            .map(|&kind| Glance {
+            .enumerate()
+            .map(|(index, &kind)| Glance {
                 kind,
                 live: true,
                 color: GREEN,
+                battery: (index == 1).then_some(crate::sensors::ant::BatteryStatus::Low),
             })
             .collect();
         for count in [0, 1, 4, 6] {

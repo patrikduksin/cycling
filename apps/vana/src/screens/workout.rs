@@ -691,11 +691,13 @@ mod tests {
                 kind: 120,
                 live: true,
                 color: GREEN,
+                battery: None,
             },
             Glance {
                 kind: 11,
                 live: false,
                 color: AMBER,
+                battery: None,
             },
         ];
         for cursor in 0..5 {

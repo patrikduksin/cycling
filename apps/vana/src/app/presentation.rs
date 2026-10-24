@@ -21,7 +21,7 @@ use crate::screens::ride::{self, PageChoice, RidePage};
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
-use crate::sensors::ant::device_type;
+use crate::sensors::ant::{BatteryStatus, device_type};
 use core::fmt::Write;
 use device_api::ant::Ant;
 use device_api::display::Display as Panel;
@@ -1016,8 +1016,27 @@ impl Runtime {
         if glance.is_empty() {
             return Check::new(Level::Off, "NO SENSORS", "TAP HERE TO PAIR ONE");
         }
-        let live = glance.iter().filter(|g| g.live).count();
         let mut title = Text::<24>::new();
+        let mut low = glance.iter().filter(|g| g.battery_low());
+        if let Some(first) = low.next() {
+            let name = |kind| core::str::from_utf8(crate::screens::home::short_name(kind));
+            let critical = glance
+                .iter()
+                .any(|g| g.battery == Some(BatteryStatus::Critical));
+            let hint = if critical {
+                "CHANGE IT BEFORE RIDING"
+            } else {
+                "CHANGE IT SOON"
+            };
+            let others = low.count();
+            if others == 0 {
+                let _ = write!(title, "{} BATTERY LOW", name(first.kind).unwrap_or(""));
+            } else {
+                let _ = write!(title, "{} BATTERIES LOW", others + 1);
+            }
+            return Check::new(Level::Wait, title.as_str(), hint);
+        }
+        let live = glance.iter().filter(|g| g.live).count();
         // Short names, two spaces apart: at most four fit a line.
         let mut names = Text::<19>::new();
         let pick = |want_live: bool| glance.iter().filter(move |g| g.live == want_live);

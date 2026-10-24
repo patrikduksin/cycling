@@ -40,6 +40,32 @@ const ACQUIRE_MS: u64 = 700;
 /// Wheel circumference VANA assumes, and a simulated wheel has unless set.
 const WHEEL_MM: f64 = 2136.0;
 
+/// One page in this many is a battery page, as the profiles send theirs.
+const BATTERY_EVERY: u32 = 32;
+
+/// What a sensor says about its battery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatteryReport {
+    /// The descriptive status field: 1 New, 2 Good, 3 Ok, 4 Low, 5 Critical.
+    /// Reserved values are allowed, to see how VANA treats them.
+    pub status: u8,
+    pub millivolts: u16,
+}
+
+impl BatteryReport {
+    pub const fn new(status: u8, millivolts: u16) -> Self {
+        Self { status, millivolts }
+    }
+
+    /// The fractional voltage byte and the byte holding the coarse voltage
+    /// and the status, as every battery page lays them out.
+    fn fields(self) -> (u8, u8) {
+        let fraction = (u32::from(self.millivolts % 1000) * 256 / 1000) as u8;
+        let coarse = (self.millivolts / 1000).min(14) as u8;
+        (fraction, (self.status & 0b111) << 4 | coarse)
+    }
+}
+
 /// One ANT+ sensor in radio range of the device, or not.
 pub struct AntSensor {
     pub identity: Identity,
@@ -52,6 +78,9 @@ pub struct AntSensor {
     pub discovery_ms: u64,
     /// The circumference of the wheel a speed sensor sits on, in mm.
     pub wheel_mm: f64,
+    /// Reports its battery now and then, in place of one page in
+    /// `BATTERY_EVERY`; silent about it when `None`.
+    pub battery: Option<BatteryReport>,
     model: Model,
     next_page_ms: u64,
 }
@@ -88,6 +117,7 @@ impl AntSensor {
             silent: false,
             discovery_ms: 400 + u64::from(device_number % 7) * 250,
             wheel_mm: WHEEL_MM,
+            battery: None,
             model: Model::default(),
             next_page_ms: 0,
         }
@@ -99,6 +129,26 @@ impl AntSensor {
             device_type::HEART_RATE => 246,
             device_type::SPEED_CADENCE | device_type::SPEED | device_type::CADENCE => 248,
             _ => 250,
+        }
+    }
+
+    /// Swap in the battery page when it is due. A heart-rate strap sends its
+    /// own page 7 and keeps the beat fields beside it; everything else sends
+    /// the common page 0x52.
+    fn with_battery(&self, page: [u8; 8]) -> [u8; 8] {
+        let Some(report) = self.battery else {
+            return page;
+        };
+        if !self.model.messages.is_multiple_of(BATTERY_EVERY) {
+            return page;
+        }
+        let (fraction, coarse) = report.fields();
+        if self.identity.device_type == device_type::HEART_RATE {
+            let mut data = page;
+            data[..4].copy_from_slice(&[0x07, 100, fraction, coarse]);
+            data
+        } else {
+            [0x52, 0xff, 1, 0, 0, 0, fraction, coarse]
         }
     }
 
@@ -508,6 +558,7 @@ impl SimulatedAnt {
             }
             sensor.next_page_ms = world.time_ms + sensor.period_ms();
             let data = sensor.page(world);
+            let data = sensor.with_battery(data);
             let heard = sensor.present
                 && !sensor.silent
                 && self

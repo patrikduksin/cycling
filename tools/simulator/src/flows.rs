@@ -60,20 +60,25 @@ impl Sim {
         );
     }
 
-    /// Step through Sensors tiles to a saved sensor and disconnect it, which
-    /// removes it from the saved sensors.
-    pub fn disconnect_sensor(&mut self, kind: &str) {
+    /// Step through Sensors tiles to a saved sensor and open its detail page.
+    pub fn open_sensor_detail(&mut self, kind: &str) {
         for _ in 0..20 {
             let screen = self.screen();
             if screen.run(kind).is_some() && !focused_nearby(&screen) {
                 self.press(Button::BottomRight);
                 self.expect_text("DISCONNECT");
-                self.press(Button::BottomRight);
                 return;
             }
             self.press(Button::BottomLeft);
         }
         panic!("no saved {kind} tile; screen:\n{}", self.screen().text());
+    }
+
+    /// Step through Sensors tiles to a saved sensor and disconnect it, which
+    /// removes it from the saved sensors.
+    pub fn disconnect_sensor(&mut self, kind: &str) {
+        self.open_sensor_detail(kind);
+        self.press(Button::BottomRight);
     }
 
     /// Pair sensors from the Sensors page, then return Home.

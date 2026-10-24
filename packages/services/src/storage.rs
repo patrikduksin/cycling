@@ -9,9 +9,14 @@ pub const HEADER_SIZE: usize = 24;
 pub const CAPACITY: usize = SECTOR_SIZE - HEADER_SIZE;
 
 const MAGIC: [u8; 4] = *b"C606";
+/// Every later format keeps bit 0 clear, so its whole version field never
+/// passes `torn_first_save` as a partly programmed version 1.
 const FORMAT_VERSION: u16 = 1;
+const _: () = assert!(FORMAT_VERSION == 1 || FORMAT_VERSION & 1 == 0);
 const COMMITTED: u32 = 0x434f_4d54;
 const COMMIT_OFFSET: usize = 20;
+/// Flash programs a page's bits in parallel, and pages in address order.
+const PAGE_SIZE: usize = 256;
 
 #[repr(C, align(4))]
 pub struct Sector(pub [u8; SECTOR_SIZE]);
@@ -188,13 +193,20 @@ impl<F: OwnedFlash> Journal<F> {
 
 fn decode(sector: &Sector) -> Option<Record> {
     let bytes = &sector.0;
-    let length = get_u32(bytes, 12) as usize;
     if bytes[0..4] != MAGIC
         || get_u16(bytes, 4) != FORMAT_VERSION
         || get_u16(bytes, 6) as usize != HEADER_SIZE
-        || length > CAPACITY
         || get_u32(bytes, COMMIT_OFFSET) != COMMITTED
     {
+        return None;
+    }
+    whole(bytes)
+}
+
+/// The record whose length and checksum verify, committed or not.
+fn whole(bytes: &[u8; SECTOR_SIZE]) -> Option<Record> {
+    let length = get_u32(bytes, 12) as usize;
+    if length > CAPACITY {
         return None;
     }
     let sequence = get_u32(bytes, 8);
@@ -202,10 +214,11 @@ fn decode(sector: &Sector) -> Option<Record> {
     (get_u32(bytes, 16) == checksum(sequence, payload)).then_some(Record { sequence, length })
 }
 
-/// Whether a sector holds a partial first save. Programming runs in order,
-/// so the header matches a sequence 1 header up to the byte where it stopped,
-/// that byte holds only bits of its target, and nothing after it is
-/// programmed. Once the header is whole, only the commit word may be partial.
+/// Whether a sector holds a partial first save. A cut inside the first page
+/// leaves each header byte with some of its target's bits programmed and no
+/// later page touched. Once the header is whole, only the commit word may be
+/// partial. A partial header whose checksum still verifies belongs to a whole
+/// later save, such as a sequence 3 cut before its commit word.
 fn torn_first_save(sector: &Sector) -> bool {
     let mut header = [0; 12];
     header[0..4].copy_from_slice(&MAGIC);
@@ -214,18 +227,17 @@ fn torn_first_save(sector: &Sector) -> bool {
     put_u32(&mut header, 8, 1);
     let bytes = &sector.0;
     let commit = get_u32(bytes, COMMIT_OFFSET);
-    match bytes
-        .iter()
-        .zip(header)
-        .position(|(byte, target)| *byte != target)
-    {
-        None => commit != COMMITTED && commit & COMMITTED == COMMITTED,
-        Some(stop) => {
-            bytes[0] != 0xff
-                && bytes[stop] & header[stop] == header[stop]
-                && bytes[stop + 1..].iter().all(|byte| *byte == 0xff)
-        }
+    if commit == COMMITTED || commit & COMMITTED != COMMITTED {
+        return false;
     }
+    bytes[..12] == header
+        || (bytes[..12]
+            .iter()
+            .zip(header)
+            .all(|(byte, target)| byte & target == target)
+            && bytes[..12].iter().any(|byte| *byte != 0xff)
+            && bytes[PAGE_SIZE..].iter().all(|byte| *byte == 0xff)
+            && whole(bytes).is_none())
 }
 
 fn newer(candidate: u32, current: u32) -> bool {
@@ -273,6 +285,9 @@ pub(crate) mod tests {
         pub(crate) bytes: [[u8; SECTOR_SIZE]; SECTOR_COUNT],
         fail_after: Option<usize>,
         tear_bytes: usize,
+        /// A cut program leaves its page partly programmed: each byte keeps
+        /// some of the bits it was clearing, drawn from this seed.
+        page_parallel: Option<u64>,
         pub(crate) operations: usize,
     }
 
@@ -282,6 +297,7 @@ pub(crate) mod tests {
                 bytes: [[0xff; SECTOR_SIZE]; SECTOR_COUNT],
                 fail_after: None,
                 tear_bytes: 0,
+                page_parallel: None,
                 operations: 0,
             }
         }
@@ -327,13 +343,28 @@ pub(crate) mod tests {
             checked_range::<()>(SECTOR_SIZE * SECTOR_COUNT, offset, data.len(), 4)
                 .map_err(|_| ())?;
             let fails = self.fails();
-            let length = if fails {
+            let landed = if fails {
                 self.tear_bytes.min(data.len())
             } else {
                 data.len()
             };
-            for (i, byte) in data[..length].iter().enumerate() {
-                self.bytes[(offset + i) / SECTOR_SIZE][(offset + i) % SECTOR_SIZE] &= *byte;
+            let cut_page = (offset + landed) / PAGE_SIZE;
+            let mut rng = self.page_parallel.map(crate::testing::Rng::new);
+            let late = rng.as_mut().is_some_and(|rng| rng.one_in(2));
+            for (i, byte) in data.iter().enumerate() {
+                let address = offset + i;
+                let target = match &mut rng {
+                    _ if !fails => *byte,
+                    None if i < landed => *byte,
+                    None => break,
+                    Some(rng) => match (address / PAGE_SIZE).cmp(&cut_page) {
+                        core::cmp::Ordering::Less => *byte,
+                        core::cmp::Ordering::Equal if late => *byte | (rng.byte() & rng.byte()),
+                        core::cmp::Ordering::Equal => *byte | rng.byte() | rng.byte(),
+                        core::cmp::Ordering::Greater => break,
+                    },
+                };
+                self.bytes[address / SECTOR_SIZE][address % SECTOR_SIZE] &= target;
             }
             if fails { Err(()) } else { Ok(()) }
         }
@@ -476,7 +507,7 @@ pub(crate) mod tests {
 
     #[test]
     fn occupied_unrecognized_journals_refuse_load_and_save_without_mutation() {
-        for scenario in 0..8 {
+        for scenario in 0..10 {
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
             match scenario {
                 0 => journal.flash.bytes[0][0] = 0, // One unknown occupied sector.
@@ -502,7 +533,7 @@ pub(crate) mod tests {
                 6 => {
                     let header = &mut journal.flash.bytes[0];
                     header[0..4].copy_from_slice(&MAGIC);
-                    put_u16(header, 4, 3);
+                    put_u16(header, 4, 4);
                     put_u16(header, 6, 28);
                     put_u32(header, 8, 1);
                     put_u32(header, 12, 5);
@@ -517,6 +548,13 @@ pub(crate) mod tests {
                     journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
                     journal.flash.bytes[1].fill(0xff);
                 }
+                // A partial header with bytes programmed past the first page.
+                8 => {
+                    journal.flash.bytes[0][0..4].copy_from_slice(&MAGIC);
+                    journal.flash.bytes[0][PAGE_SIZE] = 0;
+                }
+                // Programmed bytes behind an untouched header.
+                9 => journal.flash.bytes[0][100] = 0,
                 _ => {
                     journal.save(b"existing").unwrap();
                     if scenario == 2 {
@@ -540,6 +578,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_torn_first_save_is_preserved_and_never_blocks_the_next_save() {
+        for page_parallel in [None].into_iter().chain((0..200).map(Some)) {
+            a_torn_first_save_is_recovered(page_parallel);
+        }
+    }
+
+    fn a_torn_first_save_is_recovered(page_parallel: Option<u64>) {
         for failed_operation in 2..6 {
             for tear_bytes in [
                 0,
@@ -549,14 +593,19 @@ pub(crate) mod tests {
                 4,
                 HEADER_SIZE,
                 HEADER_SIZE + 1,
+                PAGE_SIZE - 1,
+                PAGE_SIZE,
                 2048,
                 SECTOR_SIZE,
             ] {
-                let case =
-                    std::format!("failure at operation {failed_operation}, byte {tear_bytes}");
+                let case = std::format!(
+                    "failure at operation {failed_operation}, byte {tear_bytes}, \
+                     page-parallel seed {page_parallel:?}"
+                );
                 let mut journal = Journal::new(Memory::default(), Region::Configuration);
                 journal.flash.fail_after = Some(failed_operation);
                 journal.flash.tear_bytes = tear_bytes;
+                journal.flash.page_parallel = page_parallel;
                 assert!(journal.save(b"first").is_err(), "{case}");
                 journal.flash.fail_after = None;
                 let mut output = [0; 8];
@@ -638,6 +687,7 @@ pub(crate) mod tests {
                 journal.flash.operations = 0;
                 journal.flash.fail_after = cut.then(|| rng.below(6) as usize);
                 journal.flash.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+                journal.flash.page_parallel = rng.one_in(2).then(|| rng.next());
                 let result = journal.save(&payload);
                 journal.flash.fail_after = None;
                 let mut output = [0; CAPACITY];
@@ -736,6 +786,7 @@ pub(crate) mod tests {
                 journal.flash.operations = 0;
                 journal.flash.fail_after = cut.then(|| rng.below(6) as usize);
                 journal.flash.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+                journal.flash.page_parallel = rng.one_in(2).then(|| rng.next());
                 let result = journal.save(&payload);
                 journal.flash.fail_after = None;
                 match result {

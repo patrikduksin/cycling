@@ -10,7 +10,7 @@
 use super::*;
 use crate::ride::journal::{Internal, InternalState};
 use crate::ride::log::{
-    SECTOR_SIZE, SLOT_SIZE, SLOTS, Sector, Slot, commit_word, decode, encode, erased,
+    LapStart, SECTOR_SIZE, SLOT_SIZE, SLOTS, Sector, Slot, commit_word, decode, encode, erased,
 };
 use crate::ride::storage::RideStorage;
 use crate::testing::Rng;
@@ -286,6 +286,7 @@ impl Rig {
         // Rides are numbered upwards, their records chained in order with
         // active time that never goes backwards.
         let mut open: Option<Entry> = None;
+        let mut sampled = false;
         let mut last_ride = 0;
         let mut completed = 0;
         for (index, entry) in &entries {
@@ -297,6 +298,7 @@ impl Rig {
                 );
                 last_ride = entry.ride_id;
                 open = Some(*entry);
+                sampled = false;
                 continue;
             }
             let previous = open.expect("records belong to a started ride");
@@ -310,6 +312,19 @@ impl Rig {
                 "seed {seed}: slot {index}"
             );
             if entry.kind == Kind::Samples {
+                // A ride's first sample begins its first lap; only it is marked Ride.
+                for sample in &entry.samples[..usize::from(entry.count)] {
+                    if !sampled {
+                        assert!(sample.lap.is_some(), "seed {seed}: slot {index}");
+                    } else {
+                        assert_ne!(
+                            sample.lap,
+                            Some(LapStart::Ride),
+                            "seed {seed}: slot {index}"
+                        );
+                    }
+                    sampled = true;
+                }
                 let times = entry.samples[..usize::from(entry.count)]
                     .iter()
                     .map(|sample| sample.active_ms);
@@ -348,6 +363,15 @@ impl Rig {
                 let source = self.rng.pick(&[Source::Live, Source::Demo]);
                 let now = self.now;
                 self.recorder.request(action, source, now, 1);
+                if self.rng.one_in(2) {
+                    let start = self.rng.pick(&[
+                        LapStart::Manual,
+                        LapStart::Distance,
+                        LapStart::Step,
+                        LapStart::DistanceStep,
+                    ]);
+                    self.recorder.mark_lap(start);
+                }
                 for _ in 0..self.rng.range(0, 3) {
                     self.service();
                 }

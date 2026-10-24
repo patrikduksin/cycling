@@ -327,7 +327,7 @@ fn altitude_fills_records_and_ascent_and_descent() {
     // 100 m up to 130 m in 10 m steps, then back down, with one sample
     // in the middle that has no reading.
     let at = |active_ms: u64, dm: Option<i32>| Sample {
-        altitude_dm: dm,
+        altitude: dm.map(log::Altitude::from_dm),
         ..sample(active_ms, true)
     };
     let up: Vec<Sample> = (1..=4)

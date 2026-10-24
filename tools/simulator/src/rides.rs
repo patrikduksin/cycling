@@ -44,7 +44,7 @@ impl Ride {
             .filter_map(|s| {
                 let (lat, lon) = s.location_e7?;
                 let mut point = from_e7(lat, lon);
-                point.ele = s.altitude_dm.map(|dm| f64::from(dm) / 10.0);
+                point.ele = s.altitude.map(|a| f64::from(a.dm()) / 10.0);
                 Some((point, s.utc_ms.map(|ms| ms / 1000)))
             })
             .collect();
@@ -137,8 +137,8 @@ pub fn summary(ride: &Ride) -> RideSummary {
             field(sample.battery_percent.map(|v| v.to_string())),
             field(
                 sample
-                    .altitude_dm
-                    .map(|v| format!("{:.1}", f64::from(v) / 10.0))
+                    .altitude
+                    .map(|a| format!("{:.1}", f64::from(a.dm()) / 10.0))
             ),
         );
     }

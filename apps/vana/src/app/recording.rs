@@ -13,7 +13,7 @@ use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
 use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{Lap, Laps};
-use crate::ride::log::{Sample, Source, Status};
+use crate::ride::log::{Altitude, Sample, Source, Status};
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
@@ -114,6 +114,8 @@ pub(super) struct Ride {
     /// pause or finish is settled with these readings, not those that arrived
     /// after the stop.
     settled: Option<(Sample, Step, Option<u32>)>,
+    /// The last `count` took a fresh pressure reading into the totals' altitude.
+    altitude_fresh: bool,
     /// Auto-pause and auto-start state.
     pub(super) auto: Auto,
     /// The last automatic action and when it happened, shown briefly.
@@ -164,6 +166,7 @@ impl Default for Ride {
             lap_chime: false,
             climbs: Climbs::default(),
             settled: None,
+            altitude_fresh: false,
             auto: Auto::default(),
             auto_toast: None,
             carried_ms: 0,
@@ -356,6 +359,17 @@ impl Ride {
         }
     }
 
+    /// The altitude to record with a sample: the totals' smoothed one, only
+    /// while the last step took a fresh reading into it and `pressure` is
+    /// still fresh, so it is never older than a step. Kept to the journal's
+    /// resolution.
+    pub(super) fn recorded_altitude(&self, pressure_centi_pa: Option<u32>) -> Option<Altitude> {
+        pressure_centi_pa?;
+        self.altitude_fresh
+            .then(|| self.totals.altitude_dm().map(Altitude::from_dm))
+            .flatten()
+    }
+
     /// Add an odometer step to the totals, clipped to the active time the
     /// recorder accrued since the last step. An accepted pause or finish
     /// freezes active time at once, though the status stays Recording until
@@ -369,6 +383,7 @@ impl Ride {
         pressure_centi_pa: Option<u32>,
         profile: &TrainingProfile,
     ) -> Option<ClimbEvent> {
+        self.altitude_fresh = false;
         let recorder = self.active();
         if recorder.status() != Status::Recording {
             return None;
@@ -400,6 +415,7 @@ impl Ride {
         // Only a fresh reading is altitude for the climbs; the totals keep
         // their last one through a gap, which would read as a level road.
         let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
+        self.altitude_fresh = altitude.is_some();
         let climb = self.climbs.add(credited, distance_mm, altitude);
         if let Some(ClimbEvent::Finished(_)) = climb {
             self.climbs_done = self.climbs_done.saturating_add(1);

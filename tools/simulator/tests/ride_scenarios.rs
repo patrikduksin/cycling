@@ -813,8 +813,8 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     let ride = &rides[0];
     let metres: Vec<f64> = ride
         .samples()
-        .filter_map(|s| s.altitude_dm)
-        .map(|dm| f64::from(dm) / 10.0)
+        .filter_map(|s| s.altitude)
+        .map(|a| f64::from(a.dm()) / 10.0)
         .collect();
     assert!(metres.len() > 500, "{} samples with altitude", metres.len());
     let (low, high) = metres

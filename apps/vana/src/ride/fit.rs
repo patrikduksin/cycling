@@ -557,8 +557,8 @@ impl Export {
             self.distance_mm = Some(self.distance_mm.unwrap_or(0) + step);
         }
         self.totals.add(elapsed, step.unwrap_or(0), sample, None);
-        if let Some(altitude) = sample.altitude_dm {
-            self.totals.follow_altitude_dm(altitude);
+        if let Some(altitude) = sample.altitude {
+            self.totals.follow_altitude_dm(altitude.dm());
         }
         let position = sample.location_e7.filter(|(lat, lon)| {
             (-900_000_000..=900_000_000).contains(lat)
@@ -569,7 +569,7 @@ impl Export {
             self.last_position = position;
         }
         self.samples += 1;
-        let altitude = log::altitude_fit(sample.altitude_dm);
+        let altitude = sample.altitude.map(log::Altitude::fit);
         let ts = self.advance(sample.active_ms);
         self.writer.record(
             out,

@@ -10,7 +10,7 @@ use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::screens::chrome::CONTENT;
-use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Toast, Tone};
+use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
 use crate::screens::gesture::Gestures;
 use crate::screens::home::Home;
 use crate::screens::look;
@@ -35,8 +35,8 @@ use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
 use firmware_shell::shell::{Screen, Shell};
 
-/// Live sensors whose battery wants changing, as Ready and Home name them.
-/// A sensor that is not live is missing first; its battery is not news.
+/// Sensors whose battery wants changing, as Ready and Home name them. While
+/// any sensor is not live it is missing first and no battery is news.
 struct BatteryWarning {
     title: Text<24>,
     critical: bool,
@@ -45,12 +45,15 @@ struct BatteryWarning {
 
 impl BatteryWarning {
     fn of(glance: &[crate::screens::sensors::Glance]) -> Option<Self> {
-        let mut low = glance.iter().filter(|g| g.live && g.battery_low());
+        if glance.iter().any(|g| !g.live) {
+            return None;
+        }
+        let mut low = glance.iter().filter(|g| g.battery_low());
         let first = low.next()?;
         let count = 1 + low.count();
         let critical = glance
             .iter()
-            .any(|g| g.live && g.battery == Some(BatteryStatus::Critical));
+            .any(|g| g.battery == Some(BatteryStatus::Critical));
         let mut title = Text::<24>::new();
         if count == 1 {
             let name = core::str::from_utf8(crate::screens::home::short_name(first.kind));
@@ -835,7 +838,10 @@ impl Runtime {
         let warning = BatteryWarning::of(&self.menu.glance())
             .filter(|_| !problem && status == "READY TO RIDE");
         match (self.chosen_name(), warning) {
-            (_, Some(warning)) => home.set_status(warning.title.as_bytes(), true),
+            (_, Some(warning)) => {
+                let color = if warning.critical { RED } else { AMBER };
+                home.set_status_in(warning.title.as_bytes(), color)
+            }
             // A workout waiting to be ridden names itself on the ride card.
             (Some(name), None) if !problem && status == "READY TO RIDE" => {
                 home.set_status(name.as_bytes(), false)

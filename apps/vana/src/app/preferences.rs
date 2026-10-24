@@ -1120,6 +1120,21 @@ mod tests {
         };
         assert_eq!(hidden.encode()[0], 0b1_1011);
         assert_eq!(Options::decode(&hidden.encode(), VERSION), Some(hidden));
+        // AT START (byte 1) and hidden pages (flags) share a record.
+        for ride_pages in [
+            hidden.ride_pages,
+            PageChoice::from_bits(PageChoice::BITS).unwrap(),
+        ] {
+            let both = Options {
+                auto_lap: AutoLap::AtStart,
+                ride_pages,
+                ..Options::default()
+            };
+            let bytes = both.encode();
+            assert_eq!(bytes[1], AUTO_LAP_AT_START);
+            assert_eq!(bytes[0] >> PAGES_SHIFT, ride_pages.bits());
+            assert_eq!(Options::decode(&bytes, VERSION), Some(both));
+        }
         // Versions before 6 never held page bits: a set bit is damage.
         for old in 3..=5 {
             let bytes = hidden.encode();

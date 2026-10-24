@@ -12,6 +12,7 @@ use crate::ride::climb::Climbs;
 use crate::ride::climb_ahead::Forecast;
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Sample, Status};
+use crate::ride::rider::Rider;
 use crate::ride::totals::Totals;
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::sensors::radar;
@@ -113,6 +114,8 @@ pub struct View<'a> {
     pub(super) smooth: Smooth,
     pub zone_time: ZoneTime,
     pub profile: TrainingProfile,
+    /// Weight, age and sex, for the summary's calories and W/kg.
+    pub rider: Rider,
     /// Zone colours and gauges prepared for this frame.
     pub(super) marks: Marks,
     /// The climb page's chart, prepared with `canvas`.
@@ -204,6 +207,7 @@ impl View<'_> {
             smooth: Smooth::default(),
             zone_time: ZoneTime::default(),
             profile: TrainingProfile::default(),
+            rider: Rider::default(),
             marks: Marks::default(),
             climb: ClimbFrame::default(),
             elevation_chart: None,

@@ -7,7 +7,7 @@
 //!
 //! | Byte | Field | Since |
 //! | --- | --- | --- |
-//! | 0 | Record version, 6 | 1 |
+//! | 0 | Record version, 7 | 1 |
 //! | 1..3 | FTP in watts, little-endian | 1 |
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
@@ -21,16 +21,20 @@
 //! | then | Time zone, 2 bytes owned by `clock::Zone`: 0 0 for Chile | 5 |
 //! | then | Wheel circumference in mm, little-endian, 0 for never set | 6 |
 //! | then | Wheel size mode: 0 automatic (learned from GPS), 1 manual | 6 |
+//! | then | Rider weight in kg, 0 for unset, else 30 to 200 | 7 |
+//! | then | Rider age in years, 0 for unset, else 10 to 99 | 7 |
+//! | then | Rider sex: 0 unset, 1 male, 2 female | 7 |
 //!
 //! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
 //! Both load with the default options and setup done, since a rider already
-//! used them, and the next save rewrites them as version 6. A version 3
+//! used them, and the next save rewrites them as version 7. A version 3
 //! record is `19 + 4 * count` bytes and loads with the dark theme; a version 4
 //! record is `20 + 4 * count` bytes. Both load with the Chile time zone, the
 //! zone the clock meant before it had a choice. A version 5 record is
 //! `22 + 4 * count` bytes. Versions 3 to 5 load with the default wheel size,
-//! learned automatically. A version 6 record is `25 + 4 * count` bytes, at most
-//! 65 of the shell's 96. The wheel size is global, not per sensor: the saved
+//! learned automatically. A version 6 record is `25 + 4 * count` bytes. Versions 3
+//! to 6 load with the rider's weight, age and sex unset. A version 7 record is
+//! `28 + 4 * count` bytes, at most 68 of the shell's 96. The wheel size is global, not per sensor: the saved
 //! ANT sensors are one per kind and VANA rides one bike's wheel; a sensor moved
 //! to another wheel is relearned on the next ride.
 //!
@@ -48,6 +52,7 @@
 use super::Runtime;
 use crate::clock::Zone;
 use crate::ride::laps::AutoLap;
+use crate::ride::rider::{self, Rider};
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::ride::PageChoice;
@@ -59,13 +64,15 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
 const WHEEL_LENGTH: usize = 3;
-const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V5 + WHEEL_LENGTH;
+const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V6 + rider::LENGTH;
+/// Options as version 6 stored them, without the rider's body.
+const OPTIONS_LENGTH_V6: usize = OPTIONS_LENGTH_V5 + WHEEL_LENGTH;
 /// Options as version 5 stored them, without the wheel.
 const OPTIONS_LENGTH_V5: usize = OPTIONS_LENGTH_V4 + 2;
 /// Options as version 4 stored them, without the time zone.
@@ -229,6 +236,8 @@ pub struct Options {
     pub theme: Theme,
     pub zone: Zone,
     pub wheel: Wheel,
+    /// Weight, age and sex, for heart-rate calories and W/kg.
+    pub rider: Rider,
     /// The first-run setup step to resume, 0 when setup is done.
     pub setup: u8,
     /// Ride alert settings, carried for `ride::alerts`.
@@ -249,6 +258,7 @@ impl Default for Options {
             theme: Theme::Dark,
             zone: Zone::Chile,
             wheel: Wheel::default(),
+            rider: Rider::default(),
             setup: 0,
             alerts: ALERTS_DEFAULT,
             sunset_alert: true,
@@ -283,42 +293,53 @@ impl Options {
         bytes[4..OPTIONS_LENGTH_V3].copy_from_slice(&self.alerts);
         bytes[OPTIONS_LENGTH_V3] = self.theme.byte();
         bytes[OPTIONS_LENGTH_V4..OPTIONS_LENGTH_V5].copy_from_slice(&self.zone.encode());
-        bytes[OPTIONS_LENGTH_V5..].copy_from_slice(&self.wheel.encode());
+        bytes[OPTIONS_LENGTH_V5..OPTIONS_LENGTH_V6].copy_from_slice(&self.wheel.encode());
+        bytes[OPTIONS_LENGTH_V6..].copy_from_slice(&self.rider.encode());
         bytes
     }
 
     /// Decode the options of record `version`.
     fn decode(bytes: &[u8], version: u8) -> Option<Self> {
+        let (bytes, rider) = match version {
+            3..=6 => (bytes, Rider::default()),
+            7 => {
+                let (bytes, rider) = bytes.split_last_chunk::<{ rider::LENGTH }>()?;
+                (bytes, Rider::decode(*rider)?)
+            }
+            0..=2 | 8..=u8::MAX => return None,
+        };
         let (bytes, wheel) = match version {
             3..=5 => (bytes, Wheel::default()),
-            6 => {
+            6 | 7 => {
                 let (bytes, wheel) = bytes.split_last_chunk::<WHEEL_LENGTH>()?;
                 (bytes, Wheel::decode(*wheel)?)
             }
-            _ => return None,
+            0..=2 | 8..=u8::MAX => return None,
         };
         let (bytes, zone) = match version {
             3 | 4 => (bytes, Zone::Chile),
-            5 | 6 => {
+            5..=7 => {
                 let (bytes, zone) = bytes.split_last_chunk()?;
                 (bytes, Zone::decode(*zone)?)
             }
-            _ => return None,
+            0..=2 | 8..=u8::MAX => return None,
         };
         let (bytes, theme) = match version {
             3 => (bytes, Theme::Dark),
-            _ => {
+            4..=7 => {
                 let (&theme, bytes) = bytes.split_last()?;
                 (bytes, Theme::from_byte(theme)?)
             }
+            0..=2 | 8..=u8::MAX => return None,
         };
         let (&[flags, auto_lap, daylight, setup], alerts) = bytes.split_first_chunk()?;
         let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
         // Every flag bit means something now, so none can be unknown.
         let ride_pages = match version {
             3..=5 if flags >> PAGES_SHIFT != 0 => return None,
-            3..=6 => PageChoice::from_bits(flags >> PAGES_SHIFT)?,
-            0..=2 | 7..=u8::MAX => return None,
+            3..=5 => PageChoice::default(),
+            6 | 7 => PageChoice::from_bits(flags >> PAGES_SHIFT)?,
+            0..=2 | 8..=u8::MAX => return None,
         };
         Some(Self {
             auto_pause: flags & AUTO_PAUSE != 0,
@@ -328,6 +349,7 @@ impl Options {
             theme,
             zone,
             wheel,
+            rider,
             setup,
             alerts,
             sunset_alert: flags & SUNSET_OFF == 0,
@@ -428,13 +450,14 @@ pub fn decode(bytes: &[u8]) -> (Record, Stored) {
         _ => return (Record::default(), Stored::Unsupported),
     };
     let fields = match version {
+        0 | 8..=u8::MAX => return (Record::default(), Stored::Malformed),
         1 => rest
             .is_empty()
             .then(|| (Saved::default(), Options::default())),
         2 => Saved::decode(rest)
             .ok()
             .map(|sensors| (sensors, Options::default())),
-        _ => {
+        3..=VERSION => {
             // The sensor field's own count says where the options start.
             let length = rest.first().map_or(0, |&count| 1 + 4 * usize::from(count));
             rest.split_at_checked(length)
@@ -795,14 +818,15 @@ mod tests {
     }
 
     #[test]
-    fn version_six_layout_is_pinned() {
+    fn version_seven_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
         let defaults = record(profile, none, Options::default());
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                6, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0
+                7, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+                0, 0
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -824,6 +848,7 @@ mod tests {
                 mm: Some(2105),
                 manual: true,
             },
+            rider: Rider::decode([72, 41, 2]).unwrap(),
             setup: 3,
             alerts: [50, 180, 100, 0, 0x2c, 1, 70, 30, 0],
             sunset_alert: true,
@@ -834,8 +859,8 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                6, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
-                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1
+                7, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -846,11 +871,148 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 65);
+        assert_eq!(bytes.len(), 68);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
         // A later version may place its fields differently: never guess.
         assert_eq!(Options::decode(&options.encode(), VERSION + 1), None);
+    }
+
+    /// A version 6 record has no rider body: every field it had stays, and
+    /// weight, age and sex load unset, so heart-rate calories and W/kg stay off.
+    #[test]
+    fn version_six_migrates_with_the_rider_unset() {
+        let bytes = [
+            6, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100, 0,
+            0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1,
+        ];
+        let (migrated, stored) = decode(&bytes);
+        assert_eq!(stored, Stored::Migrated);
+        assert_eq!(migrated.options.rider, Rider::default());
+        assert_eq!(migrated.options.wheel.mm, Some(2105));
+        assert!(migrated.options.wheel.manual);
+        assert_eq!(migrated.options.zone, Zone::utc(-3));
+        assert_eq!(migrated.options.theme, Theme::Auto);
+        assert_eq!(migrated.options.setup, 3);
+        assert_eq!(migrated.sensors.peers().count(), 2);
+        assert_eq!(migrated.profile, TrainingProfile::new(0x0102, 170).unwrap());
+        let rewritten = encode(&migrated);
+        assert_eq!(rewritten[0], 7);
+        assert_eq!(rewritten[1..bytes.len()], bytes[1..]);
+        assert_eq!(rewritten[bytes.len()..], [0, 0, 0]);
+        assert_eq!(decode(&rewritten), (migrated, Stored::Current));
+    }
+
+    /// A version 6 record that already holds AT START and hidden ride pages
+    /// decodes to the same options under version 7, with the body unset.
+    #[test]
+    fn a_version_six_record_with_at_start_and_hidden_pages_decodes_unchanged() {
+        let bytes = [
+            6,
+            2,
+            1,
+            170,
+            0,
+            0,
+            0b1_1011,
+            AUTO_LAP_AT_START,
+            2,
+            3,
+            50,
+            180,
+            100,
+            0,
+            0x2c,
+            1,
+            70,
+            30,
+            0,
+            2,
+            1,
+            0xf4,
+            0x39,
+            0x08,
+            1,
+        ];
+        let (migrated, stored) = decode(&bytes);
+        assert_eq!(stored, Stored::Migrated);
+        assert_eq!(migrated.options.auto_lap, AutoLap::AtStart);
+        assert_eq!(
+            migrated.options.ride_pages,
+            PageChoice::default()
+                .toggled(RidePage::Stats)
+                .toggled(RidePage::Lap)
+        );
+        assert!(migrated.options.auto_pause && migrated.options.sounds);
+        assert_eq!(migrated.options.rider, Rider::default());
+        assert_eq!(migrated.options.wheel.mm, Some(2105));
+        let rewritten = encode(&migrated);
+        assert_eq!(rewritten[0], 7);
+        assert_eq!(rewritten[1..bytes.len()], bytes[1..]);
+        assert_eq!(rewritten[bytes.len()..], [0, 0, 0]);
+        assert_eq!(decode(&rewritten), (migrated, Stored::Current));
+    }
+
+    /// Every older version loads with the body unset and its other fields
+    /// unchanged, and its rewrite as version 7 only appends the body.
+    #[test]
+    fn every_older_record_decodes_unchanged_with_the_rider_unset() {
+        let sensors = [1, 120, 0x34, 0x12, 1];
+        let alerts = [50, 180, 100, 0, 0x2c, 1, 70, 30, 0];
+        for version in 3..=6u8 {
+            let mut bytes = heapless::Vec::<u8, 64>::new();
+            bytes.extend_from_slice(&[version, 2, 1, 170, 0]).unwrap();
+            bytes.extend_from_slice(&sensors).unwrap();
+            bytes.extend_from_slice(&[0b10, 10, 2, 3]).unwrap();
+            bytes.extend_from_slice(&alerts).unwrap();
+            if version >= 4 {
+                bytes.push(1).unwrap();
+            }
+            if version >= 5 {
+                bytes.extend_from_slice(&[1, 0xf4]).unwrap();
+            }
+            if version >= 6 {
+                bytes.extend_from_slice(&[0xf4, 0x08, 1]).unwrap();
+            }
+            let (migrated, stored) = decode(&bytes);
+            assert_eq!(stored, Stored::Migrated, "version {version}");
+            assert_eq!(
+                migrated.options.rider,
+                Rider::default(),
+                "version {version}"
+            );
+            assert_eq!(migrated.options.alerts, alerts, "version {version}");
+            assert_eq!(migrated.sensors.peers().count(), 1, "version {version}");
+            let rewritten = encode(&migrated);
+            assert_eq!(decode(&rewritten), (migrated, Stored::Current));
+            assert_eq!(rewritten[rewritten.len() - 3..], [0, 0, 0]);
+        }
+    }
+
+    /// The rider's body is stored whole and a damaged one is never trusted.
+    #[test]
+    fn a_stored_body_round_trips_and_a_damaged_one_is_refused() {
+        let mut chosen = Record::default();
+        chosen.options.rider = Rider::decode([72, 41, 2]).unwrap();
+        let bytes = encode(&chosen);
+        assert_eq!(bytes[bytes.len() - 3..], [72, 41, 2]);
+        assert_eq!(decode(&bytes), (chosen, Stored::Current));
+        for tail in [
+            [29, 41, 2],
+            [201, 41, 2],
+            [72, 9, 2],
+            [72, 100, 2],
+            [72, 41, 3],
+        ] {
+            let mut damaged = bytes.to_vec();
+            let at = damaged.len() - 3;
+            damaged[at..].copy_from_slice(&tail);
+            assert_eq!(
+                decode(&damaged),
+                (Record::default(), Stored::Malformed),
+                "{tail:?}"
+            );
+        }
     }
 
     /// A version 5 record has no wheel: its rider gets the default size, set
@@ -881,7 +1043,8 @@ mod tests {
             manual: false,
         };
         let bytes = encode(&learned);
-        assert_eq!(&bytes[bytes.len() - 3..], [0x98, 0x08, 0]);
+        let wheel_at = bytes.len() - 6;
+        assert_eq!(&bytes[wheel_at..wheel_at + 3], [0x98, 0x08, 0]);
         assert_eq!(decode(&bytes), (learned, Stored::Current));
         assert_eq!(learned.options.wheel.size_mm(), 2200);
         for tail in [
@@ -892,8 +1055,7 @@ mod tests {
             [0x98, 0x08, 255],
         ] {
             let mut damaged = bytes.to_vec();
-            let at = damaged.len() - 3;
-            damaged[at..].copy_from_slice(&tail);
+            damaged[wheel_at..wheel_at + 3].copy_from_slice(&tail);
             assert_eq!(
                 decode(&damaged),
                 (Record::default(), Stored::Malformed),
@@ -902,7 +1064,7 @@ mod tests {
         }
         for mm in [1500u16, 2400] {
             let mut edge = bytes.to_vec();
-            let at = edge.len() - 3;
+            let at = wheel_at;
             edge[at..at + 2].copy_from_slice(&mm.to_le_bytes());
             assert_eq!(decode(&edge).0.options.wheel.mm, Some(mm));
         }
@@ -922,7 +1084,7 @@ mod tests {
             [50, 180, 100, 0, 0x2c, 1, 70, 30, 0]
         );
         assert_eq!(migrated.options.zone, Zone::Chile);
-        // The next save writes version 6 and keeps the rest.
+        // The next save writes version 7 and keeps the rest.
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
 
@@ -983,7 +1145,7 @@ mod tests {
     }
 
     /// Records older firmware wrote carry their auto lap byte (0 to 100)
-    /// unchanged under versions 3 to 6, and AT START composes with each.
+    /// unchanged under versions 3 to 7, and AT START composes with each.
     #[test]
     fn records_from_older_firmware_keep_their_auto_lap() {
         let profile = TrainingProfile::new(250, 170).unwrap();
@@ -991,7 +1153,8 @@ mod tests {
             (3, OPTIONS_LENGTH_V3),
             (4, OPTIONS_LENGTH_V4),
             (5, OPTIONS_LENGTH_V5),
-            (6, OPTIONS_LENGTH),
+            (6, OPTIONS_LENGTH_V6),
+            (7, OPTIONS_LENGTH),
         ] {
             for (byte, auto_lap) in [
                 (0, AutoLap::Off),
@@ -1044,7 +1207,7 @@ mod tests {
             )
         );
         assert_eq!(Options::default().setup, 0);
-        // The next save writes version 6 with the same profile and sensors.
+        // The next save writes version 7 with the same profile and sensors.
         let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
@@ -1057,7 +1220,7 @@ mod tests {
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         // A newer version, even one that appended fields.
         assert_eq!(
-            decode(&[7, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
+            decode(&[8, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
             (defaults, Stored::Unsupported)
         );
         assert_eq!(decode(&[0xff]), (defaults, Stored::Unsupported));
@@ -1079,6 +1242,11 @@ mod tests {
             &[4, 250, 0, 170, 0, 0],
             &[5, 250, 0, 170, 0, 0],
             &[6, 250, 0, 170, 0, 0],
+            &[7, 250, 0, 170, 0, 0],
+            // Version 6 options under version 7: the rider is missing.
+            &[
+                7, 250, 0, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            ],
             // Version 5 options under version 6: the wheel is missing.
             &[
                 6, 250, 0, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
@@ -1088,7 +1256,7 @@ mod tests {
                 5, 250, 0, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,
             ],
             // A sensor count that runs past the record.
-            &[6, 250, 0, 170, 0, 2, 120, 1, 0, 1],
+            &[7, 250, 0, 170, 0, 2, 120, 1, 0, 1],
         ] {
             assert_eq!(
                 decode(damaged),
@@ -1146,7 +1314,7 @@ mod tests {
             Options::decode(&every, VERSION).map(|o| o.ride_pages.bits()),
             Some(0b1_1111)
         );
-        // Version 6 options: one byte short or long, too
+        // Version 7 options: one byte short or long, an unknown flag, too
         // long a lap, an unknown day/night, theme or zone, and an impossible FTP.
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
@@ -1162,10 +1330,13 @@ mod tests {
             ([250, 0], with(OPTIONS_LENGTH_V3, 3)),
             ([250, 0], with(OPTIONS_LENGTH_V4, 2)),
             ([250, 0], with(OPTIONS_LENGTH_V5, 0xdb)),
-            ([250, 0], with(OPTIONS_LENGTH - 1, 2)),
+            ([250, 0], with(OPTIONS_LENGTH_V6 - 1, 2)),
+            ([250, 0], with(OPTIONS_LENGTH_V6, 29)),
+            ([250, 0], with(OPTIONS_LENGTH_V6 + 1, 100)),
+            ([250, 0], with(OPTIONS_LENGTH - 1, 3)),
             ([0, 0], good.to_vec()),
         ] {
-            let damaged = [&[6, profile[0], profile[1], 170, 0, 0][..], &options].concat();
+            let damaged = [&[7, profile[0], profile[1], 170, 0, 0][..], &options].concat();
             assert_eq!(
                 decode(&damaged),
                 (defaults, Stored::Malformed),
@@ -1258,6 +1429,12 @@ mod tests {
             },
             ride_pages: PageChoice::from_bits(rng.range(0, u64::from(PageChoice::BITS)) as u8)
                 .unwrap_or_default(),
+            rider: Rider::decode([
+                rng.pick(&[0, 30, 72, 200]),
+                rng.pick(&[0, 10, 41, 99]),
+                rng.pick(&[0, 1, 2]),
+            ])
+            .unwrap(),
             zone: if rng.one_in(3) {
                 Zone::Chile
             } else {

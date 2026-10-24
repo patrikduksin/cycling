@@ -22,6 +22,9 @@ pub enum Row {
     Ftp,
     Threshold,
     Bests,
+    Weight,
+    Age,
+    Sex,
     Brightness,
     AutoDim,
     Daylight,
@@ -76,8 +79,9 @@ pub enum SettingsAction {
 }
 
 /// Sections in order, each with its title and the rows it holds.
-pub const SECTIONS: [(&str, &[Row]); 10] = [
+pub const SECTIONS: [(&str, &[Row]); 11] = [
     ("PROFILE", &[Row::Ftp, Row::Threshold, Row::Bests]),
+    ("BODY", &[Row::Weight, Row::Age, Row::Sex]),
     (
         "DISPLAY",
         &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
@@ -155,6 +159,9 @@ impl Row {
             Self::Ftp => "FTP WATTS",
             Self::Threshold => "LTHR BPM",
             Self::Bests => "BESTS",
+            Self::Weight => "WEIGHT KG",
+            Self::Age => "AGE YEARS",
+            Self::Sex => "SEX",
             Self::Brightness => "BRIGHTNESS",
             Self::AutoDim => "DIM AFTER",
             Self::Daylight => "DAY / NIGHT",
@@ -208,7 +215,7 @@ impl Row {
 
     pub const fn kind(self) -> Kind {
         match self {
-            Self::Ftp | Self::Threshold | Self::Wheel => Kind::Number,
+            Self::Ftp | Self::Threshold | Self::Wheel | Self::Weight | Self::Age => Kind::Number,
             Self::Brightness
             | Self::AutoDim
             | Self::Daylight
@@ -230,7 +237,8 @@ impl Row {
             | Self::HeartHigh
             | Self::HeartLow
             | Self::PowerHigh
-            | Self::PowerLow => Kind::Choice,
+            | Self::PowerLow
+            | Self::Sex => Kind::Choice,
             Self::Sensors | Self::Phone | Self::Bests => Kind::Open,
             Self::Storage | Self::Firmware => Kind::Info,
         }
@@ -259,6 +267,17 @@ pub fn first_of(section: usize) -> usize {
 
 /// Each press or tap moves a number by this much: watts, bpm or a wheel's mm.
 pub const STEP: u16 = 5;
+
+impl Row {
+    /// How far a press or tap moves this row's number: a kilogram or a year
+    /// at a time, `STEP` for the rest.
+    pub const fn step(self) -> u16 {
+        match self {
+            Self::Weight | Self::Age => 1,
+            _ => STEP,
+        }
+    }
+}
 
 /// Lines the runtime prepares for this page.
 pub const STATUS: usize = 0;
@@ -404,11 +423,18 @@ fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bo
         Align::Left,
         WHITE,
     );
-    // A note that does not fit whole beside the value is left out.
-    let note = view.lines[NOTES + slot].as_bytes();
+    // A note too wide beside the value gives way to its part after a comma, then to none.
+    let whole = view.lines[NOTES + slot].as_bytes();
     let room = right.saturating_sub(value.right() + 12);
-    if !note.is_empty() && Line::<24>::fit(&[&CAPTION], note, room).text().len() == note.len() {
-        canvas.caption(note, room, right, base, Align::Right);
+    let last = whole
+        .windows(2)
+        .position(|pair| pair == b", ")
+        .map_or(whole, |at| &whole[at + 2..]);
+    for note in [whole, last] {
+        if !note.is_empty() && Line::<24>::fit(&[&CAPTION], note, room).text().len() == note.len() {
+            canvas.caption(note, room, right, base, Align::Right);
+            break;
+        }
     }
 }
 
@@ -454,9 +480,14 @@ fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
         Align::Left,
         WHITE,
     );
+    let (lower, raise): (&[u8], &[u8]) = if row.step() == 1 {
+        (b"-1", b"+1")
+    } else {
+        (b"-5", b"+5")
+    };
     for (left, right, label) in [
-        (LEFT, PAD_SPLIT - PAD_GAP, b"-5"),
-        (PAD_SPLIT + PAD_GAP, RIGHT, b"+5"),
+        (LEFT, PAD_SPLIT - PAD_GAP, lower),
+        (PAD_SPLIT + PAD_GAP, RIGHT, raise),
     ] {
         canvas.shape(Shape::Panel {
             rect: Rect {
@@ -524,7 +555,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 30);
+        assert_eq!(ROWS, 33);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -532,9 +563,11 @@ mod tests {
             assert!(SECTIONS[section].1.len() <= SECTION_ROWS);
         }
         assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
-        assert_eq!(section(Row::TimeZone.index()), (2, Row::TimeZone.index()));
-        assert_eq!(section(Row::Sounds.index()), (6, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (8, Row::HeartHigh.index()));
+        assert_eq!(section(Row::Weight.index()), (1, Row::Weight.index()));
+        assert_eq!(section(Row::Sex.index()), (1, Row::Weight.index()));
+        assert_eq!(section(Row::TimeZone.index()), (3, Row::TimeZone.index()));
+        assert_eq!(section(Row::Sounds.index()), (7, Row::Sounds.index()));
+        assert_eq!(section(Row::PowerLow.index()), (9, Row::HeartHigh.index()));
         assert_eq!(first_of(SECTIONS.len()), 0);
     }
 
@@ -559,6 +592,22 @@ mod tests {
         assert!(editing.canvas.shows("FTP WATTS") && !editing.canvas.shows("LTHR BPM"));
         assert!(editing.canvas.shows("-5") && editing.canvas.shows("+5"));
         assert_eq!(editing.pixel(LEFT + 2, PAD_TOP + 20), RAISED);
+    }
+
+    #[test]
+    fn body_numbers_move_a_unit_at_a_time_and_say_when_unset() {
+        let mut editing = View::new(Page::Settings, Row::Weight.index(), None);
+        editing.editing = true;
+        let _ = editing.lines[VALUES].push_str("NOT SET");
+        let _ = editing.lines[NOTES].push_str("ADD FOR W/KG");
+        editing.prepare();
+        assert!(editing.canvas.shows("WEIGHT KG") && editing.canvas.shows("NOT SET"));
+        assert!(editing.canvas.shows("-1") && editing.canvas.shows("+1"));
+        assert!(!editing.canvas.shows("+5"));
+        assert_eq!(Row::Weight.step(), 1);
+        assert_eq!(Row::Age.step(), 1);
+        assert_eq!(Row::Ftp.step(), STEP);
+        assert_eq!(Row::Sex.kind(), Kind::Choice);
     }
 
     /// Long values, notes and statuses still lay out whole on every section.

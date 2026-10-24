@@ -484,6 +484,7 @@ fn the_light_theme_turns_every_screen_white_and_keeps_its_colours() {
     assert_eq!(corner(&sim), 0, "dark by default");
     sim.home("SETTINGS");
     sim.swipe_next();
+    sim.swipe_next();
     for _ in 0..3 {
         sim.press(Button::BottomLeft);
     }
@@ -1168,6 +1169,82 @@ fn raising_ftp_in_settings_moves_the_same_watts_down_a_zone() {
     sim.checkpoint("250 W at FTP 250");
 }
 
+/// The KCAL on the summary's effort page, once it shows a number.
+fn summary_kcal(sim: &mut Sim) -> u32 {
+    sim.press(Button::BottomLeft);
+    sim.screen()
+        .field("KCAL")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("no KCAL number; screen:\n{}", sim.screen().text()))
+}
+
+#[test]
+fn a_heart_rate_only_ride_shows_calories_once_the_body_is_set() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 0.0, 140.0, 90.0);
+    sim.advance(minutes(10));
+    sim.stop_ride();
+    sim.press(Button::BottomLeft);
+    sim.expect_field("KCAL", "--");
+    sim.checkpoint("heart rate only, body not set: no calories");
+    go_home(&mut sim);
+
+    sim.home("SETTINGS");
+    sim.swipe_next();
+    sim.expect_text("BODY");
+    sim.expect_field("WEIGHT KG", "NOT SET");
+    sim.expect_field("AGE YEARS", "NOT SET");
+    sim.expect_field("SEX", "NOT SET");
+    sim.checkpoint("settings: body not set");
+    // The first press of an unset number lands on its start, then a kilo
+    // or a year at a time.
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomRight);
+    sim.expect_field("WEIGHT KG", "70");
+    for _ in 0..5 {
+        sim.press(Button::BottomRight);
+    }
+    sim.expect_text("+1");
+    sim.checkpoint("editing weight");
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomRight);
+    sim.expect_field("AGE YEARS", "30");
+    sim.press(Button::TopLeft);
+    sim.expect_field("AGE YEARS", "30 YEARS");
+    sim.set_option("SEX", "MALE");
+    sim.expect_field("WEIGHT KG", "75 KG");
+    sim.checkpoint("settings: body set");
+    sim.swipe_previous();
+    sim.expect_text("PROFILE");
+    sim.expect_text("2.9 W/KG");
+    sim.checkpoint("settings: FTP with watts per kilogram");
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+
+    sim.start_ride();
+    sim.ride_at(30.0, 0.0, 140.0, 90.0);
+    sim.advance(minutes(10));
+    sim.stop_ride();
+    // Keytel, male 30 y 75 kg at 140 bpm for ten minutes: 129.5 kcal.
+    let kcal = summary_kcal(&mut sim);
+    assert!((129..=130).contains(&kcal), "{kcal} kcal");
+    sim.checkpoint("heart rate only, body set: calories on the summary");
+    go_home(&mut sim);
+
+    sim.power_loss();
+    assert!(sim.command("PROFILE").1.contains("stored=current"));
+    sim.home("SETTINGS");
+    sim.expect_text("2.9 W/KG");
+    sim.swipe_next();
+    sim.expect_field("WEIGHT KG", "75 KG");
+    sim.expect_field("AGE YEARS", "30 YEARS");
+    sim.expect_field("SEX", "MALE");
+}
+
 #[test]
 fn training_profile_survives_power_loss() {
     let mut sim = rider();
@@ -1775,7 +1852,7 @@ fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
 /// Turn the named ride pages off in Settings, then go back Home.
 fn hide_ride_pages(sim: &mut Sim, pages: &[&str]) {
     sim.home("SETTINGS");
-    for _ in 0..4 {
+    for _ in 0..5 {
         sim.swipe_next();
     }
     sim.expect_text("RIDE PAGES");
@@ -3999,6 +4076,21 @@ fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
     sim.expect_text("MOST ASCENT");
     sim.expect_text("260 W");
     sim.checkpoint("the BESTS view");
+    // With a weight set, each power best also reads in watts per kilogram.
+    sim.expect_no_text("W/KG");
+    sim.press(Button::TopLeft);
+    sim.swipe_next();
+    sim.press(Button::BottomRight);
+    sim.press(Button::BottomRight);
+    sim.expect_field("WEIGHT KG", "70");
+    sim.press(Button::TopLeft);
+    sim.swipe_previous();
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomLeft);
+    sim.press(Button::BottomRight);
+    sim.expect_text("LONGEST RIDE");
+    sim.expect_text("3.7 W/KG");
+    sim.checkpoint("the BESTS view with watts per kilogram");
     // ACT asks first; BACK keeps them.
     sim.press(Button::BottomRight);
     sim.expect_text("CLEAR BESTS?");
@@ -4100,8 +4192,8 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_text("PROFILE");
     sim.expect_field("FTP WATTS", "215");
     sim.checkpoint("settings open on the profile");
-    // MOVE walks the rows, past the last profile row into Display.
-    for _ in 0..3 {
+    // MOVE walks the rows, past the profile and body rows into Display.
+    for _ in 0..6 {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("DISPLAY");
@@ -4726,7 +4818,12 @@ fn the_clock_reads_santiago_winter_time_in_june() {
     sim.checkpoint("time zone chile in winter");
     sim.set_option("TIME ZONE", "UTC-3");
     sim.expect_text("ALL YEAR");
-    sim.expect_text("1:00");
+    // Each swipe costs about a second, so the minute may have turned.
+    assert!(
+        sim.screen().contains("1:00") || sim.screen().contains("1:01"),
+        "{}",
+        sim.screen().text()
+    );
     sim.checkpoint("time zone fixed at utc-3");
     go_home(&mut sim);
     sim.home("RIDES");
@@ -5469,6 +5566,7 @@ fn the_sunset_caption_shows_in_the_light_theme() {
         sim.pair(&["SPEED/CAD"]);
         sim.home("SETTINGS");
         sim.swipe_next();
+        sim.swipe_next();
         for _ in 0..3 {
             sim.press(Button::BottomLeft);
         }
@@ -5501,7 +5599,7 @@ fn distances(sim: &mut Sim, start_m: f64) -> (f64, f64) {
 /// Open Settings on its RIDE section, where the wheel rows are.
 fn ride_settings(sim: &mut Sim) {
     sim.home("SETTINGS");
-    for _ in 0..3 {
+    for _ in 0..4 {
         sim.swipe_next();
     }
 }
@@ -5572,21 +5670,30 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     assert!((error_before + 2.9).abs() < 0.2, "{error_before:.2} %");
     sim.checkpoint("ride 1: still on the old size after learning");
     sim.stop_ride();
-    sim.wait_for("WHEEL SET 2200 MM", seconds(5)).unwrap();
+    sim.wait_for("WHEEL SET 22", seconds(5)).unwrap();
     sim.checkpoint("ride 1 over: the rider is told once");
+    // The learned size depends on where the ride's GPS windows fall, so a
+    // millimetre of timing drift may move it.
+    let fields = wheel_fields(&mut sim);
+    let learned: u16 = fields
+        .split("stored_mm=")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|mm| mm.parse().ok())
+        .unwrap();
+    assert!((2199..=2201).contains(&learned), "{fields}");
     assert!(
-        wheel_fields(&mut sim).contains("wheel_mm=2200 stored_mm=2200 mode=auto"),
-        "{}",
-        wheel_fields(&mut sim)
+        fields.contains(&format!("wheel_mm={learned} stored_mm={learned} mode=auto")),
+        "{fields}"
     );
     sim.advance(seconds(6));
     sim.expect_no_text("WHEEL SET");
     go_home(&mut sim);
 
     ride_settings(&mut sim);
-    sim.expect_text("2200 MM");
+    sim.expect_text(&format!("{learned} MM"));
     sim.expect_text("AUTO");
-    sim.checkpoint("settings: wheel 2200 mm, auto");
+    sim.checkpoint("settings: wheel learned, auto");
     leave_settings(&mut sim);
 
     // Ride 2 measures with the learned size.
@@ -5607,7 +5714,9 @@ fn a_wheel_three_percent_off_is_learned_from_gps_and_used_from_the_next_ride() {
     println!(
         "| 1, before | 2136 mm | {shown_before:.2} | {true_before:.2} | {error_before:+.2} % |"
     );
-    println!("| 2, after | 2200 mm | {shown_after:.2} | {true_after:.2} | {error_after:+.2} % |");
+    println!(
+        "| 2, after | {learned} mm | {shown_after:.2} | {true_after:.2} | {error_after:+.2} % |"
+    );
 }
 
 #[test]

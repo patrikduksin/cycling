@@ -7,6 +7,7 @@
 //! journal stays the record of truth.
 use crate::ride::load::PowerLoad;
 use crate::ride::log::Sample;
+use crate::ride::rider::Rider;
 
 /// The wheel sensor cannot measure below about 1.9 km/h (one 2136 mm
 /// revolution per its 4 s stop timeout), so anything it reports at or above
@@ -237,11 +238,29 @@ impl Totals {
     ///
     /// Human muscle turns about 24 % of the food energy it burns into work,
     /// and a kilocalorie is 4.184 kJ, so kcal = kJ / (0.24 x 4.184), which
-    /// is within half a percent of kJ itself. Without power there is no
-    /// estimate: a heart-rate formula needs the rider's weight, age and sex,
-    /// which VANA does not hold, so none is guessed.
+    /// is within half a percent of kJ itself. Without power there is none
+    /// here: `kcal_for` adds the heart-rate estimate, which needs the rider's
+    /// body.
     pub fn kcal(&self) -> Option<u32> {
         self.work_kj()
+    }
+
+    /// Kilocalories from the power meter's work when power covers at least
+    /// half the seconds heart rate was read, and otherwise the Keytel
+    /// estimate from heart rate once `rider` has set weight, age and sex. A
+    /// meter that dropped early in a long ride would count only its own
+    /// minutes. Either falls back to the other. A recorded sample stands for
+    /// one second.
+    pub fn kcal_for(&self, rider: Rider) -> Option<u32> {
+        let heart = (self.heart.count != 0)
+            .then(|| rider.heart_rate_kcal(self.heart.sum, self.heart.count))
+            .flatten();
+        let power_covers = self.power_ms >= u64::from(self.heart.count) * 500;
+        if power_covers {
+            self.kcal().or(heart)
+        } else {
+            heart.or(self.kcal())
+        }
     }
 
     pub fn avg_heart_bpm(&self) -> Option<u16> {
@@ -543,6 +562,45 @@ mod tests {
         assert_eq!(totals.avg_cadence_rpm(), Some(90));
         assert_eq!(totals.altitude_dm(), None);
         assert_eq!(totals.ascent_dm(), 0);
+    }
+
+    /// A ride with heart rate and no power gets the Keytel estimate once the
+    /// body is set; power keeps its work, and nothing set keeps no calories.
+    #[test]
+    fn calories_come_from_power_else_from_heart_rate_and_the_body() {
+        use crate::ride::rider::Rider;
+        let body = Rider::default()
+            .step_weight(1, true)
+            .step_age(1, true)
+            .next_sex();
+        let heart_only = Sample {
+            heart_bpm: Some(140),
+            ..Sample::default()
+        };
+        let mut totals = Totals::default();
+        ride(&mut totals, 3600, heart_only, None);
+        assert_eq!(totals.kcal(), None);
+        assert_eq!(totals.kcal_for(Rider::default()), None);
+        assert_eq!(totals.kcal_for(body.next_sex().next_sex()), None);
+        assert_eq!(totals.kcal_for(body), Some(763));
+
+        let mut powered = Totals::default();
+        ride(&mut powered, 600, riding(8333, 200, 140, 90), None);
+        assert_eq!(powered.kcal_for(body), Some(120));
+        assert_eq!(powered.kcal_for(Rider::default()), Some(120));
+        assert_eq!(Totals::default().kcal_for(body), None);
+
+        // A meter that dropped after five minutes of a two-hour heart-rate
+        // ride covers too little: the heart-rate estimate stands for the ride.
+        let mut partial = Totals::default();
+        ride(&mut partial, 300, riding(8333, 200, 140, 90), None);
+        ride(&mut partial, 6900, heart_only, None);
+        let hours = partial.kcal_for(body).unwrap();
+        assert!(hours > 1_400, "{hours}");
+        assert_eq!(
+            partial.kcal_for(Rider::default()),
+            Some(partial.work_kj().unwrap())
+        );
     }
 
     #[test]

@@ -5734,6 +5734,8 @@ fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
         BatteryReport::new(5, 2_100),
     );
     sim.advance(seconds(12));
+    assert_eq!(run_color(&sim, "PWR CRITICAL"), RED);
+    sim.checkpoint("home with a critical power meter battery");
     sim.home("RIDE");
     sim.expect_text("PWR CRITICAL BATTERY");
     sim.expect_text("CHANGE IT BEFORE RIDING");
@@ -5766,6 +5768,8 @@ fn a_sensor_that_is_not_live_is_named_before_any_battery_warning() {
     sim.set_present(device_type::POWER, POWER, false);
     sim.advance(seconds(20));
     sim.expect_text("1/2 LIVE");
+    sim.expect_no_text("LOW BATTERY");
+    sim.checkpoint("home does not name the battery while a sensor is missing");
     sim.home("RIDE");
     sim.expect_text("SENSORS WAKING UP");
     sim.expect_text("PWR");

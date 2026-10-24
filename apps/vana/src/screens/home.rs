@@ -204,9 +204,14 @@ impl Home {
     /// The line under the start button: READY TO RIDE, what is still
     /// starting, or a problem in amber.
     pub fn set_status(&mut self, text: &[u8], problem: bool) {
+        self.set_status_in(text, if problem { AMBER } else { SECONDARY });
+    }
+
+    /// The status line in a colour of its own, such as red for a critical
+    /// battery.
+    pub fn set_status_in(&mut self, text: &[u8], color: u16) {
         let (left, right) = (TEXT_LEFT + 2, RIDE_TILE.right - 8);
         let width = right - left;
-        let color = if problem { AMBER } else { SECONDARY };
         let top = PLAY.1 + CAPTION.height as usize + 4;
         // Too long for the column: break at the last space that fits.
         let split = (CAPTION.width(text) + SPILL > width)

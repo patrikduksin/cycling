@@ -6,7 +6,7 @@ import re
 import time
 from pathlib import Path
 
-from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.device.port import DiscoveryError, add_port_argument, select_port, selected_port
 from cycling_devtools.harness.runner import STARTUP_STOPPED
 from cycling_devtools.harness.stress import PREFERENCES, fields, read, validate
 from cycling_devtools.terminal.usb import UsbConnection, reply_fields
@@ -74,14 +74,18 @@ def check_overlong(connection, build):
 
 
 def reopen(port, directory, label, deadline=20):
-    """Retry only opening a new read-only session, never replay a prior command."""
+    """Retry only opening a new read-only session, never replay a prior command.
+
+    Without an explicit `port`, every attempt discovers the C606 again: a power
+    cycle can renumber its tty.
+    """
     stop = time.monotonic() + deadline
     attempt = 0
     while True:
         attempt += 1
-        connection = UsbConnection(port, directory / f'{label}-{attempt}.bin')
         entered = False
         try:
+            connection = UsbConnection(select_port(port), directory / f'{label}-{attempt}.bin')
             connection.__enter__()
             entered = True
             reply = connection.terminal_command('INFO')
@@ -91,7 +95,7 @@ def reopen(port, directory, label, deadline=20):
                 reply = connection.terminal_command('INFO')
             fields(reply)
             return connection
-        except OSError, RuntimeError, TimeoutError:
+        except OSError, RuntimeError, TimeoutError, DiscoveryError:
             if entered:
                 connection.__exit__(None, None, None)
             if time.monotonic() >= stop:
@@ -461,7 +465,8 @@ def main():
         parser.error('--seconds must be 2..120')
     if args.power_off and not args.panic:
         parser.error('--power-off needs --panic')
-    args.port = selected_port(parser, args.port)
+    # Fail here, before any session; each reopen discovers the C606 again.
+    selected_port(parser, args.port)
     print(json.dumps(run(args), indent=2))
 
 

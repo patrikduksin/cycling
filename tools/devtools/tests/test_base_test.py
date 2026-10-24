@@ -1,16 +1,22 @@
 import itertools
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import cycling_devtools.device.port as device_port
+from cycling_devtools.device.port import resolve_port
 from cycling_devtools.harness.base import (
     apply,
     check_overlong,
     crash_record,
     expect,
     idle_frames_allowed,
+    main,
     power_cycle,
     preserved,
+    reopen,
     settle,
     transport_recovery,
     wifi_failures,
@@ -324,6 +330,90 @@ class PowerCycleTests(unittest.TestCase):
         before = ScriptedConnection({'POWER SHUTDOWN': [('BUSY', '')]})
         with self.assertRaisesRegex(AssertionError, 'BUSY'):
             self.cycle(before, None)
+
+
+class ReenumeratingC606:
+    """A C606 whose tty node the kernel can renumber, as sysfs and /dev show it."""
+
+    def __init__(self, root):
+        self.root = root
+        self.sysfs = root / 'class/tty'
+        self.sysfs.mkdir(parents=True)
+        self.manifest = root / 'manifest.json'
+        self.manifest.write_text(json.dumps({'identity': '01:23:45:67:89:ab'}))
+        usb = root / 'devices/usb1'
+        usb.mkdir(parents=True)
+        for key, value in {'idVendor': '303a', 'idProduct': '1001', 'serial': '01:23:45:67:89:AB'}.items():
+            (usb / key).write_text(value + '\n')
+        self.usb = usb
+        self.opened = []
+
+    def attach(self, name):
+        tty = self.usb / 'interface/tty' / name
+        tty.mkdir(parents=True)
+        (self.sysfs / name).symlink_to(tty, target_is_directory=True)
+
+    def detach(self):
+        for link in self.sysfs.iterdir():
+            link.unlink()
+
+    def resolve(self):
+        return resolve_port(self.sysfs, self.manifest)
+
+    def connect(self, port, log):
+        self.opened.append(port)
+        if port is None or not (self.sysfs / Path(port).name).exists():
+            raise FileNotFoundError(2, 'No such file or directory', port)
+        return ScriptedConnection({})
+
+
+class ReenumerationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.device = ReenumeratingC606(Path(temporary.name))
+        for patcher in (
+            patch.object(device_port, 'resolve_port', self.device.resolve),
+            patch('cycling_devtools.harness.base.UsbConnection', side_effect=self.device.connect),
+            patch.dict('os.environ', {}, clear=True),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def session(self, *argv):
+        """`base.main` with `run` replaced by a power cycle that renumbers ttyACM1 to ttyACM0."""
+
+        def power_cycle_across_renumbering(args):
+            reopen(args.port, Path('captures'), 'power-off')
+            self.device.detach()
+
+            def reappear(unused):
+                if not any(self.device.sysfs.iterdir()):
+                    self.device.attach('ttyACM0')
+
+            with patch('time.sleep', side_effect=reappear):
+                reopen(args.port, Path('captures'), 'power-on', 180)
+            return {}
+
+        self.device.attach('ttyACM1')
+        with (
+            patch('sys.argv', ['base', 'captures', '--panic', '--power-off', *argv]),
+            patch('cycling_devtools.harness.base.run', side_effect=power_cycle_across_renumbering),
+            patch('builtins.print'),
+        ):
+            main()
+
+    def test_reopen_follows_the_c606_to_its_new_tty_after_a_power_cycle(self):
+        self.session()
+        self.assertEqual(self.device.opened[0], '/dev/ttyACM1')
+        self.assertEqual(self.device.opened[-1], '/dev/ttyACM0')
+
+    def test_an_explicit_port_is_never_rediscovered(self):
+        self.device.attach('ttyACM0')
+        with patch('time.monotonic', side_effect=itertools.count(step=10)), patch('time.sleep'):
+            with self.assertRaises(FileNotFoundError):
+                reopen('/dev/ttyACM1', Path('captures'), 'power-on', 5)
+        self.assertEqual(set(self.device.opened), {'/dev/ttyACM1'})
 
 
 class FramingTests(unittest.TestCase):

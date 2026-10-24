@@ -197,7 +197,9 @@ impl Target {
             return None;
         };
         let stage = elapsed_s / u32::from(every.max(1));
-        Some((u32::from(start) + stage * u32::from(step)).min(u32::from(u16::MAX)) as u16)
+        Some(
+            (u64::from(start) + u64::from(stage) * u64::from(step)).min(u64::from(u16::MAX)) as u16,
+        )
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod alerts;
 pub mod auto;
+pub mod bests;
 pub mod bulk;
 pub mod climb;
 pub mod climb_ahead;

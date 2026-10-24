@@ -236,6 +236,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         | Page::EndRide
         | Page::Summary
         | Page::Settings
+        | Page::Bests
         | Page::Workouts
         | Page::Phone
         | Page::History
@@ -288,10 +289,13 @@ impl Runtime {
                 self.navigation.page = Page::EndRide;
             }
             Some(Go::Summary) => {
+                self.navigation.best_news =
+                    super::bests::news(&self.ride.bests_found, &self.bests.bests);
                 self.navigation.summary_page = 0;
                 self.navigation.page = Page::Summary;
             }
             Some(Go::Home) => {
+                self.navigation.leave_summary();
                 self.navigation.ride_page = RidePage::Main;
                 self.navigation.page = Page::Home;
                 self.leave_workout();

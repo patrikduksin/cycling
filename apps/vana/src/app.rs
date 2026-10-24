@@ -10,6 +10,7 @@ use device_api::{
 };
 
 mod back;
+mod bests;
 pub use back::{BACK_CRUMBS, BackToStart, Crumb};
 mod commands;
 mod cues;
@@ -64,6 +65,7 @@ pub struct Runtime {
     sensors: Client,
     ride: recording::Ride,
     preferences: preferences::Preferences,
+    bests: bests::Kept,
     power: power::Power,
     timing: timing::Timing,
     training: training::Training,
@@ -93,6 +95,7 @@ impl Runtime {
             sensors: Client::new(profile),
             ride: recording::Ride::default(),
             preferences: preferences::Preferences::default(),
+            bests: bests::Kept::default(),
             power: power::Power::default(),
             timing: timing::Timing::default(),
             training: training::Training::default(),
@@ -238,6 +241,7 @@ impl Runtime {
         self.record(store, bulk, now, sample);
         self.replay_step(store, bulk);
         self.service_workouts(bulk);
+        self.service_bests(bulk, now);
         self.directory_step(store, bulk);
         self.track_back(now);
     }

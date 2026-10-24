@@ -10,8 +10,12 @@
 //!    lowest and highest altitude over the ride's elevation profile.
 //! 4. Best power (page 3 without an elevation page): the best 5 s, 1, 5 and
 //!    20 min of the ride as bars, then the climbs and laps.
+//! 5. Only when a new 20 min best suggests a higher FTP: `FTP 245 W?`. ACT
+//!    (check cue) takes it and BACK (back cue) keeps the FTP in force; either
+//!    one then finishes, as on every page.
 //!
-//! ACT (the green check cue) or BACK finishes and opens Home.
+//! ACT (the green check cue) or BACK finishes and opens Home. A personal best
+//! the ride set says `BEST` in its caption, in the reading's colour.
 //!
 //! A saved ride from the ride list shows on the same pages, read back from
 //! its journal: its start replaces RIDE SAVED, BACK returns to the list and
@@ -23,6 +27,7 @@
 use super::elevation::Chart;
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
+use crate::ride::bests::Found;
 use crate::ride::totals::EFFORT_SECONDS;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
@@ -36,6 +41,20 @@ pub const CUE: Cue = Cue::new(Corner::BottomRight, Icon::Check);
 /// A saved ride: ACT sends it to the phone. BACK keeps its fixed role,
 /// back to the list, without a cue, as on the ride pages.
 pub const PAST_CUES: [Cue; 1] = [Cue::new(Corner::BottomRight, Icon::Send)];
+/// The FTP offer: ACT takes it, BACK keeps the FTP in force.
+pub const OFFER_CUES: [Cue; 2] = [
+    Cue::new(Corner::TopLeft, Icon::Back),
+    Cue::new(Corner::BottomRight, Icon::Check),
+];
+
+/// A suggested FTP: 95% of a new 20 min best, well above the one in force.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FtpOffer {
+    pub suggested: u16,
+    pub current: u16,
+    /// The 20 min best it comes from, in watts.
+    pub best: u16,
+}
 
 /// Where the saved ride stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +86,30 @@ pub struct After {
     pub past: bool,
     /// The ride has an elevation page.
     pub elevation: bool,
+    /// The personal bests this ride set.
+    pub found: Found,
+    /// The FTP on offer as the last page.
+    pub offer: Option<FtpOffer>,
+}
+
+/// How many pages the summary has, the FTP offer included.
+pub fn total_pages(after: &After) -> usize {
+    pages(after.elevation) + usize::from(after.offer.is_some() && !after.past)
+}
+
+/// Whether the FTP offer, the page after the others, is on screen.
+pub fn offer_shown(after: &After) -> bool {
+    after.page == pages(after.elevation) && after.offer.is_some() && !after.past
+}
+
+/// "5 S", "1 MIN", "5 MIN" or "20 MIN": the length of best effort `index`.
+pub fn effort_label(index: usize) -> Text<12> {
+    let mut label = Text::new();
+    let _ = match EFFORT_SECONDS[index] {
+        s if s < 60 => core::fmt::Write::write_fmt(&mut label, format_args!("{s} S")),
+        s => core::fmt::Write::write_fmt(&mut label, format_args!("{} MIN", s / 60)),
+    };
+    label
 }
 
 const LEFT: usize = 16;
@@ -86,29 +129,78 @@ pub const BADGE: Badge = Badge {
 };
 
 /// A caption over its value in a column of the band whose caption top is
-/// `top`, as on the ride pages.
-fn cell(canvas: &mut Canvas, column: usize, top: usize, caption: &[u8], value: &[u8], color: u16) {
+/// `top`, as on the ride pages. A new personal best says `BEST` in its
+/// caption, in the reading's colour.
+fn cell(canvas: &mut Canvas, column: usize, top: usize, reading: &Reading) {
     let (left, right) = if column == 0 {
         (LEFT, MIDDLE - COLUMN_GAP)
     } else {
         (MIDDLE, RIGHT)
     };
-    canvas.caption(caption, right - left, left, top + 12, Align::Left);
+    let (caption, caption_color) = match reading.best {
+        Some(caption) => (caption, reading.color),
+        None => (reading.caption, SECONDARY),
+    };
+    canvas.fit(
+        &[&CAPTION],
+        caption,
+        right - left,
+        left,
+        top + 12,
+        Align::Left,
+        caption_color,
+    );
     canvas.fit(
         &[&VALUE, &BODY],
-        value,
+        reading.value.as_bytes(),
         right - left,
         left,
         top + 41,
         Align::Left,
-        color,
+        reading.color,
     );
 }
 
-fn cells(canvas: &mut Canvas, first: usize, cells: &[(&[u8], &Text<12>, u16)]) {
-    for (index, (caption, value, color)) in cells.iter().enumerate() {
+/// A caption over a value, and the caption of a personal best in its place.
+#[derive(Clone, Copy)]
+struct Reading<'a> {
+    caption: &'a [u8],
+    value: &'a Text<12>,
+    color: u16,
+    best: Option<&'a [u8]>,
+}
+
+/// The room a `BEST` caption has under a best-power bar.
+const BEST_WIDTH: usize = 44;
+
+fn reading<'a>(caption: &'a [u8], value: &'a Text<12>, color: u16) -> Reading<'a> {
+    Reading {
+        caption,
+        value,
+        color,
+        best: None,
+    }
+}
+
+impl<'a> Reading<'a> {
+    /// A new personal best: `caption` replaces the usual one, and the value
+    /// takes `color` where it would be white.
+    fn best(self, set: bool, caption: &'a [u8], color: u16) -> Self {
+        if !set {
+            return self;
+        }
+        Self {
+            best: Some(caption),
+            color,
+            ..self
+        }
+    }
+}
+
+fn cells(canvas: &mut Canvas, first: usize, cells: &[Reading]) {
+    for (index, reading) in cells.iter().enumerate() {
         let top = first + index / 2 * super::CELL_PITCH;
-        cell(canvas, index % 2, top, caption, value.as_bytes(), *color);
+        cell(canvas, index % 2, top, reading);
     }
 }
 
@@ -151,6 +243,7 @@ pub fn prepare(view: &View) -> Canvas {
     match view.after.page {
         0 => overview(view, &mut canvas),
         1 => effort(view, &mut canvas),
+        _ if offer_shown(&view.after) => ftp_offer(view, &mut canvas),
         2 if view.after.elevation => elevation_page(view, &mut canvas),
         _ => best_power(view, &mut canvas),
     }
@@ -185,16 +278,17 @@ fn overview(view: &View, canvas: &mut Canvas) {
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
     whole(power, totals.avg_power());
     whole(heart, totals.avg_heart_bpm());
+    let found = view.after.found;
     cells(
         canvas,
         122,
         &[
-            (b"TIME", time, WHITE),
-            (b"DIST KM", distance, WHITE),
-            (b"AVG KM/H", avg_speed, SPEED),
-            (b"ASCENT M", ascent, GRADE),
-            (b"AVG W", power, POWER),
-            (b"AVG BPM", heart, HEART),
+            reading(b"TIME", time, WHITE).best(found.time, b"BEST TIME", SPEED),
+            reading(b"DIST KM", distance, WHITE).best(found.distance, b"BEST KM", SPEED),
+            reading(b"AVG KM/H", avg_speed, SPEED),
+            reading(b"ASCENT M", ascent, GRADE).best(found.ascent, b"BEST ASC M", GRADE),
+            reading(b"AVG W", power, POWER),
+            reading(b"AVG BPM", heart, HEART),
         ],
     );
 }
@@ -214,12 +308,12 @@ fn effort(view: &View, canvas: &mut Canvas) {
         canvas,
         first,
         &[
-            (b"NP W", np, POWER),
-            (b"AVG W", avg, POWER),
-            (b"MAX W", max, POWER),
-            (b"WORK KJ", work, WHITE),
-            (b"AVG BPM", heart, HEART),
-            (b"MAX BPM", max_heart, HEART),
+            reading(b"NP W", np, POWER),
+            reading(b"AVG W", avg, POWER),
+            reading(b"MAX W", max, POWER),
+            reading(b"WORK KJ", work, WHITE),
+            reading(b"AVG BPM", heart, HEART),
+            reading(b"MAX BPM", max_heart, HEART),
         ],
     );
     let marks = &view.marks;
@@ -278,10 +372,10 @@ fn elevation_page(view: &View, canvas: &mut Canvas) {
         canvas,
         ELEVATION_CELLS,
         &[
-            (b"ASCENT M", ascent, GRADE),
-            (b"DESCENT M", descent, GRADE),
-            (b"MIN M", low, GRADE),
-            (b"MAX M", high, GRADE),
+            reading(b"ASCENT M", ascent, GRADE),
+            reading(b"DESCENT M", descent, GRADE),
+            reading(b"MIN M", low, GRADE),
+            reading(b"MAX M", high, GRADE),
         ],
     );
 }
@@ -295,13 +389,9 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     canvas.caption(b"BEST POWER W", RIGHT - LEFT, LEFT, first + 12, Align::Left);
     let pitch = 38;
     let peak = view.after.best.iter().flatten().max().copied().unwrap_or(0);
-    for (index, (seconds, best)) in EFFORT_SECONDS.iter().zip(view.after.best).enumerate() {
+    for (index, best) in view.after.best.into_iter().enumerate() {
         let base = first + 48 + index * pitch;
-        let mut label = Text::<12>::new();
-        let _ = match seconds {
-            s if *s < 60 => core::fmt::Write::write_fmt(&mut label, format_args!("{s} S")),
-            s => core::fmt::Write::write_fmt(&mut label, format_args!("{} MIN", s / 60)),
-        };
+        let label = effort_label(index);
         canvas.caption(
             label.as_bytes(),
             EFFORT_BAR_LEFT - LEFT - 6,
@@ -334,6 +424,18 @@ fn best_power(view: &View, canvas: &mut Canvas) {
             radius: 2,
             color: if best.is_some() { POWER } else { TERTIARY },
         });
+        // A new personal best: its own caption under the bar.
+        if view.after.found.power[index] {
+            canvas.fit(
+                &[&CAPTION],
+                b"BEST",
+                BEST_WIDTH,
+                EFFORT_BAR_LEFT,
+                base + 11,
+                Align::Left,
+                POWER,
+            );
+        }
     }
     let mut climbs = Text::<12>::new();
     let mut laps = Text::<12>::new();
@@ -342,8 +444,27 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     cells(
         canvas,
         first + 22 + 4 * pitch + 6,
-        &[(b"CLIMBS", &climbs, GRADE), (b"LAPS", &laps, WHITE)],
+        &[
+            reading(b"CLIMBS", &climbs, GRADE),
+            reading(b"LAPS", &laps, WHITE),
+        ],
     );
+}
+
+/// `FTP 245 W?`: what the new 20 min best suggests, and what it replaces.
+fn ftp_offer(view: &View, canvas: &mut Canvas) {
+    let Some(offer) = view.after.offer else {
+        return;
+    };
+    let mut best = Text::<24>::new();
+    let _ = core::fmt::Write::write_fmt(&mut best, format_args!("20 MIN BEST {} W", offer.best));
+    centred(canvas, &[&BODY, &CAPTION], best.as_bytes(), 104, SECONDARY);
+    let mut ftp = Text::<12>::new();
+    let _ = core::fmt::Write::write_fmt(&mut ftp, format_args!("FTP {} W?", offer.suggested));
+    centred(canvas, &[&TITLE, &BODY], ftp.as_bytes(), 164, POWER);
+    let mut now = Text::<24>::new();
+    let _ = core::fmt::Write::write_fmt(&mut now, format_args!("NOW {} W", offer.current));
+    centred(canvas, &[&BODY, &CAPTION], now.as_bytes(), 194, SECONDARY);
 }
 
 fn centred(
@@ -393,6 +514,8 @@ mod tests {
             laps: Some(999),
             past: false,
             elevation: false,
+            found: Found::default(),
+            offer: None,
         };
         view.prepare();
         view

@@ -7,6 +7,7 @@ use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
 use crate::clock::Local;
+use crate::ride::bests::Bests;
 use crate::ride::climb::Climbs;
 use crate::ride::climb_ahead::Forecast;
 use crate::ride::laps::{Lap, Laps};
@@ -32,6 +33,8 @@ pub enum Page {
     /// Saving, then the saved ride's summary.
     Summary,
     Settings,
+    /// The rider's personal bests, opened from Settings.
+    Bests,
     /// The workout picker.
     Workouts,
     /// Connect phone: rides to the phone over Wi-Fi, as FIT files.
@@ -55,6 +58,7 @@ impl Page {
             Self::EndRide => "end_ride",
             Self::Summary => "summary",
             Self::Settings => "settings",
+            Self::Bests => "bests",
             Self::Workouts => "workouts",
             Self::Phone => "phone",
             Self::History => "history",
@@ -123,6 +127,9 @@ pub struct View<'a> {
     pub picker: super::workouts::Picker,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
     pub ftp_offer: Option<(u16, u16)>,
+    /// The rider's personal bests, for the BESTS page.
+    pub bests: Bests,
+    pub bests_mode: super::bests::Mode,
     /// The back-to-start page's guide; its arrow is placed as it paints.
     pub back: ride::Back,
     /// When the light ends, for the back-to-start page.
@@ -199,6 +206,8 @@ impl View<'_> {
             chart: ride::WorkoutChart::default(),
             picker: super::workouts::Picker::default(),
             ftp_offer: None,
+            bests: Bests::default(),
+            bests_mode: super::bests::Mode::List,
             back: ride::Back::default(),
             sunset: ride::Light::default(),
             page,
@@ -375,12 +384,14 @@ impl View<'_> {
             }
             Page::Summary => {
                 self.bar
-                    .set_pages(self.after.page, summary::pages(self.after.elevation));
+                    .set_pages(self.after.page, summary::total_pages(&self.after));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
                 self.badge = summary::badge(self);
                 if self.after.saving == summary::Saving::Writing {
                     &[]
+                } else if summary::offer_shown(&self.after) {
+                    &summary::OFFER_CUES
                 } else {
                     core::slice::from_ref(&summary::CUE)
                 }
@@ -395,6 +406,13 @@ impl View<'_> {
             Page::Phone => {
                 fill(self, super::phone::prepare);
                 &[]
+            }
+            Page::Bests => {
+                fill(self, super::bests::prepare);
+                match self.bests_mode {
+                    super::bests::Mode::Confirm => &super::bests::CONFIRM_CUES,
+                    _ => &[],
+                }
             }
             Page::Workouts => {
                 fill(self, super::workouts::prepare);
@@ -740,6 +758,7 @@ mod tests {
             (Page::Settings, true),
             (Page::Sensors, false),
             (Page::Phone, false),
+            (Page::Bests, false),
         ] {
             let mut view = View::new(page, 1, None);
             view.editing = editing;

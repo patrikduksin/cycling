@@ -12,8 +12,9 @@
 //! unreadable after a rollback. Older samples left the bytes erased (0xFFFF),
 //! and older decoders never read them, so both directions stay compatible.
 //!
-//! Sample byte 37 marks the first sample of each lap with why the lap began
-//! ([`LapStart`]); 0xFF, and any value this firmware does not know, is none.
+//! Sample byte 37, the last spare sample byte, marks the first sample of each
+//! lap with why the lap began ([`LapStart`]); 0xFF is none. Values 5 to 254
+//! are reserved for later marks and read as none here.
 //! There is no flag bit and no record kind: decoders reject unknown flags and
 //! kinds, and an unknown kind would read as a gap after a rollback. Older
 //! samples left the byte erased, and older decoders never read it (only the

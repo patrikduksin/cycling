@@ -577,3 +577,46 @@ fn a_slot_of_four_laps_stays_within_its_bound() {
     assert_eq!(LAP.record_size(), LAP_RECORD);
     assert_eq!(out.0 - before, MAX_SLOT_OUTPUT - 7, "all but a pause");
 }
+
+#[test]
+fn lap_ascent_and_descent_add_up_to_the_session() {
+    // Up 0.45 m a second for 30 s, then down, with a lap every 7 samples:
+    // each lap's own climb has a fraction of a metre to round.
+    let samples: Vec<Sample> = (1..=60u64)
+        .map(|i| {
+            let dm = 1000 + 45 * i.min(60 - i) as i32 / 10;
+            Sample {
+                altitude: Some(log::Altitude::from_dm(dm)),
+                lap: (i % 7 == 1).then_some(if i == 1 {
+                    LapStart::Ride
+                } else {
+                    LapStart::Manual
+                }),
+                ..sample(i * 1000, true)
+            }
+        })
+        .collect();
+    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    for (index, batch) in samples.chunks(4).enumerate() {
+        slots.push(slot(
+            &Entry::batch(Source::Live, 3, index as u32 + 1, batch).unwrap(),
+        ));
+    }
+    slots.push(slot(&Entry::event(
+        Kind::Finish,
+        Source::Live,
+        3,
+        16,
+        60_000,
+    )));
+    let (plan, bytes) = file(&slots, None).unwrap();
+    assert_eq!(plan.laps, 9);
+    let messages = decode(&bytes);
+    let laps: Vec<&Decoded> = messages.iter().filter(|m| m.global == 19).collect();
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    for (in_lap, in_session) in [(21, 22), (22, 23)] {
+        let sum: u64 = laps.iter().map(|lap| lap.get(in_lap).unwrap()).sum();
+        assert!(session.get(in_session).unwrap() > 0);
+        assert_eq!(Some(sum), session.get(in_session), "lap field {in_lap}");
+    }
+}

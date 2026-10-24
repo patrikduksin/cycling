@@ -674,12 +674,14 @@ impl Export {
         let (ascent_dm, descent_dm) = (totals.ascent_dm(), totals.descent_dm());
         let metres = |dm: u32| ((dm + 5) / 10).min(u32::from(u16::MAX - 1)) as u16;
         let (from_ascent, from_descent) = self.lap_climbed_from_dm;
+        // Differences of the rounded running totals, so the laps add up to the session.
+        let climbed = |to: u32, from: u32| metres(to).saturating_sub(metres(from));
         let ascent = totals
             .altitude_dm()
-            .map(|_| metres(ascent_dm - from_ascent));
+            .map(|_| climbed(ascent_dm, from_ascent));
         let descent = totals
             .altitude_dm()
-            .map(|_| metres(descent_dm - from_descent));
+            .map(|_| climbed(descent_dm, from_descent));
         self.writer.record(
             out,
             &LAP,

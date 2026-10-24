@@ -347,6 +347,13 @@ Lap marks:
 - The lap boundary is at the sample before the mark, so a lap is accurate to
   the one-second sample grid. Laps that close within one sample share its
   mark, and a lap closed while paused marks the first sample after resume.
+- A lost mark merges two laps: a torn batch, or one a reset left unflushed,
+  takes its marks with its samples.
+- A ride that moves from the MMC to internal flash mid-ride is two journal
+  rides and two FIT files. The lap open at the move is split across them,
+  and the internal part starts with a ride mark, not a lap boundary.
+- Values 5 to 254 are reserved for later marks; this firmware and
+  `ride-export` read them as no mark. Byte 37 was the last spare sample byte.
 - Compatibility decided the place. Firmware recovery, the ride index and
   `ride-export` reject unknown record kinds and unknown sample flag bits, and
   they count a rejected slot as a gap, so a lap record kind or a flag would

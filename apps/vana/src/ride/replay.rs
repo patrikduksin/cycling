@@ -9,9 +9,9 @@
 //!
 //! Laps come from the lap marks on samples (`log::LapStart`); a ride recorded
 //! before lap marks has none, and its laps stay unknown. What the journal
-//! does not keep stays unknown too: climbs live only in RAM during a ride, and
-//! altitude is not recorded, so ascent comes from the recorded gradient over
-//! the distance ridden.
+//! does not keep stays unknown too: climbs live only in RAM during a ride.
+//! Ascent comes from the recorded gradient over the distance ridden, which
+//! rides recorded before altitude was kept also have.
 //!
 //! The replay itself is a few words of position; it adds up into `Sums` the
 //! caller lends it, so the device keeps one set of ride sums, not two.

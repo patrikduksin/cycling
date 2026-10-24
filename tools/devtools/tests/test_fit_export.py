@@ -157,6 +157,9 @@ class FitExportTests(unittest.TestCase):
         self.assertEqual(session['num_laps'], 1)
         self.assertGreater(session['normalized_power'], session['avg_power'])
         self.assertEqual((session['total_ascent'], session['total_descent']), (60, 60))
+        # Calories are the power meter's work: average watts over 600 s timer time, in kJ.
+        self.assertAlmostEqual(session['total_calories'], session['avg_power'] * 0.6, delta=1)
+        self.assertEqual(messages['lap_mesgs'][0]['total_calories'], session['total_calories'])
         self.assertEqual(len(messages['lap_mesgs']), 1)
         self.assertEqual(
             (messages['lap_mesgs'][0]['total_ascent'], messages['lap_mesgs'][0]['total_descent']), (60, 60)

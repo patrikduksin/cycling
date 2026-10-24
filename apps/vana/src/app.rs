@@ -205,7 +205,9 @@ impl Runtime {
         self.receive_ble(ble);
         let sample = self.sample(now, ant, &observations);
         self.auto_control(now);
-        self.recovery.observe(now, sample.heart_bpm);
+        let recording = self.ride.active().status() == crate::ride::log::Status::Recording;
+        let heart = self.live_heart_bpm(now);
+        self.recovery.track(now, recording, heart);
         let power_status = observations
             .input
             .snapshot(now)

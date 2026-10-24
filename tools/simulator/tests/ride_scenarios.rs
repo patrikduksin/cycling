@@ -803,6 +803,41 @@ fn the_summary_shows_calories_and_the_heart_rate_recovery_after_a_minute() {
 }
 
 #[test]
+fn a_ble_strap_gets_a_recovery_after_the_ride_is_saved() {
+    let mut sim = rider();
+    sim.ble_heart_strap(true);
+    sim.select_ble_heart_strap();
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 160.0, 90.0);
+    sim.wait_for_field("BPM", "160", seconds(30));
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    sim.ride_page("2/3");
+    sim.expect_text("MEASURING");
+    sim.ride_at(0.0, 0.0, 130.0, 0.0);
+    sim.advance(seconds(70));
+    sim.expect_text("-30 BPM");
+    sim.checkpoint("summary with ble heart rate recovery");
+}
+
+#[test]
+fn sitting_out_a_long_pause_before_ending_measures_nothing() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 170.0, 90.0);
+    sim.advance(minutes(2));
+    sim.pause_ride();
+    sim.ride_at(0.0, 0.0, 100.0, 0.0);
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.ride_page("2/3");
+    sim.expect_text("KCAL");
+    sim.advance(seconds(70));
+    sim.expect_no_text("HR RECOVERY");
+}
+
+#[test]
 fn a_ride_without_a_heart_strap_shows_no_recovery() {
     let mut sim = rider();
     sim.pair(&["POWER METER", "SPEED/CAD"]);

@@ -297,7 +297,7 @@ impl Runtime {
                 // Opening the summary is the finish; the save completing
                 // under it is not a second one.
                 if self.navigation.page != Page::Summary {
-                    self.recovery.finish(now, self.readings.live.heart_bpm);
+                    self.recovery.finish(now);
                 }
                 self.navigation.summary_page = 0;
                 self.navigation.page = Page::Summary;

@@ -226,10 +226,9 @@ pub(super) fn cell(
     );
 }
 
-/// Paint a content row: the radar strip while a radar is paired, and the
-/// page in the body, centred without a radar.
+/// Paint a content row over the black `View::paint` laid: the radar strip
+/// while a radar is paired, and the page in the body, centred without a radar.
 pub(super) fn paint(view: &View, row: &mut Row) {
-    row.fill(BLACK);
     if view.radar_paired {
         paint_radar(view.radar, &mut row.within(0..RADAR_WIDTH - 2));
         paint_page(view, &mut row.within(BODY.left..BODY.right));

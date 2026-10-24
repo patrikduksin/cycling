@@ -8,6 +8,8 @@
 mod faces;
 
 use super::row::Row;
+use super::work;
+use core::ops::Range;
 
 pub use faces::{BODY, CAPTION, HERO, LARGE, TITLE, VALUE};
 
@@ -187,13 +189,14 @@ impl<const N: usize> Line<N> {
         coverage
     }
 
-    /// Coverage of row `y` from column `from` onwards into `out`, equal to
-    /// `coverage(from + i, y)` for each `out[i]`. Each glyph is walked once:
-    /// it counts from its own start until two glyphs later, as there.
-    pub fn row_coverage(&self, y: usize, from: usize, out: &mut [u8]) {
-        out.fill(0);
+    /// Coverage of row `y` from column `from` onwards into `out`, which must
+    /// start zeroed: afterwards each `out[i]` is `coverage(from + i, y)`.
+    /// Returns the range of `out` that glyphs reached.
+    fn row_coverage(&self, y: usize, from: usize, out: &mut [u8]) -> Range<usize> {
+        debug_assert!(out.iter().all(|&a| a == 0), "coverage starts zeroed");
+        let mut reached = out.len()..0;
         if y >= usize::from(self.face.height) {
-            return;
+            return 0..0;
         }
         let limit = usize::from(self.width) + 2;
         let len = usize::from(self.len);
@@ -220,14 +223,28 @@ impl<const N: usize> Line<N> {
             }
             let stride = usize::from(glyph.w).div_ceil(2);
             let base = usize::from(glyph.offset) + gy as usize * stride;
-            let bits = &self.face.bits[base..base + stride];
             let skip = (first as i32 - ink) as usize;
-            for (gx, slot) in (skip..).zip(&mut out[first - from..last - from]) {
-                // Two pixels per byte, the left one in the high nibble.
-                let a = (bits[gx / 2] >> (4 * (1 - gx % 2))) & 0x0f;
-                *slot = (*slot).max(a);
+            let bits = &self.face.bits[base + skip / 2..base + stride];
+            reached.start = reached.start.min(first - from);
+            reached.end = reached.end.max(last - from);
+            // Two pixels per byte, the left one in the high nibble.
+            let (odd, slots) = out[first - from..last - from].split_at_mut(skip % 2);
+            let mut bytes = bits.iter();
+            if let [slot] = odd
+                && let Some(&byte) = bytes.next()
+            {
+                *slot = (*slot).max(byte & 0x0f);
+            }
+            let (pairs, rest) = slots.as_chunks_mut::<2>();
+            for ([left, right], &byte) in pairs.iter_mut().zip(&mut bytes) {
+                *left = (*left).max(byte >> 4);
+                *right = (*right).max(byte & 0x0f);
+            }
+            if let ([slot], Some(&byte)) = (rest, bytes.next()) {
+                *slot = (*slot).max(byte >> 4);
             }
         }
+        if reached.is_empty() { 0..0 } else { reached }
     }
 }
 
@@ -249,6 +266,44 @@ pub fn blend(color: u16, background: u16, coverage: u8) -> u16 {
             };
             (mix(11, 0x1f) | mix(5, 0x3f) | mix(0, 0x1f)) as u16
         }
+    }
+}
+
+/// One colour's blends over the background last seen, each coverage mixed
+/// once: a label's anti-aliased edges mostly lie over one background.
+struct Blends {
+    color: u16,
+    under: u16,
+    /// Bit `a` is set once `mixed[a]` holds the blend at coverage `a`.
+    known: u16,
+    mixed: [u16; 16],
+    mixes: u32,
+}
+
+impl Blends {
+    const fn new(color: u16) -> Self {
+        Self {
+            color,
+            under: 0,
+            known: 0,
+            mixed: [0; 16],
+            mixes: 0,
+        }
+    }
+
+    #[inline]
+    fn over(&mut self, under: u16, coverage: u8) -> u16 {
+        if under != self.under {
+            self.under = under;
+            self.known = 0;
+        }
+        let a = usize::from(coverage & 0x0f);
+        if self.known & (1 << a) == 0 {
+            self.mixed[a] = blend(self.color, under, coverage);
+            self.known |= 1 << a;
+            self.mixes += 1;
+        }
+        self.mixed[a]
     }
 }
 
@@ -317,13 +372,24 @@ impl<const N: usize> Label<N> {
         // Coverage of this row, as `Line::coverage` would give it per pixel.
         let mut coverage = [0u8; MAX_ROW];
         let span = &mut coverage[..(end - start).min(MAX_ROW)];
-        self.line
+        let reached = self
+            .line
             .row_coverage(y - self.top, start - self.left, span);
-        for (pixel, &a) in pixels[start..].iter_mut().zip(span.iter()) {
-            if a > 0 {
-                *pixel = blend(self.color, *pixel, a);
+        let mut blends = Blends::new(self.color);
+        let ink = &span[reached.clone()];
+        for (pixel, &a) in pixels[start + reached.start..].iter_mut().zip(ink) {
+            match a {
+                0 => {}
+                15.. => *pixel = self.color,
+                a => *pixel = blends.over(*pixel, a),
             }
         }
+        work::add(|work| {
+            work.label_rows += 1;
+            work.glyph_columns += ink.len() as u64;
+            work.glyph_pixels += ink.iter().filter(|&&a| a > 0).count() as u64;
+            work.mixes += u64::from(blends.mixes);
+        });
     }
 
     /// The label over `background`, or none where it has no ink.
@@ -403,6 +469,37 @@ mod tests {
             .filter(|&(x, y)| right.pixel(x, y, 0) == Some(0xffff))
             .count();
         assert!(lit > 10);
+    }
+
+    /// Glyph edges over a background that changes from pixel to pixel mix
+    /// against each pixel's own background, as the per-pixel label does.
+    #[test]
+    fn painting_over_a_varied_background_matches_the_per_pixel_label() {
+        let background = |x: usize, y: usize| {
+            let mixed = (x as u32).wrapping_mul(2_654_435_761) ^ (y as u32).wrapping_mul(40_503);
+            if x % 7 < 3 {
+                0x2945
+            } else {
+                (mixed >> 16) as u16
+            }
+        };
+        for face in FACES {
+            let label = Label::new(
+                Line::<16>::new(face, b"0:09 AVA 4.9%"),
+                4,
+                3,
+                Align::Left,
+                0xffe0,
+            );
+            for y in 0..label.bottom() + 1 {
+                let mut pixels: [u16; 240] = core::array::from_fn(|x| background(x, y));
+                label.paint(&mut Row::new(y, &mut pixels));
+                for (x, &pixel) in pixels.iter().enumerate() {
+                    let under = background(x, y);
+                    assert_eq!(pixel, label.pixel(x, y, under).unwrap_or(under), "{x},{y}");
+                }
+            }
+        }
     }
 
     #[test]

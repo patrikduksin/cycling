@@ -25,6 +25,8 @@ pub struct Frame {
     pub pixels: Vec<u16>,
     pub submissions: u32,
     pub fail_next: bool,
+    /// A `sim-bench` request to paint the next frame again and again.
+    pub bench: Option<crate::bench::Request>,
 }
 impl DisplayDevice {
     pub fn new(width: usize, height: usize) -> Self {
@@ -33,6 +35,7 @@ impl DisplayDevice {
             pixels: vec![0; width * height],
             submissions: 0,
             fail_next: false,
+            bench: None,
         })))
     }
 }
@@ -45,7 +48,10 @@ impl Display for DisplayDevice {
         if core::mem::take(&mut frame.fail_next) {
             return Err(Error::Failed);
         }
-        let width = frame.geometry.width;
+        let (width, height) = (frame.geometry.width, frame.geometry.height);
+        if let Some(request) = &mut frame.bench {
+            request.run((width, height), &mut row);
+        }
         for (y, pixels) in frame.pixels.chunks_exact_mut(width).enumerate() {
             row(y, pixels);
         }

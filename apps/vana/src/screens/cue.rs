@@ -234,18 +234,32 @@ fn triangle(x: i32, y: i32, corners: [(i32, i32); 3]) -> u8 {
 
 /// A polyline `half` quarter pixels either side of its points.
 fn stroke(x: i32, y: i32, points: &[(i32, i32)], half: i32) -> u8 {
-    let mut nearest = i32::MAX;
+    // `edge` is zero from `reach` outside the line on, so a segment whose
+    // box is that far away needs no divisions, and the rest one square root.
+    let reach = half + 2;
+    let reach2 = (reach * reach) as u32;
+    let mut nearest2 = reach2;
     for pair in points.windows(2) {
         let ((ax, ay), (bx, by)) = (pair[0], pair[1]);
+        if x < ax.min(bx) - reach
+            || x > ax.max(bx) + reach
+            || y < ay.min(by) - reach
+            || y > ay.max(by) + reach
+        {
+            continue;
+        }
         let (ex, ey) = (bx - ax, by - ay);
         let (px, py) = (x - ax, y - ay);
         let length2 = ex * ex + ey * ey;
         let t = (px * ex + py * ey).clamp(0, length2);
         let (qx, qy) = (ax + ex * t / length2, ay + ey * t / length2);
         let (dx, dy) = (x - qx, y - qy);
-        nearest = nearest.min(((dx * dx + dy * dy) as u32).isqrt() as i32);
+        nearest2 = nearest2.min((dx * dx + dy * dy) as u32);
     }
-    edge(half - nearest)
+    if nearest2 >= reach2 {
+        return 0;
+    }
+    edge(half - nearest2.isqrt() as i32)
 }
 
 #[cfg(test)]

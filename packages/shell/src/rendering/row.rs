@@ -131,7 +131,13 @@ fn fill(pixels: &mut [u16], color: u16) {
     // keeps the middle slice inside `pixels` with u32 alignment.
     let (head, pairs, tail) = unsafe { pixels.align_to_mut::<u32>() };
     head.fill(color);
-    pairs.fill(u32::from(color) * 0x0001_0001);
+    let pair = u32::from(color) * 0x0001_0001;
+    // Four stores a turn, so the loop's own count and branch cost less per pixel.
+    let (quads, pairs) = pairs.as_chunks_mut::<4>();
+    for [a, b, c, d] in quads {
+        (*a, *b, *c, *d) = (pair, pair, pair, pair);
+    }
+    pairs.fill(pair);
     tail.fill(color);
 }
 
@@ -164,8 +170,8 @@ mod tests {
     #[test]
     fn spans_fill_every_pixel_at_any_alignment() {
         for start in 0..4 {
-            for end in start..12 {
-                let mut pixels = [0u16; 12];
+            for end in start..24 {
+                let mut pixels = [0u16; 24];
                 Row::new(0, &mut pixels).span(start..end, 0xabcd);
                 for (x, &pixel) in pixels.iter().enumerate() {
                     let inside = (start..end).contains(&x);

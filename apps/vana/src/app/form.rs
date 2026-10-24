@@ -5,7 +5,8 @@
 //! stress (`ride::fitness`) from the ride index, at the FTP each ride's facts
 //! kept. The index only reads once a list wants it, so opening FORM starts it,
 //! and the page says READING RIDES until both journals are read. Nothing is
-//! stored. The fold runs in the service tick while FORM is open, whenever the
+//! stored. The fold runs in the service tick while FORM or Settings is open
+//! (the PROFILE row shows the result), whenever the
 //! rides, the FTP, the zone or the minute change, into the one buffer
 //! `Runtime` keeps; drawing only copies the answer, so the render path's stack
 //! does not carry the fold.
@@ -30,8 +31,7 @@ pub(super) struct Kept {
 }
 
 impl Kept {
-    /// The FORM row's value in Settings: form as of the last time the page
-    /// was open.
+    /// The FORM row's value in Settings: the latest fold.
     pub(super) fn summary(&self) -> Text<38> {
         let mut text = Text::new();
         let _ = match self.folded {
@@ -61,9 +61,11 @@ impl Runtime {
         }
     }
 
-    /// Keep what the FORM page shows up to date while it is open.
+    /// Keep what the FORM page shows up to date while it is open, and the
+    /// PROFILE row's value while Settings is. The minute-keyed cache bounds the
+    /// work to one fold a minute, or when the rides or the FTP change.
     pub(super) fn service_form(&mut self) {
-        if self.navigation.page != Page::Form {
+        if !matches!(self.navigation.page, Page::Form | Page::Settings) {
             return;
         }
         let mode = self.fold_form();

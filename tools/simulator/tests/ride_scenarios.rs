@@ -4256,7 +4256,7 @@ fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
     for _ in 0..3 {
         sim.press(Button::BottomLeft);
     }
-    sim.expect_field("FORM", "OPEN TO SEE");
+    sim.wait_for_field("FORM", "+6 FRESH", seconds(30));
     sim.checkpoint("settings: FORM row");
     sim.press(Button::BottomRight);
     sim.wait_for("FATIGUE", seconds(60)).unwrap();

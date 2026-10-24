@@ -9,9 +9,10 @@
 //! and nothing is stored. The fold has to start somewhere: both averages start
 //! at the mean of the window's first week, not at zero, so a rider who trains
 //! steadily reads even form from a window that began mid-habit. The guess
-//! fades by a factor of 0.057 over 120 days of the 42-day average, so the
-//! numbers are exact to within a point of the whole history once the rider has
-//! about four months of rides, and an estimate before that. A ride without
+//! fades by a factor of 0.057 over 120 days of the 42-day average, leaving an
+//! error of about 0.057 times the first week's mean minus the rider's usual
+//! load (+11 after a training camp, say). It settles within about a week once
+//! an unusual first week leaves the window. A ride without
 //! power has no stress and counts for nothing. The averages are fixed point (8
 //! fractional bits, integer division toward zero), and one day's stress is
 //! capped at [`DAY_MAX`], so no input can overflow them.

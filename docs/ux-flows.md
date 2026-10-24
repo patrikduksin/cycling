@@ -396,8 +396,9 @@ once Settings, BODY holds a weight; BACK returns to Settings.
 ## Form
 
 Settings, PROFILE, FORM opens the rider's training load from the last four
-months of rides with power. Its row reads the form number and word as of the
-last time the page was open, or OPEN TO SEE before that. FITNESS is the 42-day
+months of rides with power. Its row reads the
+current form number and word once the ride index has read the rides (it follows FTP
+changes), and OPEN TO SEE until then. FITNESS is the 42-day
 average of the daily training stress, FATIGUE the 7-day one, and FORM is
 fitness minus fatigue, with a word for it: RESTED above +25 (white), FRESH
 from +5 to +25 (green), EVEN from -10 to +4 (white), BUILDING from -30 to -11
@@ -413,10 +414,12 @@ Settings.
   nothing, and when there were any in the window the page says RIDES WITHOUT
   POWER ARE LEFT OUT.
 - The averages need a starting value, and the first week of the 120 days
-  gives it (its mean stress). Its effect fades with the 42-day average, so the
-  numbers match the whole history to within a point once the rider has about
-  four months of rides, and are an estimate before that. Rides older than 120
-  days do not count.
+  gives it (its mean stress). Its effect fades with the 42-day average to
+  0.057 of its error over the window: about 0.057 times the first week's mean
+  minus the rider's usual load, so +11 if that week was a training camp. The
+  numbers are an estimate until the rider has about four months of rides, and
+  settle within about a week once an unusual first week leaves the window.
+  Rides older than 120 days do not count.
 - Opening FORM starts the ride index if nothing has yet, and the page says
   READING RIDES until both journals are read. Without a date it says NO DATE
   YET and GET A GPS FIX, and with no ride with power in the window, NO POWER

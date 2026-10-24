@@ -58,6 +58,8 @@ def slot(kind, source, ride_id, sequence, active_ms, samples=()):
             data[at + 36] = sample['battery']
         if sample.get('altitude_m') is not None:
             data[at + 46 : at + 48] = round((sample['altitude_m'] + 500) * 5).to_bytes(2, 'little')
+        if sample.get('lap') is not None:
+            data[at + 37] = sample['lap']
         data[at + 16 : at + 20] = flags.to_bytes(4, 'little')
     data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
     data[252:256] = COMMIT.to_bytes(4, 'little')
@@ -141,6 +143,49 @@ class RideExportTests(unittest.TestCase):
         # Samples written before altitude was kept have erased bytes 46..48.
         self.assertIsNone(decode_slot(self.fixture()[1])['samples'][1]['altitude_m'])
         self.assertEqual(decode_slot(self.fixture()[1])['samples'][0]['altitude_m'], 123.4)
+
+    def test_lap_marks_list_the_laps_and_mark_them_on_the_gpx(self):
+        def at(second, lap=None):
+            location = (-333_646_900 + second * 100, -705_155_800)
+            return {
+                'active_ms': second * 1000,
+                'utc_ms': 1_789_000_000_000 + second * 1000,
+                'location': location,
+                'lap': lap,
+            }
+
+        slots = [
+            slot(1, 2, 3, 0, 0),
+            slot(2, 2, 3, 1, 4000, [at(1, 0), at(2), at(3, 1), at(4)]),
+            slot(2, 2, 3, 2, 6000, [at(5, 2), at(6, 0x42)]),
+            slot(5, 2, 3, 3, 6000),
+        ]
+        rides, invalid = rides_from_slots(slots)
+        self.assertEqual(invalid, [], 'the marks change no checked byte')
+        self.assertEqual(len(rides[0]['samples']), 6)
+        laps = rides[0]['laps']
+        self.assertEqual(
+            [(lap['lap'], lap['started_by'], lap['active_ms']) for lap in laps],
+            [(1, 'ride', 1000), (2, 'manual', 3000), (3, 'distance', 5000)],
+        )
+        self.assertIsNone(rides[0]['samples'][5]['lap'], 'an unknown mark reads as none')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'ride.gpx'
+            self.assertIsNone(write_gpx(rides[0], path))
+            ns = '{http://www.topografix.com/GPX/1/1}'
+            root = ET.parse(path).getroot()
+            self.assertEqual([child.tag for child in root], [f'{ns}wpt', f'{ns}wpt', f'{ns}trk'], 'GPX 1.1 order')
+            names = [
+                (point.find(f'{ns}name').text, point.find(f'{ns}type').text, point.attrib['lat'])
+                for point in root.findall(f'{ns}wpt')
+            ]
+            self.assertEqual(names, [('LAP 2', 'manual', '-33.3646600'), ('LAP 3', 'distance', '-33.3646400')])
+            self.assertEqual(root.find(f'{ns}wpt/{ns}time').text, '2026-09-10T00:26:43.000Z')
+
+    def test_a_ride_recorded_before_lap_marks_has_no_laps(self):
+        rides, _ = rides_from_slots(self.fixture())
+        self.assertIsNone(rides[0]['laps'])
+        self.assertTrue(all(sample['lap'] is None for sample in rides[0]['samples']))
 
     def test_known_fixture_decodes_values_and_segments(self):
         rides, invalid = rides_from_slots(self.fixture())

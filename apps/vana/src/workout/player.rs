@@ -215,6 +215,11 @@ impl Player {
         }
     }
 
+    /// The step on now lasts a distance, so its lap ends by distance.
+    pub fn distance_step(&self) -> bool {
+        self.distance_m().is_some()
+    }
+
     fn distance_m(&self) -> Option<u32> {
         match self.played.step.length {
             Length::Distance(m) => Some(m + self.extra_m),

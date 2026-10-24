@@ -6,10 +6,15 @@
 //! main page shows; average speed is distance over moving time, as in the
 //! totals. A rider's lap closes the current lap unless another lap closed less
 //! than `DEBOUNCE_MS` before; an automatic lap closes it every `AUTO_LAP_MM`
-//! of lap distance, or the distance the rider chose (`add_every`). Both count in one numbered list, and the latest `HISTORY`
-//! summaries are kept. Laps live in RAM only: the ride journal has no lap
-//! record that older readers would skip, so power-off loses them.
-use crate::ride::log::Sample;
+//! of lap distance, or the distance the rider chose (`add_every`), and a
+//! workout closes one as each step ends (`split`). All count in one numbered
+//! list, and the latest `HISTORY` summaries are kept.
+//!
+//! Each closed lap waits in `take_closed` for the recorder, which marks the
+//! next recorded sample as the first of a new lap (`log::LapStart`). So the
+//! journal keeps where laps began, to the second, and exports and saved rides
+//! read them back; the summaries here stay in RAM.
+use crate::ride::log::{LapStart, Sample};
 use crate::ride::totals::MOVING_MIN_MM_S;
 
 /// An automatic lap closes after this much lap distance (5 km).
@@ -24,7 +29,23 @@ pub const HISTORY: usize = 16;
 pub enum Trigger {
     #[default]
     Manual,
+    /// Every lap distance.
     Auto,
+    /// A workout step that lasts a time, or until it is marked, ended.
+    Step,
+    /// A workout step that lasts a distance ended.
+    DistanceStep,
+}
+
+impl From<Trigger> for LapStart {
+    fn from(trigger: Trigger) -> Self {
+        match trigger {
+            Trigger::Manual => Self::Manual,
+            Trigger::Auto => Self::Distance,
+            Trigger::Step => Self::Step,
+            Trigger::DistanceStep => Self::DistanceStep,
+        }
+    }
 }
 
 /// What one lap added up; the open lap is one too.
@@ -40,6 +61,11 @@ pub struct Lap {
     power_ms: u64,
     heart_sum: u32,
     heart_count: u32,
+    max_speed_mm_s: Option<u32>,
+    max_power: Option<u16>,
+    max_heart: Option<u16>,
+    cadence_tenths_sum: u64,
+    cadence_count: u32,
     /// How it closed, once finished.
     pub trigger: Trigger,
 }
@@ -52,23 +78,51 @@ impl Lap {
         }
     }
 
-    fn add(&mut self, elapsed_ms: u64, distance_mm: u64, sample: &Sample) {
+    /// Account one recorded step, as `Totals::add` does.
+    pub fn add(&mut self, elapsed_ms: u64, distance_mm: u64, sample: &Sample) {
         self.time_ms = self.time_ms.saturating_add(elapsed_ms);
         self.distance_mm = self.distance_mm.saturating_add(distance_mm);
-        if sample
-            .speed_mm_s
-            .is_some_and(|speed| speed >= MOVING_MIN_MM_S)
-        {
-            self.moving_ms = self.moving_ms.saturating_add(elapsed_ms);
+        if let Some(speed) = sample.speed_mm_s {
+            if speed >= MOVING_MIN_MM_S {
+                self.moving_ms = self.moving_ms.saturating_add(elapsed_ms);
+            }
+            self.max_speed_mm_s = self.max_speed_mm_s.max(Some(speed));
         }
         if let Some(watts) = sample.power_watts {
             self.energy_mj = self.energy_mj.saturating_add(u64::from(watts) * elapsed_ms);
             self.power_ms = self.power_ms.saturating_add(elapsed_ms);
+            self.max_power = self.max_power.max(Some(watts));
         }
         if let Some(bpm) = sample.heart_bpm {
             self.heart_sum = self.heart_sum.saturating_add(u32::from(bpm));
             self.heart_count = self.heart_count.saturating_add(1);
+            self.max_heart = self.max_heart.max(Some(bpm));
         }
+        if let Some(cadence) = sample.cadence_tenths.filter(|&c| c != 0) {
+            self.cadence_tenths_sum = self.cadence_tenths_sum.saturating_add(u64::from(cadence));
+            self.cadence_count = self.cadence_count.saturating_add(1);
+        }
+    }
+
+    pub fn max_speed_mm_s(&self) -> Option<u32> {
+        self.max_speed_mm_s
+    }
+
+    pub fn max_power(&self) -> Option<u16> {
+        self.max_power
+    }
+
+    pub fn max_heart_bpm(&self) -> Option<u16> {
+        self.max_heart
+    }
+
+    /// Mean cadence while pedalling, in rpm.
+    pub fn avg_cadence_rpm(&self) -> Option<u16> {
+        (self.cadence_count != 0).then(|| {
+            let count = u64::from(self.cadence_count);
+            let tenths = (self.cadence_tenths_sum + count / 2) / count;
+            ((tenths + 5) / 10).min(u64::from(u16::MAX)) as u16
+        })
     }
 
     /// Time-weighted mean over every second with power, zeros included.
@@ -102,6 +156,7 @@ pub struct Laps {
     /// Laps close every `AUTO_LAP_MM`; a workout turns this off, as its
     /// steps close the laps instead.
     pub by_distance: bool,
+    unmarked: Option<Trigger>,
 }
 
 impl Default for Laps {
@@ -112,6 +167,7 @@ impl Default for Laps {
             finished: 0,
             closed_at_ms: None,
             by_distance: true,
+            unmarked: None,
         }
     }
 }
@@ -142,9 +198,15 @@ impl Laps {
             .then(|| self.close(Trigger::Auto, now_ms))
     }
 
-    /// Close the current lap automatically, as a workout step ends.
-    pub fn split(&mut self, now_ms: u64) -> Lap {
-        self.close(Trigger::Auto, now_ms)
+    /// Close the current lap as a workout step ends: `by_distance` for a
+    /// step that lasts a distance.
+    pub fn split(&mut self, now_ms: u64, by_distance: bool) -> Lap {
+        let trigger = if by_distance {
+            Trigger::DistanceStep
+        } else {
+            Trigger::Step
+        };
+        self.close(trigger, now_ms)
     }
 
     /// The rider's lap: close the current lap unless one closed within
@@ -166,7 +228,14 @@ impl Laps {
         self.finished = self.finished.saturating_add(1);
         self.current = Lap::numbered(lap.number.saturating_add(1));
         self.closed_at_ms = Some(now_ms);
+        self.unmarked = Some(trigger);
         lap
+    }
+
+    /// How the last lap closed, once, for the recorder to mark the next
+    /// sample. Laps closing within one sample share its mark: the latest wins.
+    pub fn take_closed(&mut self) -> Option<Trigger> {
+        self.unmarked.take()
     }
 
     /// The open lap.
@@ -226,9 +295,12 @@ mod tests {
         };
         let (closed, now) = ride(&mut laps, 0, 700, riding(8000, 200, 140));
         assert!(closed.is_empty(), "5.6 km without a distance lap");
-        let lap = laps.split(now);
-        assert_eq!((lap.number, lap.trigger), (1, Trigger::Auto));
+        let lap = laps.split(now, false);
+        assert_eq!((lap.number, lap.trigger), (1, Trigger::Step));
+        assert_eq!(laps.take_closed(), Some(Trigger::Step));
+        assert_eq!(laps.take_closed(), None, "handed over once");
         assert_eq!(laps.current().number, 2);
+        assert_eq!(laps.split(now, true).trigger, Trigger::DistanceStep);
     }
 
     #[test]

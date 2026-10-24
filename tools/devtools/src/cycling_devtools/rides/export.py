@@ -8,6 +8,10 @@ slots, listed in the manifest, and their raw sectors are kept for diagnosis.
 `--format fit` also writes a FIT activity per ride (`ride-<id>.fit`, listed in
 `fit.json`) with the firmware's own encoder, for Strava or Garmin Connect.
 `--from <export>` converts an earlier export without the device.
+
+Sample byte 37 marks the first sample of each lap (see `ride/log.rs`). Ride JSON
+lists the laps, and GPX marks where each later lap began with a waypoint. A ride
+recorded before lap marks has `laps: null`.
 """
 
 import argparse
@@ -33,6 +37,7 @@ BULK_LOG_DATA = 16
 # Where record 0 was before the volume table (exports made then record no start).
 BULK_DATA_START = BULK_LOG_DATA
 MEDIA = ('internal', 'bulk')
+LAP_STARTS = {0: 'ride', 1: 'manual', 2: 'distance', 3: 'step', 4: 'distance_step'}
 
 
 def prefix(medium):
@@ -181,6 +186,7 @@ def decode_slot(data):
                 'gradient_tenths': i16(value, 44) if flags & 256 else None,
                 'battery_percent': battery,
                 'altitude_m': altitude_m(u16(value, 46)),
+                'lap': LAP_STARTS.get(value[37]),
             }
         )
     active_ms = u64(data, 16)
@@ -220,6 +226,33 @@ def date_run(ride, anchor):
     ride['_untimed'] = None
 
 
+def laps(samples):
+    """Each lap's first sample and why it began; None for a ride recorded without lap marks."""
+    if all(sample['lap'] is None for sample in samples):
+        return None
+    starts = [
+        (index, sample) for index, sample in enumerate(samples) if index == 0 or sample['lap'] not in (None, 'ride')
+    ]
+    return [
+        {
+            'lap': number,
+            'started_by': 'ride' if index == 0 else sample['lap'],
+            'sample': index,
+            'active_ms': sample['active_ms'],
+            'utc_ms': sample['utc_ms'],
+            'latitude_e7': sample['latitude_e7'],
+            'longitude_e7': sample['longitude_e7'],
+        }
+        for number, (index, sample) in enumerate(starts, 1)
+    ]
+
+
+def ended(ride):
+    ride['segments'] = [segment for segment in ride['segments'] if segment]
+    ride['laps'] = laps(ride['samples'])
+    return ride
+
+
 def rides_from_slots(slots):
     invalid = []
     return list(iter_rides(slots, invalid)), invalid
@@ -254,8 +287,7 @@ def iter_rides(slots, invalid):
             if current:
                 current['terminal'] = 'interrupted'
                 current['gap'] = True
-                current['segments'] = [segment for segment in current['segments'] if segment]
-                yield current
+                yield ended(current)
             seen.add(entry['ride_id'])
             current = {
                 'ride_id': entry['ride_id'],
@@ -326,14 +358,18 @@ def iter_rides(slots, invalid):
         elif entry['kind'] in (5, 6, 7):
             current['terminal'] = {5: 'saved', 6: 'recovered', 7: 'full'}[entry['kind']]
             current['end_slot'] = index
-            current['segments'] = [segment for segment in current['segments'] if segment]
-            yield current
+            yield ended(current)
             current = None
     if current:
         current['terminal'] = 'interrupted'
         current['gap'] = True
-        current['segments'] = [segment for segment in current['segments'] if segment]
-        yield current
+        yield ended(current)
+
+
+def gpx_time(utc_ms):
+    seconds, milliseconds = divmod(utc_ms, 1000)
+    stamp = dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds, milliseconds=milliseconds)
+    return stamp.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
 
 def write_gpx(ride, path):
@@ -351,6 +387,17 @@ def write_gpx(ride, path):
     ns = 'http://www.topografix.com/GPX/1/1'
     ET.register_namespace('', ns)
     root = ET.Element(f'{{{ns}}}gpx', version='1.1', creator='cycling')
+    for lap in (ride.get('laps') or [])[1:]:
+        if lap['latitude_e7'] is None:
+            continue
+        lat, lon = lap['latitude_e7'] / 1e7, lap['longitude_e7'] / 1e7
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            continue
+        point = ET.SubElement(root, f'{{{ns}}}wpt', lat=f'{lat:.7f}', lon=f'{lon:.7f}')
+        if lap['utc_ms'] is not None:
+            ET.SubElement(point, f'{{{ns}}}time').text = gpx_time(lap['utc_ms'])
+        ET.SubElement(point, f'{{{ns}}}name').text = f'LAP {lap["lap"]}'
+        ET.SubElement(point, f'{{{ns}}}type').text = lap['started_by']
     track = ET.SubElement(root, f'{{{ns}}}trk')
     ET.SubElement(track, f'{{{ns}}}name').text = f'Ride {ride["ride_id"]} ({ride["source"]})'
     points = 0
@@ -366,13 +413,7 @@ def write_gpx(ride, path):
             if sample['altitude_m'] is not None:
                 ET.SubElement(point, f'{{{ns}}}ele').text = f'{sample["altitude_m"]:.1f}'
             if sample['utc_ms'] is not None:
-                seconds, milliseconds = divmod(sample['utc_ms'], 1000)
-                stamp = dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(
-                    seconds=seconds, milliseconds=milliseconds
-                )
-                ET.SubElement(point, f'{{{ns}}}time').text = stamp.isoformat(timespec='milliseconds').replace(
-                    '+00:00', 'Z'
-                )
+                ET.SubElement(point, f'{{{ns}}}time').text = gpx_time(sample['utc_ms'])
             points += 1
     if points == 0:
         return 'no valid location samples'

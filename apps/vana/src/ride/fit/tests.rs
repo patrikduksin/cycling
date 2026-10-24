@@ -1,5 +1,5 @@
 use super::*;
-use crate::ride::log::{Source, commit_word, encode};
+use crate::ride::log::{LapStart, Source, commit_word, encode};
 use firmware_services::fit::{FIT_EPOCH_UNIX_S, crc16};
 use std::collections::BTreeMap;
 use std::vec;
@@ -462,5 +462,161 @@ fn a_later_stretch_outside_fit_dates_is_refused() {
             Refusal::BadClock,
             "{pause_wall_ms}"
         );
+    }
+}
+
+fn lapped_ride() -> Vec<Slot> {
+    let mark = |active: u64, lap| Sample {
+        lap: Some(lap),
+        utc_ms: Some(T0 + active + 60_000),
+        ..sample(active, true)
+    };
+    let mut first: Vec<Sample> = (1..=4).map(|i| sample(i * 1000, true)).collect();
+    first[0].lap = Some(LapStart::Ride);
+    let mut second: Vec<Sample> = (5..=8)
+        .map(|i| {
+            let mut s = sample(i * 1000, true);
+            s.utc_ms = s.utc_ms.map(|v| v + 60_000);
+            s
+        })
+        .collect();
+    second[0] = mark(5_000, LapStart::Manual);
+    second[2] = mark(7_000, LapStart::Distance);
+    let mut slots = ride(true, 60_000);
+    slots[1] = slot(&Entry::batch(Source::Live, 3, 1, &first).unwrap());
+    slots[4] = slot(&Entry::batch(Source::Live, 3, 4, &second).unwrap());
+    slots
+}
+
+#[test]
+fn each_marked_lap_becomes_a_lap_message() {
+    let (plan, bytes) = file(&lapped_ride(), None).unwrap();
+    assert_eq!(plan.laps, 3);
+    let messages = decode(&bytes);
+    let t = fit_time(T0);
+    let laps: Vec<&Decoded> = messages.iter().filter(|m| m.global == 19).collect();
+    let field = |number| laps.iter().map(|lap| lap.get(number)).collect::<Vec<_>>();
+    assert_eq!(field(254), [Some(0), Some(1), Some(2)], "message index");
+    assert_eq!(
+        field(24),
+        [Some(0), Some(2), Some(7)],
+        "manual, distance, end"
+    );
+    assert_eq!(
+        field(2),
+        [Some(t), Some(t + 4), Some(t + 66)],
+        "each starts as the last ends"
+    );
+    assert_eq!(field(253), [Some(t + 4), Some(t + 66), Some(t + 68)], "end");
+    assert_eq!(field(8), [Some(4_000), Some(2_000), Some(2_000)], "timer");
+    assert_eq!(
+        field(7),
+        [Some(4_000), Some(62_000), Some(2_000)],
+        "elapsed, the pause in lap 2"
+    );
+    assert_eq!(field(9), [Some(3_200), Some(1_600), Some(1_600)], "8 m/s");
+    assert_eq!(field(19), [Some(200); 3], "avg power");
+    assert_eq!(field(15), [Some(140); 3], "avg heart rate");
+    let lat = |active: i32| Some(u64::from(semicircles(-333_646_900 + active) as u32));
+    assert_eq!(
+        field(3),
+        [lat(1000), lat(5000), lat(7000)],
+        "first position"
+    );
+    assert_eq!(field(5), [lat(4000), lat(6000), lat(8000)], "last position");
+    let globals: Vec<u16> = messages.iter().map(|m| m.global).collect();
+    let first_lap = globals.iter().position(|g| *g == 19).unwrap();
+    assert_eq!(globals[first_lap - 2..first_lap + 3], [20, 21, 19, 21, 20]);
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    assert_eq!(session.get(26), Some(3), "num_laps");
+    assert_eq!(
+        session.get(8),
+        Some(8_000),
+        "the laps add up to the session"
+    );
+}
+
+#[test]
+fn a_ride_without_lap_marks_is_one_lap_of_the_whole_ride() {
+    let (plan, bytes) = file(&ride(true, 60_000), None).unwrap();
+    assert_eq!(plan.laps, 1);
+    let messages = decode(&bytes);
+    let laps: Vec<&Decoded> = messages.iter().filter(|m| m.global == 19).collect();
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    assert_eq!(laps.len(), 1);
+    assert_eq!(laps[0].get(24), Some(7), "session end");
+    for (in_lap, in_session) in [(2, 2), (7, 7), (8, 8), (9, 9), (13, 14), (19, 20)] {
+        assert_eq!(
+            laps[0].get(in_lap),
+            session.get(in_session),
+            "lap field {in_lap}"
+        );
+    }
+}
+
+#[test]
+fn a_slot_of_four_laps_stays_within_its_bound() {
+    let mut out = Counter::default();
+    let mut export = Export::start(3, None, None, &mut out);
+    let slots = ride(true, 0);
+    export.slot(&slots[0], &mut out);
+    export.slot(&slots[1], &mut out);
+    export.slot(&slots[2], &mut out);
+    let marked: Vec<Sample> = (5..=8)
+        .map(|i| Sample {
+            lap: Some(LapStart::Manual),
+            ..sample(i * 1000, true)
+        })
+        .collect();
+    let before = out.0;
+    export.slot(&slots[3], &mut out);
+    export.slot(
+        &slot(&Entry::batch(Source::Live, 3, 4, &marked).unwrap()),
+        &mut out,
+    );
+    assert_eq!(LAP.record_size(), LAP_RECORD);
+    assert_eq!(out.0 - before, MAX_SLOT_OUTPUT - 7, "all but a pause");
+}
+
+#[test]
+fn lap_ascent_and_descent_add_up_to_the_session() {
+    // Up 0.45 m a second for 30 s, then down, with a lap every 7 samples:
+    // each lap's own climb has a fraction of a metre to round.
+    let samples: Vec<Sample> = (1..=60u64)
+        .map(|i| {
+            let dm = 1000 + 45 * i.min(60 - i) as i32 / 10;
+            Sample {
+                altitude: Some(log::Altitude::from_dm(dm)),
+                lap: (i % 7 == 1).then_some(if i == 1 {
+                    LapStart::Ride
+                } else {
+                    LapStart::Manual
+                }),
+                ..sample(i * 1000, true)
+            }
+        })
+        .collect();
+    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    for (index, batch) in samples.chunks(4).enumerate() {
+        slots.push(slot(
+            &Entry::batch(Source::Live, 3, index as u32 + 1, batch).unwrap(),
+        ));
+    }
+    slots.push(slot(&Entry::event(
+        Kind::Finish,
+        Source::Live,
+        3,
+        16,
+        60_000,
+    )));
+    let (plan, bytes) = file(&slots, None).unwrap();
+    assert_eq!(plan.laps, 9);
+    let messages = decode(&bytes);
+    let laps: Vec<&Decoded> = messages.iter().filter(|m| m.global == 19).collect();
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    for (in_lap, in_session) in [(21, 22), (22, 23)] {
+        let sum: u64 = laps.iter().map(|lap| lap.get(in_lap).unwrap()).sum();
+        assert!(session.get(in_session).unwrap() > 0);
+        assert_eq!(Some(sum), session.get(in_session), "lap field {in_lap}");
     }
 }

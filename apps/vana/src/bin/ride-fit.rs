@@ -119,12 +119,13 @@ fn main() -> ExitCode {
                     continue;
                 }
                 format!(
-                    r#"{{"ride_id":{},"start_slot":{},"fit":"{}","bytes":{},"samples":{},"dated":{}}}"#,
+                    r#"{{"ride_id":{},"start_slot":{},"fit":"{}","bytes":{},"samples":{},"laps":{},"dated":{}}}"#,
                     entry.ride_id,
                     index,
                     name,
                     plan.size,
                     plan.samples,
+                    plan.laps,
                     plan.offset_ms.is_some()
                 )
             }

@@ -356,7 +356,7 @@ impl Runtime {
             saving,
             best: self.ride.efforts.best(),
             climbs: None,
-            laps: None,
+            laps: replay.laps(),
             past: true,
         };
     }

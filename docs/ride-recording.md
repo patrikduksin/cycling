@@ -40,6 +40,10 @@ mise run ride-export                          # Writes .local/exports/<id>/ by d
   interrupted export from zero.
 - Output: raw bytes, SHA-256, manifest, reconstructed ride JSON and GPX. Ride IDs
   restart after clear, so exported identity includes START-slot and raw content hashes.
+- Ride JSON lists `laps`: each lap's number, first sample, active time, UTC,
+  position and `started_by` (`ride`, `manual`, `distance`, `step` or
+  `distance_step`), or `null` for a ride recorded before laps were kept. GPX
+  marks where each lap after the first began with a `wpt` named `LAP n`.
 - GPX contains only recorded locations and recorded UTC (Wi-Fi SNTP, else the
   GNSS receiver's clock). When the clock arrives mid-ride, earlier samples of
   the same running stretch (no pause, gap or invalid record between) are dated
@@ -60,8 +64,8 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
 - [ride/fit.rs](../apps/vana/src/ride/fit.rs) turns a ride into a FIT
   activity (cycling): file_id, device_info, timer start, stop and resume
   events, one record per sample with time, position, distance, speed, heart
-  rate, cadence, power, grade and altitude, then one lap, the session (with normalized
-  power) and the activity. The host uses the same encoder as the device
+  rate, cadence, power, grade and altitude, one lap as each lap ends, then the
+  session (with normalized power) and the activity. The host uses the same encoder as the device
   (`ride-fit` binary), and `tools/devtools/tests/test_fit_export.py` reads its
   files with Garmin's FIT SDK and fitdecode.
 - Samples are dated like GPX: each running stretch from its first UTC sample;
@@ -70,11 +74,17 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
   during the ride. A ride with no UTC at all has no FIT until `--start-utc-ms`
   gives its start.
 - Distance comes from wheel speed only. Without a wheel sensor the file has
-  none and readers use GPS. The journal holds no laps, so the file has one lap.
+  none and readers use GPS.
   Altitude is the barometric one (below); rides recorded before it was kept
   have no elevation, and readers such as Strava fill it from their own map.
   Lap and session `total_ascent` and `total_descent` follow the recorded
   altitudes with the ride page's rules, and are left out without any.
+- Each lap's `lap_trigger` is `manual` for a lap press, `distance` for an
+  automatic lap or a workout step that lasts a distance, `time` for any other
+  workout step (FIT has no workout-step trigger), and `session_end` for the
+  last. Laps meet: each starts where the last ended, so a pause at a lap
+  boundary belongs to the later lap's elapsed time. The laps' timer times add
+  up to the session's. A ride recorded before laps were kept is one lap.
 
 ## Explicit reclaim
 
@@ -218,10 +228,9 @@ Laps:
   and power deltas against the previous lap are green with `+` when higher and
   red with `-` when lower.
 - Laps restart with each ride, stay visible after saving, and keep the last 16
-  summaries. They live in RAM only: the journal has no lap record, and current
-  and older readers (firmware recovery and `ride-export`) treat an unknown record
-  kind as an invalid slot that marks the ride as gapped. Exports therefore carry
-  no laps, and power-off loses them.
+  summaries in RAM. The journal keeps where each lap began, so FIT, JSON and
+  GPX exports and saved rides have them, and a ride recovered after power loss
+  keeps the laps it committed. See *Lap marks* below.
 
 Sensors:
 
@@ -327,6 +336,34 @@ Recording:
   `<ele>`.
 - Gradient estimates the pressure change over at least 30 metres of wheel
   distance and needs fresh pressure and moving wheel data.
+
+Lap marks:
+
+- Sample byte 37 marks the first sample of each lap with why it began: 0 for
+  the ride's first sample (the ride keeps its laps), 1 a lap press, 2 an
+  automatic lap, 3 a workout step that lasts a time or until marked, 4 a
+  workout step that lasts a distance. 0xFF, what every earlier sample holds,
+  marks nothing. A value this firmware does not know reads as no mark.
+- The lap boundary is at the sample before the mark, so a lap is accurate to
+  the one-second sample grid. Laps that close within one sample share its
+  mark, and a lap closed while paused marks the first sample after resume.
+- A lost mark merges two laps: a torn batch, or one a reset left unflushed,
+  takes its marks with its samples.
+- A ride that moves from the MMC to internal flash mid-ride is two journal
+  rides and two FIT files. The lap open at the move is split across them,
+  and the internal part starts with a ride mark, not a lap boundary.
+- Values 5 to 254 are reserved for later marks; this firmware and
+  `ride-export` read them as no mark. Byte 37 was the last spare sample byte.
+- Compatibility decided the place. Firmware recovery, the ride index and
+  `ride-export` reject unknown record kinds and unknown sample flag bits, and
+  they count a rejected slot as a gap, so a lap record kind or a flag would
+  make older firmware and tools mark new rides as gapped or drop their samples.
+  Byte 37 lies between battery (36) and power (38); no flag covers it, older
+  decoders never read it, and only the slot CRC, which the writer computes,
+  includes it. Bytes 46 and 47 were the other spare pair, taken by altitude.
+- `ride/log.rs` tests decode marked slots with a frozen copy of the decoder
+  from before lap marks, and the host tests decode them with the current
+  exporter's unchanged checks.
 
 Fixed settings in this build:
 

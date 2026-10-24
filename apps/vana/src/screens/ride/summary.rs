@@ -12,8 +12,8 @@
 //!
 //! A saved ride from the ride list shows on the same pages, read back from
 //! its journal: its start replaces RIDE SAVED, BACK returns to the list and
-//! ACT sends it to the phone. What the journal does not keep (laps and
-//! climbs) shows as --.
+//! ACT sends it to the phone. What the journal does not keep shows as --:
+//! climbs, and the laps of a ride recorded before laps were kept.
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
 use crate::ride::totals::EFFORT_SECONDS;
@@ -55,6 +55,7 @@ pub struct After {
     pub best: [Option<u16>; 4],
     /// Unknown for a saved ride read back.
     pub climbs: Option<u16>,
+    /// Unknown for a saved ride recorded without lap marks.
     pub laps: Option<u16>,
     /// A saved ride from the list, titled by `View::past_title`.
     pub past: bool,

@@ -12,7 +12,9 @@ use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::fit::Refusal;
-use vana::ride::log::{Entry, Kind, SLOT_SIZE, SLOTS, Sample, Source, commit_word, encode};
+use vana::ride::log::{
+    Entry, Kind, SLOT_SIZE, SLOTS, Sample, Slot, Source, commit_word, decode, encode,
+};
 use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, ZONES};
 
 const HEART: u16 = 4242;
@@ -3776,8 +3778,8 @@ fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
     sim.expect_field("NP W", "240");
     sim.press(Button::BottomLeft);
     sim.expect_text("BEST POWER W");
-    // Laps and climbs are not kept with a ride.
-    sim.expect_field("LAPS", "--");
+    sim.expect_field("LAPS", "1");
+    sim.expect_field("CLIMBS", "--");
     sim.checkpoint("saved ride best power");
 
     // ACT offers this ride to the phone; BACK comes back to it.
@@ -3809,6 +3811,104 @@ fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
     sim.stop_ride();
     sim.expect_field("AVG W", "240");
     sim.done();
+}
+
+fn fit_lap_triggers(bytes: &[u8]) -> Vec<u8> {
+    let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let mut definitions = std::collections::BTreeMap::new();
+    let mut triggers = Vec::new();
+    let mut at = 14;
+    while at < 14 + size {
+        let header = bytes[at];
+        at += 1;
+        let local = header & 0xf;
+        if header & 0x40 != 0 {
+            let global = u16::from_le_bytes([bytes[at + 2], bytes[at + 3]]);
+            let count = usize::from(bytes[at + 4]);
+            let fields: Vec<(u8, usize)> = (0..count)
+                .map(|i| (bytes[at + 5 + 3 * i], usize::from(bytes[at + 6 + 3 * i])))
+                .collect();
+            at += 5 + 3 * count;
+            definitions.insert(local, (global, fields));
+            continue;
+        }
+        let (global, fields) = &definitions[&local];
+        for &(number, field_size) in fields {
+            if *global == 19 && number == 24 {
+                triggers.push(bytes[at]);
+            }
+            at += field_size;
+        }
+    }
+    triggers
+}
+
+#[test]
+fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD", "HEART RATE"]);
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "AUTO LAP");
+    sim.set_option("AUTO LAP", "EVERY 1 KM");
+    // Off the RIDE section, whose title reads as the Home card.
+    sim.swipe_next();
+    go_home(&mut sim);
+
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim.expect_text("LAP 1");
+    sim.checkpoint("a lap press");
+    sim.advance(minutes(2) + seconds(30));
+    sim.stop_ride();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.expect_field("LAPS", "3");
+    sim.done();
+
+    let media = sim.ride_media();
+    let slots: Vec<Slot> = media
+        .as_chunks::<SLOT_SIZE>()
+        .0
+        .iter()
+        .map(|bytes| Slot(*bytes))
+        .collect();
+    let ride = sim.rides().last().unwrap().id;
+    let start = slots
+        .iter()
+        .position(|slot| decode(slot).is_some_and(|e| e.kind == Kind::Start && e.ride_id == ride))
+        .unwrap();
+    struct Bytes(Vec<u8>);
+    impl firmware_services::fit::Sink for Bytes {
+        fn put(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+    }
+    let mut fit = Bytes(Vec::new());
+    let plan = vana::ride::fit::write_all(
+        slots[start..].iter(),
+        ride,
+        Some(1_789_000_000_000),
+        &mut fit,
+    )
+    .unwrap();
+    assert_eq!(plan.laps, 3);
+    assert_eq!(
+        fit_lap_triggers(&fit.0),
+        [0, 2, 7],
+        "manual, distance, session end"
+    );
+
+    sim.home("RIDES");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.expect_text("BEST POWER W");
+    sim.expect_field("LAPS", "3");
+    sim.checkpoint("saved ride keeps its laps");
 }
 
 /// A saved MMC ride on a card that later fails says it cannot be read,

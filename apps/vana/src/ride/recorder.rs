@@ -15,6 +15,8 @@
 //! stays on the 1 Hz grid of the start/resume press; late service takes the
 //! due sample late, never backfills, and counts wholly skipped periods as
 //! dropped. Reset can lose three buffered samples, or four during commit.
+//! A lap mark waits for the next stored sample: the ride's first sample
+//! carries `LapStart::Ride`, and each later lap its trigger.
 //! One operation and its unconsumed completion exclude further mutations.
 
 use crate::ride::control::Action;
@@ -23,6 +25,7 @@ use crate::ride::journal::{Journal, Progress, Scan};
 use crate::ride::log::Catalog;
 use crate::ride::log::Entry;
 use crate::ride::log::Kind;
+use crate::ride::log::LapStart;
 use crate::ride::log::Recovery;
 use crate::ride::log::Sample;
 use crate::ride::log::Source;
@@ -66,6 +69,7 @@ pub struct Recorder {
     summary: Summary,
     samples: [Sample; crate::ride::log::SAMPLES_PER_BATCH],
     sample_count: usize,
+    next_lap_mark: Option<LapStart>,
     next_sample: u64,
     written_samples: u32,
     dropped_samples: u32,
@@ -94,6 +98,7 @@ impl Default for Recorder {
             summary: Summary::default(),
             samples: [Sample::default(); crate::ride::log::SAMPLES_PER_BATCH],
             sample_count: 0,
+            next_lap_mark: None,
             next_sample: 0,
             written_samples: 0,
             dropped_samples: 0,
@@ -280,6 +285,14 @@ impl Recorder {
         true
     }
 
+    /// A lap closed: the next sample this ride stores begins a new one.
+    /// Nothing is marked without an open ride.
+    pub fn mark_lap(&mut self, start: LapStart) {
+        if self.riding() {
+            self.next_lap_mark = Some(start);
+        }
+    }
+
     pub fn take_result(&mut self) -> Option<ResultEvent> {
         self.result.take()
     }
@@ -363,6 +376,7 @@ impl Recorder {
             if self.sample_count < self.samples.len() {
                 let mut sample = sample.for_source(self.source);
                 sample.active_ms = self.active_ms(now);
+                sample.lap = self.next_lap_mark.take();
                 self.samples[self.sample_count] = sample;
                 self.sample_count += 1;
             } else {
@@ -462,6 +476,7 @@ impl Recorder {
                         self.stop_at = None;
                         self.source = source;
                         self.open_ride = true;
+                        self.next_lap_mark = Some(LapStart::Ride);
                         self.summary = Summary::started(self.ride_id, source);
                         self.status = Status::Recording;
                         // As a scan would see it once START is committed.
@@ -482,6 +497,7 @@ impl Recorder {
                         self.accumulated_ms = active_ms;
                         self.stop_at = None;
                         self.open_ride = false;
+                        self.next_lap_mark = None;
                         self.status = Status::Saved;
                         self.summary.finish(Kind::Finish, active_ms, false);
                         self.catalog.push_summary(self.summary);

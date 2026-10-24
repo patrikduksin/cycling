@@ -437,6 +437,7 @@ impl Ride {
                 break;
             }
             let (part_ms, part_mm) = player.until_end(ms, mm);
+            let distance_step = player.distance_step();
             ms -= part_ms;
             mm -= part_mm;
             // A workout ride has no distance laps; its steps close them.
@@ -449,7 +450,7 @@ impl Ride {
                         | crate::workout::player::Event::Finished
                 )
             }) {
-                let _ = self.laps.split(now);
+                let _ = self.laps.split(now, distance_step);
             }
             for event in events {
                 let _ = self.workout_events.push(event);
@@ -662,6 +663,10 @@ impl Runtime {
             None
         };
         ride.continue_internally(now);
+        if let Some(trigger) = ride.laps.take_closed() {
+            ride.internal.mark_lap(trigger.into());
+            ride.bulk.mark_lap(trigger.into());
+        }
         ride.internal.service(
             &mut Internal::new(&mut ride.internal_media, store),
             now,

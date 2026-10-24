@@ -1,5 +1,6 @@
 pub mod alerts;
 pub mod auto;
+pub mod battery_life;
 pub mod bests;
 pub mod bulk;
 pub mod climb;

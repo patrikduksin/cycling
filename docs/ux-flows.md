@@ -47,7 +47,7 @@ coloured dot, a headline and, when needed, what to do:
 | --- | --- | --- | --- | --- |
 | GPS | GPS LOCKED | FINDING GPS, you can start anyway | | NO GPS, records without a map |
 | Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; NO SENSORS, tap here to pair one | | |
-| Battery | BATTERY n% | under 30%: charge after the ride | under 15%: charge before riding | |
+| Battery | BATTERY n%, with ABOUT n H LEFT once the drain rate is known | under 30%: charge after the ride | under 15%: charge before riding | |
 | Storage | ROOM FOR n H | ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; on internal memory | STORAGE FULL, STORAGE PROBLEM | |
 
 The headline sums them up: READY when every line is green or grey, ALMOST

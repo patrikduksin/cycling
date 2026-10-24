@@ -46,6 +46,8 @@ const STATIC_FRAME_MS: u64 = 1000;
 pub(super) const TOAST_MS: u64 = 2000;
 /// Battery news stays a little longer than a confirmation.
 pub(super) const BATTERY_TOAST_MS: u64 = 4000;
+/// The time-left warning keeps this far from a battery level toast.
+const BATTERY_NEWS_GAP_MS: u64 = 30_000;
 /// How long a ride without wheel speed notes that auto-pause is off.
 const NO_SPEED_NOTE_MS: u64 = 8000;
 
@@ -408,6 +410,27 @@ impl Runtime {
             if self.readings.radar_alert.update(radar, now) {
                 self.cue(Cue::RadarApproach, now);
             }
+            let alert = alert.or_else(|| {
+                let ride_left = self
+                    .ride
+                    .workout
+                    .as_ref()
+                    .and_then(|player| player.remaining_secs())
+                    .map(|secs| secs.div_ceil(60));
+                let after_news = self
+                    .readings
+                    .battery_news_ms
+                    .is_some_and(|at| now.saturating_sub(at) < BATTERY_NEWS_GAP_MS);
+                self.alerts.battery(
+                    now,
+                    self.ride.active().status(),
+                    self.readings
+                        .battery_life
+                        .minutes_left(now)
+                        .filter(|_| !after_news),
+                    ride_left,
+                )
+            });
             if let Some(alert) = alert.or(sunset) {
                 self.ride_alert(alert, now);
             }
@@ -430,6 +453,7 @@ impl Runtime {
             Some(AlertSound::Fuel) => Cue::Fuel,
             Some(AlertSound::RadarClear) => Cue::RadarClear,
             Some(AlertSound::Sunset) => Cue::BandAlert,
+            Some(AlertSound::Battery) => Cue::LowBattery,
             None => return,
         };
         self.cue(cue, now);
@@ -633,7 +657,7 @@ impl Runtime {
             }
             Page::Ready => {
                 self.refresh_sensor_menu(ant, now);
-                view.readiness = self.readiness(view.gps, view.battery);
+                view.readiness = self.readiness(view.gps, view.battery, now);
             }
             Page::Summary => {
                 view.after = self.after();
@@ -910,7 +934,7 @@ impl Runtime {
 
     /// The Ready checks: GPS, sensors, battery and room to record, each in
     /// plain words with what to do when something needs the rider.
-    pub(super) fn readiness(&self, gps: Gps, battery: Option<Battery>) -> Readiness {
+    pub(super) fn readiness(&self, gps: Gps, battery: Option<Battery>, now: u64) -> Readiness {
         let mut readiness = Readiness::default();
         if let Some(name) = self.chosen_name() {
             let _ = readiness.riding.push_str(name.as_str());
@@ -936,8 +960,18 @@ impl Runtime {
             Some(Battery { percent, .. }) => {
                 let mut title = Text::<24>::new();
                 let _ = write!(title, "BATTERY {percent}%");
+                // Time left shows when the charge needs nothing from the
+                // rider, and only once the rate is trustworthy.
+                let mut left = Text::<28>::new();
+                if let Some(minutes) = self.readings.battery_life.minutes_left(now) {
+                    let _ = write!(
+                        left,
+                        "ABOUT {} LEFT",
+                        crate::ride::battery_life::about(minutes)
+                    );
+                }
                 let (level, hint) = match percent {
-                    30.. => (Level::Good, ""),
+                    30.. => (Level::Good, left.as_str()),
                     15..30 => (Level::Wait, "CHARGE AFTER THE RIDE"),
                     _ => (Level::Problem, "CHARGE BEFORE RIDING"),
                 };

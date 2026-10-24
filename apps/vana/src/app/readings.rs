@@ -72,6 +72,10 @@ pub(super) struct Readings {
     pub(super) radar_alert: Alert,
     epochs: [Option<Epoch>; Decoded::ALL.len()],
     pub(super) battery: BatteryWatch,
+    /// Time left at the rate the charge has been falling.
+    pub(super) battery_life: crate::ride::battery_life::BatteryLife,
+    /// When the last battery level toast showed.
+    pub(super) battery_news_ms: Option<u64>,
 }
 
 /// Battery levels the rider is told about once per discharge, and whether
@@ -190,6 +194,8 @@ impl Default for Readings {
             radar_alert: Alert::default(),
             epochs: [None; Decoded::ALL.len()],
             battery: BatteryWatch::default(),
+            battery_life: Default::default(),
+            battery_news_ms: None,
         }
     }
 }

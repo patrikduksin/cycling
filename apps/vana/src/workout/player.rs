@@ -203,6 +203,25 @@ impl Player {
         self.summary
     }
 
+    /// Seconds of ride the workout still plans, when all of it is timed and
+    /// not yet done; `None` when a step ends by distance or by the rider.
+    pub fn remaining_secs(&self) -> Option<u32> {
+        if self.done || self.workout.has_untimed_steps() {
+            return None;
+        }
+        let ahead: u32 = self
+            .workout
+            .played()
+            .skip(self.position + 1)
+            .map(|played| match played.step.length {
+                Length::Time(secs) => u32::from(secs),
+                _ => 0,
+            })
+            .sum();
+        let step = (u64::from(self.duration_s()?) * 1000).saturating_sub(self.step_ms);
+        Some(ahead + step.div_ceil(1000) as u32)
+    }
+
     /// The played step after `position`.
     fn played_at(&self, position: usize) -> Option<Played> {
         self.workout.played().nth(position)
@@ -556,6 +575,23 @@ mod tests {
             events.extend(player.add(1000, 8000, &riding(watts), &profile));
         }
         events
+    }
+
+    #[test]
+    fn remaining_secs_counts_timed_steps_down_and_gives_up_on_open_ones() {
+        let mut player = Player::new(VO2_MAX);
+        let planned = VO2_MAX.planned_secs();
+        assert_eq!(player.remaining_secs(), Some(planned));
+        ride(&mut player, 100, 150);
+        assert_eq!(player.remaining_secs(), Some(planned - 100));
+        // A step that ends by the rider's say is no length at all.
+        let open = Player::new(FTP_RAMP);
+        assert_eq!(
+            open.workout().has_untimed_steps(),
+            open.remaining_secs().is_none()
+        );
+        ride(&mut player, planned, 150);
+        assert_eq!(player.remaining_secs(), None, "done");
     }
 
     #[test]

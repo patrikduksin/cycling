@@ -253,15 +253,19 @@ Polar day and night have no sunset and no alert.
 A second amber toast with the same chime, TURN BACK BY 17:40 in local time,
 says when to start home to be there by sunset. It speaks once per ride, on
 the ride pages, when less than 15 minutes remain before that time; if the time
-has already passed it says TURN BACK NOW. The time home is TRACK KM, or TO END
-KM while following a course, over the ride's moving average speed, so it waits
-for 5 minutes of moving and for 5 km/h or more. It is part of ALERTS SUNSET, with
-no setting of its own. It says nothing in polar day or night, after sunset,
-without a position or time, while paused, when riding towards the start
-(following the track back, or heading within a quarter turn of it), at the
-start, or on a recovered ride until its track has been read back. Riding home
-keeps the margin where it was, so it speaks again only after the margin has
-stayed above 30 minutes for 10 minutes, as when a shorter course is loaded.
+has already passed it says TURN BACK NOW. The time home is the straight
+distance to the start, plus 30% for winding roads, at the ride's moving
+average speed. The track ridden is no guide: on a loop it is far longer than
+the way home. A loaded course changes nothing, since its end need not be
+home. The estimate waits for 5 minutes of moving and for 5 km/h or more.
+The alert is part of ALERTS SUNSET, with no setting of its own. It says nothing
+in polar day or night, after sunset, without a position or time, while paused,
+at the start, or on a recovered ride until its track has been read back. It
+also says nothing when riding towards the start (following the track back, or
+heading within a quarter turn of it), and holds while the heading is unknown,
+as after a stop, until the rider moves again. It speaks again only after the
+margin has stayed above 30 minutes for 10 minutes, as when a loop swings
+back towards the start.
 
 ### Paused
 

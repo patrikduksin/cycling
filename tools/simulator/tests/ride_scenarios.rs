@@ -6564,8 +6564,9 @@ fn expect_quiet(sim: &mut Sim, minutes: u64, needle: &str) {
 
 /// Santiago on 14 October 2026 (UTC-3, sunset 19:55 local, 22:55 UTC), riding
 /// out at 25 km/h from 90 minutes before sunset. The way home takes as long as
-/// the ride so far, so after t minutes the margin is 90 - 2t: it drops under
-/// 15 minutes at 37.5, and the last turn is then 22:17:30 UTC, 19:17 here.
+/// the ride so far times 1.3 for winding roads, so after t minutes the margin
+/// is 90 - 2.3t: it drops under 15 minutes at 32.6, and the last turn is then
+/// 22:12:35 UTC, 19:12 here.
 #[test]
 fn riding_out_toward_dusk_says_when_to_turn_back() {
     let mut sim = rider();
@@ -6578,16 +6579,16 @@ fn riding_out_toward_dusk_says_when_to_turn_back() {
     sim.advance(minutes(20));
     sim.expect_no_text("TURN BACK");
     let latency = sim.wait_for("TURN BACK BY", minutes(30)).unwrap();
-    // 37.5 minutes after the start, less the 20 spent already.
+    // 32.6 minutes after the start, less the 20 spent already.
     assert!(
-        (minutes(17)..=minutes(18)).contains(&latency),
+        (minutes(12)..=minutes(13)).contains(&latency),
         "told after {latency} ms"
     );
-    sim.expect_text("TURN BACK BY 19:17");
+    sim.expect_text("TURN BACK BY 19:12");
     sim.advance(seconds(1));
     let ids = played_since(&sim, 0);
     assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
-    sim.checkpoint("toast: turn back by 19:17");
+    sim.checkpoint("toast: turn back by 19:12");
     // Once: the margin holds while riding on, and the toast does not return,
     // not at the sunset warning, nor at sunset, nor in the dark after it.
     expect_quiet(&mut sim, 3, "TURN BACK");
@@ -6636,6 +6637,69 @@ fn no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off() {
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     expect_quiet(&mut sim, 50, "TURN BACK");
+}
+
+/// A square loop of 8 km sides, ridden counter-clockwise from its corner.
+fn square_loop_gpx() -> String {
+    gpx_through(
+        "square loop",
+        &[
+            (0.0, 0.0),
+            (0.0, 8_000.0),
+            (8_000.0, 8_000.0),
+            (8_000.0, 0.0),
+            (0.0, 0.0),
+        ],
+    )
+}
+
+/// Round a loop at 25 km/h from two hours before sunset. The farthest the
+/// rider gets from the start is 11 km, 35 minutes of riding home with the
+/// winding of roads, so the margin never drops under 15 minutes. On the last
+/// leg the whole breadcrumb is 25 km, but home is 7 km away: the way home is
+/// the straight line, so no turn-back alert is due, nor is turning back the
+/// shorter way there.
+#[test]
+fn riding_round_a_loop_never_says_turn_back_on_the_last_leg() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_route(Route::from_gpx(&square_loop_gpx()).unwrap());
+    sim.set_gps_clock(20 * 3600 + 55 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    expect_quiet(&mut sim, 62, "TURN BACK");
+    assert!(
+        sim.world().distance_m > 25_000.0,
+        "{:.0} m",
+        sim.world().distance_m
+    );
+    sim.checkpoint("on the last leg of the loop, no turn back toast");
+    sim.stop_ride();
+}
+
+/// A rider heading home who slows to a crawl has no heading for a moment, and
+/// the minutes of light slip away: the alert holds until moving again, and
+/// riding home says nothing. With the BACK TO START page off nothing follows
+/// the track by itself, so only the heading tells which way the rider rides.
+/// Out 8 km at 25 km/h, 75 minutes from sunset,
+/// then back, then 3 km/h for 25 minutes, long enough for the margin to fall
+/// under 15 minutes.
+#[test]
+fn no_turn_back_when_stopping_on_the_way_home() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_route(Route::from_gpx(&straight_out_and_back_gpx(8.0)).unwrap());
+    hide_ride_pages(&mut sim, &["BACK TO START"]);
+    sim.set_gps_clock(21 * 3600 + 40 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    expect_quiet(&mut sim, 30, "TURN BACK");
+    sim.ride_at(3.0, 0.0, 0.0, 0.0);
+    expect_quiet(&mut sim, 25, "TURN BACK");
+    sim.checkpoint("crawling home, no turn back toast");
+    sim.stop_ride();
 }
 
 /// The light caption on BACK TO START draws in the light theme too, before

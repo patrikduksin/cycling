@@ -1,12 +1,14 @@
 //! Turn back by: the last moment to start home and still be there by sunset.
 //!
-//! Pure policy. The way home is the guide's TRACK KM (or TO END KM when the
-//! course is followed) over the ride's moving average speed; the latest turn
-//! is sunset less that time. The alert is due once less than `WARN_S` is
+//! Pure policy. The way home is the straight distance to the ride's start
+//! times `ROAD_PERCENT`, over the ride's moving average speed; the latest turn
+//! is sunset less that time. Straight, because the breadcrumb is the whole
+//! ride so far, which on a loop is far more than the way home, and because a
+//! course's end need not be home. The alert is due once less than `WARN_S` is
 //! left to it. It is given once per ride, and again only when the margin has
-//! stayed at or above `CLEAR_S` for `CLEAR_MS`: riding home keeps the margin
-//! where it was, so a margin that recovers means the plan changed (a shorter
-//! course, a faster pace), not that the rider ignored the first warning.
+//! stayed at or above `CLEAR_S` for `CLEAR_MS`: a margin that recovers means
+//! the rider is nearer home or quicker than the estimate thought (a loop
+//! swinging back, a faster pace), so a later warning is news again.
 use crate::daylight::Sun;
 use crate::ride::homing::{Guide, Mode, TURN};
 
@@ -23,6 +25,9 @@ pub const MIN_MOVING_MS: u64 = 5 * 60_000;
 /// A way home longer than this is no estimate. It also keeps the sums in
 /// range for any input.
 const MAX_HOME_S: u64 = 24 * 3600;
+/// Roads wind, so the way home is longer than the straight line to the start.
+/// 1.3 is a round figure for ordinary roads, not measured from rides.
+pub const ROAD_PERCENT: u64 = 130;
 /// Riding within this of straight to the start is riding home already.
 const HOME_ARC: u16 = TURN / 4;
 
@@ -36,14 +41,22 @@ pub struct Leg {
 }
 
 impl Leg {
-    /// The leg from `guide`, or `None` when it is not one to warn about: at
-    /// the start, or riding towards it already, by following the track back
-    /// or by heading within `HOME_ARC` of it. Following a course is riding to
-    /// its end, which is the way home then.
-    pub fn of(guide: &Guide, speed_mm_s: Option<u32>, moving_ms: u64) -> Option<Self> {
-        let outbound = guide.course || (!guide.following && !towards_start(guide));
+    /// The leg from `guide`, `start_m` metres in a straight line from the
+    /// start, or `None` when it is not one to warn about: at the start, riding
+    /// towards it already (following the track back, or heading within
+    /// `HOME_ARC` of it), or with no heading, as after a stop, when which way
+    /// the rider rides is not known. Following a course is riding away from
+    /// the start.
+    pub fn of(
+        guide: &Guide,
+        start_m: Option<u32>,
+        speed_mm_s: Option<u32>,
+        moving_ms: u64,
+    ) -> Option<Self> {
+        let heading = guide.heading?;
+        let outbound = guide.course || (!guide.following && !towards_start(guide, heading));
         (outbound && guide.mode != Mode::Arrived).then_some(Self {
-            home_m: guide.track_m,
+            home_m: (u64::from(start_m?) * ROAD_PERCENT / 100).min(u64::from(u32::MAX)) as u32,
             speed_mm_s: speed_mm_s?,
             moving_ms,
         })
@@ -60,11 +73,9 @@ impl Leg {
     }
 }
 
-fn towards_start(guide: &Guide) -> bool {
-    guide.heading.is_some_and(|heading| {
-        let apart = (guide.bearing + TURN - heading) % TURN;
-        apart <= HOME_ARC || apart >= TURN - HOME_ARC
-    })
+fn towards_start(guide: &Guide, heading: u16) -> bool {
+    let apart = (guide.bearing + TURN - heading) % TURN;
+    apart <= HOME_ARC || apart >= TURN - HOME_ARC
 }
 
 /// The latest turn: when, and how long from now.
@@ -218,24 +229,60 @@ mod tests {
 
     #[test]
     fn a_ride_out_from_the_start_has_a_leg() {
-        let leg = Leg::of(&outbound(), Some(FAST), HOUR_MS).unwrap();
-        assert_eq!(leg.home_m, 5_000);
+        let leg = Leg::of(&outbound(), Some(5_000), Some(FAST), HOUR_MS).unwrap();
+        assert_eq!(leg.home_m, 6_500);
+    }
+
+    #[test]
+    fn the_way_home_is_the_straight_line_not_the_track_ridden() {
+        let loop_leg = Guide {
+            track_m: 33_000,
+            direct_m: 7_000,
+            ..outbound()
+        };
+        let leg = Leg::of(&loop_leg, Some(7_000), Some(FAST), HOUR_MS).unwrap();
+        assert_eq!(leg.home_m, 9_100);
+        let sets = Sun::Up { sets_at: SETS };
+        let turn = Turn::new(sets, SETS - 3600, leg).unwrap();
+        assert!(turn.left_s > WARN_S, "{turn:?}");
+    }
+
+    #[test]
+    fn no_heading_holds_the_alert() {
+        let stopped = Guide {
+            heading: None,
+            ..outbound()
+        };
+        assert_eq!(Leg::of(&stopped, Some(5_000), Some(FAST), HOUR_MS), None);
+        let course = Guide {
+            following: true,
+            course: true,
+            ..stopped
+        };
+        assert_eq!(Leg::of(&course, Some(5_000), Some(FAST), HOUR_MS), None);
+    }
+
+    #[test]
+    fn a_hostile_distance_saturates() {
+        let leg = Leg::of(&outbound(), Some(u32::MAX), Some(FAST), HOUR_MS).unwrap();
+        assert_eq!(leg.home_m, u32::MAX);
+        assert_eq!(Leg::of(&outbound(), None, Some(FAST), HOUR_MS), None);
     }
 
     #[test]
     fn riding_towards_the_start_has_no_leg() {
-        assert_eq!(Leg::of(&homeward(), Some(FAST), HOUR_MS), None);
+        assert_eq!(Leg::of(&homeward(), Some(5_000), Some(FAST), HOUR_MS), None);
         let following = Guide {
             following: true,
             ..outbound()
         };
-        assert_eq!(Leg::of(&following, Some(FAST), HOUR_MS), None);
+        assert_eq!(Leg::of(&following, Some(5_000), Some(FAST), HOUR_MS), None);
         let arrived = Guide {
             mode: Mode::Arrived,
             ..outbound()
         };
-        assert_eq!(Leg::of(&arrived, Some(FAST), HOUR_MS), None);
-        assert_eq!(Leg::of(&outbound(), None, HOUR_MS), None);
+        assert_eq!(Leg::of(&arrived, Some(5_000), Some(FAST), HOUR_MS), None);
+        assert_eq!(Leg::of(&outbound(), Some(5_000), None, HOUR_MS), None);
     }
 
     #[test]
@@ -245,13 +292,17 @@ mod tests {
                 heading: Some(heading),
                 ..homeward()
             };
-            assert_eq!(Leg::of(&guide, Some(FAST), HOUR_MS), None, "{heading}");
+            assert_eq!(
+                Leg::of(&guide, Some(5_000), Some(FAST), HOUR_MS),
+                None,
+                "{heading}"
+            );
         }
         let across = Guide {
             heading: Some(HOME_ARC + 1),
             ..homeward()
         };
-        assert!(Leg::of(&across, Some(FAST), HOUR_MS).is_some());
+        assert!(Leg::of(&across, Some(5_000), Some(FAST), HOUR_MS).is_some());
     }
 
     #[test]
@@ -261,7 +312,7 @@ mod tests {
             course: true,
             ..homeward()
         };
-        assert!(Leg::of(&course, Some(FAST), HOUR_MS).is_some());
+        assert!(Leg::of(&course, Some(5_000), Some(FAST), HOUR_MS).is_some());
     }
 
     fn turn(left_s: i64) -> Option<Turn> {

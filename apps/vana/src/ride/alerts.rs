@@ -290,6 +290,10 @@ pub struct Alerts {
     battery_short_since: Option<u64>,
 }
 
+/// The last Unix time a clock is asked to read: the end of year 9999, so a
+/// hostile time cannot overflow the calendar sums.
+const LATEST_UNIX: i64 = 253_402_300_799;
+
 /// The sunset warning is due this long before sunset, and still given until
 /// `SUNSET_LATEST_S` before it: a ride resumed or a page returned to a few
 /// minutes late still gets it, but never as "30 MIN" when it is 10.
@@ -496,7 +500,7 @@ impl Alerts {
         Some(if turn.left_s <= 0 {
             Alert::TurnBackNow
         } else {
-            let local = zone.local(turn.by.max(0) as u64).of_day();
+            let local = zone.local(turn.by.clamp(0, LATEST_UNIX) as u64).of_day();
             Alert::TurnBackBy((local / 60) as u16)
         })
     }
@@ -889,6 +893,20 @@ mod tests {
             alerts.turn_back(10_000, true, rec, true, turn(60), zone),
             None
         );
+    }
+
+    #[test]
+    fn turn_back_reads_any_time_without_overflow() {
+        for by in [i64::MIN, -1, i64::MAX] {
+            let mut alerts = Alerts::default();
+            let turn = Some(Turn { by, left_s: 60 });
+            for zone in [Zone::Chile, Zone::utc(14)] {
+                alerts.turn_back = turn_back::Watch::default();
+                alerts.last = None;
+                let rec = Status::Recording;
+                assert!(alerts.turn_back(0, true, rec, true, turn, zone).is_some());
+            }
+        }
     }
 
     #[test]

@@ -108,7 +108,12 @@ impl BackToStart {
         if matches!(self.resume, Resume::Reading { .. }) {
             return None;
         }
-        Leg::of(&self.homing.guide()?, speed_mm_s, moving_ms)
+        Leg::of(
+            &self.homing.guide()?,
+            self.homing.start_m(),
+            speed_mm_s,
+            moving_ms,
+        )
     }
 
     /// Follow the course as it is now, or nothing once it is cleared.

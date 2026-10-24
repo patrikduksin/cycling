@@ -504,6 +504,13 @@ impl<'a> Homing<'a> {
         self.here
     }
 
+    /// Metres in a straight line from the fix to the ride's start, while the
+    /// fix is fresh.
+    pub fn start_m(&self) -> Option<u32> {
+        let here = self.here?;
+        (self.len != 0).then(|| distance(here, self.start(here)) as u32)
+    }
+
     /// The way the rider is riding, while moving.
     pub fn heading(&self) -> Option<u16> {
         self.heading

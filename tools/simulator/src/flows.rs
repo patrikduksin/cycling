@@ -239,7 +239,7 @@ impl Sim {
     pub fn choose_workout(&mut self, name: &str) {
         self.home("TRAIN");
         self.expect_text("WORKOUTS");
-        for _ in 0..16 {
+        for _ in 0..24 {
             if self
                 .screen()
                 .run(name)

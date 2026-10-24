@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn damaged_and_foreign_bytes_are_refused() {
-        let bytes = encode(BUILT_IN[1]);
+        let bytes = encode(&crate::workout::library::VO2_MAX);
         assert_eq!(decode(&bytes[..3]), Err(DecodeError::Length));
         let mut wrong = bytes.clone();
         wrong[0] = b'X';

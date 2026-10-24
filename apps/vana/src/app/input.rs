@@ -144,7 +144,7 @@ impl Runtime {
             Page::History => self.history_input(button, held),
             Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant),
-            Page::Workouts => self.workouts_input(button, now),
+            Page::Workouts => self.workouts_input(button, now, held),
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = self.first_page(),

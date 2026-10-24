@@ -102,6 +102,16 @@ impl Intensity {
             Self::Test => "TEST",
         }
     }
+
+    /// The label for a tight line.
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Warmup => "WARM",
+            Self::Recovery => "REC",
+            Self::Cooldown => "COOL",
+            Self::Work | Self::Test => self.label(),
+        }
+    }
 }
 
 /// How long a step lasts.

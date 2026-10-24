@@ -27,7 +27,7 @@ use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::{RidePage, Training as Shown};
 use crate::screens::workout::{Page, Text};
-use crate::screens::workouts::{Choice, Picker};
+use crate::screens::workouts::{Choice, Picker, VISIBLE};
 use crate::workout::history;
 use crate::workout::library::{Id, Library, LoadError, Outline};
 use crate::workout::model::{Length, Name, Played};
@@ -221,12 +221,19 @@ impl Runtime {
         picker
     }
 
-    /// MOVE focuses the next card, ACT chooses it for Ready, BACK goes Home.
-    pub(super) fn workouts_input(&mut self, button: Button, now: u64) {
+    /// MOVE focuses the next card (held, the next page of cards; past the
+    /// last it wraps to the first), ACT chooses it for Ready, BACK goes Home.
+    pub(super) fn workouts_input(&mut self, button: Button, now: u64, held: bool) {
         let rows = self.training.rows();
         match button {
             Button::BottomLeft => {
-                self.training.picker_cursor = (self.training.picker_cursor + 1) % rows
+                let cursor = self.training.picker_cursor;
+                let step = if held { VISIBLE } else { 1 };
+                self.training.picker_cursor = if cursor + 1 >= rows {
+                    0
+                } else {
+                    (cursor + step).min(rows - 1)
+                };
             }
             Button::BottomRight => self.choose_workout(self.training.picker_cursor, now),
             Button::TopLeft => self.navigation.page = Page::Home,

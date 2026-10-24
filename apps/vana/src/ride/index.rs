@@ -4,7 +4,7 @@
 //! An index is fed slots in order, one at a time, so a caller can spread a
 //! large bulk log over many service steps. It keeps the newest `KEPT` rides.
 
-use crate::ride::log::{self, Kind, Slot, Source};
+use crate::ride::log::{self, Kind, MAX_STEP_MS, Slot, Source};
 
 /// Rides an index keeps; older ones drop out first.
 pub const KEPT: usize = 32;
@@ -150,7 +150,8 @@ impl Index {
                     }
                     let elapsed = sample
                         .active_ms
-                        .saturating_sub(open.previous_active_ms.unwrap_or(sample.active_ms));
+                        .saturating_sub(open.previous_active_ms.unwrap_or(sample.active_ms))
+                        .min(MAX_STEP_MS);
                     open.previous_active_ms = Some(sample.active_ms);
                     if let Some(speed) = sample.speed_mm_s {
                         open.distance_mm =
@@ -255,6 +256,25 @@ mod tests {
         assert!(index.find(7, 2).is_some());
         assert!(index.find(7, 1).is_none());
         assert_eq!(index.next_slot(), slots.len() + 1);
+    }
+
+    #[test]
+    fn a_journal_gap_counts_no_more_than_the_odometer_step() {
+        let fast = |active_ms| Sample {
+            speed_mm_s: Some(u32::MAX),
+            ..sample(active_ms)
+        };
+        let mut index = Index::default();
+        for entry in [
+            Entry::event(Kind::Start, Source::Live, 1, 0, 0),
+            Entry::batch(Source::Live, 1, 1, &[fast(1_000), fast(1 << 40)]).unwrap(),
+            Entry::event(Kind::Finish, Source::Live, 1, 2, 1 << 40),
+        ] {
+            index.accept(Some(&slot(&entry)));
+        }
+        index.finish();
+        let ride = index.rides().next().unwrap();
+        assert_eq!(ride.distance_mm, Some(u64::from(u32::MAX) * 4));
     }
 
     #[test]

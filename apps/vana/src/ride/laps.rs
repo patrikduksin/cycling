@@ -139,8 +139,8 @@ impl Lap {
 
     pub fn avg_heart_bpm(&self) -> Option<u16> {
         (self.heart_count != 0).then(|| {
-            ((self.heart_sum + self.heart_count / 2) / self.heart_count).min(u32::from(u16::MAX))
-                as u16
+            (self.heart_sum.saturating_add(self.heart_count / 2) / self.heart_count)
+                .min(u32::from(u16::MAX)) as u16
         })
     }
 }
@@ -272,6 +272,16 @@ mod tests {
             heart_bpm: Some(bpm),
             ..Sample::default()
         }
+    }
+
+    #[test]
+    fn a_saturated_heart_sum_still_averages() {
+        let lap = Lap {
+            heart_sum: u32::MAX,
+            heart_count: 65_538,
+            ..Lap::default()
+        };
+        assert_eq!(lap.avg_heart_bpm(), Some(65_534));
     }
 
     /// `seconds` one-second steps at a steady sample, from `now`; returns the

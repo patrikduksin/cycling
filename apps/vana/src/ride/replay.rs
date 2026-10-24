@@ -17,13 +17,10 @@
 //! The replay itself is a few words of position; it adds up into `Sums` the
 //! caller lends it, so the device keeps one set of ride sums, not two.
 use crate::ride::elevation::Trace;
-use crate::ride::log::{Entry, Kind, LapStart, Sample};
+use crate::ride::log::{Entry, Kind, LapStart, MAX_STEP_MS, Sample};
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 
-/// The longest gap between two samples that still counts as ridden time,
-/// as the odometer caps its steps.
-const MAX_STEP_MS: u64 = 3000;
 /// Probes past an unreadable slot before bisection gives up on it.
 const PROBES: usize = 8;
 

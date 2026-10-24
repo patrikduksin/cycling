@@ -36,6 +36,9 @@ pub const SECTORS: usize = REGION_SIZE / SECTOR_SIZE;
 pub const SLOTS: usize = REGION_SIZE / SLOT_SIZE;
 pub const SAMPLES_PER_BATCH: usize = 4;
 pub const HISTORY_CAPACITY: usize = 4;
+/// The longest gap between two samples that still counts as ridden time,
+/// as the odometer caps its steps.
+pub const MAX_STEP_MS: u64 = 3000;
 
 const MAGIC: [u8; 4] = *b"RIDE";
 pub const VERSION: u8 = 1;

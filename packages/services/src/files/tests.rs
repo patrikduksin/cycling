@@ -393,3 +393,19 @@ fn operations_read_and_write_a_bounded_number_of_sectors() {
         media.reads - reads
     );
 }
+
+#[test]
+fn a_delete_repairs_a_header_count_below_its_entries() {
+    let mut media = Media::new(DATA + 64);
+    let mut s = sector();
+    format(&mut media, 1, &mut s).unwrap();
+    write(&mut media, &name("a"), b"x", &mut s).unwrap();
+    let dir = mount(&mut media, &mut s).unwrap();
+    let mut header = media.get(base(dir.copy));
+    header[18..20].copy_from_slice(&0u16.to_le_bytes());
+    let checksum = crc32(&header[..CRC]);
+    header[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(base(dir.copy), header);
+    assert_eq!(delete(&mut media, &name("a"), &mut s), Ok(()));
+    assert!(snapshot(&mut media).unwrap().is_empty());
+}

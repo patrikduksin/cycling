@@ -476,8 +476,8 @@ fn intensity(target: Target, profile: &TrainingProfile) -> Option<u32> {
 fn zone(target: Target, profile: &TrainingProfile) -> u16 {
     match target.band(profile, 0) {
         Some(band) => match band.metric {
-            Metric::Power => zone_color(profile.power_zone((band.low + band.high) / 2)),
-            Metric::Heart => zone_color(profile.heart_zone((band.low + band.high) / 2)),
+            Metric::Power => zone_color(profile.power_zone(band.low.midpoint(band.high))),
+            Metric::Heart => zone_color(profile.heart_zone(band.low.midpoint(band.high))),
             Metric::Cadence => CADENCE,
         },
         None => TERTIARY,
@@ -495,13 +495,17 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
     };
     let workout: &Workout = player.workout();
     let done = player.done();
-    let total: u32 = workout.played().map(|p| weight(&p)).sum::<u32>().max(1);
-    let mut start = 0u32;
+    let total = workout
+        .played()
+        .map(|p| u64::from(weight(&p)))
+        .sum::<u64>()
+        .max(1);
+    let mut start = 0u64;
     let position = player.now(profile).position;
     for (index, played) in workout.played().enumerate() {
-        let from = (start as u64 * CHART_WIDTH as u64 / u64::from(total)) as usize;
-        start += weight(&played);
-        let to = (start as u64 * CHART_WIDTH as u64 / u64::from(total)) as usize;
+        let from = (start * CHART_WIDTH as u64 / total) as usize;
+        start += u64::from(weight(&played));
+        let to = (start * CHART_WIDTH as u64 / total) as usize;
         let color = zone(played.step.target, profile);
         let ahead = index > position && !done;
         let color = if ahead { blend(color, BLACK, 4) } else { color };
@@ -618,6 +622,36 @@ mod tests {
         right: BODY.right,
         bottom: BODY.bottom,
     };
+
+    #[test]
+    fn a_chart_of_a_ramp_from_tens_of_kilowatts_still_lays_out() {
+        use crate::workout::model::{Length, Step, Workout};
+        let ramp = Target::Ramp {
+            start: 40_000,
+            step: 1,
+            every: 60,
+        };
+        let workout = Workout::new(
+            "HUGE",
+            &[Step::new(Intensity::Work, Length::Open, ramp)],
+            &[],
+            None,
+        );
+        assert_eq!(workout.validate(), Ok(()));
+        let chart = chart(&Player::new(workout), &TrainingProfile::default());
+        assert!(chart.now.1 > chart.now.0);
+    }
+
+    #[test]
+    fn a_chart_of_very_long_distance_steps_still_lays_out() {
+        use crate::workout::model::{Length, Step, Workout};
+        let far = Step::new(Intensity::Work, Length::Distance(u32::MAX), Target::Free);
+        let workout = Workout::new("FAR", &[far; 12], &[], None);
+        assert_eq!(workout.validate(), Ok(()));
+        let player = Player::new(workout);
+        let chart = chart(&player, &TrainingProfile::default());
+        assert!(chart.now.1 > chart.now.0);
+    }
 
     #[test]
     fn an_interval_shows_its_target_reading_verdict_and_next_step() {

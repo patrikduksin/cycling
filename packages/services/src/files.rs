@@ -507,9 +507,12 @@ impl Dir {
         // Where the entry goes: the slot holding `name`, else the first free.
         let mut target = None;
         let mut free = None;
+        // Counted, not taken from the header, which mount does not check.
+        let mut count = 0;
         for index in 0..DIR_SECTORS {
             for (slot, e) in self.entries(media, index, sector)?.iter().enumerate() {
                 let at = index * PER_SECTOR + slot;
+                count += usize::from(e.is_some());
                 match e {
                     Some(e) if e.name == *name => target = Some(at),
                     None if free.is_none() => free = Some(at),
@@ -522,7 +525,6 @@ impl Dir {
             (None, Some(_)) => free.ok_or(Error::Full)?,
             (None, None) => return Err(Error::NotFound),
         };
-        let mut count = usize::from(self.count);
         if target.is_none() {
             count += 1;
         }

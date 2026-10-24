@@ -94,43 +94,45 @@ def reopen(port, directory, label, deadline=20):
             time.sleep(0.25)
 
 
-WAKE_TIMEOUT_S = 60
 POWER_SETTLE_TIMEOUT_S = 30
+WAKE_TIMEOUT_S = 60
 
 
-def settled_power(connection):
-    """POWER once it has left startup: Initializing, then Quiescing on the way to charging standby."""
-    deadline = time.monotonic() + POWER_SETTLE_TIMEOUT_S
-    while re.search(r'state: (Initializing|Quiescing)\b', power := expect(connection, 'POWER', 'OK')['data']):
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f'power state did not settle in {POWER_SETTLE_TIMEOUT_S} s: {power}')
-        time.sleep(0.5)
-    return power
+def poll_across_resets(connection, port, directory, label, seconds, probe):
+    """Poll until `probe` is done, reconnecting whenever the C606 resets and the session drops.
 
-
-def wake_to_power_on(connection, port, directory):
-    """Wake charging standby, then reconnect once the C606 has booted from power-on.
-
-    On USB, POWER SHUTDOWN first resets the C606 in software into charging
-    standby, which keeps RTC memory. A wake makes the companion cut power,
-    and the C606 boots again about 20 s later; the session drops then.
+    `probe` returns (done, observation). Gives up `seconds` after the start
+    with the last observation.
     """
-    expect(connection, 'POWER WAKE', 'ACCEPTED')
-    deadline = time.monotonic() + WAKE_TIMEOUT_S
+    deadline = time.monotonic() + seconds
     attempt = 0
-    system = None
+    last = None
     while True:
         try:
-            system = read(connection, 'STATUS')
-            if system['reset'] != 'software':
-                return connection, system
+            done, last = probe(connection)
+            if done:
+                return connection, last
         except OSError, RuntimeError, TimeoutError:
             connection.__exit__(None, None, None)
             attempt += 1
-            connection = reopen(port, directory, f'woken-{attempt}', max(deadline - time.monotonic(), 0))
+            connection = reopen(port, directory, f'{label}-{attempt}', max(deadline - time.monotonic(), 0))
         if time.monotonic() >= deadline:
-            raise TimeoutError(f'no power-on reset {WAKE_TIMEOUT_S} s after POWER WAKE: {system}')
-        time.sleep(1)
+            raise TimeoutError(f'{label}: gave up after {seconds} s: {last}')
+        time.sleep(0.5)
+
+
+def out_of_startup(connection):
+    """After a software reset, POWER passes Initializing, then Quiescing on the way to charging standby."""
+    system = read(connection, 'STATUS')
+    if system['reset'] != 'software':
+        return True, (system, None)
+    power = expect(connection, 'POWER', 'OK')['data']
+    return not re.search(r'state: (Initializing|Quiescing)\b', power), (system, power)
+
+
+def booted_from_power_on(connection):
+    system = read(connection, 'STATUS')
+    return system['reset'] != 'software', system
 
 
 def power_cycle(port, directory):
@@ -153,9 +155,16 @@ def power_cycle(port, directory):
     print('Shutdown accepted. Without USB power, switch the C606 on again.', flush=True)
     time.sleep(5)
     connection = reopen(port, directory, 'power-on', 180)
-    system = read(connection, 'STATUS')
-    if system['reset'] == 'software' and 'state: Charging' in settled_power(connection):
-        connection, system = wake_to_power_on(connection, port, directory)
+    connection, (system, power) = poll_across_resets(
+        connection, port, directory, 'power-settling', POWER_SETTLE_TIMEOUT_S, out_of_startup
+    )
+    if power is not None and 'state: Charging' in power:
+        # Charging standby follows a software reset and keeps RTC memory; a
+        # wake makes the companion cut power, and the C606 boots from power-on.
+        expect(connection, 'POWER WAKE', 'ACCEPTED')
+        connection, system = poll_across_resets(
+            connection, port, directory, 'woken', WAKE_TIMEOUT_S, booted_from_power_on
+        )
     if system['reset'] != 'power' or system['crash'] != 'none':
         raise AssertionError(f'expected a power-on reset without a crash marker, got {system}')
     settle(connection)

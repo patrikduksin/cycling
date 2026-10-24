@@ -254,27 +254,34 @@ class PowerCycleTests(unittest.TestCase):
 
     def test_a_wake_without_a_power_on_reset_stops_at_the_deadline(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
-        device = UsbStandby(polls_until_reset=None)
-        sessions = iter([before, device.connect()])
+        device = UsbStandby(polls_until_reset=None, resets_on_the_way=0)
+        sessions = iter([before])
         with (
-            patch('cycling_devtools.harness.base.reopen', side_effect=lambda *unused: next(sessions)),
+            patch(
+                'cycling_devtools.harness.base.reopen',
+                side_effect=lambda *unused: next(sessions, None) or device.connect(),
+            ),
             patch('cycling_devtools.harness.base.time.monotonic', side_effect=itertools.count(0, 10)),
             patch('time.sleep'),
-            self.assertRaisesRegex(TimeoutError, 'no power-on reset'),
+            self.assertRaisesRegex(TimeoutError, 'woken: gave up'),
         ):
             power_cycle('port', None)
         self.assertEqual(device.commands.count('POWER WAKE'), 1)
-        self.assertLessEqual(device.commands.count('STATUS'), 8)
+        woken = device.commands[device.commands.index('POWER WAKE') :]
+        self.assertLessEqual(woken.count('STATUS'), 7)
 
     def test_a_standby_that_never_arrives_stops_at_the_deadline(self):
         before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
         device = UsbStandby(settles=False)
-        sessions = iter([before, device.connect()])
+        sessions = iter([before])
         with (
-            patch('cycling_devtools.harness.base.reopen', side_effect=lambda *unused: next(sessions)),
+            patch(
+                'cycling_devtools.harness.base.reopen',
+                side_effect=lambda *unused: next(sessions, None) or device.connect(),
+            ),
             patch('cycling_devtools.harness.base.time.monotonic', side_effect=itertools.count(0, 10)),
             patch('time.sleep'),
-            self.assertRaisesRegex(TimeoutError, 'Initializing'),
+            self.assertRaisesRegex(TimeoutError, 'power-settling: gave up.*Initializing'),
         ):
             power_cycle('port', None)
         self.assertNotIn('POWER WAKE', device.commands)

@@ -504,6 +504,11 @@ mod tests {
 
     #[test]
     fn the_header_reads_the_week_and_what_is_known() {
+        assert!(
+            core::mem::size_of::<Weeks>() <= 208,
+            "{}",
+            core::mem::size_of::<Weeks>()
+        );
         let mut list = list(ROWS, 0);
         list.weeks = Some(week());
         let canvas = prepare(&list);

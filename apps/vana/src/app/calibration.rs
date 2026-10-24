@@ -30,6 +30,9 @@ pub(super) enum Failure {
     NotConnected,
     /// The radio refused or lost the request.
     NotSent,
+    /// The radio holds an earlier message of unknown fate and refuses repeats
+    /// until it restarts.
+    RadioStuck,
     /// The power meter answered that it could not zero.
     Rejected,
     /// The power meter never answered.
@@ -83,8 +86,15 @@ pub(super) enum Event {
         response: Response,
         now: u64,
     },
-    /// Time passed, with the saved power meter's connection as it now is.
-    Tick { live: Option<Target>, now: u64 },
+    /// Time passed, with the saved power meter's connection as it now is,
+    /// whether a ride records, and whether the rider still has the sensor page
+    /// open to see the result.
+    Tick {
+        live: Option<Target>,
+        recording: bool,
+        watching: bool,
+        now: u64,
+    },
 }
 
 pub(super) fn step(phase: Phase, event: Event) -> Phase {
@@ -124,6 +134,13 @@ pub(super) fn step(phase: Phase, event: Event) -> Phase {
                 ..
             },
         ) => phase,
+        (
+            Phase::Requested { .. },
+            Event::Refused {
+                error: Error::Uncertain,
+                now,
+            },
+        ) => failed(Failure::RadioStuck, now),
         (Phase::Requested { .. }, Event::Refused { now, .. }) => failed(Failure::NotSent, now),
         (
             Phase::Waiting { id, .. },
@@ -145,7 +162,21 @@ pub(super) fn step(phase: Phase, event: Event) -> Phase {
             Response::Zeroed(offset) => Phase::Done { offset, at: now },
             Response::Failed => failed(Failure::Rejected, now),
         },
-        (Phase::Requested { target, since }, Event::Tick { live, now }) => {
+        (
+            Phase::Requested { .. },
+            Event::Tick {
+                recording: true,
+                now,
+                ..
+            },
+        ) => failed(Failure::WhileRiding, now),
+        (
+            Phase::Requested { .. },
+            Event::Tick {
+                watching: false, ..
+            },
+        ) => Phase::Idle,
+        (Phase::Requested { target, since }, Event::Tick { live, now, .. }) => {
             if live != Some(target) {
                 failed(Failure::NotConnected, now)
             } else if now.saturating_sub(since) >= ADMISSION_MS {
@@ -154,7 +185,7 @@ pub(super) fn step(phase: Phase, event: Event) -> Phase {
                 phase
             }
         }
-        (Phase::Waiting { target, since, .. }, Event::Tick { live, now }) => {
+        (Phase::Waiting { target, since, .. }, Event::Tick { live, now, .. }) => {
             if live != Some(target) {
                 failed(Failure::NotConnected, now)
             } else if now.saturating_sub(since) >= TIMEOUT_MS {
@@ -181,11 +212,13 @@ impl Phase {
     pub(super) const fn note(self) -> Option<CalibrationNote> {
         match self {
             Self::Idle => None,
-            Self::Requested { .. } | Self::Waiting { .. } => Some(CalibrationNote::Calibrating),
+            Self::Requested { .. } => Some(CalibrationNote::WaitingForRadio),
+            Self::Waiting { .. } => Some(CalibrationNote::Calibrating),
             Self::Done { offset, .. } => Some(CalibrationNote::Done(offset)),
             Self::Failed { failure, .. } => Some(match failure {
                 Failure::WhileRiding => CalibrationNote::WhileRiding,
                 Failure::NotConnected => CalibrationNote::NotConnected,
+                Failure::RadioStuck => CalibrationNote::NeedsRestart,
                 Failure::NotSent | Failure::Rejected | Failure::TimedOut => CalibrationNote::Failed,
             }),
         }
@@ -234,7 +267,14 @@ impl Runtime {
             });
         }
         let live = self.live_power_meter(ant, now);
-        self.advance_calibration(Event::Tick { live, now });
+        let recording = self.recording();
+        let watching = self.navigation.page == crate::screens::workout::Page::Sensors;
+        self.advance_calibration(Event::Tick {
+            live,
+            recording,
+            watching,
+            now,
+        });
         self.submit_calibration(ant, now);
     }
 
@@ -319,7 +359,12 @@ mod tests {
     }
 
     fn tick(live: Option<Target>, now: u64) -> Event {
-        Event::Tick { live, now }
+        Event::Tick {
+            live,
+            recording: false,
+            watching: true,
+            now,
+        }
     }
 
     #[test]
@@ -421,10 +466,19 @@ mod tests {
                 "radio refuses for good",
                 REQUESTED,
                 Event::Refused {
-                    error: Error::Uncertain,
+                    error: Error::Capacity,
                     now: 1_000,
                 },
                 failed(Failure::NotSent, 1_000),
+            ),
+            (
+                "a radio stuck on an earlier message says so",
+                REQUESTED,
+                Event::Refused {
+                    error: Error::Uncertain,
+                    now: 1_000,
+                },
+                failed(Failure::RadioStuck, 1_000),
             ),
             (
                 "stale generation refused",
@@ -569,6 +623,50 @@ mod tests {
                 failed(Failure::NotSent, 1_000 + ADMISSION_MS),
             ),
             (
+                "a ride starting while the radio is held fails the request",
+                REQUESTED,
+                Event::Tick {
+                    live: Some(TARGET),
+                    recording: true,
+                    watching: true,
+                    now: 2_000,
+                },
+                failed(Failure::WhileRiding, 2_000),
+            ),
+            (
+                "a ride starting after the request went out leaves it alone",
+                WAITING,
+                Event::Tick {
+                    live: Some(TARGET),
+                    recording: true,
+                    watching: true,
+                    now: 2_000,
+                },
+                WAITING,
+            ),
+            (
+                "leaving the sensor page cancels a request not yet sent",
+                REQUESTED,
+                Event::Tick {
+                    live: Some(TARGET),
+                    recording: false,
+                    watching: false,
+                    now: 2_000,
+                },
+                Phase::Idle,
+            ),
+            (
+                "leaving the sensor page does not cancel a sent request",
+                WAITING,
+                Event::Tick {
+                    live: Some(TARGET),
+                    recording: false,
+                    watching: false,
+                    now: 2_000,
+                },
+                WAITING,
+            ),
+            (
                 "connection lost while waiting",
                 WAITING,
                 tick(None, 2_000),
@@ -641,7 +739,7 @@ mod tests {
     #[test]
     fn the_rider_is_told_only_what_is_true() {
         assert_eq!(Phase::Idle.note(), None);
-        assert_eq!(REQUESTED.note(), Some(CalibrationNote::Calibrating));
+        assert_eq!(REQUESTED.note(), Some(CalibrationNote::WaitingForRadio));
         assert_eq!(WAITING.note(), Some(CalibrationNote::Calibrating));
         assert_eq!(
             Phase::Done { offset: -4, at: 0 }.note(),

@@ -132,3 +132,70 @@ fn a_bridge_that_rejects_the_message_fails_it() {
     run(&mut runtime, &mut radio, 310, 400);
     assert_eq!(note(&runtime), Some(CalibrationNote::Failed));
 }
+
+fn feed(runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, from: u64, to: u64) {
+    for now in (from..to).step_by(250) {
+        radio.channels.tick(now);
+        radio.data(POWER, [0x10, 1, 0xff, 80, 0, 0, 205, 0], now);
+        tick(runtime, journal, radio, now);
+    }
+}
+
+#[test]
+fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
+    let mut journal = Journal::erased();
+    let mut runtime = restored(&[power_meter()]);
+    let mut radio = Radio::new();
+    for step in 0..crate::ride::log::SECTORS as u64 {
+        tick(&mut runtime, &mut journal, &mut radio, step);
+    }
+    feed(&mut runtime, &mut journal, &mut radio, 1_000, 23_800);
+    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    radio.reject = Some(device_api::ant::Error::Busy);
+    runtime.calibrate(&mut radio, 23_800);
+    assert_eq!(note(&runtime), Some(CalibrationNote::WaitingForRadio));
+    feed(&mut runtime, &mut journal, &mut radio, 24_000, 27_000);
+    runtime.navigation.page = crate::screens::workout::Page::Ride;
+    runtime.input(
+        device_api::input::Input::Button {
+            button: device_api::input::Button::BottomRight,
+            code: 1,
+        },
+        27_000,
+        &mut radio,
+    );
+    feed(&mut runtime, &mut journal, &mut radio, 27_000, 33_000);
+    assert!(runtime.recording());
+    radio.reject = None;
+    feed(&mut runtime, &mut journal, &mut radio, 33_000, 36_000);
+    assert!(radio.channels.pending_send().is_none());
+    assert!(matches!(
+        runtime.calibration,
+        super::super::calibration::Phase::Idle | super::super::calibration::Phase::Failed { .. }
+    ));
+}
+
+#[test]
+fn leaving_the_sensor_page_drops_a_request_the_radio_has_not_taken() {
+    let (mut runtime, mut radio) = live();
+    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    radio.reject = Some(device_api::ant::Error::Busy);
+    runtime.calibrate(&mut radio, 200);
+    runtime.navigation.page = crate::screens::workout::Page::Home;
+    run(&mut runtime, &mut radio, 200, 300);
+    radio.reject = None;
+    run(&mut runtime, &mut radio, 300, 2_000);
+    assert_eq!(note(&runtime), None);
+    assert!(radio.channels.pending_send().is_none());
+}
+
+#[test]
+fn a_radio_stuck_on_an_earlier_message_asks_for_a_restart() {
+    let (mut runtime, mut radio) = live();
+    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    radio.reject = Some(device_api::ant::Error::Uncertain);
+    runtime.calibrate(&mut radio, 200);
+    let note = note(&runtime).unwrap();
+    assert_eq!(note, CalibrationNote::NeedsRestart);
+    assert_eq!(note.text().as_str(), "RESTART TO CALIBRATE");
+}

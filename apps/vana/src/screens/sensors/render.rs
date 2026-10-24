@@ -4,8 +4,8 @@
 //! original stays as the test reference the painted rows must match.
 use super::CalibrationNote;
 use super::layout::{
-    CALIBRATION_TOP, DETAIL_BUTTONS, NEARBY_GRID, POWER_DETAIL_BUTTONS, REPLACE_BUTTONS,
-    SEARCH_BUTTON, SEARCH_BUTTON_SIZE, SELECTED_GRID,
+    CALIBRATION_HINT_TOP, CALIBRATION_TOP, DETAIL_BUTTONS, NEARBY_GRID, POWER_DETAIL_BUTTONS,
+    REPLACE_BUTTONS, SEARCH_BUTTON, SEARCH_BUTTON_SIZE, SELECTED_GRID,
 };
 use super::menu::{Choice, Menu, View};
 use super::slot::{LinkStatus, Selected};
@@ -52,9 +52,9 @@ impl CalibrationNote {
     /// Cyan while waiting, green once zeroed, amber when it did not happen.
     fn color(self) -> u16 {
         match self {
-            Self::Calibrating => CYAN,
+            Self::Calibrating | Self::WaitingForRadio => CYAN,
             Self::Done(_) => GREEN,
-            Self::Failed | Self::NotConnected | Self::WhileRiding => AMBER,
+            Self::Failed | Self::NeedsRestart | Self::NotConnected | Self::WhileRiding => AMBER,
         }
     }
 }
@@ -300,6 +300,10 @@ impl Menu {
                     center,
                     note.color(),
                 );
+                if let Some(hint) = note.hint() {
+                    let top = CALIBRATION_HINT_TOP;
+                    paint_text(row, &CAPTION, hint.as_bytes(), mid, top, center, MUTED);
+                }
             }
         } else {
             self.paint_button(row, DETAIL_BUTTONS[1], Choice::Secondary, b"BACK");
@@ -679,6 +683,13 @@ impl Menu {
                     BLACK,
                 ) {
                     return c;
+                }
+                if let Some(hint) = note.hint() {
+                    let top = CALIBRATION_HINT_TOP;
+                    let hint = hint.as_bytes();
+                    if let Some(c) = write(x, y, &CAPTION, hint, mid, top, center, MUTED, BLACK) {
+                        return c;
+                    }
                 }
             }
             let [calibrate, disconnect, back] = POWER_DETAIL_BUTTONS;

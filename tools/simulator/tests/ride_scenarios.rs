@@ -6040,7 +6040,9 @@ fn calibrate_power_meter(sim: &mut Sim, reply: ZeroReply, settled: bool) {
     sim.home("SENSORS");
     sim.open_sensor_detail("POWER METER");
     sim.expect_text("CALIBRATE");
-    sim.checkpoint("power meter detail offers calibrate");
+    sim.checkpoint("power meter detail opens on back");
+    sim.press(Button::BottomLeft);
+    sim.checkpoint("power meter detail with calibrate focused");
     if settled {
         sim.advance(seconds(16));
     }
@@ -6094,9 +6096,11 @@ fn calibrating_a_power_meter_shows_the_offset_it_reports() {
     let mut sim = rider();
     calibrate_power_meter(&mut sim, ZeroReply::Offset(-37), false);
     sim.press(Button::BottomRight);
-    sim.wait_for("CALIBRATING", seconds(1)).unwrap();
+    sim.wait_for("WAITING FOR RADIO", seconds(1)).unwrap();
+    sim.checkpoint("power meter waiting for the radio");
+    sim.wait_for("CALIBRATING", seconds(20)).unwrap();
     sim.checkpoint("power meter calibrating");
-    sim.wait_for("CALIBRATED", seconds(20)).unwrap();
+    sim.wait_for("CALIBRATED", seconds(5)).unwrap();
     sim.expect_text("OFFSET -37");
     assert_eq!(run_color(&sim, "CALIBRATED  OFFSET -37"), GREEN);
     sim.checkpoint("power meter calibrated with its offset");
@@ -6111,6 +6115,7 @@ fn a_power_meter_that_refuses_to_zero_ends_in_calibration_failed() {
     sim.press(Button::BottomRight);
     sim.wait_for("CALIBRATION FAILED", seconds(5)).unwrap();
     assert_eq!(run_color(&sim, "CALIBRATION FAILED"), AMBER);
+    sim.expect_text("CRANKS STILL, TRY AGAIN");
     sim.checkpoint("power meter calibration failed");
     sim.press(Button::BottomRight);
     sim.wait_for("CALIBRATING", seconds(1)).unwrap();

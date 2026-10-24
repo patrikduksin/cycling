@@ -441,10 +441,10 @@ impl Menu {
                 }
                 Item::Selected(slot) => {
                     self.view = View::Detail(slot);
-                    // Calibrating is harmless; disconnecting is not, so a
-                    // power meter's page opens on the former.
+                    // Two quick ACT presses must not zero a meter, so a power
+                    // meter's page opens on BACK.
                     self.choice = if self.calibratable(slot) {
-                        Choice::Calibrate
+                        Choice::Secondary
                     } else {
                         Choice::Primary
                     };

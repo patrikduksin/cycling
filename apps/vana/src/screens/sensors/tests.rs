@@ -1,4 +1,4 @@
-use super::layout::{CALIBRATION_TOP, DETAIL_BUTTONS, POWER_DETAIL_BUTTONS};
+use super::layout::{CALIBRATION_HINT_TOP, CALIBRATION_TOP, DETAIL_BUTTONS, POWER_DETAIL_BUTTONS};
 use super::render::{AMBER, CYAN, GREEN, HEADING_TOP, STATUS_TOP, TITLE_TOP, WHITE};
 use super::*;
 use crate::screens::chrome::{Align, BODY, CAPTION, CARD, Label, Line, RAISED, VALUE};
@@ -743,8 +743,8 @@ fn power_detail(connection: Connection) -> Menu {
 }
 
 #[test]
-fn a_power_meter_detail_opens_on_calibrate_and_offers_it_above_the_rest() {
-    let mut menu = power_detail(Connection::Live);
+fn a_power_meter_detail_opens_on_back_and_offers_calibrate_above_the_rest() {
+    let menu = power_detail(Connection::Live);
     let label = |menu: &Menu, (top, height): (usize, usize), label: &[u8]| {
         let top = top + height / 2 - usize::from(BODY.top) - usize::from(BODY.cap) / 2;
         shows(menu, &BODY, label, 120, top, Align::Center, WHITE)
@@ -753,31 +753,29 @@ fn a_power_meter_detail_opens_on_calibrate_and_offers_it_above_the_rest() {
     assert!(label(&menu, calibrate, b"CALIBRATE"));
     assert!(label(&menu, disconnect, b"DISCONNECT"));
     assert!(label(&menu, back, b"BACK"));
-    // The page opens on the harmless button; ACT asks and stays on the page.
-    assert_eq!(
-        menu.input(press(Button::BottomRight), 800),
-        Some(Action::Calibrate)
-    );
-    assert!(matches!(menu.view, menu::View::Detail(_)));
-    // MOVE steps down and wraps: disconnect, back, calibrate.
-    menu.input(press(Button::BottomLeft), 1200);
-    menu.input(press(Button::BottomLeft), 1600);
-    assert_eq!(menu.input(press(Button::BottomRight), 2000), None);
-    assert!(matches!(menu.view, menu::View::Tiles), "back leaves");
+    // Two quick ACT presses must not zero a meter: ACT on the opening focus leaves.
     let mut menu = power_detail(Connection::Live);
-    menu.input(press(Button::BottomLeft), 800);
-    menu.input(press(Button::BottomLeft), 1200);
-    menu.input(press(Button::BottomLeft), 1600);
-    assert_eq!(
-        menu.input(press(Button::BottomRight), 2000),
-        Some(Action::Calibrate)
-    );
+    assert_eq!(menu.input(press(Button::BottomRight), 800), None);
+    assert!(matches!(menu.view, menu::View::Tiles), "back leaves");
+    // MOVE steps down and wraps: calibrate, disconnect, back.
     let mut menu = power_detail(Connection::Live);
     menu.input(press(Button::BottomLeft), 800);
     assert_eq!(
         menu.input(press(Button::BottomRight), 1200),
+        Some(Action::Calibrate)
+    );
+    assert!(matches!(menu.view, menu::View::Detail(_)));
+    menu.input(press(Button::BottomLeft), 1600);
+    assert_eq!(
+        menu.input(press(Button::BottomRight), 2000),
         Some(Action::Disconnect(11))
     );
+    let mut menu = power_detail(Connection::Live);
+    for step in 1..=3 {
+        menu.input(press(Button::BottomLeft), 400 * (step + 1));
+    }
+    assert_eq!(menu.input(press(Button::BottomRight), 3000), None);
+    assert!(matches!(menu.view, menu::View::Tiles), "wrapped to back");
 }
 
 #[test]
@@ -807,7 +805,9 @@ fn calibration_notes_paint_in_their_colour_and_never_collide() {
             "CALIBRATED  OFFSET -32768",
             GREEN,
         ),
+        (CalibrationNote::WaitingForRadio, "WAITING FOR RADIO", CYAN),
         (CalibrationNote::Failed, "CALIBRATION FAILED", AMBER),
+        (CalibrationNote::NeedsRestart, "RESTART TO CALIBRATE", AMBER),
         (CalibrationNote::NotConnected, "NOT CONNECTED", AMBER),
         (CalibrationNote::WhileRiding, "NOT DURING A RIDE", AMBER),
     ];
@@ -827,6 +827,19 @@ fn calibration_notes_paint_in_their_colour_and_never_collide() {
             ),
             "{text}"
         );
+        if let Some(hint) = note.hint() {
+            let top = CALIBRATION_HINT_TOP;
+            let hint = hint.as_bytes();
+            assert!(shows(
+                &menu,
+                &CAPTION,
+                hint,
+                120,
+                top,
+                Align::Center,
+                crate::screens::chrome::SECONDARY
+            ));
+        }
         assert_paints_reference(&menu, text);
         assert_apart(&painted_text(&menu), CONTENT, text);
     }

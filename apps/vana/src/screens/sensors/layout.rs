@@ -92,9 +92,11 @@ pub(super) const REPLACE_BUTTONS: [(usize, usize); 2] = [(216, 34), (258, 32)];
 
 /// A power meter's detail page adds CALIBRATE above the two usual buttons,
 /// as (top, height): calibrate, disconnect, back.
-pub(super) const POWER_DETAIL_BUTTONS: [(usize, usize); 3] = [(218, 28), (250, 28), (282, 28)];
+pub(super) const POWER_DETAIL_BUTTONS: [(usize, usize); 3] = [(232, 26), (260, 26), (288, 26)];
 /// Where the calibration result is written, between the battery line and the buttons.
 pub(super) const CALIBRATION_TOP: usize = 200;
+/// The grey line under a failed result saying what to do.
+pub(super) const CALIBRATION_HINT_TOP: usize = 214;
 
 const LABEL_CAPACITY: usize = 18;
 

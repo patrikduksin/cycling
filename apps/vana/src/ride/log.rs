@@ -631,7 +631,9 @@ pub struct Scanner {
     open: Option<Recovery>,
     summaries: [Option<Summary>; HISTORY_CAPACITY],
     summary_count: u8,
-    max_ride_id: u32,
+    /// The latest record's ride; ids count up and wrap past zero, so the
+    /// largest on record is not the newest.
+    last_ride_id: u32,
     torn_first: bool,
     /// The ride the last accepted slot completed, for the ride index.
     completed_now: Option<Summary>,
@@ -670,7 +672,7 @@ impl Scanner {
             open: catalog.recovery,
             summaries: catalog.summaries,
             summary_count: catalog.summary_count,
-            max_ride_id: catalog.next_ride_id.saturating_sub(1),
+            last_ride_id: catalog.next_ride_id.wrapping_sub(1),
             torn_first: catalog.torn_first,
             completed_now: None,
         }
@@ -711,7 +713,7 @@ impl Scanner {
     pub fn catalog(&self) -> Catalog {
         Catalog {
             next_slot: self.next_slot,
-            next_ride_id: self.max_ride_id.wrapping_add(1).max(1),
+            next_ride_id: self.last_ride_id.wrapping_add(1).max(1),
             completed: self.completed,
             invalid_slots: self.invalid_slots,
             valid_slots: self.valid_slots,
@@ -728,7 +730,7 @@ impl Scanner {
 
     fn apply(&mut self, entry: Entry) {
         self.valid_slots = self.valid_slots.saturating_add(1);
-        self.max_ride_id = self.max_ride_id.max(entry.ride_id);
+        self.last_ride_id = entry.ride_id;
         match entry.kind {
             Kind::Start => {
                 self.open = Some(Recovery {

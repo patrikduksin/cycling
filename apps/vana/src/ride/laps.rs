@@ -17,7 +17,8 @@
 //! journal keeps where laps began, to the second, and exports and saved rides
 //! read them back; the summaries here stay in RAM.
 use crate::ride::log::{LapStart, Sample};
-use crate::ride::totals::MOVING_MIN_MM_S;
+use crate::ride::rider::Rider;
+use crate::ride::totals::{MOVING_MIN_MM_S, calories};
 
 /// An automatic lap closes after this much lap distance (5 km).
 pub const AUTO_LAP_MM: u64 = 5_000_000;
@@ -135,7 +136,20 @@ impl Lap {
 
     /// Kilocalories from the lap's work, as `Totals::kcal` has it.
     pub fn kcal(&self) -> Option<u32> {
-        (self.power_ms != 0).then(|| ((self.energy_mj + 500_000) / 1_000_000) as u32)
+        (self.power_ms != 0).then(|| {
+            (self.energy_mj.saturating_add(500_000) / 1_000_000).min(u64::from(u32::MAX)) as u32
+        })
+    }
+
+    /// Kilocalories by the rule the summary uses for the whole ride.
+    pub fn kcal_for(&self, rider: Rider) -> Option<u32> {
+        calories(
+            self.kcal(),
+            self.power_ms,
+            u64::from(self.heart_sum),
+            self.heart_count,
+            rider,
+        )
     }
 
     pub fn max_speed_mm_s(&self) -> Option<u32> {

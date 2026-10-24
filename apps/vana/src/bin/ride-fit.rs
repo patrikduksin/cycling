@@ -5,13 +5,15 @@
 //!
 //! Writes `ride-<id>.fit` for every ride (or the one chosen) and prints one
 //! JSON line per ride: its file and size, or why it has none. `--start-utc-ms`
-//! dates rides recorded without a clock.
+//! dates rides recorded without a clock. A raw prefix carries no settings, so
+//! calories come from power alone, as for a rider without a body set.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use vana::ride::fit::{Refusal, write_all};
 use vana::ride::log::{Kind, SLOT_SIZE, Slot, decode};
+use vana::ride::rider::Rider;
 
 struct Out(Vec<u8>);
 impl firmware_services::fit::Sink for Out {
@@ -110,7 +112,13 @@ fn main() -> ExitCode {
             ..all.clone()
         };
         let mut out = Out(Vec::new());
-        let line = match write_all(ride, entry.ride_id, start_utc_ms, &mut out) {
+        let line = match write_all(
+            ride,
+            entry.ride_id,
+            Rider::default(),
+            start_utc_ms,
+            &mut out,
+        ) {
             Ok(plan) => {
                 let name = format!("ride-{}.fit", entry.ride_id);
                 if let Err(error) = std::fs::write(output.join(&name), &out.0) {

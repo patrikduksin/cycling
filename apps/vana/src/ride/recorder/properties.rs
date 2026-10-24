@@ -25,12 +25,43 @@ struct Nor {
     /// Cut power while programming byte number `.0`, leaving the bits of
     /// `.1` still set in it.
     cut: Option<(u64, u8)>,
+    /// Sectors erased so far, across reboots.
+    erased: u64,
+    /// Cut power while erasing sector number `.0`, leaving it as `.1` says.
+    erase_cut: Option<(u64, EraseTear)>,
+    /// An interrupted erase left old and erased bytes mixed, until a clear
+    /// or initialize completes.
+    torn_erase: bool,
     off: bool,
     /// Slots before this one were programmed; later ones are still erased.
     used: usize,
 }
 
+/// How an interrupted sector erase leaves its sector; NOR erase only ever
+/// sets bits, so each byte is still old or erased.
+#[derive(Clone, Copy)]
+enum EraseTear {
+    Old,
+    /// The first `n` bytes were erased.
+    Prefix(usize),
+    /// Each byte of the sector was erased or not, drawn from this seed.
+    Scattered(u64),
+}
+
 impl Nor {
+    fn blank(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            programmed: 0,
+            cut: None,
+            erased: 0,
+            erase_cut: None,
+            torn_erase: false,
+            off: false,
+            used: 0,
+        }
+    }
+
     fn program(&mut self, offset: usize, data: &[u8]) -> Result<(), ()> {
         if self.off {
             return Err(());
@@ -81,7 +112,27 @@ impl RideStorage for Nor {
         if self.off {
             return Err(());
         }
-        self.bytes[sector * SECTOR_SIZE..][..SECTOR_SIZE].fill(0xff);
+        let stored = &mut self.bytes[sector * SECTOR_SIZE..][..SECTOR_SIZE];
+        if let Some((at, tear)) = self.erase_cut
+            && at == self.erased
+        {
+            match tear {
+                EraseTear::Old => {}
+                EraseTear::Prefix(n) => stored[..n].fill(0xff),
+                EraseTear::Scattered(seed) => {
+                    let mut rng = Rng::new(seed);
+                    for byte in stored.iter_mut().filter(|_| rng.one_in(2)) {
+                        *byte = 0xff;
+                    }
+                }
+            }
+            self.erase_cut = None;
+            self.torn_erase = true;
+            self.off = true;
+            return Err(());
+        }
+        stored.fill(0xff);
+        self.erased += 1;
         Ok(())
     }
     fn ride_write_slot(&mut self, slot: usize, data: &Slot) -> Result<(), ()> {
@@ -103,6 +154,8 @@ struct Probe {
     acknowledged: Vec<(usize, Entry)>,
     /// The append in progress when the power was cut.
     attempt: Option<(usize, Entry)>,
+    /// Every record ever offered to the journal, written or not.
+    history: Vec<Entry>,
 }
 
 impl Journal for Probe {
@@ -120,6 +173,7 @@ impl Journal for Probe {
     }
     fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Option<bool> {
         self.attempt = Some((index, *entry));
+        self.history.push(*entry);
         let appended = Internal::new(&mut self.state, &mut self.nor).append(index, entry, terminal);
         if appended.is_some() {
             self.acknowledged.push((index, *entry));
@@ -135,6 +189,14 @@ impl Journal for Probe {
     }
 }
 
+/// The id after `ride_id`: zero is never a ride, so the count wraps to one.
+const fn next_ride_id(ride_id: u32) -> u32 {
+    match ride_id.wrapping_add(1) {
+        0 => 1,
+        next => next,
+    }
+}
+
 const fn terminal(kind: Kind) -> bool {
     matches!(kind, Kind::Finish | Kind::Recovered | Kind::Full)
 }
@@ -146,6 +208,12 @@ struct Rig {
     now: u64,
     /// Acknowledged records before this boot.
     boot_from: usize,
+    /// Acknowledged records before this one were destroyed by a clear.
+    live_from: usize,
+    /// Jump active time by hours, or to the edge of `u64`.
+    extreme: bool,
+    /// Also clear the journal, with power cut during the erases.
+    clears: bool,
     seed: u64,
 }
 
@@ -155,17 +223,15 @@ impl Rig {
             rng: Rng::new(seed),
             recorder: Recorder::default(),
             probe: Probe {
-                nor: Nor {
-                    bytes: vec![0xff; crate::ride::log::REGION_SIZE],
-                    programmed: 0,
-                    cut: None,
-                    off: false,
-                    used: 0,
-                },
+                nor: Nor::blank(vec![0xff; crate::ride::log::REGION_SIZE]),
                 state: InternalState::default(),
                 acknowledged: Vec::new(),
                 attempt: None,
+                history: Vec::new(),
             },
+            live_from: 0,
+            extreme: false,
+            clears: false,
             now: 0,
             boot_from: 0,
             seed,
@@ -178,19 +244,29 @@ impl Rig {
         self.recorder.service(&mut self.probe, now, sample, &|| now);
     }
 
+    /// Finished rides numbered `ids`, in the first slots.
+    fn finished_rides(&mut self, ids: &[u32]) {
+        for (n, &ride_id) in ids.iter().enumerate() {
+            let entries = [
+                Entry::event(Kind::Start, Source::Live, ride_id, 0, 0),
+                Entry::event(Kind::Finish, Source::Live, ride_id, 1, 0),
+            ];
+            for (offset, entry) in entries.iter().enumerate() {
+                let index = 2 * n + offset;
+                let mut slot = encode(entry);
+                slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
+                self.probe.nor.bytes[index * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
+                self.probe.acknowledged.push((index, *entry));
+                self.probe.history.push(*entry);
+            }
+        }
+        self.probe.nor.used = 2 * ids.len();
+    }
+
     /// A finished ride, then occupied invalid slots up to `free` slots
     /// from the end, so a few minutes of riding fill the journal.
     fn nearly_full(&mut self, free: usize) {
-        let entries = [
-            Entry::event(Kind::Start, Source::Live, 1, 0, 0),
-            Entry::event(Kind::Finish, Source::Live, 1, 1, 0),
-        ];
-        for (index, entry) in entries.iter().enumerate() {
-            let mut slot = encode(entry);
-            slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
-            self.probe.nor.bytes[index * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
-            self.probe.acknowledged.push((index, *entry));
-        }
+        self.finished_rides(&[1]);
         self.probe.nor.bytes[2 * SLOT_SIZE..(SLOTS - free) * SLOT_SIZE].fill(0);
         self.probe.nor.used = SLOTS - free;
     }
@@ -208,6 +284,7 @@ impl Rig {
         self.probe.state = InternalState::default();
         self.probe.nor.off = false;
         self.probe.nor.cut = None;
+        self.probe.nor.erase_cut = None;
         self.boot_from = self.probe.acknowledged.len();
         self.now = 0;
         let mut steps = 0;
@@ -227,6 +304,7 @@ impl Rig {
                 self.service();
             }
             assert!(self.recorder.take_result().unwrap().ok, "seed {seed}");
+            self.probe.nor.torn_erase = false;
         }
     }
 
@@ -234,7 +312,7 @@ impl Rig {
         let seed = self.seed;
         let nor = &self.probe.nor;
         let catalog = *self.recorder.catalog();
-        for (index, entry) in &self.probe.acknowledged {
+        for (index, entry) in &self.probe.acknowledged[self.live_from..] {
             assert_eq!(
                 decode(&nor.slot(*index)),
                 Some(*entry),
@@ -249,6 +327,13 @@ impl Rig {
             .iter()
             .filter_map(|&index| decode(&nor.slot(index)).map(|entry| (index, entry)))
             .collect();
+        // Nothing the journal holds is a record it was never given.
+        for (index, entry) in &entries {
+            assert!(
+                self.probe.history.contains(entry),
+                "seed {seed}: slot {index} holds an unknown record"
+            );
+        }
         assert_eq!(
             catalog.next_slot,
             occupied.last().map_or(0, |last| last + 1),
@@ -274,7 +359,8 @@ impl Rig {
             });
         assert!(
             matches!(status, Status::Ready | Status::Recovered | Status::Full)
-                || (status == Status::NeedsInit && torn_only && occupied.len() > 1),
+                || (status == Status::NeedsInit && torn_only && occupied.len() > 1)
+                || (status == Status::NeedsInit && nor.torn_erase && entries.is_empty()),
             "seed {seed}: {status:?} at slot {}",
             catalog.next_slot
         );
@@ -282,6 +368,10 @@ impl Rig {
         if let Some((index, entry)) = self.probe.attempt {
             let found = decode(&nor.slot(index));
             assert!(found.is_none() || found == Some(entry), "seed {seed}");
+        }
+        // An interrupted erase leaves rides without their first records.
+        if nor.torn_erase {
+            return;
         }
         // Rides are numbered upwards, their records chained in order with
         // active time that never goes backwards.
@@ -291,7 +381,10 @@ impl Rig {
         let mut completed = 0;
         for (index, entry) in &entries {
             if entry.kind == Kind::Start {
-                assert!(entry.ride_id > last_ride, "seed {seed}: slot {index}");
+                assert!(
+                    last_ride == 0 || entry.ride_id == next_ride_id(last_ride),
+                    "seed {seed}: slot {index}"
+                );
                 assert!(
                     open.is_none(),
                     "seed {seed}: slot {index} starts over an open ride"
@@ -354,8 +447,59 @@ impl Rig {
         );
     }
 
+    /// Milliseconds between two services: a tick or two, and when
+    /// `extreme`, sometimes hours or all the way to the end of `u64`.
+    fn advance(&mut self) -> u64 {
+        if self.extreme && self.rng.one_in(6) {
+            let jump = self.rng.below(1_000_000_000_000);
+            return self.rng.pick(&[
+                3_600_000 * (jump % 48 + 1),
+                jump,
+                u64::MAX / 2 + jump,
+                u64::MAX - jump,
+                u64::MAX,
+            ]);
+        }
+        self.rng.pick(&[10, 30, 250, 999, 1_000, 1_001, 3_500])
+    }
+
+    /// Clear the journal, cutting power at one of its erases half the time.
+    fn clear(&mut self) {
+        let upper = self.recorder.next_slot();
+        if !self.recorder.clear(upper, 1) {
+            return;
+        }
+        self.live_from = self.probe.acknowledged.len();
+        if self.rng.one_in(2) {
+            let at = self.probe.nor.erased + self.rng.below(crate::ride::log::SECTORS as u64);
+            let tear = match self.rng.below(3) {
+                0 => EraseTear::Old,
+                1 => EraseTear::Prefix(self.rng.below(SECTOR_SIZE as u64 + 1) as usize),
+                _ => EraseTear::Scattered(self.rng.next()),
+            };
+            self.probe.nor.erase_cut = Some((at, tear));
+        }
+        for _ in 0..=crate::ride::log::SECTORS {
+            if self.recorder.status() != Status::Clearing {
+                break;
+            }
+            self.service();
+        }
+        if self.probe.nor.off {
+            return;
+        }
+        let seed = self.seed;
+        assert!(self.recorder.take_result().unwrap().ok, "seed {seed}");
+        assert!(
+            self.probe.nor.bytes.iter().all(|&byte| byte == 0xff),
+            "seed {seed}: a finished clear left data"
+        );
+        self.probe.nor.torn_erase = false;
+        self.probe.nor.erase_cut = None;
+    }
+
     fn step(&mut self) {
-        match self.rng.below(24) {
+        match self.rng.below(if self.clears { 27 } else { 24 }) {
             0..=5 => {
                 let action =
                     self.rng
@@ -379,7 +523,8 @@ impl Rig {
             }
             6..=17 => {
                 for _ in 0..self.rng.range(1, 40) {
-                    self.now += self.rng.pick(&[10, 30, 250, 999, 1_000, 1_001, 3_500]);
+                    let advance = self.advance();
+                    self.now = self.now.saturating_add(advance);
                     self.service();
                 }
             }
@@ -392,6 +537,8 @@ impl Rig {
                 }
             }
             21 => self.boot(),
+            22..=23 => self.service(),
+            24..=25 if self.clears => self.clear(),
             _ => self.service(),
         }
         // Only power loss fails an append: no reading makes a record that
@@ -407,7 +554,7 @@ impl Rig {
             let programmed = self.probe.nor.programmed;
             self.probe.nor.off = false;
             for _ in 0..3 {
-                self.now += 1_000;
+                self.now = self.now.saturating_add(1_000);
                 self.service();
             }
             assert_eq!(self.probe.nor.programmed, programmed, "seed {seed}");
@@ -502,6 +649,171 @@ fn damaged_slots_anywhere_are_counted_and_never_written_over() {
                     "seed {seed}: slot {index}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn power_cut_during_a_clear_never_revives_a_ride_or_hides_data() {
+    for seed in 0..CASES {
+        let mut rig = Rig::new(seed);
+        rig.clears = true;
+        if rig.rng.one_in(6) {
+            let free = rig.rng.range(3, 24) as usize;
+            rig.nearly_full(free);
+        }
+        rig.boot();
+        for _ in 0..100 {
+            rig.step();
+        }
+        // However the last clear ended, one more finishes it and leaves
+        // nothing of the old rides.
+        rig.boot();
+        rig.service();
+        let upper = rig.recorder.next_slot();
+        if rig.recorder.clear(upper, 2) {
+            rig.live_from = rig.probe.acknowledged.len();
+            for _ in 0..=crate::ride::log::SECTORS {
+                rig.service();
+            }
+            assert!(rig.recorder.take_result().unwrap().ok, "seed {seed}");
+            assert!(
+                rig.probe.nor.bytes.iter().all(|&byte| byte == 0xff),
+                "seed {seed}"
+            );
+            rig.probe.nor.torn_erase = false;
+            rig.boot();
+            let catalog = *rig.recorder.catalog();
+            assert_eq!(rig.recorder.status(), Status::Ready, "seed {seed}");
+            assert_eq!(
+                (catalog.next_slot, catalog.completed, catalog.recovery),
+                (0, 0, None),
+                "seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn power_cut_during_initialize_keeps_foreign_data_until_it_finishes() {
+    for seed in 0..CASES {
+        let mut rig = Rig::new(seed);
+        for byte in rig.probe.nor.bytes.iter_mut() {
+            *byte = rig.rng.byte();
+        }
+        rig.probe.nor.used = SLOTS;
+        let scan = |rig: &mut Rig| {
+            rig.recorder = Recorder::default();
+            rig.probe.state = InternalState::default();
+            rig.probe.nor.off = false;
+            for _ in 0..=crate::ride::log::SECTORS {
+                rig.service();
+            }
+        };
+        scan(&mut rig);
+        assert_eq!(rig.recorder.status(), Status::NeedsInit, "seed {seed}");
+        for _ in 0..rig.rng.below(3) {
+            assert!(rig.recorder.initialize(1));
+            let at = rig.rng.below(crate::ride::log::SECTORS as u64);
+            let tear = match rig.rng.below(3) {
+                0 => EraseTear::Old,
+                1 => EraseTear::Prefix(rig.rng.below(SECTOR_SIZE as u64 + 1) as usize),
+                _ => EraseTear::Scattered(rig.rng.next()),
+            };
+            rig.probe.nor.erase_cut = Some((rig.probe.nor.erased + at, tear));
+            for _ in 0..=crate::ride::log::SECTORS {
+                rig.service();
+            }
+            assert_eq!(rig.recorder.status(), Status::Error, "seed {seed}");
+            assert!(!rig.recorder.take_result().unwrap().ok, "seed {seed}");
+            scan(&mut rig);
+            // Foreign bytes stay occupied; an erase that finished the last of
+            // them leaves a journal that is free to use.
+            let nor = &rig.probe.nor;
+            let occupied = (0..SLOTS).rev().find(|&index| !erased(&nor.slot(index).0));
+            let catalog = *rig.recorder.catalog();
+            assert_eq!(catalog.next_slot, occupied.map_or(0, |last| last + 1));
+            match rig.recorder.status() {
+                Status::NeedsInit => assert!(occupied.is_some(), "seed {seed}"),
+                Status::Ready => assert_eq!(occupied, None, "seed {seed}"),
+                status => panic!("seed {seed}: {status:?}"),
+            }
+            if rig.recorder.status() == Status::Ready {
+                break;
+            }
+        }
+        if rig.recorder.status() == Status::NeedsInit {
+            assert!(rig.recorder.initialize(2));
+            for _ in 0..=crate::ride::log::SECTORS {
+                rig.service();
+            }
+            assert!(rig.recorder.take_result().unwrap().ok, "seed {seed}");
+        }
+        assert!(
+            rig.probe.nor.bytes.iter().all(|&byte| byte == 0xff),
+            "seed {seed}"
+        );
+        assert_eq!(rig.recorder.status(), Status::Ready, "seed {seed}");
+    }
+}
+
+#[test]
+fn extreme_active_time_steps_keep_every_acknowledged_record() {
+    for seed in 0..CASES {
+        let mut rig = Rig::new(seed);
+        rig.extreme = true;
+        if rig.rng.one_in(6) {
+            let free = rig.rng.range(3, 24) as usize;
+            rig.nearly_full(free);
+        }
+        rig.boot();
+        for _ in 0..100 {
+            rig.step();
+        }
+        rig.boot();
+        rig.service();
+        let status = rig.recorder.status();
+        assert!(
+            matches!(status, Status::Ready | Status::Recovered | Status::Full),
+            "seed {seed}: {status:?}"
+        );
+    }
+}
+
+#[test]
+fn ride_ids_count_on_past_the_largest_id() {
+    for seed in 0..CASES {
+        let mut rig = Rig::new(seed);
+        let first = u32::MAX - rig.rng.below(6) as u32;
+        let count = rig.rng.range(1, 4) as u32;
+        let ids: Vec<u32> = (0..count)
+            .scan(first, |id, _| {
+                let current = *id;
+                *id = next_ride_id(current);
+                Some(current)
+            })
+            .collect();
+        rig.finished_rides(&ids);
+        rig.boot();
+        for _ in 0..100 {
+            rig.step();
+        }
+        rig.boot();
+        rig.service();
+        // A ride started now is a new ride, never one of those on record.
+        rig.recorder.request(Action::Start, Source::Live, 0, 1);
+        for _ in 0..3 {
+            rig.service();
+        }
+        if rig.recorder.status() == Status::Recording {
+            let id = rig.probe.history.last().map(|entry| entry.ride_id).unwrap();
+            let before = rig.probe.history.len() - 1;
+            assert!(
+                rig.probe.history[..before]
+                    .iter()
+                    .all(|entry| entry.ride_id != id),
+                "seed {seed}: ride {id} again"
+            );
         }
     }
 }

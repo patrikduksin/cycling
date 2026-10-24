@@ -9,9 +9,14 @@ pub const HEADER_SIZE: usize = 24;
 pub const CAPACITY: usize = SECTOR_SIZE - HEADER_SIZE;
 
 const MAGIC: [u8; 4] = *b"C606";
+/// Every later format keeps bit 0 clear, so its whole version field never
+/// passes `torn_first_save` as a partly programmed version 1.
 const FORMAT_VERSION: u16 = 1;
+const _: () = assert!(FORMAT_VERSION == 1 || FORMAT_VERSION & 1 == 0);
 const COMMITTED: u32 = 0x434f_4d54;
 const COMMIT_OFFSET: usize = 20;
+/// Flash programs a page's bits in parallel, and pages in address order.
+const PAGE_SIZE: usize = 256;
 
 #[repr(C, align(4))]
 pub struct Sector(pub [u8; SECTOR_SIZE]);
@@ -188,13 +193,20 @@ impl<F: OwnedFlash> Journal<F> {
 
 fn decode(sector: &Sector) -> Option<Record> {
     let bytes = &sector.0;
-    let length = get_u32(bytes, 12) as usize;
     if bytes[0..4] != MAGIC
         || get_u16(bytes, 4) != FORMAT_VERSION
         || get_u16(bytes, 6) as usize != HEADER_SIZE
-        || length > CAPACITY
         || get_u32(bytes, COMMIT_OFFSET) != COMMITTED
     {
+        return None;
+    }
+    whole(bytes)
+}
+
+/// The record whose length and checksum verify, committed or not.
+fn whole(bytes: &[u8; SECTOR_SIZE]) -> Option<Record> {
+    let length = get_u32(bytes, 12) as usize;
+    if length > CAPACITY {
         return None;
     }
     let sequence = get_u32(bytes, 8);
@@ -202,10 +214,11 @@ fn decode(sector: &Sector) -> Option<Record> {
     (get_u32(bytes, 16) == checksum(sequence, payload)).then_some(Record { sequence, length })
 }
 
-/// Whether a sector holds a partial first save. Programming runs in order,
-/// so the header matches a sequence 1 header up to the byte where it stopped,
-/// that byte holds only bits of its target, and nothing after it is
-/// programmed. Once the header is whole, only the commit word may be partial.
+/// Whether a sector holds a partial first save. A cut inside the first page
+/// leaves each header byte with some of its target's bits programmed and no
+/// later page touched. Once the header is whole, only the commit word may be
+/// partial. A partial header whose checksum still verifies belongs to a whole
+/// later save, such as a sequence 3 cut before its commit word.
 fn torn_first_save(sector: &Sector) -> bool {
     let mut header = [0; 12];
     header[0..4].copy_from_slice(&MAGIC);
@@ -214,18 +227,17 @@ fn torn_first_save(sector: &Sector) -> bool {
     put_u32(&mut header, 8, 1);
     let bytes = &sector.0;
     let commit = get_u32(bytes, COMMIT_OFFSET);
-    match bytes
-        .iter()
-        .zip(header)
-        .position(|(byte, target)| *byte != target)
-    {
-        None => commit != COMMITTED && commit & COMMITTED == COMMITTED,
-        Some(stop) => {
-            bytes[0] != 0xff
-                && bytes[stop] & header[stop] == header[stop]
-                && bytes[stop + 1..].iter().all(|byte| *byte == 0xff)
-        }
+    if commit == COMMITTED || commit & COMMITTED != COMMITTED {
+        return false;
     }
+    bytes[..12] == header
+        || (bytes[..12]
+            .iter()
+            .zip(header)
+            .all(|(byte, target)| byte & target == target)
+            && bytes[..12].iter().any(|byte| *byte != 0xff)
+            && bytes[PAGE_SIZE..].iter().all(|byte| *byte == 0xff)
+            && whole(bytes).is_none())
 }
 
 fn newer(candidate: u32, current: u32) -> bool {
@@ -267,8 +279,6 @@ impl<'a, B: OwnedFlash> RegionAccess<'a, B> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
-    const PAGE_SIZE: usize = 256;
 
     #[derive(Clone)]
     pub(crate) struct Memory {
@@ -523,7 +533,7 @@ pub(crate) mod tests {
                 6 => {
                     let header = &mut journal.flash.bytes[0];
                     header[0..4].copy_from_slice(&MAGIC);
-                    put_u16(header, 4, 3);
+                    put_u16(header, 4, 4);
                     put_u16(header, 6, 28);
                     put_u32(header, 8, 1);
                     put_u32(header, 12, 5);
@@ -540,9 +550,8 @@ pub(crate) mod tests {
                 }
                 // A partial header with bytes programmed past the first page.
                 8 => {
-                    journal.save(&[0; 300]).unwrap();
-                    journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
-                    journal.flash.bytes[0][4] = 0xfd;
+                    journal.flash.bytes[0][0..4].copy_from_slice(&MAGIC);
+                    journal.flash.bytes[0][PAGE_SIZE] = 0;
                 }
                 // Programmed bytes behind an untouched header.
                 9 => journal.flash.bytes[0][100] = 0,

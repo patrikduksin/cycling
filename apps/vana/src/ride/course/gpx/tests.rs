@@ -270,6 +270,16 @@ fn the_first_track_of_two_points_wins_and_a_route_stands_in_without_one() {
             ),
             point("5", "1"),
         ),
+        // A route, then a track of one point: the route stays.
+        (
+            std::format!(
+                "<gpx><rte>{}{}</rte><trk><trkseg>{}</trkseg></trk></gpx>",
+                r("7"),
+                r("7.01"),
+                p("8")
+            ),
+            point("7", "1"),
+        ),
         // A route, then an empty track: the route stays.
         (
             std::format!("<gpx><rte>{}{}</rte><trk></trk></gpx>", r("6"), r("6.01")),

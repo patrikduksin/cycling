@@ -6,12 +6,11 @@
 //! declarations well enough to find `trk` and `rte` elements, their `trkpt`
 //! or `rtept` points with `lat` and `lon` attributes, and the first `name`
 //! outside a point. Every other element is skipped. A track's segments join
-//! into one course. A track's first point replaces a route already read, so
-//! a track with one point after a good route leaves no course; the file has
-//! no room to keep both. Its state is a few
-//! dozen bytes whatever the input: tag and attribute names longer than any
-//! it looks for are kept only as "long", and coordinates are read digit by
-//! digit, so hostile input costs time, never memory.
+//! into one course. A track replaces a route already read once it has two
+//! points. Its state is a few dozen bytes whatever the input: tag and
+//! attribute names longer than any it looks for are kept only as "long", and
+//! coordinates are read digit by digit, so hostile input costs time, never
+//! memory.
 //!
 //! Coordinates are decimal degrees, `-33.4512345`, read exactly to 1e-7
 //! degree with integers (later digits are dropped). A point whose latitude
@@ -227,6 +226,8 @@ pub struct Gpx {
     name: Word<{ super::NAME }>,
     refused: Option<Refusal>,
     builder: Builder,
+    /// A track's first point, while a route read before it is kept.
+    first: Option<Point>,
 }
 
 impl Default for Gpx {
@@ -253,6 +254,7 @@ impl Gpx {
             name: Word::new(),
             refused: None,
             builder: Builder::new(),
+            first: None,
         }
     }
 
@@ -467,7 +469,7 @@ impl Gpx {
                 ) if (tag == b"trk") == track => {
                     self.route = match (points, route_kept) {
                         (2.., _) => Route::Kept { track },
-                        (0, true) => Route::Kept { track: false },
+                        (0 | 1, true) => Route::Kept { track: false },
                         _ => Route::Looking,
                     };
                 }
@@ -496,10 +498,6 @@ impl Gpx {
                     route_kept,
                 },
             ) if (tag == b"trkpt") == track => {
-                // The first point of a candidate replaces what came before.
-                if points == 0 {
-                    self.builder.start(course);
-                }
                 self.route = Route::Inside {
                     track,
                     points: points.saturating_add(1),
@@ -510,9 +508,23 @@ impl Gpx {
                     .and_then(|lat| lat.e7())
                     .zip(self.lon.and_then(|lon| lon.e7()))
                     .and_then(|(lat, lon)| Point::new(lat, lon));
-                match point {
-                    Some(point) => self.builder.push(course, point),
-                    None => self.refused = Some(Refusal::Coordinates),
+                match (point, points, route_kept) {
+                    (None, ..) => self.refused = Some(Refusal::Coordinates),
+                    // A route already read stays until the track has two
+                    // points; its first waits.
+                    (Some(point), 0, true) => self.first = Some(point),
+                    (Some(point), 0, false) => {
+                        self.builder.start(course);
+                        self.builder.push(course, point);
+                    }
+                    (Some(point), 1, true) => {
+                        self.builder.start(course);
+                        if let Some(first) = self.first.take() {
+                            self.builder.push(course, first);
+                        }
+                        self.builder.push(course, point);
+                    }
+                    (Some(point), ..) => self.builder.push(course, point),
                 }
                 self.in_point = !empty;
             }

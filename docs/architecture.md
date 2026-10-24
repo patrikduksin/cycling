@@ -124,6 +124,46 @@ Use typed results and observations; terminal code owns their text formatting.
 | Network | Expose the actual Embassy stack with connection control where hardware needs it. Stack resources can exist while the link is down. Callers bound waits, check readiness and reject results from an obsolete connection generation. |
 | BLE and ANT | Expose profile-independent transport data with connection and loss information. Devices handle controller quirks, services manage transport state, and VANA interprets profiles and chooses sensors. |
 
+## State machines are one step function over the existing owners
+
+Behavior with states, such as the ride screens, a phone session or a sensor
+scan, gets one file named for the behavior beside its owner.
+[Ride control](../apps/vana/src/app/ride_control.rs) and
+[auto-pause](../apps/vana/src/ride/auto.rs) are the models to copy.
+
+- Use plain enums and `match`, with no crate and no shared trait. Every machine
+  here is flat, and a macro would hide its transitions from the compiler's
+  exhaustiveness check and from grep. Revisit this only for a machine with nested
+  states that share entry and exit actions.
+- Find the fields that already hold the state, and read them into a fresh
+  `Seen` value for each step. A new enum holds only what no owner knows. Ride
+  control needs none, because its state is `Navigation.page` and
+  `Ride.message`.
+- Keep data that is valid in one state inside that variant. A `bool` or
+  `Option` that means "in state X" is a second copy, and it drifts.
+- Decide in one pure `step(state, Seen, Event) -> Step` that does no IO and
+  reads no clock. Match every state, and use a wildcard only for an open set
+  such as every other page.
+- Return effects as data. One interpreter performs them and is the only writer
+  of what they touch. An outcome, accepted or refused, comes back to `step` as
+  an event.
+- Raise events where the change happens, in an input handler or at the end of
+  the service tick that changed the owner. Drawing reads state and never writes
+  it.
+- A rule for a change compares a `before` value, and every other rule reads only
+  the current state, so a repeated service event changes nothing.
+- Order the file as entry points, `Event`, `Seen`, `Effect`, `Step`, `step`, the
+  interpreter, then tests.
+- Add a `name()` for wire text only where a terminal field shows the state. Ride
+  control adds none, because `RIDE STATUS page=` already reports
+  `Navigation.page`.
+- Test `step` with a table beside it, one row per state, observation and event,
+  including rows that must do nothing. Runtime tests assert what a rider or the
+  host sees (page, status, toasts, journal and `RIDE STATUS`), never variants.
+  Simulator scenarios stay the acceptance check.
+- Enforce a single writer by adding the value and its owner to `SINGLE_WRITERS`
+  in `tools/check-boundaries.py`, which `mise run check` runs.
+
 ## Ownership includes time and failure
 
 Each resource has one owner. It can provide direct access or bounded request and

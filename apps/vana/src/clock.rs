@@ -321,6 +321,7 @@ mod tests {
     fn dates_round_trip() {
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(11_016), (2000, 2, 29));
+        assert_eq!(civil(20_743), (2026, 10, 17));
         for days in [-1, 0, 11_016, 20_743, 60_000] {
             let (year, month, day) = civil(days);
             assert_eq!(days_from_civil(year, month, day), days);

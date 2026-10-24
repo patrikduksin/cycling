@@ -200,10 +200,11 @@ impl Options {
     fn decode(bytes: &[u8], version: u8) -> Option<Self> {
         let (bytes, zone) = match version {
             3 | 4 => (bytes, Zone::Chile),
-            _ => {
+            5 => {
                 let (bytes, zone) = bytes.split_last_chunk()?;
                 (bytes, Zone::decode(*zone)?)
             }
+            _ => return None,
         };
         let (bytes, theme) = match version {
             3 => (bytes, Theme::Dark),
@@ -732,6 +733,8 @@ mod tests {
         assert_eq!(bytes.len(), 62);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
+        // A later version may place its fields differently: never guess.
+        assert_eq!(Options::decode(&options.encode(), VERSION + 1), None);
     }
 
     #[test]

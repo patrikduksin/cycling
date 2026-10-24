@@ -233,25 +233,12 @@ fn parse_id(id: &str) -> Option<(Medium, usize, u32)> {
     Some((medium, slot.parse().ok()?, ride.parse().ok()?))
 }
 
-/// Proleptic Gregorian date of a Unix day.
-fn civil(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (yoe + era * 400 + i64::from(month <= 2), month, day)
-}
-
 fn file_name(ride_id: u32, start_utc_ms: Option<u64>) -> heapless::String<48> {
     let mut name = heapless::String::new();
     match start_utc_ms {
         Some(ms) => {
             let seconds = (ms / 1000) as i64;
-            let (year, month, day) = civil(seconds.div_euclid(86_400));
+            let (year, month, day) = crate::clock::civil(seconds.div_euclid(86_400));
             let minute = seconds.rem_euclid(86_400) / 60;
             let _ = write!(
                 name,
@@ -1131,8 +1118,6 @@ mod tests {
         assert_eq!(parse_id("b0-1"), Some((Medium::Bulk, 0, 1)));
         assert_eq!(parse_id("x0-1"), None);
         assert_eq!(parse_id("i12"), None);
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(20_743), (2026, 10, 17));
         assert_eq!(
             file_name(7, Some(1_792_249_200_000)).as_str(),
             "vana-2026-10-17-1500-ride7.fit"

@@ -208,12 +208,33 @@ Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved r
                    │ BACK: Home                            │ BACK: Rides               │ BACK: the ride
 ```
 
-Home's last card, RIDES, names the last ride's distance (or how many rides are
-saved, or NONE YET) and opens the list. Each card shows when the ride started
+Home's last card, RIDES, names this week's distance (WEEK 84 KM) once the ride
+index has read both journals and the week has a distance. Otherwise it names
+the last ride's distance, how many rides are saved, or NONE YET. This week's
+distance is shown rather than the last ride's because it is the number that
+survives a reboot and keeps meaning something between rides; the last ride's
+distance is on the summary the rider just saw. The card opens the list. Each card shows when the ride started
 (OCT 17  7:12, or RIDE n when the clock was unknown), its recorded time and
 distance where kept, and its average heart rate. MOVE focuses the next ride
 (held, it pages four cards at a time), ACT or a tap opens it, BACK goes Home.
 Without a saved ride the list says NO RIDES YET.
+
+While the focus is on the first three rides, a header sits above the cards:
+THIS WEEK and the number of rides, the week's distance (KM) with its moving
+time under it, a small bar for each day (Monday to Sunday, every other day
+named; ridden days white, today's ride blue, other days a dark stub) and, in
+grey, LAST WEEK with its distance. From the fourth ride on the header gives
+way to the RIDES headline and a fourth card. A week runs Monday 00:00 to the
+next Monday in the status-bar clock's zone, and a ride counts in the week and
+day it started. Rides without a start time (the clock was unknown) are in no
+week. Totals come from the ride index across both journals, so rides read
+back from the MMC and internal flash both count; a ride that moved from the
+MMC onto internal flash is two journal rides, as the list shows it, adding
+their times and distances without overlap and counting twice in the ride
+count. Distance is the recorded speed added up (wheel sensor or GPS). While
+the index is still reading, the header shows what it has found, or -- before
+it has found anything; without a clock (network time, or the GPS receiver's
+date from its last fix) it shows -- and no last week.
 
 A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is

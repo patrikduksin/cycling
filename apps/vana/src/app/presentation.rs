@@ -692,7 +692,7 @@ impl Runtime {
                 system.activity(now);
                 self.phone_view(&mut view);
             }
-            Page::History => view.set_canvas(self.history_canvas()),
+            Page::History => view.set_canvas(self.history_canvas(now)),
             Page::EndRide => {}
             Page::Ride => {
                 // Keep the screen lit while riding; a finished ride may dim and idle off.
@@ -779,7 +779,7 @@ impl Runtime {
     }
 
     fn home(&self, gps_fix: bool, now: u64) -> Home {
-        let last = self.rides_line();
+        let last = self.rides_line(now);
         let mut home = Home::new(
             self.navigation.home_cursor,
             gps_fix,

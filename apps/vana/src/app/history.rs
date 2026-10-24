@@ -17,9 +17,10 @@ use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
+use crate::ride::week::Weeks;
 use crate::screens::history::{self, List, Row};
 use crate::screens::ride::summary::{After, Saving};
-use crate::screens::workout::{Page, Text, View};
+use crate::screens::workout::{Page, Text, UTC_OFFSET_S, View};
 use core::fmt::Write;
 use device_api::input::Button;
 
@@ -301,13 +302,40 @@ impl Runtime {
         }
     }
 
+    /// This week and last, from the start times, active times and distances
+    /// of the saved rides of both journals, or none until the clock is known.
+    /// A ride that moved from the MMC onto internal flash is two journal
+    /// rides, as the list shows it: their times and distances do not overlap,
+    /// so the totals are right, and the ride count counts each part.
+    pub(super) fn weeks(&self, now: u64) -> Option<Weeks> {
+        let unix = self.unix_now(now)?;
+        let mut weeks = Weeks::new(
+            u64::try_from(unix).ok()?.saturating_mul(1000),
+            -(UTC_OFFSET_S as i64),
+        );
+        for medium in [Medium::Internal, Medium::Bulk] {
+            for index in 0..self.journal_len(medium) {
+                if let Some(ride) = self.journal_ride(medium, index) {
+                    weeks.add(ride.first_utc_ms, ride.active_ms, ride.distance_mm);
+                }
+            }
+        }
+        Some(weeks)
+    }
+
     /// The ride list, its cards made on demand.
-    pub(super) fn history_canvas(&self) -> crate::screens::canvas::Canvas {
+    pub(super) fn history_canvas(&self, now: u64) -> crate::screens::canvas::Canvas {
         let count = self.history_count();
         history::prepare(&List {
             count,
             cursor: self.history.cursor,
             row: |index| self.history_row(index, count),
+            weeks: if count > 0 && self.history.cursor < history::HEADED {
+                self.weeks(now)
+            } else {
+                None
+            },
+            reading: !self.counted(),
         })
     }
 
@@ -371,8 +399,16 @@ impl Runtime {
         self.show_elevation(view);
     }
 
-    /// Home's RIDES card: the last ride's numbers, or how many are saved.
-    pub(super) fn rides_line(&self) -> Text<20> {
+    /// Home's RIDES card: this week's distance once the index has read every
+    /// ride, else the last ride's distance, or how many are saved.
+    pub(super) fn rides_line(&self, now: u64) -> Text<20> {
+        if !self.recording()
+            && self.counted()
+            && let Some(weeks) = self.weeks(now)
+            && weeks.this.distance_mm > 0
+        {
+            return crate::screens::home::this_week(weeks.this.distance_mm);
+        }
         let distance = self
             .history
             .home_last

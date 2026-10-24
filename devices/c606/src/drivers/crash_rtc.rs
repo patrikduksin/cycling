@@ -1,7 +1,10 @@
-//! RTC-fast panic record, panic handler and reset-reason adapter for the C606.
+//! RTC-fast panic record, its flash copy, panic handler and reset-reason
+//! adapter for the C606.
 //!
-//! The record survives the software reset that ends a panic, and deep sleep,
-//! but not power loss. See `device_api::crash` for what it keeps.
+//! The RTC record survives the software reset that ends a panic, and deep
+//! sleep, but not power loss. Boot copies it to the `Region::Crash` journal
+//! (`firmware_services::crash_log`), so `CRASH` still has it after the rider
+//! switches off. See `device_api::crash` for what a record keeps.
 
 use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
@@ -13,7 +16,10 @@ use core::sync::atomic::Ordering;
 use device_api::crash::Kind;
 use device_api::crash::Marker;
 use device_api::crash::Reset;
+use device_api::storage::OwnedFlash;
 use esp_hal::rtc_cntl::SocResetReason;
+use firmware_services::crash_log;
+use firmware_services::storage::RegionAccess;
 
 #[esp_hal::ram(unstable(rtc_fast, persistent))]
 static mut PANIC_RECORD: [u32; device_api::crash::WORDS] = [0; device_api::crash::WORDS];
@@ -33,13 +39,26 @@ fn read() -> [u32; device_api::crash::WORDS] {
     words
 }
 
-/// What the last run left for this boot. A valid record is marked reported
-/// and kept for `last`; anything else is cleared.
-pub fn take() -> Marker {
+/// What the last run left for this boot. A valid record is copied to flash
+/// before it is marked reported; anything else is cleared. The copy writes
+/// only when flash does not already hold the record, so it costs one sector
+/// erase per panic, and a boot after a failed copy tries again.
+pub fn take<B: OwnedFlash>(flash: &mut RegionAccess<'_, B>) -> Marker {
     let words = read();
     let marker = device_api::crash::inspect(&words);
-    let target = addr_of_mut!(PANIC_RECORD).cast::<u32>();
     if device_api::crash::record(&words).is_some() {
+        let mut reported = words;
+        reported[device_api::crash::SEEN] = device_api::crash::REPORTED;
+        let started = esp_hal::time::Instant::now();
+        let kept = crash_log::keep(flash, &reported);
+        if !matches!(kept, Ok(false)) {
+            esp_println::println!(
+                "CYCLING_CRASH_KEPT ok={} elapsed_us={}",
+                kept.is_ok(),
+                started.elapsed().as_micros()
+            );
+        }
+        let target = addr_of_mut!(PANIC_RECORD).cast::<u32>();
         // SAFETY: SEEN is inside PANIC_RECORD. Boot runs this once before any
         // task or the panic handler can write the record; SEEN is outside the
         // checksum, so the record stays valid.
@@ -50,18 +69,48 @@ pub fn take() -> Marker {
             )
         };
     } else {
-        clear();
+        clear_rtc();
     }
     marker
 }
 
-/// The last panic recorded, reported or not, until `clear` or the next panic.
-pub fn last() -> Option<device_api::crash::Record> {
-    device_api::crash::record(&read())
+/// Where `CRASH` found the record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Source {
+    Rtc,
+    Flash,
 }
 
-/// Forget the recorded panic.
-pub fn clear() {
+impl Source {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Rtc => "rtc",
+            Self::Flash => "flash",
+        }
+    }
+}
+
+/// The last panic recorded, reported or not, until `clear` or the next panic.
+/// A valid RTC record is the newest: flash holds only copies of RTC records,
+/// and a later panic replaces the RTC record before boot copies it.
+pub fn last<B: OwnedFlash>(
+    flash: &mut RegionAccess<'_, B>,
+) -> Result<Option<(device_api::crash::Record, Source)>, B::Error> {
+    if let Some(record) = device_api::crash::record(&read()) {
+        return Ok(Some((record, Source::Rtc)));
+    }
+    Ok(crash_log::newest(flash)?
+        .and_then(|entry| device_api::crash::record(&entry.words))
+        .map(|record| (record, Source::Flash)))
+}
+
+/// Forget the recorded panic, in RTC memory and in flash.
+pub fn clear<B: OwnedFlash>(flash: &mut RegionAccess<'_, B>) -> Result<(), B::Error> {
+    clear_rtc();
+    crash_log::clear(flash)
+}
+
+fn clear_rtc() {
     let target = addr_of_mut!(PANIC_RECORD).cast::<u32>();
     // SAFETY: every offset is below WORDS, inside PANIC_RECORD. The validity
     // word is cleared first so a partial clear never looks valid; a panic

@@ -13,7 +13,7 @@
 //! few slots a tick, before it takes live fixes.
 use super::Runtime;
 use super::cues::Cue;
-use super::recording::{Medium, Ride};
+use super::recording::{Medium, Outing, Ride};
 use crate::ride::course::Course;
 use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Event, Homing};
@@ -68,10 +68,10 @@ impl Resume {
     }
 }
 
-/// The breadcrumb and whether the ride it belongs to is still open.
+/// The breadcrumb and the open ride it belongs to.
 pub struct BackToStart {
     homing: Homing<'static>,
-    riding: bool,
+    outing: Option<Outing>,
     /// The map page's track, which `map_of` keeps up to date.
     map: &'static mut MapFrame,
     map_key: Option<MapKey>,
@@ -92,7 +92,7 @@ impl BackToStart {
     ) -> Self {
         Self {
             homing: Homing::new(crumbs).with_line(line),
-            riding: false,
+            outing: None,
             map,
             map_key: None,
             course,
@@ -115,7 +115,8 @@ impl Runtime {
 
     /// Feed this pass's fix to the open ride's breadcrumb, and nudge on
     /// what following it back changed. A new ride starts a new breadcrumb,
-    /// or reads back the one a restart cut short from `store` or `bulk`.
+    /// or reads back the one a restart cut short from `store` or `bulk`; a
+    /// ride that moves to internal memory keeps its own.
     pub(super) fn track_back(
         &mut self,
         store: &mut impl crate::ride::storage::RideStorage,
@@ -125,8 +126,9 @@ impl Runtime {
         let Some(state) = self.back.as_deref_mut() else {
             return;
         };
-        let riding = self.ride.active().riding();
-        if riding && !state.riding {
+        let outing = self.ride.outing();
+        let riding = outing.is_some();
+        if riding && outing != state.outing {
             state.homing.reset();
             state.resume = match state.resume {
                 Resume::Waiting { medium, ride_id } if medium == self.ride.shown() => {
@@ -139,7 +141,7 @@ impl Runtime {
                 _ => Resume::None,
             };
         }
-        state.riding = riding;
+        state.outing = outing;
         state
             .homing
             .set_auto_follow(self.preferences.options.ride_pages.shows(RidePage::Back));

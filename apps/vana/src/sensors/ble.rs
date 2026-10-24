@@ -95,7 +95,8 @@ impl Client {
         {
             return;
         }
-        if let Some(battery) = crate::sensors::ble_profile::battery(level.raw) {
+        let previous = self.battery.map(|battery| battery.status);
+        if let Some(battery) = crate::sensors::ble_profile::battery(level.raw, previous) {
             self.battery = Some(battery);
         }
     }

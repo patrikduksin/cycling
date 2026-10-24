@@ -631,18 +631,20 @@ where
     .await
     .map_err(|_| ())?
     .map_err(|_| ())?;
-    let battery = find_battery(client).await;
+    let mut battery = find_battery(client).await;
     let mut battery_due_ms = 0;
     set_link(Link::Connected);
     if report_completion {
         CONTROL.complete(None);
     }
     loop {
-        if let Some(battery) = &battery {
+        if let Some(characteristic) = &battery {
             let now = embassy_time::Instant::now().as_millis();
             if now >= battery_due_ms {
                 battery_due_ms = now.saturating_add(BATTERY_REREAD_MS);
-                read_battery(client, battery).await;
+                if !read_battery(client, characteristic).await {
+                    battery = None;
+                }
             }
         }
         let Ok(notification) =
@@ -700,20 +702,26 @@ where
     .ok()
 }
 
+/// Read the level once. Returns false after a timeout: trouble-host's
+/// `request` is not cancel-safe, so a timed-out read leaves its reply queued
+/// and the next request on this connection would take that stale reply for its
+/// own. No request of any kind may follow a timed-out one, so the caller stops
+/// reading for the rest of the connection; a new connection starts clean.
 async fn read_battery<C>(
     client: &GattClient<'_, C, DefaultPacketPool, 12>,
     characteristic: &Characteristic<[u8]>,
-) where
+) -> bool
+where
     C: Controller,
 {
     let mut value = [0u8; 4];
-    let Ok(Ok(1)) = embassy_time::with_timeout(
+    let read = embassy_time::with_timeout(
         BATTERY_STEP,
         client.read_characteristic(characteristic, &mut value),
     )
-    .await
-    else {
-        return;
+    .await;
+    let Ok(Ok(1)) = read else {
+        return read.is_ok();
     };
     let level = BatteryLevel {
         connection: snapshot().connections,
@@ -721,6 +729,7 @@ async fn read_battery<C>(
         received_ms: embassy_time::Instant::now().as_millis(),
     };
     critical_section::with(|cs| *BATTERY.borrow_ref_mut(cs) = Some(level));
+    true
 }
 
 async fn advertise_and_echo<C>(

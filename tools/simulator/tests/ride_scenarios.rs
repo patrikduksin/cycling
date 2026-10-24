@@ -6042,3 +6042,36 @@ fn a_ble_strap_that_is_still_connecting_is_waited_for_not_blamed_for_its_battery
     sim.expect_text("SENSORS WAKING UP");
     sim.expect_no_text("LOW BATTERY");
 }
+
+#[test]
+fn a_live_ant_heart_strap_stands_for_the_role_and_a_silent_one_does_not() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE"]);
+    connected_strap(&mut sim, Some(12));
+    sim.expect_text("1/1 LIVE");
+    sim.expect_no_text("LOW BATTERY");
+
+    sim.set_present(device_type::HEART_RATE, HEART, false);
+    sim.advance(seconds(20));
+    sim.expect_text("1/2 LIVE");
+    sim.checkpoint("home with a silent ant strap and a live ble strap");
+    sim.home("RIDE");
+    sim.expect_text("SENSORS WAKING UP");
+    sim.press(Button::TopLeft);
+
+    sim.set_present(device_type::HEART_RATE, HEART, true);
+    sim.advance(seconds(40));
+    sim.expect_text("1/1 LIVE");
+}
+
+#[test]
+fn a_failed_ble_link_is_left_off_home_and_ready() {
+    let mut sim = rider();
+    sim.ble_heart_strap(false);
+    sim.select_ble_heart_strap();
+    sim.advance(seconds(15));
+    sim.device.ble.snapshot.link = Link::Failed;
+    sim.advance(seconds(1));
+    sim.home("RIDE");
+    sim.expect_text("NO SENSORS");
+}

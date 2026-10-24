@@ -66,11 +66,6 @@ pub const COMMON_BATTERY_PAGE: u8 = 0x52;
 /// The heart-rate profile's own Battery Status page, without its toggle bit.
 pub const HEART_RATE_BATTERY_PAGE: u8 = 0x07;
 
-/// Below this percentage a sensor's battery is low.
-pub const LOW_PERCENT: u8 = 20;
-/// Below this percentage a sensor's battery is critical.
-pub const LOW_PERCENT_CRITICAL: u8 = 5;
-
 /// The descriptive battery status a sensor reports. The wire's reserved
 /// and invalid values have no variant.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -92,19 +87,6 @@ impl BatteryStatus {
             3 => Some(Self::Ok),
             4 => Some(Self::Low),
             5 => Some(Self::Critical),
-            _ => None,
-        }
-    }
-
-    /// A percentage as a descriptive status. Under 5 % a coin cell is nearly
-    /// out, and under 20 % (the device's own low-battery line) it is days from
-    /// it; above 100 is not a percentage.
-    pub const fn from_percent(percent: u8) -> Option<Self> {
-        match percent {
-            0..LOW_PERCENT_CRITICAL => Some(Self::Critical),
-            LOW_PERCENT_CRITICAL..LOW_PERCENT => Some(Self::Low),
-            LOW_PERCENT..50 => Some(Self::Ok),
-            50..=100 => Some(Self::Good),
             _ => None,
         }
     }

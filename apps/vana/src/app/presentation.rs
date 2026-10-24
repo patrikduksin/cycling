@@ -828,7 +828,10 @@ impl Runtime {
     }
 
     /// The sensors Home and Ready summarise: the saved ANT sensors, then the
-    /// selected BLE sensor unless an ANT sensor already serves its role.
+    /// selected BLE sensor. A live ANT heart-rate sensor stands for the role,
+    /// as the ride prefers it; with none live the rider is on the BLE strap.
+    /// ANT cadence is never read, so BLE cadence always shows. A failed radio
+    /// has no strap to speak of.
     fn glance(&self, now: u64) -> heapless::Vec<Glance, GLANCES> {
         use crate::sensors::ble_profile::{Link, Profile};
         let mut glance = self.menu.glance();
@@ -838,7 +841,9 @@ impl Runtime {
             Profile::Cadence => device_type::CADENCE,
             Profile::Echo => return glance,
         };
-        if ble.link != Link::Off && self.links.saved.of_type(kind).is_none() {
+        let ant_serves =
+            kind == device_type::HEART_RATE && glance.iter().any(|g| g.kind == kind && g.live);
+        if !matches!(ble.link, Link::Off | Link::Failed) && !ant_serves {
             let battery = ble.battery.map(|battery| battery.status);
             // Cannot fail: the capacity holds every ANT slot and this one.
             let _ = glance.push(Glance::ble(kind, ble.link == Link::Connected, battery));

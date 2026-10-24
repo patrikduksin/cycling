@@ -30,7 +30,9 @@
 //! Dropping it, reaching its end (`CourseEnd`) or stopping it holds it off
 //! from following by itself for the rest of the ride; the pad can still
 //! follow it. Whenever the course is not followed the
-//! breadcrumb is followed back as without one.
+//! breadcrumb is followed back as without one. While the course is
+//! followed, on it and ridden its way, its turns ahead are warned of
+//! (`course::turns`).
 //!
 //! The same positions tell when the rider rides past the start (`StartPass`),
 //! for laps at the start: within `PASS_M` of it, then out beyond `PASS_END_M`
@@ -40,6 +42,7 @@
 //! away, and counts once until they are away again; that gap is the
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
+use crate::ride::course::turns::{Place, Warner, Warning};
 use crate::ride::{course, thin};
 use libm::{atan2f, cosf, sqrtf};
 
@@ -177,6 +180,8 @@ pub enum Event {
     Arrived,
     /// At the end of the course.
     CourseEnd,
+    /// A turn on the course ahead, or here.
+    Turn(Warning),
 }
 
 type Point = (f32, f32);
@@ -300,6 +305,7 @@ pub struct Homing<'a> {
     join_end: usize,
     /// Metres to the course's end where the rider was last matched.
     course_along: f32,
+    turns: Warner,
     tolerance: f32,
     origin: Option<(i32, i32)>,
     /// Metres per 1e-7 degree of longitude at the start.
@@ -350,6 +356,7 @@ impl<'a> Homing<'a> {
             join_fixes: 0,
             join_end: 0,
             course_along: 0.0,
+            turns: Warner::Quiet,
             tolerance: TOLERANCE_M,
             origin: None,
             east_per_e7: M_PER_E7,
@@ -584,7 +591,8 @@ impl<'a> Homing<'a> {
         }
         if self.following_course() {
             self.add(p);
-            return self.update(p, now);
+            let event = self.update(p, now);
+            return event.or_else(|| self.warn_turn().map(Event::Turn));
         }
         if self.auto_follow && self.retracing(p) {
             // The fixes since the turn ran back over the breadcrumb.
@@ -732,6 +740,7 @@ impl<'a> Homing<'a> {
         self.following = Some(line);
         self.join_fixes = 0;
         self.course_along = self.line[..self.line_len].get(end).map_or(0.0, |c| c.along);
+        self.turns = Warner::Quiet;
         self.segment = end;
         self.matched = None;
         self.off = false;
@@ -759,6 +768,35 @@ impl<'a> Homing<'a> {
             self.len = self.segment;
             self.keep(point);
         }
+    }
+
+    /// The turn to warn of, while following the course, on it and riding
+    /// its way.
+    fn warn_turn(&mut self) -> Option<Warning> {
+        let heading = self.heading?;
+        let here = self
+            .matched
+            .filter(|_| self.following_course() && !self.off)?;
+        let (len, end) = (self.line_len, self.segment);
+        if end == 0 || end >= len {
+            return None;
+        }
+        let (a, b) = (self.line[end - 1], self.line[end]);
+        let way = bearing((b.east, b.north), (a.east, a.north));
+        if (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)) {
+            return None;
+        }
+        // The course is kept end first; turns reads it start first.
+        let line = &self.line[..len];
+        let at = |k: usize| {
+            let c = line[len - 1 - k];
+            (c.east, c.north)
+        };
+        let place = Place {
+            next: len - end,
+            here,
+        };
+        self.turns.step(len, at, place)
     }
 
     fn track_heading(&mut self, p: Point, now: u64) {
@@ -1038,6 +1076,7 @@ impl<'a> Homing<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ride::course::turns;
     extern crate std;
     use std::vec;
     use std::vec::Vec;
@@ -1785,22 +1824,89 @@ mod tests {
     ];
 
     /// Ride `points` as the app does: a fix a second, placing the course
-    /// once the ride has its first fix.
+    /// once the ride has its first fix. The turn warnings on the way, and
+    /// every other event.
+    fn ride_course_warned(
+        homing: &mut Homing,
+        course: &[course::Point],
+        points: &[(f32, f32)],
+        now: &mut u64,
+    ) -> (Vec<Warning>, Vec<Event>) {
+        let (mut warnings, mut events) = (Vec::new(), Vec::new());
+        for &(east, north) in points {
+            *now += 1_000;
+            match homing.observe(Some(at(east, north)), *now) {
+                Some(Event::Turn(warning)) => warnings.push(warning),
+                event => events.extend(event),
+            }
+            if homing.needs_course() {
+                homing.set_course(course);
+            }
+        }
+        (warnings, events)
+    }
+
     fn ride_course(
         homing: &mut Homing,
         course: &[course::Point],
         points: &[(f32, f32)],
         now: &mut u64,
     ) -> Vec<Event> {
-        let mut events = Vec::new();
-        for &(east, north) in points {
-            *now += 1_000;
-            events.extend(homing.observe(Some(at(east, north)), *now));
-            if homing.needs_course() {
-                homing.set_course(course);
-            }
-        }
-        events
+        ride_course_warned(homing, course, points, now).1
+    }
+
+    #[test]
+    fn following_a_course_warns_of_each_corner_ahead_and_at_it() {
+        use turns::{Kind, Side};
+        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
+        let course = course_of(&SQUARE);
+        homing.set_course(&course);
+        let mut now = 0;
+        let lap = path(&SQUARE, 7.0);
+        let (warnings, events) = ride_course_warned(&mut homing, &course, &lap, &mut now);
+        assert_eq!(events, [Event::Following, Event::CourseEnd]);
+        let left = Kind::Turn(Side::Left);
+        let corner = [
+            Warning::Ahead {
+                kind: left,
+                metres: 150,
+            },
+            Warning::Now(left),
+        ];
+        assert_eq!(warnings, corner.repeat(3), "{warnings:?}");
+        // The next lap, with the course ended, warns of nothing.
+        let (warnings, _) = ride_course_warned(&mut homing, &course, &lap, &mut now);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn riding_a_followed_course_the_wrong_way_or_stopped_warns_of_nothing() {
+        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
+        let course = course_of(&SQUARE);
+        homing.set_course(&course);
+        let mut now = 0;
+        // Backwards down the second side, the pad following it 120 m past
+        // a corner: the course's way, the corner is ahead.
+        let backwards = path(&[(1000.0, 950.0), (1000.0, 0.0), (300.0, 0.0)], 7.0);
+        let (warnings, _) = ride_course_warned(&mut homing, &course, &backwards[..10], &mut now);
+        assert!(warnings.is_empty());
+        assert!(homing.set_following(true, now) && homing.following_course());
+        let (warnings, events) =
+            ride_course_warned(&mut homing, &course, &backwards[10..], &mut now);
+        assert!(warnings.is_empty(), "{warnings:?} {events:?}");
+        // Forwards, but stopped from the pad before the first corner.
+        homing.reset();
+        let out = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
+        assert_eq!(
+            ride_course(&mut homing, &course, &out, &mut now),
+            [Event::Following]
+        );
+        assert!(homing.set_following(false, now));
+        let on = path(&[(500.0, 0.0), (1000.0, 0.0), (1000.0, 500.0)], 7.0);
+        let (warnings, _) = ride_course_warned(&mut homing, &course, &on, &mut now);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

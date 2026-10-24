@@ -163,6 +163,15 @@ end, along it, END OF COURSE. After either, or after the rider stops it, the
 course no longer follows by itself for the rest of the ride; the pad can
 still follow it, and the next ride follows it again.
 
+While following, each turn on the course is warned of twice: about 150 m
+before it, RIGHT IN 150 M with a soft falling cue, and about 30 m before it,
+RIGHT with a brighter one. A turn is where the course turns by 60 degrees or
+more within about 30 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past 120
+degrees, and U-TURN past 150. A bend gentler than that says nothing. A
+roundabout is one turn, named by the way it leaves, and straight over one says
+nothing. Off the course, riding it the wrong way, standing still, or once it
+is stopped or ended, no turn is warned of.
+
 While following the course, the BACK TO START page says COURSE: the arrow
 points along the course a little way ahead (or back to it when off), DIRECT KM
 is straight to the course's end and TO END KM is along it, and the pad says

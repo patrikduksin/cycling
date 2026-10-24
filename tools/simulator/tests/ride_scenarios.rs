@@ -5943,6 +5943,82 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     sim.checkpoint("back to start after the restart, five hours read back");
 }
 
+/// A ride on the card whose card fails a lap and a half round a 3 km loop
+/// with AUTO LAP AT START carries on on internal memory as the same ride: MAP
+/// keeps the whole track, TRACK KM keeps counting and the next pass of the
+/// ride's start takes the lap.
+#[test]
+fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_route(Route::loop_around(Point::new(-33.45, -70.66), 3_000.0, 0.0));
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "AUTO LAP");
+    sim.set_option("AUTO LAP", "AT START");
+    sim.swipe_next();
+    go_home(&mut sim);
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    sim.start_ride();
+    ride_to(&mut sim, 4_500.0);
+    // Standing still the map turns north up, so the two maps compare.
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(20));
+    sim.ride_page("5/6");
+    sim.expect_text("N UP");
+    let before = map_ink(&sim);
+    sim.checkpoint("the map on the card before it fails");
+    sim.ride_page("6/6");
+    let track = sim.screen().field("TRACK KM").unwrap();
+    let stopped_m = sim.world().distance_m;
+
+    // Riding on, the next write to the card fails.
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    sim.advance(seconds(10));
+    sim.fail_bulk(0, 0);
+    sim.wait_for("RECORDING INT", seconds(15)).unwrap();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "moved"), "1", "{status}");
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(20));
+    let ridden = (sim.world().distance_m - stopped_m) / 1000.0;
+    sim.ride_page("6/6");
+    let again = sim.screen().field("TRACK KM").unwrap();
+    sim.checkpoint("back to start after the move to internal memory");
+    sim.ride_page("5/6");
+    sim.expect_text("N UP");
+    let after = map_ink(&sim);
+    sim.note(
+        NoteKind::Check,
+        format!(
+            "map ink {before} px before the move, {after} px after; TRACK KM {track} then {again}"
+        ),
+    );
+    sim.checkpoint("the map after the move, the whole track");
+    assert!(after * 10 >= before * 9, "{after} px against {before} px");
+    let km = |text: &str| text.parse::<f64>().unwrap();
+    assert!(
+        (km(&again) - km(&track) - ridden).abs() <= 0.05,
+        "{again} km against {track} km and {ridden:.2} km since"
+    );
+
+    // On round the loop: the ride's start is where the lap closes.
+    sim.ride_page("3/6");
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    let lap = ride_until_shown(&mut sim, "LAP 2 0", 6_300.0);
+    assert!((6_000.0..6_200.0).contains(&lap), "{lap}");
+    sim.checkpoint("lap toast at the ride's start after the move");
+    sim.advance(seconds(5));
+    sim.stop_ride();
+    let rides = sim.rides();
+    assert_eq!(rides.len(), 1);
+    let laps = rides[0]
+        .samples()
+        .filter(|s| s.lap == Some(vana::ride::log::LapStart::Position))
+        .count();
+    assert_eq!(laps, 1);
+}
+
 /// MOVE through the ride pages until one titled `title` shows.
 #[track_caller]
 fn press_to_page(sim: &mut Sim, title: &str) {

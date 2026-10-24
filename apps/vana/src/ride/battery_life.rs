@@ -4,16 +4,17 @@
 //! The device reports whole percent, coarse and with an unvalidated
 //! calibration (issue #88), so the estimator trusts little and prefers to be
 //! early. It tracks the lowest percent seen and notes when each new low was
-//! reached, so a gauge that flickers by a point leaves it alone; only
-//! charging, a rise of two points that holds, or a sudden fall start it over.
-//! The rate is the worse of two readings: the median of the rates between
-//! pairs of moments over `WINDOW_MS` (Theil-Sen), and the slope of the last
-//! `RECENT_MS`, since load steps and a falling gauge's knee make the old rate
-//! too kind. It says nothing until the discharge has run `MIN_SPAN_MS` over
-//! `MIN_MOMENTS` points, nor near full or soon after unplugging, when the
-//! first minutes are inflated by startup drain and the sag after charging.
-//! Below `KNEE_PERCENT` the answer is cut by `KNEE_SCALE`, because lithium
-//! gauges fall faster near empty.
+//! reached, so a gauge that flickers by a point leaves it alone; charging, a
+//! rise of two steps that holds, or a fall of over `MAX_JUMP` points start it
+//! over. A smaller sudden fall counts as one moment and only restarts the
+//! recent slope. The rate is the worse of two readings: the median of the
+//! rates between pairs of moments over `WINDOW_MS` (Theil-Sen), and the slope
+//! of the last `RECENT_MS`, since load steps make the old rate too kind. It
+//! says nothing until the discharge has run `MIN_SPAN_MS` over `MIN_MOMENTS`
+//! points, nor near full, when a fresh charge sags. Below `KNEE_PERCENT` the
+//! answer is cut by `KNEE_SCALE`, because lithium gauges fall faster near
+//! empty. A gauge that steps by 5 points needs six steps inside the window,
+//! so it shows an estimate only above about 8 %/h.
 //!
 //! Pure policy: the caller feeds each fresh report with the clock and asks
 //! for minutes left. The rate is worked out once per new moment and kept.
@@ -28,15 +29,16 @@ pub const MIN_SPAN_MS: u64 = 40 * 60 * 1000;
 /// The recent slope needs this much of its own.
 const RECENT_MOMENTS: usize = 3;
 const RECENT_SPAN_MS: u64 = 15 * 60 * 1000;
-/// A fall larger than this between two reports is a gauge jump, not
-/// discharge.
+/// A fall larger than this between two reports may be a gauge jump: it
+/// counts as one moment, but the recent slope starts over from it.
 pub const MAX_STEP: u8 = 3;
-/// A rise of at least this many points over the lowest seen, held for
-/// `RISE_HOLD_MS`, ends the discharge.
+/// A fall this large is no discharge at all: start over.
+pub const MAX_JUMP: u8 = 20;
+/// A rise of at least this many points over the lowest seen (or two steps of
+/// the gauge, if more), held for `RISE_HOLD_MS`, ends the discharge.
 const RISE: u8 = 2;
 const RISE_HOLD_MS: u64 = 2 * 60 * 1000;
-/// Nothing this soon after unplugging, or above this percent.
-pub const SETTLE_MS: u64 = 15 * 60 * 1000;
+/// Nothing above this percent: a fresh charge sags before it settles.
 pub const FULL_PERCENT: u8 = 95;
 /// Below this percent the estimate is multiplied by `KNEE_SCALE` / 10.
 pub const KNEE_PERCENT: u8 = 40;
@@ -62,9 +64,13 @@ struct Moment {
 pub struct BatteryLife {
     moments: [Moment; KEPT],
     len: usize,
-    /// The lowest percent seen this discharge, and when it began.
+    /// The lowest percent seen this discharge.
     low: Option<u8>,
-    began_ms: u64,
+    /// When the last fall of more than `MAX_STEP` points landed; the recent
+    /// slope does not look back past it.
+    jump_ms: u64,
+    /// Points of the last fall: the gauge's step, which sizes the overdue cap.
+    step: u8,
     rise_since: Option<u64>,
     seen_ms: Option<u64>,
     /// Worse of the window and recent rates, in thousandths of a percent per
@@ -86,7 +92,7 @@ impl BatteryLife {
             self.begin(now, percent);
             return;
         };
-        if percent >= low.saturating_add(RISE) {
+        if percent >= low.saturating_add(RISE.max(self.step.saturating_mul(2))) {
             let since = *self.rise_since.get_or_insert(now);
             if now.saturating_sub(since) >= RISE_HOLD_MS {
                 self.begin(now, percent);
@@ -100,10 +106,14 @@ impl BatteryLife {
             }
             return;
         }
-        if low - percent > MAX_STEP {
+        if low - percent > MAX_JUMP {
             self.begin(now, percent);
             return;
         }
+        if low - percent > MAX_STEP {
+            self.jump_ms = now;
+        }
+        self.step = low - percent;
         if self.len == KEPT {
             // Thin the old end, not the oldest point, so a fast drain keeps its span.
             self.moments.copy_within(2.., 1);
@@ -121,7 +131,6 @@ impl BatteryLife {
     fn begin(&mut self, now: u64, percent: u8) {
         *self = Self {
             low: Some(percent),
-            began_ms: now,
             seen_ms: Some(now),
             ..Self::default()
         };
@@ -146,14 +155,14 @@ impl BatteryLife {
         let (Some(first), Some(last)) = (moments.first(), moments.last()) else {
             return;
         };
-        if moments.len() < MIN_MOMENTS || last.at_ms - first.at_ms < MIN_SPAN_MS {
+        if moments.len() < MIN_MOMENTS || last.at_ms.saturating_sub(first.at_ms) < MIN_SPAN_MS {
             return;
         }
         let mut rates = [0u32; PAIRS];
         let mut count = 0;
         for (index, a) in moments.iter().enumerate() {
             for b in &moments[index + 1..] {
-                let ms = b.at_ms - a.at_ms;
+                let ms = b.at_ms.saturating_sub(a.at_ms);
                 if ms >= MIN_PAIR_MS && a.percent > b.percent {
                     rates[count] = slope(a, b);
                     count += 1;
@@ -167,10 +176,14 @@ impl BatteryLife {
         };
         let recent: &[Moment] = &moments[moments
             .iter()
-            .position(|m| last.at_ms - m.at_ms <= RECENT_MS)
+            .position(|m| {
+                last.at_ms.saturating_sub(m.at_ms) <= RECENT_MS && m.at_ms >= self.jump_ms
+            })
             .unwrap_or(0)..];
         let recent = match (recent.first(), recent.len() >= RECENT_MOMENTS) {
-            (Some(a), true) if last.at_ms - a.at_ms >= RECENT_SPAN_MS => slope(a, last),
+            (Some(a), true) if last.at_ms.saturating_sub(a.at_ms) >= RECENT_SPAN_MS => {
+                slope(a, last)
+            }
             _ => 0,
         };
         self.rate = long.max(recent);
@@ -186,15 +199,15 @@ impl BatteryLife {
             || percent == 0
             || percent > FULL_PERCENT
             || now.saturating_sub(self.seen_ms?) > STALE_MS
-            || now.saturating_sub(self.began_ms) < SETTLE_MS
         {
             return None;
         }
         let mut rate = u64::from(self.rate);
-        // The next point is overdue, so the rate is at most one point over
-        // the time since the last.
+        // A point more than two gaps overdue: the rate is at most two steps
+        // of the gauge over the time since the last. Two, not one: tracking
+        // the lowest reading of a flickering gauge puts the last point early.
         let since = now.saturating_sub(last.at_ms);
-        if let Some(cap) = (1000 * HOUR_MS).checked_div(since) {
+        if let Some(cap) = (2000 * HOUR_MS * u64::from(self.step.max(1))).checked_div(since) {
             rate = rate.min(cap);
         }
         let mut minutes = u64::from(percent) * 60_000 / rate.max(1);
@@ -208,7 +221,7 @@ impl BatteryLife {
 /// Thousandths of a percent per hour between two moments.
 fn slope(a: &Moment, b: &Moment) -> u32 {
     let drop = u64::from(a.percent.saturating_sub(b.percent));
-    (drop * 1000 * HOUR_MS / (b.at_ms - a.at_ms).max(1)) as u32
+    (drop * 1000 * HOUR_MS / b.at_ms.saturating_sub(a.at_ms).max(1)) as u32
 }
 
 /// Minutes as the rider reads them, always rounded down so the answer errs
@@ -228,7 +241,6 @@ pub fn about(minutes: u16) -> heapless::String<8> {
 mod tests {
     use super::*;
     use std::println;
-    use std::string::ToString;
     use std::vec::Vec;
 
     const MIN: u64 = 60_000;
@@ -281,17 +293,36 @@ mod tests {
         at - minute
     }
 
-    /// Feed one report a minute of the gauge of `charge` with `noise` points
-    /// of jitter and return, at each of `asks` minutes, (estimate, truth).
-    fn run(charge: Charge, noise: f64, asks: &[u64]) -> Vec<(Option<u16>, f64)> {
+    /// A gauge: `noise` points of jitter on the charge, shown in steps of
+    /// `quantum` points.
+    #[derive(Clone, Copy)]
+    struct Gauge {
+        noise: f64,
+        quantum: f64,
+        seed: u64,
+    }
+
+    impl Gauge {
+        const fn new(noise: f64) -> Self {
+            Self {
+                noise,
+                quantum: 1.0,
+                seed: 7,
+            }
+        }
+    }
+
+    /// Feed one report a minute of the gauge and return, at each of `asks`
+    /// minutes, (estimate, truth).
+    fn run_gauge(charge: Charge, gauge: Gauge, asks: &[u64]) -> Vec<(Option<u16>, f64)> {
         let mut life = BatteryLife::default();
-        let mut jitter = Noise(7);
+        let mut jitter = Noise(gauge.seed);
         let mut out = Vec::new();
         for minute in 0..=*asks.last().unwrap() {
             let now = minute * MIN;
-            let reading = charge(minute as f64) + noise * jitter.next();
-            let percent = reading.floor().clamp(1.0, 100.0) as u8;
-            life.observe(now, Some(percent), Some(false));
+            let reading = charge(minute as f64) + gauge.noise * jitter.next();
+            let percent = (reading / gauge.quantum).floor() * gauge.quantum;
+            life.observe(now, Some(percent.clamp(1.0, 100.0) as u8), Some(false));
             if asks.contains(&minute) {
                 out.push((life.minutes_left(now), truth(charge, minute as f64)));
             }
@@ -299,28 +330,103 @@ mod tests {
         out
     }
 
-    /// The estimate against the truth, as a Markdown table.
+    fn run(charge: Charge, noise: f64, asks: &[u64]) -> Vec<(Option<u16>, f64)> {
+        run_gauge(charge, Gauge::new(noise), asks)
+    }
+
+    const SEEDS: u64 = 40;
+
+    /// Over `SEEDS` runs and every fifth minute from `from` while at least
+    /// an hour of truth remains: the worst estimate over truth, the worst
+    /// under it, and how often there was no estimate.
+    fn sweep(charge: Charge, gauge: Gauge, from: u64) -> (f64, f64, f64) {
+        let last = (from..)
+            .step_by(5)
+            .take_while(|&m| truth(charge, m as f64) >= 60.0)
+            .last()
+            .unwrap();
+        let asks: Vec<u64> = (from..=last).step_by(5).collect();
+        let (mut high, mut low, mut none, mut total) = (0.0f64, f64::MAX, 0, 0);
+        for seed in 0..SEEDS {
+            for (estimate, truth) in run_gauge(charge, Gauge { seed, ..gauge }, &asks) {
+                total += 1;
+                match estimate {
+                    Some(m) => {
+                        high = high.max(f64::from(m) / truth);
+                        low = low.min(f64::from(m) / truth);
+                    }
+                    None => none += 1,
+                }
+            }
+        }
+        (high, low, f64::from(none) / f64::from(total))
+    }
+
+    fn steps(noise: f64, quantum: f64) -> Gauge {
+        Gauge {
+            noise,
+            quantum,
+            seed: 0,
+        }
+    }
+
+    /// Worst case over every sampled minute and seed, as a Markdown table.
     #[test]
     #[ignore = "prints the accuracy table"]
     fn estimate_against_truth() {
-        let asks = [60, 120, 180, 240, 300, 360, 390, 420, 440];
-        println!("| drain | minute | estimate min | truth min |");
-        println!("| --- | --- | --- | --- |");
-        for (name, charge, noise) in [
-            ("clean", clean as Charge, 0.0),
-            ("noisy", clean as Charge, 0.6),
-            ("knee", knee as Charge, 0.0),
-            ("knee, noisy", knee as Charge, 0.6),
-            ("load step", step as Charge, 0.0),
+        println!("| drain | gauge | worst over | worst under | no estimate |");
+        println!("| --- | --- | --- | --- | --- |");
+        // The load step is swept from 45 min after it: no history foretells it.
+        for (name, charge, from) in [
+            ("8 %/h", clean as Charge, 60),
+            ("load step", step as Charge, 135),
         ] {
-            for (ask, (estimate, truth)) in asks.iter().zip(run(charge, noise, &asks)) {
-                if truth < 5.0 {
-                    continue;
+            for (gauge, label) in [
+                (steps(0.0, 1.0), "clean"),
+                (steps(0.6, 1.0), "+-0.6"),
+                (steps(1.0, 1.0), "+-1.0"),
+                (steps(0.0, 2.0), "2 point steps"),
+                (steps(0.0, 5.0), "5 point steps"),
+            ] {
+                let (high, low, none) = sweep(charge, gauge, from);
+                let none_pct = none * 100.0;
+                if none >= 1.0 {
+                    println!("| {name} | {label} | - | - | {none_pct:.0}% |");
+                } else {
+                    println!("| {name} | {label} | {high:.2}x | {low:.2}x | {none_pct:.0}% |");
                 }
-                let estimate = estimate.map_or("none".into(), |m| m.to_string());
-                println!("| {name} | {ask} | {estimate} | {truth:.0} |");
             }
         }
+    }
+
+    #[test]
+    fn a_straight_drain_is_never_much_too_kind_on_any_gauge() {
+        for gauge in [
+            steps(0.0, 1.0),
+            steps(0.6, 1.0),
+            steps(1.0, 1.0),
+            steps(0.0, 2.0),
+            steps(0.6, 2.0),
+        ] {
+            let (high, low, none) = sweep(clean, gauge, 60);
+            assert!(high <= 1.15, "over by {high} at noise {}", gauge.noise);
+            assert!(low >= 0.4, "under by {low} at noise {}", gauge.noise);
+            assert!(none <= 0.05, "no estimate {none} at noise {}", gauge.noise);
+        }
+    }
+
+    #[test]
+    fn a_five_point_gauge_gives_an_estimate_only_at_a_brisk_drain() {
+        // 8 %/h is a step every 37 min: six steps do not fit the 3 h window.
+        let (_, _, none) = sweep(clean, steps(0.0, 5.0), 60);
+        assert!(none > 0.9, "{none}");
+        // At 25 %/h a step comes every 12 min, and a fall of 5 is no restart.
+        fn brisk(minute: f64) -> f64 {
+            95.0 - 25.0 * minute / 60.0
+        }
+        let (high, _, none) = sweep(brisk, steps(0.0, 5.0), 60);
+        assert!(none < 0.5, "{none}");
+        assert!(high <= 1.5, "{high}");
     }
 
     #[test]
@@ -449,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sudden_drop_or_a_lasting_rise_starts_over_but_a_blip_does_not() {
+    fn a_huge_fall_or_a_lasting_rise_starts_over_but_a_blip_does_not() {
         let build = || {
             let mut life = BatteryLife::default();
             for minute in 0..=120u64 {
@@ -458,8 +564,16 @@ mod tests {
             life
         };
         let mut life = build();
+        let before = life.minutes_left(120 * MIN).unwrap();
         life.observe(121 * MIN, Some(58), Some(false));
-        assert_eq!(life.minutes_left(121 * MIN), None, "recalibration");
+        let after = life.minutes_left(121 * MIN).unwrap();
+        assert!(
+            after < before,
+            "a big fall counts as a moment: {before} then {after}"
+        );
+        let mut life = build();
+        life.observe(121 * MIN, Some(40), Some(false));
+        assert_eq!(life.minutes_left(121 * MIN), None, "no discharge falls so");
         let mut life = build();
         life.observe(121 * MIN, Some(76), Some(false));
         life.observe(122 * MIN, Some(70), Some(false));

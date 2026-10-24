@@ -276,10 +276,10 @@ Only one toast shows at a time. From highest priority to lowest:
    (`ride/battery_life.rs`) has stayed under 1.25 times the planned time of the
    workout (1 h at least) for 5 min. The estimate needs 6 points over 40 min,
    takes the worse of the 3 h median and the last 45 min, is cut by 30% under
-   40% charge, and is silent when unknown, stale, above 95% or within 15 min of
-   unplugging. It restarts on charging, a rise of 2 points that holds or a
-   sudden fall; a one point flicker is ignored. A battery level toast
-   keeps it back for 30 s. Ready rarely shows it without a ride or an
+   40% charge, and is silent when unknown, stale or above 95%. It restarts on
+   charging, a rise of 2 steps that holds or a fall of over 20 points; a one
+   point flicker is ignored and a smaller fall counts as one moment. A battery
+   level toast keeps it back for 30 s. Ready rarely shows it without a ride or an
    hour of use behind it, since nothing is stored between boots. Limits
    and reminders keep 3 s apart; radar alerts never wait. The sunset alert
    (Settings ALERTS, SUNSET, on by default) is `Warn` with the band cue:

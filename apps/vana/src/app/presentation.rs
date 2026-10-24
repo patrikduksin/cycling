@@ -424,16 +424,16 @@ impl Runtime {
                 self.alerts.battery(
                     now,
                     self.ride.active().status(),
-                    self.readings
-                        .battery_life
-                        .minutes_left(now)
-                        .filter(|_| !after_news),
+                    self.readings.battery_life.minutes_left(now),
                     ride_left,
+                    after_news,
                 )
             });
             if let Some(alert) = alert.or(sunset) {
                 self.ride_alert(alert, now);
             }
+        } else {
+            self.alerts.battery_away();
         }
         self.cues.play(sound, now);
     }

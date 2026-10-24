@@ -454,12 +454,15 @@ impl Alerts {
     /// minutes left stay under a quarter more than the workout still planned
     /// (an hour at least) for `BATTERY_HOLD_MS`. Call after `update`, which
     /// starts a new ride's count; it waits its turn behind other alerts.
+    /// `held` keeps the warning back (a battery toast is on) without
+    /// restarting the wait.
     pub fn battery(
         &mut self,
         now: u64,
         status: Status,
         left_min: Option<u16>,
         ride_left_min: Option<u32>,
+        held: bool,
     ) -> Option<Alert> {
         let needed = ride_left_min.unwrap_or(0).max(BATTERY_HOUR_MIN) * 5 / 4;
         let short = left_min.filter(|&left| u32::from(left) < needed);
@@ -468,7 +471,8 @@ impl Alerts {
             return None;
         };
         let since = *self.battery_short_since.get_or_insert(now);
-        if now.saturating_sub(since) < BATTERY_HOLD_MS
+        if held
+            || now.saturating_sub(since) < BATTERY_HOLD_MS
             || self
                 .last
                 .is_some_and(|last| now.saturating_sub(last) < SPACING_MS)
@@ -478,6 +482,12 @@ impl Alerts {
         self.battery_told = true;
         self.last = Some(now);
         Some(Alert::BatteryLeft(left))
+    }
+
+    /// The rider left the ride pages: the wait starts over when they return,
+    /// for a warning they could not see was never given.
+    pub fn battery_away(&mut self) {
+        self.battery_short_since = None;
     }
 
     /// More vehicles than at any time since the road was last clear, or
@@ -1007,34 +1017,68 @@ mod tests {
         let rec = Status::Recording;
         let hold = BATTERY_HOLD_MS;
         // Enough for the ride (with a quarter to spare), or for over 75 min.
-        assert_eq!(alerts.battery(0, rec, Some(150), Some(120)), None);
-        assert_eq!(alerts.battery(hold, rec, Some(150), Some(120)), None);
-        assert_eq!(alerts.battery(hold, rec, Some(76), None), None);
+        assert_eq!(alerts.battery(0, rec, Some(150), Some(120), false), None);
+        assert_eq!(alerts.battery(hold, rec, Some(150), Some(120), false), None);
+        assert_eq!(alerts.battery(hold, rec, Some(76), None, false), None);
         // No estimate: quiet, never a guess.
-        assert_eq!(alerts.battery(hold, rec, None, Some(120)), None);
+        assert_eq!(alerts.battery(hold, rec, None, Some(120), false), None);
         // Not recording: quiet.
-        assert_eq!(alerts.battery(hold, Status::Paused, Some(30), None), None);
+        assert_eq!(
+            alerts.battery(hold, Status::Paused, Some(30), None, false),
+            None
+        );
         // Short, but not for long enough yet.
-        assert_eq!(alerts.battery(0, rec, Some(90), Some(120)), None);
-        assert_eq!(alerts.battery(hold - 1, rec, Some(90), Some(120)), None);
+        assert_eq!(alerts.battery(0, rec, Some(90), Some(120), false), None);
+        assert_eq!(
+            alerts.battery(hold - 1, rec, Some(90), Some(120), false),
+            None
+        );
         // A recovered estimate restarts the wait.
-        assert_eq!(alerts.battery(hold, rec, Some(200), Some(120)), None);
-        assert_eq!(alerts.battery(hold + 1, rec, Some(90), Some(120)), None);
+        assert_eq!(alerts.battery(hold, rec, Some(200), Some(120), false), None);
+        assert_eq!(
+            alerts.battery(hold + 1, rec, Some(90), Some(120), false),
+            None
+        );
         let at = 2 * hold + 1;
         assert_eq!(
-            alerts.battery(at, rec, Some(90), Some(120)),
+            alerts.battery(at, rec, Some(90), Some(120), false),
             Some(Alert::BatteryLeft(90))
         );
-        assert_eq!(alerts.battery(at + 1, rec, Some(30), None), None, "once");
+        assert_eq!(
+            alerts.battery(at + 1, rec, Some(30), None, false),
+            None,
+            "once"
+        );
         // A new ride tells again.
         let sample = Sample::default();
         alerts.update(0, &Settings::default(), rec, 5_000, &sample, quiet());
         alerts.update(10_000, &Settings::default(), rec, 0, &sample, quiet());
-        assert_eq!(alerts.battery(20_000, rec, Some(59), None), None);
+        assert_eq!(alerts.battery(20_000, rec, Some(59), None, false), None);
         assert_eq!(
-            alerts.battery(20_000 + hold, rec, Some(59), None),
+            alerts.battery(20_000 + hold, rec, Some(59), None, false),
             Some(Alert::BatteryLeft(59))
         );
+    }
+
+    #[test]
+    fn a_held_battery_warning_keeps_its_wait_and_leaving_the_page_resets_it() {
+        let mut alerts = Alerts::default();
+        let rec = Status::Recording;
+        let hold = BATTERY_HOLD_MS;
+        assert_eq!(alerts.battery(0, rec, Some(40), None, false), None);
+        // Held past the wait by a toast: due the moment it is released.
+        assert_eq!(
+            alerts.battery(hold + 1_000, rec, Some(40), None, true),
+            None
+        );
+        assert_eq!(
+            alerts.battery(hold + 2_000, rec, Some(40), None, false),
+            Some(Alert::BatteryLeft(40))
+        );
+        let mut alerts = Alerts::default();
+        assert_eq!(alerts.battery(0, rec, Some(40), None, false), None);
+        alerts.battery_away();
+        assert_eq!(alerts.battery(hold, rec, Some(40), None, false), None);
     }
 
     #[test]
@@ -1044,11 +1088,15 @@ mod tests {
             ..Alerts::default()
         };
         let rec = Status::Recording;
-        assert_eq!(alerts.battery(0, rec, Some(40), None), None);
+        assert_eq!(alerts.battery(0, rec, Some(40), None, false), None);
         let now = BATTERY_HOLD_MS + 11_000;
-        assert_eq!(alerts.battery(now, rec, Some(40), None), None, "spacing");
+        assert_eq!(
+            alerts.battery(now, rec, Some(40), None, false),
+            None,
+            "spacing"
+        );
         let alert = alerts
-            .battery(now + SPACING_MS, rec, Some(40), None)
+            .battery(now + SPACING_MS, rec, Some(40), None, false)
             .unwrap();
         assert_eq!(alert.text().as_str(), "BATTERY 40 MIN LEFT");
         assert_eq!(Alert::BatteryLeft(60).text().as_str(), "BATTERY 1 H LEFT");

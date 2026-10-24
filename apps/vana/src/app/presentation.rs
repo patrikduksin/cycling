@@ -355,12 +355,6 @@ impl Runtime {
         self.workout_cue();
         let radar = self.readings.radar.snapshot(now);
         let settings = self.alert_settings();
-        let sunset = self.alerts.sunset(
-            self.preferences.options.sunset_alert,
-            self.ride.active().status(),
-            self.navigation.page == Page::Ride,
-            self.night.sun(now),
-        );
         let alert = self.alerts.update(
             now,
             &settings,
@@ -368,6 +362,13 @@ impl Runtime {
             self.ride.active_ms(now),
             &self.readings.live,
             radar,
+        );
+        let sunset = self.alerts.sunset(
+            now,
+            self.preferences.options.sunset_alert,
+            self.ride.active().status(),
+            self.navigation.page == Page::Ride,
+            self.night.sun(now),
         );
         if self.navigation.page == Page::Ride {
             if self.readings.radar_alert.update(radar, now) {

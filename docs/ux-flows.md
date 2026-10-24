@@ -107,7 +107,8 @@ alerts follow the SOUNDS setting for the chime and show on the ride pages;
 one due while another page is up waits for the rider's return. They need a
 known position and time. A ride that starts after sunset says nothing: the
 rider can see it is dark. A ride that starts less than 20 minutes before
-sunset skips the warning and gives only LIGHTS ON. A pause across the
+sunset skips the warning and gives only LIGHTS ON. A ride recovered after a restart, already more than two
+minutes old, never repeats the warning either. A pause across the
 30-minute mark gives the warning on resume, if 20 minutes or more remain.
 Polar day and night have no sunset and no alert.
 

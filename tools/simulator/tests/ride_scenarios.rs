@@ -4484,3 +4484,40 @@ fn no_sunset_alert_when_off_or_when_the_ride_starts_after_dark() {
     sim.expect_no_text("SUNSET IN");
     sim.expect_no_text("LIGHTS ON");
 }
+
+/// The light caption on BACK TO START draws in the light theme too, before
+/// and after sunset (the light theme cannot be read as text, so it is checked
+/// by colour and by the screenshots).
+#[test]
+fn the_sunset_caption_shows_in_the_light_theme() {
+    use vana::screens::chrome::{SECONDARY, WHITE};
+    use vana::screens::look::light;
+    for (utc, colour, name) in [
+        (22 * 3600 + 10 * 60, SECONDARY, "light theme before sunset"),
+        (23 * 3600 + 30 * 60, WHITE, "light theme after sunset"),
+    ] {
+        let mut sim = rider();
+        sim.pair(&["SPEED/CAD"]);
+        sim.home("SETTINGS");
+        sim.swipe_next();
+        for _ in 0..3 {
+            sim.press(Button::BottomLeft);
+        }
+        sim.expect_field("THEME", "DARK");
+        sim.press(Button::BottomRight);
+        sim.press(Button::TopLeft);
+        sim.set_gps_clock(utc, (14, 10, 26));
+        sim.advance(seconds(15));
+        sim.ride_at(25.0, 0.0, 0.0, 0.0);
+        sim.press(Button::BottomLeft);
+        sim.press(Button::BottomLeft);
+        sim.press(Button::BottomRight);
+        sim.press(Button::BottomRight);
+        sim.advance(minutes(2));
+        sim.swipe_previous();
+        sim.advance(seconds(1));
+        assert_eq!(corner(&sim), WHITE);
+        assert!(shows(&sim, light(colour)), "{name}");
+        sim.checkpoint(name);
+    }
+}

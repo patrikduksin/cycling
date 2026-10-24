@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cycling_devtools.harness.runner import Runner, decode_chunk, events_for, execute, png_rgb565, preflight
-from cycling_devtools.harness.transport import Real, Virtual
+from cycling_devtools.harness.transport import RESTART_PROBE_MS, Real, Virtual
 from workspace_fixture import private_root
 
 
@@ -591,6 +591,14 @@ class HarnessTests(unittest.TestCase):
 
 class VirtualStartupTests(unittest.TestCase):
     """The first reply clock starts at the simulator's ready line, never at launch."""
+
+    def test_virtual_restart_refuses_work_until_the_companion_probe_ends(self):
+        with tempfile.TemporaryDirectory() as directory, Virtual(directory) as transport:
+            self.assertEqual(transport.terminal_command('RESTART')['status'], 'ACCEPTED')
+            reply = transport.terminal_command('SETTINGS')
+            self.assertEqual((reply['status'], reply['data']), ('BUSY', 'starting companion=probing'))
+            transport.delay(RESTART_PROBE_MS / 1000)
+            self.assertEqual(transport.terminal_command('SETTINGS')['status'], 'OK')
 
     def simulator(self, directory, body):
         path = Path(directory) / 'simulator'

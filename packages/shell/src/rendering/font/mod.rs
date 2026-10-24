@@ -224,27 +224,46 @@ impl<const N: usize> Line<N> {
             let stride = usize::from(glyph.w).div_ceil(2);
             let base = usize::from(glyph.offset) + gy as usize * stride;
             let skip = (first as i32 - ink) as usize;
-            let bits = &self.face.bits[base + skip / 2..base + stride];
-            reached.start = reached.start.min(first - from);
-            reached.end = reached.end.max(last - from);
-            // Two pixels per byte, the left one in the high nibble.
-            let (odd, slots) = out[first - from..last - from].split_at_mut(skip % 2);
-            let mut bytes = bits.iter();
-            if let [slot] = odd
-                && let Some(&byte) = bytes.next()
-            {
-                *slot = (*slot).max(byte & 0x0f);
-            }
-            let (pairs, rest) = slots.as_chunks_mut::<2>();
-            for ([left, right], &byte) in pairs.iter_mut().zip(&mut bytes) {
-                *left = (*left).max(byte >> 4);
-                *right = (*right).max(byte & 0x0f);
-            }
-            if let ([slot], Some(&byte)) = (rest, bytes.next()) {
-                *slot = (*slot).max(byte >> 4);
-            }
+            let bits = &self.face.bits[base..base + stride];
+            // Only columns an earlier glyph reached can hold ink to keep;
+            // the rest are still zero, so they take the glyph's own.
+            let (lo, hi) = (first - from, last - from);
+            let fresh = reached.end.clamp(lo, hi);
+            unpack(bits, skip, &mut out[lo..fresh], |slot, a| {
+                *slot = (*slot).max(a)
+            });
+            unpack(bits, skip + fresh - lo, &mut out[fresh..hi], |slot, a| {
+                *slot = a
+            });
+            reached.start = reached.start.min(lo);
+            reached.end = reached.end.max(hi);
         }
         if reached.is_empty() { 0..0 } else { reached }
+    }
+}
+
+/// Put a glyph row's coverage from glyph column `skip` on into `out`, one
+/// column per slot; the row packs two columns a byte, the left one in the
+/// high nibble.
+#[inline(always)]
+fn unpack(bits: &[u8], skip: usize, out: &mut [u8], put: impl Fn(&mut u8, u8)) {
+    if out.is_empty() {
+        return;
+    }
+    let (odd, slots) = out.split_at_mut(skip % 2);
+    let mut bytes = bits[skip / 2..].iter();
+    if let [slot] = odd
+        && let Some(&byte) = bytes.next()
+    {
+        put(slot, byte & 0x0f);
+    }
+    let (pairs, rest) = slots.as_chunks_mut::<2>();
+    for ([left, right], &byte) in pairs.iter_mut().zip(&mut bytes) {
+        put(left, byte >> 4);
+        put(right, byte & 0x0f);
+    }
+    if let ([slot], Some(&byte)) = (rest, bytes.next()) {
+        put(slot, byte >> 4);
     }
 }
 
@@ -357,11 +376,18 @@ impl<const N: usize> Label<N> {
     /// Blend the label over what the row already holds, glyph by glyph.
     /// Matches `pixel` over the same background, including where kerned
     /// glyphs overlap.
+    #[inline]
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
-        if y < self.top || y >= self.bottom() {
-            return;
+        if y >= self.top && y < self.bottom() {
+            self.paint_row(row, y);
         }
+    }
+
+    /// Most rows miss most labels, so the test above stays inline and the
+    /// painting, with its coverage buffer, is one shared call.
+    #[inline(never)]
+    fn paint_row(&self, row: &mut Row, y: usize) {
         let clip = row.clip();
         let pixels = row.pixels_mut();
         let start = self.left.max(clip.start);

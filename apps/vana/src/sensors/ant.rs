@@ -1,4 +1,4 @@
-//! Small ANT+ heart-rate and standard power-only decoders for capture diagnostics.
+//! Small ANT+ heart-rate, crank-revolution and standard power-only decoders for capture diagnostics.
 //! Callers select the correct channel type and own freshness and session resets.
 //! Raw capture retains all pages, including those not interpreted here.
 //!
@@ -57,6 +57,33 @@ impl HeartRate {
             beat_event_time: u16::from_le_bytes([data[4], data[5]]),
             beat_count: data[6],
             bpm: (data[7] != 0).then_some(data[7]),
+        })
+    }
+}
+
+/// The crank's latest revolution event of an ANT+ cadence sensor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Crank {
+    /// Time of the last revolution, in 1/1024-second units, wrapping at 65536.
+    pub event_time: u16,
+    /// Cumulative revolutions, wrapping at 65536.
+    pub count: u16,
+}
+
+impl Crank {
+    /// The combined sensor (type 121) sends its crank in bytes 0 to 3 and its
+    /// wheel in bytes 4 to 7, on every message. The cadence-only sensor (type
+    /// 122) sends its event in bytes 4 to 7 of every page, and page-specific
+    /// data in bytes 0 to 3. Any other device has no crank.
+    pub fn decode(kind: u8, data: [u8; 8]) -> Option<Self> {
+        let at = match kind {
+            device_type::SPEED_CADENCE => 0,
+            device_type::CADENCE => 4,
+            _ => return None,
+        };
+        Some(Self {
+            event_time: u16::from_le_bytes([data[at], data[at + 1]]),
+            count: u16::from_le_bytes([data[at + 2], data[at + 3]]),
         })
     }
 }
@@ -232,6 +259,33 @@ mod tests {
         }
         assert_eq!(HeartRate::decode([0; 8]).unwrap().bpm, None);
         assert_eq!(HeartRate::decode([255; 8]).unwrap().bpm, Some(255));
+    }
+
+    #[test]
+    fn crank_fields_sit_where_each_sensor_type_puts_them() {
+        let data = [0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0xf0, 0xde];
+        assert_eq!(
+            Crank::decode(device_type::SPEED_CADENCE, data),
+            Some(Crank {
+                event_time: 0x1234,
+                count: 0x5678
+            })
+        );
+        assert_eq!(
+            Crank::decode(device_type::CADENCE, data),
+            Some(Crank {
+                event_time: 0x9abc,
+                count: 0xdef0
+            })
+        );
+        for kind in [
+            device_type::SPEED,
+            device_type::POWER,
+            device_type::HEART_RATE,
+            0,
+        ] {
+            assert_eq!(Crank::decode(kind, data), None);
+        }
     }
 
     #[test]

@@ -544,6 +544,29 @@ fn heart_rate_band_and_eat_and_drink_alerts_sound_and_show() {
 }
 
 #[test]
+fn a_speed_and_cadence_sensor_alone_drives_cadence_and_its_low_alert() {
+    let mut sim = rider();
+    // The power meter is in range but not saved: only the SPD/C crank speaks.
+    sim.pair(&["SPEED/CAD"]);
+    sim.home("SETTINGS");
+    sim.set_option("LOW CADENCE", "60 RPM");
+    sim.press(Button::TopLeft);
+    assert!(sim.on_home(), "{}", sim.screen().text());
+    sim.ride_at(28.0, 0.0, 0.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.expect_field("RPM", "85");
+    sim.expect_no_text("CADENCE LOW");
+    sim.checkpoint("cadence from the speed and cadence sensor");
+    sim.ride_at(28.0, 0.0, 0.0, 55.0);
+    sim.wait_for("CADENCE LOW 55", seconds(30)).unwrap();
+    sim.checkpoint("alert: cadence below the limit");
+    sim.ride_at(28.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(8));
+    sim.expect_field("RPM", "0");
+}
+
+#[test]
 fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
     let mut sim = rider();
     sim.ble_heart_strap(true);

@@ -832,8 +832,9 @@ impl Runtime {
     /// The sensors Home and Ready summarise: the saved ANT sensors, then the
     /// selected BLE sensor. A live ANT heart-rate sensor stands for the role,
     /// as the ride prefers it; with none live the rider is on the BLE strap.
-    /// ANT cadence is never read, so BLE cadence always shows. A failed radio
-    /// has no strap to speak of.
+    /// The ride prefers BLE cadence, so a live ANT cadence sensor (cadence-only
+    /// or combined) stands for the role only while the BLE sensor is not
+    /// connected. A failed radio has no strap to speak of.
     fn glance(&self, now: u64) -> heapless::Vec<Glance, GLANCES> {
         use crate::sensors::ble_profile::{Link, Profile};
         let mut glance = self.menu.glance();
@@ -843,8 +844,12 @@ impl Runtime {
             Profile::Cadence => device_type::CADENCE,
             Profile::Echo => return glance,
         };
-        let ant_serves =
-            kind == device_type::HEART_RATE && glance.iter().any(|g| g.kind == kind && g.live);
+        let ant_serves = ant_stands_for(
+            kind,
+            ble.link == Link::Connected,
+            self.readings.crank_tenths(now).is_some(),
+            &glance,
+        );
         if !matches!(ble.link, Link::Off | Link::Failed) && !ant_serves {
             let battery = ble.battery.map(|battery| battery.status);
             // Cannot fail: the capacity holds every ANT slot and this one.
@@ -1459,6 +1464,28 @@ fn utc_offset(text: &mut Text<38>, offset_s: i64) -> core::fmt::Result {
         (0, 0) => write!(text, "UTC"),
         (hours, 0) => write!(text, "UTC{sign}{hours}"),
         (hours, minutes) => write!(text, "UTC{sign}{hours}:{minutes:02}"),
+    }
+}
+
+/// A live saved ANT sensor serves the role of the BLE sensor of `kind`: heart
+/// rate always, as the ride prefers it; cadence (from a cadence-only or a
+/// combined sensor) only while the BLE sensor is not connected, as the ride
+/// prefers that one, and once that sensor's crank has turned, so a combined
+/// sensor without a cadence magnet hides nothing.
+pub(super) fn ant_stands_for(
+    kind: u8,
+    ble_connected: bool,
+    ant_cadence_turning: bool,
+    glance: &[Glance],
+) -> bool {
+    let live = |kinds: &[u8]| glance.iter().any(|g| g.live && kinds.contains(&g.kind));
+    match kind {
+        device_type::HEART_RATE => live(&[kind]),
+        _ => {
+            !ble_connected
+                && ant_cadence_turning
+                && live(&[device_type::CADENCE, device_type::SPEED_CADENCE])
+        }
     }
 }
 

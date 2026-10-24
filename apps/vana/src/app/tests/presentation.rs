@@ -310,3 +310,30 @@ fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
     assert_eq!(runtime.navigation.settings_field, 1);
     assert!(runtime.navigation.settings_editing);
 }
+
+#[test]
+fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
+    use super::super::presentation::ant_stands_for as stands;
+    use crate::screens::sensors::Glance;
+    use crate::sensors::ant::device_type::{CADENCE, SPEED, SPEED_CADENCE};
+    let ant = |kind, live| Glance::ble(kind, live, None);
+    for kind in [CADENCE, SPEED_CADENCE] {
+        assert!(stands(CADENCE, false, true, &[ant(kind, true)]));
+        assert!(
+            !stands(CADENCE, true, true, &[ant(kind, true)]),
+            "BLE first"
+        );
+        assert!(
+            !stands(CADENCE, false, true, &[ant(kind, false)]),
+            "not live"
+        );
+        assert!(
+            !stands(CADENCE, false, false, &[ant(kind, true)]),
+            "live but never turned, such as a combined sensor without a magnet"
+        );
+    }
+    assert!(!stands(CADENCE, false, true, &[ant(SPEED, true)]));
+    assert!(!stands(CADENCE, false, true, &[]));
+    assert!(stands(HEART_RATE, true, false, &[ant(HEART_RATE, true)]));
+    assert!(!stands(HEART_RATE, false, true, &[ant(CADENCE, true)]));
+}

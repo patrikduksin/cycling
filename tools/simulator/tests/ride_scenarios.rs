@@ -4971,13 +4971,19 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
 /// Rides saved on given days, as internal flash holds them after being
 /// ridden: `(start UTC seconds, minutes, km/h)`, one sample every three seconds.
 fn journal_of_rides(rides: &[(u64, u64, f64)]) -> Vec<u8> {
+    let powered: Vec<_> = rides.iter().map(|&(s, m, k)| (s, m, k, None)).collect();
+    journal_of_powered_rides(&powered)
+}
+
+/// As `journal_of_rides`, with a steady power in watts for rides that had a meter.
+fn journal_of_powered_rides(rides: &[(u64, u64, f64, Option<u16>)]) -> Vec<u8> {
     let mut slots = Vec::new();
     let mut push = |entry: &Entry| {
         let mut slot = encode(entry);
         slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
         slots.extend_from_slice(&slot.0);
     };
-    for (index, &(start_s, minutes, kmh)) in rides.iter().enumerate() {
+    for (index, &(start_s, minutes, kmh, watts)) in rides.iter().enumerate() {
         let id = index as u32 + 1;
         let speed = (kmh / 0.0036) as u32;
         let samples: Vec<Sample> = (1..=minutes * 20)
@@ -4985,6 +4991,7 @@ fn journal_of_rides(rides: &[(u64, u64, f64)]) -> Vec<u8> {
                 active_ms: n * 3_000,
                 utc_ms: Some(start_s * 1000 + n * 3_000),
                 speed_mm_s: Some(speed),
+                power_watts: watts,
                 ..Sample::default()
             })
             .collect();
@@ -5062,6 +5069,39 @@ fn rides_list_opens_on_this_week_and_home_names_its_distance() {
     sim.press(Button::TopLeft);
     sim.press(Button::TopLeft);
     assert!(sim.on_home());
+}
+
+/// The week header adds up the training stress of the rides that had power, at
+/// the FTP now (215 W): a steady hour at FTP is 100, and a ride without a
+/// meter adds nothing and is not shown as zero.
+#[test]
+fn the_week_header_shows_training_stress_from_rides_with_power() {
+    use device_api::storage::{OwnedFlash, Region};
+    const DAY: u64 = 86_400;
+    let monday = 20_745 * DAY;
+    let rides = [
+        (monday - 6 * DAY + 12 * 3600, 50, 22.0, Some(190)),
+        (monday - 2 * DAY + 13 * 3600, 95, 27.0, None),
+        (monday + 10 * 3600 + 30 * 60, 60, 24.0, Some(215)),
+        (monday + DAY + 22 * 3600 + 30 * 60, 70, 26.0, None),
+        (monday + 2 * DAY + 11 * 3600, 30, 28.0, Some(300)),
+    ];
+    let mut sim = Sim::new();
+    sim.device
+        .media
+        .program(Region::Data, 0, &journal_of_powered_rides(&rides))
+        .unwrap();
+    let mut sim = equip(sim.boot());
+    sim.set_gps_clock(15 * 3600, (21, 10, 26));
+    sim.advance(seconds(20));
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    assert_eq!(sim.vana_page(), "history");
+    sim.expect_text("THIS WEEK");
+    sim.expect_text("LAST WEEK");
+    // An hour at 215 W is 100; half an hour at 300 W is 30 min x (300/215)^2.
+    sim.expect_text("TSS 197");
+    sim.checkpoint("the week header shows training stress");
 }
 
 /// The QR code on the panel, read back as a phone camera would.

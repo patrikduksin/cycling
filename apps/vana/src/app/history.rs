@@ -15,6 +15,7 @@ use super::Runtime;
 use super::recording::Medium;
 use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
+use crate::ride::load::Effort;
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
@@ -49,7 +50,9 @@ pub(super) struct History {
     weeks: core::cell::Cell<Option<(WeeksKey, Weeks)>>,
 }
 
-type WeeksKey = (u64, Zone, (usize, Option<u32>), (usize, Option<u32>));
+/// The minute, the zone, the FTP, and each journal's rides, last id and how
+/// many of them the index has read.
+type WeeksKey = (u64, Zone, u16, [(usize, Option<u32>, usize); 2]);
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
 /// only when both start times are known and BULK's is later, so undated rides
@@ -119,6 +122,17 @@ impl Runtime {
             .recorder(medium)
             .summary(newer + index - indexed)
             .copied()
+    }
+
+    /// The power of the `index`-th saved ride of one journal, if the ride index
+    /// has read it and it had power.
+    fn journal_effort(&self, medium: Medium, index: usize) -> Option<Effort> {
+        let (indexed, _) = self.split(medium);
+        if index < indexed {
+            self.indexed(medium)?.effort(index)
+        } else {
+            None
+        }
     }
 
     /// The `n`-th newest saved ride of both journals. Each journal's own
@@ -308,6 +322,8 @@ impl Runtime {
 
     /// This week and last, from the start times, active times and distances
     /// of the saved rides of both journals, or none until the clock is known.
+    /// Training stress comes from the index's rides with power, at the FTP
+    /// now; rides the index has not read yet carry none.
     /// A ride that moved from the MMC onto internal flash is two journal
     /// rides, as the list shows it: their times and distances do not overlap,
     /// so the totals are right, and the ride count counts each part.
@@ -319,13 +335,14 @@ impl Runtime {
                 self.journal_len(medium),
                 last.and_then(|i| self.journal_ride(medium, i))
                     .map(|r| r.ride_id),
+                self.indexed(medium).map_or(0, Journal::len),
             )
         };
         let key = (
             utc_ms / 60_000,
             self.preferences.options.zone,
-            ids(Medium::Internal),
-            ids(Medium::Bulk),
+            self.preferences.profile.ftp_watts,
+            [ids(Medium::Internal), ids(Medium::Bulk)],
         );
         if let Some((cached, weeks)) = self.history.weeks.get()
             && cached == key
@@ -333,12 +350,20 @@ impl Runtime {
             return Some(weeks);
         }
         let zone = self.preferences.options.zone;
+        let ftp = self.preferences.profile.ftp_watts;
         let offset = |utc_s| zone.offset_s(utc_s);
         let mut weeks = Weeks::new(utc_ms, &offset);
         for medium in [Medium::Internal, Medium::Bulk] {
             for index in 0..self.journal_len(medium) {
                 if let Some(ride) = self.journal_ride(medium, index) {
-                    weeks.add(ride.first_utc_ms, ride.active_ms, ride.distance_mm, &offset);
+                    weeks.add_stress(
+                        ride.first_utc_ms,
+                        ride.active_ms,
+                        ride.distance_mm,
+                        self.journal_effort(medium, index)
+                            .and_then(|effort| effort.stress_score(ftp)),
+                        &offset,
+                    );
                 }
             }
         }

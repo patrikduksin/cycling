@@ -4,13 +4,14 @@
 //! a tap opens the ride under the finger. Each card names the ride by its
 //! start (OCT 17  7:12) and says how long, how far and how hard it was.
 //! Above the first cards sits this week at a glance: distance, moving time,
-//! rides, last week's distance and a bar for each day. Scrolled past the
+//! rides, the week's training stress (TSS, from the rides that had power),
+//! last week's distance and a bar for each day. Scrolled past the
 //! first cards, the header gives way to the RIDES headline and a fourth card.
 //! Without a saved ride the screen says how one gets here.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
-    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, RAISED, Rect, SECONDARY, TERTIARY, TITLE,
-    VALUE, WHITE, WIDTH,
+    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, RAISED, Rect, SECONDARY, TERTIARY,
+    TITLE, VALUE, WHITE, WIDTH,
 };
 use super::workout::Text;
 use crate::clock::{Local, civil};
@@ -55,17 +56,20 @@ const PITCH: usize = HEIGHT + 6;
 /// While the focus is on one of the first `HEADED` rides the week header
 /// shows, over that many cards; the rest of the list has the headline.
 pub const HEADED: usize = 3;
-const HEADER_FIRST: usize = CONTENT.top + 100;
+const HEADER_FIRST: usize = CONTENT.top + 111;
 const CAPTION_BASE: usize = CONTENT.top + 16;
 const VALUE_BASE: usize = CONTENT.top + 54;
 const TIME_BASE: usize = CONTENT.top + 73;
-const LAST_BASE: usize = CONTENT.top + 90;
+const STRESS_BASE: usize = CONTENT.top + 87;
+const LAST_BASE: usize = CONTENT.top + 101;
 /// The day bars end on `BARS_BASE`, up to `BARS_HIGH` tall, `BAR_PITCH` apart.
 const BARS_BASE: usize = VALUE_BASE;
 const BARS_HIGH: usize = 30;
 const BAR_WIDE: usize = 10;
 const BAR_PITCH: usize = 14;
 const BARS_LEFT: usize = RIGHT - 4 - (DAYS - 1) * BAR_PITCH - BAR_WIDE;
+/// The most training stress the header names; more reads `9999+`.
+const STRESS_MOST: u32 = 9999;
 /// Every other day is named: the letters are as wide as the bars are apart.
 const DAY_LETTERS: [&[u8]; DAYS] = [b"M", b"", b"W", b"", b"F", b"", b"S"];
 
@@ -306,6 +310,26 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             (weeks.last.distance_mm + 500_000) / 1_000_000
         );
         canvas.caption(last.as_bytes(), RIGHT - left, left, LAST_BASE, Align::Left);
+    }
+    // This week's training stress, from the rides that had power; a week
+    // without any says nothing rather than 0. Its own line, under the time,
+    // so no distance can crowd it out.
+    if let Some(weeks) = known.filter(|weeks| weeks.this.powered > 0) {
+        let mut stress = Text::<16>::new();
+        let _ = if weeks.this.stress > STRESS_MOST {
+            write!(stress, "TSS {STRESS_MOST}+")
+        } else {
+            write!(stress, "TSS {}", weeks.this.stress)
+        };
+        canvas.fit(
+            &[&CAPTION],
+            stress.as_bytes(),
+            BARS_LEFT - left - 8,
+            left,
+            STRESS_BASE,
+            Align::Left,
+            POWER,
+        );
     }
     // One bar a day, Monday first: dark stubs for days without a ride, white
     // for ridden days (blue for today), tall in proportion to the most.
@@ -551,5 +575,34 @@ mod tests {
         );
         list.weeks = Some(big);
         prepare(&list).assert_laid_out(bounds(), &["THIS WEEK", "1234.5"], "big");
+    }
+
+    #[test]
+    fn training_stress_shows_only_for_a_week_with_power() {
+        let mut list = list(ROWS, 0);
+        list.weeks = Some(week());
+        assert!(!prepare(&list).shows("TSS"));
+        let zone = |_| -3 * 3600;
+        let tuesday = (20_746 * 86_400 + 15 * 3600) * 1000;
+        let last_week = tuesday - 7 * 86_400_000;
+        // Three- and four-digit last-week distances with three- to
+        // five-digit stress: none is cut and none overlaps.
+        for (km, stress, shown) in [
+            (84u64, 87, "TSS 87"),
+            (123, 456, "TSS 456"),
+            (1234, 1234, "TSS 1234"),
+            (1234, 9999, "TSS 9999"),
+            (1234, u32::MAX, "TSS 9999+"),
+        ] {
+            let mut weeks = week();
+            weeks.last = Default::default();
+            weeks.add(Some(last_week), 1, Some(km * 1_000_000), &zone);
+            weeks.add_stress(Some(tuesday), 1, Some(1), Some(stress), &zone);
+            list.weeks = Some(weeks);
+            let canvas = prepare(&list);
+            let last = std::format!("LAST WEEK {km} KM");
+            assert!(canvas.shows(shown), "{shown}");
+            canvas.assert_laid_out(bounds(), &[&last, shown, "THIS WEEK"], "stress");
+        }
     }
 }

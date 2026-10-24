@@ -180,6 +180,9 @@ corners; each screen's layout test checks it.
 
 ## Cells
 
+The back-to-start page adds a `CAPTION` line under its pad, centred: `SUNSET 19:42`
+in `SECONDARY` (local time, 24-hour), or `DARK` in `WHITE` once the sun is down;
+nothing when position or time is unknown. A toast covers it while one shows.
 The stats, lap, climb and back-to-start pages list readings in cells: a `CAPTION` in
 `SECONDARY` over its value in `VALUE`, in the metric's colour. Cells sit in two
 columns from the body's 10 px margin, 48 px apart, so each caption has 7 clear
@@ -263,7 +266,11 @@ Only one toast shows at a time. From highest priority to lowest:
    radar count names each new vehicle behind, 2 VEHICLES (`Warn`, no cue: the
    approach alarm already sounds), and ALL CLEAR (`Good`) follows 2 s after the
    last one passed. All are off by default except the radar count. Limits
-   and reminders keep 3 s apart; radar alerts never wait.
+   and reminders keep 3 s apart; radar alerts never wait. The sunset alert
+   (Settings ALERTS, SUNSET, on by default) is `Warn` with the band cue:
+   SUNSET IN 30 MIN once, and SUNSET - LIGHTS ON once when the sun sets
+   mid-ride (the font is ASCII, so a dash stands for a dot). Details in
+   [ux-flows](ux-flows.md#sunset).
 4. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
    hidden: the only one item 5 may replace is the bulk failure that moved

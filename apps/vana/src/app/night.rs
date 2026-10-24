@@ -9,7 +9,7 @@
 //! brightness stays as it was.
 use super::Runtime;
 use super::preferences::Daylight;
-use crate::daylight::{night_at, night_by_clock, sun_altitude};
+use crate::daylight::{Sun, night_at, night_by_clock, sun_altitude, sun_state};
 use device_api::display::Display;
 use device_api::gps::FixState;
 use device_api::input::InputSource;
@@ -25,6 +25,8 @@ const STEP_PERCENT: u8 = 4;
 const STEP_MS: u64 = 100;
 /// How often automatic mode looks at the sun again.
 const CHECK_MS: u64 = 10_000;
+/// How often the sunset is worked out again (about sixty sun altitudes).
+const SUN_MS: u64 = 60_000;
 /// The clock VANA shows is UTC-3 (Santiago summer time) in this build.
 const LOCAL_OFFSET_S: u64 = 3 * 3600;
 
@@ -40,6 +42,9 @@ pub(super) struct Night {
     /// The time of day of the last fresh fix, carried on by uptime: the
     /// fallback when no UTC is recorded.
     clock: Option<Clock>,
+    /// The sun as last worked out, the Unix time it was for and the uptime.
+    sun: Option<(Sun, i64, u64)>,
+    next_sun_ms: u64,
 }
 
 /// A receiver time of day and the uptime it was read at.
@@ -66,6 +71,8 @@ impl Default for Night {
             next_step_ms: 0,
             place: None,
             clock: None,
+            sun: None,
+            next_sun_ms: 0,
         }
     }
 }
@@ -83,6 +90,29 @@ pub(super) struct Sky {
 impl Night {
     pub(super) fn is_night(&self) -> bool {
         self.night
+    }
+
+    /// Work out the sun's state at the last fixed place for `unix` (UTC,
+    /// dated), at most once a minute, or at once when the sunset it knows
+    /// has passed. Without a place or a date nothing is known.
+    pub(super) fn watch_sun(&mut self, unix: Option<i64>, now: u64) {
+        let (Some(unix), Some((latitude, longitude))) = (unix, self.place) else {
+            self.sun = None;
+            return;
+        };
+        let passed = matches!(self.sun, Some((Sun::Up { sets_at }, ..)) if sets_at <= unix);
+        if self.sun.is_some() && now < self.next_sun_ms && !passed {
+            return;
+        }
+        self.next_sun_ms = now.saturating_add(SUN_MS);
+        self.sun = Some((sun_state(unix, latitude, longitude), unix, now));
+    }
+
+    /// The sun's state and the Unix time now, carried on from the last
+    /// working out; `None` when position or date is unknown.
+    pub(super) fn sun(&self, now: u64) -> Option<(Sun, i64)> {
+        let (sun, unix, at_ms) = self.sun?;
+        Some((sun, unix + (now.saturating_sub(at_ms) / 1000) as i64))
     }
 
     /// Decide day or night for `mode` under `sky`. Automatic mode looks
@@ -177,6 +207,7 @@ impl Runtime {
         let utc_of_day = unix
             .or_else(|| self.night.clock.map(|clock| clock.at(now)))
             .map(|seconds| seconds.rem_euclid(86_400) as u64);
+        self.night.watch_sun(unix, now);
         let was = self.night.is_night();
         let sky = Sky {
             place,

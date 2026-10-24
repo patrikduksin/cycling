@@ -34,7 +34,7 @@ mod zones;
 
 pub(super) use zones::{Marks, marks};
 
-pub use back::{Arrow, Back};
+pub use back::{Arrow, Back, Light};
 pub use climb::Frame as ClimbFrame;
 pub use lap::{LapBar, LapBars};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};

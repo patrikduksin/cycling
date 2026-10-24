@@ -30,6 +30,7 @@ pub enum Row {
     RadarAlerts,
     FuelAlert,
     CadenceLow,
+    SunsetAlert,
     HeartHigh,
     HeartLow,
     PowerHigh,
@@ -73,7 +74,12 @@ pub const SECTIONS: [(&str, &[Row]); 7] = [
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
-        &[Row::RadarAlerts, Row::FuelAlert, Row::CadenceLow],
+        &[
+            Row::RadarAlerts,
+            Row::FuelAlert,
+            Row::CadenceLow,
+            Row::SunsetAlert,
+        ],
     ),
     (
         "LIMITS",
@@ -137,6 +143,7 @@ impl Row {
             Self::RadarAlerts => "RADAR COUNT",
             Self::FuelAlert => "EAT AND DRINK",
             Self::CadenceLow => "LOW CADENCE",
+            Self::SunsetAlert => "SUNSET",
             Self::HeartHigh => "HR ABOVE",
             Self::HeartLow => "HR BELOW",
             Self::PowerHigh => "POWER ABOVE",
@@ -169,6 +176,7 @@ impl Row {
             | Self::RadarAlerts
             | Self::FuelAlert
             | Self::CadenceLow
+            | Self::SunsetAlert
             | Self::HeartHigh
             | Self::HeartLow
             | Self::PowerHigh

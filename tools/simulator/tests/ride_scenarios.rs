@@ -4409,3 +4409,78 @@ fn back_to_start_points_home_and_follows_the_track_back() {
     sim.expect_text("FOLLOW TRACK BACK");
     sim.stop_ride();
 }
+
+/// Riding into dusk in Santiago on 14 October 2026 (sunset 19:55 local,
+/// 22:55 UTC): the back-to-start page says when the light ends, a toast warns
+/// half an hour ahead and again at sunset, each once, and once dark it says so.
+#[test]
+fn riding_into_dusk_warns_before_sunset_and_again_at_sunset() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.set_gps_clock(22 * 3600 + 10 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.expect_no_text("SUNSET IN");
+    // The way home says when the light ends: 22:55 UTC is 19:55 here.
+    sim.swipe_previous();
+    sim.expect_text("BACK TO START");
+    let caption = sim.screen().text();
+    assert!(
+        caption.contains("SUNSET 19:54") || caption.contains("SUNSET 19:55"),
+        "{caption}"
+    );
+    sim.checkpoint("back to start with the sunset time");
+    sim.swipe_next();
+    let latency = sim.wait_for("SUNSET IN 30 MIN", minutes(20)).unwrap();
+    // About 22:25 UTC: 15 minutes in, less the two spent already.
+    assert!(
+        (minutes(11)..=minutes(14)).contains(&latency),
+        "warned after {latency} ms"
+    );
+    sim.advance(seconds(1));
+    let ids = played_since(&sim, 0);
+    assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
+    sim.checkpoint("toast: sunset in 30 minutes");
+    // Once: nothing more until the sun sets.
+    sim.advance(seconds(30));
+    sim.expect_no_text("SUNSET IN");
+    sim.wait_for("LIGHTS ON", minutes(40)).unwrap();
+    sim.checkpoint("toast: sunset, lights on");
+    sim.advance(minutes(5));
+    sim.expect_no_text("LIGHTS ON");
+    sim.swipe_previous();
+    sim.expect_text("BACK TO START");
+    sim.expect_text("DARK");
+    sim.checkpoint("back to start after sunset");
+}
+
+/// A ride that starts in the dark has no sunset to warn of, and turning the
+/// SUNSET setting off silences the warning.
+#[test]
+fn no_sunset_alert_when_off_or_when_the_ride_starts_after_dark() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.home("SETTINGS");
+    sim.set_option("SUNSET", "OFF");
+    sim.checkpoint("sunset alert off in Settings");
+    sim.press(Button::TopLeft);
+    sim.set_gps_clock(22 * 3600 + 10 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(minutes(60));
+    sim.expect_no_text("SUNSET IN");
+    sim.expect_no_text("LIGHTS ON");
+
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.set_gps_clock(23 * 3600 + 30 * 60, (14, 10, 26));
+    sim.advance(seconds(15));
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(minutes(10));
+    sim.expect_no_text("SUNSET IN");
+    sim.expect_no_text("LIGHTS ON");
+}

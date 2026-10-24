@@ -3,6 +3,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::night::NIGHT_PERCENT;
 use super::recording::{Medium, Request, RideMessage};
+use crate::daylight::Sun;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::log::Status;
@@ -354,6 +355,12 @@ impl Runtime {
         self.workout_cue();
         let radar = self.readings.radar.snapshot(now);
         let settings = self.alert_settings();
+        let sunset = self.alerts.sunset(
+            self.preferences.options.sunset_alert,
+            self.ride.active().status(),
+            self.navigation.page == Page::Ride,
+            self.night.sun(now),
+        );
         let alert = self.alerts.update(
             now,
             &settings,
@@ -366,7 +373,7 @@ impl Runtime {
             if self.readings.radar_alert.update(radar, now) {
                 self.cue(Cue::RadarApproach, now);
             }
-            if let Some(alert) = alert {
+            if let Some(alert) = alert.or(sunset) {
                 self.ride_alert(alert, now);
             }
         }
@@ -378,6 +385,7 @@ impl Runtime {
         let tone = match alert {
             Alert::Fuel => Tone::Info,
             Alert::RadarClear => Tone::Good,
+            Alert::SunsetSoon | Alert::SunsetNow => Tone::Warn,
             _ => Tone::Warn,
         };
         self.navigation
@@ -386,6 +394,7 @@ impl Runtime {
             Some(AlertSound::Band) => Cue::BandAlert,
             Some(AlertSound::Fuel) => Cue::Fuel,
             Some(AlertSound::RadarClear) => Cue::RadarClear,
+            Some(AlertSound::Sunset) => Cue::BandAlert,
             None => return,
         };
         self.cue(cue, now);
@@ -550,6 +559,14 @@ impl Runtime {
         }
         if view.ride_page == RidePage::Back {
             view.back = super::back::view_of(&self.back);
+            view.light = match self.night.sun(now) {
+                Some((Sun::Up { sets_at }, _)) => crate::screens::ride::Light::SetsAt(
+                    (sets_at - crate::screens::workout::UTC_OFFSET_S as i64).rem_euclid(86_400)
+                        as u32,
+                ),
+                Some((Sun::Down, _)) => crate::screens::ride::Light::Dark,
+                _ => crate::screens::ride::Light::Unknown,
+            };
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -1037,6 +1054,10 @@ impl Runtime {
             Row::RadarAlerts => {
                 let _ = write!(note, "APPROACH ALARM STAYS ON");
                 write!(value, "{}", on(self.alert_settings().radar))
+            }
+            Row::SunsetAlert => {
+                let _ = write!(note, "30 MIN BEFORE AND AT");
+                write!(value, "{}", on(options.sunset_alert))
             }
             Row::FuelAlert => match self.alert_settings().fuel_every_min {
                 0 => write!(value, "OFF"),

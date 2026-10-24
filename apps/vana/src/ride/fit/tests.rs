@@ -266,6 +266,20 @@ fn other_rides_invalid_slots_and_missing_readings_are_skipped() {
 }
 
 #[test]
+fn an_impossible_cadence_exports_as_the_highest_one() {
+    let mut fast = sample(1_000, true);
+    fast.cadence_tenths = Some(u16::MAX);
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &[fast]).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 1_000)),
+    ];
+    let (_, bytes) = file(&slots, None).unwrap();
+    let record = decode(&bytes).into_iter().find(|m| m.global == 20).unwrap();
+    assert_eq!(record.get(4), Some(254));
+}
+
+#[test]
 fn an_empty_ride_is_refused() {
     let slots = [
         slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),

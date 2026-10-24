@@ -95,6 +95,17 @@ def reopen(port, directory, label, deadline=20):
 
 
 WAKE_TIMEOUT_S = 60
+POWER_SETTLE_TIMEOUT_S = 30
+
+
+def settled_power(connection):
+    """POWER once it has left startup: Initializing, then Quiescing on the way to charging standby."""
+    deadline = time.monotonic() + POWER_SETTLE_TIMEOUT_S
+    while re.search(r'state: (Initializing|Quiescing)\b', power := expect(connection, 'POWER', 'OK')['data']):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f'power state did not settle in {POWER_SETTLE_TIMEOUT_S} s: {power}')
+        time.sleep(0.5)
+    return power
 
 
 def wake_to_power_on(connection, port, directory):
@@ -143,7 +154,7 @@ def power_cycle(port, directory):
     time.sleep(5)
     connection = reopen(port, directory, 'power-on', 180)
     system = read(connection, 'STATUS')
-    if system['reset'] == 'software' and 'state: Charging' in expect(connection, 'POWER', 'OK')['data']:
+    if system['reset'] == 'software' and 'state: Charging' in settled_power(connection):
         connection, system = wake_to_power_on(connection, port, directory)
     if system['reset'] != 'power' or system['crash'] != 'none':
         raise AssertionError(f'expected a power-on reset without a crash marker, got {system}')

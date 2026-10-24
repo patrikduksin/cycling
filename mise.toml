@@ -27,6 +27,10 @@ run = ["cargo test --workspace --locked --no-default-features", "cargo test -p s
 description = "Device tool and terrain tests, spread over worker processes"
 run = ["{{vars.devtools}} pytest -q -n auto --maxprocesses=8 tools/devtools", "{{vars.terrain}} pytest -q tools/terrain"]
 
+[tasks.stack-frames]
+description = "Report a firmware ELF's largest stack frames against devices/c606/stack-frames.toml; --suggest prints new budgets"
+run = "{{vars.devtools}} python -m cycling_devtools.stack_frames"
+
 [tasks.verify]
 description = "Run every PR gate in parallel (test, check, simulate, 4 builds, harness-virtual); --fast for the inner loop, --pr N to post results"
 run = "{{vars.devtools}} python -m cycling_devtools.verify"

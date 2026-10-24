@@ -27,6 +27,10 @@ case "${CYCLING_BULK_MAINTENANCE:-0}" in
   *) echo "CYCLING_BULK_MAINTENANCE must be 0 or 1." >&2; exit 1 ;;
 esac
 echo "Building with USB test harness=${CYCLING_HARNESS:-1}"
+variant="sdk${CYCLING_SDK:-0}-h${CYCLING_HARNESS:-1}"
+if [[ "${CYCLING_BULK_MAINTENANCE:-0}" == 1 ]]; then
+  variant="$variant-maint"
+fi
 mkdir -p .local "$image_dir"
 export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bin:$PATH"
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
@@ -54,6 +58,11 @@ if (( stack_bytes < min_stack_bytes )); then
   echo "The main stack region is below its budget: internal DRAM statics grew by $((min_stack_bytes - stack_bytes)) bytes too many." >&2
   exit 1
 fi
+# The region's size says nothing of what one frame takes from it (#205 found
+# a 30 KB console frame). Each heavy frame has a budget in stack-frames.toml;
+# a frame past its budget fails the build, naming the function.
+uv run --project tools/devtools --locked python -m cycling_devtools.stack_frames "$elf" \
+  --variant "$variant" --report "$image_dir/stack-frames.md"
 espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb \
   --partition-table devices/c606/partitions.csv --target-app-partition ota_1 \
   "$elf" "$image_dir/cycling.bin"
@@ -63,10 +72,6 @@ cp "$elf" "$image_dir/cycling.elf"
 # the primary checkout's .local so every worktree's builds are found
 # (mise run backtrace). Written under a temporary name, then moved, so
 # parallel builds never leave a torn file; the newest 24 are kept.
-variant="sdk${CYCLING_SDK:-0}-h${CYCLING_HARNESS:-1}"
-if [[ "${CYCLING_BULK_MAINTENANCE:-0}" == 1 ]]; then
-  variant="$variant-maint"
-fi
 suffix=""
 if [[ "$CYCLING_BUILD_DIRTY" == 1 ]]; then
   suffix="-dirty"

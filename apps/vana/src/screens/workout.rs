@@ -101,6 +101,8 @@ pub struct View<'a> {
     pub ride_page: RidePage,
     /// The optional ride pages the rider left on, for the page dots.
     pub ride_pages: ride::PageChoice,
+    /// The readings on the main page's lower line.
+    pub main_slots: ride::slots::Slots,
     /// Climbs and the elevation profile; only the climb page reads them.
     pub climbs: Climbs,
     /// The road ahead from the map, borrowed: it is 1 KB and main's stack
@@ -200,6 +202,7 @@ impl View<'_> {
             previous_lap: None,
             ride_page: RidePage::Main,
             ride_pages: ride::PageChoice::default(),
+            main_slots: ride::slots::Slots::default(),
             climbs: Climbs::default(),
             forecast: &Forecast::NONE,
             lap_bars: ride::LapBars::new(),

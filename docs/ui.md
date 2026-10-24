@@ -403,7 +403,7 @@ totals and alerts use readings as they arrive. The mechanism is
 ## Settings
 
 Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
+bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
 headline and at most four rows. A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
 `SECONDARY` at the right of the value line. A note that does not fit whole is
@@ -421,7 +421,7 @@ Acting on a row does one of three things:
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
-  km/at start, wheel mode auto/manual, ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
+  km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS) or a flow (PHONE, a placeholder until the
   phone companion lands).
 
@@ -455,6 +455,18 @@ starts them over. A failed clear says CLEAR FAILED in a toast.
 On the ride summary, a new best has the reading's metric colour and `BEST` in
 its caption: BEST TIME and BEST KM (`SPEED`), BEST ASC M (`GRADE`) on page 1,
 and a `POWER` `BEST` caption under each new best-power bar on page 3.
+
+MAIN PAGE has two rows, LOWER LEFT and LOWER RIGHT, one for each reading on the
+main page's last line. Each steps through CADENCE, DISTANCE, NP, AVG POWER,
+AVG HR, AVG SPEED, KCAL, WORK and ASCENT, and wraps. CADENCE on the left and
+DISTANCE on the right are the defaults, and draw the page exactly as it was.
+The unit beside the value names the reading: RPM, KM, NP, KCAL, KJ or M. The
+three averages share the unit AVG, because the half-width slot has no room for
+more, and their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count
+past 9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
+reading with no data yet shows `--`. The choice is the last two bytes of VANA's
+preference record from version 8 (`app::preferences`); older records load with
+the defaults.
 
 RIDE PAGES (STATS, LAP, CLIMB) and MORE PAGES (MAP, BACK TO START) list one row per optional ride page; five rows do not fit one section above the save status. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE

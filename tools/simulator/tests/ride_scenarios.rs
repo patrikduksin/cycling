@@ -1852,7 +1852,7 @@ fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
 /// Turn the named ride pages off in Settings, then go back Home.
 fn hide_ride_pages(sim: &mut Sim, pages: &[&str]) {
     sim.home("SETTINGS");
-    for _ in 0..5 {
+    for _ in 0..6 {
         sim.swipe_next();
     }
     sim.expect_text("RIDE PAGES");
@@ -1871,6 +1871,63 @@ fn hide_ride_pages(sim: &mut Sim, pages: &[&str]) {
         sim.press(Button::BottomLeft);
     }
     go_home(sim);
+}
+
+#[test]
+fn chosen_main_page_readings_show_on_the_ride_and_survive_a_reboot() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(seconds(5));
+    sim.expect_field("RPM", "90");
+    sim.expect_text("KM");
+    sim.checkpoint("main page with the default readings");
+    sim.stop_ride();
+    sim.press(Button::BottomLeft);
+    go_home(&mut sim);
+
+    sim.home("SETTINGS");
+    for _ in 0..5 {
+        sim.swipe_next();
+    }
+    sim.expect_text("MAIN PAGE");
+    sim.expect_field("LOWER LEFT", "CADENCE");
+    sim.expect_field("LOWER RIGHT", "DISTANCE");
+    sim.checkpoint("settings: main page readings at their defaults");
+    sim.set_option("LOWER LEFT", "KCAL");
+    sim.set_option("LOWER RIGHT", "NP");
+    sim.checkpoint("settings: KCAL and NP chosen");
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(minutes(10));
+    sim.expect_field("KCAL", "120");
+    sim.expect_field("NP", "200");
+    sim.expect_no_text("RPM");
+    sim.checkpoint("main page showing KCAL and NP");
+    sim.stop_ride();
+    sim.press(Button::BottomLeft);
+    go_home(&mut sim);
+
+    sim.power_loss();
+    assert!(sim.command("PROFILE").1.contains("stored=current"));
+    sim.home("SETTINGS");
+    for _ in 0..5 {
+        sim.swipe_next();
+    }
+    sim.expect_field("LOWER LEFT", "KCAL");
+    sim.expect_field("LOWER RIGHT", "NP");
+    go_home(&mut sim);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(minutes(2));
+    sim.expect_text("KCAL");
+    sim.expect_text("NP");
+    sim.expect_no_text("RPM");
+    sim.checkpoint("main page after a reboot still showing KCAL and NP");
 }
 
 #[test]

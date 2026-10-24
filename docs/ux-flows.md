@@ -139,6 +139,14 @@ was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
 The map draws the same breadcrumb as BACK TO START (below), so a very long
 ride shows its bends thinned and a far-off start is a small dot.
 
+### Choosing the main page's readings
+
+Settings has a MAIN PAGE section with LOWER LEFT and LOWER RIGHT, the two readings
+on the main page's last line. They start as CADENCE and DISTANCE. A rider without
+a cadence sensor can swap CADENCE for KCAL, NP, AVG HR, AVG SPEED, AVG POWER, WORK
+or ASCENT, and the page shows `--` for one that has no data yet. The choice is read
+when the ride screen opens, applies to every ride and survives a reboot.
+
 ### Choosing the ride pages
 
 Settings has RIDE PAGES and MORE PAGES sections with an ON or OFF row for each page a rider

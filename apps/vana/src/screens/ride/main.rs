@@ -1,13 +1,14 @@
 //! The main ride page, stacked like a workout view: elapsed time and grade,
 //! then speed as the hero number, power and heart rate with zone gauges,
-//! then cadence and distance. Each value has its signature colour and a
+//! then two readings the rider chose, cadence and distance by default. Each value has its signature colour and a
 //! small unit beside it; there are no boxes or dividers. During a workout a
 //! white bar under the power (or heart-rate) gauge spans the step's target.
+use super::slots::Reading;
 use super::zones::GAUGE_WIDTH;
-use super::{BODY, Labels, Smooth, Text, elapsed, kilometres, speed, whole};
+use super::{BODY, Labels, Smooth, Text, elapsed, speed, whole};
 use crate::screens::chrome::{
-    Align, BLACK, BODY as BODY_FACE, CADENCE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line,
-    POWER, Rect, Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
+    Align, BLACK, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line, POWER, Rect,
+    Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
 };
 use crate::screens::workout::View;
 use core::fmt::Write;
@@ -184,26 +185,44 @@ pub(super) fn prepare(view: &View) -> Smooth {
         let _ = labels.push(zone);
     }
 
-    // Cadence and distance split the last line between them.
+    let [left, right] = [view.main_slots.left, view.main_slots.right];
+    let mut shown = [Text::new(), Text::new()];
+    for (reading, text) in [left, right].into_iter().zip(&mut shown) {
+        reading.write(view, text);
+    }
+    lower(labels, [left, right], &shown);
+    smooth
+}
+
+/// The last line: the chosen readings split it between them, the first
+/// from the left edge and the second from the right.
+fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2]) {
     let middle = (LEFT + RIGHT) / 2;
     let base = baseline(&VALUE, LOWER_TOP);
     let faces: [&Face; 2] = [&VALUE, &BODY_FACE];
-    let rpm = value(&|v| whole(v, sample.cadence_tenths.map(|t| (t + 5) / 10)));
+    let [left, right] = readings;
     let span = (LEFT, middle - GAP / 2);
     reading(
         labels,
         &faces,
-        &rpm,
-        b"RPM",
+        &values[0],
+        left.unit(),
         span,
         base,
         Align::Left,
-        CADENCE,
+        left.color(),
     );
-    let km = value(&|v| kilometres(v, view.totals.distance_mm()));
     let span = (middle + GAP / 2, RIGHT);
-    reading(labels, &faces, &km, b"KM", span, base, Align::Right, WHITE);
-    smooth
+    reading(
+        labels,
+        &faces,
+        &values[1],
+        right.unit(),
+        span,
+        base,
+        Align::Right,
+        right.color(),
+    );
 }
 
 /// Where a reading falls on gauge `i`: the zone it is in, and the share of
@@ -344,6 +363,8 @@ mod tests {
     use super::*;
     use crate::ride::log::{Sample, Status};
     use crate::screens::chrome::layout::{assert_apart, assert_shown, text};
+    use crate::screens::ride::kilometres;
+    use crate::screens::ride::slots::Slots;
     use crate::screens::workout::Page;
     use std::string::String;
     use std::vec::Vec;
@@ -494,6 +515,77 @@ mod tests {
             vary(&|c| c.state = v);
         }
         cases
+    }
+
+    /// The widest value each reading can plausibly take, by stored id: a
+    /// 5 digit total, a 1999 W reading, 220 bpm, 120 km/h, 29 999 m of climb.
+    const WIDEST_VALUES: [&str; 9] = [
+        "180", "1000.0", "1999", "1999", "220", "120.0", "99K", "99999", "29999",
+    ];
+
+    /// Every reading in either slot, against every reading in the other, at
+    /// its widest value, keeps its value whole and clear of its neighbours.
+    #[test]
+    fn every_reading_fits_either_slot_at_its_widest_value() {
+        let bounds = Rect {
+            left: BODY.left,
+            top: BODY.top,
+            right: BODY.right,
+            bottom: BODY.bottom,
+        };
+        for left in Reading::ALL {
+            for right in Reading::ALL {
+                let mut labels = Labels::new();
+                let mut texts = [Text::<12>::new(), Text::new()];
+                for (reading, text) in [left, right].into_iter().zip(&mut texts) {
+                    let _ = text.push_str(WIDEST_VALUES[usize::from(reading.id())]);
+                }
+                lower(&mut labels, [left, right], &texts);
+                let items: Vec<_> = labels.iter().filter_map(text).collect();
+                let what = std::format!("{} | {}", left.name(), right.name());
+                assert_apart(&items, bounds, &what);
+                let units = [
+                    core::str::from_utf8(left.unit()).unwrap(),
+                    core::str::from_utf8(right.unit()).unwrap(),
+                ];
+                let want = [
+                    WIDEST_VALUES[usize::from(left.id())],
+                    WIDEST_VALUES[usize::from(right.id())],
+                    units[0],
+                    units[1],
+                ];
+                assert_shown(&items, &want, &what);
+            }
+        }
+    }
+
+    /// The defaults draw the cadence and the distance, as the page always did.
+    #[test]
+    fn the_default_slots_show_cadence_then_distance() {
+        let view = view(WIDEST);
+        assert_eq!(view.main_slots, Slots::default());
+        let items = items(&view);
+        let at = |name: &str| items.iter().find(|(n, _)| n == name).unwrap().1;
+        assert!(at("RPM").right < at("KM").left);
+    }
+
+    /// Chosen readings replace the defaults, with the totals' own values.
+    #[test]
+    fn chosen_readings_show_their_values_and_units() {
+        let mut view = view(WIDEST);
+        view.main_slots = Slots {
+            left: Reading::AvgSpeed,
+            right: Reading::Ascent,
+        };
+        view.prepare();
+        let items = items(&view);
+        let names: Vec<&str> = items.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"AVG") && names.contains(&"M"), "{names:?}");
+        assert!(
+            !names.contains(&"RPM") && !names.contains(&"KM"),
+            "{names:?}"
+        );
+        assert!(names.contains(&"120.0"), "{names:?}");
     }
 
     /// A unit follows the ink of its value: "--" keeps it as close as a

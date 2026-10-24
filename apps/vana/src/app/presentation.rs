@@ -659,6 +659,7 @@ impl Runtime {
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
         view.ride_pages = self.preferences.options.ride_pages;
+        view.main_slots = self.preferences.options.main_slots;
         view.totals = self.ride.totals;
         view.lap = self.ride.laps.current();
         view.previous_lap = self.ride.laps.previous();
@@ -1336,6 +1337,8 @@ impl Runtime {
                     }
                 )
             }
+            Row::MainLeft => write!(value, "{}", options.main_slots.left.name()),
+            Row::MainRight => write!(value, "{}", options.main_slots.right.name()),
             Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap | Row::PageBack => {
                 let shown = row
                     .ride_page()

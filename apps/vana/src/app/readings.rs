@@ -252,7 +252,7 @@ impl Readings {
 
     /// The ANT+ cadence sensor's cadence in tenths of rpm: the cadence-only
     /// sensor first, then the combined one.
-    fn crank_tenths(&self, now: u64) -> Option<u16> {
+    pub(super) fn crank_tenths(&self, now: u64) -> Option<u16> {
         self.crank
             .tenths(now)
             .or_else(|| self.combined_crank.tenths(now))

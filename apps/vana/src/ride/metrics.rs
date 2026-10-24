@@ -1,5 +1,6 @@
 //! Cycling speed, distance and gradient policy. Training zones live in `zones`.
 use crate::sensors::ant::{Crank, Epoch};
+use crate::sensors::ble_profile::CrankCadence;
 use device_api::ant::Packet;
 
 /// The circumference assumed until the rider or the calibration says
@@ -32,8 +33,8 @@ const CADENCE_SILENT_MS: u64 = 3000;
 /// A crank that has turned and then sends the same revolution this long
 /// is stopped.
 const CRANK_STOPPED_MS: u64 = 4000;
-/// Cadences above this (300 rpm) are decoding noise.
-const MAX_CADENCE_TENTHS: u64 = 3000;
+/// Cadences above this are decoding noise; the BLE sensor's cap.
+const MAX_CADENCE_TENTHS: u64 = CrankCadence::MAX_TENTHS as u64;
 
 /// Crank cadence from the revolutions of an ANT+ cadence sensor. The caller
 /// resets it when the channel session restarts.
@@ -41,10 +42,12 @@ const MAX_CADENCE_TENTHS: u64 = 3000;
 pub struct Cadence {
     previous: Option<Revolution>,
     tenths: Option<u16>,
-    /// A revolution has been measured this session. A crank that never turns,
+    /// A new revolution has arrived this session. A crank that never turns,
     /// such as a combined sensor without its cadence magnet, says nothing
     /// rather than zero.
     turned: bool,
+    /// `previous` is a revolution seen arriving, not the sensor's first message.
+    anchored: bool,
     received: u64,
 }
 
@@ -61,29 +64,30 @@ impl Cadence {
         };
         self.received = received_ms;
         let Some(previous) = self.previous else {
+            // A sensor's first message repeats its last revolution, which may
+            // be minutes old: a reference for nothing until a new one arrives.
             self.previous = Some(current);
             return;
         };
         let dt = current.event_time.wrapping_sub(previous.event_time);
         let dr = current.count.wrapping_sub(previous.count);
-        let age_ms = received_ms.saturating_sub(previous.received_ms);
-        if age_ms > REVOLUTION_EXPIRED_MS {
-            // The event time may have wrapped, so the pair measures nothing.
-            if dt == 0 && dr == 0 {
-                self.tenths = self.turned.then_some(0);
-            } else {
-                self.previous = Some(current);
-                self.tenths = None;
-            }
+        // Only a real event counts; a repeat or a stray count does not.
+        if dt == 0 || dr == 0 {
             return;
         }
-        // Only a real event counts; a repeat or a stray count does not.
-        if dt != 0 && dr != 0 {
+        let age_ms = received_ms.saturating_sub(previous.received_ms);
+        let measurable = self.anchored && age_ms <= CRANK_STOPPED_MS;
+        self.tenths = if measurable {
             let tenths = u64::from(dr) * 614_400 / u64::from(dt);
-            self.tenths = (tenths <= MAX_CADENCE_TENTHS).then_some(tenths as u16);
-            self.turned = true;
-            self.previous = Some(current);
-        }
+            (tenths <= MAX_CADENCE_TENTHS).then_some(tenths as u16)
+        } else {
+            // Spanning a stop or the session start would average the rest in
+            // with the stroke: anchor here, and keep zero if it had turned.
+            self.turned.then_some(0)
+        };
+        self.anchored = true;
+        self.turned = true;
+        self.previous = Some(current);
     }
 
     /// Cadence in tenths of rpm. A crank that has turned and sends no new
@@ -419,7 +423,9 @@ mod tests {
                 cadence.receive(crank.packet(now - start), now);
                 let measured = cadence.tenths(now);
                 let since = now - start;
-                if since > 3_000 && since < crank.stops_at_ms {
+                // The first message and the first stroke only anchor.
+                let settled = 3 * 60_000 / crank.rpm + 1_000;
+                if since > settled && since < crank.stops_at_ms {
                     let want = crank.rpm * 10;
                     let got = u64::from(measured.expect("a turning crank reads"));
                     assert!(
@@ -487,6 +493,49 @@ mod tests {
         assert_eq!(cadence.tenths(25_700), Some(899));
         cadence.reset();
         assert_eq!(cadence.tenths(25_700), None);
+    }
+
+    #[test]
+    fn the_first_stroke_after_a_stop_or_at_connection_is_not_an_average_of_the_rest() {
+        let at = |event_time: u16, count: u16| Crank { event_time, count };
+        // 90 rpm, a 20 s coast, one stroke: zero, not 3 rpm.
+        let mut cadence = Cadence::default();
+        cadence.receive(at(1000, 10), 0);
+        cadence.receive(at(1683, 11), 667);
+        cadence.receive(at(2366, 12), 1334);
+        assert_eq!(cadence.tenths(1334), Some(899));
+        for step in 1..=80u64 {
+            cadence.receive(at(2366, 12), 1334 + step * 250);
+        }
+        assert_eq!(cadence.tenths(21_334), Some(0));
+        cadence.receive(at(2366 + 20_480, 13), 21_500);
+        assert_eq!(cadence.tenths(21_500), Some(0), "anchored, not measured");
+        cadence.receive(at(2366 + 20_480 + 683, 14), 22_167);
+        assert_eq!(cadence.tenths(22_167), Some(899));
+
+        // A stop over a minute long reads zero throughout, with no flicker.
+        let mut cadence = Cadence::default();
+        cadence.receive(at(0, 0), 0);
+        cadence.receive(at(683, 1), 667);
+        cadence.receive(at(1366, 2), 1334);
+        for step in 1..=400u64 {
+            cadence.receive(at(1366, 2), 1334 + step * 250);
+        }
+        cadence.receive(at(1366 + 30_000, 3), 101_500);
+        assert_eq!(cadence.tenths(101_500), Some(0));
+
+        // Connecting to a sensor whose last stroke was long ago: the first
+        // message is no reference, however its event time wraps.
+        for old in [0u16, 3000, 40_000, 65_000] {
+            let mut cadence = Cadence::default();
+            cadence.receive(at(old, 500), 0);
+            cadence.receive(at(old, 500), 250);
+            assert_eq!(cadence.tenths(250), None);
+            cadence.receive(at(old.wrapping_add(60_000), 501), 1000);
+            assert_eq!(cadence.tenths(1000), None, "{old}");
+            cadence.receive(at(old.wrapping_add(60_683), 502), 1667);
+            assert_eq!(cadence.tenths(1667), Some(899), "{old}");
+        }
     }
 
     #[test]

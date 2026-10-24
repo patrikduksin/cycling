@@ -268,11 +268,16 @@ impl<'a, B: OwnedFlash> RegionAccess<'a, B> {
 pub(crate) mod tests {
     use super::*;
 
+    const PAGE_SIZE: usize = 256;
+
     #[derive(Clone)]
     pub(crate) struct Memory {
         pub(crate) bytes: [[u8; SECTOR_SIZE]; SECTOR_COUNT],
         fail_after: Option<usize>,
         tear_bytes: usize,
+        /// A cut program leaves its page partly programmed: each byte keeps
+        /// some of the bits it was clearing, drawn from this seed.
+        page_parallel: Option<u64>,
         pub(crate) operations: usize,
     }
 
@@ -282,6 +287,7 @@ pub(crate) mod tests {
                 bytes: [[0xff; SECTOR_SIZE]; SECTOR_COUNT],
                 fail_after: None,
                 tear_bytes: 0,
+                page_parallel: None,
                 operations: 0,
             }
         }
@@ -327,13 +333,28 @@ pub(crate) mod tests {
             checked_range::<()>(SECTOR_SIZE * SECTOR_COUNT, offset, data.len(), 4)
                 .map_err(|_| ())?;
             let fails = self.fails();
-            let length = if fails {
+            let landed = if fails {
                 self.tear_bytes.min(data.len())
             } else {
                 data.len()
             };
-            for (i, byte) in data[..length].iter().enumerate() {
-                self.bytes[(offset + i) / SECTOR_SIZE][(offset + i) % SECTOR_SIZE] &= *byte;
+            let cut_page = (offset + landed) / PAGE_SIZE;
+            let mut rng = self.page_parallel.map(crate::testing::Rng::new);
+            let late = rng.as_mut().is_some_and(|rng| rng.one_in(2));
+            for (i, byte) in data.iter().enumerate() {
+                let address = offset + i;
+                let target = match &mut rng {
+                    _ if !fails => *byte,
+                    None if i < landed => *byte,
+                    None => break,
+                    Some(rng) => match (address / PAGE_SIZE).cmp(&cut_page) {
+                        core::cmp::Ordering::Less => *byte,
+                        core::cmp::Ordering::Equal if late => *byte | (rng.byte() & rng.byte()),
+                        core::cmp::Ordering::Equal => *byte | rng.byte() | rng.byte(),
+                        core::cmp::Ordering::Greater => break,
+                    },
+                };
+                self.bytes[address / SECTOR_SIZE][address % SECTOR_SIZE] &= target;
             }
             if fails { Err(()) } else { Ok(()) }
         }
@@ -476,7 +497,7 @@ pub(crate) mod tests {
 
     #[test]
     fn occupied_unrecognized_journals_refuse_load_and_save_without_mutation() {
-        for scenario in 0..8 {
+        for scenario in 0..10 {
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
             match scenario {
                 0 => journal.flash.bytes[0][0] = 0, // One unknown occupied sector.
@@ -517,6 +538,14 @@ pub(crate) mod tests {
                     journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
                     journal.flash.bytes[1].fill(0xff);
                 }
+                // A partial header with bytes programmed past the first page.
+                8 => {
+                    journal.save(&[0; 300]).unwrap();
+                    journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
+                    journal.flash.bytes[0][4] = 0xfd;
+                }
+                // Programmed bytes behind an untouched header.
+                9 => journal.flash.bytes[0][100] = 0,
                 _ => {
                     journal.save(b"existing").unwrap();
                     if scenario == 2 {
@@ -540,6 +569,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_torn_first_save_is_preserved_and_never_blocks_the_next_save() {
+        for page_parallel in [None].into_iter().chain((0..200).map(Some)) {
+            a_torn_first_save_is_recovered(page_parallel);
+        }
+    }
+
+    fn a_torn_first_save_is_recovered(page_parallel: Option<u64>) {
         for failed_operation in 2..6 {
             for tear_bytes in [
                 0,
@@ -549,14 +584,19 @@ pub(crate) mod tests {
                 4,
                 HEADER_SIZE,
                 HEADER_SIZE + 1,
+                PAGE_SIZE - 1,
+                PAGE_SIZE,
                 2048,
                 SECTOR_SIZE,
             ] {
-                let case =
-                    std::format!("failure at operation {failed_operation}, byte {tear_bytes}");
+                let case = std::format!(
+                    "failure at operation {failed_operation}, byte {tear_bytes}, \
+                     page-parallel seed {page_parallel:?}"
+                );
                 let mut journal = Journal::new(Memory::default(), Region::Configuration);
                 journal.flash.fail_after = Some(failed_operation);
                 journal.flash.tear_bytes = tear_bytes;
+                journal.flash.page_parallel = page_parallel;
                 assert!(journal.save(b"first").is_err(), "{case}");
                 journal.flash.fail_after = None;
                 let mut output = [0; 8];
@@ -638,6 +678,7 @@ pub(crate) mod tests {
                 journal.flash.operations = 0;
                 journal.flash.fail_after = cut.then(|| rng.below(6) as usize);
                 journal.flash.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+                journal.flash.page_parallel = rng.one_in(2).then(|| rng.next());
                 let result = journal.save(&payload);
                 journal.flash.fail_after = None;
                 let mut output = [0; CAPACITY];
@@ -736,6 +777,7 @@ pub(crate) mod tests {
                 journal.flash.operations = 0;
                 journal.flash.fail_after = cut.then(|| rng.below(6) as usize);
                 journal.flash.tear_bytes = rng.below(SECTOR_SIZE as u64 + 1) as usize;
+                journal.flash.page_parallel = rng.one_in(2).then(|| rng.next());
                 let result = journal.save(&payload);
                 journal.flash.fail_after = None;
                 match result {

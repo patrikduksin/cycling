@@ -134,6 +134,11 @@ pub struct View<'a> {
     pub back: ride::Back,
     /// When the light ends, for the back-to-start page.
     pub sunset: ride::Light,
+    /// The ride's track, borrowed from the breadcrumb; only the map page
+    /// reads it.
+    pub track: ride::Track<'a>,
+    /// The map page's track, projected for this frame.
+    pub(super) map: ride::MapFrame,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -210,6 +215,8 @@ impl View<'_> {
             bests_mode: super::bests::Mode::List,
             back: ride::Back::default(),
             sunset: ride::Light::default(),
+            track: ride::Track::default(),
+            map: ride::MapFrame::default(),
             page,
             cursor,
             editing: false,

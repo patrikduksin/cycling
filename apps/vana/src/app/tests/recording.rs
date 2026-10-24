@@ -186,8 +186,9 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
         (1400, RidePage::Stats),
         (1800, RidePage::Lap),
         (2200, RidePage::Climb),
-        (2600, RidePage::Back),
-        (2950, RidePage::Main),
+        (2600, RidePage::Map),
+        (3000, RidePage::Back),
+        (3400, RidePage::Main),
     ] {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
         assert!(runtime.navigation.page == Page::Ride);
@@ -195,7 +196,7 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     }
 
     // Recording, TopLeft laps and never asks to end the ride.
-    for at in [3000, 3400] {
+    for at in [3800, 4200] {
         runtime.input(press(Button::TopLeft), at, &mut radio);
         tick(&mut runtime, &mut journal, &mut radio, at);
         assert!(runtime.navigation.page == Page::Ride);
@@ -204,14 +205,14 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     assert_eq!(runtime.ride.laps.count(), 1, "the second lap is debounced");
 
     // Paused, TopLeft asks "End ride?"; BACK keeps the ride paused.
-    pause(&mut runtime, &mut journal, &mut radio, 4000);
-    runtime.input(press(Button::TopLeft), 4400, &mut radio);
+    pause(&mut runtime, &mut journal, &mut radio, 4600);
+    runtime.input(press(Button::TopLeft), 5000, &mut radio);
     assert!(runtime.navigation.page == Page::EndRide);
-    runtime.input(press(Button::TopLeft), 4800, &mut radio);
+    runtime.input(press(Button::TopLeft), 5400, &mut radio);
     assert!(runtime.navigation.page == Page::Ride);
     // MOVE on the question does nothing; it waits as long as it takes.
-    runtime.input(press(Button::TopLeft), 5200, &mut radio);
-    runtime.input(press(Button::BottomLeft), 5600, &mut radio);
+    runtime.input(press(Button::TopLeft), 5800, &mut radio);
+    runtime.input(press(Button::BottomLeft), 6200, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 60_000);
     assert!(runtime.navigation.page == Page::EndRide);
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
@@ -465,22 +466,24 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     }
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
     runtime.input(press(Button::BottomLeft), 4200, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
     runtime.input(press(Button::BottomLeft), 4600, &mut radio);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
+    runtime.input(press(Button::BottomLeft), 5000, &mut radio);
     assert!(
         !runtime.navigation.pause_hidden,
         "back to the paused screen"
     );
     // Paging on goes round every page again, starting at the first.
     let mut seen = std::vec::Vec::new();
-    for at in (5000..9000).step_by(400).take(6) {
+    for at in (5400..9400).step_by(400).take(7) {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
         let navigation = &runtime.navigation;
         seen.push(navigation.pause_hidden.then_some(navigation.ride_page));
     }
     let pages = RidePage::ALL.map(Some);
-    assert_eq!(seen[..5], pages, "every page");
-    assert_eq!(seen[5], None, "then the paused screen");
+    assert_eq!(seen[..6], pages, "every page");
+    assert_eq!(seen[6], None, "then the paused screen");
     // A swipe back from the paused screen shows the last page.
     runtime.navigation.ride_page_chosen(RidePage::Main);
     runtime.navigation.pause_hidden = true;
@@ -709,12 +712,12 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     // Paging during a climb keeps the rider's choice when it ends.
     runtime.navigation.follow_climb(Climb::Confirmed);
     runtime.input(press(Button::BottomLeft), 2000, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
     runtime.navigation.follow_climb(finished);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
 
     // Already on the climb page: it stays there after the climb.
-    for at in [2600, 3000, 3400, 3800] {
+    for at in [2600, 3000, 3400, 3800, 4200] {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
     }
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);

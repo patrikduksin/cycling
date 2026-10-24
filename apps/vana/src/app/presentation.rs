@@ -671,6 +671,10 @@ impl Runtime {
         }
         let light = self.light();
         view.light = light;
+        if view.ride_page == RidePage::Map {
+            // Borrowed from the breadcrumb, not copied.
+            view.track = super::back::track_of(&self.back);
+        }
         view.prepare();
         let menu = &self.menu;
         // The FTP sheet covers the Sensors menu too, as it takes the buttons.

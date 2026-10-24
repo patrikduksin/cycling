@@ -99,7 +99,7 @@ fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
     // the climb page about 500 m before it.
     let shown = ride_until_shown(&mut sim, "CLIMB AHEAD", 600.0);
     assert!(shown < 400.0, "at {shown:.0} m");
-    assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
+    assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
     for label in ["LENGTH KM", "AVG GRADE", "GAIN M"] {
         assert!(
             sim.screen().field(label).is_some(),

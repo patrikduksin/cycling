@@ -69,9 +69,27 @@ plays the start chime. On the ride pages ACT pauses, MOVE turns the page and
 BACK takes a lap (with a lap toast and the lap chime). The ride pages never
 show cues: the buttons keep fixed roles.
 
+### Map
+
+The ride page before BACK TO START, MAP, draws where the ride has been: its
+own GPS track as a white line, a green dot where it began, and the rider in
+blue. Riding, the track is turned so the way the rider is heading is up and
+the rider is an arrowhead; standing still (after about 15 s without moving,
+or while paused) it is north up, the rider a dot, and the page says N UP. The
+rider sits low, so more of the road behind shows. The page zooms out in steps
+to keep the whole track in view and never closer than 500 m across. A bar at
+the bottom shows the scale (100 M, 2 KM) and the ride's distance sits beside
+it. Following the track back, the way home is green and the part already left
+behind grey, with FOLLOWING in the header. Without a fix the page says NO
+GPS YET and MAP STARTS WITH GPS; once a fix is lost the track stays where it
+was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
+
+The map draws the same breadcrumb as BACK TO START (below), so a very long
+ride shows its bends thinned and a far-off start is a small dot.
+
 ### Back to start
 
-The last ride page, BACK TO START, points the way to where the ride began.
+The page after MAP, BACK TO START, points the way to where the ride began.
 The arrow points relative to the way the rider rides, so straight up is
 straight on; standing still, it points north up and says N UP. DIRECT KM is
 the distance straight to the start, TRACK KM the distance back the way the

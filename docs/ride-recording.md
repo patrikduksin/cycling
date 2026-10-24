@@ -427,7 +427,7 @@ distance or until MARK, with a target: % FTP, watts, heart zone, % LTHR,
 cadence, a ramp or none. Repeat blocks play a run of steps several times.
 Targets follow the training profile, so a new FTP moves every power band.
 
-While riding a workout, the ride pages gain a workout page first (`1/5`). It
+While riding a workout, the ride pages gain a workout page first (`1/7`). It
 shows the step and its target, the 3 s reading against the band (UNDER, ON
 TARGET, OVER), the time or distance left, the next step and the whole
 workout as a chart. The main page draws the band under its power or heart

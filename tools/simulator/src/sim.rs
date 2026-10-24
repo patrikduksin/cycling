@@ -147,8 +147,9 @@ impl Screen {
             .get(DOTS_Y * self.width..(DOTS_Y + 1) * self.width)?;
         let mut dots = Vec::new();
         let mut x = 0;
-        // Dots sit on the left half; the clock is white on the right.
-        while x < row.len() / 2 {
+        // Dots sit left of the GPS mark, which starts past two thirds of the
+        // row; the clock is white on the right.
+        while x < row.len() * 2 / 3 {
             let color = row[x];
             let start = x;
             while x < row.len() && row[x] == color {

@@ -268,6 +268,29 @@ impl<'a> Homing<'a> {
         self.following
     }
 
+    /// The kept points, oldest first, for drawing the track.
+    pub fn crumbs(&self) -> &[Crumb] {
+        &self.crumbs[..self.len]
+    }
+
+    /// Metres east and north of the start, as of the last fix, until it is
+    /// lost.
+    pub fn position(&self) -> Option<(f32, f32)> {
+        self.here
+    }
+
+    /// The way the rider is riding, while moving.
+    pub fn heading(&self) -> Option<u16> {
+        self.heading
+    }
+
+    /// While following: the route home is the first `end` points and then
+    /// this point on the segment the rider is on, if matched yet; without a
+    /// match the whole breadcrumb is the way home.
+    pub fn route_home(&self) -> Option<(usize, Option<(f32, f32)>)> {
+        self.following.then_some((self.segment, self.matched))
+    }
+
     /// The way back as of the last fix, or none without a recent fix.
     pub fn guide(&self) -> Option<Guide> {
         self.guide

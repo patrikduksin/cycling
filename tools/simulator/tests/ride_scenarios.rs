@@ -735,12 +735,12 @@ fn stats_page_totals_a_steady_ten_minutes() {
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.advance(minutes(10));
-    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
     expect_near(&mut sim, "KM", 5.0, 0.05);
     sim.expect_field("RPM", "90");
     sim.checkpoint("main page after ten minutes");
 
-    ride_page(&mut sim, "2/5");
+    ride_page(&mut sim, "2/6");
     assert!(
         sim.screen().run("KM/H").is_none(),
         "main page units are gone"
@@ -796,14 +796,14 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     sim.ride_at(24.0, 230.0, 0.0, 80.0);
     sim.advance(minutes(5));
     sim.checkpoint("climbing on the main page");
-    ride_page(&mut sim, "2/5");
+    ride_page(&mut sim, "2/6");
     // Two kilometres in: up 50 m, then down again.
     expect_near(&mut sim, "ASCENT M", 50.0, 4.0);
     sim.checkpoint("stats halfway round");
 
     sim.advance(minutes(5));
     // The final climb brought up the climb page; back to the totals.
-    ride_page(&mut sim, "2/5");
+    ride_page(&mut sim, "2/6");
     expect_near(&mut sim, "DIST KM", 4.0, 0.05);
     // The 3 m band and smoothing may leave the last metres of the final climb.
     expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
@@ -937,7 +937,7 @@ fn pause_leaves_the_totals_untouched() {
     sim.start_ride();
     sim.ride_at(30.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(5));
-    ride_page(&mut sim, "2/5");
+    ride_page(&mut sim, "2/6");
     expect_near(&mut sim, "DIST KM", 2.5, 0.05);
 
     // Paused but still rolling hard: nothing the wheel or pedals do counts.
@@ -964,7 +964,7 @@ fn pause_leaves_the_totals_untouched() {
     assert!(moving.starts_with("09:5") || moving == "10:00", "{moving}");
     sim.checkpoint("stats after resuming");
     // The main page agrees: the pause is not ride time.
-    ride_page(&mut sim, "1/5");
+    ride_page(&mut sim, "1/6");
     let active = sim.screen().elapsed().unwrap();
     assert!(active.starts_with("0:10:0"), "{active}");
     sim.checkpoint("main page after resuming");
@@ -1149,7 +1149,7 @@ fn stats_page_splits_time_between_two_power_zones() {
     sim.advance(minutes(5));
     sim.ride_at(30.0, 250.0, 130.0, 90.0);
     sim.advance(minutes(5));
-    ride_page(&mut sim, "2/5");
+    ride_page(&mut sim, "2/6");
     sim.expect_text("PWR");
     // Without a radar the page is centred: the power bar spans x 70..218 at
     // y 286..294, with 2 px of black between zones; the heart bar sits below.
@@ -1202,7 +1202,7 @@ fn manual_laps_compare_each_effort_with_the_last() {
     // A harder, faster second lap shows green with a plus.
     sim.ride_at(33.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(4));
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     sim.expect_text("LAP 2");
     let lap = sim.screen().field("LAP TIME").unwrap();
     assert!(lap.starts_with("04:0"), "{lap}");
@@ -1260,7 +1260,7 @@ fn auto_lap_closes_every_five_kilometres() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     sim.advance(minutes(9) + seconds(50));
     sim.expect_text("LAP 1");
     expect_near(&mut sim, "LAP KM", 4.9, 0.05);
@@ -1292,7 +1292,7 @@ fn paused_time_is_not_lap_time() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 0.0, 90.0);
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     sim.advance(minutes(2));
     sim.lap(1);
     sim.advance(minutes(2));
@@ -1320,7 +1320,7 @@ fn a_second_lap_press_within_three_seconds_is_ignored() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 0.0, 90.0);
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     sim.advance(minutes(1));
     sim.lap(1);
     // A double press, as a glove or a pothole makes.
@@ -1489,7 +1489,7 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     let mut sim = hill_rider();
     sim.start_ride();
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
-    ride_page(&mut sim, "4/5");
+    ride_page(&mut sim, "4/6");
     ride_to(&mut sim, 800.0);
     sim.expect_text("NO CLIMB");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
@@ -1554,16 +1554,16 @@ fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
     sim.start_ride();
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_to(&mut sim, 1000.0);
-    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    let shown = ride_until_page(&mut sim, "4/5", 1600.0);
+    let shown = ride_until_page(&mut sim, "4/6", 1600.0);
     assert!((1300.0..1450.0).contains(&shown), "at {shown:.0} m");
     sim.expect_text("CLIMBING");
     sim.checkpoint("climb page brought up by the climb");
 
     ride_to(&mut sim, 2500.0);
     sim.ride_at(40.0, 60.0, 0.0, 0.0);
-    let back = ride_until_page(&mut sim, "1/5", 2800.0);
+    let back = ride_until_page(&mut sim, "1/6", 2800.0);
     assert!(back > 2500.0, "back at {back:.0} m");
     expect_near(&mut sim, "KM/H", 40.0, 0.3);
     sim.checkpoint("main page again over the top");
@@ -1583,7 +1583,7 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
     sim.set_barometer(false);
     while sim.world().distance_m < 2000.0 {
         sim.advance(seconds(1));
-        assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
+        assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
         sim.expect_text("CLIMBING");
     }
     sim.checkpoint("climbing through a barometer gap");
@@ -2013,7 +2013,7 @@ fn riding_with_gps_only_shows_speed_and_distance() {
         if doppler {
             sim.checkpoint("GPS only: speed and distance");
         }
-        ride_page(&mut sim, "2/5");
+        ride_page(&mut sim, "2/6");
         expect_near(&mut sim, "DIST KM", 4.17, 0.08);
         expect_near(&mut sim, "AVG KM/H", 25.0, 0.5);
         if doppler {
@@ -3048,21 +3048,24 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.advance(minutes(2));
-    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
 
     sim.swipe_next();
-    assert_eq!(sim.screen().page().as_deref(), Some("2/5"));
+    assert_eq!(sim.screen().page().as_deref(), Some("2/6"));
     sim.expect_text("AVG W");
     sim.checkpoint("swiped to stats");
     sim.swipe_previous();
-    assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
     sim.swipe_previous();
-    assert_eq!(sim.screen().page().as_deref(), Some("5/5"), "wraps");
+    assert_eq!(sim.screen().page().as_deref(), Some("6/6"), "wraps");
     sim.expect_text("BACK TO START");
     sim.swipe_previous();
+    sim.expect_text("MAP");
     sim.swipe_previous();
-    assert_eq!(sim.screen().page().as_deref(), Some("3/5"));
+    sim.swipe_previous();
+    assert_eq!(sim.screen().page().as_deref(), Some("3/6"));
     sim.expect_text("LAP TIME");
+    sim.swipe_next();
     sim.swipe_next();
     sim.swipe_next();
     sim.swipe_next();
@@ -3154,7 +3157,7 @@ fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     // The workout page leads the ride pages.
-    assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
+    assert_eq!(sim.screen().page().as_deref(), Some("1/7"));
     sim.expect_text("STEP 1/12");
 
     // Warm up to its last seconds: three countdown beeps, then the step's.
@@ -3184,9 +3187,9 @@ fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
     sim.checkpoint("interval on target");
     // The main page draws the same target under its power gauge.
     sim.press(Button::BottomLeft);
-    assert_eq!(sim.screen().page().as_deref(), Some("2/6"));
+    assert_eq!(sim.screen().page().as_deref(), Some("2/7"));
     sim.checkpoint("main page with the target band");
-    sim.ride_page("1/6");
+    sim.ride_page("1/7");
     ride_step(&mut sim, on_target);
     ride_step(&mut sim, on_target);
 
@@ -3859,7 +3862,7 @@ fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_t
     sim.start_ride();
     // 1 km at 30 km/h is two minutes.
     sim.advance(minutes(2) + seconds(20));
-    ride_page(&mut sim, "3/5");
+    ride_page(&mut sim, "3/6");
     sim.expect_text("LAP 2");
     sim.checkpoint("auto lap at 1 km");
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
@@ -4654,20 +4657,47 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
 /// A GPX ride out and back: 800 m north, 1.2 km east and 700 m north, then
 /// home the same way, with a wrong turn 150 m south and back on the way.
 fn out_and_back_gpx() -> String {
+    gpx_through(
+        "out and back",
+        &[
+            (0.0, 0.0),
+            (0.0, 800.0),
+            (1200.0, 800.0),
+            (1200.0, 1500.0),
+            // Home: back down and west, a wrong turn south, then back.
+            (1200.0, 800.0),
+            (700.0, 800.0),
+            (700.0, 650.0),
+            (700.0, 800.0),
+            (0.0, 800.0),
+            (0.0, 0.0),
+        ],
+    )
+}
+
+/// A GPX loop of about 5 km: north, round a bend east, down the far side
+/// and back west to the start, then up the first leg again.
+fn bend_loop_gpx() -> String {
+    gpx_through(
+        "bend loop",
+        &[
+            (0.0, 0.0),
+            (0.0, 900.0),
+            (500.0, 1300.0),
+            (1300.0, 1250.0),
+            (1700.0, 600.0),
+            (1300.0, -100.0),
+            (600.0, -250.0),
+            (0.0, 0.0),
+            (0.0, 900.0),
+        ],
+    )
+}
+
+/// A GPX route through points given in metres east and north of its start,
+/// a point every 10 m or so.
+fn gpx_through(name: &str, legs: &[(f64, f64)]) -> String {
     let start = Point::new(-33.45, -70.66);
-    let legs = [
-        (0.0, 0.0),
-        (0.0, 800.0),
-        (1200.0, 800.0),
-        (1200.0, 1500.0),
-        // Home: back down and west, a wrong turn south, then back.
-        (1200.0, 800.0),
-        (700.0, 800.0),
-        (700.0, 650.0),
-        (700.0, 800.0),
-        (0.0, 800.0),
-        (0.0, 0.0),
-    ];
     let metres = |(east, north): (f64, f64)| {
         let lat = start.lat + north / 111_195.0;
         let lon = start.lon + east / (111_195.0 * start.lat.to_radians().cos());
@@ -4684,7 +4714,74 @@ fn out_and_back_gpx() -> String {
             )));
         }
     }
-    shell_simulator::route::to_gpx("out and back", &points)
+    shell_simulator::route::to_gpx(name, &points)
+}
+
+/// The map page draws the ride's own track: just the rider at first, the
+/// whole loop as it grows with the rider heading up, and north up (and
+/// saying so) once the ride stops.
+#[test]
+fn map_page_draws_the_ride_track_and_goes_north_up_when_still() {
+    let mut sim = rider();
+    sim.ride_route(Route::from_gpx(&bend_loop_gpx()).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    // MOVE reaches MAP after the climb page; BACK TO START follows it.
+    for _ in 0..4 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("MAP");
+    ride_to(&mut sim, 60.0);
+    sim.checkpoint("the map early in the ride");
+
+    // Round the bend: the track is rotated so the road ahead is up.
+    ride_to(&mut sim, 1_900.0);
+    sim.expect_no_text("N UP");
+    sim.checkpoint("the map mid ride, heading up");
+
+    // Further round the loop the zoom has stepped out to keep it all in.
+    ride_to(&mut sim, 3_600.0);
+    sim.checkpoint("the map on the far side of the loop");
+
+    // Standing still the map turns north up and says so.
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
+    sim.press(Button::BottomLeft);
+    sim.expect_text("MAP");
+    // The heading is forgotten after 15 s without moving.
+    sim.advance(seconds(20));
+    sim.expect_text("N UP");
+    sim.checkpoint("the map standing still, north up");
+
+    // The next page is BACK TO START.
+    sim.press(Button::BottomLeft);
+    sim.expect_text("BACK TO START");
+    sim.stop_ride();
+}
+
+/// Following the track back, the way home is green on the map.
+#[test]
+fn map_page_shows_the_way_home_in_green_while_following_the_track_back() {
+    let mut sim = rider();
+    sim.ride_route(Route::from_gpx(&out_and_back_gpx()).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    // Out to the turnaround, then a swipe back twice: BACK TO START, MAP.
+    ride_to(&mut sim, 2_700.0);
+    sim.swipe_previous();
+    sim.swipe_previous();
+    sim.expect_text("MAP");
+    sim.expect_no_text("FOLLOWING");
+    sim.checkpoint("the map at the turnaround");
+
+    // Riding back the way it came follows the track by itself.
+    ride_until_shown(&mut sim, "FOLLOWING", 3_300.0);
+    ride_to(&mut sim, 3_400.0);
+    sim.expect_text("FOLLOWING");
+    sim.checkpoint("the map following the track back");
+    sim.stop_ride();
 }
 
 /// Back to start: the last ride page points the way home, straight or along

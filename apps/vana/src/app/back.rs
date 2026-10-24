@@ -10,7 +10,7 @@ use super::Runtime;
 use super::cues::Cue;
 use crate::ride::homing::{Event, Homing};
 use crate::screens::chrome::Tone;
-use crate::screens::ride::Back;
+use crate::screens::ride::{Back, Track};
 
 pub use crate::ride::homing::Crumb;
 
@@ -100,5 +100,19 @@ pub(super) fn view_of(back: &Option<&'static mut BackToStart>) -> Back {
             },
             Back::Guide,
         ),
+    }
+}
+
+/// What the map page draws: borrows `Runtime::back`'s breadcrumb.
+pub(super) fn track_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Track<'a> {
+    match back.as_deref() {
+        None => Track::default(),
+        Some(state) => Track {
+            available: true,
+            crumbs: state.homing.crumbs(),
+            here: state.homing.position(),
+            heading: state.homing.heading(),
+            home: state.homing.route_home(),
+        },
     }
 }

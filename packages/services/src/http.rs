@@ -1,12 +1,16 @@
 //! Minimal HTTP/1.1 framing for a small local server: request heads in,
 //! response heads out. One request per connection (`Connection: close`), no
-//! request bodies, no chunked encoding. What a route means is the caller's.
+//! chunked encoding. A `PUT` or `POST` may carry a body of up to `MAX_BODY`
+//! bytes, framed only by `Content-Length`; the transport streams it to the
+//! application and never holds it whole. What a route means is the caller's.
 
 use core::fmt::Write;
 use device_api::server::{Method, Request};
 
 /// Request heads larger than this are refused (`431`).
 pub const MAX_HEAD: usize = 1024;
+/// Request bodies larger than this are refused (`413`) before any is read.
+pub const MAX_BODY: u32 = 4 * 1024 * 1024;
 
 // Parsed once per connection and moved straight into the exchange.
 #[allow(clippy::large_enum_variant)]
@@ -14,7 +18,8 @@ pub const MAX_HEAD: usize = 1024;
 pub enum Parse {
     /// Read more bytes.
     Incomplete,
-    Request(Request),
+    /// A whole head of `head` bytes; any bytes after it start the body.
+    Request { request: Request, head: usize },
     /// Answer with this status and close.
     Refuse(u16),
 }
@@ -28,6 +33,9 @@ pub fn parse(bytes: &[u8]) -> Parse {
             Parse::Incomplete
         };
     };
+    if end + 4 > MAX_HEAD {
+        return Parse::Refuse(431);
+    }
     let Ok(head) = core::str::from_utf8(&bytes[..end]) else {
         return Parse::Refuse(400);
     };
@@ -52,6 +60,7 @@ pub fn parse(bytes: &[u8]) -> Parse {
     };
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut request = Request::new(method);
+    let mut length = None;
     if !path.starts_with('/') || request.path.push_str(path).is_err() {
         return Parse::Refuse(414);
     }
@@ -75,12 +84,14 @@ pub fn parse(bytes: &[u8]) -> Parse {
         } else if name.eq_ignore_ascii_case("accept-encoding") {
             request.gzip = value.split(',').any(|v| v.trim().starts_with("gzip"));
         } else if name.eq_ignore_ascii_case("content-length") {
-            match value.parse::<u32>() {
-                Ok(0) => {}
-                // No route takes a body; refuse rather than leave it unread.
-                Ok(_) => return Parse::Refuse(413),
-                Err(_) => return Parse::Refuse(400),
+            let Some(value) = content_length(value) else {
+                return Parse::Refuse(400);
+            };
+            // Two lengths that disagree frame the body two ways.
+            if length.is_some_and(|known| known != value) {
+                return Parse::Refuse(400);
             }
+            length = Some(value);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             return Parse::Refuse(501);
         }
@@ -90,7 +101,28 @@ pub fn parse(bytes: &[u8]) -> Parse {
     if let Some(token) = query_value(query, "t") {
         set_session(&mut request, token);
     }
-    Parse::Request(request)
+    match length.unwrap_or(0) {
+        0 => {}
+        // Only an upload carries a body; refuse rather than leave one unread.
+        _ if !matches!(method, Method::Put | Method::Post) => return Parse::Refuse(413),
+        n if n > u64::from(MAX_BODY) => return Parse::Refuse(413),
+        n => request.body = n as u32,
+    }
+    Parse::Request {
+        request,
+        head: end + 4,
+    }
+}
+
+/// A `Content-Length` value: ASCII digits only, so `+1`, `-0`, `1 2` and a
+/// list are refused. Values past `u64` are `u64::MAX`, which no cap allows.
+fn content_length(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(value.bytes().fold(0u64, |n, b| {
+        n.saturating_mul(10).saturating_add(u64::from(b - b'0'))
+    }))
 }
 
 fn set_session(request: &mut Request, token: &str) {
@@ -126,6 +158,7 @@ pub const fn reason(status: u16) -> &'static str {
         501 => "Not Implemented",
         503 => "Service Unavailable",
         505 => "HTTP Version Not Supported",
+        507 => "Insufficient Storage",
         _ => "Error",
     }
 }
@@ -170,10 +203,12 @@ impl Head {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
+    use std::string::ToString;
 
     fn request(bytes: &[u8]) -> Request {
         match parse(bytes) {
-            Parse::Request(request) => request,
+            Parse::Request { request, .. } => request,
             other => panic!("{other:?}"),
         }
     }
@@ -220,7 +255,7 @@ mod tests {
         .concat();
         assert_eq!(parse(&query), Parse::Refuse(414));
         assert_eq!(
-            parse(b"PUT / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc"),
+            parse(b"GET / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc"),
             Parse::Refuse(413)
         );
         assert_eq!(
@@ -230,6 +265,105 @@ mod tests {
         assert_eq!(
             parse(b"GET / HTTP/1.1\r\nbroken\r\n\r\n"),
             Parse::Refuse(400)
+        );
+    }
+
+    #[test]
+    fn an_upload_declares_its_body_and_where_it_starts() {
+        let bytes = b"PUT /api/course HTTP/1.1\r\nContent-Length: 5\r\n\r\n<gpx>";
+        let Parse::Request {
+            request: upload,
+            head,
+        } = parse(bytes)
+        else {
+            panic!("{:?}", parse(bytes));
+        };
+        assert_eq!(upload.body, 5);
+        assert_eq!(&bytes[head..], b"<gpx>");
+        let same = b"POST / HTTP/1.1\r\nContent-Length: 7\r\ncontent-length: 007\r\n\r\n";
+        assert_eq!(
+            request(same).body,
+            7,
+            "a repeated equal length is one length"
+        );
+        assert_eq!(request(b"PUT / HTTP/1.1\r\n\r\n").body, 0);
+        let most = format!("PUT / HTTP/1.1\r\nContent-Length: {MAX_BODY}\r\n\r\n");
+        assert_eq!(request(most.as_bytes()).body, MAX_BODY);
+    }
+
+    #[test]
+    fn a_body_is_refused_unless_one_plain_length_within_the_cap_frames_it() {
+        let refused = |length: &str| {
+            let head = format!("PUT / HTTP/1.1\r\nContent-Length: {length}\r\n\r\n");
+            parse(head.as_bytes())
+        };
+        for bad in ["+5", "-0", "5 5", "5,5", "0x10", "", "1e3", "\u{0665}"] {
+            assert_eq!(refused(bad), Parse::Refuse(400), "{bad:?}");
+        }
+        let over = (u64::from(MAX_BODY) + 1).to_string();
+        for big in [over.as_str(), "4294967296", "99999999999999999999999999"] {
+            assert_eq!(refused(big), Parse::Refuse(413), "{big}");
+        }
+        assert_eq!(
+            parse(b"PUT / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n"),
+            Parse::Refuse(400),
+            "two lengths that disagree"
+        );
+        for method in ["GET", "HEAD", "DELETE", "OPTIONS"] {
+            let head = format!("{method} / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx");
+            assert_eq!(parse(head.as_bytes()), Parse::Refuse(413), "{method}");
+        }
+    }
+
+    /// Hostile heads: random bytes, damaged real requests and every split of
+    /// a request into reads. Parsing never panics, a refusal is final, and a
+    /// request parses the same however its bytes arrive.
+    #[test]
+    fn hostile_heads_never_panic_and_reads_split_anywhere_agree() {
+        use crate::testing::Rng;
+        let samples: [&[u8]; 4] = [
+            b"PUT /api/course HTTP/1.1\r\nHost: 192.168.4.1\r\nX-Session: 0123456789abcdef\r\nContent-Length: 12\r\n\r\n<gpx></gpx>\n",
+            b"GET /api/activities/b12-3.fit?t=abc&start=5 HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n",
+            b"POST /api/close HTTP/1.1\r\nCookie: a=1; vana=zz\r\nContent-Length: 0\r\n\r\n",
+            b"DELETE /api/course HTTP/1.1\r\n\r\n",
+        ];
+        let (mut requests, mut refused) = (0, 0);
+        for seed in 0..20_000u64 {
+            let mut rng = Rng::new(seed);
+            let bytes = if rng.one_in(5) {
+                rng.bytes(MAX_HEAD + 64)
+            } else {
+                let sample = rng.pick(&samples).to_vec();
+                rng.mutate(sample)
+            };
+            let whole = parse(&bytes);
+            match &whole {
+                Parse::Request { request, head } => {
+                    requests += 1;
+                    assert!(*head <= bytes.len() && *head <= MAX_HEAD + 4, "seed {seed}");
+                    assert!(request.body <= MAX_BODY, "seed {seed}");
+                    assert!(
+                        request.body == 0 || matches!(request.method, Method::Put | Method::Post),
+                        "seed {seed}"
+                    );
+                }
+                Parse::Refuse(_) => refused += 1,
+                Parse::Incomplete => {}
+            }
+            // The transport parses each longer prefix until one is final.
+            let mut cut = 0;
+            let first = loop {
+                cut = (cut + 1 + rng.below(40) as usize).min(bytes.len());
+                match parse(&bytes[..cut]) {
+                    Parse::Incomplete if cut < bytes.len() => continue,
+                    other => break other,
+                }
+            };
+            assert_eq!(first, whole, "seed {seed}");
+        }
+        assert!(
+            requests > 2_000 && refused > 2_000,
+            "{requests} requests, {refused} refused"
         );
     }
 

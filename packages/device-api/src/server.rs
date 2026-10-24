@@ -2,9 +2,11 @@
 //! the soft access point phones join to reach it.
 //!
 //! The transport owns sockets, framing and timeouts and presents one parsed
-//! request at a time. The application answers by writing the whole response,
-//! head included, in bounded pieces whenever there is room, then finishes it.
-//! The transport closes the connection after each response.
+//! request at a time. A request's body, if any, arrives in pieces the
+//! application reads as they come; the transport never holds it whole. The
+//! application answers by writing the whole response, head included, in
+//! bounded pieces whenever there is room, then finishes it. The transport
+//! closes the connection after each response.
 
 /// Request methods the transport recognizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +32,9 @@ pub struct Request {
     pub session: heapless::String<32>,
     /// The client accepts gzip content encoding.
     pub gzip: bool,
+    /// Body bytes the client declared, within the transport's cap; zero
+    /// without a body.
+    pub body: u32,
 }
 
 impl Request {
@@ -41,6 +46,7 @@ impl Request {
             query: heapless::String::new(),
             session: heapless::String::new(),
             gzip: false,
+            body: 0,
         }
     }
 }
@@ -54,6 +60,10 @@ pub trait Server {
     /// the peer goes away, after which it is `None` (or the next request,
     /// with another id) and writes for it are dropped.
     fn request(&self) -> Option<Request>;
+    /// Move body bytes of request `id` that have arrived into `out`; returns
+    /// how many. Zero while none are waiting, once the whole body was read,
+    /// or once that request is gone. A body is read in order, exactly once.
+    fn read(&mut self, id: u32, out: &mut [u8]) -> usize;
     /// Bytes that `write` accepts now.
     fn room(&self) -> usize;
     /// Queue response bytes for request `id`; returns how many were taken,

@@ -27,6 +27,9 @@ impl device_api::position_control::PositionControl for Untouched {
     fn resume(&mut self, _: u64) -> Result<(), device_api::observation::Error> {
         panic!("GNSS accessed")
     }
+    fn diagnostics(&self) -> Option<device_api::gps::Diagnostics> {
+        panic!("GNSS accessed")
+    }
 }
 impl device_api::sensors::Sensors for Untouched {
     fn snapshot(&self, _: u64) -> device_api::sensors::Snapshot {
@@ -449,4 +452,59 @@ fn owned_test_ambiguous_write_is_not_retried_or_reported_successful() {
     assert_eq!(media.reads, [1]);
     assert_eq!(media.writes, [(1, [0xa5; 512])]);
     assert_eq!(output, "existing reply prefix ");
+}
+
+struct Receiver(Option<device_api::gps::Diagnostics>);
+impl device_api::position_control::PositionControl for Receiver {
+    fn control(&self) -> device_api::position_control::Snapshot {
+        panic!("control accessed")
+    }
+    fn pause(&mut self, _: u32, _: u64) -> Result<(), device_api::observation::Error> {
+        panic!("control accessed")
+    }
+    fn resume(&mut self, _: u64) -> Result<(), device_api::observation::Error> {
+        panic!("control accessed")
+    }
+    fn diagnostics(&self) -> Option<device_api::gps::Diagnostics> {
+        self.0
+    }
+}
+
+#[test]
+fn gnss_diag_prints_each_excerpt_in_hex() {
+    use firmware_console::commands::peripherals::parse;
+    assert_eq!(
+        parse("GNSS", &mut "DIAG".split_ascii_whitespace()),
+        Some(Command::GnssDiagnostics)
+    );
+    let mut diagnostics = device_api::gps::Diagnostics::default();
+    diagnostics.non_nmea.at = Some(70);
+    diagnostics.non_nmea.head[..2].copy_from_slice(b"GN");
+    diagnostics.non_nmea.head_len = 2;
+    diagnostics.non_nmea.before[..3].copy_from_slice(b"$GN");
+    diagnostics.non_nmea.before_len = 3;
+    diagnostics.non_nmea.after[..2].copy_from_slice(&[0xba, 0xce]);
+    diagnostics.non_nmea.after_len = 2;
+    for (receiver, status, reply) in [
+        (
+            Some(diagnostics),
+            "OK",
+            "overflow_at=None overflow_head= overflow_before= overflow_after= \
+             non_nmea_at=Some(70) non_nmea_head=474e non_nmea_before=24474e non_nmea_after=bace \
+             gap_at=None gap_head= gap_before= gap_after= encoding=hex",
+        ),
+        (None, "UNAVAILABLE", ""),
+    ] {
+        let mut output = String::new();
+        let result = execute(
+            Command::GnssDiagnostics,
+            0,
+            &mut PartialMedia::new(),
+            &mut Untouched,
+            &mut Receiver(receiver),
+            &mut Untouched,
+            &mut output,
+        );
+        assert_eq!((result, output.as_str()), (status, reply));
+    }
 }

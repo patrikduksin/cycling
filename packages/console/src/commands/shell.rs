@@ -70,7 +70,7 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
                 let g = p.gps;
                 let _ = write!(
                     out,
-                    "transport={} fix={} sequence={} bytes={} valid={} checksum_errors={} parse_errors={} dma_losses={} line_overflows={} uart_errors={} fix_age_ms={:?} satellites={:?} hdop_tenths={:?} speed_mm_s={:?} utc_ms={:?}",
+                    "transport={} fix={} sequence={} bytes={} valid={} checksum_errors={} parse_errors={} dma_losses={} line_overflows={} long_proprietary={} uart_errors={} binary_bytes={} non_nmea_frames={} fix_age_ms={:?} satellites={:?} hdop_tenths={:?} speed_mm_s={:?} utc_ms={:?}",
                     p.transport.name(),
                     g.state.name(),
                     p.sequence,
@@ -80,7 +80,10 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
                     g.parse_errors,
                     g.overflows,
                     g.line_overflows,
+                    g.long_proprietary,
                     g.uart_errors,
+                    g.binary_bytes,
+                    g.non_nmea_frames,
                     g.age_ms,
                     g.satellites,
                     g.hdop_tenths,

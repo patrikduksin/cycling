@@ -285,6 +285,7 @@ def preflight(scenario):
                 'RIDE SENSORS',
                 'RADAR SENSORS',
                 'ANT DEVICES',
+                'GNSS DIAG',
             )
             permitted = read_only
             permitted |= bool(re.fullmatch(r'DISPLAY [0-9a-fA-F]{1,4}', command))

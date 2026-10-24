@@ -72,8 +72,24 @@ Unverified reset commands and GPIO transitions remain unused.
 Current acquisition uses UART0/UHCI DMA and an independent Embassy task, with
 resynchronization after reported transport loss. The parser distinguishes no data,
 no fix, fresh and stale fixes and matches satellite data to the coordinate epoch.
-The owning code is [gps_uart.rs](../../os/src/device/gps_uart.rs),
-[positioning.rs](../../os/src/device/services/positioning.rs) and [gps.rs](../../os/src/gps.rs).
+A candidate line ends at CR or LF. The parser drops only what cannot be a
+sentence and counts it as `non_nmea_frames`. That is a control byte, or a
+character other than an upper-case letter or digit in the address, or a line
+with neither a `*hh` checksum nor a plausible address. A `$` inside binary
+output therefore cannot swallow the next sentence. A line longer than 512 bytes
+counts as `long_proprietary` when its address starts with `P`, and as
+`line_overflows`, a fault, otherwise. `GNSS DIAG` prints hex excerpts of the
+last overflow, the last dropped candidate and the last gap between sentences.
+
+[#134](https://github.com/patrikduksin/cycling/issues/134) used `GNSS DIAG` on
+the unit indoors. The overflowing line was `$PAIRSAT,4,60,1,0,200,...`, a
+proprietary satellite-status sentence longer than 512 bytes, about once per
+epoch, with no binary output. `$PAIRSAT` and the `$PAIR` command set belong to
+the Airoha receiver family, such as the AG3335. This is the first direct
+evidence of the receiver family. The part number remains unconfirmed.
+The owning code is [gps_uart.rs](../src/drivers/gps_uart.rs),
+[positioning.rs](../src/capabilities/positioning.rs) and
+[gps.rs](../../../packages/services/src/gps.rs).
 
 Early display-coupled reception suffered UART losses during network and UI work.
 That implementation is retired. [#34](https://github.com/patrikduksin/cycling/issues/34)

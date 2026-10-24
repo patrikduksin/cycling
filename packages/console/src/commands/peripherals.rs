@@ -30,6 +30,7 @@ pub enum Command {
     Gnss,
     GnssPause(u32),
     GnssResume,
+    GnssDiagnostics,
     Pressure,
     Motion,
     Companion,
@@ -99,6 +100,7 @@ pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Opt
                 Command::GnssPause(ms)
             }
             Some("RESUME") => Command::GnssResume,
+            Some("DIAG") => Command::GnssDiagnostics,
             _ => return None,
         },
         "PRESSURE" => Command::Pressure,
@@ -278,6 +280,25 @@ pub fn execute(
         }
         Command::GnssPause(ms) => status = request_status(gnss.pause(ms, now)),
         Command::GnssResume => status = request_status(gnss.resume(now)),
+        Command::GnssDiagnostics => match gnss.diagnostics() {
+            Some(d) => {
+                for (name, excerpt) in [
+                    ("overflow", d.overflow),
+                    ("non_nmea", d.non_nmea),
+                    ("gap", d.gap),
+                ] {
+                    let _ = write!(out, "{name}_at={:?} {name}_head=", excerpt.at);
+                    hex(out, excerpt.head());
+                    let _ = write!(out, " {name}_before=");
+                    hex(out, excerpt.before());
+                    let _ = write!(out, " {name}_after=");
+                    hex(out, excerpt.after());
+                    let _ = write!(out, " ");
+                }
+                let _ = write!(out, "encoding=hex");
+            }
+            None => status = "UNAVAILABLE",
+        },
         Command::Pressure => {
             let s = sensors.snapshot(now);
             let _ = write!(
@@ -357,6 +378,11 @@ pub fn execute(
         Command::CompanionQuery => status = request_status(sensors.query_identity(now)),
     }
     status
+}
+fn hex(out: &mut impl Write, bytes: &[u8]) {
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
 }
 fn media_error(error: device_api::bulk::Error) -> &'static str {
     match error {

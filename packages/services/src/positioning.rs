@@ -51,6 +51,11 @@ impl Acquisition {
         changed
     }
 
+    /// The parser's latest framing excerpts, for the terminal.
+    pub fn diagnostics(&self) -> device_api::gps::Diagnostics {
+        self.parser.diagnostics()
+    }
+
     /// Age is calculated at the caller's time, even without another publication.
     pub fn snapshot(&self, now: u64) -> Snapshot {
         let mut gps = self.parser.snapshot(now);

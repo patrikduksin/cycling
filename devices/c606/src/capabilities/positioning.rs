@@ -31,10 +31,16 @@ pub fn snapshot(now: u64) -> Option<Snapshot> {
     LATEST.lock(|state| state.borrow().as_ref().map(|state| state.snapshot(now)))
 }
 
+/// The parser's latest framing excerpts, as last published.
+pub fn diagnostics() -> Option<device_api::gps::Diagnostics> {
+    LATEST.lock(|state| state.borrow().as_ref().map(Acquisition::diagnostics))
+}
+
 #[embassy_executor::task]
 pub async fn run(mut receiver: crate::drivers::gps_uart::Receiver) {
     let mut state = Acquisition::default();
-    LATEST.lock(|latest| *latest.borrow_mut() = Some(state.clone()));
+    let published = state.clone();
+    LATEST.lock(|latest| *latest.borrow_mut() = Some(published));
     log::info!(target: "position", "acquisition started poll_ms=10 batch=2048 state_bytes={}", core::mem::size_of::<Acquisition>());
     let mut previous = state.snapshot(Instant::now().as_millis());
     loop {
@@ -44,14 +50,16 @@ pub async fn run(mut receiver: crate::drivers::gps_uart::Receiver) {
         }
         if INVALIDATE.swap(false, core::sync::atomic::Ordering::AcqRel) {
             state.control_boundary();
-            LATEST.lock(|latest| *latest.borrow_mut() = Some(state.clone()));
+            let published = state.clone();
+            LATEST.lock(|latest| *latest.borrow_mut() = Some(published));
         }
         let mut bytes = [0u8; 2048];
         let (count, dma_losses, uart_errors) = receiver.drain(&mut bytes);
         if state.ingest(now, &bytes[..count], dma_losses, uart_errors) {
             // Parsing stays outside the lock. Copy the bounded parser state only
             // on received bytes or changed fault counters, never on idle polls.
-            LATEST.lock(|latest| *latest.borrow_mut() = Some(state.clone()));
+            let published = state.clone();
+            LATEST.lock(|latest| *latest.borrow_mut() = Some(published));
         }
         let current = state.snapshot(now);
         if (current.transport, current.gps.state) != (previous.transport, previous.gps.state) {

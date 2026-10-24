@@ -669,6 +669,9 @@ impl device_api::position_control::PositionControl for Positioning {
     fn resume(&mut self, now: u64) -> Result<(), device_api::observation::Error> {
         crate::capabilities::position_control::resume(now)
     }
+    fn diagnostics(&self) -> Option<device_api::gps::Diagnostics> {
+        crate::capabilities::positioning::diagnostics()
+    }
 }
 
 impl device_api::power::PowerControl for Power {

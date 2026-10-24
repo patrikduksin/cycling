@@ -13,6 +13,7 @@ use device_api::gps::FixState;
 use device_api::input::InputObservation;
 use device_api::observation::Observation;
 use device_api::positioning::Positioning;
+use firmware_services::network_time;
 
 /// Decoded readings older than this no longer describe the rider.
 const READING_FRESH_MS: u64 = 3000;
@@ -303,12 +304,8 @@ impl Runtime {
                 .then(|| Some((snapshot.gps.latitude_e7?, snapshot.gps.longitude_e7?)))
                 .flatten()
         });
-        let clock = firmware_services::network_time::snapshot(now, 0, observations.network_online);
-        let utc_ms = clock.unix_seconds.and_then(|seconds| {
-            seconds
-                .checked_mul(1_000)?
-                .checked_add(u64::from(clock.millis))
-        });
+        let network = network_time::snapshot(now, 0, observations.network_online);
+        let utc_ms = utc_ms(network, position.and_then(|snapshot| snapshot.gps.utc_ms));
         // Keep existing last-observed battery behavior. Core status still exposes
         // its age; these ride format bytes have no battery-age field.
         let battery_percent = observations
@@ -397,6 +394,21 @@ impl Runtime {
     }
 }
 
+/// UTC now: Wi-Fi SNTP when it has synced since boot or sleep, else the
+/// receiver clock. SNTP goes first because it is there from a ride's start or
+/// not at all, while GNSS time shows up in nearly every outdoor ride. The
+/// source then changes mid-ride only if Wi-Fi appears mid-ride.
+fn utc_ms(network: network_time::Snapshot, receiver: Option<u64>) -> Option<u64> {
+    network
+        .unix_seconds
+        .and_then(|seconds| {
+            seconds
+                .checked_mul(1_000)?
+                .checked_add(u64::from(network.millis))
+        })
+        .or(receiver)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +453,21 @@ mod tests {
         assert_eq!(BatteryNews::Charging(64).toast().text(), b"CHARGING 64%");
         assert_eq!(BatteryNews::Low(20).toast().text(), b"LOW BATTERY 20%");
         assert_eq!(BatteryNews::Critical(5).toast().text(), b"CHARGE SOON 5%");
+    }
+
+    #[test]
+    fn sntp_wins_and_the_receiver_fills_in() {
+        let synced = network_time::Snapshot {
+            unix_seconds: Some(1_792_000_000),
+            millis: 250,
+            ..Default::default()
+        };
+        let receiver = Some(1_792_000_009_000);
+        assert_eq!(utc_ms(synced, receiver), Some(1_792_000_000_250));
+        assert_eq!(utc_ms(synced, None), Some(1_792_000_000_250));
+        let offline = network_time::Snapshot::default();
+        assert_eq!(utc_ms(offline, receiver), receiver);
+        assert_eq!(utc_ms(offline, None), None);
     }
 
     #[test]

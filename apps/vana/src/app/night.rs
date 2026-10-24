@@ -2,7 +2,7 @@
 //! screen does not glare, and steps back up in the morning.
 //!
 //! In automatic mode the sun decides: its altitude at the last fixed position
-//! and the current UTC time (network time, or the receiver's date and time).
+//! and the recorded UTC (network time, else the receiver's clock).
 //! Without a position it falls back to the local clock, and without any clock
 //! it keeps what it had. The change ramps over about two seconds through the
 //! shell's backlight ceiling, which is never stored, so the rider's chosen
@@ -37,17 +37,16 @@ pub(super) struct Night {
     next_step_ms: u64,
     /// The last fixed position, in degrees.
     place: Option<(f64, f64)>,
-    /// The receiver's time at its last fresh fix, carried on by the uptime
-    /// clock: after the fix is lost the receiver's time stands still.
+    /// The time of day of a receiver that never dated a fix, at its last
+    /// fresh fix, carried on by the uptime clock.
     clock: Option<Clock>,
 }
 
-/// A receiver time and the uptime it was read at.
+/// A receiver time of day and the uptime it was read at.
 #[derive(Clone, Copy)]
 struct Clock {
-    /// Unix seconds when `dated`, else seconds since UTC midnight.
+    /// Seconds since UTC midnight.
     seconds: i64,
-    dated: bool,
     at_ms: u64,
 }
 
@@ -160,30 +159,23 @@ impl Runtime {
             let (latitude, longitude) = (gps.latitude_e7?, gps.longitude_e7?);
             Some((f64::from(latitude) / 1e7, f64::from(longitude) / 1e7))
         });
-        // The receiver's time is current only with a fresh fix.
+        // A receiver that never dated a fix still gives the time of day.
         let read = fresh.and_then(|gps| {
-            if let Some(ms) = gps.utc_ms {
-                return Some(((ms / 1000) as i64, true));
-            }
             let time = gps.utc?;
             let pair = |at: usize| i64::from((time[at] - b'0') * 10 + time[at + 1] - b'0');
             time.iter()
                 .all(u8::is_ascii_digit)
-                .then(|| (pair(0) * 3600 + pair(2) * 60 + pair(4), false))
+                .then(|| pair(0) * 3600 + pair(2) * 60 + pair(4))
         });
-        if let Some((seconds, dated)) = read {
+        if let Some(seconds) = read {
             self.night.clock = Some(Clock {
                 seconds,
-                dated,
                 at_ms: now,
             });
         }
-        let clock = self.night.clock;
-        let network = self.readings.live.utc_ms.map(|ms| (ms / 1000) as i64);
-        let receiver = clock.filter(|clock| clock.dated).map(|clock| clock.at(now));
-        let unix = network.or(receiver);
+        let unix = self.readings.live.utc_ms.map(|ms| (ms / 1000) as i64);
         let utc_of_day = unix
-            .or_else(|| clock.map(|clock| clock.at(now)))
+            .or_else(|| self.night.clock.map(|clock| clock.at(now)))
             .map(|seconds| seconds.rem_euclid(86_400) as u64);
         let was = self.night.is_night();
         let sky = Sky {

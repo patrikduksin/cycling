@@ -70,7 +70,7 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
                 let g = p.gps;
                 let _ = write!(
                     out,
-                    "transport={} fix={} sequence={} bytes={} valid={} checksum_errors={} parse_errors={} dma_losses={} line_overflows={} uart_errors={} fix_age_ms={:?} satellites={:?} hdop_tenths={:?} speed_mm_s={:?}",
+                    "transport={} fix={} sequence={} bytes={} valid={} checksum_errors={} parse_errors={} dma_losses={} line_overflows={} uart_errors={} fix_age_ms={:?} satellites={:?} hdop_tenths={:?} speed_mm_s={:?} utc_ms={:?}",
                     p.transport.name(),
                     g.state.name(),
                     p.sequence,
@@ -84,7 +84,8 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
                     g.age_ms,
                     g.satellites,
                     g.hdop_tenths,
-                    g.speed_mm_s
+                    g.speed_mm_s,
+                    g.utc_ms
                 );
             } else {
                 status = "UNAVAILABLE";

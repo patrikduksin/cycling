@@ -4009,12 +4009,14 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("44/44");
-    // The oldest ride, outside every catalog, reads back.
+    // The oldest ride, outside every catalog, reads back. The rides are dated
+    // by the receiver, so start times order the journals: the oldest is the
+    // first ride, on INTERNAL (undated rides listed INTERNAL's first).
     sim.press(Button::BottomRight);
     assert_eq!(sim.vana_page(), "past_ride");
     sim.wait_gone("READING", seconds(5)).unwrap();
     sim.expect_text("SAVED RIDE");
-    sim.expect_field("AVG BPM", "100");
+    sim.expect_field("AVG BPM", "98");
     sim.checkpoint("the oldest ride read back");
     sim.press(Button::TopLeft);
     sim.press(Button::TopLeft);

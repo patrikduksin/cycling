@@ -37,6 +37,11 @@ def build(sdk, harness):
     return Step(name, 'mise run build', env)
 
 
+def frame_report(step):
+    image_dir = dict(step.env).get('CYCLING_IMAGE_DIR')
+    return ROOT / image_dir / 'stack-frames.md' if image_dir else None
+
+
 # Each inner list runs in order; the lists run in parallel.
 LANES = {
     'full': [
@@ -65,6 +70,8 @@ class Result:
 def run_step(step, logs):
     log = logs / f'{step.name}.log'
     env = os.environ | dict(step.env)
+    if report := frame_report(step):
+        report.unlink(missing_ok=True)
     started = time.monotonic()
     with log.open('w') as out:
         out.write(f'$ {step.command}\n')
@@ -95,6 +102,11 @@ def table(results, sha, dirty, total):
     rows += [f'| `{r.step.name}` | {"✅" if r.ok else "❌"} | {r.seconds:.0f} s |' for r in results]
     state = ' (uncommitted changes)' if dirty else ''
     return f'### `mise run verify` on {os.uname().nodename} — {sha}{state}, {total:.0f} s\n\n' + '\n'.join(rows)
+
+
+def frame_reports(results):
+    tables = [path.read_text() for r in results if (path := frame_report(r.step)) and path.exists()]
+    return '\n'.join(tables)
 
 
 def failure_tail(results, lines=30):
@@ -137,6 +149,8 @@ def main(argv=None):
     print(f'\nlogs: {logs.relative_to(ROOT)}')
     if args.pr:
         body = report + (f'\n\n<details><summary>failures</summary>\n\n```\n{tail}\n```\n</details>' if tail else '')
+        if frames := frame_reports(results):
+            body += f'\n\n<details><summary>largest stack frames</summary>\n\n{frames}\n</details>'
         subprocess.run(['gh', 'pr', 'comment', str(args.pr), '--body', body], cwd=ROOT, check=True)
         print(f'posted to #{args.pr}')
     return 0 if ok else 1

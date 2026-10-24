@@ -1,0 +1,68 @@
+# The largest stack frame, in bytes, each firmware function may open, per
+# build variant (sdk<CYCLING_SDK>-h<CYCLING_HARNESS>). build.sh reads the
+# frames from the release ELF's `entry a1, N` prologues and fails on a frame
+# over its budget. The first rule that matches a demangled name applies; `*`
+# matches any text, and the last rule bounds every frame not named above it.
+# Each budget is the measured frame plus max(1 KiB, 10%). Inlining differs
+# by variant, so a function inlined away in one variant has no rule there; a
+# rule that matches nothing prints a warning. View::prepare, smooth and
+# climb_frame sit under every frame VANA prepares, so their budgets are
+# tighter than the catch-all on purpose. A failed build prints the command
+# that suggests new budgets for its ELF.
+
+[sdk1-h1]
+"cycling_os::external::<*>" = 21402
+"<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 17864
+"<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 17812
+"cycling_os::__console_task::__console_task_inner_function::{closure#0}" = 13676
+"<vana::app::Runtime>::present::<*>" = 17512
+"<vana::app::Runtime>::draw_boot::<*>" = 13183
+"<vana::app::Runtime>::record::<*>" = 5680
+"<vana::screens::workout::View>::new" = 12092
+"<vana::screens::workout::View>::prepare" = 1296
+"vana::screens::workout::fill::<*>" = 8912
+"vana::screens::ride::climb_frame" = 4208
+"vana::screens::ride::smooth" = 3024
+"<firmware_shell::storage::Store<*>>::load" = 5792
+"*" = 5520
+
+[sdk1-h0]
+"cycling_os::external::<*>" = 21402
+"<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 15436
+"<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 17389
+"cycling_os::__console_task::__console_task_inner_function::{closure#0}" = 18674
+"<vana::app::Runtime>::draw_boot::<*>" = 13148
+"<vana::app::Runtime>::record::<*>" = 5680
+"<vana::screens::workout::View>::new" = 12092
+"vana::screens::workout::fill::<*>" = 8912
+"vana::screens::ride::climb_frame" = 4208
+"vana::screens::ride::smooth" = 3024
+"<firmware_shell::storage::Store<*>>::load" = 5792
+"*" = 5520
+
+[sdk0-h1]
+"<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 17812
+"<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 17794
+"<embassy_executor::raw::TaskStorage<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::poll" = 3408
+"cycling_os::commands::execute::<*>" = 4112
+"<firmware_shell::storage::Store<*>>::load" = 5792
+"<firmware_shell::storage::Store<*>>::save" = 5520
+"<esp_storage::common::FlashStorage as embedded_storage::nor_flash::NorFlash>::write" = 5184
+"<esp_storage::common::FlashStorage as embedded_storage::nor_flash::ReadNorFlash>::read" = 5184
+"<embassy_executor::raw::util::UninitCell<c606_firmware::capabilities::positioning::*>>::write_in_place::<*>" = 4512
+"c606_firmware::drivers::bluetooth::application::{closure#0}" = 3936
+"c606_firmware::board::init" = 3392
+"*" = 3232
+
+[sdk0-h0]
+"<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 15383
+"<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 14221
+"cycling_os::__console_task::__console_task_inner_function::{closure#0}" = 5200
+"<firmware_shell::storage::Store<*>>::load" = 5792
+"<firmware_shell::storage::Store<*>>::save" = 5520
+"<esp_storage::common::FlashStorage as embedded_storage::nor_flash::NorFlash>::write" = 5184
+"<esp_storage::common::FlashStorage as embedded_storage::nor_flash::ReadNorFlash>::read" = 5184
+"<embassy_executor::raw::util::UninitCell<c606_firmware::capabilities::positioning::*>>::write_in_place::<*>" = 4512
+"c606_firmware::drivers::bluetooth::application::{closure#0}" = 3936
+"c606_firmware::board::init" = 3392
+"*" = 3232

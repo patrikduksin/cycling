@@ -17,14 +17,35 @@ const fn luma(pixel: u16) -> i32 {
     (2 * r + 5 * g + b) / 8
 }
 
+/// The most a saturated colour's luma may be on the light background, about
+/// 4.5:1 against white.
+const INK_LUMA: i32 = 90;
+
 /// `pixel` with its luminance inverted and its hue kept: greys swap ends
 /// (black and white trade places) and bright colours turn dark enough to read
-/// on white. The shift is affine before clamping, so anti-aliased blends stay
-/// blends.
+/// on white. Mid-bright colours (red, heart pink, accent blue) barely move
+/// under a plain inversion, so a saturated colour is also pulled down to
+/// `INK_LUMA`, in proportion to its chroma so anti-aliased edges, which blend
+/// towards grey, stay continuous.
 pub const fn light(pixel: u16) -> u16 {
     let (r, g, b) = channels(pixel);
-    let shift = 255 - 2 * luma(pixel);
+    let luma = luma(pixel);
+    let mut target = 255 - luma;
+    if target > INK_LUMA {
+        let chroma = max(r, max(g, b)) - min(r, min(g, b));
+        let excess = target - INK_LUMA;
+        target -= min(excess, excess * chroma / 128);
+    }
+    let shift = target - luma;
     rgb(clamp(r + shift), clamp(g + shift), clamp(b + shift))
+}
+
+const fn max(a: i32, b: i32) -> i32 {
+    if a > b { a } else { b }
+}
+
+const fn min(a: i32, b: i32) -> i32 {
+    if a < b { a } else { b }
 }
 
 const fn clamp(channel: i32) -> u8 {
@@ -82,11 +103,11 @@ mod tests {
             ACCENT, GREEN, AMBER, RED, SPEED, POWER, HEART, CADENCE, GRADE,
         ]
         .into_iter()
-        .chain(ZONES);
+        // Z1 is SECONDARY, a grey.
+        .chain(ZONES.into_iter().skip(1));
         for colour in colours {
             let mapped = light(colour);
-            assert!(luma(mapped) <= 160, "{colour:04x} maps to {mapped:04x}");
-            assert!(luma(light(BLACK)) - luma(mapped) >= 95);
+            assert!(luma(mapped) <= 100, "{colour:04x} maps to {mapped:04x}");
             assert_ne!(mapped, light(BLACK));
         }
     }

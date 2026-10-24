@@ -251,6 +251,24 @@ impl Display {
 }
 
 impl Runtime {
+    /// Draw the brand's first frame in the rider's look, before the runtime
+    /// presents. Not inlined: the view is about 10 KB, and in the caller's
+    /// poll frame it would sit under every later frame's preparation (#167).
+    #[inline(never)]
+    pub fn draw_boot<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
+        &self,
+        system: &mut Shell<D, I, P, B>,
+    ) {
+        let view = View::new(Page::Boot, 0, None);
+        let light = self.light();
+        system.draw_canvas(240, 320, |row| {
+            view.paint(row);
+            if light {
+                look::apply(row.pixels_mut());
+            }
+        });
+    }
+
     pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         system: &mut Shell<D, I, P, B>,

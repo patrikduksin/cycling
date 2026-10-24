@@ -99,8 +99,12 @@ paint as usual, then every painted row goes through `screens::look::light`.
 It inverts luminance and keeps hue: `Y = (2r + 5g + b) / 8`, then each channel
 moves by `255 - 2Y` and is clamped. Greys swap ends (`BLACK` becomes white,
 `WHITE` becomes black). Bright colours such as `POWER` and `SPEED` turn dark
-enough to read on white. The shift is affine before clamping, so anti-aliased
-edges stay correct. Dark mode runs no pass at all.
+enough to read on white. Mid-bright colours such as `RED`, `HEART` and
+`ACCENT` barely move under the inversion, so a saturated colour is also pulled
+down towards a luma of 90, about 4.5:1 against white, in proportion to its
+chroma. Greys keep the plain inversion, and anti-aliased edges stay
+continuous. The brand frame at power on takes the look too. Dark mode runs no
+pass at all.
 
 QR codes stay dark modules on a light panel. The Connect phone screen paints
 its panel and modules pre-inverted in the light look, so the transform turns

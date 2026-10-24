@@ -187,7 +187,7 @@ async fn console(
     {
         sdk.load_preferences(&system.settings.app);
         sdk.set_clock(|| embassy_time::Instant::now().as_millis());
-        boot_frame(&mut system);
+        sdk.draw_boot(&mut system);
         // The terrain look-ahead's tile cache lives in PSRAM. Without it
         // the climb page says "NO MAP" and keeps to the barometer.
         let layout =
@@ -236,8 +236,7 @@ async fn console(
         if let Some(work) = device::drivers::psram::place(PHONE_WORK) {
             sdk.attach_phone(work);
         }
-        let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-        system.draw_canvas(240, 320, |row| view.paint(row));
+        sdk.draw_boot(&mut system);
     }
     #[cfg(feature = "cycling")]
     let mut terrain_step_max_us = 0u64;
@@ -402,16 +401,6 @@ async fn console(
         }
         embassy_time::Timer::after_millis(5).await;
     }
-}
-
-/// Draws VANA's first frame. Not inlined: the view is about 10 KB, and in the
-/// console task's poll frame it would sit under every later frame's
-/// preparation on the main stack (#167).
-#[cfg(feature = "cycling")]
-#[inline(never)]
-fn boot_frame(system: &mut FirmwareShell) {
-    let view = vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-    system.draw_canvas(240, 320, |row| view.paint(row));
 }
 
 /// Moves long-lived state into PSRAM so it stays out of the console task

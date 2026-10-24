@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from cycling_devtools.clean import warn_if_low_disk
 from cycling_devtools.workspace import ROOT
 
 
@@ -110,6 +111,7 @@ def main(argv=None):
     parser.add_argument('--fast', action='store_true', help='test, check and the SDK=1 HARNESS=1 build only')
     parser.add_argument('--pr', type=int, help='post the result table on this pull request')
     args = parser.parse_args(argv)
+    warn_if_low_disk()
     mode = 'fast' if args.fast else 'full'
 
     sha = git('rev-parse', '--short=12', 'HEAD')

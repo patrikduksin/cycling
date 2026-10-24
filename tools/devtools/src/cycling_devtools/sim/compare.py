@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from cycling_devtools.clean import warn_if_low_disk
 from cycling_devtools.sim import report
 from cycling_devtools.workspace import ROOT
 
@@ -345,6 +346,7 @@ def main(argv=None):
     parser.add_argument('--filter', help='cargo test name filter, applied to both runs')
     parser.add_argument('--out', type=Path, default=OUT)
     args = parser.parse_args(argv)
+    warn_if_low_disk()
     try:
         base, base_commit, base_subject = resolve_base(args.base)
     except subprocess.CalledProcessError:

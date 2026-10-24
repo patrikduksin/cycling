@@ -19,6 +19,7 @@ Device access follows the [C606 skill](../../.agents/skills/c606/SKILL.md);
 | `rides/` | Export validation, decoding and explicit journal reclamation |
 | `harness/` | Scenarios, real and virtual transports, camera and audio capture, acquisition regression checks |
 | `connectivity/` | Host Wi-Fi setup and Bluetooth test peers |
+| `clean.py` | `mise run clean`: the dry-run plan and removal of merged worktrees and idle build dirs, and the low-disk warning verify and sim-compare print |
 | `workspace.py` | Checkout location and the rule that private evidence stays inside ignored `.local/` |
 
 Imports name the owning module; package initializers do not re-export symbols.

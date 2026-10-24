@@ -92,7 +92,9 @@ def choose_elf(lines, archive):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('logs', nargs='*', type=Path)
-    parser.add_argument('--elf', type=Path, help='default: the ELF of the commit= in the input, else .local/cycling.elf')
+    parser.add_argument(
+        '--elf', type=Path, help='default: the ELF of the commit= in the input, else .local/cycling.elf'
+    )
     args = parser.parse_args(argv)
     lines = [line for log in args.logs for line in log.read_text(errors='replace').splitlines(True)] or list(sys.stdin)
     elf = args.elf or choose_elf(lines, ROOT / '.local/elf')

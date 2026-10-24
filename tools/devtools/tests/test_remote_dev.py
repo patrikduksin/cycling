@@ -90,9 +90,10 @@ class BacktraceTests(unittest.TestCase):
             ],
         )
 
-
     def test_a_crash_record_picks_the_elf_of_its_commit(self):
-        reply = ['{"status": "OK", "data": "kind=panic this_boot=true commit=15178ed1119a pcs=0x42001234,0x42005678"}\n']
+        reply = [
+            '{"status": "OK", "data": "kind=panic this_boot=true commit=15178ed1119a pcs=0x42001234,0x42005678"}\n'
+        ]
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory)
             self.assertEqual(backtrace.choose_elf(reply, archive), backtrace.ROOT / '.local/cycling.elf')

@@ -12,7 +12,6 @@ from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
 
-
 def crash_record(connection):
     """CRASH's fields; the message is the rest of the reply and may hold spaces."""
     reply = connection.terminal_command('CRASH')
@@ -20,6 +19,7 @@ def crash_record(connection):
         raise AssertionError(f'terminal rejected CRASH: {reply.get("status")}')
     head, _, message = reply['data'].partition(' message=')
     return dict(reply_fields(head), message=message)
+
 
 def expect(connection, command, status):
     if status == 'INVALID':

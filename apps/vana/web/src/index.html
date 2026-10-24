@@ -48,6 +48,25 @@ input[type=datetime-local] {
 .warn { color: var(--amber); }
 .alert { color: var(--red); }
 footer { margin-top: 24px; display: flex; justify-content: space-between; align-items: center; }
+a.back { color: var(--accent); text-decoration: none; font-size: 17px; display: inline-block; margin: 4px 0 8px; }
+.open { display: block; color: inherit; text-decoration: none; }
+.hint { display: block; margin-bottom: 12px; color: var(--accent); font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 10px; margin: 8px 0 4px; }
+.grid .value { font-size: 26px; }
+.grid .caption { display: block; margin-top: 4px; font-size: 12px; }
+.seg { display: inline-flex; background: var(--raised); border-radius: 10px; padding: 2px; }
+.seg button { background: none; font-size: 14px; padding: 6px 12px; border-radius: 8px; color: var(--secondary); }
+.seg button.on { background: var(--card); color: var(--white); }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.chart-head .read { font-size: 15px; }
+canvas { display: block; width: 100%; touch-action: pan-y; }
+.axis { display: flex; justify-content: space-between; margin: 2px 4px 8px; }
+.zones { display: flex; height: 10px; gap: 2px; margin: 10px 0 8px; }
+.zones i { display: block; border-radius: 3px; min-width: 2px; }
+.zrow { display: flex; align-items: center; gap: 8px; font-size: 15px; padding: 2px 0; }
+.zrow .badge { flex: none; }
+.zrow b { flex: 1; font-weight: 700; color: var(--muted); }
+svg { display: block; width: 100%; height: auto; max-height: 340px; }
 </style>
 </head>
 <body>
@@ -123,25 +142,490 @@ function rideCard(ride) {
   }
   const dot = (on, color) => el('span', { class: 'badge', style: `background:${on ? color : 'var(--tertiary)'}` });
   return el('div', { class: 'card' },
-    el('div', { class: 'ride-top' },
-      el('span', { class: 'ride-date' }, when(ride.start)),
-      el('span', { class: 'badges', title: 'GPS · power · heart rate' },
-        dot(ride.gps, 'var(--white)'), dot(ride.power, 'var(--power)'), dot(ride.heart, 'var(--heart)'))),
-    el('div', { class: 'metrics' },
-      metric(duration(ride.duration_s), 'TIME', 'var(--white)'),
-      ride.distance_m == null ? '' : metric((ride.distance_m / 1000).toFixed(1), 'KM', 'var(--white)')),
+    el('a', { class: 'open', href: `#/ride/${ride.id}` },
+      el('div', { class: 'ride-top' },
+        el('span', { class: 'ride-date' }, when(ride.start)),
+        el('span', { class: 'badges', title: 'GPS · power · heart rate' },
+          dot(ride.gps, 'var(--white)'), dot(ride.power, 'var(--power)'), dot(ride.heart, 'var(--heart)'))),
+      el('div', { class: 'metrics' },
+        metric(duration(ride.duration_s), 'TIME', 'var(--white)'),
+        ride.distance_m == null ? '' : metric((ride.distance_m / 1000).toFixed(1), 'KM', 'var(--white)')),
+      el('span', { class: 'hint' }, 'Charts and analysis ›')),
     ride.end === 'recovered' ? el('div', { class: 'note warn' }, 'Recovered after power loss') : '',
     actions);
 }
 
+// ---- FIT reader: record (20) and session (18) messages, little or big endian.
+const SEMI = 180 / 2 ** 31;
+const RECORD_FIELDS = { 253: 0, 0: 1, 1: 2, 5: 3, 6: 4, 3: 5, 4: 6, 7: 7, 9: 8, 2: 9, 78: 10 };
+const SIGNED = new Set([1, 3, 5]);
+const ZERO_INVALID = new Set([10, 11, 12]);
+
+function readNumber(dv, at, len, type, le) {
+  let v, bad;
+  if (len === 1) { v = SIGNED.has(type) ? dv.getInt8(at) : dv.getUint8(at); bad = SIGNED.has(type) ? 0x7f : 0xff; }
+  else if (len === 2) { v = SIGNED.has(type) ? dv.getInt16(at, le) : dv.getUint16(at, le); bad = SIGNED.has(type) ? 0x7fff : 0xffff; }
+  else if (len === 4) { v = SIGNED.has(type) ? dv.getInt32(at, le) : dv.getUint32(at, le); bad = SIGNED.has(type) ? 0x7fffffff : 0xffffffff; }
+  else return NaN;
+  return v === (ZERO_INVALID.has(type) ? 0 : bad) ? NaN : v;
+}
+
+function readFit(buffer) {
+  const dv = new DataView(buffer);
+  const start = dv.byteLength > 0 ? dv.getUint8(0) : 0;
+  const end = Math.min(dv.byteLength, dv.byteLength >= 8 ? start + dv.getUint32(4, true) : 0);
+  const defs = [];
+  let count = 0, cols = null, row = 0, stamp = NaN, truncated = false;
+  const session = {};
+  // Two passes over the same walk: the first counts records, the second fills one typed array per field.
+  for (let pass = 0; pass < 2; pass++) {
+    if (pass) cols = Array.from({ length: 11 }, () => new Float64Array(count).fill(NaN));
+    defs.length = 0; row = 0; stamp = NaN; truncated = false;
+    let pos = start;
+    while (pos < end) {
+      const h = dv.getUint8(pos++);
+      let d, offset = NaN;
+      if (h & 0x80) { d = defs[(h >> 5) & 3]; offset = h & 31; }
+      else if (h & 0x40) {
+        if (pos + 5 > end) { truncated = true; break; }
+        const le = dv.getUint8(pos + 1) === 0;
+        const global = dv.getUint16(pos + 2, le), n = dv.getUint8(pos + 4);
+        pos += 5;
+        if (pos + n * 3 > end) { truncated = true; break; }
+        const fields = [];
+        let size = 0;
+        for (let i = 0; i < n; i++, pos += 3) {
+          const len = dv.getUint8(pos + 1);
+          fields.push([dv.getUint8(pos), len, dv.getUint8(pos + 2) & 31, size]);
+          size += len;
+        }
+        if (h & 0x20) {
+          if (pos >= end) { truncated = true; break; }
+          const dn = dv.getUint8(pos++);
+          if (pos + dn * 3 > end) { truncated = true; break; }
+          for (let i = 0; i < dn; i++) size += dv.getUint8(pos + i * 3 + 1);
+          pos += dn * 3;
+        }
+        defs[h & 15] = { global, fields, size, le };
+        continue;
+      } else d = defs[h & 15];
+      if (!d) break;
+      if (pos + d.size > end) { truncated = true; break; }
+      if (d.global === 20) {
+        if (cols) {
+          for (const [num, len, type, off] of d.fields) {
+            const slot = RECORD_FIELDS[num];
+            if (slot !== undefined) cols[slot][row] = readNumber(dv, pos + off, len, type, d.le);
+          }
+          if (!Number.isNaN(offset)) {
+            // A compressed header carries the low five bits of the timestamp.
+            if (!Number.isNaN(stamp)) stamp += (offset - (stamp & 31) + 32) % 32;
+            cols[0][row] = stamp;
+          } else if (!Number.isNaN(cols[0][row])) stamp = cols[0][row];
+        }
+        row++;
+      } else if (d.global === 18 && cols) {
+        for (const [num, len, type, off] of d.fields) session[num] = readNumber(dv, pos + off, len, type, d.le);
+      }
+      pos += d.size;
+    }
+    count = row;
+  }
+  const n = count;
+  const [stampCol, lat, lon, dist, speed, heart, cadence, power, grade, low, high] = cols;
+  const t = new Float64Array(n);
+  const base = stampCol.find(Number.isFinite);
+  for (let i = 0; i < n; i++) {
+    t[i] = Number.isFinite(stampCol[i]) && base !== undefined ? stampCol[i] - base : i;
+    lat[i] *= SEMI; lon[i] *= SEMI;
+    dist[i] /= 100000; speed[i] /= 1000 / 3.6; grade[i] /= 100;
+    high[i] = Number.isFinite(high[i]) ? high[i] / 5 - 500 : low[i] / 5 - 500;
+  }
+  return {
+    n, t, lat, lon, dist, speed, heart, cadence, power, grade, altitude: high, truncated,
+    timer: session[8] / 1000, total: session[9] / 100000, climb: session[22],
+  };
+}
+
+// ---- Analysis
+function range(a, from = 0, to = a.length) {
+  let n = 0, sum = 0, min = Infinity, max = -Infinity, first = NaN, last = NaN;
+  for (let i = from; i < to; i++) {
+    const v = a[i];
+    if (!Number.isFinite(v)) continue;
+    if (!n) first = v;
+    last = v; n++; sum += v;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return { n, sum, min, max, first, last, mean: n ? sum / n : NaN };
+}
+const mean = (a) => range(a).mean;
+const peak = (a) => (range(a).n ? range(a).max : NaN);
+
+// Power on a 1 s grid over the records alone. A stopped timer leaves a gap in the
+// timestamps that no reading covers, so the grid joins across it.
+function grid(ride) {
+  const step = (i) => {
+    const dt = i + 1 < ride.n ? Math.round(ride.t[i + 1] - ride.t[i]) : 1;
+    return dt >= 1 && dt <= 10 ? dt : 1;
+  };
+  let total = 0;
+  for (let i = 0; i < ride.n; i++) total += step(i);
+  const out = new Float32Array(total);
+  let at = 0;
+  for (let i = 0; i < ride.n; i++) for (let k = step(i); k > 0; k--) out[at++] = ride.power[i] || 0;
+  return out;
+}
+
+const CURVE_SPANS = [1, 5, 10, 30, 60, 300, 600, 1200, 3600];
+function powerCurve(watts) {
+  const sums = new Float64Array(watts.length + 1);
+  for (let i = 0; i < watts.length; i++) sums[i + 1] = sums[i] + watts[i];
+  const out = [];
+  for (const span of CURVE_SPANS) {
+    if (span > watts.length) break;
+    let best = 0;
+    for (let i = span; i <= watts.length; i++) best = Math.max(best, sums[i] - sums[i - span]);
+    out.push([span, best / span]);
+  }
+  return out;
+}
+
+function normalized(watts) {
+  if (watts.length < 30) return NaN;
+  let sum = 0, run = 0, count = 0;
+  for (let i = 0; i < watts.length; i++) {
+    run += watts[i] - (i >= 30 ? watts[i - 30] : 0);
+    if (i >= 29) { sum += (run / 30) ** 4; count++; }
+  }
+  return (sum / count) ** 0.25;
+}
+
+// Ascent with a 2 m hysteresis, so barometer noise does not add up.
+function ascent(altitude) {
+  let up = 0, ref = NaN;
+  for (const a of altitude) {
+    if (!Number.isFinite(a)) continue;
+    if (Number.isNaN(ref)) ref = a;
+    if (a > ref + 2) { up += a - ref; ref = a; } else if (a < ref - 2) ref = a;
+  }
+  return up;
+}
+
+// Lower bounds as a percentage of FTP (power) or LTHR (heart rate), as the device counts them.
+const POWER_ZONES = [0, 55, 75, 90, 105, 120, 150];
+const HEART_ZONES = [0, 81, 90, 94, 100];
+const ZONE_COLORS = ['#8e8e93', '#0a84ff', '#30d158', '#ffd60a', '#ff9f0a', '#ff453a', '#bf5af2'];
+
+function zoneSeconds(values, bounds, base) {
+  const seconds = new Array(bounds.length).fill(0);
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    let z = 0;
+    // Power zones start above their bound, heart zones at it.
+    while (z + 1 < bounds.length && (bounds === POWER_ZONES ? v > Math.round(base * bounds[z + 1] / 100) : v >= Math.round(base * bounds[z + 1] / 100))) z++;
+    seconds[z]++;
+  }
+  return seconds;
+}
+
+// ---- Drawing
+const CHARTS = [
+  ['speed', 'Speed', 'KM/H', '--speed', 1],
+  ['power', 'Power', 'W', '--power', 0],
+  ['heart', 'Heart rate', 'BPM', '--heart', 0],
+  ['cadence', 'Cadence', 'RPM', '--cadence', 0],
+  ['altitude', 'Altitude', 'M', '--amber', 1],
+  ['grade', 'Grade', '%', '--amber', 1],
+];
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const fixed = (v) => (Number.isFinite(v) ? `${Math.round(v)}` : '–');
+
+function canvasFor(node, height) {
+  const ratio = window.devicePixelRatio || 1, w = node.clientWidth;
+  node.width = Math.round(w * ratio);
+  node.height = Math.round(height * ratio);
+  const ctx = node.getContext('2d');
+  ctx.scale(ratio, ratio);
+  return [ctx, w, height];
+}
+
+// One column of values per pixel: the mean of what falls in it.
+function columns(xs, ys, w) {
+  const { first: x0, last: x1 } = range(xs), span = (x1 - x0) || 1;
+  const sum = new Float64Array(w), count = new Uint32Array(w);
+  for (let i = 0; i < xs.length; i++) {
+    if (!Number.isFinite(ys[i]) || !Number.isFinite(xs[i])) continue;
+    const c = Math.min(w - 1, Math.floor((xs[i] - x0) / span * w));
+    sum[c] += ys[i]; count[c]++;
+  }
+  return Float32Array.from(sum, (s, c) => (count[c] ? s / count[c] : NaN));
+}
+
+function lineChart(node, xs, ys, color, floor, cursor) {
+  const [ctx, w, h] = canvasFor(node, 96);
+  const cols = columns(xs, ys, w), seen = range(cols);
+  if (!seen.n) return cols;
+  let lo = seen.min, hi = seen.max;
+  if (floor === 0) lo = Math.min(lo, 0);
+  if (hi - lo < 1) hi = lo + 1;
+  const pad = 14, y = (v) => h - 2 - (v - lo) / (hi - lo) * (h - 2 - pad);
+  ctx.strokeStyle = css('--raised'); ctx.lineWidth = 1;
+  for (const g of [0, .5, 1]) { const gy = Math.round(h - 2 - g * (h - 2 - pad)) + .5; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
+  ctx.fillStyle = css('--secondary'); ctx.font = '700 11px system-ui'; ctx.textAlign = 'right';
+  ctx.fillText(Math.round(hi), w - 2, 10);
+  ctx.strokeStyle = css(color); ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+  const fill = ctx.createLinearGradient(0, pad, 0, h);
+  fill.addColorStop(0, css(color) + '55'); fill.addColorStop(1, css(color) + '00');
+  let open = false, last = 0;
+  const close = () => {
+    if (!open) return;
+    ctx.stroke();
+    ctx.lineTo(last, h); ctx.lineTo(first, h); ctx.fillStyle = fill; ctx.fill(); open = false;
+  };
+  let first = 0;
+  for (let c = 0; c < w; c++) {
+    if (Number.isNaN(cols[c])) { close(); continue; }
+    if (!open) { ctx.beginPath(); ctx.moveTo(c, y(cols[c])); first = c; open = true; } else ctx.lineTo(c, y(cols[c]));
+    last = c;
+  }
+  close();
+  return cols;
+}
+
+function paintCursor(node, cursor) {
+  if (cursor == null) return;
+  const ctx = node.getContext('2d'), ratio = node.width / node.clientWidth;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const x = Math.round(cursor * (node.clientWidth - 1)) + .5;
+  ctx.strokeStyle = css('--white'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 96); ctx.stroke();
+}
+
+function curveChart(node, curve, ftp) {
+  const [ctx, w, h] = canvasFor(node, 150);
+  const left = 34, bottom = 18, top = 8, right = 10;
+  const hi = Math.max(...curve.map((c) => c[1]), ftp || 0) * 1.08 || 1;
+  const x = (s) => left + Math.log(s) / Math.log(CURVE_SPANS[CURVE_SPANS.length - 1]) * (w - left - right);
+  const y = (v) => h - bottom - v / hi * (h - bottom - top);
+  ctx.font = '700 11px system-ui'; ctx.fillStyle = css('--secondary'); ctx.strokeStyle = css('--raised'); ctx.lineWidth = 1;
+  ctx.textAlign = 'right';
+  for (const g of [0, .5, 1]) {
+    const v = g * hi, gy = Math.round(y(v)) + .5;
+    ctx.beginPath(); ctx.moveTo(left, gy); ctx.lineTo(w, gy); ctx.stroke();
+    ctx.fillText(Math.round(v), left - 5, gy + 4);
+  }
+  ctx.textAlign = 'center';
+  const names = { 1: '1s', 5: '5s', 10: '10s', 30: '30s', 60: '1m', 300: '5m', 600: '10m', 1200: '20m', 3600: '1h' };
+  for (const s of CURVE_SPANS) if (s !== 10 && s !== 600) ctx.fillText(names[s], x(s), h - 4);
+  if (ftp) {
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = css('--tertiary');
+    ctx.beginPath(); ctx.moveTo(left, y(ftp)); ctx.lineTo(w, y(ftp)); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.strokeStyle = css('--power'); ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  curve.forEach(([s, v], i) => (i ? ctx.lineTo(x(s), y(v)) : ctx.moveTo(x(s), y(v))));
+  ctx.stroke();
+  ctx.fillStyle = css('--power');
+  for (const [s, v] of curve) { ctx.beginPath(); ctx.arc(x(s), y(v), 3, 0, 7); ctx.fill(); }
+}
+
+const SVG = 'http://www.w3.org/2000/svg';
+function trackSvg(ride) {
+  const pts = [];
+  for (let i = 0; i < ride.n; i++) if (Number.isFinite(ride.lat[i]) && Number.isFinite(ride.lon[i])) pts.push([i, ride.lat[i], ride.lon[i]]);
+  if (pts.length < 2) return null;
+  const k = Math.cos(pts[0][1] * Math.PI / 180);
+  const xs = pts.map((p) => p[2] * k), ys = pts.map((p) => -p[1]);
+  const rx = range(xs), ry = range(ys), x0 = rx.min, y0 = ry.min, span = Math.max(rx.max - x0, ry.max - y0) || 1e-6;
+  const W = 300, m = 14, s = (W - 2 * m) / span;
+  const w = (rx.max - x0) * s + 2 * m, h = (ry.max - y0) * s + 2 * m;
+  const at = pts.map((p, i) => [m + (xs[i] - x0) * s, m + (ys[i] - y0) * s, p[0]]);
+  const step = Math.ceil(at.length / 700);
+  const line = at.filter((_, i) => i % step === 0 || i === at.length - 1).map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w.toFixed(0)} ${h.toFixed(0)}`);
+  const add = (tag, attrs) => { const n = document.createElementNS(SVG, tag); for (const a in attrs) n.setAttribute(a, attrs[a]); svg.append(n); return n; };
+  add('polyline', { points: line, fill: 'none', stroke: css('--speed'), 'stroke-width': 3, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+  add('circle', { cx: at[0][0], cy: at[0][1], r: 5, fill: css('--green') });
+  add('circle', { cx: at[at.length - 1][0], cy: at[at.length - 1][1], r: 5, fill: css('--red') });
+  const dot = add('circle', { r: 6, fill: css('--white'), stroke: '#000', 'stroke-width': 2, visibility: 'hidden' });
+  svg.mark = (index) => {
+    if (index == null) return dot.setAttribute('visibility', 'hidden');
+    let best = at[0];
+    for (const p of at) if (Math.abs(p[2] - index) < Math.abs(best[2] - index)) best = p;
+    dot.setAttribute('cx', best[0]); dot.setAttribute('cy', best[1]); dot.setAttribute('visibility', 'visible');
+  };
+  return svg;
+}
+
+let profile = null;
+async function profileOf() {
+  profile ??= await api('/api/status').catch(() => ({ ftp: 0, lthr: 0 }));
+  return profile;
+}
+
+function stat(value, unit, color = 'var(--white)') {
+  return el('div', {}, el('span', { class: 'value', style: `color:${color}` }, value), el('span', { class: 'unit' }, unit));
+}
+function stats(items) {
+  return el('div', { class: 'grid' }, items.map(([v, caption, color]) =>
+    el('div', {}, el('span', { class: 'value', style: `color:${color || 'var(--white)'}` }, v), el('span', { class: 'caption' }, caption))));
+}
+
+function zoneCard(title, seconds, names, colors) {
+  const total = seconds.reduce((a, b) => a + b, 0);
+  if (!total) return '';
+  return el('div', { class: 'card' }, el('div', { class: 'caption' }, title),
+    el('div', { class: 'zones' }, seconds.map((s, i) => (s ? el('i', { style: `flex:${s};background:${colors[i]}` }) : ''))),
+    seconds.map((s, i) => (s ? el('div', { class: 'zrow' }, el('span', { class: 'badge', style: `background:${colors[i]}` }),
+      el('b', {}, names[i]), el('span', {}, duration(s)), el('span', { class: 'unit', style: 'width:38px;text-align:right' }, `${Math.round(100 * s / total)}%`)) : '')));
+}
+
+let generation = 0, pending = null, onResize = null;
+function leaveRide() {
+  generation++;
+  pending?.abort();
+  removeEventListener('resize', onResize);
+}
+
+async function showRide(id) {
+  leaveRide();
+  const mine = generation;
+  pending = new AbortController();
+  const root = el('div', {}, el('a', { class: 'back', href: '#/' }, '‹ Rides'), el('div', { class: 'empty caption' }, 'Reading ride…'));
+  $('list').replaceChildren(root);
+  $('foot').textContent = '';
+  const info = rides.find((r) => r.id === id);
+  // Rides recorded without a clock are dated by the phone, so the file only needs some start.
+  const query = info && info.start == null ? '?start=1000000000' : '';
+  let ride, me;
+  try {
+    me = await profileOf();
+    const response = await fetch(`/api/activities/${id}.fit${query}`, { headers: { 'X-Session': token }, cache: 'no-store', signal: pending.signal });
+    if (response.status === 401) throw new Error('This session ended. Open Connect phone on the device and scan again.');
+    if (!response.ok) throw new Error(`Device answered ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    if (mine !== generation) return;
+    ride = readFit(bytes);
+    if (ride.n < 2) throw new Error('This ride has no records yet.');
+  } catch (error) {
+    if (mine !== generation) return;
+    root.replaceChildren(el('a', { class: 'back', href: '#/' }, '‹ Rides'), el('div', { class: 'note alert' }, error.message));
+    return;
+  }
+  const seconds = Number.isFinite(ride.timer) ? ride.timer : ride.t[ride.n - 1];
+  const km = Number.isFinite(ride.total) ? ride.total : range(ride.dist).last;
+  const climb = Number.isFinite(ride.climb) ? ride.climb : range(ride.altitude).n ? ascent(ride.altitude) : NaN;
+  const watts = grid(ride), np = normalized(watts), ftp = me.ftp, lthr = me.lthr;
+  const hasPower = range(ride.power).n > 0;
+  const items = [[duration(Math.round(seconds)), 'Time'], [Number.isFinite(km) ? km.toFixed(1) : '–', 'Km']];
+  if (range(ride.speed).n) items.push([mean(ride.speed).toFixed(1), 'Avg km/h', 'var(--speed)']);
+  if (hasPower) items.push([fixed(mean(ride.power)), 'Avg W', 'var(--power)']);
+  if (range(ride.heart).n) items.push([fixed(mean(ride.heart)), 'Avg bpm', 'var(--heart)']);
+  if (Number.isFinite(climb)) items.push([fixed(climb), 'Ascent m', 'var(--amber)']);
+  const cards = [el('div', { class: 'card' },
+    el('div', { class: 'caption' }, info ? when(info.start) : 'Ride'), stats(items),
+    el('div', { class: 'row', style: 'margin-top:8px' }, el('a', { class: 'button', href: `/api/activities/${id}.fit`, download: '' }, 'Download .fit')))];
+  if (hasPower && Number.isFinite(np) && ftp) {
+    const factor = np / ftp;
+    cards.push(el('div', { class: 'card' }, el('div', { class: 'caption' }, `Training load · FTP ${ftp} W`),
+      stats([[Math.round(np), 'NP W', 'var(--power)'], [factor.toFixed(2), 'IF'], [Math.round(seconds * np * factor / (ftp * 36)), 'TSS']])));
+  }
+
+  // Charts over time or distance, with one shared cursor.
+  const axis = { by: 'time' };
+  const live = CHARTS.filter(([key]) => range(ride[key]).n > 1)
+    .filter(([key]) => key !== 'grade' || !range(ride.altitude).n);
+  const panels = live.map(([key, name, unit, color, floor]) => {
+    const node = el('canvas', {}), read = el('span', { class: 'read', style: `color:var(${color})` });
+    const p = { key, node, read, unit, color, floor, cols: null, name };
+    p.box = el('div', { class: 'card' },
+      el('div', { class: 'chart-head' }, el('span', { class: 'caption' }, `${name} · ${unit}`), read), node);
+    return p;
+  });
+  const left = el('span', { class: 'caption' }), mid = el('span', { class: 'caption' }), right = el('span', { class: 'caption' });
+  const xs = () => (axis.by === 'time' ? ride.t : ride.dist);
+  let cursor = null, track = null;
+  const summary = (p) => `avg ${fixed(mean(ride[p.key]))} · max ${fixed(peak(ride[p.key]))}`;
+  const paint = () => {
+    for (const p of panels) {
+      p.cols = lineChart(p.node, xs(), ride[p.key], p.color, p.floor);
+      if (cursor != null) {
+        paintCursor(p.node, cursor);
+        const v = p.cols[Math.min(p.cols.length - 1, Math.round(cursor * (p.cols.length - 1)))];
+        p.read.textContent = fixed(v);
+      } else p.read.textContent = summary(p);
+    }
+    const { first, last } = range(xs());
+    axis.lo = first; axis.hi = last;
+    const label = (f) => {
+      const v = first + (last - first) * f;
+      return axis.by === 'time' ? duration(Math.round(v)) : `${v.toFixed(1)} km`;
+    };
+    left.textContent = label(0); mid.textContent = label(.5); right.textContent = label(1);
+    if (track) track.mark(cursor == null ? null : Math.round(cursor * (ride.n - 1)));
+  };
+  const move = (event) => {
+    const box = panels[0].node.getBoundingClientRect();
+    const point = event.touches ? event.touches[0] : event;
+    // The cursor is a fraction of the axis; the track reads it by record order.
+    cursor = Math.max(0, Math.min(1, (point.clientX - box.left) / box.width));
+    const x = xs(), target = axis.lo + cursor * (axis.hi - axis.lo);
+    let i = 0;
+    while (i + 1 < ride.n && !(x[i] >= target)) i++;
+    paint(); if (track) track.mark(i);
+  };
+  const seg = el('div', { class: 'seg' }, ['time', 'distance'].map((by) => el('button', {
+    type: 'button', class: by === axis.by ? 'on' : '',
+    onclick: (event) => {
+      axis.by = by; cursor = null;
+      for (const b of seg.children) b.classList.toggle('on', b === event.currentTarget);
+      paint();
+    },
+  }, by === 'time' ? 'Time' : 'Distance')));
+  cards.push(el('div', { class: 'row', style: 'justify-content:space-between;margin:10px 0 8px' }, el('span', { class: 'caption' }, 'Ride'), seg));
+  for (const p of panels) {
+    for (const name of ['pointerdown', 'pointermove']) p.node.addEventListener(name, move);
+    p.node.addEventListener('pointerleave', () => { cursor = null; paint(); });
+    cards.push(p.box);
+  }
+  if (panels.length) cards.push(el('div', { class: 'axis' }, left, mid, right));
+  if (ride.truncated) cards.push(el('div', { class: 'note warn' }, 'This file ends early. Showing what it holds.'));
+  if (!range(ride.altitude).n && panels.length) cards.push(el('div', { class: 'note' }, 'This ride has no altitude. Grade is shown instead.'));
+
+  if (hasPower) {
+    const curve = powerCurve(watts), node = el('canvas', {});
+    cards.push(el('div', { class: 'card' }, el('div', { class: 'caption' }, 'Power curve · best average W'), node));
+    cards.curve = () => curveChart(node, curve, ftp);
+    cards.push(el('div', { class: 'note' }, curve.map(([s, v]) => `${s < 60 ? s + ' s' : s / 60 + ' min'} ${Math.round(v)} W`).join(' · ')));
+  }
+  if (hasPower && ftp) cards.push(zoneCard('Time in power zones', zoneSeconds(ride.power, POWER_ZONES, ftp),
+    ['Z1 Recovery', 'Z2 Endurance', 'Z3 Tempo', 'Z4 Threshold', 'Z5 VO2 max', 'Z6 Anaerobic', 'Z7 Sprint'], ZONE_COLORS));
+  if (range(ride.heart).n && lthr) cards.push(zoneCard('Time in heart zones', zoneSeconds(ride.heart, HEART_ZONES, lthr),
+    ['Z1 Recovery', 'Z2 Endurance', 'Z3 Tempo', 'Z4 Threshold', 'Z5 Max'], ZONE_COLORS.slice(0, 5)));
+  track = trackSvg(ride);
+  if (track) cards.push(el('div', { class: 'card' }, el('div', { class: 'caption' }, 'Track'), track));
+
+  root.replaceChildren(el('a', { class: 'back', href: '#/' }, '‹ Rides'), ...cards);
+  paint();
+  cards.curve?.();
+  onResize = () => { paint(); cards.curve?.(); };
+  addEventListener('resize', onResize);
+}
+
+let rides = [];
 async function load() {
   try {
     // One request at a time: the device serves one connection.
     const status = await api('/api/status');
     const list = await api('/api/activities');
+    profile = status;
     const battery = status.battery == null ? '' : `Battery ${status.battery}%`;
     $('status').replaceChildren(el('span', {}, `FTP ${status.ftp} W`), el('span', {}, battery));
-    const rides = list.activities;
+    rides = list.activities;
+    if (location.hash.startsWith('#/ride/')) return route();
     $('list').replaceChildren(...(rides.length ? rides.map(rideCard)
       : [el('div', { class: 'empty caption' }, list.indexing ? 'Reading rides…' : 'No rides yet')]));
     $('foot').textContent = list.indexing ? 'Reading rides…' : `${rides.length} rides`;
@@ -150,6 +634,13 @@ async function load() {
     $('status').replaceChildren(el('span', { class: 'alert' }, error.message));
   }
 }
+
+let showing = '';
+function route() {
+  const match = /^#\/ride\/(.+)$/.exec(location.hash);
+  if (match) { showing = match[1]; showRide(decodeURIComponent(match[1])); } else if (showing) { showing = ''; leaveRide(); load(); }
+}
+addEventListener('hashchange', route);
 
 $('done').addEventListener('click', async () => {
   try { await api('/api/close', { method: 'POST' }); } catch {}

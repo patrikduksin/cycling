@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.runner import STARTUP_STOPPED
-from cycling_devtools.harness.stress import PREFERENCES, read, validate
+from cycling_devtools.harness.stress import PREFERENCES, fields, read, validate
 from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
@@ -84,7 +84,12 @@ def reopen(port, directory, label, deadline=20):
         try:
             connection.__enter__()
             entered = True
-            read(connection, 'INFO')
+            reply = connection.terminal_command('INFO')
+            if reply.get('id') == 0 and reply['status'] == 'INVALID':
+                # After a reset the device rejects the line the reset cut off, and
+                # that id-0 reply answers the first request. INFO only reads.
+                reply = connection.terminal_command('INFO')
+            fields(reply)
             return connection
         except OSError, RuntimeError, TimeoutError:
             if entered:

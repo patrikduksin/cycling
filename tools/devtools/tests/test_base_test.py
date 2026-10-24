@@ -5,6 +5,7 @@ from cycling_devtools.harness.base import (
     apply,
     check_overlong,
     expect,
+    idle_frames_allowed,
     power_cycle,
     preserved,
     settle,
@@ -27,6 +28,14 @@ class Connection:
 
 
 class BaseTests(unittest.TestCase):
+    def test_base_firmware_draws_nothing_while_idle(self):
+        self.assertEqual(idle_frames_allowed(dict(cycling='false'), 60_000), 0)
+
+    def test_vana_may_draw_twice_a_second_while_idle(self):
+        self.assertEqual(idle_frames_allowed(dict(cycling='true'), 5_400), 12)
+        self.assertEqual(idle_frames_allowed(dict(cycling='true'), 10_900), 23)
+        self.assertLess(idle_frames_allowed(dict(cycling='true'), 10_900), 26)
+
     def test_ambiguous_save_is_not_replayed(self):
         connection = Connection()
         settings = dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='-180')

@@ -12,6 +12,19 @@ from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
 
+def idle_frames_allowed(build, elapsed_ms):
+    """Frames an idle device may submit in `elapsed_ms`.
+
+    Base firmware draws only on change. VANA keeps drawing while awake: once a
+    second on still pages, twice while something animates, as the battery does
+    on USB. A state change pulls one frame forward, and the window may start
+    just before a frame is due.
+    """
+    if build.get('cycling') == 'false':
+        return 0
+    return int(elapsed_ms) * 2 // 1000 + 2
+
+
 def crash_record(connection):
     """CRASH's fields; the message is the rest of the reply and may hold spaces."""
     reply = connection.terminal_command('CRASH')
@@ -221,8 +234,13 @@ def run(args):
         report['position_delta'] = validate('POSITION', position, read(connection, 'POSITION'))
         report['input_delta'] = validate('INPUT', inputs, read(connection, 'INPUT'))
         after = read(connection, 'STATUS')
-        if after['display_submissions'] != baseline['display_submissions']:
-            raise AssertionError('display submitted during no-render acquisition window')
+        submitted = int(after['display_submissions']) - int(baseline['display_submissions'])
+        allowed = idle_frames_allowed(build, int(after['uptime_ms']) - int(baseline['uptime_ms']))
+        report['idle_frames'] = dict(submitted=submitted, allowed=allowed)
+        if submitted > allowed:
+            raise AssertionError(
+                f'display submitted {submitted} frames during no-render acquisition window, at most {allowed}'
+            )
         if after['storage_ops'] != baseline['storage_ops']:
             raise AssertionError('storage operation during read-only acquisition window')
         connection.__exit__(None, None, None)

@@ -758,6 +758,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     fn sensor(device_type: u8, device_number: u16) -> device_api::ant::Identity {
         device_api::ant::Identity {
@@ -848,7 +849,7 @@ mod tests {
         assert!(!migrated.options.wheel.manual);
         assert_eq!(migrated.options.zone, Zone::utc(-3));
         assert_eq!(migrated.options.theme, Theme::Light);
-        assert_eq!(migrated.options.auto_lap_km, 10);
+        assert_eq!(migrated.options.auto_lap, AutoLap::Every(10));
         assert_eq!(migrated.sensors.peers().count(), 1);
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
@@ -960,6 +961,46 @@ mod tests {
             ..Record::default()
         };
         assert_eq!(decode(&encode(&record)), (record, Stored::Current));
+    }
+
+    /// Records older firmware wrote carry their auto lap byte (0 to 100)
+    /// unchanged under versions 3 to 6, and AT START composes with each.
+    #[test]
+    fn records_from_older_firmware_keep_their_auto_lap() {
+        let profile = TrainingProfile::new(250, 170).unwrap();
+        for (version, length) in [
+            (3, OPTIONS_LENGTH_V3),
+            (4, OPTIONS_LENGTH_V4),
+            (5, OPTIONS_LENGTH_V5),
+            (6, OPTIONS_LENGTH),
+        ] {
+            for (byte, auto_lap) in [
+                (0, AutoLap::Off),
+                (5, AutoLap::Every(5)),
+                (100, AutoLap::Every(100)),
+                (255, AutoLap::AtStart),
+            ] {
+                let mut options = Options::default().encode();
+                options[1] = byte;
+                let mut bytes = vec![version, 250, 0, 170, 0, 0];
+                bytes.extend_from_slice(&options[..length]);
+                let (loaded, stored) = decode(&bytes);
+                assert_eq!(loaded.options.auto_lap, auto_lap, "v{version} {byte}");
+                assert_eq!(loaded.profile, profile);
+                let want = if version == VERSION {
+                    Stored::Current
+                } else {
+                    Stored::Migrated
+                };
+                assert_eq!(stored, want, "v{version} {byte}");
+            }
+            // A byte no firmware wrote is damage in every version.
+            let mut options = Options::default().encode();
+            options[1] = 101;
+            let mut bytes = vec![version, 250, 0, 170, 0, 0];
+            bytes.extend_from_slice(&options[..length]);
+            assert_eq!(decode(&bytes).1, Stored::Malformed, "v{version}");
+        }
     }
 
     /// Older records keep every field they had, take the default options and

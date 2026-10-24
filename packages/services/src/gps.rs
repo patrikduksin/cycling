@@ -3,10 +3,14 @@
 const LINE: usize = 512;
 use device_api::gps::*;
 
-/// A reading at most this far behind the clock is the same clock read late
-/// (sentence latency, a 10 ms poll). Further behind is a correction the
+/// A reading less than this far behind the clock is the same clock read late
+/// (sentence latency, a 10 ms poll). Further behind may be a correction the
 /// receiver made, such as learning the leap seconds.
 const RESYNC_MS: u64 = 1_000;
+/// Readings, each at a different `now`, that must all be `RESYNC_MS` behind
+/// before the clock is stepped back. A stalled executor drains old sentences
+/// at one `now`, which looks like a correction until the next on-time one.
+const CONFIRM: u8 = 3;
 /// RMC two-digit years read as 2026..=2079. Earlier years are a GPS week
 /// rollover (2006/2007) or a stale receiver RTC. 80 and later is the 1980 GPS
 /// epoch default (`060180`) or a textbook sentence (`230394`), not 2080 or 2094.
@@ -51,10 +55,19 @@ struct Decoder {
     utc: Option<[u8; 6]>,
     current_epoch: Option<Epoch>,
     identity: Identity,
-    /// Receiver UTC at uptime zero, in ms: the latest `fix utc - uptime its RMC
-    /// was read at` over dated fixes. Each value is a lower bound, because a
-    /// sentence is read after its epoch.
-    clock: Option<u64>,
+    clock: Option<Clock>,
+}
+
+/// Receiver UTC at uptime zero, in ms: the latest `fix utc - uptime its RMC
+/// was read at` over dated fixes. Each value is a lower bound, because a
+/// sentence is read after its epoch. Uptime drifts from the receiver's clock
+/// by about a second after many hours awake, which is one accepted step back.
+#[derive(Clone, Copy, Debug)]
+struct Clock {
+    at_zero_ms: u64,
+    /// Readings in a row at least `RESYNC_MS` behind, each at its own `now`.
+    behind: u8,
+    behind_at: u64,
 }
 
 impl Default for Parser {
@@ -190,7 +203,7 @@ impl Parser {
                 .map(|(speed, _)| speed),
             epoch_ms,
             utc: self.decoder.utc,
-            utc_ms: self.decoder.clock.map(|clock| clock + now),
+            utc_ms: self.decoder.clock.map(|clock| clock.at_zero_ms + now),
             age_ms: age,
             bytes: self.bytes,
             valid_sentences: self.decoder.valid,
@@ -371,7 +384,10 @@ impl Decoder {
         let Some(observed) = dated_ms(date, epoch).and_then(|ms| ms.checked_sub(now)) else {
             return;
         };
-        self.clock = Some(steer(self.clock, observed));
+        match &mut self.clock {
+            Some(clock) => clock.read(observed, now),
+            clock => *clock = Some(Clock::new(observed)),
+        }
     }
 
     /// The HDOP of a GGA, for its epoch. Out of line for the same reason.
@@ -427,14 +443,35 @@ impl Epoch {
     }
 }
 
-/// The clock after one more reading. A later reading (less latency, or uptime
-/// running slow) moves it forward. A reading less than `RESYNC_MS` behind is
-/// ignored, so jitter never steps the clock back. One further behind is a
-/// correction and is taken.
-fn steer(clock: Option<u64>, observed: u64) -> u64 {
-    match clock {
-        Some(clock) if observed <= clock && clock - observed < RESYNC_MS => clock,
-        _ => observed,
+impl Clock {
+    fn new(observed: u64) -> Self {
+        Self {
+            at_zero_ms: observed,
+            behind: 0,
+            behind_at: 0,
+        }
+    }
+
+    /// One more reading, taken at uptime `now`. A later reading (less latency,
+    /// or uptime running slow) moves the clock forward. One less than
+    /// `RESYNC_MS` behind is ignored, so jitter never steps it back. One
+    /// further behind is a correction only once `CONFIRM` of them arrive at
+    /// different times in a row, and then the latest is taken.
+    fn read(&mut self, observed: u64, now: u64) {
+        let behind = self.at_zero_ms.saturating_sub(observed);
+        if behind < RESYNC_MS {
+            self.at_zero_ms = self.at_zero_ms.max(observed);
+            self.behind = 0;
+        } else {
+            if self.behind == 0 || now != self.behind_at {
+                self.behind += 1;
+                self.behind_at = now;
+            }
+            if self.behind >= CONFIRM {
+                self.at_zero_ms = observed;
+                self.behind = 0;
+            }
+        }
     }
 }
 
@@ -870,30 +907,76 @@ mod tests {
     }
 
     #[test]
-    fn a_second_or_more_behind_is_a_correction() {
-        let at = |time: &str, read_at: u64| {
+    fn a_second_or_more_behind_is_a_correction_once_confirmed() {
+        // The clock is set at 20 s; then readings arrive at 40, 41 and 42 s.
+        let after = |times: [&str; 3]| {
             let mut p = Parser::default();
             rmc(&mut p, "100020.00", "141026", 20_000);
-            rmc(&mut p, time, "141026", read_at);
-            p.snapshot(read_at).utc_ms.unwrap() - read_at
+            for (time, read_at) in times.iter().zip([40_000, 41_000, 42_000]) {
+                rmc(&mut p, time, "141026", read_at);
+            }
+            p.snapshot(42_000).utc_ms.unwrap() - 42_000
         };
         let uptime_zero = oct14(b"100000");
-        assert_eq!(at("100040.50", 40_000), uptime_zero + 500, "ahead is taken");
         assert_eq!(
-            at("100040.00", 40_500),
+            after(["100040.50", "100041.50", "100042.50"]),
+            uptime_zero + 500,
+            "ahead is taken at once"
+        );
+        assert_eq!(
+            after(["100039.50", "100040.50", "100041.50"]),
             uptime_zero,
-            "0.5 s behind is ignored"
+            "under a second behind is ignored"
         );
         assert_eq!(
-            at("100000.00", 40_000),
+            after(["100000.00", "100001.00", "100002.00"]),
             uptime_zero - 40_000,
-            "20 s behind is taken"
+            "20 s behind, three times, is taken"
         );
         assert_eq!(
-            at("100040.00", 41_000),
+            after(["100039.00", "100040.00", "100041.00"]),
             uptime_zero - 1_000,
-            "1 s behind is taken"
+            "1 s behind, three times, is taken"
         );
+        assert_eq!(
+            after(["100000.00", "100001.00", "100042.00"]),
+            uptime_zero,
+            "an on-time reading resets the count"
+        );
+        assert_eq!(
+            after(["100000.00", "100041.50", "100002.00"]),
+            uptime_zero + 500,
+            "so does one ahead"
+        );
+    }
+
+    #[test]
+    fn a_stall_drained_at_once_never_steps_the_clock_back() {
+        let mut p = Parser::default();
+        let mut last = 0;
+        let mut check = |p: &Parser, now: u64| {
+            let utc = p.snapshot(now).utc_ms.unwrap();
+            assert!(utc >= last, "step back at {now}: {utc} < {last}");
+            last = utc;
+        };
+        for second in 0..5u64 {
+            let now = second * 1000 + 100;
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
+            check(&p, now);
+        }
+        // The executor stalls for 3 s and then reads the buffered RMCs in one
+        // poll, each one late by its age.
+        check(&p, 8_100);
+        for second in 5..8u64 {
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", 8_100);
+        }
+        check(&p, 8_100);
+        for second in 8..12u64 {
+            let now = second * 1000 + 100;
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
+            check(&p, now);
+        }
+        assert_eq!(last, oct14(b"100011"), "ends on time");
     }
 
     #[test]
@@ -903,7 +986,6 @@ mod tests {
         let once = p.snapshot(5_000).utc_ms;
         rmc(&mut p, "100000.00", "141026", 5_000);
         assert_eq!(p.snapshot(5_000).utc_ms, once);
-        assert_eq!(steer(Some(7), 7), 7);
     }
 
     #[test]

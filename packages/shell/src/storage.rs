@@ -206,6 +206,29 @@ mod tests {
     }
 
     #[test]
+    fn settings_saved_after_a_torn_first_save_load_after_reboot() {
+        use crate::preferences::{Settings, Source};
+        let mut journal = Journal::new(Memory::default(), Region::Configuration);
+        journal.save(&Settings::new(40).unwrap().encode()).unwrap();
+        let mut store = Store { journal };
+        store.journal.flash_mut().bytes[0][20..24].fill(0xff);
+        let torn = store.journal.flash_mut().bytes[0];
+        assert_eq!(store.load().unwrap().source, Source::Missing);
+
+        let settings = Settings::new(75).unwrap();
+        store.save(settings).unwrap();
+
+        let mut rebooted = Store::new(Memory {
+            bytes: store.journal.flash_mut().bytes,
+            operations: 0,
+        });
+        let loaded = rebooted.load().unwrap();
+        assert_eq!(loaded.source, Source::Current);
+        assert_eq!(loaded.settings, settings);
+        assert_eq!(rebooted.journal.flash_mut().bytes[0], torn);
+    }
+
+    #[test]
     fn a_damaged_record_is_never_replaced_by_a_save() {
         use crate::preferences::tests::{Rng, arbitrary_settings, damage};
         use crate::preferences::{Source, decode};

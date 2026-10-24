@@ -34,10 +34,18 @@ pub enum Error<E> {
     PayloadTooLarge,
     OutputTooSmall,
     ReadbackFailed,
-    /// No committed supported record exists, but at least one sector is occupied.
+    /// No committed supported record exists, and the occupied sectors are not
+    /// one torn first save beside a blank sector.
     /// Preserve the bytes for inspection instead of treating them as unused flash.
     UnrecognizedJournal,
     UnsupportedGeometry,
+}
+
+/// Where the next save goes: after the newest committed record, or into a
+/// free sector with no committed record to follow.
+enum Scan {
+    Newest(usize, Record),
+    Free { sector: usize, sequence: u32 },
 }
 
 pub struct Journal<F> {
@@ -61,8 +69,7 @@ impl<F: OwnedFlash> Journal<F> {
     }
 
     pub fn load(&mut self, output: &mut [u8]) -> Result<Option<Record>, Error<F::Error>> {
-        let newest = self.scan()?;
-        let Some((sector, record)) = newest else {
+        let Scan::Newest(sector, record) = self.scan()? else {
             return Ok(None);
         };
         if output.len() < record.length {
@@ -84,10 +91,9 @@ impl<F: OwnedFlash> Journal<F> {
         if payload.len() > CAPACITY {
             return Err(Error::PayloadTooLarge);
         }
-        let newest = self.scan()?;
-        let (target, sequence) = match newest {
-            Some((sector, record)) => (1 - sector, record.sequence.wrapping_add(1)),
-            None => (0, 1),
+        let (target, sequence) = match self.scan()? {
+            Scan::Newest(sector, record) => (1 - sector, record.sequence.wrapping_add(1)),
+            Scan::Free { sector, sequence } => (sector, sequence),
         };
 
         self.scratch.0.fill(0xff);
@@ -128,7 +134,7 @@ impl<F: OwnedFlash> Journal<F> {
         Ok(record)
     }
 
-    fn scan(&mut self) -> Result<Option<(usize, Record)>, Error<F::Error>> {
+    fn scan(&mut self) -> Result<Scan, Error<F::Error>> {
         let geometry = self.flash.geometry(self.region);
         if geometry.capacity < SECTOR_COUNT * SECTOR_SIZE
             || geometry.program_size == 0
@@ -139,12 +145,14 @@ impl<F: OwnedFlash> Journal<F> {
             return Err(Error::UnsupportedGeometry);
         }
         let mut newest = None;
-        let mut occupied = false;
+        let mut blank = [false; SECTOR_COUNT];
+        let mut torn = [false; SECTOR_COUNT];
         for sector in 0..SECTOR_COUNT {
             self.flash
                 .read(self.region, sector * SECTOR_SIZE, &mut self.scratch.0)
                 .map_err(Error::Flash)?;
-            occupied |= self.scratch.0.iter().any(|byte| *byte != 0xff);
+            blank[sector] = self.scratch.0.iter().all(|byte| *byte == 0xff);
+            torn[sector] = torn_first_save(&self.scratch);
             if let Some(record) = decode(&self.scratch)
                 && newest
                     .map(|(_, current): (usize, Record)| newer(record.sequence, current.sequence))
@@ -153,10 +161,28 @@ impl<F: OwnedFlash> Journal<F> {
                 newest = Some((sector, record));
             }
         }
-        if newest.is_none() && occupied {
-            return Err(Error::UnrecognizedJournal);
+        if let Some((sector, record)) = newest {
+            return Ok(Scan::Newest(sector, record));
         }
-        Ok(newest)
+        // A first save cut before its commit word stays in place for
+        // inspection, and the next save goes into the other, blank sector.
+        // A commit word cut mid-program can read whole on a later boot, so
+        // that save outranks the torn sequence 1.
+        let free = |sector| {
+            Ok(Scan::Free {
+                sector,
+                sequence: 2,
+            })
+        };
+        match (blank, torn) {
+            ([true, true], _) => Ok(Scan::Free {
+                sector: 0,
+                sequence: 1,
+            }),
+            ([false, true], [true, false]) => free(1),
+            ([true, false], [false, true]) => free(0),
+            _ => Err(Error::UnrecognizedJournal),
+        }
     }
 }
 
@@ -174,6 +200,32 @@ fn decode(sector: &Sector) -> Option<Record> {
     let sequence = get_u32(bytes, 8);
     let payload = &bytes[HEADER_SIZE..HEADER_SIZE + length];
     (get_u32(bytes, 16) == checksum(sequence, payload)).then_some(Record { sequence, length })
+}
+
+/// Whether a sector holds a partial first save. Programming runs in order,
+/// so the header matches a sequence 1 header up to the byte where it stopped,
+/// that byte holds only bits of its target, and nothing after it is
+/// programmed. Once the header is whole, only the commit word may be partial.
+fn torn_first_save(sector: &Sector) -> bool {
+    let mut header = [0; 12];
+    header[0..4].copy_from_slice(&MAGIC);
+    put_u16(&mut header, 4, FORMAT_VERSION);
+    put_u16(&mut header, 6, HEADER_SIZE as u16);
+    put_u32(&mut header, 8, 1);
+    let bytes = &sector.0;
+    let commit = get_u32(bytes, COMMIT_OFFSET);
+    match bytes
+        .iter()
+        .zip(header)
+        .position(|(byte, target)| *byte != target)
+    {
+        None => commit != COMMITTED && commit & COMMITTED == COMMITTED,
+        Some(stop) => {
+            bytes[0] != 0xff
+                && bytes[stop] & header[stop] == header[stop]
+                && bytes[stop + 1..].iter().all(|byte| *byte == 0xff)
+        }
+    }
 }
 
 fn newer(candidate: u32, current: u32) -> bool {
@@ -424,7 +476,7 @@ pub(crate) mod tests {
 
     #[test]
     fn occupied_unrecognized_journals_refuse_load_and_save_without_mutation() {
-        for scenario in 0..4 {
+        for scenario in 0..8 {
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
             match scenario {
                 0 => journal.flash.bytes[0][0] = 0, // One unknown occupied sector.
@@ -433,6 +485,38 @@ pub(crate) mod tests {
                     .bytes
                     .iter_mut()
                     .for_each(|sector| sector.fill(0)),
+                // Two torn first saves: neither sector is free to write.
+                4 => {
+                    journal.save(b"existing").unwrap();
+                    journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
+                    journal.flash.bytes[1] = journal.flash.bytes[0];
+                }
+                // An uncommitted later save beside a blank sector is not a first save.
+                5 => {
+                    journal.save(b"older").unwrap();
+                    journal.save(b"existing").unwrap();
+                    journal.flash.bytes[1][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
+                    journal.flash.bytes[0].fill(0xff);
+                }
+                // A future format whose header is 28 bytes, not yet committed.
+                6 => {
+                    let header = &mut journal.flash.bytes[0];
+                    header[0..4].copy_from_slice(&MAGIC);
+                    put_u16(header, 4, 3);
+                    put_u16(header, 6, 28);
+                    put_u32(header, 8, 1);
+                    put_u32(header, 12, 5);
+                    put_u32(header, 16, 0);
+                    header[28..33].copy_from_slice(b"three");
+                }
+                // A torn sequence 3 whose older records were erased.
+                7 => {
+                    for payload in [b"one", b"two", b"new"] {
+                        journal.save(payload).unwrap();
+                    }
+                    journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
+                    journal.flash.bytes[1].fill(0xff);
+                }
                 _ => {
                     journal.save(b"existing").unwrap();
                     if scenario == 2 {
@@ -455,16 +539,64 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn torn_first_write_is_preserved_and_cannot_be_retried_as_empty() {
+    fn a_torn_first_save_is_preserved_and_never_blocks_the_next_save() {
+        for failed_operation in 2..6 {
+            for tear_bytes in [
+                0,
+                1,
+                2,
+                3,
+                4,
+                HEADER_SIZE,
+                HEADER_SIZE + 1,
+                2048,
+                SECTOR_SIZE,
+            ] {
+                let case =
+                    std::format!("failure at operation {failed_operation}, byte {tear_bytes}");
+                let mut journal = Journal::new(Memory::default(), Region::Configuration);
+                journal.flash.fail_after = Some(failed_operation);
+                journal.flash.tear_bytes = tear_bytes;
+                assert!(journal.save(b"first").is_err(), "{case}");
+                journal.flash.fail_after = None;
+                let mut output = [0; 8];
+                let landed = journal.load(&mut output).expect(&case);
+                if let Some(record) = landed {
+                    assert_eq!(&output[..record.length], b"first", "{case}");
+                }
+                let torn = journal.flash.bytes[0];
+                journal.save(b"retry").expect(&case);
+                if landed.is_none() && torn.iter().any(|byte| *byte != 0xff) {
+                    assert_eq!(journal.flash.bytes[0], torn, "{case}");
+                }
+
+                let record = reboot(&journal).load(&mut output).expect(&case).unwrap();
+                assert_eq!(&output[..record.length], b"retry", "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_torn_commit_word_that_later_reads_whole_loses_to_the_next_save() {
         let mut journal = Journal::new(Memory::default(), Region::Configuration);
-        journal.flash.fail_after = Some(3); // First payload program, after scan + erase.
-        journal.flash.tear_bytes = HEADER_SIZE + 1;
-        assert_eq!(journal.save(b"first"), Err(Error::Flash(())));
+        journal.flash.fail_after = Some(4);
+        journal.flash.tear_bytes = 2;
+        assert!(journal.save(b"first").is_err());
         journal.flash.fail_after = None;
-        let before = journal.flash.bytes;
-        assert_eq!(journal.load(&mut [0; 8]), Err(Error::UnrecognizedJournal));
-        assert_eq!(journal.save(b"retry"), Err(Error::UnrecognizedJournal));
-        assert_eq!(journal.flash.bytes, before);
+        journal.save(b"retry").unwrap();
+        journal.flash.bytes[0][COMMIT_OFFSET..HEADER_SIZE]
+            .copy_from_slice(&COMMITTED.to_le_bytes());
+
+        let mut journal = reboot(&journal);
+        let mut output = [0; 8];
+        let record = journal.load(&mut output).unwrap().unwrap();
+        assert_eq!(&output[..record.length], b"retry");
+        journal.save(b"next").unwrap();
+        let record = reboot(&journal).load(&mut output).unwrap().unwrap();
+        assert_eq!(&output[..record.length], b"next");
+        journal.save(b"last").unwrap();
+        let record = reboot(&journal).load(&mut output).unwrap().unwrap();
+        assert_eq!(&output[..record.length], b"last");
     }
 
     #[test]
@@ -491,7 +623,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn random_saves_cuts_and_corruption_never_load_as_empty_or_unsaved() {
+    fn random_saves_cuts_and_corruption_load_only_saved_records() {
         use crate::testing::Rng;
         for seed in 0..500 {
             let mut rng = Rng::new(seed);
@@ -527,26 +659,22 @@ pub(crate) mod tests {
                     // Only a first save may leave nothing readable, and then
                     // the journal is occupied, never empty.
                     (Err(_), Ok(None)) => assert!(newest.is_none(), "seed {seed}"),
+                    // Two torn first saves in a row fill both sectors.
                     (Err(_), Err(Error::UnrecognizedJournal)) => {
                         assert!(newest.is_none(), "seed {seed}");
+                        assert!(no_free_sector(&journal), "seed {seed}");
                         break;
                     }
                     (Err(_), Err(error)) => panic!("seed {seed}: {error:?}"),
                 }
             }
-            // Bit rot anywhere: whatever loads was saved, and occupied
-            // flash never loads as nothing saved.
+            // Bit rot anywhere: whatever loads was saved, and when nothing
+            // loads, the next save keeps every occupied sector intact.
             for _ in 0..rng.below(4) {
                 let sector = rng.below(SECTOR_COUNT as u64) as usize;
                 let at = rng.below(SECTOR_SIZE as u64) as usize;
                 journal.flash.bytes[sector][at] ^= 1 << rng.below(8);
             }
-            let occupied = journal
-                .flash
-                .bytes
-                .iter()
-                .flatten()
-                .any(|byte| *byte != 0xff);
             let mut output = [0; CAPACITY];
             match journal.load(&mut output) {
                 Ok(Some(record)) => assert!(
@@ -555,11 +683,29 @@ pub(crate) mod tests {
                         .any(|payload| payload[..] == output[..record.length]),
                     "seed {seed}"
                 ),
-                Ok(None) => assert!(!occupied, "seed {seed}"),
+                Ok(None) => {
+                    let before = journal.flash.bytes;
+                    journal.save(b"after").unwrap();
+                    let record = journal.load(&mut output).unwrap().unwrap();
+                    assert_eq!(&output[..record.length], b"after", "seed {seed}");
+                    assert!(
+                        (0..SECTOR_COUNT).all(|sector| before[sector] == [0xff; SECTOR_SIZE]
+                            || journal.flash.bytes[sector] == before[sector]),
+                        "seed {seed}"
+                    );
+                }
                 Err(error) => assert_eq!(error, Error::UnrecognizedJournal, "seed {seed}"),
             }
         }
     }
+    fn no_free_sector(journal: &Journal<Memory>) -> bool {
+        journal
+            .flash
+            .bytes
+            .iter()
+            .all(|sector| sector.iter().any(|byte| *byte != 0xff))
+    }
+
     /// Power returns: the same flash bytes under a journal that remembers
     /// nothing of the cut save.
     fn reboot(journal: &Journal<Memory>) -> Journal<Memory> {
@@ -598,10 +744,11 @@ pub(crate) mod tests {
                         possible = std::vec![payload];
                     }
                     Err(Error::Flash(())) => possible.push(payload),
-                    // A first save cut in half leaves the journal occupied
-                    // but unreadable, and then it is kept as it is.
+                    // Only two first saves cut in a row leave no sector free,
+                    // and then the journal is kept as it is.
                     Err(Error::UnrecognizedJournal) => {
                         assert!(!acknowledged, "seed {seed}");
+                        assert!(no_free_sector(&journal), "seed {seed}");
                         assert_eq!(journal.flash.bytes, bytes, "seed {seed}");
                         break;
                     }
@@ -623,7 +770,10 @@ pub(crate) mod tests {
                         assert!(!acknowledged, "seed {seed}");
                         possible.clear();
                     }
-                    Err(Error::UnrecognizedJournal) => assert!(!acknowledged, "seed {seed}"),
+                    Err(Error::UnrecognizedJournal) => {
+                        assert!(!acknowledged, "seed {seed}");
+                        assert!(no_free_sector(&journal), "seed {seed}");
+                    }
                     Err(error) => panic!("seed {seed}: {error:?}"),
                 }
             }
@@ -636,8 +786,10 @@ pub(crate) mod tests {
                         "seed {seed}"
                     );
                 }
-                Ok(None) | Err(Error::UnrecognizedJournal) => {
-                    assert!(!acknowledged, "seed {seed}")
+                Ok(None) => assert!(!acknowledged, "seed {seed}"),
+                Err(Error::UnrecognizedJournal) => {
+                    assert!(!acknowledged, "seed {seed}");
+                    assert!(no_free_sector(&journal), "seed {seed}");
                 }
                 Err(error) => panic!("seed {seed}: {error:?}"),
             }

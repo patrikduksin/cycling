@@ -125,6 +125,7 @@ pub struct Auto {
     /// Since when the condition for the next call has held, for which
     /// source (`None` while lost) and call.
     since: Option<(u64, Option<Source>, Call)>,
+    last_remind: Option<u64>,
 }
 
 impl Auto {
@@ -167,6 +168,9 @@ impl Auto {
         // recording is not about to pause: any automatic pause is over.
         if status != Status::Paused || !automatic {
             self.paused = false;
+        }
+        if status != Status::Paused {
+            self.last_remind = None;
         }
         if let Motion::Measured(source, _) = motion {
             self.measured_by = Some(source);
@@ -230,8 +234,13 @@ impl Auto {
             return None;
         }
         if call == Call::Remind {
-            let held_since_for_next_reminder = now + REMIND_EVERY_MS - hold;
-            self.since = Some((held_since_for_next_reminder, source, call));
+            if self
+                .last_remind
+                .is_some_and(|last| now.saturating_sub(last) < REMIND_EVERY_MS)
+            {
+                return None;
+            }
+            self.last_remind = Some(now);
         }
         Some(call)
     }
@@ -542,17 +551,34 @@ mod tests {
     }
 
     #[test]
-    fn stopping_or_resuming_rearms_the_reminder() {
+    fn stop_and_go_riding_is_reminded_at_most_once_per_period() {
+        let mut auto = Auto::default();
+        let mut last: Option<u64> = None;
+        let mut count = 0;
+        for now in (0..90_000).step_by(100) {
+            let motion = if now % 6_000 < 4_000 { RIDING } else { STOPPED };
+            if auto.update(now, Status::Paused, motion, true, true) != Some(Call::Remind) {
+                continue;
+            }
+            match last {
+                None => assert_eq!(now, 3_000, "the hold comes first"),
+                Some(last) => assert!(now - last >= REMIND_EVERY_MS, "{last} then {now}"),
+            }
+            last = Some(now);
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn a_stop_does_not_shorten_the_wait_but_a_new_pause_starts_fresh() {
         let mut auto = Auto::default();
         assert_eq!(
             run(&mut auto, Status::Paused, RIDING, 0, 10_000),
             Some((3_000, Call::Remind))
         );
         assert_eq!(run(&mut auto, Status::Paused, STOPPED, 10_000, 1_000), None);
-        assert_eq!(
-            run(&mut auto, Status::Paused, RIDING, 11_000, 10_000),
-            Some((14_000, Call::Remind))
-        );
+        assert_eq!(run(&mut auto, Status::Paused, RIDING, 11_000, 10_000), None);
         assert_eq!(
             run(&mut auto, Status::Recording, RIDING, 20_000, 1_000),
             None

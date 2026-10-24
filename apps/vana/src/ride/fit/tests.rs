@@ -675,6 +675,37 @@ fn a_slot_of_four_laps_stays_within_its_bound() {
 }
 
 #[test]
+fn lap_distances_add_up_to_the_session_to_the_centimetre() {
+    // 15 mm a second: each one-sample lap holds a centimetre and a half.
+    let samples: Vec<Sample> = (1..=4u64)
+        .map(|i| Sample {
+            speed_mm_s: Some(15),
+            lap: Some(if i == 1 {
+                LapStart::Ride
+            } else {
+                LapStart::Manual
+            }),
+            ..sample(i * 1000, true)
+        })
+        .collect();
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &samples).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 4_000)),
+    ];
+    let (_, bytes) = file(&slots, None).unwrap();
+    let messages = decode(&bytes);
+    let session = messages.iter().find(|m| m.global == 18).unwrap();
+    let laps: u64 = messages
+        .iter()
+        .filter(|m| m.global == 19)
+        .map(|lap| lap.get(9).unwrap())
+        .sum();
+    assert_eq!(session.get(9), Some(6), "60 mm");
+    assert_eq!(Some(laps), session.get(9));
+}
+
+#[test]
 fn lap_ascent_and_descent_add_up_to_the_session() {
     // Up 0.45 m a second for 30 s, then down, with a lap every 7 samples:
     // each lap's own climb has a fraction of a metre to round.
@@ -719,7 +750,7 @@ fn lap_ascent_and_descent_add_up_to_the_session() {
 
 #[test]
 fn any_ride_becomes_a_valid_file_of_its_planned_size_with_ordered_times() {
-    let (mut written, mut refused) = (0, 0);
+    let (mut written, mut refused, mut lapped) = (0, 0, 0);
     for seed in 0..1_500 {
         let mut rng = crate::testing::Rng::new(seed);
         let slots = arbitrary_ride(&mut rng);
@@ -736,17 +767,39 @@ fn any_ride_becomes_a_valid_file_of_its_planned_size_with_ordered_times() {
         assert_eq!(records as u32, plan.samples, "seed {seed}");
         let times: Vec<u64> = messages
             .iter()
-            .filter(|m| matches!(m.global, 20 | 21))
+            .filter(|m| matches!(m.global, 19..=21))
             .map(|m| m.get(253).expect("timestamped"))
             .collect();
         assert!(
             times.windows(2).all(|pair| pair[0] <= pair[1]),
             "seed {seed}: {times:?}"
         );
+        // Every lap mark starts a lap, and the laps add up to the session.
+        let laps: Vec<&Decoded> = messages.iter().filter(|m| m.global == 19).collect();
+        let session = messages.iter().find(|m| m.global == 18).unwrap();
+        assert_eq!(laps.len(), usize::from(plan.laps), "seed {seed}");
+        assert_eq!(session.get(26), Some(u64::from(plan.laps)), "seed {seed}");
+        // A session total at its field's largest value saturated, so its laps cannot add up.
+        for (in_lap, in_session, largest) in [
+            (8, 8, u64::from(u32::MAX - 1)),
+            (9, 9, u64::from(u32::MAX - 1)),
+            (21, 22, u64::from(u16::MAX - 1)),
+            (22, 23, u64::from(u16::MAX - 1)),
+        ] {
+            let total = session.get(in_session);
+            if total.is_some_and(|total| total >= largest) {
+                continue;
+            }
+            // A lap without a reading leaves its field invalid.
+            let values: Vec<u64> = laps.iter().filter_map(|lap| lap.get(in_lap)).collect();
+            let sum = (!values.is_empty()).then(|| values.iter().sum::<u64>());
+            assert_eq!(sum, total, "seed {seed}: lap field {in_lap}");
+        }
+        lapped += usize::from(plan.laps > 2);
     }
     assert!(
-        written > 1_000 && refused > 0,
-        "{written} written, {refused} refused"
+        written > 1_000 && refused > 0 && lapped > 500,
+        "{written} written, {refused} refused, {lapped} with laps"
     );
 }
 

@@ -5,7 +5,7 @@
 //! quick. The generator is xorshift64*, as in `firmware_services`' private
 //! test media; a hand-rolled one keeps the locked dependency set unchanged.
 
-use crate::ride::log::{Altitude, Sample};
+use crate::ride::log::{Altitude, LapStart, Sample};
 use std::vec::Vec;
 
 pub struct Rng(u64);
@@ -55,6 +55,16 @@ impl Rng {
         (0..length).map(|_| self.byte()).collect()
     }
 
+    pub fn lap(&mut self) -> LapStart {
+        self.pick(&[
+            LapStart::Ride,
+            LapStart::Manual,
+            LapStart::Distance,
+            LapStart::Step,
+            LapStart::DistanceStep,
+        ])
+    }
+
     /// Any reading a sensor or the GPS can report, at any active time.
     pub fn sample(&mut self) -> Sample {
         Sample {
@@ -74,6 +84,7 @@ impl Rng {
             power_watts: self.option(|rng| rng.next() as u16),
             gradient_tenths: self.option(|rng| rng.next() as i16),
             altitude: self.option(|rng| Altitude::from_dm(rng.next() as i32)),
+            lap: self.one_in(4).then(|| self.lap()),
         }
     }
 

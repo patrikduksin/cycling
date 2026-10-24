@@ -1,5 +1,7 @@
 //! The benchmark screens paint the same pixels: a faster painter must not
-//! change a frame. Hashes are from `sim-bench`, which prints them.
+//! change a frame. Hashes are from `sim-bench`, which prints them. A change
+//! that means to alter one of these screens updates its hash here and shows
+//! the new screen in its sim-compare.
 #![cfg(feature = "cycling")]
 use shell_simulator::bench::{SCENES, hash, measure};
 
@@ -7,7 +9,7 @@ const HASHES: [(&str, u64); 6] = [
     ("home", 0x0c91_c4e2_1f97_76ab),
     ("ride main + radar", 0xc59f_cb1c_1dc8_1d87),
     ("climb", 0xfebc_a956_d7a5_0792),
-    ("summary", 0xa83b_0168_f662_c2b1),
+    ("summary", 0x7297_e332_ce5a_8371),
     ("sensors list", 0x294c_50dd_fdb8_bbf1),
     ("workouts", 0xcf72_96ce_aab4_afee),
 ];

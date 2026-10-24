@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.harness.runner import STARTUP_STOPPED
 from cycling_devtools.harness.stress import PREFERENCES, read, validate
 from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
@@ -25,9 +26,22 @@ def idle_frames_allowed(build, elapsed_ms):
     return int(elapsed_ms) * 2 // 1000 + 2
 
 
+CRASH_READY_TIMEOUT_S = 30
+
+
 def crash_record(connection):
-    """CRASH's fields; the message is the rest of the reply and may hold spaces."""
-    reply = connection.terminal_command('CRASH')
+    """CRASH's fields; the message is the rest of the reply and may hold spaces.
+
+    Right after a reset the device answers BUSY until its companion has
+    started. CRASH only reads, so asking again is safe.
+    """
+    stop = time.monotonic() + CRASH_READY_TIMEOUT_S
+    while (reply := connection.terminal_command('CRASH')).get('status') == 'BUSY':
+        detail = reply.get('data', '')
+        stopped = any(word in STARTUP_STOPPED for word in detail.split())
+        if stopped or time.monotonic() >= stop:
+            raise AssertionError(f'terminal rejected CRASH: BUSY {detail}')
+        time.sleep(0.5)
     if reply.get('status') != 'OK':
         raise AssertionError(f'terminal rejected CRASH: {reply.get("status")}')
     head, _, message = reply['data'].partition(' message=')

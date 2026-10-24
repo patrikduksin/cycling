@@ -169,6 +169,10 @@ fn a_roundabout_is_one_turn_the_way_it_leaves() {
     );
     let straight = ride(&roundabout(180.0), 7.0);
     assert!(straight.is_empty(), "{straight:?}");
+    // Round to leave 30 degrees left of the way in: nothing, and never a
+    // late word from partway round.
+    let slight = ride(&roundabout(210.0), 7.0);
+    assert!(slight.is_empty(), "{slight:?}");
 }
 
 #[test]
@@ -179,6 +183,14 @@ fn a_jog_left_and_right_is_no_turn_but_two_far_apart_are_two() {
     );
     let said = ride(&jog, 7.0);
     assert!(said.is_empty(), "{said:?}");
+    for offset in [20.0, 25.0] {
+        let jog = path(
+            &[(0.0, 0.0), (0.0, 300.0), (-offset, 300.0), (-offset, 600.0)],
+            5.0,
+        );
+        let said = ride(&jog, 7.0);
+        assert!(said.is_empty(), "{offset} m: {said:?}");
+    }
     let block = path(
         &[(0.0, 0.0), (0.0, 300.0), (-200.0, 300.0), (-200.0, 600.0)],
         10.0,
@@ -293,7 +305,60 @@ fn a_rider_past_the_end_or_on_a_tiny_course_hears_nothing() {
         here: (0.0, 3.99999e6),
     };
     assert_eq!(
-        next(4, |k| far[k], place, 0, u32::MAX).map(|turn| turn.kind),
+        next(4, |k| far[k], place, 0, u32::MAX).and_then(|group| group.kind),
         Some(RIGHT)
     );
+}
+
+#[test]
+fn a_staircase_is_cut_into_turns_no_longer_than_a_roundabout() {
+    // 20 m north, 20 m east, forty times over, between straights.
+    let mut corners = vec![(0.0, 0.0), (0.0, 300.0)];
+    for k in 0..40 {
+        let (east, north) = (20.0 * k as f32, 300.0 + 20.0 * k as f32);
+        corners.extend([(east + 20.0, north), (east + 20.0, north + 20.0)]);
+    }
+    let top = *corners.last().unwrap();
+    corners.push((top.0, top.1 + 300.0));
+    let line = path(&corners, 5.0);
+    let at = |k: usize| line[k];
+    let mut from = 0;
+    let mut groups = 0;
+    let place = Place {
+        next: 1,
+        here: line[0],
+    };
+    while let Some(group) = next(line.len(), at, place, from, u32::MAX) {
+        let span: f32 = (group.first..group.last)
+            .map(|k| distance(line[k], line[k + 1]))
+            .sum();
+        assert!(span <= SPAN_M + 5.0, "{group:?} spans {span} m");
+        from = group.last + 1;
+        groups += 1;
+    }
+    assert!(groups >= 10, "{groups} groups");
+    let said = ride(&line, 7.0);
+    let nows = said
+        .iter()
+        .filter(|(_, w)| matches!(w, Warning::Now(_)))
+        .count();
+    assert!(nows <= groups, "{said:?}");
+}
+
+#[test]
+fn thousands_of_points_in_one_spot_cost_a_bounded_scan() {
+    let mut line = vec![(0.0, 0.0); 2_000];
+    line.extend(path(&[(0.0, 0.0), (0.0, 400.0), (300.0, 400.0)], 10.0));
+    let calls = core::cell::Cell::new(0u32);
+    let at = |k: usize| {
+        calls.set(calls.get() + 1);
+        line[k]
+    };
+    let place = Place {
+        next: 1,
+        here: (0.0, 0.0),
+    };
+    assert_eq!(Warner::default().step(line.len(), at, place), None);
+    let most = (GROUPS * SCAN_POINTS * (4 * CHORD_POINTS + 8)) as u32;
+    assert!(calls.get() <= most, "{} reads", calls.get());
 }

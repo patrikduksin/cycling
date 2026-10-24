@@ -6,14 +6,16 @@
 //! hairpin that thinning (`ride::thin`) smoothed into a few points still
 //! bends as much as the road did. Points that bend by `BEND_DEG` or more,
 //! each within `MERGE_M` of the one before, may be one turn, as a
-//! roundabout is. The turn's angle is from the way in before its first
+//! roundabout is, up to `SPAN_M` along. The turn's angle is from the way in before its first
 //! point to the way out after its last, and it is a turn only from
 //! `TURN_DEG`: a roundabout says where it leaves, and straight over one, a
 //! jog left and right or a long bend is no turn.
 //!
 //! The course is read by index through `at`, start first, in metres east and
 //! north, so nothing is copied or kept; a scan reaches at most `AHEAD_MM`
-//! ahead. Distances along the course are u32 millimetres, saturating.
+//! and `SCAN_POINTS` ahead, and a chord walks at most `CHORD_POINTS`, so a
+//! course of thousands of points in one spot costs no more than a road.
+//! Distances along the course are u32 millimetres, saturating.
 use libm::{atan2f, fabsf, sqrtf};
 
 /// The chords each side of a point.
@@ -22,8 +24,14 @@ const WINDOW_M: f32 = 15.0;
 const MIN_CHORD_M: f32 = WINDOW_M / 2.0;
 /// A point that bends this much may be part of a turn.
 const BEND_DEG: f32 = 45.0;
-/// Such points this close along the course are one turn.
+/// Such points this close along the course are one turn, at most this long.
 const MERGE_M: f32 = 2.0 * WINDOW_M;
+const SPAN_M: f32 = 80.0;
+/// The most points one scan, or one chord, walks.
+const SCAN_POINTS: usize = 256;
+const CHORD_POINTS: usize = 64;
+/// The most groups of turning points one warning looks past.
+const GROUPS: usize = 4;
 /// A turn turns by this much or more; a sharp one and a U-turn by more.
 const TURN_DEG: f32 = 60.0;
 const SHARP_DEG: f32 = 120.0;
@@ -64,10 +72,11 @@ impl Kind {
     }
 }
 
-/// A turn ahead: its points `first` to `last`, and how far it is to `first`.
+/// Turning points ahead, `first` to `last`, and how far it is to `first`;
+/// a turn when they turn enough.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Turn {
-    pub kind: Kind,
+pub struct Group {
+    pub kind: Option<Kind>,
     pub first: usize,
     pub last: usize,
     pub ahead_mm: u32,
@@ -107,7 +116,8 @@ fn angle(a: (f32, f32), b: (f32, f32)) -> f32 {
 }
 
 /// The point `metres` along the course from point `from`, towards the
-/// start when `back`, or the course's end point when it is nearer.
+/// start when `back`, or the course's end point when it is nearer, or the
+/// point `CHORD_POINTS` on when that is.
 fn along(
     len: usize,
     at: &impl Fn(usize) -> (f32, f32),
@@ -116,7 +126,7 @@ fn along(
     metres: f32,
 ) -> (f32, f32) {
     let (mut k, mut walked) = (from, 0.0);
-    loop {
+    for _ in 0..CHORD_POINTS {
         let to = match back {
             true if k == 0 => return at(0),
             true => k - 1,
@@ -132,6 +142,7 @@ fn along(
         walked += step;
         k = to;
     }
+    at(k)
 }
 
 fn way(from: (f32, f32), to: (f32, f32)) -> Option<(f32, f32)> {
@@ -168,75 +179,75 @@ fn turned(len: usize, at: &impl Fn(usize) -> (f32, f32), first: usize, last: usi
     }
 }
 
-/// The first turn from point `from` on, of a course of `len` points, while
-/// its first point is within `reach_mm` of the rider at `place`.
+/// The first group of turning points from point `from` on, of a course of
+/// `len` points, while its first point is within `reach_mm` of the rider at
+/// `place`.
 pub fn next(
     len: usize,
     at: impl Fn(usize) -> (f32, f32),
     place: Place,
     from: usize,
     reach_mm: u32,
-) -> Option<Turn> {
+) -> Option<Group> {
     if place.next == 0 || place.next >= len {
         return None;
     }
-    let step = |k: usize| mm(distance(at(k), at(k + 1)));
+    let step = |k: usize| distance(at(k), at(k + 1));
     let mut ahead_mm = mm(distance(place.here, at(place.next)));
     let mut k = place.next;
-    while k < from && k + 1 < len {
-        ahead_mm = ahead_mm.saturating_add(step(k));
+    let mut budget = SCAN_POINTS;
+    while k < from && k + 1 < len && budget > 0 {
+        ahead_mm = ahead_mm.saturating_add(mm(step(k)));
         k += 1;
+        budget -= 1;
     }
     let turns = |k: usize| fabsf(bend(len, &at, k)) >= BEND_DEG;
     // The course's start and end points never turn.
-    while k + 1 < len && ahead_mm <= reach_mm {
+    while k + 1 < len && ahead_mm <= reach_mm && budget > 0 {
+        budget -= 1;
         if !turns(k) {
-            ahead_mm = ahead_mm.saturating_add(step(k));
+            ahead_mm = ahead_mm.saturating_add(mm(step(k)));
             k += 1;
             continue;
         }
-        let (first, mut last, mut gap) = (k, k, 0.0);
-        let mut u = k;
-        while u + 2 < len {
-            gap += distance(at(u), at(u + 1));
+        let (first, mut last) = (k, k);
+        let (mut u, mut gap, mut span) = (k, 0.0, 0.0);
+        while u + 2 < len && budget > 0 {
+            budget -= 1;
+            let metres = step(u);
+            (gap, span) = (gap + metres, span + metres);
             u += 1;
-            if gap > MERGE_M {
+            if gap > MERGE_M || span > SPAN_M {
                 break;
             }
             if turns(u) {
                 (last, gap) = (u, 0.0);
             }
         }
-        if let Some(kind) = Kind::of(turned(len, &at, first, last)) {
-            return Some(Turn {
-                kind,
-                first,
-                last,
-                ahead_mm,
-            });
-        }
-        while k <= last {
-            ahead_mm = ahead_mm.saturating_add(step(k));
-            k += 1;
-        }
+        return Some(Group {
+            kind: Kind::of(turned(len, &at, first, last)),
+            first,
+            last,
+            ahead_mm,
+        });
     }
     None
 }
 
-/// The turn last warned of, so each is warned of once ahead and once at it.
+/// The group of turning points last found ahead, so each turn is warned of
+/// once ahead and once at it, and a group the rider is in is never taken
+/// for a turn from partway through.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Warner {
     #[default]
     Quiet,
-    Ahead {
-        first: usize,
-    },
-    /// Warned at the turn; the next is looked for once the rider is past
-    /// its first point, from its last.
-    Now {
-        first: usize,
-        last: usize,
-    },
+    /// Warned of ahead.
+    Ahead { first: usize, last: usize },
+    /// Warned of at it; the next is looked for once the rider is past its
+    /// first point.
+    Now { first: usize, last: usize },
+    /// Not a turn: the points after it are looked at instead.
+    Skip { first: usize, last: usize },
 }
 
 impl Warner {
@@ -248,28 +259,34 @@ impl Warner {
         at: impl Fn(usize) -> (f32, f32),
         place: Place,
     ) -> Option<Warning> {
-        let from = match *self {
+        let mut from = match *self {
+            Self::Quiet => place.next,
             Self::Now { first, .. } if place.next <= first => return None,
-            Self::Now { last, .. } => last.saturating_add(1),
-            _ => place.next,
+            Self::Ahead { first, .. } if place.next <= first => first,
+            Self::Ahead { last, .. } | Self::Now { last, .. } | Self::Skip { last, .. } => {
+                last.saturating_add(1)
+            }
         };
-        let turn = next(len, at, place, from, AHEAD_MM)?;
-        if turn.ahead_mm <= NOW_MM {
-            *self = Self::Now {
-                first: turn.first,
-                last: turn.last,
+        for _ in 0..GROUPS {
+            let group = next(len, &at, place, from, AHEAD_MM)?;
+            let (first, last) = (group.first, group.last);
+            let Some(kind) = group.kind else {
+                *self = Self::Skip { first, last };
+                from = last.saturating_add(1);
+                continue;
             };
-            return Some(Warning::Now(turn.kind));
+            if group.ahead_mm <= NOW_MM {
+                *self = Self::Now { first, last };
+                return Some(Warning::Now(kind));
+            }
+            if group.ahead_mm < AHEAD_MIN_MM || *self == (Self::Ahead { first, last }) {
+                return None;
+            }
+            *self = Self::Ahead { first, last };
+            let metres = group.ahead_mm.saturating_add(4_999) / 10_000 * 10;
+            return Some(Warning::Ahead { kind, metres });
         }
-        if turn.ahead_mm < AHEAD_MIN_MM || *self == (Self::Ahead { first: turn.first }) {
-            return None;
-        }
-        *self = Self::Ahead { first: turn.first };
-        let metres = turn.ahead_mm.saturating_add(4_999) / 10_000 * 10;
-        Some(Warning::Ahead {
-            kind: turn.kind,
-            metres,
-        })
+        None
     }
 }
 

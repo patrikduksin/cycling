@@ -4180,6 +4180,116 @@ fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
     );
 }
 
+/// Saved rides, one per `(days ago, watts)` (0 W: no power meter), each 30 minutes
+/// starting 12:00 UTC that day, as the journal holds them after weeks of
+/// riding. Samples are 3 s apart, the longest step the recorder counts.
+fn training_history(plan: &[(u64, u16)]) -> Vec<u8> {
+    const STEP_MS: u64 = 3_000;
+    const SAMPLES: u64 = 30 * 60 * 1_000 / STEP_MS;
+    let mut bytes = Vec::new();
+    let mut push = |entry: Entry| {
+        let mut slot = encode(&entry);
+        slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
+        bytes.extend_from_slice(&slot.0);
+    };
+    for (ride, &(days_ago, watts)) in plan.iter().enumerate() {
+        let ride_id = ride as u32 + 1;
+        let started = receiver_utc_ms(0) - receiver_utc_ms(0) % 86_400_000 + 12 * 3_600_000
+            - days_ago * 86_400_000;
+        let sample = |n: u64| Sample {
+            active_ms: n * STEP_MS,
+            utc_ms: Some(started + n * STEP_MS),
+            power_watts: (watts != 0).then_some(watts),
+            ..Sample::default()
+        };
+        push(Entry::event(Kind::Start, Source::Live, ride_id, 0, 0));
+        let mut sequence = 1;
+        for batch in 0..SAMPLES / 4 {
+            let samples: Vec<_> = (1..=4).map(|i| sample(batch * 4 + i)).collect();
+            push(Entry::batch(Source::Live, ride_id, sequence, &samples).unwrap());
+            sequence += 1;
+        }
+        push(Entry::event(
+            Kind::Finish,
+            Source::Live,
+            ride_id,
+            sequence,
+            SAMPLES * STEP_MS,
+        ));
+    }
+    bytes
+}
+
+/// Six weeks of rides with power and one ride without: a build that turns hard
+/// in the fifth week and eases off in the last days. The trend dips and then
+/// recovers, and the ride without power is named as left out.
+#[test]
+fn form_page_reads_fitness_fatigue_and_form_from_six_weeks_of_rides() {
+    use device_api::storage::{OwnedFlash, Region};
+    let plan: Vec<(u64, u16)> = vec![
+        (41, 230),
+        (39, 250),
+        (37, 220),
+        (34, 260),
+        (32, 240),
+        (30, 250),
+        (27, 260),
+        (25, 270),
+        (23, 250),
+        (20, 270),
+        (18, 280),
+        (16, 260),
+        (15, 290),
+        (14, 280),
+        (13, 290),
+        (12, 310),
+        (11, 330),
+        (3, 0),
+    ];
+    let mut sim = Sim::new();
+    sim.device
+        .media
+        .program(Region::Data, 0, &training_history(&plan))
+        .unwrap();
+    let mut sim = equip(sim.boot());
+    sim.home("SETTINGS");
+    for _ in 0..3 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.wait_for_field("FORM", "+6 FRESH", seconds(30));
+    sim.checkpoint("settings: FORM row");
+    sim.press(Button::BottomRight);
+    sim.wait_for("FATIGUE", seconds(60)).unwrap();
+    // Worked outside the firmware from the same rides: each ride's stress at
+    // the default 215 W FTP, the seven-day seed, then CTL/ATL a day at a time.
+    // Fitness 19, fatigue 13, form +6; form a week apart: -10 -13 -13 -32 -16.
+    // The first week of the 120-day window is empty, so both averages start
+    // at zero.
+    sim.expect_field("FITNESS", "19");
+    sim.expect_field("FATIGUE", "13");
+    sim.expect_text("+6");
+    sim.expect_text("FRESH");
+    sim.expect_text("RIDES WITHOUT POWER");
+    sim.checkpoint("form page: fitness, fatigue, form and six weeks");
+    sim.press(Button::TopLeft);
+    sim.expect_field("FORM", "+6 FRESH");
+}
+
+/// A rider with no ride that had power gets a plain answer, not zeros.
+#[test]
+fn form_page_without_rides_with_power_says_so() {
+    let mut sim = rider();
+    sim.home("SETTINGS");
+    for _ in 0..3 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.press(Button::BottomRight);
+    sim.wait_for("NO POWER RIDES", seconds(60)).unwrap();
+    sim.expect_text("NEEDS A POWER METER");
+    sim.expect_no_text("LEFT OUT");
+    sim.checkpoint("form page with no ride that had power");
+}
+
 /// Rolling off from Ready starts the ride, and a stop at a light shows the
 /// whole-screen automatic pause until the rider rolls on.
 #[test]
@@ -4250,7 +4360,7 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_field("FTP WATTS", "215");
     sim.checkpoint("settings open on the profile");
     // MOVE walks the rows, past the profile and body rows into Display.
-    for _ in 0..6 {
+    for _ in 0..7 {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("DISPLAY");

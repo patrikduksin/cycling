@@ -63,7 +63,7 @@ pub struct Weeks {
 }
 
 /// The local day number of a UTC second on a clock with `offset_at`.
-fn local_day(utc_s: i64, offset_at: &impl Fn(i64) -> i64) -> i64 {
+pub(crate) fn local_day(utc_s: i64, offset_at: &impl Fn(i64) -> i64) -> i64 {
     (utc_s + offset_at(utc_s)).div_euclid(DAY_S)
 }
 

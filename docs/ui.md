@@ -422,7 +422,7 @@ Acting on a row does one of three things:
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
-- an action opens a page (SENSORS, BESTS) or a flow (PHONE, a placeholder until the
+- an action opens a page (SENSORS, BESTS, FORM) or a flow (PHONE, a placeholder until the
   phone companion lands).
 
 Storage and firmware rows only show facts. The save status sits in the
@@ -455,6 +455,22 @@ starts them over. A failed clear says CLEAR FAILED in a toast.
 On the ride summary, a new best has the reading's metric colour and `BEST` in
 its caption: BEST TIME and BEST KM (`SPEED`), BEST ASC M (`GRADE`) on page 1,
 and a `POWER` `BEST` caption under each new best-power bar on page 3.
+
+### Form
+
+FORM, the fourth row of PROFILE, opens fitness, fatigue and form
+(`screens::form`, numbers from `ride::fitness`): FITNESS and FATIGUE as `CAPTION`
+over a `BODY` value in `POWER` (training stress is power's colour), and FORM
+beside its verdict. Only the ends of the range take a colour: `GREEN` FRESH
+(+5 to +25) and `RED` VERY TIRED (below -30). RESTED (above +25), EVEN (-10 to
++4) and BUILDING (-30 to -11) are `WHITE`, since the cost of training is not a
+warning. Six 24 px bars, one per week, stand on a `TERTIARY` zero line, up for
+positive form and down for negative, in the colour of their own week's verdict
+and to a fixed scale (50 points is 36 px) so weeks compare. `CAPTION`s name
+only the ends, 6 WEEKS AGO and NOW, and a grey note says rides without power
+are left out, only when some were. Where there is nothing to show the page says
+why in a `BODY` headline and a grey line (READING RIDES, NO DATE YET with GET A
+GPS FIX, NO POWER RIDES with NEEDS A POWER METER). The page has no cues.
 
 MAIN PAGE has two rows, LOWER LEFT and LOWER RIGHT, one for each reading on the
 main page's last line. Each steps through CADENCE, DISTANCE, NP, AVG POWER,

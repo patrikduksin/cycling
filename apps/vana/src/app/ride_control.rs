@@ -237,6 +237,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         | Page::Summary
         | Page::Settings
         | Page::Bests
+        | Page::Form
         | Page::Workouts
         | Page::Phone
         | Page::History

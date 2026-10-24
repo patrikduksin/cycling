@@ -15,7 +15,6 @@ use super::Runtime;
 use super::recording::Medium;
 use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
-use crate::ride::load::Effort;
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
@@ -52,7 +51,7 @@ pub(super) struct History {
 
 /// The minute, the zone, the FTP, the ride facts kept, and each journal's
 /// rides, last id and how many of them the index has read.
-type WeeksKey = (u64, Zone, u16, u32, [(usize, Option<u32>, usize); 2]);
+pub(super) type WeeksKey = (u64, Zone, u16, u32, [(usize, Option<u32>, usize); 2]);
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
 /// only when both start times are known and BULK's is later, so undated rides
@@ -66,6 +65,13 @@ fn newer_head(internal: Option<&Summary>, bulk: Option<&Summary>) -> Option<usiz
         (Some(_), None) => Some(0),
         (None, Some(_)) => Some(1),
         (None, None) => None,
+    }
+}
+
+impl History {
+    /// From now on the index reads the journals in the background.
+    pub(super) fn start_indexing(&mut self) {
+        self.indexing = true;
     }
 }
 
@@ -114,7 +120,12 @@ impl Runtime {
 
     /// The `index`-th saved ride of one journal, oldest first.
     fn journal_ride(&self, medium: Medium, index: usize) -> Option<Summary> {
-        let (indexed, newer) = self.split(medium);
+        self.ride_in(medium, index, self.split(medium))
+    }
+
+    /// The same, for a caller that already knows the journal's `split`.
+    fn ride_in(&self, medium: Medium, index: usize, split: (usize, usize)) -> Option<Summary> {
+        let (indexed, newer) = split;
         if index < indexed {
             return self.indexed(medium)?.get(index);
         }
@@ -122,17 +133,6 @@ impl Runtime {
             .recorder(medium)
             .summary(newer + index - indexed)
             .copied()
-    }
-
-    /// The power of the `index`-th saved ride of one journal, if the ride index
-    /// has read it and it had power.
-    fn journal_effort(&self, medium: Medium, index: usize) -> Option<Effort> {
-        let (indexed, _) = self.split(medium);
-        if index < indexed {
-            self.indexed(medium)?.effort(index)
-        } else {
-            None
-        }
     }
 
     /// The `n`-th newest saved ride of both journals. Each journal's own
@@ -171,7 +171,7 @@ impl Runtime {
 
     /// Whether every saved ride is counted: always without an index, else
     /// once its scan has read both journals.
-    fn counted(&self) -> bool {
+    pub(super) fn counted(&self) -> bool {
         match self.history.index.as_deref() {
             None => true,
             Some(index) => self.history.indexing && self.ride.directory_done(index),
@@ -202,9 +202,13 @@ impl Runtime {
         let added = self.ride.directory_step(index, store, bulk);
         let page = self.navigation.page;
         let counted = self.counted();
-        let recount = page == Page::Home && counted != self.history.counted;
+        let flipped = counted != self.history.counted;
+        let recount = page == Page::Home && flipped;
         self.history.counted = counted;
-        if added && page == Page::History || recount {
+        if added && matches!(page, Page::History | Page::Form)
+            || recount
+            || page == Page::Form && flipped
+        {
             self.display.redraw();
         }
     }
@@ -320,6 +324,57 @@ impl Runtime {
         }
     }
 
+    /// The minute, the zone, the FTP, the facts kept and how far each
+    /// journal's index has read, which together decide every total built
+    /// from the saved rides.
+    pub(super) fn rides_key(&self, utc_ms: u64) -> WeeksKey {
+        let ids = |medium| {
+            let last = self.journal_len(medium).checked_sub(1);
+            (
+                self.journal_len(medium),
+                last.and_then(|i| self.journal_ride(medium, i))
+                    .map(|r| r.ride_id),
+                self.indexed(medium).map_or(0, Journal::len),
+            )
+        };
+        (
+            utc_ms / 60_000,
+            self.preferences.options.zone,
+            self.preferences.profile.ftp_watts,
+            self.facts.revision,
+            [ids(Medium::Internal), ids(Medium::Bulk)],
+        )
+    }
+
+    /// Each saved ride of both journals, oldest first within a journal, with
+    /// its training stress if the index has read it and it had power, at the
+    /// FTP its facts kept, else the FTP now.
+    pub(super) fn each_ride(&self, mut each: impl FnMut(&Summary, Option<u32>)) {
+        let ftp = self.preferences.profile.ftp_watts;
+        for medium in [Medium::Internal, Medium::Bulk] {
+            let split = self.split(medium);
+            for index in 0..self.journal_len(medium) {
+                let Some(ride) = self.ride_in(medium, index, split) else {
+                    continue;
+                };
+                let effort = if index < split.0 {
+                    self.indexed(medium)
+                        .and_then(|journal| journal.effort(index))
+                } else {
+                    None
+                };
+                let stress = effort.and_then(|effort| {
+                    let then = self
+                        .facts
+                        .find(medium, ride.ride_id, ride.first_utc_ms)
+                        .and_then(|facts| facts.profile);
+                    effort.stress_score(then.map_or(ftp, |profile| profile.ftp_watts))
+                });
+                each(&ride, stress);
+            }
+        }
+    }
+
     /// This week and last, from the start times, active times and distances
     /// of the saved rides of both journals, or none until the clock is known.
     /// Training stress comes from the index's rides with power, at the FTP
@@ -330,51 +385,24 @@ impl Runtime {
     /// so the totals are right, and the ride count counts each part.
     pub(super) fn weeks(&self) -> Option<Weeks> {
         let utc_ms = self.readings.live.utc_ms?;
-        let ids = |medium| {
-            let last = self.journal_len(medium).checked_sub(1);
-            (
-                self.journal_len(medium),
-                last.and_then(|i| self.journal_ride(medium, i))
-                    .map(|r| r.ride_id),
-                self.indexed(medium).map_or(0, Journal::len),
-            )
-        };
-        let key = (
-            utc_ms / 60_000,
-            self.preferences.options.zone,
-            self.preferences.profile.ftp_watts,
-            self.facts.revision,
-            [ids(Medium::Internal), ids(Medium::Bulk)],
-        );
+        let key = self.rides_key(utc_ms);
         if let Some((cached, weeks)) = self.history.weeks.get()
             && cached == key
         {
             return Some(weeks);
         }
         let zone = self.preferences.options.zone;
-        let ftp = self.preferences.profile.ftp_watts;
         let offset = |utc_s| zone.offset_s(utc_s);
         let mut weeks = Weeks::new(utc_ms, &offset);
-        for medium in [Medium::Internal, Medium::Bulk] {
-            for index in 0..self.journal_len(medium) {
-                if let Some(ride) = self.journal_ride(medium, index) {
-                    let stress = self.journal_effort(medium, index).and_then(|effort| {
-                        let then = self
-                            .facts
-                            .find(medium, ride.ride_id, ride.first_utc_ms)
-                            .and_then(|facts| facts.profile);
-                        effort.stress_score(then.map_or(ftp, |profile| profile.ftp_watts))
-                    });
-                    weeks.add_stress(
-                        ride.first_utc_ms,
-                        ride.active_ms,
-                        ride.distance_mm,
-                        stress,
-                        &offset,
-                    );
-                }
-            }
-        }
+        self.each_ride(|ride, stress| {
+            weeks.add_stress(
+                ride.first_utc_ms,
+                ride.active_ms,
+                ride.distance_mm,
+                stress,
+                &offset,
+            );
+        });
         self.history.weeks.set(Some((key, weeks)));
         Some(weeks)
     }

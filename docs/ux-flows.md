@@ -332,8 +332,8 @@ ride without facts (below) counts at the FTP set now. A ride without a
 power meter, or with under 30 s of power, adds nothing; a week with no ride that had power shows no TSS
 rather than 0; more than 9999 reads 9999+. Rides the index has not read yet carry none, and nothing is
 saved: the stress is rebuilt with the index after every boot. A 7-day against
-42-day load line was left out: the header has no room for it beside the
-distance, the bars and LAST WEEK.
+42-day load line is not in this header, which has no room for it beside the
+distance, the bars and LAST WEEK; it has its own page, FORM (below).
 
 A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
@@ -392,6 +392,40 @@ once Settings, BODY holds a weight; BACK returns to Settings.
 - ACT on BESTS asks CLEAR BESTS?: ACT (check cue) clears them, replacing a
   damaged file too, and BACK (back cue) keeps them. A failed clear says CLEAR
   FAILED.
+
+## Form
+
+Settings, PROFILE, FORM opens the rider's training load from the last four
+months of rides with power. Its row reads the
+current form number and word once the ride index has read the rides (it follows FTP
+changes), and OPEN TO SEE until then. FITNESS is the 42-day
+average of the daily training stress, FATIGUE the 7-day one, and FORM is
+fitness minus fatigue, with a word for it: RESTED above +25 (white), FRESH
+from +5 to +25 (green), EVEN from -10 to +4 (white), BUILDING from -30 to -11
+(white, the normal cost of training) and VERY TIRED below -30 (red). Under them one bar
+a week shows how form stood at the end of each of the last six weeks, up for
+positive and down for negative, from 6 WEEKS AGO to NOW. BACK returns to
+Settings.
+
+- The stress is each ride's TSS (see the rides list), at the FTP the ride was
+  saved with where its facts are still kept, else the FTP now, added up by the
+  day the ride started in the status-bar clock's zone. A day with no ride
+  counts zero, so both averages decay. A ride without power counts for
+  nothing, and when there were any in the window the page says RIDES WITHOUT
+  POWER ARE LEFT OUT.
+- The averages need a starting value, and the first week of the 120 days
+  gives it (its mean stress). Its effect fades with the 42-day average to
+  0.057 of its error over the window: about 0.057 times the first week's mean
+  minus the rider's usual load, so +11 if that week was a training camp. The
+  numbers are an estimate until the rider has about four months of rides, and
+  settle within about a week once an unusual first week leaves the window.
+  Rides older than 120 days do not count.
+- Opening FORM starts the ride index if nothing has yet, and the page says
+  READING RIDES until both journals are read. Without a date it says NO DATE
+  YET and GET A GPS FIX, and with no ride with power in the window, NO POWER
+  RIDES and NEEDS A POWER METER.
+- Nothing is saved: the page is rebuilt from the ride index and the facts
+  after every boot.
 
 ## Other routes
 

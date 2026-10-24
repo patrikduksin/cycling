@@ -10,6 +10,7 @@ pub mod directory;
 pub mod elevation;
 pub mod facts;
 pub mod fit;
+pub mod fitness;
 pub mod gps_speed;
 pub mod homing;
 pub mod index;

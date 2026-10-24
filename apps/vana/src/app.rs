@@ -16,6 +16,7 @@ pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
 mod cues;
 mod facts;
+mod form;
 mod history;
 mod input;
 mod lookahead;
@@ -73,6 +74,7 @@ pub struct Runtime {
     preferences: preferences::Preferences,
     bests: bests::Kept,
     facts: facts::Kept,
+    form: form::Kept,
     power: power::Power,
     timing: timing::Timing,
     training: training::Training,
@@ -106,6 +108,7 @@ impl Runtime {
             preferences: preferences::Preferences::default(),
             bests: bests::Kept::default(),
             facts: facts::Kept::default(),
+            form: form::Kept::default(),
             power: power::Power::default(),
             timing: timing::Timing::default(),
             training: training::Training::default(),
@@ -272,6 +275,7 @@ impl Runtime {
         self.service_bests(bulk, now);
         self.service_facts(bulk, now);
         self.directory_step(store, bulk);
+        self.service_form();
         self.track_back(now);
     }
 }

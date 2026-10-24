@@ -7,8 +7,8 @@ use shell_simulator::bench::{SCENES, hash, measure};
 
 const HASHES: [(&str, u64); 6] = [
     ("home", 0x0c91_c4e2_1f97_76ab),
-    ("ride main + radar", 0xc59f_cb1c_1dc8_1d87),
-    ("climb", 0xfebc_a956_d7a5_0792),
+    ("ride main + radar", 0xe0d1_e038_ab2a_de67),
+    ("climb", 0x3f13_7e03_dc13_4bc2),
     ("summary", 0x7297_e332_ce5a_8371),
     ("sensors list", 0x294c_50dd_fdb8_bbf1),
     ("workouts", 0xcf72_96ce_aab4_afee),

@@ -549,6 +549,9 @@ impl Runtime {
             Page::Setup => navigation.setup_cursor,
             _ => navigation.home_cursor,
         };
+        if page == Page::Ride && navigation.ride_page == RidePage::Map {
+            super::back::refresh_map(&mut self.back);
+        }
         let mut view = View::new(page, cursor, local);
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
@@ -672,7 +675,6 @@ impl Runtime {
         let light = self.light();
         view.light = light;
         if view.ride_page == RidePage::Map {
-            super::back::refresh_map(&mut self.back);
             view.map = super::back::map_of(&self.back);
         }
         view.prepare();

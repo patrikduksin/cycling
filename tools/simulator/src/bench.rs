@@ -233,7 +233,7 @@ mod scenes {
         sim.pair(&["SPEED/CAD", "POWER METER"]);
         sim.start_ride();
         sim.ride_at(30.0, 180.0, 0.0, 85.0);
-        sim.ride_page("4/5");
+        sim.ride_page("4/6");
         while sim.world().distance_m < 1000.0 {
             sim.advance(seconds(1));
         }

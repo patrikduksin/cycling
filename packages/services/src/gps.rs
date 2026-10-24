@@ -910,7 +910,6 @@ mod tests {
 
     #[test]
     fn a_second_or_more_behind_is_a_correction_once_confirmed() {
-        // The clock is set at 20 s; then readings arrive at 40, 41 and 42 s.
         let after = |times: [&str; 3]| {
             let mut p = Parser::default();
             rmc(&mut p, "100020.00", "141026", 20_000);

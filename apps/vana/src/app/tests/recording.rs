@@ -287,7 +287,14 @@ fn a_lap_is_kept_in_the_journal_and_read_back_by_replay_and_fit() {
 
     let mut out = firmware_services::fit::Counter::default();
     let slots = (0..entries.len()).map(|index| journal.slot(index));
-    let plan = crate::ride::fit::write_all(slots, 1, Some(1_789_000_000_000), &mut out).unwrap();
+    let plan = crate::ride::fit::write_all(
+        slots,
+        1,
+        Default::default(),
+        Some(1_789_000_000_000),
+        &mut out,
+    )
+    .unwrap();
     assert_eq!(plan.laps, 2);
     assert_eq!(plan.size as usize, out.0);
 }

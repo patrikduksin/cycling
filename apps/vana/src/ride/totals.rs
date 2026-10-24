@@ -9,6 +9,30 @@ use crate::ride::load::PowerLoad;
 use crate::ride::log::Sample;
 use crate::ride::rider::Rider;
 
+/// The calories a ride or a lap shows and exports: `power_kcal` from the
+/// meter's work when power covers at least half the `heart_count` seconds
+/// heart rate was read (`power_ms` is the time it covers), otherwise the
+/// Keytel estimate from the heart-rate sum once `rider` has set weight, age
+/// and sex, and either falls back to the other. The one rule for the
+/// summary, the laps and the FIT export.
+pub fn calories(
+    power_kcal: Option<u32>,
+    power_ms: u64,
+    heart_sum: u64,
+    heart_count: u32,
+    rider: Rider,
+) -> Option<u32> {
+    let heart = (heart_count != 0)
+        .then(|| rider.heart_rate_kcal(heart_sum, heart_count))
+        .flatten();
+    let power_covers = power_ms >= u64::from(heart_count) * 500;
+    if power_covers {
+        power_kcal.or(heart)
+    } else {
+        heart.or(power_kcal)
+    }
+}
+
 /// The wheel sensor cannot measure below about 1.9 km/h (one 2136 mm
 /// revolution per its 4 s stop timeout), so anything it reports at or above
 /// 1.8 km/h is rolling and counts as moving time.
@@ -252,15 +276,13 @@ impl Totals {
     /// minutes. Either falls back to the other. A recorded sample stands for
     /// one second.
     pub fn kcal_for(&self, rider: Rider) -> Option<u32> {
-        let heart = (self.heart.count != 0)
-            .then(|| rider.heart_rate_kcal(self.heart.sum, self.heart.count))
-            .flatten();
-        let power_covers = self.load.power_ms() >= u64::from(self.heart.count) * 500;
-        if power_covers {
-            self.kcal().or(heart)
-        } else {
-            heart.or(self.kcal())
-        }
+        calories(
+            self.kcal(),
+            self.load.power_ms(),
+            self.heart.sum,
+            self.heart.count,
+            rider,
+        )
     }
 
     pub fn avg_heart_bpm(&self) -> Option<u16> {

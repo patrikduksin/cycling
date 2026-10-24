@@ -1,5 +1,6 @@
 use super::*;
 use crate::ride::log::{LapStart, Source, commit_word, encode};
+use crate::ride::rider::Rider;
 use crate::testing::Draw;
 use firmware_services::fit::{FIT_EPOCH_UNIX_S, crc16};
 use std::collections::BTreeMap;
@@ -144,7 +145,7 @@ fn fit_time(unix_ms: u64) -> u64 {
 
 fn file(slots: &[Slot], start: Option<u64>) -> Result<(Plan, Vec<u8>), Refusal> {
     let mut out = Bytes(Vec::new());
-    let plan = write_all(slots.iter(), 3, start, &mut out)?;
+    let plan = write_all(slots.iter(), 3, Rider::default(), start, &mut out)?;
     assert_eq!(plan.size as usize, out.0.len());
     Ok((plan, out.0))
 }
@@ -295,7 +296,7 @@ fn an_empty_ride_is_refused() {
 #[test]
 fn stream_bounds_hold() {
     let mut out = Counter::default();
-    let export = Export::start(1, None, None, &mut out);
+    let export = Export::start(1, Rider::default(), None, None, &mut out);
     assert!(out.0 <= MAX_START_OUTPUT, "start {}", out.0);
     let start = out.0;
     let mut export2 = export.clone();
@@ -364,6 +365,119 @@ fn a_ride_without_power_has_no_calories() {
         assert_eq!(message.get(11), None, "message {global}: no guess");
         assert_eq!(message.get(16), Some(140), "heart rate is still there");
     }
+}
+
+fn body() -> Rider {
+    Rider::decode([75, 30, 1]).unwrap()
+}
+
+/// The ride's samples as the summary sees them: one recorded second each.
+fn summary_totals(samples: &[Sample]) -> Totals {
+    let mut totals = Totals::default();
+    for sample in samples {
+        totals.add(1000, 0, sample, None);
+    }
+    totals
+}
+
+fn file_for(samples: &[Sample], rider: Rider) -> Vec<Decoded> {
+    let end = samples.last().map_or(0, |s| s.active_ms);
+    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    for (index, batch) in samples.chunks(4).enumerate() {
+        let sequence = index as u32 + 1;
+        slots.push(slot(
+            &Entry::batch(Source::Live, 3, sequence, batch).unwrap(),
+        ));
+    }
+    slots.push(slot(&Entry::event(Kind::Finish, Source::Live, 3, 99, end)));
+    let mut out = Bytes(Vec::new());
+    let plan = write_all(slots.iter(), 3, rider, None, &mut out).unwrap();
+    assert_eq!(plan.size as usize, out.0.len());
+    decode(&out.0)
+}
+
+fn message(messages: &[Decoded], global: u16) -> &Decoded {
+    messages.iter().find(|m| m.global == global).unwrap()
+}
+
+/// Eight seconds with 200 W for the first `powered` of them.
+fn kinds(heart: bool, powered: u64) -> Vec<Sample> {
+    (1..=8)
+        .map(|i| Sample {
+            heart_bpm: heart.then_some(140),
+            power_watts: (i <= powered).then_some(200),
+            ..sample(i * 1000, true)
+        })
+        .collect()
+}
+
+#[test]
+fn session_and_lap_calories_are_the_summary_kcal_for_every_kind_of_ride() {
+    let keytel = body().heart_rate_kcal(140 * 8, 8).map(u64::from);
+    // 200 W for 8 s is 1.6 kJ.
+    let rides = [
+        ("heart rate only", kinds(true, 0), keytel),
+        ("power only", kinds(false, 8), Some(2)),
+        ("power covers the heart rate", kinds(true, 8), Some(2)),
+        ("power under half of it", kinds(true, 3), keytel),
+    ];
+    for (name, samples, with_body) in rides {
+        for (rider, pinned) in [(Rider::default(), None), (body(), with_body)] {
+            let expected = summary_totals(&samples).kcal_for(rider).map(u64::from);
+            let messages = file_for(&samples, rider);
+            for global in [18, 19] {
+                assert_eq!(
+                    message(&messages, global).get(11),
+                    expected,
+                    "{name} {global}"
+                );
+            }
+            if rider.sex().is_some() {
+                assert_eq!(expected, pinned, "{name}");
+            }
+        }
+    }
+    // Without a body the heart-rate-only ride keeps no calories, as before.
+    let messages = file_for(&kinds(true, 0), Rider::default());
+    assert_eq!(message(&messages, 18).get(11), None);
+}
+
+#[test]
+fn each_lap_takes_its_own_calories_from_its_own_seconds() {
+    // Power for the first lap's four seconds only, heart rate throughout.
+    let mut samples = kinds(true, 4);
+    samples[0].lap = Some(LapStart::Ride);
+    samples[4].lap = Some(LapStart::Manual);
+    let messages = file_for(&samples, body());
+    let laps: Vec<_> = messages.iter().filter(|m| m.global == 19).collect();
+    assert_eq!(laps.len(), 2);
+    // 200 W for 4 s is 0.8 kJ; the second lap has heart rate alone.
+    assert_eq!(laps[0].get(11), Some(1), "lap with power");
+    let keytel = body().heart_rate_kcal(4 * 140, 4).map(u64::from);
+    assert_eq!(laps[1].get(11), keytel, "lap without power");
+    // Power covers exactly half of the ride's heart-rate seconds.
+    assert_eq!(message(&messages, 18).get(11), Some(1));
+}
+
+#[test]
+fn calories_stay_inside_the_field_for_hostile_readings() {
+    let rider = Rider::decode([200, 99, 1]).unwrap();
+    let samples: Vec<Sample> = (1..=4)
+        .map(|i| Sample {
+            heart_bpm: Some(u16::MAX),
+            power_watts: Some(u16::MAX),
+            ..sample(i * 1000, true)
+        })
+        .collect();
+    let messages = file_for(&samples, rider);
+    for global in [18, 19] {
+        let kcal = message(&messages, global).get(11);
+        assert!(
+            kcal.is_some_and(|kcal| kcal < u64::from(u16::MAX)),
+            "{kcal:?}"
+        );
+    }
+    assert_eq!(kilocalories(u32::MAX), u16::MAX - 1);
 }
 
 #[test]
@@ -702,7 +816,7 @@ fn a_ride_without_lap_marks_is_one_lap_of_the_whole_ride() {
 #[test]
 fn a_slot_of_four_laps_stays_within_its_bound() {
     let mut out = Counter::default();
-    let mut export = Export::start(3, None, None, &mut out);
+    let mut export = Export::start(3, Rider::default(), None, None, &mut out);
     let slots = ride(true, 0);
     export.slot(&slots[0], &mut out);
     export.slot(&slots[1], &mut out);

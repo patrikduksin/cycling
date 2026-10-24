@@ -19,6 +19,7 @@ use super::recording::Medium;
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
 use crate::ride::index::{Activity, Index};
 use crate::ride::log::Slot;
+use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
@@ -134,6 +135,8 @@ enum FitPhase {
 struct FitJob {
     medium: Medium,
     ride_id: u32,
+    /// The body the calories use, read once so both passes agree.
+    rider: Rider,
     next_slot: usize,
     start_slot: usize,
     start_utc_ms: Option<u64>,
@@ -714,13 +717,15 @@ impl Runtime {
                 }),
             );
         };
+        let rider = self.preferences.options.rider;
         let mut counter = Counter::default();
-        let export = Export::start(ride_id, None, None, &mut counter);
+        let export = Export::start(ride_id, rider, None, None, &mut counter);
         self.phone.w().job = Job::Fit {
             id,
             job: FitJob {
                 medium,
                 ride_id,
+                rider,
                 next_slot: start_slot,
                 start_slot,
                 start_utc_ms: start,
@@ -886,7 +891,7 @@ impl Runtime {
                     id,
                     short: false,
                 };
-                let export = Export::start(job.ride_id, Some(&plan), clock, &mut out);
+                let export = Export::start(job.ride_id, job.rider, Some(&plan), clock, &mut out);
                 job.phase = FitPhase::Writing { export };
                 job.next_slot = job.start_slot;
                 self.phone.w().job = Job::Fit { id, job };

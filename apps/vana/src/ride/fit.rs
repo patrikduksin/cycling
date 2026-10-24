@@ -35,8 +35,12 @@
 //! the ride page's rules (`Totals`), and are left out of a ride without any.
 //! Rides recorded before altitude was kept have none.
 //!
-//! Laps and session carry `total_calories` (field 11, kcal) from the work of
-//! a power meter, and leave it invalid without power.
+//! Laps and session carry `total_calories` (field 11, kcal) as the summary
+//! shows it (`totals::calories`): the power meter's work, or the heart-rate
+//! estimate once the rider's body is set. Each lap applies the rule to its
+//! own seconds, so a lap's rounding or half-coverage choice can differ from
+//! the session's, and laps may not add up to it. Without power, or heart
+//! rate and a body, they are invalid.
 //!
 //! What the journal does not have stays out: no distance without a
 //! recorded speed (wheel or GPS), so readers fall back to GPS for distance.
@@ -45,6 +49,7 @@
 
 use crate::ride::laps::Lap;
 use crate::ride::log::{self, Entry, Kind, LapStart, MAX_STEP_MS, Sample, Slot};
+use crate::ride::rider::Rider;
 use crate::ride::totals::Totals;
 use firmware_services::fit::{
     self, BaseType, Counter, Field, Message, Sink, Value, Writer, semicircles,
@@ -315,6 +320,7 @@ pub enum Flow {
 #[derive(Clone)]
 pub struct Export {
     ride_id: u32,
+    rider: Rider,
     writer: Writer,
     started: bool,
     ended: bool,
@@ -361,6 +367,7 @@ impl Export {
     /// pass passes `None` and writes placeholder times of the same size.
     pub fn start(
         ride_id: u32,
+        rider: Rider,
         plan: Option<&Plan>,
         clock: Option<u64>,
         out: &mut impl Sink,
@@ -369,6 +376,7 @@ impl Export {
         let data = (size as usize).saturating_sub(fit::HEADER_SIZE + fit::CRC_SIZE) as u32;
         let mut export = Self {
             ride_id,
+            rider,
             writer: Writer::start(out, data),
             started: false,
             ended: false,
@@ -721,7 +729,7 @@ impl Export {
                 Value::U32(elapsed),
                 Value::U32(timer),
                 Value::U32(distance),
-                Value::U16(lap.kcal().map(kilocalories)),
+                Value::U16(lap.kcal_for(self.rider).map(kilocalories)),
                 Value::U16(speed(distance_mm.and(lap.avg_speed_mm_s()))),
                 Value::U16(speed(lap.max_speed_mm_s())),
                 Value::U8(byte(lap.avg_heart_bpm())),
@@ -793,7 +801,7 @@ impl Export {
                 Value::U32(elapsed),
                 Value::U32(timer),
                 Value::U32(distance),
-                Value::U16(totals.kcal().map(kilocalories)),
+                Value::U16(totals.kcal_for(self.rider).map(kilocalories)),
                 Value::U16(avg_speed),
                 Value::U16(max_speed),
                 Value::U8(avg_hr),
@@ -870,11 +878,12 @@ pub fn clock_for(plan: &Plan, start_utc_ms: Option<u64>) -> Result<Option<u64>, 
 pub fn write_all<S: core::borrow::Borrow<Slot>>(
     slots: impl Iterator<Item = S> + Clone,
     ride_id: u32,
+    rider: Rider,
     start_utc_ms: Option<u64>,
     out: &mut impl Sink,
 ) -> Result<Plan, Refusal> {
     let mut counter = Counter::default();
-    let mut sizing = Export::start(ride_id, None, None, &mut counter);
+    let mut sizing = Export::start(ride_id, rider, None, None, &mut counter);
     for slot in slots.clone() {
         if sizing.slot(slot.borrow(), &mut counter) == Flow::End {
             break;
@@ -882,7 +891,7 @@ pub fn write_all<S: core::borrow::Borrow<Slot>>(
     }
     let plan = sizing.finish(&mut counter);
     let clock = clock_for(&plan, start_utc_ms)?;
-    let mut export = Export::start(ride_id, Some(&plan), clock, out);
+    let mut export = Export::start(ride_id, rider, Some(&plan), clock, out);
     for slot in slots {
         if export.slot(slot.borrow(), out) == Flow::End {
             break;

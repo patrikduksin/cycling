@@ -5,6 +5,7 @@ use firmware_services::fit::Counter;
 use std::fmt::Write as _;
 use vana::ride::fit::{self, Plan, Refusal};
 use vana::ride::log::{Entry, Kind, SLOT_SIZE, Sample, Slot, decode};
+use vana::ride::rider::Rider;
 
 pub struct Ride {
     pub id: u32,
@@ -16,7 +17,13 @@ impl Ride {
     /// What the FIT export finds in this ride when the phone gives no start:
     /// its start time, or why the file is refused.
     pub fn fit_plan(&self) -> Result<Plan, Refusal> {
-        fit::write_all(self.slots.iter(), self.id, None, &mut Counter::default())
+        fit::write_all(
+            self.slots.iter(),
+            self.id,
+            Rider::default(),
+            None,
+            &mut Counter::default(),
+        )
     }
 
     pub fn samples(&self) -> impl Iterator<Item = &Sample> {
@@ -61,7 +68,13 @@ impl Ride {
             }
         }
         let mut out = Out(Vec::new());
-        fit::write_all(self.slots.iter(), self.id, start_utc_ms, &mut out)?;
+        fit::write_all(
+            self.slots.iter(),
+            self.id,
+            Rider::default(),
+            start_utc_ms,
+            &mut out,
+        )?;
         Ok(out.0)
     }
 

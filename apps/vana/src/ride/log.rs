@@ -588,6 +588,87 @@ pub fn step_ms(last_ms: Option<u64>, active_ms: u64) -> u64 {
     .min(MAX_STEP_MS)
 }
 
+/// How a ride read back from its journal divides its active time: each
+/// sample covers the time since the sample, start or resume before it, and
+/// a pause or the finish holds the last sample's speed and power up to its
+/// own moment, as the live totals do. The saved ride's summary and its FIT
+/// export both step through one, so they add up the same time.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Timeline {
+    /// A start or resume waiting for the next sample.
+    pending: Option<u64>,
+    paused: bool,
+    previous_ms: Option<u64>,
+    /// The last sample's speeds and power, which hold until a pause or the
+    /// finish.
+    last: Option<(Option<u32>, Option<u32>, Option<u16>)>,
+}
+
+impl Timeline {
+    /// A start or resume at `active_ms`.
+    pub fn start(&mut self, active_ms: u64) {
+        self.paused = false;
+        self.last = None;
+        self.pending = Some(active_ms);
+    }
+
+    /// Step to the next sample: the start or resume it is the first sample
+    /// of, if any, and the active time it covers (none for a first sample
+    /// whose start was lost).
+    pub fn sample(&mut self, sample: &Sample) -> (Option<u64>, u64) {
+        let started = self.pending.take();
+        if started.is_some() {
+            self.previous_ms = started;
+            self.paused = false;
+        }
+        let elapsed = sample
+            .active_ms
+            .saturating_sub(self.previous_ms.unwrap_or(sample.active_ms))
+            .min(MAX_STEP_MS);
+        self.previous_ms = Some(sample.active_ms);
+        self.last = Some((
+            sample.speed_mm_s,
+            sample.demo_speed_mm_s,
+            sample.power_watts,
+        ));
+        (started, elapsed)
+    }
+
+    /// Samples are being recorded: a stretch has begun and not paused.
+    pub fn running(&self) -> bool {
+        !self.paused && self.pending.is_none()
+    }
+
+    /// Recording stops at `active_ms`, for a pause or the finish: the time
+    /// since the last sample, and that sample's speed and power held over
+    /// it, while running.
+    pub fn hold(&mut self, active_ms: u64) -> Option<(u64, Sample)> {
+        let (true, Some(previous), Some((speed_mm_s, demo_speed_mm_s, power_watts))) =
+            (self.running(), self.previous_ms, self.last)
+        else {
+            return None;
+        };
+        let elapsed = active_ms.saturating_sub(previous).min(MAX_STEP_MS);
+        if elapsed == 0 {
+            return None;
+        }
+        self.previous_ms = Some(active_ms);
+        let held = Sample {
+            speed_mm_s,
+            demo_speed_mm_s,
+            power_watts,
+            ..Sample::default()
+        };
+        Some((elapsed, held))
+    }
+
+    /// A pause: samples stop until the next start or resume.
+    pub fn pause(&mut self) {
+        self.pending = None;
+        self.paused = true;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Catalog {
     pub next_slot: usize,

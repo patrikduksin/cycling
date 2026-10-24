@@ -17,7 +17,7 @@
 //! The replay itself is a few words of position; it adds up into `Sums` the
 //! caller lends it, so the device keeps one set of ride sums, not two.
 use crate::ride::elevation::Trace;
-use crate::ride::log::{Entry, Kind, LapStart, Sample, step_ms};
+use crate::ride::log::{Entry, Kind, LapStart, Sample, Timeline};
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
 
@@ -73,7 +73,9 @@ pub struct Replay {
     upper: usize,
     phase: Phase,
     found: bool,
-    last_ms: Option<u64>,
+    /// The active time each sample, pause and the finish covers, as the FIT
+    /// export counts it.
+    timeline: Timeline,
     rise_mm: u64,
     samples: u32,
     boundaries: Option<u16>,
@@ -92,7 +94,7 @@ impl Replay {
             upper,
             phase: Phase::Find { lo: 0, hi: upper },
             found: false,
-            last_ms: None,
+            timeline: Timeline::default(),
             rise_mm: 0,
             samples: 0,
             boundaries: None,
@@ -183,8 +185,15 @@ impl Replay {
                                 self.add(sample, profile, sums);
                             }
                         }
-                        Kind::Finish | Kind::Recovered | Kind::Full => self.phase = Phase::Done,
-                        Kind::Start | Kind::Pause | Kind::Resume => {}
+                        Kind::Start | Kind::Resume => self.timeline.start(entry.active_ms),
+                        Kind::Pause => {
+                            self.hold(entry.active_ms, profile, sums);
+                            self.timeline.pause();
+                        }
+                        Kind::Finish | Kind::Recovered | Kind::Full => {
+                            self.hold(entry.active_ms, profile, sums);
+                            self.phase = Phase::Done;
+                        }
                     }
                 }
             }
@@ -209,15 +218,9 @@ impl Replay {
             *boundaries = boundaries.saturating_add(u16::from(boundary));
         }
         self.samples = self.samples.saturating_add(1);
-        // Active time runs only while recording, so pauses leave no gap.
-        let elapsed = step_ms(self.last_ms, sample.active_ms);
-        self.last_ms = Some(sample.active_ms);
+        let (_, elapsed) = self.timeline.sample(sample);
         self.active_ms = self.active_ms.max(sample.active_ms);
-        if elapsed == 0 {
-            return;
-        }
-        let speed = sample.speed_mm_s.or(sample.demo_speed_mm_s).unwrap_or(0);
-        let distance_mm = u64::from(speed) * elapsed / 1000;
+        let distance_mm = step_mm(sample, elapsed);
         sums.totals.add(elapsed, distance_mm, sample, None);
         if let Some(altitude) = sample.altitude {
             self.measured = true;
@@ -235,6 +238,17 @@ impl Replay {
         }
     }
 
+    /// A pause or the finish at `active_ms`: the last sample's speed and
+    /// power held up to it, as the live totals count the time.
+    fn hold(&mut self, active_ms: u64, profile: &TrainingProfile, sums: &mut Sums<'_>) {
+        let Some((elapsed, held)) = self.timeline.hold(active_ms) else {
+            return;
+        };
+        sums.totals
+            .add(elapsed, step_mm(&held, elapsed), &held, None);
+        sums.zone_time.add(elapsed, &held, profile);
+    }
+
     /// Ascent from the recorded gradient, in decimetres.
     fn gradient_ascent_dm(&self) -> u32 {
         (self.rise_mm / 100).min(u64::from(u32::MAX)) as u32
@@ -249,6 +263,12 @@ impl Replay {
             totals.with_ascent_dm(self.gradient_ascent_dm())
         }
     }
+}
+
+/// The distance a sample covers over `elapsed_ms`, at its speed.
+fn step_mm(sample: &Sample, elapsed_ms: u64) -> u64 {
+    let speed = sample.speed_mm_s.or(sample.demo_speed_mm_s).unwrap_or(0);
+    u64::from(speed) * elapsed_ms / 1000
 }
 
 #[cfg(test)]

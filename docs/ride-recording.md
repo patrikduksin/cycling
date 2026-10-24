@@ -66,8 +66,9 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
   events, one record per sample with time, position, distance, speed, heart
   rate, cadence, power, grade and altitude, one lap as each lap ends, then the
   session (with normalized power) and the activity. Laps and session carry
-  total calories from the power meter's work (kcal ~ kJ), invalid without
-  power. The host uses the same encoder as the device (`ride-fit` binary), and `tools/devtools/tests/test_fit_export.py` reads its
+  total calories from the power meter's work (kcal ~ kJ), plus the
+  heart-rate estimate for the seconds without power once the rider's body is
+  set; invalid without either. The host uses the same encoder as the device (`ride-fit` binary), and `tools/devtools/tests/test_fit_export.py` reads its
   files with Garmin's FIT SDK and fitdecode.
 - Samples are dated like GPX: each running stretch from its first UTC sample;
   a stretch without UTC keeps the previous offset, so its pause counts as no

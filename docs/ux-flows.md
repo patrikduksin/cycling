@@ -217,10 +217,10 @@ The summary opens with a green check and RIDE SAVED, and pages through:
 1. Time, distance, average speed, ascent, average power and average heart
    rate.
 2. Normalized and maximum power, work in kJ, KCAL (the work again, as
-   calories: 24 % efficient muscle makes kJ and kcal nearly equal; without a
-   power meter, or when it covered under half the ride, estimated from heart
-   rate with the Keytel formula once Settings, BODY holds weight, age and
-   sex, and none until then), average and maximum heart rate, power and
+   calories: 24 % efficient muscle makes kJ and kcal nearly equal; for the
+   seconds without power, such as after a meter dies, the heart-rate estimate
+   by the Keytel formula is added once Settings, BODY holds weight, age and
+   sex, and nothing until then), average and maximum heart rate, power and
    heart-rate zone bars, and HR RECOVERY: the fall in heart rate over the
    minute after the ride stopped recording. A ride is paused before it ends,
    so it counts from that pause, with MEASURING and a countdown until the

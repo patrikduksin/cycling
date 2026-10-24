@@ -1,6 +1,6 @@
 //! The rider's body: weight, age and sex, kept for the two numbers that need
-//! them. Heart-rate calories (Keytel et al., 2005) when a ride has no power
-//! meter, and power per kilogram.
+//! them. Heart-rate calories (Keytel et al., 2005) for the seconds a ride has
+//! no power, and power per kilogram.
 //!
 //! Each field is unset until the rider enters it, and an unset field switches
 //! its numbers off rather than guessing: without all three there are no

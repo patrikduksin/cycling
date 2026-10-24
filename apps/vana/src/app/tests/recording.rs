@@ -237,6 +237,153 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     assert!(runtime.navigation.page == Page::Home);
 }
 
+struct Failing {
+    journal: Journal,
+    fail: bool,
+}
+
+impl RideStorage for Failing {
+    type Error = ();
+    fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), ()> {
+        self.journal.ride_read_sector(sector, output)
+    }
+    fn ride_read_slot(&mut self, slot: usize, output: &mut Slot) -> Result<(), ()> {
+        self.journal.ride_read_slot(slot, output)
+    }
+    fn ride_erase_sector(&mut self, sector: usize) -> Result<(), ()> {
+        self.journal.ride_erase_sector(sector)
+    }
+    fn ride_write_slot(&mut self, slot: usize, data: &Slot) -> Result<(), ()> {
+        if self.fail {
+            return Err(());
+        }
+        self.journal.ride_write_slot(slot, data)
+    }
+    fn ride_commit_slot(&mut self, slot: usize, commit: &Commit) -> Result<(), ()> {
+        if self.fail {
+            return Err(());
+        }
+        self.journal.ride_commit_slot(slot, commit)
+    }
+}
+
+fn ask_to_end(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut Radio) {
+    on_ride_page(runtime);
+    runtime.input(press(Button::BottomRight), 1000, radio);
+    tick(runtime, store, radio, 1000);
+    runtime.input(press(Button::BottomRight), 2000, radio);
+    for step in 0..4 {
+        tick(runtime, store, radio, 2000 + step * 50);
+    }
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    runtime.input(press(Button::TopLeft), 2400, radio);
+    assert!(runtime.navigation.page == Page::EndRide);
+}
+
+fn host(
+    runtime: &mut Runtime,
+    store: &mut impl RideStorage,
+    now: u64,
+    words: &str,
+) -> (&'static str, String) {
+    let mut output = String::new();
+    let status = runtime.command(words, store, &mut NoBulk, now, &mut output);
+    (status, output)
+}
+
+fn toast_text(runtime: &mut Runtime, now: u64) -> Option<String> {
+    runtime
+        .toast(now)
+        .map(|toast| String::from_utf8(toast.text().to_vec()).unwrap())
+}
+
+#[test]
+#[ignore = "fixed by ride_control"]
+fn a_host_resume_while_asking_returns_to_the_ride_before_the_next_frame() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    ask_to_end(&mut runtime, &mut journal, &mut radio);
+    host(&mut runtime, &mut journal, 2500, "RIDE STATUS");
+    assert_eq!(
+        host(&mut runtime, &mut journal, 2500, "RIDE RESUME").0,
+        "ACCEPTED"
+    );
+    tick(&mut runtime, &mut journal, &mut radio, 2600);
+    let (_, status) = host(&mut runtime, &mut journal, 2600, "RIDE STATUS");
+    assert!(status.starts_with("state=recording "), "{status}");
+    assert!(status.contains(" page=ride "), "{status}");
+}
+
+#[test]
+#[ignore = "fixed by ride_control"]
+fn a_host_finish_while_asking_opens_the_summary_before_the_next_frame() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    ask_to_end(&mut runtime, &mut journal, &mut radio);
+    host(&mut runtime, &mut journal, 2500, "RIDE STATUS");
+    assert_eq!(
+        host(&mut runtime, &mut journal, 2500, "RIDE FINISH").0,
+        "ACCEPTED"
+    );
+    settle(&mut runtime, &mut journal, &mut radio, 2600);
+    let (_, status) = host(&mut runtime, &mut journal, 5000, "RIDE STATUS");
+    assert!(status.starts_with("state=saved "), "{status}");
+    assert!(status.contains(" page=summary "), "{status}");
+    runtime.input(press(Button::BottomRight), 5000, &mut radio);
+    assert!(runtime.navigation.page == Page::Home);
+}
+
+#[test]
+fn a_refused_answer_to_end_ride_returns_to_the_ride_and_says_storage_not_ready() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    ask_to_end(&mut runtime, &mut journal, &mut radio);
+    let nobody_waits = 0;
+    assert!(runtime.ride.internal.request(
+        crate::ride::control::Action::Resume,
+        crate::ride::log::Source::Live,
+        2500,
+        nobody_waits
+    ));
+    runtime.input(press(Button::BottomRight), 2800, &mut radio);
+    assert!(runtime.navigation.page == Page::Ride);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert_eq!(
+        toast_text(&mut runtime, 2800).as_deref(),
+        Some("STORAGE NOT READY")
+    );
+}
+
+#[test]
+fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leave() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    let mut store = Failing {
+        journal,
+        fail: false,
+    };
+    ask_to_end(&mut runtime, &mut store, &mut radio);
+    runtime.input(press(Button::BottomRight), 2800, &mut radio);
+    assert!(runtime.navigation.page == Page::Summary);
+    store.fail = true;
+    for step in 0..20 {
+        tick(&mut runtime, &mut store, &mut radio, 2800 + step * 100);
+    }
+    let (_, status) = host(&mut runtime, &mut store, 5000, "RIDE STATUS");
+    assert!(status.starts_with("state=error "), "{status}");
+    assert!(status.contains(" page=summary "), "{status}");
+    assert!(status.ends_with(" result=FAILED"), "{status}");
+    let mut screen = super::presentation::Screen::new();
+    assert!(screen.present(&mut runtime, &radio, 5000));
+    assert!(runtime.navigation.page == Page::Summary);
+    runtime.input(press(Button::BottomRight), 5400, &mut radio);
+    assert!(runtime.navigation.page == Page::Home);
+}
+
 #[test]
 fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     let mut journal = Journal::erased();

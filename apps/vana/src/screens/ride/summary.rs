@@ -327,7 +327,7 @@ fn effort(view: &View, canvas: &mut Canvas) {
     zone_bar(canvas, b"PWR", (LEFT, BAR_LEFT), bars, marks.power_time);
     zone_bar(canvas, b"HR", (LEFT, BAR_LEFT), bars + 18, marks.heart_time);
     if let Some(reading) = view.after.recovery {
-        recovery(canvas, reading, bars + 28);
+        recovery(canvas, reading, bars + 40);
     }
 }
 

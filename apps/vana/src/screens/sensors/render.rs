@@ -12,6 +12,7 @@ use crate::screens::chrome::{
     self, Align, BLACK, BODY, CAPTION, CARD, Label, Line, RAISED, Rect, Row, VALUE, blend, card,
     disc, paint_rounded,
 };
+use crate::sensors::ant::BatteryStatus;
 use device_api::ant::Identity;
 use firmware_shell::rendering::font::Face;
 
@@ -33,6 +34,17 @@ pub(super) const NEARBY_TOP: usize = 138;
 const SEARCHING_LEFT: usize = MARGIN + CAPTION.width(b"NEARBY") + 6;
 pub(super) const TITLE_TOP: usize = 236;
 pub(super) const STATUS_TOP: usize = 262;
+
+impl Selected {
+    /// Grey while the battery is fine, amber once low, red when critical.
+    fn battery_color(self) -> u16 {
+        match self.battery.map(|battery| battery.status) {
+            Some(BatteryStatus::Critical) => chrome::RED,
+            Some(status) if status.is_low() => AMBER,
+            _ => MUTED,
+        }
+    }
+}
 
 impl LinkStatus {
     pub(super) const fn color(self) -> u16 {
@@ -265,6 +277,10 @@ impl Menu {
         let status = selected.link_status();
         let line = Self::status_line(selected);
         paint_text(row, &CAPTION, line, mid, 140, center, status.color());
+        if let Some(battery) = selected.battery_text() {
+            let color = selected.battery_color();
+            paint_text(row, &CAPTION, battery.as_bytes(), mid, 184, center, color);
+        }
         let name = kind(selected.identity.device_type);
         paint_text(row, &BODY, name, mid, 108, center, WHITE);
         paint_icon(row, 98, 52, 2, selected.identity.device_type);
@@ -576,6 +592,21 @@ impl Menu {
             status.color(),
             BLACK,
         ) {
+            return c;
+        }
+        if let Some(battery) = selected.battery_text()
+            && let Some(c) = write(
+                x,
+                y,
+                &CAPTION,
+                battery.as_bytes(),
+                mid,
+                184,
+                center,
+                selected.battery_color(),
+                BLACK,
+            )
+        {
             return c;
         }
         let mut identity = [0_u8; 24];

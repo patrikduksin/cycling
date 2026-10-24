@@ -1,5 +1,8 @@
 //! A saved sensor tile: the rider's selection and what VANA last observed
 //! while connecting it automatically.
+use crate::screens::workout::Text;
+use crate::sensors::ant::Battery;
+use core::fmt::Write;
 use device_api::ant::Identity;
 
 /// Observed connection progress of a saved sensor.
@@ -83,9 +86,23 @@ impl LinkStatus {
 pub struct Selected {
     pub identity: Identity,
     pub connection: Connection,
+    /// What the sensor last reported about its battery, if it has.
+    pub battery: Option<Battery>,
 }
 
 impl Selected {
+    /// The caption for the detail page, such as "LOW BATTERY  2.7 V".
+    pub(super) fn battery_text(self) -> Option<Text<24>> {
+        let battery = self.battery?;
+        let mut text = Text::<24>::new();
+        let _ = write!(text, "{} BATTERY", battery.status.text());
+        if let Some(millivolts) = battery.millivolts {
+            let tenths = (millivolts + 50) / 100;
+            let _ = write!(text, "  {}.{} V", tenths / 10, tenths % 10);
+        }
+        Some(text)
+    }
+
     pub(super) const fn link_status(self) -> LinkStatus {
         self.connection.status()
     }

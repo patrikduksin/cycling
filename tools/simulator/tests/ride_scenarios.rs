@@ -6,7 +6,7 @@ use device_api::gps::FixState;
 use device_api::input::Button;
 use device_api::positioning::Positioning;
 use firmware_services::gps::unix_seconds;
-use shell_simulator::ant::device_type;
+use shell_simulator::ant::{BatteryReport, device_type};
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
@@ -5668,4 +5668,159 @@ fn a_manual_wheel_size_is_kept_across_rides_and_power_loss() {
     ride_settings(&mut sim);
     sim.expect_text("2155 MM");
     sim.expect_text("MANUAL");
+}
+
+fn battery(sim: &mut Sim, kind: u8, number: u16, report: BatteryReport) {
+    sim.ant_sensor(kind, number).battery = Some(report);
+}
+
+fn run_color(sim: &Sim, text: &str) -> u16 {
+    sim.screen()
+        .run(text)
+        .unwrap_or_else(|| panic!("no {text:?}; screen:\n{}", sim.screen().text()))
+        .color
+}
+
+#[test]
+fn a_low_battery_turns_sensors_amber_on_home_and_ready() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    battery(
+        &mut sim,
+        device_type::POWER,
+        POWER,
+        BatteryReport::new(2, 2_900),
+    );
+    battery(
+        &mut sim,
+        device_type::HEART_RATE,
+        HEART,
+        BatteryReport::new(4, 2_450),
+    );
+    sim.advance(seconds(12));
+    assert!(sim.on_home(), "screen:\n{}", sim.screen().text());
+    assert_eq!(run_color(&sim, "HR LOW"), AMBER);
+    sim.expect_text("BATTERY");
+    assert_eq!(run_color(&sim, "2/2 LIVE"), AMBER);
+    sim.checkpoint("home with a low heart rate battery");
+
+    sim.home("RIDE");
+    sim.expect_text("READY");
+    sim.expect_text("HR LOW BATTERY");
+    sim.expect_text("CHANGE IT SOON");
+    sim.checkpoint("ready with a low heart rate battery");
+    sim.press(Button::TopLeft);
+
+    sim.home("SENSORS");
+    sim.open_sensor_detail("HEART RATE");
+    sim.expect_text("LOW BATTERY  2.4 V");
+    assert_eq!(run_color(&sim, "LOW BATTERY  2.4 V"), AMBER);
+    sim.checkpoint("heart rate detail with a low battery");
+    sim.press(Button::TopLeft);
+    sim.open_sensor_detail("POWER METER");
+    sim.expect_text("GOOD BATTERY  2.9 V");
+    assert_eq!(run_color(&sim, "GOOD BATTERY  2.9 V"), SECONDARY);
+    sim.checkpoint("power meter detail with a good battery");
+}
+
+#[test]
+fn a_critical_battery_is_named_and_a_fresh_one_clears_the_warning() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER"]);
+    battery(
+        &mut sim,
+        device_type::POWER,
+        POWER,
+        BatteryReport::new(5, 2_100),
+    );
+    sim.advance(seconds(12));
+    sim.home("RIDE");
+    sim.expect_text("PWR CRITICAL BATTERY");
+    sim.expect_text("CHANGE IT BEFORE RIDING");
+    sim.checkpoint("ready with a critical power meter battery");
+    sim.press(Button::TopLeft);
+
+    battery(
+        &mut sim,
+        device_type::POWER,
+        POWER,
+        BatteryReport::new(1, 3_000),
+    );
+    sim.advance(seconds(12));
+    sim.home("RIDE");
+    sim.expect_text("1 SENSOR LIVE");
+    sim.expect_no_text("CRITICAL BATTERY");
+}
+
+#[test]
+fn a_sensor_that_is_not_live_is_named_before_any_battery_warning() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    battery(
+        &mut sim,
+        device_type::HEART_RATE,
+        HEART,
+        BatteryReport::new(4, 2_450),
+    );
+    sim.advance(seconds(12));
+    sim.set_present(device_type::POWER, POWER, false);
+    sim.advance(seconds(20));
+    sim.expect_text("1/2 LIVE");
+    sim.home("RIDE");
+    sim.expect_text("SENSORS WAKING UP");
+    sim.expect_text("PWR");
+    sim.expect_no_text("LOW BATTERY");
+    sim.checkpoint("ready names the missing sensor ahead of a low battery");
+}
+
+#[test]
+fn reserved_battery_values_and_battery_pages_never_disturb_readings() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(27.0, 205.0, 138.0, 88.0);
+    for status in [0, 6, 7] {
+        battery(
+            &mut sim,
+            device_type::HEART_RATE,
+            HEART,
+            BatteryReport::new(status, 2_450),
+        );
+        battery(
+            &mut sim,
+            device_type::POWER,
+            POWER,
+            BatteryReport::new(status, 2_450),
+        );
+        sim.advance(seconds(12));
+        sim.home("RIDE");
+        sim.expect_text("2 SENSORS LIVE");
+        sim.expect_no_text("LOW BATTERY");
+        sim.press(Button::TopLeft);
+    }
+    battery(
+        &mut sim,
+        device_type::HEART_RATE,
+        HEART,
+        BatteryReport::new(4, 2_450),
+    );
+    battery(
+        &mut sim,
+        device_type::POWER,
+        POWER,
+        BatteryReport::new(4, 2_450),
+    );
+    sim.home("RIDE");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.advance(minutes(1));
+    sim.expect_field("W", "205");
+    sim.expect_field("BPM", "138");
+    sim.stop_ride();
+    let ride = &sim.rides()[0];
+    assert!(
+        ride.samples()
+            .skip(5)
+            .all(|s| s.power_watts == Some(205) && s.heart_bpm == Some(138)),
+        "battery pages leaked into the recording"
+    );
 }

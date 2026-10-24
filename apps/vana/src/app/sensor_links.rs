@@ -9,10 +9,11 @@
 use super::Runtime;
 use super::preferences::Persistence;
 use crate::screens::sensors::{Action, Connection, MenuMessage, Selected};
+use crate::sensors::ant::{Battery, BatteryReports};
 use crate::sensors::saved::Saved;
 use crate::sensors::scan::Scan;
 use device_api::ant::{
-    Admission, Ant, AntOperation, CHANNEL_CAPACITY, Error, Identity, LinkState, STALE_MS,
+    Admission, Ant, AntOperation, CHANNEL_CAPACITY, Error, Identity, LinkState, Packet, STALE_MS,
     ScanState, Snapshot,
 };
 use device_api::observation::Availability;
@@ -153,6 +154,10 @@ pub(super) struct Links {
     next: usize,
     /// Save state last shown on the sensor page.
     shown: Option<Persistence>,
+    /// What each saved slot's sensor last reported about its batteries, kept
+    /// with the peer so a replaced sensor's report never describes the new
+    /// one. Live state only; never stored.
+    batteries: [Option<(Identity, BatteryReports)>; CHANNEL_CAPACITY],
 }
 
 fn channel_of(channels: &[Option<Snapshot>], kind: u8) -> Option<Snapshot> {
@@ -164,6 +169,33 @@ fn channel_of(channels: &[Option<Snapshot>], kind: u8) -> Option<Snapshot> {
 }
 
 impl Links {
+    /// Keep a battery report from a saved sensor; any other page is ignored.
+    pub(super) fn note_battery(&mut self, packet: &Packet) {
+        let peer = packet.identity;
+        let Some((slot, saved)) = self.saved.of_type(peer.device_type) else {
+            return;
+        };
+        if saved != peer {
+            return;
+        }
+        let Some(battery) = Battery::decode(peer.device_type, packet.data) else {
+            return;
+        };
+        match &mut self.batteries[slot] {
+            Some((reporter, reports)) if *reporter == peer => reports.note(battery),
+            held => {
+                let mut reports = BatteryReports::default();
+                reports.note(battery);
+                *held = Some((peer, reports));
+            }
+        }
+    }
+
+    pub(super) fn battery(&self, slot: usize, peer: Identity) -> Option<Battery> {
+        let (reporter, reports) = self.batteries[slot].as_ref()?;
+        (*reporter == peer).then(|| reports.worst()).flatten()
+    }
+
     /// Whether a packet belongs to a sensor VANA is closing or replacing.
     pub(super) fn rejects(&self, peer: Identity) -> bool {
         self.closing.iter().any(|c| c.kind == peer.device_type)
@@ -523,6 +555,7 @@ impl Runtime {
             Some(Selected {
                 identity: peer,
                 connection: self.links.connection(slot, peer, channel, radio),
+                battery: self.links.battery(slot, peer),
             })
         })
     }

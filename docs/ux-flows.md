@@ -46,7 +46,7 @@ coloured dot, a headline and, when needed, what to do:
 | Line | Good (green) | Waiting or worth knowing (amber) | Problem (red) | Not in use (grey) |
 | --- | --- | --- | --- | --- |
 | GPS | GPS LOCKED | FINDING GPS, you can start anyway | | NO GPS, records without a map |
-| Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; NO SENSORS, tap here to pair one | | |
+| Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; NO SENSORS, tap here to pair one; HR LOW BATTERY or n BATTERIES TO CHANGE, once every sensor is live | HR CRITICAL BATTERY, change it before riding | |
 | Battery | BATTERY n%, with ABOUT n H LEFT once the drain rate is known | under 30%: charge after the ride | under 15%: charge before riding | |
 | Storage | ROOM FOR n H | ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; on internal memory | STORAGE FULL, STORAGE PROBLEM | |
 
@@ -61,6 +61,15 @@ countdown, because a countdown delays the start at a light, and rolling off
 starts the ride from Ready anyway (auto-start). BACK returns Home. Tapping
 the sensors line opens Sensors and starts a search. A ride that started a
 moment before the press (rolling off) is only shown, never paused, by ACT.
+
+A live saved ANT+ sensor that reports a low or critical battery turns the
+sensors line amber (red when critical), Home's count and that sensor's dot
+amber, and Home's status line names it, such as HR LOW BATTERY. A sensor that
+is not live is named first: a dead strap is missing, not low. The detail page
+shows the status and, when known, the voltage, such as LOW BATTERY 2.4 V. A
+sensor with several batteries counts as its weakest. Levels are read from the
+sensor's battery page as it sends it, kept only while VANA runs, and never
+stored.
 
 ### Recording
 

@@ -251,8 +251,9 @@ impl Readings {
                 self.radar.receive(packet.data, received_ms);
             }
             Decoded::Heart => {
-                let value = HeartRate::decode(packet.data);
-                self.heart = Some(Timed { value, received_ms });
+                if let Some(value) = HeartRate::decode(packet.data) {
+                    self.heart = Some(Timed { value, received_ms });
+                }
             }
             Decoded::Power => {
                 if let Some(value) = Power::decode(packet.data) {
@@ -414,6 +415,7 @@ impl Runtime {
             };
             // A removed or replaced sensor's pages never reach the ride.
             if !self.links.rejects(packet.identity) {
+                self.links.note_battery(&packet);
                 self.readings.receive(packet);
             }
         }

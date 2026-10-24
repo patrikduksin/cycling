@@ -1,6 +1,6 @@
 //! Arbitrary radio input never panics the ANT+ and BLE profile decoders.
 
-use crate::sensors::ant::{HeartRate as AntHeart, Power};
+use crate::sensors::ant::{Battery, HeartRate as AntHeart, Power};
 use crate::sensors::ble::Client;
 use crate::sensors::ble_profile::{CrankCadence, CscMeasurement, HeartRate, Profile};
 use crate::sensors::radar::Radar;
@@ -11,7 +11,7 @@ fn page(rng: &mut Rng) -> [u8; 8] {
     let mut data = rng.next().to_le_bytes();
     // Mostly pages the decoders know, so their fields are what varies.
     if !rng.one_in(4) {
-        data[0] = rng.pick(&[0x01, 0x10, 0x30, 0x31, 0x57]);
+        data[0] = rng.pick(&[0x01, 0x07, 0x10, 0x30, 0x31, 0x52, 0x57]);
     }
     data
 }
@@ -23,8 +23,15 @@ fn arbitrary_ant_pages_decode_without_panic() {
     let mut now: u64 = 0;
     for _ in 0..20_000 {
         let data = page(&mut rng);
-        let heart = AntHeart::decode(data);
-        assert_ne!(heart.bpm, Some(0));
+        if let Some(heart) = AntHeart::decode(data) {
+            assert_ne!(heart.bpm, Some(0));
+            assert_ne!(data[0], 0x52);
+        }
+        for kind in [11, 120, 121, 0, 255] {
+            if let Some(battery) = Battery::decode(kind, data) {
+                assert!(battery.millivolts.is_none_or(|mv| mv < 15_000));
+            }
+        }
         if let Some(power) = Power::decode(data) {
             assert_eq!(data[0], 0x10);
             assert_ne!(power.cadence_rpm, Some(0xff));

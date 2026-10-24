@@ -21,7 +21,7 @@ use crate::screens::ride::{self, PageChoice, RidePage};
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
-use crate::sensors::ant::device_type;
+use crate::sensors::ant::{BatteryStatus, device_type};
 use core::fmt::Write;
 use device_api::ant::Ant;
 use device_api::display::Display as Panel;
@@ -34,6 +34,47 @@ use device_api::sensors::Startup;
 use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
 use firmware_shell::shell::{Screen, Shell};
+
+/// Live sensors whose battery wants changing, as Ready and Home name them.
+/// A sensor that is not live is missing first; its battery is not news.
+struct BatteryWarning {
+    title: Text<24>,
+    critical: bool,
+    several: bool,
+}
+
+impl BatteryWarning {
+    fn of(glance: &[crate::screens::sensors::Glance]) -> Option<Self> {
+        let mut low = glance.iter().filter(|g| g.live && g.battery_low());
+        let first = low.next()?;
+        let count = 1 + low.count();
+        let critical = glance
+            .iter()
+            .any(|g| g.live && g.battery == Some(BatteryStatus::Critical));
+        let mut title = Text::<24>::new();
+        if count == 1 {
+            let name = core::str::from_utf8(crate::screens::home::short_name(first.kind));
+            let state = if critical { "CRITICAL" } else { "LOW" };
+            let _ = write!(title, "{} {state} BATTERY", name.unwrap_or(""));
+        } else {
+            let _ = write!(title, "{count} BATTERIES TO CHANGE");
+        }
+        Some(Self {
+            title,
+            critical,
+            several: count > 1,
+        })
+    }
+
+    fn hint(&self) -> &'static str {
+        match (self.critical, self.several) {
+            (false, false) => "CHANGE IT SOON",
+            (false, true) => "CHANGE THEM SOON",
+            (true, false) => "CHANGE IT BEFORE RIDING",
+            (true, true) => "CHANGE THEM BEFORE RIDING",
+        }
+    }
+}
 
 /// The brand stays this long after VANA's first frame, then Home opens. The
 /// device keeps the backlight dark until VANA runs, so this is all a rider sees.
@@ -791,9 +832,12 @@ impl Runtime {
             last,
         );
         let (status, problem) = self.home_status(now);
-        match self.chosen_name() {
+        let warning = BatteryWarning::of(&self.menu.glance())
+            .filter(|_| !problem && status == "READY TO RIDE");
+        match (self.chosen_name(), warning) {
+            (_, Some(warning)) => home.set_status(warning.title.as_bytes(), true),
             // A workout waiting to be ridden names itself on the ride card.
-            Some(name) if !problem && status == "READY TO RIDE" => {
+            (Some(name), None) if !problem && status == "READY TO RIDE" => {
                 home.set_status(name.as_bytes(), false)
             }
             _ => home.set_status(status.as_bytes(), problem),
@@ -1016,12 +1060,20 @@ impl Runtime {
         if glance.is_empty() {
             return Check::new(Level::Off, "NO SENSORS", "TAP HERE TO PAIR ONE");
         }
-        let live = glance.iter().filter(|g| g.live).count();
         let mut title = Text::<24>::new();
+        let live = glance.iter().filter(|g| g.live).count();
         // Short names, two spaces apart: at most four fit a line.
         let mut names = Text::<19>::new();
         let pick = |want_live: bool| glance.iter().filter(move |g| g.live == want_live);
         if live == glance.len() {
+            if let Some(warning) = BatteryWarning::of(&glance) {
+                let level = if warning.critical {
+                    Level::Problem
+                } else {
+                    Level::Wait
+                };
+                return Check::new(level, warning.title.as_str(), warning.hint());
+            }
             let plural = if live == 1 { "" } else { "S" };
             let _ = write!(title, "{live} SENSOR{plural} LIVE");
             for (index, g) in pick(true).enumerate() {

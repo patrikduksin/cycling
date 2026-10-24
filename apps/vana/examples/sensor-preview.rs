@@ -18,6 +18,7 @@ fn main() {
                 Connection::Searching,
                 Connection::NotFound,
             ][number % 3],
+            battery: None,
         })
     });
     let discoveries = std::array::from_fn(|index| {

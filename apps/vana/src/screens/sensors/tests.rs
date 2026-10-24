@@ -57,6 +57,7 @@ fn saved(tiles: &[(Identity, Connection)]) -> [Option<Selected>; CHANNEL_CAPACIT
         tiles.get(slot).map(|&(identity, connection)| Selected {
             identity,
             connection,
+            battery: None,
         })
     })
 }
@@ -661,4 +662,62 @@ fn crowded_sensor_pages_never_overlap_or_clip_text() {
     menu.focus_type(11);
     menu.input(press(Button::BottomRight), 20_000);
     assert_apart(&painted_text(&menu), CONTENT, "detail");
+}
+
+#[test]
+fn detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
+    use crate::screens::chrome::{CONTENT, RED, SECONDARY, layout::assert_apart};
+    use crate::sensors::ant::{Battery, BatteryStatus};
+    let cases = [
+        (
+            BatteryStatus::Good,
+            Some(2_898),
+            &b"GOOD BATTERY  2.9 V"[..],
+            SECONDARY,
+        ),
+        (
+            BatteryStatus::Low,
+            Some(2_449),
+            b"LOW BATTERY  2.4 V",
+            AMBER,
+        ),
+        (
+            BatteryStatus::Critical,
+            Some(2_100),
+            b"CRITICAL BATTERY  2.1 V",
+            RED,
+        ),
+    ];
+    for (status, millivolts, text, color) in cases {
+        let mut tiles = saved(&[(peer(10).identity, Connection::Live)]);
+        tiles[0].as_mut().unwrap().battery = Some(Battery {
+            status,
+            millivolts,
+            identifier: 0,
+        });
+        let mut menu = Menu::new();
+        menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
+        menu.input(press(Button::BottomLeft), 0);
+        menu.input(press(Button::BottomRight), 400);
+        assert!(matches!(menu.view, menu::View::Detail(_)));
+        assert!(
+            shows(&menu, &CAPTION, text, 120, 184, Align::Center, color),
+            "{status:?}"
+        );
+        assert_paints_reference(&menu, "detail with a battery");
+        assert_apart(&painted_text(&menu), CONTENT, "detail with a battery");
+    }
+    let mut menu = Menu::new();
+    menu.refresh(
+        [None; DISCOVERY_CAPACITY],
+        saved(&[(peer(10).identity, Connection::Live)]),
+        false,
+    );
+    menu.input(press(Button::BottomLeft), 0);
+    menu.input(press(Button::BottomRight), 400);
+    assert!(
+        !painted_text(&menu)
+            .iter()
+            .any(|(text, _)| text.contains("BATTERY"))
+    );
 }

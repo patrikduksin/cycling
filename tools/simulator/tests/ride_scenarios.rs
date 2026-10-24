@@ -6189,6 +6189,61 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_track() {
     sim.stop_ride();
 }
 
+/// A course followed on the card goes on being followed when the card fails
+/// and the ride moves to internal memory: no second FOLLOWING COURSE, and the
+/// wrong turn, the way back and the end come as on the card.
+#[test]
+fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
+    use device_api::server::Method;
+    let mut sim = bulk_rider();
+    sim.init_bulk();
+    sim.format_files();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+
+    sim.ride_route(Route::from_gpx(&course_ride_gpx()).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
+    ride_to(&mut sim, 1_000.0);
+
+    sim.fail_bulk(0, 0);
+    sim.wait_for("RECORDING INT", seconds(15)).unwrap();
+    let (_, status) = sim.command("RIDE STATUS");
+    assert_eq!(status_field(&status, "moved"), "1", "{status}");
+    sim.checkpoint("the ride moved to internal memory mid-course");
+
+    let ride_on_until = |sim: &mut Sim, needle: &str, before_m: f64| {
+        while !sim.screen().contains(needle) {
+            assert!(
+                sim.world().distance_m < before_m,
+                "no {needle} by {before_m} m; screen:\n{}",
+                sim.screen().text()
+            );
+            sim.expect_no_text("FOLLOWING COURSE");
+            sim.advance(seconds(1));
+        }
+        let at = sim.world().distance_m;
+        sim.note(NoteKind::Check, format!("{needle} at {at:.0} m"));
+        at
+    };
+    let off = ride_on_until(&mut sim, "OFF TRACK", 2_150.0);
+    assert!((1_960.0..2_060.0).contains(&off), "{off}");
+    sim.checkpoint("off the course after the move");
+    let on = ride_on_until(&mut sim, "BACK ON TRACK", 2_400.0);
+    assert!((2_200.0..2_340.0).contains(&on), "{on}");
+    let end = ride_on_until(&mut sim, "END OF COURSE", 5_800.0);
+    assert!((5_500.0..5_700.0).contains(&end), "{end}");
+    sim.checkpoint("the end of the course after the move");
+    sim.stop_ride();
+    assert_eq!(sim.rides().len(), 1);
+}
+
 /// A tap on MAP changes nothing; a long press stops following the course
 /// mid-ride, and it does not follow again by itself: the wrong turn later
 /// gives no OFF TRACK. The BACK TO START pad follows it again.

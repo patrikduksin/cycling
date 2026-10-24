@@ -5,7 +5,10 @@ and firmware consumers. These modules depend on device contracts, never on a
 board, the shell or the cycling application.
 
 - `gps`, `positioning` and `position_control` decode receiver input, publish aged
-  observations and track bounded pause/resume operations.
+  observations and track bounded pause/resume operations. A snapshot's `utc_ms`
+  is the receiver's clock at the caller's time. It is built from dated RMC
+  fixes only, never steps back because of sentence latency, and is cleared at a
+  control boundary.
 - `ant` owns bounded discovery and channel state. Cycling profile decoding belongs
   to the application.
 - `connectivity`, `network` and `network_time` handle reconnect intent, response

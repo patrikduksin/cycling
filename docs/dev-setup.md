@@ -61,10 +61,21 @@ pin at once and belongs in its own PR with `mise run verify` results.
 
 The device host needs this repository's primary checkout at
 `~/projects/cycling` (override with `CYCLING_DEVICE_CHECKOUT`), bootstrapped,
-and the ssh alias reachable without prompts. omni-devbox reaches the laptop as
-`c606-host`: OpenSSH on the laptop listens only on its Tailscale address and
-accepts only omni-devbox's key from omni-devbox's address. Tailscale SSH is off
-there because the tailnet's `check` mode needs a browser.
+and the ssh alias reachable without prompts. Machines reach each other over
+Tailscale SSH: run `tailscale set --ssh` on the device host, and give the
+tailnet policy an `accept` rule for your own devices, so agents never face the
+browser re-check of the default `check` rule:
+
+```jsonc
+"ssh": [
+  { "action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:self"],
+    "users": ["<device host user>", "<agent machine user>"] },
+  // the default check rule, which still covers root
+]
+```
+
+omni-devbox's `~/.ssh/config` names the laptop `c606-host` (its MagicDNS
+name and user, no keys).
 
 `mise run device <task> [args]` snapshots this checkout (uncommitted and
 untracked files included) into a worktree of the host's primary checkout under

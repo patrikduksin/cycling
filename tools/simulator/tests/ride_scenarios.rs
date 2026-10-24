@@ -3901,6 +3901,7 @@ fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
     sim.stop_ride();
     sim.swipe_next();
     sim.swipe_next();
+    sim.swipe_next();
     sim.expect_field("LAPS", "3");
     sim.done();
 
@@ -3940,6 +3941,7 @@ fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
     sim.home("RIDES");
     sim.press(Button::BottomRight);
     sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.swipe_next();
     sim.swipe_next();
     sim.swipe_next();
     sim.expect_text("BEST POWER W");

@@ -4,7 +4,7 @@
 //! An index is fed slots in order, one at a time, so a caller can spread a
 //! large bulk log over many service steps. It keeps the newest `KEPT` rides.
 
-use crate::ride::log::{self, Kind, Slot, Source};
+use crate::ride::log::{self, Kind, MAX_STEP_MS, Slot, Source};
 
 /// Rides an index keeps; older ones drop out first.
 pub const KEPT: usize = 32;
@@ -150,7 +150,8 @@ impl Index {
                     }
                     let elapsed = sample
                         .active_ms
-                        .saturating_sub(open.previous_active_ms.unwrap_or(sample.active_ms));
+                        .saturating_sub(open.previous_active_ms.unwrap_or(sample.active_ms))
+                        .min(MAX_STEP_MS);
                     open.previous_active_ms = Some(sample.active_ms);
                     if let Some(speed) = sample.speed_mm_s {
                         open.distance_mm =

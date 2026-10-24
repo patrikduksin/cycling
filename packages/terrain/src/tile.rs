@@ -96,10 +96,8 @@ impl<'a> Tile<'a> {
             return Err(Error::Corrupt);
         }
         let tile = Self::view(bytes);
-        // In u64: the vertex count is a raw u32 and usize is 32 bits on the device.
-        let length = (HEADER + tile.nodes * NODE + 2 * tile.edges * ADJ + tile.edges * EDGE) as u64
-            + tile.vertices as u64 * VERTEX as u64;
-        if tile.key != key || length != bytes.len() as u64 || tile.lon_um == 0 {
+        let length = length(tile.nodes as u32, tile.edges as u32, tile.vertices as u32);
+        if tile.key != key || length != u32::try_from(bytes.len()).ok() || tile.lon_um == 0 {
             return Err(Error::Corrupt);
         }
         let size = size.min(u32::from(u16::MAX)) as u16;
@@ -250,6 +248,13 @@ const fn crc_table() -> [u32; 256] {
     table
 }
 
+/// Bytes a tile of these counts takes, in u32 as on the device, whose usize
+/// is 32 bits; `None` past that.
+fn length(nodes: u32, edges: u32, vertices: u32) -> Option<u32> {
+    let fixed = HEADER as u32 + nodes * NODE as u32 + edges * (2 * ADJ + EDGE) as u32;
+    fixed.checked_add(vertices.checked_mul(VERTEX as u32)?)
+}
+
 static CRC_TABLE: [u32; 256] = crc_table();
 
 fn crc_update(mut value: u32, bytes: &[u8]) -> u32 {
@@ -269,4 +274,19 @@ fn crc32_skipping(bytes: &[u8], at: usize) -> u32 {
     let value = crc_update(u32::MAX, &bytes[..at]);
     let value = crc_update(value, &[0; 4]);
     !crc_update(value, &bytes[at + 4..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_length_past_u32_is_none_as_on_the_device() {
+        assert_eq!(length(1, 1, 1), Some(32 + 8 + 20 + 6));
+        assert_eq!(length(0, 0, 0x3000_0000), None);
+        assert_eq!(
+            length(u32::from(u16::MAX), u32::from(u16::MAX), u32::MAX / 6),
+            None
+        );
+    }
 }

@@ -119,7 +119,9 @@ impl Totals {
             self.max_speed_mm_s = self.max_speed_mm_s.max(Some(speed));
         }
         if let Some(watts) = sample.power_watts {
-            self.energy_mj = self.energy_mj.saturating_add(u64::from(watts) * elapsed_ms);
+            self.energy_mj = self
+                .energy_mj
+                .saturating_add(u64::from(watts).saturating_mul(elapsed_ms));
             self.power_ms = self.power_ms.saturating_add(elapsed_ms);
             self.max_power = self.max_power.max(Some(watts));
             self.smooth(watts);
@@ -177,20 +179,20 @@ impl Totals {
         match self.trend {
             // Follow the trend from its last turning point; reverse only past the band.
             Trend::Climbing if rise > 0 => {
-                self.ascent_dm += rise as u32;
+                self.ascent_dm = self.ascent_dm.saturating_add(rise as u32);
                 self.anchor_dm = altitude;
             }
             Trend::Descending if rise < 0 => {
-                self.descent_dm += rise.unsigned_abs();
+                self.descent_dm = self.descent_dm.saturating_add(rise.unsigned_abs());
                 self.anchor_dm = altitude;
             }
             _ if rise > ELEVATION_BAND_DM => {
-                self.ascent_dm += rise as u32;
+                self.ascent_dm = self.ascent_dm.saturating_add(rise as u32);
                 self.anchor_dm = altitude;
                 self.trend = Trend::Climbing;
             }
             _ if rise < -ELEVATION_BAND_DM => {
-                self.descent_dm += rise.unsigned_abs();
+                self.descent_dm = self.descent_dm.saturating_add(rise.unsigned_abs());
                 self.anchor_dm = altitude;
                 self.trend = Trend::Descending;
             }
@@ -209,7 +211,10 @@ impl Totals {
 
     /// Distance over moving time.
     pub fn avg_speed_mm_s(&self) -> Option<u32> {
-        (self.moving_ms != 0).then(|| (self.distance_mm * 1000 / self.moving_ms) as u32)
+        (self.moving_ms != 0).then(|| {
+            let speed = u128::from(self.distance_mm) * 1000 / u128::from(self.moving_ms);
+            speed.min(u128::from(u32::MAX)) as u32
+        })
     }
 
     pub fn max_speed_mm_s(&self) -> Option<u32> {
@@ -219,7 +224,8 @@ impl Totals {
     /// Time-weighted mean over every second with power, zeros included.
     pub fn avg_power(&self) -> Option<u16> {
         (self.power_ms != 0).then(|| {
-            ((self.energy_mj + self.power_ms / 2) / self.power_ms).min(u64::from(u16::MAX)) as u16
+            (self.energy_mj.saturating_add(self.power_ms / 2) / self.power_ms)
+                .min(u64::from(u16::MAX)) as u16
         })
     }
 
@@ -256,7 +262,9 @@ impl Totals {
 
     /// Mechanical work in kilojoules.
     pub fn work_kj(&self) -> Option<u32> {
-        (self.power_ms != 0).then(|| ((self.energy_mj + 500_000) / 1_000_000) as u32)
+        (self.power_ms != 0).then(|| {
+            (self.energy_mj.saturating_add(500_000) / 1_000_000).min(u64::from(u32::MAX)) as u32
+        })
     }
 
     pub fn avg_heart_bpm(&self) -> Option<u16> {

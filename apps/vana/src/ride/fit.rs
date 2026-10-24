@@ -41,7 +41,7 @@
 //! lap; a lap's ascent and descent are the session's over its time).
 
 use crate::ride::laps::Lap;
-use crate::ride::log::{self, Entry, Kind, LapStart, Sample, Slot};
+use crate::ride::log::{self, Entry, Kind, LapStart, MAX_STEP_MS, Sample, Slot};
 use crate::ride::totals::Totals;
 use firmware_services::fit::{
     self, BaseType, Counter, Field, Message, Sink, Value, Writer, semicircles,
@@ -467,7 +467,7 @@ impl Export {
         let (Some(previous), Some(last)) = (self.previous_active_ms, self.last_sample) else {
             return;
         };
-        let elapsed = active_ms.saturating_sub(previous);
+        let elapsed = active_ms.saturating_sub(previous).min(MAX_STEP_MS);
         if elapsed == 0 {
             return;
         }
@@ -595,7 +595,8 @@ impl Export {
         }
         let elapsed = sample
             .active_ms
-            .saturating_sub(self.previous_active_ms.unwrap_or(sample.active_ms));
+            .saturating_sub(self.previous_active_ms.unwrap_or(sample.active_ms))
+            .min(MAX_STEP_MS);
         self.previous_active_ms = Some(sample.active_ms);
         self.last_sample = Some(*sample);
         self.active_ms = self.active_ms.max(sample.active_ms);

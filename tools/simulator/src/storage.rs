@@ -199,10 +199,11 @@ impl OwnedFlash for FileFlash {
     }
     fn geometry(&self, r: Region) -> device_api::storage::Geometry {
         device_api::storage::Geometry {
-            capacity: if r == Region::Configuration {
-                8192
-            } else {
-                DATA_BYTES
+            capacity: match r {
+                Region::Configuration => 8192,
+                Region::Data => DATA_BYTES,
+                // The simulator never panics into a record.
+                Region::Crash => 0,
             },
             program_size: 4,
             erase_size: 4096,

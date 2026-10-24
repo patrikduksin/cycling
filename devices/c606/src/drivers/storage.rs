@@ -14,6 +14,12 @@ pub const SETTINGS_BASE: u32 = 0x00e9_8000;
 pub const DATA_BASE: u32 = 0x00d9_8000;
 const DATA_SIZE: usize = 0x10_0000;
 const SETTINGS_SIZE: usize = 2 * 4096;
+/// The last two sectors of the 64 KiB `coredump` partition. This firmware
+/// writes no core dumps, flashing writes only OTA selection below the slots,
+/// and ESP-IDF writes a dump from the partition's start, so these sectors stay
+/// clear of both. A full stock restore puts the backup's bytes back.
+const CRASH_BASE: u32 = 0x0001_e000;
+const CRASH_SIZE: usize = 2 * 4096;
 pub type Error = AccessError<FlashStorageError>;
 
 pub struct Backend<'d> {
@@ -41,6 +47,7 @@ impl<'d> Backend<'d> {
         match region {
             Region::Configuration => (SETTINGS_BASE, SETTINGS_SIZE),
             Region::Data => (DATA_BASE, DATA_SIZE),
+            Region::Crash => (CRASH_BASE, CRASH_SIZE),
         }
     }
 }

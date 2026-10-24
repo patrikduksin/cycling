@@ -251,7 +251,7 @@ const DEFINITIONS: [&Message; 7] = [
     &ACTIVITY,
 ];
 
-const LAP_RECORD: usize = 58;
+const LAP_RECORD: usize = 60;
 
 /// Largest output of one [`Export::slot`] call: a resume, four records each
 /// closing a lap, and a pause. Sinks that drain between calls need at least

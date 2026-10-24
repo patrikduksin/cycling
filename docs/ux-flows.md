@@ -76,9 +76,9 @@ own GPS track as a white line, a green dot where it began, and the rider in
 blue. Riding, the track is turned so the way the rider is heading is up and
 the rider is an arrowhead; standing still (after about 15 s without moving,
 or while paused) it is north up, the rider a dot, and the page says N UP. The
-rider sits low, so more of the road behind shows. The page zooms out in steps
-to keep the whole track in view and never closer than 500 m across. A bar at
-the bottom shows the scale (100 M, 2 KM) and the ride's distance sits beside
+page fits the whole track and the rider to the screen, zooming out in steps
+and never closer than 500 m across; it holds still until the track nears the
+edge. A bar at the bottom shows the scale (150 M, 1.5 KM) and the ride's distance sits beside
 it. Following the track back, the way home is green and the part already left
 behind grey, with FOLLOWING in the header. Without a fix the page says NO
 GPS YET and MAP STARTS WITH GPS; once a fix is lost the track stays where it

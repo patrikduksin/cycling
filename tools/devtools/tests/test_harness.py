@@ -1,6 +1,7 @@
 import io
 import json
 import struct
+import sys
 import tempfile
 import unittest
 import zlib
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cycling_devtools.harness.runner import Runner, decode_chunk, events_for, execute, png_rgb565, preflight
-from cycling_devtools.harness.transport import Real
+from cycling_devtools.harness.transport import Real, Virtual
 from workspace_fixture import private_root
 
 
@@ -521,6 +522,55 @@ class HarnessTests(unittest.TestCase):
                 self.assertFalse(runner.ant_scan_may_apply)
             finally:
                 runner.trace.close()
+
+
+class VirtualStartupTests(unittest.TestCase):
+    """The first reply clock starts at the simulator's ready line, never at launch."""
+
+    def simulator(self, directory, body):
+        path = Path(directory) / 'simulator'
+        path.write_text(f'#!{sys.executable}\nimport json, sys, time\n{body}')
+        path.chmod(0o700)
+        return str(path)
+
+    def test_slow_boot_does_not_spend_the_first_reply_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            simulator = self.simulator(
+                directory,
+                'time.sleep(2)\n'
+                "print(json.dumps({'type': 'ready', 'id': 0, 'status': 'OK', 'boot': 1, 'data': ''}), flush=True)\n"
+                'for line in sys.stdin:\n'
+                '    request = int(line.split()[1])\n'
+                "    print(json.dumps({'type': 'reply', 'id': request, 'status': 'OK', 'boot': 1, 'data': ''}), flush=True)\n",
+            )
+            with patch.object(Virtual, 'build', return_value=simulator), Virtual(directory) as transport:
+                self.assertEqual(transport.terminal_command('INFO', timeout=1.5)['status'], 'OK')
+
+    def test_exit_before_ready_reports_that_no_request_was_sent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transport = Virtual(directory)
+            with patch.object(Virtual, 'build', return_value=self.simulator(directory, 'sys.exit(1)\n')):
+                with self.assertRaisesRegex(RuntimeError, 'no request was sent'):
+                    transport.__enter__()
+            self.assertEqual(transport.request_count, 0)
+            self.assertIsNotNone(transport.process.returncode)
+
+    def test_build_launches_the_binary_cargo_reports(self):
+        artifact = {'reason': 'compiler-artifact', 'target': {'name': 'shell-simulator'}, 'executable': '/t/sim'}
+        messages = [
+            {'reason': 'compiler-artifact', 'target': {'name': 'vana'}, 'executable': None},
+            artifact,
+            {'reason': 'build-finished', 'success': True},
+        ]
+        stdout = '\n'.join(json.dumps(message) for message in messages).encode()
+        with tempfile.TemporaryDirectory() as directory, (Path(directory) / 'stderr').open('ab') as errors:
+            transport = Virtual(directory)
+            transport.errors = errors
+            with patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=stdout)):
+                self.assertEqual(transport.build(), '/t/sim')
+            with patch('subprocess.run', return_value=SimpleNamespace(returncode=101, stdout=b'')):
+                with self.assertRaisesRegex(RuntimeError, 'build failed; no request was sent'):
+                    transport.build()
 
 
 class StructureTests(unittest.TestCase):

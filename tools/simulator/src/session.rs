@@ -976,6 +976,10 @@ pub fn terminal(root: &Path, width: usize, height: usize) -> io::Result<()> {
     let mut overflow = false;
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    // The host starts its first reply clock only after this line, so boot time
+    // under load never turns a request into an uncertain mutation.
+    stdout.write_all(b"{\"type\":\"ready\"}\n")?;
+    stdout.flush()?;
     for byte in stdin.lock().bytes() {
         let byte = byte?;
         if byte != b'\n' {

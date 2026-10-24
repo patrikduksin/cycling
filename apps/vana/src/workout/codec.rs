@@ -305,4 +305,47 @@ mod tests {
         let _ = lower.extend_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&lower), Err(DecodeError::Field));
     }
+
+    #[test]
+    fn damaged_uploads_never_panic_and_only_valid_workouts_load() {
+        use crate::ride::zones::TrainingProfile;
+        use crate::workout::player::Player;
+        let profile = TrainingProfile::new(250, 170).unwrap();
+        let (mut loaded, mut refused) = (0, 0);
+        for seed in 0..5_000 {
+            let mut rng = crate::testing::Rng::new(seed);
+            let built_in = &BUILT_IN[rng.below(BUILT_IN.len() as u64) as usize];
+            let mut bytes = rng.mutate(encode(built_in).to_vec());
+            // Mostly re-seal the damage, so the fields behind the CRC are tried.
+            if bytes.len() >= 4 && !rng.one_in(4) {
+                let body = bytes.len() - 4;
+                let crc = crc32(&bytes[..body]);
+                put_u32(&mut bytes, body, crc);
+            }
+            let Ok(workout) = decode(&bytes) else {
+                refused += 1;
+                continue;
+            };
+            loaded += 1;
+            // Unused target values are not checked, so only the round trip
+            // from the loaded workout is exact; it then plays to its end.
+            assert_eq!(decode(&encode(&workout)), Ok(workout), "seed {seed}");
+            workout.planned_secs();
+            for played in workout.played() {
+                for elapsed_s in [0, 1, 59, 3_600, u32::MAX] {
+                    played.step.target.band(&profile, elapsed_s);
+                }
+            }
+            let mut player = Player::new(workout);
+            for _ in 0..=workout.played_len() {
+                player.now(&profile);
+                player.skip();
+            }
+            assert!(player.done(), "seed {seed}");
+        }
+        assert!(
+            loaded > 100 && refused > 1_000,
+            "{loaded} loaded, {refused} refused"
+        );
+    }
 }

@@ -518,6 +518,17 @@ mod tests {
     }
 
     #[test]
+    fn a_steep_uploaded_ramp_tops_out_instead_of_overflowing() {
+        let ramp = Target::Ramp {
+            start: 1,
+            step: u16::MAX,
+            every: 1,
+        };
+        assert_eq!(ramp.ramp_watts(65_537), Some(u16::MAX));
+        assert_eq!(ramp.ramp_watts(u32::MAX), Some(u16::MAX));
+    }
+
+    #[test]
     fn validation_rejects_impossible_workouts() {
         let empty = Workout::new("EMPTY", &[], &[], None);
         assert_eq!(empty.validate(), Err(Invalid::NoSteps));

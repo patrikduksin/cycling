@@ -2718,7 +2718,6 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
     // The summary shows the saved ride; Home stays put for the next one.
     sim.done();
     sim.advance(seconds(2));
-    sim.command("RIDE STATUS");
     sim.init_bulk();
     // The MMC's first write, the START record, fails.
     sim.fail_bulk(0, 0);
@@ -3367,7 +3366,6 @@ fn a_ride_started_remotely_from_the_summary_shows_its_controls() {
     sim.stop_ride();
     assert_eq!(sim.vana_page(), "summary");
     sim.ride_page("3/3");
-    sim.command("RIDE STATUS");
     assert_eq!(sim.command("RIDE START").0, "ACCEPTED");
     sim.advance(seconds(2));
     assert_eq!(sim.vana_page(), "ride");
@@ -3658,7 +3656,6 @@ fn a_saved_ride_on_a_failed_card_says_so_and_rides_list_newest_first() {
     sim.done();
     // The card fails the next ride's START; rides then record internally.
     sim.fail_bulk(0, 0);
-    sim.command("RIDE STATUS");
     assert_eq!(sim.command("RIDE START").0, "ACCEPTED");
     sim.advance(seconds(2));
     let (_, status) = sim.command("RIDE BULK STATUS");

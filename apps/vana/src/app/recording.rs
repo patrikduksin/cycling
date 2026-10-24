@@ -33,7 +33,8 @@ const TOAST_MS: u64 = 3000;
 const INDEX_INTERNAL_BUDGET: usize = 32;
 const INDEX_BULK_BUDGET: usize = 4;
 
-/// The recorder operation a rider or host requested, until someone reads its result.
+/// One actor's latest recorder operation: queued under its token, then its
+/// result.
 #[derive(Clone, Copy)]
 pub(super) enum Request {
     Idle,
@@ -79,11 +80,14 @@ pub(super) struct Ride {
     pub(super) bulk: Recorder,
     internal_media: InternalState,
     pub(super) bulk_media: BulkState,
+    /// The rider's latest operation, from a button or an automatic action;
+    /// the ride screen shows its outcome until the next one.
     pub(super) request: Request,
     /// The medium whose recorder completed `request`.
     pub(super) request_on: Medium,
-    /// Token of the latest host command; only its completion is the host's to read.
-    pub(super) host_token: Option<u32>,
+    /// The host's latest command, until `RIDE STATUS` reports its outcome.
+    /// Rider operations never replace it.
+    pub(super) host: Request,
     next_token: u32,
     pub(super) message: RideMessage,
     /// What this ride has added up so far; kept after stop until the next start.
@@ -146,7 +150,7 @@ impl Default for Ride {
             bulk_media: BulkState::default(),
             request: Request::Idle,
             request_on: Medium::Internal,
-            host_token: None,
+            host: Request::Idle,
             next_token: 1,
             message: RideMessage::Clear,
             totals: Totals::default(),
@@ -286,30 +290,58 @@ impl Ride {
         self.next_token
     }
 
-    /// Start a recorder operation under the next token. `start` reports
+    /// Start a rider operation under the next token. `start` reports
     /// whether the recorder accepted it; only then is the token consumed.
     pub(super) fn submit(
         &mut self,
         medium: Medium,
         start: impl FnOnce(&mut Recorder, u32) -> bool,
     ) -> bool {
-        let token = self.next_token;
-        if !start(self.recorder_mut(medium), token) {
+        let Some(token) = self.start(medium, start) else {
             return false;
-        }
-        self.next_token = token.wrapping_add(1).max(1);
+        };
         self.request = Request::Pending(token);
         true
     }
 
-    pub(super) fn pending(&self) -> bool {
-        matches!(self.request, Request::Pending(_))
+    /// Start a host command under the next token, as `submit` does.
+    pub(super) fn submit_host(
+        &mut self,
+        medium: Medium,
+        start: impl FnOnce(&mut Recorder, u32) -> bool,
+    ) -> bool {
+        let Some(token) = self.start(medium, start) else {
+            return false;
+        };
+        self.host = Request::Pending(token);
+        true
     }
 
-    /// A finished host command waits for its status read; automatic actions
-    /// must not replace its result.
-    pub(super) fn host_completion_unread(&self) -> bool {
-        matches!(self.request, Request::Completed(r) if Some(r.token) == self.host_token)
+    fn start(
+        &mut self,
+        medium: Medium,
+        start: impl FnOnce(&mut Recorder, u32) -> bool,
+    ) -> Option<u32> {
+        let token = self.next_token;
+        if !start(self.recorder_mut(medium), token) {
+            return None;
+        }
+        self.next_token = token.wrapping_add(1).max(1);
+        Some(token)
+    }
+
+    /// An operation of either actor is queued: the recorders take one at a
+    /// time, so nothing else is submitted until it completes.
+    pub(super) fn pending(&self) -> bool {
+        self.pending_token().is_some()
+    }
+
+    /// The token of the queued operation, whichever actor asked for it.
+    pub(super) fn pending_token(&self) -> Option<u32> {
+        match (self.host, self.request) {
+            (Request::Pending(token), _) | (_, Request::Pending(token)) => Some(token),
+            _ => None,
+        }
     }
 
     pub(super) fn clear_lap_toast(&mut self) {
@@ -574,7 +606,8 @@ impl Runtime {
         }
         // A ride moving to internal media keeps its automatic pause: the
         // continuation passes through Ready and Recording before it pauses.
-        if self.ride.pending() || self.ride.host_completion_unread() || self.ride.moving() {
+        // An unread host completion is the host's own and stays put.
+        if self.ride.pending() || self.ride.moving() {
             return;
         }
         // Rolling off starts a ride from Ready or the ride screen.
@@ -718,8 +751,13 @@ impl Runtime {
                 if result.action == Some(Action::Start) && !result.ok {
                     ride.last = Some(medium);
                 }
-                ride.request = Request::Completed(result);
-                ride.request_on = medium;
+                // Each actor reads only its own outcome.
+                if matches!(ride.host, Request::Pending(token) if token == result.token) {
+                    ride.host = Request::Completed(result);
+                } else {
+                    ride.request = Request::Completed(result);
+                    ride.request_on = medium;
+                }
             } else if !result.ok {
                 ride.give_up_continuation();
             }

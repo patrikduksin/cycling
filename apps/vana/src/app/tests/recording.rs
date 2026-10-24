@@ -1073,7 +1073,7 @@ fn a_start_mid_step_counts_its_first_fraction() {
 }
 
 #[test]
-fn an_automatic_action_leaves_an_unread_host_completion_alone() {
+fn an_automatic_action_keeps_an_unread_host_completion() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -1084,15 +1084,16 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
     let status = runtime.command("RIDE START", &mut journal, &mut NoBulk, 1000, &mut output);
     assert_eq!(status, "ACCEPTED");
     let token = output.clone();
-    let mut at = roll(
+    let at = roll(
         (&mut runtime, &mut journal, &mut radio),
         &mut wheel,
         1000,
         30,
         false,
     );
-    // The stop waits: the host has not read its completion yet.
-    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    // The stop pauses the ride without waiting for the host to read its start.
+    assert!(runtime.ride.auto.paused(), "{at}");
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
     output.clear();
     assert_eq!(
         runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, at, &mut output),
@@ -1100,17 +1101,107 @@ fn an_automatic_action_leaves_an_unread_host_completion_alone() {
     );
     let token = token.trim_start_matches("token=");
     assert!(
-        output.contains(&format!("completed={token} result=OK")),
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
         "{output}"
     );
-    at = roll(
-        (&mut runtime, &mut journal, &mut radio),
-        &mut wheel,
-        at,
-        10,
-        false,
+}
+
+fn host(
+    runtime: &mut Runtime,
+    journal: &mut Journal,
+    now: u64,
+    words: &str,
+) -> (&'static str, String) {
+    let mut output = String::new();
+    let status = runtime.command(words, journal, &mut NoBulk, now, &mut output);
+    (status, output)
+}
+
+/// The token a host mutation was accepted under.
+fn accepted(reply: (&'static str, String)) -> String {
+    assert_eq!(reply.0, "ACCEPTED", "{}", reply.1);
+    reply.1.trim_start_matches("token=").into()
+}
+
+#[test]
+fn a_rider_press_keeps_an_unread_host_completion() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    accepted(host(&mut runtime, &mut journal, 0, "RIDE START"));
+    settle(&mut runtime, &mut journal, &mut radio, 100);
+    host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    // The host pauses; the pause commits, but the host has not read it yet.
+    let token = accepted(host(&mut runtime, &mut journal, 3000, "RIDE PAUSE"));
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    // The rider resumes before the host reads its status.
+    runtime.input(press(Button::BottomRight), 6000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 6000);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    let (status, output) = host(&mut runtime, &mut journal, 8000, "RIDE STATUS");
+    assert_eq!(status, "OK");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
     );
-    assert_eq!(runtime.ride.internal.status(), Status::Paused, "{at}");
+    // Read once; the rider's resume is never reported as the host's.
+    let (_, output) = host(&mut runtime, &mut journal, 8000, "RIDE STATUS");
+    assert!(output.ends_with("pending=0"), "{output}");
+}
+
+#[test]
+fn a_rider_press_while_a_host_command_is_pending_is_ignored() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    accepted(host(&mut runtime, &mut journal, 0, "RIDE START"));
+    settle(&mut runtime, &mut journal, &mut radio, 100);
+    host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    let token = accepted(host(&mut runtime, &mut journal, 3000, "RIDE PAUSE"));
+    let next = runtime.ride.next_token();
+    // The recorder takes one operation at a time: a press before the host's
+    // pause commits does nothing and takes no token.
+    runtime.input(press(Button::BottomRight), 3000, &mut radio);
+    assert_eq!(runtime.ride.next_token(), next);
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    let (_, output) = host(&mut runtime, &mut journal, 5000, "RIDE STATUS");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
+    );
+    // Once it has, the next press acts.
+    runtime.input(press(Button::BottomRight), 5000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 5000);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+}
+
+#[test]
+fn a_rider_completion_neither_blocks_nor_answers_the_host() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 1000);
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    // The rider's start is not the host's to read.
+    let (_, output) = host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    assert!(output.ends_with("pending=0"), "{output}");
+    // Nor does it hold up a host command while unread.
+    runtime.input(press(Button::BottomRight), 3000, &mut radio);
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    let token = accepted(host(&mut runtime, &mut journal, 5000, "RIDE RESUME"));
+    settle(&mut runtime, &mut journal, &mut radio, 5000);
+    let (_, output) = host(&mut runtime, &mut journal, 7000, "RIDE STATUS");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
+    );
 }
 
 #[test]

@@ -119,24 +119,23 @@ impl Runtime {
     }
 
     /// Queue a recorder mutation, reporting its token before changing state so
-    /// an undersized reply cannot hide that a command was queued.
+    /// an undersized reply cannot hide that a command was queued. The host's
+    /// previous outcome must be read first; a rider's never holds it up.
     fn submit(
         &mut self,
         medium: Medium,
         output: &mut impl Write,
         start: impl FnOnce(&mut Recorder, u32) -> bool,
     ) -> &'static str {
-        if !matches!(self.ride.request, Request::Idle) {
+        if !matches!(self.ride.host, Request::Idle) || self.ride.pending() {
             return "BUSY";
         }
         if write!(output, "token={}", self.ride.next_token()).is_err() {
             return "OUTPUT";
         }
-        let token = self.ride.next_token();
-        if !self.ride.submit(medium, start) {
+        if !self.ride.submit_host(medium, start) {
             return "STATE";
         }
-        self.ride.host_token = Some(token);
         "ACCEPTED"
     }
 
@@ -287,13 +286,11 @@ impl Runtime {
         "OK"
     }
 
-    /// Reports and then clears a retained completion.
+    /// Reports the queued operation of either actor, then reports and clears
+    /// the host's own retained completion.
     fn ride_status(&mut self, medium: Medium, now: u64, output: &mut impl Write) -> &'static str {
         let recorder = self.ride.recorder(medium);
-        let pending = match self.ride.request {
-            Request::Pending(token) => token,
-            Request::Idle | Request::Completed(_) => 0,
-        };
+        let pending = self.ride.pending_token().unwrap_or(0);
         if write!(
             output,
             "state={} slot={} rides={} active_ms={} samples={} dropped={} free_s={} medium={} write_ms={}",
@@ -345,12 +342,12 @@ impl Runtime {
         {
             return "OUTPUT";
         }
-        if let Request::Completed(result) = self.ride.request {
+        if let Request::Completed(result) = self.ride.host {
             let outcome = if result.ok { "OK" } else { "FAILED" };
             if write!(output, " completed={} result={outcome}", result.token).is_err() {
                 return "OUTPUT";
             }
-            self.ride.request = Request::Idle;
+            self.ride.host = Request::Idle;
         }
         "OK"
     }

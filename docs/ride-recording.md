@@ -9,6 +9,10 @@ rides untouched. Use device `HELP` for commands and the
 
 - `ACCEPTED` is not flash completion. Poll `RIDE STATUS` for the matching
   completed token and result before another mutation.
+- `completed=` reports only the host's own token. Rider buttons and automatic
+  actions never replace it, and the host never waits for theirs. `pending=`
+  names whichever operation is queued; the recorder takes one at a time, so
+  host commands answer `BUSY` and rider presses do nothing until it completes.
 - After a lost reply or timeout, completion is uncertain; never blindly repeat
   the mutation.
 - Startup recovery and writes run independently of terminal requests, one bounded

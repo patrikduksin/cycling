@@ -152,7 +152,7 @@ impl Runtime {
             Page::Phone => self.phone_input(button, held),
             Page::History => self.history_input(button, held),
             Page::PastRide => self.past_ride_input(button, held),
-            Page::Settings => self.settings_input(button, now, ant),
+            Page::Settings => self.settings_input(button, now, ant, held),
             Page::Workouts => self.workouts_input(button, now, held),
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
@@ -386,7 +386,7 @@ impl Runtime {
     /// Choosing a row: BottomLeft moves to the next, BottomRight acts on it,
     /// TopLeft goes Home. Editing a number: BottomLeft lowers and
     /// BottomRight raises it by `settings::STEP`, TopLeft finishes.
-    fn settings_input(&mut self, button: Button, now: u64, ant: &mut impl Ant) {
+    fn settings_input(&mut self, button: Button, now: u64, ant: &mut impl Ant, held: bool) {
         let navigation = &mut self.navigation;
         if !navigation.settings_editing {
             match button {
@@ -400,8 +400,8 @@ impl Runtime {
             return;
         }
         match button {
-            Button::BottomLeft => self.adjust_setting(-i32::from(settings::STEP), now),
-            Button::BottomRight => self.adjust_setting(i32::from(settings::STEP), now),
+            Button::BottomLeft => self.adjust_setting(-self.setting_step(), now, held),
+            Button::BottomRight => self.adjust_setting(self.setting_step(), now, held),
             Button::TopLeft if !self.setup_edit_finished(now) => {
                 self.navigation.settings_editing = false
             }
@@ -461,6 +461,7 @@ impl Runtime {
                     options.ride_pages = options.ride_pages.toggled(page);
                 }
             }
+            Row::Sex => options.rider = options.rider.next_sex(),
             Row::Sounds => options.sounds = !options.sounds,
             Row::SunsetAlert => options.sunset_alert = !options.sunset_alert,
             Row::Daylight => {
@@ -524,14 +525,31 @@ impl Runtime {
             navigation.settings_field,
             navigation.settings_editing,
         ) {
-            Some(settings::Target::Lower) => self.adjust_setting(-i32::from(settings::STEP), now),
-            Some(settings::Target::Raise) => self.adjust_setting(i32::from(settings::STEP), now),
+            Some(settings::Target::Lower) => self.adjust_setting(-self.setting_step(), now, false),
+            Some(settings::Target::Raise) => self.adjust_setting(self.setting_step(), now, false),
             _ => {}
         }
     }
 
-    /// Move the edited number by `step`, within its range.
-    fn adjust_setting(&mut self, step: i32, now: u64) {
+    /// What one press moves the edited number.
+    fn setting_step(&self) -> i32 {
+        i32::from(settings::Row::at(self.navigation.settings_field).step())
+    }
+
+    /// Move the edited number by `step`, within its range. A repeat from a
+    /// held button (`held`) never clears weight or age: only a tap does.
+    fn adjust_setting(&mut self, step: i32, now: u64, held: bool) {
+        let row = settings::Row::at(self.navigation.settings_field);
+        if matches!(row, settings::Row::Weight | settings::Row::Age) {
+            let mut options = self.preferences.options;
+            options.rider = if row == settings::Row::Weight {
+                options.rider.step_weight(step, !held)
+            } else {
+                options.rider.step_age(step, !held)
+            };
+            self.set_options(options, now);
+            return;
+        }
         if settings::Row::at(self.navigation.settings_field) == settings::Row::Wheel {
             // The next multiple of five mm in the direction of the press, so
             // common sizes are reachable from any start. Setting the size by

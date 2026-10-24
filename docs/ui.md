@@ -403,11 +403,16 @@ totals and alerts use readings as they arrive. The mechanism is
 ## Settings
 
 Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, DISPLAY, CLOCK, RIDE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
+bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
 headline and at most four rows. A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
 `SECONDARY` at the right of the value line. A note that does not fit whole is
-left out. The focused row is `RAISED` with a 3 px `ACCENT` ring.
+left out, after trying the part following its first comma. The focused row is `RAISED` with a 3 px `ACCENT` ring.
+
+BODY holds WEIGHT KG, AGE YEARS and SEX, each NOT SET until entered. Weight
+and age move one per press. The first press of an unset number starts it at
+70 kg or 30 years, and a tap below the lowest value clears it again; a held
+button stops at the lowest value. With a weight set, the FTP note adds W/KG.
 
 Acting on a row does one of three things:
 
@@ -436,7 +441,8 @@ shell's own `TIMEZONE` terminal setting does not move VANA's clock.
 BESTS, the last row of PROFILE, opens the rider's all-time bests (`screens::bests`):
 5 s, 1, 5 and 20 min power in `POWER`, then the longest ride, the longest
 ride time and the most ascent in their own colours, each a `CAPTION` over the
-day it was set, with the value in `BODY` at the right. A best not set shows
+day it was set, with the value in `BODY` at the right. With a weight set,
+each power best also shows its W/KG as a `CAPTION` on the label's line. A best not set shows
 `--` in `TERTIARY`; one set before the clock was known shows no day. The page
 has no cues; BACK returns to Settings. The row's value counts the bests set
 (7 SET, NONE YET, or a problem). A problem replaces the list with an `AMBER`

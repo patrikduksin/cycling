@@ -20,6 +20,7 @@ pub mod reclaim;
 pub mod recorder;
 pub mod recovery;
 pub mod replay;
+pub mod rider;
 pub mod storage;
 pub mod totals;
 pub mod week;

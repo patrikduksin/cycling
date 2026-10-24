@@ -628,6 +628,7 @@ impl Runtime {
         }
         view.zone_time = self.ride.zone_time;
         view.profile = self.preferences.profile;
+        view.rider = self.preferences.options.rider;
         if page == Page::Ride {
             view.training = shown;
             if view.ride_page == RidePage::Workout
@@ -1084,7 +1085,8 @@ impl Runtime {
         let cursor = view.cursor;
         let row = Row::at(cursor);
         let editor = [row];
-        let shown: &[Row] = if view.editing && row.kind() == Kind::Number {
+        let editing = view.editing && row.kind() == Kind::Number;
+        let shown: &[Row] = if editing {
             &editor
         } else {
             SECTIONS[settings::section(cursor).0].1
@@ -1103,6 +1105,7 @@ impl Runtime {
 
     /// A Settings row's value and the note beside it.
     fn setting_line(&self, row: settings::Row, value: &mut Text<38>, note: &mut Text<38>) {
+        use crate::ride::rider::Sex;
         use crate::screens::settings::Row;
         let options = self.preferences.options;
         let profile = self.preferences.profile;
@@ -1111,10 +1114,38 @@ impl Runtime {
         let _ = match row {
             Row::Ftp => {
                 // Threshold zones: where FTP and LTHR put the rider's limit.
+                // With the weight set the note also gives W/kg; a card too
+                // narrow for both keeps the last part.
                 let (low, high) = profile.power_range(4);
+                let per_kg = options.rider.watts_per_kg_tenths(profile.ftp_watts.into());
                 let _ = write!(note, "Z4 {}-{} W", low, high - 1);
+                if let Some(tenths) = per_kg {
+                    let _ = write!(note, ", {}.{} W/KG", tenths / 10, tenths % 10);
+                }
                 write!(value, "{}", profile.ftp_watts)
             }
+            Row::Weight => match options.rider.weight_kg() {
+                Some(kg) => write!(value, "{kg} KG"),
+                None => {
+                    let _ = write!(note, "ADD FOR W/KG");
+                    write!(value, "NOT SET")
+                }
+            },
+            Row::Age => match options.rider.age_years() {
+                Some(years) => write!(value, "{years} YEARS"),
+                None => {
+                    let _ = write!(note, "ADD FOR CALORIES");
+                    write!(value, "NOT SET")
+                }
+            },
+            Row::Sex => match options.rider.sex() {
+                Some(Sex::Male) => write!(value, "MALE"),
+                Some(Sex::Female) => write!(value, "FEMALE"),
+                None => {
+                    let _ = write!(note, "ADD FOR CALORIES");
+                    write!(value, "NOT SET")
+                }
+            },
             Row::Threshold => {
                 let (low, _) = profile.heart_range(5);
                 let _ = write!(note, "Z5 FROM {} BPM", low);

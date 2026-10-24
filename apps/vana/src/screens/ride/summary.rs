@@ -305,7 +305,7 @@ fn effort(view: &View, canvas: &mut Canvas) {
     whole(np, totals.normalized_power());
     whole(max, totals.max_power());
     whole(work, totals.work_kj());
-    whole(kcal, totals.kcal());
+    whole(kcal, totals.kcal_for(view.rider));
     whole(heart, totals.avg_heart_bpm());
     whole(max_heart, totals.max_heart_bpm());
     let first = CONTENT.top + 8;

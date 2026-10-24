@@ -199,8 +199,10 @@ The summary opens with a green check and RIDE SAVED, and pages through:
 1. Time, distance, average speed, ascent, average power and average heart
    rate.
 2. Normalized and maximum power, work in kJ, KCAL (the work again, as
-   calories: 24 % efficient muscle makes kJ and kcal nearly equal; none
-   without a power meter), average and maximum heart rate, power and
+   calories: 24 % efficient muscle makes kJ and kcal nearly equal; without a
+   power meter, or when it covered under half the ride, estimated from heart
+   rate with the Keytel formula once Settings, BODY holds weight, age and
+   sex, and none until then), average and maximum heart rate, power and
    heart-rate zone bars, and HR RECOVERY: the fall in heart rate over the
    minute after the ride stopped recording. A ride is paused before it ends,
    so it counts from that pause, with MEASURING and a countdown until the
@@ -297,7 +299,8 @@ once.
 
 The rider's all-time bests are 5 s, 1, 5 and 20 min power, the longest ride
 by distance and by time, and the most ascent. Settings, PROFILE, BESTS lists
-each with its value and the day it was set; BACK returns to Settings.
+each with its value and the day it was set, and each power best also in W/KG
+once Settings, BODY holds a weight; BACK returns to Settings.
 
 - Only a ride recorded live that finishes counts. A demo ride never does.
   Rides under 10 minutes can set a power best but not a distance, time or

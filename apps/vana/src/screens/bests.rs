@@ -24,6 +24,9 @@ const LEFT: usize = 16;
 const RIGHT: usize = WIDTH - 16;
 /// The room a value has; the day beside it on the left is shorter.
 const VALUE_WIDTH: usize = 100;
+/// W/kg sits on the label's line, left of the value, which is below it. A
+/// four-digit value starts 68 px in from the right edge, so 12 px stay clear.
+const PER_KG_WIDTH: usize = 80;
 const FIRST: usize = CONTENT.top + 60;
 const PITCH: usize = 32;
 
@@ -128,6 +131,19 @@ pub fn prepare(view: &View) -> Canvas {
     for (index, mark) in bests.power.iter().enumerate() {
         let mut value = Text::<12>::new();
         let _ = write!(value, "{} W", mark.value);
+        if mark.value != 0
+            && let Some(tenths) = view.rider.watts_per_kg_tenths(mark.value)
+        {
+            let mut per_kg = Text::<12>::new();
+            let _ = write!(per_kg, "{}.{} W/KG", tenths / 10, tenths % 10);
+            canvas.caption(
+                per_kg.as_bytes(),
+                PER_KG_WIDTH,
+                RIGHT - PER_KG_WIDTH,
+                FIRST + index * PITCH - 14,
+                Align::Right,
+            );
+        }
         line(
             &mut canvas,
             index,
@@ -242,6 +258,36 @@ mod tests {
             "OCT 28 2024",
         ];
         view.canvas.assert_laid_out(full, &want, "bests");
+    }
+
+    #[test]
+    fn power_bests_show_watts_per_kilogram_only_once_the_weight_is_set() {
+        let bests = Bests {
+            power: [
+                mark(1999, 20_000),
+                mark(450, 20_001),
+                mark(312, 20_020),
+                Mark::default(),
+            ],
+            ..Bests::default()
+        };
+        let mut view = View::new(Page::Bests, 0, None);
+        view.bests = bests;
+        view.prepare();
+        assert!(!view.canvas.shows("W/KG"));
+        view.rider = crate::ride::rider::Rider::default().step_weight(1, true);
+        view.prepare();
+        let full = Rect {
+            left: 0,
+            top: CONTENT.top,
+            right: WIDTH,
+            bottom: HEIGHT,
+        };
+        view.canvas.assert_laid_out(
+            full,
+            &["28.6 W/KG", "6.4 W/KG", "4.5 W/KG", "1999 W", "312 W"],
+            "bests with weight",
+        );
     }
 
     #[test]

@@ -26,16 +26,47 @@ struct Epoch {
 
 /// The line buffer and transport counters. Decoding lives in `Decoder`, a
 /// separate field, so a complete line is decoded in place instead of copied.
+///
+/// A candidate line runs from a `$` to a CR or LF. NMEA is printable ASCII
+/// behind an address of upper-case letters and digits, so any other byte ends
+/// the candidate at once: a `$` inside a binary frame then costs nothing but a
+/// `non_nmea_frames` count, and the next real `$` starts the next sentence.
 #[derive(Clone)]
 pub struct Parser {
     line: [u8; LINE],
     len: usize,
-    discarding: bool,
+    framing: Framing,
     bytes: u32,
     parse_errors: u32,
     overflows: u32,
     line_overflows: u32,
+    long_proprietary: u32,
+    binary_bytes: u32,
+    non_nmea_frames: u32,
+    diagnostics: Diagnostics,
+    /// Which excerpts still take the bytes that follow their event.
+    filling: Filling,
     decoder: Decoder,
+}
+
+/// Where the parser is relative to the candidate line; `len` counts only in
+/// `Address` and `Fields`.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Framing {
+    /// Ignore bytes until a `$`.
+    Skipping,
+    /// A line just ended. Any byte but CR, LF or `$` opens a gap excerpt.
+    Ended,
+    /// Before the line's first `,` or `*`: upper-case letters and digits only.
+    Address,
+    Fields,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Filling {
+    overflow: bool,
+    non_nmea: bool,
+    gap: bool,
 }
 
 #[derive(Clone)]
@@ -77,11 +108,16 @@ impl Default for Parser {
         Self {
             line: [0; LINE],
             len: 0,
-            discarding: false,
+            framing: Framing::Skipping,
             bytes: 0,
             parse_errors: 0,
             overflows: 0,
             line_overflows: 0,
+            long_proprietary: 0,
+            binary_bytes: 0,
+            non_nmea_frames: 0,
+            diagnostics: Diagnostics::default(),
+            filling: Filling::default(),
             decoder: Decoder {
                 valid: 0,
                 checksum_errors: 0,
@@ -127,39 +163,129 @@ impl Parser {
         self.decoder.clock = None;
     }
     pub fn data_loss(&mut self) {
-        self.len = 0;
-        self.discarding = true;
+        self.framing = Framing::Skipping;
+        self.filling = Filling::default();
     }
     pub fn push(&mut self, byte: u8, now: u64) {
+        let at = self.bytes;
         self.bytes = self.bytes.saturating_add(1);
+        self.fill(byte);
+        let ending = matches!(byte, b'\r' | b'\n');
+        let printable = matches!(byte, b' '..=b'~');
+        if !printable && !ending {
+            self.binary_bytes = self.binary_bytes.saturating_add(1);
+        }
         if byte == b'$' {
-            self.len = 1;
             self.line[0] = byte;
-            self.discarding = false;
+            self.len = 1;
+            self.framing = Framing::Address;
             return;
         }
-        if self.discarding || self.len == 0 {
-            return;
-        }
-        if byte == b'\r' {
-            return;
-        }
-        if byte == b'\n' {
-            let len = self.len;
-            self.len = 0;
-            if !self.decoder.parse_line(&self.line[..len], now) {
+        let nmea = match self.framing {
+            Framing::Skipping => return,
+            Framing::Ended => {
+                if !ending {
+                    self.framing = Framing::Skipping;
+                    self.diagnostics.gap = Excerpt {
+                        at: Some(at),
+                        ..Excerpt::default()
+                    };
+                    let gap = &mut self.diagnostics.gap;
+                    self.filling.gap = append(&mut gap.head, &mut gap.head_len, byte);
+                }
+                return;
+            }
+            Framing::Address => matches!(byte, b'A'..=b'Z' | b'0'..=b'9' | b',' | b'*'),
+            Framing::Fields => printable || byte == b'\t' || byte >= 0x80,
+        };
+        // CR alone ends a sentence too; the LF of a CR LF then finds no line.
+        if ending && self.sentence_shaped() {
+            self.framing = Framing::Ended;
+            if !self.decoder.parse_line(&self.line[..self.len], now) {
                 self.parse_errors = self.parse_errors.saturating_add(1);
             }
             return;
         }
-        if self.len == LINE {
-            self.line_overflows = self.line_overflows.saturating_add(1);
-            self.len = 0;
-            self.discarding = true;
+        if ending || !nmea {
+            self.non_nmea_frames = self.non_nmea_frames.saturating_add(1);
+            self.diagnostics.non_nmea = self.excerpt(at, byte);
+            self.filling.non_nmea = true;
+            self.framing = Framing::Skipping;
             return;
+        }
+        if self.len == LINE {
+            // Vendor sentences have no length cap: the C606's receiver sends a
+            // PAIRSAT over 512 bytes each epoch (#134).
+            let counter = if self.line[1] == b'P' {
+                &mut self.long_proprietary
+            } else {
+                &mut self.line_overflows
+            };
+            *counter = counter.saturating_add(1);
+            self.diagnostics.overflow = self.excerpt(at, byte);
+            self.filling.overflow = true;
+            self.framing = Framing::Skipping;
+            return;
+        }
+        if matches!(byte, b',' | b'*') {
+            self.framing = Framing::Fields;
         }
         self.line[self.len] = byte;
         self.len += 1;
+    }
+
+    /// A damaged sentence counts as a parse error, but printable bytes after a
+    /// `$` in binary output must not: a line without a `*hh` checksum needs a
+    /// standard five-character address or a short proprietary one.
+    fn sentence_shaped(&self) -> bool {
+        let line = &self.line[1..self.len];
+        let checksummed = line.len() >= 3 && line[line.len() - 3] == b'*';
+        let address = line
+            .iter()
+            .position(|&b| matches!(b, b',' | b'*'))
+            .unwrap_or(line.len());
+        checksummed
+            || match line.first() {
+                Some(b'P') => (2..=10).contains(&address),
+                _ => address == 5,
+            }
+    }
+
+    /// The latest excerpt of each framing event, for the terminal.
+    pub fn diagnostics(&self) -> Diagnostics {
+        self.diagnostics
+    }
+
+    /// The current candidate line around `byte`, the event that ends it.
+    fn excerpt(&self, at: u32, byte: u8) -> Excerpt {
+        let line = &self.line[..self.len];
+        let mut excerpt = Excerpt {
+            at: Some(at),
+            ..Excerpt::default()
+        };
+        let head = &line[1..line.len().min(1 + excerpt.head.len())];
+        excerpt.head[..head.len()].copy_from_slice(head);
+        excerpt.head_len = head.len() as u8;
+        let before = &line[line.len().saturating_sub(excerpt.before.len())..];
+        excerpt.before[..before.len()].copy_from_slice(before);
+        excerpt.before_len = before.len() as u8;
+        excerpt.after[0] = byte;
+        excerpt.after_len = 1;
+        excerpt
+    }
+
+    /// Extend the excerpts still open with the byte that follows their event.
+    fn fill(&mut self, byte: u8) {
+        let d = &mut self.diagnostics;
+        if self.filling.overflow {
+            self.filling.overflow = append(&mut d.overflow.after, &mut d.overflow.after_len, byte);
+        }
+        if self.filling.non_nmea {
+            self.filling.non_nmea = append(&mut d.non_nmea.after, &mut d.non_nmea.after_len, byte);
+        }
+        if self.filling.gap {
+            self.filling.gap = append(&mut d.gap.head, &mut d.gap.head_len, byte);
+        }
     }
 
     pub fn snapshot(&self, now: u64) -> Snapshot {
@@ -213,7 +339,10 @@ impl Parser {
             parse_errors: self.parse_errors,
             overflows: self.overflows,
             line_overflows: self.line_overflows,
+            long_proprietary: self.long_proprietary,
             uart_errors: 0,
+            binary_bytes: self.binary_bytes,
+            non_nmea_frames: self.non_nmea_frames,
         }
     }
 }
@@ -573,6 +702,16 @@ fn decimal_milli(bytes: &[u8]) -> Option<u32> {
         value = value * 10 + fraction.get(i).map_or(0, |&b| u32::from(b - b'0'));
     }
     Some(value)
+}
+
+/// Append to a bounded excerpt field; true while it has room for more.
+fn append(buffer: &mut [u8], len: &mut u8, byte: u8) -> bool {
+    let at = usize::from(*len);
+    if let Some(slot) = buffer.get_mut(at) {
+        *slot = byte;
+        *len += 1;
+    }
+    usize::from(*len) < buffer.len()
 }
 
 fn hex(a: u8, b: u8) -> Option<u8> {
@@ -1113,25 +1252,19 @@ mod tests {
         value
     }
 
-    /// Lines the parser completes, as its framing rules define them.
-    fn completed_lines(bytes: &[u8]) -> (u32, u32) {
-        let (mut lines, mut overlong, mut length) = (0, 0, None);
-        for &byte in bytes {
-            length = match (byte, length) {
-                (b'$', _) => Some(1),
-                (_, None) | (b'\r', _) => length,
-                (b'\n', Some(_)) => {
-                    lines += 1;
-                    None
-                }
-                (_, Some(LINE)) => {
-                    overlong += 1;
-                    None
-                }
-                (_, Some(n)) => Some(n + 1),
-            };
+    /// Bounds on the candidate lines the parser ends, whatever it decides about
+    /// their content. Each `$` starts a candidate that the next `$` silently
+    /// replaces. One that meets CR, LF or its 512th byte first must end; one that
+    /// meets any byte may end; only one with 512 bytes before CR or LF may overflow.
+    fn candidate_bounds(bytes: &[u8]) -> (u32, u32, u32) {
+        let (mut must, mut may, mut overlong) = (0, 0, 0);
+        for segment in bytes.split(|&b| b == b'$').skip(1) {
+            let ending = segment.iter().position(|b| matches!(b, b'\r' | b'\n'));
+            must += u32::from(ending.is_some() || segment.len() >= LINE);
+            may += u32::from(!segment.is_empty());
+            overlong += u32::from(segment.len() >= LINE && ending.is_none_or(|k| k >= LINE));
         }
-        (lines, overlong)
+        (must, may, overlong)
     }
 
     #[test]
@@ -1163,14 +1296,22 @@ mod tests {
                 parser.snapshot(fed.len() as u64 + rng.below(10_000));
             }
             let snapshot = parser.snapshot(fed.len() as u64);
-            let (lines, overlong) = completed_lines(&fed);
+            let (must, may, overlong) = candidate_bounds(&fed);
             assert_eq!(snapshot.bytes as usize, fed.len(), "seed {seed}");
-            assert_eq!(
-                snapshot.valid_sentences + snapshot.checksum_errors + snapshot.parse_errors,
-                lines,
-                "seed {seed}"
+            let overflowed = snapshot.line_overflows + snapshot.long_proprietary;
+            let ended = snapshot.valid_sentences
+                + snapshot.checksum_errors
+                + snapshot.parse_errors
+                + snapshot.non_nmea_frames
+                + overflowed;
+            assert!(
+                (must..=may).contains(&ended),
+                "seed {seed}: {must} <= {ended} <= {may}"
             );
-            assert_eq!(snapshot.line_overflows, overlong, "seed {seed}");
+            assert!(
+                overflowed <= overlong,
+                "seed {seed}: {overflowed} <= {overlong}"
+            );
         }
     }
 
@@ -1211,5 +1352,205 @@ mod tests {
             assert_eq!(fix.latitude_e7, Some(-(expected as i32)), "seed {seed}");
             assert_eq!(fix.valid_sentences, before + 1, "seed {seed}");
         }
+    }
+
+    use std::vec::Vec;
+    /// A checksummed sentence with its `$`, `*hh` and the given ending.
+    fn checksummed(value: &[u8], ending: &[u8]) -> Vec<u8> {
+        let sum = value.iter().fold(0, |sum, &byte| sum ^ byte);
+        let mut line =
+            std::format!("${}*{sum:02X}", std::str::from_utf8(value).unwrap()).into_bytes();
+        line.extend_from_slice(ending);
+        line
+    }
+    const GGA: &[u8] = b"GNGGA,075848.000,,,,,0,00,25.5,,M,,M,,";
+    const GSV: &[u8] = b"GPGSV,3,1,12,01,40,083,,02,17,308,,03,07,344,,04,22,228,";
+    const TXT: &[u8] = b"GPTXT,01,01,01,ANTENNA OPEN";
+    /// A binary frame of `len` payload bytes, CASIC-like (`BA CE`) or UBX-like
+    /// (`B5 62`), whose payload is full of `$` and holds no CR or LF.
+    fn frame(sync: [u8; 2], len: usize) -> Vec<u8> {
+        let mut out = std::vec![sync[0], sync[1], len as u8, (len >> 8) as u8, 0x06, 0x01];
+        out.extend((0..len).map(|i| match i % 7 {
+            0 => b'$',
+            1..=3 => b'G' + (i % 3) as u8,
+            4 => 0x80 | i as u8,
+            _ => 0x0B + (i % 2) as u8,
+        }));
+        out.extend_from_slice(&[0xA5, 0x00, 0x24, 0x7F]);
+        out
+    }
+    fn stream(p: &mut Parser, bytes: &[u8]) {
+        for &byte in bytes {
+            p.push(byte, 1);
+        }
+    }
+
+    #[test]
+    fn binary_frames_with_dollars_between_sentences_lose_no_sentence() {
+        for sync in [[0xBA, 0xCE], [0xB5, 0x62]] {
+            for len in [0, 1, 7, 100, 600, 2000] {
+                let mut p = Parser::default();
+                let mut input = Vec::new();
+                for _ in 0..5 {
+                    input.extend(checksummed(GGA, b"\r\n"));
+                    input.extend(frame(sync, len));
+                    // A sentence directly after a frame, with no separator.
+                    input.extend(checksummed(GSV, b"\r\n"));
+                    input.extend(frame(sync, len));
+                    input.extend(checksummed(TXT, b"\r\n"));
+                }
+                stream(&mut p, &input);
+                let s = p.snapshot(1);
+                assert_eq!(s.valid_sentences, 15, "sync={sync:x?} len={len}");
+                assert_eq!(
+                    (s.line_overflows, s.parse_errors, s.checksum_errors),
+                    (0, 0, 0)
+                );
+                assert!(s.non_nmea_frames >= 10, "{}", s.non_nmea_frames);
+                let binary = input
+                    .iter()
+                    .filter(|b| !matches!(b, b' '..=b'~' | b'\r' | b'\n'))
+                    .count();
+                assert_eq!(s.binary_bytes as usize, binary);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dollar_inside_a_long_binary_frame_is_not_a_line_overflow() {
+        // Issue #134's suspected shape: a `$` early in a frame, then hundreds of
+        // bytes with no LF. The old parser buffered them into an overflow.
+        let mut p = Parser::default();
+        let mut input = checksummed(GGA, b"\r\n");
+        input.extend_from_slice(&[0xBA, 0xCE, 0x00, 0x04, b'$']);
+        input.extend((0..1024).map(|i| if i % 5 == 4 { 0x01 } else { b'A' }));
+        input.extend(checksummed(GGA, b"\r\n"));
+        stream(&mut p, &input);
+        let s = p.snapshot(1);
+        assert_eq!(
+            (s.valid_sentences, s.line_overflows, s.non_nmea_frames),
+            (2, 0, 1)
+        );
+        let excerpt = p.diagnostics().non_nmea;
+        assert_eq!(excerpt.head(), b"AAAA");
+        assert_eq!(excerpt.after(), b"\x01AAAA\x01AA");
+        // The frame right after the first sentence's ending is the gap.
+        let gap = p.diagnostics().gap;
+        assert_eq!(gap.at, Some(GGA.len() as u32 + 6));
+        assert_eq!(&gap.head()[..5], &[0xBA, 0xCE, 0x00, 0x04, b'$']);
+        assert_eq!(gap.head_len, 32);
+    }
+
+    #[test]
+    fn a_long_line_overflows_with_an_excerpt_and_a_fault_only_if_standard() {
+        for (address, overflows) in [(&b"PAIRSAT,"[..], (0, 1)), (b"GPGSV,", (1, 0))] {
+            let mut p = Parser::default();
+            let mut long = address.to_vec();
+            long.extend((0..600).map(|i| b'0' + (i % 10) as u8));
+            let mut input = checksummed(GGA, b"\r\n");
+            let start = input.len() as u32;
+            input.extend(checksummed(&long, b"\r\n"));
+            input.extend(checksummed(GGA, b"\r\n"));
+            stream(&mut p, &input);
+            let s = p.snapshot(1);
+            assert_eq!((s.valid_sentences, s.non_nmea_frames), (2, 0));
+            assert_eq!((s.line_overflows, s.long_proprietary), overflows);
+            let excerpt = p.diagnostics().overflow;
+            // `$` then 511 more bytes fit; the 513th byte of the line overflows.
+            assert_eq!(excerpt.at, Some(start + LINE as u32));
+            assert_eq!(excerpt.head(), &long[..32]);
+            assert_eq!(excerpt.before(), &long[LINE - 9..LINE - 1]);
+            assert_eq!(excerpt.after(), &long[LINE - 1..LINE + 7]);
+        }
+    }
+
+    #[test]
+    fn only_what_cannot_be_a_sentence_is_dropped() {
+        let mut p = Parser::default();
+        stream(
+            &mut p,
+            b"\xB5\x62$a,1\n$G-PS\r$ 12\n$AB,12\n$GNGGA,broken\n",
+        );
+        stream(&mut p, &checksummed(GGA, b"\r\n"));
+        stream(
+            &mut p,
+            &checksummed("GPTXT,01,01,02,ANTENNA\tOPEN \u{e9}".as_bytes(), b"\r\n"),
+        );
+        stream(&mut p, b"$PMTKa,1*00\r\n");
+        let s = p.snapshot(1);
+        assert_eq!(
+            (s.valid_sentences, s.parse_errors, s.non_nmea_frames),
+            (2, 1, 5)
+        );
+        // Lower-case proprietary addresses are not NMEA and stay rejected.
+        let excerpt = p.diagnostics().non_nmea;
+        assert_eq!(
+            (excerpt.before(), &excerpt.after()[..1]),
+            (&b"$PMTK"[..], &b"a"[..])
+        );
+    }
+
+    #[test]
+    fn carriage_return_alone_ends_a_sentence() {
+        for ending in [&b"\r"[..], b"\n", b"\r\n", b"\n\r", b"\r\r\n"] {
+            let mut p = Parser::default();
+            let mut input = Vec::new();
+            for _ in 0..4 {
+                input.extend(checksummed(GGA, ending));
+                input.extend(checksummed(GSV, ending));
+            }
+            stream(&mut p, &input);
+            let s = p.snapshot(1);
+            assert_eq!((s.valid_sentences, s.parse_errors), (8, 0), "{ending:?}");
+            assert_eq!(p.diagnostics().gap.at, None, "{ending:?}");
+        }
+    }
+
+    #[test]
+    fn gsv_bursts_parse_every_sentence() {
+        let mut p = Parser::default();
+        let mut input = Vec::new();
+        for _ in 0..40 {
+            input.extend(checksummed(GSV, b"\r\n"));
+        }
+        stream(&mut p, &input);
+        assert_eq!(p.snapshot(1).valid_sentences, 40);
+    }
+
+    #[test]
+    fn random_binary_between_sentences_never_costs_a_sentence() {
+        let mut seed = 0x2545_f491_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let mut p = Parser::default();
+        let mut sentences = 0;
+        for _ in 0..500 {
+            let gap = next() % 300;
+            let junk: Vec<u8> = (0..gap).map(|_| next() as u8).collect();
+            stream(&mut p, &junk);
+            stream(
+                &mut p,
+                &checksummed([GGA, GSV, TXT][next() as usize % 3], b"\r\n"),
+            );
+            sentences += 1;
+        }
+        let s = p.snapshot(1);
+        assert_eq!(s.valid_sentences, sentences);
+        assert_eq!(s.line_overflows, 0);
+        assert!(s.non_nmea_frames > 0 && s.binary_bytes > 0);
+    }
+
+    #[test]
+    fn excerpts_stop_at_a_data_loss() {
+        let mut p = Parser::default();
+        stream(&mut p, &checksummed(GGA, b"\r\n"));
+        stream(&mut p, &[0xBA, 0xCE]);
+        p.data_loss();
+        stream(&mut p, &[0x01, 0x02]);
+        assert_eq!(p.diagnostics().gap.head(), &[0xBA, 0xCE]);
     }
 }

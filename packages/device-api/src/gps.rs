@@ -70,8 +70,59 @@ pub struct Snapshot {
     pub checksum_errors: u32,
     pub parse_errors: u32,
     pub overflows: u32,
+    /// Standard sentences that ran past the parser's line limit without an
+    /// ending. NMEA caps them at 82 bytes, so this is a receiver or framing fault.
     pub line_overflows: u32,
+    /// Proprietary (`$P...`) lines past the line limit. Vendors may send long
+    /// ones, so the parser skips them without counting a fault.
+    pub long_proprietary: u32,
     pub uart_errors: u32,
+    /// Bytes outside printable ASCII, CR and LF, wherever they arrive: the
+    /// volume of the receiver's non-NMEA (binary) output.
+    pub binary_bytes: u32,
+    /// Candidate lines that a non-NMEA byte ended before their line ending. A
+    /// `$` inside binary output starts one; this is expected, not a fault.
+    pub non_nmea_frames: u32,
+}
+
+/// A bounded copy of the stream around one framing event, to capture what the
+/// receiver sends. `at` is the event byte's index in the received stream.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Excerpt {
+    pub at: Option<u32>,
+    /// The first bytes of the candidate line after its `$`, or of the gap.
+    pub head: [u8; 32],
+    pub head_len: u8,
+    /// The bytes just before the event byte.
+    pub before: [u8; 8],
+    pub before_len: u8,
+    /// The event byte and the bytes after it.
+    pub after: [u8; 8],
+    pub after_len: u8,
+}
+impl Excerpt {
+    pub fn head(&self) -> &[u8] {
+        &self.head[..usize::from(self.head_len)]
+    }
+    pub fn before(&self) -> &[u8] {
+        &self.before[..usize::from(self.before_len)]
+    }
+    pub fn after(&self) -> &[u8] {
+        &self.after[..usize::from(self.after_len)]
+    }
+}
+
+/// The latest excerpt of each framing event the parser recovers from.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Diagnostics {
+    /// The last printable line that overflowed: its head, and the bytes
+    /// either side of the first byte that did not fit.
+    pub overflow: Excerpt,
+    /// The last candidate line a non-NMEA byte ended, around that byte.
+    pub non_nmea: Excerpt,
+    /// The last bytes after a line ending that did not start a sentence: the
+    /// head of whatever the receiver sends between sentences.
+    pub gap: Excerpt,
 }
 
 impl Default for Snapshot {
@@ -94,7 +145,10 @@ impl Default for Snapshot {
             parse_errors: 0,
             overflows: 0,
             line_overflows: 0,
+            long_proprietary: 0,
             uart_errors: 0,
+            binary_bytes: 0,
+            non_nmea_frames: 0,
         }
     }
 }

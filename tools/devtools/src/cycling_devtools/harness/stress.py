@@ -13,6 +13,17 @@ FAULTS = {
     'INPUT': ('bad_crc', 'uart_errors', 'touch_errors', 'input_lost'),
 }
 PROGRESS = {'POSITION': ('bytes', 'valid'), 'INPUT': ('companion_valid',)}
+# Reported, never failed: binary output and long vendor sentences such as
+# $PAIRSAT are expected receiver traffic (#134). line_overflows counts only long
+# standard sentences.
+# Firmware before these counters omits them.
+OBSERVED = {'POSITION': ('long_proprietary', 'binary_bytes', 'non_nmea_frames'), 'INPUT': ()}
+
+
+def observed(command, before, after):
+    return {key: int(after[key]) - int(before[key]) for key in OBSERVED[command] if key in before and key in after}
+
+
 PREFERENCES = ('brightness', 'dim_timeout', 'dim_brightness', 'timezone')
 
 
@@ -37,7 +48,7 @@ def validate(command, before, after, allow_loss=False):
         raise AssertionError(f'{command} acquisition did not advance')
     if not allow_loss and any(delta[key] for key in FAULTS[command]):
         raise AssertionError(f'{command} faults advanced: {delta}')
-    return delta
+    return delta | observed(command, before, after)
 
 
 def run(port, directory, seconds=20, command='POSITION', interval=0.05, allow_loss=False):
@@ -86,7 +97,9 @@ def run(port, directory, seconds=20, command='POSITION', interval=0.05, allow_lo
         )
         try:
             # Keep computable deltas even when a progress/loss assertion fails.
-            result['delta'] = {key: int(after[key]) - int(before[key]) for key in PROGRESS[command] + FAULTS[command]}
+            result['delta'] = {
+                key: int(after[key]) - int(before[key]) for key in PROGRESS[command] + FAULTS[command]
+            } | observed(command, before, after)
             result['device_elapsed_ms'] = after['ms'] - before['ms']
             for key in PREFERENCES:
                 if final_settings[key] != settings[key]:

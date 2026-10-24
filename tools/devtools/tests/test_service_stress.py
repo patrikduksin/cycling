@@ -48,6 +48,18 @@ class ServiceStressTests(unittest.TestCase):
         delta = validate('POSITION', self.position(), self.position(ms=2, bytes='20', valid='2', dma_losses='1'), True)
         self.assertEqual(delta['dma_losses'], 1)
 
+    def test_binary_output_and_long_vendor_sentences_are_reported_but_not_faults(self):
+        before = self.position(long_proprietary='0', binary_bytes='0', non_nmea_frames='0')
+        after = self.position(
+            ms=2, bytes='900', valid='9', long_proprietary='7', binary_bytes='640', non_nmea_frames='3'
+        )
+        delta = validate('POSITION', before, after)
+        self.assertEqual((delta['long_proprietary'], delta['binary_bytes'], delta['non_nmea_frames']), (7, 640, 3))
+        # Firmware without the counters still validates.
+        self.assertNotIn(
+            'binary_bytes', validate('POSITION', self.position(), self.position(ms=2, bytes='20', valid='2'))
+        )
+
     def test_input_overflow_is_reported_even_when_uart_is_clean(self):
         before = dict(ms=1, companion_valid='10', bad_crc='0', uart_errors='0', touch_errors='0', input_lost='0')
         after = dict(before, ms=2, companion_valid='20', input_lost='16')

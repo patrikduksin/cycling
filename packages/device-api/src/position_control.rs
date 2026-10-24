@@ -20,4 +20,9 @@ pub trait PositionControl {
     fn control(&self) -> Snapshot;
     fn pause(&mut self, duration_ms: u32, now: u64) -> Result<(), crate::observation::Error>;
     fn resume(&mut self, now: u64) -> Result<(), crate::observation::Error>;
+    /// Excerpts of the receiver stream around framing events; None before
+    /// acquisition starts or where no receiver stream exists.
+    fn diagnostics(&self) -> Option<crate::gps::Diagnostics> {
+        None
+    }
 }

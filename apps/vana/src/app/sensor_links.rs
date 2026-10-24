@@ -487,7 +487,6 @@ impl Runtime {
         let connect = matches!(operation, AntOperation::Connect(_));
         let result = ant.request(operation, now);
         self.links.submitted(target, connect, result, now);
-        self.display.redraw();
     }
 
     pub(super) fn request_sensor(&mut self, action: Action, ant: &mut impl Ant, now: u64) {

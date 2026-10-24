@@ -17,11 +17,15 @@ run = "bash devices/c606/build.sh"
 
 [tasks.test]
 description = "Test host firmware logic and device tools"
-depends = ["test-rust", "test-python"]
+depends = ["test-rust", "test-trouble-host", "test-python"]
 
 [tasks.test-rust]
 description = "Rust host tests (one target dir, so the passes run in turn)"
-run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling", "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked"]
+run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling"]
+
+[tasks.test-trouble-host]
+description = "Vendored BLE host tests; their own workspace and target dir, so they run beside test-rust"
+run = "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked"
 
 [tasks.test-python]
 description = "Device tool and terrain tests, spread over worker processes"

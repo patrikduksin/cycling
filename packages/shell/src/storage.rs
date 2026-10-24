@@ -97,6 +97,10 @@ impl<B: OwnedFlash> Store<B> {
     pub fn data(&mut self) -> RegionAccess<'_, B> {
         RegionAccess::new(self.journal.flash_mut(), Region::Data)
     }
+
+    pub fn crash(&mut self) -> RegionAccess<'_, B> {
+        RegionAccess::new(self.journal.flash_mut(), Region::Crash)
+    }
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ use crate::drivers::gps_uart;
 use crate::drivers::psram;
 use crate::drivers::sdmmc;
 use crate::drivers::touch;
+use device_api::storage::Region;
 use esp_hal::clock::CpuClock;
 use esp_hal::dma_tx_buffer;
 use esp_hal::gpio::DriveMode;
@@ -29,6 +30,7 @@ use esp_hal::ledc::timer;
 use esp_hal::ledc::timer::TimerIFace;
 use esp_hal::time::Rate;
 use esp_println::println;
+use firmware_services::storage::RegionAccess;
 use static_cell::StaticCell;
 
 // LEDC channels borrow their timer. Keep that timer in permanent board-owned
@@ -39,7 +41,7 @@ struct Resources {
     pub reset: device_api::crash::Reset,
     pub crash: device_api::crash::Marker,
     pub bulk: Option<sdmmc::Reader<'static>>,
-    pub flash: esp_hal::peripherals::FLASH<'static>,
+    pub storage: crate::drivers::storage::Backend<'static>,
     pub wifi: esp_hal::peripherals::WIFI<'static>,
     pub bluetooth: esp_hal::peripherals::BT<'static>,
     pub usb: esp_hal::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>,
@@ -62,7 +64,9 @@ fn init() -> Resources {
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_240MHz));
     crate::drivers::sleep::initialize(p.LPWR);
     let reset = crash_rtc::reset();
-    let crash = crash_rtc::take();
+    let mut storage = crate::drivers::storage::Backend::new(p.FLASH);
+    let mut crash_flash = RegionAccess::new(&mut storage, Region::Crash);
+    let crash = crash_rtc::take(&mut crash_flash);
     println!(
         "CYCLING_BOOT version={} board=magene-c606 harness={}",
         env!("CARGO_PKG_VERSION"),
@@ -81,7 +85,9 @@ fn init() -> Resources {
             crash.name()
         ),
     }
-    if let (device_api::crash::Marker::Valid(_), Some(record)) = (crash, crash_rtc::last()) {
+    if let (device_api::crash::Marker::Valid(_), Ok(Some((record, _)))) =
+        (crash, crash_rtc::last(&mut crash_flash))
+    {
         println!(
             "CYCLING_CRASH commit={} elf={}{}-{} uptime_ms={} location={}:{} message={}",
             record.commit(),
@@ -243,7 +249,7 @@ fn init() -> Resources {
     Resources {
         reset,
         crash,
-        flash: p.FLASH,
+        storage,
         wifi: p.WIFI,
         bluetooth: p.BT,
         usb: esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE),
@@ -387,7 +393,7 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         sensors: Sensors,
         sound: Sound,
         bulk: Bulk(board.bulk, None),
-        storage: crate::drivers::storage::Backend::new(board.flash),
+        storage: board.storage,
         terminal: crate::drivers::usb::Usb::new(board.usb),
         reset: board.reset,
         crash: board.crash,

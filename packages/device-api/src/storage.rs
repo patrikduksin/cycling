@@ -35,6 +35,8 @@ pub fn checked_range<E>(
 pub enum Region {
     Configuration,
     Data,
+    /// The device's copy of its last panic record, kept across power-off.
+    Crash,
 }
 
 /// Sole physical owner of independently bounded reservations. Every operation

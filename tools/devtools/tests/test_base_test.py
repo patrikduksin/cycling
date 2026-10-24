@@ -1,7 +1,16 @@
 import unittest
 from unittest.mock import patch
 
-from cycling_devtools.harness.base import apply, check_overlong, expect, preserved, transport_recovery, wifi_failures
+from cycling_devtools.harness.base import (
+    apply,
+    check_overlong,
+    expect,
+    power_cycle,
+    preserved,
+    settle,
+    transport_recovery,
+    wifi_failures,
+)
 
 
 class Connection:
@@ -38,6 +47,78 @@ class BaseTests(unittest.TestCase):
 
     def test_wifi_failure_counter_is_not_association_count(self):
         self.assertEqual(wifi_failures(Connection()), 4)
+
+
+class ScriptedConnection:
+    """Replies per command, in order; the last reply of a command repeats."""
+
+    def __init__(self, replies):
+        self.replies = {command: list(answers) for command, answers in replies.items()}
+        self.commands = []
+        self.request_id = 1
+
+    def terminal_command(self, command):
+        self.commands.append(command)
+        answers = self.replies[command]
+        status, data = answers.pop(0) if len(answers) > 1 else answers[0]
+        return dict(status=status, data=data, ms=1)
+
+    def __exit__(self, *unused):
+        pass
+
+
+class PowerCycleTests(unittest.TestCase):
+    def cycle(self, before, after):
+        with patch('cycling_devtools.harness.base.reopen', side_effect=[before, after]), patch('time.sleep'):
+            return power_cycle('port', None)
+
+    def test_switches_off_once_and_wakes_charging_standby_before_reading_flash(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('UNAVAILABLE', ''), ('ACCEPTED', '')]})
+        idle = 'status=Status { state: Idle, ready: true }'
+        after = ScriptedConnection(
+            {
+                'STATUS': [('OK', 'reset=power crash=none')],
+                'COMPANION': [
+                    ('OK', 'startup=probing'),
+                    ('OK', 'startup=charging'),
+                    ('OK', 'startup=charging'),
+                    ('OK', 'startup=ready'),
+                ],
+                'POWER': [
+                    ('OK', idle),
+                    ('OK', 'status=Status { state: Charging, ready: false }'),
+                    ('OK', 'status=Status { state: Charging, ready: false }'),
+                    ('OK', idle),
+                ],
+                'POWER WAKE': [('UNAVAILABLE', ''), ('ACCEPTED', '')],
+            }
+        )
+        self.assertIs(self.cycle(before, after), after)
+        self.assertEqual(before.commands, ['POWER SHUTDOWN', 'POWER SHUTDOWN'])
+        self.assertEqual(after.commands.count('POWER WAKE'), 2)
+        self.assertEqual(after.commands[-2:], ['COMPANION', 'POWER'])
+
+    def test_an_early_idle_before_the_companion_starts_is_not_settled(self):
+        connection = ScriptedConnection(
+            {
+                'COMPANION': [('OK', 'startup=waiting'), ('OK', 'startup=ready')],
+                'POWER': [('OK', 'status=Status { state: Idle, ready: true }')],
+            }
+        )
+        with patch('time.sleep'):
+            settle(connection)
+        self.assertEqual(connection.commands, ['COMPANION', 'POWER', 'COMPANION', 'POWER'])
+
+    def test_a_reset_that_kept_rtc_memory_fails(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('ACCEPTED', '')]})
+        after = ScriptedConnection({'STATUS': [('OK', 'reset=software crash=none')]})
+        with self.assertRaisesRegex(AssertionError, 'power-on reset'):
+            self.cycle(before, after)
+
+    def test_a_refused_shutdown_never_waits_for_power(self):
+        before = ScriptedConnection({'POWER SHUTDOWN': [('BUSY', '')]})
+        with self.assertRaisesRegex(AssertionError, 'BUSY'):
+            self.cycle(before, None)
 
 
 class FramingTests(unittest.TestCase):

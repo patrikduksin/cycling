@@ -168,6 +168,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn data_storage(&mut self) -> firmware_services::storage::RegionAccess<'_, B> {
         self.store.data()
     }
+    /// Borrow the device's panic journal for `CRASH`.
+    pub fn crash_storage(&mut self) -> firmware_services::storage::RegionAccess<'_, B> {
+        self.store.crash()
+    }
 
     pub fn activity(&mut self, now: u64) {
         self.idle.button(now);

@@ -7,6 +7,7 @@ pub mod ant;
 pub mod bulk;
 pub mod checksum;
 pub mod connectivity;
+pub mod crash_log;
 pub mod dhcp_server;
 pub mod files;
 pub mod fit;

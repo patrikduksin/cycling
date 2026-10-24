@@ -500,42 +500,52 @@ pub fn execute(
             terminal.schedule_reboot(now, false);
             status = "ACCEPTED";
         }
-        Command::Crash => match crate::device::drivers::crash_rtc::last() {
-            None => {
-                let _ = write!(output, "none");
-            }
-            Some(record) => {
-                let _ = write!(
-                    output,
-                    "kind={} this_boot={} version={} commit={} elf={}{}-{} uptime_ms={} location={}:{} frames={} pcs=",
-                    record.kind.name(),
-                    // Boot marks the record reported, so ask what this boot's
-                    // reset was blamed on.
-                    matches!(system.crash, device_api::crash::Marker::Valid(_)),
-                    record.version(),
-                    if record.commit().is_empty() {
-                        "unknown"
-                    } else {
-                        record.commit()
-                    },
-                    // The archived ELF's name, for `mise run backtrace`.
-                    record.commit(),
-                    if record.build.dirty { "-dirty" } else { "" },
-                    record.build.variant(),
-                    record.uptime_ms,
-                    record.file(),
-                    record.line,
-                    record.pcs().len(),
-                );
-                for (index, pc) in record.pcs().iter().enumerate() {
-                    let _ = write!(output, "{}0x{pc:08x}", if index == 0 { "" } else { "," });
+        Command::Crash => {
+            let last = crate::device::drivers::crash_rtc::last(&mut system.crash_storage());
+            match last {
+                Err(device_api::storage::AccessError::Unavailable) => status = "UNAVAILABLE",
+                Err(_) => status = "FAILED",
+                Ok(None) => {
+                    let _ = write!(output, "none");
                 }
-                // Last, so a reader can take the rest of the line as it is.
-                let _ = write!(output, " message={}", record.message());
+                Ok(Some((record, source))) => {
+                    let _ = write!(
+                        output,
+                        "kind={} this_boot={} source={} version={} commit={} elf={}{}-{} uptime_ms={} location={}:{} frames={} pcs=",
+                        record.kind.name(),
+                        // Boot marks the record reported, so ask what this boot's
+                        // reset was blamed on.
+                        matches!(system.crash, device_api::crash::Marker::Valid(_)),
+                        source.name(),
+                        record.version(),
+                        if record.commit().is_empty() {
+                            "unknown"
+                        } else {
+                            record.commit()
+                        },
+                        // The archived ELF's name, for `mise run backtrace`.
+                        record.commit(),
+                        if record.build.dirty { "-dirty" } else { "" },
+                        record.build.variant(),
+                        record.uptime_ms,
+                        record.file(),
+                        record.line,
+                        record.pcs().len(),
+                    );
+                    for (index, pc) in record.pcs().iter().enumerate() {
+                        let _ = write!(output, "{}0x{pc:08x}", if index == 0 { "" } else { "," });
+                    }
+                    // Last, so a reader can take the rest of the line as it is.
+                    let _ = write!(output, " message={}", record.message());
+                }
             }
-        },
+        }
         Command::CrashClear => {
-            crate::device::drivers::crash_rtc::clear();
+            status = match crate::device::drivers::crash_rtc::clear(&mut system.crash_storage()) {
+                Ok(()) => "OK",
+                Err(device_api::storage::AccessError::Unavailable) => "UNAVAILABLE",
+                Err(_) => "FAILED",
+            };
         }
         Command::Test(n) => {
             #[cfg(feature = "debug-harness")]

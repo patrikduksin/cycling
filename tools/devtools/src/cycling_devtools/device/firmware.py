@@ -39,6 +39,9 @@ SLOTS = (0x20000, 0x760000)
 NAMES = 'AB'
 OWNED = (SLOTS[1] + APP_SIZE, RIDE_SIZE + SETTINGS_SIZE)
 # Bootloader, partition table, NVS, OTA selection, PHY data and coredump.
+# Cycling keeps its last panic record in the coredump partition's final two
+# sectors (0x1E000..0x20000); flashing writes only OTA selection here, and a
+# full restore puts the backup's bytes back.
 BOOT_ZONE = SLOTS[0]
 # Matches the harness reconnect bound for a restarted console.
 CONSOLE_SECONDS = 25

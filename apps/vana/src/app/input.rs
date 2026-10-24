@@ -10,7 +10,7 @@ use crate::screens::gesture::{Gesture, Owner};
 use crate::screens::home::{Home, Tile};
 use crate::screens::ready;
 use crate::screens::ride::RidePage;
-use crate::screens::ride::summary::PAGES as SUMMARY_PAGES;
+use crate::screens::ride::summary;
 use crate::screens::sensors::Action;
 use crate::screens::settings;
 use crate::screens::workout::{HOME, Page};
@@ -222,7 +222,8 @@ impl Runtime {
             }
             (Page::Summary | Page::PastRide, Gesture::Next) => self.next_summary_page(1),
             (Page::Summary | Page::PastRide, Gesture::Previous) => {
-                self.next_summary_page(SUMMARY_PAGES - 1)
+                let last = summary::pages(self.has_elevation()) - 1;
+                self.next_summary_page(last)
             }
             (Page::History, Gesture::Tap(point)) => {
                 let (x, y) = (usize::from(point.x), usize::from(point.y));
@@ -518,8 +519,9 @@ impl Runtime {
     }
 
     pub(super) fn next_summary_page(&mut self, step: usize) {
+        let pages = summary::pages(self.has_elevation());
         let navigation = &mut self.navigation;
-        navigation.summary_page = (navigation.summary_page + step) % SUMMARY_PAGES;
+        navigation.summary_page = (navigation.summary_page + step) % pages;
     }
 
     /// BottomLeft steps through the ride pages, wrapping after the last.

@@ -10,11 +10,13 @@
 //! Laps come from the lap marks on samples (`log::LapStart`); a ride recorded
 //! before lap marks has none, and its laps stay unknown. What the journal
 //! does not keep stays unknown too: climbs live only in RAM during a ride.
-//! Ascent comes from the recorded gradient over the distance ridden, which
-//! rides recorded before altitude was kept also have.
+//! Ascent and descent follow the recorded altitude with a live ride's rules;
+//! a ride recorded without altitude estimates its ascent from the recorded
+//! gradient over the distance ridden.
 //!
 //! The replay itself is a few words of position; it adds up into `Sums` the
 //! caller lends it, so the device keeps one set of ride sums, not two.
+use crate::ride::elevation::Trace;
 use crate::ride::log::{Entry, Kind, LapStart, Sample};
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
@@ -55,6 +57,7 @@ pub struct Sums<'a> {
     pub totals: &'a mut Totals,
     pub zone_time: &'a mut ZoneTime,
     pub efforts: &'a mut Efforts,
+    pub trace: &'a mut Trace,
 }
 
 impl Sums<'_> {
@@ -63,6 +66,7 @@ impl Sums<'_> {
         *self.totals = Totals::default();
         *self.zone_time = ZoneTime::default();
         *self.efforts = Efforts::default();
+        *self.trace = Trace::default();
     }
 }
 
@@ -76,6 +80,8 @@ pub struct Replay {
     rise_mm: u64,
     samples: u32,
     boundaries: Option<u16>,
+    /// Some sample carried an altitude, so the totals hold the ascent.
+    measured: bool,
     /// Recorded time, from the ride's last record.
     pub active_ms: u64,
 }
@@ -93,6 +99,7 @@ impl Replay {
             rise_mm: 0,
             samples: 0,
             boundaries: None,
+            measured: false,
             active_ms: 0,
         }
     }
@@ -219,6 +226,12 @@ impl Replay {
         let speed = sample.speed_mm_s.or(sample.demo_speed_mm_s).unwrap_or(0);
         let distance_mm = u64::from(speed) * elapsed / 1000;
         sums.totals.add(elapsed, distance_mm, sample, None);
+        if let Some(altitude) = sample.altitude {
+            self.measured = true;
+            sums.totals.follow_altitude_dm(altitude.dm());
+            sums.trace
+                .add(sums.totals.distance_mm(), Some(altitude.dm()));
+        }
         sums.zone_time.add(elapsed, sample, profile);
         if let Some(watts) = sample.power_watts {
             sums.efforts.add_ms(watts, elapsed);
@@ -230,15 +243,25 @@ impl Replay {
     }
 
     /// Ascent from the recorded gradient, in decimetres.
-    pub fn ascent_dm(&self) -> u32 {
+    fn gradient_ascent_dm(&self) -> u32 {
         (self.rise_mm / 100).min(u64::from(u32::MAX)) as u32
+    }
+
+    /// The ride's totals as read back: ascent and descent from the recorded
+    /// altitude, or, for a ride without one, ascent from the gradient.
+    pub fn totals(&self, totals: Totals) -> Totals {
+        if self.measured {
+            totals
+        } else {
+            totals.with_ascent_dm(self.gradient_ascent_dm())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::log::Source;
+    use crate::ride::log::{Altitude, Source};
     use std::vec::Vec;
 
     #[derive(Default)]
@@ -246,6 +269,7 @@ mod tests {
         totals: Totals,
         zone_time: ZoneTime,
         efforts: Efforts,
+        trace: Trace,
     }
 
     impl Owned {
@@ -254,6 +278,7 @@ mod tests {
                 totals: &mut self.totals,
                 zone_time: &mut self.zone_time,
                 efforts: &mut self.efforts,
+                trace: &mut self.trace,
             }
         }
     }
@@ -333,10 +358,79 @@ mod tests {
         assert_eq!(sums.totals.avg_heart_bpm(), Some(140));
         assert_eq!(sums.efforts.best(), [Some(250); 4]);
         // 5% over 12 km climbs 600 m.
-        assert_eq!(ride.ascent_dm(), 6000);
+        assert_eq!(ride.totals(sums.totals).ascent_dm(), 6000);
         // Bisection, then the ride's own slots and the next ride's first.
         let own = 1200 / 4 + 2;
         assert!(reads <= own + 16, "{reads} reads for {own} slots");
+    }
+
+    /// A ride of `seconds` at 10 m/s on a recorded gradient of 5%, whose
+    /// altitude `altitude_dm` gives by second, or none.
+    fn hilly(seconds: u64, altitude_dm: Option<fn(u64) -> i32>) -> Vec<Entry> {
+        let samples: Vec<_> = (1..=seconds)
+            .map(|s| Sample {
+                altitude: altitude_dm.map(|at| Altitude::from_dm(at(s))),
+                ..sample(s * 1000, 200)
+            })
+            .collect();
+        let mut slots = std::vec![Entry::event(Kind::Start, Source::Live, 1, 0, 0)];
+        for chunk in samples.chunks(4) {
+            slots.push(Entry::batch(Source::Live, 1, 0, chunk).unwrap());
+        }
+        slots.push(Entry::event(
+            Kind::Finish,
+            Source::Live,
+            1,
+            0,
+            seconds * 1000,
+        ));
+        slots
+    }
+
+    #[test]
+    fn a_saved_ride_with_altitude_adds_up_its_climbs_not_its_gradient() {
+        // 600 s: up 50 m over the first 200 s, down 100 m, up 50 m again.
+        let altitude = |s: u64| match s {
+            ..=200 => 6000 + 2 * s as i32,
+            201..=400 => 6400 - 5 * (s as i32 - 200),
+            _ => 5400 + 2 * (s as i32 - 400),
+        };
+        let slots = hilly(600, Some(altitude));
+        let (ride, sums, _) = replay(&slots, 1, 16);
+        let totals = ride.totals(sums.totals);
+        assert!(
+            (780..=830).contains(&totals.ascent_dm()),
+            "{}",
+            totals.ascent_dm()
+        );
+        assert!(
+            (980..=1010).contains(&totals.descent_dm()),
+            "{}",
+            totals.descent_dm()
+        );
+        // The gradient says 5% over 6 km, which would be 300 m.
+        assert_eq!(ride.gradient_ascent_dm(), 3000);
+        let (low, high) = sums.trace.range_dm().unwrap();
+        assert!((5400..=5410).contains(&low) && (6390..=6400).contains(&high));
+        assert!(sums.trace.len() > 100 && sums.trace.len() <= crate::ride::elevation::CAPACITY);
+    }
+
+    #[test]
+    fn a_saved_ride_without_altitude_falls_back_to_the_gradient() {
+        let slots = hilly(600, None);
+        let (ride, sums, _) = replay(&slots, 1, 16);
+        let totals = ride.totals(sums.totals);
+        assert_eq!(totals.ascent_dm(), 3000);
+        assert_eq!(totals.descent_dm(), 0);
+        assert!(sums.trace.is_empty());
+    }
+
+    #[test]
+    fn a_long_saved_ride_keeps_a_bounded_profile() {
+        let slots = hilly(7200, Some(|s| 6000 + (s as i32 / 3) % 500));
+        let (_, sums, _) = replay(&slots, 1, 64);
+        assert!(sums.trace.len() <= crate::ride::elevation::CAPACITY);
+        assert!(sums.trace.step_mm() > 20_000, "72 km outgrows 20 m steps");
     }
 
     #[test]

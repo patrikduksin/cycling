@@ -23,6 +23,7 @@ use core::fmt::Write;
 
 pub mod back;
 mod climb;
+pub mod elevation;
 pub(super) mod end;
 mod lap;
 mod main;
@@ -36,6 +37,7 @@ pub(super) use zones::{Marks, marks};
 
 pub use back::{Arrow, Back, Light};
 pub use climb::Frame as ClimbFrame;
+pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 

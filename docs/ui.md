@@ -131,7 +131,8 @@ steepness: grey, blue, green, yellow, orange, red, purple (Z1 to Z7).
 `zone_color(0)` (no profile or no reading) is `TERTIARY`. Heart rate uses Z1
 to Z5 of the same ramp.
 
-Climb steepness uses the ramp from blue up:
+Climb steepness uses the ramp from blue up, on the climb page's profile and on
+the summary's elevation page:
 
 | Band | Colour |
 | --- | --- |

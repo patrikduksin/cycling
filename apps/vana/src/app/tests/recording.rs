@@ -276,6 +276,7 @@ fn a_lap_is_kept_in_the_journal_and_read_back_by_replay_and_fit() {
         totals: &mut crate::ride::totals::Totals::default(),
         zone_time: &mut crate::ride::zones::ZoneTime::default(),
         efforts: &mut crate::ride::totals::Efforts::default(),
+        trace: &mut crate::ride::elevation::Trace::default(),
     };
     let profile = runtime.preferences.profile;
     while replay.step(64, &profile, &mut sums, |i| entries.get(i).copied())

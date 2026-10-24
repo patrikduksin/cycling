@@ -59,7 +59,7 @@ const MAP_TOP: usize = FIRST + (ROWS - 1) * CELL_PITCH + 6;
 const MAP_HEIGHT: usize = CHART_BOTTOM - MAP_TOP;
 const _: () = assert!(MAP_HEIGHT < EMPTY as usize);
 /// A flat road spans at least 20 m of chart height, so it stays flat.
-const MIN_SPAN_DM: i32 = 200;
+pub(super) const MIN_SPAN_DM: i32 = 200;
 /// A column with no profile sample yet.
 const EMPTY: u8 = u8::MAX;
 /// The rider's disc: 6 px across, in quarter pixels.

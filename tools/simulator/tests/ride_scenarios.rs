@@ -766,11 +766,12 @@ fn stats_page_totals_a_steady_ten_minutes() {
     sim.stop_ride();
     sim.expect_field("AVG W", "200");
     sim.checkpoint("summary after saving");
-    sim.ride_page("2/3");
+    sim.ride_page("2/4");
     sim.expect_field("NP W", "200");
     sim.press(Button::BottomLeft);
     sim.press(Button::BottomLeft);
-    assert_eq!(sim.screen().page().as_deref(), Some("1/3"));
+    sim.press(Button::BottomLeft);
+    assert_eq!(sim.screen().page().as_deref(), Some("1/4"));
     sim.press(Button::TopLeft);
     assert!(sim.on_home(), "{}", sim.screen().text());
 }
@@ -811,6 +812,18 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     // The exports carry the barometric elevation: a 600 m start, up to 650 m,
     // down to 550 m, and the session's ascent and descent.
     sim.stop_ride();
+    let live = sim.screen().field("ASCENT M").unwrap();
+    println!("ascent live summary: {live} m");
+    expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
+    sim.checkpoint("summary overview after the hilly lap");
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.expect_text("DESCENT M");
+    expect_near(&mut sim, "MIN M", 550.0, 5.0);
+    expect_near(&mut sim, "MAX M", 650.0, 5.0);
+    expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
+    expect_near(&mut sim, "DESCENT M", 100.0, 5.0);
+    sim.checkpoint("summary elevation profile of the hilly lap");
     let rides = sim.rides();
     let ride = &rides[0];
     let metres: Vec<f64> = ride
@@ -840,6 +853,25 @@ fn ascent_counts_the_climbs_of_a_hilly_loop() {
     let (ascent, descent) = (session[&22], session[&23]);
     assert!((90..=110).contains(&ascent), "FIT ascent {ascent} m");
     assert!((90..=110).contains(&descent), "FIT descent {descent} m");
+
+    // Read back from the journal, the ride shows the same ascent and profile.
+    sim.done();
+    sim.home("RIDES");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    let saved = sim.screen().field("ASCENT M").unwrap();
+    println!("ascent saved summary: {saved} m");
+    expect_near(&mut sim, "ASCENT M", 100.0, 5.0);
+    sim.checkpoint("saved hilly lap read back");
+    sim.swipe_next();
+    sim.swipe_next();
+    sim.expect_text("DESCENT M");
+    expect_near(&mut sim, "MIN M", 550.0, 5.0);
+    expect_near(&mut sim, "MAX M", 650.0, 5.0);
+    expect_near(&mut sim, "DESCENT M", 100.0, 5.0);
+    sim.checkpoint("saved hilly lap elevation profile");
+    sim.swipe_next();
+    sim.expect_text("BEST POWER W");
 }
 
 /// Valid fields by number of every data message with this global number,
@@ -1218,7 +1250,7 @@ fn manual_laps_compare_each_effort_with_the_last() {
     sim.checkpoint("lap page, easy third lap");
     sim.stop_ride();
     // The summary counts the three laps, the open one included.
-    sim.ride_page("3/3");
+    sim.ride_page("4/4");
     sim.expect_field("LAPS", "3");
 }
 
@@ -3497,6 +3529,8 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     assert!(watts.abs_diff(220) <= 1, "NP W {watts}");
     sim.checkpoint("summary: effort and zones");
     sim.press(Button::BottomLeft);
+    sim.expect_text("DESCENT M");
+    sim.press(Button::BottomLeft);
     sim.expect_text("BEST POWER W");
     sim.expect_field("LAPS", "2");
     sim.checkpoint("summary: best power, climbs and laps");
@@ -3785,6 +3819,8 @@ fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
     sim.swipe_next();
     sim.expect_field("NP W", "240");
     sim.press(Button::BottomLeft);
+    sim.expect_text("DESCENT M");
+    sim.press(Button::BottomLeft);
     sim.expect_text("BEST POWER W");
     sim.expect_field("LAPS", "1");
     sim.expect_field("CLIMBS", "--");
@@ -3873,6 +3909,7 @@ fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
     sim.stop_ride();
     sim.swipe_next();
     sim.swipe_next();
+    sim.swipe_next();
     sim.expect_field("LAPS", "3");
     sim.done();
 
@@ -3912,6 +3949,7 @@ fn laps_are_kept_with_the_ride_in_its_fit_file_and_saved_summary() {
     sim.home("RIDES");
     sim.press(Button::BottomRight);
     sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.swipe_next();
     sim.swipe_next();
     sim.swipe_next();
     sim.expect_text("BEST POWER W");

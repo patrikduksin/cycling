@@ -139,6 +139,14 @@ impl Night {
 }
 
 impl Runtime {
+    /// Whether the screens take the light look now.
+    pub(super) fn light(&self) -> bool {
+        self.preferences
+            .options
+            .theme
+            .is_light(self.night.is_night())
+    }
+
     /// Follow day and night with the backlight. Call once per loop.
     pub(super) fn follow_daylight<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,

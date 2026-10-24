@@ -133,6 +133,9 @@ pub struct View<'a> {
     pub lines: [Text<38>; 9],
     /// The Connect phone screen's QR code.
     pub qr: Option<super::qr::Placed>,
+    /// The light look is in force: the QR panel is painted inverted so the
+    /// output pass turns it back to dark modules on light.
+    pub light: bool,
     /// Ready: the checks before a ride.
     pub readiness: Readiness,
     /// How long the ride has been paused.
@@ -200,6 +203,7 @@ impl View<'_> {
             time,
             lines: core::array::from_fn(|_| Text::new()),
             qr: None,
+            light: false,
             readiness: Readiness::default(),
             paused_secs: 0,
             pause_screen: false,

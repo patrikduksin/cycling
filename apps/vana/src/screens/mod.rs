@@ -5,6 +5,7 @@ pub mod cue;
 pub mod gesture;
 pub mod history;
 pub mod home;
+pub mod look;
 pub mod phone;
 pub mod power;
 pub mod qr;

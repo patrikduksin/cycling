@@ -66,7 +66,6 @@ fn swipes_change_ride_pages_and_touch_never_controls_the_ride() {
         );
     }
     assert_eq!(runtime.ride.active().status(), Status::Recording);
-    assert!(!runtime.ride.stop_confirming(7000));
     assert!(runtime.navigation.page == Page::Ride);
 }
 

@@ -790,10 +790,7 @@ impl Runtime {
             {
                 navigation.open_ride()
             }
-            Page::EndRide if status != Status::Paused => {
-                self.ride.disarm_stop();
-                navigation.page = Page::Ride;
-            }
+            Page::EndRide if status != Status::Paused => navigation.page = Page::Ride,
             Page::Summary
                 if status == Status::Paused
                     && !self.ride.pending()

@@ -198,7 +198,6 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     for at in [3000, 3400] {
         runtime.input(press(Button::TopLeft), at, &mut radio);
         tick(&mut runtime, &mut journal, &mut radio, at);
-        assert!(!runtime.ride.stop_confirming(at));
         assert!(runtime.navigation.page == Page::Ride);
         assert_eq!(runtime.ride.internal.status(), Status::Recording);
     }
@@ -208,23 +207,20 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     pause(&mut runtime, &mut journal, &mut radio, 4000);
     runtime.input(press(Button::TopLeft), 4400, &mut radio);
     assert!(runtime.navigation.page == Page::EndRide);
-    assert!(runtime.ride.stop_confirming(4400));
     runtime.input(press(Button::TopLeft), 4800, &mut radio);
     assert!(runtime.navigation.page == Page::Ride);
-    assert!(!runtime.ride.stop_confirming(4800));
     // MOVE on the question does nothing; it waits as long as it takes.
     runtime.input(press(Button::TopLeft), 5200, &mut radio);
     runtime.input(press(Button::BottomLeft), 5600, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 60_000);
     assert!(runtime.navigation.page == Page::EndRide);
-    assert!(runtime.ride.stop_confirming(60_000));
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
     // ACT answers: the ride saves and its summary opens.
     runtime.input(press(Button::BottomRight), 60_400, &mut radio);
     assert!(runtime.navigation.page == Page::Summary);
     settle(&mut runtime, &mut journal, &mut radio, 60_400);
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
-    assert!(!runtime.ride.stop_confirming(62_000));
+    assert!(runtime.navigation.page == Page::Summary);
 
     // The summary pages wrap; ACT finishes, to Home.
     assert_eq!(runtime.navigation.summary_page, 0);
@@ -621,7 +617,6 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
     pause(&mut runtime, &mut journal, &mut radio, 5400);
     // Within the toast's two seconds: the question replaces the lap.
     runtime.input(press(Button::TopLeft), 5800, &mut radio);
-    assert!(runtime.ride.stop_confirming(5800));
     assert!(runtime.navigation.page == Page::EndRide);
     assert_eq!(runtime.ride.lap_toast(5800), None);
 }

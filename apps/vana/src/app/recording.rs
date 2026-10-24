@@ -45,8 +45,6 @@ pub(super) enum Request {
 #[derive(Clone, Copy)]
 pub(super) enum RideMessage {
     Ready,
-    /// The rider is answering "End ride?".
-    ConfirmStop,
     StorageNotReady,
 }
 
@@ -87,8 +85,6 @@ pub(super) struct Ride {
     /// Token of the latest host command; only its completion is the host's to read.
     pub(super) host_token: Option<u32>,
     next_token: u32,
-    /// "End ride?" is open over the paused ride, since then.
-    stop_armed: Option<u64>,
     pub(super) message: RideMessage,
     /// What this ride has added up so far; kept after stop until the next start.
     pub(super) totals: Totals,
@@ -152,7 +148,6 @@ impl Default for Ride {
             request_on: Medium::Internal,
             host_token: None,
             next_token: 1,
-            stop_armed: None,
             message: RideMessage::Ready,
             totals: Totals::default(),
             counted_ms: 0,
@@ -309,15 +304,7 @@ impl Ride {
         matches!(self.request, Request::Completed(r) if Some(r.token) == self.host_token)
     }
 
-    /// "End ride?" is open over a paused ride, asked at or before `now`.
-    pub(super) fn stop_confirming(&self, now: u64) -> bool {
-        self.active().status() == Status::Paused && self.stop_armed.is_some_and(|at| at <= now)
-    }
-
-    pub(super) fn arm_stop(&mut self, now: u64) {
-        self.stop_armed = Some(now);
-        self.message = RideMessage::ConfirmStop;
-        // The confirmation replaces any lap toast still showing.
+    pub(super) fn clear_lap_toast(&mut self) {
         self.lap_toast = None;
     }
 
@@ -327,10 +314,6 @@ impl Ride {
             Some((text, at)) if now.saturating_sub(at) <= TOAST_MS => text,
             _ => "",
         }
-    }
-
-    pub(super) fn disarm_stop(&mut self) {
-        self.stop_armed = None;
     }
 
     /// Add an odometer step to the totals, clipped to the active time the
@@ -588,7 +571,7 @@ impl Runtime {
         }
         // The first press to save an auto-paused ride takes it over: moving or
         // a lost sensor must not resume it under the rider's confirmation.
-        if self.ride.stop_confirming(now) {
+        if self.navigation.page == Page::EndRide && self.ride.active().status() == Status::Paused {
             self.ride.auto.manual();
             return;
         }
@@ -618,7 +601,6 @@ impl Runtime {
             self.ride.auto.accepted(decision);
             self.ride.toast = Some((toast, now));
             self.ride.message = RideMessage::Ready;
-            self.ride.disarm_stop();
             self.display.redraw();
         } else {
             self.ride.auto.declined();

@@ -556,7 +556,6 @@ impl Runtime {
     fn end_ride_input(&mut self, button: Button, now: u64) {
         match button {
             Button::TopLeft => {
-                self.ride.disarm_stop();
                 self.ride.message = RideMessage::Ready;
                 self.navigation.page = Page::Ride;
             }
@@ -571,12 +570,10 @@ impl Runtime {
                 }) {
                     self.ride.auto.manual();
                     self.ride.message = RideMessage::Ready;
-                    self.ride.disarm_stop();
                     self.navigation.summary_page = 0;
                     self.navigation.page = Page::Summary;
                 } else {
                     self.ride.message = RideMessage::StorageNotReady;
-                    self.ride.disarm_stop();
                     self.navigation.page = Page::Ride;
                 }
             }
@@ -635,7 +632,6 @@ impl Runtime {
                 RideAction::Start
             }
             (Button::TopLeft, Status::Recording) => {
-                self.ride.disarm_stop();
                 // During a workout the lap ends the step, which names the
                 // next step rather than the lap.
                 if let Some(lap) = self.ride.laps.lap(now)
@@ -647,7 +643,8 @@ impl Runtime {
             }
             // Only a paused ride ends, and only once "End ride?" is answered.
             (Button::TopLeft, Status::Paused) => {
-                self.ride.arm_stop(received);
+                self.ride.message = RideMessage::Ready;
+                self.ride.clear_lap_toast();
                 self.navigation.page = Page::EndRide;
                 return;
             }
@@ -669,7 +666,6 @@ impl Runtime {
                 self.timing.ride_press(received);
             }
             self.ride.message = RideMessage::Ready;
-            self.ride.disarm_stop();
         } else {
             self.ride.message = RideMessage::StorageNotReady;
         }

@@ -140,19 +140,20 @@ pub fn update(frame: &mut Frame, held: &mut Option<Key>, track: &Track) {
 
 /// The header baseline, as on the back-to-start page.
 const HEAD: usize = 40;
-/// Where the track is drawn: the rider's column, and rows from `TOP` to
-/// `BOTTOM` with the rider low.
+/// Where the track is drawn: the middle column, and rows from `TOP` to
+/// `BOTTOM`. The track and the rider are fitted inside a margin of `MARGIN`
+/// for the line and the marks.
 const CX: usize = (LEFT + RIGHT) / 2;
 const TOP: usize = 56;
 const BOTTOM: usize = 280;
-const RIDER_Y: usize = 196;
-/// How far the track may reach from the rider at the fit, in pixels: to
-/// each side, ahead, and behind, each less a margin for the line and dots.
-const SIDE_PX: f32 = ((RIGHT - LEFT) / 2 - 4) as f32;
-const AHEAD_PX: f32 = (RIDER_Y - TOP - 6) as f32;
-const BEHIND_PX: f32 = (BOTTOM - RIDER_Y - 8) as f32;
+const MID_Y: usize = (TOP + BOTTOM) / 2;
+const MARGIN: f32 = 10.0;
+const AVAIL_W: f32 = (RIGHT - LEFT) as f32 - 2.0 * MARGIN;
+const AVAIL_H: f32 = (BOTTOM - TOP) as f32 - 2.0 * MARGIN;
+/// The track stays where it is until it would come within this of the edge.
+const HOLD_MARGIN: f32 = MARGIN / 2.0;
 /// The width a zoom step spans, in pixels.
-const WIDTH_PX: f32 = (RIGHT - LEFT - 10) as f32;
+const WIDTH_PX: f32 = AVAIL_W;
 /// The closest zoom spans this many metres across, and each step out is
 /// this much wider, up to `MAX_STEPS`.
 const MIN_SPAN_M: f32 = 500.0;
@@ -200,7 +201,6 @@ const SPAN: usize = super::BODY.right - super::BODY.left;
 
 const _: () = assert!(BOTTOM <= crate::screens::chrome::TOAST.top);
 const _: () = assert!(HEAD + 12 < TOP);
-const _: () = assert!(RIDER_Y > TOP && RIDER_Y < BOTTOM);
 const _: () = assert!(MAX_SEGMENTS < 256, "segments are bucketed as bytes");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -240,6 +240,8 @@ pub struct Frame {
     /// The rider is drawn as a disc, or not at all without a fix.
     rider: bool,
     start: Point,
+    /// Where the rider is on the page.
+    rider_at: Point,
     /// Pixels per metre, and the zoom step it is.
     scale: f32,
     /// The zoom step plus one; zero before the first fill.
@@ -262,6 +264,7 @@ impl Default for Frame {
             chevron: [(0.0, 0.0); 3],
             rider: false,
             start: (0.0, 0.0),
+            rider_at: (0.0, 0.0),
             scale: 0.0,
             zoom_held: 0,
             following: false,
@@ -301,11 +304,24 @@ fn rotation(heading: Option<u16>) -> (f32, f32) {
     (sinf(turns * TAU), cosf(turns * TAU))
 }
 
-/// Metres east and north of the rider, as pixels on screen: the heading
-/// up, the rider at (`CX`, `RIDER_Y`).
-fn project(p: Point, centre: Point, turn: (f32, f32), scale: f32) -> Point {
-    let (right, ahead) = axes(p, centre, turn);
-    (CX as f32 + right * scale, RIDER_Y as f32 - ahead * scale)
+/// How the track maps to the page: metres from `centre` (the rider, or the
+/// last of the track), turned by `turn`, as `scale` pixels a metre around the
+/// rider's place on the page, `anchor`.
+#[derive(Clone, Copy)]
+struct Place {
+    centre: Point,
+    turn: (f32, f32),
+    anchor: Point,
+    scale: f32,
+}
+
+/// Metres east and north, as pixels on screen: the heading up.
+fn project(p: Point, place: &Place) -> Point {
+    let (right, ahead) = axes(p, place.centre, place.turn);
+    (
+        place.anchor.0 + right * place.scale,
+        place.anchor.1 - ahead * place.scale,
+    )
 }
 
 /// Metres to the right of and ahead of the rider.
@@ -314,19 +330,29 @@ fn axes(p: Point, centre: Point, (sin, cos): (f32, f32)) -> Point {
     (east * cos - north * sin, east * sin + north * cos)
 }
 
-/// How far the track reaches from the rider, in metres, on the page's axes.
+/// The box around the rider and the track, in metres right and ahead.
 #[derive(Clone, Copy, Default)]
-struct Reach {
-    side: f32,
-    ahead: f32,
+struct Bounds {
+    left: f32,
+    right: f32,
     behind: f32,
+    ahead: f32,
 }
 
-impl Reach {
+impl Bounds {
     fn include(&mut self, (right, ahead): Point) {
-        self.side = self.side.max(right.abs());
+        self.left = self.left.min(right);
+        self.right = self.right.max(right);
+        self.behind = self.behind.min(ahead);
         self.ahead = self.ahead.max(ahead);
-        self.behind = self.behind.max(-ahead);
+    }
+
+    fn width(&self) -> f32 {
+        self.right - self.left
+    }
+
+    fn height(&self) -> f32 {
+        self.ahead - self.behind
     }
 }
 
@@ -335,24 +361,56 @@ fn span(step: usize) -> f32 {
     MIN_SPAN_M * powf(STEP, step as f32)
 }
 
-/// The step of the zoom ladder that keeps `reach` on the page, from 500 m
+/// The step of the zoom ladder that fits `bounds` on the page, from 500 m
 /// across to the widest. Steps are 20% apart, and a zoom that has stepped
 /// out steps back in only once the track fits 90% of the closer step.
-fn zoom(reach: Reach, held: Option<usize>) -> usize {
-    let needed = [
-        (reach.side, SIDE_PX),
-        (reach.ahead, AHEAD_PX),
-        (reach.behind, BEHIND_PX),
-    ]
-    .into_iter()
-    .map(|(metres, room)| WIDTH_PX * metres / room)
-    .fold(0.0, f32::max);
+fn zoom(bounds: Bounds, held: Option<usize>) -> usize {
+    let needed = bounds.width().max(bounds.height() * AVAIL_W / AVAIL_H);
     let fitting = (0..MAX_STEPS).find(|&step| span(step) >= needed);
     let fitting = fitting.unwrap_or(MAX_STEPS);
     match held {
         Some(held) if fitting < held && needed > 0.9 * span(held - 1) => held,
         _ => fitting,
     }
+}
+
+/// Whether `bounds` at `scale`, with the rider at `anchor`, lies within the
+/// page less `margin`.
+fn fits(bounds: Bounds, scale: f32, anchor: Point, margin: f32) -> bool {
+    let (left, right) = (
+        anchor.0 + bounds.left * scale,
+        anchor.0 + bounds.right * scale,
+    );
+    let (top, bottom) = (
+        anchor.1 - bounds.ahead * scale,
+        anchor.1 - bounds.behind * scale,
+    );
+    left >= LEFT as f32 + margin
+        && right <= RIGHT as f32 - margin
+        && top >= TOP as f32 + margin
+        && bottom <= BOTTOM as f32 - margin
+}
+
+/// Where the rider goes on the page: where it was if the track still fits
+/// inside the hold margin, else on the rider's own column if the track fits
+/// around them there (a short track stays centred on the rider), else the
+/// middle of the box around the track.
+fn anchor(bounds: Bounds, scale: f32, held: Option<Point>) -> Point {
+    if let Some(held) = held.filter(|&held| fits(bounds, scale, held, HOLD_MARGIN)) {
+        return held;
+    }
+    let centred = (CX as f32, MID_Y as f32);
+    if fits(bounds, scale, centred, MARGIN) {
+        return centred;
+    }
+    let (mid_right, mid_ahead) = (
+        (bounds.left + bounds.right) / 2.0,
+        (bounds.behind + bounds.ahead) / 2.0,
+    );
+    (
+        CX as f32 - mid_right * scale,
+        MID_Y as f32 + mid_ahead * scale,
+    )
 }
 
 /// Project the track and thin it to what a frame can paint.
@@ -377,32 +435,40 @@ fn fill(frame: &mut Frame, track: &Track) {
     let total = track.total();
     let heading = track.heading.filter(|_| track.here.is_some());
     let turn = rotation(heading);
-    let mut reach = Reach::default();
+    let mut bounds = Bounds::default();
     let mut include = |p: Point| {
         let (right, ahead) = axes(p, centre, turn);
         if right * right + ahead * ahead < GLITCH_M * GLITCH_M {
-            reach.include((right, ahead));
+            bounds.include((right, ahead));
         }
     };
     include((0.0, 0.0));
     (0..total).for_each(|i| include(track.at(i)));
-    let step = zoom(reach, frame.zoom_held.checked_sub(1));
-    frame.zoom_held = step + 1;
+    let step = zoom(bounds, frame.zoom_held.checked_sub(1));
     let scale = WIDTH_PX / span(step);
+    let held = (frame.zoom_held > 0).then_some(frame.rider_at);
+    frame.zoom_held = step + 1;
+    frame.rider_at = anchor(bounds, scale, held);
+    let place = Place {
+        centre,
+        turn,
+        anchor: frame.rider_at,
+        scale,
+    };
     frame.scale = scale;
-    frame.start = project((0.0, 0.0), centre, turn, scale);
+    frame.start = project((0.0, 0.0), &place);
     frame.following = track.home.is_some();
     frame.heading_up = heading.is_some();
     frame.lost = track.here.is_none();
     frame.rider = track.here.is_some() && heading.is_none();
-    let (x, y) = (CX as f32, RIDER_Y as f32);
+    let (x, y) = place.anchor;
     frame.chevron = [(x, y - 9.0), (x - 8.0, y + 8.0), (x + 8.0, y + 8.0)];
     let home_end = track.home_end();
     let mut step = MIN_STEP;
     loop {
         // At the widest step what does not fit is the oldest of the track.
         let last_try = step >= MAX_STEP;
-        let fits = thin(frame, track, (centre, turn), step, home_end, last_try) && bucket(frame);
+        let fits = thin(frame, track, place, step, home_end, last_try) && bucket(frame);
         if fits || last_try {
             break;
         }
@@ -438,7 +504,7 @@ fn cells(a: Point, b: Point, mut visit: impl FnMut(Option<usize>)) {
 fn thin(
     frame: &mut Frame,
     track: &Track,
-    (centre, turn): (Point, (f32, f32)),
+    place: Place,
     step: f32,
     home_end: Option<usize>,
     newest_first: bool,
@@ -448,7 +514,7 @@ fn thin(
     if total < 2 {
         return true;
     }
-    let project_at = |i: usize| project(track.at(i), centre, turn, frame.scale);
+    let project_at = |i: usize| project(track.at(i), &place);
     let order = |k: usize| if newest_first { total - 1 - k } else { k };
     let mut grid = [0u8; GRID_BYTES];
     let mut anchor = project_at(order(0));
@@ -718,7 +784,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
             b"NO TRACK",
             width,
             CX,
-            RIDER_Y,
+            MID_Y,
             Align::Center,
             WHITE,
         );
@@ -731,7 +797,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
                 b"NO TRACK",
                 width,
                 CX,
-                RIDER_Y,
+                MID_Y,
                 Align::Center,
                 WHITE,
             );
@@ -743,17 +809,11 @@ pub(super) fn prepare(view: &View) -> Canvas {
                 b"NO GPS YET",
                 width,
                 CX,
-                RIDER_Y,
+                MID_Y,
                 Align::Center,
                 WHITE,
             );
-            canvas.caption(
-                b"MAP STARTS WITH GPS",
-                width,
-                CX,
-                RIDER_Y + 24,
-                Align::Center,
-            );
+            canvas.caption(b"MAP STARTS WITH GPS", width, CX, MID_Y + 24, Align::Center);
             return canvas;
         }
         Show::Track => {}
@@ -800,14 +860,15 @@ pub(super) fn prepare(view: &View) -> Canvas {
     }
     if frame.rider {
         canvas.shape(Shape::Disc {
-            cx: 4 * CX as i32 + 2,
-            cy: 4 * RIDER_Y as i32 + 2,
+            cx: (4.0 * frame.rider_at.0) as i32,
+            cy: (4.0 * frame.rider_at.1) as i32,
             radius: 4 * RIDER_RADIUS,
             color: ACCENT,
         });
     }
     if !frame.has_track {
-        canvas.caption(b"DRAWS AS YOU RIDE", width, CX, RIDER_Y + 36, Align::Center);
+        let below = frame.rider_at.1 as usize + 36;
+        canvas.caption(b"DRAWS AS YOU RIDE", width, CX, below, Align::Center);
     }
     // The footer: the scale bar and its length, and the ride's distance.
     let metres = nice(BAR_MAX_PX / frame.scale);
@@ -878,39 +939,43 @@ mod tests {
         frame
     }
 
+    fn place(turn: (f32, f32), scale: f32) -> Place {
+        Place {
+            centre: (0.0, 0.0),
+            turn,
+            anchor: (CX as f32, MID_Y as f32),
+            scale,
+        }
+    }
+
     #[test]
-    fn north_up_puts_north_up_and_the_rider_in_place() {
+    fn north_up_puts_north_up_and_the_rider_on_the_page() {
         let c = crumbs(&[(0.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
         let frame = filled(&track(&c));
         let s = frame.scale;
-        let rider = project((100.0, 100.0), (100.0, 100.0), (0.0, 1.0), s);
-        assert_eq!(rider, (CX as f32, RIDER_Y as f32));
         // The start is south west of the rider: left, and down.
-        assert!(frame.start.0 < CX as f32 && frame.start.1 > RIDER_Y as f32);
-        assert!((frame.start.0 - (CX as f32 - 100.0 * s)).abs() < 0.01);
-        assert!((frame.start.1 - (RIDER_Y as f32 + 100.0 * s)).abs() < 0.01);
+        let rider = frame.rider_at;
+        assert!((frame.start.0 - (rider.0 - 100.0 * s)).abs() < 0.01);
+        assert!((frame.start.1 - (rider.1 + 100.0 * s)).abs() < 0.01);
         assert_eq!(frame.count, 2);
         assert!(frame.rider && !frame.heading_up);
     }
 
     #[test]
     fn heading_up_rotates_the_way_ridden_to_the_top() {
-        let sin_cos = |turns| rotation(Some(turns));
-        let centre = (0.0, 0.0);
+        let at = |p, turns| project(p, &place(rotation(Some(turns)), 1.0));
+        let (cx, cy) = (CX as f32, MID_Y as f32);
         // Riding east: a point to the east is ahead, one to the north is left.
-        let east = project((10.0, 0.0), centre, sin_cos(TURN / 4), 1.0);
-        assert!((east.0 - CX as f32).abs() < 1e-3);
-        assert!((east.1 - (RIDER_Y as f32 - 10.0)).abs() < 1e-3);
-        let north = project((0.0, 10.0), centre, sin_cos(TURN / 4), 1.0);
-        assert!((north.0 - (CX as f32 - 10.0)).abs() < 1e-3);
-        assert!((north.1 - RIDER_Y as f32).abs() < 1e-3);
+        let east = at((10.0, 0.0), TURN / 4);
+        assert!((east.0 - cx).abs() < 1e-3 && (east.1 - (cy - 10.0)).abs() < 1e-3);
+        let north = at((0.0, 10.0), TURN / 4);
+        assert!((north.0 - (cx - 10.0)).abs() < 1e-3 && (north.1 - cy).abs() < 1e-3);
         // Riding south: north is behind.
-        let behind = project((0.0, 10.0), centre, sin_cos(TURN / 2), 1.0);
-        assert!((behind.1 - (RIDER_Y as f32 + 10.0)).abs() < 1e-3);
+        let behind = at((0.0, 10.0), TURN / 2);
+        assert!((behind.1 - (cy + 10.0)).abs() < 1e-3);
         // North up: unchanged.
-        let still = project((3.0, 4.0), centre, rotation(None), 2.0);
-        assert!((still.0 - (CX as f32 + 6.0)).abs() < 1e-3);
-        assert!((still.1 - (RIDER_Y as f32 - 8.0)).abs() < 1e-3);
+        let still = project((3.0, 4.0), &place(rotation(None), 2.0));
+        assert!((still.0 - (cx + 6.0)).abs() < 1e-3 && (still.1 - (cy - 8.0)).abs() < 1e-3);
     }
 
     #[test]
@@ -927,62 +992,117 @@ mod tests {
 
     #[test]
     fn the_zoom_fits_the_whole_track_and_is_never_closer_than_500_m() {
-        let ahead = |metres| Reach {
-            side: 0.0,
-            ahead: metres,
-            behind: 0.0,
+        let wide = |metres: f32| Bounds {
+            left: -metres / 2.0,
+            right: metres / 2.0,
+            ..Bounds::default()
         };
-        let scale = |step| WIDTH_PX / span(step);
-        assert_eq!(zoom(ahead(40.0), None), 0);
-        assert!((scale(0) * 500.0 - WIDTH_PX).abs() < 0.01);
-        // A track reaching 3 km ahead fits, within one 20% step of filling.
-        let far = zoom(ahead(3_000.0), None);
-        assert!(3_000.0 * scale(far) <= AHEAD_PX + 0.01);
-        assert!(3_000.0 * scale(far) > AHEAD_PX / STEP - 0.01);
-        // Behind has less room than ahead, and each axis counts.
-        let behind = zoom(
-            Reach {
-                behind: 3_000.0,
-                ..Reach::default()
+        assert_eq!(zoom(wide(40.0), None), 0);
+        let step = zoom(wide(3_000.0), None);
+        assert!(span(step) >= 3_000.0 && span(step) < 3_000.0 * STEP);
+        // Height counts at the page's own proportions.
+        let tall = zoom(
+            Bounds {
+                ahead: 3_000.0,
+                ..Bounds::default()
             },
             None,
         );
-        assert!(behind > far);
-        assert!(zoom(ahead(30_000.0), None) > far);
-        assert_eq!(zoom(ahead(1e9), None), zoom(ahead(2e9), None));
-        // Every point of a track is inside the page at the zoom.
-        let c = crumbs(&[
-            (0.0, 0.0),
-            (1_500.0, 800.0),
-            (-700.0, 2_300.0),
-            (400.0, -900.0),
-        ]);
-        let frame = filled(&track(&c));
-        for i in 0..frame.segments() {
-            let (a, b) = frame.segment(i);
-            for (x, y) in [a, b] {
-                assert!((LEFT as f32..RIGHT as f32).contains(&x), "{x}");
-                assert!((TOP as f32..BOTTOM as f32).contains(&y), "{y}");
+        assert!(span(tall) >= 3_000.0 * AVAIL_W / AVAIL_H);
+        assert_eq!(zoom(wide(1e9), None), zoom(wide(2e9), None));
+        // The track and the rider are inside the page, and fill most of it.
+        for heading in [None, Some(0), Some(700), Some(2500)] {
+            let c = crumbs(&[
+                (0.0, 0.0),
+                (1_500.0, 800.0),
+                (-700.0, 2_300.0),
+                (400.0, -900.0),
+                (200.0, 100.0),
+            ]);
+            let mut t = track(&c);
+            t.heading = heading;
+            let frame = filled(&t);
+            let (mut left, mut right) = (f32::MAX, f32::MIN);
+            let (mut top, mut bottom) = (f32::MAX, f32::MIN);
+            for i in 0..frame.segments() {
+                let (a, b) = frame.segment(i);
+                for (x, y) in [a, b] {
+                    left = left.min(x);
+                    right = right.max(x);
+                    top = top.min(y);
+                    bottom = bottom.max(y);
+                }
             }
+            assert!(left >= LEFT as f32 && right <= RIGHT as f32, "{heading:?}");
+            assert!(top >= TOP as f32 && bottom <= BOTTOM as f32, "{heading:?}");
+            let (width, height) = ((right - left) / AVAIL_W, (bottom - top) / AVAIL_H);
+            assert!(width.max(height) > 0.8, "{heading:?}: {width} {height}");
         }
     }
 
     #[test]
+    fn the_track_stays_put_until_it_would_leave_the_page() {
+        let c = crumbs(&[(0.0, 0.0), (0.0, 1_000.0), (600.0, 1_400.0)]);
+        let mut t = track(&c);
+        let mut frame = filled(&t);
+        let first = frame.rider_at;
+        // A rider a few metres on moves the box a little: nothing swims.
+        let more = crumbs(&[
+            (0.0, 0.0),
+            (0.0, 1_000.0),
+            (600.0, 1_400.0),
+            (610.0, 1_405.0),
+        ]);
+        t = track(&more);
+        fill(&mut frame, &t);
+        assert_eq!(frame.rider_at, first);
+        // Far enough to leave the margin: it moves.
+        let far = crumbs(&[
+            (0.0, 0.0),
+            (0.0, 1_000.0),
+            (600.0, 1_400.0),
+            (-1_500.0, -1_500.0),
+        ]);
+        t = track(&far);
+        fill(&mut frame, &t);
+        assert_ne!(frame.rider_at, first);
+    }
+
+    #[test]
+    fn the_route_home_is_inside_the_box_while_following() {
+        let c = crumbs(&[
+            (0.0, 0.0),
+            (0.0, 800.0),
+            (1_200.0, 800.0),
+            (1_200.0, 1_500.0),
+        ]);
+        let mut t = track(&c);
+        t.here = Some((1_200.0, 1_000.0));
+        t.home = Some((3, Some((1_200.0, 1_000.0))));
+        let frame = filled(&t);
+        let (a, _) = frame.segment(0);
+        assert!(a.0 >= LEFT as f32 && a.1 <= BOTTOM as f32);
+        assert!(frame.following && frame.segments() >= 3);
+    }
+
+    #[test]
     fn the_zoom_steps_back_in_only_once_the_track_fits_the_closer_step() {
-        let ahead = |metres| Reach {
-            side: 0.0,
-            ahead: metres,
-            behind: 0.0,
+        let wide = |step: usize, share: f32| {
+            let metres = share * span(step);
+            Bounds {
+                left: -metres / 2.0,
+                right: metres / 2.0,
+                ..Bounds::default()
+            }
         };
-        let metres_at = |step: usize, share: f32| share * span(step) * AHEAD_PX / WIDTH_PX;
         // Stepped out to 5, the track now needs step 4 but only just fits it.
-        assert_eq!(zoom(ahead(metres_at(4, 0.98)), Some(5)), 5);
+        assert_eq!(zoom(wide(4, 0.98), Some(5)), 5);
         // Well inside step 4: step in.
-        assert_eq!(zoom(ahead(metres_at(4, 0.85)), Some(5)), 4);
+        assert_eq!(zoom(wide(4, 0.85), Some(5)), 4);
         // Outgrowing a step always steps out at once.
-        assert_eq!(zoom(ahead(metres_at(5, 0.99)), Some(4)), 5);
+        assert_eq!(zoom(wide(5, 0.99), Some(4)), 5);
         // A change of several steps is followed at once.
-        assert_eq!(zoom(ahead(metres_at(2, 0.95)), Some(6)), 2);
+        assert_eq!(zoom(wide(2, 0.95), Some(6)), 2);
     }
 
     #[test]
@@ -1176,9 +1296,9 @@ mod tests {
         );
         let c = crumbs(&[(0.0, 0.0), (0.0, 800.0), (300.0, 900.0)]);
         let mut t = track(&c);
-        check(&t, &["MAP", "N UP", "600 M", "0.01 KM"], "still");
+        check(&t, &["MAP", "N UP", "200 M", "0.01 KM"], "still");
         t.heading = Some(0);
-        check(&t, &["MAP", "600 M", "0.01 KM"], "riding");
+        check(&t, &["MAP", "200 M", "0.01 KM"], "riding");
         t.home = Some((2, None));
         t.heading = None;
         check(&t, &["MAP", "FOLLOWING  N UP"], "following");

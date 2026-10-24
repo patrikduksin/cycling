@@ -416,7 +416,7 @@ Acting on a row does one of three things:
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
-  km, wheel mode auto/manual, sounds on/off);
+  km/at start, wheel mode auto/manual, sounds on/off);
 - an action opens a page (SENSORS, BESTS) or a flow (PHONE, a placeholder until the
   phone companion lands).
 

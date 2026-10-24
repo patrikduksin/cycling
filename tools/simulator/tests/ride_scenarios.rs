@@ -1366,6 +1366,129 @@ fn auto_lap_closes_every_five_kilometres() {
     sim.checkpoint("lap page after two auto laps");
 }
 
+/// A 2 km loop ridden at 30 km/h with AUTO LAP set to AT START; `jitter_m`
+/// is the receiver's error per axis. Ends riding on the main page.
+fn at_start_rider(jitter_m: f64) -> Sim {
+    auto_lap_rider(jitter_m, "AT START")
+}
+
+fn auto_lap_rider(jitter_m: f64, choice: &str) -> Sim {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_route(Route::loop_around(Point::new(-33.45, -70.66), 2_000.0, 0.0));
+    if jitter_m > 0.0 {
+        sim.set_gps_quality(true, 1.8, jitter_m);
+    }
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "AUTO LAP");
+    sim.set_option("AUTO LAP", choice);
+    sim.checkpoint("settings with auto lap at the start");
+    // The RIDE section's heading looks like the Home tile to `on_home`.
+    sim.swipe_next();
+    go_home(&mut sim);
+    sim.ride_at(30.0, 220.0, 0.0, 90.0);
+    sim.start_ride();
+    sim
+}
+
+/// Lap marks the journal kept for a pass of the start.
+fn position_laps(sim: &mut Sim) -> usize {
+    let rides = sim.rides();
+    rides[0]
+        .samples()
+        .filter(|s| s.lap == Some(vana::ride::log::LapStart::Position))
+        .count()
+}
+
+#[test]
+fn auto_lap_at_start_closes_a_lap_each_time_round_a_loop() {
+    let mut sim = at_start_rider(0.0);
+    ride_page(&mut sim, "3/5");
+    // Two kilometres at 30 km/h is four minutes; the lap closes about 35 m past
+    // the start, a few seconds on.
+    sim.advance(minutes(3) + seconds(30));
+    sim.expect_text("LAP 1");
+    sim.expect_no_text("LAP 2");
+    sim.wait_for("LAP 1 04:", seconds(40)).unwrap();
+    let toast = sim.screen().find("LAP 1 04:").remove(0).text;
+    assert!(toast.ends_with(" 220W"), "{toast}");
+    sim.checkpoint("lap toast at the start, first loop");
+    sim.expect_text("LAP 2");
+    expect_near(&mut sim, "LAP KM", 0.0, 0.1);
+
+    sim.wait_for("LAP 2 04:", seconds(300)).unwrap();
+    sim.checkpoint("lap toast at the start, second loop");
+    sim.advance(seconds(10));
+    sim.expect_text("LAP 3");
+    let previous = sim.screen().field("LAP 2").unwrap();
+    assert!(
+        previous.starts_with("04:0") || previous.starts_with("04:1"),
+        "{previous}"
+    );
+    sim.checkpoint("lap page after two loops");
+
+    sim.wait_for("LAP 3 04:", seconds(300)).unwrap();
+    sim.checkpoint("lap toast at the start, third loop");
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    assert_eq!(position_laps(&mut sim), 3);
+
+    let fit = sim.rides()[0]
+        .fit(Some(1_789_000_000_000))
+        .expect("a FIT file");
+    let laps = fit_messages(&fit, 19);
+    let triggers: Vec<u64> = laps.iter().map(|lap| lap[&24]).collect();
+    // position_start for each loop, then the ride's end.
+    assert_eq!(triggers, [3, 3, 3, 7]);
+    let distances: Vec<u64> = laps.iter().map(|lap| lap[&9]).collect();
+    for centimetres in &distances[..3] {
+        assert!((199_000..=207_000).contains(centimetres), "{distances:?}");
+    }
+    sim.ride_page("3/3");
+    sim.expect_field("LAPS", "4");
+}
+
+#[test]
+fn auto_lap_at_start_counts_each_loop_once_through_gps_jitter() {
+    let mut sim = at_start_rider(12.0);
+    ride_page(&mut sim, "3/5");
+    sim.advance(minutes(12) + seconds(30));
+    sim.expect_text("LAP 4");
+    sim.checkpoint("lap page after three loops, noisy GPS");
+    sim.stop_ride();
+    assert_eq!(position_laps(&mut sim), 3);
+}
+
+/// Laps found against true loops, and how far from the start the rider was
+/// where each began, for the PR's table.
+#[test]
+#[ignore = "measurement, run with --ignored --nocapture"]
+fn auto_lap_at_start_detection_table() {
+    use shell_simulator::route::{distance_m, from_e7};
+    use vana::ride::log::LapStart;
+    let start = Route::loop_around(Point::new(-33.45, -70.66), 2_000.0, 0.0).at(0.0);
+    println!(
+        "| GPS jitter per axis | loops ridden | laps detected | lap began this far past the start (m) |"
+    );
+    println!("| :-- | :-- | :-- | :-- |");
+    for jitter in [0.0, 3.0, 8.0, 12.0, 20.0] {
+        let mut sim = at_start_rider(jitter);
+        sim.advance(minutes(20) + seconds(30));
+        sim.stop_ride();
+        let rides = sim.rides();
+        let off: Vec<f64> = rides[0]
+            .samples()
+            .filter(|s| s.lap == Some(LapStart::Position))
+            .filter_map(|s| s.location_e7)
+            .map(|(lat, lon)| distance_m(from_e7(lat, lon), start))
+            .collect();
+        let (min, max) = off
+            .iter()
+            .fold((f64::MAX, 0.0_f64), |(lo, hi), &m| (lo.min(m), hi.max(m)));
+        println!("| {jitter} m | 5 | {} | {min:.0} to {max:.0} |", off.len());
+    }
+}
+
 #[test]
 fn paused_time_is_not_lap_time() {
     let mut sim = rider();

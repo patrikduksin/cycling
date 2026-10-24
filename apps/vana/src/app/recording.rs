@@ -14,7 +14,7 @@ use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
 use crate::ride::elevation::Trace;
 use crate::ride::journal::{Internal, InternalState};
-use crate::ride::laps::{Lap, Laps};
+use crate::ride::laps::{AutoLap, Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Source, Status};
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
@@ -99,8 +99,8 @@ pub(super) struct Ride {
     counted_ms: u64,
     /// This ride's laps, reset with the totals.
     pub(super) laps: Laps,
-    /// Lap distance that closes an automatic lap, from the rider's options.
-    pub(super) auto_lap_mm: Option<u64>,
+    /// What closes laps by itself, from the rider's options.
+    pub(super) auto_lap: AutoLap,
     /// The last finished lap and when it closed, for the status-row toast.
     lap_toast: Option<(u64, Lap)>,
     /// Time in each training zone, kept and reset with `totals`.
@@ -171,7 +171,7 @@ impl Default for Ride {
             totals: Totals::default(),
             counted_ms: 0,
             laps: Laps::default(),
-            auto_lap_mm: Some(crate::ride::laps::AUTO_LAP_MM),
+            auto_lap: AutoLap::Every(5),
             lap_toast: None,
             zone_time: ZoneTime::default(),
             efforts: Efforts::default(),
@@ -439,10 +439,13 @@ impl Ride {
             self.climbs_done = self.climbs_done.saturating_add(1);
         }
         let Some(player) = &mut self.workout else {
-            if let Some(lap) =
-                self.laps
-                    .add_every(credited, distance_mm, &sample, now, self.auto_lap_mm)
-            {
+            if let Some(lap) = self.laps.add_every(
+                credited,
+                distance_mm,
+                &sample,
+                now,
+                self.auto_lap.every_mm(),
+            ) {
                 self.lap_closed(lap, now);
             }
             return climb;
@@ -475,6 +478,17 @@ impl Ride {
             }
         }
         climb
+    }
+
+    /// The rider passed the ride's start: close a lap if they chose laps
+    /// there and no workout is playing.
+    pub(super) fn passed_start(&mut self, now: u64) {
+        if self.auto_lap != AutoLap::AtStart || self.workout.is_some() {
+            return;
+        }
+        if let Some(lap) = self.laps.at_start(now) {
+            self.lap_closed(lap, now);
+        }
     }
 
     /// Show a finished lap in the status row.

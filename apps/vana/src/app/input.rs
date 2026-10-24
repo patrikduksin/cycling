@@ -4,6 +4,7 @@
 //! and changes pages; it never starts, pauses, laps or stops a ride.
 use super::Runtime;
 use crate::clock::Zone;
+use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
@@ -22,7 +23,14 @@ const DEBOUNCE_MS: u64 = 350;
 /// Settings choices, in the order acting steps through them.
 const BRIGHTNESS_STEPS: [u8; 4] = [25, 50, 75, 100];
 const DIM_AFTER_SECS: [u16; 5] = [15, 30, 60, 300, 0];
-const AUTO_LAP_KM: [u8; 5] = [0, 1, 2, 5, 10];
+const AUTO_LAP: [AutoLap; 6] = [
+    AutoLap::Off,
+    AutoLap::Every(1),
+    AutoLap::Every(2),
+    AutoLap::Every(5),
+    AutoLap::Every(10),
+    AutoLap::AtStart,
+];
 /// UTC-3 is Magallanes and Aysén all year.
 const ZONES: [Zone; 3] = [Zone::Chile, Zone::utc(-3), Zone::utc(-4)];
 /// Held buttons repeat about every 100 ms; a longer gap means a new press.
@@ -445,7 +453,7 @@ impl Runtime {
             }
             Row::AutoDim => display.dim_secs = after(&DIM_AFTER_SECS, display.dim_secs),
             Row::AutoPause => options.auto_pause = !options.auto_pause,
-            Row::AutoLap => options.auto_lap_km = after(&AUTO_LAP_KM, options.auto_lap_km),
+            Row::AutoLap => options.auto_lap = after(&AUTO_LAP, options.auto_lap),
             Row::TimeZone => options.zone = after(&ZONES, options.zone),
             Row::WheelMode => options.wheel.manual = !options.wheel.manual,
             Row::Sounds => options.sounds = !options.sounds,

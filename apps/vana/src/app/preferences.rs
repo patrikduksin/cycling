@@ -13,7 +13,7 @@
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type | 2 |
 //! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on); other bits zero | 3 |
-//! | then | Auto-lap distance in km, 0 for off, at most 100 | 3 |
+//! | then | Auto lap: 0 off, 1 to 100 km between laps, 255 at the start point (255 reads as a damaged record before it existed) | 3 |
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |
 //! | then | Ride alerts, 9 bytes owned by `ride::alerts` (see `ALERTS_DEFAULT`) | 3 |
@@ -41,6 +41,7 @@
 //! (`PROFILE OVERWRITE`).
 use super::Runtime;
 use crate::clock::Zone;
+use crate::ride::laps::AutoLap;
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::saved::{FIELD_CAPACITY, Saved};
@@ -75,6 +76,10 @@ const SOUNDS: u8 = 1 << 1;
 const SUNSET_OFF: u8 = 1 << 2;
 /// The longest automatic lap a record may hold.
 pub const AUTO_LAP_MAX_KM: u8 = 100;
+/// The auto-lap byte for laps at the start point. Firmware that predates it
+/// reads any byte above `AUTO_LAP_MAX_KM` as a damaged record.
+const AUTO_LAP_AT_START: u8 = 255;
+const AUTO_LAP_FIRST_UNUSED: u8 = AUTO_LAP_MAX_KM + 1;
 
 /// Ride alerts as stored: heart low and high (bpm), power low and high (W,
 /// little-endian), cadence low (rpm), fuel reminder (minutes) and radar
@@ -185,6 +190,24 @@ impl Wheel {
     }
 }
 
+const fn auto_lap_byte(auto_lap: AutoLap) -> u8 {
+    match auto_lap {
+        AutoLap::Off => 0,
+        AutoLap::Every(km) => km,
+        AutoLap::AtStart => AUTO_LAP_AT_START,
+    }
+}
+
+const fn auto_lap_from_byte(byte: u8) -> Option<AutoLap> {
+    match byte {
+        0 => Some(AutoLap::Off),
+        1..=AUTO_LAP_MAX_KM => Some(AutoLap::Every(byte)),
+        AUTO_LAP_AT_START => Some(AutoLap::AtStart),
+        // Not a choice any firmware wrote: the record is damaged.
+        AUTO_LAP_FIRST_UNUSED..AUTO_LAP_AT_START => None,
+    }
+}
+
 /// Ride, display and sound choices, and how far first-run setup got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -192,8 +215,7 @@ pub struct Options {
     pub auto_pause: bool,
     /// Ride cues and battery warnings sound; safety alerts always do.
     pub sounds: bool,
-    /// Kilometres between automatic laps; 0 is off.
-    pub auto_lap_km: u8,
+    pub auto_lap: AutoLap,
     pub daylight: Daylight,
     pub theme: Theme,
     pub zone: Zone,
@@ -211,7 +233,7 @@ impl Default for Options {
         Self {
             auto_pause: true,
             sounds: true,
-            auto_lap_km: 5,
+            auto_lap: AutoLap::Every(5),
             daylight: Daylight::Auto,
             theme: Theme::Dark,
             zone: Zone::Chile,
@@ -239,7 +261,12 @@ impl Options {
             flags |= SUNSET_OFF;
         }
         let mut bytes = [0; OPTIONS_LENGTH];
-        bytes[..4].copy_from_slice(&[flags, self.auto_lap_km, self.daylight.byte(), self.setup]);
+        bytes[..4].copy_from_slice(&[
+            flags,
+            auto_lap_byte(self.auto_lap),
+            self.daylight.byte(),
+            self.setup,
+        ]);
         bytes[4..OPTIONS_LENGTH_V3].copy_from_slice(&self.alerts);
         bytes[OPTIONS_LENGTH_V3] = self.theme.byte();
         bytes[OPTIONS_LENGTH_V4..OPTIONS_LENGTH_V5].copy_from_slice(&self.zone.encode());
@@ -272,15 +299,15 @@ impl Options {
                 (bytes, Theme::from_byte(theme)?)
             }
         };
-        let (&[flags, auto_lap_km, daylight, setup], alerts) = bytes.split_first_chunk()?;
+        let (&[flags, auto_lap, daylight, setup], alerts) = bytes.split_first_chunk()?;
         let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
-        if flags & !(AUTO_PAUSE | SOUNDS | SUNSET_OFF) != 0 || auto_lap_km > AUTO_LAP_MAX_KM {
+        if flags & !(AUTO_PAUSE | SOUNDS | SUNSET_OFF) != 0 {
             return None;
         }
         Some(Self {
             auto_pause: flags & AUTO_PAUSE != 0,
             sounds: flags & SOUNDS != 0,
-            auto_lap_km,
+            auto_lap: auto_lap_from_byte(auto_lap)?,
             daylight: Daylight::from_byte(daylight)?,
             theme,
             zone,
@@ -614,8 +641,7 @@ impl Runtime {
     }
 
     fn apply_options(&mut self) {
-        let km = self.preferences.options.auto_lap_km;
-        self.ride.auto_lap_mm = (km != 0).then(|| u64::from(km) * 1_000_000);
+        self.ride.auto_lap = self.preferences.options.auto_lap;
     }
 
     /// Ask the shell for these backlight choices: they apply at once and
@@ -771,7 +797,7 @@ mod tests {
         let options = Options {
             auto_pause: false,
             sounds: true,
-            auto_lap_km: 10,
+            auto_lap: AutoLap::Every(10),
             daylight: Daylight::Night,
             theme: Theme::Auto,
             zone: Zone::utc(-3),
@@ -903,6 +929,37 @@ mod tests {
         }
         assert!(Theme::Auto.is_light(false));
         assert!(!Theme::Auto.is_light(true));
+    }
+
+    #[test]
+    fn the_auto_lap_choice_round_trips_and_older_readers_keep_the_record() {
+        for auto_lap in [
+            AutoLap::Off,
+            AutoLap::Every(1),
+            AutoLap::Every(AUTO_LAP_MAX_KM),
+            AutoLap::AtStart,
+        ] {
+            let options = Options {
+                auto_lap,
+                ..Options::default()
+            };
+            assert_eq!(Options::decode(&options.encode(), VERSION), Some(options));
+        }
+        let at_start = Options {
+            auto_lap: AutoLap::AtStart,
+            ..Options::default()
+        };
+        assert_eq!(at_start.encode()[1], 255);
+        // Firmware before this choice rejects a byte above 100, so it reads
+        // the whole record as damaged and leaves it stored untouched.
+        for byte in AUTO_LAP_MAX_KM + 1..255 {
+            assert_eq!(auto_lap_from_byte(byte), None, "{byte}");
+        }
+        let record = Record {
+            options: at_start,
+            ..Record::default()
+        };
+        assert_eq!(decode(&encode(&record)), (record, Stored::Current));
     }
 
     /// Older records keep every field they had, take the default options and
@@ -1089,7 +1146,11 @@ mod tests {
         let options = Options {
             auto_pause: rng.one_in(2),
             sounds: rng.one_in(2),
-            auto_lap_km: rng.range(0, u64::from(AUTO_LAP_MAX_KM)) as u8,
+            auto_lap: match rng.below(4) {
+                0 => AutoLap::Off,
+                1 => AutoLap::AtStart,
+                _ => AutoLap::Every(rng.range(1, u64::from(AUTO_LAP_MAX_KM)) as u8),
+            },
             daylight: rng.pick(&[Daylight::Auto, Daylight::Day, Daylight::Night]),
             theme: rng.pick(&[Theme::Dark, Theme::Light, Theme::Auto]),
             setup: rng.byte(),

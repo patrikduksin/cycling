@@ -69,6 +69,11 @@ plays the start chime. On the ride pages ACT pauses, MOVE turns the page and
 BACK takes a lap (with a lap toast and the lap chime). The ride pages never
 show cues: the buttons keep fixed roles.
 
+Settings RIDE has AUTO LAP: OFF, EVERY 1, 2, 5 or 10 KM, or AT START, which
+takes a lap each time the rider rides past where the ride began, for loops
+and repeats. It shows the same lap toast. A pass closes no lap shorter than
+500 m or a minute, and stopping at the start, or riding about it, is no pass.
+
 ### Map
 
 The ride page before BACK TO START, MAP, draws where the ride has been: its

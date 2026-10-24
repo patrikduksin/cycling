@@ -509,6 +509,10 @@ fn a_later_stretch_outside_fit_dates_is_refused() {
 }
 
 fn lapped_ride() -> Vec<Slot> {
+    lapped_ride_with(LapStart::Distance)
+}
+
+fn lapped_ride_with(second_lap: LapStart) -> Vec<Slot> {
     let mark = |active: u64, lap| Sample {
         lap: Some(lap),
         utc_ms: Some(T0 + active + 60_000),
@@ -524,7 +528,7 @@ fn lapped_ride() -> Vec<Slot> {
         })
         .collect();
     second[0] = mark(5_000, LapStart::Manual);
-    second[2] = mark(7_000, LapStart::Distance);
+    second[2] = mark(7_000, second_lap);
     let mut slots = ride(true, 60_000);
     slots[1] = slot(&Entry::batch(Source::Live, 3, 1, &first).unwrap());
     slots[4] = slot(&Entry::batch(Source::Live, 3, 4, &second).unwrap());
@@ -611,6 +615,21 @@ fn arbitrary_ride(rng: &mut crate::testing::Rng) -> Vec<Slot> {
         ))),
     }
     slots
+}
+
+#[test]
+fn a_lap_at_the_start_point_says_so() {
+    let (_, bytes) = file(&lapped_ride_with(LapStart::Position), None).unwrap();
+    let triggers: Vec<Option<u64>> = decode(&bytes)
+        .iter()
+        .filter(|m| m.global == 19)
+        .map(|lap| lap.get(24))
+        .collect();
+    assert_eq!(
+        triggers,
+        [Some(0), Some(3), Some(7)],
+        "manual, position_start, end"
+    );
 }
 
 #[test]

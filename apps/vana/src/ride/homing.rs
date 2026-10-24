@@ -17,6 +17,12 @@
 //! stop it. Stopping keeps the breadcrumb up to where the rider left it, so
 //! it still leads home. The heading comes from successive fixes, so the
 //! arrow can point relative to the way the rider rides.
+//!
+//! The same positions tell when the rider rides past the start (`StartPass`),
+//! for laps at the start: within `PASS_M` of it, then out beyond `PASS_END_M`
+//! again, while moving. A ride begins at the start, so a pass counts only
+//! once the rider has been `PASS_ARM_M` away, and counts once until they are
+//! away again; that gap is the hysteresis jitter near the start cannot cross.
 use libm::{atan2f, cosf, sqrtf};
 
 /// Metres per 1e-7 degree of latitude, on a sphere of the mean Earth radius.
@@ -47,6 +53,14 @@ const SEARCH_AHEAD: usize = 4;
 const ARRIVE_M: f32 = 30.0;
 const LEAVE_M: f32 = 80.0;
 const MIN_TRACK_M: f32 = 300.0;
+/// A pass of the start comes within this, and ends when the rider is `PASS_END_M`
+/// away again; the gap keeps jitter at the edge from ending it early.
+const PASS_M: f32 = 25.0;
+const PASS_END_M: f32 = 35.0;
+/// Another pass counts only after being this far from the start.
+const PASS_ARM_M: f32 = 75.0;
+/// Longer than this within `PASS_M` is loitering, not passing.
+const PASS_DWELL_MS: u64 = 60_000;
 /// While off track the nudge repeats this often.
 const REMIND_MS: u64 = 60_000;
 /// Standing still, the guide is brought up to date this often.
@@ -128,6 +142,49 @@ pub enum Event {
 
 type Point = (f32, f32);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum StartPass {
+    /// At or near the start, or just passed it: not counting until the
+    /// rider is `PASS_ARM_M` away. A ride begins here.
+    #[default]
+    Spent,
+    /// Away from the start, so the next approach counts.
+    Armed,
+    /// Within `PASS_M` since `since_ms`.
+    Inside { since_ms: u64 },
+}
+
+impl StartPass {
+    /// Take the rider's distance from the start; true as a pass completes:
+    /// the rider came near, then left while moving. Lingering near the start
+    /// (`PASS_DWELL_MS`) is no pass.
+    fn step(&mut self, direct_m: f32, moving: bool, now: u64) -> bool {
+        match *self {
+            Self::Spent => {
+                if direct_m > PASS_ARM_M {
+                    *self = Self::Armed;
+                }
+                false
+            }
+            Self::Armed => {
+                if direct_m < PASS_M {
+                    *self = Self::Inside { since_ms: now };
+                }
+                false
+            }
+            Self::Inside { since_ms } => {
+                if now.saturating_sub(since_ms) > PASS_DWELL_MS {
+                    *self = Self::Spent;
+                } else if direct_m > PASS_END_M {
+                    *self = Self::Spent;
+                    return moving;
+                }
+                false
+            }
+        }
+    }
+}
+
 fn distance(a: Point, b: Point) -> f32 {
     let (east, north) = (b.0 - a.0, b.1 - a.1);
     sqrtf(east * east + north * north)
@@ -200,6 +257,8 @@ pub struct Homing<'a> {
     retrace_len: usize,
     off: bool,
     arrived: bool,
+    pass: StartPass,
+    passed: bool,
     reminded_ms: u64,
     updated_ms: u64,
     guide: Option<Guide>,
@@ -230,6 +289,8 @@ impl<'a> Homing<'a> {
             retrace_len: 0,
             off: false,
             arrived: false,
+            pass: StartPass::Spent,
+            passed: false,
             reminded_ms: 0,
             updated_ms: 0,
             guide: None,
@@ -252,7 +313,14 @@ impl<'a> Homing<'a> {
         self.retrace = 0;
         self.off = false;
         self.arrived = false;
+        self.pass = StartPass::Spent;
+        self.passed = false;
         self.guide = None;
+    }
+
+    /// Whether the rider rode past the start since this was last asked.
+    pub fn take_pass(&mut self) -> bool {
+        core::mem::take(&mut self.passed)
     }
 
     /// Points kept now.
@@ -568,6 +636,9 @@ impl<'a> Homing<'a> {
         self.updated_ms = now;
         let start = (0.0, 0.0);
         let direct = distance(p, start);
+        if self.pass.step(direct, self.heading.is_some(), now) {
+            self.passed = true;
+        }
         let mut event = None;
         let (mode, track, off, target) = if self.following && self.len >= 2 {
             let window = self.segment.saturating_sub(SEARCH_BACK).max(1)
@@ -907,5 +978,153 @@ mod tests {
         let laps = path(&[lap, lap, lap].concat(), 7.0);
         let events = ride(&mut homing, &laps, &mut now);
         assert!(!events.contains(&Event::Following), "{events:?}");
+    }
+
+    const LOOP: [(f32, f32); 5] = [
+        (0.0, 0.0),
+        (500.0, 0.0),
+        (500.0, 500.0),
+        (0.0, 500.0),
+        (0.0, 0.0),
+    ];
+
+    /// Fixes at which a pass of the start was reported, each displaced by up
+    /// to `jitter` metres per axis.
+    fn passes(
+        homing: &mut Homing,
+        points: &[(f32, f32)],
+        now: &mut u64,
+        jitter: f32,
+    ) -> Vec<usize> {
+        let mut noise = 0x2545_f491_u32;
+        let mut next = move || {
+            noise ^= noise << 13;
+            noise ^= noise >> 17;
+            noise ^= noise << 5;
+            (noise % 2001) as f32 / 1000.0 - 1.0
+        };
+        let mut found = Vec::new();
+        for (index, &(east, north)) in points.iter().enumerate() {
+            *now += 1_000;
+            let fix = at(east + next() * jitter, north + next() * jitter);
+            homing.observe(Some(fix), *now);
+            if homing.take_pass() {
+                found.push(index);
+            }
+        }
+        found
+    }
+
+    fn lap_points(laps: usize) -> Vec<(f32, f32)> {
+        let mut corners = LOOP.to_vec();
+        for _ in 1..laps {
+            corners.extend_from_slice(&LOOP[1..]);
+        }
+        // Ride on past the start, as a rider does.
+        corners.push((300.0, 0.0));
+        path(&corners, 7.0)
+    }
+
+    #[test]
+    fn each_lap_of_a_loop_passes_the_start_once() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        let found = passes(&mut homing, &lap_points(3), &mut now, 0.0);
+        assert_eq!(found.len(), 3, "{found:?}");
+        // A lap is 2 km: 288 fixes of 7 m, and the pass ends 35 m past the start.
+        for (lap, &at) in found.iter().enumerate() {
+            let want = 288 * (lap + 1) + 5;
+            assert!(
+                at.abs_diff(want) <= 8,
+                "lap {lap} at fix {at}, loop ends near {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ride_leaving_its_own_start_is_no_pass() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        // Standing at the start for two minutes, then riding off.
+        let mut points = vec![(0.0, 0.0); 120];
+        points.extend(path(&[(0.0, 0.0), (800.0, 0.0)], 7.0));
+        assert!(passes(&mut homing, &points, &mut now, 0.0).is_empty());
+    }
+
+    #[test]
+    fn gps_jitter_at_the_start_cannot_fire_twice() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        // 12 m of jitter on each axis, from a minute at the start to three laps.
+        let mut points = vec![(0.0, 0.0); 60];
+        points.extend(lap_points(3));
+        let found = passes(&mut homing, &points, &mut now, 12.0);
+        assert_eq!(found.len(), 3, "{found:?}");
+        // Idling 60 m out, inside the hysteresis band, adds none; the start
+        // is the first noisy fix, so it may sit 17 m from where the road starts.
+        let idle = vec![(60.0, 0.0); 300];
+        assert!(passes(&mut homing, &idle, &mut now, 12.0).is_empty());
+    }
+
+    #[test]
+    fn loitering_at_the_start_is_not_a_pass() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        // A lap, then three minutes wandering a car park at the start.
+        let mut points = path(&LOOP, 7.0);
+        let yard: Vec<(f32, f32)> = (0..180)
+            .map(|i| {
+                let angle = i as f32 / 12.0;
+                (15.0 * cosf(angle), 15.0 * libm::sinf(angle))
+            })
+            .collect();
+        points.extend(&yard);
+        // Dead stop in the yard: heading goes stale.
+        assert!(passes(&mut homing, &points, &mut now, 0.0).is_empty());
+        // Leaving for another lap, the next pass counts once.
+        let found = passes(&mut homing, &lap_points(1), &mut now, 0.0);
+        assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    #[test]
+    fn stopping_at_the_start_after_a_lap_is_not_a_pass() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        let mut points = path(&LOOP, 7.0);
+        points.extend(vec![(0.0, 0.0); 120]);
+        assert!(passes(&mut homing, &points, &mut now, 0.0).is_empty());
+    }
+
+    #[test]
+    fn an_out_and_back_passes_the_start_once_on_the_way_home() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        let out = path(&[(0.0, 0.0), (3000.0, 0.0), (0.0, 0.0), (-300.0, 0.0)], 7.0);
+        let found = passes(&mut homing, &out, &mut now, 0.0);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0] > 800, "not on the way out: {found:?}");
+        // Ending the ride at the start passes nothing.
+        homing.reset();
+        let there = path(&[(0.0, 0.0), (3000.0, 0.0), (0.0, 0.0)], 7.0);
+        assert!(passes(&mut homing, &there, &mut now, 0.0).is_empty());
+    }
+
+    #[test]
+    fn a_road_that_only_grazes_the_start_area_is_no_pass() {
+        let mut crumbs = vec![Crumb::default(); 256];
+        let mut homing = Homing::new(&mut crumbs);
+        let mut now = 0;
+        // Out east, round and back west along a road 40 m north of the start.
+        let route = path(
+            &[(0.0, 0.0), (500.0, 0.0), (500.0, 40.0), (-300.0, 40.0)],
+            7.0,
+        );
+        assert!(passes(&mut homing, &route, &mut now, 0.0).is_empty());
     }
 }

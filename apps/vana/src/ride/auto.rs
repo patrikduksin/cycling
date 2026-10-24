@@ -127,14 +127,6 @@ impl Auto {
         self.since = None;
     }
 
-    /// Rider presses ACT while the ride is auto-paused: the pause becomes a
-    /// manual one and stays. Reports whether that happened.
-    pub fn take_over(&mut self) -> bool {
-        let was = self.paused;
-        self.manual();
-        was
-    }
-
     /// A requested decision was refused by the recorder.
     pub fn declined(&mut self) {
         self.since = None;
@@ -492,10 +484,9 @@ mod tests {
     #[test]
     fn taking_over_an_auto_pause_makes_it_manual() {
         let mut auto = auto_paused();
-        assert!(auto.take_over());
+        auto.manual();
         assert!(!auto.paused());
         assert_eq!(run(&mut auto, Status::Paused, RIDING, 0, 60_000), None);
-        assert!(!auto.take_over());
     }
 
     #[test]

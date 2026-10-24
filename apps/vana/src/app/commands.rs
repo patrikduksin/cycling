@@ -80,10 +80,7 @@ impl Runtime {
             }
             return self.profile_command(operation, argument, now, output);
         }
-        // Status and control address the ride the rider sees; a new ride
-        // goes where the next ride will be recorded.
         let riding = named.unwrap_or(self.ride.shown());
-        let next = named.unwrap_or(self.ride.medium());
         match (domain, operation, argument) {
             (Some("RIDE"), Some("INIT"), None) => {
                 self.submit(stored, output, |recorder, token| recorder.initialize(token))
@@ -108,11 +105,7 @@ impl Runtime {
                     // One ride at a time, whichever medium it is on.
                     return "STATE";
                 }
-                let medium = if action == Action::Start {
-                    next
-                } else {
-                    riding
-                };
+                let medium = named.unwrap_or(self.ride.target(action));
                 self.submit(medium, output, |recorder, token| {
                     recorder.request(action, Source::Live, now, token)
                 })

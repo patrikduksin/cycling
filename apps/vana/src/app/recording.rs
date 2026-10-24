@@ -7,7 +7,7 @@
 //! fails or fills while a ride is running, the ride continues on the internal
 //! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
-use crate::ride::auto::{Auto, Decision};
+use crate::ride::auto::Auto;
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
@@ -42,9 +42,9 @@ pub(super) enum Request {
 }
 
 /// Ride-page feedback that does not come from the recorder state.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RideMessage {
-    Ready,
+    Clear,
     StorageNotReady,
 }
 
@@ -113,7 +113,7 @@ pub(super) struct Ride {
     /// Auto-pause and auto-start state.
     pub(super) auto: Auto,
     /// The last automatic action and when it happened, shown briefly.
-    pub(super) toast: Option<(&'static str, u64)>,
+    pub(super) auto_toast: Option<(&'static str, u64)>,
     /// Active time the bulk medium recorded before this ride moved to internal.
     carried_ms: u64,
     /// Bulk active time awaiting the internal continuation; carried only once
@@ -148,7 +148,7 @@ impl Default for Ride {
             request_on: Medium::Internal,
             host_token: None,
             next_token: 1,
-            message: RideMessage::Ready,
+            message: RideMessage::Clear,
             totals: Totals::default(),
             counted_ms: 0,
             laps: Laps::default(),
@@ -161,7 +161,7 @@ impl Default for Ride {
             climbs: Climbs::default(),
             settled: None,
             auto: Auto::default(),
-            toast: None,
+            auto_toast: None,
             carried_ms: 0,
             carry_ms: 0,
             continuing: false,
@@ -226,6 +226,14 @@ impl Ride {
                 medium
             }
             _ => self.medium(),
+        }
+    }
+
+    pub(super) fn target(&self, action: Action) -> Medium {
+        if action == Action::Start {
+            self.medium()
+        } else {
+            self.shown()
         }
     }
 
@@ -309,8 +317,8 @@ impl Ride {
     }
 
     /// The notice of a recent automatic action, if any.
-    pub(super) fn toast(&self, now: u64) -> &'static str {
-        match self.toast {
+    pub(super) fn auto_toast(&self, now: u64) -> &'static str {
+        match self.auto_toast {
             Some((text, at)) if now.saturating_sub(at) <= TOAST_MS => text,
             _ => "",
         }
@@ -569,44 +577,12 @@ impl Runtime {
         if self.ride.pending() || self.ride.host_completion_unread() || self.ride.moving() {
             return;
         }
-        // The first press to save an auto-paused ride takes it over: moving or
-        // a lost sensor must not resume it under the rider's confirmation.
-        if self.navigation.page == Page::EndRide && self.ride.active().status() == Status::Paused {
-            self.ride.auto.manual();
-            return;
-        }
         // Rolling off starts a ride from Ready or the ride screen.
         let ready = matches!(self.navigation.page, Page::Ride | Page::Ready);
         let status = self.ride.active().status();
         let motion = self.readings.motion;
-        let Some(decision) = self.ride.auto.update(now, status, motion, ready) else {
-            return;
-        };
-        let (action, toast) = match decision {
-            Decision::Pause => (Action::Pause, ""),
-            Decision::Resume => (Action::Resume, "AUTO RESUME"),
-            Decision::Start => (Action::Start, "AUTO START"),
-        };
-        self.ride.request = Request::Idle;
-        // A new ride goes where the next ride is recorded; the open one
-        // stays on its medium.
-        let medium = if action == Action::Start {
-            self.ride.medium()
-        } else {
-            self.ride.shown()
-        };
-        if self.ride.submit(medium, |recorder, token| {
-            recorder.request(action, Source::Live, now, token)
-        }) {
-            self.ride.auto.accepted(decision);
-            self.ride.toast = Some((toast, now));
-            self.ride.message = RideMessage::Ready;
-            self.display.redraw();
-        } else {
-            self.ride.auto.declined();
-            if decision == Decision::Start {
-                self.ride.message = RideMessage::StorageNotReady;
-            }
+        if let Some(decision) = self.ride.auto.update(now, status, motion, ready) {
+            self.ride_auto(decision, now);
         }
     }
 
@@ -795,5 +771,6 @@ impl Runtime {
         if ride.active().status() == Status::Recording {
             self.timing.recording(done);
         }
+        self.ride_serviced(before, now);
     }
 }

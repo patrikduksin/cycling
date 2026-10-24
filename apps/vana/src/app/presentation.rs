@@ -107,8 +107,6 @@ impl Navigation {
         self.toast = Some((toast, now.saturating_add(ms)));
     }
 
-    /// Announce a recorder state change, from any source, once: a toast
-    /// and a chime, the paused screen, or the summary of a finished ride.
     pub(super) fn announce(&mut self, status: Status, now: u64) {
         let before = core::mem::replace(&mut self.announced, status);
         if before == status {
@@ -124,10 +122,6 @@ impl Navigation {
             (_, Status::Recording) => {
                 self.paused_since = None;
                 self.chime = Some(Cue::Start);
-                // A ride started by rolling off, or from the terminal, shows.
-                if self.page == Page::Ready {
-                    self.open_ride();
-                }
                 ("RECORDING", Tone::Good)
             }
             // The paused screen says it, whoever paused.
@@ -138,14 +132,8 @@ impl Navigation {
                 self.chime = Some(Cue::Pause);
                 return;
             }
-            // A full journal or a failure mid-ride stays on the ride screen,
-            // where its toast explains it.
-            (_, Status::Saved)
-                if riding && matches!(self.page, Page::Ride | Page::EndRide | Page::Summary) =>
-            {
+            (_, Status::Saved) if riding && self.page == Page::Summary => {
                 self.chime = Some(Cue::Saved);
-                self.page = Page::Summary;
-                self.summary_page = 0;
                 return;
             }
             (_, Status::Saved) if riding => ("RIDE SAVED", Tone::Good),
@@ -460,7 +448,9 @@ impl Runtime {
             self.navigation
                 .toast("WORKOUT MISSING", crate::screens::chrome::Tone::Warn, now);
         }
-        self.follow_ride(status);
+        if status == Status::Recording {
+            self.history_ride_started();
+        }
         let pages = self.workout_pages();
         let shown = match self.navigation.page {
             Page::Ride => self.shown_workout(&self.preferences.profile),
@@ -677,7 +667,7 @@ impl Runtime {
         if let Some(lap) = self.ride.lap_toast(now) {
             return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
         }
-        let auto = self.ride.toast(now);
+        let auto = self.ride.auto_toast(now);
         if !auto.is_empty() {
             return Some(Toast::new(auto, Tone::Info));
         }
@@ -772,34 +762,6 @@ impl Runtime {
             _ => return None,
         };
         Some(Toast::new(text, Tone::Info))
-    }
-
-    /// Keep the shown page true to the ride: a ride started on Ready or the
-    /// summary shows its pages, "End ride?" closes once the ride is no longer paused, and a
-    /// summary whose finish failed returns to the ride.
-    fn follow_ride(&mut self, status: Status) {
-        if status == Status::Recording {
-            self.history_ride_started();
-        }
-        let navigation = &mut self.navigation;
-        match navigation.page {
-            // A ride started remotely from the summary or the ride list
-            // needs its controls.
-            Page::Ready | Page::Summary | Page::History | Page::PastRide | Page::Phone
-                if status == Status::Recording =>
-            {
-                navigation.open_ride()
-            }
-            Page::EndRide if status != Status::Paused => navigation.page = Page::Ride,
-            Page::Summary
-                if status == Status::Paused
-                    && !self.ride.pending()
-                    && matches!(self.ride.request, Request::Completed(r) if !r.ok) =>
-            {
-                navigation.page = Page::Ride;
-            }
-            _ => {}
-        }
     }
 
     /// What the summary shows beyond the totals.

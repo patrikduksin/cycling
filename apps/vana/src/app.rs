@@ -24,6 +24,7 @@ mod preferences;
 mod presentation;
 mod readings;
 mod recording;
+mod ride_control;
 mod setup;
 pub use recording::Medium;
 mod phone;

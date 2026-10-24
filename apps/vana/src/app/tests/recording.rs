@@ -294,7 +294,6 @@ fn toast_text(runtime: &mut Runtime, now: u64) -> Option<String> {
 }
 
 #[test]
-#[ignore = "fixed by ride_control"]
 fn a_host_resume_while_asking_returns_to_the_ride_before_the_next_frame() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
@@ -312,7 +311,6 @@ fn a_host_resume_while_asking_returns_to_the_ride_before_the_next_frame() {
 }
 
 #[test]
-#[ignore = "fixed by ride_control"]
 fn a_host_finish_while_asking_opens_the_summary_before_the_next_frame() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
@@ -994,7 +992,7 @@ fn riding_off_auto_starts_and_storage_not_ready_does_not() {
         true,
     );
     assert_eq!(runtime.ride.internal.status(), Status::Recording);
-    assert_eq!(runtime.ride.toast(at), "AUTO START");
+    assert_eq!(runtime.ride.auto_toast(at), "AUTO START");
 
     // Off the ride screen nothing starts.
     let mut journal = Journal::erased();

@@ -317,10 +317,11 @@ impl Frame<'_> {
 
     /// Every position where a 5x7 glyph of `scale` matches, claimed or not.
     fn candidates(&self, lookup: &[(u64, u8)], scale: usize) -> Vec<Glyph> {
+        let dots = Dots::new(self.width, scale);
         let mut candidates = Vec::new();
         for y in 0..=self.height - 7 * scale {
             for x in 0..=self.width - 5 * scale {
-                candidates.extend(self.glyph_at(lookup, x, y, scale));
+                candidates.extend(self.glyph_at(lookup, &dots, x, y));
             }
         }
         candidates
@@ -359,10 +360,11 @@ impl Frame<'_> {
             .copied()
             .filter(|g| !is_stale(g.x, g.y))
             .collect();
+        let dots = Dots::new(self.width, s);
         for (y, span) in stale.iter().enumerate() {
             if let Some((from, to)) = *span {
                 for x in from..=to {
-                    candidates.extend(self.glyph_at(lookup, x, y, s));
+                    candidates.extend(self.glyph_at(lookup, &dots, x, y));
                 }
             }
         }
@@ -514,13 +516,16 @@ impl Frame<'_> {
         })
     }
 
-    fn glyph_at(&self, lookup: &[(u64, u8)], x: usize, y: usize, s: usize) -> Option<Glyph> {
-        let sample = |index: usize| self.at(x + (index % 5) * s, y + (index / 5) * s);
+    fn glyph_at(&self, lookup: &[(u64, u8)], dots: &Dots, x: usize, y: usize) -> Option<Glyph> {
+        let s = dots.scale;
+        let base = y * self.width + x;
+        let sample = |index: usize| self.pixels[base + dots.dots[index]];
         let first = sample(0);
         if s > 1
-            && [(s - 1, 0), (0, s - 1), (s - 1, s - 1)]
+            && dots
+                .corners
                 .iter()
-                .any(|&(dx, dy)| self.at(x + dx, y + dy) != first)
+                .any(|&offset| self.pixels[base + offset] != first)
         {
             return None;
         }
@@ -647,6 +652,26 @@ impl Frame<'_> {
             last = Some(glyph);
         }
         runs
+    }
+}
+
+/// Pixel offsets from a 5x7 cell's top-left pixel at one scale: each dot's
+/// top-left pixel, and the other three corners of the first dot. Most scanned
+/// positions are rejected on a few of these, so they are computed once a scan.
+struct Dots {
+    scale: usize,
+    dots: [usize; 35],
+    corners: [usize; 3],
+}
+
+impl Dots {
+    fn new(width: usize, scale: usize) -> Self {
+        let edge = scale - 1;
+        Self {
+            scale,
+            dots: std::array::from_fn(|index| (index / 5) * scale * width + (index % 5) * scale),
+            corners: [edge, edge * width, edge * width + edge],
+        }
     }
 }
 

@@ -136,6 +136,10 @@ impl Runtime {
         if !self.ride.submit_host(medium, start) {
             return "STATE";
         }
+        // A host action replaces the rider's last notice, as a rider's does.
+        if matches!(self.ride.request, Request::Completed(_)) {
+            self.ride.request = Request::Idle;
+        }
         "ACCEPTED"
     }
 

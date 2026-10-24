@@ -274,6 +274,31 @@ class ClearRidesTests(unittest.TestCase):
             commands = [call.args[0] for call in connection.terminal_command.call_args_list]
             self.assertEqual(commands.count('RIDE INIT'), 1)
 
+    def test_busy_reads_status_once_then_retries_once(self):
+        # An earlier tool's unread completion is discarded by the status read.
+        connection = MagicMock()
+        connection.terminal_command.side_effect = [
+            {'status': 'BUSY', 'data': ''},
+            {'status': 'OK', 'data': 'state=ready pending=0 completed=3 result=OK'},
+            {'status': 'ACCEPTED', 'data': 'token=4'},
+            {'status': 'OK', 'data': 'state=ready pending=0 completed=4 result=OK'},
+        ]
+        with patch('cycling_devtools.rides.clear.time.sleep'):
+            self.assertEqual(mutate_once(connection, 'RIDE INIT')['completed'], '4')
+        commands = [call.args[0] for call in connection.terminal_command.call_args_list]
+        self.assertEqual(commands, ['RIDE INIT', 'RIDE STATUS', 'RIDE INIT', 'RIDE STATUS'])
+        # An operation still in flight stays BUSY, and is not retried again.
+        connection = MagicMock()
+        connection.terminal_command.side_effect = [
+            {'status': 'BUSY', 'data': ''},
+            {'status': 'OK', 'data': 'state=recording pending=9'},
+            {'status': 'BUSY', 'data': ''},
+        ]
+        with self.assertRaisesRegex(RuntimeError, 'rejected: BUSY'):
+            mutate_once(connection, 'RIDE INIT')
+        commands = [call.args[0] for call in connection.terminal_command.call_args_list]
+        self.assertEqual(commands.count('RIDE INIT'), 2)
+
     def test_completion_deadline_never_reissues_mutation(self):
         connection = MagicMock()
         connection.terminal_command.return_value = {'status': 'ACCEPTED', 'data': 'token=1'}

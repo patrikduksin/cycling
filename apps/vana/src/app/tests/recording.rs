@@ -1596,3 +1596,156 @@ fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
     assert!(runtime.ride.moved);
     assert_eq!(runtime.ride.internal.completed(), 1);
 }
+
+/// The ride page's toast text, if any.
+fn toast_text(runtime: &mut Runtime, now: u64) -> Option<String> {
+    runtime
+        .toast(now)
+        .map(|toast| String::from_utf8(toast.text().to_vec()).unwrap())
+}
+
+#[test]
+fn a_host_action_replaces_the_riders_failure_notice() {
+    use crate::app::recording::Request;
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    accepted(host(&mut runtime, &mut journal, 0, "RIDE START"));
+    settle(&mut runtime, &mut journal, &mut radio, 100);
+    host(&mut runtime, &mut journal, 2100, "RIDE STATUS");
+    // A rider's write failed on internal flash; the ride page says so.
+    runtime.ride.request = Request::Completed(crate::ride::recorder::ResultEvent {
+        action: Some(crate::ride::control::Action::Pause),
+        token: 99,
+        ok: false,
+    });
+    runtime.ride.request_on = Medium::Internal;
+    assert_eq!(
+        toast_text(&mut runtime, 2100).as_deref(),
+        Some("WRITE FAILED")
+    );
+    // The host's pause then succeeds: the notice gives way, as it would to
+    // the rider's next action.
+    let token = accepted(host(&mut runtime, &mut journal, 3000, "RIDE PAUSE"));
+    settle(&mut runtime, &mut journal, &mut radio, 3000);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert!(matches!(runtime.ride.request, Request::Idle));
+    assert_ne!(
+        toast_text(&mut runtime, 5000).as_deref(),
+        Some("WRITE FAILED")
+    );
+    let (_, output) = host(&mut runtime, &mut journal, 5000, "RIDE STATUS");
+    assert!(
+        output.ends_with(&format!("pending=0 completed={token} result=OK")),
+        "{output}"
+    );
+}
+
+fn bulk_command(
+    runtime: &mut Runtime,
+    journal: &mut Journal,
+    bulk: &mut FlakyBulk,
+    now: u64,
+    words: &str,
+) -> (&'static str, String) {
+    let mut out = String::new();
+    let status = runtime.command(words, journal, bulk, now, &mut out);
+    (status, out)
+}
+
+#[test]
+fn a_failed_host_pause_on_mmc_is_the_hosts_and_the_ride_continues_internally() {
+    use crate::app::recording::Request;
+    let mut journal = Journal::erased();
+    let mut bulk = FlakyBulk {
+        sectors: std::collections::BTreeMap::new(),
+        fail: false,
+    };
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut now = 0;
+    while runtime.ride.internal.status() == Status::Scanning
+        || runtime.ride.bulk.status() == Status::Scanning
+    {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    accepted(bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE BULK INIT",
+    ));
+    while runtime.ride.bulk.status() != Status::Ready {
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE BULK STATUS",
+    );
+    runtime.navigation.page = Page::Ride;
+    accepted(bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE START",
+    ));
+    while runtime.ride.bulk.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    for _ in 0..20 {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    bulk_command(&mut runtime, &mut journal, &mut bulk, now, "RIDE STATUS");
+    // The card fails as the host pauses the MMC ride.
+    bulk.fail = true;
+    let token = accepted(bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE PAUSE",
+    ));
+    while !matches!(runtime.ride.host, Request::Completed(_)) {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        assert!(now < 60_000, "the host's pause never completed");
+    }
+    let (_, output) = bulk_command(
+        &mut runtime,
+        &mut journal,
+        &mut bulk,
+        now,
+        "RIDE BULK STATUS",
+    );
+    assert!(
+        output.ends_with(&format!("completed={token} result=FAILED")),
+        "{output}"
+    );
+    assert!(matches!(runtime.ride.request, Request::Idle));
+    // The ride carries on from internal flash; the rider has nothing to read.
+    while runtime.ride.internal.status() != Status::Recording {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+        assert!(now < 60_000, "the continuation never started");
+    }
+    for _ in 0..20 {
+        now += 250;
+        tick_with(&mut runtime, &mut journal, &mut bulk, now);
+    }
+    assert!(runtime.ride.internal.riding());
+    assert!(runtime.ride.moved);
+    assert_eq!(runtime.ride.shown(), Medium::Internal);
+    assert!(matches!(runtime.ride.request, Request::Idle));
+    assert_eq!(runtime.ride.request_on, Medium::Internal);
+    assert_ne!(
+        toast_text(&mut runtime, now).as_deref(),
+        Some("WRITE FAILED")
+    );
+}

@@ -104,6 +104,11 @@ impl Lap {
         }
     }
 
+    /// Kilocalories from the lap's work, as `Totals::kcal` has it.
+    pub fn kcal(&self) -> Option<u32> {
+        (self.power_ms != 0).then(|| ((self.energy_mj + 500_000) / 1_000_000) as u32)
+    }
+
     pub fn max_speed_mm_s(&self) -> Option<u32> {
         self.max_speed_mm_s
     }

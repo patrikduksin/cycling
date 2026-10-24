@@ -199,6 +199,9 @@ fn a_paused_ride_becomes_a_valid_activity() {
     assert_eq!(session.get(26), Some(1));
     let lap = messages.iter().find(|m| m.global == 19).unwrap();
     assert_eq!(lap.get(8), Some(8_000));
+    // 200 W for 8 s is 1.6 kJ, which rounds to 2 kcal.
+    assert_eq!(session.get(11), Some(2));
+    assert_eq!(lap.get(11), Some(2));
     let activity = messages.last().unwrap();
     assert_eq!(activity.get(1), Some(1));
     assert_eq!(activity.get(253), Some(t + 68));
@@ -334,6 +337,32 @@ fn an_hour_at_one_hertz_stays_small() {
     assert!(bytes.len() < 140_000, "{} bytes", bytes.len());
     let session = decode(&bytes).into_iter().find(|m| m.global == 18).unwrap();
     assert_eq!(session.get(34), Some(200), "normalized power");
+    // 200 W for an hour is 720 kJ, about 720 kcal (see `Totals::kcal`).
+    assert_eq!(session.get(11), Some(720), "session calories");
+    let lap = decode(&bytes).into_iter().find(|m| m.global == 19).unwrap();
+    assert_eq!(lap.get(11), Some(720), "lap calories");
+}
+
+#[test]
+fn a_ride_without_power_has_no_calories() {
+    let samples: Vec<Sample> = (1..=4)
+        .map(|i| Sample {
+            power_watts: None,
+            ..sample(i * 1000, true)
+        })
+        .collect();
+    let slots = [
+        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+        slot(&Entry::batch(Source::Live, 3, 1, &samples).unwrap()),
+        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 4_000)),
+    ];
+    let (_, bytes) = file(&slots, None).unwrap();
+    let messages = decode(&bytes);
+    for global in [18, 19] {
+        let message = messages.iter().find(|m| m.global == global).unwrap();
+        assert_eq!(message.get(11), None, "message {global}: no guess");
+        assert_eq!(message.get(16), Some(140), "heart rate is still there");
+    }
 }
 
 #[test]

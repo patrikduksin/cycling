@@ -17,6 +17,7 @@ pub mod log;
 pub mod metrics;
 pub mod reclaim;
 pub mod recorder;
+pub mod recovery;
 pub mod replay;
 pub mod storage;
 pub mod totals;

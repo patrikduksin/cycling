@@ -777,6 +777,47 @@ fn stats_page_totals_a_steady_ten_minutes() {
 }
 
 #[test]
+fn the_summary_shows_calories_and_the_heart_rate_recovery_after_a_minute() {
+    let mut sim = rider();
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 170.0, 90.0);
+    sim.advance(minutes(10));
+    sim.stop_ride();
+    // 200 W for ten minutes is 120 kJ, about 120 kcal.
+    sim.ride_page("2/3");
+    sim.expect_field("WORK KJ", "120");
+    sim.expect_field("KCAL", "120");
+    sim.expect_text("HR RECOVERY");
+    sim.expect_text("MEASURING");
+    sim.checkpoint("summary measuring heart rate recovery");
+
+    // The rider stops pedalling and the strap reads lower a minute on.
+    sim.ride_at(0.0, 0.0, 142.0, 0.0);
+    sim.advance(seconds(45));
+    sim.expect_text("MEASURING");
+    sim.advance(seconds(30));
+    sim.expect_text("-28 BPM");
+    sim.expect_no_text("MEASURING");
+    sim.checkpoint("summary with heart rate recovery");
+}
+
+#[test]
+fn a_ride_without_a_heart_strap_shows_no_recovery() {
+    let mut sim = rider();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(30.0, 200.0, 0.0, 90.0);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    sim.ride_page("2/3");
+    sim.expect_text("KCAL");
+    sim.advance(seconds(90));
+    sim.expect_no_text("HR RECOVERY");
+    sim.expect_no_text("MEASURING");
+}
+
+#[test]
 fn ascent_counts_the_climbs_of_a_hilly_loop() {
     let mut sim = Sim::new().boot();
     sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);

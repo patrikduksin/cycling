@@ -267,6 +267,17 @@ impl Totals {
         })
     }
 
+    /// Energy burned in kilocalories, from the power meter's work.
+    ///
+    /// Human muscle turns about 24 % of the food energy it burns into work,
+    /// and a kilocalorie is 4.184 kJ, so kcal = kJ / (0.24 x 4.184), which
+    /// is within half a percent of kJ itself. Without power there is no
+    /// estimate: a heart-rate formula needs the rider's weight, age and sex,
+    /// which VANA does not hold, so none is guessed.
+    pub fn kcal(&self) -> Option<u32> {
+        self.work_kj()
+    }
+
     pub fn avg_heart_bpm(&self) -> Option<u16> {
         self.heart.value().map(|v| v as u16)
     }

@@ -636,7 +636,7 @@ impl Runtime {
                 view.readiness = self.readiness(view.gps, view.battery);
             }
             Page::Summary => {
-                view.after = self.after();
+                view.after = self.after(now);
                 self.show_elevation(&mut view);
             }
             Page::Bests => {
@@ -886,7 +886,7 @@ impl Runtime {
     }
 
     /// What the summary shows beyond the totals.
-    fn after(&self) -> After {
+    fn after(&self, now: u64) -> After {
         let status = self.ride.active().status();
         let saving = match status {
             _ if self.ride.pending() => Saving::Writing,
@@ -905,6 +905,7 @@ impl Runtime {
             elevation: self.has_elevation(),
             found: self.ride.bests_found,
             offer: self.summary_offer(),
+            recovery: self.recovery.reading(now),
         }
     }
 

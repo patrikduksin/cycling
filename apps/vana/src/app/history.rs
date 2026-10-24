@@ -367,6 +367,8 @@ impl Runtime {
             past: true,
             elevation: self.has_elevation(),
             ..After::default()
+            // Not in the journal.
+            recovery: None,
         };
         self.show_elevation(view);
     }

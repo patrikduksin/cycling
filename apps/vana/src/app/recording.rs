@@ -617,9 +617,6 @@ impl Runtime {
     /// Pause, resume or start the ride from its speed source (see `ride::auto`),
     /// through the same request path as the buttons.
     pub(super) fn auto_control(&mut self, now: u64) {
-        if !self.preferences.options.auto_pause {
-            return;
-        }
         // A ride moving to internal media keeps its automatic pause: the
         // continuation passes through Ready and Recording before it pauses.
         // An unread host completion is the host's own and stays put.
@@ -630,8 +627,9 @@ impl Runtime {
         let ready = matches!(self.navigation.page, Page::Ride | Page::Ready);
         let status = self.ride.active().status();
         let motion = self.readings.motion;
-        if let Some(decision) = self.ride.auto.update(now, status, motion, ready) {
-            self.ride_auto(decision, now);
+        let automatic = self.preferences.options.auto_pause;
+        if let Some(call) = self.ride.auto.update(now, status, motion, ready, automatic) {
+            self.ride_auto(call, now);
         }
     }
 

@@ -1865,6 +1865,35 @@ fn a_manual_pause_does_not_resume_when_the_bike_moves() {
 }
 
 #[test]
+fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(10));
+    sim.pause_ride();
+    sim.advance(seconds(1));
+    let from = sim.device.speaker.played.len();
+    sim.advance(seconds(60));
+    assert_eq!(
+        played_since(&sim, from),
+        [0, 0, 10, 0, 0, 10],
+        "two reminders in a minute"
+    );
+    assert!(sim.screen().run("PAUSED").is_some());
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.advance(seconds(10));
+    let from = sim.device.speaker.played.len();
+    sim.advance(seconds(60));
+    assert_eq!(
+        played_since(&sim, from),
+        Vec::<u8>::new(),
+        "quiet once stopped"
+    );
+    assert!(!recording(&mut sim));
+}
+
+#[test]
 fn a_speed_sensor_dropout_does_not_pause_the_ride() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);

@@ -793,8 +793,71 @@ impl Wheel {
 
 /// Run `seconds` of wheel data and ticks from `from`, returning the end.
 fn roll(
+    ctx: (&mut Runtime, &mut Journal, &mut Radio),
+    wheel: &mut Wheel,
+    from: u64,
+    seconds: u64,
+    turning: bool,
+) -> u64 {
+    roll_heard(ctx, wheel, &mut Speaker::default(), from, seconds, turning)
+}
+
+#[derive(Default)]
+struct Speaker {
+    played: std::vec::Vec<(u64, u8)>,
+    free_at: u64,
+}
+
+impl device_api::sound::Sound for Speaker {
+    fn patterns(&self) -> &'static [device_api::sound::Pattern] {
+        const fn pattern(id: u8, frequency_hz: u16) -> device_api::sound::Pattern {
+            device_api::sound::Pattern {
+                id,
+                frequency_hz,
+                nominal_ms: 100,
+                guard_ms: 0,
+            }
+        }
+        const PATTERNS: [device_api::sound::Pattern; 3] =
+            [pattern(21, 2500), pattern(0, 3000), pattern(10, 4000)];
+        &PATTERNS
+    }
+    fn snapshot(&self) -> device_api::sound::Snapshot {
+        device_api::sound::Snapshot {
+            state: device_api::sound::State::Elapsed,
+            pattern: None,
+            requested_ms: 0,
+            submitted_ms: None,
+            until_ms: self.free_at,
+        }
+    }
+    fn play(&mut self, id: u8, now: u64) -> Result<(), device_api::observation::Error> {
+        if now < self.free_at {
+            return Err(device_api::observation::Error::Unavailable);
+        }
+        self.played.push((now, id));
+        self.free_at = now + 100;
+        Ok(())
+    }
+    fn stop(&mut self, _: u64) -> Result<(), device_api::observation::Error> {
+        Ok(())
+    }
+}
+
+impl Speaker {
+    fn heard(&self, from: u64, to: u64) -> std::vec::Vec<u8> {
+        self.played
+            .iter()
+            .filter(|(at, _)| (from..to).contains(at))
+            .map(|(_, id)| *id)
+            .collect()
+    }
+}
+
+fn roll_heard(
     (runtime, journal, radio): (&mut Runtime, &mut Journal, &mut Radio),
     wheel: &mut Wheel,
+    speaker: &mut Speaker,
     from: u64,
     seconds: u64,
     turning: bool,
@@ -805,6 +868,9 @@ fn roll(
             wheel.second(radio, now, turning);
         }
         tick(runtime, journal, radio, now);
+        let status = runtime.ride.active().status();
+        runtime.navigation.announce(status, now);
+        runtime.alert(speaker, now);
     }
     from + seconds * 1000
 }
@@ -899,6 +965,196 @@ fn a_manual_pause_stays_paused_while_the_bike_moves() {
     );
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert!(!runtime.ride.auto.paused());
+}
+
+fn manually_paused(
+    (runtime, journal, radio): (&mut Runtime, &mut Journal, &mut Radio),
+    wheel: &mut Wheel,
+    speaker: &mut Speaker,
+) -> u64 {
+    on_ride_page(runtime);
+    radio.connected(SPEED, 0);
+    let mut at = roll_heard((runtime, journal, radio), wheel, speaker, 1000, 2, true);
+    runtime.input(press(Button::BottomRight), at, radio);
+    at = roll_heard((runtime, journal, radio), wheel, speaker, at, 5, true);
+    runtime.input(press(Button::BottomRight), at, radio);
+    at = roll_heard((runtime, journal, radio), wheel, speaker, at, 1, true);
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    at - 1_000
+}
+
+#[test]
+fn a_manual_pause_reminds_a_rider_who_rides_on_until_they_resume() {
+    const REMINDER: [u8; 3] = [0, 0, 10];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut speaker = Speaker::default();
+    let paused = manually_paused(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+    );
+    let mut at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        paused,
+        40,
+        true,
+    );
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert_eq!(speaker.heard(paused, paused + 1_000), [10, 0], "the pause");
+    assert_eq!(
+        speaker.heard(paused + 1_000, paused + 3_000),
+        [],
+        "not before the hold"
+    );
+    assert_eq!(
+        speaker.heard(paused + 3_000, paused + 4_500),
+        REMINDER,
+        "reminded after riding on"
+    );
+    assert_eq!(speaker.heard(paused + 4_500, paused + 32_500), []);
+    assert_eq!(
+        speaker.heard(paused + 33_000, paused + 34_500),
+        REMINDER,
+        "and again 30 s later"
+    );
+
+    at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        at,
+        60,
+        false,
+    );
+    assert_eq!(speaker.heard(at - 55_000, at), [], "quiet once stopped");
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+
+    let rode_on = at;
+    at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        at,
+        2,
+        true,
+    );
+    assert_eq!(speaker.heard(rode_on, at), [], "re-armed with its hold");
+    at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        at,
+        3,
+        true,
+    );
+    assert_eq!(speaker.heard(rode_on, at), REMINDER, "reminded again");
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    let at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        at,
+        40,
+        true,
+    );
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    assert_eq!(speaker.heard(at - 40_000, at), [10], "only the resume cue");
+}
+
+#[test]
+fn with_auto_pause_off_a_manual_pause_still_reminds_and_stays_paused() {
+    const REMINDER: [u8; 3] = [0, 0, 10];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.preferences.options.auto_pause = false;
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut speaker = Speaker::default();
+    let paused = manually_paused(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+    );
+    let at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        paused,
+        10,
+        true,
+    );
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert_eq!(speaker.heard(paused + 3_000, at), REMINDER);
+}
+
+#[test]
+fn an_auto_pause_resumes_with_the_resume_cue_and_is_never_reminded() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    radio.connected(SPEED, 0);
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut speaker = Speaker::default();
+    let mut at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        1000,
+        2,
+        true,
+    );
+    runtime.input(press(Button::BottomRight), at, &mut radio);
+    at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        at,
+        25,
+        false,
+    );
+    assert!(runtime.ride.auto.paused());
+    let from = at;
+    at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        at,
+        40,
+        true,
+    );
+    assert_eq!(runtime.ride.internal.status(), Status::Recording);
+    assert_eq!(speaker.heard(from, at), [10], "resumed, never reminded");
+}
+
+#[test]
+fn muted_cues_keep_the_reminder_quiet() {
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.preferences.options.sounds = false;
+    let mut wheel = Wheel { time: 0, count: 0 };
+    let mut speaker = Speaker::default();
+    let paused = manually_paused(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+    );
+    let at = roll_heard(
+        (&mut runtime, &mut journal, &mut radio),
+        &mut wheel,
+        &mut speaker,
+        paused,
+        40,
+        true,
+    );
+    assert_eq!(runtime.ride.internal.status(), Status::Paused);
+    assert_eq!(speaker.heard(0, at), [], "muted");
 }
 
 #[test]

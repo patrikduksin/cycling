@@ -22,11 +22,11 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@v4.3.0
-      - run: mise run test
-      - run: mise run check
-      - run: mise run simulate
-      - run: mise run harness-virtual
+      - uses: cachix/install-nix-action@v31.11.2
+      - run: nix develop -c mise run test
+      - run: nix develop -c mise run check
+      - run: nix develop -c mise run simulate
+      - run: nix develop -c mise run harness-virtual
   firmware:
     runs-on: ubuntu-24.04
     strategy:
@@ -37,11 +37,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@v4.3.0
-      - run: mise run setup
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-      - run: mise run build
+      - uses: cachix/install-nix-action@v31.11.2
+      - run: nix develop -c mise run build
         env:
           CYCLING_SDK: ${{ matrix.sdk }}
           CYCLING_HARNESS: ${{ matrix.harness }}

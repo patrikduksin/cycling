@@ -1,3 +1,6 @@
+# mise runs tasks only. Tool versions live in flake.nix/flake.lock and reach
+# every task through the dev shell (direnv or `nix develop`).
+
 [env]
 # Never let an ambient or parent-config PYTHONPATH shadow the locked uv environment.
 PYTHONPATH = false
@@ -8,18 +11,6 @@ devtools = "uv run --project tools/devtools --locked"
 # The terrain pack builder has its own environment (osmium, numpy, tifffile).
 terrain = "uv run --project tools/terrain --locked"
 
-[tools]
-rust = { version = "1.98.1", components = ["rustfmt", "clippy"] }
-python = "3.14.7"
-uv = "0.12.10"
-"github:esp-rs/espup" = "0.17.1"
-"github:esp-rs/espflash" = "4.5.0"
-bun = "latest"
-
-[tasks.setup]
-description = "Install the pinned Xtensa Rust toolchain"
-run = "mkdir -p .local && espup install --targets esp32s3 --toolchain-version 1.97.0.0 --name cycling-esp --export-file .local/export-esp.sh"
-
 [tasks.build]
 description = "Build C606 firmware and its application image"
 run = "bash devices/c606/build.sh"
@@ -27,6 +18,10 @@ run = "bash devices/c606/build.sh"
 [tasks.test]
 description = "Test host firmware logic and device tools"
 run = ["cargo test --workspace --locked --no-default-features", "cargo test -p shell-simulator --locked --no-default-features --features debug-harness", "cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling", "cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked", "{{vars.devtools}} pytest tools/devtools", "{{vars.terrain}} pytest tools/terrain"]
+
+[tasks.verify]
+description = "Run every PR gate in parallel (test, check, simulate, 4 builds, harness-virtual); --fast for the inner loop, --pr N to post results"
+run = "{{vars.devtools}} python -m cycling_devtools.verify"
 
 [tasks.fmt]
 description = "Format Rust and Python code"
@@ -52,6 +47,14 @@ run = "{{vars.devtools}} python -m cycling_devtools.device.firmware backup"
 description = "Flash cycling into the inactive A/B slot, boot it, and reselect the old slot if its console stays silent"
 depends = ["build"]
 run = "{{vars.devtools}} python -m cycling_devtools.device.firmware flash"
+
+[tasks.flash-image]
+description = "Flash the already built .local/cycling.bin like flash does, without building (device hosts receive images)"
+run = "{{vars.devtools}} python -m cycling_devtools.device.firmware flash"
+
+[tasks.device]
+description = "Run a device task on CYCLING_DEVICE_HOST, the machine with the C606 (device flash builds here, flashes there)"
+run = "{{vars.devtools}} python -m cycling_devtools.device.remote"
 
 [tasks.rollback]
 description = "Boot the previous cycling image in the other A/B slot after validating it"
@@ -114,6 +117,10 @@ run = "/usr/bin/python3 -m cycling_devtools.connectivity.ble_sensor_sim"
 [tasks.logs]
 description = "Capture private JSON logs without resetting; send optional commands once"
 run = "{{vars.devtools}} python -m cycling_devtools.terminal.logs"
+
+[tasks.backtrace]
+description = "Decode code addresses in device logs (files or stdin) against .local/cycling.elf"
+run = "{{vars.devtools}} python -m cycling_devtools.terminal.backtrace"
 
 [tasks.terminal]
 description = "Run a command or open the interactive no-reset USB terminal"

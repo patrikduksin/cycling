@@ -442,7 +442,7 @@ ride recovered after a power cut has no record.
 - Receiver UTC trails true UTC by the receiver's output latency (under a
   second). Whether the C606 receiver reports status A with leap-second-uncorrected
   time before it has UTC parameters is unverified on hardware; the clock follows
-  a correction of a second or more, once three readings confirm it, with one
+  a correction of a second or more, once three readings half a second apart confirm it, with one
   step back. A stalled executor reads buffered sentences late but cannot step
   it back. Uptime drift can still cause one step back of a second after many
   hours awake.

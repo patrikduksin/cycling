@@ -7,10 +7,12 @@ use device_api::gps::*;
 /// (sentence latency, a 10 ms poll). Further behind may be a correction the
 /// receiver made, such as learning the leap seconds.
 const RESYNC_MS: u64 = 1_000;
-/// Readings, each at a different `now`, that must all be `RESYNC_MS` behind
-/// before the clock is stepped back. A stalled executor drains old sentences
-/// at one `now`, which looks like a correction until the next on-time one.
+/// Readings, each at least `CONFIRM_GAP_MS` after the last, that must all be
+/// `RESYNC_MS` behind before the clock is stepped back. A stalled executor
+/// drains old sentences within a few 10 ms polls, which looks like a
+/// correction until the next on-time one; a real correction lasts.
 const CONFIRM: u8 = 3;
+const CONFIRM_GAP_MS: u64 = 500;
 /// RMC two-digit years read as 2026..=2079. Earlier years are a GPS week
 /// rollover (2006/2007) or a stale receiver RTC. 80 and later is the 1980 GPS
 /// epoch default (`060180`) or a textbook sentence (`230394`), not 2080 or 2094.
@@ -65,7 +67,7 @@ struct Decoder {
 #[derive(Clone, Copy, Debug)]
 struct Clock {
     at_zero_ms: u64,
-    /// Readings in a row at least `RESYNC_MS` behind, each at its own `now`.
+    /// Readings in a row at least `RESYNC_MS` behind, `CONFIRM_GAP_MS` apart.
     behind: u8,
     behind_at: u64,
 }
@@ -455,15 +457,15 @@ impl Clock {
     /// One more reading, taken at uptime `now`. A later reading (less latency,
     /// or uptime running slow) moves the clock forward. One less than
     /// `RESYNC_MS` behind is ignored, so jitter never steps it back. One
-    /// further behind is a correction only once `CONFIRM` of them arrive at
-    /// different times in a row, and then the latest is taken.
+    /// further behind is a correction only once `CONFIRM` of them arrive
+    /// `CONFIRM_GAP_MS` apart in a row, and then the latest is taken.
     fn read(&mut self, observed: u64, now: u64) {
         let behind = self.at_zero_ms.saturating_sub(observed);
         if behind < RESYNC_MS {
             self.at_zero_ms = self.at_zero_ms.max(observed);
             self.behind = 0;
         } else {
-            if self.behind == 0 || now != self.behind_at {
+            if self.behind == 0 || now >= self.behind_at + CONFIRM_GAP_MS {
                 self.behind += 1;
                 self.behind_at = now;
             }
@@ -951,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_drained_at_once_never_steps_the_clock_back() {
+    fn a_stall_drained_late_never_steps_the_clock_back() {
         let mut p = Parser::default();
         let mut last = 0;
         let mut check = |p: &Parser, now: u64| {
@@ -964,14 +966,15 @@ mod tests {
             rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
             check(&p, now);
         }
-        // The executor stalls for 3 s and then reads the buffered RMCs in one
-        // poll, each one late by its age.
+        // The executor stalls for 3 s and then drains the buffered RMCs over
+        // consecutive 10 ms polls, each one late by its age.
         check(&p, 8_100);
-        for second in 5..8u64 {
-            rmc(&mut p, &format!("1000{second:02}.00"), "141026", 8_100);
+        for second in 5..9u64 {
+            let now = 8_100 + (second - 5) * 10;
+            rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
+            check(&p, now);
         }
-        check(&p, 8_100);
-        for second in 8..12u64 {
+        for second in 9..12u64 {
             let now = second * 1000 + 100;
             rmc(&mut p, &format!("1000{second:02}.00"), "141026", now);
             check(&p, now);

@@ -59,7 +59,7 @@ pub struct Snapshot {
     /// UTC now in ms since the Unix epoch, by the receiver: read from its dated
     /// RMC fixes and carried on by uptime, so it keeps going through a lost
     /// fix. It steps back only after a correction of a second or more is
-    /// confirmed by three readings, so a stall cannot step it back; uptime
+    /// confirmed by three readings half a second apart, so a stall cannot step it back; uptime
     /// drift can, once, after many hours awake. None until a plausible dated
     /// fix since the last control boundary.
     pub utc_ms: Option<u64>,

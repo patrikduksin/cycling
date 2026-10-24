@@ -235,6 +235,7 @@ impl Runtime {
             totals: &mut ride.totals,
             zone_time: &mut ride.zone_time,
             efforts: &mut ride.efforts,
+            trace: &mut ride.trace,
         }
     }
 
@@ -333,7 +334,7 @@ impl Runtime {
     }
 
     /// The open ride on the summary's pages.
-    pub(super) fn past_view(&self, view: &mut View) {
+    pub(super) fn past_view<'a>(&'a self, view: &mut View<'a>) {
         let Some((_, replay, summary)) = &self.history.open else {
             return;
         };
@@ -347,7 +348,7 @@ impl Runtime {
             Progress::Done => Saving::Saved,
             Progress::Missing => Saving::Unreadable,
         };
-        view.totals = self.ride.totals.with_ascent_dm(replay.ascent_dm());
+        view.totals = replay.totals(self.ride.totals);
         view.zone_time = self.ride.zone_time;
         let active_ms = summary.map_or(0, |s| s.active_ms).max(replay.active_ms);
         view.active_secs = active_ms / 1000;
@@ -358,7 +359,9 @@ impl Runtime {
             climbs: None,
             laps: replay.laps(),
             past: true,
+            elevation: self.has_elevation(),
         };
+        self.show_elevation(view);
     }
 
     /// Home's RIDES card: the last ride's numbers, or how many are saved.

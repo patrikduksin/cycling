@@ -14,7 +14,7 @@ use crate::screens::home::Home;
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
-use crate::screens::ride::summary::{After, Saving};
+use crate::screens::ride::summary::{After, Saving, SummaryPage};
 use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::MenuMessage;
 use crate::screens::settings;
@@ -314,6 +314,7 @@ impl Runtime {
         } else {
             STATIC_FRAME_MS
         });
+        self.refresh_chart();
         self.workout_display(system, now, ant, position);
         let visible = self.motion_visible();
         if self.navigation.page == Page::Ride
@@ -598,7 +599,10 @@ impl Runtime {
                 self.refresh_sensor_menu(ant, now);
                 view.readiness = self.readiness(view.gps, view.battery);
             }
-            Page::Summary => view.after = self.after(),
+            Page::Summary => {
+                view.after = self.after();
+                self.show_elevation(&mut view);
+            }
             Page::PastRide => self.past_view(&mut view),
             Page::Phone => {
                 view.phone_ride = self.history.phone.is_some();
@@ -812,6 +816,32 @@ impl Runtime {
         Some(Toast::new(text, Tone::Info))
     }
 
+    /// The elevation chart, lent to the view while the summary page that shows
+    /// it is open.
+    #[inline(never)]
+    pub(super) fn show_elevation<'a>(&'a self, view: &mut View<'a>) {
+        if crate::screens::ride::summary::shows_elevation(view) {
+            view.elevation_chart = Some(&self.ride.chart);
+        }
+    }
+
+    /// The summary has an elevation page: the ride, live or read back, charted
+    /// altitude.
+    pub(super) fn has_elevation(&self) -> bool {
+        self.ride.trace.len() >= 2
+    }
+
+    /// Chart the ride's trace again when it changed, as the summary page that
+    /// shows it opens.
+    fn refresh_chart(&mut self) {
+        let showing = matches!(self.navigation.page, Page::Summary | Page::PastRide)
+            && SummaryPage::at(self.navigation.summary_page, self.has_elevation())
+                == SummaryPage::Elevation;
+        if showing && self.ride.trace.take_changed() {
+            self.ride.chart.refresh(&self.ride.trace);
+        }
+    }
+
     /// What the summary shows beyond the totals.
     fn after(&self) -> After {
         let status = self.ride.active().status();
@@ -829,6 +859,7 @@ impl Runtime {
             // The open lap counts: a ride without a lap press is one lap.
             laps: Some(self.ride.laps.count().saturating_add(1)),
             past: false,
+            elevation: self.has_elevation(),
         }
     }
 

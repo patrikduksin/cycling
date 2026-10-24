@@ -501,5 +501,7 @@ ride recovered after a power cut has no record.
 - Gradient is an approximate barometric grade, not calibrated elevation.
 - Altitude is the standard atmosphere, not calibrated to sea level: weather can
   shift absolute altitude by tens of metres, while changes within a ride are
-  good. The history page still estimates ascent from the recorded gradient.
+  good. A saved ride's ascent, descent and elevation profile come from the
+  recorded altitude; only a ride saved before altitude was recorded estimates
+  ascent from the recorded gradient.
 - A grey radar rail does not imply an empty road.

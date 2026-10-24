@@ -32,7 +32,7 @@ Home ── RIDE ──> Ready ── ACT or roll off ──> Ride pages (record
                                           END RIDE? ── BACK ──> Paused screen
                                               │ ACT
                                               v
-                                         Saving ──> Ride saved summary (3 pages)
+                                         Saving ──> Ride saved summary (3 or 4 pages)
                                                        │ ACT (Done) or BACK
                                                        v
                                                       Home
@@ -144,10 +144,14 @@ The summary opens with a green check and RIDE SAVED, and pages through:
    rate.
 2. Normalized, average and maximum power, work in kJ, average and maximum
    heart rate, and power and heart-rate zone bars.
-3. Best power over 5 s, 1, 5 and 20 min as bars against the best of them,
-   then climbs and laps.
+3. Elevation, only for a ride that recorded altitude: ASCENT M, DESCENT M,
+   MIN M and MAX M in amber over a filled chart of altitude across the whole
+   distance, each stretch in its climb steepness colour. A ride without
+   altitude has no such page.
+4. Best power over 5 s, 1, 5 and 20 min as bars against the best of them,
+   then climbs and laps. Without an elevation page this is page 3.
 
-MOVE or a swipe turns the page; ACT (Done) or BACK goes Home. If the last
+MOVE or a swipe turns the page, wrapping, and the page dots count three or four; ACT (Done) or BACK goes Home. If the last
 write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED.
 
 The 5 s and 1 min bests are exact. The 5 and 20 min bests use 10 s buckets, so
@@ -156,7 +160,7 @@ they can read slightly low but never high.
 ## Saved rides
 
 ```text
-Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved ride (3 pages) ── ACT ──> Phone
+Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved ride (3 or 4 pages) ── ACT ──> Phone
                    │ BACK: Home                            │ BACK: Rides               │ BACK: the ride
 ```
 
@@ -167,11 +171,13 @@ distance where kept, and its average heart rate. MOVE focuses the next ride
 (held, it pages four cards at a time), ACT or a tap opens it, BACK goes Home.
 Without a saved ride the list says NO RIDES YET.
 
-A saved ride opens on the summary's three pages, read back from its journal:
+A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
 read. Laps read back from the ride (a ride recorded before laps were kept
-reads --); climbs are not kept, so they read --; ascent comes from the
-recorded gradient. MOVE or a swipe turns the page, BACK returns to
+reads --); climbs are not kept, so they read --. Ascent and the
+elevation profile come from the altitude recorded with the ride, with the same
+3 m band as a live ride; a ride saved before altitude was recorded estimates
+its ascent from the recorded gradient and shows no profile. MOVE or a swipe turns the page, BACK returns to
 the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
 record cannot be read says RIDE UNREADABLE.
 

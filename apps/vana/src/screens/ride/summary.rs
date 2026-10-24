@@ -1,19 +1,26 @@
 //! After the ride: a brief SAVING, then RIDE SAVED and what the ride added
-//! up to, on three pages that MOVE or a swipe step through.
+//! up to, on three pages that MOVE or a swipe step through, or four for a
+//! ride that recorded altitude.
 //!
 //! 1. Overview: time, distance, average speed, ascent, average power and
 //!    heart rate under a green check.
 //! 2. Effort: normalized, average and peak power, work, heart rate and the
 //!    time in each power and heart rate zone.
-//! 3. Best power: the best 5 s, 1, 5 and 20 min of the ride as bars, then
-//!    the climbs and laps.
+//! 3. Elevation, only for a ride that recorded altitude: ascent, descent,
+//!    lowest and highest altitude over the ride's elevation profile.
+//! 4. Best power (page 3 without an elevation page): the best 5 s, 1, 5 and
+//!    20 min of the ride as bars, then the climbs and laps.
 //!
 //! ACT (the green check cue) or BACK finishes and opens Home.
 //!
 //! A saved ride from the ride list shows on the same pages, read back from
 //! its journal: its start replaces RIDE SAVED, BACK returns to the list and
 //! ACT sends it to the phone. What the journal does not keep shows as --:
-//! climbs, and the laps of a ride recorded before laps were kept.
+//! climbs, and the laps of a ride recorded before laps were kept. Ascent,
+//! descent and the profile come from the recorded altitude; a ride recorded
+//! without it keeps its pages as they were, with ascent estimated from the
+//! gradient.
+use super::elevation::Chart;
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
 use crate::ride::totals::EFFORT_SECONDS;
@@ -29,7 +36,6 @@ pub const CUE: Cue = Cue::new(Corner::BottomRight, Icon::Check);
 /// A saved ride: ACT sends it to the phone. BACK keeps its fixed role,
 /// back to the list, without a cue, as on the ride pages.
 pub const PAST_CUES: [Cue; 1] = [Cue::new(Corner::BottomRight, Icon::Send)];
-pub const PAGES: usize = 3;
 
 /// Where the saved ride stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,6 +65,8 @@ pub struct After {
     pub laps: Option<u16>,
     /// A saved ride from the list, titled by `View::past_title`.
     pub past: bool,
+    /// The ride has an elevation page.
+    pub elevation: bool,
 }
 
 const LEFT: usize = 16;
@@ -143,6 +151,7 @@ pub fn prepare(view: &View) -> Canvas {
     match view.after.page {
         0 => overview(view, &mut canvas),
         1 => effort(view, &mut canvas),
+        2 if view.after.elevation => elevation_page(view, &mut canvas),
         _ => best_power(view, &mut canvas),
     }
     canvas
@@ -217,6 +226,64 @@ fn effort(view: &View, canvas: &mut Canvas) {
     let bars = first + 3 * super::CELL_PITCH + 12;
     zone_bar(canvas, b"PWR", (LEFT, BAR_LEFT), bars, marks.power_time);
     zone_bar(canvas, b"HR", (LEFT, BAR_LEFT), bars + 18, marks.heart_time);
+}
+
+/// The pages of the summary. A ride that recorded altitude has an elevation
+/// page between effort and best power.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummaryPage {
+    Overview,
+    Effort,
+    Elevation,
+    BestPower,
+}
+
+impl SummaryPage {
+    /// The page at `index` of a summary with or without an elevation page.
+    pub const fn at(index: usize, elevation: bool) -> Self {
+        match (index, elevation) {
+            (0, _) => Self::Overview,
+            (1, _) => Self::Effort,
+            (2, true) => Self::Elevation,
+            _ => Self::BestPower,
+        }
+    }
+}
+
+/// How many pages the summary has.
+pub const fn pages(elevation: bool) -> usize {
+    if elevation { 4 } else { 3 }
+}
+
+/// The elevation profile shows once the ride is saved.
+pub fn shows_elevation(view: &View) -> bool {
+    view.after.elevation
+        && SummaryPage::at(view.after.page, true) == SummaryPage::Elevation
+        && matches!(view.after.saving, Saving::Saved | Saving::Failed)
+}
+
+/// Where the elevation page's cells start, and its chart below them.
+const ELEVATION_CELLS: usize = CONTENT.top + 8;
+
+fn elevation_page(view: &View, canvas: &mut Canvas) {
+    let totals = &view.totals;
+    let mut values: [Text<12>; 4] = core::array::from_fn(|_| Text::new());
+    let [ascent, descent, low, high] = &mut values;
+    whole(ascent, Some((totals.ascent_dm() + 5) / 10));
+    whole(descent, Some((totals.descent_dm() + 5) / 10));
+    let range = view.elevation_chart.and_then(Chart::range_m);
+    whole(low, range.map(|(low, _)| low));
+    whole(high, range.map(|(_, high)| high));
+    cells(
+        canvas,
+        ELEVATION_CELLS,
+        &[
+            (b"ASCENT M", ascent, GRADE),
+            (b"DESCENT M", descent, GRADE),
+            (b"MIN M", low, GRADE),
+            (b"MAX M", high, GRADE),
+        ],
+    );
 }
 
 /// The longest a best-power bar can be; the highest effort fills it.
@@ -325,6 +392,7 @@ mod tests {
             climbs: Some(999),
             laps: Some(999),
             past: false,
+            elevation: false,
         };
         view.prepare();
         view
@@ -365,6 +433,48 @@ mod tests {
         assert!(extreme(0, Saving::Failed).canvas.shows("NOT ALL SAVED"));
         let saving = extreme(0, Saving::Writing);
         assert!(saving.canvas.shows("SAVING") && badge(&saving).is_none());
+    }
+
+    #[test]
+    fn a_ride_with_altitude_has_an_elevation_page_before_best_power() {
+        let bounds = Rect {
+            left: 0,
+            top: CONTENT.top,
+            right: WIDTH,
+            bottom: HEIGHT - RADIUS + 12,
+        };
+        let mut trace = crate::ride::elevation::Trace::default();
+        for metres in (0..4000).step_by(5) {
+            trace.add(metres * 1000, Some(-120 + (metres as i32 % 2000)));
+        }
+        let mut chart = Chart::default();
+        chart.refresh(&trace);
+        let with_altitude = |page| {
+            let mut view = extreme(page, Saving::Saved);
+            view.elevation_chart = Some(&chart);
+            view.after.elevation = true;
+            view.prepare();
+            view
+        };
+        let view = with_altitude(2);
+        let want = ["ASCENT M", "DESCENT M", "MIN M", "MAX M", "-12", "186"];
+        view.canvas.assert_laid_out(bounds, &want, "elevation");
+        assert!(shows_elevation(&view));
+        let fill = crate::screens::ride::elevation::pixel(
+            &chart,
+            WIDTH / 2,
+            crate::screens::ride::elevation::BOTTOM - 1,
+        );
+        assert!(fill.is_some(), "the chart fills above its baseline");
+        assert!(with_altitude(3).canvas.shows("BEST POWER W"));
+        assert!(!with_altitude(1).canvas.shows("ASCENT M"));
+        assert!(!shows_elevation(&with_altitude(1)));
+        let mut writing = extreme(2, Saving::Writing);
+        writing.after.elevation = true;
+        assert!(!shows_elevation(&writing));
+        let plain = extreme(2, Saving::Saved);
+        assert!(plain.canvas.shows("BEST POWER W") && !shows_elevation(&plain));
+        assert_eq!((pages(false), pages(true)), (3, 4));
     }
 
     #[test]

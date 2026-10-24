@@ -11,6 +11,7 @@ use crate::ride::auto::Auto;
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::control::Action;
+use crate::ride::elevation::Trace;
 use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Source, Status};
@@ -19,6 +20,7 @@ use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
+use crate::screens::ride::ElevationChart;
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
 
@@ -104,6 +106,11 @@ pub(super) struct Ride {
     pub(super) zone_time: ZoneTime,
     /// Best power over 5 s to 20 min, kept and reset with `totals`.
     pub(super) efforts: Efforts,
+    /// Altitude over distance for the summary's chart, kept and reset with
+    /// `totals`.
+    pub(super) trace: Trace,
+    /// The summary's chart of `trace`, charted when the page opens.
+    pub(super) chart: ElevationChart,
     /// Climbs finished this ride.
     pub(super) climbs_done: u16,
     /// A lap closed since the last chime.
@@ -162,6 +169,8 @@ impl Default for Ride {
             lap_toast: None,
             zone_time: ZoneTime::default(),
             efforts: Efforts::default(),
+            trace: Trace::default(),
+            chart: ElevationChart::default(),
             climbs_done: 0,
             lap_chime: false,
             climbs: Climbs::default(),
@@ -416,6 +425,7 @@ impl Ride {
         // their last one through a gap, which would read as a level road.
         let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
         self.altitude_fresh = altitude.is_some();
+        self.trace.add(self.totals.distance_mm(), altitude);
         let climb = self.climbs.add(credited, distance_mm, altitude);
         if let Some(ClimbEvent::Finished(_)) = climb {
             self.climbs_done = self.climbs_done.saturating_add(1);
@@ -508,6 +518,7 @@ impl Ride {
             totals: &mut self.totals,
             zone_time: &mut self.zone_time,
             efforts: &mut self.efforts,
+            trace: &mut self.trace,
         };
         let (internal, bulk_media) = (&mut self.internal_media, &mut self.bulk_media);
         let mut slot = crate::ride::log::Slot::default();
@@ -725,6 +736,7 @@ impl Runtime {
                 ride.lap_toast = None;
                 ride.zone_time = ZoneTime::default();
                 ride.efforts = Efforts::default();
+                ride.trace = Trace::default();
                 ride.climbs_done = 0;
                 ride.climbs = Climbs::default();
                 self.navigation.climb_return = None;

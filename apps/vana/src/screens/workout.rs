@@ -113,6 +113,9 @@ pub struct View<'a> {
     pub(super) marks: Marks,
     /// The climb page's chart, prepared with `canvas`.
     pub(super) climb: ClimbFrame,
+    /// The summary's elevation chart, borrowed from `Ride` (about 430
+    /// bytes, which the main stack cannot spare a copy of).
+    pub elevation_chart: Option<&'a ride::ElevationChart>,
     /// The workout chosen or running, for the workout page and the target
     /// band on the main page.
     pub training: Option<ride::Training>,
@@ -194,6 +197,7 @@ impl View<'_> {
             profile: TrainingProfile::default(),
             marks: Marks::default(),
             climb: ClimbFrame::default(),
+            elevation_chart: None,
             training: None,
             chart: ride::WorkoutChart::default(),
             picker: super::workouts::Picker::default(),
@@ -266,6 +270,15 @@ impl View<'_> {
                 self.canvas.paint(row);
                 super::phone::paint(self, row);
             }
+            Page::Summary | Page::PastRide => {
+                if let Some(chart) = self
+                    .elevation_chart
+                    .filter(|_| summary::shows_elevation(self))
+                {
+                    ride::elevation::paint(chart, row);
+                }
+                self.canvas.paint(row);
+            }
             _ => self.canvas.paint(row),
         }
         if let Some(badge) = &self.badge {
@@ -310,6 +323,14 @@ impl View<'_> {
             Page::Home => self.home.pixel(x, y),
             Page::Phone => {
                 super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas.pixel(x, y, BLACK))
+            }
+            Page::Summary | Page::PastRide => {
+                let under = self
+                    .elevation_chart
+                    .filter(|_| summary::shows_elevation(self))
+                    .and_then(|chart| ride::elevation::pixel(chart, x, y))
+                    .unwrap_or(BLACK);
+                self.canvas.pixel(x, y, under)
             }
             _ => self.canvas.pixel(x, y, BLACK),
         };
@@ -356,7 +377,8 @@ impl View<'_> {
                 &ride::end::CUES
             }
             Page::Summary => {
-                self.bar.set_pages(self.after.page, summary::PAGES);
+                self.bar
+                    .set_pages(self.after.page, summary::pages(self.after.elevation));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
                 self.badge = summary::badge(self);
@@ -384,7 +406,8 @@ impl View<'_> {
             // The runtime prepares the list with `set_canvas`.
             Page::History => &[],
             Page::PastRide => {
-                self.bar.set_pages(self.after.page, summary::PAGES);
+                self.bar
+                    .set_pages(self.after.page, summary::pages(self.after.elevation));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
                 if self.after.saving == summary::Saving::Reading {
@@ -788,16 +811,26 @@ mod tests {
         end.state = Status::Paused;
         end.prepare();
         assert_paints_reference(&end, "end ride");
-        for saving in [Saving::Writing, Saving::Saved, Saving::Failed] {
-            for page in 0..crate::screens::ride::summary::PAGES {
-                let mut summary = ride(Page::Summary);
-                summary.state = Status::Saved;
-                summary.after.saving = saving;
-                summary.after.page = page;
-                summary.after.best = [Some(900), Some(400), Some(300), None];
-                summary.prepare();
-                let what = std::format!("summary {page} {saving:?}");
-                assert_paints_reference(&summary, &what);
+        let mut trace = crate::ride::elevation::Trace::default();
+        for metres in (0..4000).step_by(5) {
+            trace.add(metres * 1000, Some(6000 + (metres as i32 % 1500) / 2));
+        }
+        let mut chart = ride::ElevationChart::default();
+        chart.refresh(&trace);
+        for elevation in [false, true] {
+            for saving in [Saving::Writing, Saving::Saved, Saving::Failed] {
+                for page in 0..crate::screens::ride::summary::pages(elevation) {
+                    let mut summary = ride(Page::Summary);
+                    summary.state = Status::Saved;
+                    summary.after.saving = saving;
+                    summary.after.page = page;
+                    summary.after.best = [Some(900), Some(400), Some(300), None];
+                    summary.elevation_chart = Some(&chart);
+                    summary.after.elevation = elevation;
+                    summary.prepare();
+                    let what = std::format!("summary {page} {saving:?}");
+                    assert_paints_reference(&summary, &what);
+                }
             }
         }
     }

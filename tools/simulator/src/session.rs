@@ -233,6 +233,9 @@ impl InputObservation for NoInputObservation {
 /// startup: three seconds of passive observation before the startup
 /// acknowledgment, then an operating reason and two advancing sensor samples.
 pub const COMPANION_BOOT_MS: u64 = 3_300;
+/// How long C606's startup check watches a running companion after a
+/// main-CPU restart before it admits work: one passive probe window.
+pub const RESTART_PROBE_MS: u64 = 3_000;
 pub type VirtualShell =
     firmware_shell::shell::Shell<DisplayDevice, InputDevice, PowerDevice, FileFlash>;
 
@@ -292,6 +295,11 @@ pub struct Session {
     pub startup: Startup,
     /// Uptime at which a starting companion runs, and the ANT availability then.
     companion_boot_ms: Option<(u64, Availability)>,
+    /// How long a main-CPU restart probes a running companion before work
+    /// is admitted; zero admits work at once. Kept across reboots.
+    pub restart_probe_ms: u64,
+    /// Uptime at which this boot's restart probe ends, and the phase then.
+    restart_probe: Option<(u64, Startup)>,
     pub input: InputDevice,
     pub power: PowerDevice,
     /// Coordinated shutdown and work readiness, as composition reads them.
@@ -326,6 +334,7 @@ impl Session {
     pub fn device() -> io::Result<Self> {
         let mut session = Self::with_media(FileFlash::memory(), 240, 320)?;
         session.companion_starting(Availability::Ready);
+        session.restart_probe_ms = RESTART_PROBE_MS;
         Ok(session)
     }
     /// The companion is probing after power-on; ANT admits nothing until it runs.
@@ -415,6 +424,8 @@ impl Session {
             battery: Battery::default(),
             startup: Startup::Unsupported,
             companion_boot_ms: None,
+            restart_probe_ms: 0,
+            restart_probe: None,
             input,
             power,
             switch: PowerSwitch::default(),
@@ -445,6 +456,12 @@ impl Session {
             self.startup = Startup::Ready;
             self.ant.availability = ant;
         }
+        if let Some((at, phase)) = self.restart_probe
+            && self.now >= at
+        {
+            self.restart_probe = None;
+            self.startup = phase;
+        }
         self.ant.tick(&self.world, self.now);
         if let Some(strap) = &mut self.ble_strap {
             let selected = self.shell.settings.ble.is_some();
@@ -458,13 +475,7 @@ impl Session {
             .level
             .map(|(percent, mv)| (percent, mv, self.now));
         self.speaker.tick(self.now);
-        self.switch.now = self.now;
-        self.switch.startup_ready = matches!(
-            self.startup,
-            Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
-        );
-        self.switch.startup_running =
-            self.switch.startup_ready || self.startup == Startup::RunningDegraded;
+        self.observe_startup();
         if self.switch.off_due() {
             self.turn_off();
             return;
@@ -568,6 +579,16 @@ impl Session {
             };
         }
     }
+    /// Power work readiness follows the companion's startup, as on C606.
+    fn observe_startup(&mut self) {
+        self.switch.now = self.now;
+        self.switch.startup_ready = matches!(
+            self.startup,
+            Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
+        );
+        self.switch.startup_running =
+            self.switch.startup_ready || self.startup == Startup::RunningDegraded;
+    }
     /// The panel shows something while the device is off: charging standby.
     pub fn standby_lit(&self) -> bool {
         self.off && self.power.0.borrow().brightness > 0
@@ -612,6 +633,12 @@ impl Session {
         Ok(())
     }
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
+        self.observe_startup();
+        let power = device_api::power::PowerControl::status(&self.switch);
+        if !power.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
+            firmware_console::protocol::write_not_ready(out, power.state, self.startup);
+            return "BUSY";
+        }
         if let Some(status) =
             firmware_console::commands::ant::execute(request.command, &mut self.ant, self.now, out)
         {
@@ -945,7 +972,13 @@ impl Session {
             next.companion_boot_ms = self
                 .companion_boot_ms
                 .map(|(at, ant)| (at.saturating_sub(self.now), ant));
+            let companion_running = next.companion_boot_ms.is_none();
+            if companion_running && self.restart_probe_ms > 0 {
+                next.restart_probe = Some((self.restart_probe_ms, next.startup));
+                next.startup = Startup::Probing;
+            }
         }
+        next.restart_probe_ms = self.restart_probe_ms;
         next.gps = self.gps.take().map(|mut gps| {
             gps.reset();
             gps
@@ -970,8 +1003,9 @@ struct Reply<'a> {
     boot: u32,
     data: &'a str,
 }
-pub fn terminal(root: &Path, width: usize, height: usize) -> io::Result<()> {
+pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64) -> io::Result<()> {
     let mut session = Session::new(root, width, height)?;
+    session.restart_probe_ms = restart_probe_ms;
     let mut line = Vec::new();
     let mut overflow = false;
     let stdin = io::stdin();

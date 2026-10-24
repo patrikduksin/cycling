@@ -12,6 +12,9 @@ from pathlib import Path
 from cycling_devtools.terminal.usb import UsbConnection, open_no_reset, terminal_reply
 from cycling_devtools.workspace import ROOT
 
+# C606's startup check watches its companion this long after a restart.
+RESTART_PROBE_MS = 3000
+
 
 class ManualAction(RuntimeError):
     pass
@@ -159,7 +162,14 @@ class Virtual:
         try:
             executable = self.build()
             self.process = subprocess.Popen(
-                [executable, '--terminal', '--state-dir', str(self.state_dir)],
+                [
+                    executable,
+                    '--terminal',
+                    '--state-dir',
+                    str(self.state_dir),
+                    '--restart-probe-ms',
+                    str(RESTART_PROBE_MS),
+                ],
                 cwd=ROOT,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,

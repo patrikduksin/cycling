@@ -427,6 +427,8 @@ class HarnessTests(unittest.TestCase):
 
             def terminal_command(self, command, **_):
                 self.request_id += 1
+                if command == 'SETTINGS':
+                    return {'status': 'OK', 'data': 'brightness=50'}
                 if command != 'HARNESS CAPS':
                     raise AssertionError(command)
                 return {'status': 'OK', 'data': 'boot=2 input=unsupported capture=unsupported'}
@@ -438,6 +440,57 @@ class HarnessTests(unittest.TestCase):
                 self.assertTrue(runner.step({'op': 'recover', 'mode': 'restart'}, 0)['boot_changed'])
             finally:
                 runner.trace.close()
+
+    def test_restart_recovery_waits_out_startup_before_opening_a_session(self):
+        class Starting:
+            virtual = True
+            request_id = 1
+
+            def __init__(self, busy, power='state: Initializing'):
+                self.busy, self.power, self.commands, self.delays = list(busy), power, [], []
+
+            def recover(self, *_):
+                self.commands.append('RESTART')
+                return {'mode': 'restart'}
+
+            def delay(self, seconds):
+                self.delays.append(seconds)
+
+            def terminal_command(self, command, **_):
+                self.commands.append(command)
+                self.request_id += 1
+                if command == 'POWER':
+                    return {'status': 'OK', 'data': f'status=Status {{ {self.power}, ready: false }}'}
+                if command != 'INFO' and self.busy:
+                    return {'status': 'BUSY', 'data': self.busy.pop(0)}
+                if command == 'HARNESS CAPS':
+                    return {'status': 'OK', 'data': 'boot=2 input=unsupported capture=unsupported'}
+                return {'status': 'OK', 'data': 'brightness=50'}
+
+        def recover(fake):
+            with tempfile.TemporaryDirectory() as directory:
+                runner = Runner(fake, Path(directory))
+                runner.boot = '1'
+                try:
+                    return runner.step({'op': 'recover', 'mode': 'restart'}, 0)
+                finally:
+                    runner.trace.close()
+
+        for detail in ('starting companion=probing', 'power transition'):
+            with self.subTest(detail=detail):
+                fake = Starting([detail, detail])
+                self.assertTrue(recover(fake)['boot_changed'])
+                self.assertEqual(fake.commands.count('RESTART'), 1)
+                self.assertEqual(fake.commands[-2:], ['SETTINGS', 'HARNESS CAPS'])
+                self.assertEqual(len(fake.delays), 2)
+        fake = Starting(['power transition'], power='state: Charging')
+        with self.assertRaisesRegex(RuntimeError, 'charging standby'):
+            recover(fake)
+        self.assertNotIn('HARNESS CAPS', fake.commands)
+        with patch('cycling_devtools.harness.runner.READY_TIMEOUT_S', 0):
+            fake = Starting(['starting companion=timed_out'])
+            with self.assertRaisesRegex(TimeoutError, 'still starting'):
+                recover(fake)
 
     def test_ant_allowlist_requires_bounded_scan_and_owned_stop(self):
         scan = dict(op='ant', action='scan', seconds=10)

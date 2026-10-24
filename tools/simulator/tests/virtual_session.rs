@@ -1,4 +1,4 @@
-use shell_simulator::session::{COMPANION_BOOT_MS, Session};
+use shell_simulator::session::{COMPANION_BOOT_MS, RESTART_PROBE_MS, Session};
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
@@ -390,6 +390,30 @@ fn cpu_restart_while_the_companion_boots_lets_it_finish() {
         (s.startup, s.ant.availability),
         (Startup::Ready, Availability::Ready)
     );
+}
+
+#[test]
+fn work_after_a_restart_waits_for_the_companion_probe_and_says_starting() {
+    // #137: a restart's harness session was refused as a power transition.
+    let t = Temp::new();
+    let mut s = Session::new(&t.0, 32, 24).unwrap();
+    s.restart_probe_ms = RESTART_PROBE_MS;
+    assert_eq!(command(&mut s, "BRIGHTNESS 61").0, "OK");
+    assert_eq!(command(&mut s, "SAVE").0, "OK");
+    s.restart().unwrap();
+    assert_eq!(command(&mut s, "INFO").0, "OK");
+    assert_eq!(
+        command(&mut s, "SETTINGS"),
+        ("BUSY", "starting companion=probing".into())
+    );
+    // A refused mutation changed nothing.
+    assert_eq!(command(&mut s, "BRIGHTNESS 42").0, "BUSY");
+    s.step(RESTART_PROBE_MS);
+    let (status, settings) = command(&mut s, "SETTINGS");
+    assert_eq!(status, "OK");
+    assert!(settings.contains("brightness=61"), "{settings}");
+    s.restart().unwrap();
+    assert_eq!(command(&mut s, "SETTINGS").0, "BUSY");
 }
 
 #[test]

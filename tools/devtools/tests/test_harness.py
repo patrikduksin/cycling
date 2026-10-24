@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cycling_devtools.harness.runner import Runner, decode_chunk, events_for, execute, png_rgb565, preflight
-from cycling_devtools.harness.transport import Real, Virtual
+from cycling_devtools.harness.transport import RESTART_PROBE_MS, Real, Virtual
 from workspace_fixture import private_root
 
 
@@ -427,6 +427,8 @@ class HarnessTests(unittest.TestCase):
 
             def terminal_command(self, command, **_):
                 self.request_id += 1
+                if command == 'SETTINGS':
+                    return {'status': 'OK', 'data': 'brightness=50'}
                 if command != 'HARNESS CAPS':
                     raise AssertionError(command)
                 return {'status': 'OK', 'data': 'boot=2 input=unsupported capture=unsupported'}
@@ -438,6 +440,69 @@ class HarnessTests(unittest.TestCase):
                 self.assertTrue(runner.step({'op': 'recover', 'mode': 'restart'}, 0)['boot_changed'])
             finally:
                 runner.trace.close()
+
+    def test_restart_recovery_waits_out_startup_before_opening_a_session(self):
+        class Starting:
+            virtual = True
+            request_id = 1
+
+            def __init__(self, busy, power='state: Initializing'):
+                self.busy, self.power, self.commands, self.delays = list(busy), power, [], []
+                self.timeouts = []
+
+            def recover(self, *_):
+                self.commands.append('RESTART')
+                return {'mode': 'restart'}
+
+            def delay(self, seconds):
+                self.delays.append(seconds)
+
+            def terminal_command(self, command, timeout):
+                self.commands.append(command)
+                self.timeouts.append(timeout)
+                self.request_id += 1
+                if command == 'POWER':
+                    return {'status': 'OK', 'data': f'status=Status {{ {self.power}, ready: false }}'}
+                if command != 'INFO' and self.busy:
+                    return {'status': 'BUSY', 'data': self.busy.pop(0)}
+                if command == 'HARNESS CAPS':
+                    return {'status': 'OK', 'data': 'boot=2 input=unsupported capture=unsupported'}
+                return {'status': 'OK', 'data': 'brightness=50'}
+
+        def recover(fake):
+            with tempfile.TemporaryDirectory() as directory:
+                runner = Runner(fake, Path(directory))
+                runner.boot = '1'
+                try:
+                    return runner.step({'op': 'recover', 'mode': 'restart'}, 0)
+                finally:
+                    runner.trace.close()
+
+        for detail in ('starting companion=probing', 'power transition'):
+            with self.subTest(detail=detail):
+                fake = Starting([detail, detail])
+                self.assertTrue(recover(fake)['boot_changed'])
+                self.assertEqual(fake.commands.count('RESTART'), 1)
+                self.assertEqual(fake.commands[-2:], ['SETTINGS', 'HARNESS CAPS'])
+                self.assertEqual(len(fake.delays), 2)
+        for busy, power, error in (
+            ('power transition', 'state: Charging', 'charging standby.*POWER WAKE'),
+            ('starting companion=charging', 'state: Initializing', 'charging standby.*POWER WAKE'),
+            ('starting companion=timed_out', 'state: Initializing', 'startup failed'),
+            ('power transition', 'state: Sleeping', r'BUSY \(power transition\)'),
+            ('active work', 'state: Idle', r'BUSY \(active work\)'),
+        ):
+            with self.subTest(busy=busy, power=power):
+                fake = Starting([busy], power=power)
+                with self.assertRaisesRegex(RuntimeError, error):
+                    recover(fake)
+                self.assertNotIn('HARNESS CAPS', fake.commands)
+                self.assertEqual(fake.delays, [])
+        with patch('cycling_devtools.harness.runner.READY_TIMEOUT_S', 0):
+            fake = Starting(['starting companion=probing'])
+            with self.assertRaisesRegex(TimeoutError, 'still starting'):
+                recover(fake)
+            self.assertEqual(fake.timeouts, [0.1])
 
     def test_ant_allowlist_requires_bounded_scan_and_owned_stop(self):
         scan = dict(op='ant', action='scan', seconds=10)
@@ -526,6 +591,14 @@ class HarnessTests(unittest.TestCase):
 
 class VirtualStartupTests(unittest.TestCase):
     """The first reply clock starts at the simulator's ready line, never at launch."""
+
+    def test_virtual_restart_refuses_work_until_the_companion_probe_ends(self):
+        with tempfile.TemporaryDirectory() as directory, Virtual(directory) as transport:
+            self.assertEqual(transport.terminal_command('RESTART')['status'], 'ACCEPTED')
+            reply = transport.terminal_command('SETTINGS')
+            self.assertEqual((reply['status'], reply['data']), ('BUSY', 'starting companion=probing'))
+            transport.delay(RESTART_PROBE_MS / 1000)
+            self.assertEqual(transport.terminal_command('SETTINGS')['status'], 'OK')
 
     def simulator(self, directory, body):
         path = Path(directory) / 'simulator'

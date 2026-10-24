@@ -24,9 +24,15 @@ fn main() {
         let height = value("--height")
             .map(|s| s.parse().expect("invalid height"))
             .unwrap_or(320);
-        if let Err(error) =
-            shell_simulator::session::terminal(std::path::Path::new(root), width, height)
-        {
+        let restart_probe_ms = value("--restart-probe-ms")
+            .map(|s| s.parse().expect("invalid restart probe"))
+            .unwrap_or(0);
+        if let Err(error) = shell_simulator::session::terminal(
+            std::path::Path::new(root),
+            width,
+            height,
+            restart_probe_ms,
+        ) {
             eprintln!("virtual terminal: {error}");
             std::process::exit(1);
         }

@@ -86,30 +86,14 @@ pub fn execute(
     let mut output = Text::new();
     let mut status = "OK";
     let started = embassy_time::Instant::now();
-    if !power.status().ready
-        && !matches!(
-            request.command,
-            Command::Power(_)
-                | Command::PowerShutdownAfter(_)
-                | Command::Info
-                | Command::Status
-                | Command::Input
-                | Command::Battery
-                | Command::Position
-                | Command::Peripheral(_)
-                | Command::Wifi
-                | Command::Ble
-                | Command::Ant
-                | Command::AntCapabilities
-                | Command::AntOperation(_)
-                | Command::AntChannel(_)
-                | Command::AntDevices
-                | Command::AntRead
-                | Command::Restart
-                | Command::Help
-        )
-    {
-        terminal.reply(request.id, "BUSY", "power transition", now);
+    let readiness = power.status();
+    if !readiness.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
+        firmware_console::protocol::write_not_ready(
+            &mut output,
+            readiness.state,
+            device_api::sensors::Sensors::startup_status(sensors),
+        );
+        terminal.reply(request.id, "BUSY", output.as_str(), now);
         return;
     }
     if let Some(status) =

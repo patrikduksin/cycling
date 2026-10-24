@@ -422,6 +422,49 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
     Ok(Request { id, command })
 }
 
+/// Whether a command runs while power work is not ready. The rest are
+/// refused with `BUSY` before they run, so nothing is queued and the host
+/// may ask again once the device is ready.
+pub fn admitted_while_not_ready(command: Command) -> bool {
+    matches!(
+        command,
+        Command::Power(_)
+            | Command::PowerShutdownAfter(_)
+            | Command::Info
+            | Command::Status
+            | Command::Input
+            | Command::Battery
+            | Command::Position
+            | Command::Peripheral(_)
+            | Command::Wifi
+            | Command::Ble
+            | Command::Ant
+            | Command::AntCapabilities
+            | Command::AntOperation(_)
+            | Command::AntChannel(_)
+            | Command::AntDevices
+            | Command::AntRead
+            | Command::Restart
+            | Command::Help
+    )
+}
+
+/// The `BUSY` detail for a command refused while power work is not ready.
+/// `starting` means the device has not finished
+/// starting: hosts wait for it within a bound. Any other detail is a power
+/// transition (charging standby, sleep, shutdown) that waiting may not end.
+pub fn write_not_ready(
+    out: &mut impl core::fmt::Write,
+    power: device_api::power::State,
+    startup: device_api::sensors::Startup,
+) {
+    let _ = if power == device_api::power::State::Initializing {
+        write!(out, "starting companion={}", startup.name())
+    } else {
+        out.write_str("power transition")
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,6 +477,31 @@ mod tests {
         );
         assert_eq!(parse(b"CMD 1 CRASH NOW"), Err(Error::Invalid));
         assert_eq!(parse(b"CMD 1 CRASH CLEAR extra"), Err(Error::Invalid));
+    }
+    #[test]
+    fn startup_refusals_say_starting_and_other_transitions_do_not() {
+        use device_api::power::State;
+        use device_api::sensors::Startup;
+        let detail = |power, startup| {
+            let mut out = std::string::String::new();
+            write_not_ready(&mut out, power, startup);
+            out
+        };
+        assert_eq!(
+            detail(State::Initializing, Startup::Probing),
+            "starting companion=probing"
+        );
+        assert_eq!(
+            detail(State::Charging, Startup::Charging),
+            "power transition"
+        );
+        assert_eq!(
+            detail(State::Requested, Startup::PowerTransition),
+            "power transition"
+        );
+        assert!(!admitted_while_not_ready(Command::Settings));
+        assert!(admitted_while_not_ready(Command::Info));
+        assert!(admitted_while_not_ready(Command::Power(None)));
     }
     #[test]
     fn ant_commands_are_bounded_and_explicit() {

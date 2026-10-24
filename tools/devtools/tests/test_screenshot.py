@@ -54,7 +54,7 @@ class FakeHarness:
         self.request_id += 1
         words = command.split()
         common = 'boot=9 session=5'
-        if command == 'ACTIVITY':
+        if command in ('ACTIVITY', 'SETTINGS'):
             data = ''
         elif command == 'HARNESS CAPS':
             data = f'capture={self.capture} input=supported chunk_bytes={self.chunk_pixels * 2} buttons=0,1,2,3, boot=9'

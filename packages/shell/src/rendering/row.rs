@@ -55,7 +55,7 @@ impl<'a> Row<'a> {
         let start = x.start.max(self.start);
         let end = x.end.min(self.pixels.len());
         if start < end {
-            self.pixels[start..end].fill(color);
+            fill(&mut self.pixels[start..end], color);
             work::add(|work| {
                 work.spans += 1;
                 work.span_pixels += (end - start) as u64;
@@ -123,6 +123,18 @@ impl<'a> Row<'a> {
     }
 }
 
+/// `pixels.fill(color)` two pixels a store: at the firmware's opt-level
+/// "s" a `u16` fill stays one store per pixel, and spans are most of a
+/// frame's writes.
+fn fill(pixels: &mut [u16], color: u16) {
+    // SAFETY: every bit pattern is a valid u32 and u16, and `align_to_mut`
+    // keeps the middle slice inside `pixels` with u32 alignment.
+    let (head, pairs, tail) = unsafe { pixels.align_to_mut::<u32>() };
+    head.fill(color);
+    pairs.fill(u32::from(color) * 0x0001_0001);
+    tail.fill(color);
+}
+
 #[cfg(test)]
 mod tests {
     use super::Row;
@@ -144,6 +156,24 @@ mod tests {
                             assert_eq!(pixel == 7, text(x, y, left, 2, scale, chunk));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spans_fill_every_pixel_at_any_alignment() {
+        for start in 0..4 {
+            for end in start..12 {
+                let mut pixels = [0u16; 12];
+                Row::new(0, &mut pixels).span(start..end, 0xabcd);
+                for (x, &pixel) in pixels.iter().enumerate() {
+                    let inside = (start..end).contains(&x);
+                    assert_eq!(
+                        pixel,
+                        if inside { 0xabcd } else { 0 },
+                        "{start}..{end} at {x}"
+                    );
                 }
             }
         }

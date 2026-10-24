@@ -37,7 +37,7 @@ BULK_LOG_DATA = 16
 # Where record 0 was before the volume table (exports made then record no start).
 BULK_DATA_START = BULK_LOG_DATA
 MEDIA = ('internal', 'bulk')
-LAP_STARTS = {0: 'ride', 1: 'manual', 2: 'distance', 3: 'step', 4: 'distance_step'}
+LAP_STARTS = {0: 'ride', 1: 'manual', 2: 'distance', 3: 'step', 4: 'distance_step', 5: 'position'}
 
 
 def prefix(medium):

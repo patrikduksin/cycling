@@ -91,6 +91,7 @@ const SUB_SPORT_GENERIC: u8 = 0;
 const LAP_TRIGGER_MANUAL: u8 = 0;
 const LAP_TRIGGER_TIME: u8 = 1;
 const LAP_TRIGGER_DISTANCE: u8 = 2;
+const LAP_TRIGGER_POSITION_START: u8 = 3;
 const LAP_TRIGGER_SESSION_END: u8 = 7;
 const SESSION_TRIGGER_ACTIVITY_END: u8 = 0;
 const ACTIVITY_MANUAL: u8 = 0;
@@ -105,6 +106,7 @@ const fn lap_trigger(start: LapStart) -> Option<u8> {
         LapStart::Manual => Some(LAP_TRIGGER_MANUAL),
         LapStart::Distance | LapStart::DistanceStep => Some(LAP_TRIGGER_DISTANCE),
         LapStart::Step => Some(LAP_TRIGGER_TIME),
+        LapStart::Position => Some(LAP_TRIGGER_POSITION_START),
     }
 }
 

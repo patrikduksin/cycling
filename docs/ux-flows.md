@@ -69,6 +69,21 @@ plays the start chime. On the ride pages ACT pauses, MOVE turns the page and
 BACK takes a lap (with a lap toast and the lap chime). The ride pages never
 show cues: the buttons keep fixed roles.
 
+Settings RIDE has AUTO LAP: OFF, EVERY 1, 2, 5 or 10 KM, or AT START, which
+takes a lap each time the rider rides past where the ride began, for loops
+and repeats. It shows the same lap toast. The start is where the rider first
+moves, so a car park off the road does not matter. A pass is within 40 m of
+the start and then out beyond 50 m while moving, and counts once the rider
+has been 100 m away; the lap closes as the rider leaves, so waiting at the
+start, at a light or to refill a bottle, delays it without losing it, and
+stopping there for good takes no lap. The first lap closes no earlier than
+500 m and a minute; later laps have no minimum, so a short loop laps every
+time. A paused ride takes no lap. A pass made wholly inside a GPS gap is not
+counted. A ride resumed after a restart counts from where it resumed, not
+where it began, as the start is kept in memory only. GPS that drifts by
+tens of metres between visits can miss laps; the lap count is a
+convenience, and BACK takes one by hand.
+
 ### Map
 
 The ride page before BACK TO START, MAP, draws where the ride has been: its

@@ -13,8 +13,10 @@
 //! and older decoders never read them, so both directions stay compatible.
 //!
 //! Sample byte 37, the last spare sample byte, marks the first sample of each
-//! lap with why the lap began ([`LapStart`]); 0xFF is none. Values 5 to 254
-//! are reserved for later marks and read as none here.
+//! lap with why the lap began ([`LapStart`]); 0xFF is none. Values 6 to 254
+//! are reserved for later marks and read as none here. Firmware that predates a
+//! mark reads it as none too, so a ride keeps all its data and only loses that
+//! lap boundary: the laps on either side read as one.
 //! There is no flag bit and no record kind: decoders reject unknown flags and
 //! kinds, and an unknown kind would read as a gap after a rollback. Older
 //! samples left the byte erased, and older decoders never read it (only the
@@ -181,6 +183,8 @@ pub enum LapStart {
     Step = 3,
     /// A workout step that lasts a distance ended.
     DistanceStep = 4,
+    /// The rider passed the ride's start point.
+    Position = 5,
 }
 
 impl LapStart {
@@ -191,6 +195,7 @@ impl LapStart {
             2 => Some(Self::Distance),
             3 => Some(Self::Step),
             4 => Some(Self::DistanceStep),
+            5 => Some(Self::Position),
             _ => None,
         }
     }
@@ -202,6 +207,7 @@ impl LapStart {
             Self::Distance => "distance",
             Self::Step => "step",
             Self::DistanceStep => "distance_step",
+            Self::Position => "position",
         }
     }
 }
@@ -1026,6 +1032,27 @@ mod tests {
         let catalog = scan.catalog();
         assert_eq!((catalog.invalid_slots, catalog.completed), (0, 1));
         assert!(!catalog.summaries[0].unwrap().gap);
+    }
+
+    #[test]
+    fn the_position_mark_round_trips_and_later_values_read_as_none() {
+        let marked = Sample {
+            lap: Some(LapStart::Position),
+            ..sample(1_000)
+        };
+        let slot = committed(&Entry::batch(Source::Live, 2, 1, &[marked]).unwrap());
+        assert_eq!(slot.0[32 + 37], 5);
+        assert_eq!(
+            decode(&slot).unwrap().samples[0].lap,
+            Some(LapStart::Position)
+        );
+        assert!(
+            decode_before_lap_marks(&slot).is_some(),
+            "older decoders keep the sample"
+        );
+        for byte in 6..=254 {
+            assert_eq!(LapStart::from_byte(byte), None, "{byte}");
+        }
     }
 
     #[test]

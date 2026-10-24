@@ -7,6 +7,7 @@ use crate::clock::Zone;
 use crate::daylight::Sun;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::climb::Event as ClimbEvent;
+use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::screens::chrome::CONTENT;
 use crate::screens::chrome::{Battery, CHARGE_STEPS, Gps, Toast, Tone};
@@ -1185,9 +1186,10 @@ impl Runtime {
                 let _ = write!(note, "WHEN STOPPED");
                 write!(value, "{}", on(options.auto_pause))
             }
-            Row::AutoLap => match options.auto_lap_km {
-                0 => write!(value, "OFF"),
-                km => write!(value, "EVERY {km} KM"),
+            Row::AutoLap => match options.auto_lap {
+                AutoLap::Off => write!(value, "OFF"),
+                AutoLap::Every(km) => write!(value, "EVERY {km} KM"),
+                AutoLap::AtStart => write!(value, "AT START"),
             },
             Row::Wheel => {
                 let in_force = self.readings.speed_wheel_mm();

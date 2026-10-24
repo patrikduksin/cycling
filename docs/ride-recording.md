@@ -216,9 +216,19 @@ climb.
 Laps:
 
 - A lap press closes the current lap; another within three seconds is ignored.
-  An automatic lap closes every 5 km of lap distance (fixed in this build), and
-  a lap press restarts that count. During a workout each step closes a lap
-  instead, and there is no 5 km lap. Both share one numbered list.
+  Settings AUTO LAP chooses what closes a lap by itself: off, every 1, 2, 5
+  (the default) or 10 km of lap distance, or AT START. A lap press restarts the
+  distance count. During a workout each step closes a lap instead, and neither
+  kind of automatic lap runs. All share one numbered list.
+- AT START closes a lap each time the rider rides past where the ride began
+  (the first fix, as back to start measures from). A pass comes within 25 m of
+  the start and then leaves beyond 35 m while moving, so the lap begins about
+  40 m past the start (35 m and the next sample). It counts once the rider has been
+  75 m away, which is why a ride never laps at its own start, and GPS jitter
+  between 25 m and 75 m cannot fire it twice. More than a minute within 25 m
+  is loitering, such as a car park, and is no pass. A pass closes no lap shorter
+  than 500 m or 60 s of recorded time; the lap carries on. It needs the
+  breadcrumb, so it runs where back to start does.
 - For two seconds a toast in the status row shows `LAP n`, the finished lap's
   time and its average power.
 - Lap time is recorded time, so a pause adds none. Lap averages follow the ride
@@ -343,8 +353,11 @@ Lap marks:
 - Sample byte 37 marks the first sample of each lap with why it began: 0 for
   the ride's first sample (the ride keeps its laps), 1 a lap press, 2 an
   automatic lap, 3 a workout step that lasts a time or until marked, 4 a
-  workout step that lasts a distance. 0xFF, what every earlier sample holds,
-  marks nothing. A value this firmware does not know reads as no mark.
+  workout step that lasts a distance, 5 a pass of the ride's start point (FIT
+  `lap_trigger` position_start). 0xFF, what every earlier sample holds,
+  marks nothing. A value this firmware does not know reads as no mark, so
+  firmware and host tools from before value 5 keep every sample of a ride with
+  position laps and only read those laps as one.
 - The lap boundary is at the sample before the mark, so a lap is accurate to
   the one-second sample grid. Laps that close within one sample share its
   mark, and a lap closed while paused marks the first sample after resume.
@@ -353,7 +366,7 @@ Lap marks:
 - A ride that moves from the MMC to internal flash mid-ride is two journal
   rides and two FIT files. The lap open at the move is split across them,
   and the internal part starts with a ride mark, not a lap boundary.
-- Values 5 to 254 are reserved for later marks; this firmware and
+- Values 6 to 254 are reserved for later marks; this firmware and
   `ride-export` read them as no mark. Byte 37 was the last spare sample byte.
 - Compatibility decided the place. Firmware recovery, the ride index and
   `ride-export` reject unknown record kinds and unknown sample flag bits, and

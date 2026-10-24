@@ -63,6 +63,10 @@ impl Runtime {
         }
         let event = state.homing.observe(self.readings.live.location_e7, now);
         let following = state.homing.following();
+        if state.homing.take_pass() {
+            self.ride.passed_start(now);
+            self.display.redraw();
+        }
         let (message, tone, cue) = match event {
             Some(Event::Following) => ("FOLLOWING TRACK", Tone::Good, Some(Cue::OnTrack)),
             Some(Event::OffTrack) => ("OFF TRACK", Tone::Warn, Some(Cue::OffTrack)),

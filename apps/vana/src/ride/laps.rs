@@ -7,8 +7,10 @@
 //! totals. A rider's lap closes the current lap unless another lap closed less
 //! than `DEBOUNCE_MS` before; an automatic lap closes it every `AUTO_LAP_MM`
 //! of lap distance, or the distance the rider chose (`add_every`), and a
-//! workout closes one as each step ends (`split`). All count in one numbered
-//! list, and the latest `HISTORY` summaries are kept.
+//! workout closes one as each step ends (`split`). The rider may choose laps
+//! at the ride's start point instead (`at_start`), which closes one when the
+//! breadcrumb reports a pass, if the lap is long enough. All count in one
+//! numbered list, and the latest `HISTORY` summaries are kept.
 //!
 //! Each closed lap waits in `take_closed` for the recorder, which marks the
 //! next recorded sample as the first of a new lap (`log::LapStart`). So the
@@ -19,10 +21,34 @@ use crate::ride::totals::MOVING_MIN_MM_S;
 
 /// An automatic lap closes after this much lap distance (5 km).
 pub const AUTO_LAP_MM: u64 = 5_000_000;
+/// The first pass of the start closes no lap shorter than this.
+pub const AT_START_MIN_MM: u64 = 500_000;
+/// Nor one shorter than this, in recorded time.
+pub const AT_START_MIN_MS: u64 = 60_000;
 /// A second lap within this long of the last one is ignored.
 pub const DEBOUNCE_MS: u64 = 3000;
 /// Finished laps whose summaries are kept, newest last.
 pub const HISTORY: usize = 16;
+
+/// What closes laps by itself, as the rider chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoLap {
+    Off,
+    /// Every this many kilometres of lap distance.
+    Every(u8),
+    /// Each pass of the ride's start point.
+    AtStart,
+}
+
+impl AutoLap {
+    /// The lap distance that closes a lap, if distance does.
+    pub fn every_mm(self) -> Option<u64> {
+        match self {
+            Self::Every(km) if km != 0 => Some(u64::from(km) * 1_000_000),
+            _ => None,
+        }
+    }
+}
 
 /// How a lap was closed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,6 +61,8 @@ pub enum Trigger {
     Step,
     /// A workout step that lasts a distance ended.
     DistanceStep,
+    /// The rider passed the ride's start point.
+    Position,
 }
 
 impl From<Trigger> for LapStart {
@@ -44,6 +72,7 @@ impl From<Trigger> for LapStart {
             Trigger::Auto => Self::Distance,
             Trigger::Step => Self::Step,
             Trigger::DistanceStep => Self::DistanceStep,
+            Trigger::Position => Self::Position,
         }
     }
 }
@@ -201,6 +230,17 @@ impl Laps {
         self.current.add(elapsed_ms, distance_mm, sample);
         (self.by_distance && every_mm.is_some_and(|every| self.current.distance_mm >= every))
             .then(|| self.close(Trigger::Auto, now_ms))
+    }
+
+    /// The rider passed the start: close the current lap. The first must have
+    /// run `AT_START_MIN_MM` and `AT_START_MIN_MS`, so a pass soon after the
+    /// start is no lap; later ones are guarded by the pass itself, which
+    /// needs the rider 75 m away first, so a short loop laps every time.
+    pub fn at_start(&mut self, now_ms: u64) -> Option<Lap> {
+        let long_enough = self.finished > 0
+            || (self.current.distance_mm >= AT_START_MIN_MM
+                && self.current.time_ms >= AT_START_MIN_MS);
+        (self.by_distance && long_enough).then(|| self.close(Trigger::Position, now_ms))
     }
 
     /// Close the current lap as a workout step ends: `by_distance` for a
@@ -406,5 +446,52 @@ mod tests {
         assert_eq!(laps.finished(15).map(|lap| lap.number), Some(5));
         assert_eq!(laps.finished(16), None);
         assert_eq!(laps.current().number, 21);
+    }
+
+    #[test]
+    fn a_pass_of_the_start_closes_a_lap_only_once_it_is_long_enough() {
+        let mut laps = Laps::default();
+        // 10 m/s for 59 s: far enough, not long enough.
+        let (_, now) = ride(&mut laps, 0, 59, riding(10_000, 200, 140));
+        assert_eq!(laps.at_start(now), None, "59 s");
+        let (_, now) = ride(&mut laps, now, 1, riding(10_000, 200, 140));
+        let lap = laps.at_start(now).expect("60 s and 600 m");
+        assert_eq!((lap.number, lap.trigger), (1, Trigger::Position));
+        assert_eq!(laps.take_closed(), Some(Trigger::Position));
+        assert_eq!(laps.current().number, 2);
+        // Later laps have no minimum: a 120 m loop at 1 m/s laps each time.
+        let (_, now) = ride(&mut laps, now, 120, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now).map(|lap| lap.distance_mm), Some(120_000));
+        let (_, now) = ride(&mut laps, now, 120, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now).map(|lap| lap.number), Some(3));
+    }
+
+    #[test]
+    fn the_first_pass_of_the_start_waits_for_five_hundred_metres() {
+        let mut laps = Laps::default();
+        let (_, now) = ride(&mut laps, 0, 379, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now), None, "379 m");
+        let (_, now) = ride(&mut laps, now, 121, riding(1_000, 100, 100));
+        assert_eq!(laps.at_start(now).map(|lap| lap.distance_mm), Some(500_000));
+    }
+
+    #[test]
+    fn laps_at_the_start_leave_workouts_to_their_steps() {
+        let mut laps = Laps {
+            by_distance: false,
+            ..Laps::default()
+        };
+        let (_, now) = ride(&mut laps, 0, 300, riding(10_000, 200, 140));
+        assert_eq!(laps.at_start(now), None);
+        assert_eq!(laps.count(), 0);
+    }
+
+    #[test]
+    fn auto_lap_choices_say_what_closes_laps() {
+        assert_eq!(AutoLap::Off.every_mm(), None);
+        assert_eq!(AutoLap::Every(0).every_mm(), None);
+        assert_eq!(AutoLap::Every(5).every_mm(), Some(AUTO_LAP_MM));
+        assert_eq!(AutoLap::Every(100).every_mm(), Some(100_000_000));
+        assert_eq!(AutoLap::AtStart.every_mm(), None);
     }
 }

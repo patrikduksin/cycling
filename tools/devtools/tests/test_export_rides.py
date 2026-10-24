@@ -182,6 +182,15 @@ class RideExportTests(unittest.TestCase):
             self.assertEqual(names, [('LAP 2', 'manual', '-33.3646600'), ('LAP 3', 'distance', '-33.3646400')])
             self.assertEqual(root.find(f'{ns}wpt/{ns}time').text, '2026-09-10T00:26:43.000Z')
 
+    def test_a_pass_of_the_start_names_its_lap(self):
+        def at(second, lap=None):
+            return {'active_ms': second * 1000, 'location': (-333_646_900, -705_155_800), 'lap': lap}
+
+        slots = [slot(1, 2, 3, 0, 0), slot(2, 2, 3, 1, 3000, [at(1, 0), at(2, 5), at(3, 6)]), slot(5, 2, 3, 2, 3000)]
+        rides, invalid = rides_from_slots(slots)
+        self.assertEqual(invalid, [])
+        self.assertEqual([lap['started_by'] for lap in rides[0]['laps']], ['ride', 'position'])
+
     def test_a_ride_recorded_before_lap_marks_has_no_laps(self):
         rides, _ = rides_from_slots(self.fixture())
         self.assertIsNone(rides[0]['laps'])

@@ -10,8 +10,8 @@ def main_checkout(root=ROOT):
     """The primary checkout that owns this repository's git directory.
 
     Linked worktrees (such as agent worktrees) have no private .local of their own.
-    The device is one physical resource, so its lock, backup and toolchain export
-    live in the primary checkout and every worktree uses them.
+    The device is one physical resource, so its lock and backup live in the
+    primary checkout and every worktree uses them.
     """
     try:
         common = subprocess.run(

@@ -7,6 +7,8 @@ description: Flash, access serial, debug or measure the connected Magene C606 sa
 
 The device-safety rules in [AGENTS.md](../../../AGENTS.md) always apply. This
 skill adds the procedure for flashing, device access, testing and reporting.
+When the device is on another machine (`CYCLING_DEVICE_HOST`), run these tasks
+through the [remote device skill](../remote-device/SKILL.md).
 
 ## Firmware: backup, A/B flash, rollback, stock
 
@@ -18,6 +20,7 @@ skill adds the procedure for flashing, device access, testing and reporting.
 | `mise run stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
 | `mise run restore-owned -- <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
 | `mise run stock-select` (alias `boot-stock`) | Boots slot A without rewriting flash, only while it still holds the verified stock image. |
+| `mise run flash-image` | `flash` for an image built elsewhere: writes the existing `.local/cycling.bin` without building. |
 | `mise run monitor` | Reads USB logs without resetting. |
 
 These tasks run [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py),

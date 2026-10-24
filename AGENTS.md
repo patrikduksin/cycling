@@ -16,13 +16,20 @@ PRs own requirements, decisions and history. Read
 | `packages/console` | Device command sessions |
 | `tools/simulator` | Host simulation |
 | `tools/devtools` | Host device workflows |
+| `flake.nix`, `nix/` | Development environment and tool versions |
 
 Keep package interfaces small and internals private. Split packages by
 meaningful ownership, not file count.
 
 ## Checks
 
-Use mise tasks and commit `Cargo.lock`.
+Use mise tasks and commit `Cargo.lock`. The flake dev shell provides every
+tool; [dev-setup](docs/dev-setup.md) sets up a machine with one command.
+
+- Inner loop: targeted host tests and the simulator; firmware rebuilds take
+  about 20 s once sccache is warm.
+- Before opening or updating a PR: `mise run verify --pr <n>` (all gates in
+  parallel, results posted on the PR).
 
 - Firmware changes: `mise run test`, `mise run check` (includes boundary checks
   and ruff) and `mise run build`. Host tasks cover base and cycling builds.
@@ -48,7 +55,9 @@ access or device tests. It owns the procedure; these rules always apply:
   the bootloader and partition table, and persisted cycling settings and rides
   across flashes. No vendor filesystem writes outside that full restore.
 - Serialize all device access. Linked worktrees share the primary checkout's
-  `.local` device lock, backup and toolchain export.
+  `.local` device lock and backup. When `CYCLING_DEVICE_HOST` is set the device
+  is on that machine: reach it only through `mise run device <task>` and the
+  [remote device skill](.agents/skills/remote-device/SKILL.md).
 - Validate changed hardware access or display timing on hardware, and report
   what was actually observed.
 - Restore a harness-enabled base on the development device after tests.

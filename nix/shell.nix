@@ -1,0 +1,64 @@
+# The one development environment: every tool a task needs, at the version
+# flake.lock pins. mise only runs tasks; it installs nothing.
+{
+  pkgs,
+  lib,
+  esp-rust,
+}:
+let
+  rust = pkgs.rust-bin.stable."1.98.1".default.override {
+    extensions = [
+      "rust-src"
+      "clippy"
+      "rustfmt"
+    ];
+  };
+  python = pkgs.python314;
+  # Libraries that manylinux wheels (numpy, osmium) and the live simulator
+  # window (minifb) load at run time. NixOS has no global /usr/lib for them.
+  runtimeLibs = with pkgs; [
+    stdenv.cc.cc.lib
+    zlib
+    libxkbcommon
+    wayland
+    libx11
+    libxcursor
+    libxrandr
+    libxi
+  ];
+in
+pkgs.mkShell {
+  packages = with pkgs; [
+    rust
+    python
+    uv
+    mise
+    espflash
+    sccache
+    ffmpeg-headless
+    pkg-config
+    git
+    gh
+    jq
+    rsync
+    openssh
+  ];
+
+  env = {
+    # build.sh puts this toolchain first only for the firmware build, so host
+    # cargo stays the rust-overlay toolchain above.
+    CYCLING_ESP_TOOLCHAIN = "${esp-rust}";
+    UV_PYTHON = "${python}/bin/python3";
+    UV_PYTHON_DOWNLOADS = "never";
+    RUSTC_WRAPPER = "sccache";
+    LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
+  };
+
+  # One sccache per machine, shared by every worktree. Override either value
+  # in .envrc.local or the environment.
+  shellHook = ''
+    export SCCACHE_DIR="''${SCCACHE_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/sccache}"
+    export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-50G}"
+    unset PYTHONPATH
+  '';
+}

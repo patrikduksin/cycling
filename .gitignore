@@ -16,6 +16,9 @@ __pycache__/
 *.key
 
 /tools/devtools/.venv/
+# nix-direnv cache and per-checkout machine settings.
+.direnv/
+.envrc.local
 # Private stock sources and analysis outputs belong in ignored local storage.
 **/stock-sources/
 **/disassembly/

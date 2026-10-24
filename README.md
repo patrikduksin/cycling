@@ -13,19 +13,20 @@ Open-source Rust firmware for the Magene C606 bike computer.
 ## Development
 
 ```sh
-mise install
-mise run setup                       # Pinned Xtensa toolchain
+scripts/bootstrap.sh                 # Nix dev shell with every pinned tool (docs/dev-setup.md)
 mise run test
 mise run check
 mise run simulate                    # Shared shell with deterministic host devices
 mise run harness-virtual             # Shared command/input/capture/persistence scenarios
 mise run build                       # Base, harness enabled
 CYCLING_SDK=1 mise run build         # Add VANA
+mise run verify                      # Every PR gate in parallel
 ```
 
-`mise tasks` lists every task; [mise.toml](mise.toml), Cargo configuration, CI
-and CLI `--help` own tool versions, options and the check matrix. Builds load the
-toolchain environment without changing your shell.
+`mise tasks` lists every task. [flake.nix](flake.nix) owns tool versions;
+[mise.toml](mise.toml), Cargo configuration and CLI `--help` own tasks, options
+and the check matrix. direnv loads the dev shell on entering a checkout;
+`nix develop -c <command>` works without it.
 
 Before connecting to or flashing a device, read the
 [C606 skill](.agents/skills/c606/SKILL.md). Device tasks include
@@ -48,6 +49,7 @@ checks presentation and input policy, not DMA, radio coexistence or power sequen
 ## Documentation
 
 - [Agent and contributor rules](AGENTS.md)
+- [Development machines and remote devices](docs/dev-setup.md)
 - [Architecture and repository map](docs/architecture.md)
 - [Testing harness](docs/testing-harness.md)
 - [Runtime connectivity](docs/runtime-connectivity.md)

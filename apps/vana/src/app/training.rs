@@ -8,9 +8,9 @@
 //! MARK (TopLeft) ends the step, which also closes the lap.
 //!
 //! Uploads are codec files a host puts under `workouts/` on the FILES
-//! volume (`mise run workout-load`). The library lists them at boot, each
-//! time the picker opens and on `WORKOUT LIST`, keeping only names and
-//! outlines; a ride reads its workout's steps when it starts. A finished
+//! volume (`mise run workout-load`), or the phone page does. The library
+//! lists them at boot, each time the picker opens and on `WORKOUT LIST`,
+//! keeping only names and outlines; a ride reads its workout's steps when it starts. A finished
 //! ride's workout outcome is saved beside it (`workout::history`).
 //!
 //! Terminal:
@@ -29,12 +29,13 @@ use crate::screens::ride::{Pages, RidePage, Training as Shown};
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
 use crate::workout::history;
-use crate::workout::library::{Id, Library, LoadError, Outline};
+use crate::workout::library::{Id, Library, LoadError, Outline, StoreError};
 use crate::workout::model::{Length, Name, Played};
 use crate::workout::player::{Event, Player, Summary};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::input::Button;
+use firmware_services::files;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beep {
@@ -186,6 +187,49 @@ impl Runtime {
         }
         self.training.list(media);
         self.display.redraw();
+    }
+
+    /// Delete upload `index`'s file. Later uploads move up a place: the
+    /// chosen one stays chosen, unless it is the one deleted.
+    pub(super) fn delete_upload(
+        &mut self,
+        index: usize,
+        media: &mut impl ReadWrite,
+    ) -> Result<(), LoadError> {
+        let id = Id::Uploaded(index as u8);
+        self.training.library.delete(id, media)?;
+        self.training.selected = match self.training.selected {
+            Some(chosen) if chosen == id => None,
+            Some(Id::Uploaded(later)) if usize::from(later) > index => {
+                Some(Id::Uploaded(later - 1))
+            }
+            other => other,
+        };
+        self.training.picker_cursor = self.training.picker_cursor.min(self.training.rows() - 1);
+        self.display.redraw();
+        Ok(())
+    }
+
+    /// Store a workout uploaded from the phone, then list the uploads
+    /// again, whether or not it was stored.
+    pub(super) fn store_upload(
+        &mut self,
+        media: &mut impl ReadWrite,
+        bytes: &[u8],
+    ) -> Result<files::Name, StoreError> {
+        let stored = Library::store(media, bytes);
+        self.training.list(media);
+        self.display.redraw();
+        stored
+    }
+
+    /// The uploads as the phone page lists them, listed again from FILES.
+    pub(super) fn list_uploads(
+        &mut self,
+        media: &mut impl ReadWrite,
+    ) -> (&Library, Option<LoadError>) {
+        self.training.list(media);
+        (&self.training.library, self.training.list_error)
     }
 
     /// Leaving the ride screen: the workout's summary stays readable, the
@@ -407,22 +451,10 @@ impl Runtime {
                 let Some(upload) = self.training.library.uploads().get(index).copied() else {
                     return "BOUNDS";
                 };
-                let id = Id::Uploaded(index as u8);
-                if let Err(error) = self.training.library.delete(id, media) {
+                if let Err(error) = self.delete_upload(index, media) {
                     let _ = write!(output, "error={}", error.name());
                     return "FAILED";
                 }
-                // Later uploads moved up a place: keep the chosen one chosen.
-                self.training.selected = match self.training.selected {
-                    Some(chosen) if chosen == id => None,
-                    Some(Id::Uploaded(later)) if usize::from(later) > index => {
-                        Some(Id::Uploaded(later - 1))
-                    }
-                    other => other,
-                };
-                self.training.picker_cursor =
-                    self.training.picker_cursor.min(self.training.rows() - 1);
-                self.display.redraw();
                 write!(output, "deleted={}", upload.file.as_str())
             }
             (Some("HISTORY"), 2) => {

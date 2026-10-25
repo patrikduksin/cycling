@@ -11,9 +11,13 @@
 //!
 //! The device serves the pre-gzipped web client, small JSON and FIT files
 //! streamed from the ride journal through `ride::fit`, two passes per file so
-//! `Content-Length` is exact. It takes one upload: a GPX course, `PUT
-//! /api/course`, read as it streams in through `ride::course::gpx` into the
-//! course beside the breadcrumb and then stored on FILES. Each service step
+//! `Content-Length` is exact. It takes two uploads. A GPX course, `PUT
+//! /api/course`, is read as it streams in through `ride::course::gpx` into
+//! the course beside the breadcrumb and then stored on FILES. A workout, `PUT
+//! /api/workouts`, is one codec file (`workout::codec`): at most
+//! `ENCODED_MAX` bytes gathered in `Work`, then decoded, validated and stored
+//! under `workouts/` by `Library::store`, the library the picker lists. `GET`
+//! lists the uploads and `DELETE ?file=` removes one. Each service step
 //! does a bounded amount of media reads, reads at most `UPLOAD_READS` pieces
 //! of a body and never writes more output than the transport has room for.
 
@@ -25,12 +29,15 @@ use crate::ride::index::{Activity, Index};
 use crate::ride::log::Slot;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
+use crate::workout::codec::{DecodeError, ENCODED_MAX};
+use crate::workout::library::{self, LoadError, StoreError};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::connectivity::Text;
 use device_api::server::{
     AccessPoint, AccessPointConfig, AccessPointState, Method, Request, Server,
 };
+use firmware_services::files;
 use firmware_services::fit::{Counter, Sink};
 use firmware_services::http::{Head, query_value};
 
@@ -182,6 +189,12 @@ enum Job {
         received: u32,
         gpx: gpx::Gpx,
     },
+    /// A workout gathering in `Work::workout`: `received` of the request's
+    /// body bytes, which are kept only up to `ENCODED_MAX`.
+    Workout {
+        id: u32,
+        received: u32,
+    },
 }
 
 #[derive(Default)]
@@ -210,7 +223,11 @@ impl Phone {
 pub struct Work {
     indexes: [Index; 2],
     job: Job,
-    text: heapless::Vec<u8, 1024>,
+    text: heapless::Vec<u8, 1536>,
+    /// The body of the workouts list, built before its head.
+    list: heapless::String<1024>,
+    /// A workout upload's bytes so far.
+    workout: heapless::Vec<u8, ENCODED_MAX>,
 }
 
 impl Work {
@@ -219,6 +236,8 @@ impl Work {
             indexes: [Index::new(), Index::new()],
             job: Job::Idle,
             text: heapless::Vec::new(),
+            list: heapless::String::new(),
+            workout: heapless::Vec::new(),
         }
     }
 }
@@ -271,6 +290,20 @@ fn file_name(ride_id: u32, start_utc_ms: Option<u64>) -> heapless::String<48> {
 }
 
 /// Writes straight into the transport, which the caller checked has room.
+/// `body` as a complete JSON response in `text`.
+fn queue(text: &mut heapless::Vec<u8, 1536>, status: u16, body: &str) {
+    text.clear();
+    let head = Head::new(status)
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-store")
+        .length(body.len())
+        .finish();
+    if let Some(head) = head {
+        let _ = text.extend_from_slice(head.bytes());
+        let _ = text.extend_from_slice(body.as_bytes());
+    }
+}
+
 struct Out<'a, S: Server> {
     server: &'a mut S,
     id: u32,
@@ -506,7 +539,8 @@ impl Runtime {
             | Job::Static { id, .. }
             | Job::Activities { id, .. }
             | Job::Fit { id, .. }
-            | Job::Course { id, .. } => Some(*id),
+            | Job::Course { id, .. }
+            | Job::Workout { id, .. } => Some(*id),
         };
         if let Some(id) = job_id
             && current.as_ref().is_none_or(|r| r.id != id)
@@ -544,18 +578,9 @@ impl Runtime {
 
     /// Queue a small complete response from `Phone::text`.
     fn reply(&mut self, id: u32, status: u16, json: Option<&str>) {
-        self.phone.w().text.clear();
-        let body = json.unwrap_or("");
-        let head = Head::new(status)
-            .header("Content-Type", "application/json")
-            .header("Cache-Control", "no-store")
-            .length(body.len())
-            .finish();
-        if let Some(head) = head {
-            let _ = self.phone.w().text.extend_from_slice(head.bytes());
-            let _ = self.phone.w().text.extend_from_slice(body.as_bytes());
-        }
-        self.phone.w().job = Job::Text { id, at: 0 };
+        let work = self.phone.w();
+        queue(&mut work.text, status, json.unwrap_or(""));
+        work.job = Job::Text { id, at: 0 };
     }
 
     fn route(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
@@ -614,6 +639,9 @@ impl Runtime {
             (Method::Get, "/api/course") => self.course_reply(id),
             (Method::Put | Method::Post, "/api/course") => self.start_course(request),
             (Method::Delete, "/api/course") => self.clear_course(id, bulk),
+            (Method::Get, "/api/workouts") => self.workouts_reply(id, bulk),
+            (Method::Put | Method::Post, "/api/workouts") => self.start_workout(request),
+            (Method::Delete, "/api/workouts") => self.delete_workout(request, bulk),
             (Method::Post, "/api/close") => {
                 self.reply(id, 204, None);
                 self.phone.wanted = Some(None);
@@ -796,6 +824,7 @@ impl Runtime {
             Job::Activities { .. } => self.progress_activities(server),
             Job::Fit { .. } => self.progress_fit(server, store, bulk),
             Job::Course { .. } => self.progress_course(server, bulk, now),
+            Job::Workout { .. } => self.progress_workout(server, bulk, now),
         }
     }
 
@@ -950,6 +979,171 @@ impl Runtime {
             }
             Err(error) => {
                 log::warn!(target: "phone", "VANA_PHONE course_not_cleared error={error:?}");
+                self.reply(id, 503, Some(r#"{"error":"storage"}"#));
+            }
+        }
+    }
+
+    /// The uploaded workouts, listed from FILES now.
+    fn workouts_reply(&mut self, id: u32, bulk: &mut impl ReadWrite) {
+        let (library, error) = self.list_uploads(bulk);
+        let mut json = heapless::String::<1024>::new();
+        let _ = write!(
+            json,
+            r#"{{"store":"{}","max":{},"skipped":{},"uploads":["#,
+            error.map_or("ok", LoadError::name),
+            library::UPLOADS,
+            library.skipped
+        );
+        for (index, upload) in library.uploads().iter().enumerate() {
+            let file = upload
+                .file
+                .as_str()
+                .strip_prefix(library::FOLDER)
+                .unwrap_or("");
+            let _ = write!(
+                json,
+                r#"{}{{"file":"{file}","name":""#,
+                if index == 0 { "" } else { "," }
+            );
+            for byte in upload.name.as_bytes() {
+                if matches!(byte, b'"' | b'\\') {
+                    let _ = json.push('\\');
+                }
+                let _ = json.push(char::from(*byte));
+            }
+            let _ = write!(
+                json,
+                r#"","minutes":{},"steps":{}}}"#,
+                upload.outline.planned_secs.div_ceil(60),
+                upload.outline.played
+            );
+        }
+        let _ = json.push_str("]}");
+        let work = self.phone.w();
+        work.list = json;
+        queue(&mut work.text, 200, &work.list);
+        work.job = Job::Text { id, at: 0 };
+    }
+
+    fn start_workout(&mut self, request: &Request) {
+        let id = request.id;
+        if self.recording() {
+            return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
+        }
+        if request.body == 0 {
+            return self.reply(id, 400, Some(r#"{"error":"empty"}"#));
+        }
+        log::info!(target: "phone", "VANA_PHONE workout_upload bytes={}", request.body);
+        let work = self.phone.w();
+        work.workout.clear();
+        work.job = Job::Workout { id, received: 0 };
+    }
+
+    fn progress_workout(&mut self, server: &mut impl Server, bulk: &mut impl ReadWrite, now: u64) {
+        let Job::Workout { id, mut received } =
+            core::mem::replace(&mut self.phone.w().job, Job::Idle)
+        else {
+            return;
+        };
+        let Some(body) = server.request().filter(|r| r.id == id).map(|r| r.body) else {
+            return;
+        };
+        let before = received;
+        // A refused file is still read to its end, so the phone gets the
+        // answer rather than a connection cut while it sends.
+        {
+            let mut piece = [0u8; UPLOAD_PIECE];
+            for _ in 0..UPLOAD_READS {
+                let wanted = (body - received).min(UPLOAD_PIECE as u32) as usize;
+                let n = server.read(id, &mut piece[..wanted]);
+                if n == 0 {
+                    break;
+                }
+                received += n as u32;
+                // Past the largest workout only the count matters.
+                let _ = self.phone.w().workout.extend_from_slice(&piece[..n]);
+            }
+        }
+        if received > before
+            && let Some(session) = self.phone.session.as_mut()
+        {
+            session.last_request_ms = now;
+        }
+        if received < body {
+            self.phone.w().job = Job::Workout { id, received };
+            return;
+        }
+        if self.recording() {
+            return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
+        }
+        if body as usize > ENCODED_MAX {
+            return self.reply(id, 413, Some(r#"{"error":"too_large"}"#));
+        }
+        let bytes = core::mem::take(&mut self.phone.w().workout);
+        let stored = self.store_upload(bulk, &bytes);
+        self.phone.w().workout = bytes;
+        match stored {
+            Ok(file) => {
+                log::info!(target: "phone", "VANA_PHONE workout_saved file={}", file.as_str());
+                self.workouts_reply(id, bulk);
+            }
+            Err(error) => {
+                log::warn!(target: "phone", "VANA_PHONE workout_not_saved error={error:?}");
+                let (status, json) = match error {
+                    StoreError::Decode(DecodeError::Magic | DecodeError::Version) => (
+                        422,
+                        r#"{"error":"format","detail":"not a VANA workout file"}"#,
+                    ),
+                    StoreError::Decode(DecodeError::Checksum | DecodeError::Length) => (
+                        422,
+                        r#"{"error":"damaged","detail":"the file is cut short or damaged"}"#,
+                    ),
+                    StoreError::Decode(_) | StoreError::Unnamed => (
+                        422,
+                        r#"{"error":"invalid","detail":"the workout is not one VANA can ride"}"#,
+                    ),
+                    StoreError::Full => (409, r#"{"error":"full"}"#),
+                    StoreError::Load(LoadError::Files(files::Error::Full)) => {
+                        (507, r#"{"error":"nospace"}"#)
+                    }
+                    StoreError::Load(
+                        LoadError::Volume(_) | LoadError::Files(files::Error::Uninitialized),
+                    ) => (
+                        503,
+                        r#"{"error":"unavailable","detail":"no formatted memory card to keep a workout on"}"#,
+                    ),
+                    StoreError::Load(_) => (503, r#"{"error":"storage"}"#),
+                };
+                self.reply(id, status, Some(json));
+            }
+        }
+    }
+
+    fn delete_workout(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
+        let id = request.id;
+        if self.recording() {
+            return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
+        }
+        let mut path = heapless::String::<{ files::NAME }>::new();
+        let wanted = query_value(&request.query, "file")
+            .filter(|_| path.push_str(library::FOLDER).is_ok())
+            .filter(|file| path.push_str(file).is_ok())
+            .and_then(|_| files::Name::new(&path).ok());
+        let (library, _) = self.list_uploads(bulk);
+        let Some(index) = wanted.and_then(|name| match library.find(&name) {
+            Some(library::Id::Uploaded(index)) => Some(usize::from(index)),
+            _ => None,
+        }) else {
+            return self.reply(id, 404, Some(r#"{"error":"workout"}"#));
+        };
+        match self.delete_upload(index, bulk) {
+            Ok(()) => {
+                log::info!(target: "phone", "VANA_PHONE workout_deleted");
+                self.reply(id, 204, None);
+            }
+            Err(error) => {
+                log::warn!(target: "phone", "VANA_PHONE workout_not_deleted error={error:?}");
                 self.reply(id, 503, Some(r#"{"error":"storage"}"#));
             }
         }

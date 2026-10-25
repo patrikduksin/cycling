@@ -24,6 +24,7 @@ mod facts;
 mod form;
 mod history;
 mod input;
+mod lists;
 mod lookahead;
 mod motion;
 mod night;

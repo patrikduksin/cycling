@@ -44,7 +44,7 @@ pub fn prepare(view: &View) -> Canvas {
     centred(&mut canvas, &[&TITLE, &BODY], title, 136, AMBER);
     let mut paused = Text::<12>::new();
     let _ = core::fmt::Write::write_str(&mut paused, "FOR ");
-    super::lap_time(&mut paused, view.paused_secs);
+    super::lap_time(&mut paused, u64::from(view.paused_secs));
     centred(&mut canvas, &[&BODY], paused.as_bytes(), 162, SECONDARY);
     centred(&mut canvas, &[&CAPTION], b"RIDE TIME", 198, SECONDARY);
     let mut time = Text::<12>::new();

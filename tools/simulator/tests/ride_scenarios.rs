@@ -5439,11 +5439,33 @@ fn ride_history_lists_every_saved_ride_of_both_journals() {
     sim.advance(seconds(20));
     sim.expect_text("1/44");
     sim.checkpoint("every saved ride of both journals");
+    // The list follows the finger: dragged up and held still, the header
+    // folds into the pinned RIDES band and later rides come up.
+    sim.drag((120, 280), (120, 80), 400, 200);
+    sim.advance(seconds(1));
+    sim.expect_text("RIDES");
+    let dragged = sim.screen().text();
+    assert!(!dragged.contains("THIS WEEK"), "{dragged}");
+    sim.checkpoint("dragged up the list");
+    // A flick coasts on well past where the finger stopped, then rests with
+    // the focus on a card in view.
+    sim.drag((120, 280), (120, 180), 50, 0);
+    sim.advance(seconds(3));
+    let coasted = sim.screen().text();
+    assert_ne!(coasted, dragged);
+    sim.checkpoint("flicked and coasted");
+    // Pulled back down hard, it lands on the top: the header and 1/44.
+    for _ in 0..4 {
+        sim.drag((120, 60), (120, 300), 60, 0);
+    }
+    sim.advance(seconds(3));
+    sim.expect_text("THIS WEEK");
+    sim.checkpoint("flicked back to the top");
     // Held MOVE pages through the list; MOVE then steps to the oldest.
     sim.hold(Button::BottomLeft, 3000);
     let shown = sim.screen().text();
     assert!(
-        !shown.contains("1/44") && !shown.contains("2/44"),
+        !shown.lines().any(|line| line == "1/44" || line == "2/44"),
         "{shown}"
     );
     sim.checkpoint("paged through the rides");

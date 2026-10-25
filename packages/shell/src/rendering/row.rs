@@ -48,6 +48,15 @@ impl<'a> Row<'a> {
             pixels: &mut self.pixels[..end],
         }
     }
+    /// The same pixels as row `y` of content that scrolls: paints placed for
+    /// `y` land on this display row.
+    pub fn at(&mut self, y: usize) -> Row<'_> {
+        Row {
+            y,
+            start: self.start,
+            pixels: self.pixels,
+        }
+    }
     pub fn fill(&mut self, color: u16) {
         self.span(0..usize::MAX, color);
     }

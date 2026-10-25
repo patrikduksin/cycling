@@ -1,19 +1,22 @@
-//! Settings: grouped sections of rows, one section per page.
+//! Settings: grouped sections of rows, one section per page. The rows scroll
+//! under the finger between the section's title and the save status
+//! (`scroll::Layout`), with a scroll bar at the right when they do not fit.
 //!
 //! Buttons keep their system roles. BottomLeft moves to the next row (the
 //! page follows into the next section), BottomRight acts on it and TopLeft
 //! goes back Home. Acting cycles a choice, opens a page or edits a number.
 //! While a number is edited, BottomLeft lowers and BottomRight raises it by
 //! `STEP`, and TopLeft finishes. Touch does the same directly: swipe between
-//! sections, tap a row to act on it, and tap the large minus and plus pads
-//! while editing. The runtime prepares each row's value and note; this draws
+//! sections, drag a long section, tap a row to act on it, and tap the large
+//! minus and plus pads while editing. The runtime prepares each row's value and note; this draws
 //! them and maps touches to `Target`s.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
-    ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, Line, RAISED, Rect, SECONDARY, TITLE, VALUE,
-    WHITE,
+    ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, Line, PRESSED, RAISED, Rect, SECONDARY,
+    TITLE, VALUE, WHITE,
 };
 use super::ride::RidePage;
+use super::scroll::{Column, Layout};
 use super::workout::View;
 
 /// Every row, in BottomLeft order.
@@ -84,7 +87,7 @@ pub enum SettingsAction {
 }
 
 /// Sections in order, each with its title and the rows it holds.
-pub const SECTIONS: [(&str, &[Row]); 12] = [
+pub const SECTIONS: [(&str, &[Row]); 11] = [
     (
         "PROFILE",
         &[Row::Ftp, Row::Threshold, Row::Bests, Row::Form],
@@ -102,9 +105,14 @@ pub const SECTIONS: [(&str, &[Row]); 12] = [
     ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
     (
         "RIDE PAGES",
-        &[Row::PageStats, Row::PageLap, Row::PageClimb],
+        &[
+            Row::PageStats,
+            Row::PageLap,
+            Row::PageClimb,
+            Row::PageMap,
+            Row::PageBack,
+        ],
     ),
-    ("MORE PAGES", &[Row::PageMap, Row::PageBack]),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
@@ -125,8 +133,15 @@ pub const SECTIONS: [(&str, &[Row]); 12] = [
     ),
 ];
 
-/// The most rows a section shows.
-pub const SECTION_ROWS: usize = 4;
+/// The most rows a section holds; more than four scroll.
+pub const SECTION_ROWS: usize = 5;
+const _: () = {
+    let mut i = 0;
+    while i < SECTIONS.len() {
+        assert!(SECTIONS[i].1.len() <= SECTION_ROWS);
+        i += 1;
+    }
+};
 /// All rows, the cursor's range.
 pub const ROWS: usize = {
     let mut count = 0;
@@ -272,6 +287,13 @@ pub fn section(index: usize) -> (usize, usize) {
     unreachable!("index is below ROWS")
 }
 
+/// The rows of the section holding cursor position `index`, and the cursor
+/// position of its first row.
+pub fn rows(index: usize) -> (&'static [Row], usize) {
+    let (section, first) = section(index);
+    (SECTIONS[section].1, first)
+}
+
 /// The first cursor position of `section`, wrapping.
 pub fn first_of(section: usize) -> usize {
     SECTIONS[..section % SECTIONS.len()]
@@ -296,7 +318,7 @@ impl Row {
 
 /// Lines the runtime prepares for this page.
 pub const STATUS: usize = 0;
-/// Each shown row's value, in section order; the edited number's value.
+/// Each of the section's rows' values, in order; the edited number's value.
 pub const VALUES: usize = 1;
 /// A note beside each value, such as the zone a number anchors.
 pub const NOTES: usize = VALUES + SECTION_ROWS;
@@ -310,7 +332,25 @@ const TITLE_BASE: usize = 62;
 const ROW_TOP: usize = 76;
 const ROW_HEIGHT: usize = 46;
 const ROW_PITCH: usize = 52;
+/// The rows scroll between the title and the save status.
+pub const LAYOUT: Layout = Layout {
+    top: ROW_TOP - 4,
+    bottom: STATUS_BASE - 12,
+    column: Column {
+        left: LEFT,
+        right: RIGHT,
+        top: 4,
+        height: ROW_HEIGHT,
+        pitch: ROW_PITCH,
+    },
+    end: 4,
+    margin: 4,
+    pin: None,
+};
 const FOCUS: usize = 3;
+/// A long section's scroll bar, in the margin right of the rows.
+const BAR_LEFT: usize = RIGHT + 4;
+const BAR_WIDE: usize = 3;
 /// The number editor's field and its minus and plus pads.
 const FIELD_TOP: usize = 76;
 const FIELD_HEIGHT: usize = 92;
@@ -329,19 +369,10 @@ pub enum Target {
     Raise,
 }
 
-fn row_rect(slot: usize) -> Rect {
-    let top = ROW_TOP + slot * ROW_PITCH;
-    Rect {
-        left: LEFT,
-        top,
-        right: RIGHT,
-        bottom: top + ROW_HEIGHT,
-    }
-}
-
 /// The target under a touch at panel point (`x`, `y`) on the section that
-/// holds `cursor`: its rows, or the pads while a number is edited.
-pub fn target(x: usize, y: usize, cursor: usize, editing: bool) -> Option<Target> {
+/// holds `cursor`, scrolled to `offset`: its rows, or the pads while a
+/// number is edited.
+pub fn target(x: usize, y: usize, cursor: usize, editing: bool, offset: i32) -> Option<Target> {
     if !(LEFT..RIGHT).contains(&x) {
         return None;
     }
@@ -354,20 +385,17 @@ pub fn target(x: usize, y: usize, cursor: usize, editing: bool) -> Option<Target
                 Target::Raise
             });
     }
-    let (section, first) = section(cursor);
-    (0..SECTIONS[section].1.len())
-        .find(|slot| {
-            let rect = row_rect(*slot);
-            (rect.top..rect.bottom).contains(&y)
-        })
-        .map(|slot| Target::Row(first + slot))
+    let (rows, first) = rows(cursor);
+    LAYOUT
+        .card_at(rows.len(), offset, x, y)
+        .map(|row| Target::Row(first + row))
 }
 
 /// The section's rows, or the number editor, with the save status.
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    let (section, first) = section(view.cursor);
-    let (title, rows) = SECTIONS[section];
+    let (section, _) = section(view.cursor);
+    let title = SECTIONS[section].0;
     let row = Row::at(view.cursor);
     if view.editing && row.kind() == Kind::Number {
         editor(&mut canvas, view, title, row);
@@ -381,8 +409,33 @@ pub(super) fn prepare(view: &View) -> Canvas {
             Align::Left,
             WHITE,
         );
-        for (slot, row) in rows.iter().enumerate() {
-            row_card(&mut canvas, view, slot, *row, first + slot == view.cursor);
+        let (rows, first) = rows(view.cursor);
+        for index in LAYOUT.visible(rows.len(), view.scroll) {
+            row_card(
+                &mut canvas,
+                view,
+                index,
+                rows[index],
+                first + index == view.cursor % ROWS,
+            );
+        }
+        // A long section's track down the viewport, the part in view lit.
+        let (top, bottom) = (LAYOUT.top, LAYOUT.bottom);
+        if let Some((start, end)) = LAYOUT.thumb(rows.len(), view.scroll) {
+            // The bar stays put while the rows scroll under it.
+            let at = |y| LAYOUT.held(y, view.scroll);
+            for (top, bottom, color) in [(top, bottom, CARD), (start, end, SECONDARY)] {
+                canvas.shape(Shape::Bar {
+                    rect: Rect {
+                        left: BAR_LEFT,
+                        top: at(top),
+                        right: BAR_LEFT + BAR_WIDE,
+                        bottom: at(bottom),
+                    },
+                    radius: 1,
+                    color,
+                });
+            }
         }
     }
     // A toast takes the bottom band; the save status waits under it.
@@ -406,8 +459,9 @@ pub(super) fn prepare(view: &View) -> Canvas {
 /// A row: its label over its value, and a note at the right. Every row can
 /// be tapped, so each sits on a small card; the focused one is raised and
 /// ringed.
-fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bool) {
-    let rect = row_rect(slot);
+fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: bool) {
+    let rect = LAYOUT.rect(index);
+    let slot = index;
     if focused {
         canvas.shape(Shape::Panel {
             rect,
@@ -418,7 +472,13 @@ fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bo
     canvas.shape(Shape::Panel {
         rect: if focused { rect.inset(FOCUS) } else { rect },
         radius: if focused { RADIUS - FOCUS } else { RADIUS },
-        color: if focused { RAISED } else { CARD },
+        color: if view.pressed_setting() == Some(index as u16) {
+            PRESSED
+        } else if focused {
+            RAISED
+        } else {
+            CARD
+        },
     });
     let (left, right) = (LEFT + INSET, RIGHT - INSET);
     canvas.caption(
@@ -576,14 +636,16 @@ mod tests {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
             assert_eq!(first_of(section), first);
-            assert!(SECTIONS[section].1.len() <= SECTION_ROWS);
+            let (rows, top) = rows(index);
+            assert!(rows.len() <= SECTION_ROWS && rows.contains(&Row::at(index)));
+            assert_eq!(rows[0], Row::at(top));
         }
         assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
         assert_eq!(section(Row::Weight.index()), (1, Row::Weight.index()));
         assert_eq!(section(Row::Sex.index()), (1, Row::Weight.index()));
         assert_eq!(section(Row::TimeZone.index()), (3, Row::TimeZone.index()));
-        assert_eq!(section(Row::Sounds.index()), (8, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (10, Row::HeartHigh.index()));
+        assert_eq!(section(Row::Sounds.index()), (7, Row::Sounds.index()));
+        assert_eq!(section(Row::PowerLow.index()), (9, Row::HeartHigh.index()));
         assert_eq!(first_of(SECTIONS.len()), 0);
     }
 
@@ -593,7 +655,12 @@ mod tests {
         let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
         assert_eq!(colors, [CARD, ACCENT, RAISED, CARD, CARD], "no pads");
         assert_eq!(moving.pixel(LEFT, ROW_TOP), 0, "rounded corner");
-        let second = row_rect(1);
+        let second = LAYOUT.column.rect(1);
+        let second = Rect {
+            top: LAYOUT.top + second.top,
+            bottom: LAYOUT.top + second.bottom,
+            ..second
+        };
         assert_eq!(moving.pixel(LEFT + 1, second.top + 20), ACCENT, "ring");
         assert_eq!(moving.pixel(LEFT + 6, second.top + 20), RAISED);
         assert!(moving.canvas().shows("PROFILE") && moving.canvas().shows("Z4 195-226 W"));
@@ -633,27 +700,28 @@ mod tests {
     /// Long values, notes and statuses still lay out whole on every section.
     #[test]
     fn extreme_settings_never_overlap_or_clip() {
+        // The rows lie on the page, below the screen's rows.
         let screen = Rect {
             left: 0,
             top: 24,
             right: 240,
-            bottom: 320,
+            bottom: 100_000,
         };
         let long = [
             ("1000", "Z4 905-1050 W"),
             ("220", "Z5 FROM 220 BPM"),
             ("SEND RIDES", ""),
             ("99H LEFT", "120 RIDES"),
+            ("OFF", "NO CLIMB POP-UP"),
         ];
         for cursor in 0..ROWS {
             for editing in [false, true] {
                 for status in ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"] {
                     let view = view(cursor, editing, &long, status);
-                    let (section, _) = section(cursor);
                     let shown = if editing && Row::at(cursor).kind() == Kind::Number {
                         1
                     } else {
-                        SECTIONS[section].1.len()
+                        rows(cursor).0.len()
                     };
                     let mut texts = std::vec![status];
                     for (value, note) in &long[..shown] {
@@ -675,21 +743,66 @@ mod tests {
     #[test]
     fn touches_find_rows_of_the_shown_section_and_pads_only_while_editing() {
         let row = |slot| ROW_TOP + slot * ROW_PITCH + 10;
-        assert_eq!(target(100, row(0), 0, false), Some(Target::Row(0)));
-        assert_eq!(target(200, row(1), 0, false), Some(Target::Row(1)));
-        assert_eq!(target(100, row(2), 0, false), Some(Target::Row(2)));
-        assert_eq!(target(100, row(3), 0, false), Some(Target::Row(3)));
+        assert_eq!(target(100, row(0), 0, false, 0), Some(Target::Row(0)));
+        assert_eq!(target(200, row(1), 0, false, 0), Some(Target::Row(1)));
+        assert_eq!(target(100, row(2), 0, false, 0), Some(Target::Row(2)));
+        assert_eq!(target(100, row(3), 0, false, 0), Some(Target::Row(3)));
         let device = Row::Sensors.index();
         assert_eq!(
-            target(100, row(3), device, false),
+            target(100, row(3), device, false, 0),
             Some(Target::Row(device + 3))
         );
-        assert_eq!(target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false), None);
+        assert_eq!(target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false, 0), None);
         let ride = Row::TimeZone.index();
-        assert_eq!(target(30, PAD_TOP + 10, ride, false), None);
-        assert_eq!(target(30, PAD_TOP + 10, 0, true), Some(Target::Lower));
-        assert_eq!(target(200, PAD_TOP + 10, 0, true), Some(Target::Raise));
-        assert_eq!(target(100, row(0), 0, true), None);
-        assert_eq!(target(5, PAD_TOP + 10, 0, true), None);
+        assert_eq!(target(30, PAD_TOP + 10, ride, false, 0), None);
+        assert_eq!(target(30, PAD_TOP + 10, 0, true, 0), Some(Target::Lower));
+        assert_eq!(target(200, PAD_TOP + 10, 0, true, 0), Some(Target::Raise));
+        assert_eq!(target(100, row(0), 0, true, 0), None);
+        assert_eq!(target(5, PAD_TOP + 10, 0, true, 0), None);
+    }
+
+    #[test]
+    fn a_long_section_scrolls_and_shows_where_it_is() {
+        let stats = Row::PageStats.index();
+        let bar = |view: &View, y| view.pixel(BAR_LEFT + 1, y);
+        let scrolled = |offset| {
+            let mut view = View::new(Page::Settings, stats, None);
+            view.scroll = offset;
+            let _ = view.show_settings()[STATUS].push_str("SAVED");
+            view.prepare();
+            view
+        };
+        let rows = SECTIONS[6].1.len();
+        assert_eq!(rows, 5);
+        // From the top: the thumb at the top of the track.
+        let top = scrolled(0);
+        assert!(top.canvas().shows("RIDE PAGES"));
+        assert_eq!(bar(&top, LAYOUT.top + 2), SECONDARY);
+        assert_eq!(bar(&top, LAYOUT.bottom - 2), CARD);
+        // Scrolled to the end: the thumb at the bottom, the fifth row whole
+        // and under a tap.
+        let end = LAYOUT.content(rows) as i32 - LAYOUT.viewport() as i32;
+        assert!(end > 0);
+        let bottom = scrolled(end);
+        assert_eq!(bar(&bottom, LAYOUT.top + 2), CARD);
+        assert_eq!(bar(&bottom, LAYOUT.bottom - 2), SECONDARY);
+        assert!(LAYOUT.whole(4, end));
+        let fifth = (LAYOUT.top as i32 + LAYOUT.span(4).0 - end + 10) as usize;
+        assert_eq!(
+            target(100, fifth, stats, false, end),
+            Some(Target::Row(stats + 4))
+        );
+        // A short section has no bar.
+        assert_eq!(bar(&view(0, false, &[], "SAVED"), LAYOUT.top + 2), 0);
+    }
+
+    #[test]
+    fn a_row_under_a_resting_finger_is_pressed() {
+        let mut view = View::new(Page::Settings, 0, None);
+        let _ = view.show_settings()[STATUS].push_str("SAVED");
+        view.press_setting(Some(1));
+        view.prepare();
+        let colors: std::vec::Vec<_> = panels(&view).iter().map(|(_, c)| *c).collect();
+        assert_eq!(colors, [ACCENT, RAISED, PRESSED, CARD, CARD]);
     }
 }

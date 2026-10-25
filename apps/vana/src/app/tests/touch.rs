@@ -160,3 +160,170 @@ fn a_contact_never_completes_on_another_screen() {
     touch(&mut runtime, &mut radio, &[sensors], 4100);
     assert!(runtime.navigation.page == Page::Sensors);
 }
+
+/// A finger dragged from `from` to `to` over `ms`, reported every 10 ms as
+/// the C606's touch poll does, rested `hold_ms`, then lifted.
+fn drag(
+    runtime: &mut Runtime,
+    radio: &mut Radio,
+    from: (u16, u16),
+    to: (u16, u16),
+    ms: u64,
+    hold_ms: u64,
+    now: u64,
+) -> u64 {
+    let steps = (ms / 10).max(1);
+    for step in 0..=steps {
+        let at = |a: u16, b: u16| {
+            (i64::from(a) + (i64::from(b) - i64::from(a)) * step as i64 / steps as i64) as u16
+        };
+        let point = Point {
+            x: at(from.0, to.0),
+            y: at(from.1, to.1),
+        };
+        let time = now + step * 10;
+        runtime.navigation.touches.tick(time);
+        runtime.input(Input::Touch(point), time, radio);
+    }
+    let lift = now + steps * 10 + hold_ms;
+    runtime.navigation.touches.tick(lift);
+    runtime.input(Input::Release, lift, radio);
+    lift
+}
+
+/// The Workouts page from its top, with its built-in workouts.
+fn workouts() -> (Runtime, Radio) {
+    let radio = Radio::new();
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    runtime.navigation.page = Page::Workouts;
+    runtime.show_focus(List::Workouts, 0);
+    assert!(
+        runtime.training.rows() >= 8,
+        "a list longer than the screen"
+    );
+    (runtime, radio)
+}
+
+/// Screen row of card `index`'s middle with the page at `offset`.
+fn card_y(index: usize, offset: i32) -> u16 {
+    let layout = workouts::LAYOUT;
+    let (top, bottom) = layout.span(index);
+    (layout.top as i32 + (top + bottom) / 2 - offset) as u16
+}
+
+use crate::screens::touch::{Control, List};
+use crate::screens::workouts;
+
+#[test]
+fn scrolling_from_a_card_never_focuses_or_chooses_it() {
+    let (mut runtime, mut radio) = workouts();
+    let start = card_y(2, 0);
+    // The finger rests on the third card until it lights up...
+    runtime.input(Input::Touch(Point { x: 120, y: start }), 1000, &mut radio);
+    runtime.navigation.touches.tick(1000 + 160);
+    assert_eq!(
+        runtime.navigation.touches.pressed(),
+        Some(Control::Workout(2))
+    );
+    // ...then drags the list up and lets go still.
+    let lift = drag(
+        &mut runtime,
+        &mut radio,
+        (120, start),
+        (120, start - 150),
+        400,
+        200,
+        1200,
+    );
+    assert_eq!(
+        runtime.navigation.touches.pressed(),
+        None,
+        "the scroll took it"
+    );
+    runtime.list_frame(lift + 2000);
+    assert_eq!(
+        runtime.list_offset(List::Workouts, lift + 2000),
+        140,
+        "1:1 less the slop"
+    );
+    assert!(runtime.navigation.page == Page::Workouts, "nothing chosen");
+    assert_eq!(runtime.training.picker_cursor, 0, "the focus stays put");
+    assert!(runtime.training.selected.is_none());
+}
+
+#[test]
+fn a_press_first_brings_a_focus_that_scrolled_away_back() {
+    let (mut runtime, mut radio) = workouts();
+    let lift = drag(
+        &mut runtime,
+        &mut radio,
+        (120, 290),
+        (120, 90),
+        400,
+        200,
+        1000,
+    );
+    runtime.list_frame(lift + 2000);
+    let offset = runtime.list_offset(List::Workouts, lift + 2000);
+    let layout = workouts::LAYOUT;
+    assert!(!layout.whole(0, offset), "the focus scrolled away");
+    // ACT scrolls the focus back into view and chooses nothing.
+    runtime.input(press(Button::BottomRight), lift + 2100, &mut radio);
+    assert!(runtime.navigation.page == Page::Workouts);
+    runtime.list_frame(lift + 4000);
+    assert_eq!(runtime.list_offset(List::Workouts, lift + 4000), 0);
+    // Scrolled away again, MOVE focuses the first whole card in view
+    // without scrolling; ACT then chooses it.
+    let lift = drag(
+        &mut runtime,
+        &mut radio,
+        (120, 290),
+        (120, 90),
+        400,
+        200,
+        lift + 5000,
+    );
+    runtime.list_frame(lift + 2000);
+    let offset = runtime.list_offset(List::Workouts, lift + 2000);
+    let first = layout.first_whole(runtime.training.rows(), offset).unwrap();
+    runtime.input(press(Button::BottomLeft), lift + 2100, &mut radio);
+    assert_eq!(runtime.training.picker_cursor, first);
+    runtime.list_frame(lift + 3000);
+    assert_eq!(runtime.list_offset(List::Workouts, lift + 3000), offset);
+    runtime.input(press(Button::BottomRight), lift + 3500, &mut radio);
+    assert!(runtime.navigation.page == Page::Ready);
+}
+
+#[test]
+fn a_tap_chooses_its_card_but_a_tap_that_stops_a_coasting_list_does_not() {
+    let (mut runtime, mut radio) = workouts();
+    // A flick: the list coasts on after the finger lifts.
+    let lift = drag(
+        &mut runtime,
+        &mut radio,
+        (120, 280),
+        (120, 180),
+        50,
+        0,
+        1000,
+    );
+    runtime.list_frame(lift + 100);
+    assert!(runtime.kinetic(List::Workouts).moving());
+    // A tap mid-list on the moving list stops it and chooses nothing.
+    touch(&mut runtime, &mut radio, &[(120, 200)], lift + 100);
+    assert!(runtime.navigation.page == Page::Workouts);
+    runtime.list_frame(lift + 300);
+    assert!(!runtime.kinetic(List::Workouts).moving());
+    // On the list at rest, a tap chooses the card under it and focuses it.
+    let offset = runtime.list_offset(List::Workouts, lift + 300);
+    let layout = workouts::LAYOUT;
+    let card = layout.first_whole(runtime.training.rows(), offset).unwrap();
+    touch(
+        &mut runtime,
+        &mut radio,
+        &[(120, card_y(card, offset))],
+        lift + 400,
+    );
+    assert!(runtime.navigation.page == Page::Ready);
+    assert_eq!(runtime.training.picker_cursor, card);
+}

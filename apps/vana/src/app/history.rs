@@ -19,7 +19,9 @@ use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
 use crate::screens::history::{self, List, Row};
+use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::summary::{After, Saving};
+use crate::screens::touch::List as Scrolling;
 use crate::screens::workout::{Page, Text, View};
 use core::fmt::Write;
 use device_api::input::Button;
@@ -38,6 +40,8 @@ pub(super) struct History {
     /// Home last saw the full count.
     counted: bool,
     pub(super) cursor: usize,
+    /// The list's scroll, which follows the finger.
+    pub(super) scroll: Kinetic,
     /// The ride on the summary's pages: its journal, its replay and its line.
     open: Option<(Medium, Replay, Summary)>,
     /// The ride the phone screen was opened for.
@@ -167,6 +171,7 @@ impl Runtime {
         self.history.cursor = 0;
         self.history.open = None;
         self.navigation.page = Page::History;
+        self.show_focus(Scrolling::Rides, 0);
     }
 
     /// Whether every saved ride is counted: always without an index, else
@@ -213,20 +218,18 @@ impl Runtime {
         }
     }
 
-    /// MOVE focuses the next ride (held, the next page of cards), ACT opens
-    /// it, BACK goes Home.
-    pub(super) fn history_input(&mut self, button: Button, held: bool) {
+    /// MOVE focuses the next ride (held, `SHOWN` on; past the last, the
+    /// first) and scrolls it into view, ACT opens it, BACK goes Home. Either
+    /// press first brings a focus that scrolled away back into view.
+    pub(super) fn history_input(&mut self, button: Button, held: bool, now: u64) {
         let count = self.history_count();
         match button {
             Button::BottomLeft if count > 0 => {
-                let step = if held { history::SHOWN } else { 1 };
-                self.history.cursor = if self.history.cursor + 1 >= count {
-                    0
-                } else {
-                    (self.history.cursor + step).min(count - 1)
-                };
+                self.list_move(Scrolling::Rides, history::SHOWN, held, now)
             }
-            Button::BottomRight if count > 0 => self.open_past_ride(self.history.cursor),
+            Button::BottomRight if count > 0 && self.list_act(Scrolling::Rides, now) => {
+                self.open_past_ride(self.history.cursor)
+            }
             Button::TopLeft => self.navigation.page = Page::Home,
             _ => {}
         }
@@ -409,13 +412,19 @@ impl Runtime {
 
     /// The ride list, its cards made on demand.
     #[inline(never)]
-    pub(super) fn history_canvas(&self) -> crate::screens::canvas::Canvas {
+    pub(super) fn history_canvas(
+        &self,
+        offset: i32,
+        pressed: Option<usize>,
+    ) -> crate::screens::canvas::Canvas {
         let count = self.history_count();
         history::prepare(&List {
             count,
             cursor: self.history.cursor,
+            offset,
+            pressed,
             row: |index| self.history_row(index, count),
-            weeks: if count > 0 && self.history.cursor < history::HEADED {
+            weeks: if count > 0 && history::header_shows(offset) {
                 self.weeks()
             } else {
                 None

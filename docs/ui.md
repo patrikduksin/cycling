@@ -404,8 +404,11 @@ totals and alerts use readings as they arrive. The mechanism is
 ## Settings
 
 Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
-headline and at most four rows. A row is a small card (radius 12) with its
+bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
+headline over rows that scroll under the finger, between the headline and
+the save status (see Lists that scroll). A section whose rows do not fit
+shows a 3 px scroll bar in the right margin: a `CARD` track down the rows,
+the part in view in `SECONDARY`. A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
 `SECONDARY` at the right of the value line. A note that does not fit whole is
 left out, after trying the part following its first comma. The focused row is `RAISED` with a 3 px `ACCENT` ring.
@@ -485,7 +488,7 @@ reading with no data yet shows `--`. The choice is the last two bytes of VANA's
 preference record from version 8 (`app::preferences`); older records load with
 the defaults.
 
-RIDE PAGES (STATS, LAP, CLIMB) and MORE PAGES (MAP, BACK TO START) list one row per optional ride page; five rows do not fit one section above the save status. The ride screen's page dots
+RIDE PAGES (STATS, LAP, CLIMB, MAP, BACK TO START) lists one row per optional ride page, five rows that scroll. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE
 press or a swipe. The `TITLE` falls back to `BODY` when a section name is too
 wide, as `RIDE PAGES` is. The CLIMB row's note, NO CLIMB POP-UP, shows while it
@@ -548,21 +551,70 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | Button | Home | Sensors | Settings | Workouts | Ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Open the focused card | Act on the focused tile | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Focus the next workout (wraps) | Next page (wraps); while paused, the paused screen is one of the pages |
+| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages |
 | TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
 | Button | Ready | End ride? | Summary | Rides | Saved ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone |
-| BottomLeft (MOVE) | — | — | Next page (wraps) | Focus the next ride (wraps) | Next page (wraps) |
+| BottomLeft (MOVE) | — | — | Next page (wraps) | Focus the next ride (wraps; held, four on) | Next page (wraps) |
 | TopLeft (BACK) | Home, dropping a chosen workout | Keep the ride, paused | Home | Home | Back to Rides |
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout under the finger is chosen; on the back-to-start page, the pad starts or stops following the track back. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
-| Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings |
-| Settings rows | Tap | Act on the row, as ACT does |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card or tile on Home and Sensors, or the ride on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does; on the back-to-start page, the pad starts or stops following the track back. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
+| Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
+| Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
+| Long press | Still for 1 s, then lifted | On the map, stops following the course |
 | Settings pads | Act on contact | Step the edited value |
+
+### How touch is routed
+
+Touch follows UIKit's model. When a finger lands, the screen hit-tests what
+lies under it: the control a tap would act on (a card, tile, row or pad), the
+list it sits in and whether the page takes swipes. The contact stays bound to
+that hit until it lifts. The list's drag, the page's swipe and the control's
+tap then compete for it, and the first to win takes it: 10 px of mostly
+vertical travel give it to the list, as much mostly sideways travel to the
+swipe, and leaving the 16 px tap slop any other way loses it for all. A
+control that lost is released, never activated. The Settings pads act as the
+finger lands. `screens::touch` owns this arbitration.
+
+A card in a list shows as pressed (`PRESSED`, iOS's touched-cell grey) only
+once the finger has rested 150 ms, as a scroll view holds a touch back until it
+knows the finger will not scroll; a control outside a list is pressed at once.
+A finger lifted before the delay still activates its card.
+
+Buttons go to the focus, which is not touch. A tap moves the focus only by
+activating a control, and scrolling never moves it.
+
+### Lists that scroll
+
+Rides, Workouts and a Settings section are pages of cards that scroll under
+the finger, with the motion of iOS's `UIScrollView` (`screens::kinetic`):
+
+- The page follows the finger pixel for pixel once it has travelled 10 px.
+- Past either end it stretches with UIKit's rubber band:
+  `(1 - 1 / (x * 0.55 / d + 1)) * d` for an overshoot `x` over a viewport `d`
+  tall.
+- Let go, it coasts at the finger's speed and slows by 0.998 each
+  millisecond (UIKit's normal deceleration); a finger that stopped before
+  lifting throws nothing.
+- Coasting into an end, or let go past one, hands its speed to a critically
+  damped spring (mass 1, stiffness 100) that settles on the end without
+  wobbling.
+- A finger on a moving page stops it, and that touch is no tap.
+
+Rides and Workouts scroll their title with the page; once it has gone under
+the status bar, the page's name and the focus's place (`3/44`) pin in a band
+at the top, over a `CARD` hairline. A Settings section keeps its headline and
+save status still and scrolls its rows between them.
+
+The focus may scroll out of view. A button press then first brings it back:
+MOVE focuses the first card that shows whole, without scrolling, and ACT
+scrolls the focused card into view and does nothing else. With the focus in
+view, MOVE focuses the next card and scrolls it into view on a stiffer spring
+(about a third of a second), and ACT acts on it.
 
 Holding TopLeft for 10 s reboots the device from any state, even one that
 draws nothing. The device firmware watches for it below VANA, so a stuck
@@ -575,7 +627,7 @@ cause stray contacts, and a ride must not depend on them. Anything touch can do,
 a button can do too.
 
 A contact belongs to the screen it began on. Every touch edge reaches the
-recognizer, even while a sheet owns the buttons. If the page, its subview (ride
+arbiter, even while a sheet owns the buttons. If the page, its subview (ride
 page, sensor detail or replacement page, Settings edit mode) or a sheet changes
 before the finger lifts, that contact gives nothing. A `Cancel` during a contact
 drops the rest of it, however long the finger keeps sliding. A `Cancel` with no
@@ -583,7 +635,7 @@ finger down changes nothing for touch, so the next tap still counts. On Sensors
 it still reaches the menu, which then waits for MOVE before ACT can change a
 sensor.
 
-Producers and the recognizer share one contract, set out on
+Producers and the arbiter share one contract, set out on
 `device_api::input::Input::Cancel`. After a `Cancel` the producer sends nothing
 more from that contact. It sends one `Release` when the panel reports the lift
 or stops reporting the finger for `STALE_CONTACT_MS` (250 ms). A finger the
@@ -595,7 +647,7 @@ Every edge queue keeps the contract too. When a slow consumer overflows
 `Edges`, the queue drops its history and sends a `Cancel`. It then drops the
 points of the contact in progress until that contact's `Release`, and tells the
 producer, which cancels its own contact. A retained move can never reach the
-recognizer as a fresh touch.
+arbiter as a fresh touch.
 
 A producer that cannot keep the contract still loses only the cancelled
 contact: a `Touch` that arrives at least 250 ms after the last touch edge

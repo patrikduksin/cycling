@@ -1,24 +1,27 @@
 //! Rides: the saved rides, newest first, one card each.
 //!
-//! MOVE focuses the next ride (wrapping), ACT opens it, BACK goes Home, and
-//! a tap opens the ride under the finger. Each card names the ride by its
-//! start (OCT 17  7:12) and says how long, how far and how hard it was.
-//! Above the first cards sits this week at a glance: distance, moving time,
-//! rides, the week's training stress (TSS, from the rides that had power),
-//! last week's distance and a bar for each day. Scrolled past the
-//! first cards, the header gives way to the RIDES headline and a fourth card.
-//! Without a saved ride the screen says how one gets here.
+//! The week header and every card make one page that scrolls under the
+//! finger (`scroll::Layout`). MOVE focuses the next ride (wrapping), ACT
+//! opens it, BACK goes Home, and a tap opens the ride under the finger. Each
+//! card names the ride by its start (OCT 17  7:12) and says how long, how far
+//! and how hard it was. At the page's top sits this week at a glance:
+//! distance, moving time, rides, the week's training stress (TSS, from the
+//! rides that had power), last week's distance and a bar for each day. Once
+//! its top line has scrolled away, RIDES and the focus's place pin at the
+//! top. Without a saved ride the screen says how one gets here.
 use super::canvas::{Canvas, Shape};
+use super::chrome::HEIGHT as SCREEN_HEIGHT;
 use super::chrome::{
-    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, RAISED, Rect, SECONDARY, TERTIARY,
-    TITLE, VALUE, WHITE, WIDTH,
+    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, PRESSED, RAISED, Rect, SECONDARY,
+    TERTIARY, TITLE, VALUE, WHITE, WIDTH,
 };
+use super::scroll::{Column, Layout, PAGE, Pin};
 use super::workout::Text;
 use crate::clock::{Local, civil};
 use crate::ride::week::{DAYS, Weeks};
 use core::fmt::Write;
 
-/// Cards on screen at once; the list scrolls to keep the focused one shown.
+/// Held MOVE steps this many cards on.
 pub const SHOWN: usize = 4;
 
 /// One saved ride as its card shows it.
@@ -32,30 +35,34 @@ pub struct Row {
     pub heart: Text<8>,
 }
 
-/// The list: how many rides, which is focused, and each card made on
-/// demand, so only the cards on screen exist at once.
+/// The list: how many rides, which is focused, how far it is scrolled and
+/// each card made on demand, so only the cards on screen exist at once.
 pub struct List<F: Fn(usize) -> Row> {
     pub count: usize,
     pub cursor: usize,
+    /// How far the page is scrolled (`Kinetic::offset`): negative past the
+    /// top, as the rubber band stretches.
+    pub offset: i32,
     pub row: F,
     /// This week and last, or none while the clock is unknown.
     pub weeks: Option<Weeks>,
     /// The index has not read every ride yet, so the weeks may grow.
     pub reading: bool,
+    /// The card under a resting finger.
+    pub pressed: Option<usize>,
 }
 
 const LEFT: usize = 10;
 const RIGHT: usize = WIDTH - 10;
 const RADIUS: usize = 12;
 const INSET: usize = 14;
+/// The focus ring around a card, inside the gap between cards.
+const RING: usize = 3;
+const _: () = assert!(2 * RING <= PITCH - HEIGHT);
 const HEADLINE: usize = CONTENT.top + 36;
-const FIRST: usize = CONTENT.top + 50;
 const HEIGHT: usize = 54;
 const PITCH: usize = HEIGHT + 6;
 
-/// While the focus is on one of the first `HEADED` rides the week header
-/// shows, over that many cards; the rest of the list has the headline.
-pub const HEADED: usize = 3;
 const HEADER_FIRST: usize = CONTENT.top + 111;
 const CAPTION_BASE: usize = CONTENT.top + 16;
 const VALUE_BASE: usize = CONTENT.top + 54;
@@ -73,41 +80,34 @@ const STRESS_MOST: u32 = 9999;
 /// Every other day is named: the letters are as wide as the bars are apart.
 const DAY_LETTERS: [&[u8]; DAYS] = [b"M", b"", b"W", b"", b"F", b"", b"S"];
 
-/// Whether the week header shows with the focus on `cursor`.
-fn headed(cursor: usize) -> bool {
-    cursor < HEADED
-}
-
-/// The first row on screen, so that the focused one shows.
-fn first_shown(cursor: usize) -> usize {
-    if headed(cursor) {
-        0
-    } else {
-        cursor - (SHOWN - 1).min(cursor)
-    }
-}
-
-/// Cards on screen with the focus on `cursor`.
-fn shown(cursor: usize) -> usize {
-    if headed(cursor) { HEADED } else { SHOWN }
-}
-
-fn card(headed: bool, slot: usize) -> Rect {
-    let top = if headed { HEADER_FIRST } else { FIRST } + slot * PITCH;
-    Rect {
+/// The page under the status bar: the week header, then the cards.
+pub const LAYOUT: Layout = Layout {
+    top: CONTENT.top,
+    bottom: SCREEN_HEIGHT,
+    column: Column {
         left: LEFT,
-        top,
         right: RIGHT,
-        bottom: top + HEIGHT,
-    }
-}
+        top: HEADER_FIRST - CONTENT.top,
+        height: HEIGHT,
+        pitch: PITCH,
+    },
+    end: 10,
+    margin: 6,
+    // Once the header's top line has gone under the status bar.
+    pin: Some(Pin {
+        after: (CAPTION_BASE - CONTENT.top) as i32,
+        height: PIN,
+    }),
+};
+/// The pinned band's height, and its line's baseline on screen.
+const PIN: usize = 24;
+const PIN_BASE: usize = CONTENT.top + 18;
+/// Shifts a row of the page as it lies at rest to its canvas row.
+const AT: usize = PAGE - CONTENT.top;
 
-/// The list index of the ride under a tap, if any.
-pub fn row_at(count: usize, cursor: usize, x: usize, y: usize) -> Option<usize> {
-    let headed = headed(cursor);
-    let slot = (0..shown(cursor)).find(|slot| card(headed, *slot).contains(x, y))?;
-    let index = first_shown(cursor) + slot;
-    (index < count).then_some(index)
+/// Whether any of the week header shows with the page scrolled to `offset`.
+pub fn header_shows(offset: i32) -> bool {
+    offset < LAYOUT.span(0).0
 }
 
 pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
@@ -118,7 +118,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             b"RIDES",
             RIGHT - LEFT,
             LEFT + 4,
-            HEADLINE,
+            AT + HEADLINE,
             Align::Left,
             WHITE,
         );
@@ -128,7 +128,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             b"NO RIDES YET",
             RIGHT - LEFT,
             centre,
-            150,
+            AT + 150,
             Align::Center,
             WHITE,
         );
@@ -136,37 +136,68 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             b"SAVED RIDES SHOW HERE",
             RIGHT - LEFT,
             centre,
-            174,
+            AT + 174,
             Align::Center,
         );
         return canvas;
     }
     let mut count = Text::<12>::new();
     let _ = write!(count, "{}/{}", list.cursor + 1, list.count);
-    let headed = headed(list.cursor);
-    if headed {
+    // Only what shows: the header while any of it does, and the cards whose
+    // rows reach the viewport.
+    if header_shows(list.offset) {
         header(&mut canvas, list, count.as_bytes());
-    } else {
+    }
+    if LAYOUT.pinned(list.offset) {
         canvas.fit(
-            &[&TITLE, &BODY],
+            &[&BODY],
             b"RIDES",
-            RIGHT - LEFT,
+            RIGHT - LEFT - 80,
             LEFT + 4,
-            HEADLINE,
+            PIN_BASE,
             Align::Left,
             WHITE,
         );
-        canvas.caption(count.as_bytes(), 80, RIGHT - 4, HEADLINE - 4, Align::Right);
+        canvas.caption(count.as_bytes(), 80, RIGHT - 4, PIN_BASE, Align::Right);
+        // A hairline where the cards pass under the band.
+        canvas.shape(Shape::Bar {
+            rect: Rect {
+                left: 0,
+                top: CONTENT.top + PIN - 1,
+                right: WIDTH,
+                bottom: CONTENT.top + PIN,
+            },
+            radius: 0,
+            color: CARD,
+        });
     }
-    let first = first_shown(list.cursor);
-    for (slot, index) in (first..list.count.min(first + shown(list.cursor))).enumerate() {
+    for index in LAYOUT.visible(list.count, list.offset) {
         let row = (list.row)(index);
-        let rect = card(headed, slot);
-        let focused = first + slot == list.cursor;
+        let rect = LAYOUT.rect(index);
+        let focused = index == list.cursor;
+        // The focused card is ringed, as on every list (`docs/ui.md`).
+        if focused {
+            canvas.shape(Shape::Panel {
+                rect: Rect {
+                    left: rect.left - RING,
+                    top: rect.top - RING,
+                    right: rect.right + RING,
+                    bottom: rect.bottom + RING,
+                },
+                radius: RADIUS + RING,
+                color: ACCENT,
+            });
+        }
         canvas.shape(Shape::Panel {
             rect,
             radius: RADIUS,
-            color: if focused { RAISED } else { CARD },
+            color: if list.pressed == Some(index) {
+                PRESSED
+            } else if focused {
+                RAISED
+            } else {
+                CARD
+            },
         });
         let width = rect.right - rect.left - 2 * INSET;
         let title_base = rect.top + 8 + BODY.cap as usize;
@@ -229,8 +260,8 @@ pub fn date(days: u16) -> Text<20> {
 /// it has found so far shows.
 fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]) {
     let left = LEFT + 4;
-    let title = canvas.caption(b"THIS WEEK", 100, left, CAPTION_BASE, Align::Left);
-    let place = canvas.caption(count, 80, RIGHT - 4, CAPTION_BASE, Align::Right);
+    let title = canvas.caption(b"THIS WEEK", 100, left, AT + CAPTION_BASE, Align::Left);
+    let place = canvas.caption(count, 80, RIGHT - 4, AT + CAPTION_BASE, Align::Right);
     let weeks = list.weeks.as_ref();
     // Nothing found yet while reading is not a quiet week.
     let known = weeks.filter(|weeks| !list.reading || weeks.this.rides > 0);
@@ -248,7 +279,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         value,
         BARS_LEFT - left - 30,
         left,
-        VALUE_BASE,
+        AT + VALUE_BASE,
         Align::Left,
         WHITE,
     );
@@ -257,7 +288,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         b"KM",
         30,
         run.right() + 6,
-        VALUE_BASE,
+        AT + VALUE_BASE,
         Align::Left,
         SECONDARY,
     );
@@ -278,7 +309,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         time.as_bytes(),
         BARS_LEFT - left - 8,
         left,
-        TIME_BASE,
+        AT + TIME_BASE,
         Align::Left,
         WHITE,
     );
@@ -298,7 +329,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             rides.as_bytes(),
             place.left.saturating_sub(title.right() + 12 + 8),
             title.right() + 12,
-            CAPTION_BASE,
+            AT + CAPTION_BASE,
             Align::Left,
         );
     }
@@ -309,7 +340,13 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             "LAST WEEK {} KM",
             (weeks.last.distance_mm + 500_000) / 1_000_000
         );
-        canvas.caption(last.as_bytes(), RIGHT - left, left, LAST_BASE, Align::Left);
+        canvas.caption(
+            last.as_bytes(),
+            RIGHT - left,
+            left,
+            AT + LAST_BASE,
+            Align::Left,
+        );
     }
     // This week's training stress, from the rides that had power; a week
     // without any says nothing rather than 0. Its own line, under the time,
@@ -326,7 +363,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             stress.as_bytes(),
             BARS_LEFT - left - 8,
             left,
-            STRESS_BASE,
+            AT + STRESS_BASE,
             Align::Left,
             POWER,
         );
@@ -348,9 +385,9 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         canvas.shape(Shape::Bar {
             rect: Rect {
                 left: x,
-                top: BARS_BASE - high,
+                top: AT + BARS_BASE - high,
                 right: x + BAR_WIDE,
-                bottom: BARS_BASE,
+                bottom: AT + BARS_BASE,
             },
             radius: if ridden { 3 } else { 1 },
             color: match (ridden, today) {
@@ -367,7 +404,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             letter,
             BAR_PITCH + 6,
             x + BAR_WIDE / 2,
-            TIME_BASE,
+            AT + TIME_BASE,
             Align::Center,
             if today { ACCENT } else { SECONDARY },
         );
@@ -425,9 +462,11 @@ mod tests {
         List {
             count,
             cursor,
+            offset: 0,
             row,
             weeks: None,
             reading: false,
+            pressed: None,
         }
     }
 
@@ -461,11 +500,32 @@ mod tests {
         }
     }
 
+    /// The whole canvas: the page sits below the screen's rows from `PAGE`.
+    fn page() -> Rect {
+        Rect {
+            top: 0,
+            bottom: 100_000,
+            ..bounds()
+        }
+    }
+
+    /// The canvas's card panels, top edges in canvas rows, with their fill.
+    fn cards(canvas: &Canvas) -> std::vec::Vec<(usize, u16)> {
+        canvas
+            .shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Panel { rect, color, .. } => Some((rect.top, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn rows_lay_out_whole_and_the_focused_one_stays_shown() {
-        let bounds = bounds();
+    fn at_the_top_the_week_header_and_the_first_cards_show() {
         let mut full = list(ROWS, 0);
         full.weeks = Some(week());
+        let canvas = prepare(&full);
         let want = [
             "THIS WEEK",
             "DEC 31  12:59",
@@ -473,58 +533,65 @@ mod tests {
             "10:07:12  132.4 KM",
             "141 BPM",
         ];
-        prepare(&full).assert_laid_out(bounds, &want, "list");
-        // Scrolled on, the headline and a fourth card replace the header.
-        let last = list(ROWS, ROWS - 1);
-        assert_eq!(first_shown(last.cursor), ROWS - SHOWN);
-        prepare(&last).assert_laid_out(bounds, &["RIDES", "8/8"], "scrolled");
-        let end = ROWS - 1;
-        assert_eq!(
-            row_at(ROWS, end, 120, card(false, SHOWN - 1).top + 4),
-            Some(end)
-        );
-        assert_eq!(
-            row_at(ROWS, end, 120, card(false, 0).top + 4),
-            Some(ROWS - SHOWN)
-        );
-        assert_eq!(row_at(1, 0, 120, card(true, 1).top + 4), None);
-        assert_eq!(row_at(ROWS, end, 120, CONTENT.top), None);
+        canvas.assert_laid_out(page(), &want, "top");
+        // The header sits on the page, above three whole cards and the top
+        // of a fourth.
+        let title = canvas.find("THIS WEEK").unwrap();
+        assert!(title.top >= PAGE);
+        let tops: std::vec::Vec<_> = cards(&canvas)
+            .iter()
+            .filter(|(_, c)| *c != ACCENT)
+            .map(|(top, _)| *top)
+            .collect();
+        assert_eq!(tops, [0, 1, 2, 3].map(|i| LAYOUT.rect(i).top));
+        assert!((0..3).all(|i| LAYOUT.whole(i, 0)) && !LAYOUT.whole(3, 0));
         let empty = prepare(&list(0, 0));
-        empty.assert_laid_out(bounds, &["NO RIDES YET", "SAVED RIDES SHOW HERE"], "empty");
+        empty.assert_laid_out(page(), &["NO RIDES YET", "SAVED RIDES SHOW HERE"], "empty");
     }
 
     #[test]
-    fn the_list_scrolls_through_the_header_and_back() {
-        // The header and three cards while the focus is on the first three
-        // rides; from the fourth, four cards and the headline.
-        for cursor in 0..ROWS {
-            let mut list = list(ROWS, cursor);
-            list.weeks = Some(week());
-            let canvas = prepare(&list);
-            canvas.assert_laid_out(bounds(), &[], "scroll");
-            assert_eq!(canvas.shows("THIS WEEK"), cursor < HEADED, "{cursor}");
-            let first = first_shown(cursor);
-            assert!(
-                first <= cursor && cursor < first + shown(cursor),
-                "{cursor}"
+    fn scrolled_only_cards_in_view_are_made_and_the_title_pins() {
+        let end = LAYOUT.reveal(ROWS - 1, 0);
+        for offset in [-40, 0, 1, 16, 17, 60, 111, 200, 301, end] {
+            let mut scrolled = list(ROWS, 0);
+            scrolled.offset = offset;
+            scrolled.weeks = Some(week());
+            let canvas = prepare(&scrolled);
+            canvas.assert_laid_out(page(), &[], &std::format!("{offset}"));
+            assert_eq!(canvas.shows("THIS WEEK"), header_shows(offset), "{offset}");
+            // Once the header's top line is gone, RIDES and the place pin.
+            assert_eq!(canvas.shows("RIDES"), LAYOUT.pinned(offset), "{offset}");
+            assert_eq!(
+                canvas.shows("1/8"),
+                header_shows(offset) || LAYOUT.pinned(offset)
             );
-            let panels = canvas
-                .shapes
+            let made: std::vec::Vec<_> = cards(&canvas)
                 .iter()
-                .filter(|s| matches!(s, Shape::Panel { .. }))
-                .count();
-            assert_eq!(panels, shown(cursor));
-            // Every card on screen answers a tap with its own row.
-            for slot in 0..shown(cursor) {
-                let at = card(headed(cursor), slot);
-                assert_eq!(
-                    row_at(ROWS, cursor, at.center_x(), at.top + 20),
-                    Some(first + slot)
-                );
-            }
-            let below = card(headed(cursor), shown(cursor) - 1).bottom;
-            assert!(below <= 320 - 4, "{cursor}: cards end at {below}");
+                .filter(|(_, c)| *c != ACCENT)
+                .map(|(top, _)| *top)
+                .collect();
+            let want: std::vec::Vec<_> = LAYOUT
+                .visible(ROWS, offset)
+                .map(|i| LAYOUT.rect(i).top)
+                .collect();
+            assert_eq!(made, want, "{offset}");
         }
+        assert!(LAYOUT.pinned(17) && !LAYOUT.pinned(16));
+    }
+
+    #[test]
+    fn the_focused_card_is_raised_and_ringed_and_one_under_a_resting_finger_pressed() {
+        let mut shown = list(ROWS, 1);
+        shown.pressed = Some(2);
+        let fills: std::vec::Vec<_> = cards(&prepare(&shown)).iter().map(|(_, c)| *c).collect();
+        assert_eq!(
+            fills,
+            [CARD, ACCENT, RAISED, PRESSED, CARD],
+            "the focus ringed"
+        );
+        shown.pressed = Some(1);
+        let fills: std::vec::Vec<_> = cards(&prepare(&shown)).iter().map(|(_, c)| *c).collect();
+        assert_eq!(fills[1..3], [ACCENT, PRESSED], "pressed keeps the ring");
     }
 
     #[test]
@@ -559,12 +626,12 @@ mod tests {
         list.reading = false;
         let quiet = prepare(&list);
         assert!(quiet.shows("0.0") && quiet.shows("0M") && quiet.shows("0 RIDES"));
-        quiet.assert_laid_out(bounds(), &["THIS WEEK", "LAST WEEK 0 KM"], "quiet");
+        quiet.assert_laid_out(page(), &["THIS WEEK", "LAST WEEK 0 KM"], "quiet");
         // No clock: nothing is known, and there is no last week.
         list.weeks = None;
         let unknown = prepare(&list);
         assert!(unknown.shows("--") && !unknown.shows("LAST WEEK 0 KM"));
-        unknown.assert_laid_out(bounds(), &["THIS WEEK"], "no clock");
+        unknown.assert_laid_out(page(), &["THIS WEEK"], "no clock");
         // A long week in a big number still fits.
         let mut big = Weeks::new(1_789_000_000_000, &|_| -3 * 3600);
         big.add(
@@ -574,7 +641,7 @@ mod tests {
             &|_| -3 * 3600,
         );
         list.weeks = Some(big);
-        prepare(&list).assert_laid_out(bounds(), &["THIS WEEK", "1234.5"], "big");
+        prepare(&list).assert_laid_out(page(), &["THIS WEEK", "1234.5"], "big");
     }
 
     #[test]
@@ -602,7 +669,7 @@ mod tests {
             let canvas = prepare(&list);
             let last = std::format!("LAST WEEK {km} KM");
             assert!(canvas.shows(shown), "{shown}");
-            canvas.assert_laid_out(bounds(), &[&last, shown, "THIS WEEK"], "stress");
+            canvas.assert_laid_out(page(), &[&last, shown, "THIS WEEK"], "stress");
         }
     }
 }

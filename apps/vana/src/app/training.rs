@@ -25,7 +25,9 @@ use super::Runtime;
 use super::cues::Cue;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
+use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::{Pages, RidePage, Training as Shown};
+use crate::screens::touch::List;
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
 use crate::workout::history;
@@ -50,6 +52,8 @@ pub(super) struct Training {
     /// The workout the next ride plays; `None` rides free.
     pub(super) selected: Option<Id>,
     pub(super) picker_cursor: usize,
+    /// The picker's scroll, which follows the finger.
+    pub(super) picker_scroll: Kinetic,
     beep: Option<(Beep, u64)>,
     /// A test's FTP waiting for the rider's answer.
     pub(super) ftp_offer: Option<u16>,
@@ -83,7 +87,7 @@ impl Training {
         self.library.ids().nth(row - 1).map(Some)
     }
 
-    fn rows(&self) -> usize {
+    pub(super) fn rows(&self) -> usize {
         1 + self.library.ids().count()
     }
 
@@ -218,13 +222,15 @@ impl Runtime {
         self.training.selected = None;
     }
 
-    pub(super) fn picker(&self) -> Picker {
+    /// The picker scrolled to `offset`, with the card under a resting finger.
+    pub(super) fn picker(&self, offset: i32, pressed: Option<usize>) -> Picker {
         let training = &self.training;
         let chosen = training
             .selected
             .and_then(|id| training.library.ids().position(|other| other == id))
             .map_or(0, |index| index + 1);
-        let mut picker = Picker::new(training.rows(), training.picker_cursor, chosen);
+        let mut picker = Picker::new(training.rows(), training.picker_cursor, chosen, offset);
+        picker.pressed = pressed;
         let mut free = Text::new();
         let _ = free.push_str("NO TARGETS");
         picker.push(Choice {
@@ -244,19 +250,13 @@ impl Runtime {
 
     /// MOVE focuses the next card (held, the next page of cards; past the
     /// last it wraps to the first), ACT chooses it for Ready, BACK goes Home.
+    /// Either press first brings a focus that scrolled away back into view.
     pub(super) fn workouts_input(&mut self, button: Button, now: u64, held: bool) {
-        let rows = self.training.rows();
         match button {
-            Button::BottomLeft => {
-                let cursor = self.training.picker_cursor;
-                let step = if held { VISIBLE } else { 1 };
-                self.training.picker_cursor = if cursor + 1 >= rows {
-                    0
-                } else {
-                    (cursor + step).min(rows - 1)
-                };
+            Button::BottomLeft => self.list_move(List::Workouts, VISIBLE, held, now),
+            Button::BottomRight if self.list_act(List::Workouts, now) => {
+                self.choose_workout(self.training.picker_cursor, now)
             }
-            Button::BottomRight => self.choose_workout(self.training.picker_cursor, now),
             Button::TopLeft => self.navigation.page = Page::Home,
             _ => {}
         }

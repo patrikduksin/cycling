@@ -142,7 +142,11 @@ pub(super) enum Extra<'a> {
     },
     /// The track, projected and kept beside the breadcrumb.
     Map(Option<&'a ride::MapFrame>),
-    Settings(Lines),
+    /// Settings' lines, and the row under a resting finger.
+    Settings {
+        lines: SettingsLines,
+        pressed: Option<u16>,
+    },
     /// The Connect phone screen's lines and QR code.
     Phone {
         qr: Option<super::qr::Placed>,
@@ -176,6 +180,9 @@ pub(super) enum Extra<'a> {
 /// Lines of text prepared for a page: Settings' values, notes and status,
 /// the phone's codes, the setup note.
 pub(super) type Lines = [Text<38>; 9];
+/// Settings' lines: the status, then a value and a note for each of a
+/// section's rows.
+pub(super) type SettingsLines = [Text<38>; 1 + 2 * super::settings::SECTION_ROWS];
 
 /// `$name` is the variant's field, or none when `$pat` is another variant.
 macro_rules! picks {
@@ -200,9 +207,9 @@ impl<'a> Extra<'a> {
         back -> ride::Back = Self::Back { back, .. } => *back;
         sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
         map -> Option<&'a ride::MapFrame> = Self::Map(frame) => *frame;
-        lines -> &Lines = Self::Settings(lines)
-            | Self::Phone { lines, .. }
-            | Self::Setup { lines, .. } => lines;
+        settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
+        settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
+        lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;
         qr -> Option<&super::qr::Placed> = Self::Phone { qr, .. } => qr.as_ref();
         setup_step -> super::setup::Step = Self::Setup { step, .. } => *step;
         readiness -> &Readiness = Self::Ready(readiness) => readiness;
@@ -273,12 +280,15 @@ pub struct View<'a> {
     pub cursor: usize,
     /// Settings: the selected field is being changed.
     pub editing: bool,
+    /// How far the page's list is scrolled, in pixels; negative past the top.
+    pub scroll: i32,
     pub time: Text<16>,
     /// The light look is in force: the QR panel is painted inverted so the
     /// output pass turns it back to dark modules on light.
     pub light: bool,
     /// How long the ride has been paused.
-    pub paused_secs: u64,
+    /// A u32 of seconds is 136 years; the room it leaves holds `scroll`.
+    pub paused_secs: u32,
     /// The paused ride shows the paused screen rather than a ride page.
     pub pause_screen: bool,
     /// Button cues prepared for this frame.
@@ -331,6 +341,7 @@ impl<'a> View<'a> {
             page,
             cursor,
             editing: false,
+            scroll: 0,
             time,
             light: false,
             paused_secs: 0,
@@ -414,8 +425,12 @@ impl<'a> View<'a> {
         self.shown(self.extra.map(), "map", None)
     }
 
-    pub fn lines(&self) -> &Lines {
+    pub fn lines(&self) -> &[Text<38>] {
+        if let Some(lines) = self.extra.settings_lines() {
+            return lines;
+        }
         self.shown(self.extra.lines(), "lines", &NO_LINES)
+            .as_slice()
     }
 
     pub fn qr(&self) -> Option<&super::qr::Placed> {
@@ -507,12 +522,27 @@ impl<'a> View<'a> {
 
     /// Settings' lines, blank, for the caller to write.
     #[inline(never)]
-    pub fn show_settings(&mut self) -> &mut Lines {
-        self.extra = Extra::Settings(Lines::default());
+    pub fn show_settings(&mut self) -> &mut SettingsLines {
+        self.extra = Extra::Settings {
+            lines: Default::default(),
+            pressed: None,
+        };
         match &mut self.extra {
-            Extra::Settings(lines) => lines,
+            Extra::Settings { lines, .. } => lines,
             _ => unreachable!(),
         }
+    }
+
+    /// Settings: the row of the section under a resting finger.
+    pub fn press_setting(&mut self, row: Option<u16>) {
+        if let Extra::Settings { pressed, .. } = &mut self.extra {
+            *pressed = row;
+        }
+    }
+
+    /// Settings: the row of the section shown as pressed.
+    pub fn pressed_setting(&self) -> Option<u16> {
+        self.extra.settings_pressed().flatten()
     }
 
     /// The phone page's code and lines, blank, for the caller to write.
@@ -599,6 +629,22 @@ impl<'a> View<'a> {
         matches!(self.page, Page::Boot | Page::EndRide) || self.paused_screen_shown()
     }
 
+    /// The scrolling list this page shows, if any.
+    pub fn layout(&self) -> Option<&'static super::scroll::Layout> {
+        match self.page {
+            Page::History => Some(&super::history::LAYOUT),
+            Page::Workouts if self.ftp_offer.is_none() => Some(&super::workouts::LAYOUT),
+            Page::Settings
+                if !(self.editing
+                    && super::settings::Row::at(self.cursor).kind()
+                        == super::settings::Kind::Number) =>
+            {
+                Some(&super::settings::LAYOUT)
+            }
+            _ => None,
+        }
+    }
+
     fn paused_screen_shown(&self) -> bool {
         self.page == Page::Ride && self.pause_screen
     }
@@ -637,7 +683,15 @@ impl<'a> View<'a> {
                 }
                 self.canvas().paint(row);
             }
-            _ => self.canvas().paint(row),
+            // A list's page scrolls: this row may show a row of it.
+            _ => match self.layout() {
+                Some(layout) => {
+                    if let Some(at) = layout.canvas_row(y, self.scroll) {
+                        self.canvas().paint(&mut row.at(at));
+                    }
+                }
+                None => self.canvas().paint(row),
+            },
         }
         if let Some(badge) = &self.badge {
             badge.paint(row);
@@ -691,7 +745,12 @@ impl<'a> View<'a> {
                     .unwrap_or(BLACK);
                 self.canvas().pixel(x, y, under)
             }
-            _ => self.canvas().pixel(x, y, BLACK),
+            _ => match self.layout() {
+                Some(layout) => layout
+                    .canvas_row(y, self.scroll)
+                    .map_or(BLACK, |at| self.canvas().pixel(x, at, BLACK)),
+                None => self.canvas().pixel(x, y, BLACK),
+            },
         };
         if let Some(badge) = &self.badge {
             color = badge.pixel(x, y, color);
@@ -1178,8 +1237,8 @@ mod tests {
             let mut view = View::new(page, 1, None);
             view.editing = editing;
             let lines = match page {
-                Page::Settings => Some(view.show_settings()),
-                Page::Phone => Some(view.show_phone().1),
+                Page::Settings => Some(view.show_settings().as_mut_slice()),
+                Page::Phone => Some(view.show_phone().1.as_mut_slice()),
                 Page::Bests => {
                     view.show_bests(Bests::default(), crate::screens::bests::Mode::List);
                     None

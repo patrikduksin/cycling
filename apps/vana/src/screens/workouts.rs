@@ -1,8 +1,9 @@
 //! Choosing what to ride, and saving what an FTP test measured.
 //!
 //! The picker lists FREE RIDE, the built-in workouts, the FTP tests and the
-//! uploaded workouts as cards, four at a time; the list scrolls to keep the
-//! focused card in view. MOVE focuses the next card, ACT chooses the
+//! uploaded workouts as cards on a page that scrolls under the finger
+//! (`scroll::Layout`); once the title has scrolled away, WORKOUTS and the
+//! focus's place pin at the top. MOVE focuses the next card, ACT chooses the
 //! focused one and opens Ready, BACK returns Home, and a tap chooses the
 //! card under the finger. The chosen workout carries a green dot.
 //!
@@ -10,24 +11,48 @@
 //! it, ACT (its corner lit) saves and BACK keeps the old one.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
-    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, GREEN, HERO, POWER, RAISED, Rect, SECONDARY,
-    TITLE, WHITE,
+    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, GREEN, HERO, POWER, PRESSED, RAISED, Rect,
+    SECONDARY, TITLE, WHITE,
 };
+use super::scroll::{Column, Layout, PAGE, Pin};
 use super::workout::{Text, View};
 use crate::workout::model::Name;
 use core::fmt::Write;
+use core::ops::Range;
 
-/// Cards in view; held MOVE pages by this many.
+/// Held MOVE pages by this many cards.
 pub const VISIBLE: usize = 4;
+/// The most cards any of whose rows show at once.
+const SHOWN: usize = 6;
 const MARGIN: usize = 10;
 const INSET: usize = 16;
 const RADIUS: usize = 12;
 const RING: usize = 3;
 const TITLE_BASE: usize = CONTENT.top + 38;
-const FIRST_TOP: usize = TITLE_BASE + 12;
 const ROW_HEIGHT: usize = 52;
-const ROW_PITCH: usize = ROW_HEIGHT + 8;
-const _: () = assert!(FIRST_TOP + VISIBLE * ROW_PITCH - 8 + RING <= CONTENT.bottom);
+/// The page under the status bar: the title, then the cards 8 px apart.
+pub const LAYOUT: Layout = Layout {
+    top: CONTENT.top,
+    bottom: CONTENT.bottom,
+    column: Column {
+        left: MARGIN,
+        right: CONTENT.right - MARGIN,
+        top: TITLE_BASE + 12 - CONTENT.top,
+        height: ROW_HEIGHT,
+        pitch: ROW_HEIGHT + 8,
+    },
+    end: 10,
+    margin: 6,
+    pin: Some(Pin {
+        after: 20,
+        height: PIN,
+    }),
+};
+const _: () = assert!(LAYOUT.viewport() / LAYOUT.column.pitch + 2 <= SHOWN);
+const PIN: usize = 24;
+const PIN_BASE: usize = CONTENT.top + 18;
+/// Shifts a row of the page as it lies at rest to its canvas row.
+const AT: usize = PAGE - CONTENT.top;
 
 /// One card: a workout's name and what it asks.
 #[derive(Clone)]
@@ -38,69 +63,60 @@ pub struct Choice {
 
 /// The picker as shown: only the cards in view are kept, so a frame's view
 /// stays small however long the list is.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Picker {
-    /// The cards in view, from `first`.
-    rows: heapless::Vec<Choice, VISIBLE>,
-    first: usize,
+    /// The cards in view, from `shown.start`.
+    rows: heapless::Vec<Choice, SHOWN>,
+    shown: Range<usize>,
     count: usize,
     pub cursor: usize,
     /// The row the next ride will use.
     pub chosen: usize,
+    /// The card under a resting finger.
+    pub pressed: Option<usize>,
+    /// How far the page is scrolled.
+    pub offset: i32,
+    /// Rows pushed so far.
+    pushed: usize,
+}
+
+impl Default for Picker {
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 impl Picker {
     pub const EMPTY: Self = Self {
         rows: heapless::Vec::new(),
-        first: 0,
+        shown: 0..0,
         count: 0,
         cursor: 0,
         chosen: 0,
+        pressed: None,
+        offset: 0,
+        pushed: 0,
     };
 
-    /// A list of `count` rows focused on `cursor`; `push` them in order.
-    pub fn new(count: usize, cursor: usize, chosen: usize) -> Self {
-        let cursor = cursor.min(count.saturating_sub(1));
-        let last_first = count.saturating_sub(VISIBLE);
+    /// A list of `count` rows focused on `cursor` and scrolled to `offset`;
+    /// `push` them in order.
+    pub fn new(count: usize, cursor: usize, chosen: usize, offset: i32) -> Self {
         Self {
-            rows: heapless::Vec::new(),
-            first: cursor.saturating_sub(VISIBLE - 1).min(last_first),
-            count: 0,
+            shown: LAYOUT.visible(count, offset),
+            count,
             cursor,
             chosen,
+            offset,
+            ..Self::EMPTY
         }
     }
 
     /// The next row, kept when it is in view.
     pub fn push(&mut self, choice: Choice) {
-        if self.count >= self.first {
+        if self.shown.contains(&self.pushed) {
             let _ = self.rows.push(choice);
         }
-        self.count += 1;
-    }
-
-    /// The first row shown, so the focused row is in view.
-    fn first(&self) -> usize {
-        self.first
-    }
-
-    fn rect(slot: usize) -> Rect {
-        let top = FIRST_TOP + slot * ROW_PITCH;
-        Rect {
-            left: MARGIN,
-            top,
-            right: CONTENT.right - MARGIN,
-            bottom: top + ROW_HEIGHT,
-        }
-    }
-
-    /// The row under a touch at (`x`, `y`).
-    pub fn row_at(&self, x: usize, y: usize) -> Option<usize> {
-        let first = self.first();
-        (0..VISIBLE)
-            .find(|&slot| Self::rect(slot).contains(x, y))
-            .map(|slot| first + slot)
-            .filter(|&row| row < self.first + self.rows.len())
+        self.pushed += 1;
     }
 }
 
@@ -108,28 +124,44 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let picker = &view.picker();
     let mut canvas = Canvas::default();
     let width = CONTENT.right - 2 * MARGIN;
+    let mut position = Text::<12>::new();
+    let _ = write!(position, "{}/{}", picker.cursor + 1, picker.count);
+    // The title scrolls with the page; once it is gone, a band pins it.
+    let (title_base, faces): (usize, &[&'static firmware_shell::rendering::font::Face]) =
+        if LAYOUT.pinned(picker.offset) {
+            canvas.shape(Shape::Bar {
+                rect: Rect {
+                    left: 0,
+                    top: CONTENT.top + PIN - 1,
+                    right: CONTENT.right,
+                    bottom: CONTENT.top + PIN,
+                },
+                radius: 0,
+                color: CARD,
+            });
+            (PIN_BASE, &[&BODY])
+        } else {
+            (AT + TITLE_BASE, &[&TITLE, &BODY])
+        };
     canvas.fit(
-        &[&TITLE, &BODY],
+        faces,
         b"WORKOUTS",
         width - 60,
         MARGIN,
-        TITLE_BASE,
+        title_base,
         Align::Left,
         WHITE,
     );
-    let mut position = Text::<12>::new();
-    let _ = write!(position, "{}/{}", picker.cursor + 1, picker.count);
     canvas.caption(
         position.as_bytes(),
         60,
         CONTENT.right - MARGIN,
-        TITLE_BASE,
+        title_base,
         Align::Right,
     );
-    let first = picker.first();
-    for (slot, choice) in (first..).zip(picker.rows.iter()) {
-        let rect = Picker::rect(slot - first);
-        let focused = slot == picker.cursor;
+    for (row, choice) in picker.shown.clone().zip(picker.rows.iter()) {
+        let rect = LAYOUT.rect(row);
+        let focused = row == picker.cursor;
         if focused {
             canvas.shape(Shape::Panel {
                 rect: Rect {
@@ -145,9 +177,15 @@ pub(super) fn prepare(view: &View) -> Canvas {
         canvas.shape(Shape::Panel {
             rect,
             radius: RADIUS,
-            color: if focused { RAISED } else { CARD },
+            color: if picker.pressed == Some(row) {
+                PRESSED
+            } else if focused {
+                RAISED
+            } else {
+                CARD
+            },
         });
-        let chosen = slot == picker.chosen;
+        let chosen = row == picker.chosen;
         let text_right = rect.right - INSET - if chosen { 16 } else { 0 };
         if chosen {
             canvas.shape(Shape::Disc {
@@ -265,7 +303,9 @@ mod tests {
 
     fn picker(rows: usize, cursor: usize) -> View<'static> {
         let mut view = View::new(Page::Workouts, 0, None);
-        let mut picker = Picker::new(rows, cursor, 2);
+        let offset = LAYOUT.reveal(cursor, 0);
+        view.scroll = offset;
+        let mut picker = Picker::new(rows, cursor, 2, offset);
         for i in 0..rows {
             let mut detail = Text::new();
             let _ = write!(detail, "{} MIN  {} STEPS", 100 + i, 96);
@@ -282,31 +322,37 @@ mod tests {
     }
 
     #[test]
-    fn the_list_scrolls_to_the_focused_row_and_taps_find_rows() {
+    fn the_page_shows_the_cards_in_view_and_pins_its_title() {
         let view = picker(12, 0);
-        assert!(view.canvas().shows("1/12"));
-        assert_eq!(view.picker().row_at(120, FIRST_TOP + 10), Some(0));
+        assert!(view.canvas().shows("1/12") && view.canvas().shows("WORKOUTS"));
+        assert_eq!(view.picker().shown, 0..5);
         let view = picker(12, 6);
-        assert_eq!(view.picker().first(), 3);
-        assert_eq!(
-            view.picker().row_at(120, FIRST_TOP + 3 * ROW_PITCH + 10),
-            Some(6)
-        );
-        assert_eq!(
-            view.picker().row_at(120, FIRST_TOP + ROW_HEIGHT + 2),
-            None,
-            "gap"
-        );
-        let view = picker(12, 11);
-        assert_eq!(view.picker().first(), 8);
+        assert!(view.canvas().shows("7/12"));
+        let offset = LAYOUT.reveal(6, 0);
+        assert!(LAYOUT.pinned(offset));
+        assert_eq!(view.picker().shown, LAYOUT.visible(12, offset));
+        // The pinned title paints on its own rows, over the page.
+        let title = view.canvas().find("WORKOUTS").unwrap();
+        assert!(title.bottom() <= CONTENT.top + PIN);
         let short = picker(2, 1);
-        assert_eq!(
-            short.picker().row_at(120, FIRST_TOP + 2 * ROW_PITCH + 10),
-            None
-        );
-        // The focused card is raised and ringed.
-        assert_eq!(short.pixel(100, FIRST_TOP + ROW_PITCH + 30), RAISED);
-        assert_eq!(short.pixel(100, FIRST_TOP + ROW_PITCH - 2), ACCENT);
+        // The focused card is raised and ringed where it shows.
+        let top = LAYOUT.top + LAYOUT.column.rect(1).top;
+        assert_eq!(short.pixel(100, top + 30), RAISED);
+        assert_eq!(short.pixel(100, top - 2), ACCENT);
+        // A card under a resting finger is pressed.
+        let mut pressed = Picker::new(2, 1, 2, 0);
+        pressed.pressed = Some(0);
+        for _ in 0..2 {
+            pressed.push(Choice {
+                name: Name::new("VO2"),
+                detail: Text::new(),
+            });
+        }
+        let mut view = View::new(Page::Workouts, 0, None);
+        view.show_picker(pressed);
+        view.prepare();
+        let first = LAYOUT.top + LAYOUT.column.rect(0).top;
+        assert_eq!(view.pixel(100, first + 30), PRESSED);
     }
 
     #[test]
@@ -317,9 +363,14 @@ mod tests {
             right: 240,
             bottom: 320,
         };
+        let page = Rect {
+            top: 0,
+            bottom: 100_000,
+            ..screen
+        };
         for cursor in 0..12 {
             picker(12, cursor).canvas().assert_laid_out(
-                screen,
+                page,
                 &["WORKOUTS"],
                 &std::format!("{cursor}"),
             );

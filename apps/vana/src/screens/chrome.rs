@@ -93,6 +93,9 @@ pub const TERTIARY: u16 = rgb(0x48, 0x48, 0x4a);
 pub const CARD: u16 = rgb(0x1c, 0x1c, 0x1e);
 /// A focused card, buttons and toasts.
 pub const RAISED: u16 = rgb(0x2c, 0x2c, 0x2e);
+/// A card under a resting finger, as iOS highlights a touched cell (dark
+/// mode's systemGray4).
+pub const PRESSED: u16 = rgb(0x3a, 0x3a, 0x3c);
 /// Focus rings and information.
 pub const ACCENT: u16 = rgb(0x0a, 0x84, 0xff);
 /// Live, good, fixed, go.

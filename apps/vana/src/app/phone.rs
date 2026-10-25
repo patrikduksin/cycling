@@ -30,7 +30,7 @@ use crate::ride::log::Slot;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
 use crate::workout::codec::{DecodeError, ENCODED_MAX};
-use crate::workout::library::{self, LoadError, StoreError};
+use crate::workout::library::{self, Library, LoadError, StoreError};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::connectivity::Text;
@@ -986,12 +986,12 @@ impl Runtime {
         }
     }
 
-    /// The uploaded workouts, listed from FILES now.
+    /// The uploaded workouts, listed from FILES now, and the files in the
+    /// folder the device does not list.
     fn workouts_reply(&mut self, id: u32, bulk: &mut impl ReadWrite) {
-        let Some(work) = self.phone.work.take() else {
-            return;
-        };
-        let (library, error) = self.list_uploads(bulk);
+        self.training.list(bulk);
+        let (library, error) = (&self.training.library, self.training.list_error);
+        let work = self.phone.w();
         let text = &mut work.text;
         text.clear();
         let _ = text.resize(HEAD_GAP, 0);
@@ -1003,8 +1003,8 @@ impl Runtime {
             library.skipped
         );
         for (index, upload) in library.uploads().iter().enumerate() {
-            // The most one entry takes, and the closing of the list.
-            if text.capacity() - text.len() < 130 {
+            // The most one entry takes, and the rest of the response.
+            if text.capacity() - text.len() < 170 {
                 break;
             }
             let file = upload
@@ -1030,6 +1030,20 @@ impl Runtime {
                 upload.outline.played
             );
         }
+        let _ = text.extend_from_slice(br#"],"unlisted":["#);
+        let mut first = true;
+        let _ = library.unlisted(bulk, |name| {
+            if text.capacity() - text.len() < 60 {
+                return;
+            }
+            let file = name.as_str().strip_prefix(library::FOLDER).unwrap_or("");
+            let _ = write!(
+                text,
+                r#"{}{{"file":"{file}"}}"#,
+                if first { "" } else { "," }
+            );
+            first = false;
+        });
         let _ = text.extend_from_slice(b"]}");
         let body = text.len() - HEAD_GAP;
         let head = Head::new(200)
@@ -1047,7 +1061,6 @@ impl Runtime {
             _ => text.clear(),
         }
         work.job = Job::Text { id, at: 0 };
-        self.phone.work = Some(work);
     }
 
     fn start_workout(&mut self, request: &Request) {
@@ -1104,12 +1117,9 @@ impl Runtime {
         if body as usize > ENCODED_MAX {
             return self.reply(id, 413, Some(r#"{"error":"too_large"}"#));
         }
-        let work = self.phone.work.take();
-        let stored = match work.as_deref() {
-            Some(work) => self.store_upload(bulk, &work.text),
-            None => Err(StoreError::Unnamed),
-        };
-        self.phone.work = work;
+        let stored = Library::store(bulk, &self.phone.w().text);
+        self.training.list(bulk);
+        self.display.redraw();
         match stored {
             Ok(file) => {
                 log::info!(target: "phone", "VANA_PHONE workout_saved file={}", file.as_str());
@@ -1157,18 +1167,24 @@ impl Runtime {
             .filter(|_| path.push_str(library::FOLDER).is_ok())
             .filter(|file| path.push_str(file).is_ok())
             .and_then(|_| files::Name::new(&path).ok());
-        let (library, _) = self.list_uploads(bulk);
-        let Some(index) = wanted.and_then(|name| match library.find(&name) {
-            Some(library::Id::Uploaded(index)) => Some(usize::from(index)),
-            _ => None,
-        }) else {
+        let Some(name) = wanted else {
             return self.reply(id, 404, Some(r#"{"error":"workout"}"#));
         };
-        match self.delete_upload(index, bulk) {
-            Ok(()) => {
+        self.training.list(bulk);
+        let result = match self.training.library.find(&name) {
+            Some(library::Id::Uploaded(index)) => {
+                self.delete_upload(usize::from(index), bulk).map(|()| true)
+            }
+            _ => self.training.library.remove_unlisted(bulk, &name),
+        };
+        match result {
+            Ok(true) => {
                 log::info!(target: "phone", "VANA_PHONE workout_deleted");
+                self.training.list(bulk);
+                self.display.redraw();
                 self.reply(id, 204, None);
             }
+            Ok(false) => self.reply(id, 404, Some(r#"{"error":"workout"}"#)),
             Err(error) => {
                 log::warn!(target: "phone", "VANA_PHONE workout_not_deleted error={error:?}");
                 self.reply(id, 503, Some(r#"{"error":"storage"}"#));

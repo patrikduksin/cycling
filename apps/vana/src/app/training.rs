@@ -29,13 +29,12 @@ use crate::screens::ride::{Pages, RidePage, Training as Shown};
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
 use crate::workout::history;
-use crate::workout::library::{Id, Library, LoadError, Outline, StoreError};
+use crate::workout::library::{Id, Library, LoadError, Outline};
 use crate::workout::model::{Length, Name, Played};
 use crate::workout::player::{Event, Player, Summary};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::input::Button;
-use firmware_services::files;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beep {
@@ -58,7 +57,7 @@ pub(super) struct Training {
     /// time the picker opens.
     listed: bool,
     /// Why the last listing found no uploads, if it failed.
-    list_error: Option<LoadError>,
+    pub(super) list_error: Option<LoadError>,
     /// The picker was open at the last tick.
     picking: bool,
     /// The ride just started free: its workout could not be read.
@@ -90,7 +89,7 @@ impl Training {
 
     /// List the uploads again, keeping the chosen one chosen if it is
     /// still there.
-    fn list(&mut self, media: &mut impl ReadWrite) {
+    pub(super) fn list(&mut self, media: &mut impl ReadWrite) {
         let chosen = match self.selected {
             Some(Id::Uploaded(index)) => self
                 .library
@@ -208,28 +207,6 @@ impl Runtime {
         self.training.picker_cursor = self.training.picker_cursor.min(self.training.rows() - 1);
         self.display.redraw();
         Ok(())
-    }
-
-    /// Store a workout uploaded from the phone, then list the uploads
-    /// again, whether or not it was stored.
-    pub(super) fn store_upload(
-        &mut self,
-        media: &mut impl ReadWrite,
-        bytes: &[u8],
-    ) -> Result<files::Name, StoreError> {
-        let stored = Library::store(media, bytes);
-        self.training.list(media);
-        self.display.redraw();
-        stored
-    }
-
-    /// The uploads as the phone page lists them, listed again from FILES.
-    pub(super) fn list_uploads(
-        &mut self,
-        media: &mut impl ReadWrite,
-    ) -> (&Library, Option<LoadError>) {
-        self.training.list(media);
-        (&self.training.library, self.training.list_error)
     }
 
     /// Leaving the ride screen: the workout's summary stays readable, the

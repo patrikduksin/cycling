@@ -705,8 +705,16 @@ function crc32(bytes) {
   return ~crc >>> 0;
 }
 
+// A number written with a point or an exponent, which load.py reads as a float
+// and refuses wherever it wants a whole number. Browsers that cannot give
+// JSON.parse the source text (no `context`) read every number as written plain.
+class Fraction { constructor(value) { this.value = value; } }
+function parseWorkout(text) {
+  return JSON.parse(text, (key, value, context) => (typeof value === 'number' && context && /[.eE]/.test(context.source) ? new Fraction(value) : value));
+}
+
 function whole(value, what, low, high) {
-  if (!Number.isInteger(value) || value < low || value > high) throw new Error(`${what} must be a whole number in ${low}..${high}`);
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < low || value > high) throw new Error(`${what} must be a whole number in ${low}..${high}`);
   return value;
 }
 
@@ -718,20 +726,22 @@ function workoutText(value, what) {
 }
 
 function stepLength(step) {
-  const kinds = [...Object.keys(WORKOUT.lengths), 'open'].filter((k) => k in step);
+  const kinds = [...Object.keys(WORKOUT.lengths), 'open'].filter((k) => Object.hasOwn(step, k));
   if (kinds.length !== 1) throw new Error('Each step needs exactly one length: seconds, minutes, metres, km or open.');
   if (kinds[0] === 'open') {
     if (step.open !== true) throw new Error('"open" must be true');
     return [2, 0];
   }
   const [kind, scale] = WORKOUT.lengths[kinds[0]];
-  const amount = step[kinds[0]] * scale;
+  const given = step[kinds[0]];
+  const plain = given instanceof Fraction ? given.value : given;
+  const amount = typeof plain === 'number' ? plain * scale : NaN;
   if (!Number.isInteger(amount)) throw new Error(`${kinds[0]} must be whole ${kind ? 'metres' : 'seconds'}`);
   return kind ? [1, whole(amount, `${kinds[0]} in metres`, WORKOUT.minMetres, 0xFFFFFFFF)] : [0, whole(amount, kinds[0], 1, 0xFFFF)];
 }
 
 function stepTarget(step) {
-  const kinds = [...Object.keys(WORKOUT.ranges), 'heart_zone', 'ramp'].filter((k) => k in step);
+  const kinds = [...Object.keys(WORKOUT.ranges), 'heart_zone', 'ramp'].filter((k) => Object.hasOwn(step, k));
   if (kinds.length > 1) throw new Error('A step has at most one target.');
   if (!kinds.length) return [0, [0, 0, 0]];
   const kind = kinds[0], value = step[kind];
@@ -751,29 +761,30 @@ function encodeWorkout(workout) {
   if (!workout || typeof workout !== 'object' || !Array.isArray(workout.steps)) throw new Error('A workout is an object with a name and steps.');
   const unknown = Object.keys(workout).filter((k) => !['name', 'test', 'steps'].includes(k));
   if (unknown.length) throw new Error(`Unknown workout fields: ${unknown.join(', ')}`);
-  if (workout.test != null && !(workout.test in WORKOUT.tests)) throw new Error('test must be twenty or ramp');
-  const name = workoutText(workout.name ?? '', 'name');
+  const test = Object.hasOwn(workout, 'test') ? workout.test : null;
+  if (test !== null && !(typeof test === 'string' && Object.hasOwn(WORKOUT.tests, test))) throw new Error('test must be twenty or ramp');
+  const name = workoutText(Object.hasOwn(workout, 'name') ? workout.name : '', 'name');
   if (!name.some((b) => b !== 0x20)) throw new Error('A workout needs a name.');
   const steps = [], blocks = [];
   for (const item of workout.steps) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Steps must be objects.');
-    if ('repeat' in item) {
+    if (Object.hasOwn(item, 'repeat')) {
       if (Object.keys(item).sort().join() !== 'repeat,steps') throw new Error('A repeat group has only repeat and steps.');
-      if (!Array.isArray(item.steps) || !item.steps.length || item.steps.some((s) => s && 'repeat' in s)) throw new Error('A repeat group holds one or more plain steps.');
+      if (!Array.isArray(item.steps) || !item.steps.length || item.steps.some((s) => s && typeof s === 'object' && Object.hasOwn(s, 'repeat'))) throw new Error('A repeat group holds one or more plain steps.');
       blocks.push([steps.length, item.steps.length, whole(item.repeat, 'repeat', 1, 0xFF)]);
       steps.push(...item.steps);
     } else steps.push(item);
   }
   if (steps.length < 1 || steps.length > WORKOUT.maxSteps) throw new Error(`A workout has 1 to ${WORKOUT.maxSteps} steps.`);
   if (blocks.length > WORKOUT.maxBlocks) throw new Error(`A workout has at most ${WORKOUT.maxBlocks} repeat groups.`);
-  const body = [0x56, 0x57, 1, WORKOUT.tests[workout.test] ?? 0, name.length, ...name, steps.length, blocks.length];
+  const body = [0x56, 0x57, 1, test === null ? 0 : WORKOUT.tests[test], name.length, ...name, steps.length, blocks.length];
   const le = (value, size) => Array.from({ length: size }, (_, i) => Math.floor(value / 2 ** (8 * i)) & 0xFF);
   for (const step of steps) {
     if (!step || typeof step !== 'object' || !WORKOUT.intensities.includes(step.intensity)) throw new Error(`intensity must be one of ${WORKOUT.intensities.join(', ')}`);
     const allowed = ['intensity', 'note', 'open', 'heart_zone', 'ramp', ...Object.keys(WORKOUT.lengths), ...Object.keys(WORKOUT.ranges)];
     const extra = Object.keys(step).filter((k) => !allowed.includes(k));
     if (extra.length) throw new Error(`Unknown step fields: ${extra.join(', ')}`);
-    const note = workoutText(step.note ?? '', 'note');
+    const note = workoutText(Object.hasOwn(step, 'note') ? step.note : '', 'note');
     const [lengthKind, amount] = stepLength(step);
     const [targetKind, values] = stepTarget(step);
     body.push(WORKOUT.intensities.indexOf(step.intensity), lengthKind, ...le(amount, 4), targetKind, ...values.flatMap((v) => le(v, 2)), 0, note.length, ...note);
@@ -785,32 +796,36 @@ function encodeWorkout(workout) {
 async function workoutFile(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (bytes[0] === 0x56 && bytes[1] === 0x57) return bytes;
-  try { return encodeWorkout(JSON.parse(new TextDecoder().decode(bytes))); }
+  try { return encodeWorkout(parseWorkout(new TextDecoder().decode(bytes))); }
   catch (error) { throw new Error(error instanceof SyntaxError ? 'This file is not a workout. Choose a workout JSON file.' : error.message); }
 }
 
 function workoutsCard(list) {
   const note = el('div', { class: 'note' });
   const input = el('input', { type: 'file', accept: '.json,.vw,application/json', style: 'display:none' });
-  const rows = list.uploads.map((workout) => el('div', { class: 'row', style: 'justify-content:space-between;flex-wrap:nowrap;margin-top:8px' },
+  const row = (title, detail, file) => el('div', { class: 'row', style: 'justify-content:space-between;flex-wrap:nowrap;margin-top:8px' },
     el('div', { style: 'min-width:0' },
-      el('div', { class: 'ride-date', style: 'overflow-wrap:anywhere' }, workout.name),
-      el('div', { class: 'note', style: 'margin:0' }, workout.minutes ? `${workout.minutes} min · ${workout.steps} steps` : `${workout.steps} steps`)),
+      el('div', { class: 'ride-date', style: 'overflow-wrap:anywhere' }, title),
+      el('div', { class: 'note', style: 'margin:0' }, detail)),
     el('button', {
       type: 'button',
       onclick: async () => {
         note.textContent = 'Deleting…';
-        try { await api(`/api/workouts?file=${encodeURIComponent(workout.file)}`, { method: 'DELETE' }); showWorkouts(await api('/api/workouts')); } catch (error) { note.textContent = error.message; }
+        try { await api(`/api/workouts?file=${encodeURIComponent(file)}`, { method: 'DELETE' }); showWorkouts(await api('/api/workouts')); } catch (error) { note.textContent = error.message; }
       },
-    }, 'Delete')));
+    }, 'Delete'));
+  const listed = list.uploads.map((workout) => row(workout.name,
+    workout.minutes ? `${workout.minutes} min · ${workout.steps} steps` : `${workout.steps} steps`, workout.file));
+  // Files in the workouts folder the device cannot list: unreadable, or past the eighth.
+  const unlisted = (list.unlisted || []).map((workout) => row(workout.file, 'Not listed on the device. Delete it to make room.', workout.file));
+  const rows = [...listed, ...unlisted];
   const full = rows.length >= list.max;
-  const empty = rows.length ? [] : [el('div', { class: 'note' }, list.store === 'ok'
+  const empty = listed.length ? [] : [el('div', { class: 'note' }, list.store === 'ok'
     ? 'No workouts added. Add a workout file to find it under TRAIN on the device.'
     : WORKOUT_ERRORS.unavailable)];
   const actions = el('div', { class: 'row', style: 'margin-top:8px' },
     el('button', { type: 'button', class: 'primary', ...(full ? { disabled: '' } : {}), onclick: () => input.click() }, 'Add a workout'));
   if (full) note.textContent = WORKOUT_ERRORS.full;
-  else if (list.skipped) note.textContent = `${list.skipped} file${list.skipped > 1 ? 's' : ''} on the card could not be read and ${list.skipped > 1 ? 'are' : 'is'} not listed.`;
   input.addEventListener('change', async () => {
     const file = input.files[0];
     input.value = '';
@@ -829,7 +844,7 @@ function workoutsCard(list) {
       showWorkouts(reply);
     } catch (error) { note.textContent = error.message; }
   });
-  return el('div', { class: 'card', id: 'workouts' }, el('div', { class: 'caption' }, `Workouts · ${rows.length} of ${list.max}`), ...rows, ...empty, actions, input, note);
+  return el('div', { class: 'card', id: 'workouts' }, el('div', { class: 'caption' }, `Workouts · ${listed.length} of ${list.max}`), ...rows, ...empty, actions, input, note);
 }
 
 function showWorkouts(list) {

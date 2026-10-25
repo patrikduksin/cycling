@@ -907,6 +907,48 @@ fn the_list_of_eight_worst_case_names_is_whole() {
     assert_eq!(body.matches(r#""file":"#).count(), 8, "{body}");
 }
 
+/// A file the host left that the device cannot read takes one of the eight
+/// places; the page lists it so it can be deleted, and nothing else can.
+#[test]
+fn an_unreadable_file_is_listed_and_deleted_from_the_phone() {
+    let mut phone = Upload::new();
+    for index in 0..7 {
+        let (status, _) = phone.put_workout(&workout_bytes(&std::format!("Set {index}"), 10), 512);
+        assert_eq!(status, 200);
+    }
+    crate::workout::library::tests::put(
+        &mut phone.files,
+        "workouts/zz-broken.vw",
+        b"not a workout",
+    );
+    let (_, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
+    assert!(
+        body.contains(r#""unlisted":[{"file":"zz-broken.vw"}]"#),
+        "{body}"
+    );
+    assert_eq!(body.matches(r#""name":"#).count(), 7, "{body}");
+    let (status, body) = phone.put_workout(&workout_bytes("Set 7", 10), 512);
+    assert_eq!((status, body.as_str()), (409, r#"{"error":"full"}"#));
+    for odd in [
+        "file=zz-broken.vw.bak",
+        "file=../course.dat",
+        "file=course.dat",
+    ] {
+        assert_eq!(
+            phone
+                .request(Method::Delete, "/api/workouts", odd, b"", 1)
+                .0,
+            404
+        );
+    }
+    let (status, _) = phone.request(Method::Delete, "/api/workouts", "file=zz-broken.vw", b"", 1);
+    assert_eq!(status, 204);
+    assert_eq!(phone.stored_workouts().len(), 7);
+    assert_eq!(phone.put_workout(&workout_bytes("Set 7", 10), 512).0, 200);
+    let (_, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
+    assert!(body.contains(r#""unlisted":[]"#), "{body}");
+}
+
 #[test]
 fn a_ninth_workout_is_refused_and_a_stored_one_can_be_replaced() {
     use crate::workout::library::UPLOADS;

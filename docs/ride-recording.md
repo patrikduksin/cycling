@@ -568,8 +568,14 @@ before anything is written, so a damaged, cut-off or unridable file changes
 nothing. It is stored as `workouts/<name in lower case, at most 17 characters>-<CRC32 of
 the name>.vw`, so the same name replaces its file (one atomic commit; a cut
 leaves the old file) and two names never share one. The picker lists only 8,
-so a ninth is refused (409 `full`) instead of evicting one; the USB path does
-not check, and its extra files stay unlisted (`skipped`). Answers: 200 with the
+so a ninth is refused (409 `full`) instead of evicting one. Every file under
+`workouts/` takes a place, readable or not, so the list also names the files the
+device does not list (`unlisted`: unreadable, or past the eighth) and `DELETE`
+removes those too. The USB path does not check the bound, and its extra files
+stay unlisted (`skipped`). Loading the same workout by USB and from the phone
+lists it twice: the USB file is named by the host (`<stem>.vw`), the phone's by
+the workout's name, so neither replaces the other; delete either with
+`WORKOUT DELETE` or from the page. Answers: 200 with the
 list, 400 `empty`, 409 `ride` or `full`, 413 `too_large`, 422 `format`,
 `damaged` or `invalid`, 503 `unavailable` or `storage`, 507 `nospace`. `GET
 /api/workouts` lists the uploads (read from FILES again) and `DELETE

@@ -516,6 +516,53 @@ impl Library {
         Ok(target)
     }
 
+    /// Visit the files under [`FOLDER`] that the listing above does not
+    /// hold: unreadable ones, and any past the first `UPLOADS` by name. A
+    /// host can leave both; the phone page offers to delete them.
+    #[inline(never)]
+    pub fn unlisted(
+        &self,
+        media: &mut impl ReadWrite,
+        mut visit: impl FnMut(&files::Name),
+    ) -> Result<(), LoadError> {
+        let mut sector = [0; SECTOR_SIZE];
+        let mut store =
+            volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
+        let dir = files::mount(&mut store, &mut sector).map_err(LoadError::Files)?;
+        dir.list(&mut store, &mut sector, |entry| {
+            if entry.name.as_str().starts_with(FOLDER) && self.find(&entry.name).is_none() {
+                visit(&entry.name);
+            }
+        })
+        .map_err(LoadError::Files)
+    }
+
+    /// Delete `file` if it is under [`FOLDER`], stored, and not listed:
+    /// whether there was one to delete.
+    #[inline(never)]
+    pub fn remove_unlisted(
+        &self,
+        media: &mut impl ReadWrite,
+        file: &files::Name,
+    ) -> Result<bool, LoadError> {
+        if !file.as_str().starts_with(FOLDER) || self.find(file).is_some() {
+            return Ok(false);
+        }
+        let mut sector = [0; SECTOR_SIZE];
+        let mut store =
+            volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
+        let dir = files::mount(&mut store, &mut sector).map_err(LoadError::Files)?;
+        if dir
+            .find(&mut store, file, &mut sector)
+            .map_err(LoadError::Files)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        files::delete(&mut store, file, &mut sector).map_err(LoadError::Files)?;
+        Ok(true)
+    }
+
     /// Delete upload `id`'s file and drop it from the list.
     pub fn delete(&mut self, id: Id, media: &mut impl ReadWrite) -> Result<(), LoadError> {
         let Id::Uploaded(index) = id else {

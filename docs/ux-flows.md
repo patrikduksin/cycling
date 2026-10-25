@@ -181,7 +181,10 @@ workouts, so a ninth is refused with "VANA holds 8 workouts. Delete one to add
 another." rather than dropping one. Adding a workout with the name of one
 already there replaces it, and a refused or cut-off upload leaves the stored
 workouts as they were. The page opens only while no ride is recording, so a
-workout cannot be added or deleted during a ride. An added workout is under
+workout cannot be added or deleted during a ride. A file in the workouts folder that VANA cannot read (or
+that the card holds beyond the eighth) shows on the card as "Not listed on the
+device" with a Delete button, since it takes one of the 8 places. A workout
+loaded over USB and the same one added here are two workouts in the picker. An added workout is under
 TRAIN at once, after the built-ins and in name order with the ones loaded over
 USB; it reads the same as one of those, and a workout the rider chose stays
 chosen when the list changes.

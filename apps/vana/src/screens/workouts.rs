@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn the_list_scrolls_to_the_focused_row_and_taps_find_rows() {
         let view = picker(12, 0);
-        assert!(view.canvas.shows("1/12"));
+        assert!(view.canvas().shows("1/12"));
         assert_eq!(view.picker.row_at(120, FIRST_TOP + 10), Some(0));
         let view = picker(12, 6);
         assert_eq!(view.picker.first(), 3);
@@ -309,7 +309,7 @@ mod tests {
             bottom: 320,
         };
         for cursor in 0..12 {
-            picker(12, cursor).canvas.assert_laid_out(
+            picker(12, cursor).canvas().assert_laid_out(
                 screen,
                 &["WORKOUTS"],
                 &std::format!("{cursor}"),

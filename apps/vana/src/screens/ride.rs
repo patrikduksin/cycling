@@ -266,6 +266,14 @@ pub struct Smooth {
     pub(super) band: Option<(usize, core::ops::Range<usize>)>,
 }
 
+impl Smooth {
+    pub const EMPTY: Self = Self {
+        labels: heapless::Vec::new(),
+        zones: [0; 2],
+        band: None,
+    };
+}
+
 /// Prepare the shown page once per frame: the main page's labels, or the
 /// other pages' canvas and the climb page's chart.
 pub(super) fn prepare(view: &mut View) {
@@ -288,7 +296,7 @@ pub(super) fn prepare(view: &mut View) {
 #[inline(never)]
 fn smooth(view: &mut View) {
     let smooth = main::prepare(view);
-    view.smooth = smooth;
+    view.body = super::workout::Body::Main(smooth);
 }
 
 /// The climb chart, prepared in its own frame (#167).
@@ -353,23 +361,23 @@ pub(super) fn paint(view: &View, row: &mut Row) {
 fn paint_page(view: &View, row: &mut Row) {
     match view.ride_page {
         RidePage::Main => main::paint(view, row),
-        RidePage::Stats | RidePage::Lap => view.canvas.paint(row),
+        RidePage::Stats | RidePage::Lap => view.canvas().paint(row),
         RidePage::Workout => {
             workout::paint_chart(&view.chart, row);
-            view.canvas.paint(row);
+            view.canvas().paint(row);
         }
         RidePage::Climb => {
             climb::paint_chart(&view.climb, row);
-            view.canvas.paint(row);
+            view.canvas().paint(row);
         }
         RidePage::Map => {
             if let Some(frame) = view.map {
                 map::paint(frame, row);
             }
-            view.canvas.paint(row);
+            view.canvas().paint(row);
         }
         RidePage::Back => {
-            view.canvas.paint(row);
+            view.canvas().paint(row);
             back::paint(view, row);
         }
     }
@@ -437,21 +445,21 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     }
     match view.ride_page {
         RidePage::Main => main::reference_pixel(view, x, y),
-        RidePage::Stats | RidePage::Lap => view.canvas.pixel(x, y, BLACK),
+        RidePage::Stats | RidePage::Lap => view.canvas().pixel(x, y, BLACK),
         RidePage::Workout => view
-            .canvas
+            .canvas()
             .pixel(x, y, workout::chart_pixel(&view.chart, x, y)),
         RidePage::Climb => view
-            .canvas
+            .canvas()
             .pixel(x, y, climb::chart_pixel(&view.climb, x, y)),
-        RidePage::Map => view.canvas.pixel(
+        RidePage::Map => view.canvas().pixel(
             x,
             y,
             view.map
                 .map_or(BLACK, |frame| map::pixel(frame, x, y, BLACK)),
         ),
         RidePage::Back => {
-            back::arrow_pixel(&back::frame(view), x, y, view.canvas.pixel(x, y, BLACK))
+            back::arrow_pixel(&back::frame(view), x, y, view.canvas().pixel(x, y, BLACK))
         }
     }
 }

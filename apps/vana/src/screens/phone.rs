@@ -171,7 +171,7 @@ mod tests {
         // Quiet zone is light, the top-left finder is dark.
         assert_eq!(view.pixel(panel.left + 4, panel.top + 4 + RADIUS), PAPER);
         assert_eq!(view.pixel(code.left + 1, code.top + 1), INK);
-        view.canvas.assert_laid_out(
+        view.canvas().assert_laid_out(
             Rect {
                 left: 0,
                 top: CONTENT.top,
@@ -216,7 +216,9 @@ mod tests {
         let view = view(None, true);
         assert!(view.qr.is_none());
         assert_eq!(
-            view.canvas.find("WI-FI DID NOT START").map(|run| run.color),
+            view.canvas()
+                .find("WI-FI DID NOT START")
+                .map(|run| run.color),
             Some(AMBER)
         );
     }

@@ -435,7 +435,7 @@ mod tests {
         ];
         for (back, want) in cases {
             let view = page(back);
-            view.canvas
+            view.canvas()
                 .assert_laid_out(PAGE, want, &std::format!("{back:?}"));
         }
     }
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn the_light_shows_beside_the_title_only_when_known() {
         let mut view = page(Back::Unavailable);
-        view.canvas
+        view.canvas()
             .assert_laid_out(PAGE, &["BACK TO START"], "unknown");
         for (light, text) in [
             (Light::SetsAt(19 * 3600 + 42 * 60), "SUNSET 19:42"),
@@ -452,7 +452,7 @@ mod tests {
         ] {
             view.sunset = light;
             view.prepare();
-            view.canvas
+            view.canvas()
                 .assert_laid_out(PAGE, &["BACK TO START", text], text);
         }
     }

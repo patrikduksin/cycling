@@ -1476,10 +1476,12 @@ mod tests {
     fn every_state_lays_out_its_text() {
         let check = |track: &Track, want: &[&str], what: &str| {
             let frame = filled(track);
-            page(Some(&frame)).canvas.assert_laid_out(PAGE, want, what);
+            page(Some(&frame))
+                .canvas()
+                .assert_laid_out(PAGE, want, what);
         };
         page(None)
-            .canvas
+            .canvas()
             .assert_laid_out(PAGE, &["MAP", "NO TRACK"], "unavailable");
         check(&Track::default(), &["MAP", "NO TRACK"], "no memory");
         let waiting = Track {

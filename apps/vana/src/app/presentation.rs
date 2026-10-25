@@ -770,7 +770,7 @@ impl Runtime {
             Page::Home | Page::Sensors => {
                 self.refresh_sensor_menu(ant, now);
                 if page == Page::Home {
-                    view.home = self.home(gps_fix, now);
+                    view.set_home(self.home(gps_fix, now));
                 }
             }
             Page::Settings => self.settings_lines(&mut view),

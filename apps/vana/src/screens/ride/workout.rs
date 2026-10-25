@@ -691,7 +691,7 @@ mod tests {
         player.skip();
         ride(&mut player, 30, 240);
         let view = page(&player, Some(240));
-        let canvas = &view.canvas;
+        let canvas = &view.canvas();
         // 106-120 % of the default 215 W FTP.
         assert_eq!(canvas.find("228-258 W").map(|r| r.color), Some(POWER));
         assert_eq!(canvas.find("240").map(|r| r.color), Some(POWER));
@@ -710,8 +710,8 @@ mod tests {
         player.skip();
         ride(&mut player, 177, 150);
         let view = page(&player, Some(150));
-        assert_eq!(view.canvas.find("UNDER").map(|r| r.color), Some(AMBER));
-        assert_eq!(view.canvas.find("0:03").map(|r| r.color), Some(AMBER));
+        assert_eq!(view.canvas().find("UNDER").map(|r| r.color), Some(AMBER));
+        assert_eq!(view.canvas().find("0:03").map(|r| r.color), Some(AMBER));
     }
 
     #[test]
@@ -722,14 +722,14 @@ mod tests {
         }
         ride(&mut player, 60, 262);
         let view = page(&player, Some(262));
-        assert!(view.canvas.shows("ALL OUT") && view.canvas.shows("AVG 262 W"));
+        assert!(view.canvas().shows("ALL OUT") && view.canvas().shows("AVG 262 W"));
         let mut player = Player::new(FTP_RAMP);
         player.skip();
         ride(&mut player, 130, 140);
         let view = page(&player, Some(140));
-        assert!(view.canvas.shows("HOLD 140 W"), "third minute");
-        assert!(view.canvas.shows("BEST 140 W"), "the best minute");
-        assert!(view.canvas.shows("LAP TO END"));
+        assert!(view.canvas().shows("HOLD 140 W"), "third minute");
+        assert!(view.canvas().shows("BEST 140 W"), "the best minute");
+        assert!(view.canvas().shows("LAP TO END"));
     }
 
     #[test]
@@ -739,7 +739,7 @@ mod tests {
             loop {
                 for watts in [None, Some(0), Some(1999)] {
                     let view = page(&player, watts);
-                    view.canvas.assert_laid_out(
+                    view.canvas().assert_laid_out(
                         PAGE,
                         &[],
                         &std::format!("{:?} {watts:?}", workout.name),
@@ -752,13 +752,13 @@ mod tests {
                     step_name(&mut short, player.now(&Default::default()).played, true);
                     let view = page(&player, Some(240));
                     assert!(
-                        view.canvas.shows(full.as_str()) || view.canvas.shows(short.as_str()),
+                        view.canvas().shows(full.as_str()) || view.canvas().shows(short.as_str()),
                         "{:?}: {} cut",
                         workout.name,
                         full.as_str()
                     );
                     assert!(
-                        view.canvas.shows(workout.name.as_str()),
+                        view.canvas().shows(workout.name.as_str()),
                         "{:?} cut at {}",
                         workout.name,
                         full.as_str()
@@ -770,7 +770,7 @@ mod tests {
                         let played = training.now.played;
                         target_text(&mut target, played, &training.now, training.test);
                         assert!(
-                            view.canvas.shows(target.as_str()),
+                            view.canvas().shows(target.as_str()),
                             "{:?}: {} cut at {ftp} W",
                             workout.name,
                             target.as_str()

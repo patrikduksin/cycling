@@ -1,11 +1,11 @@
-//! The benchmark screens (every VANA page a rider reaches) paint the same pixels: a faster painter must not
-//! change a frame. Hashes are from `sim-bench`, which prints them. A change
+//! The benchmark screens (every VANA page a rider reaches) paint the same
+//! pixels: a faster painter must not change a frame. Hashes are from `sim-bench`, which prints them. A change
 //! that means to alter one of these screens updates its hash here and shows
 //! the new screen in its sim-compare.
 #![cfg(feature = "cycling")]
 use shell_simulator::bench::{SCENES, hash, measure};
 
-const HASHES: [(&str, u64); 23] = [
+const HASHES: [(&str, u64); 32] = [
     ("home", 0x0c91_c4e2_1f97_76ab),
     ("ride main + radar", 0xe0d1_e038_ab2a_de67),
     ("climb", 0x3f13_7e03_dc13_4bc2),
@@ -29,6 +29,15 @@ const HASHES: [(&str, u64); 23] = [
     ("past ride", 0x62e4_4c6e_87bf_f7b5),
     ("sensor detail", 0xa211_02a4_cc4d_c92e),
     ("summary page 2", 0x547f_b158_ece4_58aa),
+    ("boot", 0x3181_4f05_3737_c050),
+    ("setup power editor", 0xb639_3d8a_6827_263a),
+    ("settings editing", 0xf856_4b18_c1a0_64c3),
+    ("bests confirm", 0x40ab_8b32_d5ef_28e6),
+    ("form no power", 0x5ed1_0eab_524c_8dc5),
+    ("phone from saved ride", 0xffb0_a2fb_7c21_fe75),
+    ("main with workout band", 0x0633_e69a_fe9f_b67b),
+    ("settings light", 0xf782_5c70_a641_b4dc),
+    ("home light", 0x9370_23ef_3b06_01bf),
 ];
 
 #[test]

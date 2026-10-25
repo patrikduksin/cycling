@@ -124,7 +124,7 @@ mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 23] = [
+    pub static SCENES: [Scene; 32] = [
         Scene {
             name: "home",
             reach: home,
@@ -216,6 +216,42 @@ mod scenes {
         Scene {
             name: "summary page 2",
             reach: summary_second,
+        },
+        Scene {
+            name: "boot",
+            reach: boot,
+        },
+        Scene {
+            name: "setup power editor",
+            reach: setup_power_editor,
+        },
+        Scene {
+            name: "settings editing",
+            reach: settings_editing,
+        },
+        Scene {
+            name: "bests confirm",
+            reach: bests_confirm,
+        },
+        Scene {
+            name: "form no power",
+            reach: form_no_power,
+        },
+        Scene {
+            name: "phone from saved ride",
+            reach: phone_from_ride,
+        },
+        Scene {
+            name: "main with workout band",
+            reach: main_with_band,
+        },
+        Scene {
+            name: "settings light",
+            reach: settings_light,
+        },
+        Scene {
+            name: "home light",
+            reach: home_light,
         },
     ];
 
@@ -393,6 +429,7 @@ mod scenes {
     fn paused() -> Sim {
         let mut sim = riding(30);
         sim.pause_ride();
+        sim.expect_text("PAUSED");
         sim
     }
 
@@ -413,6 +450,7 @@ mod scenes {
     fn settings() -> Sim {
         let mut sim = rider(false);
         sim.home("SETTINGS");
+        sim.expect_text("PROFILE");
         sim
     }
 
@@ -515,6 +553,86 @@ mod scenes {
     fn summary_second() -> Sim {
         let mut sim = summary();
         sim.swipe_next();
+        sim
+    }
+
+    fn boot() -> Sim {
+        let mut sim = Sim::new();
+        sim.discard_recording();
+        while sim.vana_page() != "boot" {
+            sim.advance(1);
+        }
+        sim.advance(200);
+        sim
+    }
+
+    fn setup_power_editor() -> Sim {
+        let mut sim = setup();
+        sim.press(Button::BottomRight);
+        sim.expect_text("SET FTP");
+        sim.press(Button::BottomRight);
+        sim
+    }
+
+    fn settings_editing() -> Sim {
+        let mut sim = settings();
+        sim.press(Button::BottomRight);
+        sim
+    }
+
+    fn bests_confirm() -> Sim {
+        let mut sim = bests();
+        sim.press(Button::BottomRight);
+        sim.expect_text("CLEAR BESTS?");
+        sim
+    }
+
+    fn form_no_power() -> Sim {
+        let mut sim = rider(false);
+        sim.home("SETTINGS");
+        for _ in 0..3 {
+            sim.press(Button::BottomLeft);
+        }
+        sim.press(Button::BottomRight);
+        sim.wait_for("NO POWER RIDES", seconds(60)).unwrap();
+        sim
+    }
+
+    fn phone_from_ride() -> Sim {
+        let mut sim = past_ride();
+        sim.press(Button::BottomRight);
+        sim.advance(seconds(1));
+        sim.expect_text("JOIN VANA WI-FI");
+        sim
+    }
+
+    fn main_with_band() -> Sim {
+        let mut sim = workout_page();
+        sim.ride_page("2/7");
+        sim
+    }
+
+    fn light() -> Sim {
+        let mut sim = rider(false);
+        sim.home("SETTINGS");
+        sim.swipe_next();
+        sim.swipe_next();
+        for _ in 0..3 {
+            sim.press(Button::BottomLeft);
+        }
+        sim.expect_field("THEME", "DARK");
+        sim.press(Button::BottomRight);
+        sim
+    }
+
+    fn settings_light() -> Sim {
+        light()
+    }
+
+    fn home_light() -> Sim {
+        let mut sim = light();
+        sim.press(Button::TopLeft);
+        assert_eq!(sim.vana_page(), "home");
         sim
     }
 }

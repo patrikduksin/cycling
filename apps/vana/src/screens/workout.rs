@@ -176,6 +176,7 @@ pub struct View<'a> {
     pub(super) cues: heapless::Vec<Cue, 2>,
     pub(super) badge: Option<Badge>,
 }
+
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(
     core::mem::size_of::<View>() <= 10_672,

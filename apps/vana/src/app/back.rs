@@ -140,8 +140,13 @@ impl BackToStart {
         self.homing.take_turns(course.points(), |turns| {
             match stored::load(media, course::key(course), turns) {
                 Ok(Some(stored)) => {
-                    log::info!(target: "sdk.course", "turns_stored count={}", stored.count);
-                    Some(stored.count)
+                    log::info!(
+                        target: "sdk.course",
+                        "turns_stored count={} full={}",
+                        stored.count,
+                        stored.full
+                    );
+                    Some((stored.count, stored.full))
                 }
                 Ok(None) => {
                     log::info!(target: "sdk.course", "turns_scanned");

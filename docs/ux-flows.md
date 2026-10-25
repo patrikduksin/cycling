@@ -188,7 +188,10 @@ of each other, or a turn's first bend goes against where it leads, nothing
 is said, and nothing after it either until the rider is there. A warning
 that comes just after another nudge waits a second. Off the course, riding it
 the wrong way, standing still, or once it is stopped or ended, no turn is
-warned of; riding back past a turn and on again warns of it again.
+warned of; riding back past a turn and on again warns of it again. Where
+the course runs the same road twice, as a figure of eight or an out-and-back
+does, the warnings are those of the pass the rider is on. A course with more
+than 1,024 turns is warned of to its end.
 
 While following the course, the BACK TO START page says COURSE: the arrow
 points along the course a little way ahead (or back to it when off), DIRECT KM

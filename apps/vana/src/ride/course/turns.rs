@@ -39,7 +39,9 @@
 //! the rider is at them.
 //!
 //! The course is read by index through `at`, start first, in metres east and
-//! north, so nothing of it is copied; the list holds at most `TURNS`.
+//! north, so nothing of it is copied. The list holds at most `TURNS`; on a
+//! course with more, the scan waits until the rider is past half of them,
+//! which make way for the rest.
 //! Distances along the course are u32 millimetres, saturating.
 use libm::{atan2f, fabsf, sqrtf, tanf};
 
@@ -108,7 +110,8 @@ const RING_DEG: f32 = 200.0;
 /// A bend against a coarse turn this big may be a corner of its own.
 const AGAINST_DEG: f32 = 45.0;
 
-/// The most turns a course keeps; past them a long course warns of none.
+/// The most turns a course keeps at once. Past them the scan waits until
+/// the rider is past half of them, which then make way (`Warner::passed`).
 pub const TURNS: usize = 1024;
 /// Steps of the course scanned per fix while its turns are being found.
 pub const SCAN_STEPS: usize = 1_000;
@@ -557,7 +560,12 @@ pub struct Scan {
     total: f32,
     bend: Option<Bend>,
     open: Option<Open>,
+    /// Turns that start at or before this, in millimetres along, are known
+    /// already and not listed.
+    from_mm: u32,
     started: bool,
+    /// It stopped for want of room in the list.
+    waiting: bool,
     done: bool,
 }
 
@@ -570,8 +578,24 @@ impl Scan {
         }
     }
 
+    /// A scan that lists only the turns after `turns`, the first of the
+    /// course's turns, found elsewhere: those starting past the end of the
+    /// last of them. The same turn found again, a few metres apart, starts
+    /// within it.
+    pub fn after(turns: &[Turn]) -> Self {
+        Self {
+            from_mm: turns.last().map_or(0, |last| last.end_mm),
+            ..Self::default()
+        }
+    }
+
     pub fn done(&self) -> bool {
         self.done
+    }
+
+    /// The list was full: it finds more once there is room.
+    pub fn waiting(&self) -> bool {
+        self.waiting
     }
 
     /// Metres along the course to the middle of the chord, which starts
@@ -593,7 +617,8 @@ impl Scan {
     }
 
     /// Scan up to `steps` more steps of a course of `len` points, adding the
-    /// turns found to `turns` from `found`; returns how many there are.
+    /// turns found to `turns` from `found`; returns how many there are. With
+    /// `turns` full it waits, not done, until there is room.
     pub fn step(
         &mut self,
         len: usize,
@@ -602,8 +627,11 @@ impl Scan {
         turns: &mut [Turn],
         mut found: usize,
     ) -> usize {
-        let room = turns.len();
+        let (room, from_mm) = (turns.len(), self.from_mm);
         let mut push = |turn: Turn, found: &mut usize| {
+            if from_mm > 0 && turn.start_mm <= from_mm {
+                return;
+            }
             // Coarse corners close together, apart or not, say nothing.
             if let Some(last) = found.checked_sub(1).and_then(|k| turns.get_mut(k))
                 && last.sparse
@@ -639,13 +667,18 @@ impl Scan {
             self.s = HALF_CHORD_M;
             self.heading = way(self.behind.here, self.ahead.here);
         }
+        // A step lists at most one turn, and the end two.
+        self.waiting = false;
         for _ in 0..steps {
             if found >= room {
-                self.done = true;
+                self.waiting = true;
                 return found;
             }
             if !self.behind.on(len, &at, STEP_M) || !self.ahead.on(len, &at, STEP_M) {
-                self.finish(len, &at, &mut found, &mut push);
+                self.waiting = room - found < 2;
+                if !self.waiting {
+                    self.finish(len, &at, &mut found, &mut push);
+                }
                 return found;
             }
             self.s += STEP_M;
@@ -778,6 +811,25 @@ enum Said {
 }
 
 impl Warner {
+    /// How many turns from the start of the list it no longer needs.
+    pub fn passed(&self) -> usize {
+        match self.said {
+            Said::Nothing => self.next,
+            Said::Ahead(k) | Said::Now(k) => k.min(self.next),
+        }
+    }
+
+    /// The first `count` turns of the list, up to `passed`, are gone.
+    pub fn forget(&mut self, count: usize) {
+        let count = count.min(self.passed());
+        self.next -= count;
+        self.said = match self.said {
+            Said::Nothing => Said::Nothing,
+            Said::Ahead(k) => Said::Ahead(k - count),
+            Said::Now(k) => Said::Now(k - count),
+        };
+    }
+
     /// The warning for the rider `along_mm` from the course's start, from
     /// its `turns`, if one is due.
     pub fn step(&mut self, turns: &[Turn], along_mm: u32) -> Option<Warning> {

@@ -27,6 +27,8 @@
 //! Off the course is OFF TRACK once, with no reminders; the match moves at
 //! most `JUMP_M` on along the course at a time, so the far leg of an
 //! out-and-back or the end of a loop never stands in for where the rider is.
+//! Where the course passes the same road twice, the pass that goes on from
+//! where the rider was, their way, is the one they are on.
 //! Dropping it, reaching its end (`CourseEnd`) or stopping it holds it off
 //! from following by itself for the rest of the ride; the pad can still
 //! follow it. Whenever the course is not followed the
@@ -92,6 +94,18 @@ const DROP_M: f32 = 500.0;
 /// end, and back only this far behind where it was, in one fix.
 const JUMP_M: f32 = 500.0;
 const BACK_M: f32 = ON_M;
+/// Within `ON_M` and this little on from where the rider was, the course
+/// is matched first: where it passes the same road twice, the pass the
+/// rider is on, not the other. There a stretch more than `SLIP_M` behind
+/// the furthest the rider has been counts as that much farther off, and one
+/// against the rider's way `AGAINST_M` farther.
+const NEAR_M: f32 = 100.0;
+const SLIP_M: f32 = 10.0;
+const AGAINST_M: f32 = 5.0;
+/// A fix this far from the last one matched, or the first after the fix
+/// was lost, follows a gap: the rider may be past the near stretch, and the
+/// course is matched as if just joined.
+const HOP_M: f32 = 40.0;
 /// Riding along the course: this many fixes in a row within `ON_M` of it,
 /// heading its way within an eighth of a turn.
 const JOIN_FIXES: u8 = 5;
@@ -303,6 +317,11 @@ pub struct Homing<'a> {
     join_end: usize,
     /// Metres to the course's end where the rider was last matched.
     course_along: f32,
+    /// Metres to the course's end at the furthest the rider has been along
+    /// it since following it.
+    course_reached: f32,
+    /// The fix last matched to the course, until the fix is lost.
+    course_fix: Option<Point>,
     /// The course's turns, found a few steps a fix once it is placed, and
     /// what was said of them.
     turns: &'a mut [Turn],
@@ -361,6 +380,8 @@ impl<'a> Homing<'a> {
             join_fixes: 0,
             join_end: 0,
             course_along: 0.0,
+            course_reached: 0.0,
+            course_fix: None,
             turns: &mut [],
             turn_count: 0,
             scan: Scan::default(),
@@ -525,19 +546,21 @@ impl<'a> Homing<'a> {
 
     /// The placed course's turns as stored, in place of the scan: `fill`
     /// writes them into the list in millimetres along `points`, the course
-    /// as `set_course` was given it, and returns how many, or `None` to
-    /// scan for them. They move into this ride's frame, kept point by kept
-    /// point, so the rider's place along the course finds them.
+    /// as `set_course` was given it, and returns how many and whether the
+    /// course has more, or `None` to scan for them. They move into this
+    /// ride's frame, kept point by kept point, so the rider's place along
+    /// the course finds them; the scan finds any after them.
     pub fn take_turns(
         &mut self,
         points: &[course::Point],
-        fill: impl FnOnce(&mut [Turn]) -> Option<usize>,
+        fill: impl FnOnce(&mut [Turn]) -> Option<(usize, bool)>,
     ) {
         let len = self.line_len;
         if len < 2 || points.len() != len {
             return;
         }
-        let Some(count) = fill(self.turns).filter(|&count| count <= self.turns.len()) else {
+        let Some((count, more)) = fill(self.turns).filter(|&(count, _)| count <= self.turns.len())
+        else {
             (self.scan, self.turn_count) = (Scan::default(), 0);
             return;
         };
@@ -571,7 +594,11 @@ impl<'a> Homing<'a> {
                 *slot = (ride_m * 1000.0) as u32;
             }
         }
-        (self.scan, self.turn_count) = (Scan::finished(), count);
+        self.scan = match more {
+            true => Scan::after(&self.turns[..count]),
+            false => Scan::finished(),
+        };
+        self.turn_count = count;
         self.warner = Warner::default();
     }
 
@@ -641,6 +668,7 @@ impl<'a> Homing<'a> {
                 self.here = None;
                 self.fed = None;
                 self.guide = None;
+                self.course_fix = None;
             }
             return None;
         };
@@ -824,6 +852,8 @@ impl<'a> Homing<'a> {
         self.following = Some(line);
         self.join_fixes = 0;
         self.course_along = self.line[..self.line_len].get(end).map_or(0.0, |c| c.along);
+        self.course_reached = self.course_along;
+        self.course_fix = None;
         self.warner = Warner::default();
         self.segment = end;
         self.matched = None;
@@ -875,10 +905,21 @@ impl<'a> Homing<'a> {
         self.warner.step(&self.turns[..self.turn_count], along_mm)
     }
 
-    /// Find a few more of the placed course's turns.
+    /// Find a few more of the placed course's turns. With the list full,
+    /// the first half the rider is past makes way.
     fn scan_turns(&mut self) {
         if self.scan.done() {
             return;
+        }
+        if self.scan.waiting() {
+            let (count, room) = (self.turn_count, self.turns.len());
+            let passed = self.warner.passed().min(count);
+            if passed < room / 2 {
+                return;
+            }
+            self.turns.copy_within(passed..count, 0);
+            self.turn_count -= passed;
+            self.warner.forget(passed);
         }
         let len = self.line_len;
         // The course is kept end first; the scan reads it start first.
@@ -993,26 +1034,78 @@ impl<'a> Homing<'a> {
     }
 
     /// The nearest segment of the followed line among `ends`. Following the
-    /// course, only segments from `JUMP_M` on to `BACK_M` behind where the
-    /// rider was are in reach, and on a tie the earlier one wins; on the
-    /// breadcrumb the one nearer home does.
+    /// course, the pass the rider is on (`NEAR_M`) comes first; otherwise
+    /// only segments from `JUMP_M` on to `BACK_M` behind where the rider was
+    /// are in reach, and on a tie the earlier one wins; on the breadcrumb
+    /// the one nearer home does.
     fn nearest(&self, p: Point, ends: core::ops::RangeInclusive<usize>) -> Option<Nearest> {
+        let plain = |near: &Nearest, _: &Crumb, _: &Crumb| Some(near.off);
+        if !self.following_course() {
+            return self.nearest_within(p, ends, f32::MIN, f32::MAX, plain);
+        }
+        let (along, reached) = (self.course_along, self.course_reached);
+        // After a gap in the fixes the rider may be past the near stretch.
+        if self.course_fix.is_none_or(|fix| distance(fix, p) > HOP_M) {
+            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
+        }
+        let on = |near: &Nearest, a: &Crumb, b: &Crumb| {
+            let back = (near.along - reached - SLIP_M).max(0.0);
+            let against = if self.against(a, b) { AGAINST_M } else { 0.0 };
+            (near.off <= ON_M).then_some(near.off + back + against)
+        };
+        let Some(near) = self.nearest_within(p, ends.clone(), along - NEAR_M, along + BACK_M, on)
+        else {
+            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
+        };
+        // Sliding back against the rider's way, a pass ridden its own way
+        // close by is the one they are on.
+        let line = self.course();
+        if near.along > reached + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
+            let ahead = |near: &Nearest, a: &Crumb, b: &Crumb| {
+                (near.off <= ON_M && !self.against(a, b)).then_some(near.off)
+            };
+            let window = along - JUMP_M..=along + BACK_M;
+            if let Some(ahead) = self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
+            {
+                return Some(ahead);
+            }
+        }
+        Some(near)
+    }
+
+    /// Whether the course from `b` to `a` runs against the rider's heading.
+    fn against(&self, a: &Crumb, b: &Crumb) -> bool {
+        let way = bearing((b.east, b.north), (a.east, a.north));
+        self.heading.is_some_and(|heading| {
+            (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN))
+        })
+    }
+
+    /// The segment among `ends` reaching from `floor` to `ceiling` metres
+    /// along that `cost` puts first, given where it meets `p`; a segment
+    /// without a cost is out.
+    fn nearest_within(
+        &self,
+        p: Point,
+        ends: core::ops::RangeInclusive<usize>,
+        floor: f32,
+        ceiling: f32,
+        cost: impl Fn(&Nearest, &Crumb, &Crumb) -> Option<f32>,
+    ) -> Option<Nearest> {
         let line = self.followed();
         let course = self.following_course();
-        let (floor, ceiling) = if course {
-            (self.course_along - JUMP_M, self.course_along + BACK_M)
-        } else {
-            (f32::MIN, f32::MAX)
-        };
-        let mut best: Option<Nearest> = None;
+        let mut best: Option<(Nearest, f32)> = None;
         let mut consider = |end: usize| {
             let (a, b) = (line[end - 1], line[end]);
             if b.along < floor || a.along > ceiling {
                 return;
             }
             let near = nearest_on(line, p, end);
-            if best.is_none_or(|best| near.off < best.off) {
-                best = Some(near);
+            let Some(cost) = cost(&near, &a, &b) else {
+                return;
+            };
+            if best.is_none_or(|(_, best)| cost < best) {
+                best = Some((near, cost));
             }
         };
         if course {
@@ -1020,7 +1113,7 @@ impl<'a> Homing<'a> {
         } else {
             ends.for_each(&mut consider);
         }
-        best
+        best.map(|(near, _)| near)
     }
 
     /// The followed line `along` metres from its index 0, at or before
@@ -1105,6 +1198,8 @@ impl<'a> Homing<'a> {
             self.segment = near.end;
             self.matched = Some(near.point);
             self.course_along = near.along;
+            self.course_reached = self.course_reached.min(near.along);
+            self.course_fix = Some(p);
             let was_off = self.off;
             self.off = if self.off {
                 near.off > ON_M
@@ -1173,6 +1268,9 @@ mod tests {
     extern crate std;
     use std::vec;
     use std::vec::Vec;
+
+    mod many;
+    mod passes;
 
     /// About Santiago, where 1e-7 degree east is 0.0094 m.
     const LAT: i32 = -334_500_000;
@@ -1947,7 +2045,7 @@ mod tests {
                 if let Some(stored) = stored {
                     homing.take_turns(course, |turns| {
                         turns[..stored.len()].copy_from_slice(stored);
-                        Some(stored.len())
+                        Some((stored.len(), false))
                     });
                 }
             }
@@ -2049,7 +2147,7 @@ mod tests {
         let scanned = named(&homing.turns[..homing.turn_count]);
         homing.take_turns(course.points(), |list| {
             list[..stored.len()].copy_from_slice(&stored);
-            Some(stored.len())
+            Some((stored.len(), false))
         });
         assert!(homing.scan.done());
         let placed = named(&homing.turns[..homing.turn_count]);

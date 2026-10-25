@@ -116,6 +116,8 @@ pub struct Finder {
     /// The scan needed a point the ring no longer held: what it found is
     /// not to be trusted, and the course is scanned as before.
     lost: bool,
+    /// The list filled before the track ended: the scan stopped there.
+    full: bool,
     /// The most points back the scan read, for the record.
     reach: usize,
 }
@@ -140,6 +142,7 @@ impl Finder {
             scan: Scan::default(),
             found: 0,
             lost: false,
+            full: false,
             reach: 0,
         }
     }
@@ -230,6 +233,11 @@ impl Finding<'_> {
             finder.found = finder.scan.step(taken, at, 1, self.turns, finder.found);
             let back = taken.saturating_sub(finder.scan.oldest());
             finder.reach = finder.reach.max(back);
+            // A full list waits for room no upload makes.
+            if finder.scan.waiting() {
+                finder.full = true;
+                finder.scan = Scan::finished();
+            }
         }
     }
 
@@ -261,7 +269,7 @@ impl Finding<'_> {
         }
         Some(Found {
             count: finder.found,
-            full: finder.found == self.turns.len(),
+            full: finder.full,
             reach: finder.reach,
         })
     }
@@ -338,7 +346,7 @@ impl Follow for Finding<'_> {
         (finder.raw_taken, finder.smoothed, finder.taken) = (0, 0, 0);
         (finder.taken_m, finder.given_m) = (0.0, 0.0);
         finder.scan = Scan::default();
-        (finder.found, finder.lost, finder.reach) = (0, false, 0);
+        (finder.found, finder.lost, finder.full, finder.reach) = (0, false, false, 0);
     }
 
     fn given(&mut self, point: Point) {

@@ -271,43 +271,221 @@ mod tests {
     }
 }
 
-/// Alert on a close/rapidly closing target, at most once every five seconds.
-#[derive(Default)]
-pub struct Alert {
-    last: Option<u64>,
-}
 pub fn close(target: Target) -> bool {
     target.closing_speed_cm_s > 0
         && (target.range_mm <= 40_000
             || target.range_mm <= u32::from(target.closing_speed_cm_s) * 60)
 }
-impl Alert {
-    pub fn update(&mut self, snapshot: Snapshot, now: u64) -> bool {
-        if snapshot.targets.into_iter().flatten().any(close)
-            && self.last.is_none_or(|at| now.saturating_sub(at) >= 5000)
-        {
-            self.last = Some(now);
-            true
-        } else {
-            false
+
+/// How near the nearest vehicle is, by distance or by time to reach the
+/// rider, whichever is nearer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Proximity {
+    #[default]
+    Clear,
+    Far,
+    Near,
+    Close,
+    Passing,
+}
+
+/// One beep the rider should hear now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Beep {
+    Appeared,
+    Near,
+    Close,
+    Passing,
+}
+
+/// A level's bounds: the range under which a vehicle is at least that near,
+/// and the seconds it needs to reach the rider.
+const BANDS: [(Proximity, u32, u32); 3] = [
+    (Proximity::Passing, 15_000, 2),
+    (Proximity::Close, 30_000, 4),
+    (Proximity::Near, 60_000, 7),
+];
+
+const MIN_GAP_MS: u64 = 500;
+const NEAR_EVERY_MS: u64 = 1_500;
+const CLOSE_EVERY_MS: u64 = 1_000;
+const PASSING_EVERY_MS: u64 = 500;
+
+impl Proximity {
+    pub fn of(target: Target) -> Self {
+        let speed_cm_s = u32::from(target.closing_speed_cm_s);
+        if speed_cm_s == 0 {
+            return Self::Far;
+        }
+        BANDS
+            .into_iter()
+            .find(|&(_, range_mm, secs)| {
+                // cm/s times ten is mm/s.
+                target.range_mm < range_mm || target.range_mm < speed_cm_s * 10 * secs
+            })
+            .map_or(Self::Far, |(level, ..)| level)
+    }
+
+    fn of_snapshot(snapshot: Snapshot) -> Self {
+        snapshot
+            .targets
+            .into_iter()
+            .flatten()
+            .map(Self::of)
+            .max()
+            .unwrap_or(Self::Clear)
+    }
+
+    /// The beep this level repeats, and how often.
+    const fn repeat(self) -> Option<(Beep, u64)> {
+        match self {
+            Self::Clear | Self::Far => None,
+            Self::Near => Some((Beep::Near, NEAR_EVERY_MS)),
+            Self::Close => Some((Beep::Close, CLOSE_EVERY_MS)),
+            Self::Passing => Some((Beep::Passing, PASSING_EVERY_MS)),
         }
     }
 }
 
+/// Beeps for the nearest vehicle: an alarm when one first appears, then a
+/// note that repeats faster and climbs as it closes in.
+#[derive(Default)]
+pub struct Warning {
+    level: Proximity,
+    last_ms: Option<u64>,
+}
+
+impl Warning {
+    pub fn update(&mut self, snapshot: Snapshot, now: u64) -> Option<Beep> {
+        let before = core::mem::replace(&mut self.level, Proximity::of_snapshot(snapshot));
+        let level = self.level;
+        if level == Proximity::Clear {
+            self.last_ms = None;
+            return None;
+        }
+        let beep = if before == Proximity::Clear {
+            Some(Beep::Appeared)
+        } else {
+            let (beep, every_ms) = level.repeat()?;
+            let since = now.saturating_sub(self.last_ms?);
+            (since >= MIN_GAP_MS && (level > before || since >= every_ms)).then_some(beep)
+        };
+        if beep.is_some() {
+            self.last_ms = Some(now);
+        }
+        beep
+    }
+}
+
 #[cfg(test)]
-mod alert_tests {
+mod warning_tests {
     use super::*;
+
+    fn car(range_m: u32, closing_cm_s: u16) -> Snapshot {
+        let mut snapshot = Snapshot {
+            status: Status::Ready,
+            targets: [None; 8],
+        };
+        snapshot.targets[0] = Some(Target {
+            threat: Threat::Approach,
+            side: Side::Behind,
+            range_mm: range_m * 1000,
+            closing_speed_cm_s: closing_cm_s,
+        });
+        snapshot
+    }
+
+    fn clear() -> Snapshot {
+        Snapshot {
+            status: Status::Ready,
+            targets: [None; 8],
+        }
+    }
+
     #[test]
-    fn approaching_targets_alert_without_stale_or_repeated_beeps() {
-        let mut radar = Radar::new();
-        let mut alert = Alert::default();
-        radar.receive([0x30, 1, 0, 30, 0, 0, 1, 0], 0);
-        assert!(!alert.update(radar.snapshot(0), 0));
-        radar.receive([0x30, 1, 0, 10, 0, 0, 1, 0], 1000);
-        assert!(alert.update(radar.snapshot(1000), 1000));
-        assert!(!alert.update(radar.snapshot(1100), 1100));
-        assert!(!alert.update(radar.snapshot(7000), 7000));
-        radar.receive([0x30, 2, 0, 30, 0, 0, 10, 0], 7001);
-        assert!(alert.update(radar.snapshot(7001), 7001));
+    fn a_closing_car_beeps_faster_each_time_it_gets_nearer() {
+        let mut warning = Warning::default();
+        let mut heard = std::vec::Vec::new();
+        // 9 m/s from 150 m, sampled every 100 ms.
+        for tick in 0..=160u64 {
+            let range_m = 150u32.saturating_sub((tick * 9 / 10) as u32);
+            if let Some(beep) = warning.update(car(range_m.max(1), 900), tick * 100) {
+                heard.push((tick * 100, beep));
+            }
+        }
+        let beeps: std::vec::Vec<_> = heard.iter().map(|&(_, beep)| beep).collect();
+        assert_eq!(beeps[0], Beep::Appeared);
+        let gaps = |kind: Beep| -> std::vec::Vec<u64> {
+            let at: std::vec::Vec<_> = heard.iter().filter(|h| h.1 == kind).map(|h| h.0).collect();
+            at.windows(2).map(|pair| pair[1] - pair[0]).collect()
+        };
+        assert!(beeps.iter().skip(1).any(|&b| b == Beep::Near));
+        assert!(gaps(Beep::Near).iter().all(|&gap| gap == 1_500));
+        assert!(gaps(Beep::Close).iter().all(|&gap| gap == 1_000));
+        assert!(gaps(Beep::Passing).iter().all(|&gap| gap == 500));
+        let order: std::vec::Vec<_> = {
+            let mut order = beeps.clone();
+            order.dedup();
+            order
+        };
+        assert_eq!(
+            order,
+            [Beep::Appeared, Beep::Near, Beep::Close, Beep::Passing]
+        );
+        assert!(gaps(Beep::Passing).len() >= 2);
+    }
+
+    #[test]
+    fn a_car_holding_the_riders_speed_beeps_only_once() {
+        let mut warning = Warning::default();
+        assert_eq!(warning.update(car(10, 0), 0), Some(Beep::Appeared));
+        for tick in 1..100 {
+            assert_eq!(warning.update(car(10, 0), tick * 100), None);
+        }
+    }
+
+    #[test]
+    fn time_to_reach_counts_as_well_as_range() {
+        let level = |range_m, closing_cm_s| match car(range_m, closing_cm_s).targets[0] {
+            Some(target) => Proximity::of(target),
+            None => Proximity::Clear,
+        };
+        assert_eq!(level(100, 1500), Proximity::Near, "6.7 s away");
+        assert_eq!(level(100, 2500), Proximity::Near, "4 s is not under 4");
+        assert_eq!(level(100, 3000), Proximity::Close, "3.3 s away");
+        assert_eq!(level(100, 5100), Proximity::Passing, "under 2 s");
+        assert_eq!(level(100, 900), Proximity::Far);
+        assert_eq!(level(14, 100), Proximity::Passing);
+        assert_eq!(level(29, 100), Proximity::Close);
+        assert_eq!(level(59, 100), Proximity::Near);
+        assert_eq!(level(60, 100), Proximity::Far);
+    }
+
+    #[test]
+    fn a_second_car_in_the_same_stretch_is_not_a_new_appearance() {
+        let mut warning = Warning::default();
+        assert_eq!(warning.update(car(20, 500), 0), Some(Beep::Appeared));
+        // The first car passed and the next is still far: no beep, no alarm.
+        assert_eq!(warning.update(car(200, 500), 100), None);
+        assert_eq!(warning.update(car(190, 500), 200), None);
+        assert_eq!(warning.update(car(40, 500), 2_000), Some(Beep::Near));
+    }
+
+    #[test]
+    fn a_gap_to_clear_makes_the_next_car_appear_again() {
+        let mut warning = Warning::default();
+        assert_eq!(warning.update(car(100, 500), 0), Some(Beep::Appeared));
+        assert_eq!(warning.update(clear(), 100), None);
+        assert_eq!(warning.update(car(100, 500), 200), Some(Beep::Appeared));
+    }
+
+    #[test]
+    fn a_falling_level_continues_at_the_slower_interval() {
+        let mut warning = Warning::default();
+        assert_eq!(warning.update(car(10, 500), 0), Some(Beep::Appeared));
+        assert_eq!(warning.update(car(10, 500), 500), Some(Beep::Passing));
+        assert_eq!(warning.update(car(45, 500), 600), None);
+        assert_eq!(warning.update(car(45, 500), 1_900), None);
+        assert_eq!(warning.update(car(45, 500), 2_000), Some(Beep::Near));
     }
 }

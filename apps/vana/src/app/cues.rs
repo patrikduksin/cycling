@@ -5,8 +5,9 @@
 //! low, middle and high notes by pitch, and the longest one that fits the
 //! alert budget as the alarm. Rising runs mean go (start, resume, saved),
 //! falling ones mean stop (pause), one note marks a lap and two low notes
-//! ask for the charger. The rider can mute cues in Settings; a safety alarm
-//! (a vehicle closing from behind) always sounds.
+//! ask for the charger. A vehicle closing from behind sounds the alarm, then a
+//! low, middle or high note by how near it is. The rider can mute cues in
+//! Settings; the radar cues are safety cues and always sound.
 use device_api::sound::{Pattern, Sound};
 use firmware_services::sound::Sequence;
 
@@ -33,8 +34,14 @@ pub enum Cue {
     Countdown,
     /// A workout step began, the workout ended or a test measured FTP.
     Step,
-    /// A vehicle closing from behind.
+    /// A vehicle appeared behind.
     RadarApproach,
+    /// The nearest vehicle is near.
+    RadarNear,
+    /// The nearest vehicle is close.
+    RadarClose,
+    /// The nearest vehicle is passing.
+    RadarPassing,
     /// The vehicles behind have passed.
     RadarClear,
     /// A ride alert: heart rate, power or cadence left the rider's band.
@@ -77,6 +84,10 @@ impl Cue {
             Self::Countdown => &[Low],
             Self::Step => &[High, High],
             Self::RadarApproach => &[Alarm],
+            // The note climbs as the vehicle closes in.
+            Self::RadarNear => &[Low],
+            Self::RadarClose => &[Middle],
+            Self::RadarPassing => &[High],
             // Low to high: the road behind is clear again.
             Self::RadarClear => &[Low, High],
             // Two high notes ask for attention without sounding like an alarm.
@@ -94,7 +105,10 @@ impl Cue {
 
     /// Sounds even when the rider muted cues, and is never replaced by one.
     pub const fn safety(self) -> bool {
-        matches!(self, Self::RadarApproach)
+        matches!(
+            self,
+            Self::RadarApproach | Self::RadarNear | Self::RadarClose | Self::RadarPassing
+        )
     }
 }
 
@@ -194,6 +208,9 @@ mod tests {
         assert_eq!(ids(Cue::Best), [0, 10, 10]);
         assert_eq!(ids(Cue::LowBattery), [21, 21]);
         assert_eq!(ids(Cue::RadarApproach), [22]);
+        assert_eq!(ids(Cue::RadarNear), [21]);
+        assert_eq!(ids(Cue::RadarClose), [0]);
+        assert_eq!(ids(Cue::RadarPassing), [10]);
         assert_eq!(ids(Cue::RadarClear), [21, 10]);
         assert_eq!(ids(Cue::BandAlert), [10, 10]);
         assert_eq!(ids(Cue::Fuel), [0, 0]);

@@ -23,6 +23,7 @@ use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
 use crate::screens::settings;
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::{BatteryStatus, device_type};
+use crate::sensors::radar::Beep;
 use core::fmt::Write;
 use device_api::ant::Ant;
 use device_api::display::Display as Panel;
@@ -427,8 +428,8 @@ impl Runtime {
     }
 
     /// Sound the cues and alarms due: the latest ride moment's cue, a closed
-    /// lap, a vehicle closing from behind while on the ride screen, which
-    /// wins over any cue, and the rider's alerts (`ride::alerts`), each with
+    /// lap, the radar's beeps for the nearest vehicle behind while on the ride
+    /// screen, which win over any cue, and the rider's alerts (`ride::alerts`), each with
     /// a toast on the ride pages. A cue waits for the buzzer to be free, for
     /// up to a second. Call once per loop.
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
@@ -476,8 +477,16 @@ impl Runtime {
             self.preferences.options.zone,
         );
         if self.navigation.page == Page::Ride {
-            if self.readings.radar_alert.update(radar, now) {
-                self.cue(Cue::RadarApproach, now);
+            if let Some(beep) = self.readings.radar_warning.update(radar, now) {
+                self.cue(
+                    match beep {
+                        Beep::Appeared => Cue::RadarApproach,
+                        Beep::Near => Cue::RadarNear,
+                        Beep::Close => Cue::RadarClose,
+                        Beep::Passing => Cue::RadarPassing,
+                    },
+                    now,
+                );
             }
             let alert = alert.or_else(|| {
                 let ride_left = self
@@ -1380,7 +1389,7 @@ impl Runtime {
                 write!(value, "{}", on(options.sounds))
             }
             Row::RadarAlerts => {
-                let _ = write!(note, "APPROACH ALARM STAYS ON");
+                let _ = write!(note, "RADAR BEEPS STAY ON");
                 write!(value, "{}", on(self.alert_settings().radar))
             }
             Row::SunsetAlert => {

@@ -267,11 +267,10 @@ Only one toast shows at a time. From highest priority to lowest:
    chosen under Settings ALERTS and LIMITS) show here on ride pages, each with
    its cue: a limit broken for 10 s, HR HIGH 172, HR LOW 95, POWER HIGH 400W,
    POWER LOW 120W or CADENCE LOW 60, is `Warn` and repeats every 2 min while it
-   lasts. EAT AND DRINK (`Info`) comes every chosen interval of ride time. The
-   radar count names each new vehicle behind, 2 VEHICLES (`Warn`, no cue: the
-   approach alarm already sounds), and ALL CLEAR (`Good`) follows 2 s after the
-   last one passed. All are off by default except the radar count. Once per
-   ride, BATTERY 40 MIN LEFT or BATTERY 2 H LEFT (`Warn`, with the low-battery
+   lasts. EAT AND DRINK (`Info`) comes every chosen interval of ride time.
+   ALL CLEAR (`Good`) follows 2 s after the last vehicle behind passed; the
+   radar's beeps for vehicles have no toast. All are off by default except
+   ALL CLEAR. Once per ride, BATTERY 40 MIN LEFT or BATTERY 2 H LEFT (`Warn`, with the low-battery
    cue; hours and minutes round down) shows when the estimated time left
    (`ride/battery_life.rs`) has stayed under 1.25 times the planned time of the
    workout (1 h at least) for 5 min. The estimate needs 6 points over 40 min,
@@ -281,7 +280,7 @@ Only one toast shows at a time. From highest priority to lowest:
    point flicker is ignored and a smaller fall counts as one moment. A battery
    level toast keeps it back for 30 s. Ready rarely shows it without a ride or an
    hour of use behind it, since nothing is stored between boots. Limits
-   and reminders keep 3 s apart; radar alerts never wait. The sunset alert
+   and reminders keep 3 s apart; the radar's beeps never wait. The sunset alert
    (Settings ALERTS, SUNSET, on by default) is `Warn` with the band cue:
    SUNSET IN 30 MIN once, and SUNSET - LIGHTS ON once when the sun sets
    mid-ride (the font is ASCII, so a dash stands for a dot). Details in
@@ -529,11 +528,18 @@ middle and high notes by pitch. Rising runs mean go, falling ones stop.
 | Following the track back, or back on it | low, middle |
 | Off the track being followed | high, low |
 | Back at the start, following the track | low, middle, high, high |
-| Vehicle closing from behind | the long alarm pattern |
+| Vehicle appears behind | the long alarm pattern |
+| Nearest vehicle near (under 60 m or 7 s), repeating every 1.5 s | low, once |
+| Nearest vehicle close (under 30 m or 4 s), repeating every 1 s | middle, once |
+| Nearest vehicle passing (under 15 m or 2 s), repeating every 0.5 s | high, once |
+| Road empty for 2 s after vehicles (ALL CLEAR setting) | low, high |
 
 Each note waits for the previous one's guard. A newer cue replaces one in
 progress, and a cue that cannot start within a second is dropped. SOUNDS OFF
-mutes cues; the radar alarm always sounds and nothing replaces it.
+mutes cues; the radar's beeps always sound and nothing replaces them. The
+nearest vehicle sets the pace, by its range or its time to reach the rider,
+whichever is nearer. A vehicle holding the rider's speed sounds only the alarm. When
+the road empties, the next vehicle sounds the alarm again.
 
 ## Input
 

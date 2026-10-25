@@ -176,6 +176,13 @@ pub struct View<'a> {
     pub(super) cues: heapless::Vec<Cue, 2>,
     pub(super) badge: Option<Badge>,
 }
+
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(
+    core::mem::size_of::<View>() <= 10_672,
+    "View lives on the main stack every frame: shrink it, do not grow it"
+);
+
 impl View<'_> {
     pub fn new(page: Page, cursor: usize, local: Option<Local>) -> Self {
         let mut time = Text::new();

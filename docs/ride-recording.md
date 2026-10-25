@@ -579,57 +579,88 @@ ride recovered after a power cut has no record.
 
 ### Ride facts
 
-When a ride is saved, VANA writes what the journal does not hold beside it as
-`rides/<i|b><ride id>.facts` on FILES (`apps/vana/src/ride/facts.rs`): the FTP
-and LTHR in force, the climbs it finished and their gain, and its start time.
-Once the summary has measured the heart-rate recovery, the file is written
-again with it. The rides list's TSS uses the kept FTP, and a saved ride read
-back shows the recovery and the climbs. After boot, and each time the card
-becomes ready, VANA reads the files into memory, one directory sector per
-tick while no ride is open or being written.
+When a ride is saved, VANA keeps what the journal does not hold in one table
+on FILES, `rides/facts.tbl` (`apps/vana/src/ride/facts.rs`): the FTP and LTHR
+in force, the climbs it finished and their gain, and its start time. Once the
+summary has measured the heart-rate recovery, the ride is saved again with it.
+The rides list's TSS and FORM use the kept FTP, and a saved ride read back
+shows the recovery and the climbs. After boot, and each time the card becomes
+ready, VANA reads the table into PSRAM four sectors per tick while no ride is
+open or being written.
 
-- A file applies to a journal ride only when its journal, ride id and start
-  second match. Clearing or initializing a journal deletes its files once the
+- The table keeps the newest 1000 saved rides, 32 KB: FORM's 120 days at eight
+  rides a day. It takes one FILES directory entry, whatever it holds.
+- The store cannot append in place, so each save writes the whole table again,
+  copy-on-write, with the ride last. It drops the ride's earlier record,
+  records that fail their CRC and, past 1000, the oldest saved. A cut leaves
+  the old table or the new one; every earlier ride stays.
+- A record applies to a journal ride only when its journal, ride id and start
+  second match. Clearing or initializing a journal drops its records once the
   clear succeeds, as its ride ids start over; a clear that fails keeps them
-  with the rides. Firmware from before facts clears a journal without deleting
-  them, and the start time keeps those files off the new rides. So a ride
-  whose start time is unknown (no clock) gets no facts.
+  with the rides. Firmware from before the table clears a journal without
+  touching it, and the start time keeps those records off the new rides. So a
+  ride whose start time is unknown (no clock) gets no facts.
 - A ride that moved from the MMC onto internal flash is two journal rides.
   Its facts go with the part that finished on internal flash; the MMC part
   counts at the FTP now.
-- The newest 64 are kept; saving another deletes the oldest. The FILES
-  directory holds 128 files: 64 facts, the 32 workout records, `bests.dat` and
-  the 8 uploads the picker lists leave 23 for the host. 64 rides cover the two
-  weeks the rides list totals at up to four rides a day. Facts give way to
-  every other file: a ride saves its workout record first, a new facts file
-  never takes the last free directory entry, and one the store refuses as
-  full deletes the oldest facts file and tries once more.
+- Firmware from before the table kept a file per ride,
+  `rides/<i|b><ride id>.facts`, the newest 64. VANA reads them after the
+  table, folds eight per tick into it and deletes them only once the table
+  holding them has committed; a cut in between folds them again. A ride in
+  both keeps the later start, and the table's on a tie. A file that does not
+  decode is deleted too, as that firmware's rotation would have; one that
+  does not read stays for the next boot.
+- Facts give way to every other file: a ride saves its workout record first,
+  and a new table never takes the last free directory entry, unless it folds
+  older files that free entries right after. With no entry free it deletes
+  first an older file that holds nothing to fold, else the oldest older file,
+  whose record the same write commits; a cut in between loses that one ride,
+  as older firmware's rotation would. Clearing a journal deletes its older
+  files on a full directory too.
 - Without a card, a FILES volume or a store the host formatted, nothing is
   written and every reader shows what it showed before facts were kept. A
-  write the store refuses is logged and the ride is not held up for it.
-- A file is written in one atomic commit. One that is torn, fails its CRC,
-  holds a profile out of range or names another ride than its file name is
-  ignored, except a profile out of range, which reads as none and leaves the
-  other fields. Firmware from before facts lists only `.workout` files under
-  `rides/`, so it leaves `.facts` files alone.
+  write the store refuses is logged and the ride is not held up for it. A
+  table whose header is damaged is read at the stride, 32 to 512 bytes, at
+  which most slots of its first two sectors pass their CRC, and the next save
+  writes it again with a fresh header, copy-on-write. One where no slot
+  passes at any stride, or a `rides/facts.tbl` without the magic, is left as
+  it is and nothing is saved over it.
+- Past 1000 rides the table drops the oldest saved and the memory the oldest
+  start: the same ride unless rides were saved out of start order, and each
+  boot reads the table again.
+- Firmware from before the table lists only `.workout` and `.facts` files
+  under `rides/`, so it leaves `rides/facts.tbl` alone; it then shows rides as
+  if they had no facts, and the table is still there after an update.
 
-It is a versioned 34-byte record that later versions only extend:
+The table is a header and then one slot per ride, oldest saved first. Each
+slot is `stride` bytes and ends in the CRC32 of the bytes before it:
 
-| Bytes | Field |
+| Header bytes | Field |
 | --- | --- |
-| 0..4 | magic `VFCT` |
-| 4 | version, 1 |
-| 5 | body length `n` before the CRC: 30 in version 1 |
-| 6 | journal: `i` internal, `b` bulk |
-| 7 | flags: 1 profile, 2 HR recovery, 4 climbs |
-| 8..12 | ride id |
-| 12..20 | ride start, UTC ms |
-| 20..24 | FTP (W) and LTHR (BPM), u16 each |
-| 24..26 | HR recovery, BPM fallen (i16) |
-| 26..30 | climbs finished and their gain in m, u16 each |
-| n..n+4 | CRC32 of bytes 0..n |
+| 0..4 | magic `VFTB` |
+| 4 | table version, 1 |
+| 6..8 | stride: 32, a power of two up to 512 |
 
-The reader takes up to 259 bytes, as much as a one-byte body length allows.
+| Slot bytes | Field |
+| --- | --- |
+| 0 | record version, 1 |
+| 2 | journal: `i` internal, `b` bulk |
+| 3 | flags: 1 profile, 2 HR recovery, 4 climbs |
+| 4..8 | ride id |
+| 8..16 | ride start, UTC ms |
+| 16..20 | FTP (W) and LTHR (BPM), u16 each |
+| 20..22 | HR recovery, BPM fallen (i16) |
+| 22..26 | climbs finished and their gain in m, u16 each |
+| stride-4.. | CRC32 of the slot's bytes before it |
+
+Later versions only add fields before the CRC, or lengthen the stride for
+them. A save copies the slots it keeps byte for byte, so it never drops
+fields it does not know.
+
+An older per-ride file is a 34-byte record, version 1: magic `VFCT`, the
+version, a body length `n` (30), the slot's bytes 2..26 above, and the CRC32
+of bytes 0..n. The reader takes up to 259 bytes, as much as a one-byte body
+length allows.
 
 ## What this does not prove
 

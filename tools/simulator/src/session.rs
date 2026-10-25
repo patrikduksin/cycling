@@ -415,6 +415,8 @@ impl Session {
             use vana::ride::directory::{ENTRY, RIDES, RideIndex};
             let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
             sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
+            let facts = vec![0u8; vana::ride::facts::SHELF_BYTES].into_boxed_slice();
+            sdk.attach_ride_facts(Box::leak(facts));
         }
         #[cfg(feature = "cycling")]
         sdk.load_preferences(&shell.settings.app);

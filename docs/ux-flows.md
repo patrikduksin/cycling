@@ -403,13 +403,13 @@ record cannot be read says RIDE UNREADABLE.
 
 A ride's facts are what its journal does not hold: the FTP and LTHR in force
 when it was saved, its HR RECOVERY once measured, and the climbs it finished.
-They are a small file beside the ride on the FILES volume
-(`ride-recording.md`, "Ride facts"), written when the ride is saved. The
-newest 64 are kept. A ride without them reads as before: TSS at the FTP set
-now, CLIMBS --, and no HR RECOVERY. That is a ride saved with no card, FILES
-volume or formatted store, one saved without a clock, one recovered after a
-power cut, one older than the newest 64, and one saved by firmware from before
-facts were kept. A ride that moved from the MMC onto internal flash keeps its
+They are a table on the FILES volume (`ride-recording.md`, "Ride facts"),
+written when the ride is saved, that keeps the newest 1000 rides: FORM's 120
+days at eight rides a day. A ride without them reads as before: TSS at the FTP
+set now, CLIMBS --, and no HR RECOVERY. That is a ride saved with no card,
+FILES volume or formatted store, one saved without a clock, one recovered after
+a power cut, one older than the newest 1000, and one saved by firmware from
+before facts were kept. A ride that moved from the MMC onto internal flash keeps its
 facts with its internal part.
 
 The list holds every saved ride of both journals (internal flash and the

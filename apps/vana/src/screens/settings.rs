@@ -389,7 +389,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     if view.toast.is_some() {
         return canvas;
     }
-    let status = view.lines[STATUS].as_bytes();
+    let status = view.lines()[STATUS].as_bytes();
     let fine = matches!(status, b"SAVED" | b"SAVING");
     canvas.fit(
         &[&CAPTION],
@@ -431,7 +431,7 @@ fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bo
     let base = rect.top + 38;
     let value = canvas.fit(
         &[&BODY, &CAPTION],
-        view.lines[VALUES + slot].as_bytes(),
+        view.lines()[VALUES + slot].as_bytes(),
         right - left,
         left,
         base,
@@ -439,7 +439,7 @@ fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bo
         WHITE,
     );
     // A note too wide beside the value gives way to its part after a comma, then to none.
-    let whole = view.lines[NOTES + slot].as_bytes();
+    let whole = view.lines()[NOTES + slot].as_bytes();
     let room = right.saturating_sub(value.right() + 12);
     let last = whole
         .windows(2)
@@ -479,7 +479,7 @@ fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
     );
     canvas.fit(
         &[&VALUE, &BODY],
-        view.lines[VALUES].as_bytes(),
+        view.lines()[VALUES].as_bytes(),
         width,
         left,
         rect.top + 60,
@@ -488,7 +488,7 @@ fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
     );
     canvas.fit(
         &[&CAPTION],
-        view.lines[NOTES].as_bytes(),
+        view.lines()[NOTES].as_bytes(),
         width,
         left,
         rect.top + 80,
@@ -535,11 +535,12 @@ mod tests {
     fn view(cursor: usize, editing: bool, values: &[(&str, &str)], status: &str) -> View<'static> {
         let mut view = View::new(Page::Settings, cursor, None);
         view.editing = editing;
+        let lines = view.show_settings();
         for (slot, (value, note)) in values.iter().enumerate() {
-            let _ = view.lines[VALUES + slot].push_str(value);
-            let _ = view.lines[NOTES + slot].push_str(note);
+            let _ = lines[VALUES + slot].push_str(value);
+            let _ = lines[NOTES + slot].push_str(note);
         }
-        let _ = view.lines[STATUS].push_str(status);
+        let _ = lines[STATUS].push_str(status);
         view.prepare();
         view
     }
@@ -616,8 +617,9 @@ mod tests {
     fn body_numbers_move_a_unit_at_a_time_and_say_when_unset() {
         let mut editing = View::new(Page::Settings, Row::Weight.index(), None);
         editing.editing = true;
-        let _ = editing.lines[VALUES].push_str("NOT SET");
-        let _ = editing.lines[NOTES].push_str("ADD FOR W/KG");
+        let lines = editing.show_settings();
+        let _ = lines[VALUES].push_str("NOT SET");
+        let _ = lines[NOTES].push_str("ADD FOR W/KG");
         editing.prepare();
         assert!(editing.canvas().shows("WEIGHT KG") && editing.canvas().shows("NOT SET"));
         assert!(editing.canvas().shows("-1") && editing.canvas().shows("+1"));

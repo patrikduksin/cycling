@@ -212,7 +212,7 @@ fn cells(canvas: &mut Canvas, first: usize, cells: &[Reading]) {
 
 pub fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    match view.after.saving {
+    match view.after().saving {
         Saving::Writing => {
             centred(&mut canvas, &[&TITLE, &BODY], b"SAVING", 150, WHITE);
             centred(&mut canvas, &[&CAPTION], b"KEEP VANA ON", 178, SECONDARY);
@@ -234,7 +234,7 @@ pub fn prepare(view: &View) -> Canvas {
             );
             return canvas;
         }
-        Saving::Failed if view.after.page == 0 => {
+        Saving::Failed if view.after().page == 0 => {
             centred(&mut canvas, &[&TITLE, &BODY], b"NOT ALL SAVED", 86, AMBER);
             centred(
                 &mut canvas,
@@ -246,11 +246,11 @@ pub fn prepare(view: &View) -> Canvas {
         }
         _ => {}
     }
-    match view.after.page {
+    match view.after().page {
         0 => overview(view, &mut canvas),
         1 => effort(view, &mut canvas),
-        _ if offer_shown(&view.after) => ftp_offer(view, &mut canvas),
-        2 if view.after.elevation => elevation_page(view, &mut canvas),
+        _ if offer_shown(&view.after()) => ftp_offer(view, &mut canvas),
+        2 if view.after().elevation => elevation_page(view, &mut canvas),
         _ => best_power(view, &mut canvas),
     }
     canvas
@@ -258,22 +258,22 @@ pub fn prepare(view: &View) -> Canvas {
 
 /// The badge shows over a saved ride's first page.
 pub fn badge(view: &View) -> Option<Badge> {
-    (view.after.saving == Saving::Saved && view.after.page == 0 && !view.after.past)
+    (view.after().saving == Saving::Saved && view.after().page == 0 && !view.after().past)
         .then_some(BADGE)
 }
 
 fn overview(view: &View, canvas: &mut Canvas) {
     let totals = &view.totals;
-    if view.after.past {
+    if view.after().past {
         canvas.caption(b"SAVED RIDE", RIGHT - LEFT, CENTRE, 70, Align::Center);
         centred(
             canvas,
             &[&TITLE, &BODY],
-            view.past_title.as_bytes(),
+            view.past_title().as_bytes(),
             112,
             WHITE,
         );
-    } else if view.after.saving == Saving::Saved {
+    } else if view.after().saving == Saving::Saved {
         centred(canvas, &[&TITLE, &BODY], b"RIDE SAVED", 112, WHITE);
     }
     let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
@@ -284,7 +284,7 @@ fn overview(view: &View, canvas: &mut Canvas) {
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
     whole(power, totals.avg_power());
     whole(heart, totals.avg_heart_bpm());
-    let found = view.after.found;
+    let found = view.after().found;
     cells(
         canvas,
         122,
@@ -326,7 +326,7 @@ fn effort(view: &View, canvas: &mut Canvas) {
     let bars = first + 3 * super::CELL_PITCH + 12;
     zone_bar(canvas, b"PWR", (LEFT, BAR_LEFT), bars, marks.power_time);
     zone_bar(canvas, b"HR", (LEFT, BAR_LEFT), bars + 18, marks.heart_time);
-    if let Some(reading) = view.after.recovery {
+    if let Some(reading) = view.after().recovery {
         recovery(canvas, reading, bars + 40);
     }
 }
@@ -395,9 +395,9 @@ pub const fn pages(elevation: bool) -> usize {
 
 /// The elevation profile shows once the ride is saved.
 pub fn shows_elevation(view: &View) -> bool {
-    view.after.elevation
-        && SummaryPage::at(view.after.page, true) == SummaryPage::Elevation
-        && matches!(view.after.saving, Saving::Saved | Saving::Failed)
+    view.after().elevation
+        && SummaryPage::at(view.after().page, true) == SummaryPage::Elevation
+        && matches!(view.after().saving, Saving::Saved | Saving::Failed)
 }
 
 /// Where the elevation page's cells start, and its chart below them.
@@ -409,7 +409,7 @@ fn elevation_page(view: &View, canvas: &mut Canvas) {
     let [ascent, descent, low, high] = &mut values;
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
     whole(descent, Some((totals.descent_dm() + 5) / 10));
-    let range = view.elevation_chart.and_then(Chart::range_m);
+    let range = view.elevation_chart().and_then(Chart::range_m);
     whole(low, range.map(|(low, _)| low));
     whole(high, range.map(|(_, high)| high));
     cells(
@@ -432,8 +432,15 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     let first = CONTENT.top + 8;
     canvas.caption(b"BEST POWER W", RIGHT - LEFT, LEFT, first + 12, Align::Left);
     let pitch = 38;
-    let peak = view.after.best.iter().flatten().max().copied().unwrap_or(0);
-    for (index, best) in view.after.best.into_iter().enumerate() {
+    let peak = view
+        .after()
+        .best
+        .iter()
+        .flatten()
+        .max()
+        .copied()
+        .unwrap_or(0);
+    for (index, best) in view.after().best.into_iter().enumerate() {
         let base = first + 48 + index * pitch;
         let label = effort_label(index);
         canvas.caption(
@@ -469,7 +476,7 @@ fn best_power(view: &View, canvas: &mut Canvas) {
             color: if best.is_some() { POWER } else { TERTIARY },
         });
         // A new personal best: its own caption under the bar.
-        if view.after.found.power[index] {
+        if view.after().found.power[index] {
             canvas.fit(
                 &[&CAPTION],
                 b"BEST",
@@ -483,8 +490,8 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     }
     let mut climbs = Text::<12>::new();
     let mut laps = Text::<12>::new();
-    whole(&mut climbs, view.after.climbs);
-    whole(&mut laps, view.after.laps);
+    whole(&mut climbs, view.after().climbs);
+    whole(&mut laps, view.after().laps);
     cells(
         canvas,
         first + 22 + 4 * pitch + 6,
@@ -497,7 +504,7 @@ fn best_power(view: &View, canvas: &mut Canvas) {
 
 /// `FTP 245 W?`: what the new 20 min best suggests, and what it replaces.
 fn ftp_offer(view: &View, canvas: &mut Canvas) {
-    let Some(offer) = view.after.offer else {
+    let Some(offer) = view.after().offer else {
         return;
     };
     let mut best = Text::<24>::new();
@@ -550,18 +557,21 @@ mod tests {
             view.zone_time.add(1000, &sample, &view.profile);
         }
         view.active_secs = 359_999;
-        view.after = After {
-            page,
-            saving,
-            best: [Some(1999), Some(1500), None, None],
-            climbs: Some(999),
-            laps: Some(999),
-            past: false,
-            elevation: false,
-            found: Found::default(),
-            offer: None,
-            recovery: Some(Recovery::Recovered(120)),
-        };
+        view.show_summary(
+            After {
+                page,
+                saving,
+                best: [Some(1999), Some(1500), None, None],
+                climbs: Some(999),
+                laps: Some(999),
+                past: false,
+                elevation: false,
+                found: Found::default(),
+                offer: None,
+                recovery: Some(Recovery::Recovered(120)),
+            },
+            Text::new(),
+        );
         view.prepare();
         view
     }
@@ -630,8 +640,8 @@ mod tests {
         chart.refresh(&trace);
         let with_altitude = |page| {
             let mut view = extreme(page, Saving::Saved);
-            view.elevation_chart = Some(&chart);
-            view.after.elevation = true;
+            view.set_elevation_chart(&chart);
+            view.after_mut().elevation = true;
             view.prepare();
             view
         };
@@ -649,7 +659,7 @@ mod tests {
         assert!(!with_altitude(1).canvas().shows("ASCENT M"));
         assert!(!shows_elevation(&with_altitude(1)));
         let mut writing = extreme(2, Saving::Writing);
-        writing.after.elevation = true;
+        writing.after_mut().elevation = true;
         assert!(!shows_elevation(&writing));
         let plain = extreme(2, Saving::Saved);
         assert!(plain.canvas().shows("BEST POWER W") && !shows_elevation(&plain));
@@ -666,7 +676,7 @@ mod tests {
         };
         let with = |recovery| {
             let mut view = extreme(1, Saving::Saved);
-            view.after.recovery = recovery;
+            view.after_mut().recovery = recovery;
             view.prepare();
             view
         };
@@ -693,10 +703,18 @@ mod tests {
         let past = |page, saving| {
             let mut view = extreme(page, saving);
             view.page = Page::PastRide;
-            view.after.past = true;
-            view.after.climbs = None;
-            view.after.laps = None;
-            let _ = view.past_title.push_str("DEC 31  12:59");
+            let after = view.after();
+            let mut title = Text::new();
+            let _ = title.push_str("DEC 31  12:59");
+            view.show_summary(
+                After {
+                    past: true,
+                    climbs: None,
+                    laps: None,
+                    ..after
+                },
+                title,
+            );
             view.prepare();
             view
         };

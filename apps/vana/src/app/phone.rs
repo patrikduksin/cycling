@@ -1434,10 +1434,11 @@ impl Runtime {
     }
 
     /// The Connect phone lines and code for this frame.
+    #[inline(never)]
     pub(super) fn phone_view(&mut self, view: &mut crate::screens::workout::View) {
         use crate::screens::phone::{NAME, NOTE, PROBLEM, SECRET, STEP, TITLE_LINE, place};
         use crate::screens::qr::Qr;
-        let lines = &mut view.lines;
+        let (qr, lines) = view.show_phone();
         let Some(status) = self.phone_status() else {
             let reason = match (self.phone.wanted, self.phone.closed) {
                 (Some(Some(_)), _) | (_, None) => None,
@@ -1488,7 +1489,7 @@ impl Runtime {
             } else {
                 let _ = lines[NOTE].push_str("SCAN WITH THE CAMERA");
             }
-            view.qr = Qr::encode(status.join_text().as_str()).map(place);
+            *qr = Qr::encode(status.join_text().as_str()).map(place);
             return;
         }
         let _ = lines[STEP].push_str(match status.mode {
@@ -1504,7 +1505,7 @@ impl Runtime {
                 } else {
                     let _ = lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
                 }
-                view.qr = Qr::encode(url.as_str()).map(place);
+                *qr = Qr::encode(url.as_str()).map(place);
             }
             _ => {
                 let _ = lines[NAME].push_str("WAITING FOR WI-FI");

@@ -402,11 +402,11 @@ fn phone_lines(runtime: &mut Runtime) -> (Vec<String>, Option<usize>) {
         crate::screens::workout::View::new(crate::screens::workout::Page::Phone, 0, None);
     runtime.phone_view(&mut view);
     let lines = view
-        .lines
+        .lines()
         .iter()
         .map(|line| String::from(line.as_str()))
         .collect();
-    (lines, view.qr.map(|code| code.qr.size()))
+    (lines, view.qr().map(|code| code.qr.size()))
 }
 
 #[test]

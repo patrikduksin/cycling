@@ -170,12 +170,11 @@ distance (RIGHT IN 90 M), and one nearer than 60 m is warned of only at it. A
 turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
 120 degrees, and U-TURN past 150. A bend gentler than that says nothing.
-Corners against each other less than about 25 m apart are one turn, named by
-its net way, so a short jog says nothing; two turns starting within 35 m of
-each other are warned of together, LEFT THEN RIGHT. Two corners the same way,
-as round a city block, are two turns (RIGHT THEN RIGHT when close), and a
-U-TURN only where the way back is within 25 m of the way out or the road curves
-round all the way, as a hairpin does. A roundabout of up to about 40 m radius
+Each street corner is a turn of its own, warned of in order, and two turns
+starting within 35 m of each other are warned of together: LEFT THEN RIGHT, or
+RIGHT THEN RIGHT round a city block. A U-TURN is only where the way back is
+within about 20 m of the way out, or the road curves round all the way, as a
+hairpin does. A roundabout of up to about 40 m radius
 is one turn, named by the way it leaves, and straight over one says nothing.
 Where the course is drawn coarsely, as a long course thinned to fit or a
 planner's route is, a turn of several corners is named only roughly: LEFT or

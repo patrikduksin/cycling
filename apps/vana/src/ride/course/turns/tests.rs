@@ -250,21 +250,22 @@ fn a_roundabout_of_any_size_is_one_turn_the_way_it_leaves() {
 #[test]
 fn corners_close_together_are_named_together_or_one_by_one() {
     for spacing in [3.0, 5.0, 8.0] {
-        // A jog 20 or 25 m across is no turn.
-        for across in [20.0, 25.0] {
-            let jog = ride(
-                &corners(spacing, &[(400.0, false), (400.0 + across, true)]),
-                7.0,
-            );
-            assert!(jog.is_empty(), "{spacing} m, {across} m: {jog:?}");
-        }
-        // 32 m apart: one warning names both.
-        let pair = ride(&corners(spacing, &[(400.0, false), (432.0, true)]), 7.0);
+        // 20 to 32 m apart: one warning names both, the way they go.
         let both = Warning::Now {
             kind: LEFT,
             then: Some(RIGHT),
         };
-        assert_eq!(kinds(&pair), [ahead(LEFT), both], "{spacing} m: {pair:?}");
+        for across in [20.0, 25.0, 32.0] {
+            let pair = ride(
+                &corners(spacing, &[(400.0, false), (400.0 + across, true)]),
+                7.0,
+            );
+            assert_eq!(
+                kinds(&pair),
+                [ahead(LEFT), both],
+                "{spacing} m, {across} m: {pair:?}"
+            );
+        }
         // 40 m apart: each its own, the second only at it.
         let apart = ride(&corners(spacing, &[(400.0, false), (440.0, true)]), 7.0);
         assert_eq!(
@@ -723,6 +724,22 @@ fn cue_table() {
             ));
         }
     }
+    for apart in [25.0, 40.0, 60.0] {
+        let rll = [
+            (400.0, true),
+            (400.0 + apart, false),
+            (400.0 + 2.0 * apart, false),
+        ];
+        let lr = [(400.0, false), (400.0 + apart, true)];
+        for (name, turns) in [("R L L", &rll[..]), ("L R", &lr[..])] {
+            let route = words(&ride_to(&corners(1_000.0, turns), 700.0));
+            let thin = words(&ride_to(&thinned(&corners(5.0, turns), 12_000.0).0, 700.0));
+            rows.push((
+                std::format!("{name} {apart} m apart: planner route; thinned, 12 km on"),
+                std::format!("{route}; {thin}"),
+            ));
+        }
+    }
     let blocks = [
         (30.0, 0.0),
         (37.0, 0.0),
@@ -783,7 +800,8 @@ fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f32, f32)> {
 /// way out, where the rider is still on the course.
 #[test]
 fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
-    for thin in [false, true] {
+    // 0 km on is the course as drawn; after 12 or 150 km it is thinned.
+    for after in [0.0, 12_000.0, 150_000.0] {
         for right in [true, false] {
             for spacing in [3.0, 5.0, 8.0] {
                 for kerb in [0.0, 2.0, 4.0, 6.0, 8.0] {
@@ -791,8 +809,8 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
                         15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
                     ] {
                         let full = block(spacing, apart, kerb, right);
-                        let line = if thin {
-                            thinned(&full, 12_000.0).0
+                        let line = if after > 0.0 {
+                            thinned(&full, after).0
                         } else {
                             full
                         };
@@ -813,11 +831,75 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
                         });
                         assert!(
                             !wrong,
-                            "{apart} m apart, kerb {kerb}, {spacing} m, right {right}, thin {thin}: {said:?}"
+                            "{apart} m apart, kerb {kerb}, {spacing} m, right {right}, after {after}: {said:?}"
                         );
                     }
                 }
             }
         }
     }
+}
+
+/// Whether each warning in `said` names the corners of `turns` (metres
+/// along, right) the rider has yet to reach, more than 9 m on (nearer, they
+/// are turning it already): the next one, and with THEN
+/// the one after; a U-TURN only for two the same way within 25 m.
+fn names_next_corners(said: &[(u32, Warning)], turns: &[(f32, bool)]) -> bool {
+    let side = |right: bool| if right { Side::Right } else { Side::Left };
+    let fits = |kind: Kind, at: usize| match kind {
+        Kind::Turn(s) | Kind::Sharp(s) => turns.get(at).is_some_and(|t| side(t.1) == s),
+        Kind::UTurn => match (turns.get(at), turns.get(at + 1)) {
+            (Some(a), Some(b)) => a.1 == b.1 && b.0 - a.0 <= 25.0,
+            _ => false,
+        },
+    };
+    said.iter().all(|&(metres, warning)| {
+        let at = turns
+            .iter()
+            .position(|t| t.0 > metres as f32 + 9.0)
+            .unwrap_or(turns.len());
+        match warning {
+            Warning::Ahead { kind, .. } | Warning::Now { kind, then: None } => fits(kind, at),
+            Warning::Now {
+                kind,
+                then: Some(then),
+            } => fits(kind, at) && fits(then, at + 1),
+        }
+    })
+}
+
+/// Two to four street corners of either way, 20 to 80 m apart, drawn every
+/// 3, 5 or 8 m or only at the corners (a planner's route), as drawn and
+/// thinned: every warning names the next corner's way, or there is none.
+#[test]
+fn corners_of_either_way_close_together_are_named_the_way_they_go() {
+    let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+    for count in 2..=4usize {
+        for ways in 0..1u32 << count {
+            for apart in [20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0] {
+                let turns: Vec<_> = (0..count)
+                    .map(|k| (400.0 + apart * k as f32, ways >> k & 1 == 1))
+                    .collect();
+                for spacing in [3.0, 5.0, 8.0, 1_000.0] {
+                    let full = corners(spacing, &turns);
+                    for thin in [false, true] {
+                        let line = match thin {
+                            true => thinned(&full, 12_000.0).0,
+                            false => full.clone(),
+                        };
+                        let said = ride_to(&line, 700.0);
+                        if !names_next_corners(&said, &turns) {
+                            wrong.push(std::format!(
+                                "{turns:?}, {spacing} m, thin {thin}: {said:?}"
+                            ));
+                        }
+                        runs += 1;
+                        silent += usize::from(said.is_empty());
+                    }
+                }
+            }
+        }
+    }
+    std::println!("{} of {runs} wrong, {silent} silent", wrong.len());
+    assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
 }

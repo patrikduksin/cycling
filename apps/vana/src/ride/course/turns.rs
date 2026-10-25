@@ -5,24 +5,30 @@
 //! At each step the course's way is the chord from `HALF_CHORD_M` behind to
 //! `HALF_CHORD_M` ahead, which also smooths a jittery track. Where the way
 //! swings by `RATE_DEG_PER_M` or more the course is turning; a run of turning
-//! steps is a bend, and one that never swings `BEND_MIN_DEG` from where it
-//! began is a wobble.
+//! steps the same way is a bend, and one that never swings `BEND_MIN_DEG`
+//! from where it began is a wobble.
 //!
 //! Bends make one group, at most `SPAN_M` long, and a group that turns by
 //! `TURN_DEG` or more is a turn, named by its net way: a roundabout by the way
-//! it leaves, and straight over one, a short jog or a long gentle bend is no
-//! turn. Bends the same way join only across as little straight as thinning
-//! (`ride::thin`) leaves of a curve (`same_way_gap`), so two street corners
-//! are two turns; bends against each other join within `GAP_M`, or
-//! `SAME_GAP_M` when one is a roundabout's way in or out (`FLICK_DEG`). A
-//! U-turn whose ways in and out are far apart with a straight between is two
-//! corners the same way (`two_corners`), as round a city block.
+//! it leaves, and straight over one or a long gentle bend is no turn. A bend
+//! of `FLICK_DEG` or more is a full corner, and two full corners are one turn
+//! only as a hairpin's are, or as a roundabout's way in, ring and way out
+//! are; otherwise each corner is a turn of its own, warned of in order. So:
+//! bends the same way join only across as little straight as thinning
+//! (`ride::thin`) leaves of a curve (`same_way_gap`); bends against each
+//! other join within `GAP_M`, or `SAME_GAP_M` when one is less than a full
+//! corner, and two full corners against each other only when one is an arc
+//! (`ARC_M`) with a way out after it. A U-turn whose ways in and out are far
+//! apart with a straight between is two corners the same way
+//! (`two_corners`), as round a city block.
 //!
 //! Where the course is drawn coarsely (`SPARSE_M`), as a course thinned to
-//! fit or a planner's route is, a roundabout is a few corners with long
-//! straights between: bends there join within `SPARSE_GAP_M`, and a group of
-//! several bends is named only roughly (`Kind::rough`), or not at all, so it
-//! is never named the wrong way.
+//! fit or a planner's route is, a roundabout is a few slight corners with
+//! long straights between: bends there that are not both full corners join
+//! within `SPARSE_GAP_M`, and a group of several is named only roughly
+//! (`Kind::rough`), or not at all, so it is never named the wrong way.
+//! Corners a group leaves unnamed hold back the warning of what is after
+//! them until the rider is at them.
 //!
 //! The course is read by index through `at`, start first, in metres east and
 //! north, so nothing is copied or kept. A scan reaches at most `SAMPLES`
@@ -37,6 +43,7 @@ const STEP_M: f32 = 2.0;
 const STEP_MM: u32 = 2_000;
 /// The course's way at a step is the chord this far behind to this far on.
 const HALF_CHORD_M: f32 = 7.5;
+const HALF_CHORD_MM: u32 = 7_500;
 /// The way swinging this fast is turning: 60 degrees within 50 m.
 const RATE_DEG_PER_M: f32 = 1.2;
 /// Turning steps this close are one bend, and a bend that never swings
@@ -49,6 +56,9 @@ const FLICK_DEG: f32 = 75.0;
 /// Bends against each other this close are one group, and this close when
 /// one of them is a flick.
 const GAP_M: f32 = 12.0;
+/// A bend this long turns all along, as a roundabout's ring does: a street
+/// corner, even with a wide kerb, turns in less.
+const ARC_M: f32 = 29.0;
 const SAME_GAP_M: f32 = 22.0;
 /// A course drawn with segments this long near a turn, as a planner's route
 /// or a course thinned to fit is, shows a roundabout as a few corners with
@@ -69,7 +79,7 @@ const ROUGH_TURN_DEG: f32 = 80.0;
 const ROUGH_U_TURN_DEG: f32 = 160.0;
 /// A U-turn whose ways in and out are farther apart than this, with this
 /// much straight between, as the short chord sees it, is two corners.
-const WIDE_M: f32 = 25.0;
+const WIDE_M: f32 = 21.0;
 const STRAIGHT_M: f32 = 5.0;
 const STRAIGHT_DEG: f32 = 3.0;
 const SHORT_HALF_M: f32 = 2.5;
@@ -149,6 +159,8 @@ pub struct Group {
     pub kind: Option<Kind>,
     /// It turns back as two corners, `kind` each: a city block.
     pub twice: bool,
+    /// One of its bends is a full corner (`FLICK_DEG` or more).
+    pub cornered: bool,
     pub start_mm: u32,
     pub end_mm: u32,
     pub ahead_mm: u32,
@@ -331,6 +343,9 @@ struct Bend {
     /// The most it swung from its start, either way: a bend that swings
     /// right and back left may end where it began, and still be a turn.
     peak: f32,
+    /// Which way its turning steps swing; a step the other way starts a
+    /// new bend.
+    right: bool,
 }
 
 /// A group being found: from its first bend's start to its last bend's
@@ -343,8 +358,16 @@ struct Open {
     swung: f32,
     under_way: bool,
     right: bool,
-    /// The swing of its last bend.
+    /// One of its bends is a full corner.
+    cornered: bool,
+    /// The swing of its last bend, and how long that bend is.
     bent: f32,
+    bent_m: f32,
+    /// A corner joined to an arc the other way, as a roundabout's way in
+    /// is to its ring: `Some(true)` once a bend against the arc follows, its
+    /// way out. A roundabout has both; corners that only look like one, a
+    /// corner then two close ones the other way, have no way out.
+    ring: Option<bool>,
     /// It is more than one bend, so its swing is known only roughly.
     joined: bool,
     /// One of its bends is drawn coarsely.
@@ -379,12 +402,16 @@ pub fn next(
             kind == Some(Kind::UTurn) && two_corners(len, &at, place, open.start, open.last);
         if twice {
             kind = Kind::of(open.swung / 2.0);
-        } else if open.joined {
+        } else if open.joined && open.sparse {
             kind = Kind::rough(open.swung);
+        }
+        if open.ring == Some(false) {
+            kind = None;
         }
         Group {
             kind,
             twice,
+            cornered: open.cornered,
             start_mm: place.along_mm.saturating_add(start_mm),
             end_mm: place.along_mm.saturating_add(mm(open.last)),
             ahead_mm: start_mm,
@@ -421,6 +448,9 @@ pub fn next(
                     under_way: bend.first_step && from_rider,
                     right,
                     bent: swung,
+                    cornered: fabsf(swung) >= FLICK_DEG,
+                    bent_m: bend.last - bend.start,
+                    ring: None,
                     joined: false,
                     sparse: bend.sparse,
                 });
@@ -429,19 +459,36 @@ pub fn next(
             Some(group) => {
                 let gap = bend.start - group.last;
                 // A roundabout's way in and out swing against it, and less.
-                let near = if bend.sparse || group.sparse {
+                // Two full corners are never one turn the opposite way, and
+                // the same way only as a hairpin's are, however drawn.
+                let corners = fabsf(swung) >= FLICK_DEG && fabsf(group.bent) >= FLICK_DEG;
+                let near = if (bend.sparse || group.sparse) && !corners {
                     gap <= SPARSE_GAP_M
                 } else if right == group.right {
                     gap <= same_way_gap(fabsf(swung).max(fabsf(group.bent)))
                 } else {
                     let small = fabsf(swung) < FLICK_DEG || fabsf(group.swung) < FLICK_DEG;
-                    gap <= GAP_M || (gap <= SAME_GAP_M && small)
+                    let arc = (bend.last - bend.start).max(group.bent_m) >= ARC_M;
+                    let near = match corners {
+                        true => arc && gap <= GAP_M,
+                        false => gap <= GAP_M || (gap <= SAME_GAP_M && small),
+                    };
+                    if near {
+                        group.ring = match group.ring {
+                            Some(_) => Some(true),
+                            None if corners => Some(false),
+                            None => None,
+                        };
+                    }
+                    near
                 };
                 if !near || bend.last - group.start > SPAN_M {
                     return Step::Done(Some(close(group)));
                 }
                 (group.last, group.swung) = (bend.last, total - group.before);
                 (group.right, group.bent, group.joined) = (right, swung, true);
+                group.bent_m = bend.last - bend.start;
+                group.cornered |= fabsf(swung) >= FLICK_DEG;
                 group.sparse |= bend.sparse;
                 Step::On
             }
@@ -471,6 +518,12 @@ pub fn next(
                     return group;
                 }
             }
+            if let Some(other) = bend.filter(|bend| bend.right != (turned > 0.0)) {
+                bend = None;
+                if let Step::Done(group) = take(other, total - turned, &mut open) {
+                    return group;
+                }
+            }
             match &mut bend {
                 Some(bend) => bend.last = s,
                 None => {
@@ -481,6 +534,7 @@ pub fn next(
                         first_step: step == 0,
                         sparse,
                         peak: fabsf(turned),
+                        right: turned > 0.0,
                     });
                 }
             }
@@ -532,8 +586,9 @@ enum State {
     /// Warned of at it; the next is looked for once the rider is past its
     /// start.
     Now { start_mm: u32, end_mm: u32 },
-    /// Not a turn, or under way when found: what is after it is looked at.
-    Skip { end_mm: u32 },
+    /// Not a turn, or under way when found: what is after it is looked at,
+    /// once the rider is at its last corner if it has any (`held`).
+    Skip { end_mm: u32, held: bool },
 }
 
 impl Warner {
@@ -553,23 +608,34 @@ impl Warner {
         self.furthest_mm = self.furthest_mm.max(here);
         let mut from = match self.state {
             State::Quiet => here,
-            State::Now { start_mm, .. } if here < start_mm => return None,
-            State::Ahead { start_mm, .. } if here <= start_mm => start_mm.saturating_sub(1_000),
-            State::Ahead { end_mm, .. } | State::Now { end_mm, .. } | State::Skip { end_mm } => {
-                end_mm.saturating_add(1)
+            // Nothing more until the rider is at the last corner warned of.
+            State::Now { end_mm, .. } if here.saturating_add(HALF_CHORD_MM) < end_mm => {
+                return None;
             }
+            State::Ahead { start_mm, .. } if here <= start_mm => start_mm.saturating_sub(1_000),
+            State::Skip { end_mm, held: true } if here.saturating_add(HALF_CHORD_MM) < end_mm => {
+                return None;
+            }
+            State::Ahead { end_mm, .. }
+            | State::Now { end_mm, .. }
+            | State::Skip { end_mm, .. } => end_mm,
         };
         for _ in 0..GROUPS {
             let group = next(len, &at, place, from, AHEAD_MM)?;
             let (start_mm, end_mm) = (group.start_mm, group.end_mm);
             let Some(kind) = group.kind.filter(|_| !group.under_way) else {
-                self.state = State::Skip { end_mm };
-                from = end_mm.saturating_add(1);
+                // Corners left unnamed come before anything after them.
+                let held = group.cornered;
+                self.state = State::Skip { end_mm, held };
+                if held && here.saturating_add(HALF_CHORD_MM) < end_mm {
+                    return None;
+                }
+                from = end_mm;
                 continue;
             };
             if group.ahead_mm <= NOW_MM {
                 let reach = group.ahead_mm.saturating_add(THEN_MM);
-                let after = next(len, &at, place, end_mm.saturating_add(1), reach)
+                let after = next(len, &at, place, end_mm, reach)
                     .filter(|after| after.kind.is_some() && !group.twice);
                 self.state = State::Now {
                     start_mm,

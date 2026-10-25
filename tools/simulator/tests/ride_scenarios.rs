@@ -6564,9 +6564,10 @@ fn expect_quiet(sim: &mut Sim, minutes: u64, needle: &str) {
 
 /// Santiago on 14 October 2026 (UTC-3, sunset 19:55 local, 22:55 UTC), riding
 /// out at 25 km/h from 90 minutes before sunset. The way home takes as long as
-/// the ride so far times 1.3 for winding roads, so after t minutes the margin
-/// is 90 - 2.3t: it drops under 15 minutes at 32.6, and the last turn is then
-/// 22:12:35 UTC, 19:12 here.
+/// the ride so far (the straight line times 1.3 is capped at the track ridden,
+/// which on a straight road is the line), so after t minutes the margin is
+/// 90 - 2t: it drops under 15 minutes at 37.5, and the last turn is then
+/// 22:17:30 UTC, 19:17 here.
 #[test]
 fn riding_out_toward_dusk_says_when_to_turn_back() {
     let mut sim = rider();
@@ -6579,16 +6580,16 @@ fn riding_out_toward_dusk_says_when_to_turn_back() {
     sim.advance(minutes(20));
     sim.expect_no_text("TURN BACK");
     let latency = sim.wait_for("TURN BACK BY", minutes(30)).unwrap();
-    // 32.6 minutes after the start, less the 20 spent already.
+    // 37.5 minutes after the start, less the 20 spent already.
     assert!(
-        (minutes(12)..=minutes(13)).contains(&latency),
+        (minutes(17)..=minutes(18)).contains(&latency),
         "told after {latency} ms"
     );
-    sim.expect_text("TURN BACK BY 19:12");
+    sim.expect_text("TURN BACK BY 19:17");
     sim.advance(seconds(1));
     let ids = played_since(&sim, 0);
     assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
-    sim.checkpoint("toast: turn back by 19:12");
+    sim.checkpoint("toast: turn back by 19:17");
     // Once: the margin holds while riding on, and the toast does not return,
     // not at the sunset warning, nor at sunset, nor in the dark after it.
     expect_quiet(&mut sim, 3, "TURN BACK");

@@ -110,7 +110,7 @@ impl BackToStart {
         }
         Leg::of(
             &self.homing.guide()?,
-            self.homing.start_m(),
+            self.homing.way_back(),
             speed_mm_s,
             moving_ms,
         )

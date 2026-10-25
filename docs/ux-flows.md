@@ -255,17 +255,19 @@ says when to start home to be there by sunset. It speaks once per ride, on
 the ride pages, when less than 15 minutes remain before that time; if the time
 has already passed it says TURN BACK NOW. The time home is the straight
 distance to the start, plus 30% for winding roads, at the ride's moving
-average speed. The track ridden is no guide: on a loop it is far longer than
-the way home. A loaded course changes nothing, since its end need not be
-home. The estimate waits for 5 minutes of moving and for 5 km/h or more.
+average speed, but never more than the track ridden, which is always a way
+back: exact on a straight out-and-back, and on a loop the track is no guide, as
+it is far longer than the way home. Following a course does not silence it, since
+its end need not be home; only heading for the start does. On very winding roads, or across a river or valley,
+the straight line plus 30% underestimates, so the alert can come late. The
+estimate waits for 5 minutes of moving and for 5 km/h or more.
 The alert is part of ALERTS SUNSET, with no setting of its own. It says nothing
 in polar day or night, after sunset, without a position or time, while paused,
 at the start, or on a recovered ride until its track has been read back. It
 also says nothing when riding towards the start (following the track back, or
-heading within a quarter turn of it), and holds while the heading is unknown,
-as after a stop, until the rider moves again. It speaks again only after the
-margin has stayed above 30 minutes for 10 minutes, as when a loop swings
-back towards the start.
+heading within a quarter turn of it, on a course too), and holds while the
+heading is unknown, as after a stop, until the rider moves again. It rarely
+repeats: only after the margin has stayed above 30 minutes for 10 minutes.
 
 ### Paused
 

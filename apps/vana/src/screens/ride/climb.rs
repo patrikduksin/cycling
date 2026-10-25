@@ -712,7 +712,7 @@ mod tests {
                 view.sample.gradient_tenths = tenths;
                 view.totals.add(1000, 0, &view.sample, Some(30_000));
                 view.prepare();
-                view.canvas
+                view.canvas()
                     .assert_laid_out(BODY, &["GRADE"], &std::format!("{what} {tenths:?}"));
             }
         }
@@ -723,11 +723,14 @@ mod tests {
         let mut view = ridden(1000, |_| 0);
         view.sample.gradient_tenths = Some(105);
         view.prepare();
-        assert!(view.canvas.shapes.iter().any(|shape| matches!(
+        assert!(view.canvas().shapes.iter().any(|shape| matches!(
             shape,
             Shape::Bar { color, .. } if *color == ZONES[5]
         )));
-        assert_eq!(view.canvas.find("10.5%").map(|run| run.color), Some(GRADE));
+        assert_eq!(
+            view.canvas().find("10.5%").map(|run| run.color),
+            Some(GRADE)
+        );
     }
 
     /// A climb page view with a map forecast of `road(metres)` over `km`.
@@ -777,7 +780,7 @@ mod tests {
             "7.0%",
             "210",
         ] {
-            assert!(view.canvas.shows(text), "{text}");
+            assert!(view.canvas().shows(text), "{text}");
         }
         // The chart runs from the rider to past the top: 5.3 km over 200
         // columns. The flat before the foot is dim, the climb is full orange.
@@ -833,7 +836,7 @@ mod tests {
             "NEXT 500 M",
             "9.0%",
         ] {
-            assert!(view.canvas.shows(text), "{text}");
+            assert!(view.canvas().shows(text), "{text}");
         }
         // Without a climb so far from the barometer the rider is at the left.
         assert_eq!(view.climb.rider, 0);
@@ -871,8 +874,8 @@ mod tests {
         let mut view = mapped(10, |m| (m - 1000.0).max(0.0) * 0.08);
         edit(&mut view, |forecast| forecast.confidence = 20);
         view.prepare();
-        assert!(view.canvas.shows("GRADE"));
-        assert!(!view.canvas.shows("CLIMB AHEAD"));
+        assert!(view.canvas().shows("GRADE"));
+        assert!(!view.canvas().shows("CLIMB AHEAD"));
     }
 
     /// The map views lay out whole with the widest values.
@@ -904,7 +907,7 @@ mod tests {
                     matches!(view.climb.layout, Layout::Ahead | Layout::ToTop),
                     "{what}"
                 );
-                view.canvas
+                view.canvas()
                     .assert_laid_out(BODY, &["KM"], &std::format!("{what} {tenths:?}"));
                 assert_paints_reference(&view);
             }
@@ -915,10 +918,10 @@ mod tests {
     fn without_a_map_the_page_says_so() {
         let mut view = ridden(2000, |_| 5000);
         view.prepare();
-        assert!(view.canvas.shows("NO MAP"));
+        assert!(view.canvas().shows("NO MAP"));
         assert_paints_reference(&view);
         edit(&mut view, |forecast| forecast.map = true);
         view.prepare();
-        assert!(!view.canvas.shows("NO MAP"));
+        assert!(!view.canvas().shows("NO MAP"));
     }
 }

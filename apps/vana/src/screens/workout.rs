@@ -75,6 +75,25 @@ impl Page {
 /// Home cards, in MOVE order.
 pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDES"];
 
+/// The one page body a frame paints. Only the variant for the shown page is
+/// ever filled; asking for another paints blank, and trips a debug assertion.
+// Exactly one body lives in View and its variants share one slot on purpose;
+// boxing would allocate every frame.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Body {
+    /// Nothing prepared: the Sensors menu paints itself.
+    Blank,
+    /// A canvas page (stats, lap, climb, workout, map, back, Settings, Ready,
+    /// paused, end ride, summary, boot, and the sheet over any page).
+    Canvas(Canvas),
+    Home(Home),
+    /// The ride's main page.
+    Main(Smooth),
+}
+
+static NO_CANVAS: Canvas = Canvas::EMPTY;
+static NO_SMOOTH: Smooth = Smooth::EMPTY;
+
 pub struct View<'a> {
     pub now_ms: u64,
     pub sample: Sample,
@@ -95,7 +114,6 @@ pub struct View<'a> {
     /// The first-run setup page shown on `Page::Setup`.
     pub setup: super::setup::Step,
     pub toast: Option<Toast>,
-    pub home: Home,
     bar: StatusBar,
     pub totals: Totals,
     /// The open lap and the last finished one.
@@ -115,10 +133,8 @@ pub struct View<'a> {
     pub forecast: &'a Forecast,
     /// Finished laps for the lap page's chart, oldest first.
     pub lap_bars: ride::LapBars,
-    /// What a canvas page (stats, lap, climb, Settings, Ready, paused, end
-    /// ride, summary, boot) prepared for this frame.
-    pub(super) canvas: Canvas,
-    pub(super) smooth: Smooth,
+    /// What the shown page prepared for this frame.
+    pub(super) body: Body,
     pub zone_time: ZoneTime,
     pub profile: TrainingProfile,
     /// Weight, age and sex, for the summary's calories and W/kg.
@@ -181,7 +197,7 @@ pub struct View<'a> {
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(
-    core::mem::size_of::<View>() <= 9_584,
+    core::mem::size_of::<View>() <= 7_536,
     "View lives on the main stack every frame: shrink it, do not grow it"
 );
 
@@ -209,7 +225,6 @@ impl View<'_> {
             reveal: 0,
             setup: super::setup::Step::Welcome,
             toast: None,
-            home: Home::new(cursor, false, &[], Text::new()),
             bar: StatusBar::default(),
             totals: Totals::default(),
             lap: Laps::default().current(),
@@ -220,8 +235,7 @@ impl View<'_> {
             climbs: &Climbs::NONE,
             forecast: &Forecast::NONE,
             lap_bars: ride::LapBars::new(),
-            canvas: Canvas::default(),
-            smooth: Smooth::default(),
+            body: Body::Blank,
             zone_time: ZoneTime::default(),
             profile: TrainingProfile::default(),
             rider: Rider::default(),
@@ -257,14 +271,49 @@ impl View<'_> {
         // The brand flash is painted before anything prepares a frame, as
         // the preloaded startup frame: it needs no `prepare` to show.
         if page == Page::Boot {
-            view.canvas = view.boot_canvas();
+            view.body = Body::Canvas(view.boot_canvas());
         }
         view
     }
     /// A canvas page the runtime prepares itself, such as the ride list,
     /// whose cards it makes on demand.
     pub fn set_canvas(&mut self, canvas: Canvas) {
-        self.canvas = canvas;
+        self.body = Body::Canvas(canvas);
+    }
+
+    /// Show a prepared Home.
+    pub fn set_home(&mut self, home: Home) {
+        self.body = Body::Home(home);
+    }
+
+    pub(super) fn canvas(&self) -> &Canvas {
+        match &self.body {
+            Body::Canvas(canvas) => canvas,
+            _ => {
+                debug_assert!(false, "{:?} has no canvas", self.page);
+                &NO_CANVAS
+            }
+        }
+    }
+
+    pub(super) fn smooth(&self) -> &Smooth {
+        match &self.body {
+            Body::Main(smooth) => smooth,
+            _ => {
+                debug_assert!(false, "{:?} has no main page body", self.page);
+                &NO_SMOOTH
+            }
+        }
+    }
+
+    fn home(&self) -> Option<&Home> {
+        match &self.body {
+            Body::Home(home) => Some(home),
+            _ => {
+                debug_assert!(false, "{:?} has no home body", self.page);
+                None
+            }
+        }
     }
 
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
@@ -290,7 +339,7 @@ impl View<'_> {
         let y = row.y();
         row.fill(BLACK);
         if self.page == Page::Boot || self.ftp_offer.is_some() {
-            self.canvas.paint(row);
+            self.canvas().paint(row);
             return;
         }
         if y < CONTENT.top && !self.full_screen() {
@@ -299,9 +348,14 @@ impl View<'_> {
         }
         match self.page {
             Page::Ride if !self.pause_screen => ride::paint(self, row),
-            Page::Home => self.home.paint(row),
+            Page::Home => {
+                if let Some(home) = self.home() {
+                    home.paint(row);
+                }
+            }
+            Page::Sensors => {}
             Page::Phone => {
-                self.canvas.paint(row);
+                self.canvas().paint(row);
                 super::phone::paint(self, row);
             }
             Page::Summary | Page::PastRide => {
@@ -311,9 +365,9 @@ impl View<'_> {
                 {
                     ride::elevation::paint(chart, row);
                 }
-                self.canvas.paint(row);
+                self.canvas().paint(row);
             }
-            _ => self.canvas.paint(row),
+            _ => self.canvas().paint(row),
         }
         if let Some(badge) = &self.badge {
             badge.paint(row);
@@ -344,7 +398,7 @@ impl View<'_> {
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
         if self.page == Page::Boot || self.ftp_offer.is_some() {
-            return self.canvas.pixel(x, y, BLACK);
+            return self.canvas().pixel(x, y, BLACK);
         }
         if y < CONTENT.top && !self.full_screen() {
             return self.bar.pixel(x, y);
@@ -354,9 +408,10 @@ impl View<'_> {
         }
         let mut color = match self.page {
             Page::Ride if !self.pause_screen => ride::reference_pixel(self, x, y),
-            Page::Home => self.home.pixel(x, y),
+            Page::Home => self.home().map_or(BLACK, |home| home.pixel(x, y)),
+            Page::Sensors => BLACK,
             Page::Phone => {
-                super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas.pixel(x, y, BLACK))
+                super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas().pixel(x, y, BLACK))
             }
             Page::Summary | Page::PastRide => {
                 let under = self
@@ -364,9 +419,9 @@ impl View<'_> {
                     .filter(|_| summary::shows_elevation(self))
                     .and_then(|chart| ride::elevation::pixel(chart, x, y))
                     .unwrap_or(BLACK);
-                self.canvas.pixel(x, y, under)
+                self.canvas().pixel(x, y, under)
             }
-            _ => self.canvas.pixel(x, y, BLACK),
+            _ => self.canvas().pixel(x, y, BLACK),
         };
         if let Some(badge) = &self.badge {
             color = badge.pixel(x, y, color);
@@ -534,7 +589,7 @@ impl<const N: usize> core::fmt::Write for Text<N> {
 #[inline(never)]
 pub(super) fn fill(view: &mut View, make: impl FnOnce(&View) -> Canvas) {
     let canvas = make(view);
-    view.canvas = canvas;
+    view.body = Body::Canvas(canvas);
 }
 
 #[cfg(test)]
@@ -546,9 +601,23 @@ mod tests {
         Tone, WHITE, zone_color,
     };
 
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "has no canvas")]
+    fn a_page_asking_for_another_pages_body_trips_the_assertion() {
+        let _ = View::new(Page::Home, 0, None).canvas();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn a_page_asking_for_another_pages_body_paints_blank() {
+        let view = View::new(Page::Home, 0, None);
+        assert!(view.canvas().runs.is_empty() && view.smooth().labels.is_empty());
+    }
+
     /// The colour of the prepared label that reads `text`.
     fn label_color(view: &View, text: &[u8]) -> Option<u16> {
-        view.smooth
+        view.smooth()
             .labels
             .iter()
             .find(|label| label.line.text() == text)
@@ -677,7 +746,7 @@ mod tests {
     #[test]
     fn home_highlights_the_selected_tile() {
         let mut view = View::new(Page::Home, 1, None);
-        view.home = Home::new(1, false, &[], Text::new());
+        view.set_home(Home::new(1, false, &[], Text::new()));
         view.prepare();
         assert_eq!(view.pixel(200, 215), RAISED, "Sensors is raised");
         assert_ne!(view.pixel(200, 120), RAISED, "Ride is not");
@@ -731,7 +800,12 @@ mod tests {
             view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
             let last = last_ride(4_999_800);
-            view.home = Home::new(cursor, cursor == 1, &glance[..cursor.min(2)], last);
+            view.set_home(Home::new(
+                cursor,
+                cursor == 1,
+                &glance[..cursor.min(2)],
+                last,
+            ));
             view.toast = (cursor == 2).then(|| Toast::new("RIDE SAVED", Tone::Good));
             view.prepare();
             assert_paints_reference(&view, "home");
@@ -897,7 +971,7 @@ mod tests {
     #[test]
     fn a_new_boot_view_paints_the_brand_without_prepare() {
         let view = View::new(Page::Boot, 0, None);
-        assert!(view.canvas.shows("VANA") && view.canvas.shows("LABS"));
+        assert!(view.canvas().shows("VANA") && view.canvas().shows("LABS"));
         let lit = (0..320)
             .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
             .filter(|&(x, y)| view.pixel(x, y) != BLACK)
@@ -918,7 +992,7 @@ mod tests {
         let _ = view.lines[0].push_str("RADIO WAITING FOR RADIO / GPS SEARCHING");
         view.prepare();
         let screen = Rect { top: 0, ..content };
-        view.canvas
+        view.canvas()
             .assert_laid_out(screen, &["VANA", "LABS"], "boot");
     }
 

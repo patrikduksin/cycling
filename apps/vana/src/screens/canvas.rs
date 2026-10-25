@@ -146,6 +146,11 @@ pub struct Canvas {
 }
 
 impl Canvas {
+    pub const EMPTY: Self = Self {
+        shapes: Vec::new(),
+        runs: Vec::new(),
+    };
+
     pub fn shape(&mut self, shape: Shape) {
         let _ = self.shapes.push(shape);
     }

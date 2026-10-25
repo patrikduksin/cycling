@@ -594,8 +594,8 @@ mod tests {
             ] {
                 let view = extreme(page, saving);
                 let what = std::format!("summary {page} {saving:?}");
-                view.canvas.assert_laid_out(bounds, want, &what);
-                for run in &view.canvas.runs {
+                view.canvas().assert_laid_out(bounds, want, &what);
+                for run in &view.canvas().runs {
                     let dx = WIDTH - run.columns().end.min(WIDTH);
                     let dy = HEIGHT - run.bottom();
                     assert!(
@@ -607,11 +607,11 @@ mod tests {
             }
         }
         let saved = extreme(0, Saving::Saved);
-        assert!(saved.canvas.shows("RIDE SAVED"));
+        assert!(saved.canvas().shows("RIDE SAVED"));
         assert!(badge(&saved).is_some());
-        assert!(extreme(0, Saving::Failed).canvas.shows("NOT ALL SAVED"));
+        assert!(extreme(0, Saving::Failed).canvas().shows("NOT ALL SAVED"));
         let saving = extreme(0, Saving::Writing);
-        assert!(saving.canvas.shows("SAVING") && badge(&saving).is_none());
+        assert!(saving.canvas().shows("SAVING") && badge(&saving).is_none());
     }
 
     #[test]
@@ -637,7 +637,7 @@ mod tests {
         };
         let view = with_altitude(2);
         let want = ["ASCENT M", "DESCENT M", "MIN M", "MAX M", "-12", "186"];
-        view.canvas.assert_laid_out(bounds, &want, "elevation");
+        view.canvas().assert_laid_out(bounds, &want, "elevation");
         assert!(shows_elevation(&view));
         let fill = crate::screens::ride::elevation::pixel(
             &chart,
@@ -645,14 +645,14 @@ mod tests {
             crate::screens::ride::elevation::BOTTOM - 1,
         );
         assert!(fill.is_some(), "the chart fills above its baseline");
-        assert!(with_altitude(3).canvas.shows("BEST POWER W"));
-        assert!(!with_altitude(1).canvas.shows("ASCENT M"));
+        assert!(with_altitude(3).canvas().shows("BEST POWER W"));
+        assert!(!with_altitude(1).canvas().shows("ASCENT M"));
         assert!(!shows_elevation(&with_altitude(1)));
         let mut writing = extreme(2, Saving::Writing);
         writing.after.elevation = true;
         assert!(!shows_elevation(&writing));
         let plain = extreme(2, Saving::Saved);
-        assert!(plain.canvas.shows("BEST POWER W") && !shows_elevation(&plain));
+        assert!(plain.canvas().shows("BEST POWER W") && !shows_elevation(&plain));
         assert_eq!((pages(false), pages(true)), (3, 4));
     }
 
@@ -673,11 +673,13 @@ mod tests {
         // 1999 W for a minute is 120 kJ, so 120 kcal.
         let measuring = with(Some(Recovery::Measuring(42)));
         let want = ["KCAL", "120", "HR RECOVERY", "MEASURING 42 S"];
-        measuring.canvas.assert_laid_out(bounds, &want, "measuring");
+        measuring
+            .canvas()
+            .assert_laid_out(bounds, &want, "measuring");
         let fell = with(Some(Recovery::Recovered(28)));
-        fell.canvas.assert_laid_out(bounds, &["-28 BPM"], "fell");
-        assert!(with(Some(Recovery::Recovered(-3))).canvas.shows("+3 BPM"));
-        assert!(!with(None).canvas.shows("HR RECOVERY"));
+        fell.canvas().assert_laid_out(bounds, &["-28 BPM"], "fell");
+        assert!(with(Some(Recovery::Recovered(-3))).canvas().shows("+3 BPM"));
+        assert!(!with(None).canvas().shows("HR RECOVERY"));
     }
 
     #[test]
@@ -700,13 +702,13 @@ mod tests {
         };
         let first = past(0, Saving::Saved);
         let want = ["SAVED RIDE", "DEC 31  12:59", "99:59:59"];
-        first.canvas.assert_laid_out(bounds, &want, "past ride");
-        assert!(!first.canvas.shows("RIDE SAVED") && badge(&first).is_none());
-        assert!(past(2, Saving::Saved).canvas.shows("--"));
+        first.canvas().assert_laid_out(bounds, &want, "past ride");
+        assert!(!first.canvas().shows("RIDE SAVED") && badge(&first).is_none());
+        assert!(past(2, Saving::Saved).canvas().shows("--"));
         let reading = past(0, Saving::Reading);
-        assert!(reading.canvas.shows("READING"));
+        assert!(reading.canvas().shows("READING"));
         let missing = past(0, Saving::Unreadable);
-        missing.canvas.assert_laid_out(
+        missing.canvas().assert_laid_out(
             bounds,
             &["RIDE UNREADABLE", "ITS RECORD IS DAMAGED"],
             "unreadable",
@@ -717,7 +719,7 @@ mod tests {
     fn best_power_bars_scale_to_the_highest_effort() {
         let view = extreme(2, Saving::Saved);
         let bars: std::vec::Vec<_> = view
-            .canvas
+            .canvas()
             .shapes
             .iter()
             .filter_map(|shape| match shape {

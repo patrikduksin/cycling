@@ -265,7 +265,7 @@ fn band_rows(i: usize) -> core::ops::Range<usize> {
 /// Paint a body row: a gauge row, or the labels that cover it.
 pub(super) fn paint(view: &View, row: &mut Row) {
     let y = row.y();
-    if let Some((i, columns)) = &view.smooth.band
+    if let Some((i, columns)) = &view.smooth().band
         && band_rows(*i).contains(&y)
     {
         row.span(columns.clone(), WHITE);
@@ -274,11 +274,11 @@ pub(super) fn paint(view: &View, row: &mut Row) {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i];
             let fill = mark.map_or(0, |mark| mark.fill);
-            paint_gauge(row, view.smooth.zones[i], fill, SEGMENTS[i], top);
+            paint_gauge(row, view.smooth().zones[i], fill, SEGMENTS[i], top);
             return;
         }
     }
-    for label in &view.smooth.labels {
+    for label in &view.smooth().labels {
         label.paint(row);
     }
 }
@@ -286,7 +286,7 @@ pub(super) fn paint(view: &View, row: &mut Row) {
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    if let Some((i, columns)) = &view.smooth.band
+    if let Some((i, columns)) = &view.smooth().band
         && band_rows(*i).contains(&y)
         && columns.contains(&x)
     {
@@ -296,10 +296,10 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i];
             let fill = mark.map_or(0, |mark| mark.fill);
-            return gauge(view.smooth.zones[i], fill, SEGMENTS[i], x, y, top);
+            return gauge(view.smooth().zones[i], fill, SEGMENTS[i], x, y, top);
         }
     }
-    for label in &view.smooth.labels {
+    for label in &view.smooth().labels {
         if let Some(color) = label.pixel(x, y, BLACK) {
             return color;
         }
@@ -428,7 +428,7 @@ mod tests {
     }
 
     fn items(view: &View) -> Vec<(String, Rect)> {
-        let mut items: Vec<_> = view.smooth.labels.iter().filter_map(text).collect();
+        let mut items: Vec<_> = view.smooth().labels.iter().filter_map(text).collect();
         for (i, &top) in GAUGES.iter().enumerate() {
             let rect = Rect {
                 left: LEFT,
@@ -438,7 +438,7 @@ mod tests {
             };
             items.push((std::format!("gauge {i}"), rect));
         }
-        if let Some((i, columns)) = &view.smooth.band {
+        if let Some((i, columns)) = &view.smooth().band {
             let rows = band_rows(*i);
             let rect = Rect {
                 left: columns.start,
@@ -465,7 +465,7 @@ mod tests {
                 let mut view = view(case);
                 view.training = Some(Training::of(&player, &view.profile));
                 view.prepare();
-                let (gauge, columns) = view.smooth.band.clone().expect("a power target");
+                let (gauge, columns) = view.smooth().band.clone().expect("a power target");
                 assert_eq!(gauge, 0);
                 let band = player.now(&view.profile).band.unwrap();
                 assert_eq!(columns.start, gauge_x(&view, 0, band.low));

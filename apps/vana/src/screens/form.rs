@@ -225,7 +225,7 @@ mod tests {
             left_out: true,
         });
         assert!(view.cues.is_empty());
-        view.canvas.assert_laid_out(
+        view.canvas().assert_laid_out(
             full(),
             &[
                 "FORM",
@@ -257,8 +257,8 @@ mod tests {
                 left_out,
             })
         };
-        assert!(page(true).canvas.shows("ARE LEFT OUT"));
-        assert!(!page(false).canvas.shows("LEFT OUT"));
+        assert!(page(true).canvas().shows("ARE LEFT OUT"));
+        assert!(!page(false).canvas().shows("LEFT OUT"));
     }
 
     #[test]
@@ -278,8 +278,8 @@ mod tests {
             },
             left_out: false,
         });
-        assert!(fresh.canvas.shows("+9"));
-        assert!(fresh.canvas.shows("FRESH"));
+        assert!(fresh.canvas().shows("+9"));
+        assert!(fresh.canvas().shows("FRESH"));
     }
 
     #[test]
@@ -290,8 +290,8 @@ mod tests {
             (Mode::NoPower, ["NO POWER RIDES", "NEEDS A POWER METER"]),
         ] {
             let view = view(mode);
-            view.canvas.assert_laid_out(full(), &want, "state");
-            assert!(!view.canvas.shows("FITNESS"));
+            view.canvas().assert_laid_out(full(), &want, "state");
+            assert!(!view.canvas().shows("FITNESS"));
         }
     }
 
@@ -305,7 +305,7 @@ mod tests {
             left_out: false,
         });
         let bars: std::vec::Vec<Rect> = view
-            .canvas
+            .canvas()
             .shapes
             .iter()
             .filter_map(|shape| match shape {

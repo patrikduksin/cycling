@@ -558,7 +558,7 @@ mod tests {
     }
 
     fn panels(view: &View) -> std::vec::Vec<(Rect, u16)> {
-        view.canvas
+        view.canvas()
             .shapes
             .iter()
             .filter_map(|shape| match shape {
@@ -595,17 +595,20 @@ mod tests {
         let second = row_rect(1);
         assert_eq!(moving.pixel(LEFT + 1, second.top + 20), ACCENT, "ring");
         assert_eq!(moving.pixel(LEFT + 6, second.top + 20), RAISED);
-        assert!(moving.canvas.shows("PROFILE") && moving.canvas.shows("Z4 195-226 W"));
-        assert_eq!(moving.canvas.find("215").map(|run| run.color), Some(WHITE));
+        assert!(moving.canvas().shows("PROFILE") && moving.canvas().shows("Z4 195-226 W"));
+        assert_eq!(
+            moving.canvas().find("215").map(|run| run.color),
+            Some(WHITE)
+        );
         // No permanent button labels.
         assert!((0..240).all(|x| (306..320).all(|y| moving.pixel(x, y) == 0)));
 
         let editing = profile(0, true);
         let colors: std::vec::Vec<_> = panels(&editing).iter().map(|(_, c)| *c).collect();
         assert_eq!(colors, [ACCENT, RAISED, RAISED]);
-        assert!(editing.canvas.find("215").unwrap().line.face().cap == VALUE.cap);
-        assert!(editing.canvas.shows("FTP WATTS") && !editing.canvas.shows("LTHR BPM"));
-        assert!(editing.canvas.shows("-5") && editing.canvas.shows("+5"));
+        assert!(editing.canvas().find("215").unwrap().line.face().cap == VALUE.cap);
+        assert!(editing.canvas().shows("FTP WATTS") && !editing.canvas().shows("LTHR BPM"));
+        assert!(editing.canvas().shows("-5") && editing.canvas().shows("+5"));
         assert_eq!(editing.pixel(LEFT + 2, PAD_TOP + 20), RAISED);
     }
 
@@ -616,9 +619,9 @@ mod tests {
         let _ = editing.lines[VALUES].push_str("NOT SET");
         let _ = editing.lines[NOTES].push_str("ADD FOR W/KG");
         editing.prepare();
-        assert!(editing.canvas.shows("WEIGHT KG") && editing.canvas.shows("NOT SET"));
-        assert!(editing.canvas.shows("-1") && editing.canvas.shows("+1"));
-        assert!(!editing.canvas.shows("+5"));
+        assert!(editing.canvas().shows("WEIGHT KG") && editing.canvas().shows("NOT SET"));
+        assert!(editing.canvas().shows("-1") && editing.canvas().shows("+1"));
+        assert!(!editing.canvas().shows("+5"));
         assert_eq!(Row::Weight.step(), 1);
         assert_eq!(Row::Age.step(), 1);
         assert_eq!(Row::Ftp.step(), STEP);
@@ -657,7 +660,7 @@ mod tests {
                             texts.push(note);
                         }
                     }
-                    view.canvas.assert_laid_out(
+                    view.canvas().assert_laid_out(
                         screen,
                         &texts,
                         &std::format!("{cursor} {editing} {status}"),

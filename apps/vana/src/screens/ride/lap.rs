@@ -315,7 +315,7 @@ mod tests {
     }
 
     fn bars(view: &View) -> std::vec::Vec<(usize, usize, u16)> {
-        view.canvas
+        view.canvas()
             .shapes
             .iter()
             .filter_map(|shape| match shape {
@@ -330,11 +330,11 @@ mod tests {
     #[test]
     fn differences_are_signed_and_coloured() {
         let first = (300, steady(Some(200), 8334, 150));
-        let color = |view: &View, text| view.canvas.find(text).map(|run| run.color);
+        let color = |view: &View, text| view.canvas().find(text).map(|run| run.color);
         let harder = ridden(&[first], (125, steady(Some(250), 9000, 150)));
-        assert!(harder.canvas.shows("LAP 2"));
-        assert!(harder.canvas.shows("LAP 1"));
-        assert!(harder.canvas.shows("LAP 1 W"));
+        assert!(harder.canvas().shows("LAP 2"));
+        assert!(harder.canvas().shows("LAP 1"));
+        assert!(harder.canvas().shows("LAP 1 W"));
         assert_eq!(color(&harder, "02:05"), Some(WHITE));
         assert_eq!(color(&harder, "05:00"), Some(WHITE));
         assert_eq!(color(&harder, "+2.4"), Some(GREEN));
@@ -351,9 +351,9 @@ mod tests {
     #[test]
     fn the_first_lap_has_no_comparison_and_one_bar() {
         let view = ridden(&[], (0, Sample::default()));
-        assert!(view.canvas.shows("LAP 1"));
-        assert!(view.canvas.shows("00:00"));
-        assert!(view.canvas.shows("PREV LAP"));
+        assert!(view.canvas().shows("LAP 1"));
+        assert!(view.canvas().shows("00:00"));
+        assert!(view.canvas().shows("PREV LAP"));
         assert!(bars(&view).is_empty(), "nothing ridden, nothing charted");
         let view = ridden(&[], (60, steady(Some(200), 8334, 150)));
         let one = slot(0, 1);
@@ -385,7 +385,7 @@ mod tests {
         assert!(
             lefts(0) - LEFT < MAX_BAR_WIDTH && RIGHT - (lefts(3) + MAX_BAR_WIDTH) < MAX_BAR_WIDTH
         );
-        assert!(view.canvas.shapes.iter().any(|shape| matches!(
+        assert!(view.canvas().shapes.iter().any(|shape| matches!(
             shape,
             Shape::Bar { rect, color: TERTIARY, .. } if rect.left == LEFT && rect.right == RIGHT
         )));
@@ -416,7 +416,7 @@ mod tests {
             (5, steady(Some(1), 300, 40)),
         ] {
             let view = ridden(&laps, open);
-            view.canvas.assert_laid_out(
+            view.canvas().assert_laid_out(
                 PAGE,
                 &[
                     "LAP TIME",

@@ -257,7 +257,7 @@ mod tests {
             "OCT 4 2024",
             "OCT 28 2024",
         ];
-        view.canvas.assert_laid_out(full, &want, "bests");
+        view.canvas().assert_laid_out(full, &want, "bests");
     }
 
     #[test]
@@ -274,7 +274,7 @@ mod tests {
         let mut view = View::new(Page::Bests, 0, None);
         view.bests = bests;
         view.prepare();
-        assert!(!view.canvas.shows("W/KG"));
+        assert!(!view.canvas().shows("W/KG"));
         view.rider = crate::ride::rider::Rider::default().step_weight(1, true);
         view.prepare();
         let full = Rect {
@@ -283,7 +283,7 @@ mod tests {
             right: WIDTH,
             bottom: HEIGHT,
         };
-        view.canvas.assert_laid_out(
+        view.canvas().assert_laid_out(
             full,
             &["28.6 W/KG", "6.4 W/KG", "4.5 W/KG", "1999 W", "312 W"],
             "bests with weight",
@@ -301,14 +301,16 @@ mod tests {
         let mut confirm = View::new(Page::Bests, 0, None);
         confirm.bests_mode = Mode::Confirm;
         confirm.prepare();
-        confirm
-            .canvas
-            .assert_laid_out(full, &["CLEAR BESTS?", "THEY CANNOT COME BACK"], "confirm");
+        confirm.canvas().assert_laid_out(
+            full,
+            &["CLEAR BESTS?", "THEY CANNOT COME BACK"],
+            "confirm",
+        );
         assert_eq!(confirm.cues.len(), 2);
         let mut none = View::new(Page::Bests, 0, None);
         none.bests_mode = Mode::Unavailable;
         none.prepare();
-        none.canvas
+        none.canvas()
             .assert_laid_out(full, &["BESTS NOT KEPT", "NO PLACE TO KEEP THEM"], "none");
         assert!(none.cues.is_empty());
         for (mode, want) in [
@@ -318,15 +320,15 @@ mod tests {
             let mut view = View::new(Page::Bests, 0, None);
             view.bests_mode = mode;
             view.prepare();
-            view.canvas.assert_laid_out(full, &want, "state");
+            view.canvas().assert_laid_out(full, &want, "state");
         }
     }
 
     #[test]
     fn a_best_not_set_yet_says_so_and_a_missing_day_shows_none() {
         let empty = view(Bests::default());
-        assert!(empty.canvas.shows("--"));
-        assert!(!empty.canvas.shows(" W"));
+        assert!(empty.canvas().shows("--"));
+        assert!(!empty.canvas().shows(" W"));
         let undated = view(Bests {
             power: [
                 mark(300, 0),
@@ -336,7 +338,7 @@ mod tests {
             ],
             ..Bests::default()
         });
-        assert!(undated.canvas.shows("300 W"));
-        assert!(!undated.canvas.shows("1970"));
+        assert!(undated.canvas().shows("300 W"));
+        assert!(!undated.canvas().shows("1970"));
     }
 }

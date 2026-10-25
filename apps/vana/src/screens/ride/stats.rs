@@ -191,7 +191,7 @@ mod tests {
             ..Sample::default()
         };
         let view = stats(10, &sample);
-        let canvas = &view.canvas;
+        let canvas = &view.canvas();
         let color = |text| canvas.find(text).map(|run| run.color);
         assert_eq!(color("5.00"), Some(WHITE));
         assert_eq!(color("10:00"), Some(WHITE));
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn mixed_zones_split_with_gaps_and_no_time_is_a_dim_track() {
         let empty = stats(0, &Sample::default());
-        assert!(empty.canvas.shapes.iter().all(|shape| matches!(
+        assert!(empty.canvas().shapes.iter().all(|shape| matches!(
             shape,
             Shape::Bar { color: TERTIARY, rect, .. } if rect.width() == BAR_WIDTH
         )));
@@ -240,7 +240,7 @@ mod tests {
         view.zone_time = time;
         view.prepare();
         let segments: std::vec::Vec<_> = view
-            .canvas
+            .canvas()
             .shapes
             .iter()
             .filter_map(|shape| match shape {
@@ -267,7 +267,7 @@ mod tests {
         };
         for (minutes, sample) in [(0, Sample::default()), (1, fast), (100, fast)] {
             let view = stats(minutes, &sample);
-            view.canvas
+            view.canvas()
                 .assert_laid_out(BODY, &[], &std::format!("{minutes} min"));
         }
         // A long ride: 1000 km over 99:59:59 with a full ascent.
@@ -278,6 +278,6 @@ mod tests {
                 .add(9_999_000, 1_000_000_000 / 36, &fast, Some(88_000));
         }
         view.prepare();
-        view.canvas.assert_laid_out(BODY, &[], "long ride");
+        view.canvas().assert_laid_out(BODY, &[], "long ride");
     }
 }

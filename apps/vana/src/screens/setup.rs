@@ -179,7 +179,7 @@ pub(super) fn prepare(view: &View, step: Step) -> Canvas {
             Align::Left,
             WHITE,
         );
-        let note = view.lines[slot].as_bytes();
+        let note = view.lines()[slot].as_bytes();
         let room = (RIGHT - INSET).saturating_sub(title.right() + 12);
         if !note.is_empty() && Line::<24>::fit(&[&CAPTION], note, room).text().len() == note.len() {
             canvas.fit(
@@ -223,7 +223,7 @@ mod tests {
         for step in STEPS {
             for cursor in 0..step.cards().len() {
                 let mut view = View::new(Page::Setup, cursor, None);
-                let _ = view.lines[0].push_str("1000 W");
+                let _ = view.show_setup(step)[0].push_str("1000 W");
                 view.prepare();
                 let canvas = prepare(&view, step);
                 let mut texts: std::vec::Vec<&str> = std::vec![step.title()];

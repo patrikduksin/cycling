@@ -113,9 +113,10 @@ impl Body {
     }
 }
 
-/// What a ride page prepares besides its body. No page paints two of these:
-/// the map page's inset and the lap page's overlay are canvas shapes, not
-/// another page's data.
+/// What the shown page prepares besides its body. A ride page's extras are
+/// its chart, laps or map; a menu or lifecycle page's are its lines, picker,
+/// readiness or summary. No page reads two: the FTP sheet over a page, the map
+/// page's inset and the lap page's overlay are canvas shapes.
 // One extra lives in View and its variants share one slot on purpose;
 // boxing would allocate every frame.
 #[allow(clippy::large_enum_variant)]
@@ -143,77 +144,78 @@ pub(super) enum Extra<'a> {
     },
     /// The track, projected and kept beside the breadcrumb.
     Map(Option<&'a ride::MapFrame>),
+    Settings(Lines),
+    /// The Connect phone screen's lines and QR code.
+    Phone {
+        qr: Option<super::qr::Placed>,
+        lines: Lines,
+    },
+    /// The first-run setup step and the note beside its cards.
+    Setup {
+        step: super::setup::Step,
+        lines: Lines,
+    },
+    /// Ready: the checks before a ride.
+    Ready(Readiness),
+    /// The workout picker's rows.
+    Workouts(super::workouts::Picker),
+    /// The rider's personal bests, for the BESTS page.
+    Bests {
+        bests: Bests,
+        mode: super::bests::Mode,
+    },
+    Form(super::form::Mode),
+    /// The summary after a ride, or a saved ride read back (`past_title`).
+    /// The elevation chart is borrowed from `Ride` (about 430 bytes, which
+    /// the main stack cannot spare a copy of).
+    Summary {
+        after: After,
+        past_title: Text<20>,
+        elevation: Option<&'a ride::ElevationChart>,
+    },
+}
+
+/// Lines of text prepared for a page: Settings' values, notes and status,
+/// the phone's codes, the setup note.
+pub(super) type Lines = [Text<38>; 9];
+
+/// `$name` is the variant's field, or none when `$pat` is another variant.
+macro_rules! picks {
+    ($($name:ident -> $ty:ty = $pat:pat => $found:expr;)*) => {
+        $(fn $name(&self) -> Option<$ty> {
+            match self {
+                $pat => Some($found),
+                _ => None,
+            }
+        })*
+    };
 }
 
 impl<'a> Extra<'a> {
-    fn climbs(&self) -> Option<&'a Climbs> {
-        match self {
-            Self::Climb { climbs, .. } => Some(climbs),
-            _ => None,
-        }
-    }
-
-    fn forecast(&self) -> Option<&'a Forecast> {
-        match self {
-            Self::Climb { forecast, .. } => Some(forecast),
-            _ => None,
-        }
-    }
-
-    fn climb_frame(&self) -> Option<&ClimbFrame> {
-        match self {
-            Self::Climb { frame, .. } => Some(frame),
-            _ => None,
-        }
-    }
-
-    fn chart(&self) -> Option<&ride::WorkoutChart> {
-        match self {
-            Self::Workout(chart) => Some(chart),
-            _ => None,
-        }
-    }
-
-    fn lap(&self) -> Option<Lap> {
-        match self {
-            Self::Lap { lap, .. } => Some(*lap),
-            _ => None,
-        }
-    }
-
-    fn previous_lap(&self) -> Option<Option<Lap>> {
-        match self {
-            Self::Lap { previous, .. } => Some(*previous),
-            _ => None,
-        }
-    }
-
-    fn lap_bars(&self) -> Option<&ride::LapBars> {
-        match self {
-            Self::Lap { bars, .. } => Some(bars),
-            _ => None,
-        }
-    }
-
-    fn back(&self) -> Option<ride::Back> {
-        match self {
-            Self::Back { back, .. } => Some(*back),
-            _ => None,
-        }
-    }
-
-    fn sunset(&self) -> Option<ride::Light> {
-        match self {
-            Self::Back { sunset, .. } => Some(*sunset),
-            _ => None,
-        }
-    }
-
-    fn map(&self) -> Option<Option<&'a ride::MapFrame>> {
-        match self {
-            Self::Map(frame) => Some(*frame),
-            _ => None,
-        }
+    picks! {
+        climbs -> &'a Climbs = Self::Climb { climbs, .. } => climbs;
+        forecast -> &'a Forecast = Self::Climb { forecast, .. } => forecast;
+        climb_frame -> &ClimbFrame = Self::Climb { frame, .. } => frame;
+        chart -> &ride::WorkoutChart = Self::Workout(chart) => chart;
+        lap -> Lap = Self::Lap { lap, .. } => *lap;
+        previous_lap -> Option<Lap> = Self::Lap { previous, .. } => *previous;
+        lap_bars -> &ride::LapBars = Self::Lap { bars, .. } => bars;
+        back -> ride::Back = Self::Back { back, .. } => *back;
+        sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
+        map -> Option<&'a ride::MapFrame> = Self::Map(frame) => *frame;
+        lines -> &Lines = Self::Settings(lines)
+            | Self::Phone { lines, .. }
+            | Self::Setup { lines, .. } => lines;
+        qr -> Option<&super::qr::Placed> = Self::Phone { qr, .. } => qr.as_ref();
+        setup_step -> super::setup::Step = Self::Setup { step, .. } => *step;
+        readiness -> &Readiness = Self::Ready(readiness) => readiness;
+        picker -> &super::workouts::Picker = Self::Workouts(picker) => picker;
+        bests -> Bests = Self::Bests { bests, .. } => *bests;
+        bests_mode -> super::bests::Mode = Self::Bests { mode, .. } => *mode;
+        form -> super::form::Mode = Self::Form(mode) => *mode;
+        after -> After = Self::Summary { after, .. } => *after;
+        past_title -> &Text<20> = Self::Summary { past_title, .. } => past_title;
+        elevation -> Option<&'a ride::ElevationChart> = Self::Summary { elevation, .. } => *elevation;
     }
 }
 
@@ -224,6 +226,10 @@ static NO_FORECAST: Forecast = Forecast::NONE;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
 static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
 static NO_BARS: ride::LapBars = ride::LapBars::new();
+static NO_LINES: Lines = [const { Text::new() }; 9];
+static NO_READINESS: Readiness = Readiness::EMPTY;
+static NO_PICKER: super::workouts::Picker = super::workouts::Picker::EMPTY;
+static NO_TITLE: Text<20> = Text::new();
 
 pub struct View<'a> {
     pub now_ms: u64,
@@ -242,8 +248,6 @@ pub struct View<'a> {
     pub battery: Option<Battery>,
     /// The brand reveal's progress, in thousandths, on the boot page.
     pub reveal: u16,
-    /// The first-run setup page shown on `Page::Setup`.
-    pub setup: super::setup::Step,
     pub toast: Option<Toast>,
     bar: StatusBar,
     pub totals: Totals,
@@ -262,45 +266,24 @@ pub struct View<'a> {
     pub rider: Rider,
     /// Zone colours and gauges prepared for this frame.
     pub(super) marks: Marks,
-    /// The summary's elevation chart, borrowed from `Ride` (about 430
-    /// bytes, which the main stack cannot spare a copy of).
-    pub elevation_chart: Option<&'a ride::ElevationChart>,
     /// The workout chosen or running, for the workout page and the target
     /// band on the main page.
     pub training: Option<ride::Training>,
-    /// The workout picker's rows.
-    pub picker: super::workouts::Picker,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
     pub ftp_offer: Option<(u16, u16)>,
-    /// The rider's personal bests, for the BESTS page.
-    pub bests: Bests,
-    pub bests_mode: super::bests::Mode,
-    /// What the FORM page shows.
-    pub form: super::form::Mode,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
     /// Settings: the selected field is being changed.
     pub editing: bool,
     pub time: Text<16>,
-    pub lines: [Text<38>; 9],
-    /// The Connect phone screen's QR code.
-    pub qr: Option<super::qr::Placed>,
     /// The light look is in force: the QR panel is painted inverted so the
     /// output pass turns it back to dark modules on light.
     pub light: bool,
-    /// Ready: the checks before a ride.
-    pub readiness: Readiness,
     /// How long the ride has been paused.
     pub paused_secs: u64,
     /// The paused ride shows the paused screen rather than a ride page.
     pub pause_screen: bool,
-    /// The summary after a ride.
-    pub after: After,
-    /// A saved ride read back: when it started, over its summary.
-    pub past_title: Text<20>,
-    /// The phone screen was opened for one saved ride.
-    pub phone_ride: bool,
     /// Button cues prepared for this frame.
     pub(super) cues: heapless::Vec<Cue, 2>,
     pub(super) badge: Option<Badge>,
@@ -308,7 +291,7 @@ pub struct View<'a> {
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(
-    core::mem::size_of::<View>() <= 6_680,
+    core::mem::size_of::<View>() <= 5_352,
     "View lives on the main stack every frame: shrink it, do not grow it"
 );
 
@@ -334,7 +317,6 @@ impl<'a> View<'a> {
             gps: Gps::Off,
             battery: None,
             reveal: 0,
-            setup: super::setup::Step::Welcome,
             toast: None,
             bar: StatusBar::default(),
             totals: Totals::default(),
@@ -347,26 +329,15 @@ impl<'a> View<'a> {
             profile: TrainingProfile::default(),
             rider: Rider::default(),
             marks: Marks::default(),
-            elevation_chart: None,
             training: None,
-            picker: super::workouts::Picker::default(),
             ftp_offer: None,
-            bests: Bests::default(),
-            bests_mode: super::bests::Mode::List,
-            form: super::form::Mode::Reading,
             page,
             cursor,
             editing: false,
             time,
-            lines: core::array::from_fn(|_| Text::new()),
-            qr: None,
             light: false,
-            readiness: Readiness::default(),
             paused_secs: 0,
             pause_screen: false,
-            after: After::default(),
-            past_title: Text::new(),
-            phone_ride: false,
             cues: heapless::Vec::new(),
             badge: None,
         };
@@ -388,18 +359,19 @@ impl<'a> View<'a> {
         self.body = Body::Home(home);
     }
 
+    /// What a page finds in its body or extra: the value, or for a wrong
+    /// variant a blank, after a debug assertion. Release paints the blank.
+    fn shown<T>(&self, found: Option<T>, what: &str, blank: T) -> T {
+        debug_assert!(found.is_some(), "{:?} has no {what}", self.page);
+        found.unwrap_or(blank)
+    }
+
     pub(super) fn canvas(&self) -> &Canvas {
-        self.body.canvas().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no canvas", self.page);
-            &NO_CANVAS
-        })
+        self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
     }
 
     pub(super) fn smooth(&self) -> &Smooth {
-        self.body.smooth().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no main page body", self.page);
-            &NO_SMOOTH
-        })
+        self.shown(self.body.smooth(), "main page body", &NO_SMOOTH)
     }
 
     fn home(&self) -> Option<&Home> {
@@ -409,73 +381,91 @@ impl<'a> View<'a> {
     }
 
     pub(super) fn climbs(&self) -> &'a Climbs {
-        self.extra.climbs().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no climbs", self.page);
-            &NO_CLIMBS
-        })
+        self.shown(self.extra.climbs(), "climbs", &NO_CLIMBS)
     }
 
     pub(super) fn forecast(&self) -> &'a Forecast {
-        self.extra.forecast().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no forecast", self.page);
-            &NO_FORECAST
-        })
+        self.shown(self.extra.forecast(), "forecast", &NO_FORECAST)
     }
 
     pub(super) fn climb(&self) -> &ClimbFrame {
-        self.extra.climb_frame().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no climb chart", self.page);
-            &NO_CLIMB_FRAME
-        })
+        self.shown(self.extra.climb_frame(), "climb chart", &NO_CLIMB_FRAME)
     }
 
     pub(super) fn chart(&self) -> &ride::WorkoutChart {
-        self.extra.chart().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no workout chart", self.page);
-            &NO_CHART
-        })
+        self.shown(self.extra.chart(), "workout chart", &NO_CHART)
     }
 
     pub(super) fn lap(&self) -> Lap {
-        self.extra.lap().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no lap", self.page);
-            Lap::default()
-        })
+        self.shown(self.extra.lap(), "lap", Lap::default())
     }
 
     pub(super) fn previous_lap(&self) -> Option<Lap> {
-        self.extra.previous_lap().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no previous lap", self.page);
-            None
-        })
+        self.shown(self.extra.previous_lap(), "previous lap", None)
     }
 
     pub(super) fn lap_bars(&self) -> &ride::LapBars {
-        self.extra.lap_bars().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no lap bars", self.page);
-            &NO_BARS
-        })
+        self.shown(self.extra.lap_bars(), "lap bars", &NO_BARS)
     }
 
     pub(super) fn back(&self) -> ride::Back {
-        self.extra.back().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no way back", self.page);
-            ride::Back::default()
-        })
+        self.shown(self.extra.back(), "way back", ride::Back::default())
     }
 
     pub(super) fn sunset(&self) -> ride::Light {
-        self.extra.sunset().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no sunset", self.page);
-            ride::Light::default()
-        })
+        self.shown(self.extra.sunset(), "sunset", ride::Light::default())
     }
 
     pub(super) fn map(&self) -> Option<&'a ride::MapFrame> {
-        self.extra.map().unwrap_or_else(|| {
-            debug_assert!(false, "{:?} has no map", self.page);
-            None
-        })
+        self.shown(self.extra.map(), "map", None)
+    }
+
+    pub fn lines(&self) -> &Lines {
+        self.shown(self.extra.lines(), "lines", &NO_LINES)
+    }
+
+    pub fn qr(&self) -> Option<&super::qr::Placed> {
+        self.shown(self.extra.qr(), "code", None)
+    }
+
+    pub(super) fn setup_step(&self) -> super::setup::Step {
+        self.shown(
+            self.extra.setup_step(),
+            "setup step",
+            super::setup::Step::Welcome,
+        )
+    }
+
+    pub(super) fn readiness(&self) -> &Readiness {
+        self.shown(self.extra.readiness(), "readiness", &NO_READINESS)
+    }
+
+    pub(super) fn picker(&self) -> &super::workouts::Picker {
+        self.shown(self.extra.picker(), "picker", &NO_PICKER)
+    }
+
+    pub(super) fn bests(&self) -> Bests {
+        self.shown(self.extra.bests(), "bests", Bests::default())
+    }
+
+    pub(super) fn bests_mode(&self) -> super::bests::Mode {
+        self.shown(self.extra.bests_mode(), "bests mode", Default::default())
+    }
+
+    pub(super) fn form(&self) -> super::form::Mode {
+        self.shown(self.extra.form(), "form", Default::default())
+    }
+
+    pub(super) fn after(&self) -> After {
+        self.shown(self.extra.after(), "summary", After::default())
+    }
+
+    pub(super) fn past_title(&self) -> &Text<20> {
+        self.shown(self.extra.past_title(), "past title", &NO_TITLE)
+    }
+
+    pub(super) fn elevation_chart(&self) -> Option<&'a ride::ElevationChart> {
+        self.shown(self.extra.elevation(), "summary", None)
     }
 
     /// The climb page's extras: the climbs and the forecast, lent, and a
@@ -496,10 +486,14 @@ impl<'a> View<'a> {
         }
     }
 
+    // Every `show_*` stays out of line: inlined, each would keep the Extra it
+    // builds as a temporary in `present`'s frame.
+    #[inline(never)]
     pub fn show_workout(&mut self, chart: ride::WorkoutChart) {
         self.extra = Extra::Workout(chart);
     }
 
+    #[inline(never)]
     pub fn show_laps(&mut self, bars: ride::LapBars, lap: Lap, previous: Option<Lap>) {
         self.extra = Extra::Lap {
             bars,
@@ -508,12 +502,95 @@ impl<'a> View<'a> {
         };
     }
 
+    #[inline(never)]
     pub fn show_back(&mut self, back: ride::Back, sunset: ride::Light) {
         self.extra = Extra::Back { back, sunset };
     }
 
+    #[inline(never)]
     pub fn show_map(&mut self, frame: Option<&'a ride::MapFrame>) {
         self.extra = Extra::Map(frame);
+    }
+
+    /// Settings' lines, blank, for the caller to write.
+    #[inline(never)]
+    pub fn show_settings(&mut self) -> &mut Lines {
+        self.extra = Extra::Settings(Lines::default());
+        match &mut self.extra {
+            Extra::Settings(lines) => lines,
+            _ => unreachable!(),
+        }
+    }
+
+    /// The phone page's code and lines, blank, for the caller to write.
+    #[inline(never)]
+    pub fn show_phone(&mut self) -> (&mut Option<super::qr::Placed>, &mut Lines) {
+        self.extra = Extra::Phone {
+            qr: None,
+            lines: Lines::default(),
+        };
+        match &mut self.extra {
+            Extra::Phone { qr, lines } => (qr, lines),
+            _ => unreachable!(),
+        }
+    }
+
+    /// The setup step's note lines, blank, for the caller to write.
+    #[inline(never)]
+    pub fn show_setup(&mut self, step: super::setup::Step) -> &mut Lines {
+        self.extra = Extra::Setup {
+            step,
+            lines: Lines::default(),
+        };
+        match &mut self.extra {
+            Extra::Setup { lines, .. } => lines,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline(never)]
+    pub fn show_ready(&mut self, readiness: Readiness) {
+        self.extra = Extra::Ready(readiness);
+    }
+
+    #[inline(never)]
+    pub fn show_picker(&mut self, picker: super::workouts::Picker) {
+        self.extra = Extra::Workouts(picker);
+    }
+
+    #[inline(never)]
+    pub fn show_bests(&mut self, bests: Bests, mode: super::bests::Mode) {
+        self.extra = Extra::Bests { bests, mode };
+    }
+
+    #[inline(never)]
+    pub fn show_form(&mut self, mode: super::form::Mode) {
+        self.extra = Extra::Form(mode);
+    }
+
+    #[inline(never)]
+    pub fn show_summary(&mut self, after: After, past_title: Text<20>) {
+        self.extra = Extra::Summary {
+            after,
+            past_title,
+            elevation: None,
+        };
+    }
+
+    /// Lend the summary the elevation chart its page draws.
+    pub fn set_elevation_chart(&mut self, chart: &'a ride::ElevationChart) {
+        match &mut self.extra {
+            Extra::Summary { elevation, .. } => *elevation = Some(chart),
+            _ => debug_assert!(false, "{:?} has no summary", self.page),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn after_mut(&mut self) -> &mut After {
+        match &mut self.extra {
+            Extra::Summary { after, .. } => after,
+            _ => panic!("{:?} has no summary", self.page),
+        }
     }
 
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
@@ -560,7 +637,7 @@ impl<'a> View<'a> {
             }
             Page::Summary | Page::PastRide => {
                 if let Some(chart) = self
-                    .elevation_chart
+                    .elevation_chart()
                     .filter(|_| summary::shows_elevation(self))
                 {
                     ride::elevation::paint(chart, row);
@@ -615,7 +692,7 @@ impl<'a> View<'a> {
             }
             Page::Summary | Page::PastRide => {
                 let under = self
-                    .elevation_chart
+                    .elevation_chart()
                     .filter(|_| summary::shows_elevation(self))
                     .and_then(|chart| ride::elevation::pixel(chart, x, y))
                     .unwrap_or(BLACK);
@@ -654,8 +731,8 @@ impl<'a> View<'a> {
                 &[]
             }
             Page::Ready => {
-                fill(self, |view| super::ready::prepare(&view.readiness));
-                if self.readiness.can_start() {
+                fill(self, |view| super::ready::prepare(view.readiness()));
+                if self.readiness().can_start() {
                     &super::ready::CUES
                 } else {
                     &[]
@@ -667,23 +744,23 @@ impl<'a> View<'a> {
             }
             Page::Summary => {
                 self.bar
-                    .set_pages(self.after.page, summary::total_pages(&self.after));
+                    .set_pages(self.after().page, summary::total_pages(&self.after()));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
                 self.badge = summary::badge(self);
-                if self.after.saving == summary::Saving::Writing {
+                if self.after().saving == summary::Saving::Writing {
                     &[]
-                } else if summary::offer_shown(&self.after) {
+                } else if summary::offer_shown(&self.after()) {
                     &summary::OFFER_CUES
                 } else {
                     core::slice::from_ref(&summary::CUE)
                 }
             }
             Page::Setup => {
-                fill(self, |view| super::setup::prepare(view, view.setup));
+                fill(self, |view| super::setup::prepare(view, view.setup_step()));
                 let steps = super::setup::STEPS.len();
                 self.bar
-                    .set_pages(usize::from(self.setup.byte()) - 1, steps);
+                    .set_pages(usize::from(self.setup_step().byte()) - 1, steps);
                 &[]
             }
             Page::Phone => {
@@ -692,7 +769,7 @@ impl<'a> View<'a> {
             }
             Page::Bests => {
                 fill(self, super::bests::prepare);
-                match self.bests_mode {
+                match self.bests_mode() {
                     super::bests::Mode::Confirm => &super::bests::CONFIRM_CUES,
                     _ => &[],
                 }
@@ -709,10 +786,10 @@ impl<'a> View<'a> {
             Page::History => &[],
             Page::PastRide => {
                 self.bar
-                    .set_pages(self.after.page, summary::pages(self.after.elevation));
+                    .set_pages(self.after().page, summary::pages(self.after().elevation));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
-                if self.after.saving == summary::Saving::Reading {
+                if self.after().saving == summary::Saving::Reading {
                     &[]
                 } else {
                     &summary::PAST_CUES
@@ -754,7 +831,7 @@ impl<const N: usize> Default for Text<N> {
     }
 }
 impl<const N: usize> Text<N> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             bytes: [0; N],
             len: 0,
@@ -823,9 +900,18 @@ mod tests {
         assert!(none.lap().is_none() && none.previous_lap().is_none());
         assert!(none.lap_bars().is_none() && none.back().is_none());
         assert!(none.sunset().is_none() && none.map().is_none());
+        assert!(none.lines().is_none() && none.qr().is_none());
+        assert!(none.setup_step().is_none() && none.readiness().is_none());
+        assert!(none.picker().is_none() && none.bests().is_none());
+        assert!(none.bests_mode().is_none() && none.form().is_none());
+        assert!(none.after().is_none() && none.past_title().is_none());
+        assert!(none.elevation().is_none());
         assert!(NO_CANVAS.runs.is_empty() && NO_CANVAS.shapes.is_empty());
         assert!(NO_SMOOTH.labels.is_empty() && NO_SMOOTH.band.is_none());
         assert!(NO_BARS.is_empty() && NO_CLIMBS.climbing().is_none());
+        assert!(NO_LINES.iter().all(|line| line.as_bytes().is_empty()));
+        assert!(NO_READINESS.riding.as_bytes().is_empty() && NO_TITLE.as_bytes().is_empty());
+        assert!(NO_PICKER.cursor == 0 && NO_PICKER.chosen == 0);
     }
 
     #[test]
@@ -1098,14 +1184,26 @@ mod tests {
         ] {
             let mut view = View::new(page, 1, None);
             view.editing = editing;
-            for (i, line) in view.lines.iter_mut().enumerate() {
+            let lines = match page {
+                Page::Settings => Some(view.show_settings()),
+                Page::Phone => Some(view.show_phone().1),
+                Page::Bests => {
+                    view.show_bests(Bests::default(), crate::screens::bests::Mode::List);
+                    None
+                }
+                Page::Form => {
+                    view.show_form(crate::screens::form::Mode::Reading);
+                    None
+                }
+                _ => None,
+            };
+            for (i, line) in lines.into_iter().flatten().enumerate() {
                 let _ = write!(line, "LINE {i} OK");
             }
             view.prepare();
             assert_paints_reference(&view, "text page");
         }
         let mut view = View::new(Page::Boot, 0, None);
-        let _ = view.lines[0].push_str("COMPANION READY");
         view.prepare();
         assert_paints_reference(&view, "boot");
     }
@@ -1138,19 +1236,22 @@ mod tests {
             view
         };
         let mut ready = ride(Page::Ready);
+        let mut readiness = Readiness::default();
         for (index, level) in [Level::Good, Level::Wait, Level::Off, Level::Problem]
             .into_iter()
             .enumerate()
         {
-            ready.readiness.checks[index] = Check::new(level, "GPS LOCKED", "YOU CAN START");
+            readiness.checks[index] = Check::new(level, "GPS LOCKED", "YOU CAN START");
         }
+        ready.show_ready(readiness.clone());
         ready.prepare();
         assert!(
             ready.cues.is_empty(),
             "no start cue while storage is a problem"
         );
         assert_paints_reference(&ready, "ready, blocked");
-        ready.readiness.checks[3] = Check::new(Level::Good, "ROOM FOR 99 H", "");
+        readiness.checks[3] = Check::new(Level::Good, "ROOM FOR 99 H", "");
+        ready.show_ready(readiness);
         ready.prepare();
         assert_eq!(ready.cues.len(), 1);
         assert_paints_reference(&ready, "ready");
@@ -1179,11 +1280,17 @@ mod tests {
                 for page in 0..crate::screens::ride::summary::pages(elevation) {
                     let mut summary = ride(Page::Summary);
                     summary.state = Status::Saved;
-                    summary.after.saving = saving;
-                    summary.after.page = page;
-                    summary.after.best = [Some(900), Some(400), Some(300), None];
-                    summary.elevation_chart = Some(&chart);
-                    summary.after.elevation = elevation;
+                    summary.show_summary(
+                        summary::After {
+                            saving,
+                            page,
+                            best: [Some(900), Some(400), Some(300), None],
+                            elevation,
+                            ..summary::After::default()
+                        },
+                        Text::new(),
+                    );
+                    summary.set_elevation_chart(&chart);
                     summary.prepare();
                     let what = std::format!("summary {page} {saving:?}");
                     assert_paints_reference(&summary, &what);
@@ -1215,7 +1322,6 @@ mod tests {
             bottom: 320,
         };
         let mut view = View::new(Page::Boot, 0, None);
-        let _ = view.lines[0].push_str("RADIO WAITING FOR RADIO / GPS SEARCHING");
         view.prepare();
         let screen = Rect { top: 0, ..content };
         view.canvas()

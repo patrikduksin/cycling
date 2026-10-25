@@ -143,12 +143,13 @@ impl Runtime {
 
     /// Notes beside the cards: the value a number has now.
     pub(super) fn setup_lines(&self, view: &mut View) {
-        let Some(step) = self.setup_step() else {
+        let step = self.setup_step();
+        let lines = view.show_setup(step.unwrap_or(Step::Welcome));
+        let Some(step) = step else {
             return;
         };
-        view.setup = step;
         let profile = self.preferences.profile;
-        let note = &mut view.lines[0];
+        let note = &mut lines[0];
         let _ = match step {
             Step::Power => write!(note, "{} W", profile.ftp_watts),
             Step::Heart => write!(note, "{} BPM", profile.lthr_bpm),

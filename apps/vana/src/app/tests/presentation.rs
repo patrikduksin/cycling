@@ -197,7 +197,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     assert_eq!(readiness.checks[Line::Sensors as usize].hint.as_str(), "HR");
     // The panel shows the Ready screen as the view lays it out.
     let mut view = crate::screens::workout::View::new(Page::Ready, 0, None);
-    view.readiness = runtime.readiness(crate::screens::chrome::Gps::Off, None, 7000);
+    view.show_ready(runtime.readiness(crate::screens::chrome::Gps::Off, None, 7000));
     view.prepare();
     let content = crate::screens::chrome::CONTENT.top..crate::screens::chrome::TOAST.top;
     assert!(

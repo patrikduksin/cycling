@@ -680,7 +680,7 @@ impl Runtime {
         view.ride_pages = self.preferences.options.ride_pages;
         view.main_slots = self.preferences.options.main_slots;
         view.totals = self.ride.totals;
-        if view.ride_page == RidePage::Lap {
+        if page == Page::Ride && view.ride_page == RidePage::Lap {
             let laps = &self.ride.laps;
             let kept = (0..crate::ride::laps::HISTORY).rev();
             let bars = kept
@@ -705,9 +705,9 @@ impl Runtime {
         // started from the terminal while Home is open.
         view.ftp_offer = ftp_offer;
         if let Some(picker) = picker {
-            view.picker = picker;
+            view.show_picker(picker);
         }
-        if view.ride_page == RidePage::Back {
+        if page == Page::Ride && view.ride_page == RidePage::Back {
             let sunset = light(
                 self.night.sun(now).map(|(sun, _)| sun),
                 self.preferences.options.zone,
@@ -741,20 +741,18 @@ impl Runtime {
             }
             Page::Ready => {
                 self.refresh_sensor_menu(ant, now);
-                view.readiness = self.readiness(view.gps, view.battery, now);
+                view.show_ready(self.readiness(view.gps, view.battery, now));
             }
             Page::Summary => {
-                view.after = self.after(now);
+                view.show_summary(self.after(now), Text::new());
                 self.show_elevation(&mut view);
             }
             Page::Bests => {
-                view.bests = self.bests.bests;
-                view.bests_mode = self.bests.mode();
+                view.show_bests(self.bests.bests, self.bests.mode());
             }
-            Page::Form => view.form = self.form.mode,
+            Page::Form => view.show_form(self.form.mode),
             Page::PastRide => self.past_view(&mut view),
             Page::Phone => {
-                view.phone_ride = self.history.phone.is_some();
                 // The codes stay readable while a phone connects.
                 system.activity(now);
                 self.phone_view(&mut view);
@@ -777,7 +775,7 @@ impl Runtime {
             Page::Workouts => {}
             Page::Setup => self.setup_lines(&mut view),
         }
-        if view.ride_page == RidePage::Climb {
+        if page == Page::Ride && view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.
             view.show_climb(
                 &self.ride.climbs,
@@ -786,7 +784,7 @@ impl Runtime {
         }
         let light = self.light();
         view.light = light;
-        if view.ride_page == RidePage::Map {
+        if page == Page::Ride && view.ride_page == RidePage::Map {
             view.show_map(super::back::map_of(&self.back));
         }
         view.prepare();
@@ -877,6 +875,7 @@ impl Runtime {
         glance
     }
 
+    #[inline(never)]
     fn home(&self, gps_fix: bool, now: u64) -> Home {
         let last = self.rides_line();
         let glance = self.glance(now);
@@ -1006,7 +1005,7 @@ impl Runtime {
     #[inline(never)]
     pub(super) fn show_elevation<'a>(&'a self, view: &mut View<'a>) {
         if crate::screens::ride::summary::shows_elevation(view) {
-            view.elevation_chart = Some(&self.ride.chart);
+            view.set_elevation_chart(&self.ride.chart);
         }
     }
 
@@ -1194,11 +1193,12 @@ impl Runtime {
         } else {
             SECTIONS[settings::section(cursor).0].1
         };
-        let (values, notes) = view.lines[VALUES..].split_at_mut(NOTES - VALUES);
+        let lines = view.show_settings();
+        let (values, notes) = lines[VALUES..].split_at_mut(NOTES - VALUES);
         for ((row, value), note) in shown.iter().zip(values).zip(notes) {
             self.setting_line(*row, value, note);
         }
-        let _ = view.lines[STATUS].push_str(match self.preferences.persistence() {
+        let _ = lines[STATUS].push_str(match self.preferences.persistence() {
             Persistence::Saved => "SAVED",
             Persistence::Pending => "SAVING",
             Persistence::Failed => "SAVE FAILED, RETRYING",

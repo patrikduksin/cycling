@@ -408,6 +408,7 @@ impl Runtime {
     }
 
     /// The ride list, its cards made on demand.
+    #[inline(never)]
     pub(super) fn history_canvas(&self) -> crate::screens::canvas::Canvas {
         let count = self.history_count();
         history::prepare(&List {
@@ -453,12 +454,13 @@ impl Runtime {
     /// The open ride on the summary's pages.
     pub(super) fn past_view<'a>(&'a self, view: &mut View<'a>) {
         let Some((medium, replay, summary)) = &self.history.open else {
+            view.show_summary(After::default(), Text::new());
             return;
         };
         let facts = self
             .facts
             .find(*medium, summary.ride_id, summary.first_utc_ms);
-        view.past_title = title(
+        let past_title = title(
             summary,
             self.history_count().saturating_sub(self.history.cursor),
             self.preferences.options.zone,
@@ -473,7 +475,7 @@ impl Runtime {
         view.zone_time = self.ride.zone_time;
         let active_ms = summary.map_or(0, |s| s.active_ms).max(replay.active_ms);
         view.active_secs = active_ms / 1000;
-        view.after = After {
+        let after = After {
             page: self.navigation.summary_page,
             saving,
             best: self.ride.efforts.best(),
@@ -488,6 +490,7 @@ impl Runtime {
                 .map(crate::ride::recovery::Reading::Recovered),
             ..After::default()
         };
+        view.show_summary(after, past_title);
         self.show_elevation(view);
     }
 

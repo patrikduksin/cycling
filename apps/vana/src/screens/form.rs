@@ -70,7 +70,7 @@ pub fn signed(text: &mut Text<12>, value: i16) {
 
 pub fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    let (form, left_out) = match view.form {
+    let (form, left_out) = match view.form() {
         Mode::Form { form, left_out } => (form, left_out),
         Mode::Reading => {
             super::bests::centred(&mut canvas, &[&BODY], b"READING RIDES", 150, WHITE);
@@ -199,7 +199,7 @@ mod tests {
 
     fn view(mode: Mode) -> View<'static> {
         let mut view = View::new(Page::Form, 0, None);
-        view.form = mode;
+        view.show_form(mode);
         view.prepare();
         view
     }

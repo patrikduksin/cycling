@@ -50,6 +50,14 @@ pub struct Picker {
 }
 
 impl Picker {
+    pub const EMPTY: Self = Self {
+        rows: heapless::Vec::new(),
+        first: 0,
+        count: 0,
+        cursor: 0,
+        chosen: 0,
+    };
+
     /// A list of `count` rows focused on `cursor`; `push` them in order.
     pub fn new(count: usize, cursor: usize, chosen: usize) -> Self {
         let cursor = cursor.min(count.saturating_sub(1));
@@ -97,7 +105,7 @@ impl Picker {
 }
 
 pub(super) fn prepare(view: &View) -> Canvas {
-    let picker = &view.picker;
+    let picker = &view.picker();
     let mut canvas = Canvas::default();
     let width = CONTENT.right - 2 * MARGIN;
     canvas.fit(
@@ -257,7 +265,7 @@ mod tests {
 
     fn picker(rows: usize, cursor: usize) -> View<'static> {
         let mut view = View::new(Page::Workouts, 0, None);
-        view.picker = Picker::new(rows, cursor, 2);
+        let mut picker = Picker::new(rows, cursor, 2);
         for i in 0..rows {
             let mut detail = Text::new();
             let _ = write!(detail, "{} MIN  {} STEPS", 100 + i, 96);
@@ -266,8 +274,9 @@ mod tests {
             } else {
                 Name::new("VO2")
             };
-            view.picker.push(Choice { name, detail });
+            picker.push(Choice { name, detail });
         }
+        view.show_picker(picker);
         view.prepare();
         view
     }
@@ -276,23 +285,23 @@ mod tests {
     fn the_list_scrolls_to_the_focused_row_and_taps_find_rows() {
         let view = picker(12, 0);
         assert!(view.canvas().shows("1/12"));
-        assert_eq!(view.picker.row_at(120, FIRST_TOP + 10), Some(0));
+        assert_eq!(view.picker().row_at(120, FIRST_TOP + 10), Some(0));
         let view = picker(12, 6);
-        assert_eq!(view.picker.first(), 3);
+        assert_eq!(view.picker().first(), 3);
         assert_eq!(
-            view.picker.row_at(120, FIRST_TOP + 3 * ROW_PITCH + 10),
+            view.picker().row_at(120, FIRST_TOP + 3 * ROW_PITCH + 10),
             Some(6)
         );
         assert_eq!(
-            view.picker.row_at(120, FIRST_TOP + ROW_HEIGHT + 2),
+            view.picker().row_at(120, FIRST_TOP + ROW_HEIGHT + 2),
             None,
             "gap"
         );
         let view = picker(12, 11);
-        assert_eq!(view.picker.first(), 8);
+        assert_eq!(view.picker().first(), 8);
         let short = picker(2, 1);
         assert_eq!(
-            short.picker.row_at(120, FIRST_TOP + 2 * ROW_PITCH + 10),
+            short.picker().row_at(120, FIRST_TOP + 2 * ROW_PITCH + 10),
             None
         );
         // The focused card is raised and ringed.

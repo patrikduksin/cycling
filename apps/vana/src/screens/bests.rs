@@ -71,7 +71,7 @@ pub(super) fn centred(
 
 pub fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    match view.bests_mode {
+    match view.bests_mode() {
         Mode::Confirm => {
             centred(&mut canvas, &[&TITLE, &BODY], b"CLEAR BESTS?", 150, WHITE);
             centred(
@@ -127,7 +127,7 @@ pub fn prepare(view: &View) -> Canvas {
         Align::Left,
         WHITE,
     );
-    let bests = &view.bests;
+    let bests = &view.bests();
     for (index, mark) in bests.power.iter().enumerate() {
         let mut value = Text::<12>::new();
         let _ = write!(value, "{} W", mark.value);
@@ -215,7 +215,7 @@ mod tests {
 
     fn view(bests: Bests) -> View<'static> {
         let mut view = View::new(Page::Bests, 0, None);
-        view.bests = bests;
+        view.show_bests(bests, Mode::List);
         view.prepare();
         view
     }
@@ -272,7 +272,7 @@ mod tests {
             ..Bests::default()
         };
         let mut view = View::new(Page::Bests, 0, None);
-        view.bests = bests;
+        view.show_bests(bests, Mode::List);
         view.prepare();
         assert!(!view.canvas().shows("W/KG"));
         view.rider = crate::ride::rider::Rider::default().step_weight(1, true);
@@ -299,7 +299,7 @@ mod tests {
             bottom: HEIGHT,
         };
         let mut confirm = View::new(Page::Bests, 0, None);
-        confirm.bests_mode = Mode::Confirm;
+        confirm.show_bests(Bests::default(), Mode::Confirm);
         confirm.prepare();
         confirm.canvas().assert_laid_out(
             full,
@@ -308,7 +308,7 @@ mod tests {
         );
         assert_eq!(confirm.cues.len(), 2);
         let mut none = View::new(Page::Bests, 0, None);
-        none.bests_mode = Mode::Unavailable;
+        none.show_bests(Bests::default(), Mode::Unavailable);
         none.prepare();
         none.canvas()
             .assert_laid_out(full, &["BESTS NOT KEPT", "NO PLACE TO KEEP THEM"], "none");
@@ -318,7 +318,7 @@ mod tests {
             (Mode::NotSaved, ["BESTS NOT SAVED", "STORAGE REFUSED THEM"]),
         ] {
             let mut view = View::new(Page::Bests, 0, None);
-            view.bests_mode = mode;
+            view.show_bests(Bests::default(), mode);
             view.prepare();
             view.canvas().assert_laid_out(full, &want, "state");
         }

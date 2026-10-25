@@ -50,6 +50,12 @@ pub struct Check {
 }
 
 impl Check {
+    const EMPTY: Self = Self {
+        level: Level::Wait,
+        title: Text::new(),
+        hint: Text::new(),
+    };
+
     pub fn new(level: Level, title: &str, hint: &str) -> Self {
         let mut check = Self {
             level,
@@ -80,6 +86,11 @@ pub struct Readiness {
 }
 
 impl Readiness {
+    pub const EMPTY: Self = Self {
+        riding: Text::new(),
+        checks: [Check::EMPTY; 4],
+    };
+
     /// A ride can start: no check is a problem that stops recording.
     pub fn can_start(&self) -> bool {
         self.checks[Line::Storage as usize].level != Level::Problem

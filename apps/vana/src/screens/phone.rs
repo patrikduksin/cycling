@@ -65,7 +65,7 @@ pub fn on_code(x: usize, y: usize) -> bool {
 }
 
 pub(super) fn prepare(view: &View) -> Canvas {
-    let lines = &view.lines;
+    let lines = &view.lines();
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
     canvas.caption(
@@ -85,7 +85,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         Align::Center,
         if problem { AMBER } else { WHITE },
     );
-    let below = match &view.qr {
+    let below = match view.qr() {
         Some(code) => {
             canvas.shape(Shape::Bar {
                 rect: code.panel(),
@@ -126,14 +126,14 @@ pub(super) fn prepare(view: &View) -> Canvas {
 
 /// The code's modules over the panel the canvas painted.
 pub(super) fn paint(view: &View, row: &mut super::chrome::Row) {
-    if let Some(code) = &view.qr {
+    if let Some(code) = view.qr() {
         code.paint(row, code_colors(view).1);
     }
 }
 
 #[cfg(test)]
 pub(super) fn pixel(view: &View, x: usize, y: usize) -> Option<u16> {
-    let code = view.qr.as_ref()?;
+    let code = view.qr()?;
     code.pixel(x, y).map(|dark| if dark { INK } else { PAPER })
 }
 
@@ -145,19 +145,20 @@ mod tests {
 
     fn view(qr: Option<&str>, problem: bool) -> View<'static> {
         let mut view = View::new(Page::Phone, 0, None);
-        let _ = view.lines[STEP].push_str("STEP 1 OF 2");
-        let _ = view.lines[TITLE_LINE].push_str(if problem {
+        let (code, lines) = view.show_phone();
+        let _ = lines[STEP].push_str("STEP 1 OF 2");
+        let _ = lines[TITLE_LINE].push_str(if problem {
             "WI-FI DID NOT START"
         } else {
             "JOIN VANA WI-FI"
         });
-        let _ = view.lines[NAME].push_str("VANA-3F2A");
-        let _ = view.lines[SECRET].push_str("ABCD EFGH JKMN");
-        let _ = view.lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
+        let _ = lines[NAME].push_str("VANA-3F2A");
+        let _ = lines[SECRET].push_str("ABCD EFGH JKMN");
+        let _ = lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
         if problem {
-            let _ = view.lines[PROBLEM].push_str("1");
+            let _ = lines[PROBLEM].push_str("1");
         }
-        view.qr = qr.and_then(Qr::encode).map(place);
+        *code = qr.and_then(Qr::encode).map(place);
         view.prepare();
         view
     }
@@ -165,7 +166,7 @@ mod tests {
     #[test]
     fn the_code_sits_on_a_light_panel_with_everything_on_screen() {
         let view = view(Some("WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;"), false);
-        let code = view.qr.unwrap();
+        let code = view.qr().unwrap();
         let panel = code.panel();
         assert!(panel.top >= CONTENT.top && panel.right - panel.left <= CODE_WIDTH);
         // Quiet zone is light, the top-left finder is dark.
@@ -195,7 +196,7 @@ mod tests {
         let mut view = view(Some("WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;"), false);
         view.light = true;
         view.prepare();
-        let code = view.qr.unwrap();
+        let code = view.qr().unwrap();
         let panel = code.panel();
         let shown = |x: usize, y: usize| {
             let mut pixels = [0u16; WIDTH];
@@ -214,7 +215,7 @@ mod tests {
     #[test]
     fn a_problem_shows_in_amber_without_a_code() {
         let view = view(None, true);
-        assert!(view.qr.is_none());
+        assert!(view.qr().is_none());
         assert_eq!(
             view.canvas()
                 .find("WI-FI DID NOT START")

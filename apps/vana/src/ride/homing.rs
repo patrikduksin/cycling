@@ -180,8 +180,6 @@ pub enum Event {
     Arrived,
     /// At the end of the course.
     CourseEnd,
-    /// A turn on the course ahead, or here.
-    Turn(Warning),
 }
 
 type Point = (f32, f32);
@@ -306,6 +304,8 @@ pub struct Homing<'a> {
     /// Metres to the course's end where the rider was last matched.
     course_along: f32,
     turns: Warner,
+    /// The turn warning from the last fix, until taken.
+    turn: Option<Warning>,
     tolerance: f32,
     origin: Option<(i32, i32)>,
     /// Metres per 1e-7 degree of longitude at the start.
@@ -356,7 +356,8 @@ impl<'a> Homing<'a> {
             join_fixes: 0,
             join_end: 0,
             course_along: 0.0,
-            turns: Warner::Quiet,
+            turns: Warner::default(),
+            turn: None,
             tolerance: TOLERANCE_M,
             origin: None,
             east_per_e7: M_PER_E7,
@@ -407,6 +408,7 @@ impl<'a> Homing<'a> {
         self.course_from = None;
         self.heading = None;
         self.following = None;
+        self.turn = None;
         self.segment = 0;
         self.matched = None;
         self.retrace = 0;
@@ -416,6 +418,11 @@ impl<'a> Homing<'a> {
         self.pass_start = None;
         self.passed = false;
         self.guide = None;
+    }
+
+    /// The turn ahead to warn of, from the last fix, once.
+    pub fn take_turn(&mut self) -> Option<Warning> {
+        self.turn.take()
     }
 
     /// Whether the rider rode past the start since this was last asked.
@@ -592,7 +599,8 @@ impl<'a> Homing<'a> {
         if self.following_course() {
             self.add(p);
             let event = self.update(p, now);
-            return event.or_else(|| self.warn_turn().map(Event::Turn));
+            self.turn = self.warn_turn();
+            return event;
         }
         if self.auto_follow && self.retracing(p) {
             // The fixes since the turn ran back over the breadcrumb.
@@ -740,7 +748,7 @@ impl<'a> Homing<'a> {
         self.following = Some(line);
         self.join_fixes = 0;
         self.course_along = self.line[..self.line_len].get(end).map_or(0.0, |c| c.along);
-        self.turns = Warner::Quiet;
+        self.turns = Warner::default();
         self.segment = end;
         self.matched = None;
         self.off = false;
@@ -792,9 +800,12 @@ impl<'a> Homing<'a> {
             let c = line[len - 1 - k];
             (c.east, c.north)
         };
+        let from_start = self.line[len - 1].along - self.course_along;
         let place = Place {
             next: len - end,
             here,
+            // A float cast saturates, so no position overflows.
+            along_mm: (from_start * 1000.0) as u32,
         };
         self.turns.step(len, at, place)
     }
@@ -1835,10 +1846,8 @@ mod tests {
         let (mut warnings, mut events) = (Vec::new(), Vec::new());
         for &(east, north) in points {
             *now += 1_000;
-            match homing.observe(Some(at(east, north)), *now) {
-                Some(Event::Turn(warning)) => warnings.push(warning),
-                event => events.extend(event),
-            }
+            events.extend(homing.observe(Some(at(east, north)), *now));
+            warnings.extend(homing.take_turn());
             if homing.needs_course() {
                 homing.set_course(course);
             }
@@ -1872,7 +1881,10 @@ mod tests {
                 kind: left,
                 metres: 150,
             },
-            Warning::Now(left),
+            Warning::Now {
+                kind: left,
+                then: None,
+            },
         ];
         assert_eq!(warnings, corner.repeat(3), "{warnings:?}");
         // The next lap, with the course ended, warns of nothing.

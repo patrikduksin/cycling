@@ -45,31 +45,62 @@ fn join(parts: &[Vec<(f32, f32)>]) -> Vec<(f32, f32)> {
     line
 }
 
-/// Ride `line` start to end, a fix every `step` metres, and say where along
-/// it each warning came.
-fn ride(line: &[(f32, f32)], step: f32) -> Vec<(u32, Warning)> {
-    let mut warner = Warner::default();
-    let mut said = Vec::new();
-    let (mut walked, mut ridden) = (0.0, 0.0);
+/// Where on `line` the rider is, `metres` from its start.
+fn place(line: &[(f32, f32)], metres: f32) -> Place {
+    let mut walked = 0.0;
     for next in 1..line.len() {
         let (a, b) = (line[next - 1], line[next]);
         let length = distance(a, b);
-        while ridden <= walked + length {
+        if walked + length >= metres || next + 1 == line.len() {
             let t = if length > 0.0 {
-                (ridden - walked) / length
+                ((metres - walked) / length).clamp(0.0, 1.0)
             } else {
                 0.0
             };
             let here = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
-            let at = |k: usize| line[k];
-            if let Some(warning) = warner.step(line.len(), at, Place { next, here }) {
-                said.push((ridden as u32, warning));
-            }
-            ridden += step;
+            return Place {
+                next,
+                here,
+                along_mm: mm(metres),
+            };
         }
         walked += length;
     }
+    unreachable!("a line of two points or more")
+}
+
+fn length(line: &[(f32, f32)]) -> f32 {
+    line.windows(2).map(|pair| distance(pair[0], pair[1])).sum()
+}
+
+/// Ride `line` through `positions`, metres from its start, and say where
+/// each warning came. Riding back is not riding the course its way, which
+/// warns of nothing (`Homing`), so only the way on is asked.
+fn ride_through(
+    line: &[(f32, f32)],
+    positions: impl IntoIterator<Item = f32>,
+) -> Vec<(u32, Warning)> {
+    let mut warner = Warner::default();
+    let mut said = Vec::new();
+    let mut last = f32::MIN;
+    for metres in positions {
+        let on = metres >= last;
+        last = metres;
+        if !on {
+            continue;
+        }
+        let at = |k: usize| line[k];
+        if let Some(warning) = warner.step(line.len(), at, place(line, metres)) {
+            said.push((metres as u32, warning));
+        }
+    }
     said
+}
+
+/// Ride `line` start to end, a fix every `step` metres.
+fn ride(line: &[(f32, f32)], step: f32) -> Vec<(u32, Warning)> {
+    let fixes = (length(line) / step) as usize;
+    ride_through(line, (0..=fixes).map(|k| k as f32 * step))
 }
 
 fn kinds(said: &[(u32, Warning)]) -> Vec<Warning> {
@@ -80,32 +111,85 @@ fn ahead(kind: Kind) -> Warning {
     Warning::Ahead { kind, metres: 150 }
 }
 
+fn now(kind: Kind) -> Warning {
+    Warning::Now { kind, then: None }
+}
+
 const RIGHT: Kind = Kind::Turn(Side::Right);
 const LEFT: Kind = Kind::Turn(Side::Left);
+const U_TURN: Kind = Kind::UTurn;
+
+/// A road north, turning right or left 90 degrees at each distance along
+/// it, then 400 m on; a point every `spacing` metres.
+fn corners(spacing: f32, turns: &[(f32, bool)]) -> Vec<(f32, f32)> {
+    let (mut heading, mut done) = (0.0f32, 0.0);
+    let mut points = vec![(0.0f32, 0.0f32)];
+    let end = turns.last().map_or(800.0, |turn| turn.0 + 400.0);
+    for &(at, right) in turns.iter().chain([(end, true)].iter()) {
+        let radians = heading.to_radians();
+        let p = *points.last().unwrap();
+        let leg = at - done;
+        points.push((
+            p.0 + leg * libm::sinf(radians),
+            p.1 + leg * libm::cosf(radians),
+        ));
+        done = at;
+        heading += if right { 90.0 } else { -90.0 };
+    }
+    path(&points, spacing)
+}
+
+/// A ring of `radius` metres about (0, 0), ridden anticlockwise from the
+/// south, leaving after `sweep` degrees round it.
+fn ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
+    let ring = arc((0.0, 0.0), radius, 180.0, -sweep, spacing.min(radius / 3.0));
+    let out = *ring.last().unwrap();
+    let away = (out.0 / radius * 300.0, out.1 / radius * 300.0);
+    join(&[
+        path(&[(0.0, -300.0), (0.0, -radius)], spacing),
+        ring,
+        path(&[out, away], spacing),
+    ])
+}
+
+/// Up 400 m, round a left hairpin of `radius`, and back down.
+fn hairpin(radius: f32, spacing: f32) -> Vec<(f32, f32)> {
+    join(&[
+        path(&[(0.0, 0.0), (0.0, 400.0)], spacing),
+        arc(
+            (-radius, 400.0),
+            radius,
+            90.0,
+            -180.0,
+            spacing.min(radius / 3.0),
+        ),
+        path(&[(-2.0 * radius, 400.0), (-2.0 * radius, 0.0)], spacing),
+    ])
+}
 
 #[test]
 fn a_corner_is_warned_of_150_m_before_and_again_at_it() {
-    let line = path(&[(0.0, 0.0), (0.0, 400.0), (300.0, 400.0)], 10.0);
-    let said = ride(&line, 7.0);
-    assert_eq!(
-        kinds(&said),
-        [ahead(RIGHT), Warning::Now(RIGHT)],
-        "{said:?}"
-    );
-    assert!((245..=255).contains(&said[0].0), "{said:?}");
-    assert!((370..=377).contains(&said[1].0), "{said:?}");
-    let left = path(&[(0.0, 0.0), (0.0, 400.0), (-300.0, 400.0)], 10.0);
-    assert_eq!(kinds(&ride(&left, 7.0)), [ahead(LEFT), Warning::Now(LEFT)]);
+    for spacing in [3.0, 5.0, 8.0, 50.0] {
+        let said = ride(&corners(spacing, &[(400.0, true)]), 7.0);
+        assert_eq!(
+            kinds(&said),
+            [ahead(RIGHT), now(RIGHT)],
+            "{spacing} m: {said:?}"
+        );
+        assert!((235..=255).contains(&said[0].0), "{said:?}");
+        assert!((355..=380).contains(&said[1].0), "{said:?}");
+        let left = ride(&corners(spacing, &[(400.0, false)]), 7.0);
+        assert_eq!(kinds(&left), [ahead(LEFT), now(LEFT)], "{spacing} m");
+    }
 }
 
 #[test]
 fn sharp_turns_and_u_turns_say_so() {
     let sharp = path(&[(0.0, 0.0), (0.0, 400.0), (300.0, 100.0)], 10.0);
     let kind = Kind::Sharp(Side::Right);
-    assert_eq!(kinds(&ride(&sharp, 7.0)), [ahead(kind), Warning::Now(kind)]);
+    assert_eq!(kinds(&ride(&sharp, 7.0)), [ahead(kind), now(kind)]);
     let back = path(&[(0.0, 0.0), (0.0, 400.0), (0.0, 100.0)], 10.0);
-    let kind = Kind::UTurn;
-    assert_eq!(kinds(&ride(&back, 7.0)), [ahead(kind), Warning::Now(kind)]);
+    assert_eq!(kinds(&ride(&back, 7.0)), [ahead(U_TURN), now(U_TURN)]);
 }
 
 #[test]
@@ -120,99 +204,138 @@ fn a_gentle_bend_says_nothing() {
 }
 
 #[test]
-fn a_hairpin_is_a_u_turn_whether_drawn_fine_or_as_one_point() {
-    // Up, round a 10 m radius to the left, and back down 20 m to the west.
-    let fine = join(&[
-        path(&[(0.0, 0.0), (0.0, 400.0)], 5.0),
-        arc((-10.0, 400.0), 10.0, 90.0, -180.0, 2.0),
-        path(&[(-20.0, 400.0), (-20.0, 0.0)], 5.0),
-    ]);
+fn hairpins_wide_and_tight_are_u_turns_however_drawn() {
+    for radius in [10.0, 20.0, 30.0] {
+        for spacing in [3.0, 5.0, 8.0] {
+            let said = ride(&hairpin(radius, spacing), 7.0);
+            assert_eq!(
+                kinds(&said),
+                [ahead(U_TURN), now(U_TURN)],
+                "r{radius} at {spacing} m: {said:?}"
+            );
+        }
+    }
     let rough = path(&[(0.0, 0.0), (-10.0, 410.0), (-20.0, 0.0)], 50.0);
-    for line in [fine, rough] {
+    assert_eq!(kinds(&ride(&rough, 7.0)), [ahead(U_TURN), now(U_TURN)]);
+}
+
+#[test]
+fn a_roundabout_of_any_size_is_one_turn_the_way_it_leaves() {
+    // Entering from the south, anticlockwise: the first exit is east, the
+    // second north, the third west.
+    for radius in [10.0, 15.0, 20.0, 30.0, 40.0] {
+        for spacing in [3.0, 5.0] {
+            let first = ride(&ring(radius, 90.0, spacing), 7.0);
+            assert_eq!(
+                kinds(&first),
+                [ahead(RIGHT), now(RIGHT)],
+                "r{radius}: {first:?}"
+            );
+            let third = ride(&ring(radius, 270.0, spacing), 7.0);
+            assert_eq!(
+                kinds(&third),
+                [ahead(LEFT), now(LEFT)],
+                "r{radius}: {third:?}"
+            );
+            let straight = ride(&ring(radius, 180.0, spacing), 7.0);
+            assert!(straight.is_empty(), "r{radius}: {straight:?}");
+            // Round to leave 30 degrees left of the way in: nothing, and
+            // never a late word from partway round.
+            let slight = ride(&ring(radius, 210.0, spacing), 7.0);
+            assert!(slight.is_empty(), "r{radius}: {slight:?}");
+        }
+    }
+}
+
+#[test]
+fn corners_close_together_are_named_together_or_one_by_one() {
+    for spacing in [3.0, 5.0, 8.0] {
+        // A jog 20 m across is no turn.
+        let jog = ride(&corners(spacing, &[(400.0, false), (420.0, true)]), 7.0);
+        assert!(jog.is_empty(), "{spacing} m: {jog:?}");
+        // 25 m apart: one warning names both.
+        let pair = ride(&corners(spacing, &[(400.0, false), (425.0, true)]), 7.0);
+        let both = Warning::Now {
+            kind: LEFT,
+            then: Some(RIGHT),
+        };
+        assert_eq!(kinds(&pair), [ahead(LEFT), both], "{spacing} m: {pair:?}");
+        // 40 m apart: each its own, the second only at it.
+        let apart = ride(&corners(spacing, &[(400.0, false), (440.0, true)]), 7.0);
+        assert_eq!(
+            kinds(&apart),
+            [ahead(LEFT), now(LEFT), now(RIGHT)],
+            "{spacing} m: {apart:?}"
+        );
+        let same = ride(&corners(spacing, &[(400.0, true), (440.0, true)]), 7.0);
+        assert_eq!(
+            kinds(&same),
+            [ahead(RIGHT), now(RIGHT), now(RIGHT)],
+            "{spacing} m: {same:?}"
+        );
+        // Six corners 40 m apart, right and left in turn.
+        let turns: Vec<_> = (0..6)
+            .map(|k| (400.0 + 40.0 * k as f32, k % 2 == 0))
+            .collect();
+        let said = ride(&corners(spacing, &turns), 7.0);
+        let mut want = vec![ahead(RIGHT)];
+        want.extend([RIGHT, LEFT, RIGHT, LEFT, RIGHT, LEFT].map(now));
+        assert_eq!(kinds(&said), want, "{spacing} m: {said:?}");
+        // Two far apart: each warned of ahead and at it.
+        let block = ride(&corners(spacing, &[(400.0, false), (600.0, true)]), 7.0);
+        assert_eq!(
+            kinds(&block),
+            [ahead(LEFT), now(LEFT), ahead(RIGHT), now(RIGHT)],
+            "{spacing} m"
+        );
+    }
+}
+
+#[test]
+fn a_jittery_track_says_only_its_corner() {
+    for seed in 1..=8 {
+        let mut rng = crate::testing::Rng::new(seed);
+        let mut line = corners(5.0, &[(400.0, true)]);
+        for point in &mut line[1..] {
+            point.0 += rng.below(4_001) as f32 / 1000.0 - 2.0;
+            point.1 += rng.below(4_001) as f32 / 1000.0 - 2.0;
+        }
         let said = ride(&line, 7.0);
         assert_eq!(
             kinds(&said),
-            [ahead(Kind::UTurn), Warning::Now(Kind::UTurn)],
-            "{said:?}"
+            [ahead(RIGHT), now(RIGHT)],
+            "seed {seed}: {said:?}"
         );
     }
 }
 
-/// A roundabout of 12 m radius about (0, 0), ridden anticlockwise from the
-/// south, leaving after `sweep` degrees round it.
-fn roundabout(sweep: f32) -> Vec<(f32, f32)> {
-    let ring = arc((0.0, 0.0), 12.0, 180.0, -sweep, 3.0);
-    let out = *ring.last().unwrap();
-    let away = (out.0 / 12.0 * 300.0, out.1 / 12.0 * 300.0);
-    join(&[
-        path(&[(0.0, -300.0), (0.0, -12.0)], 10.0),
-        ring,
-        path(&[out, away], 10.0),
-    ])
-}
-
 #[test]
-fn a_roundabout_is_one_turn_the_way_it_leaves() {
-    // Entering from the south, anticlockwise: the first exit is east, the
-    // second north, the third west.
-    let first = ride(&roundabout(90.0), 7.0);
+fn riding_back_past_a_turn_and_on_again_warns_of_it_again() {
+    let line = corners(5.0, &[(600.0, false), (900.0, true)]);
+    let out = (0..=90).map(|k| k as f32 * 7.0);
+    let back = (0..=60).map(|k| 630.0 - k as f32 * 7.0);
+    let on = (0..=150).map(|k| 210.0 + k as f32 * 7.0);
+    let said = ride_through(&line, out.chain(back).chain(on));
     assert_eq!(
-        kinds(&first),
-        [ahead(RIGHT), Warning::Now(RIGHT)],
-        "{first:?}"
-    );
-    let third = ride(&roundabout(270.0), 7.0);
-    assert_eq!(
-        kinds(&third),
-        [ahead(LEFT), Warning::Now(LEFT)],
-        "{third:?}"
-    );
-    let straight = ride(&roundabout(180.0), 7.0);
-    assert!(straight.is_empty(), "{straight:?}");
-    // Round to leave 30 degrees left of the way in: nothing, and never a
-    // late word from partway round.
-    let slight = ride(&roundabout(210.0), 7.0);
-    assert!(slight.is_empty(), "{slight:?}");
-}
-
-#[test]
-fn a_jog_left_and_right_is_no_turn_but_two_far_apart_are_two() {
-    let jog = path(
-        &[(0.0, 0.0), (0.0, 300.0), (-10.0, 300.0), (-10.0, 600.0)],
-        5.0,
-    );
-    let said = ride(&jog, 7.0);
-    assert!(said.is_empty(), "{said:?}");
-    for offset in [20.0, 25.0] {
-        let jog = path(
-            &[(0.0, 0.0), (0.0, 300.0), (-offset, 300.0), (-offset, 600.0)],
-            5.0,
-        );
-        let said = ride(&jog, 7.0);
-        assert!(said.is_empty(), "{offset} m: {said:?}");
-    }
-    let block = path(
-        &[(0.0, 0.0), (0.0, 300.0), (-200.0, 300.0), (-200.0, 600.0)],
-        10.0,
-    );
-    assert_eq!(
-        kinds(&ride(&block, 7.0)),
+        kinds(&said),
         [
             ahead(LEFT),
-            Warning::Now(LEFT),
+            now(LEFT),
+            ahead(LEFT),
+            now(LEFT),
             ahead(RIGHT),
-            Warning::Now(RIGHT)
-        ]
+            now(RIGHT)
+        ],
+        "{said:?}"
     );
-    // 50 m apart, the second is warned of only at it.
-    let close = path(
-        &[(0.0, 0.0), (0.0, 300.0), (-50.0, 300.0), (-50.0, 600.0)],
-        10.0,
-    );
-    assert_eq!(
-        kinds(&ride(&close, 7.0)),
-        [ahead(LEFT), Warning::Now(LEFT), Warning::Now(RIGHT)]
-    );
+}
+
+#[test]
+fn a_rider_inside_a_roundabout_hears_nothing_of_it() {
+    let line = ring(20.0, 270.0, 3.0);
+    // Starting to follow 20 m round the ring.
+    let said = ride_through(&line, (0..60).map(|k| 320.0 + k as f32 * 7.0));
+    assert!(said.is_empty(), "{said:?}");
 }
 
 /// `course`'s points in metres east and north of its start.
@@ -264,7 +387,7 @@ fn a_long_course_thinned_to_fit_warns_of_its_hairpins_as_drawn() {
     );
     assert!(thinned.len() * 20 < full.len(), "{} points", thinned.len());
 
-    let want = [ahead(Kind::UTurn), Warning::Now(Kind::UTurn)].repeat(10);
+    let want = [ahead(U_TURN), now(U_TURN)].repeat(10);
     let full_said = ride(&full, 7.0);
     assert_eq!(kinds(&full_said), want, "{full_said:?}");
     let thinned_said = ride(&thinned, 7.0);
@@ -285,24 +408,28 @@ fn a_rider_past_the_end_or_on_a_tiny_course_hears_nothing() {
     let off_end = Place {
         next: line.len(),
         here: (300.0, 400.0),
+        along_mm: 700_000,
     };
     assert_eq!(warner.step(line.len(), at, off_end), None);
     let start = Place {
         next: 0,
         here: (0.0, 0.0),
+        along_mm: 0,
     };
     assert_eq!(warner.step(line.len(), at, start), None);
     let two = [(0.0, 0.0), (0.0, 0.0)];
     let place = Place {
         next: 1,
         here: (0.0, 0.0),
+        along_mm: 0,
     };
     assert_eq!(warner.step(2, |k| two[k], place), None);
     // Points kilometres apart, and on top of one another.
     let far = [(0.0, 0.0), (0.0, 4.0e6), (4.0e6, 4.0e6), (4.0e6, 4.0e6)];
     let place = Place {
         next: 1,
-        here: (0.0, 3.99999e6),
+        here: (0.0, 3.99996e6),
+        along_mm: u32::MAX - 10,
     };
     assert_eq!(
         next(4, |k| far[k], place, 0, u32::MAX).and_then(|group| group.kind),
@@ -311,7 +438,7 @@ fn a_rider_past_the_end_or_on_a_tiny_course_hears_nothing() {
 }
 
 #[test]
-fn a_staircase_is_cut_into_turns_no_longer_than_a_roundabout() {
+fn a_staircase_is_cut_into_groups_of_bounded_length() {
     // 20 m north, 20 m east, forty times over, between straights.
     let mut corners = vec![(0.0, 0.0), (0.0, 300.0)];
     for k in 0..40 {
@@ -322,27 +449,20 @@ fn a_staircase_is_cut_into_turns_no_longer_than_a_roundabout() {
     corners.push((top.0, top.1 + 300.0));
     let line = path(&corners, 5.0);
     let at = |k: usize| line[k];
-    let mut from = 0;
     let mut groups = 0;
-    let place = Place {
-        next: 1,
-        here: line[0],
-    };
-    while let Some(group) = next(line.len(), at, place, from, u32::MAX) {
-        let span: f32 = (group.first..group.last)
-            .map(|k| distance(line[k], line[k + 1]))
-            .sum();
-        assert!(span <= SPAN_M + 5.0, "{group:?} spans {span} m");
-        from = group.last + 1;
-        groups += 1;
+    for k in 0..40 {
+        let place = place(&line, 250.0 + 40.0 * k as f32);
+        if let Some(group) = next(line.len(), at, place, place.along_mm, u32::MAX) {
+            assert!(group.end_mm - group.start_mm <= mm(SPAN_M), "{group:?}");
+            groups += 1;
+        }
     }
-    assert!(groups >= 10, "{groups} groups");
+    assert!(groups > 0);
+    // However the staircase is named, its warnings come one at a time.
     let said = ride(&line, 7.0);
-    let nows = said
-        .iter()
-        .filter(|(_, w)| matches!(w, Warning::Now(_)))
-        .count();
-    assert!(nows <= groups, "{said:?}");
+    for pair in said.windows(2) {
+        assert!(pair[1].0 > pair[0].0, "{said:?}");
+    }
 }
 
 #[test]
@@ -357,8 +477,9 @@ fn thousands_of_points_in_one_spot_cost_a_bounded_scan() {
     let place = Place {
         next: 1,
         here: (0.0, 0.0),
+        along_mm: 0,
     };
     assert_eq!(Warner::default().step(line.len(), at, place), None);
-    let most = (GROUPS * SCAN_POINTS * (4 * CHORD_POINTS + 8)) as u32;
+    let most = (2 * GROUPS * 2 * (WALK_POINTS + SAMPLES + 2)) as u32;
     assert!(calls.get() <= most, "{} reads", calls.get());
 }

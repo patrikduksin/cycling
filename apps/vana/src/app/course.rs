@@ -96,7 +96,7 @@ impl Runtime {
         self.navigation.show(toast, NUDGE_MS, now);
         let cue = match warning {
             Warning::Ahead { .. } => Cue::TurnAhead,
-            Warning::Now(_) => Cue::Turn,
+            Warning::Now { .. } => Cue::Turn,
         };
         self.cue(cue, now);
         self.display.redraw();

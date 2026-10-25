@@ -613,12 +613,20 @@ open or being written.
 - Facts give way to every other file: a ride saves its workout record first,
   and a new table never takes the last free directory entry, unless it folds
   older files that free entries right after. With no entry free it deletes
-  only an older file that holds nothing to fold, never a ride's facts; else
-  the save fails and is logged.
+  first an older file that holds nothing to fold, else the oldest older file,
+  whose record the same write commits; a cut in between loses that one ride,
+  as older firmware's rotation would. Clearing a journal deletes its older
+  files on a full directory too.
 - Without a card, a FILES volume or a store the host formatted, nothing is
   written and every reader shows what it showed before facts were kept. A
   write the store refuses is logged and the ride is not held up for it. A
-  table that does not parse is left as it is and nothing is saved over it.
+  table whose header is damaged keeps every slot that passes its CRC, read at
+  32 bytes, and the next save writes it again with a fresh header,
+  copy-on-write. A `rides/facts.tbl` without the magic is not VANA's: it is
+  left as it is and nothing is saved over it.
+- Past 1000 rides the table drops the oldest saved and the memory the oldest
+  start: the same ride unless rides were saved out of start order, and each
+  boot reads the table again.
 - Firmware from before the table lists only `.workout` and `.facts` files
   under `rides/`, so it leaves `rides/facts.tbl` alone; it then shows rides as
   if they had no facts, and the table is still there after an update.

@@ -413,7 +413,8 @@ fn the_table_gives_way_on_a_full_directory_and_frees_the_entries_it_folds() {
     assert_eq!(kept[BATCH], record(65), "after the first batch");
     assert_eq!(names(&mut crowded).len(), files::CAPACITY - 65 + 1);
 
-    // With no entry free at all, no ride's facts are deleted to make room.
+    // With no entry free at all, the oldest file goes for the table that
+    // holds its ride: every ride stays.
     let mut filled = formatted();
     for host in 0..files::CAPACITY - 64 {
         put(&mut filled, &std::format!("host/{host}"), b"x");
@@ -421,11 +422,34 @@ fn the_table_gives_way_on_a_full_directory_and_frees_the_entries_it_folds() {
     for ride in 1..=64 {
         older_file(&mut filled, &record(ride));
     }
+    assert_eq!(names(&mut filled).len(), files::CAPACITY);
+    save(&mut filled, &record(65)).unwrap();
+    while fold(&mut filled).unwrap() {}
+    let mut kept = table(&mut filled);
+    kept.sort_by_key(|record| record.ride_id);
+    assert_eq!(kept, (1..=65).map(record).collect::<Vec<_>>());
+    assert_eq!(names(&mut filled).len(), files::CAPACITY - 64 + 1);
+}
+
+#[test]
+fn a_clear_on_a_full_directory_deletes_its_journals_older_files() {
+    let mut region = formatted();
+    for host in 0..files::CAPACITY - 64 {
+        put(&mut region, &std::format!("host/{host}"), b"x");
+    }
+    for ride in 1..=60 {
+        older_file(&mut region, &record(ride));
+    }
+    for ride in 1..=4 {
+        older_file(&mut region, &internal(ride));
+    }
+    forget(&mut region, b'b').unwrap();
+    assert_eq!(older(&mut region), []);
     assert_eq!(
-        save(&mut filled, &record(65)),
-        Err(Error::Files(files::Error::Full))
+        table(&mut region),
+        (1..=4).map(internal).collect::<Vec<_>>()
     );
-    assert_eq!(older(&mut filled).len(), 64);
+    assert_eq!(names(&mut region).len(), files::CAPACITY - 64 + 1);
 }
 
 #[test]
@@ -504,7 +528,7 @@ fn an_older_file_that_will_not_read_stays_and_the_folding_stops() {
 }
 
 #[test]
-fn a_table_that_does_not_parse_is_left_alone() {
+fn a_damaged_header_keeps_the_rides_and_a_file_without_the_magic_is_left_alone() {
     for seed in 0..200 {
         let mut rng = Rng::new(seed);
         let mut region = formatted();
@@ -517,15 +541,29 @@ fn a_table_that_does_not_parse_is_left_alone() {
         damaged[at] ^= 1 << rng.below(8);
         put(&mut region, TABLE, &damaged);
         older_file(&mut region, &record(9));
+        if at < 4 {
+            assert_eq!(
+                read(&mut region, 0, |_| {}),
+                Err(Error::Table),
+                "seed {seed}"
+            );
+            assert_eq!(save(&mut region, &record(4)), Err(Error::Table));
+            assert_eq!(fold(&mut region), Err(Error::Table));
+            assert_eq!(raw(&mut region, TABLE), Some(damaged), "seed {seed}");
+            assert_eq!(older(&mut region), [record(9)]);
+            continue;
+        }
+        let rides: Vec<Record> = (1..=3).map(record).collect();
         assert_eq!(
-            read(&mut region, 0, |_| {}),
-            Err(Error::Table),
-            "seed {seed}"
+            table(&mut region),
+            rides,
+            "seed {seed}: read past the header"
         );
-        assert_eq!(save(&mut region, &record(4)), Err(Error::Table));
-        assert_eq!(fold(&mut region), Err(Error::Table));
-        assert_eq!(raw(&mut region, TABLE), Some(damaged), "seed {seed}");
-        assert_eq!(older(&mut region), [record(9)]);
+        save(&mut region, &record(4)).unwrap();
+        let written = raw(&mut region, TABLE).unwrap();
+        assert!(stride(&written).is_some(), "seed {seed}: a fresh header");
+        let expected: Vec<Record> = [1, 2, 3, 9, 4].into_iter().map(record).collect();
+        assert_eq!(table(&mut region), expected, "seed {seed}");
     }
 }
 

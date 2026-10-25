@@ -20,8 +20,10 @@
 //! Later versions only add fields before the CRC, or lengthen the stride for
 //! them; a reader takes the fields it knows from any record version at least
 //! 1, and a save copies the slots it keeps byte for byte, so it never drops
-//! fields it does not know. A table that does not parse is left alone and
-//! nothing is saved over it.
+//! fields it does not know. A table whose header is damaged reads its slots at
+//! version 1's stride, and the next rewrite gives it a fresh header; a file
+//! without the magic is not ours and is left alone, with nothing saved over
+//! it.
 //!
 //! The store has no append in place: a save writes the whole table again,
 //! copy-on-write, with the ride appended last. It drops the ride's earlier
@@ -149,7 +151,7 @@ impl Record {
 pub enum Error {
     Volume(volume::Error),
     Files(files::Error),
-    /// The table does not parse; it is left as it is.
+    /// The table file lacks the magic; it is left as it is.
     Table,
 }
 
@@ -273,10 +275,11 @@ fn decode_slot(slot: &[u8]) -> Option<Record> {
     Some(decode_fields(slot, SLOT_FIELDS))
 }
 
-/// The rides a whole table holds, oldest saved first; none if it does not
-/// parse.
+/// The rides a whole table holds, oldest saved first, read as the firmware
+/// reads them; none without the magic.
 pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
-    let stride = stride(bytes).unwrap_or(bytes.len().max(1));
+    let ours = bytes.starts_with(TABLE_MAGIC);
+    let stride = stride(bytes).unwrap_or(if ours { SLOT } else { bytes.len().max(1) });
     bytes.chunks_exact(stride).skip(1).filter_map(decode_slot)
 }
 
@@ -305,9 +308,14 @@ fn stride(bytes: &[u8]) -> Option<usize> {
 struct Table {
     entry: files::Entry,
     stride: usize,
+    /// The header parsed; else the slots are read at version 1's stride
+    /// and a rewrite writes a fresh header.
+    sound: bool,
 }
 
 impl Table {
+    /// The table, or `Error::Table` for a file without the magic, which is
+    /// not ours to read or write over.
     fn open<M: ReadWrite>(
         store: &mut volume::Volume<'_, M>,
         dir: &files::Dir,
@@ -316,11 +324,21 @@ impl Table {
         bytes: &mut files::Sector,
     ) -> Result<Self, Error> {
         let read = dir.read(store, &entry, 0, bytes, sector)?;
-        let stride = stride(&bytes[..read]).ok_or(Error::Table)?;
-        if !(entry.length as usize).is_multiple_of(stride) {
+        if bytes[..read.min(4)] != TABLE_MAGIC[..] {
             return Err(Error::Table);
         }
-        Ok(Self { entry, stride })
+        Ok(match stride(&bytes[..read]) {
+            Some(stride) if (entry.length as usize).is_multiple_of(stride) => Self {
+                entry,
+                stride,
+                sound: true,
+            },
+            _ => Self {
+                entry,
+                stride: SLOT,
+                sound: false,
+            },
+        })
     }
 
     fn sectors(&self) -> usize {
@@ -388,12 +406,17 @@ struct Batch {
 }
 
 impl Batch {
-    /// A file that read but holds nothing to fold, which may go before the
-    /// table commits.
+    /// The file that goes before the table can take a directory entry: one
+    /// that read but holds nothing to fold, else the oldest that read, whose
+    /// record this rewrite holds. A cut before the commit loses only that
+    /// ride, as older firmware's rotation would.
     fn room(&self) -> Option<&files::Entry> {
-        (0..self.entries.len())
-            .find(|&at| self.read[at] && self.records[at].is_none())
-            .map(|at| &self.entries[at])
+        let mut read = (0..self.entries.len()).filter(|&at| self.read[at]);
+        let at = read
+            .clone()
+            .find(|&at| self.records[at].is_none())
+            .or_else(|| read.next())?;
+        Some(&self.entries[at])
     }
 
     /// The ride in `slot` if the rewrite keeps it: it decodes, the change
@@ -506,7 +529,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<bool, Error> {
     };
 
     let mut kept = 0;
-    let mut dropped = false;
+    let mut dropped = table.is_some_and(|table| !table.sound);
     let mut folds = batch.records.map(|record| record.is_some());
     if let Some(table) = table {
         let rides = 0..usize::MAX;
@@ -570,6 +593,8 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<bool, Error> {
         match table {
             Some(table) => {
                 let all = 0..usize::MAX;
+                let mut fresh = [0u8; SLOT];
+                header(&mut fresh);
                 table.each(
                     &mut store,
                     &dir,
@@ -577,6 +602,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<bool, Error> {
                     &mut sector,
                     &mut bytes,
                     |store, slot| match slot {
+                        Slot::Header(_) if !table.sound => out.emit(store, &fresh),
                         Slot::Header(header) => out.emit(store, header),
                         Slot::Ride(ride) if batch.keeps(&change, ride).is_some() => {
                             if skip > 0 {
@@ -790,7 +816,9 @@ impl Shelf {
     }
 
     /// Keep `record`: a ride just saved always, one read from FILES only over
-    /// an earlier start of its ride. Once full, the oldest start gives way.
+    /// an earlier start of its ride. Once full, the oldest start gives way,
+    /// where the table drops the oldest saved: the same ride unless rides
+    /// were saved out of start order, and each boot reads the table again.
     /// Returns whether anything changed.
     pub fn put(&mut self, record: &Record, saved: bool) -> bool {
         let mut index = match self.search(record.key()) {

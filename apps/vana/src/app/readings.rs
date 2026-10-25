@@ -7,7 +7,7 @@ use crate::ride::metrics::{Cadence, Gradient, Odometer, Power3s, Speed};
 use crate::ride::wheel_size::{self, Calibrator};
 use crate::sensors::ant::{Crank, Epoch, HeartRate, Power, device_type};
 use crate::sensors::ble_profile::{self, Profile};
-use crate::sensors::radar::{Alert, Radar};
+use crate::sensors::radar::{Radar, Warning};
 use device_api::ant::{Ant, CHANNEL_CAPACITY, LinkState, PACKET_CAPACITY, Packet};
 use device_api::ble_transport::Ble;
 use device_api::gps::FixState;
@@ -96,7 +96,7 @@ pub(super) struct Readings {
     /// 3 s power at the last sample, for the ride page.
     pub(super) power_3s_watts: Option<u16>,
     pub(super) radar: Radar,
-    pub(super) radar_alert: Alert,
+    pub(super) radar_warning: Warning,
     epochs: [Option<Epoch>; Decoded::ALL.len()],
     pub(super) battery: BatteryWatch,
     /// Time left at the rate the charge has been falling.
@@ -225,7 +225,7 @@ impl Default for Readings {
             power_3s: Power3s::default(),
             power_3s_watts: None,
             radar: Radar::new(),
-            radar_alert: Alert::default(),
+            radar_warning: Warning::default(),
             epochs: [None; Decoded::ALL.len()],
             battery: BatteryWatch::default(),
             battery_life: Default::default(),

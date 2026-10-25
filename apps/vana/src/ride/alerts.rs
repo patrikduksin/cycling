@@ -1,5 +1,5 @@
 //! Ride alerts: heart rate and power outside a band, low cadence, an eat and
-//! drink reminder, a battery that may not last, and radar vehicle counts.
+//! drink reminder, a battery that may not last, and the radar road clear.
 //! Each alert is a short sound and a toast.
 //!
 //! Pure policy: the caller feeds the live sample, the ride state and the radar
@@ -56,8 +56,8 @@ pub struct Settings {
     pub cadence_low_rpm: u8,
     /// Minutes of ride time between eat and drink reminders (`FUEL_MINUTES`).
     pub fuel_every_min: u8,
-    /// Vehicle counts and ALL CLEAR from a radar. The approach beep is a
-    /// safety cue and does not depend on this.
+    /// ALL CLEAR once a radar shows the road empty. The radar's beeps are
+    /// safety cues and do not depend on this.
     pub radar: bool,
 }
 
@@ -155,8 +155,6 @@ pub enum Alert {
     Fuel,
     /// The battery may not last: the minutes it should.
     BatteryLeft(u16),
-    /// More vehicles behind than before: the count now.
-    Vehicles(u8),
     RadarClear,
     /// Sunset is about half an hour away.
     SunsetSoon,
@@ -170,8 +168,7 @@ pub enum Alert {
 }
 
 impl Alert {
-    /// The sound, if any. A rising vehicle count has none: the approach beep
-    /// already sounds for the vehicle that matters.
+    /// The sound, if any.
     pub fn cue(self) -> Option<Cue> {
         match self {
             Self::Fuel => Some(Cue::Fuel),
@@ -180,7 +177,6 @@ impl Alert {
                 Some(Cue::Sunset)
             }
             Self::BatteryLeft(_) => Some(Cue::Battery),
-            Self::Vehicles(_) => None,
             _ => Some(Cue::Band),
         }
     }
@@ -201,8 +197,6 @@ impl Alert {
                 "BATTERY {} LEFT",
                 crate::ride::battery_life::about(minutes)
             ),
-            Self::Vehicles(1) => write!(text, "1 VEHICLE"),
-            Self::Vehicles(count) => write!(text, "{count} VEHICLES"),
             Self::RadarClear => write!(text, "ALL CLEAR"),
             // The font is ASCII: a dash stands for the middle dot.
             Self::SunsetSoon => write!(text, "SUNSET IN 30 MIN"),
@@ -278,9 +272,9 @@ pub struct Alerts {
     /// The ride time seen last tick; less means a new ride.
     active_ms: u64,
     last: Option<u64>,
-    /// The most vehicles seen since the road was last clear, and since when
-    /// the radar has been empty.
-    peak: u8,
+    /// A vehicle was seen since the road was last clear, and since when the
+    /// radar has been empty.
+    seen: bool,
     empty_since: Option<u64>,
     sunset: SunsetWatch,
     turn_back: turn_back::Watch,
@@ -545,30 +539,27 @@ impl Alerts {
         self.battery_short_since = None;
     }
 
-    /// More vehicles than at any time since the road was last clear, or
-    /// the radar staying empty after vehicles.
+    /// The radar staying empty after vehicles.
     fn radar(&mut self, now: u64, settings: &Settings, radar: Snapshot) -> Option<Alert> {
         if !settings.radar || radar.status != radar::Status::Ready {
             // An unknown radar is not an empty road.
-            self.peak = 0;
+            self.seen = false;
             self.empty_since = None;
             return None;
         }
-        let count = radar.targets.iter().flatten().count() as u8;
-        if count != 0 {
+        if radar.targets.iter().flatten().next().is_some() {
+            self.seen = true;
             self.empty_since = None;
-            let rising = count > self.peak;
-            self.peak = self.peak.max(count);
-            return rising.then_some(Alert::Vehicles(count));
+            return None;
         }
-        if self.peak == 0 {
+        if !self.seen {
             return None;
         }
         let since = *self.empty_since.get_or_insert(now);
         if now.saturating_sub(since) < CLEAR_AFTER_MS {
             return None;
         }
-        self.peak = 0;
+        self.seen = false;
         self.empty_since = None;
         Some(Alert::RadarClear)
     }
@@ -812,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn radar_counts_new_vehicles_and_calls_all_clear_once_they_pass() {
+    fn radar_calls_all_clear_once_the_road_stays_empty_after_vehicles() {
         let settings = Settings::default();
         let mut alerts = Alerts::default();
         let sample = Sample::default();
@@ -820,11 +811,8 @@ mod tests {
             alerts.update(at, &settings, Status::Recording, at, &sample, radar)
         };
         assert_eq!(feed(0, quiet()), None, "an empty road is not news");
-        assert_eq!(feed(1000, vehicles(1)), Some(Alert::Vehicles(1)));
-        assert_eq!(feed(1500, vehicles(3)), Some(Alert::Vehicles(3)));
-        // Slots flicker: fewer, then as many again, is not a new vehicle.
-        assert_eq!(feed(2000, vehicles(2)), None);
-        assert_eq!(feed(2500, vehicles(3)), None);
+        assert_eq!(feed(1000, vehicles(1)), None, "a vehicle has no toast");
+        assert_eq!(feed(1500, vehicles(3)), None);
         assert_eq!(feed(3000, quiet()), None);
         assert_eq!(feed(4000, vehicles(1)), None, "back within the clear delay");
         assert_eq!(feed(5000, quiet()), None);
@@ -832,10 +820,8 @@ mod tests {
         assert_eq!(feed(7000, quiet()), Some(Alert::RadarClear));
         assert_eq!(feed(9000, quiet()), None);
         assert_eq!(Alert::RadarClear.cue(), Some(Cue::RadarClear));
-        assert_eq!(Alert::Vehicles(3).cue(), None);
-        assert_eq!(Alert::Vehicles(1).text().as_str(), "1 VEHICLE");
         // A radar that drops out is not an all clear.
-        assert_eq!(feed(10_000, vehicles(2)), Some(Alert::Vehicles(2)));
+        assert_eq!(feed(10_000, vehicles(2)), None);
         assert_eq!(feed(11_000, Snapshot::default()), None);
         assert_eq!(feed(20_000, Snapshot::default()), None);
     }
@@ -1082,15 +1068,18 @@ mod tests {
         let sample = Sample::default();
         let sun = Some((Sun::Up { sets_at: 1_700 }, 0));
         let mut alerts = Alerts::default();
+        for (at, snapshot) in [(7_000, vehicles(1)), (8_000, quiet())] {
+            alerts.update(at, &settings, Status::Recording, at, &sample, snapshot);
+        }
         let radar = alerts.update(
             10_000,
             &settings,
             Status::Recording,
             10_000,
             &sample,
-            vehicles(1),
+            quiet(),
         );
-        assert_eq!(radar, Some(Alert::Vehicles(1)));
+        assert_eq!(radar, Some(Alert::RadarClear));
         assert_eq!(
             alerts.sunset(10_000, true, Status::Recording, true, sun),
             None
@@ -1150,17 +1139,19 @@ mod tests {
     }
 
     #[test]
-    fn radar_cues_follow_their_setting() {
+    fn all_clear_follows_its_setting() {
         let off = Settings {
             radar: false,
             ..Settings::default()
         };
         let mut alerts = Alerts::default();
         let sample = Sample::default();
-        assert_eq!(
-            alerts.update(0, &off, Status::Recording, 0, &sample, vehicles(2)),
-            None
-        );
+        for (at, snapshot) in [(0, vehicles(2)), (1_000, quiet()), (4_000, quiet())] {
+            assert_eq!(
+                alerts.update(at, &off, Status::Recording, at, &sample, snapshot),
+                None
+            );
+        }
     }
 
     #[test]

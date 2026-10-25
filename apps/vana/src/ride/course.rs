@@ -316,8 +316,8 @@ pub fn encode(course: &Course, mut put: impl FnMut(&[u8])) {
     put(&sum.to_le_bytes());
 }
 
-/// The CRC32 that ends `course`'s file in version 1: the turns stored
-/// beside it name their course by it.
+/// The CRC32 of `course` encoded as version 1, whatever version its file
+/// is: the turns stored beside it name their course by it.
 pub fn key(course: &Course) -> u32 {
     sealed(course, &mut |_| {})
 }

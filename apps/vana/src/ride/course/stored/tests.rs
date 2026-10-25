@@ -478,3 +478,34 @@ fn upload_cost() {
         MAX_FILE
     );
 }
+
+/// A track that circles a spot a few metres across, as a recording left on
+/// at a stop does, then turns: its jitter reads as standing still, so the
+/// scan would need more of it than the ring keeps. Nothing found at upload
+/// is trusted, and the course placed finds its turn by the scan as before.
+#[test]
+fn a_track_the_ring_cannot_hold_is_scanned_when_placed() {
+    let mut track = path(&[(0.0, 0.0), (0.0, 400.0)], 5.0);
+    let spots = [(0.0, 400.0), (4.0, 397.0), (-4.0, 397.0)];
+    for k in 0..4 * RING {
+        track.push(spots[k % 3]);
+    }
+    track.extend(path(&[(0.0, 400.0), (400.0, 400.0)], 5.0));
+    let mut finder = Box::new(Finder::new());
+    let mut list = vec![Turn::default(); TURNS];
+    let mut finding = Finding {
+        finder: &mut finder,
+        turns: &mut list,
+    };
+    let (course, _) = build(&track, &mut finding);
+    assert_eq!(finding.finish(&course), None);
+    let mut region = formatted();
+    save_course(&mut region, &course).unwrap();
+    assert_eq!(reread(&mut region).1, None);
+    let line = framed(course.points());
+    let scanned = crate::ride::course::turns::tests::turns_of(&line);
+    assert!(
+        scanned.iter().any(|turn| turn.kind.is_some()),
+        "{scanned:?}"
+    );
+}

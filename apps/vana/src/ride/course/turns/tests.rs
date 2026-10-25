@@ -1109,3 +1109,159 @@ fn scan_time() {
         TURNS * core::mem::size_of::<Turn>()
     );
 }
+
+/// The point `metres` along `line`.
+fn point_along(line: &[(f32, f32)], metres: f32) -> (f32, f32) {
+    let mut walked = 0.0;
+    for pair in line.windows(2) {
+        let step = distance(pair[0], pair[1]);
+        if walked + step >= metres && step > 0.0 {
+            let t = (metres - walked) / step;
+            return (
+                pair[0].0 + t * (pair[1].0 - pair[0].0),
+                pair[0].1 + t * (pair[1].1 - pair[0].1),
+            );
+        }
+        walked += step;
+    }
+    *line.last().unwrap()
+}
+
+/// Metres along `line` to the point of it nearest `p`.
+fn along_to(line: &[(f32, f32)], p: (f32, f32)) -> f32 {
+    let (mut best, mut walked) = ((f32::MAX, 0.0), 0.0);
+    for pair in line.windows(2) {
+        let step = distance(pair[0], pair[1]);
+        let off = crate::ride::thin::off_segment(p, pair[0], pair[1]);
+        if step > 0.0 && off < best.0 {
+            let t = (((p.0 - pair[0].0) * (pair[1].0 - pair[0].0)
+                + (p.1 - pair[0].1) * (pair[1].1 - pair[0].1))
+                / (step * step))
+                .clamp(0.0, 1.0);
+            best = (off, walked + t * step);
+        }
+        walked += step;
+    }
+    best.1
+}
+
+/// A recorded track as a course: each point of `full` up to `noise`
+/// metres off, east and north, as GPS puts it.
+fn jittered(full: &[(f32, f32)], noise: f32, seed: u64) -> Vec<(f32, f32)> {
+    let mut rng = crate::testing::Rng::new(seed);
+    let span = (2.0 * noise * 1000.0) as u64;
+    let mut jitter = || rng.below(span + 1) as f32 / 1000.0 - noise;
+    full.iter()
+        .map(|&(east, north)| (east + jitter(), north + jitter()))
+        .collect()
+}
+
+/// Wrong runs and silent runs, of how many, on recorded tracks of corners,
+/// roundabouts and a hairpin up to `noise` metres off, as drawn and 12 km
+/// on, with their turns `found` as each path finds them. A run is wrong
+/// when a word sends the rider the wrong way: the wrong side, the wrong
+/// corner next, or a U-TURN that is not one.
+fn ride_jittered(noise: f32, found: Found) -> (Vec<std::string::String>, usize, usize) {
+    enum Judged {
+        Corners(Vec<(f32, f32)>),
+        Turn(f32),
+    }
+    let mut shapes: Vec<(Vec<(f32, f32)>, Judged)> = Vec::new();
+    for spacing in [3.0, 5.0, 8.0] {
+        for turns in [
+            vec![(400.0, 90.0)],
+            vec![(400.0, -90.0)],
+            vec![(400.0, 90.0), (440.0, -90.0)],
+        ] {
+            shapes.push((bends(spacing, &turns), Judged::Corners(turns)));
+        }
+        for (radius, sweep) in [(20.0, 90.0), (20.0, 270.0), (30.0, 90.0), (30.0, 270.0)] {
+            let degrees = swing(0.0, 180.0 - sweep);
+            shapes.push((ring(radius, sweep, spacing), Judged::Turn(degrees)));
+        }
+        shapes.push((hairpin(30.0, spacing), Judged::Turn(-180.0)));
+    }
+    let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+    for (k, (drawn, judged)) in shapes.iter().enumerate() {
+        for after in [0.0, 12_000.0] {
+            for seed in 0..15u64 {
+                let full = jittered(&extended(drawn, after), noise, seed * 100 + k as u64 + 1);
+                let positions = (0..=(1_200.0 / 7.0) as usize).map(|k| k as f32 * 7.0);
+                let (line, said) = match found {
+                    Found::Scanned => {
+                        let line = line_of(&build(&full, &mut ()).0);
+                        let said = ride_through(&line, positions);
+                        (line, said)
+                    }
+                    Found::Uploaded => {
+                        let (course, turns) = crate::ride::course::stored::tests::uploaded(&full);
+                        (line_of(&course), ride_with(&turns, positions))
+                    }
+                };
+                let right = match judged {
+                    Judged::Corners(turns) => {
+                        // Where each corner is along the course as kept, which
+                        // jitter makes longer than the road.
+                        let road = bends(1.0, turns);
+                        let kept: Vec<(f32, f32)> = turns
+                            .iter()
+                            .map(|&(at, degrees)| {
+                                (along_to(&line, point_along(&road, at)), degrees)
+                            })
+                            .collect();
+                        names_next_corners(&said, &kept)
+                    }
+                    Judged::Turn(degrees) => said.iter().all(|&(_, warning)| {
+                        let fits = |kind: Kind| match kind {
+                            Kind::UTurn => fabsf(*degrees) >= 135.0,
+                            Kind::Turn(side) | Kind::Sharp(side) => {
+                                (side == Side::Right) == (*degrees > 0.0)
+                            }
+                        };
+                        match warning {
+                            Warning::Ahead { kind, .. } => fits(kind),
+                            Warning::Now { kind, then } => fits(kind) && then.is_none_or(fits),
+                        }
+                    }),
+                };
+                if !right {
+                    wrong.push(std::format!(
+                        "{found:?} ±{noise} m, shape {k}, after {after}, seed {seed}: {} {:?}",
+                        words(&said),
+                        said.iter().map(|s| s.0).collect::<Vec<_>>()
+                    ));
+                }
+                runs += 1;
+                silent += usize::from(said.is_empty());
+            }
+        }
+    }
+    (wrong, silent, runs)
+}
+
+/// Recorded tracks as courses, up to 1 to 4 m off: turns found at upload
+/// are wrong no more often than the scan of the course as kept, and never
+/// within 2 m.
+#[test]
+fn a_recorded_track_names_its_turns_no_worse_than_the_course_as_kept() {
+    for noise in [1.0, 2.0, 3.0, 4.0] {
+        let [scanned, uploaded] = FOUND.map(|found| ride_jittered(noise, found));
+        std::println!(
+            "±{noise} m: scanned {} wrong, {} silent; uploaded {} wrong, {} silent; of {} runs",
+            scanned.0.len(),
+            scanned.1,
+            uploaded.0.len(),
+            uploaded.1,
+            uploaded.2
+        );
+        let first = |wrong: &[std::string::String]| wrong[..wrong.len().min(8)].to_vec();
+        assert!(
+            uploaded.0.len() <= scanned.0.len(),
+            "{:#?}",
+            first(&uploaded.0)
+        );
+        if noise <= 2.0 {
+            assert!(uploaded.0.is_empty(), "{:#?}", first(&uploaded.0));
+        }
+    }
+}

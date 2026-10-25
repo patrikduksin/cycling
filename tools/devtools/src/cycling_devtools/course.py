@@ -3,11 +3,13 @@ turns stored beside it, `course-turns.dat` (docs/ride-recording.md, Course).
 
     python -m cycling_devtools.course course.dat [course-turns.dat]
 
-A turns file names its course by the CRC32 that ends `course.dat`; turns
+A turns file names its course by its key, the CRC32 of the course encoded as
+version 1 of `course.dat` (for a version 1 file, the CRC that ends it); turns
 naming another course are not that course's, and the device scans for them.
 """
 
 import argparse
+import struct
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,9 +56,16 @@ def decode_course(data):
         raise ValueError('not a course')
     if header + count * point + 4 != len(data):
         raise ValueError('length does not match')
-    key = _sealed(data)
+    _sealed(data)
     points = [(i32(data, header + k * point), i32(data, header + k * point + 4)) for k in range(count)]
-    return Course(data[10 : 10 + name_len].decode('ascii'), points, key)
+    name = data[10 : 10 + name_len]
+    return Course(name.decode('ascii'), points, version_1_key(name, points))
+
+
+def version_1_key(name, points):
+    """The CRC32 of the course encoded as version 1, before its CRC."""
+    head = b'VCRS' + bytes([1, 34, 8, len(name)]) + struct.pack('<H', len(points)) + name.ljust(24, b'\0')
+    return zlib.crc32(head + b''.join(struct.pack('<ii', *p) for p in points))
 
 
 def decode_turns(data):

@@ -4,16 +4,19 @@
 //! Thinning a long course to fit (`course::Builder`) cuts its corners and
 //! roundabouts into a few long segments, and a scan of what is kept can only
 //! guess at them (`turns`). `Finder` follows the upload instead: it scans
-//! every point given, a metre apart or more, as they stream in, keeping only
-//! the last `RING` of them, which is all the scan still reads. Each turn is
+//! every point given, 4 m apart or more, as they stream in, keeping only the
+//! last `RING` of them, which is all the scan still reads. Where the points
+//! jitter, as a recorded GPS track's do, each is first moved to the mean of
+//! those about it, so jitter reads as no bend. Each turn is
 //! found in metres along the full track; once the course is complete, it is
 //! moved to the same place along the course as kept, by the full track's
 //! distance to each kept point, so the rider's place on the stored course
 //! finds it.
 //!
 //! The file store commits one file at a time, so the turns cannot commit
-//! with the course. Instead they name their course by the CRC32 that ends
-//! its file (`course::key`): turns of any other course, left by a cut
+//! with the course. Instead they name their course by its key
+//! (`course::key`), the CRC32 of the course encoded as version 1 of
+//! `course.dat`: turns of any other course, left by a cut
 //! between the two writes or by firmware that writes only `course.dat`, are
 //! not this course's, and its turns are found by the scan as before. A
 //! course without the file, or with one that does not decode, is scanned
@@ -56,13 +59,23 @@ const FULL: u8 = 1;
 /// The longest file this version writes.
 pub const MAX_FILE: usize = HEADER_V1 + TURNS * RECORD + 4;
 
-/// Points of the full track the scan keeps, a metre apart or more. It reads
-/// back only as far as the group of bends it is in and the bend after it: at
-/// most 109 points on the gates' courses, and 393 on a track that circles for
-/// kilometres.
-pub const RING: usize = 512;
-/// A point this close to the last one the scan took adds nothing to it.
-const RING_STEP_M: f32 = 1.0;
+/// Points the scan reads that it keeps. It reads back only as far as the
+/// group of bends it is in and the bend after it: at most 64 points on the
+/// gates' courses, and 132 on a track that circles for kilometres.
+pub const RING: usize = 256;
+/// A point this close to the last one taken adds nothing.
+const RING_STEP_M: f32 = 4.0;
+/// Where the points jitter, each the scan reads is the mean of the points
+/// taken within this far along either side of it: GPS jitter would
+/// otherwise read as bends, where a course thinned to fit has none.
+const SMOOTH_M: f32 = 6.0;
+/// The points jitter where, over this many before one and those the mean
+/// takes after it, how far each lies to the side of the line between its
+/// neighbours swings by this much from one to the next at most of them.
+const NOISE_SPAN: usize = 24;
+const NOISE_M: f32 = 1.0;
+/// Points taken that the mean and the jitter may still need.
+const RAW: usize = 32;
 /// The scan steps only while the track is in this far beyond its chord, so
 /// it never takes the end of what has come in so far for the course's end.
 const LEAD_M: f32 = 12.0;
@@ -76,12 +89,23 @@ pub struct Finder {
     origin: Point,
     east_per_e7: f32,
     started: bool,
-    /// The full track's last `RING` points taken, in metres from the
-    /// origin: point `k` is at `ring[k % RING]`.
+    /// The last points taken, in metres from the origin, and metres along
+    /// the track to each: point `k` is `raw[k % RAW]`. `smoothed` of them
+    /// are in the ring.
+    raw: [((f32, f32), f32); RAW],
+    raw_taken: usize,
+    /// Whether, at point `k` taken, how far it lies to the side of the line
+    /// between its neighbours swung by `NOISE_M` or more from the point
+    /// before (`swung[k % RAW]`), and that for the newest point it is known.
+    swung: [bool; RAW],
+    side: f32,
+    smoothed: usize,
+    /// The last `RING` points as the scan reads them, each a point taken or
+    /// the mean about one: point `k` is at `ring[k % RING]`.
     ring: [(f32, f32); RING],
     taken: usize,
-    /// Metres along the full track to the last point taken, and to the
-    /// last point given.
+    /// Metres along the track as the scan reads it to the last point in the
+    /// ring, and to the last point given.
     taken_m: f32,
     given_m: f32,
     /// Millimetres along the full track to each point the course keeps.
@@ -102,6 +126,11 @@ impl Finder {
             origin: Point::default(),
             east_per_e7: 0.0,
             started: false,
+            raw: [((0.0, 0.0), 0.0); RAW],
+            raw_taken: 0,
+            swung: [false; RAW],
+            side: 0.0,
+            smoothed: 0,
             ring: [(0.0, 0.0); RING],
             taken: 0,
             taken_m: 0.0,
@@ -138,6 +167,57 @@ pub struct Found {
 }
 
 impl Finding<'_> {
+    /// Put the points taken into the ring, or the means about them where
+    /// they jitter, each once the points `SMOOTH_M` after it are in, or at
+    /// the `end` with what there is.
+    fn smooth(&mut self, end: bool) {
+        loop {
+            let finder = &mut *self.finder;
+            let (i, last) = (finder.smoothed, finder.raw_taken);
+            if i >= last {
+                return;
+            }
+            let at_m = finder.raw[i % RAW].1;
+            if !end && finder.raw[(last - 1) % RAW].1 - at_m < SMOOTH_M {
+                return;
+            }
+            let first = last.saturating_sub(RAW);
+            let (mut sum, mut n) = ((0.0, 0.0), 0.0);
+            for k in first..last {
+                let (p, k_m) = finder.raw[k % RAW];
+                if (k_m - at_m).abs() <= SMOOTH_M {
+                    (sum, n) = ((sum.0 + p.0, sum.1 + p.1), n + 1.0);
+                }
+            }
+            let from = first.max(i.saturating_sub(NOISE_SPAN)) + 2;
+            let to = last.saturating_sub(1);
+            let swung = (from..to).filter(|&k| finder.swung[k % RAW]).count();
+            let noisy = to > from && swung * 2 > to - from;
+            let here = match noisy {
+                true => (sum.0 / n, sum.1 / n),
+                false => finder.raw[i % RAW].0,
+            };
+            finder.smoothed += 1;
+            self.take(here);
+        }
+    }
+
+    /// A point for the scan to read.
+    fn take(&mut self, here: (f32, f32)) {
+        let finder = &mut *self.finder;
+        // The slot this takes holds a point the scan may still read.
+        finder.lost |=
+            !finder.scan.done() && finder.taken - finder.scan.oldest().min(finder.taken) >= RING;
+        if let Some(last) = finder.taken.checked_sub(1) {
+            let last = finder.ring[last % RING];
+            let (east, north) = (here.0 - last.0, here.1 - last.1);
+            finder.taken_m += sqrtf(east * east + north * north);
+        }
+        finder.ring[finder.taken % RING] = here;
+        finder.taken += 1;
+        self.step(false);
+    }
+
     fn step(&mut self, end: bool) {
         let finder = &mut *self.finder;
         let (ring, taken) = (&finder.ring, finder.taken);
@@ -149,13 +229,13 @@ impl Finding<'_> {
             finder.found = finder.scan.step(taken, at, 1, self.turns, finder.found);
             let back = taken.saturating_sub(finder.scan.oldest());
             finder.reach = finder.reach.max(back);
-            finder.lost |= back >= RING;
         }
     }
 
     /// The track has ended: how many turns were found, in millimetres
     /// along it, or `None` when they cannot be trusted.
     pub(crate) fn scan_to_end(&mut self) -> Option<usize> {
+        self.smooth(true);
         self.step(true);
         let finder = &*self.finder;
         (!finder.lost && finder.started).then_some(finder.found)
@@ -237,6 +317,14 @@ impl<'a> Onto<'a> {
     }
 }
 
+/// How far `p` lies to the side of the line from `a` to `b`, left
+/// positive.
+fn side(a: (f32, f32), p: (f32, f32), b: (f32, f32)) -> f32 {
+    let (east, north) = (b.0 - a.0, b.1 - a.1);
+    let length = sqrtf(east * east + north * north).max(0.01);
+    (east * (p.1 - a.1) - north * (p.0 - a.0)) / length
+}
+
 /// A float cast saturates, so no length overflows.
 fn mm(metres: f32) -> u32 {
     (metres * 1000.0) as u32
@@ -246,7 +334,7 @@ impl Follow for Finding<'_> {
     fn start(&mut self) {
         let finder = &mut *self.finder;
         finder.started = false;
-        finder.taken = 0;
+        (finder.raw_taken, finder.smoothed, finder.taken) = (0, 0, 0);
         (finder.taken_m, finder.given_m) = (0.0, 0.0);
         finder.scan = Scan::default();
         (finder.found, finder.lost, finder.reach) = (0, false, 0);
@@ -259,25 +347,32 @@ impl Follow for Finding<'_> {
             (finder.origin, finder.east_per_e7) = (point, east_per_e7(point));
         }
         let here = metres(finder.origin, point, finder.east_per_e7);
-        let step = match finder.taken.checked_sub(1) {
-            Some(last) => {
-                let last = finder.ring[last % RING];
-                let (east, north) = (here.0 - last.0, here.1 - last.1);
-                sqrtf(east * east + north * north)
-            }
-            None => f32::INFINITY,
+        let off = |from: (f32, f32)| {
+            let (east, north) = (here.0 - from.0, here.1 - from.1);
+            sqrtf(east * east + north * north)
         };
-        finder.given_m = match step.is_finite() {
-            true => finder.taken_m + step,
-            false => 0.0,
+        let last_raw = finder.raw_taken.checked_sub(1).map(|k| finder.raw[k % RAW]);
+        let here_m = last_raw.map_or(0.0, |(p, p_m)| p_m + off(p));
+        // Along the track the scan reads to the last point in the ring, and
+        // on from the point taken it stands for.
+        finder.given_m = match finder.smoothed.checked_sub(1) {
+            Some(k) => finder.taken_m + here_m - finder.raw[k % RAW].1,
+            None => here_m,
         };
+        let step = last_raw.map_or(f32::INFINITY, |(p, _)| off(p));
         if step < RING_STEP_M {
             return;
         }
-        finder.taken_m = finder.given_m;
-        finder.ring[finder.taken % RING] = here;
-        finder.taken += 1;
-        self.step(false);
+        let k = finder.raw_taken;
+        finder.raw[k % RAW] = (here, here_m);
+        finder.raw_taken += 1;
+        if k >= 2 {
+            let (a, p) = (finder.raw[(k - 2) % RAW].0, finder.raw[(k - 1) % RAW].0);
+            let now = side(a, p, here);
+            finder.swung[(k - 1) % RAW] = k >= 3 && (now - finder.side).abs() >= NOISE_M;
+            finder.side = now;
+        }
+        self.smooth(false);
     }
 
     fn kept(&mut self, index: usize) {

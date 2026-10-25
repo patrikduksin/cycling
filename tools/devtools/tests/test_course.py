@@ -32,6 +32,16 @@ def test_a_course_and_its_turns_decode():
     ]
 
 
+def test_the_key_is_the_course_encoded_as_version_1():
+    v1 = course_file()
+    assert decode_course(v1).key == struct.unpack('<I', v1[-4:])[0]
+    longer = bytearray(v1[:-4])
+    longer[5] = 40
+    longer[34:34] = b'\0' * 6
+    v2 = sealed(bytes([*longer[:4], 2, *longer[5:]]))
+    assert decode_course(v2).key == decode_course(v1).key
+
+
 def test_a_later_version_with_longer_turns_still_decodes():
     stored = decode_turns(turns_file(7, [(1, 2, 1, 1)], record=16))
     assert stored.turns[0].kind == 'LEFT' and stored.turns[0].twice

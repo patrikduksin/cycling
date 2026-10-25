@@ -661,6 +661,35 @@ fn a_phone_loads_a_course_that_is_kept_on_the_card() {
     assert_eq!(restarted, points);
 }
 
+/// A course whose turns the upload cannot trust leaves no turns file, not
+/// the last course's: placed, it is scanned for them.
+#[test]
+fn a_course_whose_turns_overflow_the_finder_keeps_no_turns_file() {
+    let mut phone = Upload::new();
+    let gpx = loop_gpx("First", 50);
+    assert_eq!(phone.send(Method::Put, gpx.as_bytes(), 512).0, 200);
+    assert_eq!(phone.stored_turns(), Some(0));
+    // North 400 m, round a spot a few metres across for a long stop, then
+    // east: more than the finder's ring holds.
+    let (lat, lon) = (-33.45f64, -70.66f64);
+    let at = |east: f64, north: f64| {
+        let lat_at = lat + north / 111_195.0;
+        (lat_at, lon + east / (111_195.0 * lat.to_radians().cos()))
+    };
+    let mut points: Vec<(f64, f64)> = (0..=80).map(|k| at(0.0, k as f64 * 5.0)).collect();
+    let spots = [(0.0, 400.0), (4.0, 397.0), (-4.0, 397.0)];
+    let stop = 4 * crate::ride::course::stored::RING;
+    points.extend((0..stop).map(|k| at(spots[k % 3].0, spots[k % 3].1)));
+    points.extend((1..=80).map(|k| at(k as f64 * 5.0, 400.0)));
+    let mut file = String::from("<gpx><trk><name>Stop</name><trkseg>");
+    for (lat, lon) in points {
+        file.push_str(&std::format!("<trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"/>"));
+    }
+    file.push_str("</trkseg></trk></gpx>");
+    assert_eq!(phone.send(Method::Put, file.as_bytes(), 512).0, 200);
+    assert_eq!(phone.stored_turns(), None);
+}
+
 #[test]
 fn a_file_that_is_not_a_course_leaves_the_stored_one() {
     let mut phone = Upload::new();

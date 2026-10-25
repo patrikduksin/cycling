@@ -620,10 +620,11 @@ open or being written.
 - Without a card, a FILES volume or a store the host formatted, nothing is
   written and every reader shows what it showed before facts were kept. A
   write the store refuses is logged and the ride is not held up for it. A
-  table whose header is damaged keeps every slot that passes its CRC, read at
-  32 bytes, and the next save writes it again with a fresh header,
-  copy-on-write. A `rides/facts.tbl` without the magic is not VANA's: it is
-  left as it is and nothing is saved over it.
+  table whose header is damaged is read at the stride, 32 to 512 bytes, at
+  which most slots of its first two sectors pass their CRC, and the next save
+  writes it again with a fresh header, copy-on-write. One where no slot
+  passes at any stride, or a `rides/facts.tbl` without the magic, is left as
+  it is and nothing is saved over it.
 - Past 1000 rides the table drops the oldest saved and the memory the oldest
   start: the same ride unless rides were saved out of start order, and each
   boot reads the table again.

@@ -21,9 +21,9 @@
 //! them; a reader takes the fields it knows from any record version at least
 //! 1, and a save copies the slots it keeps byte for byte, so it never drops
 //! fields it does not know. A table whose header is damaged reads its slots at
-//! version 1's stride, and the next rewrite gives it a fresh header; a file
-//! without the magic is not ours and is left alone, with nothing saved over
-//! it.
+//! the stride most of them pass their CRC at, and the next rewrite gives it a
+//! fresh header. One where none pass, or a file without the magic, is left
+//! alone, with nothing saved over it.
 //!
 //! The store has no append in place: a save writes the whole table again,
 //! copy-on-write, with the ride appended last. It drops the ride's earlier
@@ -276,10 +276,27 @@ fn decode_slot(slot: &[u8]) -> Option<Record> {
 }
 
 /// The rides a whole table holds, oldest saved first, read as the firmware
-/// reads them; none without the magic.
+/// reads them; none if it would refuse the table.
 pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
-    let ours = bytes.starts_with(TABLE_MAGIC);
-    let stride = stride(bytes).unwrap_or(if ours { SLOT } else { bytes.len().max(1) });
+    let probed = || {
+        let first = &bytes[..bytes.len().min(SECTOR_SIZE)];
+        let mut found = Strides::count(first, true);
+        if let Some(second) = bytes.get(SECTOR_SIZE..) {
+            found.add(Strides::count(
+                &second[..second.len().min(SECTOR_SIZE)],
+                false,
+            ));
+        }
+        found.best()
+    };
+    let stride = if bytes.starts_with(TABLE_MAGIC) {
+        stride(bytes)
+            .filter(|stride| bytes.len().is_multiple_of(*stride))
+            .or_else(probed)
+    } else {
+        None
+    };
+    let stride = stride.unwrap_or(bytes.len().max(1));
     bytes.chunks_exact(stride).skip(1).filter_map(decode_slot)
 }
 
@@ -303,19 +320,61 @@ fn stride(bytes: &[u8]) -> Option<usize> {
     sound.then_some(stride)
 }
 
+/// Slots that pass their CRC at each stride a table may have, 32 to 512, for
+/// a table whose header is damaged.
+struct Strides([usize; 5]);
+
+impl Strides {
+    fn stride(index: usize) -> usize {
+        SLOT << index
+    }
+
+    /// Count the slots of a sector of the table, the first sector's header
+    /// left out.
+    fn count(bytes: &[u8], first: bool) -> Self {
+        let mut found = [0; 5];
+        for (index, found) in found.iter_mut().enumerate() {
+            *found = bytes
+                .chunks_exact(Self::stride(index))
+                .skip(usize::from(first))
+                .filter(|slot| decode_slot(slot).is_some())
+                .count();
+        }
+        Self(found)
+    }
+
+    fn add(&mut self, other: Self) {
+        for (found, more) in self.0.iter_mut().zip(other.0) {
+            *found += more;
+        }
+    }
+
+    /// The stride with the most slots that pass, if any do.
+    fn best(&self) -> Option<usize> {
+        let (index, found) = self
+            .0
+            .iter()
+            .enumerate()
+            .max_by_key(|&(index, found)| (*found, core::cmp::Reverse(index)))?;
+        (*found > 0).then(|| Self::stride(index))
+    }
+}
+
 /// The table file and the length of its slots.
 #[derive(Clone, Copy)]
 struct Table {
     entry: files::Entry,
     stride: usize,
-    /// The header parsed; else the slots are read at version 1's stride
-    /// and a rewrite writes a fresh header.
+    /// The header parsed; else the stride is the one at which the first two
+    /// sectors hold the most slots that pass, and a rewrite writes a fresh
+    /// header. A damaged header with no slot that passes is left alone.
     sound: bool,
 }
 
 impl Table {
     /// The table, or `Error::Table` for a file without the magic, which is
-    /// not ours to read or write over.
+    /// not ours to read or write over, or with a damaged header and no slot
+    /// that passes at any stride.
     fn open<M: ReadWrite>(
         store: &mut volume::Volume<'_, M>,
         dir: &files::Dir,
@@ -327,17 +386,25 @@ impl Table {
         if bytes[..read.min(4)] != TABLE_MAGIC[..] {
             return Err(Error::Table);
         }
-        Ok(match stride(&bytes[..read]) {
-            Some(stride) if (entry.length as usize).is_multiple_of(stride) => Self {
+        if let Some(stride) = stride(&bytes[..read])
+            && (entry.length as usize).is_multiple_of(stride)
+        {
+            return Ok(Self {
                 entry,
                 stride,
                 sound: true,
-            },
-            _ => Self {
-                entry,
-                stride: SLOT,
-                sound: false,
-            },
+            });
+        }
+        let mut found = Strides::count(&bytes[..read], true);
+        if entry.length as usize > SECTOR_SIZE {
+            let read = dir.read(store, &entry, SECTOR_SIZE as u32, bytes, sector)?;
+            found.add(Strides::count(&bytes[..read], false));
+        }
+        let stride = found.best().ok_or(Error::Table)?;
+        Ok(Self {
+            entry,
+            stride,
+            sound: false,
         })
     }
 
@@ -444,6 +511,14 @@ impl Out {
     fn emit(&mut self, media: &mut impl ReadWrite, slot: &[u8]) {
         self.bytes[self.used..self.used + slot.len()].copy_from_slice(slot);
         self.used += slot.len();
+        if self.used == SECTOR_SIZE {
+            self.flush(media);
+        }
+    }
+
+    fn header(&mut self, media: &mut impl ReadWrite, stride: usize) {
+        header(&mut self.bytes[self.used..self.used + stride]);
+        self.used += stride;
         if self.used == SECTOR_SIZE {
             self.flush(media);
         }
@@ -593,8 +668,6 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<bool, Error> {
         match table {
             Some(table) => {
                 let all = 0..usize::MAX;
-                let mut fresh = [0u8; SLOT];
-                header(&mut fresh);
                 table.each(
                     &mut store,
                     &dir,
@@ -602,7 +675,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<bool, Error> {
                     &mut sector,
                     &mut bytes,
                     |store, slot| match slot {
-                        Slot::Header(_) if !table.sound => out.emit(store, &fresh),
+                        Slot::Header(_) if !table.sound => out.header(store, stride),
                         Slot::Header(header) => out.emit(store, header),
                         Slot::Ride(ride) if batch.keeps(&change, ride).is_some() => {
                             if skip > 0 {
@@ -615,10 +688,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<bool, Error> {
                     },
                 )?
             }
-            None => {
-                header(&mut bytes[..stride]);
-                out.emit(&mut store, &bytes[..stride]);
-            }
+            None => out.header(&mut store, stride),
         }
         let files = batch.records.iter().zip(folds);
         for record in files

@@ -587,21 +587,30 @@ fn a_damaged_slot_costs_only_its_ride() {
     );
 }
 
+/// A table as a later firmware might write it: slots of `stride` bytes at
+/// record version 2, with bytes this firmware does not know.
+fn later_table(stride: usize, rides: &[u32]) -> Vec<u8> {
+    let mut bytes = std::vec![0u8; stride * (rides.len() + 1)];
+    bytes[..4].copy_from_slice(TABLE_MAGIC);
+    bytes[4] = 2;
+    put_u16(&mut bytes, 6, stride as u16);
+    seal(&mut bytes[..stride]);
+    for (index, ride) in rides.iter().enumerate() {
+        let slot = &mut bytes[stride * (index + 1)..][..stride];
+        encode_fields(&record(*ride), slot, SLOT_FIELDS);
+        slot[0] = 2;
+        if stride > 48 {
+            slot[40..48].copy_from_slice(b"futurefd");
+        }
+        seal(slot);
+    }
+    bytes
+}
+
 #[test]
 fn a_later_table_with_longer_slots_reads_and_keeps_their_bytes() {
     const STRIDE: usize = 64;
-    let mut bytes = std::vec![0u8; STRIDE * 3];
-    bytes[..4].copy_from_slice(TABLE_MAGIC);
-    bytes[4] = 2;
-    put_u16(&mut bytes, 6, STRIDE as u16);
-    seal(&mut bytes[..STRIDE]);
-    for (index, ride) in [1, 2].into_iter().enumerate() {
-        let slot = &mut bytes[STRIDE * (index + 1)..][..STRIDE];
-        encode_fields(&record(ride), slot, SLOT_FIELDS);
-        slot[0] = 2;
-        slot[40..48].copy_from_slice(b"futurefd");
-        seal(slot);
-    }
+    let bytes = later_table(STRIDE, &[1, 2]);
     let mut region = formatted();
     put(&mut region, TABLE, &bytes);
     assert_eq!(table(&mut region), [record(1), record(2)]);
@@ -614,6 +623,56 @@ fn a_later_table_with_longer_slots_reads_and_keeps_their_bytes() {
         "header and slots as they were"
     );
     assert_eq!(table(&mut region), [record(1), record(2), record(3)]);
+}
+
+#[test]
+fn a_damaged_header_finds_the_stride_its_slots_pass_at_or_leaves_the_table_alone() {
+    for stride in [32, 64, 128, 256, 512] {
+        for damage in [6, stride - 1] {
+            let rides = [1, 2, 3];
+            let mut bytes = later_table(stride, &rides);
+            bytes[damage] ^= 0x10;
+            let mut region = formatted();
+            put(&mut region, TABLE, &bytes);
+            let expected: Vec<Record> = rides.into_iter().map(record).collect();
+            assert_eq!(
+                table(&mut region),
+                expected,
+                "stride {stride} byte {damage}"
+            );
+            assert_eq!(decode_table(&bytes).collect::<Vec<_>>(), expected);
+            save(&mut region, &record(4)).unwrap();
+            let written = raw(&mut region, TABLE).unwrap();
+            assert_eq!(stride_of(&written), Some(stride), "a fresh header");
+            assert_eq!(
+                written[stride..stride * 4],
+                bytes[stride..],
+                "stride {stride}: the slots as they were"
+            );
+            let mut kept = expected.clone();
+            kept.push(record(4));
+            assert_eq!(table(&mut region), kept, "stride {stride} byte {damage}");
+        }
+
+        let mut bytes = later_table(stride, &[1, 2, 3]);
+        bytes[6] ^= 0x10;
+        for ride in 1..=3 {
+            bytes[stride * ride + 9] ^= 1;
+        }
+        let mut region = formatted();
+        put(&mut region, TABLE, &bytes);
+        assert_eq!(
+            read(&mut region, 0, |_| {}),
+            Err(Error::Table),
+            "stride {stride}"
+        );
+        assert_eq!(save(&mut region, &record(4)), Err(Error::Table));
+        assert_eq!(raw(&mut region, TABLE), Some(bytes), "left as it was");
+    }
+}
+
+fn stride_of(bytes: &[u8]) -> Option<usize> {
+    stride(bytes)
 }
 
 #[test]

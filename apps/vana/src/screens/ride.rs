@@ -68,7 +68,7 @@ pub(super) const RIGHT: usize = BODY.right - 8;
 /// Where a page's right column of cells starts.
 pub(super) const MIDDLE: usize = (LEFT + RIGHT) / 2 + 4;
 /// Clear columns between a left cell's ink and the right column.
-pub(super) const COLUMN_GAP: usize = 8;
+const COLUMN_GAP: usize = 8;
 /// A caption over its value: one band of cells. The next caption clears the
 /// value above it by 7 rows.
 pub(super) const CELL_PITCH: usize = 48;

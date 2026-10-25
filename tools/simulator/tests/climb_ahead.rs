@@ -105,7 +105,7 @@ fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
     assert!((400.0..550.0).contains(&shown), "at {shown:.0} m");
     assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
     assert!(sim.screen().field("LENGTH KM").is_some());
-    for label in ["AVG", "GAIN M", "POWER", "HEART", "0% UP"] {
+    for label in ["AVG", "GAIN M", "POWER 3S", "HEART", "0% UP", "FOOT", "TOP"] {
         assert!(
             sim.screen().contains(label),
             "{label}:\n{}",

@@ -126,18 +126,19 @@ convenience, and BACK takes one by hand.
 
 ### Climb
 
-The CLIMB page has one layout on every road. The grade fills the top in its
-steepness colour, with a band in that colour under it. POWER (3 s) and HEART
-follow, each with its zone on the caption's line in the zone's colour. Then
-come two readings and a profile with a white disc for the rider:
+The CLIMB page has one layout on every road. The grade fills the top left
+in its steepness colour, with no caption. POWER 3S and HEART stack beside
+it, each with its zone on a chip in the zone's colour. A band in the grade's
+colour runs under them, and two readings and a profile with a white disc
+for the rider follow:
 
 - **CLIMB IN 0.3 KM**: a climb from the map starts within 500 m. LENGTH KM,
   with AVG grade and GAIN M stacked beside it. The profile runs from the rider
   past the top, with the road before the foot and after the top dimmed.
 - **CLIMBING** on a climb the map knows: TO TOP KM and UP TO GO M. The profile
   is the whole climb from its foot past its top, and it stays put while the
-  rider's disc moves along it. What is behind is dimmed. A bar under it fills
-  with the share climbed, `60% UP`.
+  rider's disc moves along it. What is behind is dimmed. A bar under it, FOOT
+  to TOP, fills with the share climbed, `60% UP`.
 - **CLIMBING** without a map: the barometer's climb. SO FAR KM and GAIN M over
   the last 4 km, with the road before the climb dimmed. The top is unknown, so
   there is no bar.

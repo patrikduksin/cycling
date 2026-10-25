@@ -18,9 +18,7 @@
 //!
 //! `frame` precomputes every chart column once per frame; `paint_chart` only
 //! looks them up, and the canvas paints the text, the bar and the rider.
-use super::{
-    BODY, CELL_PITCH, COLUMN_GAP, GRID, LEFT, MIDDLE, RIGHT, cell, grade, kilometres, whole,
-};
+use super::{BODY, CELL_PITCH, GRID, LEFT, MIDDLE, RIGHT, cell, grade, kilometres, whole};
 use crate::ride::climb::{Category, Climbs, PROFILE_LEN, ProfileSample, STEP_MM, Steepness};
 use crate::ride::climb_ahead::{Forecast, Pinned};
 use crate::ride::elevation::Trace;
@@ -28,8 +26,8 @@ use crate::screens::canvas::{Canvas, Shape};
 #[cfg(test)]
 use crate::screens::chrome::BLACK;
 use crate::screens::chrome::{
-    ACCENT, Align, BLACK as DIM_UNDER, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE,
-    POWER, Rect, Row, SECONDARY, VALUE, WHITE, ZONES, blend, zone_color,
+    ACCENT, Align, BLACK as DIM_UNDER, BODY as BODY_FACE, CAPTION, GRADE, LARGE, Rect, Row,
+    SECONDARY, VALUE, WHITE, ZONES, blend, zone_color,
 };
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
@@ -37,13 +35,29 @@ use firmware_shell::rendering::font::{Face, Line};
 
 /// The title and the category share this baseline.
 const HEAD: usize = 40;
-/// The grade's box, between the title and the steepness band.
-const BOX_TOP: usize = HEAD + 4;
-const BAND_TOP: usize = HEAD + 4 + HERO.cap as usize + 6;
+/// The grade's box, under the title, beside power and heart rate.
+const BOX_TOP: usize = HEAD + 6;
+/// Power and heart rate: caption and value baselines, stacked on the right.
+const POWER_CAPTION: usize = HEAD + 18;
+const POWER_BASE: usize = POWER_CAPTION + 8 + BODY_FACE.cap as usize;
+const HEART_CAPTION: usize = POWER_BASE + 16;
+const HEART_BASE: usize = HEART_CAPTION + 8 + BODY_FACE.cap as usize;
+/// Where power and heart rate's values may start; the grade has the rest
+/// of the box.
+const READINGS: usize = RIGHT - 62;
+/// The grade starts a little left of the cells, so a grade like 6.0% keeps
+/// the large face beside the readings.
+const GRADE_LEFT: usize = BODY.left + 6;
+/// A zone chip: its width and how far it reaches above and below the
+/// value's baseline.
+const CHIP_WIDTH: usize = 22;
+const CHIP_ABOVE: usize = BODY_FACE.cap as usize + 2;
+const CHIP_BELOW: usize = 3;
+/// The steepness band under the grade and the readings.
+const BAND_TOP: usize = HEART_BASE + 6;
 const BAND_HEIGHT: usize = 5;
-/// Power and heart rate, then the climb's two readings: two bands of cells.
-const READINGS: usize = BAND_TOP + BAND_HEIGHT + 4;
-const CELLS: usize = READINGS + CELL_PITCH;
+/// The road's two readings.
+const CELLS: usize = BAND_TOP + BAND_HEIGHT + 4;
 /// One chart column per profile sample, ending at the body's right margin.
 const CHART_RIGHT: usize = BODY.right - 6;
 const CHART_LEFT: usize = CHART_RIGHT - PROFILE_LEN;
@@ -52,11 +66,12 @@ const CHART_TOP: usize = CELLS + CELL_PITCH - 4;
 /// The baseline row without a progress bar; the fill ends above it. The
 /// chart runs into the toast band, where a toast covers it for a moment.
 const CHART_BOTTOM: usize = BODY.bottom - 8;
-/// With a progress bar, which sits under the chart.
-const BAR_BOTTOM: usize = BODY.bottom - 6;
+/// With a progress bar under the chart, and FOOT, the share and TOP under it.
+const BAR_LABELS: usize = BODY.bottom - 3;
+const BAR_BOTTOM: usize = BAR_LABELS - CAPTION.cap as usize - 4;
 const BAR_HEIGHT: usize = 6;
-const BARRED_BOTTOM: usize = BAR_BOTTOM - BAR_HEIGHT - 6;
-const _: () = assert!(CHART_BOTTOM - CHART_TOP >= 64 && CHART_BOTTOM - CHART_TOP < EMPTY as usize);
+const BARRED_BOTTOM: usize = BAR_BOTTOM - BAR_HEIGHT - 5;
+const _: () = assert!(BARRED_BOTTOM - CHART_TOP >= 64 && CHART_BOTTOM - CHART_TOP < EMPTY as usize);
 /// A flat road spans at least 20 m of chart height, so it stays flat.
 pub(super) const MIN_SPAN_DM: i32 = 200;
 /// A column with no profile sample yet.
@@ -240,27 +255,15 @@ fn cells(canvas: &mut Canvas, view: &View, situation: Situation) {
     }
 }
 
-/// The progress bar and the rider's disc over the chart.
+/// The progress bar under the chart, FOOT to TOP, and the rider's disc.
 #[inline(never)]
 fn finish(canvas: &mut Canvas, view: &View) {
     let frame = view.climb();
     if let Some(done) = frame.done {
-        let mut share = Text::<12>::new();
-        let _ = write!(share, "{}% UP", (done + 5) / 10);
-        let label = canvas.fit(
-            &[&CAPTION],
-            share.as_bytes(),
-            RIGHT - LEFT,
-            RIGHT,
-            BAR_BOTTOM,
-            Align::Right,
-            WHITE,
-        );
-        let right = label.left - 6;
         let track = Rect {
-            left: LEFT,
+            left: CHART_LEFT,
             top: BAR_BOTTOM - BAR_HEIGHT,
-            right,
+            right: CHART_RIGHT,
             bottom: BAR_BOTTOM,
         };
         canvas.shape(Shape::Bar {
@@ -268,17 +271,31 @@ fn finish(canvas: &mut Canvas, view: &View) {
             radius: 3,
             color: GRID,
         });
-        let filled = (right - LEFT) * usize::from(done) / 1000;
+        let filled = (CHART_RIGHT - CHART_LEFT) * usize::from(done) / 1000;
         if filled >= BAR_HEIGHT {
             canvas.shape(Shape::Bar {
                 rect: Rect {
-                    right: LEFT + filled,
+                    right: CHART_LEFT + filled,
                     ..track
                 },
                 radius: 3,
                 color: WHITE,
             });
         }
+        let width = (CHART_RIGHT - CHART_LEFT) / 3;
+        canvas.caption(b"FOOT", width, CHART_LEFT, BAR_LABELS, Align::Left);
+        let mut share = Text::<12>::new();
+        let _ = write!(share, "{}% UP", (done + 5) / 10);
+        canvas.fit(
+            &[&CAPTION],
+            share.as_bytes(),
+            width,
+            (CHART_LEFT + CHART_RIGHT) / 2,
+            BAR_LABELS,
+            Align::Center,
+            WHITE,
+        );
+        canvas.caption(b"TOP", width, CHART_RIGHT, BAR_LABELS, Align::Right);
     }
     rider(canvas, frame);
 }
@@ -352,76 +369,79 @@ fn category(gain_dm: u32, grade_tenths: Option<i32>) -> (Option<&'static [u8]>, 
     }
 }
 
-/// The grade, centred in its box, then power and heart rate in cells, each
-/// with its zone on the caption's line.
+/// The grade, centred down its box, and power and heart rate stacked
+/// beside it, each with its zone on a chip.
 #[inline(never)]
 fn readings(canvas: &mut Canvas, view: &View) {
     let mut now = Text::<12>::new();
     grade(&mut now, view.sample.gradient_tenths.map(i32::from));
-    let faces: [&'static Face; 3] = [&HERO, &LARGE, &VALUE];
-    let line = Line::<24>::fit(&faces, now.as_bytes(), RIGHT - LEFT);
+    let faces: [&'static Face; 2] = [&LARGE, &VALUE];
+    let line = Line::<24>::fit(&faces, now.as_bytes(), READINGS - 6 - GRADE_LEFT);
     let cap = line.face().cap as usize;
-    let base = (BOX_TOP + BAND_TOP - 6 + cap) / 2;
+    let base = (BOX_TOP + BAND_TOP - 4 + cap) / 2;
     canvas.run(crate::screens::canvas::on_baseline(
         line,
-        (LEFT + RIGHT) / 2,
+        GRADE_LEFT,
         base,
-        Align::Center,
+        Align::Left,
         GRADE,
     ));
     let power = view.power_3s;
     let heart = view.sample.heart_bpm;
     let rows = [
         (
-            &b"POWER"[..],
+            &b"POWER 3S"[..],
             power,
-            POWER,
             power.map_or(0, |w| view.profile.power_zone(w)),
+            POWER_CAPTION,
+            POWER_BASE,
         ),
         (
             &b"HEART"[..],
             heart,
-            HEART,
             heart.map_or(0, |bpm| view.profile.heart_zone(bpm)),
+            HEART_CAPTION,
+            HEART_BASE,
         ),
     ];
-    for (column, (caption, value, color, zone)) in rows.into_iter().enumerate() {
-        let (left, right) = if column == 0 {
-            (LEFT, MIDDLE - COLUMN_GAP)
-        } else {
-            (MIDDLE, RIGHT)
-        };
+    for (caption, value, zone, caption_base, base) in rows {
+        // Right-aligned: a caption may reach left over the grade's box,
+        // above the grade itself.
+        canvas.caption(caption, RIGHT - LEFT, RIGHT, caption_base, Align::Right);
+        canvas.shape(Shape::Bar {
+            rect: Rect {
+                left: RIGHT - CHIP_WIDTH,
+                top: base - CHIP_ABOVE,
+                right: RIGHT,
+                bottom: base + CHIP_BELOW,
+            },
+            radius: 4,
+            color: zone_color(zone),
+        });
         let mut name = Text::<12>::new();
         let _ = match zone {
             0 => name.push_str("Z-"),
             z => write!(name, "Z{z}"),
         };
-        let zone = canvas.fit(
+        canvas.fit(
             &[&CAPTION],
             name.as_bytes(),
-            right - left,
-            right,
-            READINGS + 12,
-            Align::Right,
-            zone_color(zone),
-        );
-        canvas.caption(
-            caption,
-            zone.left.saturating_sub(left + 4),
-            left,
-            READINGS + 12,
-            Align::Left,
+            CHIP_WIDTH,
+            RIGHT - CHIP_WIDTH / 2,
+            base,
+            Align::Center,
+            DIM_UNDER,
         );
         let mut text = Text::<12>::new();
         whole(&mut text, value);
         canvas.fit(
-            &[&VALUE, &BODY_FACE],
+            &[&BODY_FACE, &CAPTION],
             text.as_bytes(),
-            right - left,
-            left,
-            READINGS + 41,
-            Align::Left,
-            color,
+            RIGHT - CHIP_WIDTH - 4 - READINGS,
+            RIGHT - CHIP_WIDTH - 4,
+            base,
+            Align::Right,
+            WHITE,
         );
     }
 }
@@ -741,7 +761,7 @@ mod tests {
         for text in [
             "NO CLIMB",
             "10.5%",
-            "POWER",
+            "POWER 3S",
             "260",
             "HEART",
             "148",
@@ -754,10 +774,12 @@ mod tests {
         assert_eq!(canvas.find("10.5%").map(|run| run.color), Some(GRADE));
         let zone = view.profile.power_zone(260);
         let name = std::format!("Z{zone}");
-        assert_eq!(
-            canvas.find(&name).map(|run| run.color),
-            Some(zone_color(zone))
-        );
+        assert!(canvas.shows(&name), "{name}");
+        // Its chip takes the zone's colour.
+        assert!(canvas.shapes.iter().any(|shape| matches!(
+            shape,
+            Shape::Bar { color, .. } if *color == zone_color(zone)
+        )));
         // The band under the readings takes the grade's steepness colour.
         assert!(canvas.shapes.iter().any(|shape| matches!(
             shape,
@@ -765,7 +787,7 @@ mod tests {
         )));
         // The grade sits in the middle of its box.
         let grade = canvas.find("10.5%").unwrap();
-        let middle = (BOX_TOP + BAND_TOP - 6) / 2;
+        let middle = (BOX_TOP + BAND_TOP - 4) / 2;
         let centre =
             grade.top + grade.line.face().top as usize + grade.line.face().cap as usize / 2;
         assert!(centre.abs_diff(middle) <= 1, "{centre} vs {middle}");
@@ -893,8 +915,12 @@ mod tests {
             _ => None,
         });
         let fill = fill.expect("the climbed part of the bar");
-        let track = canvas.find("60% UP").unwrap().left - 6 - LEFT;
-        assert_eq!(fill.right - LEFT, track * 600 / 1000);
+        assert_eq!(fill.left, CHART_LEFT);
+        assert_eq!(
+            fill.right - CHART_LEFT,
+            (CHART_RIGHT - CHART_LEFT) * 600 / 1000
+        );
+        assert!(canvas.shows("FOOT") && canvas.shows("TOP"));
         assert_paints_reference(&view);
     }
 
@@ -935,7 +961,7 @@ mod tests {
                 view.prepare();
                 view.canvas().assert_laid_out(
                     BODY,
-                    &["POWER", "HEART"],
+                    &["POWER 3S", "HEART"],
                     &std::format!("{what} {tenths:?}"),
                 );
                 assert_paints_reference(&view);

@@ -237,7 +237,8 @@ impl Canvas {
             .find(|run| run.line.text() == text.as_bytes())
     }
 
-    /// Runs whole, inside `bounds`, apart from each other and from bars;
+    /// Runs whole, inside `bounds`, apart from each other and from bars
+    /// (but for a label wholly on one);
     /// every shape inside `bounds`; and each of `want` shown whole.
     #[cfg(test)]
     #[track_caller]
@@ -254,8 +255,12 @@ impl Canvas {
                 && b.bottom <= bounds.bottom;
             assert!(inside, "{what}: {shape:?} leaves {bounds:?}");
             if matches!(shape, Shape::Bar { .. }) {
+                // A label on a bar, such as a zone chip's, sits wholly inside it.
+                let on = |r: &Rect| {
+                    r.left > b.left && r.right < b.right && r.top > b.top && r.bottom < b.bottom
+                };
                 let mut both = std::vec![(std::string::String::from("bar"), b)];
-                both.extend(texts.iter().cloned());
+                both.extend(texts.iter().filter(|(_, r)| !on(r)).cloned());
                 assert_apart(&both, bounds, what);
             }
         }

@@ -303,7 +303,7 @@ fn smooth(view: &mut View) {
 #[inline(never)]
 fn climb_frame(view: &mut View) {
     let climb = climb::frame(view);
-    view.climb = climb;
+    view.set_climb_frame(climb);
 }
 
 /// A caption over its value in `column` (0 or 1) of the band whose caption
@@ -363,15 +363,15 @@ fn paint_page(view: &View, row: &mut Row) {
         RidePage::Main => main::paint(view, row),
         RidePage::Stats | RidePage::Lap => view.canvas().paint(row),
         RidePage::Workout => {
-            workout::paint_chart(&view.chart, row);
+            workout::paint_chart(view.chart(), row);
             view.canvas().paint(row);
         }
         RidePage::Climb => {
-            climb::paint_chart(&view.climb, row);
+            climb::paint_chart(view.climb(), row);
             view.canvas().paint(row);
         }
         RidePage::Map => {
-            if let Some(frame) = view.map {
+            if let Some(frame) = view.map() {
                 map::paint(frame, row);
             }
             view.canvas().paint(row);
@@ -448,14 +448,14 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
         RidePage::Stats | RidePage::Lap => view.canvas().pixel(x, y, BLACK),
         RidePage::Workout => view
             .canvas()
-            .pixel(x, y, workout::chart_pixel(&view.chart, x, y)),
+            .pixel(x, y, workout::chart_pixel(view.chart(), x, y)),
         RidePage::Climb => view
             .canvas()
-            .pixel(x, y, climb::chart_pixel(&view.climb, x, y)),
+            .pixel(x, y, climb::chart_pixel(view.climb(), x, y)),
         RidePage::Map => view.canvas().pixel(
             x,
             y,
-            view.map
+            view.map()
                 .map_or(BLACK, |frame| map::pixel(frame, x, y, BLACK)),
         ),
         RidePage::Back => {

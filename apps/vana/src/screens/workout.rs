@@ -10,7 +10,7 @@ use crate::clock::Local;
 use crate::ride::bests::Bests;
 use crate::ride::climb::Climbs;
 use crate::ride::climb_ahead::Forecast;
-use crate::ride::laps::{Lap, Laps};
+use crate::ride::laps::Lap;
 use crate::ride::log::{Sample, Status};
 use crate::ride::rider::Rider;
 use crate::ride::totals::Totals;
@@ -83,16 +83,147 @@ pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDE
 pub(super) enum Body {
     /// Nothing prepared: the Sensors menu paints itself.
     Blank,
-    /// A canvas page (stats, lap, climb, workout, map, back, Settings, Ready,
-    /// paused, end ride, summary, boot, and the sheet over any page).
+    /// Every page that prepares a Canvas, and the sheet over any page.
     Canvas(Canvas),
     Home(Home),
     /// The ride's main page.
     Main(Smooth),
 }
 
+impl Body {
+    fn canvas(&self) -> Option<&Canvas> {
+        match self {
+            Self::Canvas(canvas) => Some(canvas),
+            _ => None,
+        }
+    }
+
+    fn smooth(&self) -> Option<&Smooth> {
+        match self {
+            Self::Main(smooth) => Some(smooth),
+            _ => None,
+        }
+    }
+
+    fn home(&self) -> Option<&Home> {
+        match self {
+            Self::Home(home) => Some(home),
+            _ => None,
+        }
+    }
+}
+
+/// What a ride page prepares besides its body. No page paints two of these:
+/// the map page's inset and the lap page's overlay are canvas shapes, not
+/// another page's data.
+// One extra lives in View and its variants share one slot on purpose;
+// boxing would allocate every frame.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Extra<'a> {
+    None,
+    /// The climbs and the forecast are borrowed from `Ride` and the
+    /// look-ahead (1 KB each, which the main stack cannot spare a copy of).
+    Climb {
+        climbs: &'a Climbs,
+        forecast: &'a Forecast,
+        frame: ClimbFrame,
+    },
+    Workout(ride::WorkoutChart),
+    /// The finished laps for the chart, oldest first, the open lap and the
+    /// last finished one.
+    Lap {
+        bars: ride::LapBars,
+        lap: Lap,
+        previous: Option<Lap>,
+    },
+    /// The way back, and when the light ends; the arrow is placed as it paints.
+    Back {
+        back: ride::Back,
+        sunset: ride::Light,
+    },
+    /// The track, projected and kept beside the breadcrumb.
+    Map(Option<&'a ride::MapFrame>),
+}
+
+impl<'a> Extra<'a> {
+    fn climbs(&self) -> Option<&'a Climbs> {
+        match self {
+            Self::Climb { climbs, .. } => Some(climbs),
+            _ => None,
+        }
+    }
+
+    fn forecast(&self) -> Option<&'a Forecast> {
+        match self {
+            Self::Climb { forecast, .. } => Some(forecast),
+            _ => None,
+        }
+    }
+
+    fn climb_frame(&self) -> Option<&ClimbFrame> {
+        match self {
+            Self::Climb { frame, .. } => Some(frame),
+            _ => None,
+        }
+    }
+
+    fn chart(&self) -> Option<&ride::WorkoutChart> {
+        match self {
+            Self::Workout(chart) => Some(chart),
+            _ => None,
+        }
+    }
+
+    fn lap(&self) -> Option<Lap> {
+        match self {
+            Self::Lap { lap, .. } => Some(*lap),
+            _ => None,
+        }
+    }
+
+    fn previous_lap(&self) -> Option<Option<Lap>> {
+        match self {
+            Self::Lap { previous, .. } => Some(*previous),
+            _ => None,
+        }
+    }
+
+    fn lap_bars(&self) -> Option<&ride::LapBars> {
+        match self {
+            Self::Lap { bars, .. } => Some(bars),
+            _ => None,
+        }
+    }
+
+    fn back(&self) -> Option<ride::Back> {
+        match self {
+            Self::Back { back, .. } => Some(*back),
+            _ => None,
+        }
+    }
+
+    fn sunset(&self) -> Option<ride::Light> {
+        match self {
+            Self::Back { sunset, .. } => Some(*sunset),
+            _ => None,
+        }
+    }
+
+    fn map(&self) -> Option<Option<&'a ride::MapFrame>> {
+        match self {
+            Self::Map(frame) => Some(*frame),
+            _ => None,
+        }
+    }
+}
+
 static NO_CANVAS: Canvas = Canvas::EMPTY;
 static NO_SMOOTH: Smooth = Smooth::EMPTY;
+static NO_CLIMBS: Climbs = Climbs::NONE;
+static NO_FORECAST: Forecast = Forecast::NONE;
+static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
+static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
+static NO_BARS: ride::LapBars = ride::LapBars::new();
 
 pub struct View<'a> {
     pub now_ms: u64,
@@ -116,41 +247,27 @@ pub struct View<'a> {
     pub toast: Option<Toast>,
     bar: StatusBar,
     pub totals: Totals,
-    /// The open lap and the last finished one.
-    pub lap: Lap,
-    pub previous_lap: Option<Lap>,
     pub ride_page: RidePage,
     /// The optional ride pages the rider left on, for the page dots.
     pub ride_pages: ride::PageChoice,
     /// The readings on the main page's lower line.
     pub main_slots: ride::slots::Slots,
-    /// Climbs and the elevation profile, borrowed from `Ride` (1 KB, which
-    /// the main stack cannot spare a copy of). Only the climb page reads
-    /// them.
-    pub climbs: &'a Climbs,
-    /// The road ahead from the map, borrowed: it is 1 KB and main's stack
-    /// cannot spare a copy. Only the climb page reads it.
-    pub forecast: &'a Forecast,
-    /// Finished laps for the lap page's chart, oldest first.
-    pub lap_bars: ride::LapBars,
     /// What the shown page prepared for this frame.
     pub(super) body: Body,
+    /// What the shown ride page prepared besides its body.
+    pub(super) extra: Extra<'a>,
     pub zone_time: ZoneTime,
     pub profile: TrainingProfile,
     /// Weight, age and sex, for the summary's calories and W/kg.
     pub rider: Rider,
     /// Zone colours and gauges prepared for this frame.
     pub(super) marks: Marks,
-    /// The climb page's chart, prepared with `canvas`.
-    pub(super) climb: ClimbFrame,
     /// The summary's elevation chart, borrowed from `Ride` (about 430
     /// bytes, which the main stack cannot spare a copy of).
     pub elevation_chart: Option<&'a ride::ElevationChart>,
     /// The workout chosen or running, for the workout page and the target
     /// band on the main page.
     pub training: Option<ride::Training>,
-    /// The workout page's chart, prepared with `canvas`.
-    pub chart: ride::WorkoutChart,
     /// The workout picker's rows.
     pub picker: super::workouts::Picker,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
@@ -160,12 +277,6 @@ pub struct View<'a> {
     pub bests_mode: super::bests::Mode,
     /// What the FORM page shows.
     pub form: super::form::Mode,
-    /// The back-to-start page's guide; its arrow is placed as it paints.
-    pub back: ride::Back,
-    /// When the light ends, for the back-to-start page.
-    pub sunset: ride::Light,
-    /// The map page's track, projected and kept beside the breadcrumb.
-    pub map: Option<&'a ride::MapFrame>,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -197,11 +308,11 @@ pub struct View<'a> {
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(
-    core::mem::size_of::<View>() <= 7_536,
+    core::mem::size_of::<View>() <= 6_680,
     "View lives on the main stack every frame: shrink it, do not grow it"
 );
 
-impl View<'_> {
+impl<'a> View<'a> {
     pub fn new(page: Page, cursor: usize, local: Option<Local>) -> Self {
         let mut time = Text::new();
         if let Some(local) = local {
@@ -227,31 +338,22 @@ impl View<'_> {
             toast: None,
             bar: StatusBar::default(),
             totals: Totals::default(),
-            lap: Laps::default().current(),
-            previous_lap: None,
             ride_page: RidePage::Main,
             ride_pages: ride::PageChoice::default(),
             main_slots: ride::slots::Slots::default(),
-            climbs: &Climbs::NONE,
-            forecast: &Forecast::NONE,
-            lap_bars: ride::LapBars::new(),
             body: Body::Blank,
+            extra: Extra::None,
             zone_time: ZoneTime::default(),
             profile: TrainingProfile::default(),
             rider: Rider::default(),
             marks: Marks::default(),
-            climb: ClimbFrame::default(),
             elevation_chart: None,
             training: None,
-            chart: ride::WorkoutChart::default(),
             picker: super::workouts::Picker::default(),
             ftp_offer: None,
             bests: Bests::default(),
             bests_mode: super::bests::Mode::List,
             form: super::form::Mode::Reading,
-            back: ride::Back::default(),
-            sunset: ride::Light::default(),
-            map: None,
             page,
             cursor,
             editing: false,
@@ -287,33 +389,131 @@ impl View<'_> {
     }
 
     pub(super) fn canvas(&self) -> &Canvas {
-        match &self.body {
-            Body::Canvas(canvas) => canvas,
-            _ => {
-                debug_assert!(false, "{:?} has no canvas", self.page);
-                &NO_CANVAS
-            }
-        }
+        self.body.canvas().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no canvas", self.page);
+            &NO_CANVAS
+        })
     }
 
     pub(super) fn smooth(&self) -> &Smooth {
-        match &self.body {
-            Body::Main(smooth) => smooth,
-            _ => {
-                debug_assert!(false, "{:?} has no main page body", self.page);
-                &NO_SMOOTH
-            }
-        }
+        self.body.smooth().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no main page body", self.page);
+            &NO_SMOOTH
+        })
     }
 
     fn home(&self) -> Option<&Home> {
-        match &self.body {
-            Body::Home(home) => Some(home),
-            _ => {
-                debug_assert!(false, "{:?} has no home body", self.page);
-                None
-            }
+        let home = self.body.home();
+        debug_assert!(home.is_some(), "{:?} has no home body", self.page);
+        home
+    }
+
+    pub(super) fn climbs(&self) -> &'a Climbs {
+        self.extra.climbs().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no climbs", self.page);
+            &NO_CLIMBS
+        })
+    }
+
+    pub(super) fn forecast(&self) -> &'a Forecast {
+        self.extra.forecast().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no forecast", self.page);
+            &NO_FORECAST
+        })
+    }
+
+    pub(super) fn climb(&self) -> &ClimbFrame {
+        self.extra.climb_frame().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no climb chart", self.page);
+            &NO_CLIMB_FRAME
+        })
+    }
+
+    pub(super) fn chart(&self) -> &ride::WorkoutChart {
+        self.extra.chart().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no workout chart", self.page);
+            &NO_CHART
+        })
+    }
+
+    pub(super) fn lap(&self) -> Lap {
+        self.extra.lap().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no lap", self.page);
+            Lap::default()
+        })
+    }
+
+    pub(super) fn previous_lap(&self) -> Option<Lap> {
+        self.extra.previous_lap().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no previous lap", self.page);
+            None
+        })
+    }
+
+    pub(super) fn lap_bars(&self) -> &ride::LapBars {
+        self.extra.lap_bars().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no lap bars", self.page);
+            &NO_BARS
+        })
+    }
+
+    pub(super) fn back(&self) -> ride::Back {
+        self.extra.back().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no way back", self.page);
+            ride::Back::default()
+        })
+    }
+
+    pub(super) fn sunset(&self) -> ride::Light {
+        self.extra.sunset().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no sunset", self.page);
+            ride::Light::default()
+        })
+    }
+
+    pub(super) fn map(&self) -> Option<&'a ride::MapFrame> {
+        self.extra.map().unwrap_or_else(|| {
+            debug_assert!(false, "{:?} has no map", self.page);
+            None
+        })
+    }
+
+    /// The climb page's extras: the climbs and the forecast, lent, and a
+    /// chart still to prepare.
+    #[inline(never)]
+    pub fn show_climb(&mut self, climbs: &'a Climbs, forecast: &'a Forecast) {
+        self.extra = Extra::Climb {
+            climbs,
+            forecast,
+            frame: ClimbFrame::EMPTY,
+        };
+    }
+
+    pub(super) fn set_climb_frame(&mut self, frame: ClimbFrame) {
+        match &mut self.extra {
+            Extra::Climb { frame: shown, .. } => *shown = frame,
+            _ => debug_assert!(false, "{:?} has no climb chart", self.page),
         }
+    }
+
+    pub fn show_workout(&mut self, chart: ride::WorkoutChart) {
+        self.extra = Extra::Workout(chart);
+    }
+
+    pub fn show_laps(&mut self, bars: ride::LapBars, lap: Lap, previous: Option<Lap>) {
+        self.extra = Extra::Lap {
+            bars,
+            lap,
+            previous,
+        };
+    }
+
+    pub fn show_back(&mut self, back: ride::Back, sunset: ride::Light) {
+        self.extra = Extra::Back { back, sunset };
+    }
+
+    pub fn show_map(&mut self, frame: Option<&'a ride::MapFrame>) {
+        self.extra = Extra::Map(frame);
     }
 
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
@@ -595,6 +795,7 @@ pub(super) fn fill(view: &mut View, make: impl FnOnce(&View) -> Canvas) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ride::laps::Laps;
 
     use crate::screens::chrome::{
         AMBER, CADENCE, GRADE, GREEN, HEART, POWER, RAISED, RED, Rect, SPEED, STATUS_BAR, TOAST,
@@ -608,11 +809,30 @@ mod tests {
         let _ = View::new(Page::Home, 0, None).canvas();
     }
 
+    /// What release paints for a wrong variant, which `View`'s accessors
+    /// reach only after their debug assertion: nothing found, and blank
+    /// statics.
     #[test]
-    #[cfg(not(debug_assertions))]
-    fn a_page_asking_for_another_pages_body_paints_blank() {
-        let view = View::new(Page::Home, 0, None);
-        assert!(view.canvas().runs.is_empty() && view.smooth().labels.is_empty());
+    fn a_wrong_variant_has_nothing_and_the_blanks_are_empty() {
+        assert!(Body::Blank.canvas().is_none() && Body::Blank.smooth().is_none());
+        assert!(Body::Canvas(Canvas::EMPTY).smooth().is_none());
+        assert!(Body::Blank.home().is_none());
+        let none = Extra::None;
+        assert!(none.climbs().is_none() && none.forecast().is_none());
+        assert!(none.climb_frame().is_none() && none.chart().is_none());
+        assert!(none.lap().is_none() && none.previous_lap().is_none());
+        assert!(none.lap_bars().is_none() && none.back().is_none());
+        assert!(none.sunset().is_none() && none.map().is_none());
+        assert!(NO_CANVAS.runs.is_empty() && NO_CANVAS.shapes.is_empty());
+        assert!(NO_SMOOTH.labels.is_empty() && NO_SMOOTH.band.is_none());
+        assert!(NO_BARS.is_empty() && NO_CLIMBS.climbing().is_none());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "has no lap")]
+    fn a_page_asking_for_another_pages_extra_trips_the_assertion() {
+        let _ = View::new(Page::Ride, 0, None).lap();
     }
 
     /// The colour of the prepared label that reads `text`.
@@ -739,8 +959,7 @@ mod tests {
                 300_000 + second * 1000,
             );
         }
-        view.lap = laps.current();
-        view.previous_lap = laps.previous();
+        view.show_laps(ride::LapBars::new(), laps.current(), laps.previous());
     }
 
     #[test]
@@ -824,7 +1043,6 @@ mod tests {
                     phase: 2,
                 });
                 view.gps = Gps::Searching;
-                two_laps(&mut view, 125, 250, 9000);
                 for _ in 0..600 {
                     view.totals.add(1000, 8333, &sample, None);
                     view.zone_time.add(1000, &sample, &view.profile);
@@ -847,7 +1065,7 @@ mod tests {
                 view.radar.status = radar::Status::Ready;
                 view.toast = radar_paired.then(|| Toast::new("LAP 1 05:00 200W", Tone::Info));
                 // The back-to-start arrow at an angle, its edges blended.
-                view.back = ride::Back::Guide(crate::ride::homing::Guide {
+                let back = ride::Back::Guide(crate::ride::homing::Guide {
                     mode: crate::ride::homing::Mode::Track,
                     following: true,
                     course: false,
@@ -858,6 +1076,14 @@ mod tests {
                     bearing: 2_500,
                     heading: Some(300),
                 });
+                match page {
+                    RidePage::Lap => two_laps(&mut view, 125, 250, 9000),
+                    RidePage::Back => view.show_back(back, ride::Light::default()),
+                    RidePage::Workout => view.show_workout(ride::WorkoutChart::default()),
+                    RidePage::Climb => view.show_climb(&Climbs::NONE, &Forecast::NONE),
+                    RidePage::Map => view.show_map(None),
+                    RidePage::Main | RidePage::Stats => {}
+                }
                 view.prepare();
                 assert_paints_reference(&view, &std::format!("{page:?} radar {radar_paired}"));
             }

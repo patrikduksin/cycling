@@ -191,7 +191,7 @@ mod tests {
             ..Sample::default()
         };
         let view = stats(10, &sample);
-        let canvas = &view.canvas();
+        let canvas = view.canvas();
         let color = |text| canvas.find(text).map(|run| run.color);
         assert_eq!(color("5.00"), Some(WHITE));
         assert_eq!(color("10:00"), Some(WHITE));

@@ -265,7 +265,8 @@ fn band_rows(i: usize) -> core::ops::Range<usize> {
 /// Paint a body row: a gauge row, or the labels that cover it.
 pub(super) fn paint(view: &View, row: &mut Row) {
     let y = row.y();
-    if let Some((i, columns)) = &view.smooth().band
+    let smooth = view.smooth();
+    if let Some((i, columns)) = &smooth.band
         && band_rows(*i).contains(&y)
     {
         row.span(columns.clone(), WHITE);
@@ -274,11 +275,11 @@ pub(super) fn paint(view: &View, row: &mut Row) {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i];
             let fill = mark.map_or(0, |mark| mark.fill);
-            paint_gauge(row, view.smooth().zones[i], fill, SEGMENTS[i], top);
+            paint_gauge(row, smooth.zones[i], fill, SEGMENTS[i], top);
             return;
         }
     }
-    for label in &view.smooth().labels {
+    for label in &smooth.labels {
         label.paint(row);
     }
 }
@@ -286,7 +287,8 @@ pub(super) fn paint(view: &View, row: &mut Row) {
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    if let Some((i, columns)) = &view.smooth().band
+    let smooth = view.smooth();
+    if let Some((i, columns)) = &smooth.band
         && band_rows(*i).contains(&y)
         && columns.contains(&x)
     {
@@ -296,10 +298,10 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i];
             let fill = mark.map_or(0, |mark| mark.fill);
-            return gauge(view.smooth().zones[i], fill, SEGMENTS[i], x, y, top);
+            return gauge(smooth.zones[i], fill, SEGMENTS[i], x, y, top);
         }
     }
-    for label in &view.smooth().labels {
+    for label in &smooth.labels {
         if let Some(color) = label.pixel(x, y, BLACK) {
             return color;
         }

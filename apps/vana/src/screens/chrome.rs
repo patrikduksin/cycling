@@ -190,9 +190,13 @@ pub fn card(
 }
 
 /// Paint a rounded shape whose pixels `pixel` gives. A rounded shape's row
-/// is uniform between its corner columns, and between its `edge` columns
-/// (a focus ring's width) on rows clear of the corners, so those parts are
-/// one span; only the rest is asked per pixel.
+/// is uniform between its corner columns, and so is a ring `edge` wide (a
+/// focus ring) wherever it is solid, so those parts are one span; only the
+/// anti-aliased edges are asked per pixel.
+///
+/// `pixel` must give one colour wherever the shape is solid and, with an
+/// `edge`, one colour across the ring: where `rect` is solid and the same
+/// shape inset by `edge` (radius less `edge`) is clear, as `card` paints it.
 pub fn paint_rounded(
     row: &mut Row,
     rect: Rect,
@@ -205,6 +209,8 @@ pub fn paint_rounded(
 
 /// `paint_rounded` for shapes over something other than black: `pixel` is
 /// also given what the row already holds there, to blend its edge over.
+/// A span's colour comes from `pixel` at its first column, over what the row
+/// holds there only, so solid parts must not depend on what lies beneath.
 pub fn paint_rounded_over(
     row: &mut Row,
     rect: Rect,
@@ -229,8 +235,13 @@ pub fn paint_rounded_over(
     {
         row.span(middle.clone(), color);
     }
-    row.each_over(rect.left..middle.start, |x, under| pixel(x, y, under));
-    row.each_over(middle.end..rect.right, |x, under| pixel(x, y, under));
+    if side > 0 {
+        for ring in [rect.left..middle.start, middle.end..rect.right] {
+            if let Some(color) = pixel(ring.start, y, under(row, ring.start)) {
+                row.span(ring, color);
+            }
+        }
+    }
 }
 
 /// What the row holds at `x`: black beyond its end.
@@ -276,7 +287,7 @@ fn paint_corner_row(
     } else {
         solid.start
     };
-    if let Some((solid, touched)) = inner {
+    if let Some((solid, touched)) = &inner {
         let end = if solid.is_empty() {
             touched.end
         } else {
@@ -285,7 +296,13 @@ fn paint_corner_row(
         fringe_end = fringe_end.max(end);
     }
     let fringe_end = fringe_end.clamp(start, middle.start);
-    row.each_over(start..fringe_end, |x, under| pixel(x, y, under));
+    match inner {
+        Some((_, touched_inner)) if !solid.is_empty() && !touched_inner.is_empty() => {
+            let ring = solid.start.max(start)..touched_inner.start.min(fringe_end);
+            paint_ringed_fringe(row, start..fringe_end, ring, pixel);
+        }
+        _ => row.each_over(start..fringe_end, |x, under| pixel(x, y, under)),
+    }
     // Right corner, mirrored.
     let ((solid, touched), inner) = discs(rect.right - radius);
     let end = touched.end.min(rect.right);
@@ -294,7 +311,7 @@ fn paint_corner_row(
     } else {
         solid.end
     };
-    if let Some((solid, touched)) = inner {
+    if let Some((solid, touched)) = &inner {
         let start = if solid.is_empty() {
             touched.start
         } else {
@@ -306,7 +323,34 @@ fn paint_corner_row(
     if let Some(color) = color {
         row.span(fringe_end..fringe_start, color);
     }
-    row.each_over(fringe_start..end, |x, under| pixel(x, y, under));
+    match inner {
+        Some((_, touched_inner)) if !solid.is_empty() && !touched_inner.is_empty() => {
+            let ring = touched_inner.end.max(fringe_start)..solid.end.min(end);
+            paint_ringed_fringe(row, fringe_start..end, ring, pixel);
+        }
+        _ => row.each_over(fringe_start..end, |x, under| pixel(x, y, under)),
+    }
+}
+
+/// Paint a corner's `fringe` per pixel, but for its `ring` columns, where
+/// the outer disc is solid and the inner one clear: those are one colour.
+#[inline(never)]
+fn paint_ringed_fringe(
+    row: &mut Row,
+    fringe: Range<usize>,
+    ring: Range<usize>,
+    pixel: &impl Fn(usize, usize, u16) -> Option<u16>,
+) {
+    let y = row.y();
+    if ring.is_empty() {
+        row.each_over(fringe, |x, under| pixel(x, y, under));
+        return;
+    }
+    row.each_over(fringe.start..ring.start, |x, under| pixel(x, y, under));
+    if let Some(color) = pixel(ring.start, y, under(row, ring.start)) {
+        row.span(ring.clone(), color);
+    }
+    row.each_over(ring.end..fringe.end, |x, under| pixel(x, y, under));
 }
 
 /// The columns of row `y` where a `disc` of `radius` around (cx, cy), in
@@ -1434,16 +1478,19 @@ mod tests {
             right: 230,
             bottom: 90,
         };
-        for ring in [None, Some(ACCENT)] {
-            for y in 25..95 {
-                let mut pixels = [UNDER; WIDTH];
-                let edge = if ring.is_some() { 3 } else { 0 };
-                paint_rounded(&mut Row::new(y, &mut pixels), rect, 18, edge, |x, y| {
-                    card(rect, 18, x, y, RAISED, ring)
-                });
-                let want: [u16; WIDTH] =
-                    core::array::from_fn(|x| card(rect, 18, x, y, RAISED, ring).unwrap_or(UNDER));
-                assert_eq!(pixels, want, "card row {y}");
+        for radius in [3, 4, 7, 12, 16, 18, 29] {
+            for ring in [None, Some(ACCENT)] {
+                for y in 25..95 {
+                    let mut pixels = [UNDER; WIDTH];
+                    let edge = if ring.is_some() { 3 } else { 0 };
+                    paint_rounded(&mut Row::new(y, &mut pixels), rect, radius, edge, |x, y| {
+                        card(rect, radius, x, y, RAISED, ring)
+                    });
+                    let want: [u16; WIDTH] = core::array::from_fn(|x| {
+                        card(rect, radius, x, y, RAISED, ring).unwrap_or(UNDER)
+                    });
+                    assert_eq!(pixels, want, "card of radius {radius}, row {y}");
+                }
             }
         }
     }

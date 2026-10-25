@@ -188,65 +188,13 @@ impl<const N: usize> Line<N> {
         }
         coverage
     }
-
-    /// Coverage of row `y` from column `from` onwards into `out`, which must
-    /// start zeroed: afterwards each `out[i]` is `coverage(from + i, y)`.
-    /// Returns the range of `out` that glyphs reached.
-    fn row_coverage(&self, y: usize, from: usize, out: &mut [u8]) -> Range<usize> {
-        debug_assert!(out.iter().all(|&a| a == 0), "coverage starts zeroed");
-        let mut reached = out.len()..0;
-        if y >= usize::from(self.face.height) {
-            return 0..0;
-        }
-        let limit = usize::from(self.width) + 2;
-        let len = usize::from(self.len);
-        for i in 0..len {
-            let start = usize::from(self.starts[i]);
-            let until = if i + 2 < len {
-                usize::from(self.starts[i + 2])
-            } else {
-                limit
-            }
-            .min(limit);
-            let glyph = self.face.glyph(self.chars[i]);
-            let gy = y as i32 - i32::from(glyph.y);
-            if gy < 0 || gy >= i32::from(glyph.h) {
-                continue;
-            }
-            let ink = start as i32 + i32::from(glyph.x);
-            let first = (ink.max(0) as usize).max(start).max(from);
-            let last = ((ink + i32::from(glyph.w)).max(0) as usize)
-                .min(until)
-                .min(from + out.len());
-            if first >= last {
-                continue;
-            }
-            let stride = usize::from(glyph.w).div_ceil(2);
-            let base = usize::from(glyph.offset) + gy as usize * stride;
-            let skip = (first as i32 - ink) as usize;
-            let bits = &self.face.bits[base..base + stride];
-            // Only columns an earlier glyph reached can hold ink to keep;
-            // the rest are still zero, so they take the glyph's own.
-            let (lo, hi) = (first - from, last - from);
-            let fresh = reached.end.clamp(lo, hi);
-            unpack(bits, skip, &mut out[lo..fresh], |slot, a| {
-                *slot = (*slot).max(a)
-            });
-            unpack(bits, skip + fresh - lo, &mut out[fresh..hi], |slot, a| {
-                *slot = a
-            });
-            reached.start = reached.start.min(lo);
-            reached.end = reached.end.max(hi);
-        }
-        if reached.is_empty() { 0..0 } else { reached }
-    }
 }
 
 /// Put a glyph row's coverage from glyph column `skip` on into `out`, one
 /// column per slot; the row packs two columns a byte, the left one in the
-/// high nibble.
+/// high nibble. `put` must leave a slot alone at coverage 0.
 #[inline(always)]
-fn unpack(bits: &[u8], skip: usize, out: &mut [u8], put: impl Fn(&mut u8, u8)) {
+fn unpack<T>(bits: &[u8], skip: usize, out: &mut [T], mut put: impl FnMut(&mut T, u8)) {
     if out.is_empty() {
         return;
     }
@@ -259,16 +207,33 @@ fn unpack(bits: &[u8], skip: usize, out: &mut [u8], put: impl Fn(&mut u8, u8)) {
     }
     let (pairs, rest) = slots.as_chunks_mut::<2>();
     for ([left, right], &byte) in pairs.iter_mut().zip(&mut bytes) {
-        put(left, byte >> 4);
-        put(right, byte & 0x0f);
+        // Glyph rows are mostly blank or solid.
+        match byte {
+            0 => {}
+            0xff => {
+                put(left, 15);
+                put(right, 15);
+            }
+            _ => {
+                put(left, byte >> 4);
+                put(right, byte & 0x0f);
+            }
+        }
     }
     if let ([slot], Some(&byte)) = (rest, bytes.next()) {
         put(slot, byte >> 4);
     }
 }
 
-/// The widest row a label paints at once.
-const MAX_ROW: usize = 320;
+/// Coverage at glyph column `x` of a glyph row packed as `unpack` reads it.
+fn nibble(bits: &[u8], x: usize) -> u8 {
+    let byte = bits[x / 2];
+    if x.is_multiple_of(2) {
+        byte >> 4
+    } else {
+        byte & 0x0f
+    }
+}
 
 /// Mix `color` over `background` by a 4-bit coverage. Full coverage is
 /// exactly `color`, so the simulator can recognise solid glyph pixels.
@@ -323,6 +288,36 @@ impl Blends {
             self.mixes += 1;
         }
         self.mixed[a]
+    }
+
+    #[inline(always)]
+    fn put(&mut self, pixel: &mut u16, coverage: u8) {
+        match coverage {
+            0 => {}
+            15.. => *pixel = self.color,
+            a => *pixel = self.over(*pixel, a),
+        }
+    }
+}
+
+/// A glyph's last columns that lie in the next glyph's cell, and their
+/// coverage, held until the next glyph adds its own.
+#[derive(Default)]
+struct Held {
+    columns: Range<usize>,
+    coverage: [u8; SPILL],
+}
+
+impl Held {
+    /// Paint the held columns, each at the larger of its coverage and
+    /// `next`'s, and hold none.
+    #[inline(always)]
+    fn paint(&mut self, pixels: &mut [u16], blends: &mut Blends, next: impl Fn(usize) -> u8) {
+        for x in self.columns.clone() {
+            let held = self.coverage.get(x - self.columns.start).copied();
+            blends.put(&mut pixels[x], held.unwrap_or(0).max(next(x)));
+        }
+        self.columns = 0..0;
     }
 }
 
@@ -385,35 +380,80 @@ impl<const N: usize> Label<N> {
     }
 
     /// Most rows miss most labels, so the test above stays inline and the
-    /// painting, with its coverage buffer, is one shared call.
+    /// painting is one shared call.
+    ///
+    /// Each glyph paints its columns straight into the row. Only the last
+    /// `SPILL` columns of a glyph can lie in the next glyph's cell, so the
+    /// coverage there is held until the next glyph adds its own; a column
+    /// takes the larger, as `Line::coverage` does.
     #[inline(never)]
     fn paint_row(&self, row: &mut Row, y: usize) {
         let clip = row.clip();
-        let pixels = row.pixels_mut();
-        let start = self.left.max(clip.start);
-        let end = (self.right() + 2).min(clip.end);
-        if start >= end {
+        let end = (self.right() + SPILL).min(clip.end);
+        if self.left.max(clip.start) >= end {
             return;
         }
-        // Coverage of this row, as `Line::coverage` would give it per pixel.
-        let mut coverage = [0u8; MAX_ROW];
-        let span = &mut coverage[..(end - start).min(MAX_ROW)];
-        let reached = self
-            .line
-            .row_coverage(y - self.top, start - self.left, span);
+        // Columns from here on count from the label's left edge.
+        let pixels = &mut row.pixels_mut()[self.left..end];
+        let (from, to) = (clip.start.saturating_sub(self.left), pixels.len());
+        let line = &self.line;
+        let y = y - self.top;
+        let starts = &line.starts[..usize::from(line.len)];
+        // Like `Line::coverage`, a glyph reaches no further than the cell after next.
+        let cell = |i: usize| {
+            starts
+                .get(i)
+                .map_or(to, |&start| usize::from(start).min(to))
+        };
         let mut blends = Blends::new(self.color);
-        let ink = &span[reached.clone()];
-        for (pixel, &a) in pixels[start + reached.start..].iter_mut().zip(ink) {
-            match a {
-                0 => {}
-                15.. => *pixel = self.color,
-                a => *pixel = blends.over(*pixel, a),
+        let mut columns = 0;
+        let mut held = Held::default();
+        for (i, (&start, &character)) in starts.iter().zip(&line.chars).enumerate() {
+            let glyph = line.face.glyph(character);
+            let gy = y.wrapping_sub(usize::from(glyph.y));
+            if gy >= usize::from(glyph.h) {
+                held.paint(pixels, &mut blends, |_| 0);
+                continue;
+            }
+            let start = usize::from(start);
+            let ink = start as isize + isize::from(glyph.x);
+            let first = start.max(ink.max(0) as usize).max(from);
+            let last = ((ink + isize::from(glyph.w)).max(0) as usize).min(cell(i + 2));
+            let stride = usize::from(glyph.w).div_ceil(2);
+            let base = usize::from(glyph.offset) + gy * stride;
+            let bits = &line.face.bits[base..base + stride];
+            let skip = |x: usize| (x as isize - ink) as usize;
+            // A glyph's ink starts in its own cell, where the held columns start.
+            let own = first.max(held.columns.end);
+            held.paint(pixels, &mut blends, |x| {
+                if (first..last).contains(&x) {
+                    nibble(bits, skip(x))
+                } else {
+                    0
+                }
+            });
+            let next = cell(i + 1);
+            let own = own..last.min(next);
+            if !own.is_empty() {
+                columns += own.len();
+                unpack(bits, skip(own.start), &mut pixels[own], |pixel, a| {
+                    blends.put(pixel, a)
+                });
+            }
+            if last > next {
+                held.columns = first.max(next)..last;
+                columns += held.columns.len();
+                for (x, slot) in held.columns.clone().zip(&mut held.coverage) {
+                    *slot = nibble(bits, skip(x));
+                }
             }
         }
+        held.paint(pixels, &mut blends, |_| 0);
         work::add(|work| {
+            let inked = (from..to).filter(|&x| line.coverage(x, y) > 0);
             work.label_rows += 1;
-            work.glyph_columns += ink.len() as u64;
-            work.glyph_pixels += ink.iter().filter(|&&a| a > 0).count() as u64;
+            work.glyph_columns += columns as u64;
+            work.glyph_pixels += inked.count() as u64;
             work.mixes += u64::from(blends.mixes);
         });
     }
@@ -450,6 +490,18 @@ mod tests {
         for face in [&CAPTION, &BODY, &TITLE] {
             assert!((b'A'..=b'Z').all(|c| face.glyph(c).w > 0));
             assert_eq!(face.glyph(b'a').advance, face.glyph(b'A').advance);
+        }
+    }
+
+    /// `Label::paint_row` holds only `SPILL` columns of a glyph for the next.
+    #[test]
+    fn glyphs_spill_at_most_spill_columns_into_the_next_cell() {
+        for face in FACES {
+            for glyph in face.glyphs {
+                let reach = i32::from(glyph.x) + i32::from(glyph.w);
+                assert!(reach <= i32::from(glyph.advance) + SPILL as i32);
+                assert!(glyph.w == 0 || glyph.x < glyph.advance as i8);
+            }
         }
     }
 
@@ -528,10 +580,47 @@ mod tests {
         }
     }
 
+    /// Glyphs that reach into the next cell, before every glyph, alone and
+    /// across a glyph with no advance.
+    #[test]
+    fn spilling_glyphs_paint_like_the_per_pixel_label() {
+        const BACKGROUND: u16 = 0x2945;
+        let characters = || 0x20u8..0x60;
+        for face in FACES {
+            let spills = characters().filter(|&c| {
+                let glyph = face.glyph(c);
+                i32::from(glyph.x) + i32::from(glyph.w) > i32::from(glyph.advance)
+            });
+            let empty = characters().find(|&c| face.glyph(c).advance == 0);
+            for first in spills {
+                for after in characters() {
+                    for text in [&[first, after][..], &[first, empty.unwrap_or(b' '), after]] {
+                        let label =
+                            Label::new(Line::<4>::new(face, text), 3, 0, Align::Left, 0xffe0);
+                        for y in 0..label.bottom() {
+                            let mut pixels = [BACKGROUND; 160];
+                            label.paint(&mut Row::new(y, &mut pixels));
+                            for x in label.columns() {
+                                let want = label.pixel(x, y, BACKGROUND).unwrap_or(BACKGROUND);
+                                assert_eq!(pixels[x], want, "{text:?} at {x},{y}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn painting_a_row_matches_the_per_pixel_label() {
         const BACKGROUND: u16 = 0x2945;
-        let texts: [&[u8]; 4] = [b"SETTINGS", b"0:09:59", b"AVA WTF 4.99 KM", b"T1/7%"];
+        let texts: [&[u8]; 5] = [
+            b"SETTINGS",
+            b"0:09:59",
+            b"AVA WTF 4.99 KM",
+            b"T1/7%",
+            b"9A9W7",
+        ];
         for face in FACES {
             for text in texts {
                 for (x, align) in [(3, Align::Left), (120, Align::Center), (236, Align::Right)] {

@@ -77,6 +77,9 @@ pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDE
 
 /// The one page body a frame paints. Only the variant for the shown page is
 /// ever filled; asking for another paints blank, and trips a debug assertion.
+// Exactly one body lives in View and its variants share one slot on purpose;
+// boxing would allocate every frame.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Body {
     /// Nothing prepared: the Sensors menu paints itself.
     Blank,

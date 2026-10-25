@@ -14,8 +14,9 @@
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
-use crate::ride::course::Course;
+use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::turns::Warning;
+use crate::ride::course::{self, Course};
 use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Event, Homing};
 use crate::ride::log::{Slot, Status, decode};
@@ -23,6 +24,7 @@ use crate::ride::turn_back::Leg;
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
 use crate::screens::ride::{Back, MapKey, RidePage, Track, update_map};
+use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
 
@@ -81,6 +83,8 @@ pub struct BackToStart {
     map_key: Option<MapKey>,
     /// The loaded course and whether it matches the stored one.
     pub(super) course: &'static mut Course,
+    /// Finds the turns of a course while it uploads.
+    finder: &'static mut Finder,
     pub(super) kept: super::course::Kept,
     resume: Resume,
     /// When the last nudge showed, and a turn warning waiting on it.
@@ -97,6 +101,7 @@ impl BackToStart {
         turns: &'static mut [crate::ride::course::turns::Turn],
         map: &'static mut MapFrame,
         course: &'static mut Course,
+        finder: &'static mut Finder,
     ) -> Self {
         Self {
             homing: Homing::new(crumbs).with_line(line).with_turns(turns),
@@ -104,6 +109,7 @@ impl BackToStart {
             map,
             map_key: None,
             course,
+            finder,
             kept: super::course::Kept::default(),
             resume: Resume::None,
             nudged_at: None,
@@ -125,9 +131,61 @@ impl BackToStart {
         )
     }
 
-    /// Follow the course as it is now, or nothing once it is cleared.
-    pub(super) fn course_changed(&mut self) {
-        self.homing.set_course(self.course.points());
+    /// Follow the course as it is now, or nothing once it is cleared. Once
+    /// it is placed, its turns are those stored beside it on `media`, or
+    /// found by the scan when none of its own are there.
+    pub(super) fn course_changed(&mut self, media: &mut impl ReadWrite) {
+        let course = &*self.course;
+        self.homing.set_course(course.points());
+        self.homing.take_turns(course.points(), |turns| {
+            match stored::load(media, course::key(course), turns) {
+                Ok(Some(stored)) => {
+                    log::info!(target: "sdk.course", "turns_stored count={}", stored.count);
+                    Some(stored.count)
+                }
+                Ok(None) => {
+                    log::info!(target: "sdk.course", "turns_scanned");
+                    None
+                }
+                Err(error) => {
+                    log::warn!(target: "sdk.course", "turns_not_read error={error:?}");
+                    None
+                }
+            }
+        });
+    }
+
+    /// Store the turns `found` while the course uploaded beside it, or,
+    /// with none to trust, remove what is there.
+    pub(super) fn save_turns(&mut self, media: &mut impl ReadWrite, found: Option<stored::Found>) {
+        let key = course::key(self.course);
+        let result = match found {
+            Some(found) => {
+                log::info!(
+                    target: "phone",
+                    "VANA_PHONE course_turns count={} full={} reach={}",
+                    found.count,
+                    found.full,
+                    found.reach
+                );
+                let turns = &self.homing.turn_room()[..found.count];
+                stored::save(media, key, turns, found.full)
+            }
+            None => stored::delete(media),
+        };
+        if let Err(error) = result {
+            log::warn!(target: "phone", "VANA_PHONE course_turns_not_saved error={error:?}");
+        }
+    }
+
+    /// The course to build from an upload, and what finds its turns into
+    /// the turn list meanwhile.
+    pub(super) fn upload(&mut self) -> (&mut Course, Finding<'_>) {
+        let finding = Finding {
+            finder: self.finder,
+            turns: self.homing.turn_room(),
+        };
+        (self.course, finding)
     }
 }
 
@@ -207,7 +265,7 @@ impl Runtime {
                 }
             };
             if state.homing.needs_course() {
-                state.homing.set_course(state.course.points());
+                state.course_changed(bulk);
             }
             if !done {
                 state.resume = Resume::Reading { medium, rebuild };
@@ -218,7 +276,7 @@ impl Runtime {
         }
         let event = state.homing.observe(self.readings.live.location_e7, now);
         if state.homing.needs_course() {
-            state.homing.set_course(state.course.points());
+            state.course_changed(bulk);
         }
         let following = state.homing.following();
         let course = state.homing.following_course();

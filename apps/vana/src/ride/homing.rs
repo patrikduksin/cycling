@@ -523,6 +523,65 @@ impl<'a> Homing<'a> {
         self.warner = Warner::default();
     }
 
+    /// The placed course's turns as stored, in place of the scan: `fill`
+    /// writes them into the list in millimetres along `points`, the course
+    /// as `set_course` was given it, and returns how many, or `None` to
+    /// scan for them. They move into this ride's frame, kept point by kept
+    /// point, so the rider's place along the course finds them.
+    pub fn take_turns(
+        &mut self,
+        points: &[course::Point],
+        fill: impl FnOnce(&mut [Turn]) -> Option<usize>,
+    ) {
+        let len = self.line_len;
+        if len < 2 || points.len() != len {
+            return;
+        }
+        let Some(count) = fill(self.turns).filter(|&count| count <= self.turns.len()) else {
+            (self.scan, self.turn_count) = (Scan::default(), 0);
+            return;
+        };
+        // Kept point `k` from the start is `line[len - 1 - k]`.
+        let line = &self.line[..len];
+        let frame_m = |k: usize| line[len - 1].along - line[len - 1 - k].along;
+        for end in [false, true] {
+            let mut course_m = course::along_m(points).enumerate().peekable();
+            let (mut k, mut from_m) = (0, 0.0f32);
+            for turn in &mut self.turns[..count] {
+                let slot = match end {
+                    false => &mut turn.start_mm,
+                    true => &mut turn.end_mm,
+                };
+                let at_m = *slot as f32 / 1000.0;
+                while let Some(&(next, next_m)) = course_m.peek() {
+                    if next_m > at_m {
+                        break;
+                    }
+                    (k, from_m) = (next, next_m);
+                    course_m.next();
+                }
+                let ride_m = match course_m.peek() {
+                    Some(&(next, next_m)) if next_m > from_m => {
+                        let t = (at_m - from_m) / (next_m - from_m);
+                        frame_m(k) + t * (frame_m(next) - frame_m(k))
+                    }
+                    _ => frame_m(k),
+                };
+                // A float cast saturates, so no position overflows.
+                *slot = (ride_m * 1000.0) as u32;
+            }
+        }
+        (self.scan, self.turn_count) = (Scan::finished(), count);
+        self.warner = Warner::default();
+    }
+
+    /// The turn list, to find a course's turns into while it uploads. Only
+    /// while no course is placed: placing one finds its own.
+    pub fn turn_room(&mut self) -> &mut [Turn] {
+        (self.scan, self.turn_count) = (Scan::finished(), 0);
+        self.turns
+    }
+
     /// The kept points, oldest first, for drawing the track.
     pub fn crumbs(&self) -> &[Crumb] {
         &self.crumbs[..self.len]
@@ -1866,6 +1925,18 @@ mod tests {
         points: &[(f32, f32)],
         now: &mut u64,
     ) -> (Vec<Warning>, Vec<Event>) {
+        ride_course_stored(homing, course, None, points, now)
+    }
+
+    /// As `ride_course_warned`, the course's turns `stored` at upload when
+    /// given, in place of the scan.
+    fn ride_course_stored(
+        homing: &mut Homing,
+        course: &[course::Point],
+        stored: Option<&[Turn]>,
+        points: &[(f32, f32)],
+        now: &mut u64,
+    ) -> (Vec<Warning>, Vec<Event>) {
         let (mut warnings, mut events) = (Vec::new(), Vec::new());
         for &(east, north) in points {
             *now += 1_000;
@@ -1873,6 +1944,12 @@ mod tests {
             warnings.extend(homing.take_turn());
             if homing.needs_course() {
                 homing.set_course(course);
+                if let Some(stored) = stored {
+                    homing.take_turns(course, |turns| {
+                        turns[..stored.len()].copy_from_slice(stored);
+                        Some(stored.len())
+                    });
+                }
             }
         }
         (warnings, events)
@@ -1933,76 +2010,157 @@ mod tests {
         *line.last().unwrap()
     }
 
+    /// Turns stored at upload are measured along the course in its own
+    /// frame. Placed for a ride that starts 40 km north, they move into
+    /// the ride's frame and sit where the scan of the placed course finds
+    /// them; as stored, they would be well over 100 m out by the end.
+    #[test]
+    fn stored_turns_move_into_the_frame_of_a_ride_started_far_away() {
+        use crate::ride::course::stored::tests::uploaded;
+        use crate::ride::course::turns::tests::bends;
+        use crate::ride::course::turns::{TURNS, Turn};
+        let corners: Vec<(f32, f32)> = (0..12)
+            .map(|k| {
+                (
+                    400.0 + 5_000.0 * k as f32,
+                    if k % 2 == 0 { 90.0 } else { -90.0 },
+                )
+            })
+            .collect();
+        let (course, stored) = uploaded(&bends(10.0, &corners));
+        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+        let mut turns = vec![Turn::default(); TURNS];
+        let mut homing = Homing::new(&mut crumbs)
+            .with_line(&mut line)
+            .with_turns(&mut turns);
+        homing.observe(Some(at(0.0, 40_000.0)), 1_000);
+        homing.set_course(course.points());
+        assert_eq!(homing.course().len(), course.points().len());
+        while !homing.scan.done() {
+            homing.scan_turns();
+        }
+        let named = |turns: &[Turn]| -> Vec<Turn> {
+            turns
+                .iter()
+                .filter(|turn| turn.kind.is_some())
+                .copied()
+                .collect()
+        };
+        let scanned = named(&homing.turns[..homing.turn_count]);
+        homing.take_turns(course.points(), |list| {
+            list[..stored.len()].copy_from_slice(&stored);
+            Some(stored.len())
+        });
+        assert!(homing.scan.done());
+        let placed = named(&homing.turns[..homing.turn_count]);
+        assert_eq!(placed.len(), corners.len());
+        assert_eq!(scanned.len(), corners.len());
+        let apart = |a: &[Turn], b: &[Turn]| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| a.start_mm.abs_diff(b.start_mm))
+                .max()
+                .unwrap()
+        };
+        let (moved, as_stored) = (apart(&placed, &scanned), apart(&named(&stored), &scanned));
+        std::println!(
+            "stored turns {moved} mm from the scan's once moved, {as_stored} mm as stored"
+        );
+        assert!(moved <= 10_000, "{moved} mm");
+        assert!(as_stored > 100_000, "{as_stored} mm");
+        for (placed, stored) in placed.iter().zip(&named(&stored)) {
+            assert_eq!((placed.kind, placed.twice), (stored.kind, stored.twice));
+        }
+    }
+
     /// Roundabouts of 15 to 40 m radius, left at the first, second and
     /// third exits, as drawn and thinned 12 km on, ridden through `Homing`
     /// with a fix every 5, 7 or 9 m up to 0, 3 or 6 m off, 39 times each:
     /// every word is the right way, or there is none.
     #[test]
     fn noisy_fixes_round_a_roundabout_never_give_a_wrong_word() {
-        use crate::ride::course::turns::tests::{Verdict, built, judge, ring};
+        use crate::ride::course::stored::tests::uploaded;
+        use crate::ride::course::turns::tests::{
+            FOUND, Found, Verdict, built, extended, judge, ring,
+        };
         use crate::ride::course::turns::{TURNS, Turn};
         use crate::testing::Rng;
-        let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
-        for radius in [15.0, 20.0, 30.0, 40.0] {
-            for sweep in [90.0, 180.0, 270.0] {
-                let road = ring(radius, sweep, 5.0);
-                let degrees = turns::swing(0.0, 180.0 - sweep);
-                for after in [0.0, 12_000.0] {
-                    let course: Vec<course::Point> = match after > 0.0 {
-                        true => built(&road, after).0.points().to_vec(),
-                        false => road
-                            .iter()
-                            .map(|&(east, north)| {
-                                course::tests::at(f64::from(east), f64::from(north))
-                            })
-                            .collect(),
-                    };
-                    for (noise, step) in [0.0f32, 3.0, 6.0]
-                        .into_iter()
-                        .flat_map(|noise| [5.0f32, 7.0, 9.0].map(|step| (noise, step)))
-                    {
-                        for seed in 0..39 {
-                            let mut rng = Rng::new(seed + 1);
-                            let mut jitter = || {
-                                let span = (2.0 * noise * 1000.0) as u64;
-                                rng.below(span + 1) as f32 / 1000.0 - noise
-                            };
-                            let fixes: Vec<(f32, f32)> = (0..(900.0 / step) as usize)
-                                .map(|k| {
-                                    let (east, north) = along_line(&road, k as f32 * step);
-                                    (east + jitter(), north + jitter())
-                                })
-                                .collect();
-                            let (mut crumbs, mut line) =
-                                (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-                            let mut turns = vec![Turn::default(); TURNS];
-                            let mut homing = Homing::new(&mut crumbs)
-                                .with_line(&mut line)
-                                .with_turns(&mut turns);
-                            homing.set_course(&course);
-                            let mut now = 0;
-                            let (warnings, _) =
-                                ride_course_warned(&mut homing, &course, &fixes, &mut now);
-                            let said: Vec<_> = warnings.iter().map(|&w| (0, w)).collect();
-                            runs += 1;
-                            match judge(&said, degrees) {
+        for found in FOUND {
+            let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+            for radius in [15.0, 20.0, 30.0, 40.0] {
+                for sweep in [90.0, 180.0, 270.0] {
+                    let road = ring(radius, sweep, 5.0);
+                    let degrees = turns::swing(0.0, 180.0 - sweep);
+                    for after in [0.0, 12_000.0] {
+                        let (course, stored): (Vec<course::Point>, _) = match (found, after > 0.0) {
+                            (Found::Uploaded, _) => {
+                                let (course, turns) = uploaded(&extended(&road, after));
+                                (course.points().to_vec(), Some(turns))
+                            }
+                            (Found::Scanned, true) => {
+                                (built(&road, after).0.points().to_vec(), None)
+                            }
+                            (Found::Scanned, false) => (
+                                road.iter()
+                                    .map(|&(east, north)| {
+                                        course::tests::at(f64::from(east), f64::from(north))
+                                    })
+                                    .collect(),
+                                None,
+                            ),
+                        };
+                        for (noise, step) in [0.0f32, 3.0, 6.0]
+                            .into_iter()
+                            .flat_map(|noise| [5.0f32, 7.0, 9.0].map(|step| (noise, step)))
+                        {
+                            for seed in 0..39 {
+                                let mut rng = Rng::new(seed + 1);
+                                let mut jitter = || {
+                                    let span = (2.0 * noise * 1000.0) as u64;
+                                    rng.below(span + 1) as f32 / 1000.0 - noise
+                                };
+                                let fixes: Vec<(f32, f32)> = (0..(900.0 / step) as usize)
+                                    .map(|k| {
+                                        let (east, north) = along_line(&road, k as f32 * step);
+                                        (east + jitter(), north + jitter())
+                                    })
+                                    .collect();
+                                let (mut crumbs, mut line) =
+                                    (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+                                let mut turns = vec![Turn::default(); TURNS];
+                                let mut homing = Homing::new(&mut crumbs)
+                                    .with_line(&mut line)
+                                    .with_turns(&mut turns);
+                                homing.set_course(&course);
+                                let mut now = 0;
+                                let (warnings, _) = ride_course_stored(
+                                    &mut homing,
+                                    &course,
+                                    stored.as_deref(),
+                                    &fixes,
+                                    &mut now,
+                                );
+                                let said: Vec<_> = warnings.iter().map(|&w| (0, w)).collect();
+                                runs += 1;
+                                match judge(&said, degrees) {
                                 Verdict::Wrong => wrong.push(std::format!(
-                                    "r{radius} exit {sweep} after {after} noise {noise} step {step} seed {seed}: {warnings:?}"
+                                    "{found:?}: r{radius} exit {sweep} after {after} noise {noise} step {step} seed {seed}: {warnings:?}"
                                 )),
                                 Verdict::Silent if sweep != 180.0 => silent += 1,
                                 Verdict::Silent => {}
                                 Verdict::Right => {}
                             }
+                            }
                         }
                     }
                 }
             }
+            std::println!(
+                "{found:?}: {} of {runs} wrong, {silent} silent at a first or third exit",
+                wrong.len()
+            );
+            assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
         }
-        std::println!(
-            "{} of {runs} wrong, {silent} silent at a first or third exit",
-            wrong.len()
-        );
-        assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
     }
 
     #[test]

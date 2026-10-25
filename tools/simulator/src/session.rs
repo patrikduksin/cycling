@@ -435,8 +435,9 @@ impl Session {
             let line = Vec::leak(vec![vana::app::Crumb::default(); vana::app::COURSE_POINTS]);
             let turns = Vec::leak(vec![vana::app::Turn::default(); vana::app::COURSE_TURNS]);
             let course = Box::leak(Box::new(vana::app::Course::empty()));
+            let finder = Box::leak(Box::new(vana::app::CourseFinder::new()));
             let back = Box::new(vana::app::BackToStart::new(
-                crumbs, line, turns, map, course,
+                crumbs, line, turns, map, course, finder,
             ));
             sdk.attach_back(Box::leak(back));
         }

@@ -10,9 +10,9 @@ use std::vec::Vec;
 fn read(bytes: &[u8]) -> (Result<(), Refusal>, Box<Course>) {
     let mut course = empty();
     let mut gpx = Gpx::new();
-    gpx.start(&mut course);
-    gpx.feed(bytes, &mut course);
-    let result = gpx.finish(&mut course);
+    gpx.start(&mut course, &mut ());
+    gpx.feed(bytes, &mut course, &mut ());
+    let result = gpx.finish(&mut course, &mut ());
     (result, course)
 }
 
@@ -20,14 +20,14 @@ fn read(bytes: &[u8]) -> (Result<(), Refusal>, Box<Course>) {
 fn read_in_pieces(bytes: &[u8], rng: &mut Rng) -> (Result<(), Refusal>, Box<Course>) {
     let mut course = empty();
     let mut gpx = Gpx::new();
-    gpx.start(&mut course);
+    gpx.start(&mut course, &mut ());
     let mut rest = bytes;
     while !rest.is_empty() {
         let n = (rng.range(1, 300) as usize).min(rest.len());
-        gpx.feed(&rest[..n], &mut course);
+        gpx.feed(&rest[..n], &mut course, &mut ());
         rest = &rest[n..];
     }
-    let result = gpx.finish(&mut course);
+    let result = gpx.finish(&mut course, &mut ());
     (result, course)
 }
 

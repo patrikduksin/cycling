@@ -5,7 +5,7 @@ use std::vec;
 use std::vec::Vec;
 
 /// Points every `step` metres along straight legs between `corners`.
-fn path(corners: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
+pub(crate) fn path(corners: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
     let mut points = vec![corners[0]];
     for pair in corners.windows(2) {
         let steps = (distance(pair[0], pair[1]) / step).ceil() as usize;
@@ -23,7 +23,13 @@ fn path(corners: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
 /// Points every `step` metres round a circle about `centre`, from `from`
 /// degrees clockwise from north, through `sweep` degrees: clockwise when
 /// positive.
-fn arc(centre: (f32, f32), radius: f32, from: f32, sweep: f32, step: f32) -> Vec<(f32, f32)> {
+pub(crate) fn arc(
+    centre: (f32, f32),
+    radius: f32,
+    from: f32,
+    sweep: f32,
+    step: f32,
+) -> Vec<(f32, f32)> {
     let steps = (fabsf(sweep).to_radians() * radius / step).ceil() as usize;
     (0..=steps)
         .map(|i| {
@@ -36,7 +42,7 @@ fn arc(centre: (f32, f32), radius: f32, from: f32, sweep: f32, step: f32) -> Vec
         .collect()
 }
 
-fn join(parts: &[Vec<(f32, f32)>]) -> Vec<(f32, f32)> {
+pub(crate) fn join(parts: &[Vec<(f32, f32)>]) -> Vec<(f32, f32)> {
     let mut line: Vec<(f32, f32)> = Vec::new();
     for part in parts {
         let skip = usize::from(line.last() == part.first());
@@ -69,7 +75,14 @@ fn ride_through(
     line: &[(f32, f32)],
     positions: impl IntoIterator<Item = f32>,
 ) -> Vec<(u32, Warning)> {
-    let turns = turns_of(line);
+    ride_with(&turns_of(line), positions)
+}
+
+/// Ride a course of `turns` through `positions`, as `ride_through`.
+pub(crate) fn ride_with(
+    turns: &[Turn],
+    positions: impl IntoIterator<Item = f32>,
+) -> Vec<(u32, Warning)> {
     let mut warner = Warner::default();
     let mut said = Vec::new();
     let mut last = f32::MIN;
@@ -79,7 +92,7 @@ fn ride_through(
         if !on {
             continue;
         }
-        if let Some(warning) = warner.step(&turns, mm(metres)) {
+        if let Some(warning) = warner.step(turns, mm(metres)) {
             said.push((metres as u32, warning));
         }
     }
@@ -142,7 +155,7 @@ pub(crate) fn ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
 }
 
 /// Up 400 m, round a left hairpin of `radius`, and back down.
-fn hairpin(radius: f32, spacing: f32) -> Vec<(f32, f32)> {
+pub(crate) fn hairpin(radius: f32, spacing: f32) -> Vec<(f32, f32)> {
     join(&[
         path(&[(0.0, 0.0), (0.0, 400.0)], spacing),
         arc(
@@ -369,11 +382,15 @@ fn a_long_course_thinned_to_fit_warns_of_its_hairpins_as_drawn() {
     let full = join(&switchbacks);
     let mut course = empty();
     let mut builder = Builder::new();
-    builder.start(&mut course);
+    builder.start(&mut course, &mut ());
     for &(east, north) in &full {
-        builder.push(&mut course, point_at(f64::from(east), f64::from(north)));
+        builder.push(
+            &mut course,
+            point_at(f64::from(east), f64::from(north)),
+            &mut (),
+        );
     }
-    builder.finish(&mut course);
+    builder.finish(&mut course, &mut ());
     let thinned = line_of(&course);
     assert!(
         builder.tolerance >= 16.0,
@@ -462,21 +479,68 @@ fn thinned(line: &[(f32, f32)], after: f32) -> (Vec<(f32, f32)>, f32) {
 
 /// The course `thinned` keeps, and the tolerance it was thinned at.
 pub(crate) fn built(line: &[(f32, f32)], after: f32) -> (std::boxed::Box<Course>, f32) {
+    build(&extended(line, after), &mut ())
+}
+
+/// `line`, then `after` metres straight on from its end, a point every 5 m.
+pub(crate) fn extended(line: &[(f32, f32)], after: f32) -> Vec<(f32, f32)> {
     let (a, b) = (line[line.len() - 2], line[line.len() - 1]);
     let length = distance(a, b);
     let far = (
         b.0 + (b.0 - a.0) / length * after,
         b.1 + (b.1 - a.1) / length * after,
     );
-    let full = join(&[line.to_vec(), path(&[b, far], 5.0)]);
+    join(&[line.to_vec(), path(&[b, far], 5.0)])
+}
+
+/// The course built from `full`, followed by `follow`, and the tolerance
+/// it was thinned at.
+pub(crate) fn build(
+    full: &[(f32, f32)],
+    follow: &mut impl crate::ride::course::Follow,
+) -> (std::boxed::Box<Course>, f32) {
     let mut course = empty();
     let mut builder = Builder::new();
-    builder.start(&mut course);
-    for &(east, north) in &full {
-        builder.push(&mut course, point_at(f64::from(east), f64::from(north)));
+    builder.start(&mut course, follow);
+    for &(east, north) in full {
+        builder.push(
+            &mut course,
+            point_at(f64::from(east), f64::from(north)),
+            follow,
+        );
     }
-    builder.finish(&mut course);
+    builder.finish(&mut course, follow);
     (course, builder.tolerance)
+}
+
+/// How a course's turns are found: by the scan of the course as kept when
+/// it is placed, or at upload from every point (`course::stored`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    Scanned,
+    Uploaded,
+}
+
+pub(crate) const FOUND: [Found; 2] = [Found::Scanned, Found::Uploaded];
+
+/// What a rider hears on `drawn`, then `after` metres on, uploaded and
+/// kept as `built` keeps it, ridden from its start to `to` metres with a
+/// fix every 7 m. A course `after` 0 m on is scanned as drawn.
+pub(crate) fn heard(
+    drawn: &[(f32, f32)],
+    after: f32,
+    found: Found,
+    to: f32,
+) -> Vec<(u32, Warning)> {
+    let positions = (0..=(to / 7.0) as usize).map(|k| k as f32 * 7.0);
+    match found {
+        Found::Scanned if after > 0.0 => ride_through(&thinned(drawn, after).0, positions),
+        Found::Scanned => ride_through(drawn, positions),
+        Found::Uploaded => {
+            let (_, turns) = crate::ride::course::stored::tests::uploaded(&extended(drawn, after));
+            ride_with(&turns, positions)
+        }
+    }
 }
 
 /// Ride `line` from its start to `to` metres, a fix every 7 m.
@@ -513,69 +577,72 @@ pub(crate) fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
 }
 
 /// Every exit of a roundabout, and hairpins, on a course thinned to fit:
-/// what is said is right, or nothing is.
+/// what is said is right, or nothing is. Turns found at upload name every
+/// hairpin a U-turn.
 #[test]
 fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
-    let (mut silent, mut runs) = (Vec::new(), 0);
-    // 0 m on is the course as drawn; after 12 or 150 km it is thinned.
-    for after in [0.0, 12_000.0, 150_000.0] {
-        for spacing in [3.0, 5.0, 8.0] {
-            for curved in [false, true] {
-                for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
-                    for sweep in (3..=22).map(|k| k as f32 * 15.0) {
-                        let drawn = match curved {
-                            true => curved_ring(radius, sweep, spacing),
-                            false => ring(radius, sweep, spacing),
-                        };
-                        let line = match after > 0.0 {
-                            true => thinned(&drawn, after).0,
-                            false => drawn,
-                        };
-                        let degrees = swing(0.0, 180.0 - sweep);
-                        let said = ride_to(&line, 900.0);
-                        let verdict = judge(&said, degrees);
-                        assert!(
-                            verdict != Verdict::Wrong,
-                            "r{radius} exit {sweep} ({degrees}), {spacing} m, curved {curved}, after {after}: {said:?}"
-                        );
-                        runs += 1;
-                        if verdict == Verdict::Silent && fabsf(degrees) >= 75.0 {
-                            silent.push((after, spacing, curved, radius, sweep));
+    for found in FOUND {
+        let (mut silent, mut runs, mut u_turns, mut hairpins) = (Vec::new(), 0, 0, 0);
+        // 0 m on is the course as drawn; after 12 or 150 km it is thinned.
+        for after in [0.0, 12_000.0, 150_000.0] {
+            for spacing in [3.0, 5.0, 8.0] {
+                for curved in [false, true] {
+                    for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
+                        for sweep in (3..=22).map(|k| k as f32 * 15.0) {
+                            let drawn = match curved {
+                                true => curved_ring(radius, sweep, spacing),
+                                false => ring(radius, sweep, spacing),
+                            };
+                            let degrees = swing(0.0, 180.0 - sweep);
+                            let said = heard(&drawn, after, found, 900.0);
+                            let verdict = judge(&said, degrees);
+                            assert!(
+                                verdict != Verdict::Wrong,
+                                "{found:?}: r{radius} exit {sweep} ({degrees}), {spacing} m, curved {curved}, after {after}: {said:?}"
+                            );
+                            runs += 1;
+                            if verdict == Verdict::Silent && fabsf(degrees) >= 75.0 {
+                                silent.push((after, spacing, curved, radius, sweep));
+                            }
                         }
                     }
                 }
-            }
-            if after == 0.0 {
-                continue;
-            }
-            for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
-                let (line, _) = thinned(&hairpin(radius, spacing), after);
-                let said = ride_to(&line, 1_200.0);
-                let twice = [
-                    ahead(LEFT),
-                    Warning::Now {
-                        kind: LEFT,
-                        then: Some(LEFT),
-                    },
-                ];
-                let said = kinds(&said);
-                assert!(
-                    said == [ahead(U_TURN), now(U_TURN)] || said == twice,
-                    "hairpin r{radius}, {spacing} m, after {after}: {said:?}"
-                );
+                if after == 0.0 {
+                    continue;
+                }
+                for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
+                    let said = kinds(&heard(&hairpin(radius, spacing), after, found, 1_200.0));
+                    let twice = [
+                        ahead(LEFT),
+                        Warning::Now {
+                            kind: LEFT,
+                            then: Some(LEFT),
+                        },
+                    ];
+                    let u_turn = said == [ahead(U_TURN), now(U_TURN)];
+                    assert!(
+                        u_turn || (said == twice && found == Found::Scanned),
+                        "{found:?}: hairpin r{radius}, {spacing} m, after {after}: {said:?}"
+                    );
+                    (hairpins, u_turns) = (hairpins + 1, u_turns + usize::from(u_turn));
+                }
             }
         }
+        std::println!(
+            "{found:?}: {} of {runs} silent where a turn of 75 degrees or more was due; {u_turns} of {hairpins} thinned hairpins U-TURN",
+            silent.len()
+        );
+        let most = match found {
+            Found::Scanned => 15,
+            Found::Uploaded => 5,
+        };
+        assert!(silent.len() * 100 <= runs * most, "{found:?}: {silent:?}");
     }
-    std::println!(
-        "{} of {runs} silent where a turn of 75 degrees or more was due",
-        silent.len()
-    );
-    assert!(silent.len() * 100 <= runs * 15, "{silent:?}");
 }
 
 /// As `ring`, but the way in and out each curve onto the ring on a 10 m
 /// radius, as roads into a roundabout do.
-fn curved_ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
+pub(crate) fn curved_ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
     let bend = 10.0;
     let step = spacing.min(radius / 3.0).min(bend / 3.0);
     let ring = arc((0.0, 0.0), radius, 180.0, -sweep, spacing.min(radius / 3.0));
@@ -738,8 +805,56 @@ fn cue_table() {
 
 /// Two corners the same way, `apart` metres apart, each rounded to a kerb
 /// of `kerb` metres: 400 m north, across, and 400 m back south beside the
+/// The table in the pull request for turns found at upload: what each
+/// thinned course says with its turns scanned when placed, and found at
+/// upload. `cargo test -p vana --lib --release upload_table -- --ignored --nocapture`
+#[test]
+#[ignore = "prints the upload table"]
+fn upload_table() {
+    type Row = (std::string::String, Vec<(f32, f32)>, f32, f32);
+    let mut rows: Vec<Row> = Vec::new();
+    for after in [12_000.0, 150_000.0] {
+        let km = after / 1000.0;
+        for radius in [15.0, 20.0, 30.0, 40.0] {
+            for sweep in [90.0, 270.0, 330.0] {
+                rows.push((
+                    std::format!("{km} km on: roundabout r{radius}, exit at {sweep} degrees"),
+                    ring(radius, sweep, 5.0),
+                    after,
+                    900.0,
+                ));
+            }
+        }
+        for radius in [20.0, 30.0, 40.0] {
+            rows.push((
+                std::format!("{km} km on: hairpin r{radius}"),
+                hairpin(radius, 5.0),
+                after,
+                1_200.0,
+            ));
+        }
+        for apart in [25.0, 40.0] {
+            let rll = [
+                (400.0, true),
+                (400.0 + apart, false),
+                (400.0 + 2.0 * apart, false),
+            ];
+            rows.push((
+                std::format!("{km} km on: R, L, L {apart} m apart"),
+                corners(5.0, &rll),
+                after,
+                700.0,
+            ));
+        }
+    }
+    for (name, drawn, after, to) in rows {
+        let [scanned, uploaded] = FOUND.map(|found| words(&heard(&drawn, after, found, to)));
+        std::println!("| {name} | {scanned} | {uploaded} |");
+    }
+}
+
 /// way up. A city block, to the right, or to the left mirrored.
-fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f32, f32)> {
+pub(crate) fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f32, f32)> {
     let line = if kerb == 0.0 {
         path(
             &[(0.0, 0.0), (0.0, 400.0), (apart, 400.0), (apart, 0.0)],
@@ -769,43 +884,44 @@ fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f32, f32)> {
 /// way out, where the rider is still on the course.
 #[test]
 fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
-    // 0 km on is the course as drawn; after 12 or 150 km it is thinned.
-    for after in [0.0, 12_000.0, 150_000.0] {
-        for right in [true, false] {
-            for spacing in [3.0, 5.0, 8.0] {
-                for kerb in [0.0, 2.0, 4.0, 6.0, 8.0] {
-                    for apart in [
-                        15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
-                    ] {
-                        let full = block(spacing, apart, kerb, right);
-                        let line = if after > 0.0 {
-                            thinned(&full, after).0
-                        } else {
-                            full
-                        };
-                        let said = ride_to(&line, 700.0);
-                        let side = if right { Side::Right } else { Side::Left };
-                        let fits = |kind: Kind| match kind {
-                            Kind::UTurn => apart <= 25.0,
-                            Kind::Turn(s) | Kind::Sharp(s) => s == side,
-                        };
-                        let wrong = said.iter().any(|&(_, warning)| match warning {
-                            Warning::Ahead { kind, .. } | Warning::Now { kind, then: None } => {
-                                !fits(kind)
-                            }
-                            Warning::Now {
-                                kind,
-                                then: Some(then),
-                            } => !fits(kind) || !fits(then),
-                        });
-                        assert!(
-                            !wrong,
-                            "{apart} m apart, kerb {kerb}, {spacing} m, right {right}, after {after}: {said:?}"
-                        );
+    for found in FOUND {
+        let (mut runs, mut silent) = (0, 0);
+        // 0 km on is the course as drawn; after 12 or 150 km it is thinned.
+        for after in [0.0, 12_000.0, 150_000.0] {
+            for right in [true, false] {
+                for spacing in [3.0, 5.0, 8.0] {
+                    for kerb in [0.0, 2.0, 4.0, 6.0, 8.0] {
+                        for apart in [
+                            15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
+                        ] {
+                            let said =
+                                heard(&block(spacing, apart, kerb, right), after, found, 700.0);
+                            runs += 1;
+                            silent += usize::from(said.is_empty());
+                            let side = if right { Side::Right } else { Side::Left };
+                            let fits = |kind: Kind| match kind {
+                                Kind::UTurn => apart <= 25.0,
+                                Kind::Turn(s) | Kind::Sharp(s) => s == side,
+                            };
+                            let wrong = said.iter().any(|&(_, warning)| match warning {
+                                Warning::Ahead { kind, .. } | Warning::Now { kind, then: None } => {
+                                    !fits(kind)
+                                }
+                                Warning::Now {
+                                    kind,
+                                    then: Some(then),
+                                } => !fits(kind) || !fits(then),
+                            });
+                            assert!(
+                                !wrong,
+                                "{found:?}: {apart} m apart, kerb {kerb}, {spacing} m, right {right}, after {after}: {said:?}"
+                            );
+                        }
                     }
                 }
             }
         }
+        std::println!("{found:?}: 0 of {runs} wrong, {silent} silent");
     }
 }
 
@@ -869,20 +985,17 @@ pub(crate) fn bends(spacing: f32, turns: &[(f32, f32)]) -> Vec<(f32, f32)> {
 fn ride_corners(
     courses: &[Vec<(f32, f32)>],
     spacings: &[f32],
+    found: Found,
 ) -> (Vec<std::string::String>, usize, usize) {
     let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
     for turns in courses {
         for &spacing in spacings {
             let full = bends(spacing, turns);
             for after in [0.0, 12_000.0, 150_000.0] {
-                let line = match after > 0.0 {
-                    true => thinned(&full, after).0,
-                    false => full.clone(),
-                };
-                let said = ride_to(&line, 800.0);
+                let said = heard(&full, after, found, 800.0);
                 if !names_next_corners(&said, turns) {
                     wrong.push(std::format!(
-                        "{turns:?}, {spacing} m, {after} m on: {said:?}"
+                        "{found:?}: {turns:?}, {spacing} m, {after} m on: {said:?}"
                     ));
                 }
                 runs += 1;
@@ -913,9 +1026,14 @@ fn corners_of_either_way_close_together_are_named_the_way_they_go() {
             }
         }
     }
-    let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0]);
-    std::println!("{} of {runs} wrong, {silent} silent", wrong.len());
-    assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+    for found in FOUND {
+        let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0], found);
+        std::println!(
+            "{found:?}: {} of {runs} wrong, {silent} silent",
+            wrong.len()
+        );
+        assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+    }
 }
 
 /// The shapes a review found named the wrong way: a right, a left and two
@@ -950,9 +1068,14 @@ fn staggered_junctions_and_chicanes_are_named_rightly_or_not_at_all() {
                 .collect(),
         );
     }
-    let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0]);
-    std::println!("{} of {runs} wrong, {silent} silent", wrong.len());
-    assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+    for found in FOUND {
+        let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0], found);
+        std::println!(
+            "{found:?}: {} of {runs} wrong, {silent} silent",
+            wrong.len()
+        );
+        assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+    }
 }
 
 /// How long finding a 300 km course's turns takes, and how many it keeps:
@@ -984,5 +1107,247 @@ fn scan_time() {
         "a turn is {} bytes; {TURNS} take {} bytes",
         core::mem::size_of::<Turn>(),
         TURNS * core::mem::size_of::<Turn>()
+    );
+}
+
+/// The point `metres` along `line`.
+fn point_along(line: &[(f32, f32)], metres: f32) -> (f32, f32) {
+    let mut walked = 0.0;
+    for pair in line.windows(2) {
+        let step = distance(pair[0], pair[1]);
+        if walked + step >= metres && step > 0.0 {
+            let t = (metres - walked) / step;
+            return (
+                pair[0].0 + t * (pair[1].0 - pair[0].0),
+                pair[0].1 + t * (pair[1].1 - pair[0].1),
+            );
+        }
+        walked += step;
+    }
+    *line.last().unwrap()
+}
+
+/// Metres along `line` to the point of it nearest `p`.
+fn along_to(line: &[(f32, f32)], p: (f32, f32)) -> f32 {
+    let (mut best, mut walked) = ((f32::MAX, 0.0), 0.0);
+    for pair in line.windows(2) {
+        let step = distance(pair[0], pair[1]);
+        let off = crate::ride::thin::off_segment(p, pair[0], pair[1]);
+        if step > 0.0 && off < best.0 {
+            let t = (((p.0 - pair[0].0) * (pair[1].0 - pair[0].0)
+                + (p.1 - pair[0].1) * (pair[1].1 - pair[0].1))
+                / (step * step))
+                .clamp(0.0, 1.0);
+            best = (off, walked + t * step);
+        }
+        walked += step;
+    }
+    best.1
+}
+
+/// A recorded track as a course: each point of `full` up to `noise`
+/// metres off, east and north, as GPS puts it.
+fn jittered(full: &[(f32, f32)], noise: f32, seed: u64) -> Vec<(f32, f32)> {
+    let mut rng = crate::testing::Rng::new(seed);
+    let span = (2.0 * noise * 1000.0) as u64;
+    let mut jitter = || rng.below(span + 1) as f32 / 1000.0 - noise;
+    full.iter()
+        .map(|&(east, north)| (east + jitter(), north + jitter()))
+        .collect()
+}
+
+/// Wrong runs and silent runs, of how many, on recorded tracks of corners,
+/// roundabouts and a hairpin up to `noise` metres off, as drawn and 12 km
+/// on, with their turns `found` as each path finds them. A run is wrong
+/// when a word sends the rider the wrong way: the wrong side, the wrong
+/// corner next, or a U-TURN that is not one.
+fn ride_jittered(noise: f32, found: Found) -> (Vec<std::string::String>, usize, usize) {
+    enum Judged {
+        Corners(Vec<(f32, f32)>),
+        Turn(f32),
+    }
+    let mut shapes: Vec<(Vec<(f32, f32)>, Judged)> = Vec::new();
+    for spacing in [3.0, 5.0, 8.0] {
+        for turns in [
+            vec![(400.0, 90.0)],
+            vec![(400.0, -90.0)],
+            vec![(400.0, 90.0), (440.0, -90.0)],
+        ] {
+            shapes.push((bends(spacing, &turns), Judged::Corners(turns)));
+        }
+        for (radius, sweep) in [(20.0, 90.0), (20.0, 270.0), (30.0, 90.0), (30.0, 270.0)] {
+            let degrees = swing(0.0, 180.0 - sweep);
+            shapes.push((ring(radius, sweep, spacing), Judged::Turn(degrees)));
+        }
+        shapes.push((hairpin(30.0, spacing), Judged::Turn(-180.0)));
+    }
+    let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+    for (k, (drawn, judged)) in shapes.iter().enumerate() {
+        for after in [0.0, 12_000.0] {
+            for seed in 0..15u64 {
+                let full = jittered(&extended(drawn, after), noise, seed * 100 + k as u64 + 1);
+                let positions = (0..=(1_200.0 / 7.0) as usize).map(|k| k as f32 * 7.0);
+                let (line, said) = match found {
+                    Found::Scanned => {
+                        let line = line_of(&build(&full, &mut ()).0);
+                        let said = ride_through(&line, positions);
+                        (line, said)
+                    }
+                    Found::Uploaded => {
+                        let (course, turns) = crate::ride::course::stored::tests::uploaded(&full);
+                        (line_of(&course), ride_with(&turns, positions))
+                    }
+                };
+                let right = match judged {
+                    Judged::Corners(turns) => {
+                        // Where each corner is along the course as kept, which
+                        // jitter makes longer than the road.
+                        let road = bends(1.0, turns);
+                        let kept: Vec<(f32, f32)> = turns
+                            .iter()
+                            .map(|&(at, degrees)| {
+                                (along_to(&line, point_along(&road, at)), degrees)
+                            })
+                            .collect();
+                        names_next_corners(&said, &kept)
+                    }
+                    Judged::Turn(degrees) => said.iter().all(|&(_, warning)| {
+                        let fits = |kind: Kind| match kind {
+                            Kind::UTurn => fabsf(*degrees) >= 135.0,
+                            Kind::Turn(side) | Kind::Sharp(side) => {
+                                (side == Side::Right) == (*degrees > 0.0)
+                            }
+                        };
+                        match warning {
+                            Warning::Ahead { kind, .. } => fits(kind),
+                            Warning::Now { kind, then } => fits(kind) && then.is_none_or(fits),
+                        }
+                    }),
+                };
+                if !right {
+                    wrong.push(std::format!(
+                        "{found:?} ±{noise} m, shape {k}, after {after}, seed {seed}: {} {:?}",
+                        words(&said),
+                        said.iter().map(|s| s.0).collect::<Vec<_>>()
+                    ));
+                }
+                runs += 1;
+                silent += usize::from(said.is_empty());
+            }
+        }
+    }
+    (wrong, silent, runs)
+}
+
+/// Recorded tracks as courses, up to 1 to 4 m off: turns found at upload
+/// are wrong no more often than the scan of the course as kept, and never
+/// within 2 m.
+#[test]
+fn a_recorded_track_names_its_turns_no_worse_than_the_course_as_kept() {
+    for noise in [1.0, 2.0, 3.0, 4.0] {
+        let [scanned, uploaded] = FOUND.map(|found| ride_jittered(noise, found));
+        std::println!(
+            "±{noise} m: scanned {} wrong, {} silent; uploaded {} wrong, {} silent; of {} runs",
+            scanned.0.len(),
+            scanned.1,
+            uploaded.0.len(),
+            uploaded.1,
+            uploaded.2
+        );
+        let first = |wrong: &[std::string::String]| wrong[..wrong.len().min(8)].to_vec();
+        // The seeds are fixed, but at ±3 m and more both paths are wrong in a
+        // few percent of runs, and which runs is chance: a margin of 1% of
+        // the runs keeps a draw that is level from failing.
+        let margin = uploaded.2 / 100;
+        assert!(
+            uploaded.0.len() <= scanned.0.len() + margin,
+            "{:#?}",
+            first(&uploaded.0)
+        );
+        if noise <= 2.0 {
+            assert!(uploaded.0.is_empty(), "{:#?}", first(&uploaded.0));
+        }
+    }
+}
+
+/// Drawn courses with a point every 3.0 to 4.5 m: no corner is cut, so two
+/// corners the same way are never one U-TURN, on city blocks and on mixed
+/// corners, and the shapes a review found.
+#[test]
+fn corners_drawn_every_3_to_4_5_m_are_never_cut() {
+    let spacings: Vec<f32> = (30..=45).map(|k| k as f32 / 10.0).collect();
+    let mut wrong = Vec::new();
+    for &spacing in &spacings {
+        for right in [true, false] {
+            for kerb in [0.0, 4.0] {
+                for apart in [15.0, 20.0, 25.0, 30.0, 40.0, 60.0] {
+                    let said = heard(
+                        &block(spacing, apart, kerb, right),
+                        0.0,
+                        Found::Uploaded,
+                        700.0,
+                    );
+                    let side = if right { Side::Right } else { Side::Left };
+                    let fits = |kind: Kind| match kind {
+                        Kind::UTurn => apart <= 25.0 && kerb == 0.0 || apart <= 20.0,
+                        Kind::Turn(s) | Kind::Sharp(s) => s == side,
+                    };
+                    let bad = said.iter().any(|&(_, warning)| match warning {
+                        Warning::Ahead { kind, .. } | Warning::Now { kind, then: None } => {
+                            !fits(kind)
+                        }
+                        Warning::Now {
+                            kind,
+                            then: Some(then),
+                        } => !fits(kind) || !fits(then),
+                    });
+                    if bad {
+                        wrong.push(std::format!(
+                            "block {apart} m, kerb {kerb}, {spacing} m, right {right}: {}",
+                            words(&said)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let mut courses = vec![
+        vec![(400.0, 90.0), (425.0, 90.0), (450.0, 90.0)],
+        vec![(400.0, -90.0), (415.0, 90.0), (440.0, 90.0)],
+        vec![(400.0, -90.0), (415.0, 90.0), (445.0, 90.0)],
+    ];
+    for ways in 0..8u32 {
+        for apart in [20.0, 25.0, 30.0] {
+            courses.push(
+                (0..3)
+                    .map(|k| {
+                        (
+                            400.0 + apart * k as f32,
+                            if ways >> k & 1 == 1 { 90.0 } else { -90.0 },
+                        )
+                    })
+                    .collect(),
+            );
+        }
+    }
+    for turns in &courses {
+        for &spacing in &spacings {
+            let said = heard(&bends(spacing, turns), 0.0, Found::Uploaded, 800.0);
+            // A U-TURN only where the way back is within 21 m of the way out.
+            let wide = turns.windows(2).all(|pair| pair[1].0 - pair[0].0 > 21.0);
+            let u_turn = said.iter().any(|&(_, warning)| match warning {
+                Warning::Ahead { kind, .. } => kind == Kind::UTurn,
+                Warning::Now { kind, then } => kind == Kind::UTurn || then == Some(Kind::UTurn),
+            });
+            if !names_next_corners(&said, turns) || (wide && u_turn) {
+                wrong.push(std::format!("{turns:?}, {spacing} m: {}", words(&said)));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} wrong: {:#?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(8)]
     );
 }

@@ -590,6 +590,16 @@ impl Upload {
         crate::ride::course::load(&mut self.files, &mut course).unwrap();
         course.points().to_vec()
     }
+
+    /// The turns stored beside the stored course, if its own.
+    fn stored_turns(&mut self) -> Option<usize> {
+        use crate::ride::course::{self, stored};
+        let mut course = std::boxed::Box::new(course::Course::empty());
+        course::load(&mut self.files, &mut course).unwrap();
+        let mut turns = std::vec![crate::app::Turn::default(); crate::app::COURSE_TURNS];
+        let found = stored::load(&mut self.files, course::key(&course), &mut turns).unwrap();
+        found.map(|found| found.count)
+    }
 }
 
 fn attach_course_room(runtime: &mut Runtime) {
@@ -599,7 +609,8 @@ fn attach_course_room(runtime: &mut Runtime) {
     let turns = Vec::leak(std::vec![crate::app::Turn::default(); crate::app::COURSE_TURNS]);
     let map = Box::leak(Box::new(crate::app::MapFrame::default()));
     let course = Box::leak(Box::new(crate::ride::course::Course::empty()));
-    let back = crate::app::BackToStart::new(crumbs, line, turns, map, course);
+    let finder = Box::leak(Box::new(crate::app::CourseFinder::new()));
+    let back = crate::app::BackToStart::new(crumbs, line, turns, map, course, finder);
     runtime.attach_back(Box::leak(Box::new(back)));
 }
 
@@ -631,6 +642,11 @@ fn a_phone_loads_a_course_that_is_kept_on_the_card() {
     let points = phone.points();
     assert_eq!(points.len(), 300);
     assert_eq!(phone.stored(), points, "the card keeps what memory holds");
+    assert_eq!(
+        phone.stored_turns(),
+        Some(0),
+        "its turns beside it: none on a loop"
+    );
     let listed = phone.course();
     assert!(
         listed.contains(r#""store":"kept","loaded":true"#),
@@ -643,6 +659,35 @@ fn a_phone_loads_a_course_that_is_kept_on_the_card() {
     runtime.service_course(&mut phone.files, 0);
     let restarted = runtime.course().unwrap().points().to_vec();
     assert_eq!(restarted, points);
+}
+
+/// A course whose turns the upload cannot trust leaves no turns file, not
+/// the last course's: placed, it is scanned for them.
+#[test]
+fn a_course_whose_turns_overflow_the_finder_keeps_no_turns_file() {
+    let mut phone = Upload::new();
+    let gpx = loop_gpx("First", 50);
+    assert_eq!(phone.send(Method::Put, gpx.as_bytes(), 512).0, 200);
+    assert_eq!(phone.stored_turns(), Some(0));
+    // North 400 m, round a spot a few metres across for a long stop, then
+    // east: more than the finder's ring holds.
+    let (lat, lon) = (-33.45f64, -70.66f64);
+    let at = |east: f64, north: f64| {
+        let lat_at = lat + north / 111_195.0;
+        (lat_at, lon + east / (111_195.0 * lat.to_radians().cos()))
+    };
+    let mut points: Vec<(f64, f64)> = (0..=80).map(|k| at(0.0, k as f64 * 5.0)).collect();
+    let spots = [(0.0, 400.0), (4.0, 397.0), (-4.0, 397.0)];
+    let stop = 4 * crate::ride::course::stored::RING;
+    points.extend((0..stop).map(|k| at(spots[k % 3].0, spots[k % 3].1)));
+    points.extend((1..=80).map(|k| at(k as f64 * 5.0, 400.0)));
+    let mut file = String::from("<gpx><trk><name>Stop</name><trkseg>");
+    for (lat, lon) in points {
+        file.push_str(&std::format!("<trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"/>"));
+    }
+    file.push_str("</trkseg></trk></gpx>");
+    assert_eq!(phone.send(Method::Put, file.as_bytes(), 512).0, 200);
+    assert_eq!(phone.stored_turns(), None);
 }
 
 #[test]
@@ -688,9 +733,11 @@ fn the_phone_clears_the_course_from_memory_and_the_card() {
     let mut phone = Upload::new();
     let gpx = loop_gpx("Gone", 40);
     assert_eq!(phone.send(Method::Put, gpx.as_bytes(), 200).0, 200);
+    assert_eq!(phone.stored_turns(), Some(0));
     assert_eq!(phone.send(Method::Delete, b"", 1).0, 204);
     assert!(phone.points().is_empty());
     assert!(phone.stored().is_empty());
+    assert_eq!(phone.stored_turns(), None);
     assert!(phone.course().contains(r#""loaded":false"#));
     // Clearing again is no error.
     assert_eq!(phone.send(Method::Delete, b"", 1).0, 204);

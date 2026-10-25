@@ -179,6 +179,54 @@ pub struct Turn {
     sparse: bool,
 }
 
+/// Bytes of a turn as stored (`course::stored`).
+pub(crate) const RECORD: usize = 12;
+
+impl Turn {
+    /// Stored: from and to in millimetres along, its kind, and whether it
+    /// is two corners and cornered.
+    pub(crate) fn record(&self) -> [u8; RECORD] {
+        let mut bytes = [0u8; RECORD];
+        bytes[..4].copy_from_slice(&self.start_mm.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.end_mm.to_le_bytes());
+        bytes[8] = match self.kind {
+            None => 0,
+            Some(Kind::Turn(Side::Left)) => 1,
+            Some(Kind::Turn(Side::Right)) => 2,
+            Some(Kind::Sharp(Side::Left)) => 3,
+            Some(Kind::Sharp(Side::Right)) => 4,
+            Some(Kind::UTurn) => 5,
+        };
+        bytes[9] = u8::from(self.twice) | u8::from(self.cornered) << 1;
+        bytes
+    }
+
+    /// A stored turn, if its kind is one this firmware knows. Flags it does
+    /// not know and bytes past `RECORD` are a later version's.
+    pub(crate) fn from_record(bytes: &[u8]) -> Option<Self> {
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let kind = match bytes[8] {
+            0 => None,
+            1 => Some(Kind::Turn(Side::Left)),
+            2 => Some(Kind::Turn(Side::Right)),
+            3 => Some(Kind::Sharp(Side::Left)),
+            4 => Some(Kind::Sharp(Side::Right)),
+            5 => Some(Kind::UTurn),
+            _ => return None,
+        };
+        Some(Self {
+            start_mm: word(0),
+            end_mm: word(4),
+            kind,
+            twice: bytes[9] & 1 != 0,
+            cornered: bytes[9] & 2 != 0,
+            sparse: false,
+        })
+    }
+}
+
 /// What to tell the rider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Warning {
@@ -514,8 +562,34 @@ pub struct Scan {
 }
 
 impl Scan {
+    /// A scan with nothing left to find: the turns came from elsewhere.
+    pub fn finished() -> Self {
+        Self {
+            done: true,
+            ..Self::default()
+        }
+    }
+
     pub fn done(&self) -> bool {
         self.done
+    }
+
+    /// Metres along the course to the middle of the chord, which starts
+    /// half a chord in; the scan has read the course half a chord beyond.
+    pub(crate) fn along_m(&self) -> f32 {
+        self.s.max(HALF_CHORD_M)
+    }
+
+    /// The first point the scan may still read.
+    pub(crate) fn oldest(&self) -> usize {
+        let tails = [self.bend.map(|b| b.tail), self.open.map(|o| o.tail)];
+        tails
+            .into_iter()
+            .flatten()
+            .chain([self.behind, self.tail])
+            .map(|cursor| cursor.next.saturating_sub(1))
+            .min()
+            .unwrap_or(0)
     }
 
     /// Scan up to `steps` more steps of a course of `len` points, adding the

@@ -176,10 +176,13 @@ RIGHT THEN RIGHT round a city block. A U-TURN is only where the way back is
 within about 20 m of the way out, or the road curves round all the way, as a
 hairpin does. A roundabout of up to about 40 m radius
 is one turn, named by the way it leaves, and straight over one says nothing.
-Where the course is drawn coarsely, as a long course thinned to fit or a
-planner's route is, a turn of several corners is named only roughly: LEFT or
-RIGHT from about 80 degrees, U-TURN from about 160, never SHARP, and otherwise
-nothing; a roundabout there may say nothing but never a wrong way. Wherever
+A course's turns are found once, as it loads from the phone, from every
+point of the file, so a long course thinned to fit names them as drawn.
+Where the course is drawn coarsely, as a planner's route is, or it was loaded
+before turns were found this way, a turn of several corners is named only
+roughly: LEFT or RIGHT from about 80 degrees, U-TURN from about 160, never
+SHARP, and otherwise nothing; a roundabout there may say nothing but never a
+wrong way. Wherever
 which way comes first is not clear, as when corners come within a few metres
 of each other, or a turn's first bend goes against where it leads, nothing
 is said, and nothing after it either until the rider is there. A warning

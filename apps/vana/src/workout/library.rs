@@ -732,7 +732,7 @@ pub(crate) mod tests {
     }
 
     /// A sparse owned region that starts blank.
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     pub(crate) struct Region(BTreeMap<u64, [u8; SECTOR_SIZE]>);
 
     impl ReadWrite for Region {

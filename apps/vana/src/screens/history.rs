@@ -56,6 +56,9 @@ const LEFT: usize = 10;
 const RIGHT: usize = WIDTH - 10;
 const RADIUS: usize = 12;
 const INSET: usize = 14;
+/// The focus ring around a card, inside the gap between cards.
+const RING: usize = 3;
+const _: () = assert!(2 * RING <= PITCH - HEIGHT);
 const HEADLINE: usize = CONTENT.top + 36;
 const HEIGHT: usize = 54;
 const PITCH: usize = HEIGHT + 6;
@@ -172,6 +175,19 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
         let row = (list.row)(index);
         let rect = LAYOUT.rect(index);
         let focused = index == list.cursor;
+        // The focused card is ringed, as on every list (`docs/ui.md`).
+        if focused {
+            canvas.shape(Shape::Panel {
+                rect: Rect {
+                    left: rect.left - RING,
+                    top: rect.top - RING,
+                    right: rect.right + RING,
+                    bottom: rect.bottom + RING,
+                },
+                radius: RADIUS + RING,
+                color: ACCENT,
+            });
+        }
         canvas.shape(Shape::Panel {
             rect,
             radius: RADIUS,
@@ -522,7 +538,11 @@ mod tests {
         // of a fourth.
         let title = canvas.find("THIS WEEK").unwrap();
         assert!(title.top >= PAGE);
-        let tops: std::vec::Vec<_> = cards(&canvas).iter().map(|(top, _)| *top).collect();
+        let tops: std::vec::Vec<_> = cards(&canvas)
+            .iter()
+            .filter(|(_, c)| *c != ACCENT)
+            .map(|(top, _)| *top)
+            .collect();
         assert_eq!(tops, [0, 1, 2, 3].map(|i| LAYOUT.rect(i).top));
         assert!((0..3).all(|i| LAYOUT.whole(i, 0)) && !LAYOUT.whole(3, 0));
         let empty = prepare(&list(0, 0));
@@ -545,7 +565,11 @@ mod tests {
                 canvas.shows("1/8"),
                 header_shows(offset) || LAYOUT.pinned(offset)
             );
-            let made: std::vec::Vec<_> = cards(&canvas).iter().map(|(top, _)| *top).collect();
+            let made: std::vec::Vec<_> = cards(&canvas)
+                .iter()
+                .filter(|(_, c)| *c != ACCENT)
+                .map(|(top, _)| *top)
+                .collect();
             let want: std::vec::Vec<_> = LAYOUT
                 .visible(ROWS, offset)
                 .map(|i| LAYOUT.rect(i).top)
@@ -556,14 +580,18 @@ mod tests {
     }
 
     #[test]
-    fn the_focused_card_is_raised_and_one_under_a_resting_finger_pressed() {
+    fn the_focused_card_is_raised_and_ringed_and_one_under_a_resting_finger_pressed() {
         let mut shown = list(ROWS, 1);
         shown.pressed = Some(2);
         let fills: std::vec::Vec<_> = cards(&prepare(&shown)).iter().map(|(_, c)| *c).collect();
-        assert_eq!(fills, [CARD, RAISED, PRESSED, CARD]);
+        assert_eq!(
+            fills,
+            [CARD, ACCENT, RAISED, PRESSED, CARD],
+            "the focus ringed"
+        );
         shown.pressed = Some(1);
         let fills: std::vec::Vec<_> = cards(&prepare(&shown)).iter().map(|(_, c)| *c).collect();
-        assert_eq!(fills[1], PRESSED, "pressed shows over focused");
+        assert_eq!(fills[1..3], [ACCENT, PRESSED], "pressed keeps the ring");
     }
 
     #[test]

@@ -25,7 +25,7 @@ const HASHES: [(&str, u64); 32] = [
     ("phone", 0x03bc_91b7_8e55_fe64),
     ("bests", 0x5942_c60f_15ca_7f9b),
     ("form", 0x0470_d411_bce3_f3f3),
-    ("history", 0x621c_bffd_cd82_0b29),
+    ("history", 0x5754_10a7_c14c_4d01),
     ("past ride", 0x62e4_4c6e_87bf_f7b5),
     ("sensor detail", 0xa211_02a4_cc4d_c92e),
     ("summary page 2", 0x547f_b158_ece4_58aa),

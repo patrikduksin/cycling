@@ -31,7 +31,9 @@ impl SimServer {
         self.next_id += 1;
         let mut request = Request::new(method);
         request.id = self.next_id;
+        let (path, query) = path.split_once('?').unwrap_or((path, ""));
         request.path.push_str(path).expect("a short path");
+        request.query.push_str(query).expect("a short query");
         request.session.push_str(session).expect("a session token");
         request.body = u32::try_from(body.len()).expect("a body under 4 GB");
         self.exchange = Some(Exchange {

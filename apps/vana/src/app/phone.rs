@@ -48,6 +48,11 @@ const READS_PER_STEP: usize = 48;
 /// Pieces of an upload's body read per service step.
 const UPLOAD_READS: usize = 8;
 const UPLOAD_PIECE: usize = 512;
+/// Room for a response: a head, and the workouts list of 8 whose names
+/// need the most escapes.
+const TEXT: usize = 1280;
+/// Room kept for a response's head before its body is written.
+const HEAD_GAP: usize = 160;
 /// The web client, built by `apps/vana/web/build.py`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!("../../web/dist/index.html.gz");
 /// Readable characters for passwords, upper case as the screen shows
@@ -223,11 +228,10 @@ impl Phone {
 pub struct Work {
     indexes: [Index; 2],
     job: Job,
-    text: heapless::Vec<u8, 1536>,
-    /// The body of the workouts list, built before its head.
-    list: heapless::String<1024>,
-    /// A workout upload's bytes so far.
-    workout: heapless::Vec<u8, ENCODED_MAX>,
+    /// A response, and while a workout uploads, its bytes so far: the
+    /// response is queued only once they are used. Every byte here is copied
+    /// through the boot stack (`PHONE_WORK`), so it is kept small.
+    text: heapless::Vec<u8, TEXT>,
 }
 
 impl Work {
@@ -236,8 +240,6 @@ impl Work {
             indexes: [Index::new(), Index::new()],
             job: Job::Idle,
             text: heapless::Vec::new(),
-            list: heapless::String::new(),
-            workout: heapless::Vec::new(),
         }
     }
 }
@@ -291,7 +293,7 @@ fn file_name(ride_id: u32, start_utc_ms: Option<u64>) -> heapless::String<48> {
 
 /// Writes straight into the transport, which the caller checked has room.
 /// `body` as a complete JSON response in `text`.
-fn queue(text: &mut heapless::Vec<u8, 1536>, status: u16, body: &str) {
+fn queue(text: &mut heapless::Vec<u8, TEXT>, status: u16, body: &str) {
     text.clear();
     let head = Head::new(status)
         .header("Content-Type", "application/json")
@@ -986,44 +988,66 @@ impl Runtime {
 
     /// The uploaded workouts, listed from FILES now.
     fn workouts_reply(&mut self, id: u32, bulk: &mut impl ReadWrite) {
+        let Some(work) = self.phone.work.take() else {
+            return;
+        };
         let (library, error) = self.list_uploads(bulk);
-        let mut json = heapless::String::<1024>::new();
+        let text = &mut work.text;
+        text.clear();
+        let _ = text.resize(HEAD_GAP, 0);
         let _ = write!(
-            json,
+            text,
             r#"{{"store":"{}","max":{},"skipped":{},"uploads":["#,
             error.map_or("ok", LoadError::name),
             library::UPLOADS,
             library.skipped
         );
         for (index, upload) in library.uploads().iter().enumerate() {
+            // The most one entry takes, and the closing of the list.
+            if text.capacity() - text.len() < 130 {
+                break;
+            }
             let file = upload
                 .file
                 .as_str()
                 .strip_prefix(library::FOLDER)
                 .unwrap_or("");
             let _ = write!(
-                json,
+                text,
                 r#"{}{{"file":"{file}","name":""#,
                 if index == 0 { "" } else { "," }
             );
             for byte in upload.name.as_bytes() {
                 if matches!(byte, b'"' | b'\\') {
-                    let _ = json.push('\\');
+                    let _ = text.push(b'\\');
                 }
-                let _ = json.push(char::from(*byte));
+                let _ = text.push(*byte);
             }
             let _ = write!(
-                json,
+                text,
                 r#"","minutes":{},"steps":{}}}"#,
                 upload.outline.planned_secs.div_ceil(60),
                 upload.outline.played
             );
         }
-        let _ = json.push_str("]}");
-        let work = self.phone.w();
-        work.list = json;
-        queue(&mut work.text, 200, &work.list);
+        let _ = text.extend_from_slice(b"]}");
+        let body = text.len() - HEAD_GAP;
+        let head = Head::new(200)
+            .header("Content-Type", "application/json")
+            .header("Cache-Control", "no-store")
+            .length(body)
+            .finish();
+        match head {
+            Some(head) if head.bytes().len() <= HEAD_GAP => {
+                let at = HEAD_GAP - head.bytes().len();
+                text[at..HEAD_GAP].copy_from_slice(head.bytes());
+                text.copy_within(at.., 0);
+                text.truncate(body + head.bytes().len());
+            }
+            _ => text.clear(),
+        }
         work.job = Job::Text { id, at: 0 };
+        self.phone.work = Some(work);
     }
 
     fn start_workout(&mut self, request: &Request) {
@@ -1036,7 +1060,7 @@ impl Runtime {
         }
         log::info!(target: "phone", "VANA_PHONE workout_upload bytes={}", request.body);
         let work = self.phone.w();
-        work.workout.clear();
+        work.text.clear();
         work.job = Job::Workout { id, received: 0 };
     }
 
@@ -1062,7 +1086,7 @@ impl Runtime {
                 }
                 received += n as u32;
                 // Past the largest workout only the count matters.
-                let _ = self.phone.w().workout.extend_from_slice(&piece[..n]);
+                let _ = self.phone.w().text.extend_from_slice(&piece[..n]);
             }
         }
         if received > before
@@ -1080,9 +1104,12 @@ impl Runtime {
         if body as usize > ENCODED_MAX {
             return self.reply(id, 413, Some(r#"{"error":"too_large"}"#));
         }
-        let bytes = core::mem::take(&mut self.phone.w().workout);
-        let stored = self.store_upload(bulk, &bytes);
-        self.phone.w().workout = bytes;
+        let work = self.phone.work.take();
+        let stored = match work.as_deref() {
+            Some(work) => self.store_upload(bulk, &work.text),
+            None => Err(StoreError::Unnamed),
+        };
+        self.phone.work = work;
         match stored {
             Ok(file) => {
                 log::info!(target: "phone", "VANA_PHONE workout_saved file={}", file.as_str());

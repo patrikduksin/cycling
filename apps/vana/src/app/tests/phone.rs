@@ -892,6 +892,21 @@ fn a_phone_uploads_lists_replaces_and_deletes_a_workout() {
     assert_eq!(phone.stored_workouts().len(), 1);
 }
 
+/// The list of eight workouts whose names need the most escaping still fits
+/// its response and ends whole.
+#[test]
+fn the_list_of_eight_worst_case_names_is_whole() {
+    let mut phone = Upload::new();
+    for index in 0..8 {
+        let name = std::format!("{index}{}", "\"".repeat(19));
+        assert_eq!(phone.put_workout(&workout_bytes(&name, 10), 512).0, 200);
+    }
+    let (status, body) = phone.request(Method::Get, "/api/workouts", "", b"", 1);
+    assert_eq!(status, 200);
+    assert!(body.ends_with("]}"), "{body}");
+    assert_eq!(body.matches(r#""file":"#).count(), 8, "{body}");
+}
+
 #[test]
 fn a_ninth_workout_is_refused_and_a_stored_one_can_be_replaced() {
     use crate::workout::library::UPLOADS;

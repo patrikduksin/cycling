@@ -20,7 +20,7 @@ const HASHES: [(&str, u64); 32] = [
     ("paused", 0x1abb_4ec0_be41_8109),
     ("end ride", 0x45ab_e5fa_c73d_1778),
     ("ready", 0x3dc6_4149_a715_c58c),
-    ("settings", 0x820b_0890_7240_cd50),
+    ("settings", 0x7b6c_3a58_d239_aba0),
     ("setup", 0x2a09_c578_4c67_1ae2),
     ("phone", 0x03bc_91b7_8e55_fe64),
     ("bests", 0x5942_c60f_15ca_7f9b),
@@ -31,12 +31,12 @@ const HASHES: [(&str, u64); 32] = [
     ("summary page 2", 0x547f_b158_ece4_58aa),
     ("boot", 0x3181_4f05_3737_c050),
     ("setup power step", 0x4176_3293_5a0d_f513),
-    ("settings editing", 0xf856_4b18_c1a0_64c3),
+    ("settings editing", 0x1375_b9da_f552_f2b3),
     ("bests confirm", 0x40ab_8b32_d5ef_28e6),
     ("form no power", 0x5ed1_0eab_524c_8dc5),
     ("phone from saved ride", 0xffb0_a2fb_7c21_fe75),
     ("main with workout band", 0x0633_e69a_fe9f_b67b),
-    ("settings light", 0xf782_5c70_a641_b4dc),
+    ("settings light", 0x59c2_096e_5dc3_6e44),
     ("home light", 0x9370_23ef_3b06_01bf),
 ];
 

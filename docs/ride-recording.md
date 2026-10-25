@@ -561,7 +561,12 @@ that course's. A course without its own turns, or with a turns file that does
 not decode, has them found by scanning the course as kept when it is placed,
 as before; so does a course whose scan at upload needed more than the 512
 points it keeps, and its turns file is removed. Placing a course reads its
-turns into the 1,024-turn list and moves them into the ride's frame.
+turns into the 1,024-turn list and moves them into the ride's frame. The list
+holds 1,024 turns at a time: on a course with more, the scan waits once the
+list is full until the rider is past half of it, and those turns make way.
+A turns file flagged as holding fewer than the course has is followed the
+same way by the scan of the course as kept, which lists only turns starting
+more than 50 m after the last stored one.
 
 | Bytes | Field |
 | --- | --- |

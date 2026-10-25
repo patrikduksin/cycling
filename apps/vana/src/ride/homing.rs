@@ -539,19 +539,21 @@ impl<'a> Homing<'a> {
 
     /// The placed course's turns as stored, in place of the scan: `fill`
     /// writes them into the list in millimetres along `points`, the course
-    /// as `set_course` was given it, and returns how many, or `None` to
-    /// scan for them. They move into this ride's frame, kept point by kept
-    /// point, so the rider's place along the course finds them.
+    /// as `set_course` was given it, and returns how many and whether the
+    /// course has more, or `None` to scan for them. They move into this
+    /// ride's frame, kept point by kept point, so the rider's place along
+    /// the course finds them; the scan finds any after them.
     pub fn take_turns(
         &mut self,
         points: &[course::Point],
-        fill: impl FnOnce(&mut [Turn]) -> Option<usize>,
+        fill: impl FnOnce(&mut [Turn]) -> Option<(usize, bool)>,
     ) {
         let len = self.line_len;
         if len < 2 || points.len() != len {
             return;
         }
-        let Some(count) = fill(self.turns).filter(|&count| count <= self.turns.len()) else {
+        let Some((count, more)) = fill(self.turns).filter(|&(count, _)| count <= self.turns.len())
+        else {
             (self.scan, self.turn_count) = (Scan::default(), 0);
             return;
         };
@@ -585,7 +587,11 @@ impl<'a> Homing<'a> {
                 *slot = (ride_m * 1000.0) as u32;
             }
         }
-        (self.scan, self.turn_count) = (Scan::finished(), count);
+        self.scan = match more {
+            true => Scan::after(&self.turns[..count]),
+            false => Scan::finished(),
+        };
+        self.turn_count = count;
         self.warner = Warner::default();
     }
 
@@ -890,10 +896,21 @@ impl<'a> Homing<'a> {
         self.warner.step(&self.turns[..self.turn_count], along_mm)
     }
 
-    /// Find a few more of the placed course's turns.
+    /// Find a few more of the placed course's turns. With the list full,
+    /// the first half the rider is past makes way.
     fn scan_turns(&mut self) {
         if self.scan.done() {
             return;
+        }
+        if self.scan.waiting() {
+            let (count, room) = (self.turn_count, self.turns.len());
+            let passed = self.warner.passed().min(count);
+            if passed < room / 2 {
+                return;
+            }
+            self.turns.copy_within(passed..count, 0);
+            self.turn_count -= passed;
+            self.warner.forget(passed);
         }
         let len = self.line_len;
         // The course is kept end first; the scan reads it start first.
@@ -1217,6 +1234,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
+    mod many;
     mod passes;
 
     /// About Santiago, where 1e-7 degree east is 0.0094 m.
@@ -1992,7 +2010,7 @@ mod tests {
                 if let Some(stored) = stored {
                     homing.take_turns(course, |turns| {
                         turns[..stored.len()].copy_from_slice(stored);
-                        Some(stored.len())
+                        Some((stored.len(), false))
                     });
                 }
             }
@@ -2094,7 +2112,7 @@ mod tests {
         let scanned = named(&homing.turns[..homing.turn_count]);
         homing.take_turns(course.points(), |list| {
             list[..stored.len()].copy_from_slice(&stored);
-            Some(stored.len())
+            Some((stored.len(), false))
         });
         assert!(homing.scan.done());
         let placed = named(&homing.turns[..homing.turn_count]);

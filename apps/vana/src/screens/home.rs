@@ -8,7 +8,8 @@ use super::chrome::{
     Rect, Row, SECONDARY, TITLE, WHITE, blend, card, paint_disc, paint_rounded,
 };
 
-/// The width of a card's focus ring, which `paint_rounded` draws per pixel.
+/// The width of a card's focus ring, which `paint_rounded` fills as spans
+/// where it is solid.
 const fn ring(focused: bool) -> usize {
     if focused { 3 } else { 0 }
 }

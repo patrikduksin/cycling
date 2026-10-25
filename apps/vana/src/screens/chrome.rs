@@ -193,6 +193,10 @@ pub fn card(
 /// is uniform between its corner columns, and so is a ring `edge` wide (a
 /// focus ring) wherever it is solid, so those parts are one span; only the
 /// anti-aliased edges are asked per pixel.
+///
+/// `pixel` must give one colour wherever the shape is solid and, with an
+/// `edge`, one colour across the ring: where `rect` is solid and the same
+/// shape inset by `edge` (radius less `edge`) is clear, as `card` paints it.
 pub fn paint_rounded(
     row: &mut Row,
     rect: Rect,
@@ -205,6 +209,8 @@ pub fn paint_rounded(
 
 /// `paint_rounded` for shapes over something other than black: `pixel` is
 /// also given what the row already holds there, to blend its edge over.
+/// A span's colour comes from `pixel` at its first column, over what the row
+/// holds there only, so solid parts must not depend on what lies beneath.
 pub fn paint_rounded_over(
     row: &mut Row,
     rect: Rect,

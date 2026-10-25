@@ -2,6 +2,7 @@
 //! times and print host CPU microseconds per frame with the painters' work.
 //!
 //! `cargo run -p shell-simulator --release --features cycling --bin sim-bench -- [frames] [scene filter]`
+//! A filter that is a scene's whole name picks only that scene.
 //!
 //! Host time is a proxy only; on the device the frame time is STATUS
 //! `display_frame_us`.
@@ -15,7 +16,15 @@ fn main() {
         "| screen | min µs | median µs | spans | span px | evaluated px | label rows | glyph columns | glyph px | mixes | hash |"
     );
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");
-    for scene in SCENES.iter().filter(|scene| scene.name.contains(&filter)) {
+    let exact = SCENES.iter().any(|scene| scene.name == filter);
+    let picked = |name: &str| {
+        if exact {
+            name == filter
+        } else {
+            name.contains(&filter)
+        }
+    };
+    for scene in SCENES.iter().filter(|scene| picked(scene.name)) {
         let mut sim = (scene.reach)();
         let request = measure(&mut sim, frames);
         assert!(

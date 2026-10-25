@@ -314,8 +314,8 @@ impl Held {
     #[inline(always)]
     fn paint(&mut self, pixels: &mut [u16], blends: &mut Blends, next: impl Fn(usize) -> u8) {
         for x in self.columns.clone() {
-            let held = self.coverage[x - self.columns.start];
-            blends.put(&mut pixels[x], held.max(next(x)));
+            let held = self.coverage.get(x - self.columns.start).copied();
+            blends.put(&mut pixels[x], held.unwrap_or(0).max(next(x)));
         }
         self.columns = 0..0;
     }

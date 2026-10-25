@@ -210,10 +210,10 @@ impl<'a> Extra<'a> {
         setup_step -> super::setup::Step = Self::Setup { step, .. } => *step;
         readiness -> &Readiness = Self::Ready(readiness) => readiness;
         picker -> &super::workouts::Picker = Self::Workouts(picker) => picker;
-        bests -> Bests = Self::Bests { bests, .. } => *bests;
+        bests -> &Bests = Self::Bests { bests, .. } => bests;
         bests_mode -> super::bests::Mode = Self::Bests { mode, .. } => *mode;
         form -> super::form::Mode = Self::Form(mode) => *mode;
-        after -> After = Self::Summary { after, .. } => *after;
+        after -> &After = Self::Summary { after, .. } => after;
         past_title -> &Text<20> = Self::Summary { past_title, .. } => past_title;
         elevation -> Option<&'a ride::ElevationChart> = Self::Summary { elevation, .. } => *elevation;
     }
@@ -230,6 +230,8 @@ static NO_LINES: Lines = [const { Text::new() }; 9];
 static NO_READINESS: Readiness = Readiness::EMPTY;
 static NO_PICKER: super::workouts::Picker = super::workouts::Picker::EMPTY;
 static NO_TITLE: Text<20> = Text::new();
+static NO_BESTS: Bests = Bests::EMPTY;
+static NO_AFTER: After = After::EMPTY;
 
 pub struct View<'a> {
     pub now_ms: u64,
@@ -444,8 +446,8 @@ impl<'a> View<'a> {
         self.shown(self.extra.picker(), "picker", &NO_PICKER)
     }
 
-    pub(super) fn bests(&self) -> Bests {
-        self.shown(self.extra.bests(), "bests", Bests::default())
+    pub(super) fn bests(&self) -> &Bests {
+        self.shown(self.extra.bests(), "bests", &NO_BESTS)
     }
 
     pub(super) fn bests_mode(&self) -> super::bests::Mode {
@@ -456,8 +458,8 @@ impl<'a> View<'a> {
         self.shown(self.extra.form(), "form", Default::default())
     }
 
-    pub(super) fn after(&self) -> After {
-        self.shown(self.extra.after(), "summary", After::default())
+    pub(super) fn after(&self) -> &After {
+        self.shown(self.extra.after(), "summary", &NO_AFTER)
     }
 
     pub(super) fn past_title(&self) -> &Text<20> {
@@ -744,13 +746,13 @@ impl<'a> View<'a> {
             }
             Page::Summary => {
                 self.bar
-                    .set_pages(self.after().page, summary::total_pages(&self.after()));
+                    .set_pages(self.after().page, summary::total_pages(self.after()));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
                 self.badge = summary::badge(self);
                 if self.after().saving == summary::Saving::Writing {
                     &[]
-                } else if summary::offer_shown(&self.after()) {
+                } else if summary::offer_shown(self.after()) {
                     &summary::OFFER_CUES
                 } else {
                     core::slice::from_ref(&summary::CUE)

@@ -98,6 +98,21 @@ pub struct After {
     pub recovery: Option<Recovery>,
 }
 
+impl After {
+    pub const EMPTY: Self = Self {
+        page: 0,
+        saving: Saving::Writing,
+        best: [None; 4],
+        climbs: None,
+        laps: None,
+        past: false,
+        elevation: false,
+        found: Found::EMPTY,
+        offer: None,
+        recovery: None,
+    };
+}
+
 /// How many pages the summary has, the FTP offer included.
 pub fn total_pages(after: &After) -> usize {
     pages(after.elevation) + usize::from(after.offer.is_some() && !after.past)
@@ -212,7 +227,8 @@ fn cells(canvas: &mut Canvas, first: usize, cells: &[Reading]) {
 
 pub fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    match view.after().saving {
+    let after = view.after();
+    match after.saving {
         Saving::Writing => {
             centred(&mut canvas, &[&TITLE, &BODY], b"SAVING", 150, WHITE);
             centred(&mut canvas, &[&CAPTION], b"KEEP VANA ON", 178, SECONDARY);
@@ -234,7 +250,7 @@ pub fn prepare(view: &View) -> Canvas {
             );
             return canvas;
         }
-        Saving::Failed if view.after().page == 0 => {
+        Saving::Failed if after.page == 0 => {
             centred(&mut canvas, &[&TITLE, &BODY], b"NOT ALL SAVED", 86, AMBER);
             centred(
                 &mut canvas,
@@ -246,11 +262,11 @@ pub fn prepare(view: &View) -> Canvas {
         }
         _ => {}
     }
-    match view.after().page {
+    match after.page {
         0 => overview(view, &mut canvas),
         1 => effort(view, &mut canvas),
-        _ if offer_shown(&view.after()) => ftp_offer(view, &mut canvas),
-        2 if view.after().elevation => elevation_page(view, &mut canvas),
+        _ if offer_shown(after) => ftp_offer(view, &mut canvas),
+        2 if after.elevation => elevation_page(view, &mut canvas),
         _ => best_power(view, &mut canvas),
     }
     canvas
@@ -258,13 +274,14 @@ pub fn prepare(view: &View) -> Canvas {
 
 /// The badge shows over a saved ride's first page.
 pub fn badge(view: &View) -> Option<Badge> {
-    (view.after().saving == Saving::Saved && view.after().page == 0 && !view.after().past)
-        .then_some(BADGE)
+    let after = view.after();
+    (after.saving == Saving::Saved && after.page == 0 && !after.past).then_some(BADGE)
 }
 
 fn overview(view: &View, canvas: &mut Canvas) {
     let totals = &view.totals;
-    if view.after().past {
+    let after = view.after();
+    if after.past {
         canvas.caption(b"SAVED RIDE", RIGHT - LEFT, CENTRE, 70, Align::Center);
         centred(
             canvas,
@@ -273,7 +290,7 @@ fn overview(view: &View, canvas: &mut Canvas) {
             112,
             WHITE,
         );
-    } else if view.after().saving == Saving::Saved {
+    } else if after.saving == Saving::Saved {
         centred(canvas, &[&TITLE, &BODY], b"RIDE SAVED", 112, WHITE);
     }
     let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
@@ -395,9 +412,10 @@ pub const fn pages(elevation: bool) -> usize {
 
 /// The elevation profile shows once the ride is saved.
 pub fn shows_elevation(view: &View) -> bool {
-    view.after().elevation
-        && SummaryPage::at(view.after().page, true) == SummaryPage::Elevation
-        && matches!(view.after().saving, Saving::Saved | Saving::Failed)
+    let after = view.after();
+    after.elevation
+        && SummaryPage::at(after.page, true) == SummaryPage::Elevation
+        && matches!(after.saving, Saving::Saved | Saving::Failed)
 }
 
 /// Where the elevation page's cells start, and its chart below them.
@@ -432,15 +450,9 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     let first = CONTENT.top + 8;
     canvas.caption(b"BEST POWER W", RIGHT - LEFT, LEFT, first + 12, Align::Left);
     let pitch = 38;
-    let peak = view
-        .after()
-        .best
-        .iter()
-        .flatten()
-        .max()
-        .copied()
-        .unwrap_or(0);
-    for (index, best) in view.after().best.into_iter().enumerate() {
+    let after = view.after();
+    let peak = after.best.iter().flatten().max().copied().unwrap_or(0);
+    for (index, best) in after.best.into_iter().enumerate() {
         let base = first + 48 + index * pitch;
         let label = effort_label(index);
         canvas.caption(
@@ -476,7 +488,7 @@ fn best_power(view: &View, canvas: &mut Canvas) {
             color: if best.is_some() { POWER } else { TERTIARY },
         });
         // A new personal best: its own caption under the bar.
-        if view.after().found.power[index] {
+        if after.found.power[index] {
             canvas.fit(
                 &[&CAPTION],
                 b"BEST",
@@ -490,8 +502,8 @@ fn best_power(view: &View, canvas: &mut Canvas) {
     }
     let mut climbs = Text::<12>::new();
     let mut laps = Text::<12>::new();
-    whole(&mut climbs, view.after().climbs);
-    whole(&mut laps, view.after().laps);
+    whole(&mut climbs, after.climbs);
+    whole(&mut laps, after.laps);
     cells(
         canvas,
         first + 22 + 4 * pitch + 6,
@@ -703,7 +715,7 @@ mod tests {
         let past = |page, saving| {
             let mut view = extreme(page, saving);
             view.page = Page::PastRide;
-            let after = view.after();
+            let after = *view.after();
             let mut title = Text::new();
             let _ = title.push_str("DEC 31  12:59");
             view.show_summary(

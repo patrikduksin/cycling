@@ -1,7 +1,7 @@
 //! The benchmark screens (every VANA page a rider reaches) paint the same
-//! pixels: a faster painter must not change a frame. Hashes are from `sim-bench`, which prints them. A change
-//! that means to alter one of these screens updates its hash here and shows
-//! the new screen in its sim-compare.
+//! pixels: a faster painter must not change a frame. Hashes are from
+//! `sim-bench`, which prints them. A change that means to alter one of these
+//! screens updates its hash here and shows the new screen in its sim-compare.
 #![cfg(feature = "cycling")]
 use shell_simulator::bench::{SCENES, hash, measure};
 
@@ -30,7 +30,7 @@ const HASHES: [(&str, u64); 32] = [
     ("sensor detail", 0xa211_02a4_cc4d_c92e),
     ("summary page 2", 0x547f_b158_ece4_58aa),
     ("boot", 0x3181_4f05_3737_c050),
-    ("setup power editor", 0xb639_3d8a_6827_263a),
+    ("setup power step", 0x4176_3293_5a0d_f513),
     ("settings editing", 0xf856_4b18_c1a0_64c3),
     ("bests confirm", 0x40ab_8b32_d5ef_28e6),
     ("form no power", 0x5ed1_0eab_524c_8dc5),

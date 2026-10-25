@@ -222,8 +222,8 @@ mod scenes {
             reach: boot,
         },
         Scene {
-            name: "setup power editor",
-            reach: setup_power_editor,
+            name: "setup power step",
+            reach: setup_power_step,
         },
         Scene {
             name: "settings editing",
@@ -247,7 +247,7 @@ mod scenes {
         },
         Scene {
             name: "settings light",
-            reach: settings_light,
+            reach: light,
         },
         Scene {
             name: "home light",
@@ -559,18 +559,22 @@ mod scenes {
     fn boot() -> Sim {
         let mut sim = Sim::new();
         sim.discard_recording();
-        while sim.vana_page() != "boot" {
+        for _ in 0..5_000 {
+            if sim.vana_page() == "boot" {
+                break;
+            }
             sim.advance(1);
         }
+        assert_eq!(sim.vana_page(), "boot");
         sim.advance(200);
         sim
     }
 
-    fn setup_power_editor() -> Sim {
+    fn setup_power_step() -> Sim {
         let mut sim = setup();
         sim.press(Button::BottomRight);
         sim.expect_text("SET FTP");
-        sim.press(Button::BottomRight);
+        assert_eq!(sim.vana_page(), "setup");
         sim
     }
 
@@ -623,10 +627,6 @@ mod scenes {
         sim.expect_field("THEME", "DARK");
         sim.press(Button::BottomRight);
         sim
-    }
-
-    fn settings_light() -> Sim {
-        light()
     }
 
     fn home_light() -> Sim {

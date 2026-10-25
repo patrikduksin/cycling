@@ -9,11 +9,7 @@ impl Sim {
     #[track_caller]
     pub fn home(&mut self, label: &str) {
         for _ in 0..crate::sim::HOME_CARDS + 2 {
-            if self
-                .screen()
-                .run(label)
-                .is_some_and(|run| run.color == 0xffff)
-            {
+            if self.screen().white(label) {
                 self.press(Button::BottomRight);
                 return;
             }
@@ -249,11 +245,7 @@ impl Sim {
         self.home("TRAIN");
         self.expect_text("WORKOUTS");
         for _ in 0..24 {
-            if self
-                .screen()
-                .run(name)
-                .is_some_and(|run| run.color == 0xffff)
-            {
+            if self.screen().white(name) {
                 self.press(Button::BottomRight);
                 assert_eq!(self.vana_page(), "ready");
                 self.expect_text(name);

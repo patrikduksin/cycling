@@ -166,7 +166,7 @@ impl Night {
 
 impl Runtime {
     /// Whether the screens take the light look now.
-    pub(super) fn light(&self) -> bool {
+    pub fn light(&self) -> bool {
         self.preferences
             .options
             .theme

@@ -3,7 +3,7 @@
 use crate::ant::AntSensor;
 use crate::recording::{Outcome, Recording};
 use crate::route::Route;
-use crate::screen::{Frame, TextRun};
+use crate::screen::{Frame, Look, TextRun};
 use crate::session::Session;
 use crate::world::{Vehicle, World};
 use device_api::input::{Button, Input, Point};
@@ -54,6 +54,7 @@ pub struct Screen {
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<u16>,
+    pub look: Option<&'static Look>,
 }
 
 impl Screen {
@@ -62,6 +63,7 @@ impl Screen {
             width: self.width,
             height: self.height,
             pixels: &self.pixels,
+            look: self.look,
         }
     }
 
@@ -118,6 +120,13 @@ impl Screen {
     /// A text run that reads exactly `text`, such as a button label.
     pub fn run(&self, text: &str) -> Option<TextRun> {
         self.frame().read().into_iter().find(|run| run.text == text)
+    }
+
+    /// Whether `text` is painted white, as VANA's focused titles are; the
+    /// light look shows them black.
+    pub fn white(&self, text: &str) -> bool {
+        let white = self.look.map_or(0xffff, |look| look.shown(0xffff));
+        self.run(text).is_some_and(|run| run.color == white)
     }
 
     /// The ride clock: the largest H:MM:SS reading, the top one on a tie.
@@ -429,7 +438,22 @@ impl Sim {
             width: frame.geometry.width,
             height: frame.geometry.height,
             pixels: frame.pixels.clone(),
+            look: self.look(),
         }
+    }
+
+    /// VANA paints every frame dark and maps it through the light look when
+    /// that is in force.
+    #[cfg(feature = "cycling")]
+    fn look(&self) -> Option<&'static Look> {
+        static LIGHT: std::sync::LazyLock<Look> =
+            std::sync::LazyLock::new(|| Look::new(vana::screens::look::light));
+        self.device.sdk.light().then(|| &*LIGHT)
+    }
+
+    #[cfg(not(feature = "cycling"))]
+    fn look(&self) -> Option<&'static Look> {
+        None
     }
 
     /// Advance until `needle` is on screen. Returns the waiting time, or the

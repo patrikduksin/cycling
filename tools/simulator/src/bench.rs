@@ -632,7 +632,7 @@ mod scenes {
     fn home_light() -> Sim {
         let mut sim = light();
         sim.press(Button::TopLeft);
-        assert_eq!(sim.vana_page(), "home");
+        sim.expect_text("READY TO RIDE");
         sim
     }
 }

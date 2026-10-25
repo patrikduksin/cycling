@@ -416,7 +416,7 @@ mod tests {
             let screen = live.sim.screen();
             ["RIDE", "SENSORS", "TRAIN", "SETTINGS"]
                 .into_iter()
-                .position(|tile| screen.run(tile).is_some_and(|run| run.color == 0xffff))
+                .position(|tile| screen.white(tile))
         };
         let mut was = train(live);
         let mut moves = 0;

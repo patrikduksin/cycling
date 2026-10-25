@@ -2,10 +2,13 @@
 //! work, then workouts a host uploaded to the FILES volume under
 //! [`FOLDER`].
 //!
+//! A phone page uploads the same codec files (`Library::store`).
+//!
 //! `Library` keeps only a small index of the uploads (file, name, outline);
 //! a ride loads its workout's steps from FILES when it starts (`load`).
 use super::codec::{self, ENCODED_MAX};
 use super::model::{Block, Intensity::*, Length, Name, Step, Target, Test, Workout};
+use core::fmt::Write;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
 use firmware_services::{files, volume};
@@ -271,10 +274,54 @@ pub enum Id {
 }
 
 /// The folder of uploaded workouts on the FILES volume. A host puts each
-/// as one codec file (`mise run workout-load`); the library lists them.
+/// as one codec file (`mise run workout-load`), or the phone page does
+/// (`Library::store`); the library lists them.
 pub const FOLDER: &str = "workouts/";
 /// Uploads the picker lists, in file-name order; later ones are not shown.
 pub const UPLOADS: usize = 8;
+
+/// Bytes of a stored file's name that come from the workout's own name.
+const STEM_BYTES: usize = 17;
+
+/// Why a workout upload was not stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreError {
+    Decode(codec::DecodeError),
+    /// The name is empty or only spaces.
+    Unnamed,
+    /// `UPLOADS` workouts are stored and this one would be a ninth.
+    Full,
+    Load(LoadError),
+}
+
+/// Where a workout is stored: `workouts/<name in lower case>-<CRC of the
+/// name>.vw`. The same name always lands in the same file, so uploading a
+/// workout again replaces it, and two names never share one.
+pub fn file_name(name: &Name) -> Result<files::Name, files::Error> {
+    let mut stem = heapless::String::<STEM_BYTES>::new();
+    for byte in name.as_bytes() {
+        let letter = byte.to_ascii_lowercase();
+        let keep = if letter.is_ascii_alphanumeric() {
+            letter
+        } else if stem.is_empty() || stem.ends_with('-') {
+            continue;
+        } else {
+            b'-'
+        };
+        if stem.push(char::from(keep)).is_err() {
+            break;
+        }
+    }
+    let mut text = heapless::String::<{ files::NAME }>::new();
+    let _ = write!(
+        text,
+        "{FOLDER}{}{}{:08x}.vw",
+        stem.as_str().trim_end_matches('-'),
+        if stem.is_empty() { "" } else { "-" },
+        crc32(name.as_bytes())
+    );
+    files::Name::new(&text)
+}
 
 /// What the picker shows of a workout without decoding it again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -435,6 +482,38 @@ impl Library {
             .map_err(LoadError::Files)?
             .ok_or(LoadError::Missing)?;
         read(&dir, &mut store, &entry, &mut sector)
+    }
+
+    /// Store an uploaded codec file as a new upload, or in place of the
+    /// upload of the same name. The bytes are decoded and validated first,
+    /// and only a whole valid file is written: the store replaces a file in
+    /// one commit, so a cut leaves the old one. A ninth workout is refused
+    /// (`StoreError::Full`) rather than evicting one, since the picker
+    /// lists only `UPLOADS`. The caller lists the uploads again.
+    pub fn store(media: &mut impl ReadWrite, bytes: &[u8]) -> Result<files::Name, StoreError> {
+        let workout = codec::decode(bytes).map_err(StoreError::Decode)?;
+        if workout.name.as_str().trim().is_empty() {
+            return Err(StoreError::Unnamed);
+        }
+        let load = |error| StoreError::Load(LoadError::Files(error));
+        let target = file_name(&workout.name).map_err(load)?;
+        let mut sector = [0; SECTOR_SIZE];
+        let mut store = volume::open(media, &volume::FILES, &mut sector)
+            .map_err(|error| StoreError::Load(LoadError::Volume(error)))?;
+        let dir = files::mount(&mut store, &mut sector).map_err(load)?;
+        let (mut stored, mut replaces) = (0usize, false);
+        dir.list(&mut store, &mut sector, |entry| {
+            if entry.name.as_str().starts_with(FOLDER) {
+                stored += 1;
+                replaces |= entry.name == target;
+            }
+        })
+        .map_err(load)?;
+        if !replaces && stored >= UPLOADS {
+            return Err(StoreError::Full);
+        }
+        files::write(&mut store, &target, bytes, &mut sector).map_err(load)?;
+        Ok(target)
     }
 
     /// Delete upload `id`'s file and drop it from the list.
@@ -724,5 +803,65 @@ pub(crate) mod tests {
         assert_eq!(library.skipped, 2);
         assert_eq!(library.uploads()[0].file.as_str(), "workouts/00");
         assert_eq!(library.uploads()[UPLOADS - 1].file.as_str(), "workouts/07");
+    }
+
+    #[test]
+    fn a_stored_name_is_stable_unique_and_fits_a_file_name() {
+        let named = |text: &str| file_name(&Name::new(text)).unwrap();
+        assert_eq!(named("OVER UNDERS"), named("over unders"));
+        assert_ne!(named("A B"), named("A-B"));
+        let longest = named("!!X-Y_Z (A+B) 12345!!");
+        assert!(longest.as_str().len() <= files::NAME, "{longest:?}");
+        assert!(longest.as_str().starts_with("workouts/x-y-z-a-b-12"));
+        let symbols = named("(((");
+        assert!(
+            symbols.as_str().starts_with("workouts/") && symbols.as_str().ends_with(".vw"),
+            "{symbols:?}"
+        );
+    }
+
+    #[test]
+    fn store_keeps_whole_valid_workouts_and_refuses_the_rest_untouched() {
+        let mut region = formatted();
+        let good = codec::encode(&THRESHOLD);
+        let file = Library::store(&mut region, &good).unwrap();
+        let mut library = Library::default();
+        library.refresh(&mut region).unwrap();
+        assert_eq!(library.uploads()[0].file, file);
+        assert_eq!(library.load(Id::Uploaded(0), &mut region), Ok(THRESHOLD));
+        let mut cut = good.to_vec();
+        cut.pop();
+        let mut flipped = good.to_vec();
+        flipped[8] ^= 4;
+        for bad in [&cut[..], &flipped[..], &[][..], b"VW"] {
+            assert!(matches!(
+                Library::store(&mut region, bad),
+                Err(StoreError::Decode(_))
+            ));
+        }
+        library.refresh(&mut region).unwrap();
+        assert_eq!(library.skipped, 0);
+        assert_eq!(library.load(Id::Uploaded(0), &mut region), Ok(THRESHOLD));
+    }
+
+    /// What the phone page's JavaScript and `mise run workout-load` both make
+    /// of the JSON in `workouts/load.py`'s docstring, with an open step, a
+    /// ramp, distances and a repeat group: the device reads it as written.
+    #[test]
+    fn a_host_encoded_workout_is_stored_and_read_back() {
+        const HEX: &str = "565701000f4f5645522022554e4445525322203f0801000058020000013200410000000000010078000000015c00600000000005554e44455201003c000000022c0140010000000002005a00000001280032000000000001020000000006640014003c000000010200000000055a006400000000000301d0070000030100000000000000030196000000043c0046000000000001020396c0adab";
+        let bytes: std::vec::Vec<u8> = (0..HEX.len() / 2)
+            .map(|i| u8::from_str_radix(&HEX[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let mut region = formatted();
+        Library::store(&mut region, &bytes).unwrap();
+        let mut library = Library::default();
+        library.refresh(&mut region).unwrap();
+        let (name, outline) = library.outline(Id::Uploaded(0)).unwrap();
+        assert_eq!(name.as_str(), "OVER \"UNDERS\" ?");
+        assert!(outline.untimed);
+        let workout = library.load(Id::Uploaded(0), &mut region).unwrap();
+        assert_eq!(workout.steps().len(), 8);
+        assert_eq!(&codec::encode(&workout)[..], &bytes[..]);
     }
 }

@@ -57,6 +57,8 @@ pub struct Mark {
 }
 
 impl Mark {
+    pub const NONE: Self = Self { value: 0, day: 0 };
+
     /// Raise to `value` when it beats the best; returns whether it did.
     fn raise(&mut self, value: u32, day: u16) -> bool {
         if value <= self.value {
@@ -87,6 +89,13 @@ pub struct Found {
 }
 
 impl Found {
+    pub const EMPTY: Self = Self {
+        power: [false; 4],
+        distance: false,
+        time: false,
+        ascent: false,
+    };
+
     pub fn count(&self) -> usize {
         self.power.iter().filter(|set| **set).count()
             + usize::from(self.distance)
@@ -109,6 +118,13 @@ pub struct Bests {
 }
 
 impl Bests {
+    pub const EMPTY: Self = Self {
+        power: [Mark::NONE; 4],
+        distance_m: Mark::NONE,
+        time_s: Mark::NONE,
+        ascent_m: Mark::NONE,
+    };
+
     /// Bytes of the stored field, little-endian: four power marks of watts
     /// and day (u16 each), distance in metres (u32) and day (u16), time in
     /// seconds (u32) and day (u16), ascent in metres (u16) and day (u16).

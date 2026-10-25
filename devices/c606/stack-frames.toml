@@ -22,6 +22,7 @@
 "vana::screens::workout::fill::<*>" = 8912
 "vana::screens::ride::climb_frame" = 4208
 "vana::screens::ride::smooth" = 3024
+"<vana::app::Runtime>::history_canvas" = 5424
 "<firmware_shell::storage::Store<*>>::load" = 5792
 "*" = 5520
 
@@ -36,6 +37,7 @@
 "vana::screens::workout::fill::<*>" = 8912
 "vana::screens::ride::climb_frame" = 4208
 "vana::screens::ride::smooth" = 3024
+"<vana::app::Runtime>::history_canvas" = 5424
 "<firmware_shell::storage::Store<*>>::load" = 5792
 "*" = 5520
 

@@ -127,7 +127,7 @@ pub fn prepare(view: &View) -> Canvas {
         Align::Left,
         WHITE,
     );
-    let bests = &view.bests();
+    let bests = view.bests();
     for (index, mark) in bests.power.iter().enumerate() {
         let mut value = Text::<12>::new();
         let _ = write!(value, "{} W", mark.value);

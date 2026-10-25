@@ -611,7 +611,8 @@ mod tests {
     use crate::ride::climb::Climbs;
     use crate::screens::workout::Page;
 
-    /// A view of the climb page after riding `metres` along `altitude_dm(m)`.
+    /// A view of the climb page after riding `metres` along `altitude_dm(m)`;
+    /// views borrow the climbs, so tests leak them.
     fn ridden(metres: u32, altitude_dm: impl Fn(u32) -> i32) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, None);
         view.radar_paired = true;
@@ -620,7 +621,7 @@ mod tests {
         for m in (5..=metres).step_by(5) {
             climbs.add(1000, 5000, Some(altitude_dm(m)));
         }
-        view.climbs = climbs;
+        view.climbs = std::boxed::Box::leak(std::boxed::Box::new(climbs));
         view
     }
 

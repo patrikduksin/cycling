@@ -707,9 +707,6 @@ impl Runtime {
         if let Some(picker) = picker {
             view.picker = picker;
         }
-        if view.ride_page == RidePage::Climb {
-            view.climbs = self.ride.climbs.clone();
-        }
         if view.ride_page == RidePage::Back {
             view.back = super::back::view_of(&self.back);
             view.sunset = light(
@@ -781,7 +778,8 @@ impl Runtime {
             Page::Setup => self.setup_lines(&mut view),
         }
         if view.ride_page == RidePage::Climb {
-            // Borrowed from the look-ahead's own block, not copied.
+            // Borrowed from the ride and the look-ahead's own block, not copied.
+            view.climbs = &self.ride.climbs;
             view.forecast = super::lookahead::forecast_of(&self.lookahead);
         }
         let light = self.light();

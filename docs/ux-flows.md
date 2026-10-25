@@ -170,11 +170,12 @@ distance (RIGHT IN 90 M), and one nearer than 60 m is warned of only at it. A
 turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
 120 degrees, and U-TURN past 150. A bend gentler than that says nothing.
-Corners less than about 20 m apart are one turn, named by its net way, so a
-short jog says nothing; two turns starting within 30 m of each other are
+Corners less than about 25 m apart are one turn, named by its net way, so a
+short jog says nothing; two turns starting within 35 m of each other are
 warned of together, LEFT THEN RIGHT. A roundabout of up to about 40 m radius
-is one turn, named by the way it leaves, and straight over one says
-nothing. A warning that comes just after another nudge waits a second. Off
+is one turn, named by the way it leaves, and straight over one says nothing;
+this holds on a long course thinned to fit, where a roundabout may also say
+nothing but never a wrong way. A warning that comes just after another nudge waits a second. Off
 the course, riding it the wrong way, standing still, or once it is stopped or
 ended, no turn is warned of; riding back past a turn and on again warns of it
 again.

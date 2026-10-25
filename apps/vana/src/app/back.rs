@@ -170,6 +170,7 @@ impl Runtime {
             .set_auto_follow(self.preferences.options.ride_pages.shows(RidePage::Back));
         if !riding {
             state.resume = Resume::waiting(&self.ride);
+            state.held_turn = None;
             return;
         }
         if let Resume::Reading {

@@ -250,11 +250,16 @@ fn a_roundabout_of_any_size_is_one_turn_the_way_it_leaves() {
 #[test]
 fn corners_close_together_are_named_together_or_one_by_one() {
     for spacing in [3.0, 5.0, 8.0] {
-        // A jog 20 m across is no turn.
-        let jog = ride(&corners(spacing, &[(400.0, false), (420.0, true)]), 7.0);
-        assert!(jog.is_empty(), "{spacing} m: {jog:?}");
-        // 25 m apart: one warning names both.
-        let pair = ride(&corners(spacing, &[(400.0, false), (425.0, true)]), 7.0);
+        // A jog 20 or 25 m across is no turn.
+        for across in [20.0, 25.0] {
+            let jog = ride(
+                &corners(spacing, &[(400.0, false), (400.0 + across, true)]),
+                7.0,
+            );
+            assert!(jog.is_empty(), "{spacing} m, {across} m: {jog:?}");
+        }
+        // 32 m apart: one warning names both.
+        let pair = ride(&corners(spacing, &[(400.0, false), (432.0, true)]), 7.0);
         let both = Warning::Now {
             kind: LEFT,
             then: Some(RIGHT),
@@ -482,4 +487,204 @@ fn thousands_of_points_in_one_spot_cost_a_bounded_scan() {
     assert_eq!(Warner::default().step(line.len(), at, place), None);
     let most = (2 * GROUPS * 2 * (WALK_POINTS + SAMPLES + 2)) as u32;
     assert!(calls.get() <= most, "{} reads", calls.get());
+}
+
+/// `line`, then `after` metres straight on from its end, as a course built
+/// from a point every 5 m keeps it: thinned to fit when that is too many.
+fn thinned(line: &[(f32, f32)], after: f32) -> (Vec<(f32, f32)>, f32) {
+    let (a, b) = (line[line.len() - 2], line[line.len() - 1]);
+    let length = distance(a, b);
+    let far = (
+        b.0 + (b.0 - a.0) / length * after,
+        b.1 + (b.1 - a.1) / length * after,
+    );
+    let full = join(&[line.to_vec(), path(&[b, far], 5.0)]);
+    let mut course = empty();
+    let mut builder = Builder::new();
+    builder.start(&mut course);
+    for &(east, north) in &full {
+        builder.push(&mut course, point_at(f64::from(east), f64::from(north)));
+    }
+    builder.finish(&mut course);
+    (line_of(&course), builder.tolerance)
+}
+
+/// Ride `line` from its start to `to` metres, a fix every 7 m.
+fn ride_to(line: &[(f32, f32)], to: f32) -> Vec<(u32, Warning)> {
+    ride_through(line, (0..=(to / 7.0) as usize).map(|k| k as f32 * 7.0))
+}
+
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Right,
+    Silent,
+    Wrong,
+}
+
+/// Whether what was said names a turn of `degrees`, right positive, rightly.
+fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
+    let fits = |kind: Kind| match kind {
+        Kind::UTurn => fabsf(degrees) >= 130.0,
+        Kind::Turn(side) | Kind::Sharp(side) => {
+            let right = degrees > 0.0;
+            fabsf(degrees) >= 45.0 && (side == Side::Right) == right && fabsf(degrees) <= 170.0
+        }
+    };
+    let mut nows = 0;
+    for &(_, warning) in said {
+        let ok = match warning {
+            Warning::Ahead { kind, .. } => fits(kind),
+            Warning::Now { kind, then } => {
+                nows += 1;
+                fits(kind) && then.is_none()
+            }
+        };
+        if !ok {
+            return Verdict::Wrong;
+        }
+    }
+    match nows {
+        0 if said.is_empty() => Verdict::Silent,
+        1 => Verdict::Right,
+        _ => Verdict::Wrong,
+    }
+}
+
+/// Every exit of a roundabout, and hairpins, on a course thinned to fit:
+/// what is said is right, or nothing is.
+#[test]
+fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
+    let mut silent = Vec::new();
+    for after in [12_000.0, 150_000.0] {
+        for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
+            for sweep in (3..=22).map(|k| k as f32 * 15.0) {
+                let (line, tolerance) = thinned(&ring(radius, sweep, 5.0), after);
+                assert!(tolerance >= 4.0 && line.len() < 2_048);
+                let degrees = swing(0.0, 180.0 - sweep);
+                let said = ride_to(&line, 900.0);
+                let verdict = judge(&said, degrees);
+                assert!(
+                    verdict != Verdict::Wrong,
+                    "r{radius} exit {sweep} ({degrees}) after {after}: {said:?}"
+                );
+                if verdict == Verdict::Silent && fabsf(degrees) >= 75.0 {
+                    silent.push((radius, sweep));
+                }
+            }
+        }
+        for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
+            let (line, _) = thinned(&hairpin(radius, 5.0), after);
+            let said = ride_to(&line, 1_200.0);
+            assert_eq!(
+                kinds(&said),
+                [ahead(U_TURN), now(U_TURN)],
+                "hairpin r{radius} after {after}"
+            );
+        }
+    }
+    std::println!("silent where a turn was due: {silent:?}");
+    assert!(silent.len() <= 4, "{silent:?}");
+}
+
+/// What `said` names, shortly: R ahead, R, L THEN R.
+fn words(said: &[(u32, Warning)]) -> std::string::String {
+    let word = |kind: Kind| match kind {
+        Kind::Turn(Side::Left) => "L",
+        Kind::Turn(Side::Right) => "R",
+        Kind::Sharp(Side::Left) => "SL",
+        Kind::Sharp(Side::Right) => "SR",
+        Kind::UTurn => "U",
+    };
+    let said: Vec<_> = said
+        .iter()
+        .map(|&(_, warning)| match warning {
+            Warning::Ahead { kind, .. } => std::format!("{} ahead", word(kind)),
+            Warning::Now { kind, then: None } => word(kind).into(),
+            Warning::Now {
+                kind,
+                then: Some(then),
+            } => std::format!("{} THEN {}", word(kind), word(then)),
+        })
+        .collect();
+    if said.is_empty() {
+        "nothing".into()
+    } else {
+        said.join(", ")
+    }
+}
+
+/// The table in the pull request: what each course says, as Markdown rows.
+/// `cargo test -p vana --lib cue_table -- --ignored --nocapture`
+#[test]
+#[ignore = "prints the cue table"]
+fn cue_table() {
+    let mut rows: Vec<(std::string::String, std::string::String)> = Vec::new();
+    for spacing in [3.0, 5.0, 8.0] {
+        let courses = [
+            ("right turn", corners(spacing, &[(400.0, true)])),
+            (
+                "left, right 40 m on",
+                corners(spacing, &[(400.0, false), (440.0, true)]),
+            ),
+            (
+                "right, right 40 m on",
+                corners(spacing, &[(400.0, true), (440.0, true)]),
+            ),
+            (
+                "R L R L R L 40 m apart",
+                corners(
+                    spacing,
+                    &(0..6)
+                        .map(|k| (400.0 + 40.0 * k as f32, k % 2 == 0))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "jog left, right 20 m on",
+                corners(spacing, &[(400.0, false), (420.0, true)]),
+            ),
+            ("hairpin r10", hairpin(10.0, spacing)),
+            ("hairpin r20", hairpin(20.0, spacing)),
+        ];
+        for (name, line) in courses {
+            rows.push((
+                std::format!("{name} ({spacing} m)"),
+                words(&ride(&line, 7.0)),
+            ));
+        }
+    }
+    for radius in [10.0, 20.0, 30.0, 40.0] {
+        let exits = [90.0, 180.0, 270.0].map(|sweep| words(&ride(&ring(radius, sweep, 3.0), 7.0)));
+        rows.push((
+            std::format!("roundabout r{radius}: first; straight; third exit"),
+            exits.join("; "),
+        ));
+    }
+    for after in [12_000.0, 150_000.0] {
+        let km = after / 1000.0;
+        for radius in [15.0, 20.0, 30.0, 40.0] {
+            let exits = [90.0, 180.0, 270.0].map(|sweep| {
+                words(&ride_to(
+                    &thinned(&ring(radius, sweep, 5.0), after).0,
+                    900.0,
+                ))
+            });
+            rows.push((
+                std::format!(
+                    "thinned, {km} km on: roundabout r{radius}: first; straight; third exit"
+                ),
+                exits.join("; "),
+            ));
+        }
+        for radius in [20.0, 30.0, 40.0] {
+            let said = ride_to(&thinned(&hairpin(radius, 5.0), after).0, 1_200.0);
+            rows.push((
+                std::format!("thinned, {km} km on: hairpin r{radius}"),
+                words(&said),
+            ));
+        }
+    }
+    for (name, said) in rows {
+        std::println!("| {name} | {said} |");
+    }
 }

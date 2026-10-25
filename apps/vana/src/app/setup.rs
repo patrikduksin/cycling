@@ -75,14 +75,13 @@ impl Runtime {
     }
 
     /// A tap on a card takes it.
-    pub(super) fn setup_tap(&mut self, x: usize, y: usize, now: u64, ant: &mut impl Ant) {
+    /// A tap on setup card `card` takes it.
+    pub(super) fn setup_card(&mut self, card: usize, now: u64, ant: &mut impl Ant) {
         let Some(step) = self.setup_step() else {
             return;
         };
-        if let Some(card) = crate::screens::setup::target(x, y, step) {
-            self.navigation.setup_cursor = card;
-            self.setup_choice(step, now, ant);
-        }
+        self.navigation.setup_cursor = card;
+        self.setup_choice(step, now, ant);
     }
 
     fn setup_choice(&mut self, step: Step, now: u64, ant: &mut impl Ant) {

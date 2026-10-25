@@ -12,8 +12,8 @@ use crate::ride::log::Status;
 use crate::ride::turn_back::Turn;
 use crate::screens::chrome::CONTENT;
 use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
-use crate::screens::gesture::Gestures;
 use crate::screens::home::Home;
+use crate::screens::kinetic::Kinetic;
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
@@ -21,6 +21,7 @@ use crate::screens::ride::summary::{After, Saving, SummaryPage};
 use crate::screens::ride::{self, PageChoice, RidePage};
 use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
 use crate::screens::settings;
+use crate::screens::touch::{Control, List, Touches};
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::{BatteryStatus, device_type};
 use core::fmt::Write;
@@ -131,7 +132,10 @@ pub(super) struct Navigation {
     pub(super) first_frame: Option<u64>,
     /// Latest report of each button, to tell a held button from a new press.
     pub(super) last_report: [Option<u64>; 3],
-    pub(super) gestures: Gestures,
+    /// The finger on the screen, if any, and what it is bound to.
+    pub(super) touches: Touches,
+    /// The Settings section's scroll.
+    pub(super) settings_scroll: Kinetic,
     /// A confirmation or hint and when it expires.
     pub(super) toast: Option<(Toast, u64)>,
     /// The recorder state the last frame announced.
@@ -256,7 +260,8 @@ impl Default for Navigation {
             last_press: 0,
             first_frame: None,
             last_report: [None; 3],
-            gestures: Gestures::default(),
+            touches: Touches::default(),
+            settings_scroll: Kinetic::default(),
             toast: None,
             announced: Status::Ready,
             paused_since: None,
@@ -405,14 +410,19 @@ impl Runtime {
         // A list in motion draws as often as the panel can take: its
         // curves are read at each frame's time, so a late frame lands
         // where the motion has got to.
-        if self.navigation.page == Page::History
-            && self.history_frame(now)
-            && let Display::Active { next_frame_ms } = &mut self.display
-        {
-            *next_frame_ms = (*next_frame_ms).min(now + SCROLL_FRAME_MS);
-        }
+        // A card under a resting finger lights up once the delay passes.
+        self.navigation.touches.tick(now);
+        let moving = self.list_frame(now);
         self.refresh_chart();
         self.workout_display(system, now, ant, position);
+        if let Display::Active { next_frame_ms } = &mut self.display {
+            if moving {
+                *next_frame_ms = (*next_frame_ms).min(now + SCROLL_FRAME_MS);
+            }
+            if let Some(due) = self.navigation.touches.due() {
+                *next_frame_ms = (*next_frame_ms).min(due);
+            }
+        }
         let visible = self.motion_visible();
         if self.navigation.page == Page::Ride
             && let Display::Active { next_frame_ms } = &mut self.display
@@ -644,7 +654,14 @@ impl Runtime {
             _ => None,
         };
         let ftp_offer = self.ftp_sheet();
-        let picker = (self.navigation.page == Page::Workouts).then(|| self.picker());
+        let picker_offset = self.list_offset(List::Workouts, now);
+        let picker = (self.navigation.page == Page::Workouts).then(|| {
+            let pressed = match self.navigation.touches.pressed() {
+                Some(Control::Workout(index)) => Some(index),
+                _ => None,
+            };
+            self.picker(self.list_offset(List::Workouts, now), pressed)
+        });
         let navigation = &mut self.navigation;
         // A page the rider turned off, or the workout page once its workout
         // is gone, gives way to the main page.
@@ -716,6 +733,7 @@ impl Runtime {
         // started from the terminal while Home is open.
         view.ftp_offer = ftp_offer;
         if let Some(picker) = picker {
+            view.scroll = picker_offset;
             view.show_picker(picker);
         }
         if page == Page::Ride && view.ride_page == RidePage::Back {
@@ -769,9 +787,13 @@ impl Runtime {
                 self.phone_view(&mut view);
             }
             Page::History => {
-                let offset = self.history.scroll.0.offset(now);
+                let offset = self.list_offset(List::Rides, now);
+                let pressed = match self.navigation.touches.pressed() {
+                    Some(Control::Ride(index)) => Some(index),
+                    _ => None,
+                };
                 view.scroll = offset;
-                view.set_canvas(self.history_canvas(offset));
+                view.set_canvas(self.history_canvas(offset, pressed));
             }
             Page::EndRide => {}
             Page::Ride => {
@@ -786,7 +808,15 @@ impl Runtime {
                     view.set_home(self.home(gps_fix, now));
                 }
             }
-            Page::Settings => self.settings_lines(&mut view),
+            Page::Settings => {
+                view.scroll = self.list_offset(List::Settings, now);
+                self.settings_lines(&mut view);
+                let first = settings::rows(self.navigation.settings_field).1;
+                view.press_setting(match self.navigation.touches.pressed() {
+                    Some(Control::Setting(field)) => Some((field - first) as u16),
+                    _ => None,
+                });
+            }
             Page::Workouts => {}
             Page::Setup => self.setup_lines(&mut view),
         }
@@ -1206,7 +1236,7 @@ impl Runtime {
         let shown: &[Row] = if editing {
             &editor
         } else {
-            settings::shown(cursor).0
+            settings::rows(cursor).0
         };
         let lines = view.show_settings();
         let (values, notes) = lines[VALUES..].split_at_mut(NOTES - VALUES);

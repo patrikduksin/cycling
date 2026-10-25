@@ -18,14 +18,13 @@ use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
-use crate::screens::gesture::Gesture;
 use crate::screens::history::{self, List, Row};
 use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::summary::{After, Saving};
-use crate::screens::scroll::Scroll as Window;
+use crate::screens::touch::List as Scrolling;
 use crate::screens::workout::{Page, Text, View};
 use core::fmt::Write;
-use device_api::input::{Button, Input};
+use device_api::input::Button;
 
 /// Slots read per tick: internal flash reads are quick, the MMC slower.
 const INTERNAL_BUDGET: usize = 32;
@@ -42,9 +41,7 @@ pub(super) struct History {
     counted: bool,
     pub(super) cursor: usize,
     /// The list's scroll, which follows the finger.
-    pub(super) scroll: Scroll,
-    /// The last contact scrolled the list or stopped it, so it is no tap.
-    pub(super) tap_taken: bool,
+    pub(super) scroll: Kinetic,
     /// The ride on the summary's pages: its journal, its replay and its line.
     open: Option<(Medium, Replay, Summary)>,
     /// The ride the phone screen was opened for.
@@ -58,15 +55,6 @@ pub(super) struct History {
 
 /// The minute, the zone, the FTP, the ride facts kept, and each journal's
 /// rides, last id and how many of them the index has read.
-/// The ride list's scroll, sized to its viewport.
-pub(super) struct Scroll(pub(super) Kinetic);
-
-impl Default for Scroll {
-    fn default() -> Self {
-        Self(Kinetic::new(history::VIEWPORT))
-    }
-}
-
 pub(super) type WeeksKey = (u64, Zone, u16, u32, [(usize, Option<u32>, usize); 2]);
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
@@ -181,9 +169,9 @@ impl Runtime {
     pub(super) fn open_history(&mut self) {
         self.history.indexing = true;
         self.history.cursor = 0;
-        self.history.scroll = Scroll::default();
         self.history.open = None;
         self.navigation.page = Page::History;
+        self.show_focus(Scrolling::Rides, 0);
     }
 
     /// Whether every saved ride is counted: always without an index, else
@@ -231,59 +219,20 @@ impl Runtime {
     }
 
     /// MOVE focuses the next ride (held, `SHOWN` on; past the last, the
-    /// first) and scrolls it into view, ACT opens it, BACK goes Home.
+    /// first) and scrolls it into view, ACT opens it, BACK goes Home. Either
+    /// press first brings a focus that scrolled away back into view.
     pub(super) fn history_input(&mut self, button: Button, held: bool, now: u64) {
         let count = self.history_count();
         match button {
             Button::BottomLeft if count > 0 => {
-                let cursor = Window::new(count, self.history.cursor, history::SHOWN).next(held);
-                self.history.cursor = cursor;
-                let scroll = &mut self.history.scroll.0;
-                let target = history::reveal(cursor, scroll.rest() as i32);
-                scroll.reveal(target as f32, now);
+                self.list_move(Scrolling::Rides, history::SHOWN, held, now)
             }
-            Button::BottomRight if count > 0 => self.open_past_ride(self.history.cursor),
+            Button::BottomRight if count > 0 && self.list_act(Scrolling::Rides, now) => {
+                self.open_past_ride(self.history.cursor)
+            }
             Button::TopLeft => self.navigation.page = Page::Home,
             _ => {}
         }
-    }
-
-    /// Every touch edge while the ride list shows or holds a finger: the
-    /// list follows the finger, and a contact that scrolled it or stopped it
-    /// is no tap.
-    pub(super) fn history_touch(&mut self, input: Input, gesture: Option<Gesture>, at: u64) {
-        let scroll = &mut self.history.scroll.0;
-        if self.navigation.page != Page::History && !scroll.held() {
-            return;
-        }
-        match input {
-            Input::Touch(point) if matches!(gesture, Some(Gesture::Down(_))) => {
-                self.history.tap_taken = false;
-                scroll.press(i32::from(point.y), at);
-            }
-            Input::Touch(point) => scroll.drag(i32::from(point.y), at),
-            Input::Release => self.history.tap_taken = scroll.release(at),
-            Input::Cancel => scroll.cancel(at),
-            Input::Button { .. } => return,
-        }
-        self.display.redraw();
-    }
-
-    /// Before each frame of the list: its length, its motion, and the focus
-    /// on a card that shows whole where the list will rest. A coast's last
-    /// pixel takes seconds to settle, so the focus moves as the finger lifts,
-    /// onto the card the coast brings into view. True while it moves.
-    pub(super) fn history_frame(&mut self, now: u64) -> bool {
-        let count = self.history_count();
-        let history = &mut self.history;
-        let scroll = &mut history.scroll.0;
-        scroll.set_content(history::content(count), now);
-        scroll.advance(now);
-        if !scroll.held() {
-            let rest = libm::roundf(scroll.rest()) as i32;
-            history.cursor = history::settled(count, history.cursor, rest);
-        }
-        scroll.moving()
     }
 
     pub(super) fn open_past_ride(&mut self, index: usize) {
@@ -463,12 +412,17 @@ impl Runtime {
 
     /// The ride list, its cards made on demand.
     #[inline(never)]
-    pub(super) fn history_canvas(&self, offset: i32) -> crate::screens::canvas::Canvas {
+    pub(super) fn history_canvas(
+        &self,
+        offset: i32,
+        pressed: Option<usize>,
+    ) -> crate::screens::canvas::Canvas {
         let count = self.history_count();
         history::prepare(&List {
             count,
             cursor: self.history.cursor,
             offset,
+            pressed,
             row: |index| self.history_row(index, count),
             weeks: if count > 0 && history::header_shows(offset) {
                 self.weeks()

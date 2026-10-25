@@ -78,6 +78,12 @@ enum Motion {
     },
 }
 
+impl Default for Kinetic {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
+
 /// The scroll offset of a list `viewport` pixels tall over `content` pixels:
 /// 0 shows the top, `max` the bottom, and the rubber band reaches past both.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,9 +107,10 @@ impl Kinetic {
         }
     }
 
-    /// The content is now `content` pixels tall; content at rest past its
-    /// new end springs back.
-    pub fn set_content(&mut self, content: usize, now: u64) {
+    /// The list shows `viewport` rows of `content`; content at rest past
+    /// its new end moves to it.
+    pub fn fit(&mut self, viewport: usize, content: usize, now: u64) {
+        self.viewport = viewport.max(1) as f32;
         self.max = (content as f32 - self.viewport).max(0.0);
         if let Motion::Still(at) = self.motion
             && at > self.max
@@ -146,8 +153,9 @@ impl Kinetic {
         }
     }
 
-    /// A finger lands at height `y`. Moving content stops under it.
-    pub fn press(&mut self, y: i32, now: u64) {
+    /// A finger lands at height `y`. Moving content stops under it; true
+    /// when it did, so the touch is the list's and no tap.
+    pub fn press(&mut self, y: i32, now: u64) -> bool {
         let (position, velocity, _) = self.state(now);
         let caught = !matches!(self.motion, Motion::Still(_)) && velocity.abs() >= CATCH_SPEED;
         self.motion = Motion::Held {
@@ -158,6 +166,7 @@ impl Kinetic {
         };
         self.sampled = 0;
         self.sample(now, y);
+        caught
     }
 
     /// The finger moved to height `y`.
@@ -446,7 +455,7 @@ mod tests {
     /// A list of 1000 px seen through 300: `max` is 700.
     fn list() -> Kinetic {
         let mut list = Kinetic::new(300);
-        list.set_content(1000, 0);
+        list.fit(300, 1000, 0);
         list
     }
 
@@ -632,7 +641,7 @@ mod tests {
     #[test]
     fn content_shorter_than_the_viewport_only_bands() {
         let mut list = Kinetic::new(300);
-        list.set_content(200, 0);
+        list.fit(300, 200, 0);
         let lift = flick(&mut list, 250, 100, 0, 100);
         list.release(lift);
         run(&mut list, lift, lift + 3000);

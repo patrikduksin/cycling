@@ -1,20 +1,21 @@
 //! Rides: the saved rides, newest first, one card each.
 //!
-//! MOVE focuses the next ride (wrapping), ACT opens it, BACK goes Home, and
-//! a tap opens the ride under the finger. Each card names the ride by its
-//! start (OCT 17  7:12) and says how long, how far and how hard it was.
-//! Above the first cards sits this week at a glance: distance, moving time,
-//! rides, the week's training stress (TSS, from the rides that had power),
-//! last week's distance and a bar for each day. Scrolled past the
-//! first cards, the header gives way to the RIDES headline and a fourth card.
-//! Without a saved ride the screen says how one gets here.
+//! The week header and every card make one page that scrolls under the
+//! finger (`scroll::Layout`). MOVE focuses the next ride (wrapping), ACT
+//! opens it, BACK goes Home, and a tap opens the ride under the finger. Each
+//! card names the ride by its start (OCT 17  7:12) and says how long, how far
+//! and how hard it was. At the page's top sits this week at a glance:
+//! distance, moving time, rides, the week's training stress (TSS, from the
+//! rides that had power), last week's distance and a bar for each day. Once
+//! its top line has scrolled away, RIDES and the focus's place pin at the
+//! top. Without a saved ride the screen says how one gets here.
 use super::canvas::{Canvas, Shape};
 use super::chrome::HEIGHT as SCREEN_HEIGHT;
 use super::chrome::{
-    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, RAISED, Rect, SECONDARY, TERTIARY,
-    TITLE, VALUE, WHITE, WIDTH,
+    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, PRESSED, RAISED, Rect, SECONDARY,
+    TERTIARY, TITLE, VALUE, WHITE, WIDTH,
 };
-use super::scroll::Column;
+use super::scroll::{Column, Layout, PAGE, Pin};
 use super::workout::Text;
 use crate::clock::{Local, civil};
 use crate::ride::week::{DAYS, Weeks};
@@ -47,6 +48,8 @@ pub struct List<F: Fn(usize) -> Row> {
     pub weeks: Option<Weeks>,
     /// The index has not read every ride yet, so the weeks may grow.
     pub reading: bool,
+    /// The card under a resting finger.
+    pub pressed: Option<usize>,
 }
 
 const LEFT: usize = 10;
@@ -74,115 +77,34 @@ const STRESS_MOST: u32 = 9999;
 /// Every other day is named: the letters are as wide as the bars are apart.
 const DAY_LETTERS: [&[u8]; DAYS] = [b"M", b"", b"W", b"", b"F", b"", b"S"];
 
-/// The week header and every card make one page that scrolls under the
-/// status bar: `VIEWPORT` pixels of it show at once. Cards follow the
-/// header in this column, in screen coordinates while the page is at the top.
-pub const VIEWPORT: usize = SCREEN_HEIGHT - CONTENT.top;
-const COLUMN: Column = Column {
-    left: LEFT,
-    right: RIGHT,
-    top: HEADER_FIRST,
-    height: HEIGHT,
-    pitch: PITCH,
+/// The page under the status bar: the week header, then the cards.
+pub const LAYOUT: Layout = Layout {
+    top: CONTENT.top,
+    bottom: SCREEN_HEIGHT,
+    column: Column {
+        left: LEFT,
+        right: RIGHT,
+        top: HEADER_FIRST - CONTENT.top,
+        height: HEIGHT,
+        pitch: PITCH,
+    },
+    end: 10,
+    margin: 6,
+    // Once the header's top line has gone under the status bar.
+    pin: Some(Pin {
+        after: (CAPTION_BASE - CONTENT.top) as i32,
+        height: PIN,
+    }),
 };
-/// Room under the last card when the page is scrolled to its end.
-const END_MARGIN: usize = 10;
-/// A card revealed for the focus keeps this much room from the viewport's edge.
-const REVEAL_MARGIN: usize = 6;
-
-/// The page's height, from the top of the viewport.
-pub fn content(count: usize) -> usize {
-    if count == 0 {
-        return VIEWPORT;
-    }
-    COLUMN.bottom(count) + END_MARGIN - CONTENT.top
-}
-
-/// Card `index`'s top and bottom on the page, from the top of the viewport.
-fn span(index: usize) -> (i32, i32) {
-    let rect = COLUMN.rect(index);
-    let top = CONTENT.top as i32;
-    (rect.top as i32 - top, rect.bottom as i32 - top)
-}
-
-/// Once the header's top line has scrolled under the status bar, a band
-/// this tall pins RIDES and the focus's place at the top of the viewport, as
-/// iOS folds a large title into its navigation bar. The band's runs sit in
-/// the page's first rows, above anything that scrolls, and paint there.
-pub const PIN: usize = CONTENT.top;
-const PIN_BASE: usize = 18;
-
-/// Whether the band pins with the page scrolled to `offset`.
-pub fn pinned(offset: i32) -> bool {
-    offset > (CAPTION_BASE - CONTENT.top) as i32
-}
-
-/// The viewport's first row that shows the page, past the band.
-fn inset(offset: i32) -> i32 {
-    if pinned(offset) { PIN as i32 } else { 0 }
-}
-
-/// The page's row that screen row `y` shows with the page scrolled to
-/// `offset`: the pinned band's own rows inside it, none above the page.
-pub fn page_row(y: usize, offset: i32) -> Option<usize> {
-    if pinned(offset) && y < CONTENT.top + PIN {
-        return Some(y - CONTENT.top);
-    }
-    usize::try_from(y as i32 + offset).ok()
-}
+/// The pinned band's height, and its line's baseline on screen.
+const PIN: usize = 24;
+const PIN_BASE: usize = CONTENT.top + 18;
+/// Shifts a row of the page as it lies at rest to its canvas row.
+const AT: usize = PAGE - CONTENT.top;
 
 /// Whether any of the week header shows with the page scrolled to `offset`.
 pub fn header_shows(offset: i32) -> bool {
-    offset < span(0).0
-}
-
-/// Whether card `index` shows whole with the page scrolled to `offset`.
-pub fn whole(index: usize, offset: i32) -> bool {
-    let (top, bottom) = span(index);
-    top >= offset + inset(offset) && bottom <= offset + VIEWPORT as i32
-}
-
-/// The scroll that shows card `index` whole, moving as little as it can from
-/// `offset`. The first card shows the page from its top, header and all.
-pub fn reveal(index: usize, offset: i32) -> i32 {
-    if index == 0 {
-        return 0;
-    }
-    let (top, bottom) = span(index);
-    let margin = REVEAL_MARGIN as i32;
-    if top - margin - inset(offset) < offset {
-        top - margin - PIN as i32
-    } else if bottom + margin > offset + VIEWPORT as i32 {
-        bottom + margin - VIEWPORT as i32
-    } else {
-        offset
-    }
-}
-
-/// The card to focus once the page stops at `offset` with the focus on
-/// `cursor`: the focus itself while it shows whole, else the nearest card
-/// that does.
-pub fn settled(count: usize, cursor: usize, offset: i32) -> usize {
-    if count == 0 || whole(cursor, offset) {
-        return cursor;
-    }
-    let (top, _) = span(cursor);
-    let pick = if top < offset {
-        (0..count).find(|&index| whole(index, offset))
-    } else {
-        (0..count).rev().find(|&index| whole(index, offset))
-    };
-    pick.unwrap_or(cursor)
-}
-
-/// The list index of the ride under a tap at screen (`x`, `y`) with the
-/// page scrolled to `offset`, if any.
-pub fn row_at(count: usize, offset: i32, x: usize, y: usize) -> Option<usize> {
-    if y < CONTENT.top + inset(offset) as usize {
-        return None;
-    }
-    let y = usize::try_from(y as i32 + offset).ok()?;
-    COLUMN.slot_at(count, x, y)
+    offset < LAYOUT.span(0).0
 }
 
 pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
@@ -193,7 +115,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             b"RIDES",
             RIGHT - LEFT,
             LEFT + 4,
-            HEADLINE,
+            AT + HEADLINE,
             Align::Left,
             WHITE,
         );
@@ -203,7 +125,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             b"NO RIDES YET",
             RIGHT - LEFT,
             centre,
-            150,
+            AT + 150,
             Align::Center,
             WHITE,
         );
@@ -211,7 +133,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             b"SAVED RIDES SHOW HERE",
             RIGHT - LEFT,
             centre,
-            174,
+            AT + 174,
             Align::Center,
         );
         return canvas;
@@ -220,11 +142,10 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
     let _ = write!(count, "{}/{}", list.cursor + 1, list.count);
     // Only what shows: the header while any of it does, and the cards whose
     // rows reach the viewport.
-    let (top, bottom) = (list.offset, list.offset + VIEWPORT as i32);
     if header_shows(list.offset) {
         header(&mut canvas, list, count.as_bytes());
     }
-    if pinned(list.offset) {
+    if LAYOUT.pinned(list.offset) {
         canvas.fit(
             &[&BODY],
             b"RIDES",
@@ -239,27 +160,28 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
         canvas.shape(Shape::Bar {
             rect: Rect {
                 left: 0,
-                top: PIN - 1,
+                top: CONTENT.top + PIN - 1,
                 right: WIDTH,
-                bottom: PIN,
+                bottom: CONTENT.top + PIN,
             },
             radius: 0,
             color: CARD,
         });
     }
-    // Card i shows while its bottom is below the top and its top above the
-    // bottom: i > (top - bottom of card 0) / pitch, i < (bottom - its top) / pitch.
-    let pitch = PITCH as i32;
-    let first = ((top - span(0).1).div_euclid(pitch) + 1).max(0) as usize;
-    let end = ((bottom - span(0).0 - 1).div_euclid(pitch) + 1).clamp(0, list.count as i32);
-    for index in first..end as usize {
+    for index in LAYOUT.visible(list.count, list.offset) {
         let row = (list.row)(index);
-        let rect = COLUMN.rect(index);
+        let rect = LAYOUT.rect(index);
         let focused = index == list.cursor;
         canvas.shape(Shape::Panel {
             rect,
             radius: RADIUS,
-            color: if focused { RAISED } else { CARD },
+            color: if list.pressed == Some(index) {
+                PRESSED
+            } else if focused {
+                RAISED
+            } else {
+                CARD
+            },
         });
         let width = rect.right - rect.left - 2 * INSET;
         let title_base = rect.top + 8 + BODY.cap as usize;
@@ -322,8 +244,8 @@ pub fn date(days: u16) -> Text<20> {
 /// it has found so far shows.
 fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]) {
     let left = LEFT + 4;
-    let title = canvas.caption(b"THIS WEEK", 100, left, CAPTION_BASE, Align::Left);
-    let place = canvas.caption(count, 80, RIGHT - 4, CAPTION_BASE, Align::Right);
+    let title = canvas.caption(b"THIS WEEK", 100, left, AT + CAPTION_BASE, Align::Left);
+    let place = canvas.caption(count, 80, RIGHT - 4, AT + CAPTION_BASE, Align::Right);
     let weeks = list.weeks.as_ref();
     // Nothing found yet while reading is not a quiet week.
     let known = weeks.filter(|weeks| !list.reading || weeks.this.rides > 0);
@@ -341,7 +263,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         value,
         BARS_LEFT - left - 30,
         left,
-        VALUE_BASE,
+        AT + VALUE_BASE,
         Align::Left,
         WHITE,
     );
@@ -350,7 +272,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         b"KM",
         30,
         run.right() + 6,
-        VALUE_BASE,
+        AT + VALUE_BASE,
         Align::Left,
         SECONDARY,
     );
@@ -371,7 +293,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         time.as_bytes(),
         BARS_LEFT - left - 8,
         left,
-        TIME_BASE,
+        AT + TIME_BASE,
         Align::Left,
         WHITE,
     );
@@ -391,7 +313,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             rides.as_bytes(),
             place.left.saturating_sub(title.right() + 12 + 8),
             title.right() + 12,
-            CAPTION_BASE,
+            AT + CAPTION_BASE,
             Align::Left,
         );
     }
@@ -402,7 +324,13 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             "LAST WEEK {} KM",
             (weeks.last.distance_mm + 500_000) / 1_000_000
         );
-        canvas.caption(last.as_bytes(), RIGHT - left, left, LAST_BASE, Align::Left);
+        canvas.caption(
+            last.as_bytes(),
+            RIGHT - left,
+            left,
+            AT + LAST_BASE,
+            Align::Left,
+        );
     }
     // This week's training stress, from the rides that had power; a week
     // without any says nothing rather than 0. Its own line, under the time,
@@ -419,7 +347,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             stress.as_bytes(),
             BARS_LEFT - left - 8,
             left,
-            STRESS_BASE,
+            AT + STRESS_BASE,
             Align::Left,
             POWER,
         );
@@ -441,9 +369,9 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         canvas.shape(Shape::Bar {
             rect: Rect {
                 left: x,
-                top: BARS_BASE - high,
+                top: AT + BARS_BASE - high,
                 right: x + BAR_WIDE,
-                bottom: BARS_BASE,
+                bottom: AT + BARS_BASE,
             },
             radius: if ridden { 3 } else { 1 },
             color: match (ridden, today) {
@@ -460,7 +388,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             letter,
             BAR_PITCH + 6,
             x + BAR_WIDE / 2,
-            TIME_BASE,
+            AT + TIME_BASE,
             Align::Center,
             if today { ACCENT } else { SECONDARY },
         );
@@ -522,6 +450,7 @@ mod tests {
             row,
             weeks: None,
             reading: false,
+            pressed: None,
         }
     }
 
@@ -555,23 +484,22 @@ mod tests {
         }
     }
 
-    /// The page's whole height in screen rows: runs below the panel are
-    /// cards scrolled part way in.
+    /// The whole canvas: the page sits below the screen's rows from `PAGE`.
     fn page() -> Rect {
         Rect {
             top: 0,
-            bottom: 10_000,
+            bottom: 100_000,
             ..bounds()
         }
     }
 
-    /// The canvas's card panels, top edges in page rows.
-    fn cards(canvas: &Canvas) -> std::vec::Vec<usize> {
+    /// The canvas's card panels, top edges in canvas rows, with their fill.
+    fn cards(canvas: &Canvas) -> std::vec::Vec<(usize, u16)> {
         canvas
             .shapes
             .iter()
             .filter_map(|shape| match shape {
-                Shape::Panel { rect, .. } => Some(rect.top),
+                Shape::Panel { rect, color, .. } => Some((rect.top, *color)),
                 _ => None,
             })
             .collect()
@@ -590,20 +518,21 @@ mod tests {
             "141 BPM",
         ];
         canvas.assert_laid_out(page(), &want, "top");
-        // Three whole cards and the top of a fourth reach the panel.
-        assert_eq!(cards(&canvas), [0, 1, 2, 3].map(|i| COLUMN.rect(i).top));
-        assert!((0..3).all(|i| whole(i, 0)) && !whole(3, 0));
+        // The header sits on the page, above three whole cards and the top
+        // of a fourth.
+        let title = canvas.find("THIS WEEK").unwrap();
+        assert!(title.top >= PAGE);
+        let tops: std::vec::Vec<_> = cards(&canvas).iter().map(|(top, _)| *top).collect();
+        assert_eq!(tops, [0, 1, 2, 3].map(|i| LAYOUT.rect(i).top));
+        assert!((0..3).all(|i| LAYOUT.whole(i, 0)) && !LAYOUT.whole(3, 0));
         let empty = prepare(&list(0, 0));
-        empty.assert_laid_out(
-            bounds(),
-            &["NO RIDES YET", "SAVED RIDES SHOW HERE"],
-            "empty",
-        );
+        empty.assert_laid_out(page(), &["NO RIDES YET", "SAVED RIDES SHOW HERE"], "empty");
     }
 
     #[test]
-    fn scrolled_only_the_cards_in_view_are_made_and_taps_find_them() {
-        for offset in [-40, 0, 1, 60, 111, 200, 301, reveal(ROWS - 1, 0)] {
+    fn scrolled_only_cards_in_view_are_made_and_the_title_pins() {
+        let end = LAYOUT.reveal(ROWS - 1, 0);
+        for offset in [-40, 0, 1, 16, 17, 60, 111, 200, 301, end] {
             let mut scrolled = list(ROWS, 0);
             scrolled.offset = offset;
             scrolled.weeks = Some(week());
@@ -611,66 +540,30 @@ mod tests {
             canvas.assert_laid_out(page(), &[], &std::format!("{offset}"));
             assert_eq!(canvas.shows("THIS WEEK"), header_shows(offset), "{offset}");
             // Once the header's top line is gone, RIDES and the place pin.
-            assert_eq!(canvas.shows("RIDES"), pinned(offset), "{offset}");
-            assert_eq!(canvas.shows("1/8"), header_shows(offset) || pinned(offset));
-            let band = CONTENT.top + inset(offset) as usize;
-            let (top, bottom) = (CONTENT.top as i32 + offset, 320 + offset);
-            let made = cards(&canvas);
-            for index in 0..ROWS {
-                let rect = COLUMN.rect(index);
-                let reaches = (rect.bottom as i32) > top && (rect.top as i32) < bottom;
-                assert_eq!(made.contains(&rect.top), reaches, "{offset} {index}");
-                // A tap on a card's middle, where it shows on the panel.
-                let y = (rect.top + rect.bottom) as i32 / 2 - offset;
-                if reaches && y >= band as i32 && y < 320 {
-                    assert_eq!(row_at(ROWS, offset, 120, y as usize), Some(index));
-                }
-            }
-            assert_eq!(row_at(ROWS, offset, 120, band - 1), None, "bar or band");
-            // The band's rows show the band, the rest the page.
-            let shown = if pinned(offset) {
-                Some(3)
-            } else {
-                usize::try_from(CONTENT.top as i32 + 3 + offset).ok()
-            };
-            assert_eq!(page_row(CONTENT.top + 3, offset), shown);
+            assert_eq!(canvas.shows("RIDES"), LAYOUT.pinned(offset), "{offset}");
+            assert_eq!(
+                canvas.shows("1/8"),
+                header_shows(offset) || LAYOUT.pinned(offset)
+            );
+            let made: std::vec::Vec<_> = cards(&canvas).iter().map(|(top, _)| *top).collect();
+            let want: std::vec::Vec<_> = LAYOUT
+                .visible(ROWS, offset)
+                .map(|i| LAYOUT.rect(i).top)
+                .collect();
+            assert_eq!(made, want, "{offset}");
         }
-        // The gap between cards and the margins are no card.
-        let gap = COLUMN.rect(0).bottom + 2;
-        assert_eq!(row_at(ROWS, 0, 120, gap), None);
-        assert_eq!(row_at(ROWS, 0, 4, COLUMN.rect(0).top + 10), None);
-        assert_eq!(row_at(1, 0, 120, COLUMN.rect(1).top + 10), None);
+        assert!(LAYOUT.pinned(17) && !LAYOUT.pinned(16));
     }
 
     #[test]
-    fn the_page_ends_under_the_last_card_and_reveals_move_as_little_as_they_can() {
-        let end = content(ROWS) as i32 - VIEWPORT as i32;
-        assert_eq!(
-            reveal(ROWS - 1, 0),
-            end - END_MARGIN as i32 + REVEAL_MARGIN as i32
-        );
-        assert!(whole(ROWS - 1, reveal(ROWS - 1, 0)));
-        // A card already whole needs no scroll; one above scrolls up to it.
-        assert_eq!(reveal(1, 0), 0);
-        let low = reveal(ROWS - 1, 0);
-        assert_eq!(reveal(ROWS - 2, low), low);
-        let up = reveal(2, low);
-        assert!(up < low && whole(2, up) && !whole(1, up));
-        assert_eq!(reveal(0, low), 0, "the first card brings the header");
-        assert_eq!(content(0), VIEWPORT);
-    }
-
-    #[test]
-    fn once_the_page_rests_the_focus_moves_onto_a_card_that_shows_whole() {
-        assert_eq!(settled(ROWS, 1, 0), 1);
-        // Scrolled down past the focus: the first whole card.
-        let low = reveal(ROWS - 1, 0);
-        let first = (0..ROWS).find(|&i| whole(i, low)).unwrap();
-        assert_eq!(settled(ROWS, 0, low), first);
-        // Scrolled up past the focus: the last whole card.
-        let last = (0..ROWS).rev().find(|&i| whole(i, 0)).unwrap();
-        assert_eq!(settled(ROWS, ROWS - 1, 0), last);
-        assert_eq!(settled(0, 0, 0), 0);
+    fn the_focused_card_is_raised_and_one_under_a_resting_finger_pressed() {
+        let mut shown = list(ROWS, 1);
+        shown.pressed = Some(2);
+        let fills: std::vec::Vec<_> = cards(&prepare(&shown)).iter().map(|(_, c)| *c).collect();
+        assert_eq!(fills, [CARD, RAISED, PRESSED, CARD]);
+        shown.pressed = Some(1);
+        let fills: std::vec::Vec<_> = cards(&prepare(&shown)).iter().map(|(_, c)| *c).collect();
+        assert_eq!(fills[1], PRESSED, "pressed shows over focused");
     }
 
     #[test]

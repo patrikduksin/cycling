@@ -541,9 +541,9 @@ reader takes the fields it knows from any version at least 1. A file with more
 points than the reader holds reads as damaged and is left alone until an
 upload replaces it.
 
-The upload also finds the course's turns, from every point of the file 4 m
-apart or more, before thinning (`ride::course::stored`): the turn scan runs
-as points stream in and keeps only the last 256 of them (2 KiB), all it
+The upload also finds the course's turns, from every point of the file a
+metre apart or more, before thinning (`ride::course::stored`): the turn scan runs
+as points stream in and keeps only the last 512 of them (4 KiB), all it
 reads back. Where the points jitter, as a recorded GPS track's do, each is
 first moved to the mean of the points within 6 m along either side, so the
 jitter reads as no bend; a drawn course is read as it is. The points jitter
@@ -551,7 +551,7 @@ where, from point to point, how far each lies to the side of the line between
 its neighbours swings by a metre or more at most of them. Each turn is found
 in metres along the full track and moved onto the course as kept, in
 proportion between the kept points either side; the gates' turns land within
-5 m of where the full track's point projects onto the kept course. The turns
+3 m of where the full track's point projects onto the kept course. The turns
 are written as `course-turns.dat` once `course.dat` is committed, and removed
 with it. The file store commits one file at a time, so the turns name their
 course by its key: the CRC32 of the course encoded as version 1 of
@@ -559,7 +559,7 @@ course by its key: the CRC32 of the course encoded as version 1 of
 between the two writes, or by firmware that writes only `course.dat`, are not
 that course's. A course without its own turns, or with a turns file that does
 not decode, has them found by scanning the course as kept when it is placed,
-as before; so does a course whose scan at upload needed more than the 256
+as before; so does a course whose scan at upload needed more than the 512
 points it keeps, and its turns file is removed. Placing a course reads its
 turns into the 1,024-turn list and moves them into the ride's frame.
 

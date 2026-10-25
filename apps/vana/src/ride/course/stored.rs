@@ -4,8 +4,8 @@
 //! Thinning a long course to fit (`course::Builder`) cuts its corners and
 //! roundabouts into a few long segments, and a scan of what is kept can only
 //! guess at them (`turns`). `Finder` follows the upload instead: it scans
-//! every point given, 4 m apart or more, as they stream in, keeping only the
-//! last `RING` of them, which is all the scan still reads. Where the points
+//! every point given, a metre apart or more, as they stream in, keeping only
+//! the last `RING` of them, which is all the scan still reads. Where the points
 //! jitter, as a recorded GPS track's do, each is first moved to the mean of
 //! those about it, so jitter reads as no bend. Each turn is
 //! found in metres along the full track; once the course is complete, it is
@@ -60,11 +60,12 @@ const FULL: u8 = 1;
 pub const MAX_FILE: usize = HEADER_V1 + TURNS * RECORD + 4;
 
 /// Points the scan reads that it keeps. It reads back only as far as the
-/// group of bends it is in and the bend after it: at most 64 points on the
-/// gates' courses, and 132 on a track that circles for kilometres.
-pub const RING: usize = 256;
-/// A point this close to the last one taken adds nothing.
-const RING_STEP_M: f32 = 4.0;
+/// group of bends it is in and the bend after it: at most 109 points on the
+/// gates' courses, and 393 on a track that circles for kilometres.
+pub const RING: usize = 512;
+/// A point this close to the last one taken adds nothing. Points farther
+/// apart are all taken, so no corner of a drawn course is cut.
+const RING_STEP_M: f32 = 1.0;
 /// Where the points jitter, each the scan reads is the mean of the points
 /// taken within this far along either side of it: GPS jitter would
 /// otherwise read as bends, where a course thinned to fit has none.
@@ -75,7 +76,7 @@ const SMOOTH_M: f32 = 6.0;
 const NOISE_SPAN: usize = 24;
 const NOISE_M: f32 = 1.0;
 /// Points taken that the mean and the jitter may still need.
-const RAW: usize = 32;
+const RAW: usize = 48;
 /// The scan steps only while the track is in this far beyond its chord, so
 /// it never takes the end of what has come in so far for the course's end.
 const LEAD_M: f32 = 12.0;

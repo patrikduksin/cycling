@@ -170,6 +170,22 @@ STOP FOLLOWING. Otherwise the page works as below: riding back along the
 ride's own track still follows the track, and the pad says FOLLOW COURSE while
 the course is within 500 m, else FOLLOW TRACK BACK. With BACK TO START off no course is followed, as no track is.
 
+### Workouts from the phone
+
+The phone page has a Workouts card beside the Course card: the workouts added
+from the phone, each with its length and steps and a Delete button, and Add a
+workout. The card takes the workout JSON `mise run workout-load` takes (or a
+`.vw` file made by it) and shows what it could not accept in words: not a
+workout, damaged, one VANA cannot ride, no card or no room. VANA holds 8
+workouts, so a ninth is refused with "VANA holds 8 workouts. Delete one to add
+another." rather than dropping one. Adding a workout with the name of one
+already there replaces it, and a refused or cut-off upload leaves the stored
+workouts as they were. The page opens only while no ride is recording, so a
+workout cannot be added or deleted during a ride. An added workout is under
+TRAIN at once, after the built-ins and in name order with the ones loaded over
+USB; it reads the same as one of those, and a workout the rider chose stays
+chosen when the list changes.
+
 ### Choosing the main page's readings
 
 Settings has a MAIN PAGE section with LOWER LEFT and LOWER RIGHT, the two readings

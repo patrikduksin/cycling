@@ -5942,6 +5942,116 @@ fn a_course_loaded_from_the_phone_is_kept_across_a_restart() {
     assert!(body.contains(r#""loaded":false"#), "{body}");
 }
 
+/// A workout added from the phone page is stored beside the files already
+/// on the card, found in the TRAIN picker, ridden, and deleted from the page.
+/// A second phone upload of the same name replaces it; a damaged one changes
+/// nothing.
+#[test]
+fn a_workout_added_from_the_phone_is_found_in_the_picker_and_ridden() {
+    use device_api::server::Method;
+    use vana::workout::codec::encode;
+    use vana::workout::model::{Block, Intensity, Length, Step, Target, Workout};
+    const STEPS: &[Step] = &[
+        Step::new(
+            Intensity::Warmup,
+            Length::Time(600),
+            Target::Ftp { low: 50, high: 65 },
+        ),
+        Step::new(
+            Intensity::Work,
+            Length::Time(600),
+            Target::Ftp { low: 88, high: 94 },
+        ),
+        Step::new(
+            Intensity::Recovery,
+            Length::Time(300),
+            Target::Ftp { low: 45, high: 55 },
+        ),
+        Step::new(
+            Intensity::Cooldown,
+            Length::Time(600),
+            Target::Ftp { low: 40, high: 55 },
+        ),
+    ];
+    const BLOCKS: &[Block] = &[Block {
+        first: 1,
+        len: 2,
+        count: 3,
+    }];
+    let bytes = encode(&Workout::new("FROM THE PHONE", STEPS, BLOCKS, None));
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.put_file("workouts/keep.vw", b"not a workout, left as it was");
+    sim.connect_phone();
+    let (status, body) = sim.phone_request(Method::Get, "/api/workouts", b"");
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(r#""uploads":[]"#) && body.contains(r#""skipped":1"#),
+        "{body}"
+    );
+
+    // A damaged upload changes nothing.
+    let mut damaged = bytes.to_vec();
+    damaged[9] ^= 1;
+    let (status, body) = sim.phone_request(Method::Put, "/api/workouts", &damaged);
+    assert_eq!(status, 422, "{body}");
+    let (status, body) = sim.phone_request(Method::Put, "/api/workouts", &bytes);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(r#""name":"FROM THE PHONE","minutes":65,"steps":8"#),
+        "{body}"
+    );
+    let stored = sim
+        .file(&format!(
+            "workouts/from-the-phone-{:08x}.vw",
+            firmware_services::checksum::crc32(b"FROM THE PHONE")
+        ))
+        .expect("the workout file on FILES");
+    assert_eq!(stored, &bytes[..]);
+    assert_eq!(
+        sim.file("workouts/keep.vw").as_deref(),
+        Some(&b"not a workout, left as it was"[..])
+    );
+    go_home(&mut sim);
+    sim.home("TRAIN");
+    for _ in 0..17 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("FROM THE PHONE");
+    sim.expect_text("8 STEPS");
+    sim.checkpoint("workout from the phone in the picker");
+    go_home(&mut sim);
+
+    // The picker lists it; choosing it and starting a ride plays it.
+    sim.choose_workout("FROM THE PHONE");
+    sim.checkpoint("phone workout chosen");
+    sim.press(Button::BottomRight);
+    sim.wait_for("RECORDING", seconds(2)).unwrap();
+    sim.ride_at(30.0, 120.0, 0.0, 90.0);
+    assert_eq!(sim.workout()["workout"], "FROM_THE_PHONE");
+    assert_eq!(sim.workout()["step"], "1/8");
+    sim.checkpoint("phone workout riding");
+    sim.stop_ride();
+    sim.done();
+
+    // Back on the page, the workout is listed and deleted.
+    sim.connect_phone();
+    let (_, body) = sim.phone_request(Method::Get, "/api/workouts", b"");
+    let file = body
+        .split(r#""file":""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("no workout listed: {body}"))
+        .to_string();
+    let (status, _) = sim.phone_request(Method::Delete, &format!("/api/workouts?file={file}"), b"");
+    assert_eq!(status, 204);
+    assert_eq!(sim.file(&format!("workouts/{file}")), None);
+    assert!(sim.file("workouts/keep.vw").is_some());
+}
+
 /// A GPX ride out and back: 800 m north, 1.2 km east and 700 m north, then
 /// home the same way, with a wrong turn 150 m south and back on the way.
 fn out_and_back_gpx() -> String {

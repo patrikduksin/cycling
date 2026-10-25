@@ -560,6 +560,23 @@ the CRC on commit and reads the file back. `mise run files -- put
 workouts/NAME.vw PATH` works too. Format FILES once first if `FILES STATUS`
 says it is not formatted.
 
+The phone page adds workouts too (`PUT /api/workouts`, the same codec file as
+the body, at most `ENCODED_MAX` (475) bytes; the page builds it from the JSON
+in the browser, byte for byte as `workout-load` does). The file is gathered in
+the phone server's PSRAM, then `Library::store` decodes and validates it
+before anything is written, so a damaged, cut-off or unridable file changes
+nothing. It is stored as `workouts/<name in lower case, at most 17 characters>-<CRC32 of
+the name>.vw`, so the same name replaces its file (one atomic commit; a cut
+leaves the old file) and two names never share one. The picker lists only 8,
+so a ninth is refused (409 `full`) instead of evicting one; the USB path does
+not check, and its extra files stay unlisted (`skipped`). Answers: 200 with the
+list, 400 `empty`, 409 `ride` or `full`, 413 `too_large`, 422 `format`,
+`damaged` or `invalid`, 503 `unavailable` or `storage`, 507 `nospace`. `GET
+/api/workouts` lists the uploads (read from FILES again) and `DELETE
+/api/workouts?file=<file>` removes one that is listed. The files are the ones
+firmware from before the phone page reads, unchanged; the phone session ends
+when a ride starts and these routes also refuse while one records.
+
 VANA lists `workouts/` at boot, each time the picker opens and on
 `WORKOUT LIST`. It keeps only each upload's file, name and outline: the first
 8 by file name, in name order after the built-ins. Files that do not decode

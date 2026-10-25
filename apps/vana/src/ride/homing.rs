@@ -504,6 +504,18 @@ impl<'a> Homing<'a> {
         self.here
     }
 
+    /// While the fix is fresh: metres in a straight line from it to the
+    /// ride's start, and metres of track ridden, the way back over it.
+    pub fn way_back(&self) -> Option<(u32, u32)> {
+        let here = self.here?;
+        (self.len != 0).then(|| {
+            (
+                distance(here, self.start(here)) as u32,
+                self.recorded_m(here) as u32,
+            )
+        })
+    }
+
     /// The way the rider is riding, while moving.
     pub fn heading(&self) -> Option<u16> {
         self.heading

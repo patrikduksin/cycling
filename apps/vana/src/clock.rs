@@ -52,7 +52,7 @@ impl Zone {
     /// What the clock reads at `utc_s`, seconds since 1970 UTC.
     pub fn local(self, utc_s: u64) -> Local {
         let utc = utc_s as i64;
-        Local((utc + self.offset_s(utc)).max(0) as u64)
+        Local(utc.saturating_add(self.offset_s(utc)).max(0) as u64)
     }
 
     /// What the clock reads at a UTC time of day without a date. Summer time

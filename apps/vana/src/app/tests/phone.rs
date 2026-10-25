@@ -596,9 +596,10 @@ fn attach_course_room(runtime: &mut Runtime) {
     use std::boxed::Box;
     let crumbs = Vec::leak(std::vec![crate::app::Crumb::default(); 64]);
     let line = Vec::leak(std::vec![crate::app::Crumb::default(); crate::app::COURSE_POINTS]);
+    let turns = Vec::leak(std::vec![crate::app::Turn::default(); crate::app::COURSE_TURNS]);
     let map = Box::leak(Box::new(crate::app::MapFrame::default()));
     let course = Box::leak(Box::new(crate::ride::course::Course::empty()));
-    let back = crate::app::BackToStart::new(crumbs, line, map, course);
+    let back = crate::app::BackToStart::new(crumbs, line, turns, map, course);
     runtime.attach_back(Box::leak(Box::new(back)));
 }
 

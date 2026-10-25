@@ -94,11 +94,12 @@ impl BackToStart {
     pub fn new(
         crumbs: &'static mut [Crumb],
         line: &'static mut [Crumb],
+        turns: &'static mut [crate::ride::course::turns::Turn],
         map: &'static mut MapFrame,
         course: &'static mut Course,
     ) -> Self {
         Self {
-            homing: Homing::new(crumbs).with_line(line),
+            homing: Homing::new(crumbs).with_line(line).with_turns(turns),
             outing: None,
             map,
             map_key: None,

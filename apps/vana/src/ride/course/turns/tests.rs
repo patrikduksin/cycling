@@ -45,32 +45,21 @@ fn join(parts: &[Vec<(f32, f32)>]) -> Vec<(f32, f32)> {
     line
 }
 
-/// Where on `line` the rider is, `metres` from its start.
-fn place(line: &[(f32, f32)], metres: f32) -> Place {
-    let mut walked = 0.0;
-    for next in 1..line.len() {
-        let (a, b) = (line[next - 1], line[next]);
-        let length = distance(a, b);
-        if walked + length >= metres || next + 1 == line.len() {
-            let t = if length > 0.0 {
-                ((metres - walked) / length).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let here = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
-            return Place {
-                next,
-                here,
-                along_mm: mm(metres),
-            };
-        }
-        walked += length;
-    }
-    unreachable!("a line of two points or more")
-}
-
 fn length(line: &[(f32, f32)]) -> f32 {
     line.windows(2).map(|pair| distance(pair[0], pair[1])).sum()
+}
+
+/// `line`'s turns, found as a placed course's are.
+pub(crate) fn turns_of(line: &[(f32, f32)]) -> Vec<Turn> {
+    let mut turns = vec![Turn::default(); TURNS];
+    let at = |k: usize| line[k];
+    let mut scan = Scan::default();
+    let mut found = 0;
+    while !scan.done() {
+        found = scan.step(line.len(), at, SCAN_STEPS, &mut turns, found);
+    }
+    turns.truncate(found);
+    turns
 }
 
 /// Ride `line` through `positions`, metres from its start, and say where
@@ -80,6 +69,7 @@ fn ride_through(
     line: &[(f32, f32)],
     positions: impl IntoIterator<Item = f32>,
 ) -> Vec<(u32, Warning)> {
+    let turns = turns_of(line);
     let mut warner = Warner::default();
     let mut said = Vec::new();
     let mut last = f32::MIN;
@@ -89,8 +79,7 @@ fn ride_through(
         if !on {
             continue;
         }
-        let at = |k: usize| line[k];
-        if let Some(warning) = warner.step(line.len(), at, place(line, metres)) {
+        if let Some(warning) = warner.step(&turns, mm(metres)) {
             said.push((metres as u32, warning));
         }
     }
@@ -141,7 +130,7 @@ fn corners(spacing: f32, turns: &[(f32, bool)]) -> Vec<(f32, f32)> {
 
 /// A ring of `radius` metres about (0, 0), ridden anticlockwise from the
 /// south, leaving after `sweep` degrees round it.
-fn ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
+pub(crate) fn ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
     let ring = arc((0.0, 0.0), radius, 180.0, -sweep, spacing.min(radius / 3.0));
     let out = *ring.last().unwrap();
     let away = (out.0 / radius * 300.0, out.1 / radius * 300.0);
@@ -409,38 +398,18 @@ fn a_long_course_thinned_to_fit_warns_of_its_hairpins_as_drawn() {
 #[test]
 fn a_rider_past_the_end_or_on_a_tiny_course_hears_nothing() {
     let line = path(&[(0.0, 0.0), (0.0, 400.0), (300.0, 400.0)], 10.0);
-    let at = |k: usize| line[k];
+    let turns = turns_of(&line);
     let mut warner = Warner::default();
-    let off_end = Place {
-        next: line.len(),
-        here: (300.0, 400.0),
-        along_mm: 700_000,
-    };
-    assert_eq!(warner.step(line.len(), at, off_end), None);
-    let start = Place {
-        next: 0,
-        here: (0.0, 0.0),
-        along_mm: 0,
-    };
-    assert_eq!(warner.step(line.len(), at, start), None);
-    let two = [(0.0, 0.0), (0.0, 0.0)];
-    let place = Place {
-        next: 1,
-        here: (0.0, 0.0),
-        along_mm: 0,
-    };
-    assert_eq!(warner.step(2, |k| two[k], place), None);
+    assert_eq!(warner.step(&turns, 700_000), None);
+    assert_eq!(Warner::default().step(&[], 0), None);
+    assert!(turns_of(&[(0.0, 0.0), (0.0, 0.0)]).is_empty());
+    assert!(turns_of(&[(0.0, 0.0)]).is_empty());
     // Points kilometres apart, and on top of one another.
     let far = [(0.0, 0.0), (0.0, 4.0e6), (4.0e6, 4.0e6), (4.0e6, 4.0e6)];
-    let place = Place {
-        next: 1,
-        here: (0.0, 3.99996e6),
-        along_mm: u32::MAX - 10,
-    };
-    assert_eq!(
-        next(4, |k| far[k], place, 0, u32::MAX).and_then(|group| group.kind),
-        Some(RIGHT)
-    );
+    let kinds: Vec<_> = turns_of(&far).iter().filter_map(|turn| turn.kind).collect();
+    assert_eq!(kinds, [RIGHT]);
+    // A rider beyond what a u32 of millimetres holds.
+    assert_eq!(Warner::default().step(&turns_of(&far), u32::MAX), None);
 }
 
 #[test]
@@ -454,16 +423,11 @@ fn a_staircase_is_cut_into_groups_of_bounded_length() {
     let top = *corners.last().unwrap();
     corners.push((top.0, top.1 + 300.0));
     let line = path(&corners, 5.0);
-    let at = |k: usize| line[k];
-    let mut groups = 0;
-    for k in 0..40 {
-        let place = place(&line, 250.0 + 40.0 * k as f32);
-        if let Some(group) = next(line.len(), at, place, place.along_mm, u32::MAX) {
-            assert!(group.end_mm - group.start_mm <= mm(SPAN_M), "{group:?}");
-            groups += 1;
-        }
+    let turns = turns_of(&line);
+    assert!(!turns.is_empty());
+    for turn in &turns {
+        assert!(turn.end_mm - turn.start_mm <= mm(SPAN_M), "{turn:?}");
     }
-    assert!(groups > 0);
     // However the staircase is named, its warnings come one at a time.
     let said = ride(&line, 7.0);
     for pair in said.windows(2) {
@@ -480,19 +444,24 @@ fn thousands_of_points_in_one_spot_cost_a_bounded_scan() {
         calls.set(calls.get() + 1);
         line[k]
     };
-    let place = Place {
-        next: 1,
-        here: (0.0, 0.0),
-        along_mm: 0,
-    };
-    assert_eq!(Warner::default().step(line.len(), at, place), None);
-    let most = (2 * GROUPS * 2 * (WALK_POINTS + SAMPLES + 2)) as u32;
+    let mut turns = vec![Turn::default(); TURNS];
+    let mut scan = Scan::default();
+    let found = scan.step(line.len(), at, SCAN_STEPS, &mut turns, 0);
+    assert!(found <= 1);
+    // Each point is passed once by each end of the chord, and its tail.
+    let most = (8 * line.len() + 8 * SCAN_STEPS) as u32;
     assert!(calls.get() <= most, "{} reads", calls.get());
 }
 
 /// `line`, then `after` metres straight on from its end, as a course built
 /// from a point every 5 m keeps it: thinned to fit when that is too many.
 fn thinned(line: &[(f32, f32)], after: f32) -> (Vec<(f32, f32)>, f32) {
+    let (course, tolerance) = built(line, after);
+    (line_of(&course), tolerance)
+}
+
+/// The course `thinned` keeps, and the tolerance it was thinned at.
+pub(crate) fn built(line: &[(f32, f32)], after: f32) -> (std::boxed::Box<Course>, f32) {
     let (a, b) = (line[line.len() - 2], line[line.len() - 1]);
     let length = distance(a, b);
     let far = (
@@ -507,7 +476,7 @@ fn thinned(line: &[(f32, f32)], after: f32) -> (Vec<(f32, f32)>, f32) {
         builder.push(&mut course, point_at(f64::from(east), f64::from(north)));
     }
     builder.finish(&mut course);
-    (line_of(&course), builder.tolerance)
+    (course, builder.tolerance)
 }
 
 /// Ride `line` from its start to `to` metres, a fix every 7 m.
@@ -516,7 +485,7 @@ fn ride_to(line: &[(f32, f32)], to: f32) -> Vec<(u32, Warning)> {
 }
 
 #[derive(Debug, PartialEq)]
-enum Verdict {
+pub(crate) enum Verdict {
     Right,
     Silent,
     Wrong,
@@ -524,7 +493,7 @@ enum Verdict {
 
 /// Whether what was said names a turn of `degrees`, right positive, rightly:
 /// every word the way it goes, as one turn or as two the same way.
-fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
+pub(crate) fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
     let a = fabsf(degrees);
     let side = |s: Side| (s == Side::Right) == (degrees > 0.0);
     let fits = |kind: Kind| match kind {
@@ -601,7 +570,7 @@ fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
         "{} of {runs} silent where a turn of 75 degrees or more was due",
         silent.len()
     );
-    assert!(silent.len() * 10 <= runs, "{silent:?}");
+    assert!(silent.len() * 100 <= runs * 15, "{silent:?}");
 }
 
 /// As `ring`, but the way in and out each curve onto the ring on a 10 m
@@ -844,12 +813,18 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
 /// along, right) the rider has yet to reach, more than 9 m on (nearer, they
 /// are turning it already): the next one, and with THEN
 /// the one after; a U-TURN only for two the same way within 25 m.
-fn names_next_corners(said: &[(u32, Warning)], turns: &[(f32, bool)]) -> bool {
-    let side = |right: bool| if right { Side::Right } else { Side::Left };
+fn names_next_corners(said: &[(u32, Warning)], turns: &[(f32, f32)]) -> bool {
+    let side = |degrees: f32| {
+        if degrees > 0.0 {
+            Side::Right
+        } else {
+            Side::Left
+        }
+    };
     let fits = |kind: Kind, at: usize| match kind {
         Kind::Turn(s) | Kind::Sharp(s) => turns.get(at).is_some_and(|t| side(t.1) == s),
         Kind::UTurn => match (turns.get(at), turns.get(at + 1)) {
-            (Some(a), Some(b)) => a.1 == b.1 && b.0 - a.0 <= 25.0,
+            (Some(a), Some(b)) => side(a.1) == side(b.1) && b.0 - a.0 <= 25.0,
             _ => false,
         },
     };
@@ -863,43 +838,151 @@ fn names_next_corners(said: &[(u32, Warning)], turns: &[(f32, bool)]) -> bool {
             Warning::Now {
                 kind,
                 then: Some(then),
-            } => fits(kind, at) && fits(then, at + 1),
+            } => fits(kind, at) && fits(then, at + if kind == Kind::UTurn { 2 } else { 1 }),
         }
     })
 }
 
-/// Two to four street corners of either way, 20 to 80 m apart, drawn every
+/// A road north, turning by the given degrees (right positive) at each
+/// distance along it, then 400 m on; a point every `spacing` metres.
+pub(crate) fn bends(spacing: f32, turns: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let (mut heading, mut done) = (0.0f32, 0.0);
+    let mut points = vec![(0.0f32, 0.0f32)];
+    let end = turns.last().map_or(800.0, |turn| turn.0 + 400.0);
+    for &(at, degrees) in turns.iter().chain([(end, 0.0)].iter()) {
+        let radians = heading.to_radians();
+        let p = *points.last().unwrap();
+        let leg = at - done;
+        points.push((
+            p.0 + leg * libm::sinf(radians),
+            p.1 + leg * libm::cosf(radians),
+        ));
+        done = at;
+        heading += degrees;
+    }
+    path(&points, spacing)
+}
+
+/// Whether each course of `turns` (metres along, degrees), drawn every
+/// `spacings` metres, as drawn and thinned 12 and 150 km on, names its
+/// corners rightly: the wrong runs, and how many were silent, of how many.
+fn ride_corners(
+    courses: &[Vec<(f32, f32)>],
+    spacings: &[f32],
+) -> (Vec<std::string::String>, usize, usize) {
+    let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+    for turns in courses {
+        for &spacing in spacings {
+            let full = bends(spacing, turns);
+            for after in [0.0, 12_000.0, 150_000.0] {
+                let line = match after > 0.0 {
+                    true => thinned(&full, after).0,
+                    false => full.clone(),
+                };
+                let said = ride_to(&line, 800.0);
+                if !names_next_corners(&said, turns) {
+                    wrong.push(std::format!(
+                        "{turns:?}, {spacing} m, {after} m on: {said:?}"
+                    ));
+                }
+                runs += 1;
+                silent += usize::from(said.is_empty());
+            }
+        }
+    }
+    (wrong, silent, runs)
+}
+
+/// Two to four street corners of either way, 15 to 80 m apart, drawn every
 /// 3, 5 or 8 m or only at the corners (a planner's route), as drawn and
 /// thinned: every warning names the next corner's way, or there is none.
 #[test]
 fn corners_of_either_way_close_together_are_named_the_way_they_go() {
-    let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+    let mut courses = Vec::new();
     for count in 2..=4usize {
         for ways in 0..1u32 << count {
-            for apart in [20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0] {
-                let turns: Vec<_> = (0..count)
-                    .map(|k| (400.0 + apart * k as f32, ways >> k & 1 == 1))
-                    .collect();
-                for spacing in [3.0, 5.0, 8.0, 1_000.0] {
-                    let full = corners(spacing, &turns);
-                    for thin in [false, true] {
-                        let line = match thin {
-                            true => thinned(&full, 12_000.0).0,
-                            false => full.clone(),
-                        };
-                        let said = ride_to(&line, 700.0);
-                        if !names_next_corners(&said, &turns) {
-                            wrong.push(std::format!(
-                                "{turns:?}, {spacing} m, thin {thin}: {said:?}"
-                            ));
-                        }
-                        runs += 1;
-                        silent += usize::from(said.is_empty());
-                    }
-                }
+            for apart in [15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0] {
+                courses.push(
+                    (0..count)
+                        .map(|k| {
+                            let right = ways >> k & 1 == 1;
+                            (400.0 + apart * k as f32, if right { 90.0 } else { -90.0 })
+                        })
+                        .collect(),
+                );
             }
         }
     }
+    let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0]);
     std::println!("{} of {runs} wrong, {silent} silent", wrong.len());
     assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+}
+
+/// The shapes a review found named the wrong way: a right, a left and two
+/// rights 20 m apart; a staggered junction, a left and a right 15 m apart,
+/// then a right; and a chicane of 75 degree corners 30 m apart.
+#[test]
+fn staggered_junctions_and_chicanes_are_named_rightly_or_not_at_all() {
+    let mut courses = vec![
+        vec![(400.0, 90.0), (420.0, -90.0), (440.0, 90.0), (460.0, 90.0)],
+        vec![
+            (400.0, -90.0),
+            (420.0, 90.0),
+            (440.0, -90.0),
+            (460.0, -90.0),
+        ],
+    ];
+    for then in [30.0, 40.0, 50.0, 60.0] {
+        for way in [1.0, -1.0] {
+            courses.push(vec![
+                (400.0, -90.0 * way),
+                (415.0, 90.0 * way),
+                (415.0 + then, 90.0 * way),
+            ]);
+        }
+    }
+    for way in [1.0, -1.0] {
+        courses.push(
+            [1.0, -1.0, -1.0, 1.0]
+                .iter()
+                .enumerate()
+                .map(|(k, side)| (400.0 + 30.0 * k as f32, 75.0 * side * way))
+                .collect(),
+        );
+    }
+    let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0]);
+    std::println!("{} of {runs} wrong, {silent} silent", wrong.len());
+    assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+}
+
+/// How long finding a 300 km course's turns takes, and how many it keeps:
+/// `cargo test --release -p vana --lib scan_time -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement"]
+fn scan_time() {
+    // 300 km of roads, a corner either way every kilometre.
+    let mut turns = Vec::new();
+    let mut rng = crate::testing::Rng::new(9);
+    for k in 0..300 {
+        let way = if rng.below(2) == 0 { 90.0 } else { -90.0 };
+        turns.push((400.0 + 1_000.0 * k as f32, way));
+    }
+    let (course, tolerance) = built(&bends(5.0, &turns), 0.1);
+    let line = line_of(&course);
+    let length = length(&line);
+    let start = std::time::Instant::now();
+    let found = turns_of(&line);
+    let took = start.elapsed();
+    std::println!(
+        "{:.0} km in {} points (thinned at {tolerance} m): {} turns kept in {took:?}, {} steps",
+        length / 1000.0,
+        line.len(),
+        found.len(),
+        (length / STEP_M) as u64
+    );
+    std::println!(
+        "a turn is {} bytes; {TURNS} take {} bytes",
+        core::mem::size_of::<Turn>(),
+        TURNS * core::mem::size_of::<Turn>()
+    );
 }

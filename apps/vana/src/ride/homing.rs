@@ -42,7 +42,7 @@
 //! away, and counts once until they are away again; that gap is the
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
-use crate::ride::course::turns::{Place, Warner, Warning};
+use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn, Warner, Warning};
 use crate::ride::{course, thin};
 use libm::{atan2f, cosf, sqrtf};
 
@@ -303,7 +303,12 @@ pub struct Homing<'a> {
     join_end: usize,
     /// Metres to the course's end where the rider was last matched.
     course_along: f32,
-    turns: Warner,
+    /// The course's turns, found a few steps a fix once it is placed, and
+    /// what was said of them.
+    turns: &'a mut [Turn],
+    turn_count: usize,
+    scan: Scan,
+    warner: Warner,
     /// The turn warning from the last fix, until taken.
     turn: Option<Warning>,
     tolerance: f32,
@@ -356,7 +361,10 @@ impl<'a> Homing<'a> {
             join_fixes: 0,
             join_end: 0,
             course_along: 0.0,
-            turns: Warner::default(),
+            turns: &mut [],
+            turn_count: 0,
+            scan: Scan::default(),
+            warner: Warner::default(),
             turn: None,
             tolerance: TOLERANCE_M,
             origin: None,
@@ -387,6 +395,12 @@ impl<'a> Homing<'a> {
     }
 
     /// Room for a course of up to `line.len()` points.
+    /// Room for up to `turns.len()` of the course's turns.
+    pub fn with_turns(mut self, turns: &'a mut [Turn]) -> Self {
+        self.turns = turns;
+        self
+    }
+
     pub fn with_line(mut self, line: &'a mut [Crumb]) -> Self {
         self.line = line;
         self
@@ -505,6 +519,8 @@ impl<'a> Homing<'a> {
             };
         }
         self.line_len = n;
+        (self.scan, self.turn_count) = (Scan::default(), 0);
+        self.warner = Warner::default();
     }
 
     /// The kept points, oldest first, for drawing the track.
@@ -560,6 +576,7 @@ impl<'a> Homing<'a> {
     /// The ride's position, if fresh, once per main-loop pass. A receiver
     /// reports about once a second, so only a new position is a new fix.
     pub fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
+        self.scan_turns();
         let Some((lat, lon)) = location_e7 else {
             if self.here.is_some() && now.saturating_sub(self.here_ms) > FIX_LOST_MS {
                 self.here = None;
@@ -748,7 +765,7 @@ impl<'a> Homing<'a> {
         self.following = Some(line);
         self.join_fixes = 0;
         self.course_along = self.line[..self.line_len].get(end).map_or(0.0, |c| c.along);
-        self.turns = Warner::default();
+        self.warner = Warner::default();
         self.segment = end;
         self.matched = None;
         self.off = false;
@@ -782,8 +799,7 @@ impl<'a> Homing<'a> {
     /// its way.
     fn warn_turn(&mut self) -> Option<Warning> {
         let heading = self.heading?;
-        let here = self
-            .matched
+        self.matched
             .filter(|_| self.following_course() && !self.off)?;
         let (len, end) = (self.line_len, self.segment);
         if end == 0 || end >= len {
@@ -794,20 +810,27 @@ impl<'a> Homing<'a> {
         if (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)) {
             return None;
         }
-        // The course is kept end first; turns reads it start first.
+        let from_start = self.line[len - 1].along - self.course_along;
+        // A float cast saturates, so no position overflows.
+        let along_mm = (from_start * 1000.0) as u32;
+        self.warner.step(&self.turns[..self.turn_count], along_mm)
+    }
+
+    /// Find a few more of the placed course's turns.
+    fn scan_turns(&mut self) {
+        if self.scan.done() {
+            return;
+        }
+        let len = self.line_len;
+        // The course is kept end first; the scan reads it start first.
         let line = &self.line[..len];
         let at = |k: usize| {
             let c = line[len - 1 - k];
             (c.east, c.north)
         };
-        let from_start = self.line[len - 1].along - self.course_along;
-        let place = Place {
-            next: len - end,
-            here,
-            // A float cast saturates, so no position overflows.
-            along_mm: (from_start * 1000.0) as u32,
-        };
-        self.turns.step(len, at, place)
+        self.turn_count = self
+            .scan
+            .step(len, at, SCAN_STEPS, self.turns, self.turn_count);
     }
 
     fn track_heading(&mut self, p: Point, now: u64) {
@@ -1868,7 +1891,10 @@ mod tests {
     fn following_a_course_warns_of_each_corner_ahead_and_at_it() {
         use turns::{Kind, Side};
         let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
+        let mut turns = vec![turns::Turn::default(); turns::TURNS];
+        let mut homing = Homing::new(&mut crumbs)
+            .with_line(&mut line)
+            .with_turns(&mut turns);
         let course = course_of(&SQUARE);
         homing.set_course(&course);
         let mut now = 0;
@@ -1892,10 +1918,100 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
+    /// The point `metres` along `line`, or its end.
+    fn along_line(line: &[(f32, f32)], metres: f32) -> (f32, f32) {
+        let mut walked = 0.0;
+        for pair in line.windows(2) {
+            let length = distance(pair[0], pair[1]);
+            if walked + length >= metres && length > 0.0 {
+                let t = (metres - walked) / length;
+                let (a, b) = (pair[0], pair[1]);
+                return (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+            }
+            walked += length;
+        }
+        *line.last().unwrap()
+    }
+
+    /// Roundabouts of 15 to 40 m radius, left at the first, second and
+    /// third exits, as drawn and thinned 12 km on, ridden through `Homing`
+    /// with a fix every 5, 7 or 9 m up to 0, 3 or 6 m off, 39 times each:
+    /// every word is the right way, or there is none.
+    #[test]
+    fn noisy_fixes_round_a_roundabout_never_give_a_wrong_word() {
+        use crate::ride::course::turns::tests::{Verdict, built, judge, ring};
+        use crate::ride::course::turns::{TURNS, Turn};
+        use crate::testing::Rng;
+        let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+        for radius in [15.0, 20.0, 30.0, 40.0] {
+            for sweep in [90.0, 180.0, 270.0] {
+                let road = ring(radius, sweep, 5.0);
+                let degrees = turns::swing(0.0, 180.0 - sweep);
+                for after in [0.0, 12_000.0] {
+                    let course: Vec<course::Point> = match after > 0.0 {
+                        true => built(&road, after).0.points().to_vec(),
+                        false => road
+                            .iter()
+                            .map(|&(east, north)| {
+                                course::tests::at(f64::from(east), f64::from(north))
+                            })
+                            .collect(),
+                    };
+                    for (noise, step) in [0.0f32, 3.0, 6.0]
+                        .into_iter()
+                        .flat_map(|noise| [5.0f32, 7.0, 9.0].map(|step| (noise, step)))
+                    {
+                        for seed in 0..39 {
+                            let mut rng = Rng::new(seed + 1);
+                            let mut jitter = || {
+                                let span = (2.0 * noise * 1000.0) as u64;
+                                rng.below(span + 1) as f32 / 1000.0 - noise
+                            };
+                            let fixes: Vec<(f32, f32)> = (0..(900.0 / step) as usize)
+                                .map(|k| {
+                                    let (east, north) = along_line(&road, k as f32 * step);
+                                    (east + jitter(), north + jitter())
+                                })
+                                .collect();
+                            let (mut crumbs, mut line) =
+                                (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+                            let mut turns = vec![Turn::default(); TURNS];
+                            let mut homing = Homing::new(&mut crumbs)
+                                .with_line(&mut line)
+                                .with_turns(&mut turns);
+                            homing.set_course(&course);
+                            let mut now = 0;
+                            let (warnings, _) =
+                                ride_course_warned(&mut homing, &course, &fixes, &mut now);
+                            let said: Vec<_> = warnings.iter().map(|&w| (0, w)).collect();
+                            runs += 1;
+                            match judge(&said, degrees) {
+                                Verdict::Wrong => wrong.push(std::format!(
+                                    "r{radius} exit {sweep} after {after} noise {noise} step {step} seed {seed}: {warnings:?}"
+                                )),
+                                Verdict::Silent if sweep != 180.0 => silent += 1,
+                                Verdict::Silent => {}
+                                Verdict::Right => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::println!(
+            "{} of {runs} wrong, {silent} silent at a first or third exit",
+            wrong.len()
+        );
+        assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+    }
+
     #[test]
     fn riding_a_followed_course_the_wrong_way_or_stopped_warns_of_nothing() {
         let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
+        let mut turns = vec![turns::Turn::default(); turns::TURNS];
+        let mut homing = Homing::new(&mut crumbs)
+            .with_line(&mut line)
+            .with_turns(&mut turns);
         let course = course_of(&SQUARE);
         homing.set_course(&course);
         let mut now = 0;

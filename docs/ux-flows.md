@@ -179,7 +179,10 @@ is one turn, named by the way it leaves, and straight over one says nothing.
 Where the course is drawn coarsely, as a long course thinned to fit or a
 planner's route is, a turn of several corners is named only roughly: LEFT or
 RIGHT from about 80 degrees, U-TURN from about 160, never SHARP, and otherwise
-nothing; a roundabout there may say nothing but never a wrong way. A warning
+nothing; a roundabout there may say nothing but never a wrong way. Wherever
+which way comes first is not clear, as when corners come within a few metres
+of each other, or a turn's first bend goes against where it leads, nothing
+is said, and nothing after it either until the rider is there. A warning
 that comes just after another nudge waits a second. Off the course, riding it
 the wrong way, standing still, or once it is stopped or ended, no turn is
 warned of; riding back past a turn and on again warns of it again.

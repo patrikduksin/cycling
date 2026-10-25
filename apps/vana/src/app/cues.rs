@@ -47,6 +47,10 @@ pub enum Cue {
     OnTrack,
     /// Back at the start, following the track.
     AtStart,
+    /// A turn on the course ahead.
+    TurnAhead,
+    /// The turn is here.
+    Turn,
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +86,9 @@ impl Cue {
             Self::OffTrack => &[High, Low],
             Self::OnTrack => &[Low, Middle],
             Self::AtStart => &[Low, Middle, High, High],
+            // A soft fall to warn, and a bright call at the turn itself.
+            Self::TurnAhead => &[Middle, Low],
+            Self::Turn => &[High, Middle, High],
         }
     }
 
@@ -191,6 +198,8 @@ mod tests {
         assert_eq!(ids(Cue::BandAlert), [10, 10]);
         assert_eq!(ids(Cue::Fuel), [0, 0]);
         assert_eq!(ids(Cue::StillPaused), [0, 0, 10]);
+        assert_eq!(ids(Cue::TurnAhead), [0, 21]);
+        assert_eq!(ids(Cue::Turn), [10, 0, 10]);
         // One pattern stands for every note; none leaves cues silent.
         let single = [pattern(4, 3000, 100)];
         assert_eq!(resolve(&single, Cue::Saved).to_vec(), [4, 4, 4]);

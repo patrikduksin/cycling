@@ -42,6 +42,7 @@ use firmware_services::{files, volume};
 use libm::{cosf, sqrtf};
 
 pub mod gpx;
+pub mod turns;
 
 /// Points a course keeps, start and end included.
 pub const POINTS: usize = 2048;

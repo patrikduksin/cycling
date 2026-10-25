@@ -15,6 +15,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
 use crate::ride::course::Course;
+use crate::ride::course::turns::Warning;
 use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Event, Homing};
 use crate::ride::log::{Slot, Status, decode};
@@ -28,7 +29,9 @@ pub use crate::ride::homing::Crumb;
 /// Points the breadcrumb keeps: 48 KiB, thinned to fit a ride of any length.
 pub const BACK_CRUMBS: usize = 4096;
 /// The nudges stay a little longer than a confirmation.
-const NUDGE_MS: u64 = 4_000;
+pub(super) const NUDGE_MS: u64 = 4_000;
+/// A turn warning waits this long after a nudge, so the nudge is read.
+const TURN_HOLD_MS: u64 = 1_000;
 /// Slots the rebuild reads per tick, as the history replay does.
 const REBUILD_INTERNAL: usize = 32;
 const REBUILD_BULK: usize = 8;
@@ -80,6 +83,9 @@ pub struct BackToStart {
     pub(super) course: &'static mut Course,
     pub(super) kept: super::course::Kept,
     resume: Resume,
+    /// When the last nudge showed, and a turn warning waiting on it.
+    nudged_at: Option<u64>,
+    held_turn: Option<Warning>,
 }
 
 impl BackToStart {
@@ -88,17 +94,20 @@ impl BackToStart {
     pub fn new(
         crumbs: &'static mut [Crumb],
         line: &'static mut [Crumb],
+        turns: &'static mut [crate::ride::course::turns::Turn],
         map: &'static mut MapFrame,
         course: &'static mut Course,
     ) -> Self {
         Self {
-            homing: Homing::new(crumbs).with_line(line),
+            homing: Homing::new(crumbs).with_line(line).with_turns(turns),
             outing: None,
             map,
             map_key: None,
             course,
             kept: super::course::Kept::default(),
             resume: Resume::None,
+            nudged_at: None,
+            held_turn: None,
         }
     }
 
@@ -162,6 +171,7 @@ impl Runtime {
             .set_auto_follow(self.preferences.options.ride_pages.shows(RidePage::Back));
         if !riding {
             state.resume = Resume::waiting(&self.ride);
+            state.held_turn = None;
             return;
         }
         if let Resume::Reading {
@@ -216,25 +226,47 @@ impl Runtime {
             self.ride.passed_start(now);
             self.display.redraw();
         }
-        let (message, tone, cue) = match event {
+        let nudge = match event {
             Some(Event::Following) if course => {
-                ("FOLLOWING COURSE", Tone::Good, Some(Cue::OnTrack))
+                Some(("FOLLOWING COURSE", Tone::Good, Some(Cue::OnTrack)))
             }
-            Some(Event::Following) => ("FOLLOWING TRACK", Tone::Good, Some(Cue::OnTrack)),
-            Some(Event::OffTrack) => ("OFF TRACK", Tone::Warn, Some(Cue::OffTrack)),
-            Some(Event::OnTrack) => ("BACK ON TRACK", Tone::Good, Some(Cue::OnTrack)),
-            Some(Event::Dropped) => ("STOPPED FOLLOWING", Tone::Info, None),
+            Some(Event::Following) => Some(("FOLLOWING TRACK", Tone::Good, Some(Cue::OnTrack))),
+            Some(Event::OffTrack) => Some(("OFF TRACK", Tone::Warn, Some(Cue::OffTrack))),
+            Some(Event::OnTrack) => Some(("BACK ON TRACK", Tone::Good, Some(Cue::OnTrack))),
+            Some(Event::Dropped) => Some(("STOPPED FOLLOWING", Tone::Info, None)),
             // Riding past the start on a loop is no news unless heading back.
-            Some(Event::Arrived) if following => ("BACK AT START", Tone::Good, Some(Cue::AtStart)),
-            Some(Event::CourseEnd) => ("END OF COURSE", Tone::Good, Some(Cue::AtStart)),
-            _ => return,
+            Some(Event::Arrived) if following => {
+                Some(("BACK AT START", Tone::Good, Some(Cue::AtStart)))
+            }
+            Some(Event::CourseEnd) => Some(("END OF COURSE", Tone::Good, Some(Cue::AtStart))),
+            _ => None,
         };
-        let toast = crate::screens::chrome::Toast::new(message, tone);
-        self.navigation.show(toast, NUDGE_MS, now);
-        if let Some(cue) = cue {
-            self.cue(cue, now);
+        // A turn warning waits a moment rather than replace a nudge just shown.
+        if nudge.is_some() {
+            state.nudged_at = Some(now);
         }
-        self.display.redraw();
+        let turn = state.homing.take_turn().or(state.held_turn.take());
+        let fresh = state
+            .nudged_at
+            .is_some_and(|at| now.saturating_sub(at) < TURN_HOLD_MS);
+        let turn = match turn {
+            Some(warning) if fresh => {
+                state.held_turn = Some(warning);
+                None
+            }
+            turn => turn,
+        };
+        if let Some((message, tone, cue)) = nudge {
+            let toast = crate::screens::chrome::Toast::new(message, tone);
+            self.navigation.show(toast, NUDGE_MS, now);
+            if let Some(cue) = cue {
+                self.cue(cue, now);
+            }
+            self.display.redraw();
+        }
+        if let Some(warning) = turn {
+            self.warn_turn(warning, now);
+        }
     }
 
     /// The tap on the page's pad: follow the course or the breadcrumb back,

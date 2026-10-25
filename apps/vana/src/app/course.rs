@@ -3,9 +3,15 @@
 //! the phone. The course itself lives beside the breadcrumb (`back`); this
 //! keeps whether it matches the stored file. An upload empties the course
 //! while it streams in, so one that fails or is cut off reads the stored
-//! course back.
+//! course back. While the course is followed, a turn ahead is a toast and a
+//! cue.
 use super::Runtime;
+use super::back::NUDGE_MS;
+use super::cues::Cue;
+use crate::ride::course::turns::Warning;
 use crate::ride::course::{self, Course};
+use crate::screens::chrome::{Toast, Tone};
+use crate::screens::ride::turn_toast;
 use device_api::bulk::ReadWrite;
 
 /// A failed read is tried again this long after.
@@ -81,6 +87,18 @@ impl Runtime {
         }
         back.kept.took(result, now);
         back.course_changed();
+        self.display.redraw();
+    }
+
+    /// Warn of a turn on the course: LEFT IN 150 M, then LEFT at it.
+    pub(super) fn warn_turn(&mut self, warning: Warning, now: u64) {
+        let toast = Toast::new(turn_toast(warning).as_str(), Tone::Info);
+        self.navigation.show(toast, NUDGE_MS, now);
+        let cue = match warning {
+            Warning::Ahead { .. } => Cue::TurnAhead,
+            Warning::Now { .. } => Cue::Turn,
+        };
+        self.cue(cue, now);
         self.display.redraw();
     }
 

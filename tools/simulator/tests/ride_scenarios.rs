@@ -6498,6 +6498,126 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_track() {
     sim.stop_ride();
 }
 
+/// A course with a right-angle turn after 600 m, a gentle bend 45 degrees
+/// left over 100 m, 400 m on, a hairpin left of 10 m radius, and 400 m back
+/// down beside the way up.
+fn turns_course_gpx() -> String {
+    let mut legs = vec![(0.0, 0.0), (0.0, 600.0), (500.0, 600.0)];
+    let mut at = (500.0f64, 600.0f64);
+    for heading in [75.0f64, 60.0, 45.0] {
+        let (sin, cos) = heading.to_radians().sin_cos();
+        at = (at.0 + 35.0 * sin, at.1 + 35.0 * cos);
+        legs.push(at);
+    }
+    let (sin, cos) = 45f64.to_radians().sin_cos();
+    let top = (at.0 + 400.0 * sin, at.1 + 400.0 * cos);
+    legs.push(top);
+    // Round to the left: the centre is 10 m off the way, to its left.
+    let centre = (top.0 - 10.0 * cos, top.1 + 10.0 * sin);
+    for step in 1..=12 {
+        let a = (135.0 - 15.0 * f64::from(step)).to_radians();
+        legs.push((centre.0 + 10.0 * a.cos(), centre.1 - 10.0 * a.sin()));
+    }
+    let bottom = *legs.last().unwrap();
+    legs.push((bottom.0 - 400.0 * sin, bottom.1 - 400.0 * cos));
+    gpx_through("turns", &legs)
+}
+
+/// The rider rides on until `needle` is the toast, and says where.
+#[track_caller]
+fn ride_until_toast(sim: &mut Sim, needle: &str, before_m: f64) -> f64 {
+    let shown = |sim: &Sim| {
+        sim.screen()
+            .find(needle)
+            .iter()
+            .any(|run| run.text == needle)
+    };
+    while !shown(sim) {
+        assert!(
+            sim.world().distance_m < before_m,
+            "no {needle} by {before_m} m; screen:\n{}",
+            sim.screen().text()
+        );
+        sim.advance(seconds(1));
+    }
+    let at = sim.world().distance_m;
+    sim.note(NoteKind::Check, format!("{needle} at {at:.0} m"));
+    at
+}
+
+/// Following a course warns of each turn: 150 m before it with a toast and
+/// a soft cue, and at it with a brighter one. The right-angle turn says
+/// RIGHT and the hairpin U-TURN; the gentle bend between says nothing.
+#[test]
+fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
+    use device_api::server::Method;
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.format_files();
+    sim.connect_phone();
+    let gpx = turns_course_gpx();
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", gpx.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+
+    sim.ride_route(Route::from_gpx(&gpx).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
+    for _ in 0..4 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("MAP");
+
+    let from = sim.device.speaker.played.len();
+    let ahead = ride_until_toast(&mut sim, "RIGHT IN 150 M", 500.0);
+    assert!((435.0..465.0).contains(&ahead), "{ahead}");
+    sim.checkpoint("the right turn 150 m ahead on the map");
+    sim.advance(seconds(1));
+    assert_eq!(played_since(&sim, from), [0, 21], "the soft cue");
+    let from = sim.device.speaker.played.len();
+    let at = ride_until_toast(&mut sim, "RIGHT", 620.0);
+    assert!((560.0..600.0).contains(&at), "{at}");
+    sim.checkpoint("at the right turn");
+    sim.advance(seconds(1));
+    assert_eq!(played_since(&sim, from), [10, 0, 10], "the bright cue");
+
+    // Round the gentle bend and on: silence until the hairpin is near.
+    ride_to(&mut sim, 700.0);
+    let from = sim.device.speaker.played.len();
+    while sim.world().distance_m < 1_400.0 {
+        sim.advance(seconds(1));
+        let screen = sim.screen();
+        let word = ["LEFT", "RIGHT", "U-TURN"]
+            .into_iter()
+            .find(|w| screen.contains(w));
+        assert!(
+            word.is_none(),
+            "{word:?} on the bend; screen:\n{}",
+            screen.text()
+        );
+    }
+    assert_eq!(
+        played_since(&sim, from),
+        Vec::<u8>::new(),
+        "no cue on the bend"
+    );
+
+    let ahead = ride_until_toast(&mut sim, "U-TURN IN 150 M", 1_500.0);
+    assert!((1_440.0..1_470.0).contains(&ahead), "{ahead}");
+    sim.checkpoint("the hairpin 150 m ahead");
+    let at = ride_until_toast(&mut sim, "U-TURN", 1_620.0);
+    assert!((1_565.0..1_605.0).contains(&at), "{at}");
+    sim.checkpoint("at the hairpin");
+    let end = ride_until_shown(&mut sim, "END OF COURSE", 2_100.0);
+    assert!(end > 1_950.0, "{end}");
+    sim.stop_ride();
+}
+
 /// A course followed on the card goes on being followed when the card fails
 /// and the ride moves to internal memory: no second FOLLOWING COURSE, and the
 /// wrong turn, the way back and the end come as on the card.

@@ -20,6 +20,7 @@
 use super::canvas::Canvas;
 use super::chrome::{self, Align, CONTENT, Rect};
 use super::workout::{Text, View};
+use crate::ride::course::turns::{Kind, Side, Warning};
 use crate::ride::laps::Lap;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
@@ -492,6 +493,31 @@ pub fn lap_toast(lap: Lap) -> Text<19> {
     toast
 }
 
+/// A turn warning's toast: LEFT IN 150 M ahead of the turn, LEFT at it, or
+/// LEFT THEN RIGHT for two close together.
+pub fn turn_toast(warning: Warning) -> Text<20> {
+    let way = |kind: Kind| match kind {
+        Kind::Turn(Side::Left) | Kind::Sharp(Side::Left) => "LEFT",
+        Kind::Turn(Side::Right) | Kind::Sharp(Side::Right) => "RIGHT",
+        Kind::UTurn => "U-TURN",
+    };
+    let name = |kind: Kind| match kind {
+        Kind::Sharp(Side::Left) => "SHARP LEFT",
+        Kind::Sharp(Side::Right) => "SHARP RIGHT",
+        kind => way(kind),
+    };
+    let mut toast = Text::new();
+    let _ = match warning {
+        Warning::Ahead { kind, metres } => write!(toast, "{} IN {metres} M", name(kind)),
+        Warning::Now { kind, then: None } => write!(toast, "{}", name(kind)),
+        Warning::Now {
+            kind,
+            then: Some(then),
+        } => write!(toast, "{} THEN {}", way(kind), way(then)),
+    };
+    toast
+}
+
 /// km/h with one truncated decimal, as the live reading always showed, or "--".
 pub(super) fn speed(value: &mut Text<12>, mm_s: Option<u32>) {
     let _ = match mm_s {
@@ -554,6 +580,47 @@ pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Displa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_turn_warning_fits_a_toast_whole() {
+        let sides = [Side::Left, Side::Right];
+        let kinds: std::vec::Vec<Kind> = sides
+            .iter()
+            .flat_map(|&side| [Kind::Turn(side), Kind::Sharp(side)])
+            .chain([Kind::UTurn])
+            .collect();
+        for &kind in &kinds {
+            let mut warnings = std::vec![
+                Warning::Ahead { kind, metres: 150 },
+                Warning::Now { kind, then: None },
+            ];
+            warnings.extend(kinds.iter().map(|&then| Warning::Now {
+                kind,
+                then: Some(then),
+            }));
+            for warning in warnings {
+                let text = turn_toast(warning);
+                let text = text.as_str();
+                let width = BODY_FACE.width(text.as_bytes()) + 24;
+                assert!(width <= chrome::WIDTH - 4, "{text} is {width} wide");
+            }
+        }
+        let ahead = Warning::Ahead {
+            kind: Kind::Sharp(Side::Right),
+            metres: 150,
+        };
+        assert_eq!(turn_toast(ahead).as_str(), "SHARP RIGHT IN 150 M");
+        let now = Warning::Now {
+            kind: Kind::UTurn,
+            then: None,
+        };
+        assert_eq!(turn_toast(now).as_str(), "U-TURN");
+        let both = Warning::Now {
+            kind: Kind::Sharp(Side::Left),
+            then: Some(Kind::Turn(Side::Right)),
+        };
+        assert_eq!(turn_toast(both).as_str(), "LEFT THEN RIGHT");
+    }
 
     fn choice(hidden: &[RidePage]) -> PageChoice {
         hidden

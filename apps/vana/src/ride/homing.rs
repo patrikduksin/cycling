@@ -1041,7 +1041,7 @@ impl<'a> Homing<'a> {
                 (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN))
             });
             let back = (near.along - reached - SLIP_M).max(0.0);
-            (near.off <= ON_M).then(|| near.off + back + if against { AGAINST_M } else { 0.0 })
+            (near.off <= ON_M).then_some(near.off + back + if against { AGAINST_M } else { 0.0 })
         };
         self.nearest_within(p, ends.clone(), along - NEAR_M, along + BACK_M, on)
             .or_else(|| self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain))

@@ -1351,3 +1351,46 @@ fn corners_drawn_every_3_to_4_5_m_are_never_cut() {
         &wrong[..wrong.len().min(8)]
     );
 }
+
+/// A roundabout drawn as a polygon of `side` m sides, the ways in and out
+/// drawn only at their ends, as a coarse planner's route may draw one.
+fn coarse_ring(radius: f32, sweep: f32, side: f32) -> Vec<(f32, f32)> {
+    let ring = arc((0.0, 0.0), radius, 180.0, -sweep, side);
+    let out = *ring.last().unwrap();
+    let away = (out.0 / radius * 300.0, out.1 / radius * 300.0);
+    join(&[vec![(0.0, -300.0), (0.0, -radius)], ring, vec![out, away]])
+}
+
+/// Every exit of a roundabout drawn with sides of 20 to 40 m, as drawn and
+/// 12 km on: a polygon of four sides is a city block's shape, so what is
+/// said is right or nothing is.
+#[test]
+fn a_roundabout_drawn_coarsely_never_names_a_wrong_way() {
+    for found in FOUND {
+        let (mut wrong, mut silent, mut runs) = (Vec::new(), 0, 0);
+        for side in [20.0, 25.0, 30.0, 40.0] {
+            for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
+                for sweep in (3..=22).map(|k| k as f32 * 15.0) {
+                    let drawn = coarse_ring(radius, sweep, side);
+                    let degrees = swing(0.0, 180.0 - sweep);
+                    for after in [0.0, 12_000.0] {
+                        let said = heard(&drawn, after, found, 900.0);
+                        runs += 1;
+                        match judge(&said, degrees) {
+                            Verdict::Wrong => wrong.push(std::format!(
+                                "{found:?}: side {side}, r{radius} exit {sweep}, after {after}: {said:?}"
+                            )),
+                            Verdict::Silent => silent += 1,
+                            Verdict::Right => {}
+                        }
+                    }
+                }
+            }
+        }
+        std::println!(
+            "{found:?}: {} of {runs} wrong, {silent} silent",
+            wrong.len()
+        );
+        assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
+    }
+}

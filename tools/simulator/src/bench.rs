@@ -112,9 +112,11 @@ pub use scenes::{SCENES, Scene, measure};
 mod scenes {
     use super::Request;
     use crate::ant::device_type;
+    use crate::bulk::Presence;
     use crate::route::{Point, Route};
-    use crate::sim::{Sim, seconds};
+    use crate::sim::{Sim, minutes, seconds};
     use crate::world::{Side, Vehicle};
+    use device_api::input::Button;
 
     /// A screen to measure and how a rider reaches it.
     pub struct Scene {
@@ -122,7 +124,7 @@ mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 6] = [
+    pub static SCENES: [Scene; 23] = [
         Scene {
             name: "home",
             reach: home,
@@ -146,6 +148,74 @@ mod scenes {
         Scene {
             name: "workouts",
             reach: workouts,
+        },
+        Scene {
+            name: "ride stats",
+            reach: stats,
+        },
+        Scene {
+            name: "lap",
+            reach: lap_page,
+        },
+        Scene {
+            name: "workout",
+            reach: workout_page,
+        },
+        Scene {
+            name: "map",
+            reach: map_page,
+        },
+        Scene {
+            name: "back to start",
+            reach: back_page,
+        },
+        Scene {
+            name: "paused",
+            reach: paused,
+        },
+        Scene {
+            name: "end ride",
+            reach: end_ride,
+        },
+        Scene {
+            name: "ready",
+            reach: ready,
+        },
+        Scene {
+            name: "settings",
+            reach: settings,
+        },
+        Scene {
+            name: "setup",
+            reach: setup,
+        },
+        Scene {
+            name: "phone",
+            reach: phone,
+        },
+        Scene {
+            name: "bests",
+            reach: bests,
+        },
+        Scene {
+            name: "form",
+            reach: form,
+        },
+        Scene {
+            name: "history",
+            reach: history,
+        },
+        Scene {
+            name: "past ride",
+            reach: past_ride,
+        },
+        Scene {
+            name: "sensor detail",
+            reach: sensor_detail,
+        },
+        Scene {
+            name: "summary page 2",
+            reach: summary_second,
         },
     ];
 
@@ -266,6 +336,185 @@ mod scenes {
         let mut sim = rider(false);
         sim.home("TRAIN");
         sim.expect_text("WORKOUTS");
+        sim
+    }
+
+    /// Riding at a steady effort for `secs`, as `rider(false)` is paired.
+    fn riding(secs: u64) -> Sim {
+        let mut sim = rider(false);
+        sim.start_ride();
+        sim.ride_at(28.0, 230.0, 142.0, 88.0);
+        sim.advance(seconds(secs));
+        sim
+    }
+
+    fn stats() -> Sim {
+        let mut sim = riding(120);
+        sim.ride_page("2/6");
+        sim.expect_text("AVG W");
+        sim
+    }
+
+    fn lap_page() -> Sim {
+        let mut sim = riding(60);
+        sim.lap(1);
+        sim.advance(seconds(30));
+        sim.ride_page("3/6");
+        sim.expect_text("LAP TIME");
+        sim
+    }
+
+    fn workout_page() -> Sim {
+        let mut sim = rider(false);
+        sim.choose_workout("VO2 MAX 5X3");
+        sim.press(Button::BottomRight);
+        sim.wait_for("RECORDING", seconds(2)).unwrap();
+        sim.ride_at(30.0, 120.0, 142.0, 90.0);
+        sim.advance(seconds(20));
+        assert_eq!(sim.screen().page().as_deref(), Some("1/7"));
+        sim.expect_text("1/12");
+        sim
+    }
+
+    fn map_page() -> Sim {
+        let mut sim = riding(90);
+        sim.ride_page("5/6");
+        sim.expect_text("MAP");
+        sim
+    }
+
+    fn back_page() -> Sim {
+        let mut sim = riding(90);
+        sim.ride_page("6/6");
+        sim.expect_text("BACK TO START");
+        sim
+    }
+
+    fn paused() -> Sim {
+        let mut sim = riding(30);
+        sim.pause_ride();
+        sim
+    }
+
+    fn end_ride() -> Sim {
+        let mut sim = paused();
+        sim.press(Button::TopLeft);
+        sim.expect_text("END RIDE?");
+        sim
+    }
+
+    fn ready() -> Sim {
+        let mut sim = rider(false);
+        sim.home("RIDE");
+        sim.expect_text("READY");
+        sim
+    }
+
+    fn settings() -> Sim {
+        let mut sim = rider(false);
+        sim.home("SETTINGS");
+        sim
+    }
+
+    fn setup() -> Sim {
+        let mut sim = Sim::new();
+        sim.wait_usable();
+        sim.expect_text("WELCOME");
+        sim
+    }
+
+    fn phone() -> Sim {
+        let mut sim = rider(false);
+        sim.connect_phone();
+        sim.expect_text("RIDES");
+        sim
+    }
+
+    /// A card with its volumes made and one ride that sets every best, on Home.
+    fn after_a_long_ride() -> Sim {
+        let mut sim = Sim::new();
+        sim.fit_bulk(Presence::Ready);
+        let mut sim = sim.boot();
+        sim.init_bulk();
+        sim.init_volumes();
+        sim.put_file("notes.txt", b"x");
+        sim.ant_sensor(device_type::HEART_RATE, 4242);
+        sim.ant_sensor(device_type::POWER, 1234);
+        sim.ant_sensor(device_type::SPEED_CADENCE, 777);
+        sim.ride_route(Route::loop_around(
+            Point::new(-33.45, -70.66),
+            5_000.0,
+            20.0,
+        ));
+        sim.ride_at(0.0, 0.0, 72.0, 0.0);
+        sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+        sim.start_ride();
+        sim.ride_at(30.0, 200.0, 140.0, 90.0);
+        sim.advance(minutes(22));
+        sim.stop_ride();
+        sim.done();
+        sim
+    }
+
+    fn bests() -> Sim {
+        let mut sim = after_a_long_ride();
+        sim.home("SETTINGS");
+        sim.press(Button::BottomLeft);
+        sim.press(Button::BottomLeft);
+        sim.press(Button::BottomRight);
+        sim.expect_text("LONGEST RIDE");
+        sim
+    }
+
+    fn form() -> Sim {
+        let mut sim = after_a_long_ride();
+        sim.home("SETTINGS");
+        for _ in 0..3 {
+            sim.press(Button::BottomLeft);
+        }
+        sim.press(Button::BottomRight);
+        sim.wait_for("FATIGUE", seconds(60)).unwrap();
+        sim
+    }
+
+    fn saved_rides() -> Sim {
+        let mut sim = rider(false);
+        for length in [3, 5] {
+            sim.start_ride();
+            sim.ride_at(28.0, 230.0, 142.0, 88.0);
+            sim.advance(minutes(length));
+            sim.stop_ride();
+            sim.done();
+        }
+        sim
+    }
+
+    fn history() -> Sim {
+        let mut sim = saved_rides();
+        sim.home("RIDES");
+        sim.expect_text("1/2");
+        sim
+    }
+
+    fn past_ride() -> Sim {
+        let mut sim = history();
+        sim.press(Button::BottomRight);
+        sim.wait_gone("READING", seconds(5)).unwrap();
+        sim.expect_text("SAVED RIDE");
+        sim
+    }
+
+    fn sensor_detail() -> Sim {
+        let mut sim = rider(false);
+        sim.home("SENSORS");
+        sim.wait_for("LIVE DATA", seconds(20)).unwrap();
+        sim.open_sensor_detail("POWER METER");
+        sim
+    }
+
+    fn summary_second() -> Sim {
+        let mut sim = summary();
+        sim.swipe_next();
         sim
     }
 }

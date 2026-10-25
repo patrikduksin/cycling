@@ -95,28 +95,35 @@ fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
     let mut sim = rider();
     sim.start_ride();
     sim.ride_at(14.0, 240.0, 0.0, 80.0);
-    // The pack sees G-21's first ramp, 700 m from the start, and brings up
-    // the climb page about 500 m before it.
-    let shown = ride_until_shown(&mut sim, "CLIMB AHEAD", 600.0);
-    assert!(shown < 400.0, "at {shown:.0} m");
+    // G-21 starts on a short rise to about 410 m: the map has the rider on
+    // a climb from the first fixes, and brings up the climb page.
+    ride_until_shown(&mut sim, "CLIMBING", 100.0);
     assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
-    for label in ["LENGTH KM", "AVG GRADE", "GAIN M"] {
+    // Over its top it shows the first ramp, 700 m from the start, once the
+    // map is sure of the road again past a fork.
+    let shown = ride_until_shown(&mut sim, "CLIMB IN", 600.0);
+    assert!((400.0..550.0).contains(&shown), "at {shown:.0} m");
+    assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
+    assert!(sim.screen().field("LENGTH KM").is_some());
+    for label in ["AVG", "GAIN M", "POWER 3S", "HEART", "0% UP", "FOOT", "TOP"] {
         assert!(
-            sim.screen().field(label).is_some(),
+            sim.screen().contains(label),
             "{label}:\n{}",
             sim.screen().text()
         );
     }
     sim.checkpoint("climb ahead from the map at the foot of G-21");
 
-    // On the ramp the page counts down to its top.
-    let on = ride_until_shown(&mut sim, "TO THE TOP", 1_200.0);
+    // On the ramp the page counts down to its top, the rider moving along
+    // the whole climb.
+    let on = ride_until_shown(&mut sim, "CLIMBING", 1_200.0);
     assert!((600.0..1_100.0).contains(&on), "at {on:.0} m");
-    let first = field(&sim, "TO GO M");
+    let first = field(&sim, "UP TO GO M");
     sim.checkpoint("climb page counting down to the top");
     ride_to(&mut sim, on + 150.0);
-    sim.expect_text("TO THE TOP");
-    let later = field(&sim, "TO GO M");
+    sim.expect_text("CLIMBING");
+    let later = field(&sim, "UP TO GO M");
     assert!(later < first, "{later} m to go, was {first}");
+    assert!(!sim.screen().contains("0% UP"), "{}", sim.screen().text());
     sim.checkpoint("climb page nearer the top");
 }

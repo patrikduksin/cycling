@@ -5,11 +5,9 @@ use super::cue::{Badge, Cue};
 use super::home::Home;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
-use super::ride::{self, ClimbFrame, Marks, RidePage, Smooth};
+use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
 use crate::clock::Local;
 use crate::ride::bests::Bests;
-use crate::ride::climb::Climbs;
-use crate::ride::climb_ahead::Forecast;
 use crate::ride::laps::Lap;
 use crate::ride::log::{Sample, Status};
 use crate::ride::rider::Rider;
@@ -122,11 +120,11 @@ impl Body {
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Extra<'a> {
     None,
-    /// The climbs and the forecast are borrowed from `Ride` and the
-    /// look-ahead (1 KB each, which the main stack cannot spare a copy of).
+    /// The climbs, the trace, the forecast and the pinned climb are
+    /// borrowed from `Ride` and the look-ahead (up to 1 KB each, which the
+    /// main stack cannot spare a copy of).
     Climb {
-        climbs: &'a Climbs,
-        forecast: &'a Forecast,
+        lent: ClimbLent<'a>,
         frame: ClimbFrame,
     },
     Workout(ride::WorkoutChart),
@@ -193,8 +191,7 @@ macro_rules! picks {
 
 impl<'a> Extra<'a> {
     picks! {
-        climbs -> &'a Climbs = Self::Climb { climbs, .. } => climbs;
-        forecast -> &'a Forecast = Self::Climb { forecast, .. } => forecast;
+        climb_lent -> ClimbLent<'a> = Self::Climb { lent, .. } => *lent;
         climb_frame -> &ClimbFrame = Self::Climb { frame, .. } => frame;
         chart -> &ride::WorkoutChart = Self::Workout(chart) => chart;
         lap -> Lap = Self::Lap { lap, .. } => *lap;
@@ -221,8 +218,6 @@ impl<'a> Extra<'a> {
 
 static NO_CANVAS: Canvas = Canvas::EMPTY;
 static NO_SMOOTH: Smooth = Smooth::EMPTY;
-static NO_CLIMBS: Climbs = Climbs::NONE;
-static NO_FORECAST: Forecast = Forecast::NONE;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
 static NO_CHART: ride::WorkoutChart = ride::WorkoutChart::EMPTY;
 static NO_BARS: ride::LapBars = ride::LapBars::new();
@@ -382,12 +377,9 @@ impl<'a> View<'a> {
         home
     }
 
-    pub(super) fn climbs(&self) -> &'a Climbs {
-        self.shown(self.extra.climbs(), "climbs", &NO_CLIMBS)
-    }
-
-    pub(super) fn forecast(&self) -> &'a Forecast {
-        self.shown(self.extra.forecast(), "forecast", &NO_FORECAST)
+    /// What the climb page draws from.
+    pub(super) fn climb_lent(&self) -> ClimbLent<'a> {
+        self.shown(self.extra.climb_lent(), "climbs", ClimbLent::NONE)
     }
 
     pub(super) fn climb(&self) -> &ClimbFrame {
@@ -470,13 +462,12 @@ impl<'a> View<'a> {
         self.shown(self.extra.elevation(), "summary", None)
     }
 
-    /// The climb page's extras: the climbs and the forecast, lent, and a
-    /// chart still to prepare.
+    /// The climb page's extras: what it draws from, lent, and a chart still
+    /// to prepare.
     #[inline(never)]
-    pub fn show_climb(&mut self, climbs: &'a Climbs, forecast: &'a Forecast) {
+    pub fn show_climb(&mut self, lent: ClimbLent<'a>) {
         self.extra = Extra::Climb {
-            climbs,
-            forecast,
+            lent,
             frame: ClimbFrame::EMPTY,
         };
     }
@@ -897,7 +888,7 @@ mod tests {
         assert!(Body::Canvas(Canvas::EMPTY).smooth().is_none());
         assert!(Body::Blank.home().is_none());
         let none = Extra::None;
-        assert!(none.climbs().is_none() && none.forecast().is_none());
+        assert!(none.climb_lent().is_none());
         assert!(none.climb_frame().is_none() && none.chart().is_none());
         assert!(none.lap().is_none() && none.previous_lap().is_none());
         assert!(none.lap_bars().is_none() && none.back().is_none());
@@ -910,7 +901,7 @@ mod tests {
         assert!(none.elevation().is_none());
         assert!(NO_CANVAS.runs.is_empty() && NO_CANVAS.shapes.is_empty());
         assert!(NO_SMOOTH.labels.is_empty() && NO_SMOOTH.band.is_none());
-        assert!(NO_BARS.is_empty() && NO_CLIMBS.climbing().is_none());
+        assert!(NO_BARS.is_empty() && ClimbLent::NONE.climbs.climbing().is_none());
         assert!(NO_LINES.iter().all(|line| line.as_bytes().is_empty()));
         assert!(NO_READINESS.riding.as_bytes().is_empty() && NO_TITLE.as_bytes().is_empty());
         assert!(NO_PICKER.cursor == 0 && NO_PICKER.chosen == 0);
@@ -1168,7 +1159,7 @@ mod tests {
                     RidePage::Lap => two_laps(&mut view, 125, 250, 9000),
                     RidePage::Back => view.show_back(back, ride::Light::default()),
                     RidePage::Workout => view.show_workout(ride::WorkoutChart::default()),
-                    RidePage::Climb => view.show_climb(&Climbs::NONE, &Forecast::NONE),
+                    RidePage::Climb => view.show_climb(ClimbLent::NONE),
                     RidePage::Map => view.show_map(None),
                     RidePage::Main | RidePage::Stats => {}
                 }

@@ -639,7 +639,7 @@ impl Runtime {
                 self.activities_head(id);
             }
             (Method::Get, "/api/course") => self.course_reply(id),
-            (Method::Put | Method::Post, "/api/course") => self.start_course(request),
+            (Method::Put | Method::Post, "/api/course") => self.start_course(request, bulk),
             (Method::Delete, "/api/course") => self.clear_course(id, bulk),
             (Method::Get, "/api/workouts") => self.workouts_reply(id, bulk),
             (Method::Put | Method::Post, "/api/workouts") => self.start_workout(request),
@@ -865,7 +865,7 @@ impl Runtime {
         self.reply(id, 200, Some(json.as_str()));
     }
 
-    fn start_course(&mut self, request: &Request) {
+    fn start_course(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
         let id = request.id;
         if request.body == 0 {
             return self.reply(id, 400, Some(r#"{"error":"empty"}"#));
@@ -877,8 +877,9 @@ impl Runtime {
         // one; if it fails, the stored one is read back.
         back.kept.store = super::course::Store::Unread;
         let mut gpx = gpx::Gpx::new();
-        gpx.start(back.course);
-        back.course_changed();
+        let (course, mut finding) = back.upload();
+        gpx.start(course, &mut finding);
+        back.course_changed(bulk);
         log::info!(target: "phone", "VANA_PHONE course_upload bytes={}", request.body);
         self.phone.w().job = Job::Course {
             id,
@@ -907,6 +908,7 @@ impl Runtime {
         // answer rather than a connection cut while it sends.
         {
             let mut piece = [0u8; UPLOAD_PIECE];
+            let (course, mut finding) = back.upload();
             for _ in 0..UPLOAD_READS {
                 let wanted = (body - received).min(UPLOAD_PIECE as u32) as usize;
                 let n = server.read(id, &mut piece[..wanted]);
@@ -914,7 +916,7 @@ impl Runtime {
                     break;
                 }
                 received += n as u32;
-                gpx.feed(&piece[..n], back.course);
+                gpx.feed(&piece[..n], course, &mut finding);
             }
         }
         // A long upload is activity, not an idle session.
@@ -927,7 +929,10 @@ impl Runtime {
             self.phone.w().job = Job::Course { id, received, gpx };
             return;
         }
-        if let Err(refusal) = gpx.finish(back.course) {
+        let (course, mut finding) = back.upload();
+        let finished = gpx.finish(course, &mut finding);
+        let found = finished.ok().and_then(|()| finding.finish(course));
+        if let Err(refusal) = finished {
             log::warn!(target: "phone", "VANA_PHONE course_refused reason={refusal:?}");
             return self.reply(
                 id,
@@ -941,7 +946,8 @@ impl Runtime {
         match course::save(bulk, back.course) {
             Ok(()) => {
                 back.kept.store = super::course::Store::Kept;
-                back.course_changed();
+                back.save_turns(bulk, found);
+                back.course_changed(bulk);
                 log::info!(
                     target: "phone",
                     "VANA_PHONE course_saved points={} distance_m={}",
@@ -974,7 +980,7 @@ impl Runtime {
             Ok(()) => {
                 back.course.clear();
                 back.kept.store = super::course::Store::Kept;
-                back.course_changed();
+                back.course_changed(bulk);
                 log::info!(target: "phone", "VANA_PHONE course_cleared");
                 self.display.redraw();
                 self.reply(id, 204, None);

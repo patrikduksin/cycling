@@ -590,6 +590,16 @@ impl Upload {
         crate::ride::course::load(&mut self.files, &mut course).unwrap();
         course.points().to_vec()
     }
+
+    /// The turns stored beside the stored course, if its own.
+    fn stored_turns(&mut self) -> Option<usize> {
+        use crate::ride::course::{self, stored};
+        let mut course = std::boxed::Box::new(course::Course::empty());
+        course::load(&mut self.files, &mut course).unwrap();
+        let mut turns = std::vec![crate::app::Turn::default(); crate::app::COURSE_TURNS];
+        let found = stored::load(&mut self.files, course::key(&course), &mut turns).unwrap();
+        found.map(|found| found.count)
+    }
 }
 
 fn attach_course_room(runtime: &mut Runtime) {
@@ -599,7 +609,8 @@ fn attach_course_room(runtime: &mut Runtime) {
     let turns = Vec::leak(std::vec![crate::app::Turn::default(); crate::app::COURSE_TURNS]);
     let map = Box::leak(Box::new(crate::app::MapFrame::default()));
     let course = Box::leak(Box::new(crate::ride::course::Course::empty()));
-    let back = crate::app::BackToStart::new(crumbs, line, turns, map, course);
+    let finder = Box::leak(Box::new(crate::app::CourseFinder::new()));
+    let back = crate::app::BackToStart::new(crumbs, line, turns, map, course, finder);
     runtime.attach_back(Box::leak(Box::new(back)));
 }
 
@@ -631,6 +642,11 @@ fn a_phone_loads_a_course_that_is_kept_on_the_card() {
     let points = phone.points();
     assert_eq!(points.len(), 300);
     assert_eq!(phone.stored(), points, "the card keeps what memory holds");
+    assert_eq!(
+        phone.stored_turns(),
+        Some(0),
+        "its turns beside it: none on a loop"
+    );
     let listed = phone.course();
     assert!(
         listed.contains(r#""store":"kept","loaded":true"#),
@@ -688,9 +704,11 @@ fn the_phone_clears_the_course_from_memory_and_the_card() {
     let mut phone = Upload::new();
     let gpx = loop_gpx("Gone", 40);
     assert_eq!(phone.send(Method::Put, gpx.as_bytes(), 200).0, 200);
+    assert_eq!(phone.stored_turns(), Some(0));
     assert_eq!(phone.send(Method::Delete, b"", 1).0, 204);
     assert!(phone.points().is_empty());
     assert!(phone.stored().is_empty());
+    assert_eq!(phone.stored_turns(), None);
     assert!(phone.course().contains(r#""loaded":false"#));
     // Clearing again is no error.
     assert_eq!(phone.send(Method::Delete, b"", 1).0, 204);

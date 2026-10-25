@@ -5923,6 +5923,13 @@ fn a_course_loaded_from_the_phone_is_kept_across_a_restart() {
     assert!(body.contains(r#""name":"BEND LOOP""#), "{body}");
     let stored = sim.file("course.dat").expect("course.dat on FILES");
     assert_eq!(&stored[..5], b"VCRS\x01");
+    let turns = sim.file("course-turns.dat").expect("its turns beside it");
+    assert_eq!(&turns[..5], b"VTRN\x01");
+    assert_eq!(
+        &turns[8..12],
+        &stored[stored.len() - 4..],
+        "named by the course's CRC"
+    );
     assert_eq!(
         sim.file("workouts/keep.vw").as_deref(),
         Some(&b"kept as it was"[..])
@@ -5938,6 +5945,7 @@ fn a_course_loaded_from_the_phone_is_kept_across_a_restart() {
     let (status, _) = sim.phone_request(Method::Delete, "/api/course", b"");
     assert_eq!(status, 204);
     assert!(sim.file("course.dat").is_none());
+    assert!(sim.file("course-turns.dat").is_none());
     let (_, body) = sim.phone_request(Method::Get, "/api/course", b"");
     assert!(body.contains(r#""loaded":false"#), "{body}");
 }

@@ -16,7 +16,7 @@
 //! degree with integers (later digits are dropped). A point whose latitude
 //! or longitude is missing, not a decimal or out of range refuses the whole
 //! file: it is damaged, and following part of it could lead anywhere.
-use super::{Builder, Course, Point};
+use super::{Builder, Course, Follow, Point};
 
 /// Why a file gives no course.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,10 +258,11 @@ impl Gpx {
         }
     }
 
-    /// Start reading a file into `course`, which is emptied.
-    pub fn start(&mut self, course: &mut Course) {
+    /// Start reading a file into `course`, which is emptied; `follow`
+    /// follows it as it is built.
+    pub fn start(&mut self, course: &mut Course, follow: &mut impl Follow) {
         *self = Self::new();
-        self.builder.start(course);
+        self.builder.start(course, follow);
     }
 
     /// The file refused already, before its end.
@@ -269,20 +270,20 @@ impl Gpx {
         self.refused
     }
 
-    pub fn feed(&mut self, bytes: &[u8], course: &mut Course) {
+    pub fn feed(&mut self, bytes: &[u8], course: &mut Course, follow: &mut impl Follow) {
         for &byte in bytes {
             if self.refused.is_some() {
                 return;
             }
-            self.step(byte, course);
+            self.step(byte, course, follow);
         }
     }
 
     /// The file ended: the course is complete, or why there is none. A
     /// refused file leaves `course` empty.
-    pub fn finish(&mut self, course: &mut Course) -> Result<(), Refusal> {
+    pub fn finish(&mut self, course: &mut Course, follow: &mut impl Follow) -> Result<(), Refusal> {
         if self.refused.is_none() {
-            self.builder.finish(course);
+            self.builder.finish(course, follow);
             if course.points().len() < 2 {
                 self.refused = Some(Refusal::Empty);
             }
@@ -299,7 +300,7 @@ impl Gpx {
         }
     }
 
-    fn step(&mut self, byte: u8, course: &mut Course) {
+    fn step(&mut self, byte: u8, course: &mut Course, follow: &mut impl Follow) {
         let space = matches!(byte, b' ' | b'\t' | b'\r' | b'\n');
         self.state = match self.state {
             State::Text => {
@@ -326,7 +327,7 @@ impl Gpx {
                 }
             }
             State::TagName => match byte {
-                b'>' => self.end_tag(false, course),
+                b'>' => self.end_tag(false, course, follow),
                 b'/' => State::Slash,
                 _ if space => State::Tag,
                 _ => {
@@ -344,7 +345,7 @@ impl Gpx {
                 }
             },
             State::Tag => match byte {
-                b'>' => self.end_tag(false, course),
+                b'>' => self.end_tag(false, course, follow),
                 b'/' => State::Slash,
                 _ if space => State::Tag,
                 _ => {
@@ -355,7 +356,7 @@ impl Gpx {
             },
             State::AttributeName => match byte {
                 b'=' => State::Quote,
-                b'>' => self.end_tag(false, course),
+                b'>' => self.end_tag(false, course, follow),
                 _ if space => State::Equals,
                 _ => {
                     self.attribute.push(byte);
@@ -364,7 +365,7 @@ impl Gpx {
             },
             State::Equals => match byte {
                 b'=' => State::Quote,
-                b'>' => self.end_tag(false, course),
+                b'>' => self.end_tag(false, course, follow),
                 _ if space => State::Equals,
                 // An attribute without a value; this byte starts the next.
                 _ => {
@@ -378,7 +379,7 @@ impl Gpx {
                     self.value = Decimal::new();
                     State::Value(byte)
                 }
-                b'>' => self.end_tag(false, course),
+                b'>' => self.end_tag(false, course, follow),
                 _ if space => State::Quote,
                 _ => State::Tag,
             },
@@ -396,7 +397,7 @@ impl Gpx {
                 }
             }
             State::Slash => match byte {
-                b'>' => self.end_tag(true, course),
+                b'>' => self.end_tag(true, course, follow),
                 _ if space => State::Slash,
                 _ => State::Tag,
             },
@@ -455,7 +456,7 @@ impl Gpx {
         }
     }
 
-    fn end_tag(&mut self, empty: bool, course: &mut Course) -> State {
+    fn end_tag(&mut self, empty: bool, course: &mut Course, follow: &mut impl Follow) -> State {
         let tag = self.tag.local();
         if self.closing {
             match (tag, self.route) {
@@ -514,17 +515,17 @@ impl Gpx {
                     // points; its first waits.
                     (Some(point), 0, true) => self.first = Some(point),
                     (Some(point), 0, false) => {
-                        self.builder.start(course);
-                        self.builder.push(course, point);
+                        self.builder.start(course, follow);
+                        self.builder.push(course, point, follow);
                     }
                     (Some(point), 1, true) => {
-                        self.builder.start(course);
+                        self.builder.start(course, follow);
                         if let Some(first) = self.first.take() {
-                            self.builder.push(course, first);
+                            self.builder.push(course, first, follow);
                         }
-                        self.builder.push(course, point);
+                        self.builder.push(course, point, follow);
                     }
-                    (Some(point), ..) => self.builder.push(course, point),
+                    (Some(point), ..) => self.builder.push(course, point, follow),
                 }
                 self.in_point = !empty;
             }

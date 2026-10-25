@@ -38,11 +38,29 @@ pub fn thin<T: Copy>(
     tolerance: &mut f32,
     at: impl Fn(&T) -> (f32, f32),
 ) -> usize {
+    thin_moving(points, len, tolerance, at, |_, _| {})
+}
+
+/// As `thin`, telling `moved` of each point kept, as `(to, from)` its
+/// index after and before a pass, so a list beside `points` can follow.
+pub fn thin_moving<T: Copy>(
+    points: &mut [T],
+    len: usize,
+    tolerance: &mut f32,
+    at: impl Fn(&T) -> (f32, f32),
+    mut moved: impl FnMut(usize, usize),
+) -> usize {
     let target = points.len() * 3 / 4;
     let mut len = len;
     let mut rounds = 0;
     loop {
-        len = pass(&mut points[..len], *tolerance, rounds > ROUNDS, &at);
+        len = pass(
+            &mut points[..len],
+            *tolerance,
+            rounds > ROUNDS,
+            &at,
+            &mut moved,
+        );
         if len <= target {
             return len;
         }
@@ -60,6 +78,7 @@ fn pass<T: Copy>(
     tolerance: f32,
     halve: bool,
     at: &impl Fn(&T) -> (f32, f32),
+    moved: &mut impl FnMut(usize, usize),
 ) -> usize {
     let len = points.len();
     if len <= 2 {
@@ -74,10 +93,12 @@ fn pass<T: Copy>(
             reach(points, anchor, tolerance, at)
         };
         points[kept] = points[anchor];
+        moved(kept, anchor);
         kept += 1;
     }
     if anchor != len - 1 {
         points[kept] = points[len - 1];
+        moved(kept, len - 1);
         kept += 1;
     }
     kept

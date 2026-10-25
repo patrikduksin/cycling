@@ -20,11 +20,11 @@ pub(crate) fn at(east: f64, north: f64) -> Point {
 fn built(points: impl IntoIterator<Item = Point>) -> Box<Course> {
     let mut course = empty();
     let mut builder = Builder::new();
-    builder.start(&mut course);
+    builder.start(&mut course, &mut ());
     for point in points {
-        builder.push(&mut course, point);
+        builder.push(&mut course, point, &mut ());
     }
-    builder.finish(&mut course);
+    builder.finish(&mut course, &mut ());
     course
 }
 

@@ -42,6 +42,7 @@ use firmware_services::{files, volume};
 use libm::{cosf, sqrtf};
 
 pub mod gpx;
+pub mod stored;
 pub mod turns;
 
 /// Points a course keeps, start and end included.
@@ -209,12 +210,14 @@ impl Builder {
     }
 
     /// Start `course` over.
-    pub fn start(&mut self, course: &mut Course) {
+    pub fn start(&mut self, course: &mut Course, follow: &mut impl Follow) {
         *self = Self::new();
         course.clear();
+        follow.start();
     }
 
-    pub fn push(&mut self, course: &mut Course, point: Point) {
+    pub fn push(&mut self, course: &mut Course, point: Point, follow: &mut impl Follow) {
+        follow.given(point);
         self.last = Some(point);
         let len = course.len as usize;
         if len == 0 {
@@ -225,27 +228,61 @@ impl Builder {
                 return;
             }
         }
-        self.keep(course, point);
+        self.keep(course, point, follow);
     }
 
     /// End the course at the newest point given.
-    pub fn finish(&mut self, course: &mut Course) {
+    pub fn finish(&mut self, course: &mut Course, follow: &mut impl Follow) {
         if let Some(last) = self.last.take()
             && course.points().last() != Some(&last)
         {
-            self.keep(course, last);
+            self.keep(course, last, follow);
         }
     }
 
-    fn keep(&mut self, course: &mut Course, point: Point) {
+    fn keep(&mut self, course: &mut Course, point: Point, follow: &mut impl Follow) {
         if course.len as usize == POINTS {
             let (origin, scale) = (course.points[0], self.east_per_e7);
             let at = |p: &Point| metres(origin, *p, scale);
-            course.len = thin::thin(&mut course.points, POINTS, &mut self.tolerance, at) as u32;
+            let moved = |to, from| follow.moved(to, from);
+            course.len =
+                thin::thin_moving(&mut course.points, POINTS, &mut self.tolerance, at, moved)
+                    as u32;
         }
+        follow.kept(course.len as usize);
         course.points[course.len as usize] = point;
         course.len += 1;
     }
+}
+
+/// What follows a course as it is built: every point given, kept or not,
+/// and where the kept ones go, so a list beside the course keeps up.
+pub trait Follow {
+    /// The course starts over.
+    fn start(&mut self) {}
+    /// The next point, in order.
+    fn given(&mut self, _point: Point) {}
+    /// The newest point given is kept, at `index`.
+    fn kept(&mut self, _index: usize) {}
+    /// Thinning moved the kept point at `from` to `to`.
+    fn moved(&mut self, _to: usize, _from: usize) {}
+}
+
+/// Nothing follows.
+impl Follow for () {}
+
+/// Metres along `points` from the first to each, in turn, in the course's
+/// own frame: what distances along a course are measured in.
+pub(crate) fn along_m(points: &[Point]) -> impl Iterator<Item = f32> + '_ {
+    let scale = points.first().map_or(M_PER_E7, |&first| east_per_e7(first));
+    let mut along = 0.0f32;
+    points.iter().enumerate().map(move |(k, &p)| {
+        if k > 0 {
+            let (east, north) = metres(points[k - 1], p, scale);
+            along += sqrtf(east * east + north * north);
+        }
+        along
+    })
 }
 
 /// Why a course could not be read or written.
@@ -275,6 +312,18 @@ impl From<files::Error> for Error {
 
 /// Every byte of `course`'s file, in order, in a few pieces.
 pub fn encode(course: &Course, mut put: impl FnMut(&[u8])) {
+    let sum = sealed(course, &mut put);
+    put(&sum.to_le_bytes());
+}
+
+/// The CRC32 that ends `course`'s file in version 1: the turns stored
+/// beside it name their course by it.
+pub fn key(course: &Course) -> u32 {
+    sealed(course, &mut |_| {})
+}
+
+/// The file's bytes before its CRC, to `put`; returns the CRC.
+fn sealed(course: &Course, put: &mut impl FnMut(&[u8])) -> u32 {
     let mut crc = Crc32::new();
     let mut emit = |bytes: &[u8]| {
         crc = crc.update(bytes);
@@ -295,8 +344,7 @@ pub fn encode(course: &Course, mut put: impl FnMut(&[u8])) {
         put_u32(&mut bytes, 4, point.lon_e7 as u32);
         emit(&bytes);
     }
-    let sum = crc.finish();
-    put(&sum.to_le_bytes());
+    crc.finish()
 }
 
 /// Read a file of `length` bytes into `course` through `read`, which fills
@@ -425,21 +473,31 @@ pub fn load(media: &mut impl ReadWrite, course: &mut Course) -> Result<(), Error
 /// Store `course`, replacing the file there in one atomic commit. A store
 /// the host has not formatted is not formatted here.
 pub fn save(media: &mut impl ReadWrite, course: &Course) -> Result<(), Error> {
+    write(media, &name(), |put| encode(course, put))
+}
+
+/// Write the file `encode` gives, twice: once for its length and CRC, then
+/// to the store.
+fn write(
+    media: &mut impl ReadWrite,
+    name: &files::Name,
+    encode: impl Fn(&mut dyn FnMut(&[u8])),
+) -> Result<(), Error> {
     let mut length = 0u32;
     let mut crc = Crc32::new();
-    encode(course, |bytes| {
+    encode(&mut |bytes| {
         length += bytes.len() as u32;
         crc = crc.update(bytes);
     });
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
     let dir = files::mount(&mut store, &mut sector)?;
-    let mut writer = dir.begin(&mut store, &name(), length, &mut sector)?;
+    let mut writer = dir.begin(&mut store, name, length, &mut sector)?;
     // Whole sectors to the writer, and the short last one at the end.
     let mut held = [0u8; SECTOR_SIZE];
     let mut filled = 0;
     let mut failed = None;
-    encode(course, |mut bytes| {
+    encode(&mut |mut bytes| {
         while !bytes.is_empty() && failed.is_none() {
             let n = bytes.len().min(SECTOR_SIZE - filled);
             held[filled..filled + n].copy_from_slice(&bytes[..n]);
@@ -459,10 +517,20 @@ pub fn save(media: &mut impl ReadWrite, course: &Course) -> Result<(), Error> {
     Ok(())
 }
 
+/// Remove the course, and then the turns stored beside it. A cut between
+/// leaves turns that name no course.
 pub fn delete(media: &mut impl ReadWrite) -> Result<(), Error> {
+    remove(media, &name())?;
+    if let Err(error) = stored::delete(media) {
+        log::warn!(target: "sdk.course", "turns_not_deleted error={error:?}");
+    }
+    Ok(())
+}
+
+fn remove(media: &mut impl ReadWrite, name: &files::Name) -> Result<(), Error> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
-    match files::delete(&mut store, &name(), &mut sector) {
+    match files::delete(&mut store, name, &mut sector) {
         Ok(()) | Err(files::Error::NotFound) => Ok(()),
         Err(error) => Err(error.into()),
     }

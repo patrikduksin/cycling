@@ -876,8 +876,10 @@ fn the_map_brings_the_page_up_before_the_foot_and_takes_it_away_past_the_top() {
     map_says(&mut runtime, 2, |m| -m * 0.02);
     runtime.follow_road();
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    // 100 m past the top it lets go.
+    // At 100 m past the top it stays; beyond, it lets go.
     ride_on(&mut runtime, 200);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    ride_on(&mut runtime, 10);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
 }
 

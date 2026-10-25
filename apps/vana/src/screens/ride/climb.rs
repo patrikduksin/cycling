@@ -175,7 +175,6 @@ fn tenths_km(value: &mut Text<12>, mm: u64) {
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let situation = situation(view);
-    let odometer = view.totals.distance_mm();
     head(&mut canvas, view, situation);
     readings(&mut canvas, view);
     let steepness = view
@@ -193,26 +192,28 @@ pub(super) fn prepare(view: &View) -> Canvas {
         color: steepness.map_or(GRID, color),
     });
 
+    cells(&mut canvas, view, situation);
+    finish(&mut canvas, view);
+    canvas
+}
+
+/// The road's two readings under power and heart rate.
+#[inline(never)]
+fn cells(canvas: &mut Canvas, view: &View, situation: Situation) {
+    let odometer = view.totals.distance_mm();
     let mut values: [Text<12>; 2] = core::array::from_fn(|_| Text::new());
     let labels: [(&[u8], u16); 2] = match situation {
         Situation::Ahead(pin) => {
             let climb = pin.summary();
             kilometres(&mut values[0], climb.length_mm);
-            cell(
-                &mut canvas,
-                0,
-                CELLS,
-                b"LENGTH KM",
-                values[0].as_bytes(),
-                WHITE,
-            );
+            cell(canvas, 0, CELLS, b"LENGTH KM", values[0].as_bytes(), WHITE);
             let mut average = Text::<12>::new();
             grade(&mut average, climb.grade_tenths());
             let mut gain = Text::<12>::new();
             metres(&mut gain, climb.gain_dm as i32);
-            stacked(&mut canvas, b"AVG", &average, CELLS + 16);
-            stacked(&mut canvas, b"GAIN M", &gain, CELLS + 41);
-            return finish(canvas, view);
+            stacked(canvas, b"AVG", &average, CELLS + 16);
+            stacked(canvas, b"GAIN M", &gain, CELLS + 41);
+            return;
         }
         Situation::OnMap(pin) => {
             tenths_km(&mut values[0], pin.top_mm.saturating_sub(odometer));
@@ -235,20 +236,13 @@ pub(super) fn prepare(view: &View) -> Canvas {
         }
     };
     for (column, ((caption, color), value)) in labels.iter().zip(&values).enumerate() {
-        cell(
-            &mut canvas,
-            column,
-            CELLS,
-            caption,
-            value.as_bytes(),
-            *color,
-        );
+        cell(canvas, column, CELLS, caption, value.as_bytes(), *color);
     }
-    finish(canvas, view)
 }
 
 /// The progress bar and the rider's disc over the chart.
-fn finish(mut canvas: Canvas, view: &View) -> Canvas {
+#[inline(never)]
+fn finish(canvas: &mut Canvas, view: &View) {
     let frame = view.climb();
     if let Some(done) = frame.done {
         let mut share = Text::<12>::new();
@@ -286,11 +280,11 @@ fn finish(mut canvas: Canvas, view: &View) -> Canvas {
             });
         }
     }
-    rider(&mut canvas, frame);
-    canvas
+    rider(canvas, frame);
 }
 
 /// The title on the left and the category, or NO MAP, on the right.
+#[inline(never)]
 fn head(canvas: &mut Canvas, view: &View, situation: Situation) {
     let odometer = view.totals.distance_mm();
     let mut title = Text::<24>::new();
@@ -360,6 +354,7 @@ fn category(gain_dm: u32, grade_tenths: Option<i32>) -> (Option<&'static [u8]>, 
 
 /// The grade, centred in its box, then power and heart rate in cells, each
 /// with its zone on the caption's line.
+#[inline(never)]
 fn readings(canvas: &mut Canvas, view: &View) {
     let mut now = Text::<12>::new();
     grade(&mut now, view.sample.gradient_tenths.map(i32::from));

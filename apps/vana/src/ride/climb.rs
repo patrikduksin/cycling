@@ -516,6 +516,14 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
+    #[test]
+    fn the_borrowed_empty_climbs_is_the_default() {
+        assert_eq!(
+            std::format!("{:?}", Climbs::NONE),
+            std::format!("{:?}", Climbs::default())
+        );
+    }
+
     /// Feed one-second steps at `speed_mm_s` along `altitude(distance_mm)`,
     /// for `metres`, returning every event.
     fn ride(

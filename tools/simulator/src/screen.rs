@@ -65,6 +65,52 @@ pub struct Frame<'a> {
     pub width: usize,
     pub height: usize,
     pub pixels: &'a [u16],
+    /// The map every painted pixel went through on its way to the panel, if
+    /// any, as VANA's light look does.
+    pub look: Option<&'a Look>,
+}
+
+/// A colour map applied to whole painted frames. Anti-aliased edges are
+/// blended before the map, so reading them takes the colours that map to the
+/// text and background shown.
+pub struct Look {
+    map: fn(u16) -> u16,
+    /// The colours that map to `shown` are `painted[starts[shown]..starts[shown + 1]]`.
+    starts: Vec<u32>,
+    painted: Vec<u16>,
+}
+
+impl Look {
+    pub fn new(map: fn(u16) -> u16) -> Self {
+        let mut starts = vec![0_u32; 1 << 16 | 1];
+        for colour in 0..=u16::MAX {
+            starts[usize::from(map(colour)) + 1] += 1;
+        }
+        for i in 1..starts.len() {
+            starts[i] += starts[i - 1];
+        }
+        let mut next = starts.clone();
+        let mut painted = vec![0_u16; 1 << 16];
+        for colour in 0..=u16::MAX {
+            let slot = &mut next[usize::from(map(colour))];
+            painted[*slot as usize] = colour;
+            *slot += 1;
+        }
+        Self {
+            map,
+            starts,
+            painted,
+        }
+    }
+
+    pub fn shown(&self, painted: u16) -> u16 {
+        (self.map)(painted)
+    }
+
+    fn painted(&self, shown: u16) -> &[u16] {
+        let shown = usize::from(shown);
+        &self.painted[self.starts[shown] as usize..self.starts[shown + 1] as usize]
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,10 +171,11 @@ struct Templates {
     by_down: HashMap<usize, Vec<(usize, usize)>>,
 }
 
-/// Templates keyed by the solid run right of and below the anchor.
-fn templates() -> &'static Templates {
-    static TEMPLATES: OnceLock<Templates> = OnceLock::new();
-    TEMPLATES.get_or_init(|| {
+/// Templates keyed by the solid run right of and below the anchor, where
+/// pixels of at least `floor` coverage are solid.
+fn templates(floor: u8) -> &'static Templates {
+    static TEMPLATES: [OnceLock<Templates>; 2] = [const { OnceLock::new() }; 2];
+    TEMPLATES[usize::from(15 - floor)].get_or_init(|| {
         let mut map: HashMap<(usize, usize), Vec<Template>> = HashMap::new();
         for (face_index, face) in FACES.iter().enumerate() {
             for character in 0x21..=0x5f_u8 {
@@ -148,7 +195,7 @@ fn templates() -> &'static Templates {
                     .flat_map(|y| (0..w).map(move |x| (x, y)))
                     .map(|(x, y)| at(x, y))
                     .collect();
-                let solid: Vec<bool> = coverage.iter().map(|&c| c == 15).collect();
+                let solid: Vec<bool> = coverage.iter().map(|&c| c >= floor).collect();
                 let Some(first) = solid.iter().position(|&s| s) else {
                     continue;
                 };
@@ -162,7 +209,7 @@ fn templates() -> &'static Templates {
                 let solids: Vec<usize> = (0..w * h).filter(|&i| solid[i]).collect();
                 let ink = solids.len() as u32;
                 let edges = (0..w * h)
-                    .filter(|&i| (1..15).contains(&coverage[i]))
+                    .filter(|&i| (1..floor).contains(&coverage[i]))
                     .collect();
                 let clear = (0..w * h).filter(|&i| coverage[i] == 0).collect();
                 map.entry((right, down)).or_default().push(Template {
@@ -214,7 +261,10 @@ impl Frame<'_> {
             glyphs
         });
         let mut runs = self.group(glyphs);
-        runs.retain(|run| !(run.text.len() == 1 && b"-.,:/".contains(&run.text.as_bytes()[0])));
+        // A lone mark is likelier a stray edge than text: the edge rows of a
+        // large glyph can be one flat colour shaped like "_" or "=", more often
+        // under a look, which maps nearby edge colours to one.
+        runs.retain(|run| !(run.text.len() == 1 && b"-.,:/_=".contains(&run.text.as_bytes()[0])));
         runs.sort_by_key(|run| (run.y, run.x));
         runs
     }
@@ -374,8 +424,16 @@ impl Frame<'_> {
     /// Anti-aliased glyphs: each starts at a solid pixel with no solid pixel of
     /// its colour to the left or above, and matches a template exactly.
     fn smooth_glyphs(&self) -> Vec<Glyph> {
-        let templates = templates();
+        // A look can map a nearly covered edge pixel to the text colour, as
+        // VANA's light look does to orange at coverage 14, so a glyph can show
+        // more solid pixels than it was painted with.
+        let floors: &[u8] = if self.look.is_some() {
+            &[15, 14]
+        } else {
+            &[15]
+        };
         let (width, height) = (self.width, self.height);
+        let blank = self.look.map_or(0, |look| look.shown(0));
         let mut claimed = vec![false; width * height];
         let mut found = Vec::new();
         for y in 0..height {
@@ -385,7 +443,7 @@ impl Frame<'_> {
                 // it belongs to a glyph already read, as touching capitals do.
                 let joined =
                     |nx: usize, ny: usize| self.at(nx, ny) == color && !claimed[ny * width + nx];
-                if color == 0
+                if color == blank
                     || claimed[y * width + x]
                     || (x > 0 && joined(x - 1, y))
                     || (y > 0 && joined(x, y - 1))
@@ -398,15 +456,19 @@ impl Frame<'_> {
                     .count();
                 // A run that continues into the next glyph, as in "TT", is
                 // longer than the template's own.
-                let exact = templates.exact.get(&(right, down)).into_iter().flatten();
-                let joined = templates
-                    .by_down
-                    .get(&down)
-                    .into_iter()
-                    .flatten()
-                    .filter(|&&(r, _)| r < right)
-                    .flat_map(|key| &templates.exact[key]);
-                for template in exact.chain(joined) {
+                let candidates = floors.iter().flat_map(|&floor| {
+                    let templates = templates(floor);
+                    let exact = templates.exact.get(&(right, down)).into_iter().flatten();
+                    let joined = templates
+                        .by_down
+                        .get(&down)
+                        .into_iter()
+                        .flatten()
+                        .filter(move |&&(r, _)| r < right)
+                        .flat_map(|key| &templates.exact[key]);
+                    exact.chain(joined)
+                });
+                for template in candidates {
                     let Some((left, top)) = self.matches(template, x, y, color, &claimed) else {
                         continue;
                     };
@@ -502,11 +564,22 @@ impl Frame<'_> {
             .into_iter()
             .max_by_key(|&(_, n)| n)
             .map_or(outside, |(c, _)| c);
-        let blended = edges
-            .iter()
-            .filter(|&&i| pixel(i) == blend(color, background, template.coverage[i]))
-            .count();
-        (blended * 4 >= edges.len() * 3).then_some((left, top))
+        let blends = |map: &dyn Fn(u16) -> u16, color: u16, background: u16| {
+            let blended = edges
+                .iter()
+                .filter(|&&i| pixel(i) == map(blend(color, background, template.coverage[i])))
+                .count();
+            blended * 4 >= edges.len() * 3
+        };
+        let read = match self.look {
+            None => blends(&|c| c, color, background),
+            Some(look) => look.painted(color).iter().any(|&color| {
+                look.painted(background)
+                    .iter()
+                    .any(|&background| blends(&look.map, color, background))
+            }),
+        };
+        read.then_some((left, top))
     }
 
     fn overlaps(&self, claimed: &[bool], x: usize, y: usize, scale: usize) -> bool {
@@ -752,6 +825,7 @@ mod tests {
             width: W,
             height: H,
             pixels,
+            look: None,
         }
     }
 

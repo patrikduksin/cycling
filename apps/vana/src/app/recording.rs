@@ -791,7 +791,7 @@ impl Runtime {
                 ride.ftp_suggestion = None;
                 ride.climbing = Climbing::default();
                 ride.climbs = Climbs::default();
-                self.navigation.climb_return = None;
+                self.navigation.climb = Default::default();
                 // The chosen workout starts with the ride, its steps read
                 // now; its steps lap it. One that cannot be read rides free.
                 ride.workout = match self.training.load_chosen(bulk) {

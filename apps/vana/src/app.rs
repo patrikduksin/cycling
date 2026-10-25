@@ -12,6 +12,7 @@ use device_api::{
 mod back;
 mod bests;
 mod calibration;
+mod climb_page;
 pub use crate::ride::course::stored::Finder as CourseFinder;
 pub use crate::ride::course::turns::{TURNS as COURSE_TURNS, Turn};
 pub use crate::ride::course::{Course, POINTS as COURSE_POINTS};
@@ -283,5 +284,6 @@ impl Runtime {
         self.directory_step(store, bulk);
         self.service_form();
         self.track_back(store, bulk, now);
+        self.follow_road();
     }
 }

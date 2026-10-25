@@ -204,7 +204,7 @@ impl Row {
             Self::PageMap => "MAP",
             Self::PageBack => "BACK TO START",
             Self::Sounds => "SOUNDS",
-            Self::RadarAlerts => "RADAR COUNT",
+            Self::RadarAlerts => "RADAR ALL CLEAR",
             Self::FuelAlert => "EAT AND DRINK",
             Self::CadenceLow => "LOW CADENCE",
             Self::SunsetAlert => "SUNSET",

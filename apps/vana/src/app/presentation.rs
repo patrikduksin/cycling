@@ -6,7 +6,6 @@ use super::recording::{Medium, Request, RideMessage};
 use crate::clock::Zone;
 use crate::daylight::Sun;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
-use crate::ride::climb::Event as ClimbEvent;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::turn_back::Turn;
@@ -18,12 +17,13 @@ use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
 use crate::screens::ride::summary::{After, Saving, SummaryPage};
-use crate::screens::ride::{self, PageChoice, RidePage};
+use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
 use crate::screens::settings;
 use crate::screens::touch::{Control, List, Touches};
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::{BatteryStatus, device_type};
+use crate::sensors::radar::Beep;
 use core::fmt::Write;
 use device_api::ant::Ant;
 use device_api::display::Display as Panel;
@@ -123,9 +123,11 @@ pub(super) struct Navigation {
     pub(super) phone_step: u8,
     /// The screen already moved to the page code when a phone joined.
     pub(super) phone_advanced: bool,
-    /// The page to return to when the climb that switched to the climb page
-    /// ends; cleared when the rider changes page themselves.
-    pub(super) climb_return: Option<RidePage>,
+    /// Whether the climb page came up by itself, and where it goes back to
+    /// (`climb_page`).
+    pub(super) climb: super::climb_page::Follow,
+    /// The road the last pass saw.
+    pub(super) road: super::climb_page::Road,
     pub(super) page_since: u64,
     pub(super) last_press: u64,
     /// When VANA drew its first frame; the brand flash counts from here.
@@ -236,7 +238,7 @@ impl Navigation {
     /// Show the ride screen's first page.
     pub(super) fn open_ride(&mut self) {
         self.page = Page::Ride;
-        self.ride_page_chosen(self.first_page);
+        self.ride_page_reset(self.first_page);
         self.pause_hidden = false;
     }
 }
@@ -255,7 +257,8 @@ impl Default for Navigation {
             sensors_return: false,
             phone_step: 0,
             phone_advanced: false,
-            climb_return: None,
+            climb: Default::default(),
+            road: Default::default(),
             page_since: 0,
             last_press: 0,
             first_frame: None,
@@ -276,35 +279,7 @@ impl Default for Navigation {
     }
 }
 
-impl Navigation {
-    /// The ride screen follows climbs: a confirmed climb shows the climb page,
-    /// and its end returns to the page the rider was on, unless they changed
-    /// page during the climb (`ride_page_chosen`). With the climb page turned
-    /// off a climb changes nothing: the climb has no toast to fall back on.
-    pub(super) fn follow_climb(&mut self, event: ClimbEvent, choice: PageChoice) {
-        if self.page != Page::Ride || !choice.shows(RidePage::Climb) {
-            return;
-        }
-        match event {
-            ClimbEvent::Confirmed if self.ride_page != RidePage::Climb => {
-                self.climb_return = Some(self.ride_page);
-                self.ride_page = RidePage::Climb;
-            }
-            ClimbEvent::Confirmed => {}
-            ClimbEvent::Finished(_) => {
-                if let Some(previous) = self.climb_return.take() {
-                    self.ride_page = previous;
-                }
-            }
-        }
-    }
-
-    /// The rider picked a ride page: a climb no longer takes them back.
-    pub(super) fn ride_page_chosen(&mut self, page: RidePage) {
-        self.ride_page = page;
-        self.climb_return = None;
-    }
-}
+impl Navigation {}
 
 /// Foreground drawing. Once the terminal takes over the panel it stays suspended.
 #[derive(Clone, Copy)]
@@ -448,8 +423,8 @@ impl Runtime {
     }
 
     /// Sound the cues and alarms due: the latest ride moment's cue, a closed
-    /// lap, a vehicle closing from behind while on the ride screen, which
-    /// wins over any cue, and the rider's alerts (`ride::alerts`), each with
+    /// lap, the radar's beeps for the nearest vehicle behind while on the ride
+    /// screen, which win over any cue, and the rider's alerts (`ride::alerts`), each with
     /// a toast on the ride pages. A cue waits for the buzzer to be free, for
     /// up to a second. Call once per loop.
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
@@ -497,8 +472,16 @@ impl Runtime {
             self.preferences.options.zone,
         );
         if self.navigation.page == Page::Ride {
-            if self.readings.radar_alert.update(radar, now) {
-                self.cue(Cue::RadarApproach, now);
+            if let Some(beep) = self.readings.radar_warning.update(radar, now) {
+                self.cue(
+                    match beep {
+                        Beep::Appeared => Cue::RadarApproach,
+                        Beep::Near => Cue::RadarNear,
+                        Beep::Close => Cue::RadarClose,
+                        Beep::Passing => Cue::RadarPassing,
+                    },
+                    now,
+                );
             }
             let alert = alert.or_else(|| {
                 let ride_left = self
@@ -822,10 +805,12 @@ impl Runtime {
         }
         if page == Page::Ride && view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.
-            view.show_climb(
-                &self.ride.climbs,
-                super::lookahead::forecast_of(&self.lookahead),
-            );
+            view.show_climb(crate::screens::ride::ClimbLent {
+                climbs: &self.ride.climbs,
+                trace: &self.ride.trace,
+                forecast: super::lookahead::forecast_of(&self.lookahead),
+                pinned: super::lookahead::pinned_of(&self.lookahead),
+            });
         }
         let light = self.light();
         view.light = light;
@@ -1425,7 +1410,7 @@ impl Runtime {
                 write!(value, "{}", on(options.sounds))
             }
             Row::RadarAlerts => {
-                let _ = write!(note, "APPROACH ALARM STAYS ON");
+                let _ = write!(note, "RADAR BEEPS STAY ON");
                 write!(value, "{}", on(self.alert_settings().radar))
             }
             Row::SunsetAlert => {

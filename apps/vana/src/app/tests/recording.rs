@@ -693,16 +693,29 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
     assert_eq!(runtime.ride.lap_toast(5800), None);
 }
 
+/// Ride `metres` on the barometer's climbs at 5 m/s along `altitude_dm(m)`,
+/// from where the last stretch ended, and let the page follow the road.
+fn ride_barometer(runtime: &mut Runtime, metres: u32, altitude_dm: impl Fn(u32) -> i32) {
+    for m in (5..=metres).step_by(5) {
+        runtime.ride.climbs.add(1000, 5000, Some(altitude_dm(m)));
+        runtime.follow_road();
+    }
+}
+
+/// Up 400 m at 8% (32 m), confirmed by the barometer.
+fn barometer_climb(runtime: &mut Runtime) {
+    ride_barometer(runtime, 400, |m| m as i32 * 8 / 10);
+    assert!(runtime.ride.climbs.climbing().is_some());
+}
+
+/// Level after the climb, until the barometer ends it.
+fn barometer_top(runtime: &mut Runtime) {
+    ride_barometer(runtime, 400, |_| 320);
+    assert!(runtime.ride.climbs.climbing().is_none());
+}
+
 #[test]
 fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
-    use crate::ride::climb::{Event as Climb, Summary};
-    let finished = Climb::Finished(Summary {
-        start_mm: 0,
-        start_altitude_dm: 0,
-        gain_dm: 900,
-        length_mm: 1_500_000,
-        time_ms: 450_000,
-    });
     let mut radio = Radio::new();
     let mut journal = Journal::erased();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
@@ -711,24 +724,19 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
 
     // A climb shows the climb page; its end goes back to the stats.
-    runtime
-        .navigation
-        .follow_climb(Climb::Confirmed, PageChoice::default());
+    barometer_climb(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime
-        .navigation
-        .follow_climb(finished, PageChoice::default());
+    barometer_top(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
 
-    // Paging during a climb keeps the rider's choice when it ends.
-    runtime
-        .navigation
-        .follow_climb(Climb::Confirmed, PageChoice::default());
+    // Paging during a climb keeps the rider's choice when it ends, and the
+    // climb does not take them back.
+    barometer_climb(&mut runtime);
     runtime.input(press(Button::BottomLeft), 2000, &mut radio);
     assert_eq!(runtime.navigation.ride_page, RidePage::Map);
-    runtime
-        .navigation
-        .follow_climb(finished, PageChoice::default());
+    ride_barometer(&mut runtime, 200, |m| 320 + m as i32 * 8 / 10);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
+    barometer_top(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Map);
 
     // Already on the climb page: it stays there after the climb.
@@ -736,20 +744,14 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
     }
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime
-        .navigation
-        .follow_climb(Climb::Confirmed, PageChoice::default());
-    runtime
-        .navigation
-        .follow_climb(finished, PageChoice::default());
+    barometer_climb(&mut runtime);
+    barometer_top(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
 
     // Away from the ride screen climbs change nothing.
     runtime.navigation.page = Page::Home;
     runtime.navigation.ride_page = RidePage::Main;
-    runtime
-        .navigation
-        .follow_climb(Climb::Confirmed, PageChoice::default());
+    barometer_climb(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
 }
 
@@ -808,119 +810,124 @@ fn a_page_turned_off_under_the_rider_gives_way_to_main() {
 
 #[test]
 fn a_climb_does_not_bring_up_a_climb_page_the_rider_turned_off() {
-    use crate::ride::climb::{Event as Climb, Summary};
     let mut radio = Radio::new();
     let mut journal = Journal::erased();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     hide(&mut runtime, &[RidePage::Climb]);
     on_ride_page(&mut runtime);
-    runtime.ride_climb_event(Climb::Confirmed);
+    barometer_climb(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
     assert!(runtime.navigation.toast.is_none(), "silent, no toast");
-    runtime.ride_climb_event(Climb::Finished(Summary::default()));
+    barometer_top(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
 
     climb_on_the_map(&mut runtime, 0.0);
-    runtime.follow_forecast();
+    runtime.follow_road();
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
     assert!(runtime.navigation.toast.is_none());
 
     hide(&mut runtime, &[]);
-    runtime.forecast_mut().forget();
-    runtime.lookahead.as_deref_mut().unwrap().announced = false;
-    runtime.ride_climb_event(Climb::Confirmed);
+    runtime.follow_road();
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb, "back on");
 }
 
-#[test]
-fn the_barometer_ending_a_climb_leaves_the_page_while_the_map_climbs_on() {
-    use crate::ride::climb::{Event as Climb, Summary};
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    runtime.ride_climb_event(Climb::Confirmed);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    // The map has the rider 1 km from the top of a 5% climb.
-    let road = |m: f64| m.min(1000.0) * 0.05;
-    let arena = std::vec![0u8; crate::app::TERRAIN_ARENA_BYTES].leak();
-    let terrain = std::boxed::Box::new(crate::app::Terrain::new(arena));
-    runtime.attach_terrain(std::boxed::Box::leak(terrain));
-    runtime
-        .forecast_mut()
-        .update(&crate::ride::climb_ahead::tests::ahead(1, 5, road));
-    runtime.ride_climb_event(Climb::Finished(Summary::default()));
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    // Without a climb on the map the barometer's word counts again.
-    runtime
-        .forecast_mut()
-        .update(&crate::ride::climb_ahead::tests::ahead(2, 5, |_| 0.0));
-    runtime.ride_climb_event(Climb::Finished(Summary::default()));
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-}
-
 /// A runtime with a look-ahead whose forecast has a 5% climb starting
-/// `foot` metres ahead.
+/// `foot` metres ahead, pinned to the ride.
 fn climb_on_the_map(runtime: &mut Runtime, foot: f64) {
     let arena = std::vec![0u8; crate::app::TERRAIN_ARENA_BYTES].leak();
     let terrain = std::boxed::Box::new(crate::app::Terrain::new(arena));
     runtime.attach_terrain(std::boxed::Box::leak(terrain));
     let road = move |m: f64| (m - foot).clamp(0.0, 1000.0) * 0.05;
+    map_says(runtime, 1, road);
+}
+
+/// A new forecast of `road(metres)`, followed by the pin as recording does.
+fn map_says(runtime: &mut Runtime, generation: u32, road: impl Fn(f64) -> f64) {
     runtime
         .forecast_mut()
-        .update(&crate::ride::climb_ahead::tests::ahead(1, 5, road));
+        .update(&crate::ride::climb_ahead::tests::ahead(generation, 5, road));
+    runtime.pin_for_test(true);
+}
+
+/// Ride `metres` on the odometer, at 5 m/s, following the road each second.
+fn ride_on(runtime: &mut Runtime, metres: u64) {
+    for _ in 0..metres / 5 {
+        let sample = runtime.readings.live;
+        runtime.ride.totals.add(1000, 5000, &sample, None);
+        // The look-ahead steps each pass, with or without a new forecast.
+        runtime.pin_for_test(false);
+        runtime.follow_road();
+    }
 }
 
 #[test]
-fn a_climb_the_map_saw_before_the_ride_screen_is_announced_on_it() {
+fn the_map_brings_the_page_up_before_the_foot_and_takes_it_away_past_the_top() {
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    climb_on_the_map(&mut runtime, 300.0);
+    runtime.follow_road();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    // Up the 1 km climb: the barometer saying nothing keeps it, as does a
+    // map that loses the climb in its last metres.
+    ride_on(&mut runtime, 1200);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    map_says(&mut runtime, 2, |m| -m * 0.02);
+    runtime.follow_road();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    // At 100 m past the top it stays; beyond, it lets go.
+    ride_on(&mut runtime, 200);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    ride_on(&mut runtime, 10);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+#[test]
+fn the_barometer_ending_a_climb_leaves_the_page_while_the_map_climbs_on() {
+    let mut radio = Radio::new();
+    let mut journal = Journal::erased();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    climb_on_the_map(&mut runtime, 0.0);
+    barometer_climb(&mut runtime);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    barometer_top(&mut runtime);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    // The map shows the rider turned off the climb: the road is clear.
+    map_says(&mut runtime, 2, |_| 0.0);
+    runtime.follow_road();
+    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+}
+
+#[test]
+fn a_climb_the_map_saw_before_the_ride_screen_comes_up_on_it() {
     let mut radio = Radio::new();
     let mut journal = Journal::erased();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     climb_on_the_map(&mut runtime, 300.0);
     runtime.navigation.page = Page::Home;
-    runtime.follow_forecast();
+    runtime.follow_road();
     on_ride_page(&mut runtime);
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-    runtime.follow_forecast();
+    runtime.follow_road();
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
 }
 
 #[test]
-fn the_barometer_does_not_bring_back_a_climb_page_the_rider_left() {
-    use crate::ride::climb::Event as Climb;
+fn a_climb_close_after_another_comes_up_too() {
     let mut radio = Radio::new();
     let mut journal = Journal::erased();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     on_ride_page(&mut runtime);
     climb_on_the_map(&mut runtime, 0.0);
-    runtime.follow_forecast();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime.navigation.ride_page_chosen(RidePage::Main);
-    runtime.ride_climb_event(Climb::Confirmed);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-    // A climb the map did not announce is the barometer's to show.
-    runtime.forecast_mut().forget();
-    runtime.lookahead.as_deref_mut().unwrap().announced = false;
-    runtime.ride_climb_event(Climb::Confirmed);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-}
-
-#[test]
-fn a_climb_close_after_another_is_announced_too() {
-    let mut radio = Radio::new();
-    let mut journal = Journal::erased();
-    let mut runtime = ready_runtime(&mut journal, &mut radio);
-    on_ride_page(&mut runtime);
-    climb_on_the_map(&mut runtime, 0.0);
-    runtime.follow_forecast();
+    runtime.follow_road();
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
     runtime.navigation.ride_page_chosen(RidePage::Main);
     // Over the top: 300 m level, then the next climb.
-    let road = |m: f64| (m - 300.0).clamp(0.0, 800.0) * 0.06;
-    runtime
-        .forecast_mut()
-        .update(&crate::ride::climb_ahead::tests::ahead(2, 5, road));
-    runtime.follow_forecast();
+    ride_on(&mut runtime, 1150);
+    map_says(&mut runtime, 2, |m| (m - 300.0).clamp(0.0, 800.0) * 0.06);
+    runtime.follow_road();
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
 }
 

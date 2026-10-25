@@ -214,7 +214,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
 }
 
 #[test]
-fn radar_alerts_sound_only_on_the_ride_page() {
+fn radar_beeps_sound_only_on_the_ride_page() {
     use device_api::sound::{Pattern, Snapshot, Sound, State};
     /// Played ids, and when the buzzer is free again (500 ms per sound).
     struct Speaker(Vec<u8>, u64);
@@ -269,9 +269,14 @@ fn radar_alerts_sound_only_on_the_ride_page() {
     runtime.alert(&mut speaker, 1250);
     assert_eq!(speaker.0, [2], "the longest pattern that fits");
 
-    // A chime holds the buzzer when a car appears: the alert is not spent
-    // on a refused sound, and plays once the buzzer is free.
+    // The road empties, then a chime holds the buzzer when the next car
+    // appears: the alarm is not spent on a refused sound, and plays once the
+    // buzzer is free.
     speaker.0.clear();
+    radio.data(RADAR, [0x30, 0, 0, 0, 0, 0, 0, 0], 6000);
+    tick(&mut runtime, &mut journal, &mut radio, 6000);
+    runtime.alert(&mut speaker, 6000);
+    assert!(speaker.0.is_empty(), "an empty road is quiet");
     runtime.navigation.chime = Some(crate::app::cues::Cue::Lap);
     runtime.alert(&mut speaker, 7000);
     assert_eq!(speaker.0, [1], "the lap chime");
@@ -282,7 +287,7 @@ fn radar_alerts_sound_only_on_the_ride_page() {
     radio.data(RADAR, [0x30, 2, 0, 10, 0, 0, 1, 0], 7500);
     tick(&mut runtime, &mut journal, &mut radio, 7500);
     runtime.alert(&mut speaker, 7500);
-    assert_eq!(speaker.0, [1, 2], "the alert, once the buzzer is free");
+    assert_eq!(speaker.0, [1, 2], "the alarm, once the buzzer is free");
 }
 
 #[test]

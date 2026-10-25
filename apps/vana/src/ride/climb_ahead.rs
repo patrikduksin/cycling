@@ -7,9 +7,14 @@
 //! what the ride would detect when riding it, found before the rider gets
 //! there. Categories follow `climb::Category`.
 //!
-//! A forecast is shown only when the look-ahead is confident (`MIN_CONFIDENCE`)
-//! and reaches far enough to say something; otherwise the climb page keeps
-//! its map-free view.
+//! A forecast is used only when the look-ahead is confident (`MIN_CONFIDENCE`)
+//! and reaches far enough to say something; otherwise the climb page draws
+//! from the barometer alone.
+//!
+//! The forecast moves with the rider, so it forgets a climb's foot once the
+//! rider is past it. `Pinned` keeps the climb on the ride's odometer from
+//! `ANNOUNCE_MM` before its foot to `PAST_TOP_MM` after its top, so the page
+//! draws the whole climb and the rider moving along it.
 use crate::ride::climb::{Climbs, DROP_DM, END_TENTHS, Event, STEP_MM, Steepness, Summary};
 use terrain::{Ahead, End};
 
@@ -27,6 +32,19 @@ const FLAT_STEPS: usize = 10;
 /// A climb that starts within this distance is the one the rider is on:
 /// the detector finds the start of a climb under way up to a window behind.
 pub const ON_CLIMB_MM: u64 = 60_000;
+/// A climb is pinned, and the climb page comes up, this far before its foot.
+pub const ANNOUNCE_MM: u64 = 500_000;
+/// A pinned climb stays this far past its top, so the page does not leave
+/// on the summit.
+pub const PAST_TOP_MM: u64 = 100_000;
+/// A foot the map puts this close to the pinned one is the same climb.
+const SAME_FOOT_MM: u64 = 200_000;
+/// Within this of the top the map may no longer see the climb under way
+/// (`Forecast::remainder` needs 200 m still rising).
+const LAST_MM: u64 = FLAT_STEPS as u64 * STEP_MM;
+/// Samples a pinned climb keeps (12 km): the forecast's reach from where it
+/// was first seen, and some road ridden since.
+pub const PINNED: usize = SAMPLES + 100;
 
 /// A climb on the road ahead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,6 +256,180 @@ impl Forecast {
     }
 }
 
+/// A climb from the map, pinned to the ride's odometer: its foot and top,
+/// and the map's elevation of the road from where it was first seen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pinned {
+    /// Odometer distance of the first sample: where the climb was pinned.
+    origin_mm: u64,
+    /// Odometer distance of the foot and of the top.
+    pub foot_mm: u64,
+    pub top_mm: u64,
+    /// The map ended before the top: the climb goes on at least this far.
+    pub open: bool,
+    /// Map elevation every 20 m from `origin_mm`, dm, relative to the first.
+    samples: [i16; PINNED],
+    len: usize,
+}
+
+impl Pinned {
+    /// Pin `climb` from `forecast`, with the rider at `odometer_mm`.
+    fn new(forecast: &Forecast, climb: ClimbAhead, odometer_mm: u64) -> Self {
+        let mut pinned = Self {
+            origin_mm: odometer_mm,
+            foot_mm: odometer_mm + climb.summary.start_mm,
+            top_mm: odometer_mm + climb.end_mm(),
+            open: climb.open,
+            samples: [0; PINNED],
+            len: 0,
+        };
+        pinned.take(forecast, 0, 0);
+        pinned
+    }
+
+    /// The forecast's samples from sample `at` on, `anchor` dm above it.
+    fn take(&mut self, forecast: &Forecast, at: usize, anchor: i32) {
+        let len = forecast.len.min(PINNED - at);
+        let base = i32::from(forecast.samples[0]);
+        for (slot, sample) in self.samples[at..at + len].iter_mut().zip(&forecast.samples) {
+            let z = anchor + i32::from(*sample) - base;
+            *slot = z.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        }
+        self.len = at + len;
+    }
+
+    /// The same climb seen again from `odometer_mm`: the road ahead and the
+    /// top from the new forecast, the road behind as it was.
+    fn refresh(&mut self, forecast: &Forecast, climb: ClimbAhead, odometer_mm: u64, on: bool) {
+        let at = self.index(odometer_mm);
+        if at >= PINNED {
+            // Longer than the pin holds: what it has stays.
+            self.open = true;
+            return;
+        }
+        if !on {
+            self.foot_mm = odometer_mm + climb.summary.start_mm;
+        }
+        self.top_mm = (odometer_mm + climb.end_mm()).max(self.foot_mm);
+        let anchor = i32::from(self.samples[at.min(self.len.saturating_sub(1))]);
+        // A stretch the forecast skipped (no fix) is bridged level.
+        for index in self.len..at {
+            self.samples[index] = anchor as i16;
+        }
+        self.take(forecast, at, anchor);
+        self.open = climb.open || self.index(self.top_mm) >= PINNED;
+    }
+
+    fn index(&self, odometer_mm: u64) -> usize {
+        (odometer_mm.saturating_sub(self.origin_mm) / STEP_MM) as usize
+    }
+
+    /// Odometer distance of the first and the last sample.
+    pub fn span_mm(&self) -> (u64, u64) {
+        let last = self.len.saturating_sub(1) as u64 * STEP_MM;
+        (self.origin_mm, self.origin_mm + last)
+    }
+
+    /// Map elevation at `odometer_mm`, dm relative to the first sample,
+    /// between samples in a straight line.
+    pub fn altitude_dm(&self, odometer_mm: u64) -> i32 {
+        let last = self.len.saturating_sub(1);
+        let index = self.index(odometer_mm);
+        if index >= last {
+            return i32::from(self.samples[last]);
+        }
+        let (a, b) = (
+            i32::from(self.samples[index]),
+            i32::from(self.samples[index + 1]),
+        );
+        let into = (odometer_mm.saturating_sub(self.origin_mm) % STEP_MM) as i32;
+        a + (b - a) * into / STEP_MM as i32
+    }
+
+    /// Steepness at `odometer_mm`: the grade over 100 m each side, as the
+    /// ride's profile has it.
+    pub fn steepness(&self, odometer_mm: u64) -> Steepness {
+        const LOCAL: usize = 5;
+        let index = self.index(odometer_mm).min(self.len.saturating_sub(1));
+        let from = index.saturating_sub(LOCAL);
+        let to = (index + LOCAL).min(self.len.saturating_sub(1));
+        if to <= from {
+            return Steepness::Easy;
+        }
+        let rise = i32::from(self.samples[to]) - i32::from(self.samples[from]);
+        Steepness::of(rise * 5 / (to - from) as i32)
+    }
+
+    /// The whole climb, foot to top; `start_mm` is the foot's odometer.
+    pub fn summary(&self) -> Summary {
+        let gain = self.altitude_dm(self.top_mm) - self.altitude_dm(self.foot_mm);
+        Summary {
+            start_mm: self.foot_mm,
+            start_altitude_dm: self.altitude_dm(self.foot_mm),
+            gain_dm: gain.max(0) as u32,
+            length_mm: self.top_mm - self.foot_mm,
+            time_ms: 0,
+        }
+    }
+
+    /// The share of the climb behind the rider at `odometer_mm`, 0..=1000.
+    pub fn done_permille(&self, odometer_mm: u64) -> u32 {
+        let length = self.top_mm.saturating_sub(self.foot_mm).max(1);
+        let done = odometer_mm.saturating_sub(self.foot_mm).min(length);
+        (done * 1000 / length) as u32
+    }
+}
+
+/// Keep `pinned` on the map's climb as the rider at `odometer_mm` rides, each
+/// pass: let it go `PAST_TOP_MM` after the top. With a `fresh` forecast, also
+/// pin the climb under way or within `ANNOUNCE_MM`, follow its top as the
+/// map sees further, and let it go when the map shows the rider left it. A
+/// forecast already followed is not looked at again: it describes the road
+/// from where the rider was.
+pub fn follow(pinned: &mut Option<Pinned>, fresh: Option<&Forecast>, odometer_mm: u64) {
+    if pinned
+        .as_ref()
+        .is_some_and(|p| odometer_mm > p.top_mm + PAST_TOP_MM)
+    {
+        *pinned = None;
+    }
+    // An unsure forecast (a fork close ahead) changes nothing.
+    let Some(forecast) = fresh.filter(|forecast| forecast.usable()) else {
+        return;
+    };
+    let current = forecast.current();
+    // A pinned climb ahead keeps its pin a little past the announce distance,
+    // so a foot estimate wobbling at 500 m does not pin and unpin it.
+    let reach = ANNOUNCE_MM + if pinned.is_some() { SAME_FOOT_MM } else { 0 };
+    let near = current.or(forecast.upcoming().filter(|c| c.summary.start_mm <= reach));
+    match (pinned.as_mut(), near) {
+        (None, Some(climb)) => *pinned = Some(Pinned::new(forecast, climb, odometer_mm)),
+        (Some(pin), Some(climb)) => {
+            let on = current.is_some();
+            let same = if on {
+                odometer_mm + SAME_FOOT_MM >= pin.foot_mm && odometer_mm <= pin.top_mm + PAST_TOP_MM
+            } else {
+                (odometer_mm + climb.summary.start_mm).abs_diff(pin.foot_mm) <= SAME_FOOT_MM
+            };
+            if same {
+                pin.refresh(forecast, climb, odometer_mm, on);
+            } else if odometer_mm > pin.top_mm || odometer_mm < pin.foot_mm {
+                // Over the top the next climb is a climb of its own; before
+                // the foot, the road now leads to another one.
+                *pinned = Some(Pinned::new(forecast, climb, odometer_mm));
+            }
+        }
+        (Some(pin), None) => {
+            // No climb here by the map: the rider turned off before the foot
+            // or partway up. Near the top the map no longer sees the rest.
+            if odometer_mm < pin.foot_mm || odometer_mm + LAST_MM < pin.top_mm {
+                *pinned = None;
+            }
+        }
+        (None, None) => {}
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -398,5 +590,86 @@ pub(crate) mod tests {
         assert_eq!(rest.summary.gain_dm, 80);
         let next = forecast.upcoming().expect("the 8% climb");
         assert!(next.summary.start_mm >= 1_100_000);
+    }
+
+    /// Follow a new forecast of `road(metres)` with the rider at `at_m`.
+    fn seen(pinned: &mut Option<Pinned>, generation: u32, at_m: u64, road: impl Fn(f64) -> f64) {
+        let mut forecast = Forecast::default();
+        forecast.update(&ahead(generation, 5, road));
+        follow(pinned, Some(&forecast), at_m * 1000);
+    }
+
+    #[test]
+    fn a_climb_is_pinned_once_it_is_within_500_m() {
+        let mut pinned = None;
+        seen(&mut pinned, 1, 0, |m| (m - 900.0).clamp(0.0, 1000.0) * 0.08);
+        assert!(pinned.is_none(), "900 m away");
+        seen(&mut pinned, 2, 500, |m| {
+            (m - 400.0).clamp(0.0, 1000.0) * 0.08
+        });
+        let pin = pinned.as_ref().expect("400 m away");
+        assert!((880_000..=920_000).contains(&pin.foot_mm), "{pin:?}");
+        assert!((1_880_000..=1_920_000).contains(&pin.top_mm), "{pin:?}");
+        let climb = pin.summary();
+        assert!((780..=820).contains(&climb.gain_dm), "{climb:?}");
+        assert_eq!(climb.category(), Category::Four);
+        assert_eq!(pin.done_permille(500_000), 0);
+    }
+
+    #[test]
+    fn the_foot_stays_while_the_map_moves_the_top() {
+        let mut pinned = None;
+        seen(&mut pinned, 1, 0, |m| (m - 200.0).clamp(0.0, 1000.0) * 0.08);
+        let foot = pinned.as_ref().unwrap().foot_mm;
+        // 500 m up, the map now sees the climb go on 1 km more than it did.
+        seen(&mut pinned, 2, 700, |m| m.min(1500.0) * 0.08);
+        let pin = pinned.as_ref().unwrap();
+        assert_eq!(pin.foot_mm, foot, "the foot is behind the rider");
+        assert!((2_180_000..=2_220_000).contains(&pin.top_mm), "{pin:?}");
+        // What was ridden keeps the first forecast's road: 40 m up so far.
+        let up = pin.altitude_dm(700_000) - pin.altitude_dm(pin.foot_mm);
+        assert!((390..=410).contains(&up), "{up}");
+        assert!((240..=260).contains(&pin.done_permille(700_000)));
+    }
+
+    #[test]
+    fn a_pin_goes_past_the_top_or_when_the_rider_turns_off() {
+        let climb = |m: f64| (m - 200.0).clamp(0.0, 1000.0) * 0.08;
+        let mut pinned = None;
+        seen(&mut pinned, 1, 0, climb);
+        // Without a new forecast it stays to 100 m past the top.
+        follow(&mut pinned, None, 1_250_000);
+        assert!(pinned.is_some());
+        follow(&mut pinned, None, 1_310_000);
+        assert!(pinned.is_none());
+        // Partway up, the map shows a level road: the rider turned off.
+        seen(&mut pinned, 2, 0, climb);
+        seen(&mut pinned, 3, 500, |_| 0.0);
+        assert!(pinned.is_none());
+        // In the last 200 m the map no longer sees the climb: it stays.
+        seen(&mut pinned, 4, 0, climb);
+        seen(&mut pinned, 5, 1100, |m| -m * 0.02);
+        assert!(pinned.is_some());
+        // An unsure forecast changes nothing.
+        let mut unsure = ahead(6, 5, |_| 0.0);
+        unsure.confidence = 10;
+        let mut forecast = Forecast::default();
+        forecast.update(&unsure);
+        follow(&mut pinned, Some(&forecast), 1_150_000);
+        assert!(pinned.is_some());
+    }
+
+    #[test]
+    fn over_the_top_the_next_climb_is_pinned_afresh() {
+        let mut pinned = None;
+        seen(&mut pinned, 1, 0, |m| m.min(1000.0) * 0.08);
+        let first = pinned.as_ref().unwrap().foot_mm;
+        // 50 m past the top, the next climb starts 300 m on.
+        seen(&mut pinned, 2, 1050, |m| {
+            (m - 300.0).clamp(0.0, 800.0) * 0.06
+        });
+        let pin = pinned.as_ref().unwrap();
+        assert_ne!(pin.foot_mm, first);
+        assert!((1_330_000..=1_370_000).contains(&pin.foot_mm), "{pin:?}");
     }
 }

@@ -210,9 +210,9 @@ instead. Touch never starts, pauses, laps or ends a ride.
 | Saved (summary) | Done: Home | Next summary page | Home |
 
 The pages are live, totals, lap and climb; the header shows `1/4`. A
-confirmed climb (3% over 200 m that gains 20 m) brings up the climb page, and
-its end returns to the previous page unless the rider changed page during the
-climb.
+confirmed climb (3% over 200 m that gains 20 m), or one from the map within
+500 m, brings up the climb page. Its end returns to the previous page unless
+the rider changed page during the climb.
 
 Laps:
 

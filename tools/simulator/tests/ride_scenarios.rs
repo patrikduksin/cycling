@@ -277,7 +277,7 @@ fn power_lost_during_the_first_write_of_a_fresh_journal_still_records() {
 }
 
 #[test]
-fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
+fn approaching_vehicle_is_drawn_and_sounds_one_alarm() {
     let mut sim = rider();
     sim.ant_sensor(device_type::RADAR, RADAR);
     sim.pair(&["RADAR"]);
@@ -297,11 +297,10 @@ fn approaching_vehicle_is_drawn_and_sounds_an_alert() {
     sim.advance(seconds(2));
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 1, "{radar:?}");
-    assert_eq!(alerts(&sim), 0, "alert while far away");
-    // Six seconds from reaching the rider, VANA beeps.
+    assert_eq!(alerts(&sim), 1, "the alarm sounds as the vehicle appears");
     sim.advance(seconds(4));
-    assert_eq!(alerts(&sim), 1, "no alert when close");
-    sim.checkpoint("vehicle close, alert sounded");
+    assert_eq!(alerts(&sim), 1, "closing in ticks, not another alarm");
+    sim.checkpoint("vehicle close, alarm sounded once");
     sim.advance(seconds(15));
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 0, "vehicle passed");
@@ -428,38 +427,46 @@ fn gps_tunnel_records_samples_without_a_position() {
 }
 
 #[test]
-fn radar_names_new_vehicles_and_calls_all_clear_when_they_pass() {
+fn radar_beeps_faster_and_higher_as_a_vehicle_closes_then_calls_all_clear() {
     let mut sim = rider();
     sim.ant_sensor(device_type::RADAR, RADAR);
     sim.pair(&["RADAR"]);
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.advance(seconds(5));
+    let before = sim.device.speaker.played.len();
     sim.vehicle(Vehicle {
         range_m: 140.0,
         closing_kmh: 30.0,
         fast: false,
         side: Side::Behind,
     });
-    sim.wait_for("1 VEHICLE", seconds(3)).unwrap();
-    sim.checkpoint("radar: one vehicle behind");
-    sim.vehicle(Vehicle {
-        range_m: 140.0,
-        closing_kmh: 30.0,
-        fast: false,
-        side: Side::Behind,
-    });
-    sim.wait_for("2 VEHICLES", seconds(3)).unwrap();
-    let played = sim.device.speaker.played.len();
-    sim.wait_for("ALL CLEAR", seconds(30)).unwrap();
-    sim.checkpoint("radar: all clear after they passed");
+    for _ in 0..80 {
+        if sim.wait_for("ALL CLEAR", 500).is_ok() {
+            break;
+        }
+        sim.expect_no_text("VEHICLE");
+    }
+    sim.expect_text("ALL CLEAR");
+    sim.checkpoint("radar: all clear after the vehicle passed");
     sim.advance(seconds(1));
-    let clear: Vec<_> = sim.device.speaker.played[played..].to_vec();
-    // The all-clear cue runs low to high: 2.5 kHz, then 4 kHz.
-    let ids: Vec<_> = clear.iter().map(|&(_, id)| id).collect();
+    let heard = sim.device.speaker.played[before..].to_vec();
+
+    // The alarm, then low, middle and high ticks, then ALL CLEAR (low, high).
+    let mut ids: Vec<_> = heard.iter().map(|&(_, id)| id).collect();
+    ids.dedup();
+    assert_eq!(ids, [22, 21, 0, 10, 21, 10], "{heard:?}");
+    let gap = |id: u8| -> u64 {
+        let at: Vec<_> = heard.iter().filter(|h| h.1 == id).map(|h| h.0).collect();
+        at.windows(2).map(|pair| pair[1] - pair[0]).min().unwrap()
+    };
     assert!(
-        ids.windows(2).any(|pair| pair == [21, 10]),
-        "the all-clear cue sounds: {ids:?}"
+        gap(21) > gap(0),
+        "low ticks are slower than middle: {heard:?}"
+    );
+    assert!(
+        gap(0) > gap(10),
+        "middle ticks are slower than high: {heard:?}"
     );
 }
 
@@ -643,7 +650,7 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
     assert!(counts.windows(2).all(|w| w[1] <= w[0]), "{counts:?}");
     assert!(counts.iter().any(|&n| (1..6).contains(&n)), "{counts:?}");
     assert_eq!(counts.last(), Some(&0), "{counts:?}");
-    assert!(alerts(&sim) >= 5, "alerts sounded");
+    assert_eq!(alerts(&sim), 1, "one alarm for the whole group");
     sim.checkpoint("all vehicles passed");
 
     // The radar is still connected: a new vehicle is detected.
@@ -656,6 +663,7 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
     sim.advance(seconds(2));
     let radar = sim.device.sdk.radar(sim.device.now);
     assert_eq!(radar.targets.iter().flatten().count(), 1, "{radar:?}");
+    assert_eq!(alerts(&sim), 2, "the next vehicle sounds the alarm again");
 }
 
 #[test]
@@ -1768,23 +1776,24 @@ fn ride_until_page(sim: &mut Sim, page: &str, before_m: f64) -> f64 {
     at
 }
 
-/// A percentage reading such as "6.0%".
+/// The climb page's grade: its largest percentage, which needs no caption.
 #[track_caller]
-fn expect_percent(sim: &mut Sim, label: &str, expected: f64, tolerance: f64) {
+fn expect_grade(sim: &mut Sim, expected: f64, tolerance: f64) {
     let screen = sim.screen();
-    let value = screen
-        .field(label)
-        .unwrap_or_else(|| panic!("no {label}; screen:\n{}", screen.text()));
-    let number: f64 = value
-        .trim_end_matches('%')
-        .parse()
-        .unwrap_or_else(|_| panic!("{label} shows {value:?}"));
+    let grade = screen
+        .frame()
+        .read()
+        .into_iter()
+        .filter(|run| run.text.ends_with('%'))
+        .max_by_key(|run| run.scale)
+        .unwrap_or_else(|| panic!("no grade; screen:\n{}", screen.text()));
+    let number: f64 = grade.text.trim_end_matches('%').parse().unwrap();
     assert!(
         (number - expected).abs() <= tolerance,
-        "{label} shows {value}, expected {expected}% ± {tolerance}; screen:\n{}",
-        screen.text()
+        "grade {}, expected {expected}% ± {tolerance}",
+        grade.text
     );
-    sim.note(NoteKind::Check, format!("{label} shows {value}"));
+    sim.note(NoteKind::Check, format!("grade shows {}", grade.text));
 }
 
 #[test]
@@ -1797,7 +1806,8 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.expect_text("NO CLIMB");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     sim.expect_field("ASCENT M", "0");
-    expect_percent(&mut sim, "GRADE", 0.0, 0.5);
+    expect_grade(&mut sim, 0.0, 0.5);
+    sim.expect_text("180");
     sim.checkpoint("climb page on the flat");
 
     // Up at 14 km/h. 20 m of gain confirms the climb about 330 m in.
@@ -1812,21 +1822,16 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     );
 
     ride_to(&mut sim, 1750.0);
-    expect_percent(&mut sim, "GRADE", 6.0, 0.5);
+    expect_grade(&mut sim, 6.0, 0.5);
     expect_near(&mut sim, "GAIN M", 45.0, 4.0);
-    expect_near(&mut sim, "LENGTH KM", 0.75, 0.05);
-    expect_percent(&mut sim, "AVG GRADE", 6.0, 0.4);
-    // 3.9 m/s at 6% is 840 m/h.
-    expect_near(&mut sim, "VAM M/H", 840.0, 60.0);
-    expect_near(&mut sim, "ALTITUDE M", 645.0, 3.0);
-    let time = sim.screen().field("CLIMB TIME").unwrap();
-    assert!(time.starts_with("03:"), "{time}");
+    expect_near(&mut sim, "SO FAR KM", 0.75, 0.05);
+    sim.expect_text("260");
     sim.checkpoint("climb page mid-climb");
 
     ride_to(&mut sim, 2510.0);
     sim.expect_text("CLIMBING");
     expect_near(&mut sim, "GAIN M", 90.0, 4.0);
-    expect_near(&mut sim, "LENGTH KM", 1.5, 0.05);
+    expect_near(&mut sim, "SO FAR KM", 1.5, 0.05);
     sim.checkpoint("climb page at the top");
 
     // Over the top at 40 km/h the climb ends within about 200 m.
@@ -1839,15 +1844,6 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.expect_text("NO CLIMB");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     expect_near(&mut sim, "ASCENT M", 90.0, 4.0);
-    expect_near(&mut sim, "LAST GAIN", 90.0, 4.0);
-    expect_near(&mut sim, "LAST KM", 1.5, 0.08);
-    expect_percent(&mut sim, "LAST AVG", 6.0, 0.4);
-    let time = sim.screen().field("LAST TIME").unwrap();
-    // 1.5 km at 14 km/h is 6:26.
-    assert!(
-        time.starts_with("06:") || time.starts_with("07:0"),
-        "{time}"
-    );
     sim.checkpoint("climb page after the descent");
 }
 
@@ -4525,9 +4521,9 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_text("RADAR STAYS ON");
     sim.checkpoint("sounds off");
     sim.swipe_next();
-    // Every alert is off but the radar count, until the rider sets one.
+    // Every alert is off but the radar all clear, until the rider sets one.
     sim.expect_text("ALERTS");
-    sim.expect_field("RADAR COUNT", "ON");
+    sim.expect_field("RADAR ALL CLEAR", "ON");
     sim.expect_field("EAT AND DRINK", "OFF");
     sim.expect_field("LOW CADENCE", "OFF");
     sim.set_option("LOW CADENCE", "70 RPM");

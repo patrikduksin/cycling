@@ -1065,8 +1065,7 @@ impl<'a> Homing<'a> {
                 (near.off <= ON_M && !self.against(a, b)).then_some(near.off)
             };
             let window = along - JUMP_M..=along + BACK_M;
-            if let Some(ahead) =
-                self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
+            if let Some(ahead) = self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
             {
                 return Some(ahead);
             }
@@ -1077,8 +1076,9 @@ impl<'a> Homing<'a> {
     /// Whether the course from `b` to `a` runs against the rider's heading.
     fn against(&self, a: &Crumb, b: &Crumb) -> bool {
         let way = bearing((b.east, b.north), (a.east, a.north));
-        self.heading
-            .is_some_and(|heading| (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)))
+        self.heading.is_some_and(|heading| {
+            (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN))
+        })
     }
 
     /// The segment among `ends` reaching from `floor` to `ceiling` metres

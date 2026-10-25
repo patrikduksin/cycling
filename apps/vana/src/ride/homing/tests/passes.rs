@@ -74,22 +74,26 @@ fn judge(said: &[(f32, Warning)], corners: &[(f32, f32)], noise: f32) -> Heard {
                 .position(|c| c.0 > metres + 12.0)
                 .unwrap_or(corners.len())
         };
-        let ok = [next(metres - noise - 12.0), next(metres - noise), next(metres + noise)]
-            .into_iter()
-            .any(|at| match warning {
-                Warning::Ahead { kind, .. } => names(kind, corners, at).is_some(),
-                Warning::Now { kind, then } => match names(kind, corners, at) {
-                    None => false,
-                    Some(n) => {
-                        let then = match then {
-                            None => Some(0),
-                            Some(then) => names(then, corners, at + n),
-                        };
-                        then.inspect(|m| named[at..at + n + m].iter_mut().for_each(|c| *c = true))
-                            .is_some()
-                    }
-                },
-            });
+        let ok = [
+            next(metres - noise - 12.0),
+            next(metres - noise),
+            next(metres + noise),
+        ]
+        .into_iter()
+        .any(|at| match warning {
+            Warning::Ahead { kind, .. } => names(kind, corners, at).is_some(),
+            Warning::Now { kind, then } => match names(kind, corners, at) {
+                None => false,
+                Some(n) => {
+                    let then = match then {
+                        None => Some(0),
+                        Some(then) => names(then, corners, at + n),
+                    };
+                    then.inspect(|m| named[at..at + n + m].iter_mut().for_each(|c| *c = true))
+                        .is_some()
+                }
+            },
+        });
         if !ok {
             return Heard::Wrong;
         }
@@ -390,9 +394,15 @@ fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
     }
     let pin = 10.0;
     let hairpin = crate::ride::course::turns::tests::join(&[
-        path(&[(0.0, 0.0), (0.0, 600.0), (400.0, 600.0), (400.0, 1000.0)], 5.0),
+        path(
+            &[(0.0, 0.0), (0.0, 600.0), (400.0, 600.0), (400.0, 1000.0)],
+            5.0,
+        ),
         crate::ride::course::turns::tests::arc((400.0 + pin, 1000.0), pin, -90.0, 180.0, 3.0),
-        path(&[(400.0 + 2.0 * pin, 1000.0), (400.0 + 2.0 * pin, 400.0)], 5.0),
+        path(
+            &[(400.0 + 2.0 * pin, 1000.0), (400.0 + 2.0 * pin, 400.0)],
+            5.0,
+        ),
     ]);
     lines.push(("hairpin 20 m".into(), hairpin, 1400.0));
     let (mut wrong, mut off, mut unended, mut runs) = (Vec::new(), 0, 0, 0);
@@ -404,15 +414,8 @@ fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
                 for from in [at - gap / 2.0, at - gap - 10.0] {
                     for noise in [0.0f32, 3.0] {
                         for seed in 0..4 {
-                            let (said, events) = ride_gapped(
-                                line,
-                                line,
-                                found,
-                                noise,
-                                7.0,
-                                seed,
-                                from..from + gap,
-                            );
+                            let (said, events) =
+                                ride_gapped(line, line, found, noise, 7.0, seed, from..from + gap);
                             runs += 1;
                             off += usize::from(events.contains(&Event::OffTrack));
                             unended += usize::from(!events.contains(&Event::CourseEnd));

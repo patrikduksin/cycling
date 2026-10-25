@@ -7,10 +7,14 @@ use crate::ride::course::turns::{Kind, Side, TURNS, Turn};
 /// `count` corners 100 m apart, right then left in turn, drawn only at
 /// the corners as a planner's route is.
 fn zigzag(count: usize) -> Vec<(f32, f32)> {
+    zigzag_apart(count, 100.0)
+}
+
+fn zigzag_apart(count: usize, apart: f32) -> Vec<(f32, f32)> {
     let corners: Vec<(f32, f32)> = (0..count)
         .map(|k| {
             (
-                400.0 + 100.0 * k as f32,
+                400.0 + apart * k as f32,
                 if k % 2 == 0 { 90.0 } else { -90.0 },
             )
         })
@@ -86,4 +90,17 @@ fn turns_stored_from_a_full_list_are_followed_by_the_scan() {
         right_left(1_500)
     );
     assert_eq!(at_corners(&zigzag(60), 16, Some(16)), right_left(60));
+}
+
+/// The first corner after the stored ones, 60 m on, is named too.
+#[test]
+fn the_corner_just_after_the_stored_turns_is_named() {
+    for apart in [60.0, 80.0] {
+        let line = zigzag_apart(33, apart);
+        assert_eq!(
+            at_corners(&line, 16, Some(16)),
+            right_left(33),
+            "{apart} m apart"
+        );
+    }
 }

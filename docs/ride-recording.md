@@ -566,7 +566,7 @@ holds 1,024 turns at a time: on a course with more, the scan waits once the
 list is full until the rider is past half of it, and those turns make way.
 A turns file flagged as holding fewer than the course has is followed the
 same way by the scan of the course as kept, which lists only turns starting
-more than 50 m after the last stored one.
+after the end of the last stored one.
 
 | Bytes | Field |
 | --- | --- |

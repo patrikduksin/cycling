@@ -105,9 +105,6 @@ const REWIND_MM: u32 = 30_000;
 /// Coarsely drawn corners closer than this, in one group or two, say
 /// nothing: which way they go first is not known.
 const CROWD_M: f32 = 10.0;
-/// A scan after turns found elsewhere lists none starting this soon after
-/// the last of them: it may be the same turn, found a little apart.
-const AFTER_MM: u32 = 50_000;
 /// Bends one way adding up to this are a roundabout's ring.
 const RING_DEG: f32 = 200.0;
 /// A bend against a coarse turn this big may be a corner of its own.
@@ -563,7 +560,7 @@ pub struct Scan {
     total: f32,
     bend: Option<Bend>,
     open: Option<Open>,
-    /// Turns that start before this, in millimetres along, are known
+    /// Turns that start at or before this, in millimetres along, are known
     /// already and not listed.
     from_mm: u32,
     started: bool,
@@ -582,12 +579,12 @@ impl Scan {
     }
 
     /// A scan that lists only the turns after `turns`, the first of the
-    /// course's turns, found elsewhere.
+    /// course's turns, found elsewhere: those starting past the end of the
+    /// last of them. The same turn found again, a few metres apart, starts
+    /// within it.
     pub fn after(turns: &[Turn]) -> Self {
         Self {
-            from_mm: turns
-                .last()
-                .map_or(0, |last| last.end_mm.saturating_add(AFTER_MM)),
+            from_mm: turns.last().map_or(0, |last| last.end_mm),
             ..Self::default()
         }
     }
@@ -632,7 +629,7 @@ impl Scan {
     ) -> usize {
         let (room, from_mm) = (turns.len(), self.from_mm);
         let mut push = |turn: Turn, found: &mut usize| {
-            if turn.start_mm < from_mm {
+            if from_mm > 0 && turn.start_mm <= from_mm {
                 return;
             }
             // Coarse corners close together, apart or not, say nothing.

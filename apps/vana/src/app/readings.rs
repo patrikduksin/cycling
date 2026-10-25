@@ -582,9 +582,8 @@ impl Runtime {
         };
         if let Some(step) = step {
             let profile = self.preferences.profile;
-            if let Some(event) = self.ride.count(now, step, &sample, pressure, &profile) {
-                self.ride_climb_event(event);
-            }
+            // The climb page reads the climb under way; `follow_road` looks.
+            let _ = self.ride.count(now, step, &sample, pressure, &profile);
             if !self.ride.workout_events.is_empty() {
                 self.workout_events(now);
             }

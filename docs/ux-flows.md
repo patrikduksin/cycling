@@ -124,6 +124,37 @@ from where the cut ride began, as the track below explains. GPS that drifts by
 tens of metres between visits can miss laps; the lap count is a
 convenience, and BACK takes one by hand.
 
+### Climb
+
+The CLIMB page has one layout on every road. The grade fills the top in its
+steepness colour, with a band in that colour under it. POWER (3 s) and HEART
+follow, each with its zone on the caption's line in the zone's colour. Then
+come two readings and a profile with a white disc for the rider:
+
+- **CLIMB IN 0.3 KM**: a climb from the map starts within 500 m. LENGTH KM,
+  with AVG grade and GAIN M stacked beside it. The profile runs from the rider
+  past the top, with the road before the foot and after the top dimmed.
+- **CLIMBING** on a climb the map knows: TO TOP KM and UP TO GO M. The profile
+  is the whole climb from its foot past its top, and it stays put while the
+  rider's disc moves along it. What is behind is dimmed. A bar under it fills
+  with the share climbed, `60% UP`.
+- **CLIMBING** without a map: the barometer's climb. SO FAR KM and GAIN M over
+  the last 4 km, with the road before the climb dimmed. The top is unknown, so
+  there is no bar.
+- **NO CLIMB**: ALTITUDE M and ASCENT M over the whole ride's elevation, with
+  the rider at its end.
+
+The category (CAT 4 to HC) sits right of the title in the climb's steepness
+colour, and NO MAP sits there when there is no terrain pack.
+
+The page comes up by itself when a climb is under way or within 500 m, as
+long as CLIMB is on. Once the road is clear the ride screen goes back to the
+page the rider was on. A rider who pages away during a climb stays where they
+went until the climb is over. A rider already on the page stays on it after
+the climb. Going straight over a top into the next climb counts as a new
+climb. Paused or off the ride screen, nothing switches. Once the ride
+screen opens again, a climb under way brings the page up.
+
 ### Map
 
 The ride page before BACK TO START, MAP, draws where the ride has been: its
@@ -237,7 +268,7 @@ first, and the page dots count only those. With every optional page off, MOVE
 has only MAIN, and with a workout only WORKOUT and MAIN.
 
 CLIMB OFF also ends the climb page's habit of coming up by itself: neither the
-ride's own climb detection nor the map's CLIMB AHEAD switches the page. A climb
+ride's own climb detection nor a climb ahead on the map switches the page. A climb
 never had a toast, and none is added: the rider declined the page, and a toast
 would cover the readings they chose to look at. The CLIMB row's note
 says NO CLIMB POP-UP while it is off. The choice is read when the ride screen

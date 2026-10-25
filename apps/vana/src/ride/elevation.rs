@@ -35,15 +35,20 @@ pub struct Trace {
 
 impl Default for Trace {
     fn default() -> Self {
-        Self {
-            points: [Altitude::from_dm(0); CAPACITY],
-            len: 0,
-            step_mm: FIRST_STEP_MM,
-            next_mm: 0,
-            latest: None,
-            changed: true,
-        }
+        Self::EMPTY
     }
+}
+
+impl Trace {
+    /// No altitude yet. A constant, so a page without a ride can borrow it.
+    pub const EMPTY: Self = Self {
+        points: [Altitude::ZERO; CAPACITY],
+        len: 0,
+        step_mm: FIRST_STEP_MM,
+        next_mm: 0,
+        latest: None,
+        changed: true,
+    };
 }
 
 impl Trace {

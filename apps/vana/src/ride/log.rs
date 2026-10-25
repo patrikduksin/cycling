@@ -978,6 +978,9 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
 pub struct Altitude(u16);
 
 impl Altitude {
+    /// Sea level, `from_dm(0)`, as a constant.
+    pub const ZERO: Self = Self(2500);
+
     /// The nearest step to `altitude_dm` decimetres, clamped to the range.
     pub fn from_dm(altitude_dm: i32) -> Self {
         Self(((altitude_dm.saturating_add(1)).div_euclid(2) + 2500).clamp(0, 0xfffe) as u16)

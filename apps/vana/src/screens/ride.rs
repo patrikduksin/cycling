@@ -13,10 +13,10 @@
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` whose `prepare` returns its canvas, dispatched below.
 //!
-//! The climb page also follows the road: when a climb is confirmed the ride
-//! screen switches to it, and when the climb ends it returns to the page the
+//! The climb page also follows the road: it comes up before a climb or once
+//! one is under way, and when the road is clear it returns to the page the
 //! rider was on, unless they changed page during the climb (see
-//! `Navigation::follow_climb`).
+//! `app::climb_page`).
 use super::canvas::Canvas;
 use super::chrome::{self, Align, CONTENT, Rect};
 use super::workout::{Text, View};
@@ -42,7 +42,7 @@ mod zones;
 pub(super) use zones::{Marks, marks};
 
 pub use back::{Arrow, Back, Light};
-pub use climb::Frame as ClimbFrame;
+pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
 pub use map::{Frame as MapFrame, Key as MapKey, Track, update as update_map};
@@ -68,7 +68,7 @@ pub(super) const RIGHT: usize = BODY.right - 8;
 /// Where a page's right column of cells starts.
 pub(super) const MIDDLE: usize = (LEFT + RIGHT) / 2 + 4;
 /// Clear columns between a left cell's ink and the right column.
-const COLUMN_GAP: usize = 8;
+pub(super) const COLUMN_GAP: usize = 8;
 /// A caption over its value: one band of cells. The next caption clears the
 /// value above it by 7 rows.
 pub(super) const CELL_PITCH: usize = 48;
@@ -89,7 +89,8 @@ pub enum RidePage {
     Stats,
     /// The open lap against the last finished one.
     Lap,
-    /// Grade, the climb under way or the last one, and the elevation profile.
+    /// Grade, power and heart rate, and the climb near or under way on its
+    /// profile, or the ride's elevation.
     Climb,
     /// The workout step on now; first, and only while a workout is chosen.
     Workout,

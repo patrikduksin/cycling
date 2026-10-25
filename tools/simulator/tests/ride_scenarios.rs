@@ -1776,23 +1776,24 @@ fn ride_until_page(sim: &mut Sim, page: &str, before_m: f64) -> f64 {
     at
 }
 
-/// A percentage reading such as "6.0%".
+/// The climb page's grade: its largest percentage, which needs no caption.
 #[track_caller]
-fn expect_percent(sim: &mut Sim, label: &str, expected: f64, tolerance: f64) {
+fn expect_grade(sim: &mut Sim, expected: f64, tolerance: f64) {
     let screen = sim.screen();
-    let value = screen
-        .field(label)
-        .unwrap_or_else(|| panic!("no {label}; screen:\n{}", screen.text()));
-    let number: f64 = value
-        .trim_end_matches('%')
-        .parse()
-        .unwrap_or_else(|_| panic!("{label} shows {value:?}"));
+    let grade = screen
+        .frame()
+        .read()
+        .into_iter()
+        .filter(|run| run.text.ends_with('%'))
+        .max_by_key(|run| run.scale)
+        .unwrap_or_else(|| panic!("no grade; screen:\n{}", screen.text()));
+    let number: f64 = grade.text.trim_end_matches('%').parse().unwrap();
     assert!(
         (number - expected).abs() <= tolerance,
-        "{label} shows {value}, expected {expected}% ± {tolerance}; screen:\n{}",
-        screen.text()
+        "grade {}, expected {expected}% ± {tolerance}",
+        grade.text
     );
-    sim.note(NoteKind::Check, format!("{label} shows {value}"));
+    sim.note(NoteKind::Check, format!("grade shows {}", grade.text));
 }
 
 #[test]
@@ -1805,7 +1806,8 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.expect_text("NO CLIMB");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     sim.expect_field("ASCENT M", "0");
-    expect_percent(&mut sim, "GRADE", 0.0, 0.5);
+    expect_grade(&mut sim, 0.0, 0.5);
+    sim.expect_text("180");
     sim.checkpoint("climb page on the flat");
 
     // Up at 14 km/h. 20 m of gain confirms the climb about 330 m in.
@@ -1820,21 +1822,16 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     );
 
     ride_to(&mut sim, 1750.0);
-    expect_percent(&mut sim, "GRADE", 6.0, 0.5);
+    expect_grade(&mut sim, 6.0, 0.5);
     expect_near(&mut sim, "GAIN M", 45.0, 4.0);
-    expect_near(&mut sim, "LENGTH KM", 0.75, 0.05);
-    expect_percent(&mut sim, "AVG GRADE", 6.0, 0.4);
-    // 3.9 m/s at 6% is 840 m/h.
-    expect_near(&mut sim, "VAM M/H", 840.0, 60.0);
-    expect_near(&mut sim, "ALTITUDE M", 645.0, 3.0);
-    let time = sim.screen().field("CLIMB TIME").unwrap();
-    assert!(time.starts_with("03:"), "{time}");
+    expect_near(&mut sim, "SO FAR KM", 0.75, 0.05);
+    sim.expect_text("260");
     sim.checkpoint("climb page mid-climb");
 
     ride_to(&mut sim, 2510.0);
     sim.expect_text("CLIMBING");
     expect_near(&mut sim, "GAIN M", 90.0, 4.0);
-    expect_near(&mut sim, "LENGTH KM", 1.5, 0.05);
+    expect_near(&mut sim, "SO FAR KM", 1.5, 0.05);
     sim.checkpoint("climb page at the top");
 
     // Over the top at 40 km/h the climb ends within about 200 m.
@@ -1847,15 +1844,6 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
     sim.expect_text("NO CLIMB");
     expect_near(&mut sim, "ALTITUDE M", 600.0, 2.0);
     expect_near(&mut sim, "ASCENT M", 90.0, 4.0);
-    expect_near(&mut sim, "LAST GAIN", 90.0, 4.0);
-    expect_near(&mut sim, "LAST KM", 1.5, 0.08);
-    expect_percent(&mut sim, "LAST AVG", 6.0, 0.4);
-    let time = sim.screen().field("LAST TIME").unwrap();
-    // 1.5 km at 14 km/h is 6:26.
-    assert!(
-        time.starts_with("06:") || time.starts_with("07:0"),
-        "{time}"
-    );
     sim.checkpoint("climb page after the descent");
 }
 

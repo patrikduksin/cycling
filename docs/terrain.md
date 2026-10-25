@@ -302,10 +302,17 @@ the same as gain (m) × 100:
 | Score from | 8,000 | 16,000 | 32,000 | 48,000 | 64,000 |
 
 The forecast is usable only when the match is on a road and the prediction's
-confidence is at least 50%. Otherwise the climb page keeps its reactive,
-barometer-only view.
+confidence is at least 50%. Otherwise the climb page draws from the barometer
+alone.
 
-The map brings up the climb page 500 m before a climb starts, once per climb.
+A climb under way or within 500 m is pinned to the ride's odometer
+(`climb_ahead::Pinned`, about 1.2 KB in the look-ahead's PSRAM block). Its
+foot stays where the map first put it, while each new forecast moves its top
+and the road still ahead. The road ridden is kept, so the page can draw the
+whole climb. The pin lets go 100 m past the top, or when a forecast shows no
+climb before the foot or partway up. Within 200 m of the top the map no
+longer sees the rest of the climb, so the pin stays. Pinning brings up the
+climb page (ux-flows, Climb).
 
 ## Memory and CPU budget
 

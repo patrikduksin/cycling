@@ -1,69 +1,70 @@
-//! The climb page: the grade now in its steepness colour, the climb under
-//! way (or altitude, ascent and the last climb) and the last 4 km of
-//! elevation as a solid profile coloured by local grade, with a white disc
-//! for the rider.
+//! The climb page: one layout for every road. The grade fills the top left in
+//! its steepness colour, 3 s power and heart rate stack beside it with their
+//! zones, and a band in the grade's colour runs under them. Two readings and
+//! a profile, solid and coloured by local grade with a white disc for the
+//! rider, follow. What they show depends on the road (`Situation`):
 //!
-//! With a terrain pack and a confident look-ahead (`ride::climb_ahead`) the
-//! page looks forward instead:
-//!
-//! - **Climb ahead**, before a climb starts: the distance to its foot as the
-//!   hero, its category, length, average grade and gain, and the road from
-//!   the rider to its top, the climb in full steepness colour and the road
-//!   before it dimmed.
-//! - **To the top**, on a climb: the distance left as the hero, the gain
-//!   left, the grade now and over the next 500 m, and the climb from its
-//!   foot to its top. What is ahead is the subject, in full colour; the part
-//!   already climbed (from the barometer) is dimmed; the rider's disc sits
-//!   where they meet.
-//!
-//! Off the map, unmatched or unsure, it is the map-free page above.
+//! - **Ahead** (the map pinned a climb whose foot is ahead): CLIMB IN, the
+//!   distance to the foot; its length, average grade and gain; the road from
+//!   the rider past the top, with the road before the foot and after the top
+//!   dimmed, and an empty progress bar.
+//! - **On the map's climb**: CLIMBING; the distance and gain to the top; the
+//!   whole climb from its foot past its top, fixed while the rider's disc
+//!   moves along it, what is behind dimmed, and the share climbed as a bar.
+//! - **On a climb without a map** (the barometer's): CLIMBING; the length
+//!   and gain so far; the last 4 km with the road before the climb dimmed.
+//! - **Clear**: NO CLIMB; altitude and ascent over the whole ride's
+//!   elevation, the rider at its end.
 //!
 //! `frame` precomputes every chart column once per frame; `paint_chart` only
-//! looks them up, and the canvas paints the text and the rider over it.
-use super::{BODY, CELL_PITCH, GRID, LEFT, RIGHT, cell, grade, kilometres, lap_time, whole};
-use crate::ride::climb::{Category, PROFILE_LEN, ProfileSample, STEP_MM, Steepness, Summary};
-use crate::ride::climb_ahead::ClimbAhead;
+//! looks them up, and the canvas paints the text, the bar and the rider.
+use super::{
+    BODY, CELL_PITCH, COLUMN_GAP, GRID, LEFT, MIDDLE, RIGHT, cell, grade, kilometres, whole,
+};
+use crate::ride::climb::{Category, Climbs, PROFILE_LEN, ProfileSample, STEP_MM, Steepness};
+use crate::ride::climb_ahead::{Forecast, Pinned};
+use crate::ride::elevation::Trace;
 use crate::screens::canvas::{Canvas, Shape};
 #[cfg(test)]
 use crate::screens::chrome::BLACK;
 use crate::screens::chrome::{
-    ACCENT, Align, BLACK as DIM_UNDER, CAPTION, GRADE, HERO, LARGE, Rect, Row, SECONDARY, VALUE,
-    WHITE, ZONES, blend,
+    ACCENT, Align, BLACK as DIM_UNDER, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE,
+    POWER, Rect, Row, SECONDARY, VALUE, WHITE, ZONES, blend, zone_color,
 };
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
+use firmware_shell::rendering::font::{Face, Line};
 
-/// "GRADE" and the climb state share this baseline.
+/// The title and the category share this baseline.
 const HEAD: usize = 40;
-/// The grade's baseline, under its caption.
-const GRADE_BASE: usize = HEAD + 4 + HERO.cap as usize;
-/// The steepness band under the grade.
-const BAND_TOP: usize = GRADE_BASE + 6;
+/// The grade's box, between the title and the steepness band.
+const BOX_TOP: usize = HEAD + 4;
+const BAND_TOP: usize = HEAD + 4 + HERO.cap as usize + 6;
 const BAND_HEIGHT: usize = 5;
-/// The first band of cells; up to three follow.
-const FIRST: usize = BAND_TOP + BAND_HEIGHT + 4;
-const ROWS: usize = 3;
-/// One chart column per 20 m profile sample, ending at the body's right
-/// margin; the rider's disc sits on the newest.
+/// Power and heart rate, then the climb's two readings: two bands of cells.
+const READINGS: usize = BAND_TOP + BAND_HEIGHT + 4;
+const CELLS: usize = READINGS + CELL_PITCH;
+/// One chart column per profile sample, ending at the body's right margin.
 const CHART_RIGHT: usize = BODY.right - 6;
 const CHART_LEFT: usize = CHART_RIGHT - PROFILE_LEN;
 const _: () = assert!(CHART_LEFT >= BODY.left, "the profile needs 200 columns");
-const CHART_TOP: usize = FIRST + ROWS * CELL_PITCH + 6;
-/// The baseline row; the fill ends above it. The chart runs into the toast
-/// band, where a toast covers it for a moment.
+const CHART_TOP: usize = CELLS + CELL_PITCH - 4;
+/// The baseline row without a progress bar; the fill ends above it. The
+/// chart runs into the toast band, where a toast covers it for a moment.
 const CHART_BOTTOM: usize = BODY.bottom - 8;
-const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
-const _: () = assert!(CHART_HEIGHT >= 24 && CHART_HEIGHT < EMPTY as usize);
-/// The map views have two rows of cells, so their profile takes the third.
-const MAP_TOP: usize = FIRST + (ROWS - 1) * CELL_PITCH + 6;
-const MAP_HEIGHT: usize = CHART_BOTTOM - MAP_TOP;
-const _: () = assert!(MAP_HEIGHT < EMPTY as usize);
+/// With a progress bar, which sits under the chart.
+const BAR_BOTTOM: usize = BODY.bottom - 6;
+const BAR_HEIGHT: usize = 6;
+const BARRED_BOTTOM: usize = BAR_BOTTOM - BAR_HEIGHT - 6;
+const _: () = assert!(CHART_BOTTOM - CHART_TOP >= 64 && CHART_BOTTOM - CHART_TOP < EMPTY as usize);
 /// A flat road spans at least 20 m of chart height, so it stays flat.
 pub(super) const MIN_SPAN_DM: i32 = 200;
 /// A column with no profile sample yet.
 const EMPTY: u8 = u8::MAX;
 /// The rider's disc: 6 px across, in quarter pixels.
 const RIDER_RADIUS: i32 = 12;
+/// The map's road past the top: a tenth of the climb, at least 200 m.
+const AFTER_MIN_MM: u64 = 200_000;
 
 /// Steepness colours, from the zone ramp: blue down, then green, yellow,
 /// orange, red and purple.
@@ -78,67 +79,79 @@ pub(super) const fn color(steepness: Steepness) -> u16 {
     }]
 }
 
-/// Cell captions and value colours, two per band.
-const CLIMBING: [(&[u8], u16); 6] = [
-    (b"GAIN M", GRADE),
-    (b"LENGTH KM", WHITE),
-    (b"AVG GRADE", GRADE),
-    (b"VAM M/H", GRADE),
-    (b"CLIMB TIME", WHITE),
-    (b"ALTITUDE M", GRADE),
-];
-const IDLE: [(&[u8], u16); 6] = [
-    (b"ALTITUDE M", GRADE),
-    (b"ASCENT M", GRADE),
-    (b"LAST GAIN", GRADE),
-    (b"LAST KM", WHITE),
-    (b"LAST AVG", GRADE),
-    (b"LAST TIME", WHITE),
-];
+/// What the climb page draws from, lent by the ride and the look-ahead.
+#[derive(Clone, Copy)]
+pub struct Lent<'a> {
+    pub climbs: &'a Climbs,
+    /// The whole ride's elevation.
+    pub trace: &'a Trace,
+    pub forecast: &'a Forecast,
+    /// The map's climb near or under way, on the ride's odometer.
+    pub pinned: Option<&'a Pinned>,
+}
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Layout {
-    /// No climb yet: altitude and ascent.
-    #[default]
-    Idle,
-    /// Not climbing: altitude, ascent and the last climb.
-    Last,
-    /// On a confirmed climb.
-    Climbing,
-    /// The map shows a climb ahead.
-    Ahead,
-    /// The map shows the rest of the climb under way.
-    ToTop,
+impl Lent<'static> {
+    /// Nothing ridden and no map.
+    pub const NONE: Self = Self {
+        climbs: &Climbs::NONE,
+        trace: &Trace::EMPTY,
+        forecast: &Forecast::NONE,
+        pinned: None,
+    };
+}
+
+/// The road, as the page draws it; `app::climb_page` reads it the same way.
+#[derive(Clone, Copy)]
+enum Situation<'a> {
+    Ahead(&'a Pinned),
+    OnMap(&'a Pinned),
+    /// The barometer's climb under way: its length and gain so far.
+    OnClimb {
+        length_mm: u64,
+        gain_dm: u32,
+    },
+    Clear,
+}
+
+fn situation<'a>(view: &View<'a>) -> Situation<'a> {
+    let lent = view.climb_lent();
+    let odometer = view.totals.distance_mm();
+    match (lent.pinned, lent.climbs.climbing()) {
+        (Some(pin), _) if odometer < pin.foot_mm => Situation::Ahead(pin),
+        (Some(pin), _) => Situation::OnMap(pin),
+        (None, Some(climb)) => Situation::OnClimb {
+            length_mm: climb.length_mm,
+            gain_dm: climb.gain_dm,
+        },
+        (None, None) => Situation::Clear,
+    }
 }
 
 /// What the climb page precomputes for one frame.
 #[derive(Clone)]
 pub struct Frame {
-    layout: Layout,
-    /// The chart's first row: `CHART_TOP`, or `MAP_TOP` for the map views.
-    top: usize,
-    grade: Option<Steepness>,
-    /// Rows below `top` where each column's fill starts, or `EMPTY`.
+    /// The chart's baseline row: `CHART_BOTTOM`, or `BARRED_BOTTOM` over a
+    /// progress bar.
+    bottom: usize,
+    /// Rows below `CHART_TOP` where each column's fill starts, or `EMPTY`.
     tops: [u8; PROFILE_LEN],
     bands: [Steepness; PROFILE_LEN],
     /// Columns drawn at 25%: road outside the climb, or already climbed.
     dim: [bool; PROFILE_LEN],
     /// The rider's column, or `EMPTY`.
     rider: u8,
-    /// The climb the map view is about.
-    climb: Option<ClimbAhead>,
+    /// The share of the climb climbed, 0..=1000, for the progress bar.
+    done: Option<u16>,
 }
 
 impl Frame {
     pub const EMPTY: Self = Self {
-        layout: Layout::Idle,
-        top: CHART_TOP,
-        grade: None,
+        bottom: CHART_BOTTOM,
         tops: [EMPTY; PROFILE_LEN],
         bands: [Steepness::Easy; PROFILE_LEN],
         dim: [false; PROFILE_LEN],
         rider: EMPTY,
-        climb: None,
+        done: None,
     };
 }
 
@@ -152,69 +165,23 @@ fn metres(value: &mut Text<12>, dm: i32) {
     whole(value, Some((dm + 5).div_euclid(10)));
 }
 
-fn altitude(value: &mut Text<12>, dm: Option<i32>) {
-    match dm {
-        Some(dm) => metres(value, dm),
-        None => whole(value, None::<u8>),
-    }
+/// Kilometres with one decimal: `0.4`, `12.3`.
+fn tenths_km(value: &mut Text<12>, mm: u64) {
+    let tenths = (mm + 50_000) / 100_000;
+    let _ = write!(value, "{}.{}", tenths / 10, tenths % 10);
 }
 
-/// A climb's gain, length and average grade into the first three cells, and
-/// its time into cell `time`.
-fn summary(cells: &mut [Text<12>], climb: &Summary, time: usize) {
-    metres(&mut cells[0], climb.gain_dm as i32);
-    kilometres(&mut cells[1], climb.length_mm);
-    grade(&mut cells[2], climb.grade_tenths());
-    lap_time(&mut cells[time], climb.time_ms / 1000);
-}
-
-/// The text, the steepness band and the rider; `frame` must be prepared.
+/// The text, the band, the bar and the rider; `frame` must be prepared.
 pub(super) fn prepare(view: &View) -> Canvas {
-    let frame = view.climb();
-    if matches!(frame.layout, Layout::Ahead | Layout::ToTop) {
-        return prepare_map(view);
-    }
     let mut canvas = Canvas::default();
-    let width = RIGHT - LEFT;
-    let (state, state_color) = if frame.layout == Layout::Climbing {
-        (b"CLIMBING".as_slice(), ACCENT)
-    } else {
-        (b"NO CLIMB".as_slice(), crate::screens::chrome::SECONDARY)
-    };
-    let state = canvas.fit(
-        &[&crate::screens::chrome::CAPTION],
-        state,
-        width,
-        RIGHT,
-        HEAD,
-        Align::Right,
-        state_color,
-    );
-    canvas.caption(b"GRADE", state.left - LEFT, LEFT, HEAD, Align::Left);
-    if !view.forecast().map {
-        // No terrain pack (or no memory for it): only the barometer speaks.
-        canvas.fit(
-            &[&crate::screens::chrome::CAPTION],
-            b"NO MAP",
-            RIGHT - LEFT,
-            LEFT,
-            CHART_TOP + 12,
-            Align::Left,
-            crate::screens::chrome::SECONDARY,
-        );
-    }
-    let mut now = Text::<12>::new();
-    grade(&mut now, view.sample.gradient_tenths.map(i32::from));
-    let faces = [&HERO, &LARGE, &VALUE];
-    canvas.fit(
-        &faces,
-        now.as_bytes(),
-        width,
-        LEFT,
-        GRADE_BASE,
-        Align::Left,
-        GRADE,
-    );
+    let situation = situation(view);
+    let odometer = view.totals.distance_mm();
+    head(&mut canvas, view, situation);
+    readings(&mut canvas, view);
+    let steepness = view
+        .sample
+        .gradient_tenths
+        .map(|tenths| Steepness::of(i32::from(tenths)));
     canvas.shape(Shape::Bar {
         rect: Rect {
             left: LEFT,
@@ -223,42 +190,267 @@ pub(super) fn prepare(view: &View) -> Canvas {
             bottom: BAND_TOP + BAND_HEIGHT,
         },
         radius: 2,
-        color: frame.grade.map_or(GRID, color),
+        color: steepness.map_or(GRID, color),
     });
 
-    let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
-    let altitude_dm = view.totals.altitude_dm();
-    let (labels, cells) = if let Some(climb) = view.climbs().climbing() {
-        summary(&mut values, &climb, 4);
-        whole(&mut values[3], view.climbs().vam_m_h());
-        altitude(&mut values[5], altitude_dm);
-        (&CLIMBING, 6)
-    } else {
-        altitude(&mut values[0], altitude_dm);
-        metres(&mut values[1], view.totals.ascent_dm() as i32);
-        match view.climbs().last_climb() {
-            // The last climb fills the cells after altitude and ascent.
-            Some(last) => {
-                summary(&mut values[2..], &last, 3);
-                (&IDLE, 6)
+    let mut values: [Text<12>; 2] = core::array::from_fn(|_| Text::new());
+    let labels: [(&[u8], u16); 2] = match situation {
+        Situation::Ahead(pin) => {
+            let climb = pin.summary();
+            kilometres(&mut values[0], climb.length_mm);
+            cell(
+                &mut canvas,
+                0,
+                CELLS,
+                b"LENGTH KM",
+                values[0].as_bytes(),
+                WHITE,
+            );
+            let mut average = Text::<12>::new();
+            grade(&mut average, climb.grade_tenths());
+            let mut gain = Text::<12>::new();
+            metres(&mut gain, climb.gain_dm as i32);
+            stacked(&mut canvas, b"AVG", &average, CELLS + 16);
+            stacked(&mut canvas, b"GAIN M", &gain, CELLS + 41);
+            return finish(canvas, view);
+        }
+        Situation::OnMap(pin) => {
+            tenths_km(&mut values[0], pin.top_mm.saturating_sub(odometer));
+            let left = pin.altitude_dm(pin.top_mm) - pin.altitude_dm(odometer);
+            metres(&mut values[1], left.max(0));
+            [(b"TO TOP KM", WHITE), (b"UP TO GO M", GRADE)]
+        }
+        Situation::OnClimb { length_mm, gain_dm } => {
+            kilometres(&mut values[0], length_mm);
+            metres(&mut values[1], gain_dm as i32);
+            [(b"SO FAR KM", WHITE), (b"GAIN M", GRADE)]
+        }
+        Situation::Clear => {
+            match view.totals.altitude_dm() {
+                Some(dm) => metres(&mut values[0], dm),
+                None => whole(&mut values[0], None::<u8>),
             }
-            None => (&IDLE, 2),
+            metres(&mut values[1], view.totals.ascent_dm() as i32);
+            [(b"ALTITUDE M", GRADE), (b"ASCENT M", GRADE)]
         }
     };
-    for (index, ((caption, color), value)) in labels.iter().zip(&values).take(cells).enumerate() {
-        let top = FIRST + index / 2 * CELL_PITCH;
+    for (column, ((caption, color), value)) in labels.iter().zip(&values).enumerate() {
         cell(
             &mut canvas,
-            index % 2,
-            top,
+            column,
+            CELLS,
             caption,
             value.as_bytes(),
             *color,
         );
     }
+    finish(canvas, view)
+}
 
+/// The progress bar and the rider's disc over the chart.
+fn finish(mut canvas: Canvas, view: &View) -> Canvas {
+    let frame = view.climb();
+    if let Some(done) = frame.done {
+        let mut share = Text::<12>::new();
+        let _ = write!(share, "{}% UP", (done + 5) / 10);
+        let label = canvas.fit(
+            &[&CAPTION],
+            share.as_bytes(),
+            RIGHT - LEFT,
+            RIGHT,
+            BAR_BOTTOM,
+            Align::Right,
+            WHITE,
+        );
+        let right = label.left - 6;
+        let track = Rect {
+            left: LEFT,
+            top: BAR_BOTTOM - BAR_HEIGHT,
+            right,
+            bottom: BAR_BOTTOM,
+        };
+        canvas.shape(Shape::Bar {
+            rect: track,
+            radius: 3,
+            color: GRID,
+        });
+        let filled = (right - LEFT) * usize::from(done) / 1000;
+        if filled >= BAR_HEIGHT {
+            canvas.shape(Shape::Bar {
+                rect: Rect {
+                    right: LEFT + filled,
+                    ..track
+                },
+                radius: 3,
+                color: WHITE,
+            });
+        }
+    }
     rider(&mut canvas, frame);
     canvas
+}
+
+/// The title on the left and the category, or NO MAP, on the right.
+fn head(canvas: &mut Canvas, view: &View, situation: Situation) {
+    let odometer = view.totals.distance_mm();
+    let mut title = Text::<24>::new();
+    let (category, color) = match situation {
+        Situation::Ahead(pin) => {
+            let mut km = Text::<12>::new();
+            tenths_km(&mut km, pin.foot_mm.saturating_sub(odometer));
+            let _ = write!(title, "CLIMB IN {} KM", km.as_str());
+            category(pin.summary().gain_dm, pin.summary().grade_tenths())
+        }
+        Situation::OnMap(pin) => {
+            let _ = title.push_str("CLIMBING");
+            category(pin.summary().gain_dm, pin.summary().grade_tenths())
+        }
+        Situation::OnClimb { length_mm, gain_dm } => {
+            let _ = title.push_str("CLIMBING");
+            let grade = (length_mm > 0).then(|| (gain_dm as u64 * 100_000 / length_mm) as i32);
+            category(gain_dm, grade)
+        }
+        Situation::Clear => {
+            let _ = title.push_str("NO CLIMB");
+            (None, SECONDARY)
+        }
+    };
+    let title_color = match situation {
+        Situation::Clear => SECONDARY,
+        _ => ACCENT,
+    };
+    let title = canvas.fit(
+        &[&CAPTION],
+        title.as_bytes(),
+        RIGHT - LEFT,
+        LEFT,
+        HEAD,
+        Align::Left,
+        title_color,
+    );
+    let right: Option<(&[u8], u16)> = match category {
+        Some(name) => Some((name, color)),
+        // No terrain pack (or no memory for it): only the barometer speaks.
+        None if !view.climb_lent().forecast.map => Some((b"NO MAP", SECONDARY)),
+        None => None,
+    };
+    if let Some((text, color)) = right {
+        canvas.fit(
+            &[&CAPTION],
+            text,
+            RIGHT.saturating_sub(title.right() + 8),
+            RIGHT,
+            HEAD,
+            Align::Right,
+            color,
+        );
+    }
+}
+
+/// A climb's category name in the colour of its average steepness; none
+/// for a climb too small to have one.
+fn category(gain_dm: u32, grade_tenths: Option<i32>) -> (Option<&'static [u8]>, u16) {
+    let category = Category::of(gain_dm);
+    let color = color(Steepness::of(grade_tenths.unwrap_or(0)));
+    match category {
+        Category::Uncategorised => (None, color),
+        category => (Some(category.name()), color),
+    }
+}
+
+/// The grade, centred in its box, then power and heart rate in cells, each
+/// with its zone on the caption's line.
+fn readings(canvas: &mut Canvas, view: &View) {
+    let mut now = Text::<12>::new();
+    grade(&mut now, view.sample.gradient_tenths.map(i32::from));
+    let faces: [&'static Face; 3] = [&HERO, &LARGE, &VALUE];
+    let line = Line::<24>::fit(&faces, now.as_bytes(), RIGHT - LEFT);
+    let cap = line.face().cap as usize;
+    let base = (BOX_TOP + BAND_TOP - 6 + cap) / 2;
+    canvas.run(crate::screens::canvas::on_baseline(
+        line,
+        (LEFT + RIGHT) / 2,
+        base,
+        Align::Center,
+        GRADE,
+    ));
+    let power = view.power_3s;
+    let heart = view.sample.heart_bpm;
+    let rows = [
+        (
+            &b"POWER"[..],
+            power,
+            POWER,
+            power.map_or(0, |w| view.profile.power_zone(w)),
+        ),
+        (
+            &b"HEART"[..],
+            heart,
+            HEART,
+            heart.map_or(0, |bpm| view.profile.heart_zone(bpm)),
+        ),
+    ];
+    for (column, (caption, value, color, zone)) in rows.into_iter().enumerate() {
+        let (left, right) = if column == 0 {
+            (LEFT, MIDDLE - COLUMN_GAP)
+        } else {
+            (MIDDLE, RIGHT)
+        };
+        let mut name = Text::<12>::new();
+        let _ = match zone {
+            0 => name.push_str("Z-"),
+            z => write!(name, "Z{z}"),
+        };
+        let zone = canvas.fit(
+            &[&CAPTION],
+            name.as_bytes(),
+            right - left,
+            right,
+            READINGS + 12,
+            Align::Right,
+            zone_color(zone),
+        );
+        canvas.caption(
+            caption,
+            zone.left.saturating_sub(left + 4),
+            left,
+            READINGS + 12,
+            Align::Left,
+        );
+        let mut text = Text::<12>::new();
+        whole(&mut text, value);
+        canvas.fit(
+            &[&VALUE, &BODY_FACE],
+            text.as_bytes(),
+            right - left,
+            left,
+            READINGS + 41,
+            Align::Left,
+            color,
+        );
+    }
+}
+
+/// A caption and its value on one line of the right column: two of them
+/// stack where one cell would be.
+fn stacked(canvas: &mut Canvas, caption: &[u8], value: &Text<12>, base: usize) {
+    let width = RIGHT - MIDDLE;
+    let run = canvas.fit(
+        &[&BODY_FACE],
+        value.as_bytes(),
+        width,
+        RIGHT,
+        base,
+        Align::Right,
+        GRADE,
+    );
+    canvas.caption(
+        caption,
+        run.left.saturating_sub(MIDDLE + 4),
+        MIDDLE,
+        base,
+        Align::Left,
+    );
 }
 
 /// The rider's disc on the chart.
@@ -271,237 +463,11 @@ fn rider(canvas: &mut Canvas, frame: &Frame) {
     if top != EMPTY {
         canvas.shape(Shape::Disc {
             cx: 4 * (CHART_LEFT + column) as i32 + 2,
-            cy: 4 * (frame.top + usize::from(top)) as i32 + 2,
+            cy: 4 * (CHART_TOP + usize::from(top)) as i32 + 2,
             radius: RIDER_RADIUS,
             color: WHITE,
         });
     }
-}
-
-/// Kilometres with one decimal: `0.4`, `12.3`.
-fn tenths_km(value: &mut Text<12>, mm: u64) {
-    let tenths = (mm + 50_000) / 100_000;
-    let _ = write!(value, "{}.{}", tenths / 10, tenths % 10);
-}
-
-/// The hero reading with its unit after it, on the grade's baseline.
-fn hero(canvas: &mut Canvas, value: &[u8], unit: &[u8], color: u16) {
-    let unit_width = CAPTION.width(unit) + 2;
-    let width = RIGHT - LEFT - unit_width - 6;
-    let run = canvas.fit(
-        &[&HERO, &LARGE, &VALUE],
-        value,
-        width,
-        LEFT,
-        GRADE_BASE,
-        Align::Left,
-        color,
-    );
-    canvas.caption(unit, unit_width, run.right() + 6, GRADE_BASE, Align::Left);
-}
-
-/// Cell captions and value colours of the map views, two per band.
-const AHEAD: [(&[u8], u16); 4] = [
-    (b"LENGTH KM", WHITE),
-    (b"AVG GRADE", GRADE),
-    (b"GAIN M", GRADE),
-    (b"NOW", GRADE),
-];
-const TO_TOP: [(&[u8], u16); 4] = [
-    (b"TO GO M", GRADE),
-    (b"NOW", GRADE),
-    (b"NEXT 500 M", GRADE),
-    (b"VAM M/H", GRADE),
-];
-
-/// A climb's category, in the colour of its average steepness.
-fn category(canvas: &mut Canvas, climb: &Summary, left: usize) {
-    let name = Category::of(climb.gain_dm).name();
-    let color = color(Steepness::of(climb.grade_tenths().unwrap_or(0)));
-    canvas.fit(
-        &[&CAPTION],
-        name,
-        RIGHT - left,
-        RIGHT,
-        HEAD,
-        Align::Right,
-        color,
-    );
-}
-
-/// The climb ahead, or the rest of the climb under way, from the map.
-fn prepare_map(view: &View) -> Canvas {
-    let frame = view.climb();
-    let mut canvas = Canvas::default();
-    let Some(climb) = frame.climb else {
-        return canvas;
-    };
-    let ahead = frame.layout == Layout::Ahead;
-    let title: &[u8] = if ahead { b"CLIMB AHEAD" } else { b"TO THE TOP" };
-    let title = canvas.fit(
-        &[&CAPTION],
-        title,
-        RIGHT - LEFT,
-        LEFT,
-        HEAD,
-        Align::Left,
-        ACCENT,
-    );
-    category(&mut canvas, &climb.summary, title.right() + 8);
-    let mut value = Text::<12>::new();
-    let distance = if ahead {
-        climb.summary.start_mm
-    } else {
-        climb.end_mm()
-    };
-    tenths_km(&mut value, distance);
-    hero(&mut canvas, value.as_bytes(), b"KM", WHITE);
-    let band = if ahead {
-        Steepness::of(climb.summary.grade_tenths().unwrap_or(0))
-    } else {
-        frame.grade.unwrap_or_else(|| view.forecast().steepness(0))
-    };
-    canvas.shape(Shape::Bar {
-        rect: Rect {
-            left: LEFT,
-            top: BAND_TOP,
-            right: RIGHT,
-            bottom: BAND_TOP + BAND_HEIGHT,
-        },
-        radius: 2,
-        color: color(band),
-    });
-    let now = view
-        .sample
-        .gradient_tenths
-        .map(i32::from)
-        .or_else(|| view.forecast().grade(0, 100_000));
-    let mut values: [Text<12>; 4] = core::array::from_fn(|_| Text::new());
-    let labels = if ahead {
-        kilometres(&mut values[0], climb.summary.length_mm);
-        grade(&mut values[1], climb.summary.grade_tenths());
-        metres(&mut values[2], climb.summary.gain_dm as i32);
-        grade(&mut values[3], now);
-        &AHEAD
-    } else {
-        // Gain left: from the rider (0) to the top.
-        let top = climb.summary.start_altitude_dm + climb.summary.gain_dm as i32;
-        metres(&mut values[0], top.max(0));
-        grade(&mut values[1], now);
-        grade(&mut values[2], view.forecast().grade(0, 500_000));
-        whole(&mut values[3], view.climbs().vam_m_h());
-        &TO_TOP
-    };
-    for (index, ((caption, color), value)) in labels.iter().zip(&values).enumerate() {
-        let top = FIRST + index / 2 * CELL_PITCH;
-        cell(
-            &mut canvas,
-            index % 2,
-            top,
-            caption,
-            value.as_bytes(),
-            *color,
-        );
-    }
-    if climb.open {
-        // The map ends before the top: say so where the chart ends.
-        canvas.fit(
-            &[&CAPTION],
-            b"AND MORE",
-            RIGHT - LEFT,
-            RIGHT,
-            MAP_TOP + 12,
-            Align::Right,
-            SECONDARY,
-        );
-    }
-    rider(&mut canvas, frame);
-    canvas
-}
-
-/// The map's frame: the climb ahead or under way, when the forecast has one.
-fn map_frame(view: &View) -> Option<Frame> {
-    let forecast = view.forecast();
-    let (layout, climb) = match (forecast.current(), forecast.upcoming()) {
-        (Some(current), _) => (Layout::ToTop, current),
-        (None, Some(next)) => (Layout::Ahead, next),
-        (None, None) => return None,
-    };
-    let mut frame = Frame {
-        top: MAP_TOP,
-        layout,
-        grade: view
-            .sample
-            .gradient_tenths
-            .map(|tenths| Steepness::of(i32::from(tenths))),
-        climb: Some(climb),
-        ..Frame::default()
-    };
-    let step = STEP_MM;
-    let ahead_len = forecast.len;
-    // Past: the barometric profile of the climb so far, while on one.
-    let mut past = [ProfileSample::default(); PROFILE_LEN];
-    let mut past_len = 0;
-    let mut behind_mm = 0;
-    if layout == Layout::ToTop
-        && let Some(so_far) = view.climbs().climbing()
-    {
-        past_len = view.climbs().profile(&mut past);
-        behind_mm = so_far
-            .length_mm
-            .min(past_len.saturating_sub(1) as u64 * step);
-    }
-    // Ahead: to the top, plus a little road after it for context.
-    let end = climb.end_mm();
-    let after = (climb.summary.length_mm / 10).max(200_000);
-    let ahead_mm = (end + after)
-        .min(ahead_len.saturating_sub(1) as u64 * step)
-        .max(step);
-    let total = behind_mm + ahead_mm;
-    let columns = PROFILE_LEN as u64;
-    let rider = (behind_mm * (columns - 1) / total) as usize;
-    frame.rider = rider as u8;
-    // Elevation and steepness at a column, relative to the rider.
-    let at = |column: usize| -> (i32, Steepness, bool) {
-        let distance = column as u64 * total / (columns - 1);
-        if distance < behind_mm {
-            let back = ((behind_mm - distance) / step) as usize;
-            let newest = past_len - 1;
-            let sample = past[newest.saturating_sub(back)];
-            let z = i32::from(sample.altitude_dm) - i32::from(past[newest].altitude_dm);
-            (z, Steepness::of(i32::from(sample.grade_tenths)), true)
-        } else {
-            let ahead = distance - behind_mm;
-            let index = ((ahead / step) as usize).min(ahead_len - 1);
-            let inside = ahead >= climb.summary.start_mm && ahead <= end;
-            (
-                i32::from(forecast.samples[index]),
-                forecast.steepness(index),
-                layout == Layout::Ahead && !inside || ahead > end,
-            )
-        }
-    };
-    let mut low = i32::MAX;
-    let mut high = i32::MIN;
-    let mut columns_z = [0i32; PROFILE_LEN];
-    for (column, slot) in columns_z.iter_mut().enumerate() {
-        // Steepness is already a 200 m grade, so a steady grade keeps one colour.
-        let (z, steepness, dim) = at(column);
-        *slot = z;
-        low = low.min(z);
-        high = high.max(z);
-        frame.bands[column] = steepness;
-        frame.dim[column] = dim;
-    }
-    let range = high - low;
-    let span = range.max(MIN_SPAN_DM);
-    let floor = low - (span - range) / 4;
-    let rows = MAP_HEIGHT as i32 - 4;
-    for (column, z) in columns_z.iter().enumerate() {
-        let height = 1 + (z - floor) * rows / span;
-        frame.tops[column] = (MAP_HEIGHT as i32 - height) as u8;
-    }
-    Some(frame)
 }
 
 /// A column's colour: its steepness, at 25% when dimmed.
@@ -514,63 +480,131 @@ fn shade(frame: &Frame, column: usize) -> u16 {
     }
 }
 
-/// Precompute the layout, grade colour and every chart column.
-pub(super) fn frame(view: &View) -> Frame {
-    if let Some(frame) = map_frame(view) {
-        return frame;
-    }
-    let climbs = view.climbs();
-    let mut frame = Frame {
-        layout: if climbs.climbing().is_some() {
-            Layout::Climbing
-        } else if climbs.last_climb().is_some() {
-            Layout::Last
-        } else {
-            Layout::Idle
-        },
-        grade: view
-            .sample
-            .gradient_tenths
-            .map(|tenths| Steepness::of(i32::from(tenths))),
-        ..Frame::default()
-    };
-    let mut samples = [ProfileSample::default(); PROFILE_LEN];
-    let len = climbs.profile(&mut samples);
-    let samples = &samples[..len];
+/// One chart column: its altitude, steepness and whether it is dimmed.
+type Column = (i32, Steepness, bool);
+
+/// Scale `columns` (from `first` on) into the frame's rows.
+fn fill(frame: &mut Frame, first: usize, columns: &[Column]) {
     let (Some(low), Some(high)) = (
-        samples.iter().map(|s| i32::from(s.altitude_dm)).min(),
-        samples.iter().map(|s| i32::from(s.altitude_dm)).max(),
+        columns.iter().map(|c| c.0).min(),
+        columns.iter().map(|c| c.0).max(),
     ) else {
-        return frame;
+        return;
     };
     let range = high - low;
     let span = range.max(MIN_SPAN_DM);
     // A range smaller than the minimum span sits in the lower part, as a road.
     let floor = low - (span - range) / 4;
+    let height = (frame.bottom - CHART_TOP) as i32;
     // Leave room above the highest point for the rider's disc.
-    let rows = CHART_HEIGHT as i32 - 4;
-    let first = PROFILE_LEN - len;
-    let mut band = Steepness::of(samples.first().map_or(0, |s| i32::from(s.grade_tenths)));
-    for (index, sample) in samples.iter().enumerate() {
-        band = band.after(i32::from(sample.grade_tenths));
-        let height = 1 + (i32::from(sample.altitude_dm) - floor) * rows / span;
-        frame.tops[first + index] = (CHART_HEIGHT as i32 - height) as u8;
-        frame.bands[first + index] = band;
+    let rows = height - 4;
+    for (index, &(z, steepness, dim)) in columns.iter().enumerate() {
+        let filled = 1 + (z - floor) * rows / span;
+        frame.tops[first + index] = (height - filled) as u8;
+        frame.bands[first + index] = steepness;
+        frame.dim[first + index] = dim;
     }
-    frame.rider = (PROFILE_LEN - 1) as u8;
+}
+
+/// Precompute every chart column for the road the page shows.
+pub(super) fn frame(view: &View) -> Frame {
+    let mut frame = Frame::default();
+    let lent = view.climb_lent();
+    let odometer = view.totals.distance_mm();
+    let mut columns = [(0, Steepness::Easy, false); PROFILE_LEN];
+    match situation(view) {
+        Situation::Ahead(pin) | Situation::OnMap(pin) => {
+            let on = odometer >= pin.foot_mm;
+            frame.bottom = BARRED_BOTTOM;
+            frame.done = Some(if on {
+                pin.done_permille(odometer) as u16
+            } else {
+                0
+            });
+            // Ahead from the rider, on the climb from its foot; past the top
+            // a little road for context, as far as the map reaches.
+            let start = if on { pin.foot_mm } else { odometer };
+            let after = ((pin.top_mm - pin.foot_mm) / 10).max(AFTER_MIN_MM);
+            let end = (pin.top_mm + after)
+                .min(pin.span_mm().1)
+                .max(start + STEP_MM);
+            let last = PROFILE_LEN as u64 - 1;
+            for (column, slot) in columns.iter_mut().enumerate() {
+                let at = start + column as u64 * (end - start) / last;
+                let outside = at < pin.foot_mm || at > pin.top_mm;
+                *slot = (
+                    pin.altitude_dm(at),
+                    pin.steepness(at),
+                    outside || (on && at < odometer),
+                );
+            }
+            let rider = odometer.saturating_sub(start) * last / (end - start);
+            frame.rider = rider.min(last) as u8;
+            fill(&mut frame, 0, &columns);
+        }
+        Situation::OnClimb { length_mm, .. } => {
+            let mut samples = [ProfileSample::default(); PROFILE_LEN];
+            let len = lent.climbs.profile(&mut samples);
+            let climbed = (length_mm / STEP_MM) as usize;
+            let mut band = Steepness::of(samples.first().map_or(0, |s| i32::from(s.grade_tenths)));
+            for (index, (sample, slot)) in samples[..len].iter().zip(&mut columns).enumerate() {
+                band = band.after(i32::from(sample.grade_tenths));
+                *slot = (
+                    i32::from(sample.altitude_dm),
+                    band,
+                    index + climbed < len.saturating_sub(1),
+                );
+            }
+            if len > 0 {
+                frame.rider = (PROFILE_LEN - 1) as u8;
+                fill(&mut frame, PROFILE_LEN - len, &columns[..len]);
+            }
+        }
+        Situation::Clear => {
+            let trace = lent.trace;
+            let len = trace.len();
+            if len < 2 {
+                return frame;
+            }
+            // A column's grade spans the road 100 m each side.
+            let reach = (100_000 / trace.step_mm()).max(1) as usize;
+            let mut band = None;
+            let last = PROFILE_LEN - 1;
+            for (column, slot) in columns.iter_mut().enumerate() {
+                let at = column * (len - 1);
+                let (index, into) = (at / last, (at % last) as i32);
+                let next = (index + 1).min(len - 1);
+                let (a, b) = (trace.altitude_dm(index), trace.altitude_dm(next));
+                let (from, to) = (index.saturating_sub(reach), (index + reach).min(len - 1));
+                let rise = i64::from(trace.altitude_dm(to) - trace.altitude_dm(from));
+                let run = (to - from) as i64 * trace.step_mm() as i64;
+                let tenths = if run == 0 {
+                    0
+                } else {
+                    (rise * 100_000 / run) as i32
+                };
+                let steepness =
+                    band.map_or_else(|| Steepness::of(tenths), |b: Steepness| b.after(tenths));
+                band = Some(steepness);
+                *slot = (a + (b - a) * into / last as i32, steepness, false);
+            }
+            frame.rider = last as u8;
+            fill(&mut frame, 0, &columns);
+        }
+    }
     frame
 }
 
 /// The profile fill and its baseline.
 pub(super) fn paint_chart(frame: &Frame, row: &mut Row) {
     let y = row.y();
-    if y == CHART_BOTTOM {
+    if y == frame.bottom {
         row.span(CHART_LEFT..CHART_RIGHT, GRID);
     }
-    if !(frame.top..CHART_BOTTOM).contains(&y) {
+    if !(CHART_TOP..frame.bottom).contains(&y) {
         return;
     }
-    let line = y - frame.top;
+    let line = y - CHART_TOP;
     // Runs of one colour fill as spans.
     let mut column = 0;
     while column < PROFILE_LEN {
@@ -594,15 +628,15 @@ pub(super) fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
     if !(CHART_LEFT..CHART_RIGHT).contains(&x) {
         return BLACK;
     }
-    if y == CHART_BOTTOM {
+    if y == frame.bottom {
         return GRID;
     }
-    if !(frame.top..CHART_BOTTOM).contains(&y) {
+    if !(CHART_TOP..frame.bottom).contains(&y) {
         return BLACK;
     }
     let column = x - CHART_LEFT;
     let top = frame.tops[column];
-    if top != EMPTY && y - frame.top >= usize::from(top) {
+    if top != EMPTY && y - CHART_TOP >= usize::from(top) {
         shade(frame, column)
     } else {
         BLACK
@@ -612,151 +646,72 @@ pub(super) fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::climb::Climbs;
+    use crate::ride::climb_ahead::{self, tests::ahead};
     use crate::screens::workout::Page;
+    use std::boxed::Box;
 
-    /// A view of the climb page after riding `metres` along `altitude_dm(m)`;
-    /// views borrow the climbs, so tests leak them.
-    fn ridden(metres: u32, altitude_dm: impl Fn(u32) -> i32) -> View<'static> {
-        let mut view = View::new(Page::Ride, 0, None);
-        view.radar_paired = true;
-        view.ride_page = crate::screens::ride::RidePage::Climb;
-        let mut climbs = Climbs::default();
-        for m in (5..=metres).step_by(5) {
-            climbs.add(1000, 5000, Some(altitude_dm(m)));
-        }
-        view.show_climb(
-            std::boxed::Box::leak(std::boxed::Box::new(climbs)),
-            &crate::ride::climb_ahead::Forecast::NONE,
-        );
-        view
+    /// What a climb page view borrows; tests leak it.
+    struct Ride {
+        climbs: Climbs,
+        trace: Trace,
+        forecast: Forecast,
+        pinned: Option<Pinned>,
+        odometer_mm: u64,
     }
 
-    #[test]
-    fn a_flat_road_stays_low_and_green() {
-        let mut view = ridden(2000, |_| 5000);
-        view.prepare();
-        let frame = view.climb();
-        // 2 km fills the right half; the older half is empty.
-        assert_eq!(frame.tops[99], EMPTY);
-        let flat = frame.tops[PROFILE_LEN - 1];
-        assert!(frame.tops[100..].iter().all(|&top| top == flat));
-        // Low in the minimum span: about a quarter of the chart.
-        let height = CHART_HEIGHT - usize::from(flat);
-        let quarter = CHART_HEIGHT / 4;
-        assert!((quarter - 4..=quarter + 4).contains(&height), "{height}");
-        assert!(frame.bands[100..].iter().all(|&b| b == Steepness::Easy));
-        assert_eq!(
-            view.pixel(CHART_LEFT + 150, CHART_BOTTOM - 1),
-            color(Steepness::Easy)
-        );
-        assert_eq!(view.pixel(CHART_LEFT + 50, CHART_BOTTOM - 1), BLACK);
-        assert_eq!(view.pixel(CHART_LEFT + 50, CHART_BOTTOM), GRID);
-        // The rider's disc sits on the newest altitude.
-        assert_eq!(
-            view.pixel(CHART_RIGHT - 1, CHART_TOP + usize::from(flat)),
-            WHITE
-        );
-    }
-
-    #[test]
-    fn a_climb_fills_the_chart_and_colours_by_grade() {
-        // 1 km flat, 1 km at 7%, 1 km at 10%, then 400 m down at 5%.
-        let mut view = ridden(3400, |m| match m {
-            ..1000 => 0,
-            1000..2000 => (m as i32 - 1000) * 7 / 10,
-            2000..3000 => 700 + (m as i32 - 2000),
-            _ => 1700 - (m as i32 - 3000) / 2,
-        });
-        view.prepare();
-        let frame = view.climb();
-        // 170 samples, right-aligned: the flat starts at column 30.
-        assert_eq!(frame.tops[29], EMPTY);
-        assert_eq!(usize::from(frame.tops[60]), CHART_HEIGHT - 1);
-        // Highest at the top of the 10%, three rows below the chart top.
-        assert_eq!(frame.tops[180], 3);
-        // Each steady stretch is one solid colour.
-        assert!(frame.bands[30..75].iter().all(|&b| b == Steepness::Easy));
-        assert!(frame.bands[85..125].iter().all(|&b| b == Steepness::Steep));
-        assert!(frame.bands[135..175].iter().all(|&b| b == Steepness::Hard));
-        assert!(frame.bands[185..].iter().all(|&b| b == Steepness::Descent));
-        assert_eq!(
-            view.pixel(CHART_LEFT + 150, CHART_BOTTOM - 1),
-            color(Steepness::Hard)
-        );
-        assert_eq!(
-            view.pixel(CHART_LEFT + 195, CHART_BOTTOM - 1),
-            color(Steepness::Descent)
-        );
-    }
-
-    #[test]
-    fn a_steady_grade_on_a_band_boundary_keeps_one_colour() {
-        // 2 km at exactly 6%, sampled with the rounding a real trace has.
-        let mut view = ridden(2000, |m| m as i32 * 6 / 10);
-        view.prepare();
-        let bands = &view.climb().bands[100..];
-        assert!(bands.iter().all(|&b| b == bands[0]), "{bands:?}");
-    }
-
-    /// Every climb state, with the widest values, lays out whole.
-    #[test]
-    fn extreme_climbs_never_overlap_or_clip() {
-        let steep = |m: u32| m as i32 * 25 / 10;
-        let cases: [(&str, View); 4] = [
-            ("nothing ridden", ridden(0, |_| 0)),
-            ("flat", ridden(4000, |_| 5000)),
-            ("climbing 25%", ridden(4000, steep)),
-            (
-                "after a climb",
-                ridden(6000, |m| {
-                    steep(m.min(3000)) - (m.saturating_sub(3000)) as i32
-                }),
-            ),
-        ];
-        for (what, mut view) in cases {
-            for tenths in [None, Some(-125), Some(-5), Some(255), Some(999)] {
-                view.sample.gradient_tenths = tenths;
-                view.totals.add(1000, 0, &view.sample, Some(30_000));
-                view.prepare();
-                view.canvas()
-                    .assert_laid_out(BODY, &["GRADE"], &std::format!("{what} {tenths:?}"));
+    impl Ride {
+        fn new() -> Self {
+            Self {
+                climbs: Climbs::default(),
+                trace: Trace::default(),
+                forecast: Forecast::NONE,
+                pinned: None,
+                odometer_mm: 0,
             }
         }
-    }
 
-    #[test]
-    fn the_grade_band_takes_the_steepness_colour() {
-        let mut view = ridden(1000, |_| 0);
-        view.sample.gradient_tenths = Some(105);
-        view.prepare();
-        assert!(view.canvas().shapes.iter().any(|shape| matches!(
-            shape,
-            Shape::Bar { color, .. } if *color == ZONES[5]
-        )));
-        assert_eq!(
-            view.canvas().find("10.5%").map(|run| run.color),
-            Some(GRADE)
-        );
-    }
+        /// Ride `metres` at 5 m/s along `altitude_dm(m)` on the barometer.
+        fn ridden(mut self, metres: u32, altitude_dm: impl Fn(u32) -> i32) -> Self {
+            for m in (5..=metres).step_by(5) {
+                let z = altitude_dm(m);
+                self.climbs.add(1000, 5000, Some(z));
+                self.odometer_mm += 5000;
+                self.trace.add(self.odometer_mm, Some(z));
+            }
+            self
+        }
 
-    /// A climb page view with a map forecast of `road(metres)` over `km`.
-    fn mapped(km: usize, road: impl Fn(f64) -> f64) -> View<'static> {
-        let mut view = ridden(0, |_| 0);
-        edit(&mut view, |forecast| {
-            forecast.update(&crate::ride::climb_ahead::tests::ahead(1, km, road));
-        });
-        view
-    }
+        /// The map sees `road(metres)` ahead over `km`, from here.
+        fn mapped(mut self, generation: u32, km: usize, road: impl Fn(f64) -> f64) -> Self {
+            self.forecast.map = true;
+            self.forecast.update(&ahead(generation, km, road));
+            climb_ahead::follow(&mut self.pinned, Some(&self.forecast), self.odometer_mm);
+            self
+        }
 
-    /// Change the view's forecast: views borrow it, so tests leak a copy.
-    fn edit(
-        view: &mut View<'static>,
-        change: impl FnOnce(&mut crate::ride::climb_ahead::Forecast),
-    ) {
-        let forecast = std::boxed::Box::leak(std::boxed::Box::new(view.forecast().clone()));
-        change(forecast);
-        view.show_climb(view.climbs(), forecast);
+        /// Move on `metres` without a new forecast.
+        fn on(mut self, metres: u64) -> Self {
+            self.odometer_mm += metres * 1000;
+            climb_ahead::follow(&mut self.pinned, None, self.odometer_mm);
+            self
+        }
+
+        fn view(self) -> View<'static> {
+            let ride: &'static Ride = Box::leak(Box::new(self));
+            let mut view = View::new(Page::Ride, 0, None);
+            view.radar_paired = true;
+            view.ride_page = crate::screens::ride::RidePage::Climb;
+            let sample = view.sample;
+            view.totals
+                .add(1000, ride.odometer_mm, &sample, Some(95_000));
+            view.show_climb(Lent {
+                climbs: &ride.climbs,
+                trace: &ride.trace,
+                forecast: &ride.forecast,
+                pinned: ride.pinned.as_ref(),
+            });
+            view
+        }
     }
 
     /// Every painted row equals the per-pixel reference.
@@ -770,29 +725,127 @@ mod tests {
         }
     }
 
+    /// 1 km flat, then 1 km at 7%, 1 km at 10%, then 400 m down at 5%.
+    fn hill(m: u32) -> i32 {
+        match m {
+            ..1000 => 0,
+            1000..2000 => (m as i32 - 1000) * 7 / 10,
+            2000..3000 => 700 + (m as i32 - 2000),
+            _ => 1700 - (m as i32 - 3000) / 2,
+        }
+    }
+
     #[test]
-    fn a_climb_ahead_shows_its_foot_category_and_profile() {
-        // 2 km flat, then 3 km at 7%, then flat.
-        let mut view = mapped(10, |m| (m - 2000.0).clamp(0.0, 3000.0) * 0.07);
+    fn grade_power_and_heart_rate_show_on_every_road() {
+        let mut view = Ride::new().ridden(1000, |_| 0).view();
+        view.sample.gradient_tenths = Some(105);
+        view.power_3s = Some(260);
+        view.sample.heart_bpm = Some(148);
+        view.prepare();
+        let canvas = view.canvas();
+        for text in [
+            "NO CLIMB",
+            "10.5%",
+            "POWER",
+            "260",
+            "HEART",
+            "148",
+            "ALTITUDE M",
+            "ASCENT M",
+        ] {
+            assert!(canvas.shows(text), "{text}");
+        }
+        assert!(!canvas.shows("GRADE"), "the grade needs no caption");
+        assert_eq!(canvas.find("10.5%").map(|run| run.color), Some(GRADE));
+        let zone = view.profile.power_zone(260);
+        let name = std::format!("Z{zone}");
+        assert_eq!(
+            canvas.find(&name).map(|run| run.color),
+            Some(zone_color(zone))
+        );
+        // The band under the readings takes the grade's steepness colour.
+        assert!(canvas.shapes.iter().any(|shape| matches!(
+            shape,
+            Shape::Bar { color, .. } if *color == ZONES[5]
+        )));
+        // The grade sits in the middle of its box.
+        let grade = canvas.find("10.5%").unwrap();
+        let middle = (BOX_TOP + BAND_TOP - 6) / 2;
+        let centre =
+            grade.top + grade.line.face().top as usize + grade.line.face().cap as usize / 2;
+        assert!(centre.abs_diff(middle) <= 1, "{centre} vs {middle}");
+    }
+
+    #[test]
+    fn with_no_climb_the_whole_ride_is_the_profile() {
+        let mut view = Ride::new().ridden(3400, hill).view();
         view.prepare();
         let frame = view.climb();
-        assert_eq!(frame.layout, Layout::Ahead);
-        for text in [
-            "CLIMB AHEAD",
-            "CAT 3",
-            "2.0",
-            "KM",
-            "LENGTH KM",
-            "3.00",
-            "7.0%",
-            "210",
-        ] {
-            assert!(view.canvas().shows(text), "{text}");
+        assert!(view.canvas().shows("NO CLIMB") && view.canvas().shows("NO MAP"));
+        // The whole ride spans the chart, the rider at its end.
+        assert!(frame.tops.iter().all(|&top| top != EMPTY));
+        assert_eq!(usize::from(frame.rider), PROFILE_LEN - 1);
+        assert_eq!(frame.done, None);
+        assert!(frame.dim.iter().all(|&d| !d));
+        let height = CHART_BOTTOM - CHART_TOP;
+        assert_eq!(
+            usize::from(frame.tops[10]),
+            height - 1,
+            "the start is lowest"
+        );
+        assert!(frame.bands[10..50].iter().all(|&b| b == Steepness::Easy));
+        assert!(frame.bands[125..165].iter().all(|&b| b == Steepness::Hard));
+        assert!(frame.bands[185..].iter().all(|&b| b == Steepness::Descent));
+        assert_paints_reference(&view);
+    }
+
+    #[test]
+    fn on_a_climb_without_a_map_the_climb_so_far_is_in_colour() {
+        let mut view = Ride::new().ridden(2600, hill).view();
+        view.prepare();
+        let canvas = view.canvas();
+        for text in ["CLIMBING", "SO FAR KM", "GAIN M"] {
+            assert!(canvas.shows(text), "{text}");
         }
-        // The chart runs from the rider to past the top: 5.3 km over 200
-        // columns. The flat before the foot is dim, the climb is full orange.
+        let frame = view.climb();
+        assert_eq!(usize::from(frame.rider), PROFILE_LEN - 1);
+        assert_eq!(frame.done, None, "no top, no bar");
+        // The flat before the climb is dim; the climb itself is not.
+        let first = PROFILE_LEN - 130;
+        assert!(frame.dim[first..first + 40].iter().all(|&d| d));
+        assert!(frame.dim[PROFILE_LEN - 60..].iter().all(|&d| !d));
+        assert_paints_reference(&view);
+    }
+
+    #[test]
+    fn a_climb_ahead_shows_its_foot_category_and_the_road_to_its_top() {
+        // 300 m flat, then 1 km at 8% (80 m), then flat.
+        let road = |m: f64| (m - 300.0).clamp(0.0, 1000.0) * 0.08;
+        let mut view = Ride::new().mapped(1, 5, road).view();
+        view.sample.gradient_tenths = Some(10);
+        view.prepare();
+        let canvas = view.canvas();
+        for text in [
+            "CLIMB IN 0.3 KM",
+            "CAT 4",
+            "LENGTH KM",
+            "AVG",
+            "8.0%",
+            "GAIN M",
+            "80",
+            "0% UP",
+        ] {
+            assert!(canvas.shows(text), "{text}");
+        }
+        // Average and gain stack in the right column.
+        let (average, gain) = (canvas.find("8.0%").unwrap(), canvas.find("80").unwrap());
+        assert!(gain.top > average.top + 10, "stacked");
+        let frame = view.climb();
         assert_eq!(frame.rider, 0);
-        let foot = 2_000 * (PROFILE_LEN - 1) / 5_300;
+        assert_eq!(frame.done, Some(0));
+        assert_eq!(frame.bottom, BARRED_BOTTOM);
+        // The road to the foot is dim, the climb in full colour.
+        let foot = 300 * (PROFILE_LEN - 1) / 1500;
         assert!(frame.dim[..foot - 2].iter().all(|&d| d));
         assert!(frame.dim[foot + 2..foot + 100].iter().all(|&d| !d));
         assert!(
@@ -800,135 +853,112 @@ mod tests {
                 .iter()
                 .all(|&b| b == Steepness::Steep)
         );
-        assert_eq!(
-            view.pixel(CHART_LEFT + foot + 50, CHART_BOTTOM - 1),
-            color(Steepness::Steep)
-        );
-        assert_eq!(
-            view.pixel(CHART_LEFT + 20, CHART_BOTTOM - 1),
-            blend(color(Steepness::Easy), BLACK, 4)
-        );
-        // The top is the highest column.
-        let top = frame
-            .tops
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, t)| **t)
-            .unwrap()
-            .0;
-        assert!(top > foot + 100, "{top}");
         assert_paints_reference(&view);
     }
 
     #[test]
-    fn on_a_climb_the_page_counts_down_to_the_top() {
-        // On a 9% climb with 1.5 km to go, then down.
-        let road = |m: f64| {
-            if m < 1500.0 {
-                m * 0.09
-            } else {
-                135.0 - (m - 1500.0) * 0.05
-            }
-        };
-        let mut view = mapped(5, road);
-        view.sample.gradient_tenths = Some(88);
+    fn on_the_map_climb_the_rider_moves_along_the_whole_climb() {
+        let road = |m: f64| (m - 300.0).clamp(0.0, 1000.0) * 0.08;
+        let ride = Ride::new().mapped(1, 5, road).on(900);
+        // 600 m up, 400 m to go: the map sees the rest from here.
+        let ride = ride.mapped(2, 5, |m: f64| m.min(400.0) * 0.08);
+        let mut view = ride.view();
         view.prepare();
-        assert_eq!(view.climb().layout, Layout::ToTop);
+        let canvas = view.canvas();
         for text in [
-            "TO THE TOP",
-            "1.5",
-            "TO GO M",
-            "135",
-            "8.8%",
-            "NEXT 500 M",
-            "9.0%",
+            "CLIMBING",
+            "CAT 4",
+            "TO TOP KM",
+            "0.4",
+            "UP TO GO M",
+            "32",
+            "60% UP",
         ] {
-            assert!(view.canvas().shows(text), "{text}");
+            assert!(canvas.shows(text), "{text}");
         }
-        // Without a climb so far from the barometer the rider is at the left.
-        assert_eq!(view.climb().rider, 0);
-        assert!(!view.climb().dim[..150].iter().any(|&d| d));
-        assert_paints_reference(&view);
-    }
-
-    #[test]
-    fn the_part_climbed_is_dimmed_behind_the_rider() {
-        // The barometer has 1 km of 8% behind; the map 1 km more ahead.
-        let mut view = ridden(2000, |m| (m as i32 - 1000).max(0) * 8 / 10);
-        edit(&mut view, |forecast| {
-            forecast.update(&crate::ride::climb_ahead::tests::ahead(1, 3, |m| {
-                (m.min(1000.0)) * 0.08
-            }));
-        });
-        view.prepare();
         let frame = view.climb();
-        assert_eq!(frame.layout, Layout::ToTop);
+        // The chart starts at the foot: the rider is 600 m into 1.2 km of it.
         let rider = usize::from(frame.rider);
-        assert!((70..110).contains(&rider), "{rider}");
-        assert!(frame.dim[..rider - 2].iter().all(|&d| d));
-        assert!(frame.dim[rider + 2..rider + 50].iter().all(|&d| !d));
+        assert!((95..=105).contains(&rider), "{rider}");
+        assert!(frame.dim[..rider - 1].iter().all(|&d| d), "climbed");
+        assert!(
+            frame.dim[rider + 1..rider + 60].iter().all(|&d| !d),
+            "ahead"
+        );
+        assert_eq!(frame.done, Some(600));
         // The rider's disc sits on the profile at the rider's column.
         let x = CHART_LEFT + rider;
         assert_eq!(
-            view.pixel(x, MAP_TOP + usize::from(frame.tops[rider])),
+            view.pixel(x, CHART_TOP + usize::from(frame.tops[rider])),
             WHITE
         );
+        // The bar is filled to the share climbed.
+        let fill = canvas.shapes.iter().find_map(|shape| match shape {
+            Shape::Bar { rect, color, .. } if *color == WHITE => Some(*rect),
+            _ => None,
+        });
+        let fill = fill.expect("the climbed part of the bar");
+        let track = canvas.find("60% UP").unwrap().left - 6 - LEFT;
+        assert_eq!(fill.right - LEFT, track * 600 / 1000);
         assert_paints_reference(&view);
     }
 
+    /// Every road, with the widest values, lays out whole.
     #[test]
-    fn an_unsure_forecast_leaves_the_map_free_page() {
-        let mut view = mapped(10, |m| (m - 1000.0).max(0.0) * 0.08);
-        edit(&mut view, |forecast| forecast.confidence = 20);
-        view.prepare();
-        assert!(view.canvas().shows("GRADE"));
-        assert!(!view.canvas().shows("CLIMB AHEAD"));
-    }
-
-    /// The map views lay out whole with the widest values.
-    #[test]
-    fn extreme_forecasts_never_overlap_or_clip() {
-        let cases: [(&str, View); 4] = [
-            // An HC wall 9.9 km away that runs past the horizon.
-            ("far HC", mapped(10, |m| (m - 9_400.0).max(0.0) * 0.25)),
-            // A 25% climb from here past the horizon.
-            ("steep open", mapped(10, |m| m * 0.25)),
-            // A short Cat 4 just ahead.
-            ("short", mapped(10, |m| (m - 300.0).clamp(0.0, 900.0) * 0.1)),
-            (
-                "descent then climb",
-                mapped(10, |m| {
-                    if m < 3000.0 {
-                        -m * 0.08
-                    } else {
-                        -240.0 + (m - 3000.0) * 0.12
-                    }
-                }),
-            ),
+    fn extreme_climbs_never_overlap_or_clip() {
+        type Case = (&'static str, fn() -> Ride);
+        let cases: [Case; 7] = [
+            ("nothing ridden", Ride::new),
+            ("flat", || Ride::new().ridden(4000, |_| 5000)),
+            ("climbing 25%", || {
+                Ride::new().ridden(4000, |m| m as i32 * 25 / 10)
+            }),
+            ("far HC", || {
+                Ride::new().mapped(1, 10, |m| (m - 450.0).max(0.0) * 0.25)
+            }),
+            ("steep open", || Ride::new().mapped(1, 10, |m| m * 0.25)),
+            ("short", || {
+                Ride::new().mapped(1, 10, |m| (m - 300.0).clamp(0.0, 900.0) * 0.1)
+            }),
+            ("on HC", || {
+                Ride::new()
+                    .mapped(1, 10, |m| (m - 100.0).max(0.0) * 0.25)
+                    .on(5000)
+            }),
         ];
-        for (what, mut view) in cases {
-            for tenths in [None, Some(-125), Some(255), Some(999)] {
+        for (what, ride) in cases {
+            for (tenths, watts, bpm) in [
+                (None, None, None),
+                (Some(-125), Some(1999), Some(220)),
+                (Some(255), Some(85), Some(60)),
+                (Some(999), Some(999), Some(199)),
+            ] {
+                let mut view = ride().view();
                 view.sample.gradient_tenths = tenths;
+                view.power_3s = watts;
+                view.sample.heart_bpm = bpm;
                 view.prepare();
-                assert!(
-                    matches!(view.climb().layout, Layout::Ahead | Layout::ToTop),
-                    "{what}"
+                view.canvas().assert_laid_out(
+                    BODY,
+                    &["POWER", "HEART"],
+                    &std::format!("{what} {tenths:?}"),
                 );
-                view.canvas()
-                    .assert_laid_out(BODY, &["KM"], &std::format!("{what} {tenths:?}"));
                 assert_paints_reference(&view);
             }
         }
     }
 
     #[test]
-    fn without_a_map_the_page_says_so() {
-        let mut view = ridden(2000, |_| 5000);
+    fn an_unsure_forecast_pins_nothing() {
+        let mut ride = Ride::new();
+        ride.forecast.map = true;
+        let mut unsure = ahead(1, 10, |m| (m - 300.0).max(0.0) * 0.08);
+        unsure.confidence = 20;
+        ride.forecast.update(&unsure);
+        climb_ahead::follow(&mut ride.pinned, Some(&ride.forecast), 0);
+        let mut view = ride.view();
         view.prepare();
-        assert!(view.canvas().shows("NO MAP"));
-        assert_paints_reference(&view);
-        edit(&mut view, |forecast| forecast.map = true);
-        view.prepare();
+        assert!(view.canvas().shows("NO CLIMB"));
         assert!(!view.canvas().shows("NO MAP"));
     }
 }

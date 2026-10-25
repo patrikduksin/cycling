@@ -1,5 +1,6 @@
 //! The road ahead: GPS fixes into the terrain look-ahead, its results into
-//! the climb forecast, and the climb page brought up before a climb starts.
+//! the climb forecast, and the climb near or under way pinned to the ride
+//! (`climb_ahead::Pinned`) for the climb page.
 //!
 //! Composition builds a `Terrain` around a tile arena, both in a block of its
 //! own (PSRAM on the device), and hands it to `Runtime::attach_terrain`. Then
@@ -8,9 +9,7 @@
 //! call does one bounded step. Without a `Terrain` or a ready pack the climb
 //! page keeps its map-free view and says "NO MAP".
 use super::Runtime;
-use crate::ride::climb::Event as ClimbEvent;
-use crate::ride::climb_ahead::{ClimbAhead, Forecast};
-use crate::screens::workout::Page;
+use crate::ride::climb_ahead::{self, Forecast, Pinned};
 use device_api::bulk::ReadWrite;
 use firmware_services::pack::{self, Pack};
 use firmware_services::volume::{self, Extent, Sector, TERRAIN, Volume};
@@ -18,8 +17,6 @@ use firmware_services::volume::{self, Extent, Sector, TERRAIN, Volume};
 /// A fix older than this stops the look-ahead (the rider is in a tunnel or
 /// the receiver lost the sky).
 const FIX_LOST_MS: u64 = 5_000;
-/// The climb page comes up this far before a climb starts.
-const ANNOUNCE_MM: u64 = 500_000;
 /// The tile cache composition gives `Terrain::new`: 512 KiB of 8 KiB pages,
 /// room for the road ahead through the densest city tiles.
 pub const TERRAIN_ARENA_BYTES: usize = 64 * terrain::PAGE_BYTES;
@@ -52,10 +49,9 @@ pub struct Terrain {
     /// a second, the main loop runs far more often, and the matcher's
     /// hysteresis counts fixes, so only a new position is a new fix.
     fed: Option<(i32, i32)>,
-    /// The map brought up the climb page for the climb under way or close.
-    pub(super) announced: bool,
-    /// The announced climb has been under way (the rider reached its foot).
-    on_climb: bool,
+    /// The map's climb under way or close, on the ride's odometer; none
+    /// outside a recording ride.
+    pinned: Option<Pinned>,
     status: Option<terrain::Status>,
 }
 
@@ -70,8 +66,7 @@ impl Terrain {
             forecast: Forecast::NONE,
             last_fix_ms: None,
             fed: None,
-            announced: false,
-            on_climb: false,
+            pinned: None,
             status: None,
         }
     }
@@ -87,8 +82,7 @@ impl Terrain {
         self.forecast.map = false;
         self.last_fix_ms = None;
         self.fed = None;
-        self.announced = false;
-        self.on_climb = false;
+        self.pinned = None;
         self.status = None;
     }
 }
@@ -124,6 +118,11 @@ fn find_pack(media: &mut impl ReadWrite, sector: &mut Sector) -> Option<Mounted>
 /// so the frame can hold it while the rest of `Runtime` changes.
 pub(super) fn forecast_of<'a>(terrain: &'a Option<&'static mut Terrain>) -> &'a Forecast {
     terrain.as_deref().map_or(&NO_MAP, |state| &state.forecast)
+}
+
+/// The pinned climb in `terrain`, borrowing only that field.
+pub(super) fn pinned_of<'a>(terrain: &'a Option<&'static mut Terrain>) -> Option<&'a Pinned> {
+    terrain.as_deref().and_then(|state| state.pinned.as_ref())
 }
 
 impl Runtime {
@@ -194,79 +193,39 @@ impl Runtime {
         };
         state.status = Some(status);
         state.forecast.map = status != terrain::Status::NoPack;
-        if status == terrain::Status::NoPack {
+        let fresh = if status == terrain::Status::NoPack {
             // No pack, or one the engine gave up on: the last forecast is
             // stale, and the page falls back to the barometer.
             state.forecast.forget();
+            false
         } else {
-            state.forecast.update(engine.ahead());
-        }
-        // Every pass, not only on a new forecast: a climb seen before the
-        // ride screen was open is announced once it is.
-        self.follow_forecast();
+            state.forecast.update(engine.ahead())
+        };
+        self.pin_climb(fresh);
+        self.follow_road();
         status
     }
 
-    /// The ride screen follows the map too: the climb page comes up shortly
-    /// before a climb, and goes back once the map shows no climb under way
-    /// or close, unless the ride's own detector still sees one.
-    pub(super) fn follow_forecast(&mut self) {
+    /// Pin the map's climb to the ride while one is recording, looking at
+    /// the forecast if it is `fresh`; a ride's odometer starts over with each
+    /// ride, so no pin outlives one.
+    pub(super) fn pin_climb(&mut self, fresh: bool) {
+        let recording = self.recording();
+        let odometer = self.ride.totals.distance_mm();
         let Some(state) = self.lookahead.as_deref_mut() else {
             return;
         };
-        let forecast = &state.forecast;
-        // An unusable forecast (a fork, an unsure match) changes nothing:
-        // the page waits for the map to say something again.
-        if !forecast.usable() {
-            return;
-        }
-        let near = |c: &ClimbAhead| c.summary.start_mm <= ANNOUNCE_MM;
-        let current = forecast.current().is_some();
-        let coming = current || forecast.upcoming().is_some_and(|c| near(&c));
-        // Over the top of the announced climb, the next one, however close,
-        // is a climb of its own.
-        if state.announced && state.on_climb && !current && coming {
-            state.announced = false;
-        }
-        if coming {
-            // Once per climb: a rider who pages away is left there. Only the
-            // ride screen can show it; until then the climb stays unannounced.
-            if !state.announced && self.navigation.page == Page::Ride {
-                state.announced = true;
-                state.on_climb = current;
-                self.navigation
-                    .follow_climb(ClimbEvent::Confirmed, self.preferences.options.ride_pages);
-            } else if state.announced {
-                state.on_climb |= current;
-            }
-        } else if core::mem::take(&mut state.announced) && self.ride.climbs.climbing().is_none() {
-            let summary = self.ride.climbs.last_climb().unwrap_or_default();
-            self.navigation.follow_climb(
-                ClimbEvent::Finished(summary),
-                self.preferences.options.ride_pages,
-            );
+        if recording {
+            let forecast = fresh.then_some(&state.forecast);
+            climb_ahead::follow(&mut state.pinned, forecast, odometer);
+        } else {
+            state.pinned = None;
         }
     }
 
-    /// The ride's own (barometric) detector saw a climb start or end. Its
-    /// start does not bring the climb page up again for a climb the map has
-    /// already announced (the rider may have paged away). Its end does not
-    /// take the page away while the map still shows a climb under way or
-    /// close: the map knows the road goes on up.
-    pub(super) fn ride_climb_event(&mut self, event: ClimbEvent) {
-        let announced = self.lookahead.as_deref().is_some_and(|s| s.announced);
-        let forecast = self.forecast();
-        let map_climb = forecast.current().is_some()
-            || forecast
-                .upcoming()
-                .is_some_and(|c| c.summary.start_mm <= ANNOUNCE_MM);
-        match event {
-            ClimbEvent::Confirmed if announced && map_climb => return,
-            ClimbEvent::Finished(_) if map_climb => return,
-            _ => {}
-        }
-        self.navigation
-            .follow_climb(event, self.preferences.options.ride_pages);
+    /// The climb the map pinned, for the climb page and its follower.
+    pub(super) fn pinned(&self) -> Option<&Pinned> {
+        pinned_of(&self.lookahead)
     }
 
     /// What the look-ahead did last: no pack, off the map, working or idle.
@@ -277,6 +236,19 @@ impl Runtime {
     /// The forecast the climb page draws.
     pub fn forecast(&self) -> &Forecast {
         forecast_of(&self.lookahead)
+    }
+
+    /// Pin the forecast's climb as a recording ride would, for tests that
+    /// stand in for the engine.
+    #[cfg(test)]
+    pub(super) fn pin_for_test(&mut self, fresh: bool) {
+        let odometer = self.ride.totals.distance_mm();
+        let state = self
+            .lookahead
+            .as_deref_mut()
+            .expect("tests attach a Terrain first");
+        let forecast = fresh.then_some(&state.forecast);
+        climb_ahead::follow(&mut state.pinned, forecast, odometer);
     }
 
     /// The forecast, for tests that stand in for the engine.

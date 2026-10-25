@@ -106,8 +106,10 @@ pub struct View<'a> {
     pub ride_pages: ride::PageChoice,
     /// The readings on the main page's lower line.
     pub main_slots: ride::slots::Slots,
-    /// Climbs and the elevation profile; only the climb page reads them.
-    pub climbs: Climbs,
+    /// Climbs and the elevation profile, borrowed from `Ride` (1 KB, which
+    /// the main stack cannot spare a copy of). Only the climb page reads
+    /// them.
+    pub climbs: &'a Climbs,
     /// The road ahead from the map, borrowed: it is 1 KB and main's stack
     /// cannot spare a copy. Only the climb page reads it.
     pub forecast: &'a Forecast,
@@ -179,7 +181,7 @@ pub struct View<'a> {
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(
-    core::mem::size_of::<View>() <= 10_672,
+    core::mem::size_of::<View>() <= 9_584,
     "View lives on the main stack every frame: shrink it, do not grow it"
 );
 
@@ -215,7 +217,7 @@ impl View<'_> {
             ride_page: RidePage::Main,
             ride_pages: ride::PageChoice::default(),
             main_slots: ride::slots::Slots::default(),
-            climbs: Climbs::default(),
+            climbs: &Climbs::NONE,
             forecast: &Forecast::NONE,
             lap_bars: ride::LapBars::new(),
             canvas: Canvas::default(),

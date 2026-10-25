@@ -103,6 +103,12 @@ struct Point {
 }
 
 impl Point {
+    const ZERO: Point = Point {
+        altitude_dm: 0,
+        distance_mm: 0,
+        time_ms: 0,
+    };
+
     /// The point at `distance_mm` on the straight line from `self` to `to`.
     fn toward(self, to: Point, distance_mm: u64) -> Point {
         let span = to.distance_mm.saturating_sub(self.distance_mm);
@@ -240,15 +246,19 @@ struct Ring<T: Copy + Default, const N: usize> {
 
 impl<T: Copy + Default, const N: usize> Default for Ring<T, N> {
     fn default() -> Self {
-        Self {
-            values: [T::default(); N],
-            len: 0,
-            next: 0,
-        }
+        Self::empty(T::default())
     }
 }
 
 impl<T: Copy + Default, const N: usize> Ring<T, N> {
+    const fn empty(zero: T) -> Self {
+        Self {
+            values: [zero; N],
+            len: 0,
+            next: 0,
+        }
+    }
+
     fn push(&mut self, value: T) {
         self.values[self.next] = value;
         self.next = (self.next + 1) % N;
@@ -305,6 +315,21 @@ pub struct Climbs {
 }
 
 impl Climbs {
+    /// No ride yet. A constant, so a page without climbs can borrow it.
+    pub const NONE: Self = Self {
+        distance_mm: 0,
+        time_ms: 0,
+        latest: None,
+        next_mm: 0,
+        base_dm: 0,
+        gap: false,
+        profile: Ring::empty(0),
+        window: Ring::empty(Point::ZERO),
+        vam: Ring::empty((0, 0)),
+        current: None,
+        last: None,
+    };
+
     /// Account one recorded step of `elapsed_ms` that covered `distance_mm`
     /// and ended at the smoothed `altitude_dm`, if there is a barometer.
     pub fn add(

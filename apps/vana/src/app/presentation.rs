@@ -1183,7 +1183,7 @@ impl Runtime {
 
     fn settings_lines(&self, view: &mut View) {
         use super::preferences::Persistence;
-        use crate::screens::settings::{Kind, NOTES, Row, SECTIONS, STATUS, VALUES};
+        use crate::screens::settings::{Kind, NOTES, Row, STATUS, VALUES};
         let cursor = view.cursor;
         let row = Row::at(cursor);
         let editor = [row];
@@ -1191,7 +1191,7 @@ impl Runtime {
         let shown: &[Row] = if editing {
             &editor
         } else {
-            SECTIONS[settings::section(cursor).0].1
+            settings::shown(cursor).0
         };
         let lines = view.show_settings();
         let (values, notes) = lines[VALUES..].split_at_mut(NOTES - VALUES);

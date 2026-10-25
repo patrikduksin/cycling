@@ -26,6 +26,7 @@ use super::cues::Cue;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::{Pages, RidePage, Training as Shown};
+use crate::screens::scroll::Scroll;
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
 use crate::workout::history;
@@ -248,18 +249,23 @@ impl Runtime {
         let rows = self.training.rows();
         match button {
             Button::BottomLeft => {
-                let cursor = self.training.picker_cursor;
-                let step = if held { VISIBLE } else { 1 };
-                self.training.picker_cursor = if cursor + 1 >= rows {
-                    0
-                } else {
-                    (cursor + step).min(rows - 1)
-                };
+                let scroll = Scroll::new(rows, self.training.picker_cursor, VISIBLE);
+                self.training.picker_cursor = scroll.next(held);
             }
             Button::BottomRight => self.choose_workout(self.training.picker_cursor, now),
             Button::TopLeft => self.navigation.page = Page::Home,
             _ => {}
         }
+    }
+
+    /// A vertical swipe focuses the card a page on or back.
+    pub(super) fn workouts_swipe(&mut self, on: bool) {
+        let scroll = Scroll::new(self.training.rows(), self.training.picker_cursor, VISIBLE);
+        self.training.picker_cursor = if on {
+            scroll.page_on()
+        } else {
+            scroll.page_back()
+        };
     }
 
     /// Choose picker row `row`: Ready names it, and the next ride plays it.

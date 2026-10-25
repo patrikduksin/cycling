@@ -405,8 +405,10 @@ totals and alerts use readings as they arrive. The mechanism is
 ## Settings
 
 Settings is a list of sections, one per page, with page dots in the status
-bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, MORE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
-headline and at most four rows. A row is a small card (radius 12) with its
+bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
+headline and shows at most four rows; a longer one scrolls to keep the
+focused row in view, with a 3 px scroll bar in the right margin (a `CARD`
+track down the rows, the window's part of it in `SECONDARY`). A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
 `SECONDARY` at the right of the value line. A note that does not fit whole is
 left out, after trying the part following its first comma. The focused row is `RAISED` with a 3 px `ACCENT` ring.
@@ -486,7 +488,7 @@ reading with no data yet shows `--`. The choice is the last two bytes of VANA's
 preference record from version 8 (`app::preferences`); older records load with
 the defaults.
 
-RIDE PAGES (STATS, LAP, CLIMB) and MORE PAGES (MAP, BACK TO START) list one row per optional ride page; five rows do not fit one section above the save status. The ride screen's page dots
+RIDE PAGES (STATS, LAP, CLIMB, MAP, BACK TO START) lists one row per optional ride page, five rows that scroll. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE
 press or a swipe. The `TITLE` falls back to `BODY` when a section name is too
 wide, as `RIDE PAGES` is. The CLIMB row's note, NO CLIMB POP-UP, shows while it
@@ -555,6 +557,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | --- | --- | --- |
 | Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Opens the card or tile under the finger on Home and Sensors, or the ride under it on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout under the finger is chosen; on the back-to-start page, the pad starts or stops following the track back. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Swipe | Moves at least 48 px horizontally and at least twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings |
+| Vertical swipe | Moves at least 48 px vertically and at least twice as far as horizontally, within 1 s | On Workouts, Rides and a long Settings section, focus the row a page on (bottom to top) or a page back (top to bottom), stopping at the ends; the list scrolls with the focus |
 | Settings rows | Tap | Act on the row, as ACT does |
 | Settings pads | Act on contact | Step the edited value |
 

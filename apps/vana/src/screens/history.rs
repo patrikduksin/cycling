@@ -13,6 +13,7 @@ use super::chrome::{
     ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, RAISED, Rect, SECONDARY, TERTIARY,
     TITLE, VALUE, WHITE, WIDTH,
 };
+use super::scroll::{Column, Scroll};
 use super::workout::Text;
 use crate::clock::{Local, civil};
 use crate::ride::week::{DAYS, Weeks};
@@ -78,36 +79,26 @@ fn headed(cursor: usize) -> bool {
     cursor < HEADED
 }
 
-/// The first row on screen, so that the focused one shows.
-fn first_shown(cursor: usize) -> usize {
-    if headed(cursor) {
-        0
-    } else {
-        cursor - (SHOWN - 1).min(cursor)
-    }
+/// The list's window with the focus on `cursor`: under the week header it
+/// holds `HEADED` cards, under the headline `SHOWN`.
+pub fn scroll(count: usize, cursor: usize) -> Scroll {
+    Scroll::new(count, cursor, if headed(cursor) { HEADED } else { SHOWN })
 }
 
-/// Cards on screen with the focus on `cursor`.
-fn shown(cursor: usize) -> usize {
-    if headed(cursor) { HEADED } else { SHOWN }
-}
-
-fn card(headed: bool, slot: usize) -> Rect {
-    let top = if headed { HEADER_FIRST } else { FIRST } + slot * PITCH;
-    Rect {
+/// The cards' column, under the week header or under the headline.
+const fn column(headed: bool) -> Column {
+    Column {
         left: LEFT,
-        top,
         right: RIGHT,
-        bottom: top + HEIGHT,
+        top: if headed { HEADER_FIRST } else { FIRST },
+        height: HEIGHT,
+        pitch: PITCH,
     }
 }
 
 /// The list index of the ride under a tap, if any.
 pub fn row_at(count: usize, cursor: usize, x: usize, y: usize) -> Option<usize> {
-    let headed = headed(cursor);
-    let slot = (0..shown(cursor)).find(|slot| card(headed, *slot).contains(x, y))?;
-    let index = first_shown(cursor) + slot;
-    (index < count).then_some(index)
+    scroll(count, cursor).row_at(column(headed(cursor)), x, y)
 }
 
 pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
@@ -158,11 +149,10 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
         );
         canvas.caption(count.as_bytes(), 80, RIGHT - 4, HEADLINE - 4, Align::Right);
     }
-    let first = first_shown(list.cursor);
-    for (slot, index) in (first..list.count.min(first + shown(list.cursor))).enumerate() {
+    for (slot, index) in scroll(list.count, list.cursor).visible() {
         let row = (list.row)(index);
-        let rect = card(headed, slot);
-        let focused = first + slot == list.cursor;
+        let rect = column(headed).rect(slot);
+        let focused = index == list.cursor;
         canvas.shape(Shape::Panel {
             rect,
             radius: RADIUS,
@@ -476,18 +466,18 @@ mod tests {
         prepare(&full).assert_laid_out(bounds, &want, "list");
         // Scrolled on, the headline and a fourth card replace the header.
         let last = list(ROWS, ROWS - 1);
-        assert_eq!(first_shown(last.cursor), ROWS - SHOWN);
+        assert_eq!(scroll(ROWS, last.cursor).first(), ROWS - SHOWN);
         prepare(&last).assert_laid_out(bounds, &["RIDES", "8/8"], "scrolled");
         let end = ROWS - 1;
         assert_eq!(
-            row_at(ROWS, end, 120, card(false, SHOWN - 1).top + 4),
+            row_at(ROWS, end, 120, column(false).rect(SHOWN - 1).top + 4),
             Some(end)
         );
         assert_eq!(
-            row_at(ROWS, end, 120, card(false, 0).top + 4),
+            row_at(ROWS, end, 120, column(false).rect(0).top + 4),
             Some(ROWS - SHOWN)
         );
-        assert_eq!(row_at(1, 0, 120, card(true, 1).top + 4), None);
+        assert_eq!(row_at(1, 0, 120, column(true).rect(1).top + 4), None);
         assert_eq!(row_at(ROWS, end, 120, CONTENT.top), None);
         let empty = prepare(&list(0, 0));
         empty.assert_laid_out(bounds, &["NO RIDES YET", "SAVED RIDES SHOW HERE"], "empty");
@@ -503,9 +493,10 @@ mod tests {
             let canvas = prepare(&list);
             canvas.assert_laid_out(bounds(), &[], "scroll");
             assert_eq!(canvas.shows("THIS WEEK"), cursor < HEADED, "{cursor}");
-            let first = first_shown(cursor);
+            let window = scroll(ROWS, cursor);
+            let first = window.first();
             assert!(
-                first <= cursor && cursor < first + shown(cursor),
+                first <= cursor && cursor < first + window.in_view(),
                 "{cursor}"
             );
             let panels = canvas
@@ -513,16 +504,16 @@ mod tests {
                 .iter()
                 .filter(|s| matches!(s, Shape::Panel { .. }))
                 .count();
-            assert_eq!(panels, shown(cursor));
+            assert_eq!(panels, window.in_view());
             // Every card on screen answers a tap with its own row.
-            for slot in 0..shown(cursor) {
-                let at = card(headed(cursor), slot);
+            for slot in 0..window.in_view() {
+                let at = column(headed(cursor)).rect(slot);
                 assert_eq!(
                     row_at(ROWS, cursor, at.center_x(), at.top + 20),
                     Some(first + slot)
                 );
             }
-            let below = card(headed(cursor), shown(cursor) - 1).bottom;
+            let below = column(headed(cursor)).bottom(window.in_view());
             assert!(below <= 320 - 4, "{cursor}: cards end at {below}");
         }
     }

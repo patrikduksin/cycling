@@ -13,6 +13,7 @@ use super::chrome::{
     ACCENT, Align, BODY, CAPTION, CARD, CONTENT, GREEN, HERO, POWER, RAISED, Rect, SECONDARY,
     TITLE, WHITE,
 };
+use super::scroll::{Column, Scroll};
 use super::workout::{Text, View};
 use crate::workout::model::Name;
 use core::fmt::Write;
@@ -24,10 +25,16 @@ const INSET: usize = 16;
 const RADIUS: usize = 12;
 const RING: usize = 3;
 const TITLE_BASE: usize = CONTENT.top + 38;
-const FIRST_TOP: usize = TITLE_BASE + 12;
 const ROW_HEIGHT: usize = 52;
-const ROW_PITCH: usize = ROW_HEIGHT + 8;
-const _: () = assert!(FIRST_TOP + VISIBLE * ROW_PITCH - 8 + RING <= CONTENT.bottom);
+/// The cards, 8 px apart.
+const COLUMN: Column = Column {
+    left: MARGIN,
+    right: CONTENT.right - MARGIN,
+    top: TITLE_BASE + 12,
+    height: ROW_HEIGHT,
+    pitch: ROW_HEIGHT + 8,
+};
+const _: () = assert!(COLUMN.bottom(VISIBLE) + RING <= CONTENT.bottom);
 
 /// One card: a workout's name and what it asks.
 #[derive(Clone)]
@@ -38,69 +45,56 @@ pub struct Choice {
 
 /// The picker as shown: only the cards in view are kept, so a frame's view
 /// stays small however long the list is.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Picker {
-    /// The cards in view, from `first`.
+    /// The cards in view, from the window's first row.
     rows: heapless::Vec<Choice, VISIBLE>,
-    first: usize,
-    count: usize,
-    pub cursor: usize,
+    scroll: Scroll,
+    /// Rows pushed so far.
+    pushed: usize,
     /// The row the next ride will use.
     pub chosen: usize,
+}
+
+impl Default for Picker {
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 impl Picker {
     pub const EMPTY: Self = Self {
         rows: heapless::Vec::new(),
-        first: 0,
-        count: 0,
-        cursor: 0,
+        scroll: Scroll::new(0, 0, VISIBLE),
+        pushed: 0,
         chosen: 0,
     };
 
     /// A list of `count` rows focused on `cursor`; `push` them in order.
     pub fn new(count: usize, cursor: usize, chosen: usize) -> Self {
-        let cursor = cursor.min(count.saturating_sub(1));
-        let last_first = count.saturating_sub(VISIBLE);
         Self {
-            rows: heapless::Vec::new(),
-            first: cursor.saturating_sub(VISIBLE - 1).min(last_first),
-            count: 0,
-            cursor,
+            scroll: Scroll::new(count, cursor, VISIBLE),
             chosen,
+            ..Self::EMPTY
         }
     }
 
     /// The next row, kept when it is in view.
     pub fn push(&mut self, choice: Choice) {
-        if self.count >= self.first {
+        if self.pushed >= self.scroll.first() {
             let _ = self.rows.push(choice);
         }
-        self.count += 1;
+        self.pushed += 1;
     }
 
-    /// The first row shown, so the focused row is in view.
-    fn first(&self) -> usize {
-        self.first
-    }
-
-    fn rect(slot: usize) -> Rect {
-        let top = FIRST_TOP + slot * ROW_PITCH;
-        Rect {
-            left: MARGIN,
-            top,
-            right: CONTENT.right - MARGIN,
-            bottom: top + ROW_HEIGHT,
-        }
+    /// The list's window: which rows show, and which one is focused.
+    pub fn scroll(&self) -> Scroll {
+        self.scroll
     }
 
     /// The row under a touch at (`x`, `y`).
     pub fn row_at(&self, x: usize, y: usize) -> Option<usize> {
-        let first = self.first();
-        (0..VISIBLE)
-            .find(|&slot| Self::rect(slot).contains(x, y))
-            .map(|slot| first + slot)
-            .filter(|&row| row < self.first + self.rows.len())
+        self.scroll.row_at(COLUMN, x, y)
     }
 }
 
@@ -118,7 +112,8 @@ pub(super) fn prepare(view: &View) -> Canvas {
         WHITE,
     );
     let mut position = Text::<12>::new();
-    let _ = write!(position, "{}/{}", picker.cursor + 1, picker.count);
+    let scroll = picker.scroll;
+    let _ = write!(position, "{}/{}", scroll.cursor + 1, scroll.count);
     canvas.caption(
         position.as_bytes(),
         60,
@@ -126,10 +121,9 @@ pub(super) fn prepare(view: &View) -> Canvas {
         TITLE_BASE,
         Align::Right,
     );
-    let first = picker.first();
-    for (slot, choice) in (first..).zip(picker.rows.iter()) {
-        let rect = Picker::rect(slot - first);
-        let focused = slot == picker.cursor;
+    for ((slot, row), choice) in scroll.visible().zip(picker.rows.iter()) {
+        let rect = COLUMN.rect(slot);
+        let focused = row == scroll.cursor;
         if focused {
             canvas.shape(Shape::Panel {
                 rect: Rect {
@@ -147,7 +141,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
             radius: RADIUS,
             color: if focused { RAISED } else { CARD },
         });
-        let chosen = slot == picker.chosen;
+        let chosen = row == picker.chosen;
         let text_right = rect.right - INSET - if chosen { 16 } else { 0 };
         if chosen {
             canvas.shape(Shape::Disc {
@@ -285,28 +279,18 @@ mod tests {
     fn the_list_scrolls_to_the_focused_row_and_taps_find_rows() {
         let view = picker(12, 0);
         assert!(view.canvas().shows("1/12"));
-        assert_eq!(view.picker().row_at(120, FIRST_TOP + 10), Some(0));
+        assert_eq!(view.picker().row_at(120, COLUMN.top + 10), Some(0));
         let view = picker(12, 6);
-        assert_eq!(view.picker().first(), 3);
-        assert_eq!(
-            view.picker().row_at(120, FIRST_TOP + 3 * ROW_PITCH + 10),
-            Some(6)
-        );
-        assert_eq!(
-            view.picker().row_at(120, FIRST_TOP + ROW_HEIGHT + 2),
-            None,
-            "gap"
-        );
+        assert_eq!(view.picker().scroll().first(), 3);
+        assert_eq!(view.picker().row_at(120, COLUMN.rect(3).top + 10), Some(6));
+        assert!(view.canvas().shows("7/12"));
         let view = picker(12, 11);
-        assert_eq!(view.picker().first(), 8);
+        assert_eq!(view.picker().scroll().first(), 8);
         let short = picker(2, 1);
-        assert_eq!(
-            short.picker().row_at(120, FIRST_TOP + 2 * ROW_PITCH + 10),
-            None
-        );
         // The focused card is raised and ringed.
-        assert_eq!(short.pixel(100, FIRST_TOP + ROW_PITCH + 30), RAISED);
-        assert_eq!(short.pixel(100, FIRST_TOP + ROW_PITCH - 2), ACCENT);
+        let top = COLUMN.rect(1).top;
+        assert_eq!(short.pixel(100, top + 30), RAISED);
+        assert_eq!(short.pixel(100, top - 2), ACCENT);
     }
 
     #[test]

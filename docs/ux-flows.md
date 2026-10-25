@@ -229,7 +229,7 @@ when the ride screen opens, applies to every ride and survives a reboot.
 
 ### Choosing the ride pages
 
-Settings has RIDE PAGES and MORE PAGES sections with an ON or OFF row for each page a rider
+Settings has a RIDE PAGES section with an ON or OFF row for each page a rider
 may not need: STATS, LAP, CLIMB, MAP and BACK TO START. All are ON by default. MAIN
 is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
 swipes step through the pages that are on, wrapping from the last to the

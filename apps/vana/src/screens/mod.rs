@@ -13,6 +13,7 @@ pub mod power;
 pub mod qr;
 pub mod ready;
 pub mod ride;
+pub mod scroll;
 pub mod sensors;
 pub mod settings;
 pub mod setup;

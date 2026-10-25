@@ -1,12 +1,14 @@
-//! Settings: grouped sections of rows, one section per page.
+//! Settings: grouped sections of rows, one section per page. A section with
+//! more rows than `SECTION_ROWS` scrolls to keep the focused row in view, with
+//! a scroll bar at the right.
 //!
 //! Buttons keep their system roles. BottomLeft moves to the next row (the
 //! page follows into the next section), BottomRight acts on it and TopLeft
 //! goes back Home. Acting cycles a choice, opens a page or edits a number.
 //! While a number is edited, BottomLeft lowers and BottomRight raises it by
 //! `STEP`, and TopLeft finishes. Touch does the same directly: swipe between
-//! sections, tap a row to act on it, and tap the large minus and plus pads
-//! while editing. The runtime prepares each row's value and note; this draws
+//! sections, swipe up or down to scroll a long section, tap a row to act on
+//! it, and tap the large minus and plus pads while editing. The runtime prepares each row's value and note; this draws
 //! them and maps touches to `Target`s.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
@@ -14,6 +16,7 @@ use super::chrome::{
     WHITE,
 };
 use super::ride::RidePage;
+use super::scroll::{Column, Scroll};
 use super::workout::View;
 
 /// Every row, in BottomLeft order.
@@ -84,7 +87,7 @@ pub enum SettingsAction {
 }
 
 /// Sections in order, each with its title and the rows it holds.
-pub const SECTIONS: [(&str, &[Row]); 12] = [
+pub const SECTIONS: [(&str, &[Row]); 11] = [
     (
         "PROFILE",
         &[Row::Ftp, Row::Threshold, Row::Bests, Row::Form],
@@ -102,9 +105,14 @@ pub const SECTIONS: [(&str, &[Row]); 12] = [
     ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
     (
         "RIDE PAGES",
-        &[Row::PageStats, Row::PageLap, Row::PageClimb],
+        &[
+            Row::PageStats,
+            Row::PageLap,
+            Row::PageClimb,
+            Row::PageMap,
+            Row::PageBack,
+        ],
     ),
-    ("MORE PAGES", &[Row::PageMap, Row::PageBack]),
     ("SOUND", &[Row::Sounds]),
     (
         "ALERTS",
@@ -125,7 +133,7 @@ pub const SECTIONS: [(&str, &[Row]); 12] = [
     ),
 ];
 
-/// The most rows a section shows.
+/// The most rows a section shows at once; a longer one scrolls.
 pub const SECTION_ROWS: usize = 4;
 /// All rows, the cursor's range.
 pub const ROWS: usize = {
@@ -272,6 +280,35 @@ pub fn section(index: usize) -> (usize, usize) {
     unreachable!("index is below ROWS")
 }
 
+/// The rows on screen with the focus on cursor position `index`: the
+/// section's window and the cursor position of its first row.
+pub fn scroll(index: usize) -> (Scroll, usize) {
+    let (section, first) = section(index);
+    let rows = SECTIONS[section].1.len();
+    (Scroll::new(rows, index % ROWS - first, SECTION_ROWS), first)
+}
+
+/// The rows on screen with the focus on cursor position `index`, and the
+/// cursor position of the first of them.
+pub fn shown(index: usize) -> (&'static [Row], usize) {
+    let (scroll, first) = scroll(index);
+    let rows = SECTIONS[section(index).0].1;
+    let top = scroll.first();
+    (&rows[top..top + scroll.in_view()], first + top)
+}
+
+/// The cursor position a vertical swipe moves to: a page on or back in the
+/// focused row's section, stopping at its ends.
+pub fn swiped(index: usize, on: bool) -> usize {
+    let (scroll, first) = scroll(index);
+    first
+        + if on {
+            scroll.page_on()
+        } else {
+            scroll.page_back()
+        }
+}
+
 /// The first cursor position of `section`, wrapping.
 pub fn first_of(section: usize) -> usize {
     SECTIONS[..section % SECTIONS.len()]
@@ -310,7 +347,17 @@ const TITLE_BASE: usize = 62;
 const ROW_TOP: usize = 76;
 const ROW_HEIGHT: usize = 46;
 const ROW_PITCH: usize = 52;
+const COLUMN: Column = Column {
+    left: LEFT,
+    right: RIGHT,
+    top: ROW_TOP,
+    height: ROW_HEIGHT,
+    pitch: ROW_PITCH,
+};
 const FOCUS: usize = 3;
+/// A long section's scroll bar, in the margin right of the rows.
+const BAR_LEFT: usize = RIGHT + 4;
+const BAR_WIDE: usize = 3;
 /// The number editor's field and its minus and plus pads.
 const FIELD_TOP: usize = 76;
 const FIELD_HEIGHT: usize = 92;
@@ -329,16 +376,6 @@ pub enum Target {
     Raise,
 }
 
-fn row_rect(slot: usize) -> Rect {
-    let top = ROW_TOP + slot * ROW_PITCH;
-    Rect {
-        left: LEFT,
-        top,
-        right: RIGHT,
-        bottom: top + ROW_HEIGHT,
-    }
-}
-
 /// The target under a touch at panel point (`x`, `y`) on the section that
 /// holds `cursor`: its rows, or the pads while a number is edited.
 pub fn target(x: usize, y: usize, cursor: usize, editing: bool) -> Option<Target> {
@@ -354,20 +391,17 @@ pub fn target(x: usize, y: usize, cursor: usize, editing: bool) -> Option<Target
                 Target::Raise
             });
     }
-    let (section, first) = section(cursor);
-    (0..SECTIONS[section].1.len())
-        .find(|slot| {
-            let rect = row_rect(*slot);
-            (rect.top..rect.bottom).contains(&y)
-        })
-        .map(|slot| Target::Row(first + slot))
+    let (scroll, first) = scroll(cursor);
+    scroll
+        .row_at(COLUMN, x, y)
+        .map(|row| Target::Row(first + row))
 }
 
 /// The section's rows, or the number editor, with the save status.
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    let (section, first) = section(view.cursor);
-    let (title, rows) = SECTIONS[section];
+    let (section, _) = section(view.cursor);
+    let title = SECTIONS[section].0;
     let row = Row::at(view.cursor);
     if view.editing && row.kind() == Kind::Number {
         editor(&mut canvas, view, title, row);
@@ -381,8 +415,31 @@ pub(super) fn prepare(view: &View) -> Canvas {
             Align::Left,
             WHITE,
         );
+        let (rows, first) = shown(view.cursor);
         for (slot, row) in rows.iter().enumerate() {
-            row_card(&mut canvas, view, slot, *row, first + slot == view.cursor);
+            row_card(
+                &mut canvas,
+                view,
+                slot,
+                *row,
+                first + slot == view.cursor % ROWS,
+            );
+        }
+        // A long section's track down the rows' height, its window lit on it.
+        let (top, bottom) = (COLUMN.top, COLUMN.bottom(SECTION_ROWS));
+        if let Some((start, end)) = scroll(view.cursor).0.thumb(top, bottom) {
+            for (top, bottom, color) in [(top, bottom, CARD), (start, end, SECONDARY)] {
+                canvas.shape(Shape::Bar {
+                    rect: Rect {
+                        left: BAR_LEFT,
+                        top,
+                        right: BAR_LEFT + BAR_WIDE,
+                        bottom,
+                    },
+                    radius: 1,
+                    color,
+                });
+            }
         }
     }
     // A toast takes the bottom band; the save status waits under it.
@@ -407,7 +464,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
 /// be tapped, so each sits on a small card; the focused one is raised and
 /// ringed.
 fn row_card(canvas: &mut Canvas, view: &View, slot: usize, row: Row, focused: bool) {
-    let rect = row_rect(slot);
+    let rect = COLUMN.rect(slot);
     if focused {
         canvas.shape(Shape::Panel {
             rect,
@@ -576,14 +633,16 @@ mod tests {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
             assert_eq!(first_of(section), first);
-            assert!(SECTIONS[section].1.len() <= SECTION_ROWS);
+            let (rows, top) = shown(index);
+            assert!(rows.len() <= SECTION_ROWS && rows.contains(&Row::at(index)));
+            assert_eq!(rows[0], Row::at(top));
         }
         assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
         assert_eq!(section(Row::Weight.index()), (1, Row::Weight.index()));
         assert_eq!(section(Row::Sex.index()), (1, Row::Weight.index()));
         assert_eq!(section(Row::TimeZone.index()), (3, Row::TimeZone.index()));
-        assert_eq!(section(Row::Sounds.index()), (8, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (10, Row::HeartHigh.index()));
+        assert_eq!(section(Row::Sounds.index()), (7, Row::Sounds.index()));
+        assert_eq!(section(Row::PowerLow.index()), (9, Row::HeartHigh.index()));
         assert_eq!(first_of(SECTIONS.len()), 0);
     }
 
@@ -593,7 +652,7 @@ mod tests {
         let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
         assert_eq!(colors, [CARD, ACCENT, RAISED, CARD, CARD], "no pads");
         assert_eq!(moving.pixel(LEFT, ROW_TOP), 0, "rounded corner");
-        let second = row_rect(1);
+        let second = COLUMN.rect(1);
         assert_eq!(moving.pixel(LEFT + 1, second.top + 20), ACCENT, "ring");
         assert_eq!(moving.pixel(LEFT + 6, second.top + 20), RAISED);
         assert!(moving.canvas().shows("PROFILE") && moving.canvas().shows("Z4 195-226 W"));
@@ -649,11 +708,10 @@ mod tests {
             for editing in [false, true] {
                 for status in ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"] {
                     let view = view(cursor, editing, &long, status);
-                    let (section, _) = section(cursor);
                     let shown = if editing && Row::at(cursor).kind() == Kind::Number {
                         1
                     } else {
-                        SECTIONS[section].1.len()
+                        shown(cursor).0.len()
                     };
                     let mut texts = std::vec![status];
                     for (value, note) in &long[..shown] {
@@ -691,5 +749,33 @@ mod tests {
         assert_eq!(target(200, PAD_TOP + 10, 0, true), Some(Target::Raise));
         assert_eq!(target(100, row(0), 0, true), None);
         assert_eq!(target(5, PAD_TOP + 10, 0, true), None);
+    }
+
+    #[test]
+    fn a_long_section_scrolls_to_the_focus_and_shows_where_it_is() {
+        let stats = Row::PageStats.index();
+        let row = |slot| ROW_TOP + slot * ROW_PITCH + 10;
+        let bar = |view: &View, y| view.pixel(BAR_LEFT + 1, y);
+        // From the top, the first four rows and the thumb at the top.
+        let top = view(stats, false, &[], "SAVED");
+        assert!(top.canvas().shows("RIDE PAGES"));
+        assert_eq!(shown(stats), (&SECTIONS[6].1[..4], stats));
+        assert_eq!(target(100, row(0), stats, false), Some(Target::Row(stats)));
+        assert_eq!(bar(&top, ROW_TOP + 2), SECONDARY);
+        assert_eq!(bar(&top, COLUMN.bottom(4) - 2), CARD);
+        // On the fifth row, the window moves by one and so does the thumb.
+        let back = Row::PageBack.index();
+        let end = view(back, false, &[], "SAVED");
+        assert_eq!(shown(back), (&SECTIONS[6].1[1..], stats + 1));
+        assert_eq!(target(100, row(3), back, false), Some(Target::Row(back)));
+        assert_eq!(bar(&end, ROW_TOP + 2), CARD);
+        assert_eq!(bar(&end, COLUMN.bottom(4) - 2), SECONDARY);
+        // A short section has no bar.
+        assert_eq!(bar(&view(0, false, &[], "SAVED"), ROW_TOP + 2), 0);
+        // Swipes page within the section and stop at its ends.
+        assert_eq!(swiped(stats, true), stats + 4);
+        assert_eq!(swiped(back, true), back);
+        assert_eq!(swiped(back, false), stats);
+        assert_eq!(swiped(0, true), 3, "PROFILE has four rows");
     }
 }

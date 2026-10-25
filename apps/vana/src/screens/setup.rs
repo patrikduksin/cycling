@@ -6,9 +6,8 @@
 //! start, so a ride never waits for it). Touch taps a card. Numbers open the
 //! Settings editor and come back here when it finishes.
 use super::canvas::{Canvas, Shape};
-use super::chrome::{
-    ACCENT, Align, BODY, CAPTION, CARD, Line, RAISED, Rect, SECONDARY, TITLE, WHITE,
-};
+use super::chrome::{ACCENT, Align, BODY, CAPTION, CARD, Line, RAISED, SECONDARY, TITLE, WHITE};
+use super::scroll::Column;
 use super::workout::View;
 
 /// Setup pages in order. The stored setup step is the page number.
@@ -106,30 +105,19 @@ const INSET: usize = 16;
 const TITLE_BASE: usize = 70;
 const TEXT_BASE: usize = 100;
 const TEXT_PITCH: usize = 20;
-const CARD_TOP: usize = 150;
 const CARD_HEIGHT: usize = 52;
-const CARD_PITCH: usize = 60;
+const CARDS: Column = Column {
+    left: LEFT,
+    right: RIGHT,
+    top: 150,
+    height: CARD_HEIGHT,
+    pitch: 60,
+};
 const FOCUS: usize = 3;
-
-fn card_rect(slot: usize) -> Rect {
-    let top = CARD_TOP + slot * CARD_PITCH;
-    Rect {
-        left: LEFT,
-        top,
-        right: RIGHT,
-        bottom: top + CARD_HEIGHT,
-    }
-}
 
 /// The card under a touch at panel point (`x`, `y`) on `step`.
 pub fn target(x: usize, y: usize, step: Step) -> Option<usize> {
-    if !(LEFT..RIGHT).contains(&x) {
-        return None;
-    }
-    (0..step.cards().len()).find(|slot| {
-        let rect = card_rect(*slot);
-        (rect.top..rect.bottom).contains(&y)
-    })
+    CARDS.slot_at(step.cards().len(), x, y)
 }
 
 /// The page for `step` with `view.cursor` focused. `view.lines[slot]` is a
@@ -155,7 +143,7 @@ pub(super) fn prepare(view: &View, step: Step) -> Canvas {
         );
     }
     for (slot, (label, _)) in step.cards().iter().enumerate() {
-        let rect = card_rect(slot);
+        let rect = CARDS.rect(slot);
         let focused = slot == view.cursor;
         if focused {
             canvas.shape(Shape::Panel {
@@ -199,6 +187,7 @@ pub(super) fn prepare(view: &View, step: Step) -> Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::chrome::Rect;
     use crate::screens::workout::Page;
 
     #[test]
@@ -230,9 +219,9 @@ mod tests {
                 texts.extend(step.text());
                 texts.extend(step.cards().iter().map(|(label, _)| *label));
                 canvas.assert_laid_out(screen, &texts, &std::format!("{step:?} {cursor}"));
-                assert_eq!(target(100, card_rect(cursor).top + 5, step), Some(cursor));
+                assert_eq!(target(100, CARDS.rect(cursor).top + 5, step), Some(cursor));
             }
         }
-        assert_eq!(target(100, CARD_TOP - 2, Step::Welcome), None);
+        assert_eq!(target(100, CARDS.top - 2, Step::Welcome), None);
     }
 }

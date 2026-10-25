@@ -1,8 +1,8 @@
 //! Touch gestures from raw contact edges: a tap, a long press or a
-//! horizontal swipe.
+//! horizontal or vertical swipe.
 //!
-//! Policy lives with the caller: taps select, swipes change pages, and no
-//! gesture ever controls a ride.
+//! Policy lives with the caller: taps select, horizontal swipes change pages,
+//! vertical swipes scroll lists, and no gesture ever controls a ride.
 //!
 //! Every touch edge reaches the recognizer, whatever owns input, together
 //! with the [`Owner`] of the screen shown at that moment. A contact belongs to
@@ -24,9 +24,9 @@ const TAP_SLOP: i32 = 16;
 const TAP_MAX_MS: u64 = 600;
 /// A contact this long, still within the tap slop, is a long press.
 pub const HOLD_MS: u64 = 1_000;
-/// A swipe travels at least this far horizontally...
+/// A swipe travels at least this far along its axis...
 const SWIPE_MIN: i32 = 48;
-/// ...at least twice as far as vertically, within this time.
+/// ...at least twice as far as across it, within this time.
 const SWIPE_MAX_MS: u64 = 1000;
 
 /// What the screen showed when an edge arrived; a contact that began under
@@ -46,6 +46,10 @@ pub enum Gesture {
     Next,
     /// Finger moved left to right: show what came before.
     Previous,
+    /// Finger moved bottom to top: scroll a list on to the cards below.
+    ScrollOn,
+    /// Finger moved top to bottom: scroll a list back to the cards above.
+    ScrollBack,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -191,6 +195,13 @@ fn classify(start: Point, end: Point, held_ms: u64, wandered: bool) -> Option<Ge
             Gesture::Previous
         });
     }
+    if held_ms <= SWIPE_MAX_MS && dy.abs() >= SWIPE_MIN && dy.abs() >= 2 * dx.abs() {
+        return Some(if dy < 0 {
+            Gesture::ScrollOn
+        } else {
+            Gesture::ScrollBack
+        });
+    }
     None
 }
 
@@ -247,12 +258,22 @@ mod tests {
     }
 
     #[test]
+    fn vertical_travel_is_a_swipe_and_its_direction_scrolls() {
+        let mut g = Gestures::default();
+        let up = [(120, 250), (125, 200), (130, 150)];
+        assert_eq!(contact(&mut g, &up, 300), Some(Gesture::ScrollOn));
+        let down = [(120, 40), (110, 200)];
+        assert_eq!(contact(&mut g, &down, 300), Some(Gesture::ScrollBack));
+    }
+
+    #[test]
     fn short_slow_or_diagonal_drags_are_nothing() {
         let mut g = Gestures::default();
         assert_eq!(contact(&mut g, &[(100, 100), (70, 100)], 200), None);
         assert_eq!(contact(&mut g, &[(200, 100), (100, 100)], 1500), None);
         assert_eq!(contact(&mut g, &[(200, 100), (140, 140)], 200), None);
-        assert_eq!(contact(&mut g, &[(100, 40), (100, 200)], 200), None);
+        assert_eq!(contact(&mut g, &[(100, 100), (100, 70)], 200), None);
+        assert_eq!(contact(&mut g, &[(100, 40), (100, 200)], 1500), None);
         // Out and back is a drag that returned, not a tap.
         assert_eq!(contact(&mut g, &[(40, 80), (180, 80), (40, 80)], 150), None);
     }

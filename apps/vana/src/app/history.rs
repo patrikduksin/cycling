@@ -219,17 +219,22 @@ impl Runtime {
         let count = self.history_count();
         match button {
             Button::BottomLeft if count > 0 => {
-                let step = if held { history::SHOWN } else { 1 };
-                self.history.cursor = if self.history.cursor + 1 >= count {
-                    0
-                } else {
-                    (self.history.cursor + step).min(count - 1)
-                };
+                self.history.cursor = history::scroll(count, self.history.cursor).next(held);
             }
             Button::BottomRight if count > 0 => self.open_past_ride(self.history.cursor),
             Button::TopLeft => self.navigation.page = Page::Home,
             _ => {}
         }
+    }
+
+    /// A vertical swipe focuses the ride a page on or back.
+    pub(super) fn history_swipe(&mut self, on: bool) {
+        let scroll = history::scroll(self.history_count(), self.history.cursor);
+        self.history.cursor = if on {
+            scroll.page_on()
+        } else {
+            scroll.page_back()
+        };
     }
 
     pub(super) fn open_past_ride(&mut self, index: usize) {

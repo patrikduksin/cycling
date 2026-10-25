@@ -183,11 +183,13 @@ impl Runtime {
             }
             Page::Summary | Page::PastRide => navigation.summary_page as u32,
             // Cards scroll with the focus, so a tap belongs to one list view.
-            Page::History => self.history.cursor as u32,
+            Page::History => self.history.cursor as u32 & 0xFF,
+            Page::Workouts => self.training.picker_cursor as u32 & 0xFF,
             Page::Sensors => u32::from(self.menu.touch_view()),
+            // A long section scrolls with the focus, so the row is the view.
             Page::Settings => {
-                let section = settings::section(navigation.settings_field).0 as u32;
-                u32::from(navigation.settings_editing) | section << 1
+                let field = navigation.settings_field as u32 & 0x7F;
+                u32::from(navigation.settings_editing) | field << 1
             }
             Page::Setup => u32::from(self.preferences.options.setup),
             Page::Boot
@@ -196,8 +198,7 @@ impl Runtime {
             | Page::EndRide
             | Page::Phone
             | Page::Bests
-            | Page::Form
-            | Page::Workouts => 0,
+            | Page::Form => 0,
         };
         let sheet = u32::from(self.power.view().is_some() || self.training.ftp_offer.is_some());
         let dark = u32::from(!self.display.is_active());
@@ -255,6 +256,12 @@ impl Runtime {
                 self.refresh_sensor_menu(ant, now);
                 let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
                 self.sensors_action(action, now, ant);
+            }
+            (Page::History, Gesture::ScrollOn | Gesture::ScrollBack) => {
+                self.history_swipe(gesture == Gesture::ScrollOn)
+            }
+            (Page::Workouts, Gesture::ScrollOn | Gesture::ScrollBack) => {
+                self.workouts_swipe(gesture == Gesture::ScrollOn)
             }
             (Page::Workouts, Gesture::Tap(point)) => {
                 let picker = self.picker();
@@ -323,6 +330,13 @@ impl Runtime {
                 };
                 navigation.settings_field = settings::first_of(section);
                 navigation.settings_editing = false;
+            }
+            (Page::Settings, Gesture::ScrollOn | Gesture::ScrollBack)
+                if !self.navigation.settings_editing =>
+            {
+                let navigation = &mut self.navigation;
+                let on = gesture == Gesture::ScrollOn;
+                navigation.settings_field = settings::swiped(navigation.settings_field, on);
             }
             _ => return,
         }

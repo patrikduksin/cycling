@@ -913,7 +913,7 @@ mod tests {
         assert!(NO_BARS.is_empty() && NO_CLIMBS.climbing().is_none());
         assert!(NO_LINES.iter().all(|line| line.as_bytes().is_empty()));
         assert!(NO_READINESS.riding.as_bytes().is_empty() && NO_TITLE.as_bytes().is_empty());
-        assert!(NO_PICKER.cursor == 0 && NO_PICKER.chosen == 0);
+        assert!(NO_PICKER.scroll().cursor == 0 && NO_PICKER.chosen == 0);
     }
 
     #[test]

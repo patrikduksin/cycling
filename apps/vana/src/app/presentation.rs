@@ -88,6 +88,8 @@ const ANIMATED_FRAME_MS: u64 = 500;
 /// takes about 25 ms on the C606, so this leaves the loop free between them.
 pub(super) const MOTION_FRAME_MS: u64 = 40;
 const STATIC_FRAME_MS: u64 = 1000;
+/// A list following the finger or coasting draws at up to 60 frames a second.
+const SCROLL_FRAME_MS: u64 = 16;
 /// How long a confirmation or hint stays over the content.
 pub(super) const TOAST_MS: u64 = 2000;
 /// Battery news stays a little longer than a confirmation.
@@ -400,6 +402,15 @@ impl Runtime {
         } else {
             STATIC_FRAME_MS
         });
+        // A list in motion draws as often as the panel can take: its
+        // curves are read at each frame's time, so a late frame lands
+        // where the motion has got to.
+        if self.navigation.page == Page::History
+            && self.history_frame(now)
+            && let Display::Active { next_frame_ms } = &mut self.display
+        {
+            *next_frame_ms = (*next_frame_ms).min(now + SCROLL_FRAME_MS);
+        }
         self.refresh_chart();
         self.workout_display(system, now, ant, position);
         let visible = self.motion_visible();
@@ -728,9 +739,9 @@ impl Runtime {
             }),
             Observation::Unavailable => None,
         };
-        view.paused_secs = navigation
-            .paused_since
-            .map_or(0, |since| now.saturating_sub(since) / 1000);
+        view.paused_secs = navigation.paused_since.map_or(0, |since| {
+            (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
+        });
         view.pause_screen =
             page == Page::Ride && view.state == Status::Paused && !navigation.pause_hidden;
         view.toast = self.toast(now);
@@ -757,7 +768,11 @@ impl Runtime {
                 system.activity(now);
                 self.phone_view(&mut view);
             }
-            Page::History => view.set_canvas(self.history_canvas()),
+            Page::History => {
+                let offset = self.history.scroll.0.offset(now);
+                view.scroll = offset;
+                view.set_canvas(self.history_canvas(offset));
+            }
             Page::EndRide => {}
             Page::Ride => {
                 // Keep the screen lit while riding; a finished ride may dim and idle off.

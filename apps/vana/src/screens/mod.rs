@@ -7,6 +7,7 @@ pub mod form;
 pub mod gesture;
 pub mod history;
 pub mod home;
+pub mod kinetic;
 pub mod look;
 pub mod phone;
 pub mod power;

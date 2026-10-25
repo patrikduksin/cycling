@@ -59,6 +59,7 @@ impl Runtime {
             .navigation
             .gestures
             .feed(input, received, self.touch_owner());
+        self.history_touch(input, gesture, received);
         if !self.display.is_active() {
             return;
         }
@@ -151,7 +152,7 @@ impl Runtime {
             Page::Bests => self.bests_input(button, held),
             Page::Form => self.form_input(button, held),
             Page::Phone => self.phone_input(button, held),
-            Page::History => self.history_input(button, held),
+            Page::History => self.history_input(button, held, now),
             Page::PastRide => self.past_ride_input(button, held),
             Page::Settings => self.settings_input(button, now, ant, held),
             Page::Workouts => self.workouts_input(button, now, held),
@@ -243,12 +244,12 @@ impl Runtime {
             }
             (Page::Summary | Page::PastRide, Gesture::Next) => self.next_summary_page(1),
             (Page::Summary | Page::PastRide, Gesture::Previous) => self.previous_summary_page(),
-            (Page::History, Gesture::Tap(point)) => {
+            // A tap opens the ride under it, unless it scrolled or stopped the list.
+            (Page::History, Gesture::Tap(point)) if !self.history.tap_taken => {
                 let (x, y) = (usize::from(point.x), usize::from(point.y));
                 let count = self.history_count();
-                if let Some(index) =
-                    crate::screens::history::row_at(count, self.history.cursor, x, y)
-                {
+                let offset = self.history.scroll.0.offset(now);
+                if let Some(index) = crate::screens::history::row_at(count, offset, x, y) {
                     self.open_past_ride(index);
                 }
             }
@@ -256,9 +257,6 @@ impl Runtime {
                 self.refresh_sensor_menu(ant, now);
                 let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
                 self.sensors_action(action, now, ant);
-            }
-            (Page::History, Gesture::ScrollOn | Gesture::ScrollBack) => {
-                self.history_swipe(gesture == Gesture::ScrollOn)
             }
             (Page::Workouts, Gesture::ScrollOn | Gesture::ScrollBack) => {
                 self.workouts_swipe(gesture == Gesture::ScrollOn)

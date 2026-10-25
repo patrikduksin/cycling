@@ -388,6 +388,35 @@ impl Sim {
         self.touch(&points);
     }
 
+    /// A finger dragged from `from` to `to` over `ms`, reported every
+    /// 10 ms as the C606's touch poll does. Lifted straight after the last
+    /// move, the list coasts on at the finger's speed; with `hold_ms` the
+    /// finger rests there first, so it throws nothing.
+    pub fn drag(&mut self, from: (u16, u16), to: (u16, u16), ms: u64, hold_ms: u64) {
+        self.note(
+            NoteKind::Input,
+            format!(
+                "drag {},{} to {},{} in {ms} ms, held {hold_ms} ms",
+                from.0, from.1, to.0, to.1
+            ),
+        );
+        let steps = (ms / 10).max(1) as i32;
+        let lerp = |a: u16, b: u16, i: i32| {
+            (i32::from(a) + (i32::from(b) - i32::from(a)) * i / steps) as u16
+        };
+        for i in 0..=steps {
+            let point = Point {
+                x: lerp(from.0, to.0, i),
+                y: lerp(from.1, to.1, i),
+            };
+            self.device.input.push(self.device.now, Input::Touch(point));
+            self.advance(10);
+        }
+        self.advance(hold_ms);
+        self.device.input.push(self.device.now, Input::Release);
+        self.advance(PRESS_GAP_MS);
+    }
+
     /// Swipe right to left across the middle: the next page.
     pub fn swipe_next(&mut self) {
         self.swipe((200, 160), (40, 160));

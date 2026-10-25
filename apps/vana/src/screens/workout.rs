@@ -278,12 +278,15 @@ pub struct View<'a> {
     pub cursor: usize,
     /// Settings: the selected field is being changed.
     pub editing: bool,
+    /// Rides: how far the page is scrolled, in pixels; negative past the top.
+    pub scroll: i32,
     pub time: Text<16>,
     /// The light look is in force: the QR panel is painted inverted so the
     /// output pass turns it back to dark modules on light.
     pub light: bool,
     /// How long the ride has been paused.
-    pub paused_secs: u64,
+    /// A u32 of seconds is 136 years; the room it leaves holds `scroll`.
+    pub paused_secs: u32,
     /// The paused ride shows the paused screen rather than a ride page.
     pub pause_screen: bool,
     /// Button cues prepared for this frame.
@@ -336,6 +339,7 @@ impl<'a> View<'a> {
             page,
             cursor,
             editing: false,
+            scroll: 0,
             time,
             light: false,
             paused_secs: 0,
@@ -646,6 +650,13 @@ impl<'a> View<'a> {
                 }
                 self.canvas().paint(row);
             }
+            // The page scrolls under the status bar: this row shows the
+            // page's row `scroll` further down.
+            Page::History => {
+                if let Some(at) = super::history::page_row(y, self.scroll) {
+                    self.canvas().paint(&mut row.at(at));
+                }
+            }
             _ => self.canvas().paint(row),
         }
         if let Some(badge) = &self.badge {
@@ -700,6 +711,8 @@ impl<'a> View<'a> {
                     .unwrap_or(BLACK);
                 self.canvas().pixel(x, y, under)
             }
+            Page::History => super::history::page_row(y, self.scroll)
+                .map_or(BLACK, |at| self.canvas().pixel(x, at, BLACK)),
             _ => self.canvas().pixel(x, y, BLACK),
         };
         if let Some(badge) = &self.badge {

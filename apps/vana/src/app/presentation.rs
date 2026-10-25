@@ -680,25 +680,25 @@ impl Runtime {
         view.ride_pages = self.preferences.options.ride_pages;
         view.main_slots = self.preferences.options.main_slots;
         view.totals = self.ride.totals;
-        view.lap = self.ride.laps.current();
-        view.previous_lap = self.ride.laps.previous();
         if view.ride_page == RidePage::Lap {
             let laps = &self.ride.laps;
             let kept = (0..crate::ride::laps::HISTORY).rev();
-            view.lap_bars = kept
+            let bars = kept
                 .filter_map(|back| laps.finished(back))
                 .map(Into::into)
                 .collect();
+            view.show_laps(bars, laps.current(), laps.previous());
         }
         view.zone_time = self.ride.zone_time;
         view.profile = self.preferences.profile;
         view.rider = self.preferences.options.rider;
         if page == Page::Ride {
             view.training = shown;
-            if view.ride_page == RidePage::Workout
-                && let Some(player) = &self.ride.workout
-            {
-                view.chart = crate::screens::ride::workout_chart(player, &view.profile);
+            if view.ride_page == RidePage::Workout {
+                view.show_workout(match &self.ride.workout {
+                    Some(player) => crate::screens::ride::workout_chart(player, &view.profile),
+                    None => Default::default(),
+                });
             }
         }
         // The sheet shows wherever it takes the buttons, as after a test
@@ -708,11 +708,11 @@ impl Runtime {
             view.picker = picker;
         }
         if view.ride_page == RidePage::Back {
-            view.back = super::back::view_of(&self.back);
-            view.sunset = light(
+            let sunset = light(
                 self.night.sun(now).map(|(sun, _)| sun),
                 self.preferences.options.zone,
             );
+            view.show_back(super::back::view_of(&self.back), sunset);
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -779,13 +779,15 @@ impl Runtime {
         }
         if view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.
-            view.climbs = &self.ride.climbs;
-            view.forecast = super::lookahead::forecast_of(&self.lookahead);
+            view.show_climb(
+                &self.ride.climbs,
+                super::lookahead::forecast_of(&self.lookahead),
+            );
         }
         let light = self.light();
         view.light = light;
         if view.ride_page == RidePage::Map {
-            view.map = super::back::map_of(&self.back);
+            view.show_map(super::back::map_of(&self.back));
         }
         view.prepare();
         let menu = &self.menu;

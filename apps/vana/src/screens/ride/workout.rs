@@ -108,14 +108,18 @@ impl Chart {
 
 const EMPTY: u8 = u8::MAX;
 
+impl Chart {
+    pub const EMPTY: Self = Self {
+        tops: [EMPTY; CHART_WIDTH],
+        colors: [0; CHART_WIDTH],
+        palette: heapless::Vec::new(),
+        now: (0, 0),
+    };
+}
+
 impl Default for Chart {
     fn default() -> Self {
-        Self {
-            tops: [EMPTY; CHART_WIDTH],
-            colors: [0; CHART_WIDTH],
-            palette: heapless::Vec::new(),
-            now: (0, 0),
-        }
+        Self::EMPTY
     }
 }
 
@@ -628,7 +632,7 @@ mod tests {
         view.state = Status::Recording;
         view.sample.power_watts = watts;
         view.training = Some(Training::of(player, &view.profile));
-        view.chart = chart(player, &view.profile);
+        view.show_workout(chart(player, &view.profile));
         view.prepare();
         view
     }
@@ -691,7 +695,7 @@ mod tests {
         player.skip();
         ride(&mut player, 30, 240);
         let view = page(&player, Some(240));
-        let canvas = &view.canvas();
+        let canvas = view.canvas();
         // 106-120 % of the default 215 W FTP.
         assert_eq!(canvas.find("228-258 W").map(|r| r.color), Some(POWER));
         assert_eq!(canvas.find("240").map(|r| r.color), Some(POWER));
@@ -701,7 +705,7 @@ mod tests {
         assert!(canvas.shows("3:00 RECOVER"));
         canvas.assert_laid_out(PAGE, &["VO2 MAX 5X3", "228-258 W", "240"], "interval");
         // The step on now is marked under its bar, and past bars are lit.
-        assert!(view.chart.now.1 > view.chart.now.0);
+        assert!(view.chart().now.1 > view.chart().now.0);
     }
 
     #[test]
@@ -794,9 +798,9 @@ mod tests {
         let view = page(&player, Some(240));
         for y in CHART_TOP - 2..BODY.bottom {
             let mut pixels = [BLACK; crate::screens::chrome::WIDTH];
-            paint_chart(&view.chart, &mut Row::new(y, &mut pixels));
+            paint_chart(view.chart(), &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, chart_pixel(&view.chart, x, y), "{x},{y}");
+                assert_eq!(pixel, chart_pixel(view.chart(), x, y), "{x},{y}");
             }
         }
     }

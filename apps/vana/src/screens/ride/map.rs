@@ -972,8 +972,8 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
     canvas.caption(b"MAP", width, LEFT, HEAD, Align::Left);
-    let show = view.map.map_or(Show::Unavailable, |frame| frame.show);
-    let Some(frame) = view.map else {
+    let show = view.map().map_or(Show::Unavailable, |frame| frame.show);
+    let Some(frame) = view.map() else {
         canvas.fit(
             &[&BODY_FACE],
             b"NO TRACK",
@@ -1466,7 +1466,7 @@ mod tests {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Map;
         view.radar_paired = true;
-        view.map = frame;
+        view.show_map(frame);
         view.totals.add(1000, 8333, &Default::default(), None);
         view.prepare();
         view

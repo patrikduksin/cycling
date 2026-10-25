@@ -97,7 +97,7 @@ fn colour(mode: Mode) -> u16 {
 
 /// The arrow for this frame, if the page shows one.
 pub(super) fn frame(view: &View) -> Arrow {
-    let Back::Guide(guide) = view.back else {
+    let Back::Guide(guide) = view.back() else {
         return Arrow::default();
     };
     if guide.mode == Mode::Arrived {
@@ -219,7 +219,7 @@ fn state(back: Back) -> (&'static [u8], u16) {
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
-    let (following, course) = match view.back {
+    let (following, course) = match view.back() {
         Back::Guide(guide) => (guide.following, guide.course),
         Back::Waiting { following, course } => (following, course),
         Back::Unavailable => (false, false),
@@ -231,11 +231,11 @@ pub(super) fn prepare(view: &View) -> Canvas {
         b"BACK TO START"
     };
     canvas.caption(title, width, LEFT, HEAD, Align::Left);
-    let guide = match view.back {
+    let guide = match view.back() {
         Back::Guide(guide) => Some(guide),
         _ => None,
     };
-    let (status, status_color) = state(view.back);
+    let (status, status_color) = state(view.back());
     let mut line = Text::<24>::new();
     let _ = line.push_str(core::str::from_utf8(status).unwrap_or(""));
     // Without a heading the arrow points north up, and says so.
@@ -321,7 +321,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         radius: 12,
         color: RAISED,
     });
-    let course_near = matches!(view.back, Back::Guide(guide) if guide.course_near);
+    let course_near = matches!(view.back(), Back::Guide(guide) if guide.course_near);
     let pad: &[u8] = match (following, course_near) {
         (true, _) => b"STOP FOLLOWING",
         (false, true) => b"FOLLOW COURSE",
@@ -338,7 +338,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     );
     // The light, under the pad: grey, white once it is dark.
     let mut light = Text::<14>::new();
-    let color = match view.sunset {
+    let color = match view.sunset() {
         Light::Unknown => None,
         Light::SetsAt(local) => {
             let _ = write!(light, "SUNSET {:02}:{:02}", local / 3600, local / 60 % 60);
@@ -394,7 +394,7 @@ mod tests {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Back;
         view.radar_paired = true;
-        view.back = back;
+        view.show_back(back, Light::default());
         view.prepare();
         view
     }
@@ -450,7 +450,7 @@ mod tests {
             (Light::SetsAt(5 * 60), "SUNSET 00:05"),
             (Light::Dark, "DARK"),
         ] {
-            view.sunset = light;
+            view.show_back(Back::Unavailable, light);
             view.prepare();
             view.canvas()
                 .assert_laid_out(PAGE, &["BACK TO START", text], text);

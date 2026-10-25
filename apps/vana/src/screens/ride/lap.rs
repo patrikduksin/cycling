@@ -54,7 +54,7 @@ pub type LapBars = heapless::Vec<LapBar, HISTORY>;
 
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    let lap = view.lap;
+    let lap = view.lap();
     let width = RIGHT - LEFT;
     let mut text = Text::<12>::new();
     let _ = write!(text, "LAP {}", lap.number);
@@ -103,7 +103,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     cell(&mut canvas, 1, band(1), b"LAP BPM", heart.as_bytes(), HEART);
 
     // The last finished lap by its number, as the toast named it.
-    let previous = view.previous_lap;
+    let previous = view.previous_lap();
     let mut name = Text::<12>::new();
     let mut watts_name = Text::<12>::new();
     let _ = match previous {
@@ -151,7 +151,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let color = delta_color(&harder);
     cell(&mut canvas, 1, band(3), b"W DIFF", harder.as_bytes(), color);
 
-    chart(&mut canvas, &view.lap_bars, lap.into());
+    chart(&mut canvas, view.lap_bars(), lap.into());
     canvas
 }
 
@@ -306,10 +306,12 @@ mod tests {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Lap;
         view.radar_paired = true;
-        view.lap = ride.current();
-        view.previous_lap = ride.previous();
         let kept = (0..HISTORY).rev().filter_map(|back| ride.finished(back));
-        view.lap_bars = kept.map(LapBar::from).collect();
+        view.show_laps(
+            kept.map(LapBar::from).collect(),
+            ride.current(),
+            ride.previous(),
+        );
         view.prepare();
         view
     }

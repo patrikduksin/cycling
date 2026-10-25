@@ -129,18 +129,22 @@ pub struct Frame {
     climb: Option<ClimbAhead>,
 }
 
+impl Frame {
+    pub const EMPTY: Self = Self {
+        layout: Layout::Idle,
+        top: CHART_TOP,
+        grade: None,
+        tops: [EMPTY; PROFILE_LEN],
+        bands: [Steepness::Easy; PROFILE_LEN],
+        dim: [false; PROFILE_LEN],
+        rider: EMPTY,
+        climb: None,
+    };
+}
+
 impl Default for Frame {
     fn default() -> Self {
-        Self {
-            layout: Layout::Idle,
-            top: CHART_TOP,
-            grade: None,
-            tops: [EMPTY; PROFILE_LEN],
-            bands: [Steepness::Easy; PROFILE_LEN],
-            dim: [false; PROFILE_LEN],
-            rider: EMPTY,
-            climb: None,
-        }
+        Self::EMPTY
     }
 }
 
@@ -166,7 +170,7 @@ fn summary(cells: &mut [Text<12>], climb: &Summary, time: usize) {
 
 /// The text, the steepness band and the rider; `frame` must be prepared.
 pub(super) fn prepare(view: &View) -> Canvas {
-    let frame = &view.climb;
+    let frame = view.climb();
     if matches!(frame.layout, Layout::Ahead | Layout::ToTop) {
         return prepare_map(view);
     }
@@ -187,7 +191,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         state_color,
     );
     canvas.caption(b"GRADE", state.left - LEFT, LEFT, HEAD, Align::Left);
-    if !view.forecast.map {
+    if !view.forecast().map {
         // No terrain pack (or no memory for it): only the barometer speaks.
         canvas.fit(
             &[&crate::screens::chrome::CAPTION],
@@ -224,15 +228,15 @@ pub(super) fn prepare(view: &View) -> Canvas {
 
     let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
     let altitude_dm = view.totals.altitude_dm();
-    let (labels, cells) = if let Some(climb) = view.climbs.climbing() {
+    let (labels, cells) = if let Some(climb) = view.climbs().climbing() {
         summary(&mut values, &climb, 4);
-        whole(&mut values[3], view.climbs.vam_m_h());
+        whole(&mut values[3], view.climbs().vam_m_h());
         altitude(&mut values[5], altitude_dm);
         (&CLIMBING, 6)
     } else {
         altitude(&mut values[0], altitude_dm);
         metres(&mut values[1], view.totals.ascent_dm() as i32);
-        match view.climbs.last_climb() {
+        match view.climbs().last_climb() {
             // The last climb fills the cells after altitude and ascent.
             Some(last) => {
                 summary(&mut values[2..], &last, 3);
@@ -327,7 +331,7 @@ fn category(canvas: &mut Canvas, climb: &Summary, left: usize) {
 
 /// The climb ahead, or the rest of the climb under way, from the map.
 fn prepare_map(view: &View) -> Canvas {
-    let frame = &view.climb;
+    let frame = view.climb();
     let mut canvas = Canvas::default();
     let Some(climb) = frame.climb else {
         return canvas;
@@ -355,7 +359,7 @@ fn prepare_map(view: &View) -> Canvas {
     let band = if ahead {
         Steepness::of(climb.summary.grade_tenths().unwrap_or(0))
     } else {
-        frame.grade.unwrap_or_else(|| view.forecast.steepness(0))
+        frame.grade.unwrap_or_else(|| view.forecast().steepness(0))
     };
     canvas.shape(Shape::Bar {
         rect: Rect {
@@ -371,7 +375,7 @@ fn prepare_map(view: &View) -> Canvas {
         .sample
         .gradient_tenths
         .map(i32::from)
-        .or_else(|| view.forecast.grade(0, 100_000));
+        .or_else(|| view.forecast().grade(0, 100_000));
     let mut values: [Text<12>; 4] = core::array::from_fn(|_| Text::new());
     let labels = if ahead {
         kilometres(&mut values[0], climb.summary.length_mm);
@@ -384,8 +388,8 @@ fn prepare_map(view: &View) -> Canvas {
         let top = climb.summary.start_altitude_dm + climb.summary.gain_dm as i32;
         metres(&mut values[0], top.max(0));
         grade(&mut values[1], now);
-        grade(&mut values[2], view.forecast.grade(0, 500_000));
-        whole(&mut values[3], view.climbs.vam_m_h());
+        grade(&mut values[2], view.forecast().grade(0, 500_000));
+        whole(&mut values[3], view.climbs().vam_m_h());
         &TO_TOP
     };
     for (index, ((caption, color), value)) in labels.iter().zip(&values).enumerate() {
@@ -417,7 +421,7 @@ fn prepare_map(view: &View) -> Canvas {
 
 /// The map's frame: the climb ahead or under way, when the forecast has one.
 fn map_frame(view: &View) -> Option<Frame> {
-    let forecast = &view.forecast;
+    let forecast = view.forecast();
     let (layout, climb) = match (forecast.current(), forecast.upcoming()) {
         (Some(current), _) => (Layout::ToTop, current),
         (None, Some(next)) => (Layout::Ahead, next),
@@ -440,9 +444,9 @@ fn map_frame(view: &View) -> Option<Frame> {
     let mut past_len = 0;
     let mut behind_mm = 0;
     if layout == Layout::ToTop
-        && let Some(so_far) = view.climbs.climbing()
+        && let Some(so_far) = view.climbs().climbing()
     {
-        past_len = view.climbs.profile(&mut past);
+        past_len = view.climbs().profile(&mut past);
         behind_mm = so_far
             .length_mm
             .min(past_len.saturating_sub(1) as u64 * step);
@@ -515,7 +519,7 @@ pub(super) fn frame(view: &View) -> Frame {
     if let Some(frame) = map_frame(view) {
         return frame;
     }
-    let climbs = &view.climbs;
+    let climbs = view.climbs();
     let mut frame = Frame {
         layout: if climbs.climbing().is_some() {
             Layout::Climbing
@@ -621,7 +625,10 @@ mod tests {
         for m in (5..=metres).step_by(5) {
             climbs.add(1000, 5000, Some(altitude_dm(m)));
         }
-        view.climbs = std::boxed::Box::leak(std::boxed::Box::new(climbs));
+        view.show_climb(
+            std::boxed::Box::leak(std::boxed::Box::new(climbs)),
+            &crate::ride::climb_ahead::Forecast::NONE,
+        );
         view
     }
 
@@ -629,7 +636,7 @@ mod tests {
     fn a_flat_road_stays_low_and_green() {
         let mut view = ridden(2000, |_| 5000);
         view.prepare();
-        let frame = &view.climb;
+        let frame = view.climb();
         // 2 km fills the right half; the older half is empty.
         assert_eq!(frame.tops[99], EMPTY);
         let flat = frame.tops[PROFILE_LEN - 1];
@@ -662,7 +669,7 @@ mod tests {
             _ => 1700 - (m as i32 - 3000) / 2,
         });
         view.prepare();
-        let frame = &view.climb;
+        let frame = view.climb();
         // 170 samples, right-aligned: the flat starts at column 30.
         assert_eq!(frame.tops[29], EMPTY);
         assert_eq!(usize::from(frame.tops[60]), CHART_HEIGHT - 1);
@@ -688,7 +695,7 @@ mod tests {
         // 2 km at exactly 6%, sampled with the rounding a real trace has.
         let mut view = ridden(2000, |m| m as i32 * 6 / 10);
         view.prepare();
-        let bands = &view.climb.bands[100..];
+        let bands = &view.climb().bands[100..];
         assert!(bands.iter().all(|&b| b == bands[0]), "{bands:?}");
     }
 
@@ -747,9 +754,9 @@ mod tests {
         view: &mut View<'static>,
         change: impl FnOnce(&mut crate::ride::climb_ahead::Forecast),
     ) {
-        let forecast = std::boxed::Box::leak(std::boxed::Box::new(view.forecast.clone()));
+        let forecast = std::boxed::Box::leak(std::boxed::Box::new(view.forecast().clone()));
         change(forecast);
-        view.forecast = forecast;
+        view.show_climb(view.climbs(), forecast);
     }
 
     /// Every painted row equals the per-pixel reference.
@@ -768,7 +775,7 @@ mod tests {
         // 2 km flat, then 3 km at 7%, then flat.
         let mut view = mapped(10, |m| (m - 2000.0).clamp(0.0, 3000.0) * 0.07);
         view.prepare();
-        let frame = &view.climb;
+        let frame = view.climb();
         assert_eq!(frame.layout, Layout::Ahead);
         for text in [
             "CLIMB AHEAD",
@@ -826,7 +833,7 @@ mod tests {
         let mut view = mapped(5, road);
         view.sample.gradient_tenths = Some(88);
         view.prepare();
-        assert_eq!(view.climb.layout, Layout::ToTop);
+        assert_eq!(view.climb().layout, Layout::ToTop);
         for text in [
             "TO THE TOP",
             "1.5",
@@ -839,8 +846,8 @@ mod tests {
             assert!(view.canvas().shows(text), "{text}");
         }
         // Without a climb so far from the barometer the rider is at the left.
-        assert_eq!(view.climb.rider, 0);
-        assert!(!view.climb.dim[..150].iter().any(|&d| d));
+        assert_eq!(view.climb().rider, 0);
+        assert!(!view.climb().dim[..150].iter().any(|&d| d));
         assert_paints_reference(&view);
     }
 
@@ -854,7 +861,7 @@ mod tests {
             }));
         });
         view.prepare();
-        let frame = &view.climb;
+        let frame = view.climb();
         assert_eq!(frame.layout, Layout::ToTop);
         let rider = usize::from(frame.rider);
         assert!((70..110).contains(&rider), "{rider}");
@@ -904,7 +911,7 @@ mod tests {
                 view.sample.gradient_tenths = tenths;
                 view.prepare();
                 assert!(
-                    matches!(view.climb.layout, Layout::Ahead | Layout::ToTop),
+                    matches!(view.climb().layout, Layout::Ahead | Layout::ToTop),
                     "{what}"
                 );
                 view.canvas()

@@ -9,17 +9,25 @@ use crate::testing::Rng;
 use std::string::String;
 
 /// The corners of `line`: metres along to each, and its swing, right
-/// positive.
+/// positive. The points of a curve, each a small swing the same way within
+/// 5 m of the last, are one corner where it starts.
 fn corners_of(line: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let way = |a: Point, b: Point| libm::atan2f(b.0 - a.0, b.1 - a.1).to_degrees();
-    let mut along = 0.0;
-    let mut corners = Vec::new();
+    let (mut along, mut last) = (0.0, f32::MIN);
+    let mut corners: Vec<(f32, f32)> = Vec::new();
     for w in line.windows(3) {
         along += distance(w[0], w[1]);
         let swing = turns::swing(way(w[0], w[1]), way(w[1], w[2]));
-        if swing.abs() >= 1.0 {
-            corners.push((along, swing));
+        if swing.abs() < 1.0 {
+            continue;
         }
+        match corners.last_mut() {
+            Some(curve) if swing.abs() < 45.0 && along - last <= 5.0 && curve.1 * swing > 0.0 => {
+                curve.1 += swing;
+            }
+            _ => corners.push((along, swing)),
+        }
+        last = along;
     }
     corners
 }
@@ -55,7 +63,8 @@ enum Heard {
 
 /// What `said`, metres along the rider's way and the word, makes of the
 /// rider's `corners`, with fixes up to `noise` m off: a word may name the
-/// corner after one the rider is within 12 m and that of.
+/// corner after one the rider is within 12 m and that of, or the one they
+/// are at.
 fn judge(said: &[(f32, Warning)], corners: &[(f32, f32)], noise: f32) -> Heard {
     let mut named = vec![false; corners.len()];
     for &(metres, warning) in said {
@@ -65,7 +74,7 @@ fn judge(said: &[(f32, Warning)], corners: &[(f32, f32)], noise: f32) -> Heard {
                 .position(|c| c.0 > metres + 12.0)
                 .unwrap_or(corners.len())
         };
-        let ok = [next(metres - noise), next(metres + noise)]
+        let ok = [next(metres - noise - 12.0), next(metres - noise), next(metres + noise)]
             .into_iter()
             .any(|at| match warning {
                 Warning::Ahead { kind, .. } => names(kind, corners, at).is_some(),
@@ -117,6 +126,20 @@ fn ride_way(
     step: f32,
     seed: u64,
 ) -> (Vec<(f32, Warning)>, Vec<Event>) {
+    ride_gapped(line, way, found, noise, step, seed, 0.0..0.0)
+}
+
+/// As `ride_way`, with no fix from `gap` metres along `way`, the clock
+/// running on.
+fn ride_gapped(
+    line: &[(f32, f32)],
+    way: &[(f32, f32)],
+    found: Found,
+    noise: f32,
+    step: f32,
+    seed: u64,
+    gap: core::ops::Range<f32>,
+) -> (Vec<(f32, Warning)>, Vec<Event>) {
     let drawn = path(line, 5.0);
     let (course, stored): (Vec<course::Point>, Option<Vec<Turn>>) = match found {
         Found::Scanned => (
@@ -149,6 +172,11 @@ fn ride_way(
         let metres = k as f32 * step;
         let (east, north) = along_line(way, metres);
         let fix = (east + jitter(), north + jitter());
+        if gap.contains(&metres) {
+            now += 1_000;
+            homing.observe(None, now);
+            continue;
+        }
         let one = [fix];
         let (words, more) =
             ride_course_stored(&mut homing, &course, stored.as_deref(), &one, &mut now);
@@ -337,4 +365,72 @@ fn a_shortcut_onto_the_course_further_on_is_followed_from_there() {
             }
         }
     }
+}
+
+/// Courses that come back alongside themselves, with the fixes lost for 100
+/// to 300 m: across an out-and-back's far end, or just before a hairpin.
+/// Every word names the corner ahead on the pass the rider is on, no run is
+/// told OFF TRACK, and each reaches the course's end.
+#[test]
+fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
+    let mut lines = Vec::new();
+    for out in [400.0f32, 800.0] {
+        for apart in [4.0f32, 10.0, 20.0] {
+            let line = vec![
+                (0.0, 0.0),
+                (0.0, 600.0),
+                (out, 600.0),
+                (out, 600.0 + apart),
+                (apart, 600.0 + apart),
+                (apart, 0.0),
+            ];
+            let turnaround = 600.0 + out;
+            lines.push((std::format!("out {out} apart {apart}"), line, turnaround));
+        }
+    }
+    let pin = 10.0;
+    let hairpin = crate::ride::course::turns::tests::join(&[
+        path(&[(0.0, 0.0), (0.0, 600.0), (400.0, 600.0), (400.0, 1000.0)], 5.0),
+        crate::ride::course::turns::tests::arc((400.0 + pin, 1000.0), pin, -90.0, 180.0, 3.0),
+        path(&[(400.0 + 2.0 * pin, 1000.0), (400.0 + 2.0 * pin, 400.0)], 5.0),
+    ]);
+    lines.push(("hairpin 20 m".into(), hairpin, 1400.0));
+    let (mut wrong, mut off, mut unended, mut runs) = (Vec::new(), 0, 0, 0);
+    for (name, line, at) in &lines {
+        let corners = corners_of(line);
+        for found in FOUND {
+            for gap in [100.0f32, 150.0, 200.0, 300.0] {
+                // Across the far end, and ending just before it.
+                for from in [at - gap / 2.0, at - gap - 10.0] {
+                    for noise in [0.0f32, 3.0] {
+                        for seed in 0..4 {
+                            let (said, events) = ride_gapped(
+                                line,
+                                line,
+                                found,
+                                noise,
+                                7.0,
+                                seed,
+                                from..from + gap,
+                            );
+                            runs += 1;
+                            off += usize::from(events.contains(&Event::OffTrack));
+                            unended += usize::from(!events.contains(&Event::CourseEnd));
+                            if judge(&said, &corners, noise) == Heard::Wrong {
+                                wrong.push(std::format!(
+                                    "{found:?}: {name} gap {gap} from {from} noise {noise} seed {seed}: {said:?} {events:?}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::println!(
+        "gaps: {} of {runs} wrong, {off} off track, {unended} never at the end",
+        wrong.len()
+    );
+    assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(6)]);
+    assert_eq!((off, unended), (0, 0), "told OFF TRACK or never at the end");
 }

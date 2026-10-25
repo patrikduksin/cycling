@@ -102,6 +102,10 @@ const BACK_M: f32 = ON_M;
 const NEAR_M: f32 = 100.0;
 const SLIP_M: f32 = 10.0;
 const AGAINST_M: f32 = 5.0;
+/// A fix this far from the last one matched, or the first after the fix
+/// was lost, follows a gap: the rider may be past the near stretch, and the
+/// course is matched as if just joined.
+const HOP_M: f32 = 40.0;
 /// Riding along the course: this many fixes in a row within `ON_M` of it,
 /// heading its way within an eighth of a turn.
 const JOIN_FIXES: u8 = 5;
@@ -316,6 +320,8 @@ pub struct Homing<'a> {
     /// Metres to the course's end at the furthest the rider has been along
     /// it since following it.
     course_reached: f32,
+    /// The fix last matched to the course, until the fix is lost.
+    course_fix: Option<Point>,
     /// The course's turns, found a few steps a fix once it is placed, and
     /// what was said of them.
     turns: &'a mut [Turn],
@@ -375,6 +381,7 @@ impl<'a> Homing<'a> {
             join_end: 0,
             course_along: 0.0,
             course_reached: 0.0,
+            course_fix: None,
             turns: &mut [],
             turn_count: 0,
             scan: Scan::default(),
@@ -661,6 +668,7 @@ impl<'a> Homing<'a> {
                 self.here = None;
                 self.fed = None;
                 self.guide = None;
+                self.course_fix = None;
             }
             return None;
         };
@@ -845,6 +853,7 @@ impl<'a> Homing<'a> {
         self.join_fixes = 0;
         self.course_along = self.line[..self.line_len].get(end).map_or(0.0, |c| c.along);
         self.course_reached = self.course_along;
+        self.course_fix = None;
         self.warner = Warner::default();
         self.segment = end;
         self.matched = None;
@@ -1035,16 +1044,41 @@ impl<'a> Homing<'a> {
             return self.nearest_within(p, ends, f32::MIN, f32::MAX, plain);
         }
         let (along, reached) = (self.course_along, self.course_reached);
+        // After a gap in the fixes the rider may be past the near stretch.
+        if self.course_fix.is_none_or(|fix| distance(fix, p) > HOP_M) {
+            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
+        }
         let on = |near: &Nearest, a: &Crumb, b: &Crumb| {
-            let way = bearing((b.east, b.north), (a.east, a.north));
-            let against = self.heading.is_some_and(|heading| {
-                (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN))
-            });
             let back = (near.along - reached - SLIP_M).max(0.0);
-            (near.off <= ON_M).then_some(near.off + back + if against { AGAINST_M } else { 0.0 })
+            let against = if self.against(a, b) { AGAINST_M } else { 0.0 };
+            (near.off <= ON_M).then_some(near.off + back + against)
         };
-        self.nearest_within(p, ends.clone(), along - NEAR_M, along + BACK_M, on)
-            .or_else(|| self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain))
+        let Some(near) = self.nearest_within(p, ends.clone(), along - NEAR_M, along + BACK_M, on)
+        else {
+            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
+        };
+        // Sliding back against the rider's way, a pass ridden its own way
+        // close by is the one they are on.
+        let line = self.course();
+        if near.along > reached + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
+            let ahead = |near: &Nearest, a: &Crumb, b: &Crumb| {
+                (near.off <= ON_M && !self.against(a, b)).then_some(near.off)
+            };
+            let window = along - JUMP_M..=along + BACK_M;
+            if let Some(ahead) =
+                self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
+            {
+                return Some(ahead);
+            }
+        }
+        Some(near)
+    }
+
+    /// Whether the course from `b` to `a` runs against the rider's heading.
+    fn against(&self, a: &Crumb, b: &Crumb) -> bool {
+        let way = bearing((b.east, b.north), (a.east, a.north));
+        self.heading
+            .is_some_and(|heading| (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)))
     }
 
     /// The segment among `ends` reaching from `floor` to `ceiling` metres
@@ -1165,6 +1199,7 @@ impl<'a> Homing<'a> {
             self.matched = Some(near.point);
             self.course_along = near.along;
             self.course_reached = self.course_reached.min(near.along);
+            self.course_fix = Some(p);
             let was_off = self.off;
             self.off = if self.off {
                 near.off > ON_M

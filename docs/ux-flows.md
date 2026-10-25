@@ -170,15 +170,20 @@ distance (RIGHT IN 90 M), and one nearer than 60 m is warned of only at it. A
 turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
 120 degrees, and U-TURN past 150. A bend gentler than that says nothing.
-Corners less than about 25 m apart are one turn, named by its net way, so a
-short jog says nothing; two turns starting within 35 m of each other are
-warned of together, LEFT THEN RIGHT. A roundabout of up to about 40 m radius
-is one turn, named by the way it leaves, and straight over one says nothing;
-this holds on a long course thinned to fit, where a roundabout may also say
-nothing but never a wrong way. A warning that comes just after another nudge waits a second. Off
-the course, riding it the wrong way, standing still, or once it is stopped or
-ended, no turn is warned of; riding back past a turn and on again warns of it
-again.
+Corners against each other less than about 25 m apart are one turn, named by
+its net way, so a short jog says nothing; two turns starting within 35 m of
+each other are warned of together, LEFT THEN RIGHT. Two corners the same way,
+as round a city block, are two turns (RIGHT THEN RIGHT when close), and a
+U-TURN only where the way back is within 25 m of the way out or the road curves
+round all the way, as a hairpin does. A roundabout of up to about 40 m radius
+is one turn, named by the way it leaves, and straight over one says nothing.
+Where the course is drawn coarsely, as a long course thinned to fit or a
+planner's route is, a turn of several corners is named only roughly: LEFT or
+RIGHT from about 80 degrees, U-TURN from about 160, never SHARP, and otherwise
+nothing; a roundabout there may say nothing but never a wrong way. A warning
+that comes just after another nudge waits a second. Off the course, riding it
+the wrong way, standing still, or once it is stopped or ended, no turn is
+warned of; riding back past a turn and on again warns of it again.
 
 While following the course, the BACK TO START page says COURSE: the arrow
 points along the course a little way ahead (or back to it when off), DIRECT KM

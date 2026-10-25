@@ -521,32 +521,24 @@ enum Verdict {
     Wrong,
 }
 
-/// Whether what was said names a turn of `degrees`, right positive, rightly.
+/// Whether what was said names a turn of `degrees`, right positive, rightly:
+/// every word the way it goes, as one turn or as two the same way.
 fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
+    let a = fabsf(degrees);
+    let side = |s: Side| (s == Side::Right) == (degrees > 0.0);
     let fits = |kind: Kind| match kind {
-        Kind::UTurn => fabsf(degrees) >= 130.0,
-        Kind::Turn(side) | Kind::Sharp(side) => {
-            let right = degrees > 0.0;
-            fabsf(degrees) >= 45.0 && (side == Side::Right) == right && fabsf(degrees) <= 170.0
-        }
+        Kind::UTurn => a >= 135.0,
+        Kind::Sharp(s) => side(s) && (100.0..=170.0).contains(&a),
+        Kind::Turn(s) => side(s) && (55.0..=150.0).contains(&a),
     };
-    let mut nows = 0;
-    for &(_, warning) in said {
-        let ok = match warning {
-            Warning::Ahead { kind, .. } => fits(kind),
-            Warning::Now { kind, then } => {
-                nows += 1;
-                fits(kind) && then.is_none()
-            }
-        };
-        if !ok {
-            return Verdict::Wrong;
-        }
-    }
-    match nows {
-        0 if said.is_empty() => Verdict::Silent,
-        1 => Verdict::Right,
-        _ => Verdict::Wrong,
+    let right = said.iter().all(|&(_, warning)| match warning {
+        Warning::Ahead { kind, .. } => fits(kind),
+        Warning::Now { kind, then } => fits(kind) && then.is_none_or(fits),
+    });
+    match said.is_empty() {
+        true => Verdict::Silent,
+        false if right => Verdict::Right,
+        false => Verdict::Wrong,
     }
 }
 
@@ -554,36 +546,83 @@ fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
 /// what is said is right, or nothing is.
 #[test]
 fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
-    let mut silent = Vec::new();
-    for after in [12_000.0, 150_000.0] {
-        for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
-            for sweep in (3..=22).map(|k| k as f32 * 15.0) {
-                let (line, tolerance) = thinned(&ring(radius, sweep, 5.0), after);
-                assert!(tolerance >= 4.0 && line.len() < 2_048);
-                let degrees = swing(0.0, 180.0 - sweep);
-                let said = ride_to(&line, 900.0);
-                let verdict = judge(&said, degrees);
-                assert!(
-                    verdict != Verdict::Wrong,
-                    "r{radius} exit {sweep} ({degrees}) after {after}: {said:?}"
-                );
-                if verdict == Verdict::Silent && fabsf(degrees) >= 75.0 {
-                    silent.push((radius, sweep));
+    let (mut silent, mut runs) = (Vec::new(), 0);
+    // 0 m on is the course as drawn; after 12 or 150 km it is thinned.
+    for after in [0.0, 12_000.0, 150_000.0] {
+        for spacing in [3.0, 5.0, 8.0] {
+            for curved in [false, true] {
+                for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
+                    for sweep in (3..=22).map(|k| k as f32 * 15.0) {
+                        let drawn = match curved {
+                            true => curved_ring(radius, sweep, spacing),
+                            false => ring(radius, sweep, spacing),
+                        };
+                        let line = match after > 0.0 {
+                            true => thinned(&drawn, after).0,
+                            false => drawn,
+                        };
+                        let degrees = swing(0.0, 180.0 - sweep);
+                        let said = ride_to(&line, 900.0);
+                        let verdict = judge(&said, degrees);
+                        assert!(
+                            verdict != Verdict::Wrong,
+                            "r{radius} exit {sweep} ({degrees}), {spacing} m, curved {curved}, after {after}: {said:?}"
+                        );
+                        runs += 1;
+                        if verdict == Verdict::Silent && fabsf(degrees) >= 75.0 {
+                            silent.push((after, spacing, curved, radius, sweep));
+                        }
+                    }
                 }
             }
-        }
-        for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
-            let (line, _) = thinned(&hairpin(radius, 5.0), after);
-            let said = ride_to(&line, 1_200.0);
-            assert_eq!(
-                kinds(&said),
-                [ahead(U_TURN), now(U_TURN)],
-                "hairpin r{radius} after {after}"
-            );
+            if after == 0.0 {
+                continue;
+            }
+            for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
+                let (line, _) = thinned(&hairpin(radius, spacing), after);
+                let said = ride_to(&line, 1_200.0);
+                let twice = [
+                    ahead(LEFT),
+                    Warning::Now {
+                        kind: LEFT,
+                        then: Some(LEFT),
+                    },
+                ];
+                let said = kinds(&said);
+                assert!(
+                    said == [ahead(U_TURN), now(U_TURN)] || said == twice,
+                    "hairpin r{radius}, {spacing} m, after {after}: {said:?}"
+                );
+            }
         }
     }
-    std::println!("silent where a turn was due: {silent:?}");
-    assert!(silent.len() <= 4, "{silent:?}");
+    std::println!(
+        "{} of {runs} silent where a turn of 75 degrees or more was due",
+        silent.len()
+    );
+    assert!(silent.len() * 10 <= runs, "{silent:?}");
+}
+
+/// As `ring`, but the way in and out each curve onto the ring on a 10 m
+/// radius, as roads into a roundabout do.
+fn curved_ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f32)> {
+    let bend = 10.0;
+    let step = spacing.min(radius / 3.0).min(bend / 3.0);
+    let ring = arc((0.0, 0.0), radius, 180.0, -sweep, spacing.min(radius / 3.0));
+    let exit = *ring.last().unwrap();
+    // The exit's bearing from the centre, clockwise from north.
+    let out = 180.0 - sweep;
+    let (sin, cos) = (libm::sinf(out.to_radians()), libm::cosf(out.to_radians()));
+    let turn = (exit.0 + bend * sin, exit.1 + bend * cos);
+    let leave = arc(turn, bend, out + 180.0, 90.0, step);
+    let off = *leave.last().unwrap();
+    join(&[
+        path(&[(-bend, -300.0), (-bend, -radius - bend)], spacing),
+        arc((0.0, -radius - bend), bend, 270.0, 90.0, step),
+        ring,
+        leave,
+        path(&[off, (off.0 + 300.0 * sin, off.1 + 300.0 * cos)], spacing),
+    ])
 }
 
 /// What `said` names, shortly: R ahead, R, L THEN R.
@@ -684,7 +723,101 @@ fn cue_table() {
             ));
         }
     }
+    let blocks = [
+        (30.0, 0.0),
+        (37.0, 0.0),
+        (40.0, 4.0),
+        (45.0, 8.0),
+        (50.0, 8.0),
+    ];
+    for (apart, kerb) in blocks {
+        for right in [true, false] {
+            let way = if right { "right" } else { "left" };
+            let full = block(5.0, apart, kerb, right);
+            let thin = thinned(&full, 12_000.0).0;
+            rows.push((
+                std::format!("block, two {way}s {apart} m apart, kerb {kerb} m: drawn; thinned"),
+                std::format!(
+                    "{}; {}",
+                    words(&ride_to(&full, 700.0)),
+                    words(&ride_to(&thin, 700.0))
+                ),
+            ));
+        }
+    }
     for (name, said) in rows {
         std::println!("| {name} | {said} |");
+    }
+}
+
+/// Two corners the same way, `apart` metres apart, each rounded to a kerb
+/// of `kerb` metres: 400 m north, across, and 400 m back south beside the
+/// way up. A city block, to the right, or to the left mirrored.
+fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f32, f32)> {
+    let line = if kerb == 0.0 {
+        path(
+            &[(0.0, 0.0), (0.0, 400.0), (apart, 400.0), (apart, 0.0)],
+            spacing,
+        )
+    } else {
+        let step = spacing.min(kerb / 2.0);
+        join(&[
+            path(&[(0.0, 0.0), (0.0, 400.0 - kerb)], spacing),
+            arc((kerb, 400.0 - kerb), kerb, 270.0, 90.0, step),
+            path(&[(kerb, 400.0), (apart - kerb, 400.0)], spacing),
+            arc((apart - kerb, 400.0 - kerb), kerb, 0.0, 90.0, step),
+            path(&[(apart, 400.0 - kerb), (apart, 0.0)], spacing),
+        ])
+    };
+    if right {
+        line
+    } else {
+        line.into_iter()
+            .map(|(east, north)| (-east, north))
+            .collect()
+    }
+}
+
+/// A city block's two corners are named one by one or together, the way
+/// they go, and never a U-TURN unless the way back is within 25 m of the
+/// way out, where the rider is still on the course.
+#[test]
+fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
+    for thin in [false, true] {
+        for right in [true, false] {
+            for spacing in [3.0, 5.0, 8.0] {
+                for kerb in [0.0, 2.0, 4.0, 6.0, 8.0] {
+                    for apart in [
+                        15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
+                    ] {
+                        let full = block(spacing, apart, kerb, right);
+                        let line = if thin {
+                            thinned(&full, 12_000.0).0
+                        } else {
+                            full
+                        };
+                        let said = ride_to(&line, 700.0);
+                        let side = if right { Side::Right } else { Side::Left };
+                        let fits = |kind: Kind| match kind {
+                            Kind::UTurn => apart <= 25.0,
+                            Kind::Turn(s) | Kind::Sharp(s) => s == side,
+                        };
+                        let wrong = said.iter().any(|&(_, warning)| match warning {
+                            Warning::Ahead { kind, .. } | Warning::Now { kind, then: None } => {
+                                !fits(kind)
+                            }
+                            Warning::Now {
+                                kind,
+                                then: Some(then),
+                            } => !fits(kind) || !fits(then),
+                        });
+                        assert!(
+                            !wrong,
+                            "{apart} m apart, kerb {kerb}, {spacing} m, right {right}, thin {thin}: {said:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

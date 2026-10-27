@@ -56,14 +56,14 @@ class RemoteScriptTests(unittest.TestCase):
         }
         with patch.dict(remote.os.environ, env, clear=True):
             script = remote.run('.local/remote/a', 'logs', ['STATUS', 'a b'])
-        self.assertIn("env CYCLING_SDK=1 mise run logs STATUS 'a b'", script)
+        self.assertIn("env CYCLING_SDK=1 cycling logs STATUS 'a b'", script)
         self.assertNotIn('CYCLING_DEVICE_HOST', script)
         self.assertNotIn('/nix/store', script)
 
     def test_build_is_refused_as_a_device_task(self):
         with patch.dict(remote.os.environ, {'CYCLING_DEVICE_HOST': 'h'}), self.assertRaises(SystemExit) as raised:
             remote.main(['flash-image'])
-        self.assertIn('mise run device flash', str(raised.exception))
+        self.assertIn('cycling device flash', str(raised.exception))
 
 
 class BacktraceTests(unittest.TestCase):

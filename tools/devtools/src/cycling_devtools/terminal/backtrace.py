@@ -1,7 +1,7 @@
 """Decode code addresses in device logs into functions, files and lines.
 
-    mise run backtrace [log ...] [--elf PATH]     # stdin when no log is given
-    mise run device terminal CRASH | mise run backtrace
+    cycling backtrace [log ...] [--elf PATH]     # stdin when no log is given
+    cycling device terminal CRASH | cycling backtrace
 
 A panic prints its message and `0x42xxxxxx` return addresses on the USB
 console, and keeps them in the device's crash record, which `CRASH` reads
@@ -107,7 +107,7 @@ def main(argv=None):
     else:
         elf, commit = choose_elf(lines, DEVICE_LOCAL / 'elf')
     if not elf.is_file():
-        sys.exit(f'{elf} is missing: build the image that crashed first (mise run build)')
+        sys.exit(f'{elf} is missing: build the image that crashed first (cycling build)')
     if commit and not holds_commit(elf, commit):
         sys.exit(f'{elf} was not built from commit {commit}: build that commit, or pass --elf')
     for line in decode(lines, elf):

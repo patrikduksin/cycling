@@ -21,6 +21,6 @@ Preserve existing ride records and terminal wire formats when changing these
 modules. The BLE profile selector VANA interprets is stored in the
 [shell settings envelope](../../packages/shell/README.md).
 
-Run host checks with `mise run test`. See [ride recording](../../docs/ride-recording.md)
+Run host checks with `cycling test`. See [ride recording](../../docs/ride-recording.md)
 for persistence and export guarantees, and [architecture](../../docs/architecture.md)
 for package boundaries.

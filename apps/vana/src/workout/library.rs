@@ -274,7 +274,7 @@ pub enum Id {
 }
 
 /// The folder of uploaded workouts on the FILES volume. A host puts each
-/// as one codec file (`mise run workout-load`), or the phone page does
+/// as one codec file (`cycling workout-load`), or the phone page does
 /// (`Library::store`); the library lists them.
 pub const FOLDER: &str = "workouts/";
 /// Uploads the picker lists, in file-name order; later ones are not shown.
@@ -891,7 +891,7 @@ pub(crate) mod tests {
         assert_eq!(library.load(Id::Uploaded(0), &mut region), Ok(THRESHOLD));
     }
 
-    /// What the phone page's JavaScript and `mise run workout-load` both make
+    /// What the phone page's JavaScript and `cycling workout-load` both make
     /// of the JSON in `workouts/load.py`'s docstring, with an open step, a
     /// ramp, distances and a repeat group: the device reads it as written.
     #[test]

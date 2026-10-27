@@ -39,7 +39,7 @@
         };
       });
 
-      # Evaluates and builds the whole environment; `mise run verify` runs the suites.
+      # Evaluates and builds the whole environment; `cycling verify` runs the suites.
       checks = forSystems (pkgs: {
         shell = self.devShells.${pkgs.stdenv.hostPlatform.system}.default;
       });

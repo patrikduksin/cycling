@@ -23,10 +23,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31.11.2
-      - run: nix develop -c mise run test
-      - run: nix develop -c mise run check
-      - run: nix develop -c mise run simulate
-      - run: nix develop -c mise run harness-virtual
+      - run: nix develop -c cycling test
+      - run: nix develop -c cycling check
+      - run: nix develop -c cycling simulate
+      - run: nix develop -c cycling harness-virtual
   firmware:
     runs-on: ubuntu-24.04
     strategy:
@@ -38,7 +38,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31.11.2
-      - run: nix develop -c mise run build
+      - run: nix develop -c cycling build
         env:
           CYCLING_SDK: ${{ matrix.sdk }}
           CYCLING_HARNESS: ${{ matrix.harness }}

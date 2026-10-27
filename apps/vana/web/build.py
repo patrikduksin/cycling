@@ -31,7 +31,7 @@ def main():
         raise SystemExit(f'web client is {len(data)} bytes gzipped, over the {BUDGET} byte budget')
     if '--check' in sys.argv[1:]:
         if not OUTPUT.exists() or OUTPUT.read_bytes() != data:
-            raise SystemExit(f'{OUTPUT.relative_to(HERE.parents[2])} is stale: run mise run web')
+            raise SystemExit(f'{OUTPUT.relative_to(HERE.parents[2])} is stale: run cycling web')
         return
     OUTPUT.parent.mkdir(exist_ok=True)
     OUTPUT.write_bytes(data)

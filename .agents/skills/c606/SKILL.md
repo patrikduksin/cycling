@@ -14,14 +14,14 @@ through the [remote device skill](../remote-device/SKILL.md).
 
 | Task | Does |
 | --- | --- |
-| `mise run backup` | One-time full-flash backup into private `.local/device`. Refuses to overwrite an existing backup. |
-| `mise run flash` | Rebuilds for the given `CYCLING_SDK`/`CYCLING_HARNESS`, writes the slot that is not selected, verifies it and the reservations, selects and boots it, and requires its console. |
-| `mise run rollback` | Validates the cycling image in the other slot and boots it. No slot writes. |
-| `mise run stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
-| `mise run restore-owned -- <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
-| `mise run stock-select` (alias `boot-stock`) | Boots slot A without rewriting flash, only while it still holds the verified stock image. |
-| `mise run flash-image` | `flash` for an image built elsewhere: writes the existing `.local/cycling.bin` without building. |
-| `mise run monitor` | Reads USB logs without resetting. |
+| `cycling backup` | One-time full-flash backup into private `.local/device`. Refuses to overwrite an existing backup. |
+| `cycling flash` | Rebuilds for the given `CYCLING_SDK`/`CYCLING_HARNESS`, writes the slot that is not selected, verifies it and the reservations, selects and boots it, and requires its console. |
+| `cycling rollback` | Validates the cycling image in the other slot and boots it. No slot writes. |
+| `cycling stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
+| `cycling restore-owned <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
+| `cycling stock-select` (alias `boot-stock`) | Boots slot A without rewriting flash, only while it still holds the verified stock image. |
+| `cycling flash-image` | `flash` for an image built elsewhere: writes the existing `.local/cycling.bin` without building. |
+| `cycling monitor` | Reads USB logs without resetting. |
 
 These tasks run [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py),
 which owns the flash geometry. It verifies the device and baseline, validates the
@@ -50,13 +50,13 @@ its `manifest.json`; keep the separate copy too.
 - `stock` checks every backup hash and the device identity before writing, saves
   the current ride and settings reservations as
   `.local/device/owned-pre-restore-<ns>.bin` (rides at offset 0, settings at
-  `0x100000`) and prints the path and the `mise run restore-owned` command
+  `0x100000`) and prints the path and the `cycling restore-owned` command
   that puts them back after the next cycling flash, writes only differing sectors (boot metadata
   last, identical bootloader sectors never), reads the whole flash back, and
   resets. It reads 16 MiB twice: allow about five minutes. The reservations
   then hold the backup's bytes, so cycling reports `SETTINGS source=failed
   persistence_error=true` and `EXPORT INFO ... needs_init` and refuses to persist
-  until `mise run restore-owned` writes the snapshot back.
+  until `cycling restore-owned` writes the snapshot back.
 - Never use generic flashing tools or write the backup by hand. The recovered
   layout assumes secure boot and flash encryption are disabled.
 - Never touch eFuses. Preserve the bootloader, partition table and the ride and
@@ -74,8 +74,8 @@ its `manifest.json`; keep the separate copy too.
   successful attachment.
 - If an operation is interrupted, download mode can stay active: inspect the
   private logs and reconnect. ROM download mode stays reachable, so rerun the
-  interrupted task, `mise run rollback`, or `mise run stock` for a full restore.
-- Stop `mise run monitor` before opening a no-reset reader.
+  interrupted task, `cycling rollback`, or `cycling stock` for a full restore.
+- Stop `cycling monitor` before opening a no-reset reader.
 
 ## Device access
 
@@ -83,7 +83,7 @@ its `manifest.json`; keep the separate copy too.
   exports, tests and flash share the exclusive `.local/usb.lock`; never run
   simultaneous readers.
 - Port selection: `--port`, then `CYCLING_PORT`, then the single connected C606
-  matching the backup manifest. `mise run device-port` prints that path without
+  matching the backup manifest. `cycling device-port` prints that path without
   opening it. Missing or ambiguous devices fail. Resolve again after flashing,
   reconnecting or renumbering.
 - If permissions require sudo, recheck `sudo -n true`; do not assume an old
@@ -95,7 +95,7 @@ its `manifest.json`; keep the separate copy too.
   replays commands, and a reply from an earlier boot never completes a new request.
 - `ACCEPTED` means queued; poll completion where the command requires it. A
   timeout after a mutation is uncertain completion, not permission to retry.
-- `mise run screenshot -- out.png [--scale 2] [--press BUTTON ...]` saves the
+- `cycling screenshot out.png [--scale 2] [--press BUTTON ...]` saves the
   next frame submitted to the panel (harness builds). It is PR proof of rendered
   pixels, not of panel output. A `BUSY power transition` reply after flashing
   means charging standby; `POWER` shows it and `POWER WAKE` leaves it.
@@ -104,10 +104,10 @@ its `manifest.json`; keep the separate copy too.
   ends (3 s, longer after transport faults). It ran nothing, so ask again;
   the harness runner, screenshot and cleanup wait for it with read-only
   `SETTINGS`.
-- `mise run latency -- --press BUTTON` times synthetic presses to the end of the
+- `cycling latency --press BUTTON` times synthetic presses to the end of the
   next frame submission and reports idle frame rate and time (harness builds).
   It does not observe the panel or physical switches.
-- The interactive terminal reads only while awaiting replies. Use `mise run logs`
+- The interactive terminal reads only while awaiting replies. Use `cycling logs`
   for continuous collection. Keep raw bytes and decoded records under `.local/`.
 
 ## Build modes
@@ -117,7 +117,7 @@ its `manifest.json`; keep the separate copy too.
 | `CYCLING_SDK` | Base (default) | Adds VANA cycling workflows |
 | `CYCLING_HARNESS` | Removes diagnostic fault controls; keeps terminal, logs, Wi-Fi and the bring-up probe | Diagnostic controls (default) |
 
-- Pass both values to `mise run flash`.
+- Pass both values to `cycling flash`.
 - Record firmware revision, both modes, device timestamps, collection state and
   traffic with results.
 - Use harness-disabled builds for performance and power baselines.
@@ -126,22 +126,22 @@ its `manifest.json`; keep the separate copy too.
 
 ## Test rules
 
-- Settings mutation tests (for example `mise run persistence-test`) snapshot and
+- Settings mutation tests (for example `cycling persistence-test`) snapshot and
   restore original preferences. Report a failed restoration for inspection; do
   not retry an ambiguous save blindly.
 - Preserve existing rides. Never run mutation tests against a ride that must stay
   active. Reclaim only explicitly identified disposable data, after the export
   verification in [ride recording](../../../docs/ride-recording.md).
-- Transport starvation (`mise run e2e -- --transport-recovery`) requires base with
+- Transport starvation (`cycling e2e --transport-recovery`) requires base with
   harness enabled and no ride consumer. It sends a six-second executor stall once;
   allow more than six seconds for acknowledgment. The reply timestamp precedes the
   stall, so judge recovery from later POSITION/INPUT timestamps. Loss is expected
   only when the test establishes it and then observes resumed parser/companion progress.
 - GNSS: check transport, parser progress, freshness and recovery. Valid sentences
   without a fix indoors are not a regression by themselves.
-- BLE: `mise run bluetooth-echo` verifies reconnect, read/write and notifications.
+- BLE: `cycling bluetooth-echo` verifies reconnect, read/write and notifications.
   A reported MTU is observed, not forced; keep the separate MTU-23 regression.
-  BlueZ tasks use system Python. Stop `mise run ble-simulator` afterward to
+  BlueZ tasks use system Python. Stop `cycling ble-simulator` afterward to
   unregister its advertisement and GATT application.
 
 ## What this does not prove

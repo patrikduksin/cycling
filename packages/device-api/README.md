@@ -17,4 +17,4 @@ request submission.
 
 This crate is `no_std`. The optional `network-stack` feature exposes Embassy's
 existing stack through the network capability instead of introducing a second
-socket API. Run `mise run test` for the workspace's host checks.
+socket API. Run `cycling test` for the workspace's host checks.

@@ -1,7 +1,8 @@
 # Device development tools
 
 This Python package owns host access to firmware, private captures and scenario
-execution. Use the root mise tasks (`mise tasks` lists them). Tools run in this
+execution. Use the `cycling` tasks (`cycling` lists them; [cli.py](src/cycling_devtools/cli.py)
+defines them). Tools run in this
 package's locked uv environment (`uv run --project tools/devtools --locked`),
 which also provides esptool, pytest and ruff. The Bluetooth tasks
 (`bluetooth-echo`, `ble-simulator`) instead use system Python for the
@@ -19,7 +20,7 @@ Device access follows the [C606 skill](../../.agents/skills/c606/SKILL.md);
 | `rides/` | Export validation, decoding and explicit journal reclamation |
 | `harness/` | Scenarios, real and virtual transports, camera and audio capture, acquisition regression checks |
 | `connectivity/` | Host Wi-Fi setup and Bluetooth test peers |
-| `clean.py` | `mise run clean`: the dry-run plan and removal of merged worktrees and idle build dirs, and the low-disk warning verify and sim-compare print |
+| `clean.py` | `cycling clean`: the dry-run plan and removal of merged worktrees and idle build dirs, and the low-disk warning verify and sim-compare print |
 | `workspace.py` | Checkout location and the rule that private evidence stays inside ignored `.local/` |
 
 Imports name the owning module; package initializers do not re-export symbols.
@@ -29,15 +30,15 @@ backups and credentials.
 ## Run and test
 
 ```sh
-mise run terminal -- --help
-mise run harness -- recipes
-mise run test     # includes pytest
-mise run check    # includes ruff format --check and ruff check
-mise run fmt      # applies ruff format
+cycling terminal --help
+cycling harness recipes
+cycling test     # includes pytest
+cycling check    # includes ruff format --check and ruff check
+cycling fmt      # applies ruff format
 ```
 
 Modules without a task run as
-`mise exec -- uv run --project tools/devtools --locked python -m cycling_devtools.<module>`.
+`uv run --project tools/devtools --locked python -m cycling_devtools.<module>`.
 Tests use fake transports and temporary files and keep coverage for protected
 flash, uncertain writes, backup verification and ride export/reclaim.
 
@@ -54,7 +55,7 @@ flash, uncertain writes, backup verification and ride export/reclaim.
 Connect owned peers explicitly, then capture:
 
 ```sh
-mise exec -- uv run --project tools/devtools --locked python -m cycling_devtools.connectivity.ant \
+uv run --project tools/devtools --locked python -m cycling_devtools.connectivity.ant \
   --output .local/ant-check-001 \
   --types 120 121 --seconds 10 --scan-seconds 5 \
   --fixture-notes 'Record board revision, companion version, build modes, sensor categories and active traffic'

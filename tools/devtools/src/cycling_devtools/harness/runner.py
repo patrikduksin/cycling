@@ -378,9 +378,9 @@ STARTUP_STOPPED = {
     'companion=uncertain': 'failed',
 }
 NOT_READY = {
-    'standby': 'device is in charging standby ({}); `mise run terminal -- POWER WAKE` leaves it',
-    'failed': 'device startup failed ({}); inspect `mise run terminal -- POWER` and COMPANION',
-    'busy': 'SETTINGS returned BUSY ({}); inspect `mise run terminal -- POWER`',
+    'standby': 'device is in charging standby ({}); `cycling terminal POWER WAKE` leaves it',
+    'failed': 'device startup failed ({}); inspect `cycling terminal POWER` and COMPANION',
+    'busy': 'SETTINGS returned BUSY ({}); inspect `cycling terminal POWER`',
 }
 
 
@@ -1255,7 +1255,7 @@ def main():
                     'run_id': output.name,
                     'status': 'running',
                     'path': str(output),
-                    'wait': f'mise run harness -- wait {output.name} --seconds 30',
+                    'wait': f'cycling harness wait {output.name} --seconds 30',
                 }
             )
         )

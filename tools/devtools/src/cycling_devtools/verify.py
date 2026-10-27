@@ -34,7 +34,7 @@ def build(sdk, harness):
         ('CYCLING_HARNESS', harness),
         ('CYCLING_IMAGE_DIR', f'.local/verify/images/{name}'),
     )
-    return Step(name, 'mise run build', env)
+    return Step(name, 'cycling build', env)
 
 
 def frame_report(step):
@@ -45,18 +45,18 @@ def frame_report(step):
 # Each inner list runs in order; the lists run in parallel.
 LANES = {
     'full': [
-        [Step('test', 'mise run test'), Step('simulate', 'mise run simulate')],
-        [Step('check', 'mise run check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
+        [Step('test', 'cycling test'), Step('simulate', 'cycling simulate')],
+        [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
         *[[build(sdk, harness)] for sdk in '01' for harness in '01'],
     ],
     # The inner loop before pushing: everything except three of the four builds.
     'fast': [
-        [Step('test', 'mise run test')],
-        [Step('check', 'mise run check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
+        [Step('test', 'cycling test')],
+        [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
         [build('1', '1')],
     ],
 }
-ALONE = {'full': [Step('harness-virtual', 'mise run harness-virtual')], 'fast': []}
+ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': []}
 
 
 @dataclass
@@ -101,7 +101,7 @@ def table(results, sha, dirty, total):
     rows = ['| step | result | time |', '| --- | --- | --- |']
     rows += [f'| `{r.step.name}` | {"✅" if r.ok else "❌"} | {r.seconds:.0f} s |' for r in results]
     state = ' (uncommitted changes)' if dirty else ''
-    return f'### `mise run verify` on {os.uname().nodename} — {sha}{state}, {total:.0f} s\n\n' + '\n'.join(rows)
+    return f'### `cycling verify` on {os.uname().nodename} — {sha}{state}, {total:.0f} s\n\n' + '\n'.join(rows)
 
 
 def frame_reports(results):

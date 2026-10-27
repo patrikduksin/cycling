@@ -523,7 +523,7 @@ pub fn execute(
                         } else {
                             record.commit()
                         },
-                        // The archived ELF's name, for `mise run backtrace`.
+                        // The archived ELF's name, for `cycling backtrace`.
                         record.commit(),
                         if record.build.dirty { "-dirty" } else { "" },
                         record.build.variant(),

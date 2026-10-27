@@ -556,7 +556,7 @@ Wi-Fi state, zero UART/CRC errors and successful bounded MMC access. The device
 remained ready in normal operation, with all collectors stopped. The first cycle
 has the owner's physical screen confirmation; the repeat has telemetry evidence.
 
-`mise run test`, `mise run check` and all four base/SDK × harness firmware builds
+`cycling test`, `cycling check` and all four base/SDK × harness firmware builds
 passed for the delivered implementation. Independent review covered the final
 MCU-only sequencing, receive boundaries, recovery and capability limits. The
 existing Trouble Host patch and its minimum-MTU regression remain intact.

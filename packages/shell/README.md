@@ -24,6 +24,6 @@ it requires an explicit format migration. Public settings and diagnostic fields
 remain integration points; prefer operations that keep their invariants with the
 shell when changing those interfaces.
 
-Run `mise run test` for host checks. The simulator exercises the same shell with
+Run `cycling test` for host checks. The simulator exercises the same shell with
 multiple display sizes, scripted input and storage failures. It cannot validate
 physical display timing or power transitions.

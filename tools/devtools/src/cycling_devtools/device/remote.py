@@ -1,6 +1,6 @@
 """Run a device task on the machine the C606 is plugged into, from any machine.
 
-    mise run device <task> [args...]      # e.g. device flash, device logs STATUS
+    cycling device <task> [args...]      # e.g. device flash, device logs STATUS
 
 CYCLING_DEVICE_HOST names that machine's ssh alias. This checkout, including
 uncommitted and untracked files, is snapshotted as a commit and pushed into a
@@ -75,10 +75,9 @@ mkdir -p {worktree}/.local
 def run(worktree, task, args):
     """Run the task in the host's dev shell, with this machine's CYCLING_* task settings."""
     env = ' '.join(f'{k}={shlex.quote(v)}' for k, v in sorted(task_environment().items()))
-    command = shlex.join(['mise', 'run', task, *args])
+    command = shlex.join(['cycling', task, *args])
     return f"""cd ~/{CHECKOUT}/{worktree}
-if command -v direnv >/dev/null; then shell='direnv exec .'; else shell='nix develop --command'; fi
-exec $shell env {env} {command}
+exec nix develop --command env {env} {command}
 """
 
 
@@ -91,11 +90,11 @@ def main(argv=None):
         sys.exit('CYCLING_DEVICE_HOST is not set: run the task directly on the machine with the device.')
     task, args = argv[0], argv[1:]
     if task in {'build', 'flash-image'}:
-        sys.exit(f'run `mise run device flash`: it builds here and flashes there; {task} is not a device task.')
+        sys.exit(f'run `cycling device flash`: it builds here and flashes there; {task} is not a device task.')
 
     if task == 'flash':
         # Build here, where the toolchain and caches are; the host only writes the image.
-        subprocess.run(['mise', 'run', 'build'], cwd=ROOT, check=True)
+        subprocess.run(['cycling', 'build'], cwd=ROOT, check=True)
         task = 'flash-image'
     sha = snapshot()
     name = slot()

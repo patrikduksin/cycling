@@ -8,7 +8,7 @@
 //! MARK (TopLeft) ends the step, which also closes the lap.
 //!
 //! Uploads are codec files a host puts under `workouts/` on the FILES
-//! volume (`mise run workout-load`), or the phone page does. The library
+//! volume (`cycling workout-load`), or the phone page does. The library
 //! lists them at boot, each time the picker opens and on `WORKOUT LIST`,
 //! keeping only names and outlines; a ride reads its workout's steps when it starts. A finished
 //! ride's workout outcome is saved beside it (`workout::history`).

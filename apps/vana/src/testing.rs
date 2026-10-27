@@ -1,7 +1,7 @@
 //! Deterministic random input for host property tests.
 //!
 //! Property tests draw every case from a fixed seed, so a failure names the
-//! case that reproduces it, and cap their cases so `mise run test` stays
+//! case that reproduces it, and cap their cases so `cycling test` stays
 //! quick. The generator is `firmware_services::testing::Rng`, shared by every
 //! crate's property tests through that crate's `testing` feature.
 

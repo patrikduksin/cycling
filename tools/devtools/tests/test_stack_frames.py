@@ -157,7 +157,7 @@ def test_a_frame_over_budget_fails_naming_it_and_the_command_for_new_budgets(tmp
     assert run(tmp_path, objdump, BUDGETS.replace('= 1296', '= 200')) == 1
     err = capsys.readouterr().err
     assert 'Stack frame over budget: <vana::screens::workout::View>::prepare is 272 B, budget 200 B' in err
-    assert f'mise run stack-frames {tmp_path / "cycling-os"} --variant sdk1-h1 --suggest' in err
+    assert f'cycling stack-frames {tmp_path / "cycling-os"} --variant sdk1-h1 --suggest' in err
 
 
 def test_an_unnamed_frame_over_the_catch_all_fails(tmp_path, objdump, capsys):

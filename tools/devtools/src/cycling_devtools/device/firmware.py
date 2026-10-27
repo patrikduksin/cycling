@@ -342,7 +342,7 @@ class Device:
 
     def baseline(self, identity, metadata):
         """Before any slot write: same device, intact backup, unchanged partition table and bootloader."""
-        require((LOCAL / 'manifest.json').exists(), 'Run mise run backup before flashing')
+        require((LOCAL / 'manifest.json').exists(), 'Run cycling backup before flashing')
         manifest = json.loads((LOCAL / 'manifest.json').read_text())
         backup = (LOCAL / 'flash.bin').read_bytes()
         stock = (LOCAL / 'stock.bin').read_bytes()
@@ -455,7 +455,7 @@ class Device:
         except (RuntimeError, OSError, ValueError) as error:
             raise RuntimeError(
                 f'Slot {NAMES[slot]} {problem}, and switching back to slot {NAMES[previous]} failed: {error}. '
-                f'Reconnect, then run mise run rollback or mise run stock. Logs: {LOCAL}'
+                f'Reconnect, then run cycling rollback or cycling stock. Logs: {LOCAL}'
             ) from None
         if previous_probe is not None:
             back = console_info(resolve, seconds, LOCAL / f'{time.time_ns()}-console.log', previous_probe)
@@ -496,7 +496,7 @@ class Device:
         print(
             'The restore puts the backup bytes back into these reservations, so cycling firmware will not persist '
             'settings or rides there until they are restored. After flashing cycling again, run: '
-            f'mise run restore-owned -- {snapshot}',
+            f'cycling restore-owned {snapshot}',
             flush=True,
         )
         plan = restore_plan(current, backup)
@@ -509,7 +509,7 @@ class Device:
         after, _ = self.read(0, FLASH_SIZE, 'restore-after.bin')
         bad = sectors_differing(after, backup)
         if bad:
-            raise RuntimeError(f'{len(bad)} sectors differ from the backup, first at {bad[0]:#x}; rerun mise run stock')
+            raise RuntimeError(f'{len(bad)} sectors differ from the backup, first at {bad[0]:#x}; rerun cycling stock')
         for name in ('restore-before.bin', 'restore-after.bin', 'restore-run.bin'):
             (LOCAL / name).unlink(missing_ok=True)
         self.reboot()
@@ -521,7 +521,7 @@ class Device:
         try:
             self.verify(SLOTS[0], LOCAL / 'stock.bin')
         except RuntimeError:
-            raise RuntimeError('Slot A no longer holds stock; use mise run stock for the full restore') from None
+            raise RuntimeError('Slot A no longer holds stock; use cycling stock for the full restore') from None
         self.select(metadata, 0)
         print('Stock can remove USB: confirm the screen.')
 

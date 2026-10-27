@@ -12,26 +12,26 @@ explains the mechanism.
 
 ## Simulator first
 
-Most behavior needs no hardware. Reproduce in a host test, `mise run sim`
-(report and screenshots in `.local/sim/latest`) or `mise run harness-virtual`
-first; `mise run sim-compare --pr N` attaches before and after screens. Go to
+Most behavior needs no hardware. Reproduce in a host test, `cycling sim`
+(report and screenshots in `.local/sim/latest`) or `cycling harness-virtual`
+first; `cycling sim-compare --pr N` attaches before and after screens. Go to
 the device for what the simulator cannot show: drivers, timing, radio, power,
 storage and real sensors.
 
 ## Device tasks
 
 `CYCLING_DEVICE_HOST` set means the device is elsewhere. Run every device task
-as `mise run device <task> [args]`; never ssh to the host to run tools there by
+as `cycling device <task> [args]`; never ssh to the host to run tools there by
 hand.
 
 | Goal | Command |
 | --- | --- |
-| Is the device there? | `mise run device device-port` |
-| One command | `mise run device terminal STATUS` (or `INFO`) |
-| Flash this checkout | `CYCLING_SDK=1 mise run device flash` (builds here, then the host's A/B flash) |
-| Logs | `mise run device logs --seconds 30` |
-| Base, persistence, crash tests | `mise run device e2e`, `persistence-test`, `crash-test` |
-| Back to the previous slot | `mise run device rollback` |
+| Is the device there? | `cycling device device-port` |
+| One command | `cycling device terminal STATUS` (or `INFO`) |
+| Flash this checkout | `CYCLING_SDK=1 cycling device flash` (builds here, then the host's A/B flash) |
+| Logs | `cycling device logs --seconds 30` |
+| Base, persistence, crash tests | `cycling device e2e`, `persistence-test`, `crash-test` |
+| Back to the previous slot | `cycling device rollback` |
 
 - The host holds the one USB lock. `Another cycling device task is using USB`
   means another agent has the device: wait and retry, never work around it.
@@ -42,7 +42,7 @@ hand.
 - `stock`, `stock-select`, `backup` and `restore-owned` need the owner's
   go-ahead in the task; ask rather than run them.
 - After device tests, leave a harness-enabled cycling build running
-  (`CYCLING_SDK=1 CYCLING_HARNESS=1 mise run device flash`), as the C606 skill
+  (`CYCLING_SDK=1 CYCLING_HARNESS=1 cycling device flash`), as the C606 skill
   requires, and report what you observed.
 
 ## Crashes
@@ -59,11 +59,11 @@ been running at the time. `source=rtc` means RTC memory still held it,
 Firmware from before this copy neither reads nor clears it, so after a
 rollback to such firmware and back, an older flash record can reappear;
 run `CRASH CLEAR` on current firmware to drop it.
-`mise run device crash-test --power-off` adds a power cycle to the crash
+`cycling device crash-test --power-off` adds a power cycle to the crash
 test (on USB the C606 comes back in charging standby; off USB, switch it on).
 
-Decode with `mise run device terminal CRASH | mise run backtrace`, or
-`mise run backtrace <log>` for a captured panic print. `build.sh` keeps the
+Decode with `cycling device terminal CRASH | cycling backtrace`, or
+`cycling backtrace <log>` for a captured panic print. `build.sh` keeps the
 newest 24 builds' ELFs as `.local/elf/<commit>[-dirty]-sdkX-hY.elf` in the
 primary checkout (and the last as `.local/cycling.elf`); the record's `elf=`
 picks its own, and decoding refuses an ELF without the record's commit. Post the decoded frames, not raw addresses,

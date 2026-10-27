@@ -23,18 +23,18 @@ loop's order and serves the terminal backend. The world and its observers:
   memory media with injected torn writes; memory media survives a power loss.
 - `rides.rs`: reads recorded rides back with VANA's journal decoder.
 
-Scenarios live in `tests/ride_scenarios.rs`. `mise run sim` runs them with
+Scenarios live in `tests/ride_scenarios.rs`. `cycling sim` runs them with
 `SIM_ARTIFACTS` set: `recording.rs` writes a captioned video, checkpoint
 screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
 and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
 including failed ones. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
-and chart encoders. `mise run sim-pr <number>` posts the run inline on a pull
-request through `cycling_devtools.sim.report`. `mise run sim-compare [--base <ref>]
+and chart encoders. `cycling sim-pr <number>` posts the run inline on a pull
+request through `cycling_devtools.sim.report`. `cycling sim-compare [--base <ref>]
 [--filter <test name>] [--pr <number>]` also runs the base ref (default `origin/main`, fetched first) in a temporary
 worktree and reports only screens whose pixels changed, Before | After
 (`cycling_devtools.sim.compare`).
 
-`mise run sim-live` opens a window (`src/bin/sim-live.rs`, behind the `live`
+`cycling sim-live` opens a window (`src/bin/sim-live.rs`, behind the `live`
 feature) onto `live.rs`: the device powers on beside a rider at 25 km/h on a
 loop route with GPS and ANT heart-rate, power, speed/cadence and radar sensors
 in range. Time runs in 10 ms firmware passes at real time or faster:
@@ -54,7 +54,7 @@ Each session is written as `live_session-<unix time>` under `.local/sim/live`
 when the window closes or on `Esc`; Ctrl-C in the terminal discards it. `sim-live --frames N --screenshot out.png` renders N
 frames at 30 fps without a window.
 
-`mise run simulate` runs the base demonstration and `mise run harness-virtual`
+`cycling simulate` runs the base demonstration and `cycling harness-virtual`
 the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit
 disposable `--state-dir` and prints a `ready` line once booted; the harness builds
 the simulator first and starts its reply timeouts only after that line.

@@ -29,7 +29,7 @@ readable; new terminal rides use live observations.
 ## Export
 
 ```sh
-mise run ride-export                          # Writes .local/exports/<id>/ by default; see --help
+cycling ride-export                          # Writes .local/exports/<id>/ by default; see --help
 ```
 
 - Export is read-only and requires a closed, exportable recorder state.
@@ -57,8 +57,8 @@ mise run ride-export                          # Writes .local/exports/<id>/ by d
 ### FIT activities
 
 ```sh
-mise run ride-export -- --format fit                        # Also writes ride-<id>.fit, listed in fit.json
-mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an earlier export offline
+cycling ride-export --format fit                        # Also writes ride-<id>.fit, listed in fit.json
+cycling ride-export --from .local/exports/<id> --format fit   # Convert an earlier export offline
 ```
 
 - [ride/fit.rs](../apps/vana/src/ride/fit.rs) turns a ride into a FIT
@@ -91,7 +91,7 @@ mise run ride-export -- --from .local/exports/<id> --format fit   # Convert an e
 ## Explicit reclaim
 
 ```sh
-mise run ride-clear -- .local/exports/<export-id>
+cycling ride-clear .local/exports/<export-id>
 ```
 
 - The helper verifies the local export's length and SHA-256, downloads and hashes
@@ -114,8 +114,8 @@ mechanism is [`sector_log`](../packages/services/src/sector_log.rs) and the
 VANA format is [ride/bulk.rs](../apps/vana/src/ride/bulk.rs).
 
 ```sh
-mise run ride-export -- --medium bulk          # Bulk export; adds store_id, generation, capacity
-mise run ride-clear -- --medium bulk .local/exports/<export-id>
+cycling ride-export --medium bulk          # Bulk export; adds store_id, generation, capacity
+cycling ride-clear --medium bulk .local/exports/<export-id>
 ```
 
 - Bulk rides live in the RIDES volume of the MMC's volume table (see
@@ -175,7 +175,7 @@ raw export. The on-device diagnostic recorder has been removed. Decode a full ra
 prefix offline:
 
 ```sh
-mise run ant-export -- .local/ant-decoded --input .local/exports/<export-id>/ride-slots.bin
+cycling ant-export .local/ant-decoded --input .local/exports/<export-id>/ride-slots.bin
 ```
 
 `--start-slot N` decodes only the tail. The decoder reports invalid ANT records and
@@ -594,13 +594,13 @@ new FTP to the profile, BACK keeps the old one.
   stays under 90% of the step for 10 s, or at MARK. FTP is 75% of the best
   full minute.
 
-Load a workout from JSON with `mise run workout-load <file> [--name stem]`;
+Load a workout from JSON with `cycling workout-load <file> [--name stem]`;
 `--dry-run` prints the file it would put. Examples are in
 `tools/devtools/workouts/` and the format is described in
 `cycling_devtools.workouts.load`. The host writes codec version 1
 (`apps/vana/src/workout/codec.rs`) to the MMC's FILES volume as
 `workouts/<stem>.vw` through the volume transfer session. That session checks
-the CRC on commit and reads the file back. `mise run files -- put
+the CRC on commit and reads the file back. `cycling files put
 workouts/NAME.vw PATH` works too. Format FILES once first if `FILES STATUS`
 says it is not formatted.
 

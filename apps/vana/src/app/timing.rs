@@ -1,5 +1,5 @@
 //! Uptime milestones of turning on and riding, for `RIDE TIMING` and the
-//! `mise run startup-timing` harness. Each first occurrence is kept for the
+//! `cycling startup-timing` harness. Each first occurrence is kept for the
 //! boot; ride-start and press-to-frame figures follow the latest ride.
 use core::fmt::Write;
 

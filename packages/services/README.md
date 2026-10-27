@@ -28,7 +28,7 @@ state private. Add a module here only when it is portable mechanism with a clear
 owner; device wire formats belong beside that device, and product decisions
 belong beside the application or shell.
 
-The crate and its tests run without hardware. Run `mise run test` for the
+The crate and its tests run without hardware. Run `cycling test` for the
 workspace's host checks. Tests exercise loss, stale observations, bounded queues
 and interrupted persistence because those guarantees must survive extraction
 and reuse.

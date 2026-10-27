@@ -23,20 +23,21 @@ meaningful ownership, not file count.
 
 ## Checks
 
-Use mise tasks and commit `Cargo.lock`. The flake dev shell provides every
-tool; [dev-setup](docs/dev-setup.md) sets up a machine with one command.
+Run tasks through `cycling <task>` and commit `Cargo.lock`. The flake dev
+shell provides every tool and the `cycling` command; see
+[dev-setup](docs/dev-setup.md).
 
 - Inner loop: targeted host tests and the simulator; firmware rebuilds take
   about 20 s once sccache is warm.
-- Before opening or updating a PR: `mise run verify --pr <n>` (all gates in
+- Before opening or updating a PR: `cycling verify --pr <n>` (all gates in
   parallel, results posted on the PR).
 - Disk: every worktree carries about 4.5 GB of `.local` build targets. Run
-  `mise run clean` for a dry-run table of what it would free; `--apply` removes
+  `cycling clean` for a dry-run table of what it would free; `--apply` removes
   merged, clean, quiet worktrees nobody is working in, and idle build dirs.
   Verify and sim-compare warn when the disk runs low.
 
-- Firmware changes: `mise run test`, `mise run check` (includes boundary checks
-  and ruff) and `mise run build`. Host tasks cover base and cycling builds.
+- Firmware changes: `cycling test`, `cycling check` (includes boundary checks
+  and ruff) and `cycling build`. Host tasks cover base and cycling builds.
 - Feature-boundary changes: also build base and cycling with both harness modes
   (`CYCLING_SDK=0|1`, `CYCLING_HARNESS=0|1`).
 - PRs are verified locally, not by GitHub CI: run test, check, simulate,
@@ -50,17 +51,17 @@ tool; [dev-setup](docs/dev-setup.md) sets up a machine with one command.
 Read the [C606 skill](.agents/skills/c606/SKILL.md) before flashing, serial
 access or device tests. It owns the procedure; these rules always apply:
 
-- Change device firmware only through `mise run backup`, `mise run flash`,
-  `mise run rollback`, `mise run stock`, `mise run stock-select` and
-  `mise run restore-owned`.
+- Change device firmware only through `cycling backup`, `cycling flash`,
+  `cycling rollback`, `cycling stock`, `cycling stock-select` and
+  `cycling restore-owned`.
 - Stock lives in the verified private backup, not on the device (owner
   decision, 2026-10-17): cycling may occupy both A/B application slots, and
-  `mise run stock` restores the complete backup. Never touch eFuses. Preserve
+  `cycling stock` restores the complete backup. Never touch eFuses. Preserve
   the bootloader and partition table, and persisted cycling settings and rides
   across flashes. No vendor filesystem writes outside that full restore.
 - Serialize all device access. Linked worktrees share the primary checkout's
   `.local` device lock and backup. When `CYCLING_DEVICE_HOST` is set the device
-  is on that machine: reach it only through `mise run device <task>` and the
+  is on that machine: reach it only through `cycling device <task>` and the
   [remote device skill](.agents/skills/remote-device/SKILL.md).
 - Validate changed hardware access or display timing on hardware, and report
   what was actually observed.

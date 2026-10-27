@@ -1,26 +1,26 @@
 # Testing through the harness
 
-`mise run harness` runs named recipes or JSON scenarios against the C606 or the
+`cycling harness` runs named recipes or JSON scenarios against the C606 or the
 virtual backend and prints compact JSON. Real runs follow the
 [C606 skill](../.agents/skills/c606/SKILL.md), including port selection and
 restoring a harness-enabled base afterward.
 
 ```sh
-mise run harness -- recipes                      # List recipes and their steps
-mise run harness -- run input-screen             # Real device; --port is optional
-mise run harness -- run shared --backend virtual
-mise run harness -- run virtual-sdk --backend virtual --sdk
-mise run harness-virtual                         # shared, virtual-foundation and virtual-sdk
+cycling harness recipes                      # List recipes and their steps
+cycling harness run input-screen             # Real device; --port is optional
+cycling harness run shared --backend virtual
+cycling harness run virtual-sdk --backend virtual --sdk
+cycling harness-virtual                         # shared, virtual-foundation and virtual-sdk
 ```
 
-For a single picture of the panel, use `mise run screenshot`. It saves the next
+For a single picture of the panel, use `cycling screenshot`. It saves the next
 frame the firmware pushes to the panel, after scaling, as a PNG. The command trace
 and USB log stay in `.local/screenshots/`.
 
 ```sh
-mise run screenshot -- shot.png --scale 2        # Nearest-neighbour 2x upscale
-mise run screenshot -- shot.png --press bottom-left --press bottom-right
-mise run screenshot -- --backend virtual --sdk   # Simulator; default path in .local/screenshots
+cycling screenshot shot.png --scale 2        # Nearest-neighbour 2x upscale
+cycling screenshot shot.png --press bottom-left --press bottom-right
+cycling screenshot --backend virtual --sdk   # Simulator; default path in .local/screenshots
 ```
 
 `--press` wakes a dimmed screen first, then sends the listed synthetic button
@@ -29,16 +29,16 @@ time, capture wait, transfer time and the number of chunk reads. Render time
 includes copying the frame into capture memory; STATUS `display_ms` is the latest
 frame without that copy.
 
-For responsiveness, `mise run latency` times button presses to the end of the next
+For responsiveness, `cycling latency` times button presses to the end of the next
 frame on the C606 and reports the idle frame rate and frame time. Presses fall due
 at random phases, so some wait for a frame already rendering.
 
 ```sh
-mise run latency -- --press top-left --count 20        # On Home
-mise run latency -- --press bottom-left --count 21     # During a ride: steps through the pages
+cycling latency --press top-left --count 20        # On Home
+cycling latency --press bottom-left --count 21     # During a ride: steps through the pages
 ```
 
-`mise run startup-timing` measures how fast VANA turns on and starts riding. VANA
+`cycling startup-timing` measures how fast VANA turns on and starts riding. VANA
 keeps the device uptime of each first milestone per boot (first frame, Home,
 companion, ride storage, GNSS fix, each sensor's first live data, ride-start
 press and confirmed recording, press-to-frame latency) and reports them with
@@ -46,16 +46,16 @@ press and confirmed recording, press-to-frame latency) and reports them with
 main-CPU reset, not at the top-left press.
 
 ```sh
-mise run startup-timing -- --sim                 # Simulator scenario `startup_timing`; modelled timings
-mise run startup-timing                          # Prompts to turn the C606 on, then polls it (SDK build)
-mise run startup-timing -- --restart --ride      # Main-CPU restart; then start, pause and save a short ride
+cycling startup-timing --sim                 # Simulator scenario `startup_timing`; modelled timings
+cycling startup-timing                          # Prompts to turn the C606 on, then polls it (SDK build)
+cycling startup-timing --restart --ride      # Main-CPU restart; then start, pause and save a short ride
 ```
 
 The table and evidence go to `.local/timing/`. `--ride` records one short ride and
 needs a harness build; `--gnss` also waits for a fix. `--ride` and `--restart`
 refuse while a ride is open. `--ride` presses only from Home, checks `RIDE STATUS`
 (`page`, `state`) after every press, and fails unless the ride ends saved.
-`mise run startup-timing -- --summarize .local/timing/<run>...` prints the median
+`cycling startup-timing --summarize .local/timing/<run>...` prints the median
 and nearest-rank p90 of each milestone and step over repeated runs.
 
 | Recipe | Checks |
@@ -146,9 +146,9 @@ The first virtual run may include compilation.
 ## Long runs, cancellation and recovery
 
 ```sh
-mise run harness -- start frames
-mise run harness -- wait RUN_ID --seconds 30
-mise run harness -- cancel RUN_ID --seconds 10
+cycling harness start frames
+cycling harness wait RUN_ID --seconds 30
+cycling harness cancel RUN_ID --seconds 10
 ```
 
 - `wait` is bounded to 60 seconds and observes the same worker; it never restarts
@@ -208,7 +208,7 @@ memory/register access or a general service registry.
 
 ## Camera and microphone
 
-`mise run harness -- av-discover` lists camera paths and PulseAudio/PipeWire
+`cycling harness av-discover` lists camera paths and PulseAudio/PipeWire
 sources. A scenario's `captures` list selects at most one `camera` and one
 `microphone`, with `seconds`, camera `device`/`size`/`format` or microphone
 `source`. Each has its own duration cap and stops on failure or cancellation.
@@ -231,7 +231,7 @@ sources. A scenario's `captures` list selects at most one `camera` and one
 The virtual backend uses production parsing, shared shell handlers and the SDK
 runtime with deterministic time and file-backed test media locked against
 concurrent access. It covers restart persistence, torn writes and production
-export rules. `mise run test` and CI run these regressions and both original
+export rules. `cycling test` and CI run these regressions and both original
 shell geometries.
 
 ## What this does not prove

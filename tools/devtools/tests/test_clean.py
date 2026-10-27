@@ -408,7 +408,7 @@ class PlanTests(CleanCase):
 class DiskGuardTests(unittest.TestCase):
     def test_warns_under_the_threshold_and_names_the_command(self):
         with patch.object(clean, 'free_gb', return_value=12.0):
-            self.assertIn('mise run clean', clean.low_disk_warning())
+            self.assertIn('cycling clean', clean.low_disk_warning())
 
     def test_rounds_down_so_a_shortfall_never_prints_the_threshold(self):
         with patch.object(clean, 'free_gb', return_value=29.6):

@@ -40,7 +40,7 @@ CMD 20 BLE ECHO
 ```
 
 The Wi-Fi example encodes a test network `Test` with a test password; use
-`mise run wifi-setup` for real credentials. `BLE SELECT` requires an SDK build;
+`cycling wifi-setup` for real credentials. `BLE SELECT` requires an SDK build;
 base supports discovery, echo, disconnect and forgetting a saved selection.
 
 ## Completion and reconnection
@@ -78,16 +78,16 @@ base supports discovery, echo, disconnect and forgetting a saved selection.
 
 ## Harness validation
 
-`mise run wifi-setup` saves the current authorized NetworkManager profile to
+`cycling wifi-setup` saves the current authorized NetworkManager profile to
 `.local/wifi/config.json`. The [connectivity generator](../tools/devtools/src/cycling_devtools/harness/connectivity.py)
 writes Wi-Fi and BLE scenarios to `.local/foundation/scenarios/` from the captured
 original idle base state in `.local/foundation/original/state.json`, without device access.
 
 ```sh
-mise exec -- uv run --project tools/devtools --locked python -m cycling_devtools.harness.connectivity
-mise run harness -- run --scenario .local/foundation/scenarios/connectivity-wifi.json
-mise run ble-simulator -- --profile both    # Owned host fixture for the BLE SDK scenario
-mise run harness -- run --scenario .local/foundation/scenarios/connectivity-ble.json
+uv run --project tools/devtools --locked python -m cycling_devtools.harness.connectivity
+cycling harness run --scenario .local/foundation/scenarios/connectivity-wifi.json
+cycling ble-simulator --profile both    # Owned host fixture for the BLE SDK scenario
+cycling harness run --scenario .local/foundation/scenarios/connectivity-ble.json
 ```
 
 Device access and port selection follow the [C606 skill](../.agents/skills/c606/SKILL.md).

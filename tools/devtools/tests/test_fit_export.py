@@ -98,7 +98,7 @@ def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, 
 
 
 def debug_build(command, **kwargs):
-    """The test reuses the debug build `mise run test` already made."""
+    """The test reuses the debug build `cycling test` already made."""
     return subprocess.run([part for part in command if part != '--release'], **kwargs)
 
 

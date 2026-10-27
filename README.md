@@ -13,28 +13,28 @@ Open-source Rust firmware for the Magene C606 bike computer.
 ## Development
 
 ```sh
-scripts/bootstrap.sh                 # Nix dev shell with every pinned tool (docs/dev-setup.md)
-mise run test
-mise run check
-mise run simulate                    # Shared shell with deterministic host devices
-mise run harness-virtual             # Shared command/input/capture/persistence scenarios
-mise run build                       # Base, harness enabled
-CYCLING_SDK=1 mise run build         # Add VANA
-mise run verify                      # Every PR gate in parallel
+nix develop                         # Nix dev shell with every pinned tool (docs/dev-setup.md)
+cycling test
+cycling check
+cycling simulate                    # Shared shell with deterministic host devices
+cycling harness-virtual             # Shared command/input/capture/persistence scenarios
+cycling build                       # Base, harness enabled
+CYCLING_SDK=1 cycling build         # Add VANA
+cycling verify                      # Every PR gate in parallel
 ```
 
-`mise tasks` lists every task. [flake.nix](flake.nix) owns tool versions;
-[mise.toml](mise.toml), Cargo configuration and CLI `--help` own tasks, options
-and the check matrix. direnv loads the dev shell on entering a checkout;
-`nix develop -c <command>` works without it.
+`cycling` lists every task. [flake.nix](flake.nix) owns tool versions;
+[cli.py](tools/devtools/src/cycling_devtools/cli.py), Cargo configuration and
+CLI `--help` own tasks, options and the check matrix. `nix develop` enters the
+dev shell; `nix develop -c <command>` runs one command in it.
 
 Before connecting to or flashing a device, read the
 [C606 skill](.agents/skills/c606/SKILL.md). Device tasks include
-`mise run terminal -- STATUS`, `mise run harness -- run input-screen` and
-`mise run stock`.
+`cycling terminal STATUS`, `cycling harness run input-screen` and
+`cycling stock`.
 
 Wi-Fi is unconfigured until provisioned over USB; firmware images contain no
-credentials. `mise run wifi-setup` copies the current NetworkManager profile into
+credentials. `cycling wifi-setup` copies the current NetworkManager profile into
 ignored `.local/wifi/`; see [runtime connectivity](docs/runtime-connectivity.md).
 
 ## Adding a device
@@ -42,7 +42,7 @@ ignored `.local/wifi/`; see [runtime connectivity](docs/runtime-connectivity.md)
 Select a compatible HAL/runtime and implement the capabilities the shell needs in
 `devices/<device>`, keeping wiring, drivers, memory constraints and task startup
 there. Compose those handles with the shared shell in a device entry point, add
-the composition to the mise and CI checks, and validate it on hardware. Shell
+the composition to the `cycling` tasks and CI checks, and validate it on hardware. Shell
 code must not need device imports or board-name branches. The host simulator
 checks presentation and input policy, not DMA, radio coexistence or power sequencing.
 

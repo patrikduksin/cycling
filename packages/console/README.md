@@ -14,5 +14,5 @@ by a device can still be pending; formatting a successful submission must not
 claim that the operation completed. Keep logs and replies bounded so a missing
 host cannot stop acquisition or consume unbounded memory.
 
-Run `mise run test` for host checks. Shared session scenarios also run through
-`mise run harness-virtual`; see [testing harness](../../docs/testing-harness.md).
+Run `cycling test` for host checks. Shared session scenarios also run through
+`cycling harness-virtual`; see [testing harness](../../docs/testing-harness.md).

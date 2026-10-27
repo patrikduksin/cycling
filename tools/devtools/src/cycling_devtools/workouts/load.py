@@ -26,7 +26,7 @@ free ride. `test` may be `twenty` or `ramp`. The encoding is codec version 1
 The workout goes onto the MMC's FILES volume as `workouts/<name>.vw` through
 the volume transfer session, which checks the file's CRC on commit and reads
 it back. VANA lists `workouts/` when its picker opens; this tool also asks it
-to list again (`WORKOUT LIST`). Run `mise run files -- format --confirm` once
+to list again (`WORKOUT LIST`). Run `cycling files format --confirm` once
 on a device whose FILES volume is not formatted yet.
 """
 

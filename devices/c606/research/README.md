@@ -16,7 +16,7 @@ ignored `.local/` (see [AGENTS.md](../../../AGENTS.md)).
 The read-only [unpacker](unpack.py) takes your own update file:
 
 ```sh
-mise exec -- uv run --script devices/c606/research/unpack.py /path/to/N21_update.bin --output .local/stock
+uv run --script devices/c606/research/unpack.py /path/to/N21_update.bin --output .local/stock
 ```
 
 It reconstructs images and ELF load segments, not original symbols or source, and

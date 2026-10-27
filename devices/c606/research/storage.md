@@ -198,8 +198,8 @@ separate work in [#105](https://github.com/patrikduksin/cycling/issues/105).
 
 `CYCLING_BULK_MAINTENANCE=1` selects a dedicated image whose binary USB protocol
 replaces the normal console. Install it through the existing protected
-`mise run flash` workflow. The host [mmc_maintenance.py](../../../tools/devtools/src/cycling_devtools/device/mmc_maintenance.py)
-uses the shared USB lock and opens without reset. `mise run mmc-maintenance --help`
+`cycling flash` workflow. The host [mmc_maintenance.py](../../../tools/devtools/src/cycling_devtools/device/mmc_maintenance.py)
+uses the shared USB lock and opens without reset. `cycling mmc-maintenance --help`
 and subcommand help own the current CLI syntax.
 
 `backup IMAGE` creates a new full MMC image and manifest under ignored `.local/`.

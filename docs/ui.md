@@ -663,6 +663,6 @@ matched against glyph templates rendered from the same faces. The reader
 tolerates glyphs that touch, as in `TT`. If a new layout makes two labels
 ambiguous, rename one rather than weakening the reader.
 
-`mise run sim` writes screenshots and videos to `.local/sim/latest`.
-`mise run sim-compare --pr <n>` renders the same scenarios on main and on a PR,
+`cycling sim` writes screenshots and videos to `.local/sim/latest`.
+`cycling sim-compare --pr <n>` renders the same scenarios on main and on a PR,
 side by side.

@@ -20,7 +20,7 @@ cannot use (newer version, unknown kind, or extents beyond the region) is
 ## Creating the table, and regions from before volumes
 
 Only an explicit initialize writes the table: `RIDE BULK INIT`, or
-`VOLUME INIT` / `mise run volumes -- init` on builds without VANA. It writes
+`VOLUME INIT` / `cycling volumes init` on builds without VANA. It writes
 two sectors, and then `RIDE BULK INIT` formats the log inside `RIDES`.
 
 Before volumes, the ride log owned the whole region, starting at relative
@@ -59,10 +59,10 @@ enters on the ordinary terminal. The frames are described in
 session and refuses to start one while a ride is recording.
 
 ```sh
-mise run volumes -- inspect                       # table, terrain state, file store
-mise run terrain-write -- pack.bin --tag CHILE-V1 --verify   # resumes a matching writing pack
-mise run terrain-verify -- pack.bin
-mise run files -- list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
+cycling volumes inspect                       # table, terrain state, file store
+cycling terrain-write pack.bin --tag CHILE-V1 --verify   # resumes a matching writing pack
+cycling terrain-verify pack.bin
+cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
 ```
 
 Line commands: `VOLUME [STATUS|INIT|TRANSFER]`, `TERRAIN [STATUS]` and

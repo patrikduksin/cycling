@@ -67,7 +67,7 @@ and serialization `0x4204b000`. Vendor disassembly remains private in `.local/`.
 
 ## Console
 
-Use `mise run terminal` with `CYCLING_PORT` set to the current USB port when needed.
+Use `cycling terminal` with `CYCLING_PORT` set to the current USB port when needed.
 Commands use decimal identity fields from discovery. Example identities below are
 synthetic.
 
@@ -119,12 +119,12 @@ export preserve them, including records without a terminal stop marker. To decod
 a previously exported prefix without connecting the device:
 
 ```sh
-mise run ant-export -- .local/ant-decoded --input .local/ride-export/ride-slots.bin
+cycling ant-export .local/ant-decoded --input .local/ride-export/ride-slots.bin
 ```
 
 The offline decoder preserves the input range, checks capture commit/CRC records,
 reports invalid slots and sequence gaps, and writes a SHA-256 manifest. Raw
-identities and positions stay in ignored `.local/`. Use `mise run ride-export`
+identities and positions stay in ignored `.local/`. Use `cycling ride-export`
 for a read-only download of the current journal before offline decoding.
 
 ## Multiple sensor types

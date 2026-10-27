@@ -209,7 +209,7 @@ const BUILD: device_api::crash::Build = device_api::crash::Build {
 };
 
 /// Record where and why the firmware panicked, print it as esp-backtrace
-/// did, so `mise run backtrace` still decodes captured logs, then reset.
+/// did, so `cycling backtrace` still decodes captured logs, then reset.
 ///
 /// The record is stored twice: first without the message, then with it, so
 /// a panic while formatting the message (or a stack overflow that formatting

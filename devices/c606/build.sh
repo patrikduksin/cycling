@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-# The flake dev shell (direnv or `nix develop`) provides the pinned Xtensa toolchain.
+# The flake dev shell (`nix develop`) provides the pinned Xtensa toolchain.
 if [[ -z "${CYCLING_ESP_TOOLCHAIN:-}" ]]; then
-  echo "Enter the dev shell first: direnv allow, or nix develop (docs/dev-setup.md)." >&2
+  echo "Enter the dev shell first: nix develop (docs/dev-setup.md)." >&2
   exit 1
 fi
 # Target dirs default to this checkout; point the root elsewhere to share them.
@@ -70,7 +70,7 @@ espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-s
 cp "$elf" "$image_dir/cycling.elf"
 # And one per commit and variant, named as the panic record's elf= says, in
 # the primary checkout's .local so every worktree's builds are found
-# (mise run backtrace). Written under a temporary name, then moved, so
+# (cycling backtrace). Written under a temporary name, then moved, so
 # parallel builds never leave a torn file; the newest 24 are kept.
 suffix=""
 if [[ "$CYCLING_BUILD_DIRTY" == 1 ]]; then

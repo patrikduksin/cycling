@@ -215,7 +215,7 @@ def main(argv=None):
         print(
             'Keep big temporaries out of stack frames, as 40aa736 (#205) did. For a deliberate change, '
             "print this build's table with each budget at its frame + max(1 KiB, 10%):\n"
-            f'  mise run stack-frames {args.elf.resolve()} --variant {args.variant} --suggest',
+            f'  cycling stack-frames {args.elf.resolve()} --variant {args.variant} --suggest',
             file=sys.stderr,
         )
     return 1 if failures else 0

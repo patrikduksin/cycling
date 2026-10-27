@@ -1,5 +1,5 @@
 # The one development environment: every tool a task needs, at the version
-# flake.lock pins. mise only runs tasks; it installs nothing.
+# flake.lock pins, and `cycling`, which runs the tasks.
 {
   pkgs,
   lib,
@@ -26,6 +26,12 @@ let
     libxrandr
     libxi
   ];
+  # `cycling <task>` from anywhere in a checkout, in the locked devtools
+  # environment; tools/devtools/src/cycling_devtools/cli.py owns the tasks.
+  cycling = pkgs.writeShellScriptBin "cycling" ''
+    root=$(git rev-parse --show-toplevel) || exit
+    exec uv run --project "$root/tools/devtools" --locked python -m cycling_devtools.cli "$@"
+  '';
 in
 pkgs.mkShell {
   packages = with pkgs; [
@@ -33,7 +39,7 @@ pkgs.mkShell {
     cargo-nextest
     python
     uv
-    mise
+    cycling
     espflash
     sccache
     ffmpeg-headless
@@ -59,9 +65,13 @@ pkgs.mkShell {
     LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
   };
 
-  # One sccache per machine, shared by every worktree. Override either value
-  # in .envrc.local or the environment.
+  # Settings that are never committed: one file for every checkout on this
+  # machine (CYCLING_DEVICE_HOST), then one for this checkout. Then one sccache
+  # per machine, shared by every worktree, unless those files set otherwise.
   shellHook = ''
+    for env in "''${XDG_CONFIG_HOME:-$HOME/.config}/cycling/env.sh" "$(git rev-parse --show-toplevel 2>/dev/null)/.local/env.sh"; do
+      if [ -f "$env" ]; then . "$env"; fi
+    done
     export SCCACHE_DIR="''${SCCACHE_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/sccache}"
     export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-50G}"
     unset PYTHONPATH

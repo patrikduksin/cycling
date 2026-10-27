@@ -5,8 +5,8 @@ The repository follows the things we build: a cycling application, shared firmwa
 packages, firmware for each device, and development tools. Package boundaries
 express ownership. They should reduce what a caller needs to understand.
 
-This document explains design intent. Code owns concrete interfaces; Cargo, mise
-and CI own build and verification mechanics. GitHub issues and PRs own requirements,
+This document explains design intent. Code owns concrete interfaces; Cargo, `cycling`
+tasks and CI own build and verification mechanics. GitHub issues and PRs own requirements,
 decisions and history. Change those authoritative sources instead of copying their
 details into this document.
 
@@ -162,7 +162,7 @@ scan, gets one file named for the behavior beside its owner.
   host sees (page, status, toasts, journal and `RIDE STATUS`), never variants.
   Simulator scenarios stay the acceptance check.
 - Enforce a single writer by adding the value and its owner to `SINGLE_WRITERS`
-  in `tools/check-boundaries.py`, which `mise run check` runs.
+  in `tools/check-boundaries.py`, which `cycling check` runs.
 
 ## Ownership includes time and failure
 

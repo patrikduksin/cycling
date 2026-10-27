@@ -2574,7 +2574,7 @@ fn wait_lit(sim: &mut Sim) -> u64 {
     sim.device.now
 }
 
-/// The milestones VANA reports for `mise run startup-timing -- --sim`, which
+/// The milestones VANA reports for `cycling startup-timing --sim`, which
 /// reads them from `STARTUP_TIMING_OUT`. Simulated timings are modelled.
 #[test]
 fn startup_timing() {

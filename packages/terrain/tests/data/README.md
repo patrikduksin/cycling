@@ -2,10 +2,10 @@
 
 - `farellones.terrain`: a sample pack of the roads from Santiago's eastern
   edge up to Farellones (bbox -33.40,-70.49 to -33.33,-70.27), built with
-  `mise run terrain -- build --sample`.
+  `cycling terrain build --sample`.
 - `farellones-g21.csv`: route G-21 through that pack from its lowest point,
   one line per vertex (latitude, longitude, elevation in metres), written by
-  `mise run terrain -- trace`.
+  `cycling terrain trace`.
 
 Both are derived from:
 

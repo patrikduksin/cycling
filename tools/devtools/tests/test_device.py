@@ -382,7 +382,7 @@ class BaselineTests(Workspace):
 
     def test_missing_backup_manifest_refuses_before_device_access(self):
         (self.local / 'manifest.json').unlink()
-        with self.assertRaisesRegex(RuntimeError, 'Run mise run backup'):
+        with self.assertRaisesRegex(RuntimeError, 'Run cycling backup'):
             self.fake.baseline(IDENTITY, metadata())
 
     def test_each_mismatch_refuses(self):
@@ -582,7 +582,7 @@ class ReviewFixTests(Workspace):
             return connect(strict)
 
         self.fake.connect = once
-        with self.assertRaisesRegex(RuntimeError, 'switching back to slot A failed: esptool failed.*mise run rollback'):
+        with self.assertRaisesRegex(RuntimeError, 'switching back to slot A failed: esptool failed.*cycling rollback'):
             self.main('flash')
 
     def test_tty_configuration_failure_counts_as_attachment_failure(self):

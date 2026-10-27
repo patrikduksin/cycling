@@ -236,7 +236,7 @@ the course is within 500 m, else FOLLOW TRACK BACK. With BACK TO START off no co
 
 The phone page has a Workouts card beside the Course card: the workouts added
 from the phone, each with its length and steps and a Delete button, and Add a
-workout. The card takes the workout JSON `mise run workout-load` takes (or a
+workout. The card takes the workout JSON `cycling workout-load` takes (or a
 `.vw` file made by it) and shows what it could not accept in words: not a
 workout, damaged, one VANA cannot ride, no card or no room. VANA holds 8
 workouts, so a ninth is refused with "VANA holds 8 workouts. Delete one to add

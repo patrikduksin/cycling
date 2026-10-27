@@ -1,31 +1,40 @@
 # Development machines
 
-Any x86_64 or aarch64 Linux machine becomes a cycling development machine with
-one command. [flake.nix](../flake.nix) and its lock own every tool version; mise
-only runs tasks. Agents work on a fast remote machine (omni-devbox) while the
-C606 stays plugged into another one; only the image and text cross the network.
+Any x86_64 or aarch64 Linux machine with Nix becomes a cycling development
+machine. [flake.nix](../flake.nix) and its lock own every tool version, and the
+dev shell's `cycling` command runs every task
+([cli.py](../tools/devtools/src/cycling_devtools/cli.py); `cycling` alone lists
+them). Agents work on a fast remote machine (omni-devbox) while the C606 stays
+plugged into another one; only the image and text cross the network.
 
 ## Set up a machine
 
+The machine needs Nix with flakes; the repository provides everything else.
+
 ```sh
 git clone https://github.com/patrikduksin/cycling && cd cycling
-scripts/bootstrap.sh                               # this machine has the C606
-scripts/bootstrap.sh --device-host c606-host      # the C606 is on c606-host
+nix develop
 ```
 
-The script is idempotent. It installs Nix with flakes if missing, direnv with
-nix-direnv, trusts this checkout and its T3 Code worktrees
-(`~/.t3/worktrees/cycling`) so they need no `direnv allow`, builds the dev
-shell and, with `--device-host`, records where device tasks go in
-`~/.config/cycling/envrc`. `--warm` also runs `mise run verify --fast` to fill
-the compiler cache. The first shell downloads about 1 GB (about 4 GB in the
-Nix store, most of it the two Rust toolchains); later shells start from
-nix-direnv's cache instantly.
+`nix develop` enters the dev shell; `nix develop -c <command>` runs one command
+in it. The first shell downloads about 1 GB (about 4 GB in the Nix store, most
+of it the two Rust toolchains); later ones start in about 2 s.
+`cycling verify --fast` once fills the compiler cache. Claude Code sessions
+enter the shell through the [SessionStart hook](../.claude/hooks/dev-shell.sh),
+which also keeps it from Nix garbage collection (`.local/dev-shell`).
 
-Entering a checkout loads the shell through direnv. Without direnv, prefix
-commands with `nix develop -c`. Claude Code sessions load it through the
-[SessionStart hook](../.claude/hooks/dev-shell.sh), because agent shells are
-not interactive and never run direnv's prompt hook.
+Settings that are never committed go in `~/.config/cycling/env.sh` (every
+checkout on this machine) or `.local/env.sh` (this checkout); the shell sources
+both. When the C606 is on another machine, name its ssh alias there:
+
+```sh
+mkdir -p ~/.config/cycling
+echo 'export CYCLING_DEVICE_HOST=c606-host' >~/.config/cycling/env.sh
+```
+
+Claude Code installs the pstack plugin the first time it opens a trusted
+checkout: [.claude/settings.json](../.claude/settings.json) names its
+marketplace and enables it.
 
 ## What the shell provides
 
@@ -39,20 +48,20 @@ not interactive and never run direnv's prompt hook.
   and the live simulator window load.
 
 `nix flake check` builds the whole environment; `nix flake update` moves every
-pin at once and belongs in its own PR with `mise run verify` results.
+pin at once and belongs in its own PR with `cycling verify` results.
 
 ## Fast builds
 
 - `RUSTC_WRAPPER=sccache` with one cache per machine (`~/.cache/sccache`,
   50 GB), shared by every worktree: a new worktree compiles dependencies from
   cache. Override `SCCACHE_DIR` or `SCCACHE_CACHE_SIZE` in
-  `~/.config/cycling/envrc` or `.envrc.local`.
+  `~/.config/cycling/env.sh` or `.local/env.sh`.
 - Target dirs stay per worktree, so parallel agents never queue on one cargo
   lock. `CYCLING_FW_TARGET_ROOT` moves the firmware target dirs elsewhere.
 - Firmware always builds release (fat LTO). A lighter profile was measured and
   dropped: Xtensa runtime assembly needs one codegen unit and LTO, and thin
   LTO saved nothing over warm release rebuilds (about 20 s).
-- `mise run verify` runs test, check, simulate and all four firmware builds in
+- `cycling verify` runs test, check, simulate and all four firmware builds in
   parallel, then harness-virtual alone, and prints one table; `--fast` is the
   inner-loop subset, `--pr N` posts the table on a PR. Logs go to
   `.local/verify/<commit>/`.
@@ -60,7 +69,7 @@ pin at once and belongs in its own PR with `mise run verify` results.
 ## A device on another machine
 
 The device host needs this repository's primary checkout at
-`~/projects/cycling` (override with `CYCLING_DEVICE_CHECKOUT`), bootstrapped,
+`~/projects/cycling` (override with `CYCLING_DEVICE_CHECKOUT`), set up as above,
 and the ssh alias reachable without prompts. Machines reach each other over
 Tailscale SSH: run `tailscale set --ssh` on the device host, and give the
 tailnet policy an `accept` rule for your own devices, so agents never face the
@@ -77,7 +86,7 @@ browser re-check of the default `check` rule:
 omni-devbox's `~/.ssh/config` names the laptop `c606-host` (its MagicDNS
 name and user, no keys).
 
-`mise run device <task> [args]` snapshots this checkout (uncommitted and
+`cycling device <task> [args]` snapshots this checkout (uncommitted and
 untracked files included) into a worktree of the host's primary checkout under
 `.local/remote/`, so the host's USB lock, backup and safety checks apply as
 usual. `device flash` builds here and sends only the image to `flash-image`.

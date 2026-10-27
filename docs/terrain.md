@@ -96,7 +96,7 @@ sparse.
 
 ## Building a pack
 
-`tools/terrain` is a uv project. It runs as `mise run terrain -- <command>`
+`tools/terrain` is a uv project. It runs as `cycling terrain <command>`
 and keeps downloads and national packs in the ignored `.local/terrain`:
 
 1. **Download.** Get the Geofabrik extract and the GLO-30 tiles that cover
@@ -140,7 +140,7 @@ volume through the volume pack tooling and the device reads it by byte
 offset:
 
 ```sh
-mise run terrain-write -- .local/terrain/chile.terrain --tag CHILE-TERRAIN-V1 --verify
+cycling terrain-write .local/terrain/chile.terrain --tag CHILE-TERRAIN-V1 --verify
 ```
 
 All integers are little-endian.

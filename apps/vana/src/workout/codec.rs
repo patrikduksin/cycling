@@ -1,4 +1,4 @@
-//! The upload format of one workout, version 1. Hosts write it (`mise run
+//! The upload format of one workout, version 1. Hosts write it (`cycling
 //! workout-load` from JSON); the device checks and stores it unchanged.
 //! Multi-byte fields are little-endian.
 //!

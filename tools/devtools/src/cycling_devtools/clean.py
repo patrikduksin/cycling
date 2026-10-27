@@ -459,7 +459,7 @@ def low_disk_warning(path=ROOT, minimum_gb=LOW_DISK_GB):
     free = free_gb(path)
     if free >= minimum_gb:
         return None
-    return f'warning: only {math.floor(free)} GB free on the repository filesystem (under {minimum_gb} GB); run `mise run clean`'
+    return f'warning: only {math.floor(free)} GB free on the repository filesystem (under {minimum_gb} GB); run `cycling clean`'
 
 
 def warn_if_low_disk():

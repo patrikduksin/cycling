@@ -23,14 +23,10 @@ of it the two Rust toolchains); later ones start in about 2 s.
 enter the shell through the [SessionStart hook](../.claude/hooks/dev-shell.sh),
 which also keeps it from Nix garbage collection (`.local/dev-shell`).
 
-Settings that are never committed go in `~/.config/cycling/env.sh` (every
-checkout on this machine) or `.local/env.sh` (this checkout); the shell sources
-both. When the C606 is on another machine, name its ssh alias there:
-
-```sh
-mkdir -p ~/.config/cycling
-echo 'export CYCLING_DEVICE_HOST=c606-host' >~/.config/cycling/env.sh
-```
+What differs between machines belongs to the machine, not the repository: set
+it in the environment, from the machine's own configuration. When the C606 is
+on another machine, `CYCLING_DEVICE_HOST` names its ssh alias; omni-devbox sets
+`CYCLING_DEVICE_HOST=c606-host` in its NixOS configuration.
 
 Claude Code installs the pstack plugin the first time it opens a trusted
 checkout: [.claude/settings.json](../.claude/settings.json) names its
@@ -54,8 +50,7 @@ pin at once and belongs in its own PR with `cycling verify` results.
 
 - `RUSTC_WRAPPER=sccache` with one cache per machine (`~/.cache/sccache`,
   50 GB), shared by every worktree: a new worktree compiles dependencies from
-  cache. Override `SCCACHE_DIR` or `SCCACHE_CACHE_SIZE` in
-  `~/.config/cycling/env.sh` or `.local/env.sh`.
+  cache. Override `SCCACHE_DIR` or `SCCACHE_CACHE_SIZE` in the environment.
 - Target dirs stay per worktree, so parallel agents never queue on one cargo
   lock. `CYCLING_FW_TARGET_ROOT` moves the firmware target dirs elsewhere.
 - Firmware always builds release (fat LTO). A lighter profile was measured and

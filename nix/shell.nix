@@ -65,13 +65,9 @@ pkgs.mkShell {
     LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
   };
 
-  # Settings that are never committed: one file for every checkout on this
-  # machine (CYCLING_DEVICE_HOST), then one for this checkout. Then one sccache
-  # per machine, shared by every worktree, unless those files set otherwise.
+  # One sccache per machine, shared by every worktree. Override either value
+  # in the environment.
   shellHook = ''
-    for env in "''${XDG_CONFIG_HOME:-$HOME/.config}/cycling/env.sh" "$(git rev-parse --show-toplevel 2>/dev/null)/.local/env.sh"; do
-      if [ -f "$env" ]; then . "$env"; fi
-    done
     export SCCACHE_DIR="''${SCCACHE_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/sccache}"
     export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-50G}"
     unset PYTHONPATH

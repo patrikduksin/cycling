@@ -255,7 +255,7 @@ async fn console(
     #[cfg(feature = "cycling")]
     {
         sdk.load_preferences(&system.settings.app);
-        sdk.set_clock(|| embassy_time::Instant::now().as_millis());
+        sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
         sdk.draw_boot(&mut system);
         // The terrain look-ahead's tile cache lives in PSRAM. Without it
         // the climb page says "NO MAP" and keeps to the barometer.
@@ -385,7 +385,11 @@ async fn console(
                 &mut devices.ble,
                 vana::app::Observations {
                     position: &devices.position,
-                    network_online: device_api::network::Network::online(&devices.network),
+                    network_time: firmware_services::network_time::snapshot(
+                        now,
+                        0,
+                        device_api::network::Network::online(&devices.network),
+                    ),
                     input: &devices.input,
                     physical: device_api::sensors::Sensors::snapshot(&devices.sensors, now),
                 },

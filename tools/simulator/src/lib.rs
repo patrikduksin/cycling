@@ -11,6 +11,7 @@ pub mod live;
 #[cfg(feature = "cycling")]
 pub mod phone;
 pub mod recording;
+pub mod replay;
 #[cfg(feature = "cycling")]
 pub mod rides;
 pub mod route;

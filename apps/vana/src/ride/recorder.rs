@@ -347,7 +347,7 @@ impl Recorder {
             return true;
         }
         if matches!(self.status, Status::Formatting | Status::Clearing) {
-            self.prepare(journal, clock);
+            self.prepare(journal, now, clock);
             return true;
         }
         if self.status == Status::Error {
@@ -604,11 +604,11 @@ impl Recorder {
     }
 
     /// One initialize or clear step; completion leaves an empty journal.
-    fn prepare(&mut self, journal: &mut impl Journal, clock: &impl Fn() -> u64) {
+    fn prepare(&mut self, journal: &mut impl Journal, now: u64, clock: &impl Fn() -> u64) {
         let clearing = self.status == Status::Clearing;
         let started = clock();
         // A new bulk epoch needs an identity that differs from the last one.
-        let seed = started ^ (u64::from(self.catalog.next_ride_id) << 32) ^ self.step as u64;
+        let seed = now ^ (u64::from(self.catalog.next_ride_id) << 32) ^ self.step as u64;
         let progress = if clearing {
             journal.clear(self.step, seed)
         } else {

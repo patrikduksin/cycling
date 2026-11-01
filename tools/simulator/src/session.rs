@@ -7,21 +7,36 @@ use crate::devices::PowerDevice;
 use crate::devices::PowerSwitch;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
-use crate::storage::{Fault, FileFlash};
+use crate::replay::{Blocks, Capture, Mode, Next, Origin, Replay, Report, Seen, Shelled, Sources};
+use crate::storage::FileFlash;
 use crate::world::World;
 use device_api::ant::Ant;
 use device_api::ant::AntOperation;
 use device_api::ble_transport::Ble;
+use device_api::bulk::ReadWrite;
 use device_api::display::Display;
 use device_api::input::Button;
 use device_api::input::InputObservation;
 use device_api::input::InputSnapshot;
 use device_api::observation::Availability;
 use device_api::observation::Error;
+use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use device_api::sensors::Startup;
+#[cfg(feature = "cycling")]
+use device_api::server::AccessPoint;
+#[cfg(feature = "cycling")]
+use device_api::{power::PowerControl, server::Server, sound::Sound};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
+use firmware_services::trace::frozen::{
+    CompanionView, FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record,
+    RecordedBulk, RecordedEdges, Recorder,
+};
+#[cfg(feature = "cycling")]
+use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
+use firmware_services::trace::{Event, Header, Output};
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io;
 use std::io::Read;
@@ -251,6 +266,8 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
+#[cfg(feature = "cycling")]
+const ASSUMED_BAROMETER_MS: u64 = 100;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
 /// startup: three seconds of passive observation before the startup
 /// acknowledgment, then an operating reason and two advancing sensor samples.
@@ -259,7 +276,145 @@ pub const COMPANION_BOOT_MS: u64 = 3_300;
 /// main-CPU restart before it admits work: one passive probe window.
 pub const RESTART_PROBE_MS: u64 = 3_000;
 pub type VirtualShell =
-    firmware_shell::shell::Shell<DisplayDevice, InputDevice, PowerDevice, FileFlash>;
+    firmware_shell::shell::Shell<DisplayDevice, RecordedEdges<InputDevice>, PowerDevice, FileFlash>;
+
+const TRACE_BLOCK: usize = 4096;
+
+type TraceRecorder = Recorder<Box<[u8]>, Blocks>;
+
+struct Trace {
+    recorder: RefCell<TraceRecorder>,
+    #[cfg(feature = "cycling")]
+    ant: firmware_services::trace::frozen::FrozenAnt,
+    #[cfg(feature = "cycling")]
+    ble: firmware_services::trace::frozen::FrozenBle,
+    position: FrozenPosition,
+    companion: FrozenCompanion,
+    startup: Latest<Startup>,
+    #[cfg(feature = "cycling")]
+    physical: Latest<device_api::sensors::Snapshot>,
+    #[cfg(feature = "cycling")]
+    network_time: Latest<firmware_services::network_time::Snapshot>,
+    #[cfg(feature = "cycling")]
+    page: Option<vana::screens::workout::Page>,
+    power: FrozenPowerControl,
+    backlight: Latest<Availability>,
+    #[cfg(feature = "cycling")]
+    sound: FrozenSound,
+    #[cfg(feature = "cycling")]
+    access_point: FrozenAccessPoint,
+    #[cfg(feature = "cycling")]
+    server: FrozenServer,
+}
+
+impl Trace {
+    fn new(boot: u32, profile: u8) -> Self {
+        let header = Header {
+            version: firmware_services::trace::VERSION,
+            oldest_reader: firmware_services::trace::OLDEST_READER,
+            build: build_id(),
+            boot,
+            profile,
+            config: &[],
+            media: &[],
+        };
+        let buffer = vec![0u8; TRACE_BLOCK].into_boxed_slice();
+        Self {
+            recorder: RefCell::new(
+                Recorder::new(&header, buffer, Blocks::default()).expect("the header fits a block"),
+            ),
+            #[cfg(feature = "cycling")]
+            ant: Default::default(),
+            #[cfg(feature = "cycling")]
+            ble: Default::default(),
+            position: FrozenPosition::default(),
+            companion: FrozenCompanion::default(),
+            startup: Latest::default(),
+            #[cfg(feature = "cycling")]
+            physical: Latest::default(),
+            #[cfg(feature = "cycling")]
+            network_time: Latest::default(),
+            #[cfg(feature = "cycling")]
+            page: None,
+            power: FrozenPowerControl::default(),
+            backlight: Latest::default(),
+            #[cfg(feature = "cycling")]
+            sound: FrozenSound::default(),
+            #[cfg(feature = "cycling")]
+            access_point: FrozenAccessPoint::default(),
+            #[cfg(feature = "cycling")]
+            server: FrozenServer::default(),
+        }
+    }
+
+    fn record(&self, event: &Event<'_>) {
+        self.recorder.borrow_mut().record(event);
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut recorder = self.recorder.borrow_mut();
+        let mut bytes = recorder.sink().0.clone();
+        bytes.extend_from_slice(recorder.open_block());
+        bytes
+    }
+}
+
+fn build_id() -> [u8; 20] {
+    let mut id = [0u8; 20];
+    let hex = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
+    for (byte, pair) in id.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *byte = core::str::from_utf8(pair)
+            .ok()
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            .unwrap_or(0);
+    }
+    id
+}
+
+fn recorded_bulk<'a>(
+    bulk: &'a mut crate::bulk::SimBulk,
+    devices: &'a mut Devices,
+    record: &'a RefCell<TraceRecorder>,
+) -> RecordedBulk<'a, dyn ReadWrite + 'a, TraceRecorder> {
+    let bulk: &mut dyn ReadWrite = match devices {
+        Devices::Replayed(replay) => &mut replay.sources.bulk,
+        Devices::Simulated(_) => bulk,
+    };
+    RecordedBulk::new(bulk, record)
+}
+
+fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
+    switch.now = now;
+    switch.startup_ready = matches!(
+        startup,
+        Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
+    );
+    switch.startup_running = switch.startup_ready || startup == Startup::RunningDegraded;
+}
+
+fn battery(companion: CompanionView) -> Option<(u8, u16, u64)> {
+    match companion.0?.battery {
+        Observation::Fresh {
+            value: (percent, mv),
+            received_ms,
+        }
+        | Observation::Stale {
+            value: (percent, mv),
+            received_ms,
+        } => Some((percent, mv, received_ms)),
+        Observation::Unavailable => None,
+    }
+}
+
+/// USB power: the companion reports power status zero.
+fn charging(companion: CompanionView) -> bool {
+    companion.0.is_some_and(|snapshot| {
+        matches!(
+            snapshot.power,
+            Observation::Fresh { value: 0, .. } | Observation::Stale { value: 0, .. }
+        )
+    })
+}
 
 /// Look-ahead blocks of ended sessions. VANA holds its block as `&'static mut`,
 /// as on the device, so each block is leaked once and then handed from one
@@ -299,22 +454,22 @@ impl Drop for Session {
     }
 }
 
-/// The simulated device and the world it observes, composed like C606 firmware.
-pub struct Session {
-    pub shell: VirtualShell,
-    /// Device uptime; it restarts from zero with the device.
-    pub now: u64,
-    pub boot: u32,
+/// The world and the simulated devices that observe it. A replay has none:
+/// its trace answers for them.
+pub struct Simulated {
+    pub world: World,
     pub position: PositionFixture,
     pub ble: BleFixture,
     /// A BLE heart-rate strap that notifies the world's heart rate once a second.
     pub ble_strap: Option<BleStrap>,
     pub ant: SimulatedAnt,
-    pub world: World,
     pub gps: Option<Receiver>,
     pub speaker: Speaker,
     pub battery: Battery,
     pub startup: Startup,
+    /// Wi-Fi time synchronization, as the device's clock owner holds it;
+    /// device memory, so a reboot loses it.
+    pub network_time: Option<firmware_services::network_time::Anchor>,
     /// Uptime at which a starting companion runs, and the ANT availability then.
     companion_boot_ms: Option<(u64, Availability)>,
     /// How long a main-CPU restart probes a running companion before work
@@ -322,24 +477,136 @@ pub struct Session {
     pub restart_probe_ms: u64,
     /// Uptime at which this boot's restart probe ends, and the phase then.
     restart_probe: Option<(u64, Startup)>,
-    pub input: InputDevice,
-    pub power: PowerDevice,
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
+    #[cfg(feature = "cycling")]
+    barometer: Option<(u64, u32)>,
+    wifi_control: device_api::connectivity::ControlStatus,
+    ble_control: device_api::connectivity::ControlStatus,
+    #[cfg(feature = "cycling")]
+    pub phone_server: crate::phone::SimServer,
+    #[cfg(feature = "cycling")]
+    pub access_point: crate::phone::SimAccessPoint,
+}
+
+impl Simulated {
+    fn new() -> Self {
+        Self {
+            world: World::default(),
+            position: PositionFixture::default(),
+            ble: BleFixture::default(),
+            ble_strap: None,
+            ant: SimulatedAnt::new(Availability::Unsupported),
+            gps: None,
+            speaker: Speaker::default(),
+            battery: Battery::default(),
+            startup: Startup::Unsupported,
+            network_time: None,
+            companion_boot_ms: None,
+            restart_probe_ms: 0,
+            restart_probe: None,
+            switch: PowerSwitch::default(),
+            #[cfg(feature = "cycling")]
+            barometer: None,
+            wifi_control: device_api::connectivity::ControlStatus::new(),
+            ble_control: device_api::connectivity::ControlStatus::new(),
+            #[cfg(feature = "cycling")]
+            phone_server: Default::default(),
+            #[cfg(feature = "cycling")]
+            access_point: Default::default(),
+        }
+    }
+
+    fn companion_starting(&mut self, ant: Availability) {
+        self.startup = Startup::Probing;
+        self.ant.availability = Availability::Initializing;
+        self.companion_boot_ms = Some((COMPANION_BOOT_MS, ant));
+    }
+
+    fn ant_ready_availability(&self) -> Availability {
+        match self.companion_boot_ms {
+            Some((_, ant)) => ant,
+            None => self.ant.availability,
+        }
+    }
+
+    fn environment(&mut self, now: u64, ble_selected: bool) {
+        if let Some((at, ant)) = self.companion_boot_ms
+            && now >= at
+        {
+            self.companion_boot_ms = None;
+            self.startup = Startup::Ready;
+            self.ant.availability = ant;
+        }
+        if let Some((at, phase)) = self.restart_probe
+            && now >= at
+        {
+            self.restart_probe = None;
+            self.startup = phase;
+        }
+        self.ant.tick(&self.world, now);
+        if let Some(strap) = &mut self.ble_strap {
+            strap.tick(&self.world, now, ble_selected, &mut self.ble);
+        }
+        if let Some(gps) = &mut self.gps {
+            gps.tick(&self.world, now, &mut self.position.acquisition);
+        }
+    }
+
+    #[cfg(feature = "cycling")]
+    fn physical(&mut self, now: u64) -> device_api::sensors::Snapshot {
+        let slot = now - now % ASSUMED_BAROMETER_MS;
+        self.barometer = match (self.world.pressure_centi_pa(), self.barometer) {
+            (None, _) => None,
+            (Some(_), Some((at, pressure))) if at == slot => Some((at, pressure)),
+            (Some(pressure), _) => Some((slot, pressure)),
+        };
+        let pressure = match self.barometer {
+            Some((received_ms, pressure_centi_pa)) => Observation::Fresh {
+                value: device_api::sensors::Pressure {
+                    pressure_centi_pa,
+                    temperature_centi_c: 2000,
+                },
+                received_ms,
+            },
+            None => Observation::Unavailable,
+        };
+        device_api::sensors::Snapshot {
+            pressure,
+            motion: [Observation::Unavailable; 2],
+            identity: Observation::Unavailable,
+            reports: 0,
+            invalid_reports: 0,
+            losses: 0,
+        }
+    }
+}
+
+enum Devices {
+    Simulated(Box<Simulated>),
+    Replayed(Box<Replay>),
+}
+
+/// The simulated device, composed like C606 firmware, and what it observes.
+pub struct Session {
+    pub shell: VirtualShell,
+    /// Device uptime; it restarts from zero with the device.
+    pub now: u64,
+    pub boot: u32,
+    pub input: InputDevice,
+    pub power: PowerDevice,
     /// The device turned itself off; only a power-button start brings it back.
     pub off: bool,
     pub display: DisplayDevice,
-    wifi_control: device_api::connectivity::ControlStatus,
-    ble_control: device_api::connectivity::ControlStatus,
     pub media: FileFlash,
     /// The owned MMC region; absent unless a scenario fits one.
     pub bulk: crate::bulk::SimBulk,
     #[cfg(feature = "cycling")]
     pub sdk: vana::app::Runtime,
-    #[cfg(feature = "cycling")]
-    pub phone_server: crate::phone::SimServer,
-    #[cfg(feature = "cycling")]
-    pub access_point: crate::phone::SimAccessPoint,
+    trace: Trace,
+    origin: Option<Origin>,
+    unrecorded: Option<(&'static str, u64)>,
+    devices: Devices,
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
@@ -355,21 +622,26 @@ impl Session {
     /// start shortly after boot.
     pub fn device() -> io::Result<Self> {
         let mut session = Self::with_media(FileFlash::memory(), 240, 320)?;
-        session.companion_starting(Availability::Ready);
-        session.restart_probe_ms = RESTART_PROBE_MS;
+        let sim = session.sim_mut();
+        sim.companion_starting(Availability::Ready);
+        sim.restart_probe_ms = RESTART_PROBE_MS;
         Ok(session)
     }
-    /// The companion is probing after power-on; ANT admits nothing until it runs.
-    fn companion_starting(&mut self, ant: Availability) {
-        self.startup = Startup::Probing;
-        self.ant.availability = Availability::Initializing;
-        self.companion_boot_ms = Some((COMPANION_BOOT_MS, ant));
-    }
-    fn ant_ready_availability(&self) -> Availability {
-        match self.companion_boot_ms {
-            Some((_, ant)) => ant,
-            None => self.ant.availability,
+    /// The world and the simulated devices. A replay has none.
+    pub fn sim(&self) -> &Simulated {
+        match &self.devices {
+            Devices::Simulated(sim) => sim,
+            Devices::Replayed(_) => panic!("a replay has no simulated world"),
         }
+    }
+    pub fn sim_mut(&mut self) -> &mut Simulated {
+        match &mut self.devices {
+            Devices::Simulated(sim) => sim,
+            Devices::Replayed(_) => panic!("a replay has no simulated world"),
+        }
+    }
+    pub fn is_replay(&self) -> bool {
+        matches!(self.devices, Devices::Replayed(_))
     }
     fn with_media(media: FileFlash, width: usize, height: usize) -> io::Result<Self> {
         let boot = media.begin_boot()?;
@@ -381,7 +653,7 @@ impl Session {
         let power = PowerDevice::new(Availability::Ready);
         let mut shell = firmware_shell::shell::Shell::new(
             display.clone(),
-            input.clone(),
+            RecordedEdges::new(input.clone()),
             power.clone(),
             media.clone(),
             0,
@@ -441,184 +713,379 @@ impl Session {
             ));
             sdk.attach_back(Box::leak(back));
         }
+        let trace = Trace::new(boot, shell.settings.ble_profile);
         Ok(Self {
             shell,
             now: 0,
             boot,
-            position: PositionFixture::default(),
-            ble: BleFixture::default(),
-            ble_strap: None,
-            ant: SimulatedAnt::new(Availability::Unsupported),
-            world: World::default(),
-            gps: None,
-            speaker: Speaker::default(),
-            battery: Battery::default(),
-            startup: Startup::Unsupported,
-            companion_boot_ms: None,
-            restart_probe_ms: 0,
-            restart_probe: None,
             input,
             power,
-            switch: PowerSwitch::default(),
             off: false,
             display,
-            wifi_control: device_api::connectivity::ControlStatus::new(),
-            ble_control: device_api::connectivity::ControlStatus::new(),
             media,
             bulk: crate::bulk::SimBulk::default(),
             #[cfg(feature = "cycling")]
             sdk,
-            #[cfg(feature = "cycling")]
-            phone_server: Default::default(),
-            #[cfg(feature = "cycling")]
-            access_point: Default::default(),
+            trace,
+            origin: None,
+            unrecorded: None,
+            devices: Devices::Simulated(Box::new(Simulated::new())),
         })
+    }
+    /// A C606-sized device on the captured media, with the capture's trace
+    /// standing in for the world. Drive it with `replay_step`.
+    pub fn replaying(capture: &Capture, mode: Mode) -> io::Result<Self> {
+        let origin = &capture.origin;
+        let flash = origin.flash.copy_before_boot(origin.boot).ok_or_else(|| {
+            io::Error::other("the capture's media is file-backed and cannot be replayed")
+        })?;
+        let mut session = Self::with_media(flash, 240, 320)?;
+        session.bulk = origin.bulk.scripted();
+        let shelled = Shelled {
+            input: session.input.clone(),
+            display: session.display.clone(),
+            power: session.power.clone(),
+            flash: session.media.clone(),
+            bulk: session.bulk.clone(),
+        };
+        let replay = Replay::new(capture.trace.clone(), shelled, mode, build_id())
+            .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
+        session.devices = Devices::Replayed(Box::new(replay));
+        Ok(session)
+    }
+    /// Run what the trace holds next: a pass or a terminal request. False
+    /// once the trace is spent.
+    pub fn replay_step(&mut self) -> bool {
+        let Devices::Replayed(replay) = &mut self.devices else {
+            return false;
+        };
+        match replay.step() {
+            Next::Pass => self.tick(),
+            Next::Command(line) => {
+                let _ = self.command(line.as_bytes(), &mut String::new());
+            }
+            Next::End => {
+                let trace = self.trace();
+                if let Devices::Replayed(replay) = &mut self.devices {
+                    replay.rerecorded(&trace);
+                }
+                return false;
+            }
+        }
+        true
+    }
+    /// Where a replay parted from its recording so far.
+    pub fn report(&self) -> Option<Report> {
+        match &self.devices {
+            Devices::Replayed(replay) => Some(replay.sources.report()),
+            Devices::Simulated(_) => None,
+        }
+    }
+    /// The devices a replay presents, to set up before it runs.
+    pub fn replay_sources(&mut self) -> Option<&mut Sources> {
+        match &mut self.devices {
+            Devices::Replayed(replay) => Some(&mut replay.sources),
+            Devices::Simulated(_) => None,
+        }
+    }
+    /// What a replay of this session needs.
+    pub fn capture(&self) -> Result<Capture, String> {
+        if let Some((what, at)) = self.unrecorded {
+            return Err(format!("{what} at {at} ms, unseen by the trace"));
+        }
+        Ok(Capture {
+            origin: self.origin.clone().ok_or("no pass ran yet")?,
+            trace: self.trace(),
+        })
+    }
+    /// The bulk medium as a host writes it over USB. After the first pass
+    /// such a write changes what VANA reads unseen by the trace, so this
+    /// session no longer has a capture.
+    pub fn host_bulk(&mut self) -> crate::bulk::SimBulk {
+        self.unrecorded("a host wrote the bulk medium");
+        self.bulk.host()
+    }
+    fn unrecorded(&mut self, what: &'static str) {
+        if self.origin.is_some() {
+            self.unrecorded.get_or_insert((what, self.now));
+        }
+    }
+    /// The trace of this power-on session so far.
+    pub fn trace(&self) -> Vec<u8> {
+        self.trace.bytes()
     }
     /// One pass of the firmware loop, in the order C606 composition runs it.
     pub fn tick(&mut self) {
+        match &mut self.devices {
+            Devices::Replayed(replay) => self.now = replay.load_pass(),
+            Devices::Simulated(sim) => {
+                if self.origin.is_none() {
+                    self.origin = self.media.copy_before_boot(self.boot).map(|flash| Origin {
+                        flash,
+                        bulk: self.bulk.copy(),
+                        boot: self.boot,
+                    });
+                }
+                if !self.off {
+                    sim.environment(self.now, self.shell.settings.ble.is_some());
+                }
+            }
+        }
+        self.trace.record(&Event::Pass { now_ms: self.now });
+        self.display.0.borrow_mut().refusals.begin_pass();
+        self.power.0.borrow_mut().refusals.begin_pass();
+        self.media.fault.borrow_mut().begin_pass();
+        self.bulk.begin_pass();
+        self.pass();
+        self.record_faults();
+        let seen = self.record_seen();
+        if let Devices::Replayed(replay) = &mut self.devices {
+            replay.saw(&seen);
+        }
+    }
+    fn record_faults(&mut self) {
+        let panel = core::mem::take(&mut self.display.0.borrow_mut().refusals.refused);
+        let backlight = core::mem::take(&mut self.power.0.borrow_mut().refusals.refused);
+        let flash = core::mem::take(&mut self.media.fault.borrow_mut().log);
+        let bulk = self.bulk.take_log();
+        let refused = (panel.into_iter().map(|attempt| (Output::Panel, attempt))).chain(
+            backlight
+                .into_iter()
+                .map(|attempt| (Output::Backlight, attempt)),
+        );
+        for (output, attempt) in refused {
+            self.trace.record(&Event::Refused { output, attempt });
+        }
+        for fault in flash.into_iter().chain(bulk) {
+            self.trace.record(&Event::StorageFault(fault));
+        }
+    }
+    fn startup(&self) -> Startup {
+        match &self.devices {
+            Devices::Simulated(sim) => sim.startup,
+            Devices::Replayed(replay) => replay.sources.startup(),
+        }
+    }
+    fn pass(&mut self) {
+        let now = self.now;
+        let record = &self.trace.recorder;
+        let companion = match &self.devices {
+            Devices::Replayed(replay) => {
+                self.trace
+                    .companion
+                    .freeze(&replay.sources.companion, now, record)
+            }
+            Devices::Simulated(sim) => self.trace.companion.freeze(&sim.battery, now, record),
+        };
         if self.off {
-            self.standby();
+            self.standby(companion);
             return;
         }
-        if let Some((at, ant)) = self.companion_boot_ms
-            && self.now >= at
-        {
-            self.companion_boot_ms = None;
-            self.startup = Startup::Ready;
-            self.ant.availability = ant;
-        }
-        if let Some((at, phase)) = self.restart_probe
-            && self.now >= at
-        {
-            self.restart_probe = None;
-            self.startup = phase;
-        }
-        self.ant.tick(&self.world, self.now);
-        if let Some(strap) = &mut self.ble_strap {
-            let selected = self.shell.settings.ble.is_some();
-            strap.tick(&self.world, self.now, selected, &mut self.ble);
-        }
-        if let Some(gps) = &mut self.gps {
-            gps.tick(&self.world, self.now, &mut self.position.acquisition);
-        }
-        self.power.0.borrow_mut().battery = self
-            .battery
-            .level
-            .map(|(percent, mv)| (percent, mv, self.now));
-        self.speaker.tick(self.now);
-        self.observe_startup();
-        if self.switch.off_due() {
+        let startup = self.startup();
+        let startup =
+            self.trace
+                .startup
+                .observe(startup, now, &self.trace.recorder, Event::Startup);
+        self.power.0.borrow_mut().battery = battery(companion);
+        let record = &self.trace.recorder;
+        let power = match &mut self.devices {
+            Devices::Simulated(sim) => {
+                sim.speaker.tick(now);
+                observe_startup(&mut sim.switch, now, startup);
+                (!sim.switch.off_due()).then(|| self.trace.power.freeze(&sim.switch, now, record))
+            }
+            Devices::Replayed(replay) => (!replay.sources.power.powered_off())
+                .then(|| self.trace.power.freeze(&replay.sources.power, now, record)),
+        };
+        let Some(power) = power else {
+            self.trace.record(&Event::PoweredOff);
             self.turn_off();
             return;
-        }
-        let power = device_api::power::PowerControl::status(&self.switch);
+        };
         // C606 composition scans the ride journal while the companion starts
         // and runs the shell and VANA only once power work is ready; until
         // then the backlight stays dark.
         #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Initializing {
-            self.sdk
-                .prepare(&mut self.shell.data_storage(), &mut self.bulk, self.now);
+            self.sdk.prepare(
+                &mut self.shell.data_storage(),
+                &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
+                now,
+            );
         }
         if !power.ready {
             return;
         }
+        let record = &self.trace.recorder;
+        self.trace.backlight.observe(
+            self.power.0.borrow().available,
+            now,
+            record,
+            Event::Backlight,
+        );
+        let position = match &self.devices {
+            Devices::Replayed(replay) => {
+                self.trace
+                    .position
+                    .freeze(&replay.sources.position, now, record)
+            }
+            Devices::Simulated(sim) => self.trace.position.freeze(&sim.position, now, record),
+        };
         #[cfg(feature = "cycling")]
+        self.vana_pass(companion, position, startup);
+        #[cfg(not(feature = "cycling"))]
         {
-            self.sdk.set_startup_status(self.startup);
-            self.shell.set_app_active(self.sdk.input_active());
+            self.shell.tick(now);
+            self.shell
+                .input_source()
+                .record(&mut *self.trace.recorder.borrow_mut());
+            self.shell.observe_position(&position, now);
+            self.shell.present();
         }
-        self.shell.tick(self.now);
-        #[cfg(feature = "cycling")]
+    }
+    #[cfg(feature = "cycling")]
+    fn vana_pass(
+        &mut self,
+        companion: CompanionView,
+        position: firmware_services::trace::frozen::PositionView,
+        startup: Startup,
+    ) {
+        let now = self.now;
+        let (physical, network_time) = match &mut self.devices {
+            Devices::Replayed(replay) => (replay.sources.physical(), replay.sources.network_time()),
+            Devices::Simulated(sim) => (
+                sim.physical(now),
+                sim.network_time
+                    .map_or_else(Default::default, |anchor| anchor.snapshot(now, 0, true)),
+            ),
+        };
+        let record = &self.trace.recorder;
+        let physical = self
+            .trace
+            .physical
+            .observe(physical, now, record, Event::Physical);
+        let network_time =
+            self.trace
+                .network_time
+                .observe(network_time, now, record, Event::NetworkTime);
+        type Handles<'a> = (
+            &'a mut dyn Ant,
+            &'a mut dyn Ble,
+            &'a mut dyn ReadWrite,
+            &'a mut dyn AccessPoint,
+            &'a mut dyn Server,
+            &'a mut dyn Sound,
+            &'a mut dyn PowerControl,
+        );
+        let (ant, ble, bulk, access_point, server, sound, control): Handles =
+            match &mut self.devices {
+                Devices::Replayed(replay) => {
+                    let sources = &mut replay.sources;
+                    (
+                        &mut sources.ant,
+                        &mut sources.ble,
+                        &mut sources.bulk,
+                        &mut sources.access_point,
+                        &mut sources.server,
+                        &mut sources.sound,
+                        &mut sources.power,
+                    )
+                }
+                Devices::Simulated(sim) => (
+                    &mut sim.ant,
+                    &mut sim.ble,
+                    &mut self.bulk,
+                    &mut sim.access_point,
+                    &mut sim.phone_server,
+                    &mut sim.speaker,
+                    &mut sim.switch,
+                ),
+            };
+        let mut ant = self.trace.ant.bind(ant, now, record);
+        let mut ble = self.trace.ble.bind(ble, now, record);
+        let mut bulk = RecordedBulk::new(bulk, record);
+        let mut access_point = self.trace.access_point.bind(access_point, now, record);
+        let mut server = self.trace.server.bind(server, now, record);
+        let mut sound = self.trace.sound.bind(sound, now, record);
+        let mut control = self.trace.power.bind(control, now, record);
+        self.sdk.set_startup_status(startup);
+        self.shell.set_app_active(self.sdk.input_active());
+        self.shell.tick(now);
+        self.shell
+            .input_source()
+            .record(&mut *self.trace.recorder.borrow_mut());
         for _ in 0..16 {
             let Some(edge) = self.shell.take_app_input() else {
                 break;
             };
             self.sdk
-                .input_received(edge.input, edge.received_ms, self.now, &mut self.ant);
+                .input_received(edge.input, edge.received_ms, now, &mut ant);
         }
-        self.shell.observe_position(&self.position, self.now);
+        self.shell.observe_position(&position, now);
         self.shell.present();
-        #[cfg(feature = "cycling")]
-        {
-            let pressure = match self.world.pressure_centi_pa() {
-                Some(pressure_centi_pa) => device_api::observation::Observation::Fresh {
-                    value: device_api::sensors::Pressure {
-                        pressure_centi_pa,
-                        temperature_centi_c: 2000,
-                    },
-                    received_ms: self.now,
-                },
-                None => device_api::observation::Observation::Unavailable,
-            };
-            self.sdk.tick(
-                &mut self.shell.data_storage(),
-                &mut self.bulk,
-                self.now,
-                &mut self.ant,
-                &mut self.ble,
-                vana::app::Observations {
-                    position: &self.position,
-                    network_online: false,
-                    input: &self.battery,
-                    physical: device_api::sensors::Snapshot {
-                        pressure,
-                        motion: [device_api::observation::Observation::Unavailable; 2],
-                        identity: device_api::observation::Observation::Unavailable,
-                        reports: 0,
-                        invalid_reports: 0,
-                        losses: 0,
-                    },
-                },
-            );
-            // As composition does: one bounded look-ahead step a pass,
-            // reading the TERRAIN volume's pack when one is installed.
-            self.sdk.look_ahead(&mut self.bulk, self.now);
-            self.sdk.serve_phone(
-                &mut self.phone_server,
-                &mut self.access_point,
-                &mut self.shell.data_storage(),
-                &mut self.bulk,
-                self.now,
-            );
-            self.sdk
-                .present(&mut self.shell, self.now, &self.ant, &self.position);
-            self.sdk.save_preferences(&mut self.shell, self.now);
-            self.sdk.alert(&mut self.speaker, self.now);
-            self.sdk.power(&mut self.shell, &mut self.switch, self.now);
+        self.sdk.tick(
+            &mut self.shell.data_storage(),
+            &mut bulk,
+            now,
+            &mut ant,
+            &mut ble,
+            vana::app::Observations {
+                position: &position,
+                network_time,
+                input: &companion,
+                physical,
+            },
+        );
+        self.sdk.look_ahead(&mut bulk, now);
+        self.sdk.serve_phone(
+            &mut server,
+            &mut access_point,
+            &mut self.shell.data_storage(),
+            &mut bulk,
+            now,
+        );
+        self.sdk.present(&mut self.shell, now, &ant, &position);
+        self.sdk.save_preferences(&mut self.shell, now);
+        self.sdk.alert(&mut sound, now);
+        self.sdk.power(&mut self.shell, &mut control, now);
+    }
+    #[cfg(feature = "cycling")]
+    fn record_seen(&mut self) -> Vec<Seen> {
+        let mut seen = Vec::new();
+        let page = self.sdk.page();
+        if self.trace.page != Some(page) {
+            self.trace.page = Some(page);
+            self.trace.record(&Event::Page(page.name()));
+            seen.push(Seen::Page(page.name().into()));
         }
+        for pattern in self.trace.sound.take_started() {
+            self.trace.record(&Event::Sound(pattern));
+            seen.push(Seen::Sound(pattern));
+        }
+        seen
+    }
+    #[cfg(not(feature = "cycling"))]
+    fn record_seen(&mut self) -> Vec<Seen> {
+        Vec::new()
     }
     /// Off on USB power the C606 rests in charging standby: VANA shows the
     /// charge for a while, then the panel goes dark. Off on battery, nothing
     /// runs at all.
-    fn standby(&mut self) {
-        let charging = self.battery.charging;
+    fn standby(&mut self, companion: CompanionView) {
+        let charging = charging(companion);
         if !charging {
             self.power.0.borrow_mut().brightness = 0;
         }
         #[cfg(feature = "cycling")]
         if charging {
-            self.power.0.borrow_mut().battery = self
-                .battery
-                .level
-                .map(|(percent, mv)| (percent, mv, self.now));
-            let lit = self.sdk.standby(&mut self.shell, &self.battery, self.now);
+            self.power.0.borrow_mut().battery = battery(companion);
+            let lit = self.sdk.standby(&mut self.shell, &companion, self.now);
             self.power.0.borrow_mut().brightness = if lit {
                 self.shell.settings.brightness
             } else {
                 0
             };
         }
-    }
-    /// Power work readiness follows the companion's startup, as on C606.
-    fn observe_startup(&mut self) {
-        self.switch.now = self.now;
-        self.switch.startup_ready = matches!(
-            self.startup,
-            Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
-        );
-        self.switch.startup_running =
-            self.switch.startup_ready || self.startup == Startup::RunningDegraded;
     }
     /// The panel shows something while the device is off: charging standby.
     pub fn standby_lit(&self) -> bool {
@@ -631,7 +1098,7 @@ impl Session {
         self.power.0.borrow_mut().brightness = 0;
         let mut frame = self.display.0.borrow_mut();
         frame.pixels.fill(0);
-        frame.submissions += 1;
+        frame.shown();
     }
     /// Whether the panel is lit: the shell set a brightness since power-on.
     pub fn lit(&self) -> bool {
@@ -651,7 +1118,7 @@ impl Session {
         while self.now < end {
             let step = (end - self.now).min(10);
             self.now += step;
-            self.world.advance(step);
+            self.sim_mut().world.advance(step);
             self.tick();
         }
     }
@@ -663,16 +1130,80 @@ impl Session {
         self.step(ms);
         Ok(())
     }
+    /// A terminal request line: recorded into the trace, then executed.
+    pub fn command(
+        &mut self,
+        line: &[u8],
+        out: &mut String,
+    ) -> Result<(Request, &'static str), firmware_console::protocol::Error> {
+        let request = firmware_console::protocol::parse(line)?;
+        if let Ok(text) = core::str::from_utf8(line) {
+            self.trace.record(&Event::Command(text));
+        }
+        let power = self.gate();
+        Ok((request, self.execute_gated(request, power, out)))
+    }
+    /// Execute a parsed request. Unlike `command`, the trace does not see it,
+    /// so a replay of this session will not either.
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
-        self.observe_startup();
-        let power = device_api::power::PowerControl::status(&self.switch);
+        self.unrecorded("a request ran unrecorded");
+        let power = self.gate();
+        self.execute_gated(request, power, out)
+    }
+    fn gate(&mut self) -> device_api::power::Status {
+        let now = self.now;
+        let record = &self.trace.recorder;
+        match &mut self.devices {
+            Devices::Simulated(sim) => {
+                observe_startup(&mut sim.switch, now, sim.startup);
+                self.trace.power.freeze(&sim.switch, now, record)
+            }
+            Devices::Replayed(replay) => {
+                self.trace.power.freeze(&replay.sources.power, now, record)
+            }
+        }
+    }
+    fn execute_gated(
+        &mut self,
+        request: Request,
+        power: device_api::power::Status,
+        out: &mut String,
+    ) -> &'static str {
+        let status = self.respond(request, power, out);
+        self.record_faults();
+        status
+    }
+    fn respond(
+        &mut self,
+        request: Request,
+        power: device_api::power::Status,
+        out: &mut String,
+    ) -> &'static str {
+        let now = self.now;
         if !power.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
-            firmware_console::protocol::write_not_ready(out, power.state, self.startup);
+            let startup = match &self.devices {
+                Devices::Simulated(sim) => sim.startup,
+                Devices::Replayed(_) => self.trace.startup.at(now).unwrap_or(Startup::Unsupported),
+            };
+            firmware_console::protocol::write_not_ready(out, power.state, startup);
             return "BUSY";
         }
-        if let Some(status) =
-            firmware_console::commands::ant::execute(request.command, &mut self.ant, self.now, out)
-        {
+        let status = match &mut self.devices {
+            Devices::Simulated(sim) => {
+                firmware_console::commands::ant::execute(request.command, &mut sim.ant, now, out)
+            }
+            Devices::Replayed(replay) => {
+                let status =
+                    firmware_console::commands::ant::execute(request.command, &mut NoAnt, now, out);
+                if status.is_some() {
+                    replay
+                        .sources
+                        .unrecorded("the ANT radio the terminal reads");
+                }
+                status
+            }
+        };
+        if let Some(status) = status {
             return status;
         }
         self.tick();
@@ -699,6 +1230,20 @@ impl Session {
             }
             return status;
         }
+        let (wifi_control, ble_control) = match &self.devices {
+            Devices::Simulated(sim) => (sim.wifi_control, sim.ble_control),
+            Devices::Replayed(replay) => {
+                if matches!(request.command, Command::Wifi | Command::Ble) {
+                    replay
+                        .sources
+                        .unrecorded("the radio control status the terminal reads");
+                }
+                (
+                    device_api::connectivity::ControlStatus::new(),
+                    device_api::connectivity::ControlStatus::new(),
+                )
+            }
+        };
         match request.command {
             // The simulator has no binary USB session; tests install volume
             // contents through `Sim` instead.
@@ -706,7 +1251,11 @@ impl Session {
                 return "UNSUPPORTED";
             }
             Command::Volume(command) => {
-                return firmware_console::commands::volumes::execute(command, &mut self.bulk, out);
+                return firmware_console::commands::volumes::execute(
+                    command,
+                    &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
+                    out,
+                );
             }
             Command::Info => {
                 let _ = write!(
@@ -732,9 +1281,9 @@ impl Session {
                     out,
                     "state=0 online=false saved={} operation={} sequence={} error={} radio=unsupported fixture=true",
                     self.shell.settings.wifi.is_some(),
-                    self.wifi_control.operation.name(),
-                    self.wifi_control.sequence,
-                    self.wifi_control.error_name()
+                    wifi_control.operation.name(),
+                    wifi_control.sequence,
+                    wifi_control.error_name()
                 );
             }
             Command::WifiConfigure(_) | Command::WifiForget => {
@@ -748,8 +1297,10 @@ impl Session {
                     self.shell.settings = previous;
                     return "FAILED";
                 }
-                self.wifi_control.sequence = self.wifi_control.sequence.wrapping_add(1);
-                self.wifi_control.operation = device_api::connectivity::Operation::Completed;
+                if let Devices::Simulated(sim) = &mut self.devices {
+                    sim.wifi_control.sequence = sim.wifi_control.sequence.wrapping_add(1);
+                    sim.wifi_control.operation = device_api::connectivity::Operation::Completed;
+                }
                 return "ACCEPTED";
             }
             Command::BleForget => {
@@ -760,14 +1311,16 @@ impl Session {
                     self.shell.settings = previous;
                     return "FAILED";
                 }
-                self.ble.packets.clear();
-                self.ble.snapshot.link = device_api::ble_transport::Link::Off;
-                self.ble_control.sequence = self.ble_control.sequence.wrapping_add(1);
-                self.ble_control.operation = device_api::connectivity::Operation::Completed;
+                if let Devices::Simulated(sim) = &mut self.devices {
+                    sim.ble.packets.clear();
+                    sim.ble.snapshot.link = device_api::ble_transport::Link::Off;
+                    sim.ble_control.sequence = sim.ble_control.sequence.wrapping_add(1);
+                    sim.ble_control.operation = device_api::connectivity::Operation::Completed;
+                }
                 #[cfg(feature = "cycling")]
                 self.sdk.select_profile(
                     vana::sensors::ble_profile::Profile::Echo,
-                    self.ble.snapshot.connections,
+                    self.trace.ble.snapshot().connections,
                 );
                 return "ACCEPTED";
             }
@@ -782,16 +1335,24 @@ impl Session {
                     self.shell.settings = previous;
                     return "FAILED";
                 }
-                self.ble.packets.clear();
-                self.ble.snapshot.link = device_api::ble_transport::Link::Off;
+                if let Devices::Simulated(sim) = &mut self.devices {
+                    sim.ble.packets.clear();
+                    sim.ble.snapshot.link = device_api::ble_transport::Link::Off;
+                    sim.ble_control.sequence = sim.ble_control.sequence.wrapping_add(1);
+                    sim.ble_control.operation = device_api::connectivity::Operation::Completed;
+                }
                 self.sdk
-                    .select_profile(profile, self.ble.snapshot.connections);
-                self.ble_control.sequence = self.ble_control.sequence.wrapping_add(1);
-                self.ble_control.operation = device_api::connectivity::Operation::Completed;
+                    .select_profile(profile, self.trace.ble.snapshot().connections);
                 return "ACCEPTED";
             }
             Command::Ble => {
-                let s = self.ble.snapshot();
+                let s = match &self.devices {
+                    Devices::Simulated(sim) => sim.ble.snapshot(),
+                    #[cfg(feature = "cycling")]
+                    Devices::Replayed(_) => self.trace.ble.snapshot(),
+                    #[cfg(not(feature = "cycling"))]
+                    Devices::Replayed(_) => Default::default(),
+                };
                 let _ = write!(
                     out,
                     "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={} saved={} profile={} operation={} sequence={} error={} radio=unsupported fixture=true",
@@ -803,9 +1364,9 @@ impl Session {
                     s.scan_reports,
                     self.shell.settings.ble.is_some(),
                     self.shell.settings.ble_profile,
-                    self.ble_control.operation.name(),
-                    self.ble_control.sequence,
-                    self.ble_control.error_name()
+                    ble_control.operation.name(),
+                    ble_control.sequence,
+                    ble_control.error_name()
                 );
             }
             #[cfg(feature = "cycling")]
@@ -813,7 +1374,7 @@ impl Session {
                 return self.sdk.command(
                     core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                     &mut self.shell.data_storage(),
-                    &mut self.bulk,
+                    &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
                     self.now,
                     out,
                 );
@@ -828,7 +1389,12 @@ impl Session {
         }
         "OK"
     }
+    /// A terminal fixture line: the world or a simulated device changes. A
+    /// replay has neither; its trace already holds what they did.
     pub fn fixture(&mut self, line: &str, out: &mut String) -> &'static str {
+        if self.is_replay() {
+            return "UNSUPPORTED";
+        }
         // Validate the complete fixture shape before changing any fixture state.
         let parts: Vec<_> = line.split_ascii_whitespace().collect();
         let expected = match parts.get(1).copied() {
@@ -850,7 +1416,10 @@ impl Session {
                 let Some(ms) = w.next().and_then(|s| s.parse().ok()) else {
                     return "INVALID";
                 };
-                if w.next().is_some() || self.advance(ms).is_err() {
+                if w.next().is_some() {
+                    return "INVALID";
+                }
+                if self.advance(ms).is_err() {
                     return "INVALID";
                 }
             }
@@ -870,15 +1439,16 @@ impl Session {
                 if after > 1024 || partial > 4096 || w.next().is_some() {
                     return "INVALID";
                 }
-                *self.media.fault.borrow_mut() = Fault {
-                    after: Some(after),
-                    partial,
-                };
+                let mut fault = self.media.fault.borrow_mut();
+                fault.after = Some(after);
+                fault.partial = partial;
             }
             Some("POSITION") => {
+                let now = self.now;
+                let sim = self.sim_mut();
                 match w.next() {
-                    Some("NONE") => self.position = PositionFixture::default(),
-                    Some("UNSUPPORTED") => self.position.missing = true,
+                    Some("NONE") => sim.position = PositionFixture::default(),
+                    Some("UNSUPPORTED") => sim.position.missing = true,
                     Some("NMEA") => {
                         let Some(sentence) = w.next() else {
                             return "INVALID";
@@ -888,22 +1458,22 @@ impl Session {
                         }
                         let mut bytes = sentence.as_bytes().to_vec();
                         bytes.extend_from_slice(b"\r\n");
-                        self.position.missing = false;
-                        self.position.acquisition.ingest(
-                            self.now,
+                        sim.position.missing = false;
+                        sim.position.acquisition.ingest(
+                            now,
                             &bytes,
-                            self.position.dma_losses,
-                            self.position.uart_errors,
+                            sim.position.dma_losses,
+                            sim.position.uart_errors,
                         );
                     }
                     Some("LOSS") => {
-                        self.position.dma_losses = self.position.dma_losses.saturating_add(1);
-                        self.position.uart_errors = self.position.uart_errors.saturating_add(1);
-                        self.position.acquisition.ingest(
-                            self.now,
+                        sim.position.dma_losses = sim.position.dma_losses.saturating_add(1);
+                        sim.position.uart_errors = sim.position.uart_errors.saturating_add(1);
+                        sim.position.acquisition.ingest(
+                            now,
                             &[],
-                            self.position.dma_losses,
-                            self.position.uart_errors,
+                            sim.position.dma_losses,
+                            sim.position.uart_errors,
                         );
                     }
                     _ => return "INVALID",
@@ -913,40 +1483,42 @@ impl Session {
                 }
             }
             Some("BLE") => {
+                let now = self.now;
+                let sim = self.sim_mut();
                 match w.next() {
                     Some("CONNECT") => {
-                        self.ble.snapshot.link = device_api::ble_transport::Link::Connected;
-                        self.ble.snapshot.connections += 1;
-                        self.ble.packets.clear();
+                        sim.ble.snapshot.link = device_api::ble_transport::Link::Connected;
+                        sim.ble.snapshot.connections += 1;
+                        sim.ble.packets.clear();
                     }
                     Some("DISCONNECT") => {
-                        self.ble.snapshot.link = device_api::ble_transport::Link::Off;
-                        self.ble.snapshot.disconnections += 1;
-                        self.ble.packets.clear();
+                        sim.ble.snapshot.link = device_api::ble_transport::Link::Off;
+                        sim.ble.snapshot.disconnections += 1;
+                        sim.ble.packets.clear();
                     }
                     Some("LOSS") => {
-                        self.ble.snapshot.dropped += 1;
+                        sim.ble.snapshot.dropped += 1;
                     }
                     Some("HEART") => {
                         let Some(bpm) = w.next().and_then(|s| s.parse::<u8>().ok()) else {
                             return "INVALID";
                         };
-                        if self.ble.snapshot.link != device_api::ble_transport::Link::Connected {
+                        if sim.ble.snapshot.link != device_api::ble_transport::Link::Connected {
                             return "UNAVAILABLE";
                         }
-                        self.ble.snapshot.notifications += 1;
-                        if self.ble.packets.len() == 4 {
-                            self.ble.snapshot.dropped += 1;
+                        sim.ble.snapshot.notifications += 1;
+                        if sim.ble.packets.len() == 4 {
+                            sim.ble.snapshot.dropped += 1;
                         } else {
                             let mut bytes = [0; 60];
                             bytes[1] = bpm;
-                            self.ble
+                            sim.ble
                                 .packets
                                 .push_back(device_api::ble_transport::Packet {
-                                    connection: self.ble.snapshot.connections,
-                                    sequence: self.ble.snapshot.notifications,
-                                    dropped: self.ble.snapshot.dropped,
-                                    received_ms: self.now,
+                                    connection: sim.ble.snapshot.connections,
+                                    sequence: sim.ble.snapshot.notifications,
+                                    dropped: sim.ble.snapshot.dropped,
+                                    received_ms: now,
                                     bytes,
                                     length: 2,
                                 });
@@ -980,47 +1552,48 @@ impl Session {
         let mut next = Self::with_media(self.media.clone(), g.width, g.height)?;
         self.bulk.begin_boot();
         next.bulk = self.bulk.clone();
-        next.world = core::mem::take(&mut self.world);
-        // Read before the swap: afterwards `self.ant` is the fresh radio.
-        let ready = self.ant_ready_availability();
-        core::mem::swap(&mut next.ant, &mut self.ant);
+        let uptime = self.now;
+        let (sim, next_sim) = (self.sim_mut(), next.sim_mut());
+        next_sim.world = core::mem::take(&mut sim.world);
+        let ready = sim.ant_ready_availability();
+        core::mem::swap(&mut next_sim.ant, &mut sim.ant);
         if power {
-            next.ant.power_cycled();
-            if self.companion_boot_ms.is_some()
-                || matches!(self.startup, Startup::Ready | Startup::AlreadyRunning)
+            next_sim.ant.power_cycled();
+            if sim.companion_boot_ms.is_some()
+                || matches!(sim.startup, Startup::Ready | Startup::AlreadyRunning)
             {
-                next.companion_starting(ready);
+                next_sim.companion_starting(ready);
             }
         } else {
-            next.ant.host_restarted();
-            next.startup = if self.startup == Startup::Ready {
+            next_sim.ant.host_restarted();
+            next_sim.startup = if sim.startup == Startup::Ready {
                 Startup::AlreadyRunning
             } else {
-                self.startup
+                sim.startup
             };
             // A CPU reset does not stop a companion that is still booting;
             // the new uptime starts at zero, so carry what is left.
-            next.companion_boot_ms = self
+            next_sim.companion_boot_ms = sim
                 .companion_boot_ms
-                .map(|(at, ant)| (at.saturating_sub(self.now), ant));
-            let companion_running = next.companion_boot_ms.is_none();
-            if companion_running && self.restart_probe_ms > 0 {
-                next.restart_probe = Some((self.restart_probe_ms, next.startup));
-                next.startup = Startup::Probing;
+                .map(|(at, ant)| (at.saturating_sub(uptime), ant));
+            let companion_running = next_sim.companion_boot_ms.is_none();
+            if companion_running && sim.restart_probe_ms > 0 {
+                next_sim.restart_probe = Some((sim.restart_probe_ms, next_sim.startup));
+                next_sim.startup = Startup::Probing;
             }
         }
-        next.restart_probe_ms = self.restart_probe_ms;
-        next.gps = self.gps.take().map(|mut gps| {
+        next_sim.restart_probe_ms = sim.restart_probe_ms;
+        next_sim.gps = sim.gps.take().map(|mut gps| {
             gps.reset();
             gps
         });
-        next.position.missing = self.position.missing;
-        next.battery = self.battery;
-        next.ble_strap = self.ble_strap.take().map(|mut strap| {
+        next_sim.position.missing = sim.position.missing;
+        next_sim.battery = sim.battery;
+        next_sim.ble_strap = sim.ble_strap.take().map(|mut strap| {
             strap.reset();
             strap
         });
-        next.speaker.played = core::mem::take(&mut self.speaker.played);
+        next_sim.speaker.played = core::mem::take(&mut sim.speaker.played);
         *self = next;
         Ok(())
     }
@@ -1036,7 +1609,7 @@ struct Reply<'a> {
 }
 pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64) -> io::Result<()> {
     let mut session = Session::new(root, width, height)?;
-    session.restart_probe_ms = restart_probe_ms;
+    session.sim_mut().restart_probe_ms = restart_probe_ms;
     let mut line = Vec::new();
     let mut overflow = false;
     let stdin = io::stdin();
@@ -1064,15 +1637,11 @@ pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64)
         } else if fixture {
             session.fixture(core::str::from_utf8(&line).unwrap_or(""), &mut out)
         } else {
-            match if line.len() > firmware_console::protocol::MAX_LINE {
-                Err(firmware_console::protocol::Error::Overlong)
-            } else {
-                firmware_console::protocol::parse(&line)
-            } {
-                Ok(request) => {
+            match session.command(&line, &mut out) {
+                Ok((request, status)) => {
                     id = request.id;
                     restart = request.command == Command::Restart;
-                    session.execute(request, &mut out)
+                    status
                 }
                 Err(_) => "INVALID",
             }

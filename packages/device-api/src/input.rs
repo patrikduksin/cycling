@@ -37,7 +37,7 @@ pub trait InputSource {
     fn take_edge(&mut self) -> Option<Edge>;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputSnapshot {
     pub battery: Observation<(u8, u16)>,
     pub power: Observation<u8>,

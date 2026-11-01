@@ -14,6 +14,7 @@ use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
 use firmware_services::input::Edges;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::vec;
 use std::vec::Vec;
@@ -25,8 +26,25 @@ pub struct Frame {
     pub pixels: Vec<u16>,
     pub submissions: u32,
     pub fail_next: bool,
+    pub refusals: Refusals,
     /// A `sim-bench` request to paint the next frame again and again.
     pub bench: Option<crate::bench::Request>,
+    /// A hash of every frame shown since this was set, in order.
+    pub hashes: Option<Vec<u64>>,
+}
+impl Frame {
+    /// A new frame is on the panel.
+    pub fn shown(&mut self) {
+        self.submissions += 1;
+        if let Some(hashes) = &mut self.hashes {
+            hashes.push(hash(&self.pixels));
+        }
+    }
+}
+fn hash(pixels: &[u16]) -> u64 {
+    pixels.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &pixel| {
+        (hash ^ u64::from(pixel)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 impl DisplayDevice {
     pub fn new(width: usize, height: usize) -> Self {
@@ -35,7 +53,9 @@ impl DisplayDevice {
             pixels: vec![0; width * height],
             submissions: 0,
             fail_next: false,
+            refusals: Refusals::default(),
             bench: None,
+            hashes: None,
         })))
     }
 }
@@ -45,7 +65,8 @@ impl Display for DisplayDevice {
     }
     fn submit(&mut self, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
         let mut frame = self.0.borrow_mut();
-        if core::mem::take(&mut frame.fail_next) {
+        let injected = core::mem::take(&mut frame.fail_next);
+        if frame.refusals.refuse(injected) {
             return Err(Error::Failed);
         }
         let (width, height) = (frame.geometry.width, frame.geometry.height);
@@ -55,19 +76,22 @@ impl Display for DisplayDevice {
         for (y, pixels) in frame.pixels.chunks_exact_mut(width).enumerate() {
             row(y, pixels);
         }
-        frame.submissions += 1;
+        frame.shown();
         Ok(())
     }
 }
 #[derive(Clone)]
 pub struct InputDevice {
     pub edges: Rc<RefCell<Edges>>,
+    /// Edges a trace recorded, delivered as they were taken.
+    pub replayed: Rc<RefCell<VecDeque<Edge>>>,
     pub controls: Controls,
 }
 impl InputDevice {
     pub fn new(buttons: &'static [Button], touch: Availability) -> Self {
         Self {
             edges: Rc::new(RefCell::new(Edges::new())),
+            replayed: Rc::default(),
             controls: Controls { touch, buttons },
         }
     }
@@ -80,7 +104,8 @@ impl InputSource for InputDevice {
         self.controls
     }
     fn take_edge(&mut self) -> Option<Edge> {
-        self.edges.borrow_mut().pop()
+        let replayed = self.replayed.borrow_mut().pop_front();
+        replayed.or_else(|| self.edges.borrow_mut().pop())
     }
 }
 #[derive(Clone)]
@@ -91,6 +116,7 @@ pub struct PowerState {
     pub brightness: u8,
     pub writes: u32,
     pub fail: bool,
+    pub refusals: Refusals,
 }
 impl PowerDevice {
     pub fn new(available: Availability) -> Self {
@@ -100,6 +126,7 @@ impl PowerDevice {
             brightness: 0,
             writes: 0,
             fail: false,
+            refusals: Refusals::default(),
         })))
     }
 }
@@ -116,11 +143,40 @@ impl Power for PowerDevice {
         if state.available == Availability::Unsupported {
             return Err(Error::Unsupported);
         }
-        if state.fail {
+        let injected = state.fail;
+        if state.refusals.refuse(injected) {
             return Err(Error::Failed);
         }
         state.brightness = percent;
         Ok(())
+    }
+}
+/// The attempts an output refused this pass. A live device refuses what a
+/// scenario injects and logs it for the trace; a replay refuses exactly the
+/// attempts its trace holds.
+#[derive(Default)]
+pub struct Refusals {
+    attempts: u8,
+    pub refused: Vec<u8>,
+    pub scripted: Vec<u8>,
+}
+impl Refusals {
+    /// A new pass: attempts count from zero again.
+    pub fn begin_pass(&mut self) {
+        self.attempts = 0;
+    }
+    fn refuse(&mut self, injected: bool) -> bool {
+        let attempt = self.attempts;
+        self.attempts = attempt.saturating_add(1);
+        let scripted = self.scripted.iter().position(|&at| at == attempt);
+        if let Some(index) = scripted {
+            self.scripted.remove(index);
+        }
+        let refused = injected || scripted.is_some();
+        if refused {
+            self.refused.push(attempt);
+        }
+        refused
     }
 }
 /// The simulator has no positioning receiver or radios.
@@ -229,7 +285,7 @@ impl OwnedFlash for Memory {
     }
 }
 /// Buzzer patterns as C606 advertises them.
-const PATTERNS: &[device_api::sound::Pattern] = &[
+pub(crate) const PATTERNS: &[device_api::sound::Pattern] = &[
     device_api::sound::Pattern {
         id: 0,
         frequency_hz: 3000,
@@ -287,7 +343,8 @@ impl device_api::sound::Sound for Speaker {
         self.player.stop(now)
     }
 }
-/// Companion battery and button observations as VANA samples them.
+/// Companion battery and button observations as VANA samples them. The
+/// simulated companion reports them once a second.
 #[derive(Clone, Copy, Default)]
 pub struct Battery {
     /// Percent and millivolts, or no report.
@@ -296,6 +353,7 @@ pub struct Battery {
 }
 impl device_api::input::InputObservation for Battery {
     fn snapshot(&self, now: u64) -> Option<device_api::input::InputSnapshot> {
+        let now = now - now % 1000;
         let battery = match self.level {
             Some(value) => device_api::observation::Observation::Fresh {
                 value,

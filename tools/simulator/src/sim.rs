@@ -269,12 +269,16 @@ impl Sim {
         self.wait_usable()
     }
 
+    /// World time; a replay has no world, so its device uptime.
     pub fn now(&self) -> u64 {
-        self.device.world.time_ms
+        if self.device.is_replay() {
+            return self.device.now;
+        }
+        self.device.sim().world.time_ms
     }
 
     pub fn world(&mut self) -> &mut World {
-        &mut self.device.world
+        &mut self.device.sim_mut().world
     }
 
     pub fn note(&mut self, kind: NoteKind, text: impl Into<String>) {
@@ -290,15 +294,16 @@ impl Sim {
             self.device.step(ms);
             return;
         };
-        let end = self.device.world.time_ms + ms;
-        while self.device.world.time_ms < end {
-            self.device.step((end - self.device.world.time_ms).min(10));
+        let end = self.device.sim().world.time_ms + ms;
+        while self.device.sim().world.time_ms < end {
+            self.device
+                .step((end - self.device.sim().world.time_ms).min(10));
             let frame = self.device.display.0.borrow();
             recording.observe(
-                self.device.world.time_ms,
+                self.device.sim().world.time_ms,
                 frame.submissions,
                 &frame.pixels,
-                &self.device.world,
+                &self.device.sim().world,
             );
         }
     }
@@ -309,7 +314,7 @@ impl Sim {
         if let Some(recording) = &mut self.recording {
             recording.checkpoint(
                 name,
-                self.device.world.time_ms,
+                self.device.sim().world.time_ms,
                 &self.device.display.0.borrow().pixels,
                 self.notes.len(),
             );
@@ -586,13 +591,63 @@ impl Sim {
 
     /// A terminal command as the USB console would send it.
     pub fn command(&mut self, text: &str) -> (&'static str, String) {
-        let request = match firmware_console::protocol::parse(format!("CMD 1 {text}").as_bytes()) {
-            Ok(request) => request,
-            Err(_) => return ("INVALID", String::new()),
-        };
         let mut out = String::new();
-        let status = self.device.execute(request, &mut out);
-        (status, out)
+        match self
+            .device
+            .command(format!("CMD 1 {text}").as_bytes(), &mut out)
+        {
+            Ok((_, status)) => (status, out),
+            Err(_) => ("INVALID", String::new()),
+        }
+    }
+
+    /// Keep a hash of every frame from now on, to compare two runs.
+    pub fn hash_frames(&mut self) {
+        self.device.display.0.borrow_mut().hashes = Some(Vec::new());
+    }
+
+    /// The hash of every frame shown since `hash_frames`.
+    pub fn frame_hashes(&self) -> Vec<u64> {
+        let frame = self.device.display.0.borrow();
+        frame.hashes.clone().unwrap_or_default()
+    }
+
+    /// The trace of this power-on session so far.
+    pub fn trace(&self) -> Vec<u8> {
+        self.device.trace()
+    }
+
+    /// What a replay of this power-on session needs.
+    pub fn capture(&self) -> crate::replay::Capture {
+        self.device.capture().unwrap_or_else(|why| panic!("{why}"))
+    }
+
+    /// Run a captured session again on its media, pass by pass at the
+    /// recorded uptimes, with the trace standing in for the world. Frames
+    /// are hashed throughout.
+    pub fn replay(capture: &crate::replay::Capture) -> Self {
+        Self::replay_as(capture, crate::replay::Mode::Strict, |_| {})
+    }
+
+    /// As `replay`, in `mode`, with the replay's devices as `setup` leaves
+    /// them before the first pass.
+    pub fn replay_as(
+        capture: &crate::replay::Capture,
+        mode: crate::replay::Mode,
+        setup: impl FnOnce(&mut crate::replay::Sources),
+    ) -> Self {
+        let device =
+            crate::session::Session::replaying(capture, mode).expect("a replayable capture");
+        let mut sim = Self {
+            device,
+            notes: Vec::new(),
+            recording: None,
+            power_hold: 0,
+        };
+        sim.hash_frames();
+        setup(sim.device.replay_sources().expect("a replay"));
+        while sim.device.replay_step() {}
+        sim
     }
 
     /// An ANT+ sensor near the rider; created in range when new.
@@ -601,7 +656,7 @@ impl Sim {
             NoteKind::World,
             format!("ANT sensor {device_type}/{device_number} nearby"),
         );
-        self.device.ant.sensor(device_type, device_number)
+        self.device.sim_mut().ant.sensor(device_type, device_number)
     }
 
     pub fn set_present(&mut self, device_type: u8, device_number: u16, present: bool) {
@@ -612,7 +667,11 @@ impl Sim {
                 if present { "in range" } else { "out of range" }
             ),
         );
-        self.device.ant.sensor(device_type, device_number).present = present;
+        self.device
+            .sim_mut()
+            .ant
+            .sensor(device_type, device_number)
+            .present = present;
     }
 
     /// Follow a route with a GPS receiver that has sky view.
@@ -621,9 +680,12 @@ impl Sim {
             NoteKind::World,
             format!("route of {:.0} m with GPS", route.length_m()),
         );
-        self.device.world.route = Some(route);
-        self.device.world.distance_m = 0.0;
-        self.device.gps.get_or_insert_with(Default::default);
+        self.device.sim_mut().world.route = Some(route);
+        self.device.sim_mut().world.distance_m = 0.0;
+        self.device
+            .sim_mut()
+            .gps
+            .get_or_insert_with(Default::default);
     }
 
     /// Store a BLE heart-rate strap as the selected peer, as the companion
@@ -636,6 +698,19 @@ impl Sim {
         assert_eq!(status, "ACCEPTED", "BLE SELECT: {out}");
     }
 
+    /// Wi-Fi time synchronization succeeds now with this UTC, in ms since
+    /// 1970; the device keeps it until it reboots.
+    pub fn sync_network_time(&mut self, unix_ms: u64) {
+        self.note(
+            NoteKind::World,
+            format!("network time synced to {unix_ms} ms"),
+        );
+        self.device.sim_mut().network_time = Some(firmware_services::network_time::Anchor {
+            unix_ms,
+            uptime_ms: self.device.now,
+        });
+    }
+
     /// The raw Battery Level (0x2A19) the BLE heart strap reports on its next
     /// connection and each minute after, or none for a strap without the
     /// Battery Service.
@@ -645,6 +720,7 @@ impl Sim {
             format!("BLE heart strap battery level {raw:?}"),
         );
         self.device
+            .sim_mut()
             .ble_strap
             .get_or_insert_with(crate::session::BleStrap::new)
             .battery = raw;
@@ -662,6 +738,7 @@ impl Sim {
             },
         );
         self.device
+            .sim_mut()
             .ble_strap
             .get_or_insert_with(crate::session::BleStrap::new)
             .present = present;
@@ -677,7 +754,7 @@ impl Sim {
                 "barometer silent"
             },
         );
-        self.device.world.barometer_lost = !present;
+        self.device.sim_mut().world.barometer_lost = !present;
     }
 
     pub fn set_gps_fix(&mut self, fix: bool) {
@@ -689,7 +766,7 @@ impl Sim {
                 "GPS sky view lost"
             },
         );
-        if let Some(gps) = &mut self.device.gps {
+        if let Some(gps) = &mut self.device.sim_mut().gps {
             gps.fix = fix;
         }
     }
@@ -704,7 +781,7 @@ impl Sim {
                 if doppler { "with" } else { "without" }
             ),
         );
-        if let Some(gps) = &mut self.device.gps {
+        if let Some(gps) = &mut self.device.sim_mut().gps {
             gps.nmea.doppler = doppler;
             gps.nmea.hdop = hdop;
             gps.jitter_m = jitter_m;
@@ -725,8 +802,8 @@ impl Sim {
                 date.2
             ),
         );
-        let now_ms = self.device.world.time_ms;
-        if let Some(gps) = &mut self.device.gps {
+        let now_ms = self.device.sim().world.time_ms;
+        if let Some(gps) = &mut self.device.sim_mut().gps {
             let mut nmea = crate::route::Nmea::reading(utc_s, date, now_ms);
             nmea.doppler = gps.nmea.doppler;
             nmea.hdop = gps.nmea.hdop;
@@ -739,7 +816,7 @@ impl Sim {
             NoteKind::World,
             format!("riding {speed_kmh} km/h {power_w} W {heart_bpm} bpm {cadence_rpm} rpm"),
         );
-        let world = &mut self.device.world;
+        let world = &mut self.device.sim_mut().world;
         world.speed_kmh = speed_kmh;
         world.power_w = power_w;
         world.heart_bpm = heart_bpm;
@@ -754,7 +831,7 @@ impl Sim {
                 vehicle.side, vehicle.range_m, vehicle.closing_kmh
             ),
         );
-        self.device.world.vehicles.push(vehicle);
+        self.device.sim_mut().world.vehicles.push(vehicle);
     }
 
     pub fn set_battery(&mut self, percent: u8, charging: bool) {
@@ -765,8 +842,8 @@ impl Sim {
                 if charging { " charging" } else { "" }
             ),
         );
-        self.device.battery.level = Some((percent, 3300 + u16::from(percent) * 9));
-        self.device.battery.charging = charging;
+        self.device.sim_mut().battery.level = Some((percent, 3300 + u16::from(percent) * 9));
+        self.device.sim_mut().battery.charging = charging;
     }
 
     /// Cut power without warning and boot again; media keeps what was written.
@@ -787,10 +864,9 @@ impl Sim {
             NoteKind::Device,
             format!("storage fails after {after} writes"),
         );
-        *self.device.media.fault.borrow_mut() = crate::storage::Fault {
-            after: Some(after),
-            partial,
-        };
+        let mut fault = self.device.media.fault.borrow_mut();
+        fault.after = Some(after);
+        fault.partial = partial;
     }
 
     /// Fit the C606 owned MMC region, as it is before VANA formats it.
@@ -828,7 +904,8 @@ impl Sim {
     /// `VOLUME INIT` would.
     pub fn init_volumes(&mut self) -> firmware_services::volume::Table {
         let mut sector = [0u8; 512];
-        firmware_services::volume::create(&mut self.device.bulk, &mut sector).expect("volume table")
+        firmware_services::volume::create(&mut self.device.host_bulk(), &mut sector)
+            .expect("volume table")
     }
 
     /// Install `bytes` as the ready TERRAIN pack, as the host's terrain write
@@ -837,8 +914,8 @@ impl Sim {
         use firmware_services::{pack, volume};
         self.init_volumes();
         let mut sector = [0u8; 512];
-        let media = &mut self.device.bulk;
-        let mut terrain = volume::open(media, &volume::TERRAIN, &mut sector).expect("TERRAIN");
+        let mut media = self.device.host_bulk();
+        let mut terrain = volume::open(&mut media, &volume::TERRAIN, &mut sector).expect("TERRAIN");
         let spec = pack::Spec {
             length: bytes.len() as u64,
             crc: firmware_services::checksum::crc32(bytes),
@@ -867,8 +944,8 @@ impl Sim {
         use firmware_services::{files, volume};
         self.init_volumes();
         let mut sector = [0u8; 512];
-        let media = &mut self.device.bulk;
-        let mut store = volume::open(media, &volume::FILES, &mut sector).expect("FILES");
+        let mut media = self.device.host_bulk();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).expect("FILES");
         if files::mount(&mut store, &mut sector) == Err(files::Error::Uninitialized) {
             files::format(&mut store, 1, &mut sector).expect("format");
         }
@@ -880,8 +957,8 @@ impl Sim {
         use firmware_services::{files, volume};
         self.format_files();
         let mut sector = [0u8; 512];
-        let media = &mut self.device.bulk;
-        let mut store = volume::open(media, &volume::FILES, &mut sector).expect("FILES");
+        let mut media = self.device.host_bulk();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).expect("FILES");
         let name = files::Name::new(name).expect("file name");
         files::write(&mut store, &name, bytes, &mut sector).expect("file write");
         self.note(
@@ -894,8 +971,8 @@ impl Sim {
     pub fn file(&mut self, name: &str) -> Option<Vec<u8>> {
         use firmware_services::{files, volume};
         let mut sector = [0u8; 512];
-        let media = &mut self.device.bulk;
-        let mut store = volume::open(media, &volume::FILES, &mut sector).ok()?;
+        let mut media = self.device.bulk.host();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).ok()?;
         let dir = files::mount(&mut store, &mut sector).ok()?;
         let entry = dir
             .find(&mut store, &files::Name::new(name).ok()?, &mut sector)
@@ -913,7 +990,8 @@ impl Sim {
         use firmware_console::commands::volumes;
         self.init_volumes();
         let mut out = String::new();
-        let status = volumes::execute(volumes::Command::AddStore, &mut self.device.bulk, &mut out);
+        let mut media = self.device.host_bulk();
+        let status = volumes::execute(volumes::Command::AddStore, &mut media, &mut out);
         assert_eq!(status, "OK", "VOLUME ADD STORE: {out}");
     }
 
@@ -922,7 +1000,8 @@ impl Sim {
     pub fn store_file(&mut self, name: &str) -> Option<Vec<u8>> {
         use firmware_services::{store, volume};
         let mut sector = [0u8; 512];
-        let mut vol = volume::open(&mut self.device.bulk, &volume::STORE, &mut sector).ok()?;
+        let mut media = self.device.bulk.host();
+        let mut vol = volume::open(&mut media, &volume::STORE, &mut sector).ok()?;
         let mounted = store::mount(&mut vol, &mut sector).ok()?;
         let name = store::Name::new(name).ok()?;
         let mut reader = mounted.reader(&mut vol, &name, &mut sector).ok()?;
@@ -972,7 +1051,7 @@ impl Sim {
     /// A readable summary of what the device and world look like right now.
     pub fn describe(&self) -> String {
         let mut out = String::new();
-        let world = &self.device.world;
+        let world = &self.device.sim().world;
         let _ = writeln!(
             out,
             "t={} ms uptime={} ms boot={} distance={:.0} m speed={} km/h",
@@ -997,7 +1076,7 @@ impl Drop for Sim {
             let rides = Vec::new();
             recording.write(Outcome {
                 notes: &self.notes,
-                end_ms: self.device.world.time_ms,
+                end_ms: self.device.sim().world.time_ms,
                 rides,
             })
         }));

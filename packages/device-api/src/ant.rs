@@ -194,6 +194,7 @@ pub struct ScanSnapshot {
     pub discovery_overflows: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AntOperation {
     Scan(u32),
     StopScan,

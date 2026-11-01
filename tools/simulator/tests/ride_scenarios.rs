@@ -159,6 +159,7 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
 /// Radar alerts sounded: the 300 ms pattern, which ride chimes never use.
 fn alerts(sim: &Sim) -> usize {
     sim.device
+        .sim()
         .speaker
         .played
         .iter()
@@ -286,7 +287,10 @@ fn approaching_vehicle_is_drawn_and_sounds_one_alarm() {
     sim.advance(seconds(5));
     // Starting chimed once; no alert yet.
     assert_eq!(alerts(&sim), 0);
-    assert!(!sim.device.speaker.played.is_empty(), "the start chime");
+    assert!(
+        !sim.device.sim_mut().speaker.played.is_empty(),
+        "the start chime"
+    );
 
     sim.vehicle(Vehicle {
         range_m: 120.0,
@@ -434,7 +438,7 @@ fn radar_beeps_faster_and_higher_as_a_vehicle_closes_then_calls_all_clear() {
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.advance(seconds(5));
-    let before = sim.device.speaker.played.len();
+    let before = sim.device.sim_mut().speaker.played.len();
     sim.vehicle(Vehicle {
         range_m: 140.0,
         closing_kmh: 30.0,
@@ -450,7 +454,7 @@ fn radar_beeps_faster_and_higher_as_a_vehicle_closes_then_calls_all_clear() {
     sim.expect_text("ALL CLEAR");
     sim.checkpoint("radar: all clear after the vehicle passed");
     sim.advance(seconds(1));
-    let heard = sim.device.speaker.played[before..].to_vec();
+    let heard = sim.device.sim_mut().speaker.played[before..].to_vec();
 
     // The alarm, then low, middle and high ticks, then ALL CLEAR (low, high).
     let mut ids: Vec<_> = heard.iter().map(|&(_, id)| id).collect();
@@ -575,7 +579,10 @@ fn a_speed_and_cadence_sensor_alone_drives_cadence_and_its_low_alert() {
 
 #[test]
 fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
-    let mut sim = rider();
+    ble_heart_strap(&mut rider());
+}
+
+fn ble_heart_strap(sim: &mut Sim) {
     sim.ble_heart_strap(true);
     sim.start_ride();
     sim.ride_at(22.0, 0.0, 131.0, 0.0);
@@ -593,10 +600,10 @@ fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
     // The link survives a short gap; the reading goes stale, then the link drops.
     sim.ble_heart_strap(false);
     sim.advance(seconds(3));
-    assert_eq!(sim.device.ble.snapshot.link, Link::Connected);
+    assert_eq!(sim.device.sim_mut().ble.snapshot.link, Link::Connected);
     sim.advance(seconds(4));
     sim.expect_field("BPM", "--");
-    assert_ne!(sim.device.ble.snapshot.link, Link::Connected);
+    assert_ne!(sim.device.sim_mut().ble.snapshot.link, Link::Connected);
     sim.checkpoint("strap out of range");
 
     // Back in range, it reconnects on the next scan after the backoff.
@@ -668,7 +675,10 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
 
 #[test]
 fn pause_excludes_time_and_two_hour_ride_keeps_every_sample() {
-    let mut sim = rider();
+    two_hour_ride_with_a_pause(&mut rider());
+}
+
+fn two_hour_ride_with_a_pause(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.ride_at(30.0, 220.0, 145.0, 90.0);
     sim.start_ride();
@@ -1371,7 +1381,10 @@ fn color_of(sim: &Sim, text: &str) -> u16 {
 
 #[test]
 fn manual_laps_compare_each_effort_with_the_last() {
-    let mut sim = rider();
+    manual_laps(&mut rider());
+}
+
+fn manual_laps(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
@@ -1390,26 +1403,26 @@ fn manual_laps_compare_each_effort_with_the_last() {
     // A harder, faster second lap shows green with a plus.
     sim.ride_at(33.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(4));
-    ride_page(&mut sim, "3/6");
+    ride_page(sim, "3/6");
     sim.expect_text("LAP 2");
     let lap = sim.screen().field("LAP TIME").unwrap();
     assert!(lap.starts_with("04:0"), "{lap}");
-    expect_near(&mut sim, "LAP KM", 2.2, 0.05);
+    expect_near(sim, "LAP KM", 2.2, 0.05);
     // Within a watt or a beat: the change of effort spans a second.
-    expect_near(&mut sim, "LAP W", 250.0, 1.0);
-    expect_near(&mut sim, "LAP KM/H", 33.0, 0.2);
-    expect_near(&mut sim, "LAP BPM", 150.0, 1.0);
+    expect_near(sim, "LAP W", 250.0, 1.0);
+    expect_near(sim, "LAP KM/H", 33.0, 0.2);
+    expect_near(sim, "LAP BPM", 150.0, 1.0);
     sim.expect_text("LAP 1");
     sim.expect_field("LAP 1 W", "200");
     let harder = sim.screen().field("W DIFF").unwrap();
     assert!(harder == "+49" || harder == "+50", "{harder}");
-    assert_eq!(color_of(&sim, &harder), GREEN);
+    assert_eq!(color_of(sim, &harder), GREEN);
     let faster = sim.screen().field("KM/H DIFF").unwrap();
     assert!(
         faster.starts_with("+2.") || faster.starts_with("+3."),
         "{faster}"
     );
-    assert_eq!(color_of(&sim, &faster), GREEN);
+    assert_eq!(color_of(sim, &faster), GREEN);
     sim.checkpoint("lap page, second lap harder");
 
     // An easy third lap is plain grey with a minus: not an alert.
@@ -1423,10 +1436,10 @@ fn manual_laps_compare_each_effort_with_the_last() {
     sim.expect_text("LAP 3");
     sim.expect_text("LAP 2");
     let previous: f64 = sim.screen().field("LAP 2 W").unwrap().parse().unwrap();
-    let easier = reading(&sim, "W DIFF");
+    let easier = reading(sim, "W DIFF");
     assert!((easier - (150.0 - previous)).abs() <= 1.0, "{easier}");
     assert_eq!(
-        color_of(&sim, &sim.screen().field("W DIFF").unwrap()),
+        color_of(sim, &sim.screen().field("W DIFF").unwrap()),
         SECONDARY
     );
     let slower = sim.screen().field("KM/H DIFF").unwrap();
@@ -1434,7 +1447,7 @@ fn manual_laps_compare_each_effort_with_the_last() {
         slower.starts_with("-8.") || slower.starts_with("-9."),
         "{slower}"
     );
-    assert_eq!(color_of(&sim, &slower), SECONDARY);
+    assert_eq!(color_of(sim, &slower), SECONDARY);
     sim.checkpoint("lap page, easy third lap");
     sim.stop_ride();
     // The summary counts the three laps, the open one included.
@@ -2041,7 +2054,7 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
 }
 
 fn link(sim: &Sim, kind: u8) -> Option<LinkState> {
-    shell_simulator::ant::link(&sim.device.ant, kind, sim.device.now)
+    shell_simulator::ant::link(&sim.device.sim().ant, kind, sim.device.now)
 }
 
 /// Let time pass until the channel of this kind is connected.
@@ -2063,6 +2076,7 @@ fn wait_connected(sim: &mut Sim, kind: u8, timeout_ms: u64) {
 /// Connect requests the companion received since it last started.
 fn connects(sim: &Sim, kind: u8) -> Vec<u16> {
     sim.device
+        .sim()
         .ant
         .log
         .iter()
@@ -2097,12 +2111,13 @@ fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     // Saved identities were asked for directly: no discovery ran.
     assert!(
         sim.device
+            .sim_mut()
             .ant
             .log
             .iter()
             .all(|(_, request)| !matches!(request, Request::Scan { .. })),
         "{:?}",
-        sim.device.ant.log
+        sim.device.sim_mut().ant.log
     );
     assert_eq!(connects(&sim, device_type::HEART_RATE), [HEART]);
     assert_eq!(connects(&sim, device_type::POWER), [POWER]);
@@ -2182,7 +2197,7 @@ fn disconnect_is_remembered_across_reboot() {
     // The channel closes once the cancelled discovery has released the radio.
     let mut waited = 0;
     while link(&sim, device_type::HEART_RATE) != Some(LinkState::Disconnected) {
-        assert!(waited < seconds(15), "{:?}", sim.device.ant.log);
+        assert!(waited < seconds(15), "{:?}", sim.device.sim_mut().ant.log);
         sim.advance(100);
         waited += 100;
     }
@@ -2279,7 +2294,10 @@ fn elapsed_secs(sim: &Sim) -> u64 {
 
 #[test]
 fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
-    let mut sim = rider();
+    traffic_light_stop(&mut rider());
+}
+
+fn traffic_light_stop(sim: &mut Sim) {
     sim.pair(&["SPEED/CAD"]);
     // Rolling already, so the start does not read as a stop.
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
@@ -2299,12 +2317,12 @@ fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
     sim.expect_text("AUTO PAUSED");
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO RESUME", seconds(10)).unwrap();
-    assert!(recording(&mut sim));
+    assert!(recording(sim));
     sim.checkpoint("auto resumed when the light turns green");
     sim.advance(seconds(20));
     sim.expect_no_text("AUTO");
     // About 30 + 7 + 20 s riding; the 60 s wait is not in there.
-    let secs = elapsed_secs(&sim);
+    let secs = elapsed_secs(sim);
     assert!((50..=75).contains(&secs), "active {secs} s");
     sim.stop_ride();
     let kinds = sim.rides()[0].kinds();
@@ -2353,7 +2371,7 @@ fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
     sim.advance(seconds(10));
     sim.pause_ride();
     sim.advance(seconds(1));
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.advance(seconds(60));
     assert_eq!(
         played_since(&sim, from),
@@ -2363,7 +2381,7 @@ fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
     assert!(sim.screen().run("PAUSED").is_some());
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(10));
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.advance(seconds(60));
     assert_eq!(
         played_since(&sim, from),
@@ -3588,6 +3606,7 @@ fn training_rider() -> Sim {
 /// The device's beeps since `from` (uptime), as pattern ids.
 fn beeps_since(sim: &Sim, from: u64) -> Vec<u8> {
     sim.device
+        .sim()
         .speaker
         .played
         .iter()
@@ -3996,14 +4015,14 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.checkpoint("ready: GPS, three sensors, battery and room");
 
     // ACT starts at once: the ride pages, a RECORDING toast and a chime.
-    let chimes = sim.device.speaker.played.len();
+    let chimes = sim.device.sim_mut().speaker.played.len();
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     assert_eq!(sim.vana_page(), "ride");
     // The second note follows the first's guard.
     sim.advance(seconds(1));
     assert_eq!(
-        sim.device.speaker.played.len(),
+        sim.device.sim_mut().speaker.played.len(),
         chimes + 2,
         "start cue: two notes"
     );
@@ -4039,10 +4058,14 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.press(Button::TopLeft);
     assert_eq!(sim.ride_state(), "paused");
     // Resuming chimes too.
-    let chimes = sim.device.speaker.played.len();
+    let chimes = sim.device.sim_mut().speaker.played.len();
     sim.resume_ride();
     sim.wait_for("RESUMED", seconds(2)).unwrap();
-    assert_eq!(sim.device.speaker.played.len(), chimes + 1, "resume chime");
+    assert_eq!(
+        sim.device.sim_mut().speaker.played.len(),
+        chimes + 1,
+        "resume chime"
+    );
     sim.advance(minutes(1));
 
     // Now end it: the summary shows the ride over three pages.
@@ -4097,11 +4120,14 @@ fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.start_ride();
     sim.advance(minutes(22));
-    let chimes = sim.device.speaker.played.len();
+    let chimes = sim.device.sim_mut().speaker.played.len();
     sim.stop_ride();
     sim.expect_text("7 NEW BESTS");
     sim.advance(seconds(1));
-    assert!(sim.device.speaker.played.len() >= chimes + 3, "best chime");
+    assert!(
+        sim.device.sim_mut().speaker.played.len() >= chimes + 3,
+        "best chime"
+    );
     sim.checkpoint("first ride: seven new bests");
     sim.expect_text("BEST");
     // 95% of 200 W is under the FTP in force: no offer, three pages.
@@ -4476,7 +4502,7 @@ fn show_setting(sim: &mut Sim, label: &str) {
 
 /// The patterns played since the `from`th.
 fn played_since(sim: &Sim, from: usize) -> Vec<u8> {
-    let played = &sim.device.speaker.played;
+    let played = &sim.device.sim().speaker.played;
     played[from..].iter().map(|(_, id)| *id).collect()
 }
 
@@ -4584,26 +4610,26 @@ fn ride_cues_rise_to_go_fall_to_pause_and_mark_laps() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.start_ride();
     sim.advance(seconds(2));
     // Middle then high: go.
     assert_eq!(played_since(&sim, from), [0, 10], "start");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.lap(1);
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [0], "one note marks a lap");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.pause_ride();
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [10, 0], "high then middle: stop");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.resume_ride();
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [10], "resume");
     sim.pause_ride();
     sim.advance(seconds(2));
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.stop_ride();
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [21, 0, 10], "a rising run: saved");
@@ -4623,7 +4649,7 @@ fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_t
     go_home(&mut sim);
 
     sim.ride_at(30.0, 0.0, 0.0, 0.0);
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.start_ride();
     // 1 km at 30 km/h is two minutes.
     sim.advance(minutes(2) + seconds(20));
@@ -5181,7 +5207,7 @@ fn a_receiver_date_outside_the_plausible_window_leaves_the_ride_undated() {
     // A GPS week rollover reports 2006 for today.
     sim.set_gps_clock(10 * 3600, (14, 10, 6));
     sim.advance(seconds(5));
-    let gps = sim.device.position.snapshot(sim.now()).unwrap().gps;
+    let gps = sim.device.sim().position.snapshot(sim.now()).unwrap().gps;
     assert_eq!(gps.state, FixState::Fresh);
     assert_eq!(gps.utc_ms, None, "the receiver never takes the date");
     cyclist(&mut sim);
@@ -5891,6 +5917,7 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
     sim.expect_text("JOIN VANA WI-FI");
     let config = sim
         .device
+        .sim_mut()
         .access_point
         .config
         .expect("access point started");
@@ -5903,10 +5930,10 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
             config.password.text()
         )
     );
-    assert!(sim.device.phone_server.listening);
+    assert!(sim.device.sim_mut().phone_server.listening);
     sim.checkpoint("connect phone: join wi-fi");
 
-    sim.device.access_point.clients = 1;
+    sim.device.sim_mut().access_point.clients = 1;
     sim.advance(seconds(1));
     sim.expect_text("OPEN YOUR RIDES");
     let page = scanned(&sim);
@@ -5917,10 +5944,10 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
     sim.advance(seconds(1));
     assert_eq!(sim.vana_page(), "home");
     assert!(
-        sim.device.access_point.config.is_none(),
+        sim.device.sim_mut().access_point.config.is_none(),
         "access point stopped"
     );
-    assert!(!sim.device.phone_server.listening);
+    assert!(!sim.device.sim_mut().phone_server.listening);
 }
 
 /// A course loaded from the phone page is kept on the memory card beside
@@ -6599,13 +6626,13 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
     }
     sim.expect_text("MAP");
 
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     let ahead = ride_until_toast(&mut sim, "RIGHT IN 150 M", 500.0);
     assert!((435.0..465.0).contains(&ahead), "{ahead}");
     sim.checkpoint("the right turn 150 m ahead on the map");
     sim.advance(seconds(1));
     assert_eq!(played_since(&sim, from), [0, 21], "the soft cue");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     let at = ride_until_toast(&mut sim, "RIGHT", 620.0);
     assert!((560.0..600.0).contains(&at), "{at}");
     sim.checkpoint("at the right turn");
@@ -6614,7 +6641,7 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
 
     // Round the gentle bend and on: silence until the hairpin is near.
     ride_to(&mut sim, 700.0);
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     while sim.world().distance_m < 1_400.0 {
         sim.advance(seconds(1));
         let screen = sim.screen();
@@ -7588,7 +7615,7 @@ fn a_failed_ble_link_is_left_off_home_and_ready() {
     sim.ble_heart_strap(false);
     sim.select_ble_heart_strap();
     sim.advance(seconds(15));
-    sim.device.ble.snapshot.link = Link::Failed;
+    sim.device.sim_mut().ble.snapshot.link = Link::Failed;
     sim.advance(seconds(1));
     sim.home("RIDE");
     sim.expect_text("NO SENSORS");
@@ -7676,4 +7703,1176 @@ fn calibrating_a_power_meter_never_disturbs_a_later_ride() {
         ride.samples().skip(5).all(|s| s.power_watts == Some(205)),
         "calibration pages leaked into the recording"
     );
+}
+
+fn hashed() -> Sim {
+    let mut sim = Sim::new();
+    sim.hash_frames();
+    sim
+}
+
+#[track_caller]
+fn assert_replays_exactly(
+    recorded: Sim,
+    scenario: fn(&mut Sim),
+    bulk: bool,
+) -> shell_simulator::replay::Capture {
+    assert_replays_exactly_after(recorded, scenario, bulk, |_| {})
+}
+
+#[track_caller]
+fn assert_replays_exactly_after(
+    mut recorded: Sim,
+    scenario: fn(&mut Sim),
+    bulk: bool,
+    alter: fn(&mut shell_simulator::replay::Capture),
+) -> shell_simulator::replay::Capture {
+    scenario(&mut recorded);
+    let mut capture = recorded.capture();
+    alter(&mut capture);
+    println!("{}", trace_size(&capture.trace, recorded.device.now));
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    if let Some(difference) =
+        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace())
+    {
+        panic!("the replay read or showed something else: {difference}");
+    }
+    let (frames, replayed_frames) = (recorded.frame_hashes(), replayed.frame_hashes());
+    assert!(frames.len() > 100, "{} frames", frames.len());
+    let first = frames
+        .iter()
+        .zip(&replayed_frames)
+        .position(|(a, b)| a != b);
+    assert_eq!(
+        (first, replayed_frames.len()),
+        (None, frames.len()),
+        "the first frame that differs, and how many the replay showed"
+    );
+    assert!(
+        replayed.ride_media() == recorded.ride_media(),
+        "the internal journal's bytes differ"
+    );
+    let samples = |sim: &mut Sim, bulk: bool| {
+        let rides = if bulk { sim.bulk_rides() } else { sim.rides() };
+        rides
+            .iter()
+            .map(|ride| (ride.id, ride.kinds(), ride.samples().copied().collect()))
+            .collect::<Vec<(u32, Vec<Kind>, Vec<Sample>)>>()
+    };
+    let rides = samples(&mut recorded, bulk);
+    assert!(
+        rides.iter().any(|ride| ride.2.len() > 30),
+        "a ride was saved"
+    );
+    assert_eq!(samples(&mut replayed, bulk), rides);
+    capture
+}
+
+fn trace_size(bytes: &[u8], uptime_ms: u64) -> String {
+    use firmware_services::trace::{Encoder, MAX_BLOCK, decode};
+    let (_, events) = decode(bytes).unwrap();
+    let mut encoder = Encoder::new(vec![0u8; MAX_BLOCK]);
+    let mut kinds = std::collections::BTreeMap::<String, (usize, usize)>::new();
+    for event in events {
+        let before = encoder.len();
+        let size = match encoder.push(&event) {
+            Ok(()) => encoder.len() - before,
+            Err(_) => {
+                encoder.restart();
+                let before = encoder.len();
+                encoder.push(&event).unwrap();
+                encoder.len() - before
+            }
+        };
+        let debug = format!("{event:?}");
+        let kind = debug.split([' ', '(', '{']).next().unwrap_or_default();
+        let entry = kinds.entry(kind.into()).or_default();
+        entry.0 += 1;
+        entry.1 += size;
+    }
+    let minutes = uptime_ms as f64 / 60_000.0;
+    let mut out = format!(
+        "trace: {} bytes over {minutes:.1} min of uptime, {:.0} bytes/min;",
+        bytes.len(),
+        bytes.len() as f64 / minutes
+    );
+    for (kind, (count, size)) in kinds {
+        out += &format!(" {kind} {count}x {:.0} B/min,", size as f64 / minutes);
+    }
+    out
+}
+
+#[test]
+fn a_ride_with_laps_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), manual_laps, false);
+}
+
+#[test]
+fn an_auto_paused_ride_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), traffic_light_stop, false);
+}
+
+#[test]
+fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
+}
+
+#[test]
+fn a_two_hour_ride_with_a_pause_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), two_hour_ride_with_a_pause, false);
+}
+
+const WIFI_UTC_MS: u64 = 1_793_521_800_000;
+
+fn a_ride_dated_by_wifi(sim: &mut Sim) {
+    sim.sync_network_time(WIFI_UTC_MS);
+    let synced = sim.now();
+    cyclist(sim);
+    let pressed = press_start(sim);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    let start = fit_start_ms(&sim.rides().pop().unwrap());
+    let expected = WIFI_UTC_MS + pressed - synced;
+    assert!(
+        start.abs_diff(expected) < 1_000,
+        "the ride starts at {start}, Wi-Fi time at the press is {expected}"
+    );
+}
+
+#[test]
+fn a_ride_dated_by_wifi_replays_exactly_whatever_the_process_clock_holds() {
+    use firmware_services::network_time::{Timestamp, update};
+    update(
+        Timestamp {
+            unix_seconds: (WIFI_UTC_MS / 1000 + 365 * 86_400) as u32,
+            millis: 0,
+            stratum: 2,
+        },
+        0,
+    );
+    let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_dated_by_wifi, false);
+    let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let synced = events
+        .filter_map(|event| match event {
+            firmware_services::trace::Event::NetworkTime(time) => time.unix_seconds,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(synced.len(), 1, "one synchronization: {synced:?}");
+    assert!(synced[0].abs_diff(WIFI_UTC_MS / 1000) < 60, "{synced:?}");
+}
+
+fn a_ride_on_new_bulk_media(sim: &mut Sim) {
+    sim.init_bulk();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(minutes(5));
+    sim.pause_ride();
+    sim.advance(minutes(1));
+    sim.resume_ride();
+    sim.advance(minutes(5));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_ride_on_bulk_media_replays_exactly() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    assert_replays_exactly(equip(sim.boot()), a_ride_on_new_bulk_media, true);
+}
+
+#[test]
+fn a_new_store_replays_with_the_entropy_it_was_named_from() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let capture = assert_replays_exactly_after(
+        equip(sim.boot()),
+        a_ride_on_new_bulk_media,
+        true,
+        |capture| capture.origin.bulk.reseed_entropy(0xdec0de),
+    );
+    let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let entropy = events
+        .filter(|event| matches!(event, firmware_services::trace::Event::Entropy(_)))
+        .count();
+    assert!(entropy > 0, "the store's entropy is recorded");
+}
+
+fn paired_then_ridden(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(seconds(10));
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.ride_at(33.0, 250.0, 150.0, 92.0);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+}
+
+fn sensor_data(sim: &mut Sim) -> Vec<Vec<Sample>> {
+    sim.rides()
+        .iter()
+        .map(|ride| ride.samples().copied().collect())
+        .collect()
+}
+
+#[test]
+fn a_ride_replayed_as_stimulus_on_the_same_build_saves_the_same_ride() {
+    use shell_simulator::replay::Mode;
+    let mut recorded = equip(hashed().boot());
+    paired_then_ridden(&mut recorded);
+    let mut replayed = Sim::replay_as(&recorded.capture(), Mode::Stimulus, |_| {});
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{report:?}");
+    let rides = sensor_data(&mut recorded);
+    assert!(
+        rides.iter().any(|ride| ride.len() > 200),
+        "a ride was saved"
+    );
+    assert_eq!(sensor_data(&mut replayed), rides);
+}
+
+fn connected_in_order(trace: &[u8]) -> Vec<u8> {
+    use firmware_services::trace::{Event, decode};
+    let (_, events) = decode(trace).unwrap();
+    events
+        .filter_map(|event| match event {
+            Event::AntRequest {
+                operation: device_api::ant::AntOperation::Connect(peer),
+                result: Ok(_),
+            } => Some(peer.device_type),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
+    use device_api::ant::{AntOperation, Error};
+    use shell_simulator::replay::{Kind, Mode};
+    let mut recorded = equip(hashed().boot());
+    paired_then_ridden(&mut recorded);
+    let mut power_asked = false;
+    let mut replayed = Sim::replay_as(&recorded.capture(), Mode::Stimulus, |sources| {
+        sources.adapt_ant(move |operation, _| match operation {
+            AntOperation::Connect(peer) if peer.device_type == device_type::POWER => {
+                power_asked = true;
+                None
+            }
+            AntOperation::Connect(_) if !power_asked => Some(Err(Error::Busy)),
+            _ => None,
+        })
+    });
+    let (power, heart, speed) = (
+        device_type::POWER,
+        device_type::HEART_RATE,
+        device_type::SPEED_CADENCE,
+    );
+    assert_eq!(connected_in_order(&recorded.trace()), [heart, power, speed]);
+    let mut order = connected_in_order(&replayed.trace());
+    assert_eq!(order[0], power, "{order:?}");
+    order.sort_unstable();
+    assert_eq!(order, [power, heart, speed]);
+    let report = replayed.device.report().unwrap();
+    println!("{report:#?}");
+    assert!(report.count(Kind::NotRequested) >= 1, "{report:?}");
+    assert!(report.count(Kind::Modelled) >= 1, "{report:?}");
+    assert!(report.count(Kind::NotHeard) > 0, "{report:?}");
+    assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
+}
+
+fn count_events(
+    trace: &[u8],
+    matches: impl Fn(&firmware_services::trace::Event<'_>) -> bool,
+) -> usize {
+    let (_, events) = firmware_services::trace::decode(trace).unwrap();
+    events.filter(|event| matches(event)).count()
+}
+
+fn a_course_uploaded_from_the_phone(sim: &mut Sim) {
+    use device_api::server::Method;
+    sim.init_bulk();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
+    use firmware_services::trace::Event;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    let capture = assert_replays_exactly(equip(sim.boot()), a_course_uploaded_from_the_phone, true);
+    let read: usize = {
+        let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+        events
+            .filter_map(|event| match event {
+                Event::ServerRead { part, .. } => Some(part.len()),
+                _ => None,
+            })
+            .sum()
+    };
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    assert_eq!(read, course.len(), "the whole body is in the trace");
+    let joined = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::AccessPoint {
+                state: device_api::server::AccessPointState::Up { clients: 1 },
+                ..
+            }
+        )
+    });
+    assert_eq!(joined, 1, "the phone joined once");
+}
+
+fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.fail_storage(0, 10);
+    sim.advance(seconds(30));
+}
+
+#[test]
+fn a_storage_failure_mid_ride_replays_exactly() {
+    use firmware_services::trace::{Event, Medium, StorageFault};
+    let capture = assert_replays_exactly(
+        equip(hashed().boot()),
+        a_ride_whose_journal_write_tears,
+        false,
+    );
+    let torn = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::StorageFault(StorageFault {
+                medium: Medium::Data,
+                landed: 10,
+                ..
+            })
+        )
+    });
+    assert_eq!(torn, 1, "one torn write, with what landed");
+}
+
+fn a_ride_whose_card_fails(sim: &mut Sim) {
+    sim.init_bulk();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.fail_bulk(0, 100);
+    sim.advance(minutes(1));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_bulk_failure_mid_ride_replays_exactly() {
+    use firmware_services::trace::{Event, Medium, StorageFault};
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let capture = assert_replays_exactly(equip(sim.boot()), a_ride_whose_card_fails, false);
+    let torn = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::StorageFault(StorageFault {
+                medium: Medium::Bulk,
+                landed: 100,
+                ..
+            })
+        )
+    });
+    assert_eq!(torn, 1, "the torn write, with what landed");
+}
+
+fn a_ride_whose_card_goes_missing(sim: &mut Sim) {
+    sim.init_bulk();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.fit_bulk(Presence::Missing);
+    sim.advance(minutes(1));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_card_that_goes_missing_mid_ride_replays_exactly() {
+    use firmware_services::trace::{Event, Medium, StorageError, StorageFault};
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let capture = assert_replays_exactly(equip(sim.boot()), a_ride_whose_card_goes_missing, false);
+    let missing = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::StorageFault(StorageFault {
+                medium: Medium::Bulk,
+                error: StorageError::Unavailable,
+                ..
+            })
+        )
+    });
+    assert!(missing > 0, "the card's absence is recorded");
+}
+
+fn a_ride_whose_panel_and_backlight_refuse(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(30));
+    sim.device.display.0.borrow_mut().fail_next = true;
+    sim.device.power.0.borrow_mut().fail = true;
+    let (status, out) = sim.command("BRIGHTNESS 40");
+    assert_eq!(status, "OK", "{out}");
+    sim.advance(seconds(5));
+    sim.device.power.0.borrow_mut().fail = false;
+    sim.device.power.0.borrow_mut().available = device_api::observation::Availability::Failed;
+    sim.advance(seconds(5));
+    sim.device.power.0.borrow_mut().available = device_api::observation::Availability::Ready;
+    sim.advance(seconds(30));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_panel_and_backlight_that_refuse_replay_exactly() {
+    use firmware_services::trace::{Event, Output};
+    let capture = assert_replays_exactly(
+        equip(hashed().boot()),
+        a_ride_whose_panel_and_backlight_refuse,
+        false,
+    );
+    for output in [Output::Panel, Output::Backlight] {
+        let refused = count_events(
+            &capture.trace,
+            |event| matches!(event, Event::Refused { output: refused, .. } if *refused == output),
+        );
+        assert!(refused > 0, "{output:?} refused");
+    }
+    let changes = count_events(&capture.trace, |event| matches!(event, Event::Backlight(_)));
+    assert_eq!(changes, 3, "ready, failed, ready again");
+}
+
+fn a_ride_then_turned_off(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    sim.done();
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "turned off");
+    sim.advance(seconds(2));
+}
+
+#[test]
+fn a_ride_ended_by_turning_off_replays_exactly() {
+    use firmware_services::trace::Event;
+    let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_then_turned_off, false);
+    let asked = count_events(&capture.trace, |event| {
+        matches!(event, Event::PowerRequest { result: Ok(()), .. })
+    });
+    let off = count_events(&capture.trace, |event| matches!(event, Event::PoweredOff));
+    assert_eq!(
+        (asked, off),
+        (1, 1),
+        "one shutdown asked, then the power went"
+    );
+}
+
+mod mutations {
+    use super::*;
+    use firmware_services::trace::frozen::{Record, Recorder};
+    use firmware_services::trace::{Event, Header, decode};
+    use shell_simulator::replay::{Blocks, Capture, first_difference};
+
+    pub struct Recording {
+        capture: Capture,
+        pub trace: &'static [u8],
+        frames: Vec<u64>,
+        media: Vec<u8>,
+        settings: Vec<u8>,
+        card: u64,
+        backlight: (u8, u32),
+    }
+
+    type Outputs = (Vec<u64>, Vec<u8>, Vec<u8>, u64, (u8, u32));
+
+    /// What a session left behind: its frames, its ride journal, its saved
+    /// settings, the sectors it wrote to the card, and the backlight.
+    fn outputs(sim: &mut Sim) -> Outputs {
+        let power = sim.device.power.0.borrow();
+        let backlight = (power.brightness, power.writes);
+        drop(power);
+        (
+            sim.frame_hashes(),
+            sim.ride_media(),
+            sim.device
+                .media
+                .contents(device_api::storage::Region::Configuration),
+            sim.device.bulk.digest(),
+            backlight,
+        )
+    }
+
+    pub fn record(sim: Sim, scenario: fn(&mut Sim)) -> Recording {
+        let mut sim = sim;
+        scenario(&mut sim);
+        let capture = sim.capture();
+        let (frames, media, settings, card, backlight) = outputs(&mut sim);
+        Recording {
+            trace: Vec::leak(capture.trace.clone()),
+            frames,
+            media,
+            settings,
+            card,
+            backlight,
+            capture,
+        }
+    }
+
+    pub fn kind(event: &Event<'_>) -> String {
+        let debug = format!("{event:?}");
+        debug
+            .split([' ', '(', '{'])
+            .next()
+            .unwrap_or_default()
+            .into()
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mutation {
+        Drop,
+        Alter,
+    }
+
+    fn altered(event: Event<'static>) -> Option<Event<'static>> {
+        use device_api::observation::{Error, Observation};
+        let flip = |result: Result<(), Error>| match result {
+            Ok(()) => Err(Error::Failed),
+            Err(_) => Ok(()),
+        };
+        Some(match event {
+            Event::Input(mut edge) => {
+                edge.input = match edge.input {
+                    device_api::input::Input::Button { button, code } => {
+                        device_api::input::Input::Button {
+                            button: if button == Button::TopLeft {
+                                Button::BottomRight
+                            } else {
+                                Button::TopLeft
+                            },
+                            code,
+                        }
+                    }
+                    _ => device_api::input::Input::Cancel,
+                };
+                Event::Input(edge)
+            }
+            Event::AntPacket(mut packet) => {
+                packet.data[7] = packet.data[7].wrapping_add(40);
+                Event::AntPacket(packet)
+            }
+            Event::AntRequest { operation, result } => Event::AntRequest {
+                operation,
+                result: match result {
+                    Ok(_) => Err(device_api::ant::Error::Busy),
+                    Err(_) => Ok(device_api::ant::Admission::Accepted),
+                },
+            },
+            Event::BlePacket(mut packet) => {
+                packet.bytes[1] = packet.bytes[1].wrapping_add(40);
+                Event::BlePacket(packet)
+            }
+            Event::Physical(mut snapshot) => {
+                if let Observation::Fresh { value, .. } = &mut snapshot.pressure {
+                    value.pressure_centi_pa -= 50_000;
+                }
+                Event::Physical(snapshot)
+            }
+            Event::Power(Some(mut snapshot)) => {
+                if let Observation::Fresh { value, .. } = &mut snapshot.power {
+                    *value = if *value == 0 { 7 } else { 0 };
+                }
+                Event::Power(Some(snapshot))
+            }
+            Event::Position {
+                availability,
+                snapshot: Some(mut snapshot),
+            } => {
+                snapshot.gps.latitude_e7 = snapshot.gps.latitude_e7.map(|lat| lat + 100_000);
+                Event::Position {
+                    availability,
+                    snapshot: Some(snapshot),
+                }
+            }
+            Event::NetworkTime(mut time) => {
+                time.unix_seconds = time.unix_seconds.map(|seconds| seconds + 7 * 3_600);
+                Event::NetworkTime(time)
+            }
+            Event::Entropy(value) => Event::Entropy(value ^ 0xffff),
+            Event::StorageFault(mut fault) => {
+                use firmware_services::trace::StorageError;
+                match fault.landed {
+                    0..=5 => {
+                        fault.error = match fault.error {
+                            StorageError::Unsupported => StorageError::Unavailable,
+                            _ => StorageError::Unsupported,
+                        }
+                    }
+                    landed => fault.landed = landed - 5,
+                }
+                Event::StorageFault(fault)
+            }
+            Event::Refused { output, attempt } => Event::Refused {
+                output,
+                attempt: attempt.wrapping_add(1),
+            },
+            Event::SoundRequest { play, result } => Event::SoundRequest {
+                play,
+                result: flip(result),
+            },
+            Event::PowerRequest {
+                operation,
+                delay_ms,
+                result,
+            } => Event::PowerRequest {
+                operation,
+                delay_ms,
+                result: flip(result),
+            },
+            Event::AccessPointRequest { start, result } => Event::AccessPointRequest {
+                start,
+                result: flip(result),
+            },
+            Event::ServerRead { id, part, more } if part.iter().any(u8::is_ascii_digit) => {
+                let mut changed = part.to_vec();
+                let digit = changed.iter_mut().find(|byte| byte.is_ascii_digit())?;
+                *digit = if *digit == b'9' { b'0' } else { *digit + 1 };
+                Event::ServerRead {
+                    id,
+                    part: Vec::leak(changed),
+                    more,
+                }
+            }
+            Event::ServerWrite { id, taken } => Event::ServerWrite {
+                id,
+                taken: taken.saturating_sub(1),
+            },
+            Event::ServerFinish(id) => Event::ServerFinish(id + 1),
+            Event::Pass { now_ms } => Event::Pass { now_ms: now_ms + 5 },
+            Event::AntRadio(mut radio) => {
+                radio.scanning = !radio.scanning;
+                Event::AntRadio(radio)
+            }
+            Event::AntDiscoveries(mut found) => {
+                found[0] = match found[0] {
+                    Some(_) => None,
+                    None => found.iter().flatten().next().copied(),
+                };
+                Event::AntDiscoveries(found)
+            }
+            Event::AntLink {
+                channel,
+                snapshot: Some(mut snapshot),
+            } => {
+                snapshot.stale = !snapshot.stale;
+                Event::AntLink {
+                    channel,
+                    snapshot: Some(snapshot),
+                }
+            }
+            Event::AntSend(Some(mut send)) => {
+                send.stage = device_api::ant::SendStage::Uncertain;
+                Event::AntSend(Some(send))
+            }
+            Event::BleLink {
+                availability,
+                mut snapshot,
+            } => {
+                snapshot.disconnections += 1;
+                Event::BleLink {
+                    availability,
+                    snapshot,
+                }
+            }
+            Event::BleBattery(mut level) => {
+                level.raw = level.raw.wrapping_add(30);
+                Event::BleBattery(level)
+            }
+            Event::Startup(startup) => Event::Startup(match startup {
+                device_api::sensors::Startup::Ready => {
+                    device_api::sensors::Startup::RunningDegraded
+                }
+                _ => device_api::sensors::Startup::Ready,
+            }),
+            Event::SoundState(mut snapshot) => {
+                snapshot.state = device_api::sound::State::Failed;
+                Event::SoundState(snapshot)
+            }
+            Event::PowerControl(mut status) => {
+                status.ready = !status.ready;
+                Event::PowerControl(status)
+            }
+            Event::Backlight(_) => Event::Backlight(device_api::observation::Availability::Failed),
+            Event::AccessPoint { state, reach } => Event::AccessPoint {
+                state: match state {
+                    device_api::server::AccessPointState::Up { clients } => {
+                        device_api::server::AccessPointState::Up {
+                            clients: clients + 1,
+                        }
+                    }
+                    _ => device_api::server::AccessPointState::Failed,
+                },
+                reach,
+            },
+            Event::Server { request, room } => Event::Server {
+                request,
+                room: room / 2,
+            },
+            Event::Page(_) => Event::Page("bests"),
+            Event::Sound(pattern) => Event::Sound(pattern ^ 1),
+            _ => return None,
+        })
+    }
+
+    fn encode(header: &Header<'_>, events: impl IntoIterator<Item = Event<'static>>) -> Vec<u8> {
+        let buffer = vec![0u8; 4096].into_boxed_slice();
+        let mut recorder = Recorder::new(header, buffer, Blocks::default()).unwrap();
+        for event in events {
+            recorder.record(&event);
+        }
+        let mut bytes = recorder.sink().0.clone();
+        bytes.extend_from_slice(recorder.open_block());
+        bytes
+    }
+
+    pub fn mutated(trace: &'static [u8], kind: &str, how: Mutation) -> Option<Vec<u8>> {
+        let (header, events) = decode(trace).unwrap();
+        let mut events: Vec<Event<'static>> = events.collect();
+        let of_kind: Vec<usize> = (0..events.len())
+            .filter(|&index| self::kind(&events[index]) == kind)
+            .collect();
+        let at = *of_kind.get(of_kind.len() / 2)?;
+        match how {
+            Mutation::Drop => {
+                events.remove(at);
+            }
+            Mutation::Alter => {
+                let changed = altered(events[at]).filter(|changed| *changed != events[at])?;
+                events[at] = changed;
+            }
+        }
+        Some(encode(&header, events))
+    }
+
+    pub fn with_too_large(trace: &'static [u8]) -> Vec<u8> {
+        let (header, events) = decode(trace).unwrap();
+        let mut events: Vec<Event<'static>> = events.collect();
+        let second = events
+            .iter()
+            .position(|event| matches!(event, Event::Pass { .. }))
+            .unwrap()
+            + 1;
+        events.insert(second, Event::TooLarge(Event::Command("").tag()));
+        encode(&header, events)
+    }
+
+    #[derive(Debug)]
+    pub struct Caught {
+        pub report: Option<String>,
+        pub visible: bool,
+        pub handed: bool,
+    }
+
+    impl Caught {
+        pub fn any(&self) -> bool {
+            self.report.is_some() || self.visible || self.handed
+        }
+
+        pub fn how(&self) -> String {
+            match (&self.report, self.visible, self.handed) {
+                (Some(report), _, _) => format!("report: {report}"),
+                (None, true, _) => "visible: frames or journal".into(),
+                (None, false, true) => "handed: re-recorded trace".into(),
+                (None, false, false) => "NOT CAUGHT".into(),
+            }
+        }
+    }
+
+    pub fn replay(recording: &Recording, trace: Vec<u8>) -> Caught {
+        let capture = Capture {
+            origin: recording.capture.origin.clone(),
+            trace,
+        };
+        let mut replayed = Sim::replay(&capture);
+        let report = replayed.device.report().unwrap();
+        let report = report
+            .first
+            .map(|first| format!("{:?} at {} ms", first.kind, first.at_ms));
+        let visible = outputs(&mut replayed)
+            != (
+                recording.frames.clone(),
+                recording.media.clone(),
+                recording.settings.clone(),
+                recording.card,
+                recording.backlight,
+            );
+        let handed = first_difference(recording.trace, &replayed.trace()).is_some();
+        Caught {
+            report,
+            visible,
+            handed,
+        }
+    }
+
+    /// How a mutation must show. Most change what VANA does where the
+    /// report or the outputs see it; some heal, and then only the values
+    /// handed to VANA show it, proving the trace was their only source.
+    #[derive(Clone, Copy, Debug)]
+    pub enum Shows {
+        Directly,
+        Heals(&'static str),
+    }
+
+    /// Each row's middle event, mutated as the row says, must show as the
+    /// row expects. The unmutated trace must not, or the check proves
+    /// nothing.
+    #[track_caller]
+    pub fn assert_every_mutation_shows(recording: &Recording, rows: &[(&str, Mutation, Shows)]) {
+        let clean = replay(recording, recording.trace.to_vec());
+        assert!(!clean.any(), "the unmutated trace replays clean: {clean:?}");
+        let mut missed = Vec::new();
+        for &(kind, how, shows) in rows {
+            let trace = mutated(recording.trace, kind, how)
+                .unwrap_or_else(|| panic!("no {kind} to {how:?} in the trace"));
+            let caught = replay(recording, trace);
+            let (shown, why) = match shows {
+                Shows::Directly => (caught.report.is_some() || caught.visible, ""),
+                Shows::Heals(why) => (caught.any(), why),
+            };
+            println!("| {kind} | {how:?} | {} | {why} |", caught.how());
+            if !shown {
+                missed.push((kind, how, shows));
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "mutations that did not show as expected: {missed:?}"
+        );
+    }
+}
+
+fn a_short_ride_with_every_sensor(sim: &mut Sim) {
+    sim.ble_heart_strap(true);
+    sim.ble_heart_strap_battery(Some(80));
+    sim.select_ble_heart_strap();
+    sim.sync_network_time(WIFI_UTC_MS);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(40));
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(40));
+    sim.stop_ride();
+}
+
+type Row = (&'static str, mutations::Mutation, mutations::Shows);
+
+/// Rows that drop and alter each kind and expect both to show directly,
+/// with `heals` in place of the rows it names.
+fn rows(kinds: &[&'static str], heals: &[Row]) -> Vec<Row> {
+    use mutations::{Mutation, Shows};
+    let mut rows: Vec<Row> = kinds
+        .iter()
+        .flat_map(|&kind| [Mutation::Drop, Mutation::Alter].map(|how| (kind, how, Shows::Directly)))
+        .collect();
+    for &(kind, how, shows) in heals {
+        let row = rows
+            .iter_mut()
+            .find(|row| (row.0, row.1) == (kind, how))
+            .unwrap_or_else(|| panic!("{kind} {how:?} heals but is not a row"));
+        row.2 = shows;
+    }
+    rows
+}
+
+fn heals(kind: &'static str, how: mutations::Mutation, why: &'static str) -> Row {
+    (kind, how, mutations::Shows::Heals(why))
+}
+
+#[test]
+fn every_sensor_input_mutated_shows_in_its_replay() {
+    use mutations::Mutation::{Alter, Drop};
+    let recording = mutations::record(equip(hashed().boot()), a_short_ride_with_every_sensor);
+    let once = "the next report, within a second, replaces it";
+    let mut rows = rows(
+        &[
+            "Pass",
+            "Input",
+            "AntRadio",
+            "AntDiscoveries",
+            "AntLink",
+            "AntPacket",
+            "AntRequest",
+            "BleLink",
+            "BlePacket",
+            "BleBattery",
+            "Position",
+            "Physical",
+            "Power",
+            "NetworkTime",
+            "Startup",
+            "SoundState",
+            "SoundRequest",
+            "PowerControl",
+            "Backlight",
+            "StorageFault",
+            "Page",
+            "Sound",
+        ],
+        &[
+            heals(
+                "Pass",
+                Drop,
+                "its events join the pass before; nothing VANA shows moves by 10 ms",
+            ),
+            heals(
+                "Pass",
+                Alter,
+                "5 ms later; nothing VANA shows moves by 5 ms",
+            ),
+            heals(
+                "AntRadio",
+                Alter,
+                "no screen this ride shows reads the scan flag",
+            ),
+            heals(
+                "AntDiscoveries",
+                Drop,
+                "the sensors are already chosen; a scan list changes nothing",
+            ),
+            heals(
+                "AntDiscoveries",
+                Alter,
+                "the sensors are already chosen; a scan list changes nothing",
+            ),
+            heals("AntLink", Drop, once),
+            heals("AntLink", Alter, once),
+            heals("AntPacket", Drop, "the next page's running totals catch up"),
+            heals(
+                "AntRequest",
+                Alter,
+                "the channel snapshots that follow still report the sensor connected",
+            ),
+            heals(
+                "BleLink",
+                Drop,
+                "only the strap's counters change there, and no screen shows them",
+            ),
+            heals(
+                "BleLink",
+                Alter,
+                "only the strap's counters change there, and no screen shows them",
+            ),
+            heals("BlePacket", Drop, once),
+            heals("BlePacket", Alter, once),
+            heals(
+                "BleBattery",
+                Drop,
+                "the strap's battery reaches no screen in this ride",
+            ),
+            heals(
+                "BleBattery",
+                Alter,
+                "the strap's battery reaches no screen in this ride",
+            ),
+            heals("Physical", Drop, once),
+            heals("Physical", Alter, once),
+            heals("Power", Drop, once),
+            heals("Power", Alter, once),
+            heals(
+                "Startup",
+                Alter,
+                "VANA shows a ready and a degraded companion alike",
+            ),
+            heals(
+                "SoundState",
+                Drop,
+                "VANA reads only its play answers, never the buzzer's state",
+            ),
+            heals(
+                "SoundState",
+                Alter,
+                "VANA reads only its play answers, never the buzzer's state",
+            ),
+            heals(
+                "StorageFault",
+                Drop,
+                "one of the absent card's refusals; the next request is refused again",
+            ),
+            heals(
+                "StorageFault",
+                Alter,
+                "one of the absent card's refusals; the next request is refused again",
+            ),
+        ],
+    );
+    rows.push(heals(
+        "Command",
+        Drop,
+        "the middle command only reads the ride's state",
+    ));
+    mutations::assert_every_mutation_shows(&recording, &rows);
+    let marked = mutations::with_too_large(recording.trace);
+    let caught = mutations::replay(&recording, marked);
+    println!("| TooLarge | Insert | {} | |", caught.how());
+    assert!(caught.report.is_some(), "{caught:?}");
+}
+
+fn a_power_meter_calibrated(sim: &mut Sim) {
+    calibrate_power_meter(sim, ZeroReply::Offset(-37), true);
+    sim.press(Button::BottomRight);
+    sim.wait_for("CALIBRATED", seconds(25)).unwrap();
+}
+
+#[test]
+fn every_ant_send_mutated_shows_in_its_replay() {
+    let recording = mutations::record(equip(hashed().boot()), a_power_meter_calibrated);
+    let rows = rows(
+        &["AntSend", "AntRequest"],
+        &[heals(
+            "AntSend",
+            mutations::Mutation::Alter,
+            "the next status poll reports the send again",
+        )],
+    );
+    mutations::assert_every_mutation_shows(&recording, &rows);
+}
+
+fn a_course_from_the_phone(sim: &mut Sim) {
+    use device_api::server::Method;
+    sim.init_bulk();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(2));
+}
+
+#[test]
+fn every_phone_input_mutated_shows_in_its_replay() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    let recording = mutations::record(equip(sim.boot()), a_course_from_the_phone);
+    use mutations::Mutation::{Alter, Drop};
+    let rows = rows(
+        &[
+            "AccessPoint",
+            "AccessPointRequest",
+            "Server",
+            "ServerRead",
+            "ServerWrite",
+            "ServerFinish",
+            "Entropy",
+        ],
+        &[
+            heals(
+                "AccessPoint",
+                Alter,
+                "VANA reads only whether a phone joined, not how many",
+            ),
+            heals(
+                "Server",
+                Alter,
+                "VANA writes what fits, and the response still completes",
+            ),
+            heals(
+                "ServerFinish",
+                Drop,
+                "what finishing changed then follows the write before it, in the same pass",
+            ),
+        ],
+    );
+    mutations::assert_every_mutation_shows(&recording, &rows);
+}
+
+fn a_ride_with_faults(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.device.display.0.borrow_mut().fail_next = true;
+    sim.device.power.0.borrow_mut().fail = true;
+    let (status, out) = sim.command("BRIGHTNESS 40");
+    assert_eq!(status, "OK", "{out}");
+    sim.advance(seconds(2));
+    sim.device.power.0.borrow_mut().fail = false;
+    sim.advance(seconds(20));
+    sim.fail_storage(0, 10);
+    sim.advance(seconds(20));
+}
+
+#[test]
+fn every_fault_input_mutated_shows_in_its_replay() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let recording = mutations::record(equip(sim.boot()), a_ride_with_faults);
+    mutations::assert_every_mutation_shows(
+        &recording,
+        &rows(&["StorageFault", "Refused", "Backlight"], &[]),
+    );
+}
+
+#[test]
+fn every_card_fault_mutated_shows_in_its_replay() {
+    for scenario in [a_ride_whose_card_fails, a_ride_whose_card_goes_missing] {
+        let mut sim = hashed();
+        sim.fit_bulk(Presence::Ready);
+        let recording = mutations::record(equip(sim.boot()), scenario);
+        let after = "one of the card's refusals after the ride moved to internal flash";
+        let rows = rows(
+            &["StorageFault"],
+            &[
+                heals("StorageFault", mutations::Mutation::Drop, after),
+                heals("StorageFault", mutations::Mutation::Alter, after),
+            ],
+        );
+        mutations::assert_every_mutation_shows(&recording, &rows);
+    }
+}
+
+#[test]
+fn every_power_input_mutated_shows_in_its_replay() {
+    let recording = mutations::record(equip(hashed().boot()), a_ride_then_turned_off);
+    let mut rows = rows(
+        &["PowerRequest", "PowerControl"],
+        &[heals(
+            "PowerRequest",
+            mutations::Mutation::Alter,
+            "the status and the power loss recorded after it still carry the shutdown",
+        )],
+    );
+    rows.push((
+        "PoweredOff",
+        mutations::Mutation::Drop,
+        mutations::Shows::Directly,
+    ));
+    mutations::assert_every_mutation_shows(&recording, &rows);
 }

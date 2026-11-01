@@ -460,8 +460,44 @@ impl SimulatedAnt {
 
     /// Advance the companion and radio by one simulation step.
     pub fn tick(&mut self, world: &World, now: u64) {
-        if self.availability != Availability::Ready {
+        if !self.advance(now) {
             return;
+        }
+        self.broadcast(world, now);
+        self.deliver(now);
+    }
+
+    /// One step in which the sensors send `pages` rather than pages of the
+    /// world; returns the senders of those no open channel heard.
+    pub fn tick_hearing(
+        &mut self,
+        now: u64,
+        pages: impl IntoIterator<Item = (Identity, [u8; 8])>,
+    ) -> Vec<Identity> {
+        let ready = self.advance(now);
+        let mut missed = Vec::new();
+        for (identity, data) in pages {
+            let heard = ready
+                && self
+                    .open
+                    .iter()
+                    .any(|o| o.connected && o.identity == identity);
+            if heard {
+                let device_type = identity.device_type;
+                self.events.push((now, Event::Data { device_type, data }));
+            } else {
+                missed.push(identity);
+            }
+        }
+        if ready {
+            self.deliver(now);
+        }
+        missed
+    }
+
+    fn advance(&mut self, now: u64) -> bool {
+        if self.availability != Availability::Ready {
+            return false;
         }
         self.state.tick(now);
         self.scan.tick(now);
@@ -483,8 +519,7 @@ impl SimulatedAnt {
         self.send(now);
         self.discover(now);
         self.link(now);
-        self.broadcast(world, now);
-        self.deliver(now);
+        true
     }
 
     fn companion(&mut self, request: Request, now: u64) {

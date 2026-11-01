@@ -5,6 +5,8 @@ pub mod ant_page;
 pub mod divergence;
 pub mod file;
 pub mod find;
+#[cfg(feature = "cycling")]
+pub mod origin;
 pub mod otlp;
 pub mod story;
 pub mod stub;

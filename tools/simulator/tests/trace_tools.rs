@@ -195,6 +195,33 @@ fn the_save_warning_is_storage_and_belongs_to_the_ride_it_ended_with() {
 }
 
 #[test]
+fn the_origin_of_a_later_power_on_names_the_ride_and_sensors_saved_before_it() {
+    let mut sim = Sim::new();
+    sim.fit_bulk(shell_simulator::bulk::Presence::Ready);
+    let mut sim = sim.boot();
+    sim.discard_recording();
+    laps_and_a_menu(&mut sim);
+    sim.device
+        .power_cycle()
+        .expect("the device powers on again");
+    sim.advance(seconds(5));
+    let text =
+        shell_simulator::trace::origin::describe(&sim.capture(), file::Media::Saved, "x.origin");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].ends_with("power-on 2"), "{text}");
+    assert!(
+        lines[2].contains(&format!("sensors power#{POWER}")),
+        "{text}"
+    );
+    assert!(lines[2].ends_with("setup done"), "{text}");
+    assert!(
+        lines[3].starts_with("rides on internal flash: ride 1 (1:"),
+        "{text}"
+    );
+    assert!(lines[4].starts_with("bulk card: ready, "), "{text}");
+}
+
+#[test]
 fn the_story_holds_the_ride_its_pause_and_the_climb_page() {
     let timeline = timeline("power-dropout-after-descent");
     let story = tell(&timeline);

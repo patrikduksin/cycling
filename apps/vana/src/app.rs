@@ -31,6 +31,8 @@ mod night;
 pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
 mod power;
 mod preferences;
+/// VANA's stored preferences as it reads them, for tools that describe media.
+pub use preferences::decode as decode_preferences;
 mod presentation;
 mod readings;
 mod recording;

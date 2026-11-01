@@ -10,7 +10,7 @@ use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, SILENCE_MS, Timeline, duration, read, session_clock,
 };
-use shell_simulator::trace::{divergence, otlp, stub};
+use shell_simulator::trace::{divergence, origin, otlp, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,10 @@ commands:
       events (boot, laps, warnings, storage, gaps, commands), one line each.
       A warning names what began or which ride ended in the same pass, and
       a ride counts the warnings logged in it. Run this first.
+  origin <trace>
+      The media a replay starts from, in words: power-on number, shell
+      settings and VANA's preferences (saved sensors), rides on internal
+      flash, and the bulk card. A trace without .origin starts blank.
   timeline <trace> [--from T] [--to T] [--kinds LIST] [--all] [--hex]
       Every event in the window, inputs and what the rider saw. Kinds: gap,
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
@@ -149,6 +153,14 @@ fn run(args: &[String]) -> Result<String, String> {
     let timeline = read(&capture.trace)?;
     match command.as_str() {
         "summary" => Ok(summary(&path, &timeline, media)),
+        "origin" => Ok(origin::describe(
+            &capture,
+            media,
+            &std::fs::canonicalize(file::origin_path(&path))
+                .unwrap_or_else(|_| file::origin_path(&path))
+                .display()
+                .to_string(),
+        )),
         "timeline" => timeline_text(&timeline, &options),
         "find" => find_text(&timeline, &options),
         "otlp" => {

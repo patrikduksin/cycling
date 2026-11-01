@@ -49,11 +49,15 @@
 //! when it changed, reopen held files with [`Store::open_append`] (the host
 //! may have deleted them); each reopen leaves the rest of a chunk unused. A
 //! [`format`] is a new generation too.
-//! Only one [`Appender`] per store writes at a time; opening another one
-//! makes the first fail with `Stale`.
+//! Only the [`Appender`] a [`Store`] opened last writes: a create or
+//! [`Store::open_append`] that succeeds makes every earlier appender, of any
+//! file and from any mount, fail with `Stale` on that store. One that fails
+//! leaves the open appender writing, unless its rollover deleted that
+//! appender's file.
 //!
 //! Rollover: an appender or a create given a directory deletes the oldest
-//! closed file in it (lowest id, never the open one) when the store is full.
+//! file in it (lowest id) when the store is full. An appender never deletes
+//! its own file; a create may delete the open appender's, which it replaces.
 //!
 //! Limits: the directory holds `CAPACITY` (64) files, whatever the volume
 //! size, and a 65th fails with `Full` unless it rolls over. Outside
@@ -88,6 +92,7 @@
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
+use core::sync::atomic::{AtomicU32, Ordering};
 use device_api::bulk::{Error as MediaError, ReadWrite, SECTOR_SIZE};
 
 pub type Sector = [u8; SECTOR_SIZE];
@@ -367,7 +372,7 @@ fn current(
         Store {
             copy,
             head,
-            writer: 0,
+            writer: None,
         },
         other,
     ))
@@ -435,7 +440,7 @@ fn format_chunks(
     Ok(Store {
         copy,
         head,
-        writer: 0,
+        writer: None,
     })
 }
 
@@ -497,13 +502,22 @@ struct Chain {
     last: u32,
 }
 
-/// The mounted metadata: the current header and the open appender's file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Writer {
+    token: u32,
+    id: u32,
+}
+
+/// The mounted metadata: the current header and the open appender.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Store {
     copy: u64,
     head: Header,
-    writer: u32,
+    writer: Option<Writer>,
 }
+
+/// The token of the last appender any [`Store`] opened.
+static TOKEN: AtomicU32 = AtomicU32::new(0);
 
 impl Store {
     /// Changes with every metadata commit, by any writer.
@@ -523,6 +537,12 @@ impl Store {
     /// Record sectors per chunk.
     pub fn chunk_sectors(&self) -> u32 {
         self.head.chunk
+    }
+
+    fn open(&mut self, id: u32) -> u32 {
+        let token = TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        self.writer = Some(Writer { token, id });
+        token
     }
 
     fn body(&self, media: &mut impl ReadWrite, k: usize, sector: &mut Sector) -> Result<(), Error> {
@@ -773,7 +793,6 @@ impl Store {
         rollover: Option<Dir>,
         sector: &mut Sector,
     ) -> Result<Appender, Error> {
-        self.writer = 0;
         for _ in 0..2 {
             let (mut exists, mut free) = (false, None);
             self.scan(media, sector, |slot, file| {
@@ -819,11 +838,19 @@ impl Store {
                         }
                     },
                 )?;
-                self.writer = id;
-                return Ok(Appender::new(slot, id, chunk, 0, Tail::At(0), rollover));
+                let token = self.open(id);
+                return Ok(Appender::new(
+                    token,
+                    slot,
+                    id,
+                    chunk,
+                    0,
+                    Tail::At(0),
+                    rollover,
+                ));
             }
             match rollover {
-                Some(dir) if self.delete_oldest(media, &dir, sector)?.is_some() => {}
+                Some(dir) if self.remove_oldest(media, &dir, None, sector)?.is_some() => {}
                 _ => return Err(Error::Full),
             }
         }
@@ -839,7 +866,6 @@ impl Store {
         rollover: Option<Dir>,
         sector: &mut Sector,
     ) -> Result<Appender, Error> {
-        self.writer = 0;
         let (slot, id) = self.find(media, name, sector)?;
         let chain = self.chain(media, slot, sector)?;
         let (chunk, position) = (self.head.chunk, chain.count - 1);
@@ -860,9 +886,9 @@ impl Store {
             full if full == chunk => Tail::At(chunk),
             records => Tail::Reopened(records),
         };
-        self.writer = id;
+        let token = self.open(id);
         Ok(Appender::new(
-            slot, id, chain.last, position, tail, rollover,
+            token, slot, id, chain.last, position, tail, rollover,
         ))
     }
 
@@ -897,11 +923,7 @@ impl Store {
         sector: &mut Sector,
     ) -> Result<(), Error> {
         let (slot, id) = self.find(media, name, sector)?;
-        self.remove(media, slot, sector)?;
-        if id == self.writer {
-            self.writer = 0;
-        }
-        Ok(())
+        self.remove(media, slot, id, sector)
     }
 
     /// Delete the oldest file in `dir` and its subdirectories other than the
@@ -912,10 +934,21 @@ impl Store {
         dir: &Dir,
         sector: &mut Sector,
     ) -> Result<Option<Name>, Error> {
+        let keep = self.writer.map(|writer| writer.id);
+        self.remove_oldest(media, dir, keep, sector)
+    }
+
+    fn remove_oldest(
+        &mut self,
+        media: &mut impl ReadWrite,
+        dir: &Dir,
+        keep: Option<u32>,
+        sector: &mut Sector,
+    ) -> Result<Option<Name>, Error> {
         let mut oldest: Option<(usize, Name, u32)> = None;
         self.scan(media, sector, |slot, file| {
             if let Some((name, id)) = file
-                && id != self.writer
+                && keep != Some(id)
                 && name.is_in(dir)
                 && oldest.is_none_or(|(_, _, o)| id < o)
             {
@@ -923,10 +956,10 @@ impl Store {
             }
             false
         })?;
-        let Some((slot, name, _)) = oldest else {
+        let Some((slot, name, id)) = oldest else {
             return Ok(None);
         };
-        self.remove(media, slot, sector)?;
+        self.remove(media, slot, id, sector)?;
         Ok(Some(name))
     }
 
@@ -934,6 +967,7 @@ impl Store {
         &mut self,
         media: &mut impl ReadWrite,
         slot: usize,
+        id: u32,
         sector: &mut Sector,
     ) -> Result<(), Error> {
         let tables = ((1u32 << self.head.table()) - 1) << DIR_SECTORS;
@@ -957,7 +991,11 @@ impl Store {
                     }
                 }
             },
-        )
+        )?;
+        if self.writer.is_some_and(|writer| writer.id == id) {
+            self.writer = None;
+        }
+        Ok(())
     }
 }
 
@@ -976,6 +1014,7 @@ enum Tail {
 /// [`Appender::sync`] writes the partly filled one.
 #[derive(Debug)]
 pub struct Appender {
+    token: u32,
     slot: usize,
     id: u32,
     chunk: u32,
@@ -988,6 +1027,7 @@ pub struct Appender {
 
 impl Appender {
     fn new(
+        token: u32,
         slot: usize,
         id: u32,
         chunk: u32,
@@ -996,6 +1036,7 @@ impl Appender {
         rollover: Option<Dir>,
     ) -> Self {
         Self {
+            token,
             slot,
             id,
             chunk,
@@ -1005,6 +1046,14 @@ impl Appender {
             buffer: [0; PAYLOAD],
             rollover,
         }
+    }
+
+    fn check(&self, store: &Store) -> Result<(), Error> {
+        if store.writer.map(|writer| writer.token) != Some(self.token) || self.tail == Tail::Closed
+        {
+            return Err(Error::Stale);
+        }
+        Ok(())
     }
 
     /// Append `bytes`; each `PAYLOAD` of them writes a record. An error
@@ -1017,9 +1066,7 @@ impl Appender {
         mut bytes: &[u8],
         sector: &mut Sector,
     ) -> Result<(), Error> {
-        if store.writer != self.id || self.tail == Tail::Closed {
-            return Err(Error::Stale);
-        }
+        self.check(store)?;
         while !bytes.is_empty() {
             let n = (PAYLOAD - self.fill).min(bytes.len());
             self.buffer[self.fill..self.fill + n].copy_from_slice(&bytes[..n]);
@@ -1039,9 +1086,7 @@ impl Appender {
         media: &mut impl ReadWrite,
         sector: &mut Sector,
     ) -> Result<(), Error> {
-        if store.writer != self.id || self.tail == Tail::Closed {
-            return Err(Error::Stale);
-        }
+        self.check(store)?;
         if self.fill > 0 {
             self.flush(store, media, sector)?;
         }

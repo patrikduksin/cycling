@@ -438,35 +438,55 @@ def store_list(transfer, directory=''):
 
 
 def store_get(transfer, name, output):
-    """Pull every record of `name` into `output`.
+    """Pull every record of `name` that reads back into `output`.
 
-    Records the medium lost end the pull: `output` keeps the records before
-    them and the result names the first lost record. Any other failure
-    leaves no file.
+    The pull skips the records the medium lost and lists each hole in the
+    result, with its byte offset in `output`. A sector read that fails ends
+    the pull: `output` keeps every record before it and the result marks it
+    incomplete. Any other failure, or one before the first record, leaves
+    `output` as it was.
     """
     name_bytes = name.encode()
     partial = Path(f'{output}.partial')
-    record, records, length, hole = 0, 0, 0, None
+    record, records, length, holes, incomplete = 0, 0, 0, [], None
+    batch = STORE_RECORDS
     try:
         with partial.open('wb') as out:
             while True:
-                status, record, count, data = transfer.call(
-                    'store_read', record, STORE_RECORDS, name_bytes, allow=('hole',)
+                status, arg, count, data = transfer.call(
+                    'store_read', record, batch, name_bytes, allow=('hole', 'media')
                 )
-                if status == 'hole':
-                    hole = {'record': record, 'records': count}
+                if status == 'media' and batch > 1:
+                    # The device drops a whole request at a failed read; retry
+                    # one record at a time to keep the records before it.
+                    batch = 1
+                    continue
+                if status == 'media':
+                    if records == 0:
+                        raise TransferError('store_read', STATUS.index(status))
+                    incomplete = {'record': record}
                     break
+                batch = STORE_RECORDS
+                if status == 'hole':
+                    if arg + count <= record:
+                        raise RuntimeError(f'store_read reported a hole that does not move on: {count} from {arg}')
+                    holes.append({'record': arg, 'records': count, 'offset': length})
+                    record = arg + count
+                    continue
                 if count == 0:
                     break
                 out.write(data)
-                records += count
-                length += len(data)
+                record, records, length = arg, records + count, length + len(data)
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
     partial.replace(output)
     result = {'name': name, 'records': records, 'bytes': length}
-    return {**result, 'hole': hole} if hole else result
+    if holes:
+        result['holes'] = holes
+    if incomplete:
+        result['incomplete'] = incomplete
+    return result
 
 
 LINE_ACTIONS = {
@@ -574,11 +594,15 @@ def main():
             parser.error(f'{path} is not a file')
     result = run(args, selected_port(parser, args.port))
     print(json.dumps(result, indent=2))
-    if isinstance(result, dict) and 'hole' in result:
-        hole = result['hole']
+    if not isinstance(result, dict):
+        return
+    problems = [f'the device lost {h["records"]} record(s) from record {h["record"]}' for h in result.get('holes', [])]
+    if 'incomplete' in result:
+        stop = result['incomplete']
+        problems.append(f'a sector read failed at record {stop["record"]}, so the pull stopped there')
+    if problems:
         raise SystemExit(
-            f'{args.name}: the device lost {hole["records"]} record(s) from record {hole["record"]}; '
-            f'{args.path} holds the {result["records"]} records before them'
+            f'{args.name}: {"; ".join(problems)}; {args.path} holds the {result["records"]} records that read back'
         )
 
 

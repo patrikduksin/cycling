@@ -34,6 +34,7 @@ class FakeDevice:
         self.store = {}
         self.generation = 1
         self.reads = []
+        self.unreadable = set()
 
     def terrain_info(self):
         info = bytearray(93)
@@ -161,6 +162,8 @@ class FakeDevice:
                 return volumes.STATUS.index('hole'), arg, lost, b''
             data, sent = b'', 0
             while sent < min(count, len(records) - 1) and records[sent] is not None and len(data) + 486 <= 4096:
+                if arg + sent in self.unreadable:
+                    return volumes.STATUS.index('media'), 0, 0, b''
                 data += records[sent]
                 sent += 1
             return 0, arg + sent, sent, data
@@ -419,28 +422,86 @@ class VolumesTests(unittest.TestCase):
         self.assertEqual([e['name'] for e in volumes.store_list(transfer, 'traces/')], ['traces/0002'])
         self.assertEqual(volumes.inspect(transfer)['store']['generation'], 2)
 
-    def test_a_get_keeps_the_records_before_a_hole_and_names_it(self):
+    def run_main(self, argv, result, message):
+        with (
+            mock.patch.object(sys, 'argv', argv),
+            mock.patch.object(volumes, 'selected_port', return_value='port'),
+            mock.patch.object(volumes, 'run', return_value=result),
+            mock.patch('builtins.print'),
+            self.assertRaisesRegex(SystemExit, message),
+        ):
+            volumes.main()
+
+    def test_a_get_goes_on_after_each_hole_and_names_them_all(self):
         device = FakeDevice()
-        trace = [bytes([i % 251]) * 486 for i in range(40)]
-        device.store = {'traces/0001': (1, [*trace[:20], None, None, *trace[22:]])}
+        trace = [bytes([i % 251]) * (486 - (i % 5) * 90) for i in range(40)]
+        device.store = {'traces/0001': (1, [*trace[:20], None, None, *trace[22:30], None, *trace[31:]])}
+        kept = [*trace[:20], *trace[22:30], *trace[31:]]
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / 'trace.bin'
             result = volumes.store_get(FakeTransfer(device), 'traces/0001', out)
-            self.assertEqual(out.read_bytes(), b''.join(trace[:20]))
+            self.assertEqual(out.read_bytes(), b''.join(kept))
             self.assertFalse(Path(f'{out}.partial').exists())
             self.assertEqual(
                 result,
-                {'name': 'traces/0001', 'records': 20, 'bytes': 20 * 486, 'hole': {'record': 20, 'records': 2}},
+                {
+                    'name': 'traces/0001',
+                    'records': 37,
+                    'bytes': len(b''.join(kept)),
+                    'holes': [
+                        {'record': 20, 'records': 2, 'offset': len(b''.join(trace[:20]))},
+                        {'record': 30, 'records': 1, 'offset': len(b''.join(kept[:28]))},
+                    ],
+                },
             )
-            argv = ['volumes', 'store', 'get', 'traces/0001', str(out)]
-            with (
-                mock.patch.object(sys, 'argv', argv),
-                mock.patch.object(volumes, 'selected_port', return_value='port'),
-                mock.patch.object(volumes, 'run', return_value=result),
-                mock.patch('builtins.print'),
-                self.assertRaisesRegex(SystemExit, 'lost 2 record\\(s\\) from record 20; .* holds the 20 records'),
-            ):
-                volumes.main()
+            self.run_main(
+                ['volumes', 'store', 'get', 'traces/0001', str(out)],
+                result,
+                'lost 2 record\\(s\\) from record 20; the device lost 1 record\\(s\\) from record 30; '
+                '.* holds the 37 records that read back',
+            )
+
+    def test_a_get_rejects_a_hole_that_does_not_move_on(self):
+        device = FakeDevice()
+        device.store = {'traces/0001': (1, [b'kept'])}
+        device.handle = lambda op, arg, count, payload: (volumes.STATUS.index('hole'), arg, 0, b'')
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            with self.assertRaisesRegex(RuntimeError, 'hole'):
+                volumes.store_get(FakeTransfer(device), 'traces/0001', out)
+            self.assertFalse(out.exists() or Path(f'{out}.partial').exists())
+
+    def test_a_get_whose_sector_read_fails_keeps_every_record_before_it_as_incomplete(self):
+        device = FakeDevice()
+        trace = [bytes([i % 251]) * 486 for i in range(40)]
+        device.store = {'traces/0001': (1, trace)}
+        device.unreadable = {37}
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            result = volumes.store_get(FakeTransfer(device), 'traces/0001', out)
+            self.assertEqual(out.read_bytes(), b''.join(trace[:37]))
+            self.assertFalse(Path(f'{out}.partial').exists())
+            self.assertEqual(
+                result,
+                {'name': 'traces/0001', 'records': 37, 'bytes': 37 * 486, 'incomplete': {'record': 37}},
+            )
+            self.run_main(
+                ['volumes', 'store', 'get', 'traces/0001', str(out)],
+                result,
+                'a sector read failed at record 37, so the pull stopped there; .* holds the 37 records',
+            )
+
+    def test_a_get_whose_first_read_fails_keeps_the_earlier_output(self):
+        device = FakeDevice()
+        device.store = {'traces/0001': (1, [b'record'])}
+        device.unreadable = {0}
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            out.write_bytes(b'an earlier pull')
+            with self.assertRaisesRegex(volumes.TransferError, 'media'):
+                volumes.store_get(FakeTransfer(device), 'traces/0001', out)
+            self.assertEqual(out.read_bytes(), b'an earlier pull')
+            self.assertFalse(Path(f'{out}.partial').exists())
 
     def test_inspect_reports_firmware_from_before_store(self):
         device = FakeDevice()

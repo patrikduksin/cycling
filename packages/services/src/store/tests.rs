@@ -491,6 +491,98 @@ fn deleting_the_open_file_makes_its_appender_stale() {
 }
 
 #[test]
+fn opening_a_file_again_makes_its_earlier_appender_stale() {
+    let mut media = formatted(8, 4);
+    let mut s = sector();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut first = store.create(&mut media, &name("a"), None, &mut s).unwrap();
+    first
+        .append(&mut store, &mut media, b"one", &mut s)
+        .unwrap();
+    first.sync(&mut store, &mut media, &mut s).unwrap();
+    let mut second = store
+        .open_append(&mut media, &name("a"), None, &mut s)
+        .unwrap();
+    let writes = media.writes;
+    assert_eq!(
+        first.append(&mut store, &mut media, &[1; PAYLOAD], &mut s),
+        Err(Error::Stale)
+    );
+    assert_eq!(
+        first.sync(&mut store, &mut media, &mut s),
+        Err(Error::Stale)
+    );
+    assert_eq!(media.writes, writes, "the earlier appender writes nothing");
+    second
+        .append(&mut store, &mut media, b" two", &mut s)
+        .unwrap();
+    second.sync(&mut store, &mut media, &mut s).unwrap();
+    assert_eq!(snapshot(&mut media).unwrap()["a"], b"one two");
+}
+
+#[test]
+fn an_appender_from_an_earlier_mount_is_stale_once_a_new_mount_opens_any_file() {
+    let mut media = formatted(8, 4);
+    let mut s = sector();
+    let mut first = mount(&mut media, &mut s).unwrap();
+    let mut held = first.create(&mut media, &name("a"), None, &mut s).unwrap();
+    held.append(&mut first, &mut media, b"one", &mut s).unwrap();
+    held.sync(&mut first, &mut media, &mut s).unwrap();
+    for (text, reopen) in [("a", true), ("b", false)] {
+        let mut store = mount(&mut media, &mut s).unwrap();
+        let mut file = if reopen {
+            store.open_append(&mut media, &name(text), None, &mut s)
+        } else {
+            store.create(&mut media, &name(text), None, &mut s)
+        }
+        .unwrap();
+        let writes = media.writes;
+        assert_eq!(
+            held.append(&mut store, &mut media, &[1; PAYLOAD], &mut s),
+            Err(Error::Stale),
+            "{text}"
+        );
+        assert_eq!(
+            media.writes, writes,
+            "{text}: the held appender writes nothing"
+        );
+        file.append(&mut store, &mut media, b" two", &mut s)
+            .unwrap();
+        file.sync(&mut store, &mut media, &mut s).unwrap();
+    }
+    let files = snapshot(&mut media).unwrap();
+    assert_eq!(
+        (&files["a"][..], &files["b"][..]),
+        (&b"one two"[..], &b" two"[..])
+    );
+}
+
+#[test]
+fn an_open_that_fails_leaves_the_open_appender_writing() {
+    let mut media = formatted(8, 4);
+    let mut s = sector();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store.create(&mut media, &name("a"), None, &mut s).unwrap();
+    file.append(&mut store, &mut media, b"one", &mut s).unwrap();
+    assert_eq!(
+        store.create(&mut media, &name("a"), None, &mut s).err(),
+        Some(Error::Exists)
+    );
+    file.append(&mut store, &mut media, b" two", &mut s)
+        .unwrap();
+    assert_eq!(
+        store
+            .open_append(&mut media, &name("missing"), None, &mut s)
+            .err(),
+        Some(Error::NotFound)
+    );
+    file.append(&mut store, &mut media, b" three", &mut s)
+        .unwrap();
+    file.sync(&mut store, &mut media, &mut s).unwrap();
+    assert_eq!(snapshot(&mut media).unwrap()["a"], b"one two three");
+}
+
+#[test]
 fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
     let mut s = sector();
     let mut media = Media::new(DATA + 64);

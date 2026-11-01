@@ -160,9 +160,12 @@ cycling store list [traces/] | get NAME PATH | delete NAME | format --confirm
 `cycling store get` pulls a file record by record. The session keeps the
 file open between requests, so a pull reads about one sector per 486 bytes,
 and at the end the rest of the file's last chunk (at most 512 sectors). If
-the device lost records of the file, `get` stops at the first one: `PATH`
-keeps the records before it, and the command names the lost record and
-exits with status 1.
+the device lost records of the file, `get` skips them: `PATH` keeps every
+record that reads back, and the command names each hole, with its byte
+offset in `PATH`, and exits with status 1. If a sector read fails, `get`
+stops there: `PATH` keeps every record before it, the result marks the pull
+`incomplete`, and the command exits with status 1. A failure before the
+first record leaves `PATH` as it was.
 A delete changes the store while the app is paused. After the session the
 app mounts the store again and compares its generation with the one it held;
 if they differ, it reopens its files.

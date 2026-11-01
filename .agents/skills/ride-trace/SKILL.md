@@ -5,14 +5,13 @@ description: Turn a rider's account of a ride problem into the moment in the rid
 
 # Ride trace
 
-The simulator records every power-on session as a trace: each input VANA read
-(buttons, ANT and BLE sensors, GPS, barometer, battery, commands, the phone
-server, the buzzer and power control) and a thin
+The C606 (cycling builds) and the simulator record every power-on session as a
+trace: each input VANA read (buttons, ANT and BLE sensors, GPS, barometer,
+battery, commands, the phone server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
 main page's readings once a second on the ride pages, each cue note,
-warnings). The device does not record traces yet: its recorder is phase 4,
-still pending, so every trace today comes from the simulator. The seen layer is ground
-truth for finding the moment; the inputs drive the replay. The trace holds only
+warnings). The seen layer is ground truth for finding the moment; the inputs
+drive the replay. The trace holds only
 what VANA read: a BLE sensor shows as VANA's link to it and the packets it took,
 never as advertisements or anything else on the air, so a sensor that never
 appears was never connected, not necessarily absent. Every command below prints
@@ -22,13 +21,27 @@ text: start there, and open a PNG only to confirm what the text says.
 
 - From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
   `<name>.trace` with the media it started on in `<name>.origin`.
-- From the device, once phase 4 lands (pending): `cycling store get
-  traces/<file>` (arguments in `cycling store --help`). A device trace has
-  no `.origin`, so its replay starts on blank media: rides and settings saved
-  before that power-on are absent. Keep it under `.local/` and never commit
-  it: a trace records the rider's location and the secrets a replay needs,
-  the password of each `WIFI CONFIG` command and the token of each phone
-  request.
+- From the device: the C606 writes each session to
+  `traces/<sequence>-<boot>.trace` in the card's STORE volume. Connect it
+  over USB and run `cycling trace pull` for the newest trace, or
+  `cycling trace pull <file>` for another; both copy it to
+  `.local/traces/<file>`. By hand: `cycling store list traces/` lists them,
+  `cycling store get traces/<file> .local/traces/<file>` copies one. When
+  `CYCLING_DEVICE_HOST` is set, the device is on another machine: follow the
+  remote device skill. Keep device traces under `.local/` and never commit
+  one: it records the rider's location.
+- What a device trace holds: the C606 redacts secrets as it records (each
+  `WIFI CONFIG` password, the phone session's token and Wi-Fi password), and
+  a replay runs on placeholders. Its header names the settings and media at
+  power-on, but it has no `.origin`, so its replay starts on blank media:
+  rides and settings saved before that power-on are absent, and a strict
+  replay reports what differs. The file ends with the pass before VANA
+  asked to turn off, or at its last sync (5 s at most) when power was cut.
+  A session the companion started for charging records its standby while
+  the card stays closed; once the standby screen is dark, a pass is
+  recorded only when the startup or power status changes. Warnings
+  in a device trace include driver lines that a replay never logs, and
+  replays ignore them.
 
 `cycling trace origin <trace>` says in words what a replay starts from: the
 power-on number, settings, VANA's saved sensors and setup step, rides on

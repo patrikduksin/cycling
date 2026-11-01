@@ -422,6 +422,26 @@ class VolumesTests(unittest.TestCase):
         self.assertEqual([e['name'] for e in volumes.store_list(transfer, 'traces/')], ['traces/0002'])
         self.assertEqual(volumes.inspect(transfer)['store']['generation'], 2)
 
+    def test_trace_pull_takes_the_newest_trace_or_the_one_named(self):
+        device = FakeDevice()
+        device.store = {
+            'traces/000009-0000aaaa.trace': (4, [b'nine']),
+            'traces/000010-0000bbbb.trace': (2, [b'ten']),
+            'other/000099': (5, [b'not a trace']),
+        }
+        transfer = FakeTransfer(device)
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            newest = volumes.trace_pull(transfer, directory=directory)
+            self.assertEqual(newest['path'], str(directory / '000010-0000bbbb.trace'))
+            self.assertEqual((directory / '000010-0000bbbb.trace').read_bytes(), b'ten')
+            named = volumes.trace_pull(transfer, '000009-0000aaaa.trace', directory)
+            self.assertEqual(named['name'], 'traces/000009-0000aaaa.trace')
+            self.assertEqual((directory / '000009-0000aaaa.trace').read_bytes(), b'nine')
+        device.store = {}
+        with self.assertRaisesRegex(ValueError, 'no file in traces/'):
+            volumes.trace_pull(transfer, directory=Path('unused'))
+
     def run_main(self, argv, result, message):
         with (
             mock.patch.object(sys, 'argv', argv),

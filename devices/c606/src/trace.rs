@@ -209,7 +209,7 @@ impl Trace {
     /// its locals stay out of `vana_pass`'s frame, which stays under every
     /// frame VANA runs.
     #[inline(never)]
-    pub fn seen(&mut self, sdk: &mut vana::app::Runtime, now: u64) {
+    pub fn seen(&mut self, sdk: &mut vana::app::Runtime, frame: Option<u32>, now: u64) {
         use vana::app::Seen;
         let mut heard: Option<Note> = None;
         let mut record = self.record.borrow_mut();
@@ -247,6 +247,9 @@ impl Trace {
                 note: played.note,
                 of: played.of,
             });
+        }
+        if let Some(digest) = frame {
+            self.record(&Event::Frame(digest));
         }
         crate::logging::drain_warnings(|level, target, text| {
             self.record(&Event::Log {

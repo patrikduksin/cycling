@@ -879,6 +879,7 @@ impl Session {
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
             shell.draw_canvas(240, 320, |row| view.paint(row));
         }
+        shell.forget_frame();
         #[cfg(feature = "cycling")]
         let mut sdk = vana::app::Runtime::new(profile);
         #[cfg(feature = "cycling")]
@@ -1509,6 +1510,9 @@ impl Session {
                 note,
                 of,
             });
+        }
+        if let Some(digest) = self.shell.take_frame() {
+            record(Event::Frame(digest));
         }
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {

@@ -216,4 +216,39 @@ mod tests {
         assert_eq!(shell.foreground, Screen::Blank);
         assert_eq!(display.0.borrow().submissions, before);
     }
+
+    #[test]
+    fn a_frame_counts_as_shown_when_any_pixel_changed() {
+        let display = DisplayDevice::new(240, 320);
+        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let power = PowerDevice::new(Availability::Ready);
+        let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
+        let draw = |shell: &mut Shell<_, _, _, _>, flipped: &[usize]| {
+            shell.draw_rows(|y, pixels| {
+                for (x, pixel) in pixels.iter_mut().enumerate() {
+                    *pixel = (y * 240 + x) as u16;
+                    if flipped.contains(&(y * 240 + x)) {
+                        *pixel ^= 0x8000;
+                    }
+                }
+            });
+            shell.take_frame()
+        };
+        let first = draw(&mut shell, &[]);
+        assert!(first.is_some(), "the first frame is a change");
+        assert_eq!(draw(&mut shell, &[]), None, "the same pixels again");
+        let flipped = draw(&mut shell, &[1, 3]);
+        assert!(
+            flipped.is_some() && flipped != first,
+            "the top bit of two odd pixels"
+        );
+        let other = draw(&mut shell, &[241, 76_799]);
+        assert!(other.is_some() && other != flipped, "two pixels far apart");
+        shell.forget_frame();
+        assert_eq!(
+            draw(&mut shell, &[241, 76_799]),
+            other,
+            "a change once forgotten"
+        );
+    }
 }

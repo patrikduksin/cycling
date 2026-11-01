@@ -8409,11 +8409,15 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
 
     let mut replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
-    assert_eq!(report.first, None, "{:?}", report.counts);
-    assert_eq!(
-        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace()),
-        None
+    let first = report.first.as_ref().map(|first| first.detail.as_str());
+    assert!(
+        first.is_some_and(
+            |detail| detail.starts_with(r#"the rider saw [Page("phone"), Frame("#)
+                && detail.ends_with(": the same, in other pixels")
+        ),
+        "only the phone page, which draws the redacted credentials, differs: {first:?}"
     );
+    assert_eq!(report.count(shell_simulator::replay::Kind::Seen), 2);
     assert!(
         replayed.ride_media() == sim.ride_media(),
         "the same journal"
@@ -8881,6 +8885,7 @@ mod mutations {
                 room: room / 2,
             },
             Event::Page(_) => Event::Page("bests"),
+            Event::Frame(digest) => Event::Frame(digest ^ 1),
             Event::Sound {
                 pattern,
                 cue,
@@ -9112,6 +9117,7 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
             "StorageFault",
             "Page",
             "Sound",
+            "Frame",
         ],
         &[
             heals(

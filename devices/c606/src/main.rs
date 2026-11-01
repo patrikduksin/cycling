@@ -405,6 +405,7 @@ async fn console(
     let started = embassy_time::Instant::now();
     system.present();
     system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
+    system.forget_frame();
     loop {
         device::activity::pass_began();
         let now = embassy_time::Instant::now().as_millis();
@@ -664,7 +665,7 @@ fn vana_pass(
         sdk.power(system, &mut control, now);
     }
     trace.log.record(&trace.record);
-    trace.seen(sdk, now);
+    trace.seen(sdk, system.take_frame(), now);
     trace.drain(
         &mut devices.bulk,
         sdk.journals_at_boot(),

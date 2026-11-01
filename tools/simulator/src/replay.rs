@@ -334,6 +334,7 @@ pub enum Seen {
         note: u8,
         of: u8,
     },
+    Frame(u32),
 }
 
 /// The shell's own devices, which a replay scripts from the trace: the
@@ -466,12 +467,29 @@ impl Replay {
         self.sources.ledger.now()
     }
 
-    /// What the rider saw in the pass just run, against the recording.
+    /// What the rider saw in the pass just run, against the recording. A
+    /// stimulus replay can run another build, which may draw the same
+    /// things in other pixels, so it leaves the frames out.
     pub fn saw(&mut self, seen: &[Seen]) {
-        if seen != self.seen.as_slice() {
+        let frame = |seen: &&Seen| matches!(seen, Seen::Frame(_));
+        let recorded = || self.seen.iter();
+        let differs = if !seen
+            .iter()
+            .filter(|s| !frame(s))
+            .eq(recorded().filter(|s| !frame(s)))
+        {
+            Some("")
+        } else if self.sources.ledger.mode() == Mode::Strict
+            && !seen.iter().filter(frame).eq(recorded().filter(frame))
+        {
+            Some(": the same, in other pixels")
+        } else {
+            None
+        };
+        if let Some(how) = differs {
             let recorded = core::mem::take(&mut self.seen);
             self.sources.ledger.note(Kind::Seen, 1, || {
-                format!("the rider saw {seen:?}, the recording {recorded:?}")
+                format!("the rider saw {seen:?}, the recording {recorded:?}{how}")
             });
         }
     }
@@ -560,6 +578,7 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
             note: *note,
             of: *of,
         })),
+        Event::Frame(digest) => Some(Some(Seen::Frame(*digest))),
         event if measured(event) => Some(None),
         _ => None,
     }
@@ -875,6 +894,7 @@ impl Sources {
             | Event::Sound { .. }
             | Event::RideState(_)
             | Event::Shown(_)
+            | Event::Frame(_)
             | Event::Log { .. }
             | Event::Health(_)
             | Event::Activity(_)

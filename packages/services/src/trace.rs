@@ -537,6 +537,9 @@ pub enum Event<'a> {
     RideState(&'a str),
     /// The displayed fields, about once a second.
     Shown(&'a str),
+    /// A digest of the pixels on the panel at the end of a pass, when they
+    /// changed since the last.
+    Frame(u32),
     /// A diagnostic harness's synthetic press or touch the shell handed on
     /// like a physical one. A replay runs the harness command that
     /// scheduled it, so this is never replayed as an input.
@@ -602,6 +605,7 @@ mod tag {
     pub const SHOWN: u8 = 68;
     pub const SYNTHETIC: u8 = 70;
     pub const LOG: u8 = 69;
+    pub const FRAME: u8 = 71;
     pub const HEALTH: u8 = 80;
     pub const ACTIVITY: u8 = 81;
     pub const TASK: u8 = 82;
@@ -1374,6 +1378,7 @@ impl<'a> Event<'a> {
             Self::RideState(_) => tag::RIDE_STATE,
             Self::Shown(_) => tag::SHOWN,
             Self::Synthetic(_) => tag::SYNTHETIC,
+            Self::Frame(_) => tag::FRAME,
             Self::Log { .. } => tag::LOG,
             Self::Health(_) => tag::HEALTH,
             Self::Activity(_) => tag::ACTIVITY,
@@ -1496,6 +1501,7 @@ impl<'a> Event<'a> {
                 text.put(w);
             }
             Self::Synthetic(input) => input.put(w),
+            Self::Frame(digest) => digest.put(w),
             Self::Health(health) => health.put(w),
             Self::Activity(activity) => activity.put(w),
             Self::Task {
@@ -1602,6 +1608,7 @@ impl<'a> Event<'a> {
             tag::RIDE_STATE => Self::RideState(Wire::take(r)),
             tag::SHOWN => Self::Shown(Wire::take(r)),
             tag::SYNTHETIC => Self::Synthetic(Wire::take(r)),
+            tag::FRAME => Self::Frame(Wire::take(r)),
             tag::LOG => Self::Log {
                 level: Wire::take(r),
                 target: Wire::take(r),

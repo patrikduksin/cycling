@@ -18,6 +18,13 @@ use device_api::power::Power;
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
+const FNV_OFFSET: u32 = 0x811c_9dc5;
+const FNV_PRIME: u32 = 0x0100_0193;
+fn fnv1a(digest: u32, pixels: &[u16]) -> u32 {
+    pixels.iter().fold(digest, |hash, &pixel| {
+        (hash ^ u32::from(pixel)).wrapping_mul(FNV_PRIME)
+    })
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Status,
@@ -46,6 +53,10 @@ pub struct Shell<D, I, P, B> {
     pub operations: u32,
     pub storage_max_ms: u64,
     pub display_submissions: u32,
+    /// A digest of the pixels on the panel.
+    panel: Option<u32>,
+    /// The digest `take_frame` last handed out.
+    taken: Option<u32>,
     /// The latest submission, rendering included; measured when `clock` is set.
     pub display_ms: u64,
     pub display_max_ms: u64,
@@ -134,6 +145,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             synthetic: Synthetic::new(),
             boot_id: 0,
             synthetic_events: 0,
+            panel: None,
+            taken: None,
             store,
             settings,
             settings_source: source,
@@ -200,6 +213,18 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     #[cfg(feature = "debug-harness")]
     pub fn take_synthetic(&mut self) -> Synthetic {
         core::mem::take(&mut self.synthetic)
+    }
+    /// A digest of the pixels on the panel, when they changed since the
+    /// last call.
+    pub fn take_frame(&mut self) -> Option<u32> {
+        let changed = self.panel != self.taken;
+        self.taken = self.panel;
+        self.panel.filter(|_| changed)
+    }
+    /// Forget the panel, so the next frame drawn counts as a change. Boards
+    /// boot through other frames; their traces start alike after this.
+    pub fn forget_frame(&mut self) {
+        (self.panel, self.taken) = (None, None);
     }
     /// The physical input source, for composition that records what `tick` took.
     pub fn input_source(&mut self) -> &mut I {
@@ -442,8 +467,13 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         result.is_ok()
     }
     /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
-    pub fn draw_rows(&mut self, row: impl FnMut(usize, &mut [u16])) {
+    pub fn draw_rows(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
         let started = self.clock.map(|clock| clock());
+        let mut frame = FNV_OFFSET;
+        let row = |y: usize, pixels: &mut [u16]| {
+            row(y, pixels);
+            frame = fnv1a(frame, pixels);
+        };
         #[cfg(feature = "debug-harness")]
         {
             if self.harness.begin_frame(self.display.geometry()) {
@@ -464,6 +494,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         #[cfg(not(feature = "debug-harness"))]
         {
             self.display_error = self.display.submit(row).is_err();
+        }
+        if !self.display_error {
+            self.panel = Some(frame);
         }
         self.display_submissions = self.display_submissions.saturating_add(1);
         if let (Some(clock), Some(started)) = (self.clock, started) {

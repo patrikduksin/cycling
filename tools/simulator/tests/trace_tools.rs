@@ -685,3 +685,55 @@ fn timeline_and_find_never_print_the_phone_token() {
     let found = find(&timeline, &Query::parse(&token), (0, u64::MAX), None);
     assert!(found.is_empty(), "{found:#?}");
 }
+
+#[test]
+fn the_ride_clock_reads_what_the_rider_saw_after_the_card_fails() {
+    let mut sim = Sim::new();
+    sim.fit_bulk(shell_simulator::bulk::Presence::Ready);
+    let mut sim = sim.boot();
+    sim.discard_recording();
+    sim.ant_sensor(device_type::HEART_RATE, 4242);
+    sim.ride_route(Route::loop_around(
+        Point::new(-33.45, -70.66),
+        5_000.0,
+        20.0,
+    ));
+    sim.ride_at(28.0, 0.0, 140.0, 0.0);
+    sim.init_bulk();
+    sim.pair(&["HEART RATE"]);
+    sim.start_ride();
+    sim.advance(seconds(120));
+    sim.fail_bulk(0, 100);
+    sim.advance(seconds(60));
+    let timeline = read(&sim.capture().trace).unwrap();
+    use shell_simulator::trace::timeline::field;
+    let off: Vec<String> = timeline
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Shown)
+        .filter_map(|e| {
+            let shown = field(&e.text, "time")?;
+            let ride = e.at.ride_ms.map(|ms| {
+                let s = ms / 1000;
+                format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+            });
+            (ride.as_deref() != Some(shown)).then(|| format!("{e}"))
+        })
+        .collect();
+    assert!(
+        off.is_empty(),
+        "{} off, first {:#?}",
+        off.len(),
+        &off[..off.len().min(4)]
+    );
+    let states: Vec<&str> = timeline
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Ride)
+        .map(|e| e.text.as_str())
+        .collect();
+    assert!(
+        states.len() > 1,
+        "the fallback shows in the ride states: {states:?}"
+    );
+}

@@ -566,6 +566,25 @@ impl Reader {
         self.pass_start = self.entries.len();
     }
 
+    /// Set the ride clock to the ride time VANA showed when they part: a
+    /// storage fallback closes and reopens the recorder, which would start
+    /// the clock again, while the rider's ride time carries on.
+    fn ride_time_shown(&mut self, fields: &str) {
+        let (Some(ride_ms), Some(shown_ms)) =
+            (self.ride_ms, field(fields, "time").and_then(parse_ms))
+        else {
+            return;
+        };
+        if ride_ms / 1000 != shown_ms / 1000 {
+            self.ride_ms = Some(shown_ms);
+            self.clock.push(Anchor {
+                session_ms: self.now,
+                ride_ms: self.ride_ms,
+                running: self.recording,
+            });
+        }
+    }
+
     fn heard_from(&mut self, sensor: &str) {
         let Some(last_ms) = self.heard.insert(sensor.to_string(), self.now) else {
             return;
@@ -749,7 +768,10 @@ impl Reader {
                 });
                 self.push(Kind::Ride, state.into());
             }
-            Event::Shown(fields) => self.push(Kind::Shown, fields.into()),
+            Event::Shown(fields) => {
+                self.ride_time_shown(fields);
+                self.push(Kind::Shown, fields.into())
+            }
             Event::Log {
                 level,
                 target,

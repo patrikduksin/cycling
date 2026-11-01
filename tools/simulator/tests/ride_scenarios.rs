@@ -7722,7 +7722,8 @@ fn assert_replays_exactly_after(
     alter(&mut capture);
     println!("{}", trace_size(&capture.trace, recorded.device.now));
     let mut replayed = Sim::replay(&capture);
-    assert_eq!(replayed.device.divergence(), None);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
     if let Some(difference) = first_difference(&capture.trace, &replayed.trace()) {
         panic!("the replay read or showed something else: {difference}");
     }
@@ -7921,4 +7922,94 @@ fn a_new_store_replays_with_the_entropy_it_was_named_from() {
         .filter(|event| matches!(event, firmware_services::trace::Event::Entropy(_)))
         .count();
     assert!(entropy > 0, "the store's entropy is recorded");
+}
+
+/// Three sensors paired, a few seconds on Home, then four minutes ridden.
+fn paired_then_ridden(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.ride_at(30.0, 200.0, 140.0, 90.0);
+    sim.advance(seconds(10));
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.ride_at(33.0, 250.0, 150.0, 92.0);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+}
+
+/// What each sensor, the receiver and the barometer gave each saved sample.
+fn sensor_data(sim: &mut Sim) -> Vec<Vec<Sample>> {
+    sim.rides()
+        .iter()
+        .map(|ride| ride.samples().copied().collect())
+        .collect()
+}
+
+#[test]
+fn a_ride_replayed_as_stimulus_on_the_same_build_saves_the_same_ride() {
+    use shell_simulator::replay::Mode;
+    let mut recorded = equip(hashed().boot());
+    paired_then_ridden(&mut recorded);
+    let mut replayed = Sim::replay_as(&recorded.capture(), Mode::Stimulus, |_| {});
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{report:?}");
+    let rides = sensor_data(&mut recorded);
+    assert!(
+        rides.iter().any(|ride| ride.len() > 200),
+        "a ride was saved"
+    );
+    assert_eq!(sensor_data(&mut replayed), rides);
+}
+
+/// The sensors whose connection the radio accepted, in order.
+fn connected_in_order(trace: &[u8]) -> Vec<u8> {
+    use firmware_services::trace::{Event, decode};
+    let (_, events) = decode(trace).unwrap();
+    events
+        .filter_map(|event| match event {
+            Event::AntRequest {
+                operation: device_api::ant::AntOperation::Connect(peer),
+                result: Ok(_),
+            } => Some(peer.device_type),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A changed build asks for the power meter before any other sensor, so
+/// it connects the three in another order than the recording did. The
+/// model answers what the recording never asked, the heart strap is heard
+/// once its channel opens, and the ride saves what the sensors sent.
+#[test]
+fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
+    use device_api::ant::{AntOperation, Error};
+    use shell_simulator::replay::{Kind, Mode};
+    let mut recorded = equip(hashed().boot());
+    paired_then_ridden(&mut recorded);
+    let mut power_asked = false;
+    let mut replayed = Sim::replay_as(&recorded.capture(), Mode::Stimulus, |sources| {
+        sources.adapt_ant(move |operation, _| match operation {
+            AntOperation::Connect(peer) if peer.device_type == device_type::POWER => {
+                power_asked = true;
+                None
+            }
+            AntOperation::Connect(_) if !power_asked => Some(Err(Error::Busy)),
+            _ => None,
+        })
+    });
+    let (power, heart, speed) = (
+        device_type::POWER,
+        device_type::HEART_RATE,
+        device_type::SPEED_CADENCE,
+    );
+    assert_eq!(connected_in_order(&recorded.trace()), [heart, power, speed]);
+    let mut order = connected_in_order(&replayed.trace());
+    assert_eq!(order[0], power, "{order:?}");
+    order.sort_unstable();
+    assert_eq!(order, [power, heart, speed]);
+    let report = replayed.device.report().unwrap();
+    println!("{report:#?}");
+    assert!(report.count(Kind::NotRequested) >= 1, "{report:?}");
+    assert!(report.count(Kind::Unanswered) >= 1, "{report:?}");
+    assert!(report.count(Kind::NotHeard) > 0, "{report:?}");
+    assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
 }

@@ -623,7 +623,18 @@ impl Sim {
     /// recorded uptimes, with the trace standing in for the world. Frames
     /// are hashed throughout.
     pub fn replay(capture: &crate::replay::Capture) -> Self {
-        let device = crate::session::Session::replaying(capture).expect("a replayable capture");
+        Self::replay_as(capture, crate::replay::Mode::Strict, |_| {})
+    }
+
+    /// As `replay`, in `mode`, with the replay's devices as `setup` leaves
+    /// them before the first pass.
+    pub fn replay_as(
+        capture: &crate::replay::Capture,
+        mode: crate::replay::Mode,
+        setup: impl FnOnce(&mut crate::replay::Sources),
+    ) -> Self {
+        let device =
+            crate::session::Session::replaying(capture, mode).expect("a replayable capture");
         let mut sim = Self {
             device,
             notes: Vec::new(),
@@ -631,6 +642,7 @@ impl Sim {
             power_hold: 0,
         };
         sim.hash_frames();
+        setup(sim.device.replay_sources().expect("a replay"));
         while sim.device.replay_step() {}
         sim
     }

@@ -7,7 +7,7 @@ use crate::devices::PowerDevice;
 use crate::devices::PowerSwitch;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
-use crate::replay::{Blocks, Capture, Next, Origin, Replay};
+use crate::replay::{Blocks, Capture, Mode, Next, Origin, Replay, Report, Seen, Sources};
 use crate::storage::{Fault, FileFlash};
 use crate::world::World;
 use device_api::ant::Ant;
@@ -623,7 +623,7 @@ impl Session {
     }
     /// A C606-sized device on the captured media, with the capture's trace
     /// standing in for the world. Drive it with `replay_step`.
-    pub fn replaying(capture: &Capture) -> io::Result<Self> {
+    pub fn replaying(capture: &Capture, mode: Mode) -> io::Result<Self> {
         let origin = &capture.origin;
         let flash = origin.flash.copy_before_boot(origin.boot).ok_or_else(|| {
             io::Error::other("the capture's media is file-backed and cannot be replayed")
@@ -634,6 +634,7 @@ impl Session {
             capture.trace.clone(),
             session.input.clone(),
             session.bulk.clone(),
+            mode,
         )
         .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
         session.replay = Some(Box::new(replay));
@@ -654,9 +655,13 @@ impl Session {
         }
         true
     }
-    /// The first point where a replay asked for what the trace did not hold.
-    pub fn divergence(&self) -> Option<&str> {
-        self.replay.as_ref()?.sources.divergence.as_deref()
+    /// Where a replay parted from its recording so far.
+    pub fn report(&self) -> Option<&Report> {
+        Some(&self.replay.as_ref()?.sources.report)
+    }
+    /// The devices a replay presents, to set up before it runs.
+    pub fn replay_sources(&mut self) -> Option<&mut Sources> {
+        Some(&mut self.replay.as_mut()?.sources)
     }
     /// What a replay of this session needs; `None` before the first pass.
     pub fn capture(&self) -> Option<Capture> {
@@ -685,7 +690,10 @@ impl Session {
         }
         self.trace.record(&Event::Pass { now_ms: self.now });
         self.pass();
-        self.record_seen();
+        let seen = self.record_seen();
+        if let Some(replay) = &mut self.replay {
+            replay.saw(&seen);
+        }
     }
     /// The world moves the simulated devices on to this pass.
     fn environment(&mut self) {
@@ -904,7 +912,8 @@ impl Session {
         }
     }
     /// What the rider saw change this pass: the page and any sound.
-    fn record_seen(&mut self) {
+    fn record_seen(&mut self) -> Vec<Seen> {
+        let mut seen = Vec::new();
         let mut recorder = self.trace.recorder.borrow_mut();
         #[cfg(feature = "cycling")]
         {
@@ -912,12 +921,15 @@ impl Session {
             if self.trace.page != Some(page) {
                 self.trace.page = Some(page);
                 recorder.record(&Event::Page(page.name()));
+                seen.push(Seen::Page(page.name().into()));
             }
         }
         for &(_, pattern) in self.speaker.played.get(self.trace.sounds..).unwrap_or(&[]) {
             recorder.record(&Event::Sound(pattern));
+            seen.push(Seen::Sound(pattern));
         }
         self.trace.sounds = self.speaker.played.len();
+        seen
     }
     /// Off on USB power the C606 rests in charging standby: VANA shows the
     /// charge for a while, then the panel goes dark. Off on battery, nothing

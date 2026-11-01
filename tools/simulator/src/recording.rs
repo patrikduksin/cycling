@@ -61,8 +61,22 @@ pub const MARKER: &str = ".simulator-output";
 
 /// Make `dir` an empty directory marked as the simulator's output. A
 /// directory is replaced only when it holds [`MARKER`] or is empty; anything
-/// else is refused, so a mistyped path never loses someone's files.
+/// else is refused, so a mistyped path never loses someone's files. The
+/// directory the process runs in, and any directory above it, is never
+/// claimed: an empty `--out` would otherwise mark it, and a later `--out .`
+/// would empty it.
 pub fn replace_dir(dir: &Path) -> io::Result<()> {
+    if dir.as_os_str().is_empty() {
+        return Err(io::Error::other("the output directory is empty; name one"));
+    }
+    if let (Ok(target), Ok(cwd)) = (dir.canonicalize(), std::env::current_dir()?.canonicalize())
+        && cwd.starts_with(&target)
+    {
+        return Err(io::Error::other(format!(
+            "{} is this directory or one above it; choose a directory inside it",
+            dir.display()
+        )));
+    }
     match fs::read_dir(dir) {
         Ok(mut entries) => {
             if !dir.join(MARKER).is_file() && entries.next().is_some() {

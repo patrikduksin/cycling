@@ -1,6 +1,7 @@
 #![cfg(feature = "cycling")]
 use device_api::input::Button;
 use shell_simulator::ant::device_type;
+use shell_simulator::recording;
 use shell_simulator::replay::Mode;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{Sim, seconds};
@@ -563,9 +564,11 @@ fn scratch(name: &str) -> PathBuf {
 #[test]
 fn replay_never_deletes_a_directory_it_did_not_write() {
     let dir = scratch("replay-out");
-    let mine = dir.join("notes.txt");
+    let theirs = dir.join("theirs");
+    std::fs::create_dir(&theirs).unwrap();
+    let mine = theirs.join("notes.txt");
     std::fs::write(&mine, "the rider's notes").unwrap();
-    let refused = cycling_replay(&dir, Some(&dir));
+    let refused = cycling_replay(&dir, Some(&theirs));
     assert!(!refused.status.success(), "{refused:?}");
     let error = String::from_utf8_lossy(&refused.stderr);
     assert!(error.contains("did not write"), "{error}");
@@ -583,6 +586,29 @@ fn replay_never_deletes_a_directory_it_did_not_write() {
         assert!(empty.join("divergence.txt").exists(), "{run}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn replay_never_claims_or_replaces_the_directory_it_runs_in() {
+    let cwd = scratch("replay-cwd");
+    let parent_of_cwd = cwd.join("inside");
+    std::fs::create_dir(&parent_of_cwd).unwrap();
+    let mine = cwd.join("notes.txt");
+    std::fs::write(&mine, "the rider's notes").unwrap();
+
+    let empty = cycling_replay(&cwd, Some(Path::new("")));
+    assert!(!empty.status.success(), "{empty:?}");
+    assert!(!cwd.join(recording::MARKER).exists());
+
+    std::fs::write(cwd.join(recording::MARKER), "").unwrap();
+    for out in [Path::new("."), cwd.as_path()] {
+        let refused = cycling_replay(&cwd, Some(out));
+        assert!(!refused.status.success(), "{}: {refused:?}", out.display());
+    }
+    let refused = cycling_replay(&parent_of_cwd, Some(Path::new("..")));
+    assert!(!refused.status.success(), "..: {refused:?}");
+    assert_eq!(std::fs::read_to_string(&mine).unwrap(), "the rider's notes");
+    std::fs::remove_dir_all(&cwd).unwrap();
 }
 
 #[test]

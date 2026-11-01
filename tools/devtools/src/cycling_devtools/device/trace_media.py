@@ -38,7 +38,11 @@ def trace_tool(*args):
 
 
 def header_media(text):
-    """`cycling trace media` lines as a dict; a medium the device could not read is None."""
+    """`cycling trace media` lines as a dict; a medium without anything to pull is None.
+
+    RIDES is pulled when VANA found a log at power-on, `log` or `uncertain`; the rebuild says
+    what an uncertain, unusable or uninitialized one means for the replay.
+    """
     media = {'journal': None, 'rides': None, 'files': None, 'terrain': None}
     for line in text.splitlines():
         words = line.split()
@@ -47,8 +51,8 @@ def header_media(text):
         kind = words[0]
         if kind == 'journal':
             media['journal'] = int(words[1])
-        elif kind == 'rides':
-            media['rides'] = {'store': words[1], 'head': int(words[2])}
+        elif kind == 'rides' and words[1] in ('log', 'uncertain'):
+            media['rides'] = {'store': words[2], 'head': int(words[3])}
         elif kind == 'files':
             media['files'] = {'store': words[1], 'generation': int(words[2]), 'entries': []}
         elif kind == 'file':

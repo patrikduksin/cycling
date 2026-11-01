@@ -71,13 +71,17 @@ fn ride(sim: &mut Sim, seconds_long: u64, power_w: f64) {
     sim.done();
 }
 
-/// A device with a past: saved sensors, a ride on the internal journal and
-/// one on the card's RIDES log, a workout, a course and a terrain pack. Then
-/// the session the test pulls: a power-on that rides G-21 into the pack.
-/// Returns the device after that session, its trace as the device wrote it
-/// to STORE, and what the session left: the frames the rider saw and the
-/// rides on both journals.
 fn recorded_session() -> (Sim, Vec<u8>, Session) {
+    recorded_session_after(|_| {})
+}
+
+/// A device with a past: saved sensors, a ride on the internal journal and
+/// one on the card's RIDES log, a workout, a course and a terrain pack, and
+/// then whatever `before` does. Then the session the test pulls: a power-on
+/// that rides G-21 into the pack. Returns the device after that session,
+/// its trace as the device wrote it to STORE, and what the session left:
+/// the frames the rider saw and the rides on both journals.
+fn recorded_session_after(before: impl FnOnce(&mut Sim)) -> (Sim, Vec<u8>, Session) {
     let mut sim = Sim::new();
     sim.hash_frames();
     sim.fit_bulk(Presence::Ready);
@@ -107,6 +111,7 @@ fn recorded_session() -> (Sim, Vec<u8>, Session) {
     let (code, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
     assert_eq!(code, 200, "{body}");
     assert!(sim.file("course.dat").is_some(), "the course is on FILES");
+    before(&mut sim);
 
     sim.device.restart().unwrap();
     sim.wait_usable();
@@ -134,12 +139,17 @@ struct Session {
 }
 
 impl Session {
+    /// The card's rides only when it holds a log VANA can export.
     fn of(sim: &mut Sim) -> Self {
+        let rides = if sim.command("EXPORT BULK INFO").0 == "OK" {
+            sim.bulk_rides()
+        } else {
+            Vec::new()
+        };
         Self {
             frames: sim.frame_hashes(),
             journal: sim.ride_media(),
-            rides: sim
-                .bulk_rides()
+            rides: rides
                 .iter()
                 .map(|ride| (ride.id, ride.kinds(), ride.samples().copied().collect()))
                 .collect(),
@@ -175,8 +185,7 @@ fn pull(sim: &mut Sim, trace: &[u8]) -> Pulled {
                 let count = upper.min(slots.parse().unwrap());
                 pulled.internal = Some(slots_of(sim, "EXPORT", count));
             }
-            ["rides", "none"] => {}
-            ["rides", _, head] => {
+            ["rides", "log" | "uncertain", _, head] => {
                 let (_, info) = sim.command("EXPORT BULK INFO");
                 let info: Vec<&str> = info.split_whitespace().collect();
                 let upper: usize = info[3].parse().unwrap();
@@ -343,6 +352,65 @@ fn an_internal_journal_cleared_and_filled_again_since_starts_empty() {
     assert!(
         report.contains("cleared since; it starts empty"),
         "{report}"
+    );
+}
+
+/// The owned sector the card's RIDES volume starts at.
+fn rides_start(sim: &mut Sim) -> u64 {
+    use firmware_services::volume;
+    let mut sector = [0u8; 512];
+    let Ok(volume::Layout::Table(table)) = volume::read(&mut sim.device.bulk.host(), &mut sector)
+    else {
+        panic!("a volume table");
+    };
+    table.find(&volume::RIDES).unwrap().start
+}
+
+#[test]
+fn a_ride_log_vana_could_not_use_at_power_on_is_reported() {
+    let (mut sim, trace, _) = recorded_session_after(|sim| {
+        let rides = rides_start(sim);
+        sim.device.bulk.corrupt(rides);
+        sim.device.bulk.corrupt(rides + 1);
+    });
+    assert!(
+        rebuild::media(&trace).unwrap().contains("rides unusable\n"),
+        "both superblocks lost over the ride's records"
+    );
+    let pulled = pull(&mut sim, &trace);
+    assert!(pulled.rides.is_none(), "nothing to pull");
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(gaps.contains(&Gap::RidesUnusable), "{gaps:?}");
+}
+
+#[test]
+fn a_ride_log_vana_kept_read_only_at_power_on_is_reported() {
+    let (mut sim, trace, _) = recorded_session_after(|sim| {
+        sim.ride_at(28.0, 200.0, 140.0, 85.0);
+        let (status, out) = sim.command("RIDE START");
+        assert_eq!(status, "ACCEPTED", "{out}");
+        sim.advance(seconds(30));
+        let (_, status) = sim.command("RIDE BULK STATUS");
+        let head: u64 = status
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("slot="))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let record = rides_start(sim) + firmware_services::sector_log::DATA_START + head - 2;
+        sim.device.bulk.corrupt(record);
+    });
+    let lines = rebuild::media(&trace).unwrap();
+    assert!(
+        lines.contains("rides uncertain "),
+        "a damaged record before valid ones of the open ride: {lines}"
+    );
+    let pulled = pull(&mut sim, &trace);
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(
+        gaps.iter()
+            .any(|gap| matches!(gap, Gap::RidesUncertain { .. })),
+        "{gaps:?}"
     );
 }
 

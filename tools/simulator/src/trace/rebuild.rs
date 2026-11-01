@@ -15,7 +15,7 @@ use crate::bulk::{Presence, SimBulk};
 use crate::replay::Origin;
 use crate::storage::FileFlash;
 use device_api::bulk::SECTOR_SIZE;
-use firmware_services::trace::origin::{self, Config, FileEntry};
+use firmware_services::trace::origin::{self, Config, FileEntry, RideLog};
 use firmware_services::{checksum::crc32, files, pack, sector_log, volume};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,6 +82,13 @@ pub enum Gap {
     /// Records whose sector container was invalid on the device; the rebuilt
     /// log holds valid records of zeros there.
     RidesInvalid(Vec<u64>),
+    /// VANA could not prove where the card's ride log ended at power-on and
+    /// kept it read only; the rebuilt log holds its `head` records and takes
+    /// appends.
+    RidesUncertain { head: u64 },
+    /// VANA could not use the card's ride log at power-on; the rebuilt card
+    /// has no ride log.
+    RidesUnusable,
     /// FILES was not pulled, or it now holds another store, so it was
     /// formatted since: no file of power-on is recovered.
     Files { store: u64, now: Option<u64> },
@@ -137,6 +144,14 @@ impl fmt::Display for Gap {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Self::RidesUncertain { head } => write!(
+                f,
+                "RIDES: VANA could not prove where the ride log ended at power-on and kept it read only; the card starts with its {head} records as a log that takes rides"
+            ),
+            Self::RidesUnusable => write!(
+                f,
+                "RIDES: VANA could not use the ride log at power-on: the volume table or the log's metadata was corrupt, lost or foreign, or the card did not read; the card starts without a ride log"
+            ),
             Self::Files { store, now: None } => {
                 write!(f, "FILES (store {store:016x}): not pulled; it starts empty")
             }
@@ -188,9 +203,18 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
     let internal = media
         .journal
         .and_then(|journal| internal_at_power_on(journal, pulled, &mut gaps));
-    let rides = media
-        .rides
-        .and_then(|(store, head)| rides_at_power_on(store, head, pulled, &mut gaps));
+    let rides = match media.rides {
+        Some(RideLog::Log { store, head }) => rides_at_power_on(store, head, pulled, &mut gaps),
+        Some(RideLog::Uncertain { store, head }) => {
+            gaps.push(Gap::RidesUncertain { head });
+            rides_at_power_on(store, head, pulled, &mut gaps)
+        }
+        Some(RideLog::Unusable) => {
+            gaps.push(Gap::RidesUnusable);
+            None
+        }
+        Some(RideLog::Uninitialized) | None => None,
+    };
     let ended = ended(internal.unwrap_or_default(), rides.map_or(&[], |log| log.1));
     let flash = internal_flash(boot, config.settings, internal)?;
     let bulk = SimBulk::default();
@@ -207,8 +231,8 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
     if status != "OK" {
         return Err(format!("STORE: {status} {out}"));
     }
-    if let (Some((store, _)), Some((log, slots))) = (media.rides, rides) {
-        write_rides(&mut card, store, log, slots)?;
+    if let Some((log, slots)) = rides {
+        write_rides(&mut card, log, slots)?;
     }
     if let Some(listed) = media.files {
         write_files(&mut card, &listed, media.facts, pulled, &ended, &mut gaps)?;
@@ -239,7 +263,12 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
         None => out += "journal none\n",
     }
     match media.rides {
-        Some((store, head)) => out += &format!("rides {store:016x} {head}\n"),
+        Some(RideLog::Log { store, head }) => out += &format!("rides log {store:016x} {head}\n"),
+        Some(RideLog::Uncertain { store, head }) => {
+            out += &format!("rides uncertain {store:016x} {head}\n")
+        }
+        Some(RideLog::Uninitialized) => out += "rides uninitialized\n",
+        Some(RideLog::Unusable) => out += "rides unusable\n",
         None => out += "rides none\n",
     }
     match media.files {
@@ -367,9 +396,9 @@ fn internal_flash(boot: u32, settings: &[u8], journal: Option<&[u8]>) -> Result<
     Ok(FileFlash::from_image(boot - 1, configuration, data))
 }
 
-/// The log `store` holding `slots`, checkpointed where VANA does: after each
+/// The log of `log`'s epoch holding `slots`, checkpointed where VANA does: after each
 /// ride's last record and every `CHECKPOINT_RECORDS` records.
-fn write_rides(card: &mut SimBulk, store: u64, log: &Rides, slots: &[u8]) -> Result<(), String> {
+fn write_rides(card: &mut SimBulk, log: &Rides, slots: &[u8]) -> Result<(), String> {
     let mut sector = [0u8; SECTOR_SIZE];
     let mut volume =
         volume::open(card, &volume::RIDES, &mut sector).map_err(|e| format!("RIDES: {e:?}"))?;
@@ -380,7 +409,7 @@ fn write_rides(card: &mut SimBulk, store: u64, log: &Rides, slots: &[u8]) -> Res
     let mut epoch = sector_log::restore(
         &mut volume,
         TAG,
-        store,
+        log.store,
         log.generation,
         &initial,
         &mut sector,

@@ -71,7 +71,7 @@ class RewritingDevice(FakeDevice):
 
 
 def header(pack=None):
-    lines = ['boot 7', 'journal 2', f'rides {STORE} 3', 'files 00000000000000ab 9']
+    lines = ['boot 7', 'journal 2', f'rides log {STORE} 3', 'files 00000000000000ab 9']
     lines += ['file workouts/tempo.vw 46 2144df1c 1', 'file bests.dat 42 2144df1c 3']
     if pack:
         lines.append(f'terrain {len(pack)} {hashlib.sha256(pack).hexdigest()} ready CHILE-TERRAIN-V1')
@@ -184,6 +184,10 @@ class TracePullTests(unittest.TestCase):
         self.assertEqual(media['rides'], {'store': STORE, 'head': 3})
         self.assertEqual([entry['name'] for entry in media['files']['entries']], ['workouts/tempo.vw', 'bests.dat'])
         self.assertEqual(media['terrain']['tag'], 'CHILE-TERRAIN-V1')
+        media = trace_media.header_media(f'rides uncertain {STORE} 5\n')
+        self.assertEqual(media['rides'], {'store': STORE, 'head': 5}, 'its records are pulled')
+        for line in ('rides unusable', 'rides uninitialized'):
+            self.assertIsNone(trace_media.header_media(line)['rides'], line)
 
 
 if __name__ == '__main__':

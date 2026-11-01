@@ -8002,7 +8002,7 @@ fn a_ride_on_bulk_media_replays_exactly() {
 
 #[test]
 fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() {
-    use firmware_services::trace::origin::{Config, FileEntry, Media, Memory};
+    use firmware_services::trace::origin::{Config, FileEntry, Media, Memory, RideLog};
     let field = |out: &str, key: &str| -> String {
         out.split_whitespace()
             .find_map(|word| word.strip_prefix(key))
@@ -8036,7 +8036,9 @@ fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() 
     assert_eq!(stored, settings, "the settings at power-on");
 
     let media = Media::decode(header.media).unwrap();
-    let (store, head) = media.rides.expect("the card's ride log");
+    let Some(RideLog::Log { store, head }) = media.rides else {
+        panic!("the card's ride log: {:?}", media.rides);
+    };
     assert_eq!(format!("{store:016x}"), field(&bulk, "store="));
     assert_eq!(
         head.to_string(),

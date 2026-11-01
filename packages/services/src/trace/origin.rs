@@ -47,9 +47,7 @@ impl Memory {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Media<'a> {
     pub journal: Option<Journal>,
-    /// The card's ride log when VANA's boot scan ended: its epoch's store id
-    /// and head. RIDES only grows, so a host rewinds a later copy to this.
-    pub rides: Option<(u64, u64)>,
+    pub rides: Option<RideLog>,
     pub files: Option<Files<'a>>,
     /// VANA's ride facts table, `rides/facts.tbl` in FILES, by the digest
     /// of its slots (`vana::ride::facts::digest`); `None` without a table.
@@ -69,6 +67,22 @@ pub struct Journal {
     /// starts it again from slot 0, so a host tells a later copy that still
     /// holds the slots of power-on from one cleared and filled again since.
     pub last: Option<u32>,
+}
+
+/// The card's ride log as VANA's boot scan found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RideLog {
+    /// RIDES holds no log.
+    Uninitialized,
+    /// A log whose end the scan proved: its epoch's store id and head. RIDES
+    /// only grows, so a host rewinds a later copy to this.
+    Log { store: u64, head: u64 },
+    /// A log whose end the scan could not prove, so VANA kept it read only:
+    /// `head` is one past the last valid record it saw.
+    Uncertain { store: u64, head: u64 },
+    /// No log VANA could use: the volume table or the log's metadata was
+    /// corrupt, lost or foreign, or the card did not read.
+    Unusable,
 }
 
 /// The FILES store, and every file in it, as [`FileEntry`] records.
@@ -372,6 +386,41 @@ impl Wire<'_> for Journal {
     }
 }
 
+impl Wire<'_> for RideLog {
+    fn put(&self, w: &mut Writer) {
+        match *self {
+            Self::Uninitialized => w.byte(0),
+            Self::Log { store, head } => {
+                w.byte(1);
+                (store, head).put(w);
+            }
+            Self::Uncertain { store, head } => {
+                w.byte(2);
+                (store, head).put(w);
+            }
+            Self::Unusable => w.byte(3),
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Uninitialized,
+            1 => {
+                let (store, head) = Wire::take(r);
+                Self::Log { store, head }
+            }
+            2 => {
+                let (store, head) = Wire::take(r);
+                Self::Uncertain { store, head }
+            }
+            3 => Self::Unusable,
+            _ => {
+                r.fail();
+                Self::Unusable
+            }
+        }
+    }
+}
+
 impl<'a> Wire<'a> for Files<'a> {
     fn put(&self, w: &mut Writer) {
         self.store.put(w);
@@ -468,7 +517,10 @@ mod tests {
                 next: 41,
                 last: Some(0xdead_beef),
             }),
-            rides: Some((0x1234, 900)),
+            rides: Some(RideLog::Uncertain {
+                store: 0x1234,
+                head: 900,
+            }),
             files: Some(Files {
                 store: 5,
                 generation: 77,
@@ -498,6 +550,19 @@ mod tests {
         };
         let len = none.encode(&mut out).unwrap();
         assert_eq!(Media::decode(&out[..len]), Some(none));
+        for rides in [
+            RideLog::Uninitialized,
+            RideLog::Log { store: 7, head: 3 },
+            RideLog::Uncertain { store: 7, head: 3 },
+            RideLog::Unusable,
+        ] {
+            let media = Media {
+                rides: Some(rides),
+                ..none
+            };
+            let len = media.encode(&mut out).unwrap();
+            assert_eq!(Media::decode(&out[..len]), Some(media));
+        }
     }
 
     #[test]

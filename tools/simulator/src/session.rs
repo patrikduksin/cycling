@@ -371,8 +371,7 @@ type Volumes = (
     Option<u32>,
     Option<origin::Terrain>,
 );
-/// The internal journal, and the card log's store id and head.
-type Journals = (Option<origin::Journal>, Option<(u64, u64)>);
+type Journals = (Option<origin::Journal>, Option<origin::RideLog>);
 
 impl Start {
     fn read_volumes(&mut self, bulk: &crate::bulk::SimBulk) {
@@ -1061,7 +1060,7 @@ impl Session {
             let journals = self
                 .sdk
                 .journals_at_boot()
-                .map(|journals| (Some(journals.internal), journals.bulk));
+                .map(|journals| (Some(journals.internal), Some(journals.bulk)));
             #[cfg(not(feature = "cycling"))]
             let journals = Some((None, None));
             self.trace.start.journals = journals;

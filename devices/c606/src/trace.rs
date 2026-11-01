@@ -492,7 +492,7 @@ impl Start {
         let entries: &'static [u8] = self.entries;
         let media = Media {
             journal: Some(journals.internal),
-            rides: journals.bulk,
+            rides: Some(journals.bulk),
             files: self.files.map(|(store, generation, len)| Files {
                 store,
                 generation,

@@ -70,7 +70,9 @@ commands:
       stimulus runs this build against the recorded world; strict expects
       the recording build and counts every call it answers differently.
       auto (default) picks strict when this checkout, without uncommitted
-      VANA changes, built the trace's commit, else stimulus, and says why.
+      VANA changes, built the trace's commit, else stimulus, and says why;
+      a build with uncommitted changes never matches (its stamp ends -dirty,
+      and the traces it records name no build).
       Divergences count inside the window, with a total for before it, each
       labelled rider-visible, model-only (the stimulus ANT model),
       timing-only, call-level (strict) or replay fault.
@@ -385,6 +387,11 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+include!("../build_sources.rs");
+
+/// The suffix `build.rs` puts on a build made with uncommitted changes.
+const DIRTY: &str = "-dirty";
+
 fn pick_mode(
     asked: &str,
     recorded: &str,
@@ -392,12 +399,14 @@ fn pick_mode(
     edits: &[String],
 ) -> Result<(Mode, String), String> {
     let short = |build: &str| build.chars().take(12).collect::<String>();
+    let built = current.strip_suffix(DIRTY);
+    let commit = built.unwrap_or(current);
     let same = !recorded.is_empty()
-        && !current.is_empty()
-        && (recorded.starts_with(current) || current.starts_with(recorded));
+        && !commit.is_empty()
+        && (recorded.starts_with(commit) || commit.starts_with(recorded));
     let builds = if recorded.is_empty() {
-        "the trace names no build (recorded before builds were stamped)".to_string()
-    } else if current.is_empty() {
+        "the trace names no build (a build with uncommitted changes recorded it, or one from before builds were stamped)".to_string()
+    } else if commit.is_empty() {
         format!(
             "the trace's build is {}; this checkout's is unknown",
             short(recorded)
@@ -406,21 +415,23 @@ fn pick_mode(
         format!(
             "the trace's build {} is not this checkout's {}",
             short(recorded),
-            short(current)
+            short(commit)
         )
     } else if let Some(first) = edits.first() {
         format!(
             "this checkout's commit {} recorded the trace, but {} files that build VANA have uncommitted changes ({first})",
-            short(current),
+            short(commit),
             edits.len()
         )
-    } else {
+    } else if built.is_some() {
         format!(
-            "this checkout's build {} recorded the trace",
-            short(current)
+            "this checkout's commit {} recorded the trace, but this build was made with uncommitted changes to files that build VANA",
+            short(commit)
         )
+    } else {
+        format!("this checkout's build {} recorded the trace", short(commit))
     };
-    let matched = same && edits.is_empty();
+    let matched = same && built.is_none() && edits.is_empty();
     match asked {
         "auto" if matched => Ok((Mode::Strict, builds)),
         "auto" => Ok((
@@ -444,17 +455,8 @@ fn uncommitted() -> Vec<String> {
     std::process::Command::new("git")
         .arg("-C")
         .arg(root)
-        .args([
-            "status",
-            "--porcelain",
-            "--untracked-files=no",
-            "--",
-            "apps",
-            "packages",
-            "tools/simulator",
-            "Cargo.toml",
-            "Cargo.lock",
-        ])
+        .args(["status", "--porcelain", "--untracked-files=no", "--"])
+        .args(BUILD_SOURCES)
         .output()
         .ok()
         .filter(|out| out.status.success())
@@ -598,6 +600,9 @@ mod tests {
         assert_eq!(auto("fedcba9876", BUILD, &[]), Mode::Stimulus);
         let edited = ["apps/vana/src/app/facts.rs".to_string()];
         assert_eq!(auto(BUILD, BUILD, &edited), Mode::Stimulus);
+        let dirty = format!("{BUILD}{DIRTY}");
+        assert_eq!(auto(BUILD, &dirty, &[]), Mode::Stimulus, "built dirty");
+        assert_eq!(auto(&BUILD[..12], &dirty, &[]), Mode::Stimulus);
         assert_eq!(
             pick_mode("strict", "", BUILD, &[]).unwrap().0,
             Mode::Strict,

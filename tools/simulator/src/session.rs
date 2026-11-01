@@ -355,9 +355,13 @@ impl Trace {
     }
 }
 
+/// The build's commit; zero, unknown, for a build with uncommitted changes,
+/// since no commit holds what it ran.
 fn build_id() -> [u8; 20] {
     let mut id = [0u8; 20];
-    let hex = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
+    let hex = option_env!("CYCLING_BUILD_COMMIT")
+        .filter(|commit| !commit.ends_with("-dirty"))
+        .unwrap_or("");
     for (byte, pair) in id.iter_mut().zip(hex.as_bytes().chunks(2)) {
         *byte = core::str::from_utf8(pair)
             .ok()

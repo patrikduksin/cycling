@@ -617,3 +617,28 @@ fn replay_guards_its_default_directory_the_same_way() {
     assert!(out.join("divergence.txt").exists());
     std::fs::remove_dir_all(&cwd).unwrap();
 }
+
+include!("../src/build_sources.rs");
+
+#[test]
+fn the_build_stamp_is_this_checkouts_commit_and_says_when_it_was_edited() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .expect("git runs");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let head = git(&["rev-parse", "HEAD"]);
+    let edited = !git(&[
+        &["status", "--porcelain", "--untracked-files=no", "--"][..],
+        BUILD_SOURCES,
+    ]
+    .concat())
+    .is_empty();
+    let expected = format!("{head}{}", if edited { "-dirty" } else { "" });
+    assert_eq!(option_env!("CYCLING_BUILD_COMMIT"), Some(expected.as_str()));
+}

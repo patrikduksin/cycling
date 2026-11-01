@@ -906,6 +906,36 @@ impl Sim {
         Some(bytes)
     }
 
+    /// Give the bulk region a STORE volume holding an empty store, as the
+    /// owner's `VOLUME ADD STORE` would: the volume table is created first if
+    /// there is none, and a store that exists is kept.
+    pub fn format_store(&mut self) {
+        use firmware_console::commands::volumes;
+        self.init_volumes();
+        let mut out = String::new();
+        let status = volumes::execute(volumes::Command::AddStore, &mut self.device.bulk, &mut out);
+        assert_eq!(status, "OK", "VOLUME ADD STORE: {out}");
+    }
+
+    /// A file's bytes from STORE, if it exists, as the host's `store get`
+    /// would read them.
+    pub fn store_file(&mut self, name: &str) -> Option<Vec<u8>> {
+        use firmware_services::{store, volume};
+        let mut sector = [0u8; 512];
+        let mut vol = volume::open(&mut self.device.bulk, &volume::STORE, &mut sector).ok()?;
+        let mounted = store::mount(&mut vol, &mut sector).ok()?;
+        let name = store::Name::new(name).ok()?;
+        let mut reader = mounted.reader(&mut vol, &name, &mut sector).ok()?;
+        let (mut bytes, mut record) = (Vec::new(), [0u8; store::PAYLOAD]);
+        while let Some(n) = reader
+            .next(&mounted, &mut vol, &mut record, &mut sector)
+            .ok()?
+        {
+            bytes.extend_from_slice(&record[..n]);
+        }
+        Some(bytes)
+    }
+
     /// Rides on the bulk log, read through `EXPORT BULK` as a host would.
     #[cfg(feature = "cycling")]
     pub fn bulk_rides(&mut self) -> Vec<crate::rides::Ride> {

@@ -116,5 +116,5 @@ if they differ, it reopens its files.
 Line commands: `VOLUME [STATUS|INIT|ADD STORE|TRANSFER]`, `TERRAIN [STATUS]`,
 `FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]` and
 `STORE [STATUS|LIST index]`. The simulator supports the line commands. Its
-`Sim::install_terrain`, `Sim::put_file` and `Sim::file` stand in for the host
-transfer.
+`Sim::install_terrain`, `Sim::put_file`, `Sim::file`, `Sim::format_store` and
+`Sim::store_file` stand in for the host transfer.

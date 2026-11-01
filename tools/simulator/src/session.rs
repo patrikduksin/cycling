@@ -355,6 +355,12 @@ impl Trace {
     }
 }
 
+/// The checkout paths whose tracked files build VANA, as `build.rs` lists
+/// them: an uncommitted change under one means no commit holds this build.
+pub fn build_sources() -> Vec<&'static str> {
+    env!("CYCLING_BUILD_SOURCES").split(' ').collect()
+}
+
 /// The build's commit; zero, unknown, for a build with uncommitted changes,
 /// since no commit holds what it ran.
 fn build_id() -> [u8; 20] {

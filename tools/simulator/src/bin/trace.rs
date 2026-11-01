@@ -387,8 +387,6 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
-include!("../build_sources.rs");
-
 const DIRTY: &str = "-dirty";
 
 fn pick_mode(
@@ -455,7 +453,7 @@ fn uncommitted() -> Vec<String> {
         .arg("-C")
         .arg(root)
         .args(["status", "--porcelain", "--untracked-files=no", "--"])
-        .args(BUILD_SOURCES)
+        .args(shell_simulator::session::build_sources())
         .output()
         .ok()
         .filter(|out| out.status.success())

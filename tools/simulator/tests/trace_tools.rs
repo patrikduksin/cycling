@@ -613,8 +613,6 @@ fn replay_guards_its_default_directory_the_same_way() {
     std::fs::remove_dir_all(&cwd).unwrap();
 }
 
-include!("../src/build_sources.rs");
-
 #[test]
 fn the_build_stamp_is_this_checkouts_commit_and_says_when_it_was_edited() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -628,9 +626,10 @@ fn the_build_stamp_is_this_checkouts_commit_and_says_when_it_was_edited() {
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     };
     let head = git(&["rev-parse", "HEAD"]);
+    let sources = shell_simulator::session::build_sources();
     let edited = !git(&[
         &["status", "--porcelain", "--untracked-files=no", "--"][..],
-        BUILD_SOURCES,
+        &sources,
     ]
     .concat())
     .is_empty();
@@ -790,8 +789,9 @@ fn a_test_stub_compiles_in_a_fresh_file_whatever_it_expects() {
 #[test]
 fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sources = shell_simulator::session::build_sources();
     let covered = |path: &str| {
-        BUILD_SOURCES
+        sources
             .iter()
             .any(|source| path == *source || path.starts_with(&format!("{source}/")))
     };
@@ -843,7 +843,7 @@ fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
     let unwatched: Vec<&String> = read.iter().filter(|path| !covered(path)).collect();
     assert!(
         unwatched.is_empty(),
-        "{unwatched:?} are not in BUILD_SOURCES"
+        "{unwatched:?} are not in build.rs's BUILD_SOURCES"
     );
 }
 

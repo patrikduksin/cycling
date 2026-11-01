@@ -1,7 +1,19 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-include!("src/build_sources.rs");
+/// The checkout paths whose tracked files build VANA in the simulator, from
+/// the repository root. An edit under any of them makes the build `-dirty`;
+/// the simulator gets them as `CYCLING_BUILD_SOURCES` for the same check.
+const BUILD_SOURCES: &[&str] = &[
+    "apps",
+    "packages",
+    "tools/simulator",
+    "vendor",
+    "patches",
+    ".cargo",
+    "Cargo.toml",
+    "Cargo.lock",
+];
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
@@ -17,6 +29,10 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=CYCLING_BUILD_COMMIT");
+    println!(
+        "cargo:rustc-env=CYCLING_BUILD_SOURCES={}",
+        BUILD_SOURCES.join(" ")
+    );
     if std::env::var_os("CYCLING_BUILD_COMMIT").is_some() {
         return;
     }

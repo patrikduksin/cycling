@@ -1,0 +1,234 @@
+use super::*;
+use device_api::ant::{Identity, LinkState, STALE_MS};
+use device_api::input::{Button, Input};
+use std::format;
+use std::string::String;
+use std::vec::Vec;
+
+/// Each event as text, in the order recorded.
+#[derive(Default)]
+struct Log(Vec<String>);
+
+impl Record for Log {
+    fn record(&mut self, event: &Event<'_>) {
+        self.0.push(format!("{event:?}"));
+    }
+}
+
+fn kinds(log: &RefCell<Log>) -> Vec<String> {
+    log.borrow_mut()
+        .0
+        .drain(..)
+        .map(|text| text.split(['(', ' ']).next().unwrap().into())
+        .collect()
+}
+
+const POWER: Identity = Identity {
+    device_type: 11,
+    device_number: 1234,
+    transmission_type: 1,
+};
+
+/// A radio with one power meter channel that last heard a page at `heard`.
+struct Radio {
+    heard: u64,
+    link: LinkState,
+    packets: Vec<ant::Packet>,
+}
+
+impl Radio {
+    fn new() -> Self {
+        Self {
+            heard: 0,
+            link: LinkState::Connected,
+            packets: Vec::new(),
+        }
+    }
+}
+
+impl Ant for Radio {
+    fn scanning(&self) -> bool {
+        false
+    }
+    fn discoveries(&self) -> [Option<ant::Discovery>; 8] {
+        [None; 8]
+    }
+    fn request(&mut self, _: AntOperation, _: u64) -> Result<ant::Admission, ant::Error> {
+        self.link = LinkState::Disconnecting;
+        Ok(ant::Admission::Accepted)
+    }
+    fn availability(&self) -> Availability {
+        Availability::Ready
+    }
+    fn channels(&self, now: u64) -> [Option<ant::Snapshot>; ant::CHANNEL_CAPACITY] {
+        let age = now.saturating_sub(self.heard);
+        let mut channels = [None; ant::CHANNEL_CAPACITY];
+        channels[0] = Some(ant::Snapshot {
+            scanning: false,
+            link: self.link,
+            selected: Some(POWER),
+            generation: 1,
+            packets: 0,
+            dropped_packets: 0,
+            discovery_overflows: 0,
+            transport_losses: 0,
+            tx_failures: 0,
+            age_ms: Some(age),
+            stale: age >= STALE_MS,
+        });
+        channels
+    }
+    fn take_packet(&mut self) -> Option<ant::Packet> {
+        self.packets.pop()
+    }
+}
+
+#[test]
+fn a_pass_reads_the_value_sampled_at_its_start() {
+    let log = RefCell::new(Log::default());
+    let mut frozen = FrozenAnt::default();
+    let mut radio = Radio::new();
+    let mut ant = frozen.bind(&mut radio, 100, &log);
+    assert_eq!(
+        ant.request(AntOperation::StopScan, 100),
+        Ok(ant::Admission::Accepted)
+    );
+    let link = ant.channel(11, 100).unwrap().link;
+    assert_eq!(link, LinkState::Connected, "the request shows next pass");
+    let ant = frozen.bind(&mut radio, 110, &log);
+    assert_eq!(ant.channel(11, 110).unwrap().link, LinkState::Disconnecting);
+}
+
+#[test]
+fn an_unchanged_radio_is_recorded_once() {
+    let log = RefCell::new(Log::default());
+    let mut frozen = FrozenAnt::default();
+    let mut radio = Radio::new();
+    radio.heard = 95;
+    frozen.bind(&mut radio, 100, &log);
+    let first = kinds(&log);
+    assert_eq!(first[..2], ["AntRadio", "AntDiscoveries"]);
+    assert_eq!(
+        first[2..],
+        ["AntLink"; ant::CHANNEL_CAPACITY],
+        "empty ones too"
+    );
+    for now in (110..STALE_MS).step_by(10) {
+        frozen.bind(&mut radio, now, &log);
+    }
+    assert!(kinds(&log).is_empty(), "age alone is not a change");
+    radio.heard = 2_000;
+    frozen.bind(&mut radio, 2_010, &log);
+    assert_eq!(kinds(&log), ["AntLink"], "a new page is");
+}
+
+#[test]
+fn a_replay_presents_what_the_radio_reported_every_pass() {
+    let log = RefCell::new(Log::default());
+    let mut frozen = FrozenAnt::default();
+    let mut radio = Radio::new();
+    let mut replayed: Latest<Option<ant::Snapshot>> = Latest::default();
+    let mut recorded = 0;
+    for now in (0..10_000).step_by(10) {
+        if now == 5_000 {
+            radio.heard = 5_000;
+        }
+        let actual = frozen.bind(&mut radio, now, &log).channels(now)[0];
+        let events = kinds(&log);
+        if events.contains(&"AntLink".into()) {
+            replayed.set(actual, now);
+            recorded += 1;
+        }
+        assert_eq!(replayed.at(now), Some(actual), "at {now} ms");
+    }
+    assert_eq!(recorded, 4, "start, stale, a page, stale again");
+}
+
+#[test]
+fn takes_and_requests_are_recorded_in_call_order() {
+    let log = RefCell::new(Log::default());
+    let mut frozen = FrozenAnt::default();
+    let mut radio = Radio::new();
+    frozen.bind(&mut radio, 0, &log);
+    kinds(&log);
+    radio.packets.push(ant::Packet {
+        identity: POWER,
+        data: [0x10; 8],
+        received_ms: 5,
+        generation: 1,
+        loss_count: 0,
+    });
+    let mut ant = frozen.bind(&mut radio, 10, &log);
+    assert!(ant.take_packet().is_some());
+    assert!(ant.take_packet().is_none());
+    let _ = ant.request(AntOperation::StopScan, 10);
+    let _ = ant.send_status(ant::OperationId(1));
+    assert_eq!(kinds(&log), ["AntPacket", "AntAdmission", "AntSend"]);
+}
+
+struct Queue(Vec<Edge>);
+
+impl InputSource for Queue {
+    fn controls(&self) -> Controls {
+        Controls {
+            touch: Availability::Ready,
+            buttons: &[],
+        }
+    }
+    fn take_edge(&mut self) -> Option<Edge> {
+        (!self.0.is_empty()).then(|| self.0.remove(0))
+    }
+}
+
+#[test]
+fn edges_past_one_tick_wait_for_the_next_pass() {
+    let press = |sequence| Edge {
+        sequence,
+        received_ms: 0,
+        input: Input::Button {
+            button: Button::TopLeft,
+            code: 1,
+        },
+    };
+    let mut edges = RecordedEdges::new(Queue((1..=20).map(press).collect()));
+    let mut taken = 0;
+    while edges.take_edge().is_some() {
+        taken += 1;
+    }
+    assert_eq!(taken, 16);
+    let mut log = Log::default();
+    edges.record(&mut log);
+    assert_eq!(log.0.len(), 16);
+    let rest: Vec<_> = core::iter::from_fn(|| edges.take_edge()).collect();
+    assert_eq!(rest.first().map(|edge| edge.sequence), Some(17));
+}
+
+#[test]
+fn a_full_block_moves_on_to_the_next() {
+    struct Blocks(Vec<Vec<u8>>);
+    impl Sink for Blocks {
+        fn block(&mut self, bytes: &[u8]) {
+            self.0.push(bytes.into());
+        }
+    }
+    let header = Header {
+        version: crate::trace::VERSION,
+        build: [0; 20],
+        boot: 1,
+        profile: 0,
+        config: &[],
+        media: &[],
+    };
+    let mut recorder = Recorder::new(&header, [0u8; 128], Blocks(Vec::new())).unwrap();
+    for now in 1..=500 {
+        recorder.record(&Event::Pass { now_ms: now * 10 });
+    }
+    let mut bytes: Vec<u8> = recorder.sink().0.concat();
+    assert!(recorder.sink().0.len() > 4, "several blocks");
+    bytes.extend_from_slice(recorder.open_block());
+    let (_, events) = crate::trace::decode(&bytes).unwrap();
+    let passes: Vec<_> = events.collect();
+    assert_eq!(passes.len(), 500);
+    assert_eq!(passes.last(), Some(&Event::Pass { now_ms: 5_000 }));
+    assert_eq!(recorder.refused(), 0);
+}

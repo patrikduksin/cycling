@@ -19,6 +19,7 @@ use device_api::observation::{Availability, Observation};
 use device_api::positioning;
 use device_api::sensors;
 
+pub mod frozen;
 #[cfg(test)]
 mod tests;
 

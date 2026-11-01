@@ -25,6 +25,27 @@ pub struct Point {
     pub at: Moment,
     pub name: String,
     pub text: String,
+    /// Index of the span it happened in: the ride open then, ending
+    /// included, else the session.
+    pub span: usize,
+    /// For a warning: what began, or which ride ended, in the same pass.
+    pub alongside: Vec<String>,
+}
+
+impl Point {
+    fn new(at: Moment, name: &str, text: String) -> Self {
+        Self {
+            at,
+            name: name.into(),
+            text,
+            span: 0,
+            alongside: Vec::new(),
+        }
+    }
+
+    fn warning(&self) -> bool {
+        matches!(self.name.as_str(), "log" | "storage")
+    }
 }
 
 pub struct Story {
@@ -97,11 +118,11 @@ pub fn tell(timeline: &Timeline) -> Story {
     }];
     let mut events = Vec::new();
     if let Some(first) = timeline.entries.first() {
-        events.push(Point {
-            at: first.at,
-            name: "boot".into(),
-            text: format!("boot {}", timeline.boot),
-        });
+        events.push(Point::new(
+            first.at,
+            "boot",
+            format!("boot {}", timeline.boot),
+        ));
     }
     let mut open: HashMap<String, usize> = HashMap::new();
     let mut ride: Option<usize> = None;
@@ -168,17 +189,11 @@ pub fn tell(timeline: &Timeline) -> Story {
             }
             Kind::Toast if entry.text.starts_with("LAP ") => {
                 laps += 1;
-                events.push(Point {
-                    at: entry.at,
-                    name: "lap".into(),
-                    text: entry.text.clone(),
-                });
+                events.push(Point::new(entry.at, "lap", entry.text.clone()));
             }
-            Kind::Log | Kind::Gap | Kind::Command | Kind::Storage => events.push(Point {
-                at: entry.at,
-                name: entry.kind.name().into(),
-                text: entry.text.clone(),
-            }),
+            Kind::Log | Kind::Gap | Kind::Command | Kind::Storage => {
+                events.push(Point::new(entry.at, entry.kind.name(), entry.text.clone()))
+            }
             _ => {}
         }
     }
@@ -199,7 +214,41 @@ pub fn tell(timeline: &Timeline) -> Story {
     }
     spans[1..].sort_by_key(|span| span.start.session_ms);
     reparent(&mut spans);
+    attach(&mut spans, &mut events);
     Story { spans, events }
+}
+
+/// Put each event in the ride it happened in, and say what a warning
+/// coincided with, so a ride saved while a save failed reads as one moment.
+fn attach(spans: &mut [Span], events: &mut [Point]) {
+    for event in events.iter_mut() {
+        let at = event.at.session_ms;
+        let within = |span: &Span| (span.start.session_ms..=span.end.session_ms).contains(&at);
+        event.span = spans
+            .iter()
+            .rposition(|span| span.name == "ride" && within(span))
+            .unwrap_or(0);
+        if !event.warning() {
+            continue;
+        }
+        event.alongside = spans[1..]
+            .iter()
+            .filter_map(|span| {
+                if span.start.session_ms == at {
+                    return Some(format!("{} began", span.name));
+                }
+                let ended = span.attributes.iter().find(|(key, _)| key == "ended")?;
+                (span.end.session_ms == at).then(|| format!("{} ended {}", span.name, ended.1))
+            })
+            .collect();
+        if event.span != 0 {
+            let warnings = &mut spans[event.span].attributes;
+            match warnings.iter_mut().find(|(key, _)| key == "warnings") {
+                Some((_, count)) => *count = (count.parse::<u32>().unwrap_or(0) + 1).to_string(),
+                None => warnings.push(("warnings".into(), "1".into())),
+            }
+        }
+    }
 }
 
 /// Sorting moved the spans; point each stretch at its ride again.
@@ -234,7 +283,13 @@ impl fmt::Display for Span {
 }
 
 impl fmt::Display for Point {
+    /// `03:55.860 ride --:--  event storage  warn sdk.facts save_failed
+    /// error=... (same pass: ride ended saved, page summary began)`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}  event {}  {}", self.at, self.name, self.text)
+        write!(f, "{}  event {}  {}", self.at, self.name, self.text)?;
+        if !self.alongside.is_empty() {
+            write!(f, "  (same pass: {})", self.alongside.join(", "))?;
+        }
+        Ok(())
     }
 }

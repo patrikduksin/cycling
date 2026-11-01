@@ -150,7 +150,10 @@ fn the_meter_out_of_range_is_one_silence_between_its_last_and_first_packet() {
     let next_ms = silence.next_ms.expect("the meter came back");
     let silent = next_ms - silence.last_ms;
     // Out of range for 25 s; the packets around it are 250 ms apart.
-    assert!((24_500..=25_500).contains(&silent), "silent for {silent} ms");
+    assert!(
+        (24_500..=25_500).contains(&silent),
+        "silent for {silent} ms"
+    );
     let story = tell(&timeline);
     let span = story
         .spans
@@ -160,6 +163,34 @@ fn the_meter_out_of_range_is_one_silence_between_its_last_and_first_packet() {
     assert_eq!(
         (span.start.session_ms, span.end.session_ms),
         (silence.last_ms, next_ms)
+    );
+}
+
+#[test]
+fn the_save_warning_is_storage_and_belongs_to_the_ride_it_ended_with() {
+    let timeline = timeline("power-dropout-after-descent");
+    let found = find(
+        &timeline,
+        &Query::parse("storage"),
+        (0, u64::MAX),
+        Some("save_failed"),
+    );
+    let [Found::Entry(warning)] = found.as_slice() else {
+        panic!("one save warning under storage: {found:?}");
+    };
+    let story = tell(&timeline);
+    let event = story
+        .events
+        .iter()
+        .find(|e| e.at == warning.at && e.name == "storage")
+        .expect("the warning is an event");
+    let ride = &story.spans[event.span];
+    assert_eq!(ride.name, "ride");
+    assert!(ride.attributes.contains(&("warnings".into(), "1".into())));
+    assert!(
+        event.alongside.contains(&"ride ended saved".to_string()),
+        "{:?}",
+        event.alongside
     );
 }
 

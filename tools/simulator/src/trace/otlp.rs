@@ -70,24 +70,21 @@ pub fn export(timeline: &Timeline, story: &Story) -> String {
         if span.open {
             attributes.push(attribute("vana.open_at_end", "true"));
         }
-        let events = if index == 0 {
-            story
-                .events
-                .iter()
-                .map(|event| {
-                    format!(
-                        r#"{{"timeUnixNano":{},"name":{},"attributes":[{},{}]}}"#,
-                        nanos(event.at.session_ms),
-                        json(&event.name),
-                        attribute("text", &event.text),
-                        attribute("vana.at", &event.at.to_string()),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        } else {
-            String::new()
-        };
+        let events = story
+            .events
+            .iter()
+            .filter(|event| event.span == index)
+            .map(|event| {
+                format!(
+                    r#"{{"timeUnixNano":{},"name":{},"attributes":[{},{}]}}"#,
+                    nanos(event.at.session_ms),
+                    json(&event.name),
+                    attribute("text", &event.text),
+                    attribute("vana.at", &event.at.to_string()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         let parent = span
             .parent
             .map(|parent| format!(r#""parentSpanId":{},"#, json(&span_id(parent))))

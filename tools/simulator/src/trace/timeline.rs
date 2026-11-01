@@ -203,6 +203,8 @@ impl Kind {
     }
 
     /// What the rider saw or heard, or VANA logged; the rest is input.
+    /// Storage holds both: faults the media reported, and VANA's warnings
+    /// about saving or reading, which `about_storage` sorts out of `log`.
     pub const fn seen(self) -> bool {
         matches!(
             self,
@@ -668,7 +670,11 @@ impl Reader {
                 target,
                 text,
             } => self.push(
-                Kind::Log,
+                if about_storage(text) {
+                    Kind::Storage
+                } else {
+                    Kind::Log
+                },
                 format!(
                     "{} {target} {text}",
                     match level {
@@ -777,6 +783,27 @@ fn answer(result: Result<(), device_api::observation::Error>) -> String {
         Ok(()) => "ok".into(),
         Err(error) => format!("{error:?}").to_lowercase(),
     }
+}
+
+/// Words in a VANA warning that name saving to or reading from media.
+const STORAGE_WORDS: [&str; 11] = [
+    "save",
+    "load",
+    "forget",
+    "fold",
+    "clear",
+    "history",
+    "storage",
+    "bulk",
+    "media",
+    "volume",
+    "turns_not",
+];
+
+/// A warning about media goes with the storage faults, not other logs.
+fn about_storage(text: &str) -> bool {
+    let text = text.to_lowercase();
+    STORAGE_WORDS.iter().any(|word| text.contains(word))
 }
 
 fn hex(bytes: &[u8]) -> String {

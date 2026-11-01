@@ -31,13 +31,16 @@ commands:
       Sensor silences first (each sensor's last packet before a pause and its
       first after), then spans (session, rides, recording and paused
       stretches, pages, toasts, sensor links and silences, GPS fix) and
-      events (boot, laps, warnings, gaps, commands), one line each. Run this
-      first.
+      events (boot, laps, warnings, storage, gaps, commands), one line each.
+      A warning names what began or which ride ended in the same pass, and
+      a ride counts the warnings logged in it. Run this first.
   timeline <trace> [--from T] [--to T] [--kinds LIST] [--all] [--hex]
       Every event in the window, inputs and what the rider saw. Kinds: gap,
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
-      gps, sensors, battery, time, storage, entropy, page, toast, sound, ride,
-      shown, log; groups seen, inputs, default, all. --all also lists entries
+      gps, sensors, battery, time, storage (media faults and VANA's warnings
+      about saving or reading), entropy, page, toast, sound, ride, shown,
+      log, phone, power, display, buzzer, trace; groups seen, inputs,
+      default, all. --all also lists entries
       that only repeat their source (a counter or reading moved). ANT+ pages
       read as words (power 230 W, hr 142 bpm, cadence 86 rpm, radar targets);
       --hex adds each packet's bytes.

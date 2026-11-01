@@ -362,7 +362,6 @@ fn line_commands_report_volumes_terrain_and_files() {
 fn line_commands_add_and_report_the_store() {
     let mut media = Media::default();
     let mut out = String::new();
-    // No table yet: nothing to add STORE to.
     assert_eq!(
         volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
         "UNINITIALIZED"
@@ -389,7 +388,6 @@ fn line_commands_add_and_report_the_store() {
         ),
         "{out}"
     );
-    // A store with files is kept as it is.
     let mut sector = [0u8; 512];
     let mut vol =
         firmware_services::volume::open(&mut media, &firmware_services::volume::STORE, &mut sector)
@@ -442,8 +440,6 @@ fn line_commands_add_and_report_the_store() {
     }
 }
 
-/// What the app leaves in STORE: a trace of `records` records, each as long
-/// as its number allows, and a small settings file.
 fn record_traces(media: &mut Media, records: u32) -> Vec<u8> {
     use firmware_services::store::{self, Name};
     let mut sector = [0u8; 512];
@@ -511,10 +507,6 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
         status::INVALID
     );
 
-    // A pull keeps its reader open: one read per record (2.1 per KB of full
-    // records), plus opening the file, a table pass at each chunk, and at
-    // the end the rest of the last chunk, which the last two requests both
-    // read.
     let reads = host.media.reads;
     let (mut pulled, mut at) = (Vec::new(), 0);
     loop {
@@ -538,7 +530,6 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
         "{overhead} reads besides records"
     );
 
-    // Any record range, in another chunk or back at the start.
     let first = firmware_services::store::CHUNK + 5;
     let (_, next, count, data) = host.call(op::STORE_READ, u64::from(first), 2, b"traces/0001");
     assert_eq!((next, count), (u64::from(first) + 2, 2));
@@ -554,7 +545,6 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
     );
     assert_eq!(host.call(op::STORE_READ, 0, 1, b"/bad").0, status::INVALID);
 
-    // A delete is a new generation the app compares after the session.
     let (status, after, _, _) = host.call(op::STORE_DELETE, 0, 0, b"traces/0001");
     assert_eq!(status, status::OK);
     assert!(after > generation);
@@ -564,7 +554,6 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
     );
     let (_, _, files, info) = host.call(op::STORE_STATUS, 0, 0, &[]);
     assert_eq!((files, get_u64(&info, 0)), (1, after));
-    // A new session sees what this one committed.
     host.session = Session::default();
     host.id = 0;
     let (_, _, count, list) = host.call(op::STORE_LIST, 0, 0, b"");
@@ -588,7 +577,6 @@ fn a_pull_stops_at_records_the_medium_lost_and_says_which() {
         .unwrap()
         .extent()
         .start;
-    // The trace holds chunks 1 and 2, after the settings file's chunk 0.
     let lost = CHUNK + 20;
     host.media
         .written
@@ -610,8 +598,6 @@ fn a_pull_stops_at_records_the_medium_lost_and_says_which() {
     assert!(data == trace[offset(lost + 1)..offset(lost + 2)]);
 }
 
-/// A store whose only header a fault damaged mounts as corrupt, and VOLUME
-/// ADD STORE never formats over it: the owner's explicit format does.
 #[test]
 fn only_the_owners_store_format_replaces_a_corrupt_store() {
     use firmware_services::store::COPY_B;
@@ -641,7 +627,6 @@ fn only_the_owners_store_format_replaces_a_corrupt_store() {
         out.starts_with("state=ready files=0 capacity=64 chunks=1039 free=1039 generation=1 "),
         "{out}"
     );
-    // A store of another version is never formatted over.
     let mut newer = media.written[&start];
     newer[16] = 2;
     let checksum = crc32(&newer[..508]);

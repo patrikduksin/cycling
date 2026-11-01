@@ -279,7 +279,6 @@ const STORE_ENTRY: usize = store::NAME + 8;
 
 const _: () = assert!(store::CAPACITY * STORE_ENTRY <= MAX_PAYLOAD);
 
-/// STORE as the session left it: mounted, with the file being pulled open.
 struct Pull {
     extent: volume::Extent,
     store: store::Store,
@@ -368,7 +367,6 @@ impl Session {
             op::FILES_STATUS..=op::FILES_STAT => self.files(request, payload, media, out),
             op::STORE_STATUS..=op::STORE_DELETE => {
                 let reply = self.store(request, payload, media, out);
-                // Metadata this session may no longer hold is read again.
                 if matches!(
                     reply.status,
                     status::MEDIA | status::STALE | status::CORRUPT
@@ -676,7 +674,6 @@ impl Session {
                 Reply::ok(mounted.generation(), files, STORE_INFO)
             }
             op::STORE_LIST => {
-                // Every file in the directory and below fits one reply.
                 let Ok(dir) = store::Dir::new(text) else {
                     return Reply::error(status::INVALID);
                 };

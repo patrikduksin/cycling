@@ -93,7 +93,6 @@ const PER_SECTOR: usize = SECTOR_SIZE / ENTRY;
 pub const DIR_SECTORS: usize = 8;
 /// Files the store can hold.
 pub const CAPACITY: usize = DIR_SECTORS * PER_SECTOR;
-/// Chunk table entries per sector.
 const LINKS: usize = SECTOR_SIZE / 4;
 /// Table sectors at most, whatever the volume size.
 pub const MAX_TABLE: usize = 16;
@@ -146,8 +145,6 @@ impl From<MediaError> for Error {
     }
 }
 
-/// Up to `NAME` bytes of `A-Z a-z 0-9 . _ - /`, as `/`-separated segments
-/// that are not empty. A directory is empty (the root) or ends in `/`.
 fn path(text: &str, dir: bool) -> Result<([u8; NAME], u8), Error> {
     let raw = text.as_bytes();
     let segments = match raw.split_last() {
@@ -170,7 +167,8 @@ fn path(text: &str, dir: bool) -> Result<([u8; NAME], u8), Error> {
     Ok((bytes, raw.len() as u8))
 }
 
-/// A file name, such as `traces/0001`.
+/// A file name, such as `traces/0001`: up to `NAME` bytes of `A-Z a-z 0-9 .
+/// _ - /`, as `/`-separated segments that are not empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Name {
     bytes: [u8; NAME],
@@ -184,7 +182,6 @@ impl Name {
     }
 
     pub fn as_str(&self) -> &str {
-        // Only validated ASCII is ever stored.
         core::str::from_utf8(&self.bytes[..usize::from(self.length)]).unwrap_or("")
     }
 
@@ -194,7 +191,8 @@ impl Name {
     }
 }
 
-/// A directory: empty for the root, else ending in `/`, such as `traces/`.
+/// A directory: empty for the root, else a name ending in `/`, such as
+/// `traces/`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Dir {
     bytes: [u8; NAME],
@@ -223,7 +221,6 @@ pub struct Entry {
     pub name: Name,
     /// Unique in the store and increasing: a larger id is a newer file.
     pub id: u32,
-    /// Chunks it holds; every one but the last is full.
     pub chunks: u32,
 }
 
@@ -274,12 +271,10 @@ impl Header {
 enum Replica {
     Ours(Header),
     Foreign,
-    /// The magic without a valid CRC.
     Damaged,
     Absent,
 }
 
-/// A header copy, for a volume with `data` sectors after `DATA`.
 fn decode(sector: &Sector, data: u64) -> Replica {
     if sector[..16] != MAGIC[..] {
         return Replica::Absent;
@@ -318,7 +313,6 @@ fn decode(sector: &Sector, data: u64) -> Replica {
     Replica::Ours(head)
 }
 
-/// The valid header copies, and whether any copy is damaged.
 fn headers(
     media: &mut impl ReadWrite,
     sector: &mut Sector,
@@ -346,8 +340,6 @@ pub fn mount(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Store, E
     current(media, sector).map(|(store, _)| store)
 }
 
-/// The current metadata, and the body CRCs the other copy's valid header
-/// vouches for.
 fn current(
     media: &mut impl ReadWrite,
     sector: &mut Sector,
@@ -419,8 +411,7 @@ fn format_chunks(
     // A cut tears a sector into new and old bytes. The header goes out first
     // without its magic and then whole, so a torn header is the whole one or
     // has no magic: a store that never had a valid header still reads as
-    // `Uninitialized`, never `Corrupt`. The body is zeros, so its CRCs are
-    // known before it is written.
+    // `Uninitialized`, never `Corrupt`.
     sector.fill(0);
     let body = head.body();
     head.crcs[..body].fill(crc32(sector));
@@ -459,16 +450,13 @@ fn decode_entry(bytes: &[u8]) -> Result<Option<(Name, u32)>, Error> {
     Ok(Some((name, id)))
 }
 
-/// The table entry of a chunk a file holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Link {
     slot: usize,
     position: u32,
-    /// The file went on in its next chunk before this one filled.
     partial: bool,
 }
 
-/// Set in an entry's position field for a partial chunk.
 const PARTIAL: u16 = 0x8000;
 
 const _: () = assert!(MAX_CHUNKS <= PARTIAL as usize);
@@ -483,8 +471,6 @@ fn put_link(sector: &mut Sector, chunk: u32, link: Option<Link>) {
     put_u16(sector, at + 2, position);
 }
 
-/// Where a file's chunks are: how many, the first and whether it is
-/// partial, and the last.
 struct Chain {
     count: u32,
     first: (u32, bool),
@@ -496,7 +482,6 @@ struct Chain {
 pub struct Store {
     copy: u64,
     head: Header,
-    /// File id of the open appender, 0 for none.
     writer: u32,
 }
 
@@ -520,7 +505,6 @@ impl Store {
         self.head.chunk
     }
 
-    /// Body sector `k` of the current copy, verified against its header.
     fn body(&self, media: &mut impl ReadWrite, k: usize, sector: &mut Sector) -> Result<(), Error> {
         media.owned_read(base(self.copy) + 1 + k as u64, sector)?;
         if crc32(sector) != self.head.crcs[k] {
@@ -529,8 +513,6 @@ impl Store {
         Ok(())
     }
 
-    /// Visit every entry slot with its file until `visit` returns true:
-    /// at most `D` reads.
     fn scan(
         &self,
         media: &mut impl ReadWrite,
@@ -549,7 +531,6 @@ impl Store {
         Ok(())
     }
 
-    /// The slot and id of `name`: at most `D` reads.
     fn find(
         &self,
         media: &mut impl ReadWrite,
@@ -568,7 +549,6 @@ impl Store {
         found.ok_or(Error::NotFound)
     }
 
-    /// Visit every chunk's table entry: `T` reads.
     fn table(
         &self,
         media: &mut impl ReadWrite,
@@ -604,7 +584,6 @@ impl Store {
         Ok(())
     }
 
-    /// The free chunk nearest after the cursor, wrapping: `T` reads.
     fn free_chunk(
         &self,
         media: &mut impl ReadWrite,
@@ -621,7 +600,6 @@ impl Store {
         Ok(best)
     }
 
-    /// The chunks of the file in `slot`: `T` reads.
     fn chain(
         &self,
         media: &mut impl ReadWrite,
@@ -650,8 +628,6 @@ impl Store {
         }
     }
 
-    /// The chunk at `position` of the file in `slot`, and whether it is
-    /// partial: `T` reads.
     fn locate(
         &self,
         media: &mut impl ReadWrite,
@@ -670,8 +646,6 @@ impl Store {
         found.ok_or(Error::Corrupt)
     }
 
-    /// The payload length of `chunk`'s record `index` when it is record
-    /// `number` of file `id`: one read.
     fn record(
         &self,
         media: &mut impl ReadWrite,
@@ -693,10 +667,6 @@ impl Store {
         Ok(valid.then_some(length))
     }
 
-    /// Copy-on-write commit into the other copy: the body sectors in
-    /// `change` pass through `edit`, the others are copied where that copy
-    /// does not already hold them. Fails with `Stale`, writing nothing,
-    /// unless this metadata is still current.
     fn commit(
         &mut self,
         media: &mut impl ReadWrite,
@@ -706,8 +676,6 @@ impl Store {
         sector: &mut Sector,
         mut edit: impl FnMut(usize, &mut Sector),
     ) -> Result<(), Error> {
-        // The other copy as the medium holds it now: another writer's commit
-        // may have failed part way through rewriting it.
         let (now, held) = current(media, sector)?;
         if (now.copy, now.head) != (self.copy, self.head) {
             return Err(Error::Stale);
@@ -833,7 +801,6 @@ impl Store {
                 _ => return Err(Error::Full),
             }
         }
-        // A deleted file always frees an entry and a chunk.
         Err(Error::Corrupt)
     }
 
@@ -924,7 +891,6 @@ impl Store {
         Ok(Some(name))
     }
 
-    /// Clear the entry in `slot` and free its chunks in one commit.
     fn remove(
         &mut self,
         media: &mut impl ReadWrite,
@@ -964,8 +930,6 @@ pub struct Appender {
     id: u32,
     chunk: u32,
     position: u32,
-    /// The next record in `chunk`; `None` after a reopen, when the next
-    /// record starts another chunk.
     index: Option<u32>,
     fill: usize,
     buffer: [u8; PAYLOAD],
@@ -1063,8 +1027,6 @@ impl Appender {
         Ok(())
     }
 
-    /// Give the file another chunk, rolling over if the store is full, and
-    /// mark the last one `partial`.
     fn extend(
         &mut self,
         store: &mut Store,
@@ -1204,8 +1166,6 @@ impl Reader {
                 self.index += 1;
                 return Ok(Next::Record(length));
             }
-            // Records are written once and in order: one that reads back
-            // after this one means this one was lost.
             let mut after = self.index + 1;
             while after < chunk {
                 let number = from + after - self.index;

@@ -81,7 +81,6 @@ PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
 NAME = 40
 ENTRY = 2 + NAME + 12
 STORE_ENTRY = NAME + 8
-# Records one STORE_READ asks for; the device sends as many as fit 4 KiB.
 STORE_RECORDS = 16
 
 
@@ -470,8 +469,6 @@ def store_get(transfer, name, output):
     return {**result, 'hole': hole} if hole else result
 
 
-# Table writes and the store format run as ordinary terminal commands,
-# outside the transfer session, which keeps STORE open.
 LINE_ACTIONS = {
     ('init', None): 'VOLUME INIT',
     ('add-store', None): 'VOLUME ADD STORE',

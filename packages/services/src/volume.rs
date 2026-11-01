@@ -83,8 +83,6 @@ impl From<MediaError> for Error {
     }
 }
 
-/// The kind code written for a volume (see the module docs): RIDES and
-/// TERRAIN keep 1 and 2, and FILES and STORE write 3.
 fn kind_code(name: &Name) -> u8 {
     match *name {
         RIDES => 1,
@@ -140,8 +138,6 @@ impl Table {
         end.unwrap_or(TABLE)
     }
 
-    /// STORE over the rest of a region of `sectors`, from the next 1 MiB
-    /// boundary after the last volume, if that leaves it `STORE_MIN`.
     fn store_extent(&self, sectors: u64) -> Option<Extent> {
         let start = self.end().next_multiple_of(ALIGN);
         let rest = sectors.saturating_sub(start);

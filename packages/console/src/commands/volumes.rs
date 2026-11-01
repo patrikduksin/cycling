@@ -348,7 +348,6 @@ pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Writ
                 Err(e) => return store_status(e),
             };
             let listed = match command {
-                // Bounded reply: up to eight files, then where to continue.
                 Command::StoreList(start) => {
                     let (mut index, mut shown, mut next) = (0, 0, None);
                     let listed = mounted.list(&mut vol, &store::Dir::ROOT, &mut sector, |e| {

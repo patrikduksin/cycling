@@ -27,7 +27,6 @@ fn the_default_plan_fits_the_c606_region_in_disjoint_aligned_volumes() {
     for volume in table.volumes() {
         assert_eq!(volume.start % ALIGN, 0, "{}", volume.label());
     }
-    // STORE takes the last 260 MiB.
     let store = table.find(&STORE).unwrap();
     assert_eq!(
         (store.start, store.sectors),
@@ -38,8 +37,6 @@ fn the_default_plan_fits_the_c606_region_in_disjoint_aligned_volumes() {
     assert!(rides.sectors / 3600 > 580);
 }
 
-/// The table every C606 got before STORE: the default plan's first three
-/// volumes, in both copies.
 fn table_before_store(media: &mut Media) -> Table {
     let mut table = plan(C606).unwrap();
     table.volumes[3] = None;
@@ -50,8 +47,6 @@ fn table_before_store(media: &mut Media) -> Table {
     table
 }
 
-/// Rides, a file and the terrain pack's header as an owner's device holds
-/// them, so a migration can be checked not to touch them.
 fn fill_volumes(media: &mut Media) {
     let mut s = sector();
     let mut rides = open(media, &RIDES, &mut s).unwrap();
@@ -67,7 +62,6 @@ fn fill_volumes(media: &mut Media) {
     media.set(terrain.start, [0x7e; SECTOR_SIZE]);
 }
 
-/// The names of the files in the STORE volume's store.
 fn store_files(media: &mut Media) -> Result<Vec<String>, store::Error> {
     let mut s = sector();
     let mut volume = open(media, &STORE, &mut s).unwrap();
@@ -79,7 +73,6 @@ fn store_files(media: &mut Media) -> Result<Vec<String>, store::Error> {
     Ok(names)
 }
 
-/// The written sectors outside the table and the STORE volume.
 fn outside_store(media: &Media) -> BTreeMap<u64, Sector> {
     let store = plan(C606).unwrap().find(&STORE).unwrap();
     let mut sectors = media.written.clone();
@@ -95,7 +88,6 @@ fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
     fill_volumes(&mut media);
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(old)));
     assert_eq!(open(&mut media, &STORE, &mut s).err(), Some(Error::Missing));
-    // Opening volumes and initializing never add it.
     assert_eq!(create(&mut media, &mut s), Ok(old));
     let before = outside_store(&media);
     let writes = media.writes;
@@ -143,7 +135,6 @@ fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
     let volume = open(&mut media, &STORE, &mut s).unwrap();
     assert_eq!(volume.extent(), store);
 
-    // Already migrated: nothing to write, the same table, the files kept.
     let mut volume = open(&mut media, &STORE, &mut s).unwrap();
     let mut mounted = store::mount(&mut volume, &mut s).unwrap();
     let trace = store::Name::new("traces/1").unwrap();
@@ -152,7 +143,6 @@ fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
     assert_eq!(add_store(&mut media, &mut s), Ok(migrated));
     assert_eq!(media.writes, writes);
     assert_eq!(store_files(&mut media), Ok(vec!["traces/1".to_string()]));
-    // A fresh table has STORE and only needs the store.
     let mut fresh = Media::new(C606);
     let table = create(&mut fresh, &mut s).unwrap();
     assert_eq!(store_files(&mut fresh), Err(store::Error::Uninitialized));
@@ -167,8 +157,6 @@ fn a_cut_anywhere_in_adding_store_leaves_old_or_new_data_and_running_again_compl
     cut_everywhere_in_add_store(|_| {});
 }
 
-/// Copy 1 is the only valid table when a cut interrupted the write of copy 0
-/// (`create` and `add_store` write copy 1 first), or copy 0 never held one.
 #[test]
 fn a_cut_in_adding_store_keeps_a_table_that_only_copy_1_holds() {
     let (mut table, mut torn) = (sector(), sector());
@@ -188,7 +176,6 @@ fn cut_everywhere_in_add_store(copy_0: impl Fn(&mut Media)) {
         generation: 2,
         ..plan(C606).unwrap()
     };
-    // Two table copies, then the store's header, body and header again.
     let writes = 2 + (store::DIR_SECTORS + 9 + 2) as u64;
     let tears = [
         Tear::Old,
@@ -242,18 +229,15 @@ fn cut_everywhere_in_add_store(copy_0: impl Fn(&mut Media)) {
 #[test]
 fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     let mut s = sector();
-    // Blank.
     let mut media = Media::new(C606);
     assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
     assert_eq!(media.writes, 0);
-    // The ride log from before volumes.
     let mut log = sector_log::format(&mut media, TAG, 7, b"catalog", &mut s).unwrap();
     log.append(&mut media, b"old test ride", &mut s).unwrap();
     let writes = media.writes;
     assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Legacy));
     assert_eq!(media.writes, writes);
-    // A lost table over a ride log.
     let mut media = Media::new(C606);
     table_before_store(&mut media);
     fill_volumes(&mut media);
@@ -263,7 +247,6 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Lost));
     assert_eq!(media.writes, writes);
-    // A foreign table.
     let mut media = Media::new(C606);
     table_before_store(&mut media);
     let good = media.get(0);
@@ -274,7 +257,6 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     media.set(0, newer);
     assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign.into()));
     assert_eq!(media.writes, 0);
-    // No room: small media give rides everything.
     let mut small = Media::new(100);
     create(&mut small, &mut s).unwrap();
     let writes = small.writes;
@@ -286,8 +268,6 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
 fn adding_store_formats_only_a_volume_that_never_held_a_store() {
     let store = plan(C606).unwrap().find(&STORE).unwrap();
     let copy_b = store.start + store::COPY_B;
-    // What never-written sectors read as: an earlier filesystem's bytes
-    // (`Media` returns those), or an erased medium's zeros or 0xFF.
     for fill in [None, Some(0x00), Some(0xff)] {
         let mut media = Media::new(C606);
         let mut s = sector();
@@ -300,8 +280,6 @@ fn adding_store_formats_only_a_volume_that_never_held_a_store() {
         add_store(&mut media, &mut s).unwrap();
         assert_eq!(store_files(&mut media), Ok(Vec::new()), "{fill:?}");
     }
-    // A header with the store's magic and no valid copy is a damaged store:
-    // reported, and neither the table nor the volume is written.
     let mut good = Media::new(C606);
     let mut s = sector();
     create(&mut good, &mut s).unwrap();
@@ -327,7 +305,6 @@ fn adding_store_formats_only_a_volume_that_never_held_a_store() {
             assert_eq!(media.writes, writes, "nothing written");
         }
     }
-    // A store of another version is foreign and kept too.
     let mut media = Media::new(C606);
     table_before_store(&mut media);
     let mut newer = header;
@@ -450,7 +427,6 @@ fn firmware_from_before_store_still_opens_its_volumes_in_a_table_with_store() {
                 .collect();
             assert_eq!(seen, expected(&table), "copy {copy}");
             assert_eq!(seen, expected(&old), "copy {copy}: what it had before");
-            // It looks volumes up by name; these kinds are the ones it wrote.
             let kinds: Vec<_> = volumes.iter().map(|v| (v.0, v.1)).collect();
             assert!(kinds.contains(&(RIDES, Kind::Log)));
             assert!(kinds.contains(&(FILES, Kind::Files)));

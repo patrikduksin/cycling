@@ -31,7 +31,6 @@ class FakeDevice:
         self.writer = None
         self.writes = []
         self.fail_write_at = None
-        # STORE: name -> (file id, records), and the generation deletes advance.
         self.store = {}
         self.generation = 1
         self.reads = []
@@ -156,7 +155,6 @@ class FakeDevice:
             if payload.decode() not in self.store:
                 return 8, 0, 0, b''
             self.reads.append(arg)
-            # A record the medium lost is None.
             records = [*self.store[payload.decode()][1][arg:], b'']
             lost = next(i for i, record in enumerate(records) if record is not None)
             if lost:
@@ -409,7 +407,6 @@ class VolumesTests(unittest.TestCase):
             result = volumes.store_get(transfer, 'traces/0002', out)
             self.assertEqual(out.read_bytes(), b''.join(trace))
             self.assertEqual(result, {'name': 'traces/0002', 'records': 1300, 'bytes': len(b''.join(trace))})
-            # Each request continues where the last reply ended.
             self.assertEqual(device.reads[0], 0)
             self.assertEqual(device.reads, sorted(set(device.reads)))
             missing = Path(directory) / 'missing.bin'

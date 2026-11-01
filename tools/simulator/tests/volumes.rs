@@ -153,8 +153,6 @@ fn terrain_and_files_installed_by_the_host_live_beside_bulk_rides() {
     assert_eq!(sim.command("VOLUME TRANSFER").0, "UNSUPPORTED");
 }
 
-/// Rewrite the volume table as firmware from before STORE wrote it: the
-/// same RIDES, FILES and TERRAIN, and the last 260 MiB unallocated.
 fn table_before_store(sim: &mut Sim) {
     use device_api::bulk::ReadWrite;
     let mut table = sim.device.bulk.sector(0);
@@ -238,7 +236,6 @@ fn adding_store_over_a_damaged_store_reports_it_and_writes_nothing() {
     sim.fit_bulk(Presence::Ready);
     sim.init_volumes();
     table_before_store(&mut sim);
-    // The store's magic in its first header sector, without a valid CRC.
     let mut header = [0u8; 512];
     header[..16].copy_from_slice(firmware_services::store::MAGIC);
     sim.device.bulk.owned_write(5_244_928, &header).unwrap();
@@ -251,7 +248,6 @@ fn adding_store_over_a_damaged_store_reports_it_and_writes_nothing() {
     assert_eq!(field(&volumes, "generation"), "1", "{volumes}");
 }
 
-/// What a recorder of a later phase does: append to a trace in `traces/`.
 #[test]
 fn a_trace_appended_to_the_store_reads_back_after_a_power_loss() {
     use firmware_services::{store, volume};

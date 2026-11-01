@@ -606,7 +606,6 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
         Err(_) => panic!("transfer block layout"),
     };
     const _: () = assert!(SESSION.is_multiple_of(core::mem::align_of::<Session>()));
-    // The block is freed without dropping the session in it.
     const _: () = assert!(!core::mem::needs_drop::<Session>());
     impl Drop for Block {
         fn drop(&mut self) {

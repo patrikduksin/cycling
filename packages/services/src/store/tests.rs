@@ -16,7 +16,6 @@ fn dir(text: &str) -> Dir {
     Dir::new(text).unwrap()
 }
 
-/// A volume of `chunks` chunks of `chunk` sectors, formatted.
 fn formatted(chunks: u64, chunk: u32) -> Media {
     let mut media = Media::new(DATA + chunks * u64::from(chunk));
     format_chunks(&mut media, 7, chunk, &mut sector()).unwrap();
@@ -27,7 +26,6 @@ fn bytes(length: usize, rng: &mut Rng) -> Vec<u8> {
     (0..length).map(|_| rng.byte()).collect()
 }
 
-/// Every file and its bytes, as one boot reads them.
 fn snapshot(media: &mut impl ReadWrite) -> Result<BTreeMap<String, Vec<u8>>, Error> {
     let mut boot = Boot::mount(media)?;
     let mut files = BTreeMap::new();
@@ -38,7 +36,6 @@ fn snapshot(media: &mut impl ReadWrite) -> Result<BTreeMap<String, Vec<u8>>, Err
     Ok(files)
 }
 
-/// One power-on of a recorder: the mounted store and at most one open file.
 struct Boot<'m, M> {
     media: &'m mut M,
     store: Store,
@@ -108,7 +105,6 @@ impl<'m, M: ReadWrite> Boot<'m, M> {
         Ok(names)
     }
 
-    /// The file's bytes; nothing writes a record twice, so a hole is corrupt.
     fn read(&mut self, text: &str) -> Result<Vec<u8>, Error> {
         let mut reader = self
             .store
@@ -125,8 +121,6 @@ impl<'m, M: ReadWrite> Boot<'m, M> {
     }
 }
 
-/// What a reader of `text` finds, in order: each record as its first byte
-/// and length, and each hole.
 fn events(media: &mut Media, text: &str) -> Vec<String> {
     let mut s = sector();
     let store = mount(media, &mut s).unwrap();
@@ -182,7 +176,6 @@ fn files_grow_across_chunks_and_read_back_after_a_reboot() {
         .create(&mut media, &name("traces/a"), None, &mut s)
         .unwrap();
     let mut expected = Vec::new();
-    // Ten records' worth crosses two chunk boundaries; syncs leave short records.
     for round in 0..12 {
         let more = bytes(rng.range(1, 900) as usize, &mut rng);
         file.append(&mut store, &mut media, &more, &mut s).unwrap();
@@ -198,7 +191,6 @@ fn files_grow_across_chunks_and_read_back_after_a_reboot() {
         .unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].chunks >= 3, "{entries:?}");
-    // A reboot: the file continues in another chunk.
     let mut store = mount(&mut media, &mut s).unwrap();
     let mut file = store
         .open_append(&mut media, &name("traces/a"), None, &mut s)
@@ -209,7 +201,6 @@ fn files_grow_across_chunks_and_read_back_after_a_reboot() {
     expected.extend_from_slice(b"after reboot");
     let found = snapshot(&mut media).unwrap();
     assert_eq!(found["traces/a"], expected);
-    // Seeking lands on a record, in another chunk or past the end.
     let store = mount(&mut media, &mut s).unwrap();
     let mut reader = store.reader(&mut media, &name("traces/a"), &mut s).unwrap();
     let mut out = [0u8; PAYLOAD];
@@ -271,7 +262,6 @@ fn rollover_deletes_the_oldest_closed_file_in_its_directory_only() {
     let mut store = mount(&mut media, &mut s).unwrap();
     let traces = Some(dir("traces/"));
     let record = [9u8; PAYLOAD];
-    // Other directories never roll over: two chunks of settings.
     let mut other = store
         .create(&mut media, &name("other/settings"), None, &mut s)
         .unwrap();
@@ -285,7 +275,6 @@ fn rollover_deletes_the_oldest_closed_file_in_its_directory_only() {
         file.append(&mut store, &mut media, &record, &mut s)
             .unwrap();
     }
-    // traces/3 fills the last two free chunks, then takes traces/1's, then traces/2's.
     let mut open = store
         .create(&mut media, &name("traces/3"), traces, &mut s)
         .unwrap();
@@ -299,7 +288,6 @@ fn rollover_deletes_the_oldest_closed_file_in_its_directory_only() {
         ["other/settings", "traces/3"]
     );
     assert_eq!(found["traces/3"].len(), 8 * PAYLOAD);
-    // Nothing closed is left in traces/: the open file is never rolled over.
     assert_eq!(
         open.append(&mut store, &mut media, &record, &mut s),
         Err(Error::Full)
@@ -308,14 +296,12 @@ fn rollover_deletes_the_oldest_closed_file_in_its_directory_only() {
         store.delete_oldest(&mut media, &dir("traces/"), &mut s),
         Ok(None)
     );
-    // Without a directory to roll over a full store refuses a create.
     assert_eq!(
         store
             .create(&mut media, &name("traces/4"), None, &mut s)
             .err(),
         Some(Error::Full)
     );
-    // A create rolls over too, and makes the earlier appender stale.
     let mut next = store
         .create(&mut media, &name("traces/4"), traces, &mut s)
         .unwrap();
@@ -394,8 +380,6 @@ fn names_are_unique_and_missing_files_are_reported() {
     );
 }
 
-/// The host's transfer session mounts its own store and deletes files while
-/// the app holds its store and appender.
 #[test]
 fn a_store_changed_by_another_writer_is_stale_until_mounted_again() {
     let mut media = formatted(8, 2);
@@ -422,7 +406,6 @@ fn a_store_changed_by_another_writer_is_stale_until_mounted_again() {
     );
     assert_eq!(media.writes, writes, "a stale store writes nothing");
 
-    // The app compares generations and reopens what it held.
     let mut fresh = mount(&mut media, &mut s).unwrap();
     assert_ne!(fresh.generation(), app.generation());
     assert_eq!(
@@ -438,7 +421,6 @@ fn a_store_changed_by_another_writer_is_stale_until_mounted_again() {
     trace.sync(&mut fresh, &mut media, &mut s).unwrap();
     assert_eq!(snapshot(&mut media).unwrap()["traces/2"], b"before after");
 
-    // A file the host deleted is gone: the app starts another one.
     let mut host = mount(&mut media, &mut s).unwrap();
     host.delete(&mut media, &name("traces/2"), &mut s).unwrap();
     let mut fresh = mount(&mut media, &mut s).unwrap();
@@ -448,7 +430,6 @@ fn a_store_changed_by_another_writer_is_stale_until_mounted_again() {
             .err(),
         Some(Error::NotFound)
     );
-    // A reader is valid only for the metadata it was opened on.
     fresh.create(&mut media, &name("b"), None, &mut s).unwrap();
     let mut reader = fresh.reader(&mut media, &name("b"), &mut s).unwrap();
     fresh.delete(&mut media, &name("b"), &mut s).unwrap();
@@ -458,10 +439,6 @@ fn a_store_changed_by_another_writer_is_stale_until_mounted_again() {
     );
 }
 
-/// The host's delete fails part way through its commit with a media error,
-/// not a cut: the app keeps running on the store it mounted before, while
-/// the copy it would commit into holds part of the host's body under an
-/// invalidated header.
 #[test]
 fn a_commit_another_writer_left_unfinished_does_not_vouch_for_the_next() {
     let mut failures = 0;
@@ -471,9 +448,7 @@ fn a_commit_another_writer_left_unfinished_does_not_vouch_for_the_next() {
             let mut media = formatted(16, 2);
             let mut s = sector();
             let mut app = mount(&mut media, &mut s).unwrap();
-            // The ninth file's entry sits in the second directory sector, so
-            // the last commit leaves the first one equal in both copies.
-            for i in 0..9 {
+            for i in 0..=PER_SECTOR {
                 app.create(&mut media, &name(&std::format!("f{i}")), None, &mut s)
                     .unwrap();
             }
@@ -535,14 +510,14 @@ fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
         changed
     };
     for (offset, value) in [
-        (16, 2),   // version
-        (18, 9),   // directory sectors
-        (20, 3),   // table sectors
-        (22, 1),   // reserved
-        (48, 200), // more chunks than the volume holds
-        (53, 4),   // chunks larger than CHUNK
-        (60, 1),   // reserved
-        (200, 1),  // past the CRCs
+        (16, 2),
+        (18, 9),
+        (20, 3),
+        (22, 1),
+        (48, 200),
+        (53, 4),
+        (60, 1),
+        (200, 1),
     ] {
         media.set(base(store.copy), reseal(offset, value));
         let writes = media.writes;
@@ -553,11 +528,9 @@ fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
     media.set(base(store.copy), good);
     let mut store = mount(&mut media, &mut s).unwrap();
     store.create(&mut media, &name("a"), None, &mut s).unwrap();
-    // A damaged body sector is corrupt, not an empty directory.
     let store = mount(&mut media, &mut s).unwrap();
     media.set(base(store.copy) + 1, [0x5a; SECTOR_SIZE]);
     assert_eq!(snapshot(&mut media).err(), Some(Error::Corrupt));
-    // An explicit format starts over.
     format_chunks(&mut media, 3, 8, &mut s).unwrap();
     assert!(snapshot(&mut media).unwrap().is_empty());
 }
@@ -591,7 +564,6 @@ fn a_missing_record_at_the_end_of_a_full_chunk_is_a_hole_not_its_end() {
         file.append(&mut store, &mut media, &[k; PAYLOAD], &mut s)
             .unwrap();
     }
-    // The file's first chunk is chunk 0: damage its second record.
     media.set(DATA + 1, [0; SECTOR_SIZE]);
     assert_eq!(
         events(&mut media, "a"),
@@ -603,8 +575,6 @@ fn a_missing_record_at_the_end_of_a_full_chunk_is_a_hole_not_its_end() {
     );
 }
 
-/// The reviewer's probe: a record inside the last chunk stops reading back,
-/// then the file is reopened, appended to, cut, reopened and appended again.
 #[test]
 fn a_damaged_record_before_the_end_neither_loses_nor_reorders_synced_records() {
     let mut media = formatted(8, 64);
@@ -647,14 +617,7 @@ fn a_damaged_record_before_the_end_neither_loses_nor_reorders_synced_records() {
     assert_eq!(events(&mut media, "a"), expected);
 }
 
-// The power-cut property: cut at every write of a scenario of creates,
-// appends, syncs, small files, deletes and rollovers, with each tear. After
-// the cut the store mounts, holds only files the interrupted step started or
-// ended with, every file reads as a prefix of what was appended to it and
-// keeps at least its synced bytes, and the store keeps working.
-
 const TRACES: &str = "traces/";
-/// 32 chunks of 4 KiB: about three quarters of what the scenario appends.
 const CHUNKS: u64 = 32;
 const SMALL_CHUNK: u32 = 8;
 
@@ -663,7 +626,6 @@ enum Op {
     Create(String),
     Append(Vec<u8>),
     Sync,
-    /// A small file written whole while a trace is open.
     Put(String, Vec<u8>),
     Delete(String),
 }
@@ -753,10 +715,8 @@ fn scenario(seed: u64) -> Vec<Op> {
 }
 
 struct Reference {
-    /// Files present before op i (index 0: the empty store).
     names: Vec<BTreeSet<String>>,
     models: Vec<Model>,
-    /// Writes finished after op i.
     writes: Vec<u64>,
 }
 
@@ -799,16 +759,11 @@ fn is_body(at: u64) -> bool {
     at < DATA && !is_header(at)
 }
 
-/// How the medium under the scenario behaves. Every faulty one must fail
-/// the property: it is what a store with that bug would write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Disk {
     Honest,
-    /// Acknowledges each write and lands it only when the next one arrives.
     WriteBack,
-    /// Lands each commit's header before its body: a commit in the wrong order.
     HeaderFirst,
-    /// Drops the write that invalidates the other copy's header.
     NoInvalidate,
 }
 
@@ -868,12 +823,10 @@ impl ReadWrite for Faulty<'_> {
 #[derive(Default, Debug)]
 struct Outcome {
     cuts: u64,
-    /// Most appended bytes a cut lost, and most it could have lost (unsynced).
     lost: usize,
     unsynced: usize,
 }
 
-/// The index of the op that failed.
 fn run_ops<M: ReadWrite>(media: &mut M, ops: &[Op]) -> Option<usize> {
     let mut boot = Boot::mount(media).ok()?;
     let mut open = None;
@@ -936,7 +889,6 @@ fn cut(ops: &[Op], r: &Reference, at: u64, tear: Tear, outcome: &mut Outcome, di
         outcome.lost = outcome.lost.max(handed.saturating_sub(bytes.len()));
         outcome.unsynced = outcome.unsynced.max(handed - before.synced[open]);
     }
-    // The store keeps working: continue the trace (or start one), sync, read.
     let target = before
         .open
         .clone()
@@ -975,7 +927,6 @@ fn every_cut(seed: u64, disk: Disk) -> Outcome {
     let total = *r.writes.last().unwrap();
     let mut rng = Rng::new(seed ^ 0xc0ffee);
     let mut outcome = Outcome::default();
-    // A write-back medium never lands the last write, so no cut reaches it.
     for at in 0..total - u64::from(disk == Disk::WriteBack) {
         for tear in [Tear::Old, Tear::Prefix(rng.below(512) as usize), Tear::New] {
             cut(&ops, &r, at, tear, &mut outcome, disk);
@@ -1032,8 +983,6 @@ fn control_a_commit_that_keeps_the_old_header_valid_fails_the_property() {
     every_cut(1, Disk::NoInvalidate);
 }
 
-// Worst-case sector operations, as the module documentation states them.
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
     Mount,
@@ -1049,7 +998,6 @@ enum Kind {
     Seek,
 }
 
-/// (reads, writes) at most, for `table` table sectors and `chunk`-sector chunks.
 fn bound(kind: Kind, table: u64, chunk: u32) -> (u64, u64) {
     let (d, t) = (DIR_SECTORS as u64, table);
     match kind {
@@ -1098,9 +1046,6 @@ impl Costs {
     }
 }
 
-/// Sessions of traces that roll over, a small file beside them, power cuts
-/// in the middle of commits, reboots, reads and deletes, on the C606 table
-/// size (1,039 chunks, 9 table sectors) with small chunks.
 #[test]
 fn operations_have_the_documented_worst_case_costs() {
     let (chunks, chunk) = (1039, 4);
@@ -1133,7 +1078,6 @@ fn operations_have_the_documented_worst_case_costs() {
             .unwrap();
         other.sync(&mut store, &mut media, &mut s).unwrap();
     }
-    // Long traces, then short ones until every entry is used.
     for session in 0..200 {
         let mut store = costs.measure(&mut media, Kind::Mount, |m| mount(m, &mut s).unwrap());
         let before = count(&mut media, &mut s);
@@ -1167,7 +1111,6 @@ fn operations_have_the_documented_worst_case_costs() {
                     file.sync(&mut store, m, &mut s).unwrap()
                 });
             }
-            // A cut in the middle of a commit leaves the other copy invalid.
             if record == records / 2 && session % 3 == 0 {
                 media.cut = Some((1, Tear::Prefix(100)));
                 let _ = store.create(&mut media, &name("traces/cut"), traces, &mut s);
@@ -1181,7 +1124,6 @@ fn operations_have_the_documented_worst_case_costs() {
                 let _ = store.delete(&mut media, &name("traces/cut"), &mut s);
             }
         }
-        // Fill the store, so the next create rolls over for a chunk.
         while session % 4 == 1
             && (file.index.is_some_and(|index| index < chunk)
                 || store.free_chunk(&mut media, &mut s).unwrap().is_some())
@@ -1196,7 +1138,6 @@ fn operations_have_the_documented_worst_case_costs() {
         rolled_on_create > 20 && rolled_on_append > 20,
         "{rolled_on_create} {rolled_on_append}"
     );
-    // A host pull, seeks and deletes.
     let store = mount(&mut media, &mut s).unwrap();
     let mut names = Vec::new();
     costs.measure(&mut media, Kind::List, |m| {
@@ -1237,7 +1178,6 @@ fn operations_have_the_documented_worst_case_costs() {
     costs.check(table, chunk);
 }
 
-/// The production geometry: the C606 STORE volume and 256 KiB chunks.
 #[test]
 fn the_c606_store_volume_has_1039_chunks_and_bounded_costs_at_full_chunk_size() {
     let mut media = Media::new(532_479);

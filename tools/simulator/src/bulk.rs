@@ -1,9 +1,7 @@
 //! The C606 owned MMC data region, simulated sparsely. Written sectors outlive
 //! a power loss; never-written sectors return stale bytes, as the partition
 //! reused an old filesystem. Like the device, a failed write leaves the
-//! controller failed until the next boot, and every write is verified. Its
-//! size is the device's, so the default volume table gives it the same
-//! volumes, STORE included (`Sim::init_volumes`, `Sim::format_store`).
+//! controller failed until the next boot, and every write is verified.
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 

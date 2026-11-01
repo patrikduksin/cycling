@@ -20,10 +20,46 @@ pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
 const FNV_OFFSET: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
-fn fnv1a(digest: u32, pixels: &[u16]) -> u32 {
-    pixels.iter().fold(digest, |hash, &pixel| {
-        (hash ^ u32::from(pixel)).wrapping_mul(FNV_PRIME)
-    })
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "`digest` reads two pixels as the word `first | second << 16`"
+);
+/// FNV-1a's step, then a xorshift. A multiply carries a bit only upward, so
+/// without the shift two words whose top bits differ cancel, and a second
+/// pixel's top bit is a word's.
+fn step(hash: u32, word: u32) -> u32 {
+    let hash = (hash ^ word).wrapping_mul(FNV_PRIME);
+    hash ^ hash >> 16
+}
+/// A row's pixels hashed two to a word, `first | second << 16`, and an odd
+/// last pixel alone. Each step maps the hash one to one, so a row that
+/// differs in one word always digests otherwise. A word a step halves the
+/// multiplies a frame waits on, and a word-aligned row, as the C606's DMA
+/// strips are, reads each word in one load.
+fn digest(hash: u32, pixels: &[u16]) -> u32 {
+    // SAFETY: every bit pattern is a valid u32, and `align_to` keeps the
+    // middle slice inside `pixels` with u32 alignment.
+    let (head, words, tail) = unsafe { pixels.align_to::<u32>() };
+    if !head.is_empty() {
+        return digest_pairs(hash, pixels);
+    }
+    // Four words a turn, so the loop's own count and branch cost less per pixel.
+    let (quads, words) = words.as_chunks::<4>();
+    let hash = quads.iter().fold(hash, |hash, &[a, b, c, d]| {
+        step(step(step(step(hash, a), b), c), d)
+    });
+    digest_pairs(
+        words.iter().fold(hash, |hash, &word| step(hash, word)),
+        tail,
+    )
+}
+fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
+    let (pairs, last) = pixels.as_chunks::<2>();
+    let hash = pairs.iter().fold(hash, |hash, &[first, second]| {
+        step(hash, u32::from(first) | u32::from(second) << 16)
+    });
+    last.iter()
+        .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -472,7 +508,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         let mut frame = FNV_OFFSET;
         let row = |y: usize, pixels: &mut [u16]| {
             row(y, pixels);
-            frame = fnv1a(frame, pixels);
+            frame = digest(frame, pixels);
         };
         #[cfg(feature = "debug-harness")]
         {
@@ -551,5 +587,37 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.fill_color = Some(color);
         self.draw_rows(|_, pixels| pixels.fill(color));
         self.dirty = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FNV_OFFSET, FNV_PRIME, digest};
+
+    #[test]
+    fn a_row_digests_two_pixels_a_word_wherever_it_sits_in_memory() {
+        let defined = |pixels: &[u16]| {
+            pixels.chunks(2).fold(FNV_OFFSET, |hash, pair| {
+                let word = u32::from(pair[0]) | pair.get(1).map_or(0, |&p| u32::from(p) << 16);
+                let hash = (hash ^ word).wrapping_mul(FNV_PRIME);
+                hash ^ hash >> 16
+            })
+        };
+        let mut words = [0u32; 130];
+        // SAFETY: a u16 view of u32s, which every bit pattern fits.
+        let (_, memory, _) = unsafe { words.align_to_mut::<u16>() };
+        for (x, pixel) in memory.iter_mut().enumerate() {
+            *pixel = (x as u16).wrapping_mul(0x9e37);
+        }
+        for start in [0, 1, 2] {
+            for len in 0..=245 {
+                let row = &memory[start..start + len];
+                assert_eq!(
+                    digest(FNV_OFFSET, row),
+                    defined(row),
+                    "{len} pixels from {start}"
+                );
+            }
+        }
     }
 }

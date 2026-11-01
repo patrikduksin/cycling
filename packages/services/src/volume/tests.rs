@@ -1,6 +1,11 @@
 use super::*;
 use crate::sector_log::{self, Recovery, Step};
+use crate::store;
 use crate::testing::{Media, Tear};
+use std::collections::BTreeMap;
+use std::string::{String, ToString};
+use std::vec;
+use std::vec::Vec;
 
 const C606: u64 = 5_777_407;
 const TAG: &[u8; 16] = b"TEST-LOG-SCHEMA1";
@@ -22,10 +27,418 @@ fn the_default_plan_fits_the_c606_region_in_disjoint_aligned_volumes() {
     for volume in table.volumes() {
         assert_eq!(volume.start % ALIGN, 0, "{}", volume.label());
     }
-    // About 260 MiB stays unallocated for later volumes.
-    assert_eq!(table.unallocated(C606), 532_479);
+    let store = table.find(&STORE).unwrap();
+    assert_eq!(
+        (store.start, store.sectors),
+        (terrain.start + terrain.sectors, 532_479)
+    );
+    assert_eq!(table.unallocated(C606), 0);
     // About 2,000 hours of one-record-per-second rides.
     assert!(rides.sectors / 3600 > 580);
+}
+
+fn table_before_store(media: &mut Media) -> Table {
+    let mut table = plan(C606).unwrap();
+    table.volumes[3] = None;
+    let mut s = sector();
+    table.encode(&mut s);
+    media.set(0, s);
+    media.set(1, s);
+    table
+}
+
+fn fill_volumes(media: &mut Media) {
+    let mut s = sector();
+    let mut rides = open(media, &RIDES, &mut s).unwrap();
+    let mut log = sector_log::format(&mut rides, TAG, 9, b"cat", &mut s).unwrap();
+    for _ in 0..3 {
+        log.append(&mut rides, b"ride", &mut s).unwrap();
+    }
+    let mut files = open(media, &FILES, &mut s).unwrap();
+    crate::files::format(&mut files, 1, &mut s).unwrap();
+    let name = crate::files::Name::new("course.dat").unwrap();
+    crate::files::write(&mut files, &name, b"course", &mut s).unwrap();
+    let terrain = plan(C606).unwrap().find(&TERRAIN).unwrap();
+    media.set(terrain.start, [0x7e; SECTOR_SIZE]);
+}
+
+fn store_files(media: &mut Media) -> Result<Vec<String>, store::Error> {
+    let mut s = sector();
+    let mut volume = open(media, &STORE, &mut s).unwrap();
+    let mounted = store::mount(&mut volume, &mut s)?;
+    let mut names = Vec::new();
+    mounted.list(&mut volume, &store::Dir::ROOT, &mut s, |e| {
+        names.push(e.name.as_str().to_string());
+    })?;
+    Ok(names)
+}
+
+fn outside_store(media: &Media) -> BTreeMap<u64, Sector> {
+    let store = plan(C606).unwrap().find(&STORE).unwrap();
+    let mut sectors = media.written.clone();
+    sectors.retain(|at, _| *at >= TABLE && *at < store.start);
+    sectors
+}
+
+#[test]
+fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
+    let mut media = Media::new(C606);
+    let mut s = sector();
+    let old = table_before_store(&mut media);
+    fill_volumes(&mut media);
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(old)));
+    assert_eq!(open(&mut media, &STORE, &mut s).err(), Some(Error::Missing));
+    assert_eq!(create(&mut media, &mut s), Ok(old));
+    let before = outside_store(&media);
+    let writes = media.writes;
+
+    let migrated = add_store(&mut media, &mut s).unwrap();
+    let format = (store::DIR_SECTORS + 9 + 2) as u64;
+    assert_eq!(
+        media.writes - writes,
+        2 + format,
+        "both table copies and a store"
+    );
+    assert_eq!(outside_store(&media), before, "no other volume changed");
+    assert_eq!(store_files(&mut media), Ok(Vec::new()));
+    assert_eq!(migrated.generation, old.generation + 1);
+    assert_eq!(migrated.planned, old.planned);
+    for volume in old.volumes() {
+        assert_eq!(
+            migrated.find(&volume.name),
+            Some(*volume),
+            "{}",
+            volume.label()
+        );
+    }
+    let store = migrated.find(&STORE).unwrap();
+    assert_eq!((store.start, store.sectors), (5_244_928, 532_479));
+    assert_eq!(
+        migrated,
+        plan(C606).map(|t| Table { generation: 2, ..t }).unwrap()
+    );
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(migrated)));
+    let mut rides = open(&mut media, &RIDES, &mut s).unwrap();
+    let mut recovery = Recovery::new(TAG, 32);
+    let head = loop {
+        match recovery.step(&mut rides, &mut s).unwrap() {
+            Step::Done(log) => break log.head(),
+            Step::Uncertain(_) => panic!("uncertain"),
+            _ => {}
+        }
+    };
+    assert_eq!(head, 3, "the rides are still there");
+    let mut files = open(&mut media, &FILES, &mut s).unwrap();
+    let name = crate::files::Name::new("course.dat").unwrap();
+    let dir = crate::files::mount(&mut files, &mut s).unwrap();
+    assert!(dir.find(&mut files, &name, &mut s).unwrap().is_some());
+    let volume = open(&mut media, &STORE, &mut s).unwrap();
+    assert_eq!(volume.extent(), store);
+
+    let mut volume = open(&mut media, &STORE, &mut s).unwrap();
+    let mut mounted = store::mount(&mut volume, &mut s).unwrap();
+    let trace = store::Name::new("traces/1").unwrap();
+    mounted.create(&mut volume, &trace, None, &mut s).unwrap();
+    let writes = media.writes;
+    assert_eq!(add_store(&mut media, &mut s), Ok(migrated));
+    assert_eq!(media.writes, writes);
+    assert_eq!(store_files(&mut media), Ok(vec!["traces/1".to_string()]));
+    let mut fresh = Media::new(C606);
+    let table = create(&mut fresh, &mut s).unwrap();
+    assert_eq!(store_files(&mut fresh), Err(store::Error::Uninitialized));
+    let writes = fresh.writes;
+    assert_eq!(add_store(&mut fresh, &mut s), Ok(table));
+    assert_eq!(fresh.writes - writes, format);
+    assert_eq!(store_files(&mut fresh), Ok(Vec::new()));
+}
+
+#[test]
+fn a_cut_anywhere_in_adding_store_leaves_old_or_new_data_and_running_again_completes_it() {
+    cut_everywhere_in_add_store(|_| {});
+}
+
+#[test]
+fn a_cut_in_adding_store_keeps_a_table_that_only_one_copy_holds() {
+    let (mut table, mut torn, mut older) = (sector(), sector(), sector());
+    plan(C606).unwrap().encode(&mut table);
+    torn[..100].copy_from_slice(&table[..100]);
+    let mut log = Media::new(64);
+    sector_log::format(&mut log, TAG, 7, b"catalog", &mut sector()).unwrap();
+    let legacy = log.get(0);
+    assert!(sector_log::is_superblock(&legacy));
+    let mut before = plan(C606).unwrap();
+    before.volumes[3] = None;
+    before.generation = 0;
+    before.encode(&mut older);
+    for other in [[0; SECTOR_SIZE], torn, legacy, older] {
+        for copy in [0, 1] {
+            cut_everywhere_in_add_store(|media| media.set(copy, other));
+        }
+    }
+}
+
+fn cut_everywhere_in_add_store(damage: impl Fn(&mut Media)) {
+    let new = Table {
+        generation: 2,
+        ..plan(C606).unwrap()
+    };
+    let writes = 2 + (store::DIR_SECTORS + 9 + 2) as u64;
+    let tears = [
+        Tear::Old,
+        Tear::Prefix(8),
+        Tear::Prefix(16),
+        Tear::Prefix(100),
+        Tear::Prefix(511),
+        Tear::New,
+    ];
+    for at in 0..writes {
+        for tear in tears {
+            let mut media = Media::new(C606);
+            let mut s = sector();
+            let old = table_before_store(&mut media);
+            fill_volumes(&mut media);
+            damage(&mut media);
+            assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(old)));
+            let before = outside_store(&media);
+            media.cut = Some((at, tear));
+            assert!(add_store(&mut media, &mut s).is_err());
+            media.reboot();
+            match read(&mut media, &mut s) {
+                Ok(Layout::Table(table)) => assert!(
+                    table == old || table == new,
+                    "cut at {at} {tear:?}: {table:?}"
+                ),
+                other => panic!("cut at {at} {tear:?}: {other:?}"),
+            }
+            if read(&mut media, &mut s) == Ok(Layout::Table(new)) {
+                match store_files(&mut media) {
+                    Ok(files) => assert!(files.is_empty()),
+                    Err(error) => assert_eq!(
+                        error,
+                        store::Error::Uninitialized,
+                        "cut at {at} {tear:?}: a half-formatted store is blank, not corrupt"
+                    ),
+                }
+            }
+            assert_eq!(
+                add_store(&mut media, &mut s),
+                Ok(new),
+                "cut at {at} {tear:?}"
+            );
+            assert_eq!(media.get(0), media.get(1), "both copies hold it");
+            assert_eq!(store_files(&mut media), Ok(Vec::new()));
+            assert_eq!(outside_store(&media), before);
+        }
+    }
+}
+
+#[test]
+fn without_a_table_this_version_understands_adding_store_writes_nothing() {
+    let mut s = sector();
+    let mut media = Media::new(C606);
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
+    assert_eq!(media.writes, 0);
+    let mut log = sector_log::format(&mut media, TAG, 7, b"catalog", &mut s).unwrap();
+    log.append(&mut media, b"old test ride", &mut s).unwrap();
+    let writes = media.writes;
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Legacy));
+    assert_eq!(media.writes, writes);
+    let mut media = Media::new(C606);
+    table_before_store(&mut media);
+    fill_volumes(&mut media);
+    media.set(0, [0xa5; SECTOR_SIZE]);
+    media.set(1, [0; SECTOR_SIZE]);
+    let writes = media.writes;
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Lost));
+    assert_eq!(media.writes, writes);
+    let mut media = Media::new(C606);
+    table_before_store(&mut media);
+    let good = media.get(0);
+    let mut newer = good;
+    newer[16] = 2;
+    let checksum = crc32(&newer[..CRC]);
+    newer[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(0, newer);
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign.into()));
+    assert_eq!(media.writes, 0);
+    let mut small = Media::new(100);
+    create(&mut small, &mut s).unwrap();
+    let writes = small.writes;
+    assert_eq!(add_store(&mut small, &mut s), Err(Error::Small.into()));
+    assert_eq!(small.writes, writes);
+}
+
+#[test]
+fn adding_store_formats_only_a_volume_that_never_held_a_store() {
+    let store = plan(C606).unwrap().find(&STORE).unwrap();
+    let copy_b = store.start + store::COPY_B;
+    for fill in [None, Some(0x00), Some(0xff)] {
+        let mut media = Media::new(C606);
+        let mut s = sector();
+        table_before_store(&mut media);
+        if let Some(byte) = fill {
+            for at in store.start..store.start + store::DATA {
+                media.set(at, [byte; SECTOR_SIZE]);
+            }
+        }
+        add_store(&mut media, &mut s).unwrap();
+        assert_eq!(store_files(&mut media), Ok(Vec::new()), "{fill:?}");
+    }
+    let mut good = Media::new(C606);
+    let mut s = sector();
+    create(&mut good, &mut s).unwrap();
+    add_store(&mut good, &mut s).unwrap();
+    let header = good.get(store.start);
+    let mut damaged = header;
+    damaged[100] ^= 1;
+    for (a, b) in [(damaged, [0; SECTOR_SIZE]), ([0; SECTOR_SIZE], damaged)] {
+        for migrated in [false, true] {
+            let mut media = Media::new(C606);
+            if migrated {
+                create(&mut media, &mut s).unwrap();
+            } else {
+                table_before_store(&mut media);
+            }
+            media.set(store.start, a);
+            media.set(copy_b, b);
+            let writes = media.writes;
+            assert_eq!(
+                add_store(&mut media, &mut s),
+                Err(AddStoreError::Store(store::Error::Corrupt))
+            );
+            assert_eq!(media.writes, writes, "nothing written");
+        }
+    }
+    let mut media = Media::new(C606);
+    table_before_store(&mut media);
+    let mut newer = header;
+    newer[16] = 2;
+    let checksum = crc32(&newer[..CRC]);
+    newer[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(store.start, newer);
+    assert_eq!(
+        add_store(&mut media, &mut s),
+        Err(AddStoreError::Store(store::Error::Foreign))
+    );
+    assert_eq!(media.writes, 0);
+}
+
+/// The table decoder of the last firmware before STORE (`main` at ee97abe,
+/// `packages/services/src/volume.rs`): its checks unchanged, its result the
+/// extents it accepts. A rollback to that firmware is checked against it.
+mod before_store {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum Kind {
+        Log = 1,
+        Pack = 2,
+        Files = 3,
+    }
+
+    impl Kind {
+        fn from_u8(value: u8) -> Option<Self> {
+            match value {
+                1 => Some(Self::Log),
+                2 => Some(Self::Pack),
+                3 => Some(Self::Files),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Replica {
+        Table(Vec<(Name, Kind, u64, u64)>),
+        Foreign,
+        Invalid,
+    }
+
+    pub fn decode(sector: &Sector, region: u64) -> Replica {
+        if sector[..16] != MAGIC[..] {
+            return Replica::Invalid;
+        }
+        if get_u32(sector, CRC) != crc32(&sector[..CRC]) {
+            return Replica::Invalid;
+        }
+        let count = usize::from(get_u16(sector, 18));
+        if get_u16(sector, 16) != VERSION
+            || get_u32(sector, 20) != SECTOR_SIZE as u32
+            || count > MAX_VOLUMES
+            || sector[40..ENTRIES].iter().any(|b| *b != 0)
+            || sector[ENTRIES + count * ENTRY..CRC].iter().any(|b| *b != 0)
+        {
+            return Replica::Foreign;
+        }
+        let mut volumes = Vec::new();
+        let mut end = TABLE;
+        for index in 0..count {
+            let entry = &sector[ENTRIES + index * ENTRY..][..ENTRY];
+            let mut name = [0; 8];
+            name.copy_from_slice(&entry[..8]);
+            let start = get_u64(entry, 16);
+            let sectors = get_u64(entry, 24);
+            let Some(kind) = Kind::from_u8(entry[8]) else {
+                return Replica::Foreign;
+            };
+            if name[0] == 0
+                || entry[9..16].iter().any(|b| *b != 0)
+                || start < end
+                || sectors == 0
+                || start.checked_add(sectors).is_none_or(|e| e > region)
+            {
+                return Replica::Foreign;
+            }
+            end = start + sectors;
+            volumes.push((name, kind, start, sectors));
+        }
+        for (index, a) in volumes.iter().enumerate() {
+            if volumes.iter().skip(index + 1).any(|b| b.0 == a.0) {
+                return Replica::Foreign;
+            }
+        }
+        Replica::Table(volumes)
+    }
+}
+
+#[test]
+fn firmware_from_before_store_still_opens_its_volumes_in_a_table_with_store() {
+    use before_store::{Kind, Replica, decode};
+    let expected = |table: &Table| {
+        let found = |name| {
+            let v = table.find(&name).unwrap();
+            (name, v.start, v.sectors)
+        };
+        [found(RIDES), found(FILES), found(TERRAIN)]
+    };
+    let mut migrated = Media::new(C606);
+    let mut s = sector();
+    let old = table_before_store(&mut migrated);
+    let migrated_table = add_store(&mut migrated, &mut s).unwrap();
+    let mut fresh = Media::new(C606);
+    let fresh_table = create(&mut fresh, &mut s).unwrap();
+    for (media, table) in [(&migrated, migrated_table), (&fresh, fresh_table)] {
+        assert!(table.find(&STORE).is_some());
+        for copy in 0..2 {
+            let Replica::Table(volumes) = decode(&media.get(copy), C606) else {
+                panic!("copy {copy} rejected: {:?}", decode(&media.get(copy), C606));
+            };
+            let seen: Vec<_> = volumes
+                .iter()
+                .filter(|v| v.0 != STORE)
+                .map(|v| (v.0, v.2, v.3))
+                .collect();
+            assert_eq!(seen, expected(&table), "copy {copy}");
+            assert_eq!(seen, expected(&old), "copy {copy}: what it had before");
+            let kinds: Vec<_> = volumes.iter().map(|v| (v.0, v.1)).collect();
+            assert!(kinds.contains(&(RIDES, Kind::Log)));
+            assert!(kinds.contains(&(FILES, Kind::Files)));
+            assert!(kinds.contains(&(TERRAIN, Kind::Pack)));
+        }
+    }
 }
 
 #[test]

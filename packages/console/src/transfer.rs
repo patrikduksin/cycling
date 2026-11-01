@@ -19,12 +19,18 @@
 //! terrain pack's data sectors in order (`pack::Writer`) and file data before
 //! its commit (`files::Writer`); every other write is a header or directory
 //! commit owned by those mechanisms. Nothing here touches RIDES.
+//!
+//! The session keeps STORE mounted, and the reader of the file being pulled
+//! open, across requests: a pull reads one sector per record (about 2 reads
+//! per KB). `STORE_DELETE` changes the store under the app, which holds its
+//! own metadata. After the session the app mounts STORE again and, when the
+//! generation changed, reopens the files it held (`firmware_services::store`).
 
 use device_api::bulk::ReadWrite;
 use firmware_services::checksum::crc32;
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
 use firmware_services::volume::{self, Layout};
-use firmware_services::{files, pack};
+use firmware_services::{files, pack, store};
 
 pub const HEADER: usize = 36;
 pub const MAX_PAYLOAD: usize = 4096;
@@ -54,6 +60,10 @@ pub mod op {
     pub const FILES_READ: u16 = 26;
     pub const FILES_DELETE: u16 = 27;
     pub const FILES_STAT: u16 = 28;
+    pub const STORE_STATUS: u16 = 30;
+    pub const STORE_LIST: u16 = 31;
+    pub const STORE_READ: u16 = 32;
+    pub const STORE_DELETE: u16 = 33;
 }
 
 /// Reply statuses; the host maps them to messages.
@@ -72,6 +82,9 @@ pub mod status {
     pub const TOO_LARGE: u16 = 11;
     pub const CORRUPT: u16 = 12;
     pub const EMPTY: u16 = 13;
+    /// `STORE_READ` reached records the medium lost: `arg` is the first,
+    /// `count` how many.
+    pub const HOLE: u16 = 14;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,6 +210,21 @@ fn files_error(error: files::Error) -> u16 {
     }
 }
 
+fn store_error(error: store::Error) -> u16 {
+    match error {
+        store::Error::Media(_) => status::MEDIA,
+        store::Error::Uninitialized => status::UNINITIALIZED,
+        store::Error::Foreign => status::FOREIGN,
+        store::Error::Corrupt => status::CORRUPT,
+        store::Error::Name => status::INVALID,
+        store::Error::Exists => status::STATE,
+        store::Error::NotFound => status::NOT_FOUND,
+        store::Error::Full => status::FULL,
+        store::Error::Stale => status::STALE,
+        store::Error::Range => status::RANGE,
+    }
+}
+
 /// Fixed-size header encoding shared by `TERRAIN_*` replies: state (0 empty,
 /// 1 writing, 2 ready), generation, length, CRC, tag, digest, stamp, the
 /// volume's byte capacity and the session writer's cursor.
@@ -242,12 +270,28 @@ fn name(payload: &[u8]) -> Option<files::Name> {
     files::Name::new(core::str::from_utf8(payload).ok()?).ok()
 }
 
-/// One session's state: the open terrain and file writers.
+/// `STORE_STATUS` reply: generation, store id, files, file capacity, chunks,
+/// free chunks, record sectors per chunk and payload bytes per record.
+const STORE_INFO: usize = 8 + 8 + 4 * 6;
+
+/// `STORE_LIST` entry: name 40 (zero padded), file id, chunks.
+const STORE_ENTRY: usize = store::NAME + 8;
+
+const _: () = assert!(store::CAPACITY * STORE_ENTRY <= MAX_PAYLOAD);
+
+struct Pull {
+    extent: volume::Extent,
+    store: store::Store,
+    reader: Option<(store::Name, store::Reader)>,
+}
+
+/// One session's state: the open terrain and file writers, and STORE.
 #[derive(Default)]
 pub struct Session {
     last_id: u32,
     terrain: Option<pack::Writer>,
     file: Option<files::Writer>,
+    store: Option<Pull>,
     ended: bool,
 }
 
@@ -291,7 +335,8 @@ impl Session {
                     Err(_) => return Reply::error(status::MEDIA),
                 };
                 // Layout code, then region, generation, planned and
-                // unallocated sectors at 8..40, then 25-byte entries.
+                // unallocated sectors at 8..40, then 25-byte entries: name,
+                // a zero byte that once held the kind, start and sectors.
                 out[..TABLE_HEAD].fill(0);
                 put_u64(out, 8, region);
                 let mut length = TABLE_HEAD;
@@ -307,7 +352,7 @@ impl Session {
                         for v in table.volumes() {
                             let e = &mut out[length..length + 25];
                             e[..8].copy_from_slice(&v.name);
-                            e[8] = v.kind as u8;
+                            e[8] = 0;
                             put_u64(e, 9, v.start);
                             put_u64(e, 17, v.sectors);
                             length += 25;
@@ -320,6 +365,16 @@ impl Session {
             }
             op::TERRAIN_STATUS..=op::TERRAIN_CRC => self.terrain(request, payload, media, out),
             op::FILES_STATUS..=op::FILES_STAT => self.files(request, payload, media, out),
+            op::STORE_STATUS..=op::STORE_DELETE => {
+                let reply = self.store(request, payload, media, out);
+                if matches!(
+                    reply.status,
+                    status::MEDIA | status::STALE | status::CORRUPT
+                ) {
+                    self.store = None;
+                }
+                reply
+            }
             _ => Reply::error(status::INVALID),
         }
     }
@@ -561,6 +616,147 @@ impl Session {
                 match dir.read(&mut vol, &entry, offset, &mut out[..wanted], &mut sector) {
                     Ok(n) => Reply::ok(request.arg, entry.crc, n),
                     Err(e) => Reply::error(files_error(e)),
+                }
+            }
+            _ => Reply::error(status::INVALID),
+        }
+    }
+
+    fn store(
+        &mut self,
+        request: &Request,
+        payload: &[u8],
+        media: &mut impl ReadWrite,
+        out: &mut [u8; MAX_PAYLOAD],
+    ) -> Reply {
+        let mut sector = [0u8; 512];
+        if self.store.is_none() {
+            let mut vol = match volume::open(media, &volume::STORE, &mut sector) {
+                Ok(v) => v,
+                Err(e) => return Reply::error(volume_error(e)),
+            };
+            let mounted = match store::mount(&mut vol, &mut sector) {
+                Ok(mounted) => mounted,
+                Err(e) => return Reply::error(store_error(e)),
+            };
+            self.store = Some(Pull {
+                extent: vol.extent(),
+                store: mounted,
+                reader: None,
+            });
+        }
+        let Some(pull) = self.store.as_mut() else {
+            return Reply::error(status::STATE);
+        };
+        let mut vol = volume::Volume::new(media, pull.extent);
+        let text = core::str::from_utf8(payload).unwrap_or("\0");
+        match request.op {
+            op::STORE_STATUS => {
+                let (mut files, mut used) = (0, 0);
+                let listed = pull
+                    .store
+                    .list(&mut vol, &store::Dir::ROOT, &mut sector, |e| {
+                        files += 1;
+                        used += e.chunks;
+                    });
+                if let Err(e) = listed {
+                    return Reply::error(store_error(e));
+                }
+                let mounted = &pull.store;
+                put_u64(out, 0, mounted.generation());
+                put_u64(out, 8, mounted.store_id());
+                put_u32(out, 16, files);
+                put_u32(out, 20, store::CAPACITY as u32);
+                put_u32(out, 24, mounted.chunks());
+                put_u32(out, 28, mounted.chunks() - used);
+                put_u32(out, 32, mounted.chunk_sectors());
+                put_u32(out, 36, store::PAYLOAD as u32);
+                Reply::ok(mounted.generation(), files, STORE_INFO)
+            }
+            op::STORE_LIST => {
+                let Ok(dir) = store::Dir::new(text) else {
+                    return Reply::error(status::INVALID);
+                };
+                let mut length = 0;
+                let listed = pull.store.list(&mut vol, &dir, &mut sector, |e| {
+                    let entry = &mut out[length..length + STORE_ENTRY];
+                    entry.fill(0);
+                    entry[..e.name.as_str().len()].copy_from_slice(e.name.as_str().as_bytes());
+                    put_u32(entry, store::NAME, e.id);
+                    put_u32(entry, store::NAME + 4, e.chunks);
+                    length += STORE_ENTRY;
+                });
+                match listed {
+                    Ok(()) => Reply::ok(
+                        pull.store.generation(),
+                        (length / STORE_ENTRY) as u32,
+                        length,
+                    ),
+                    Err(e) => Reply::error(store_error(e)),
+                }
+            }
+            op::STORE_READ => {
+                // Records from `arg`, at most `count`, as many as fit, up to
+                // a hole; the reply's `arg` is the next record and `count` 0
+                // the end. A request that starts at a hole gets `HOLE`.
+                let Ok(name) = store::Name::new(text) else {
+                    return Reply::error(status::INVALID);
+                };
+                let Ok(first) = u32::try_from(request.arg) else {
+                    return Reply::error(status::RANGE);
+                };
+                let open = match pull.reader.take() {
+                    Some((n, reader)) if n == name && reader.record(&pull.store) == first => {
+                        Ok(reader)
+                    }
+                    _ => pull
+                        .store
+                        .reader(&mut vol, &name, &mut sector)
+                        .and_then(|mut reader| {
+                            reader.seek(&pull.store, &mut vol, first, &mut sector)?;
+                            Ok(reader)
+                        }),
+                };
+                let mut reader = match open {
+                    Ok(reader) => reader,
+                    Err(e) => return Reply::error(store_error(e)),
+                };
+                let (mut length, mut records, mut hole) = (0, 0, None);
+                while records < request.count && length + store::PAYLOAD <= MAX_PAYLOAD {
+                    let Ok(record) = (&mut out[length..length + store::PAYLOAD]).try_into() else {
+                        break;
+                    };
+                    match reader.next(&pull.store, &mut vol, record, &mut sector) {
+                        Ok(store::Next::Record(n)) => (length, records) = (length + n, records + 1),
+                        Ok(store::Next::End) => break,
+                        Ok(store::Next::Hole { from, to }) if records == 0 => {
+                            pull.reader = Some((name, reader));
+                            return Reply {
+                                status: status::HOLE,
+                                arg: u64::from(from),
+                                count: to - from,
+                                length: 0,
+                            };
+                        }
+                        Ok(store::Next::Hole { from, .. }) => {
+                            hole = Some(from);
+                            break;
+                        }
+                        Err(e) => return Reply::error(store_error(e)),
+                    }
+                }
+                let next = hole.unwrap_or_else(|| reader.record(&pull.store));
+                pull.reader = Some((name, reader));
+                Reply::ok(u64::from(next), records, length)
+            }
+            op::STORE_DELETE => {
+                let Ok(name) = store::Name::new(text) else {
+                    return Reply::error(status::INVALID);
+                };
+                pull.reader = None;
+                match pull.store.delete(&mut vol, &name, &mut sector) {
+                    Ok(()) => Reply::ok(pull.store.generation(), 0, 0),
+                    Err(e) => Reply::error(store_error(e)),
                 }
             }
             _ => Reply::error(status::INVALID),

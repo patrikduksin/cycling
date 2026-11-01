@@ -1,6 +1,7 @@
 import hashlib
 import os
 import struct
+import sys
 import tempfile
 import unittest
 import zlib
@@ -30,6 +31,9 @@ class FakeDevice:
         self.writer = None
         self.writes = []
         self.fail_write_at = None
+        self.store = {}
+        self.generation = 1
+        self.reads = []
 
     def terrain_info(self):
         info = bytearray(93)
@@ -58,12 +62,12 @@ class FakeDevice:
             table = bytearray(40)
             table[0] = 2
             table[8:40] = struct.pack('<QQQQ', 5_777_407, 1, 5_777_407, 532_479)
-            for name, kind, start, sectors in [
-                (b'RIDES', 1, 2048, 2_097_152),
-                (b'FILES', 3, 2_099_200, 524_288),
-                (b'TERRAIN', 2, 2_623_488, 2_621_440),
+            for name, start, sectors in [
+                (b'RIDES', 2048, 2_097_152),
+                (b'FILES', 2_099_200, 524_288),
+                (b'TERRAIN', 2_623_488, 2_621_440),
             ]:
-                table += name.ljust(8, b'\0') + bytes([kind]) + struct.pack('<QQ', start, sectors)
+                table += name.ljust(8, b'\0') + bytes(1) + struct.pack('<QQ', start, sectors)
             return 0, 0, 3, bytes(table)
         if op == OP['terrain_status']:
             return 0, 0, 0, self.terrain_info()
@@ -134,6 +138,37 @@ class FakeDevice:
             return 0, 128, len(self.files), entries
         if op == OP['files_delete']:
             return (0, 0, 0, b'') if self.files.pop(payload.decode(), None) is not None else (8, 0, 0, b'')
+        if self.store is None and op in (OP['store_status'], OP['store_list'], OP['store_read']):
+            return volumes.STATUS.index('invalid'), 0, 0, b''
+        if op == OP['store_status']:
+            info = struct.pack('<QQ6I', self.generation, 0xCD, len(self.store), 64, 1039, 1000, 512, 486)
+            return 0, self.generation, len(self.store), info
+        if op == OP['store_list']:
+            prefix = payload.decode()
+            entries = b''.join(
+                name.encode().ljust(40, b'\0') + struct.pack('<II', file_id, 1 + len(records) // 512)
+                for name, (file_id, records) in self.store.items()
+                if name.startswith(prefix)
+            )
+            return 0, self.generation, len(entries) // 48, entries
+        if op == OP['store_read']:
+            if payload.decode() not in self.store:
+                return 8, 0, 0, b''
+            self.reads.append(arg)
+            records = [*self.store[payload.decode()][1][arg:], b'']
+            lost = next(i for i, record in enumerate(records) if record is not None)
+            if lost:
+                return volumes.STATUS.index('hole'), arg, lost, b''
+            data, sent = b'', 0
+            while sent < min(count, len(records) - 1) and records[sent] is not None and len(data) + 486 <= 4096:
+                data += records[sent]
+                sent += 1
+            return 0, arg + sent, sent, data
+        if op == OP['store_delete']:
+            if self.store.pop(payload.decode(), None) is None:
+                return 8, 0, 0, b''
+            self.generation += 1
+            return 0, self.generation, 0, b''
         raise AssertionError(op)
 
     def entry(self, slot, name):
@@ -194,9 +229,7 @@ class VolumesTests(unittest.TestCase):
         result = volumes.inspect(FakeTransfer(device))
         self.assertEqual(result['layout'], 'volumes')
         self.assertEqual([v['name'] for v in result['volumes']], ['RIDES', 'FILES', 'TERRAIN'])
-        self.assertEqual(
-            result['volumes'][2], {'name': 'TERRAIN', 'kind': 'pack', 'start': 2_623_488, 'sectors': 2_621_440}
-        )
+        self.assertEqual(result['volumes'][2], {'name': 'TERRAIN', 'start': 2_623_488, 'sectors': 2_621_440})
         self.assertEqual(result['terrain']['state'], 'empty')
         self.assertEqual(result['unallocated'], 532_479)
         self.assertEqual((result['files']['state'], result['files']['store']), ('ready', '00000000000000ab'))
@@ -262,6 +295,62 @@ class VolumesTests(unittest.TestCase):
             volumes.run(Namespace(action='terrain-verify', file=Path('pack')), 'port')
         self.assertEqual(order, ['hash', 'connect', 'session', ('verify', (1, b'', 2))])
 
+    def test_add_store_runs_the_line_command_and_reports_a_refusal(self):
+        sent = []
+
+        class Connection:
+            def __init__(self, status):
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def terminal_command(self, command):
+                sent.append(command)
+                return {'status': self.status, 'data': 'layout=volumes store=5244928+532479'}
+
+        with tempfile.TemporaryDirectory() as directory:
+            for status in ('OK', 'UNINITIALIZED'):
+                with mock.patch.multiple(
+                    volumes,
+                    private_path=lambda _: Path(directory),
+                    UsbConnection=lambda *_, status=status: Connection(status),
+                ):
+                    if status == 'OK':
+                        result = volumes.run(Namespace(action='add-store'), 'port')
+                        self.assertEqual(result, {'status': 'layout=volumes store=5244928+532479'})
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'VOLUME ADD STORE: UNINITIALIZED'):
+                            volumes.run(Namespace(action='add-store'), 'port')
+        self.assertEqual(sent, ['VOLUME ADD STORE', 'VOLUME ADD STORE'])
+
+    def test_store_format_needs_confirm_and_runs_the_line_command(self):
+        sent = []
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def terminal_command(self, command):
+                sent.append(command)
+                return {'status': 'OK', 'data': 'state=ready files=0'}
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.multiple(
+                volumes, private_path=lambda _: Path(directory), UsbConnection=lambda *_: Connection()
+            ):
+                with self.assertRaisesRegex(ValueError, 'pass --confirm'):
+                    volumes.run(Namespace(action='store', verb='format', confirm=False), 'port')
+                self.assertEqual(sent, [])
+                result = volumes.run(Namespace(action='store', verb='format', confirm=True), 'port')
+        self.assertEqual((sent, result), (['STORE FORMAT CONFIRM'], {'status': 'state=ready files=0'}))
+
     def test_verify_reports_a_differing_pack(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.pack(directory)
@@ -302,6 +391,61 @@ class VolumesTests(unittest.TestCase):
             self.assertEqual(out.read_bytes(), source.read_bytes())
             transfer.call('files_delete', payload=b'workouts/ftp.json')
             self.assertEqual(volumes.files_list(transfer), [])
+
+    def test_store_lists_a_directory_pulls_a_file_by_records_and_deletes(self):
+        device = FakeDevice()
+        trace = [bytes([i % 251]) * (486 - (i % 5) * 90) for i in range(1300)]
+        device.store = {'traces/0002': (3, trace), 'traces/0001': (2, [b'old']), 'other/settings': (1, [b's'])}
+        transfer = FakeTransfer(device)
+        self.assertEqual(
+            volumes.store_list(transfer, 'traces/'),
+            [{'name': 'traces/0001', 'id': 2, 'chunks': 1}, {'name': 'traces/0002', 'id': 3, 'chunks': 3}],
+        )
+        self.assertEqual(len(volumes.store_list(transfer)), 3)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            result = volumes.store_get(transfer, 'traces/0002', out)
+            self.assertEqual(out.read_bytes(), b''.join(trace))
+            self.assertEqual(result, {'name': 'traces/0002', 'records': 1300, 'bytes': len(b''.join(trace))})
+            self.assertEqual(device.reads[0], 0)
+            self.assertEqual(device.reads, sorted(set(device.reads)))
+            missing = Path(directory) / 'missing.bin'
+            with self.assertRaisesRegex(volumes.TransferError, 'not_found'):
+                volumes.store_get(transfer, 'traces/none', missing)
+            self.assertFalse(missing.exists() or Path(f'{missing}.partial').exists())
+        status = volumes.inspect(transfer)['store']
+        self.assertEqual((status['files'], status['free_chunks'], status['generation']), (3, 1000, 1))
+        transfer.call('store_delete', payload=b'traces/0001')
+        self.assertEqual([e['name'] for e in volumes.store_list(transfer, 'traces/')], ['traces/0002'])
+        self.assertEqual(volumes.inspect(transfer)['store']['generation'], 2)
+
+    def test_a_get_keeps_the_records_before_a_hole_and_names_it(self):
+        device = FakeDevice()
+        trace = [bytes([i % 251]) * 486 for i in range(40)]
+        device.store = {'traces/0001': (1, [*trace[:20], None, None, *trace[22:]])}
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            result = volumes.store_get(FakeTransfer(device), 'traces/0001', out)
+            self.assertEqual(out.read_bytes(), b''.join(trace[:20]))
+            self.assertFalse(Path(f'{out}.partial').exists())
+            self.assertEqual(
+                result,
+                {'name': 'traces/0001', 'records': 20, 'bytes': 20 * 486, 'hole': {'record': 20, 'records': 2}},
+            )
+            argv = ['volumes', 'store', 'get', 'traces/0001', str(out)]
+            with (
+                mock.patch.object(sys, 'argv', argv),
+                mock.patch.object(volumes, 'selected_port', return_value='port'),
+                mock.patch.object(volumes, 'run', return_value=result),
+                mock.patch('builtins.print'),
+                self.assertRaisesRegex(SystemExit, 'lost 2 record\\(s\\) from record 20; .* holds the 20 records'),
+            ):
+                volumes.main()
+
+    def test_inspect_reports_firmware_from_before_store(self):
+        device = FakeDevice()
+        device.store = None
+        self.assertEqual(volumes.inspect(FakeTransfer(device))['store'], {'state': 'unsupported'})
 
     def test_a_get_whose_bytes_do_not_match_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as directory:

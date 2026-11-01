@@ -3,19 +3,33 @@
 //! Relative owned sectors 0 and 1 hold two copies of a volume table: magic,
 //! version, generation, the region size it was planned for and up to
 //! `MAX_VOLUMES` named extents, sealed by a CRC32. Readers take the valid copy
-//! of the newest generation. Writers write copy 1 and then copy 0, so a cut
-//! leaves either table whole. Each volume is an independent block device
-//! ([`Volume`]) whose relative sector 0 is its first sector, so a mechanism
-//! written for the whole region (the sector log) runs unchanged inside it, and
-//! no access through a volume can reach another volume or the table.
+//! of the newest generation. Writers write first the copy that does not hold
+//! the current table, so a cut leaves either table whole. Each volume is an
+//! independent block device ([`Volume`]) whose relative sector 0 is its first
+//! sector, so a mechanism written for the whole region (the sector log) runs
+//! unchanged inside it, and no access through a volume can reach another
+//! volume or the table.
 //!
 //! Before volumes existed the sector log owned the whole region; its
 //! superblocks sit where the table now does. Reading reports such a region as
 //! [`Layout::Legacy`] and never as a blank one. Only [`create`], an explicit
 //! initialize, writes a table, and it refuses a table it does not understand.
+//!
+//! The default plan ends with `STORE`, which takes the rest of the region. A
+//! table written before `STORE` existed gains it only through [`add_store`],
+//! an explicit migration that adds that one extent in the unallocated tail
+//! as a new generation and leaves every existing extent as it was. It formats
+//! an empty store there only when the volume never held one.
+//!
+//! A volume is its name; the mechanism inside checks its own format. Byte 8
+//! of an entry was once a kind code, and readers from before `STORE` reject a
+//! table holding any code but 1, 2 or 3, while they find volumes by name and
+//! ignore the others. So every table keeps writing those codes, `STORE` as 3,
+//! and a migrated table still opens RIDES, FILES and TERRAIN after a rollback.
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
+use crate::store::Error as StoreError;
 use device_api::bulk::{Error as MediaError, OwnedInfo, ReadWrite, SECTOR_SIZE};
 
 pub type Sector = [u8; SECTOR_SIZE];
@@ -35,13 +49,17 @@ pub const RIDES: Name = *b"RIDES\0\0\0";
 pub const TERRAIN: Name = *b"TERRAIN\0";
 /// Small named files (`crate::files`).
 pub const FILES: Name = *b"FILES\0\0\0";
+/// Growable files in directories (`crate::store`), such as ride traces.
+pub const STORE: Name = *b"STORE\0\0\0";
 
 const MIB: u64 = 2048;
 /// Default sizes: about 2,000 h of rides, a terrain pack of several hundred MB
-/// with room to grow, and a small file store. The rest stays unallocated.
+/// with room to grow, and a small file store. STORE takes the rest.
 pub const RIDES_SECTORS: u64 = 1024 * MIB;
 pub const FILES_SECTORS: u64 = 256 * MIB;
 pub const TERRAIN_SECTORS: u64 = 1280 * MIB;
+/// The least STORE takes: a store's metadata and a few chunks.
+pub const STORE_MIN: u64 = 2 * MIB;
 
 const CRC: usize = SECTOR_SIZE - 4;
 const ENTRIES: usize = 64;
@@ -50,12 +68,12 @@ const ENTRY: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Media(MediaError),
-    /// A valid table this version cannot use: newer version, unknown kinds or
-    /// extents that do not fit this region. Never overwritten.
+    /// A valid table this version cannot use: newer version, unknown kind
+    /// codes or extents that do not fit this region. Never overwritten.
     Foreign,
-    /// The named volume is not in the table.
+    /// The named volume is not in the table, or there is no table.
     Missing,
-    /// The region is too small for any plan.
+    /// The region is too small for any plan, or has no room for STORE.
     Small,
 }
 
@@ -65,30 +83,11 @@ impl From<MediaError> for Error {
     }
 }
 
-/// What a volume holds; the owning mechanism checks its own format inside.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Kind {
-    Log = 1,
-    Pack = 2,
-    Files = 3,
-}
-
-impl Kind {
-    fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::Log),
-            2 => Some(Self::Pack),
-            3 => Some(Self::Files),
-            _ => None,
-        }
-    }
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Log => "log",
-            Self::Pack => "pack",
-            Self::Files => "files",
-        }
+fn kind_code(name: &Name) -> u8 {
+    match *name {
+        RIDES => 1,
+        TERRAIN => 2,
+        _ => 3,
     }
 }
 
@@ -96,7 +95,6 @@ impl Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Extent {
     pub name: Name,
-    pub kind: Kind,
     pub start: u64,
     pub sectors: u64,
 }
@@ -132,8 +130,22 @@ impl Table {
 
     /// Sectors after the last volume, reserved for later volumes.
     pub fn unallocated(&self, sectors: u64) -> u64 {
+        sectors.saturating_sub(self.end())
+    }
+
+    fn end(&self) -> u64 {
         let end = self.volumes().map(|v| v.start + v.sectors).max();
-        sectors.saturating_sub(end.unwrap_or(TABLE))
+        end.unwrap_or(TABLE)
+    }
+
+    fn store_extent(&self, sectors: u64) -> Option<Extent> {
+        let start = self.end().next_multiple_of(ALIGN);
+        let rest = sectors.saturating_sub(start);
+        (rest >= STORE_MIN).then_some(Extent {
+            name: STORE,
+            start,
+            sectors: rest,
+        })
     }
 
     fn encode(&self, sector: &mut Sector) {
@@ -147,7 +159,7 @@ impl Table {
         for (index, volume) in self.volumes().enumerate() {
             let entry = &mut sector[ENTRIES + index * ENTRY..][..ENTRY];
             entry[..8].copy_from_slice(&volume.name);
-            entry[8] = volume.kind as u8;
+            entry[8] = kind_code(&volume.name);
             put_u64(entry, 16, volume.start);
             put_u64(entry, 24, volume.sectors);
         }
@@ -220,10 +232,8 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         name.copy_from_slice(&entry[..8]);
         let start = get_u64(entry, 16);
         let sectors = get_u64(entry, 24);
-        let Some(kind) = Kind::from_u8(entry[8]) else {
-            return Replica::Foreign;
-        };
         if name[0] == 0
+            || !(1..=3).contains(&entry[8])
             || entry[9..16].iter().any(|b| *b != 0)
             || start < end
             || sectors == 0
@@ -234,7 +244,6 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         end = start + sectors;
         *slot = Some(Extent {
             name,
-            kind,
             start,
             sectors,
         });
@@ -293,40 +302,39 @@ pub fn read(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Layout, E
 }
 
 /// The default layout for a region of `sectors`: RIDES, FILES and TERRAIN at
-/// their default sizes, or RIDES alone on a region too small for them (test
-/// and simulator media).
+/// their default sizes and STORE over the rest, or RIDES alone on a region
+/// too small for them (test and simulator media).
 pub fn plan(sectors: u64) -> Result<Table, Error> {
-    let mut volumes = [None; MAX_VOLUMES];
+    let mut table = Table {
+        generation: 1,
+        planned: sectors,
+        volumes: [None; MAX_VOLUMES],
+    };
     if sectors >= ALIGN + RIDES_SECTORS + FILES_SECTORS + TERRAIN_SECTORS {
         let mut start = ALIGN;
-        for (slot, (name, kind, size)) in volumes.iter_mut().zip([
-            (RIDES, Kind::Log, RIDES_SECTORS),
-            (FILES, Kind::Files, FILES_SECTORS),
-            (TERRAIN, Kind::Pack, TERRAIN_SECTORS),
+        for (slot, (name, size)) in table.volumes.iter_mut().zip([
+            (RIDES, RIDES_SECTORS),
+            (FILES, FILES_SECTORS),
+            (TERRAIN, TERRAIN_SECTORS),
         ]) {
             *slot = Some(Extent {
                 name,
-                kind,
                 start,
                 sectors: size,
             });
             start += size;
         }
+        table.volumes[3] = table.store_extent(sectors);
     } else {
         // Small media keep the table area minimal and give rides the rest.
         let rides = sectors.checked_sub(TABLE).filter(|s| *s > 0);
-        volumes[0] = Some(Extent {
+        table.volumes[0] = Some(Extent {
             name: RIDES,
-            kind: Kind::Log,
             start: TABLE,
             sectors: rides.ok_or(Error::Small)?,
         });
     }
-    Ok(Table {
-        generation: 1,
-        planned: sectors,
-        volumes,
-    })
+    Ok(table)
 }
 
 /// Write the default table over a blank, legacy or lost one and return it.
@@ -343,6 +351,90 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
     table.encode(sector);
     for copy in [1, 0] {
         media.owned_write(copy, sector)?;
+    }
+    Ok(table)
+}
+
+/// Why [`add_store`] stopped. It writes nothing for any of these but a
+/// media error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddStoreError {
+    /// No table (blank, legacy or lost: `Missing`), a foreign one, no room
+    /// for STORE, or a media error.
+    Table(Error),
+    /// The STORE volume holds neither a store nor nothing: corrupt or foreign
+    /// metadata is never formatted over.
+    Store(StoreError),
+}
+
+impl From<Error> for AddStoreError {
+    fn from(error: Error) -> Self {
+        Self::Table(error)
+    }
+}
+
+impl From<MediaError> for AddStoreError {
+    fn from(error: MediaError) -> Self {
+        Self::Table(Error::Media(error))
+    }
+}
+
+impl From<StoreError> for AddStoreError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Media(error) => Self::Table(Error::Media(error)),
+            error => Self::Store(error),
+        }
+    }
+}
+
+/// Add STORE and an empty store in it: the one migration a table from before
+/// STORE needs. STORE takes the unallocated tail as one more extent in the
+/// next generation; no existing extent moves or changes. The volume must
+/// hold a store or be blank ([`StoreError::Uninitialized`]), or nothing is
+/// written. The table goes first to the copy that does not hold the current
+/// table, then to the other, so a cut leaves the old table or the new one,
+/// and a blank volume is formatted last. Running it again converges: a table
+/// that has STORE is written only to a copy that does not hold it yet, and a
+/// store that exists is kept.
+pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, AddStoreError> {
+    let current = match read(media, sector)? {
+        Layout::Table(table) => table,
+        Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing.into()),
+    };
+    let mut table = current;
+    let store = match table.find(&STORE) {
+        Some(store) => store,
+        None => {
+            let store = table.store_extent(media.owned_info()?.sectors);
+            let store = store.ok_or(Error::Small)?;
+            let slot = table.volumes.iter_mut().find(|v| v.is_none());
+            *slot.ok_or(Error::Small)? = Some(store);
+            table.generation += 1;
+            store
+        }
+    };
+    let blank = match crate::store::mount(&mut Volume::new(media, store), sector) {
+        Ok(_) => false,
+        Err(StoreError::Uninitialized) => true,
+        Err(error) => return Err(error.into()),
+    };
+    let mut copy = [0u8; SECTOR_SIZE];
+    media.owned_read(0, &mut copy)?;
+    let region = media.owned_info()?.sectors;
+    let first = match decode(&copy, region) {
+        Replica::Table(held) if held == current => 1,
+        _ => 0,
+    };
+    table.encode(sector);
+    for index in [first, 1 - first] {
+        media.owned_read(index, &mut copy)?;
+        if copy != *sector {
+            media.owned_write(index, sector)?;
+        }
+    }
+    if blank {
+        crate::store::format(&mut Volume::new(media, store), 0, sector)?;
     }
     Ok(table)
 }

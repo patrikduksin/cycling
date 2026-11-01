@@ -276,7 +276,7 @@ TASKS = [
     ),
     task(
         'volumes',
-        'Inspect the MMC volume table, terrain pack and file store (inspect|init|terrain-write|terrain-verify|files)',
+        'Inspect the MMC volume table, terrain pack and file store (inspect|init|add-store|terrain-write|terrain-verify|files)',
         f'{DEV}device.volumes',
     ),
     task(
@@ -293,6 +293,11 @@ TASKS = [
         'files',
         'List, put, get, delete or format files in the MMC FILES store (list|put name path|get name path|delete name|format --confirm)',
         f'{DEV}device.volumes files',
+    ),
+    task(
+        'store',
+        'List, get or delete files in the MMC STORE, such as ride traces, or erase it (list [dir/]|get name path|delete name|format --confirm)',
+        f'{DEV}device.volumes store',
     ),
     task(
         'mmc-maintenance',

@@ -11,6 +11,7 @@ const C606: u64 = 5_777_407;
 #[derive(Default)]
 struct Media {
     written: BTreeMap<u64, [u8; SECTOR_SIZE]>,
+    reads: u64,
 }
 
 impl ReadWrite for Media {
@@ -25,6 +26,7 @@ impl ReadWrite for Media {
         if sector >= C606 {
             return Err(Error::Range);
         }
+        self.reads += 1;
         *output = self
             .written
             .get(&sector)
@@ -142,16 +144,17 @@ fn headers_are_checked_and_ids_must_increase() {
 fn the_volume_table_is_reported() {
     let mut host = Host::new();
     let (status, _, count, table) = host.call(op::VOLUMES, 0, 0, &[]);
-    assert_eq!((status, count, table[0]), (status::OK, 3, 2));
+    assert_eq!((status, count, table[0]), (status::OK, 4, 2));
     assert_eq!(get_u64(&table, 8), C606);
-    assert_eq!(get_u64(&table, 32), 532_479);
+    assert_eq!(get_u64(&table, 32), 0);
     let names: Vec<_> = table[40..].chunks(25).map(|e| e[..8].to_vec()).collect();
     assert_eq!(
         names,
         [
             b"RIDES\0\0\0".to_vec(),
             b"FILES\0\0\0".to_vec(),
-            b"TERRAIN\0".to_vec()
+            b"TERRAIN\0".to_vec(),
+            b"STORE\0\0\0".to_vec()
         ]
     );
     let mut blank = Host::new();
@@ -310,7 +313,7 @@ fn line_commands_report_volumes_terrain_and_files() {
     volumes::execute(volumes::Command::Status, &mut media, &mut out);
     assert_eq!(
         out,
-        "layout=volumes sectors=5777407 generation=1 unallocated=532479 rides=2048+2097152:log files=2099200+524288:files terrain=2623488+2621440:pack"
+        "layout=volumes sectors=5777407 generation=1 unallocated=0 rides=2048+2097152 files=2099200+524288 terrain=2623488+2621440 store=5244928+532479"
     );
     out.clear();
     volumes::execute(volumes::Command::Terrain, &mut media, &mut out);
@@ -353,4 +356,287 @@ fn line_commands_report_volumes_terrain_and_files() {
     assert_eq!(volumes::parse("FILES", &mut words), None);
     let mut words = "FORMAT".split_ascii_whitespace();
     assert_eq!(volumes::parse("FILES", &mut words), None);
+}
+
+#[test]
+fn line_commands_add_and_report_the_store() {
+    let mut media = Media::default();
+    let mut out = String::new();
+    assert_eq!(
+        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        "UNINITIALIZED"
+    );
+    assert!(media.written.is_empty());
+    volumes::execute(volumes::Command::Init, &mut media, &mut out);
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::Store, &mut media, &mut out),
+        "OK"
+    );
+    assert_eq!(out, "state=uninitialized");
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        "OK"
+    );
+    assert!(out.ends_with(" store=5244928+532479"), "{out}");
+    out.clear();
+    volumes::execute(volumes::Command::Store, &mut media, &mut out);
+    assert!(
+        out.starts_with(
+            "state=ready files=0 capacity=64 chunks=1039 free=1039 generation=1 store="
+        ),
+        "{out}"
+    );
+    let mut sector = [0u8; 512];
+    let mut vol =
+        firmware_services::volume::open(&mut media, &firmware_services::volume::STORE, &mut sector)
+            .unwrap();
+    let mut store = firmware_services::store::mount(&mut vol, &mut sector).unwrap();
+    for i in 0..10 {
+        let name = firmware_services::store::Name::new(&std::format!("traces/{i}")).unwrap();
+        store.create(&mut vol, &name, None, &mut sector).unwrap();
+    }
+    let writes = media.written.clone();
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        "OK"
+    );
+    assert!(media.written == writes, "nothing written");
+    out.clear();
+    volumes::execute(volumes::Command::Store, &mut media, &mut out);
+    assert!(
+        out.starts_with("state=ready files=10 capacity=64 chunks=1039 free=1029 "),
+        "{out}"
+    );
+    out.clear();
+    volumes::execute(volumes::Command::StoreList(0), &mut media, &mut out);
+    assert!(out.starts_with("traces/0:1:1 traces/1:2:1 "), "{out}");
+    assert!(out.ends_with(" next=8"), "{out}");
+    out.clear();
+    volumes::execute(volumes::Command::StoreList(8), &mut media, &mut out);
+    assert_eq!(out, "traces/8:9:1 traces/9:10:1");
+    for (line, parsed) in [
+        ("ADD STORE", Some(volumes::Command::AddStore)),
+        ("ADD", None),
+        ("ADD FILES", None),
+    ] {
+        let mut words = line.split_ascii_whitespace();
+        assert_eq!(volumes::parse("VOLUME", &mut words), parsed, "{line}");
+    }
+    for (line, parsed) in [
+        ("", Some(volumes::Command::Store)),
+        ("LIST", Some(volumes::Command::StoreList(0))),
+        ("LIST 63", Some(volumes::Command::StoreList(63))),
+        ("LIST 64", None),
+        ("DELETE traces/1", None),
+        ("FORMAT CONFIRM", Some(volumes::Command::StoreFormat)),
+        ("FORMAT", None),
+        ("FORMAT CONFIRM NOW", None),
+    ] {
+        let mut words = line.split_ascii_whitespace();
+        assert_eq!(volumes::parse("STORE", &mut words), parsed, "{line}");
+    }
+}
+
+fn record_traces(media: &mut Media, records: u32) -> Vec<u8> {
+    use firmware_services::store::{self, Name};
+    let mut sector = [0u8; 512];
+    let mut vol = firmware_services::volume::open(media, &volume::STORE, &mut sector).unwrap();
+    let mut mounted = store::mount(&mut vol, &mut sector).unwrap();
+    let mut other = mounted
+        .create(
+            &mut vol,
+            &Name::new("other/settings").unwrap(),
+            None,
+            &mut sector,
+        )
+        .unwrap();
+    other
+        .append(&mut mounted, &mut vol, b"settings", &mut sector)
+        .unwrap();
+    other.sync(&mut mounted, &mut vol, &mut sector).unwrap();
+    let mut trace = mounted
+        .create(
+            &mut vol,
+            &Name::new("traces/0001").unwrap(),
+            None,
+            &mut sector,
+        )
+        .unwrap();
+    let mut bytes = Vec::new();
+    for i in 0..records {
+        let record: Vec<u8> = (0..store::PAYLOAD - (i as usize % 7) * 50)
+            .map(|b| (b as u32 * 13 + i) as u8)
+            .collect();
+        trace
+            .append(&mut mounted, &mut vol, &record, &mut sector)
+            .unwrap();
+        trace.sync(&mut mounted, &mut vol, &mut sector).unwrap();
+        bytes.extend_from_slice(&record);
+    }
+    bytes
+}
+
+#[test]
+fn store_files_are_listed_pulled_by_record_range_and_deleted() {
+    let mut host = Host::new();
+    assert_eq!(
+        host.call(op::STORE_STATUS, 0, 0, &[]).0,
+        status::UNINITIALIZED
+    );
+    host.session = Session::default();
+    host.id = 0;
+    let mut out = String::new();
+    volumes::execute(volumes::Command::AddStore, &mut host.media, &mut out);
+    let records = 2 * firmware_services::store::CHUNK + 300;
+    let trace = record_traces(&mut host.media, records);
+
+    let (status, generation, files, info) = host.call(op::STORE_STATUS, 0, 0, &[]);
+    assert_eq!((status, files), (status::OK, 2));
+    assert_eq!(get_u64(&info, 0), generation);
+    assert_eq!(get_u32(&info, 24) - get_u32(&info, 28), 4, "chunks in use");
+    let (status, _, count, list) = host.call(op::STORE_LIST, 0, 0, b"traces/");
+    assert_eq!((status, count, list.len()), (status::OK, 1, 48));
+    assert_eq!(&list[..11], b"traces/0001");
+    assert_eq!(get_u32(&list, 44), 3, "chunks");
+    assert_eq!(host.call(op::STORE_LIST, 0, 0, b"").2, 2);
+    assert_eq!(
+        host.call(op::STORE_LIST, 0, 0, b"traces").0,
+        status::INVALID
+    );
+
+    let reads = host.media.reads;
+    let (mut pulled, mut at) = (Vec::new(), 0);
+    loop {
+        let (status, next, count, data) = host.call(op::STORE_READ, at, 100, b"traces/0001");
+        assert_eq!(status, status::OK);
+        if count == 0 {
+            break;
+        }
+        assert_eq!(next, at + u64::from(count));
+        pulled.extend_from_slice(&data);
+        at = next;
+    }
+    assert_eq!(at, u64::from(records));
+    assert!(pulled == trace, "the pulled trace differs");
+    let (table, dir) = (9, 1);
+    let rest =
+        u64::from(firmware_services::store::CHUNK - records % firmware_services::store::CHUNK);
+    let overhead = host.media.reads - reads - u64::from(records);
+    assert!(
+        overhead <= dir + 3 * table + 2 * rest,
+        "{overhead} reads besides records"
+    );
+
+    let first = firmware_services::store::CHUNK + 5;
+    let (_, next, count, data) = host.call(op::STORE_READ, u64::from(first), 2, b"traces/0001");
+    assert_eq!((next, count), (u64::from(first) + 2, 2));
+    let offset: usize = (0..first)
+        .map(|i| firmware_services::store::PAYLOAD - (i as usize % 7) * 50)
+        .sum();
+    assert!(data == trace[offset..offset + data.len()]);
+    let (_, _, _, data) = host.call(op::STORE_READ, 0, 1, b"traces/0001");
+    assert!(data == trace[..firmware_services::store::PAYLOAD]);
+    assert_eq!(
+        host.call(op::STORE_READ, 0, 1, b"traces/none").0,
+        status::NOT_FOUND
+    );
+    assert_eq!(host.call(op::STORE_READ, 0, 1, b"/bad").0, status::INVALID);
+
+    let (status, after, _, _) = host.call(op::STORE_DELETE, 0, 0, b"traces/0001");
+    assert_eq!(status, status::OK);
+    assert!(after > generation);
+    assert_eq!(
+        host.call(op::STORE_READ, 0, 1, b"traces/0001").0,
+        status::NOT_FOUND
+    );
+    let (_, _, files, info) = host.call(op::STORE_STATUS, 0, 0, &[]);
+    assert_eq!((files, get_u64(&info, 0)), (1, after));
+    host.session = Session::default();
+    host.id = 0;
+    let (_, _, count, list) = host.call(op::STORE_LIST, 0, 0, b"");
+    assert_eq!((count, &list[..14]), (1, &b"other/settings"[..]));
+}
+
+#[test]
+fn a_pull_stops_at_records_the_medium_lost_and_says_which() {
+    use firmware_services::store::{CHUNK, DATA, PAYLOAD};
+    let mut host = Host::new();
+    volumes::execute(
+        volumes::Command::AddStore,
+        &mut host.media,
+        &mut String::new(),
+    );
+    let trace = record_traces(&mut host.media, CHUNK + 100);
+    let offset =
+        |record: u32| -> usize { (0..record).map(|i| PAYLOAD - (i as usize % 7) * 50).sum() };
+    let mut sector = [0u8; 512];
+    let start = volume::open(&mut host.media, &volume::STORE, &mut sector)
+        .unwrap()
+        .extent()
+        .start;
+    let lost = CHUNK + 20;
+    host.media
+        .written
+        .insert(start + DATA + 2 * u64::from(CHUNK) + 20, [0; 512]);
+
+    let (status, next, count, data) =
+        host.call(op::STORE_READ, u64::from(lost - 5), 100, b"traces/0001");
+    assert_eq!((status, next, count), (status::OK, u64::from(lost), 5));
+    assert!(data == trace[offset(lost - 5)..offset(lost)]);
+    let (status, first, missing, data) =
+        host.call(op::STORE_READ, u64::from(lost), 100, b"traces/0001");
+    assert_eq!(
+        (status, first, missing, data.len()),
+        (status::HOLE, u64::from(lost), 1, 0)
+    );
+    let (status, _, count, data) =
+        host.call(op::STORE_READ, u64::from(lost + 1), 1, b"traces/0001");
+    assert_eq!((status, count), (status::OK, 1));
+    assert!(data == trace[offset(lost + 1)..offset(lost + 2)]);
+}
+
+#[test]
+fn only_the_owners_store_format_replaces_a_corrupt_store() {
+    use firmware_services::store::COPY_B;
+    let mut media = Media::default();
+    let mut out = String::new();
+    volumes::execute(volumes::Command::Init, &mut media, &mut out);
+    volumes::execute(volumes::Command::AddStore, &mut media, &mut out);
+    let mut sector = [0u8; 512];
+    let start = volume::open(&mut media, &volume::STORE, &mut sector)
+        .unwrap()
+        .extent()
+        .start;
+    let mut header = media.written[&start];
+    header[100] ^= 1;
+    media.written.insert(start, header);
+    assert!(!media.written.contains_key(&(start + COPY_B)));
+    for command in [volumes::Command::Store, volumes::Command::AddStore] {
+        out.clear();
+        assert_eq!(volumes::execute(command, &mut media, &mut out), "CORRUPT");
+    }
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),
+        "OK"
+    );
+    assert!(
+        out.starts_with("state=ready files=0 capacity=64 chunks=1039 free=1039 generation=1 "),
+        "{out}"
+    );
+    let mut newer = media.written[&start];
+    newer[16] = 2;
+    let checksum = crc32(&newer[..508]);
+    newer[508..].copy_from_slice(&checksum.to_le_bytes());
+    media.written.insert(start + COPY_B, newer);
+    let written = media.written.clone();
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),
+        "FOREIGN"
+    );
+    assert!(media.written == written, "nothing written");
 }

@@ -108,7 +108,7 @@ pub fn execute(
         ) {
             let _ = write!(
                 output,
-                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
+                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,STORE,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
             );
             #[cfg(feature = "cycling")]
             {
@@ -157,10 +157,15 @@ pub fn execute(
         }
         Command::Volume(command) => {
             use firmware_console::commands::volumes;
-            // Transfers pause the app; refuse while a ride records. Volume
-            // writes never reach RIDES, so other commands need no guard.
+            // A transfer pauses the app, and a STORE format erases every
+            // file in STORE; refuse both while a ride records. Other volume
+            // writes never reach RIDES or STORE.
             #[cfg(feature = "cycling")]
-            if command == volumes::Command::Transfer && sdk.recording() {
+            if matches!(
+                command,
+                volumes::Command::Transfer | volumes::Command::StoreFormat
+            ) && sdk.recording()
+            {
                 terminal.reply(request.id, "BUSY", "active work", now);
                 return;
             }
@@ -213,7 +218,7 @@ pub fn execute(
             );
             let _ = write!(
                 output,
-                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; VOLUME [STATUS|INIT|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
+                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; VOLUME [STATUS|INIT|ADD STORE|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; STORE [STATUS|FORMAT CONFIRM|LIST index]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
             );
             let _ = write!(
                 output,
@@ -592,19 +597,25 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
     use device_api::console::Console;
     use firmware_console::transfer::{self, HEADER, MAX_PAYLOAD, Session};
     use firmware_services::checksum::crc32;
-    // The request and reply buffers (8 KiB) live in external RAM for the
-    // session only: held across awaits they would sit in the console task's
-    // static future and take internal RAM from the main stack.
-    struct Buffers(*mut u8);
-    const LAYOUT: core::alloc::Layout =
-        match core::alloc::Layout::from_size_align(2 * MAX_PAYLOAD, 4) {
-            Ok(layout) => layout,
-            Err(_) => panic!("transfer buffer layout"),
-        };
-    impl Drop for Buffers {
+    // The request and reply buffers (8 KiB) and the session, which keeps
+    // STORE mounted between requests, live in external RAM for the session
+    // only: held across awaits they would sit in the console task's static
+    // future and take internal RAM from the main stack.
+    struct Block(*mut u8);
+    const SESSION: usize = 2 * MAX_PAYLOAD;
+    const LAYOUT: core::alloc::Layout = match core::alloc::Layout::from_size_align(
+        SESSION + core::mem::size_of::<Session>(),
+        core::mem::align_of::<Session>(),
+    ) {
+        Ok(layout) => layout,
+        Err(_) => panic!("transfer block layout"),
+    };
+    const _: () = assert!(SESSION.is_multiple_of(core::mem::align_of::<Session>()));
+    const _: () = assert!(!core::mem::needs_drop::<Session>());
+    impl Drop for Block {
         fn drop(&mut self) {
             // SAFETY: the block came from `allocate_external` with `LAYOUT`,
-            // is freed only here, and no slice of it outlives `self`.
+            // is freed only here, and no reference into it outlives `self`.
             unsafe { device::drivers::psram::deallocate_external(self.0, LAYOUT) };
         }
     }
@@ -614,18 +625,21 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
         // No external RAM: the host times out and reports the session failed.
         return;
     }
-    let buffers = Buffers(pointer);
-    // SAFETY: the allocator returned `LAYOUT.size()` writable bytes, zeroed
-    // here before any reference exists; `buffers` frees them only after
-    // `payload` and `out` (declared later, dropped first) are gone.
-    let (payload, out) = unsafe {
-        core::ptr::write_bytes(buffers.0, 0, LAYOUT.size());
+    let block = Block(pointer);
+    // SAFETY: the allocator returned `LAYOUT.size()` writable bytes aligned
+    // for `Session` at `SESSION`, initialized here before any reference
+    // exists; `block` frees them only after `payload`, `out` and `session`
+    // (declared later, dropped first) are gone.
+    let (payload, out, session) = unsafe {
+        core::ptr::write_bytes(block.0, 0, SESSION);
+        let session = block.0.add(SESSION).cast::<Session>();
+        session.write(Session::default());
         (
-            &mut *buffers.0.cast::<[u8; MAX_PAYLOAD]>(),
-            &mut *buffers.0.add(MAX_PAYLOAD).cast::<[u8; MAX_PAYLOAD]>(),
+            &mut *block.0.cast::<[u8; MAX_PAYLOAD]>(),
+            &mut *block.0.add(MAX_PAYLOAD).cast::<[u8; MAX_PAYLOAD]>(),
+            &mut *session,
         )
     };
-    let mut session = Session::default();
     let mut header = [0u8; HEADER];
     let mut last = embassy_time::Instant::now();
     let idle = embassy_time::Duration::from_millis(transfer::IDLE_MS);

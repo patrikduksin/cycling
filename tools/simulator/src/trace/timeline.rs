@@ -386,6 +386,8 @@ pub struct Window {
     pub end_ms: u64,
     pub activity: trace::Activity,
     pub tasks: Vec<TaskTime>,
+    /// The main-loop pass's stages, parts of the `console` task's time.
+    pub stages: Vec<StageTime>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -393,6 +395,14 @@ pub struct TaskTime {
     pub name: String,
     pub polls: u32,
     pub busy_us: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageTime {
+    pub name: String,
+    pub runs: u32,
+    pub busy_us: u32,
+    pub max_us: u32,
 }
 
 /// No packet from `sensor` after `last_ms` until `next_ms`, or to the end.
@@ -985,6 +995,7 @@ impl Reader {
                     end_ms: self.now,
                     activity,
                     tasks: Vec::new(),
+                    stages: Vec::new(),
                 });
             }
             Event::Task {
@@ -997,6 +1008,21 @@ impl Reader {
                         name: name.into(),
                         polls,
                         busy_us,
+                    });
+                }
+            }
+            Event::Stage {
+                name,
+                runs,
+                busy_us,
+                max_us,
+            } => {
+                if let Some(window) = &mut self.window {
+                    window.stages.push(StageTime {
+                        name: name.into(),
+                        runs,
+                        busy_us,
+                        max_us,
                     });
                 }
             }
@@ -1265,6 +1291,22 @@ fn window(window: &Window) -> String {
     if !tasks.is_empty() {
         let _ = write!(text, "; {}", tasks.join(", "));
     }
+    let stages: Vec<String> = window
+        .stages
+        .iter()
+        .map(|stage| {
+            format!(
+                "{} {} ({} a pass, max {})",
+                stage.name,
+                share(stage.busy_us),
+                micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
+                micros(u64::from(stage.max_us))
+            )
+        })
+        .collect();
+    if !stages.is_empty() {
+        let _ = write!(text, "; pass stages {}", stages.join(", "));
+    }
     let c = &a.consumers;
     let _ = write!(
         text,
@@ -1318,6 +1360,15 @@ pub fn bytes(n: u64) -> String {
 
 pub fn millis(us: u32) -> String {
     format!("{:.1} ms", f64::from(us) / 1000.0)
+}
+
+/// `850 µs`, or `3.15 ms` from a millisecond up.
+pub fn micros(us: u64) -> String {
+    if us >= 1000 {
+        format!("{:.2} ms", us as f64 / 1000.0)
+    } else {
+        format!("{us} µs")
+    }
 }
 
 #[cfg(test)]

@@ -335,7 +335,8 @@ pub struct Health {
 
 /// Where the CPU's time went since the record before, and what drew power
 /// as the window ended. Not an input. Its executor tasks follow it as
-/// [`Event::Task`] records. Times are µs; an interrupt counts in whatever
+/// [`Event::Task`] records, then the main-loop pass's stages as
+/// [`Event::Stage`] records. Times are µs; an interrupt counts in whatever
 /// it interrupted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Activity {
@@ -558,6 +559,15 @@ pub enum Event<'a> {
         polls: u32,
         busy_us: Option<u32>,
     },
+    /// One stage of the main-loop pass, a part of the `console` task's
+    /// share of the [`Event::Activity`] window before it: the passes that
+    /// ran it, their time in it and the slowest one's.
+    Stage {
+        name: &'a str,
+        runs: u32,
+        busy_us: u32,
+        max_us: u32,
+    },
 }
 
 mod tag {
@@ -609,6 +619,7 @@ mod tag {
     pub const HEALTH: u8 = 80;
     pub const ACTIVITY: u8 = 81;
     pub const TASK: u8 = 82;
+    pub const STAGE: u8 = 83;
 }
 
 const SHORT_PASS: u8 = 0x80;
@@ -1383,6 +1394,7 @@ impl<'a> Event<'a> {
             Self::Health(_) => tag::HEALTH,
             Self::Activity(_) => tag::ACTIVITY,
             Self::Task { .. } => tag::TASK,
+            Self::Stage { .. } => tag::STAGE,
         }
     }
 
@@ -1513,6 +1525,17 @@ impl<'a> Event<'a> {
                 polls.put(w);
                 busy_us.put(w);
             }
+            Self::Stage {
+                name,
+                runs,
+                busy_us,
+                max_us,
+            } => {
+                name.put(w);
+                runs.put(w);
+                busy_us.put(w);
+                max_us.put(w);
+            }
         }
     }
 
@@ -1620,6 +1643,12 @@ impl<'a> Event<'a> {
                 name: Wire::take(r),
                 polls: Wire::take(r),
                 busy_us: Wire::take(r),
+            },
+            tag::STAGE => Self::Stage {
+                name: Wire::take(r),
+                runs: Wire::take(r),
+                busy_us: Wire::take(r),
+                max_us: Wire::take(r),
             },
             _ => return None,
         })

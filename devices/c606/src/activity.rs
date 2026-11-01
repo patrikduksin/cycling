@@ -348,16 +348,169 @@ impl Counters {
     }
 }
 
+/// The stages of a main-loop pass, by their names in the trace, in the
+/// order a pass runs them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Stage {
+    Bringup,
+    /// The pass's record and the startup, power and companion status it
+    /// freezes.
+    Inputs,
+    /// The ride journals' boot scan and charging standby.
+    Standby,
+    /// The other inputs VANA reads, frozen or bound to the trace.
+    Observe,
+    /// The shell's tick and the input it routes to VANA.
+    Shell,
+    ShellPresent,
+    VanaTick,
+    LookAhead,
+    Phone,
+    VanaPresent,
+    /// Preferences, alerts and power requests after the frame.
+    VanaAfter,
+    Seen,
+    Drain,
+    Vitals,
+    Terminal,
+    Command,
+    /// The health lines logged every few seconds.
+    Log,
+}
+
+impl Stage {
+    const ALL: [Self; 17] = [
+        Self::Bringup,
+        Self::Inputs,
+        Self::Standby,
+        Self::Observe,
+        Self::Shell,
+        Self::ShellPresent,
+        Self::VanaTick,
+        Self::LookAhead,
+        Self::Phone,
+        Self::VanaPresent,
+        Self::VanaAfter,
+        Self::Seen,
+        Self::Drain,
+        Self::Vitals,
+        Self::Terminal,
+        Self::Command,
+        Self::Log,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bringup => "bringup",
+            Self::Inputs => "inputs",
+            Self::Standby => "standby",
+            Self::Observe => "observe",
+            Self::Shell => "shell",
+            Self::ShellPresent => "shell.present",
+            Self::VanaTick => "vana.tick",
+            Self::LookAhead => "look_ahead",
+            Self::Phone => "phone",
+            Self::VanaPresent => "vana.present",
+            Self::VanaAfter => "vana.after",
+            Self::Seen => "seen",
+            Self::Drain => "drain",
+            Self::Vitals => "vitals",
+            Self::Terminal => "terminal",
+            Self::Command => "command",
+            Self::Log => "log",
+        }
+    }
+}
+
+// `Stages` indexes its slots by `stage as usize`, and `take` names them
+// by `Stage::ALL[index]`.
+const _: () = {
+    let mut index = 0;
+    while index < Stage::ALL.len() {
+        assert!(Stage::ALL[index] as usize == index);
+        index += 1;
+    }
+};
+
+struct StageSlot {
+    runs: AtomicU32,
+    busy: Cycles,
+    max: AtomicU32,
+}
+
+/// The pass's time by stage. The console task marks where each stage
+/// ends, and the cycles since the mark before count in that stage; it is
+/// their only writer.
+struct Stages {
+    marked: AtomicU32,
+    slots: [StageSlot; Stage::ALL.len()],
+}
+
+/// One stage's runs and time since the stages were last taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StageTime {
+    pub stage: Stage,
+    pub runs: u32,
+    pub busy_us: u32,
+    pub max_us: u32,
+}
+
+impl Stages {
+    const fn new() -> Self {
+        Self {
+            marked: AtomicU32::new(0),
+            slots: [const {
+                StageSlot {
+                    runs: AtomicU32::new(0),
+                    busy: Cycles::new(),
+                    max: AtomicU32::new(0),
+                }
+            }; Stage::ALL.len()],
+        }
+    }
+
+    fn begin(&self, now: u32) {
+        self.marked.store(now, Relaxed);
+    }
+
+    fn end(&self, stage: Stage, now: u32) {
+        let took = now.wrapping_sub(self.marked.swap(now, Relaxed));
+        let slot = &self.slots[stage as usize];
+        slot.runs
+            .store(slot.runs.load(Relaxed).wrapping_add(1), Relaxed);
+        slot.busy.add(took);
+        slot.max.fetch_max(took, Relaxed);
+    }
+
+    fn take(&self, mhz: u32) -> [Option<StageTime>; Stage::ALL.len()] {
+        let us = |cycles: u64| u32::try_from(cycles / u64::from(mhz.max(1))).unwrap_or(u32::MAX);
+        core::array::from_fn(|index| {
+            let slot = &self.slots[index];
+            let runs = slot.runs.swap(0, Relaxed);
+            let busy = slot.busy.take();
+            let max = slot.max.swap(0, Relaxed);
+            (runs > 0).then(|| StageTime {
+                stage: Stage::ALL[index],
+                runs,
+                busy_us: us(busy),
+                max_us: us(u64::from(max)),
+            })
+        })
+    }
+}
+
 #[cfg(feature = "hardware")]
 pub use device::*;
 
 #[cfg(feature = "hardware")]
 mod device {
-    use super::{Counters, Taken, Task};
+    use super::{Counters, Stage, StageTime, Stages, Taken, Task};
     use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
     use esp_hal::xtensa_lx::timer::get_cycle_count as cycles;
 
     static COUNTERS: Counters = Counters::new();
+    static STAGES: Stages = Stages::new();
     /// What one counting hook costs, in cycles, as [`calibrate`] measured.
     static HOOK_CYCLES: AtomicU32 = AtomicU32::new(0);
     static PASS_BEGAN_US: AtomicU32 = AtomicU32::new(0);
@@ -420,6 +573,17 @@ mod device {
     /// A main-loop pass begins; one that awaits restarts after the await.
     pub fn pass_began() {
         PASS_BEGAN_US.store(now_us(), Relaxed);
+        STAGES.begin(cycles());
+    }
+
+    /// The pass's `stage` ends here; it began where the one before ended.
+    pub fn stage_ended(stage: Stage) {
+        STAGES.end(stage, cycles());
+    }
+
+    /// Each stage that ran since the last take.
+    pub fn take_stages() -> [Option<StageTime>; Stage::ALL.len()] {
+        STAGES.take(esp_hal::clock::cpu_clock().as_mhz())
     }
 
     pub fn pass_ended() {
@@ -548,6 +712,41 @@ mod tests {
         );
         let again = counters.take(480_000, MHZ);
         assert_eq!(again.tasks, [None; SLOTS], "a take starts the next window");
+    }
+
+    #[test]
+    fn a_stage_counts_the_time_since_the_stage_before_ended() {
+        let stages = Stages::new();
+        for pass in 0..2u32 {
+            let at = pass * 240_000;
+            stages.begin(at);
+            stages.end(Stage::Inputs, at + 240);
+            stages.end(Stage::VanaTick, at + 240 + 2_400 * (pass + 1));
+        }
+        let taken = stages.take(MHZ);
+        assert_eq!(
+            taken[Stage::Inputs as usize],
+            Some(StageTime {
+                stage: Stage::Inputs,
+                runs: 2,
+                busy_us: 2,
+                max_us: 1
+            })
+        );
+        assert_eq!(
+            taken[Stage::VanaTick as usize],
+            Some(StageTime {
+                stage: Stage::VanaTick,
+                runs: 2,
+                busy_us: 30,
+                max_us: 20
+            })
+        );
+        assert_eq!(taken[Stage::Seen as usize], None, "a stage that never ran");
+        assert!(
+            stages.take(MHZ).iter().all(Option::is_none),
+            "a take starts the next window"
+        );
     }
 
     #[test]

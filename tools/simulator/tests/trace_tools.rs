@@ -312,6 +312,33 @@ fn lap_toasts_are_events_and_ride_time_stops_while_paused() {
 }
 
 #[test]
+fn every_press_of_the_same_button_is_found() {
+    let timeline = timeline("laps-and-a-menu");
+    let laps: Vec<u64> = tell(&timeline)
+        .events
+        .iter()
+        .filter(|e| e.name == "lap")
+        .map(|e| e.at.session_ms)
+        .collect();
+    let presses: Vec<u64> = find(
+        &timeline,
+        &Query::parse("input"),
+        (0, u64::MAX),
+        Some("TopLeft"),
+    )
+    .iter()
+    .filter_map(|found| match found {
+        Found::Entry(entry) => Some(entry.at.session_ms),
+        Found::Stretch { .. } => None,
+    })
+    .collect();
+    assert_eq!(laps.len(), 2);
+    for lap in laps {
+        assert!(presses.contains(&lap), "a press at {lap} in {presses:?}");
+    }
+}
+
+#[test]
 fn otlp_export_is_one_traces_and_one_metrics_request() {
     let timeline = timeline("power-dropout-after-descent");
     let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));

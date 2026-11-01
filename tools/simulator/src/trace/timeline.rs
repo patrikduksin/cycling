@@ -211,6 +211,13 @@ impl Kind {
         )
     }
 
+    /// Each entry is something that happened (a press, a command, a note
+    /// played), not a state reported again, so none is ever a repeat: two
+    /// presses of one button are two presses.
+    pub const fn edge(self) -> bool {
+        matches!(self, Self::Input | Self::Command | Self::Sound)
+    }
+
     /// Many per second; hidden unless asked for.
     pub const fn bulky(self) -> bool {
         matches!(
@@ -462,7 +469,7 @@ impl Reader {
     }
 
     fn push_from(&mut self, kind: Kind, source: u8, text: String) {
-        let repeat = self.last.get(&(kind, source)) == Some(&text);
+        let repeat = !kind.edge() && self.last.get(&(kind, source)) == Some(&text);
         if !repeat {
             self.last.insert((kind, source), text.clone());
         }

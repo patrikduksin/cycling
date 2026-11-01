@@ -398,6 +398,51 @@ pub fn format(
     while store == 0 || seen.contains(&store) {
         store = mix(store);
     }
+    let epoch = Super {
+        store,
+        generation,
+        capacity,
+    };
+    lay_out(media, tag, epoch, sequence, initial, sector)
+}
+
+/// Start the epoch `store` of `generation`, as [`format`] would have, on a
+/// region that holds no log: for a host rebuilding the medium a recording
+/// started on. Writes `RING + 2` sectors.
+pub fn restore(
+    media: &mut impl ReadWrite,
+    tag: &[u8; 16],
+    store: u64,
+    generation: u64,
+    initial: &[u8],
+    sector: &mut Sector,
+) -> Result<Log, Error> {
+    if store == 0 || generation == 0 {
+        return Err(Error::Foreign);
+    }
+    let capacity = capacity(media.owned_info()?.sectors)?;
+    let epoch = Super {
+        store,
+        generation,
+        capacity,
+    };
+    lay_out(media, tag, epoch, 0, initial, sector)
+}
+
+/// Write an epoch's first checkpoint, its superblocks and the rest of its
+/// ring, the first checkpoint `RING` past `sequence`.
+fn lay_out(
+    media: &mut impl ReadWrite,
+    tag: &[u8; 16],
+    Super {
+        store,
+        generation,
+        capacity,
+    }: Super,
+    sequence: u64,
+    initial: &[u8],
+    sector: &mut Sector,
+) -> Result<Log, Error> {
     let mut log = Log {
         store,
         generation,

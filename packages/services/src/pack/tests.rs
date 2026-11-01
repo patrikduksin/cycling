@@ -251,3 +251,23 @@ impl Replica {
         matches!(self, Replica::Invalid)
     }
 }
+
+#[test]
+fn a_restored_pack_reads_as_the_header_it_was_given() {
+    let data = content(3000, 5);
+    let header = Header {
+        state: State::Ready,
+        generation: 6,
+        spec: spec(&data),
+    };
+    let mut media = Media::new(DATA + 64);
+    let mut s = sector();
+    restore(&mut media, header, &data, &mut s).unwrap();
+    assert_eq!(status(&mut media, &mut s), Ok(Some(header)));
+    assert_eq!(read_all(&mut media), data);
+    assert_eq!(
+        restore(&mut media, header, &data[1..], &mut s),
+        Err(Error::Mismatch),
+        "bytes the header does not describe"
+    );
+}

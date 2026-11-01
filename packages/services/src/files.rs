@@ -273,6 +273,73 @@ pub fn format(media: &mut impl ReadWrite, seed: u64, sector: &mut Sector) -> Res
     Ok(dir)
 }
 
+/// A store holding `files`, each `(name, revision, bytes)`, in slot order
+/// and under the id and generation a host names: for rebuilding the medium a
+/// recording started on. Writes copy A whatever the volume holds; extents
+/// follow one another from the first data sector.
+pub fn restore(
+    media: &mut impl ReadWrite,
+    id: u64,
+    generation: u64,
+    files: &[(Name, u32, &[u8])],
+    sector: &mut Sector,
+) -> Result<Dir, Error> {
+    let data = media
+        .owned_info()?
+        .sectors
+        .checked_sub(DATA)
+        .ok_or(Error::Range)?;
+    if files.len() > CAPACITY {
+        return Err(Error::Full);
+    }
+    let mut entries = [None; CAPACITY];
+    let mut start = 0u64;
+    for ((name, revision, bytes), slot) in files.iter().zip(entries.iter_mut()) {
+        let length = u32::try_from(bytes.len())
+            .ok()
+            .filter(|length| *length <= MAX_FILE)
+            .ok_or(Error::TooLarge)?;
+        let entry = Entry {
+            name: *name,
+            length,
+            crc: crc32(bytes),
+            revision: *revision,
+            start: u32::try_from(start).map_err(|_| Error::Full)?,
+        };
+        if start + entry.sectors() > data {
+            return Err(Error::Full);
+        }
+        for (index, chunk) in bytes.chunks(SECTOR_SIZE).enumerate() {
+            sector.fill(0);
+            sector[..chunk.len()].copy_from_slice(chunk);
+            media.owned_write(DATA + start + index as u64, sector)?;
+        }
+        start += entry.sectors();
+        *slot = Some(entry);
+    }
+    let mut dir = Dir {
+        copy: 0,
+        id,
+        generation,
+        cursor: start as u32,
+        count: files.len() as u16,
+        crcs: [0; DIR_SECTORS],
+        data,
+    };
+    for (index, chunk) in entries.chunks(PER_SECTOR).enumerate() {
+        sector.fill(0);
+        for (slot, entry) in chunk.iter().enumerate() {
+            if let Some(entry) = entry {
+                entry.encode(&mut sector[slot * ENTRY..][..ENTRY]);
+            }
+        }
+        dir.crcs[index] = crc32(sector);
+        media.owned_write(1 + index as u64, sector)?;
+    }
+    write_header(media, &dir, sector)?;
+    Ok(dir)
+}
+
 fn write_header(media: &mut impl ReadWrite, dir: &Dir, sector: &mut Sector) -> Result<(), Error> {
     sector.fill(0);
     sector[..16].copy_from_slice(MAGIC);

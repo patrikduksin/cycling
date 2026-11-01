@@ -52,7 +52,10 @@ base supports discovery, echo, disconnect and forgetting a saved selection.
   `CONNECT` after that operation completes. `CONNECT` also reconnects an existing
   selection; `RECONNECT` is the same bounded operation.
 - Wi-Fi connect completion means radio association; `state=4` means DHCP and the
-  public HTTP probe also succeeded. BLE connect completion means the selected
+  public HTTP probe also succeeded. The probe requests
+  `http://connectivitycheck.gstatic.com/generate_204` over plain HTTP (the
+  device has no TLS) and passes only on status 204, so a captive portal's 200 or
+  302 fails it. The request carries no identifier and the response has no body. BLE connect completion means the selected
   notification characteristic is subscribed. Connection and notification counters
   show later activity.
 - Unexpected link loss keeps connection intent and retries with capped backoff.

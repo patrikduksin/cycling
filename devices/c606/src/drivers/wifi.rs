@@ -890,7 +890,7 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
         return Err("injected_dns");
     }
     let addresses = stack
-        .dns_query("example.com", DnsQueryType::A)
+        .dns_query(firmware_services::network::PROBE_HOST, DnsQueryType::A)
         .await
         .map_err(|_| "dns")?;
     #[cfg(feature = "debug-harness")]
@@ -903,8 +903,7 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
     socket.set_timeout(Some(Duration::from_secs(10)));
     socket.connect((host, 80)).await.map_err(|_| "connect")?;
-    let mut request =
-        b"GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\n\r\n".as_slice();
+    let mut request = firmware_services::network::PROBE_REQUEST;
     while !request.is_empty() {
         let n = socket.write(request).await.map_err(|_| "write")?;
         if n == 0 {

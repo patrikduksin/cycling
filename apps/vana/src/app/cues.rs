@@ -253,7 +253,7 @@ mod tests {
     fn every_cue_is_listed_once() {
         for (i, cue) in Cue::ALL.iter().enumerate() {
             assert_eq!(Cue::ALL.iter().position(|c| c == cue), Some(i), "{cue:?}");
-            let _ = match cue {
+            match cue {
                 Cue::Start
                 | Cue::Pause
                 | Cue::Resume
@@ -275,8 +275,8 @@ mod tests {
                 | Cue::OnTrack
                 | Cue::AtStart
                 | Cue::TurnAhead
-                | Cue::Turn => (),
-            };
+                | Cue::Turn => {}
+            }
         }
     }
 

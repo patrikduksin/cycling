@@ -500,6 +500,39 @@ fn a_test_stub_never_asserts_the_symptom_it_is_told_to_expect_away() {
 }
 
 #[test]
+fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
+    use shell_simulator::trace::stub::to_fixture;
+    let fixture = fixture("laps-and-a-menu");
+    let (capture, media) = file::load(&fixture).unwrap();
+    assert_eq!(to_fixture(&fixture, &capture, media), None);
+
+    let dir = std::env::temp_dir().join(format!("trace-stub-{}", std::process::id()));
+    let outside = dir.join("morning.trace");
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.advance(seconds(2));
+    file::save(&sim.capture(), &outside).unwrap();
+    let (capture, media) = file::load(&outside).unwrap();
+    let steps = to_fixture(&outside, &capture, media).unwrap();
+    assert!(steps.contains("holds no Wi-Fi password"), "{steps}");
+    assert!(
+        steps.contains("tools/simulator/tests/traces/morning.trace\n"),
+        "{steps}"
+    );
+    assert!(
+        steps.contains("--test trace_tools no_committed_fixture"),
+        "{steps}"
+    );
+
+    std::fs::remove_file(file::origin_path(&outside)).unwrap();
+    let (capture, media) = file::load(&outside).unwrap();
+    let steps = to_fixture(&outside, &capture, media).unwrap();
+    assert!(steps.contains("device trace"), "{steps}");
+    assert!(!steps.contains("cp "), "{steps}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
     let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
     let sim = Sim::replay_as(&capture, Mode::Stimulus, |_| {});

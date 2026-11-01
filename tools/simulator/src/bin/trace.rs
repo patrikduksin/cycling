@@ -77,7 +77,9 @@ commands:
       the expectation (power!=--, power=230, page=ride/climb, toast~SAVE)
       and refuses one the recording already meets; without it the
       expectation is a todo!() to replace. Either way the test is red on the
-      recording. Put the trace under tools/simulator/tests/traces/.
+      recording. For a trace outside tools/simulator/tests/traces/ it first
+      says whether the trace may become a fixture (a device trace or one
+      holding a secret may not) and the commands that copy it there.
 ";
 
 fn main() -> ExitCode {
@@ -197,7 +199,11 @@ fn run(args: &[String]) -> Result<String, String> {
                 .map(|list| list.split(',').map(stub::Expect::parse).collect())
                 .transpose()?
                 .unwrap_or_default();
-            stub::stub(&timeline, fixture, &name, at, &expect)
+            let test = stub::stub(&timeline, fixture, &name, at, &expect)?;
+            Ok(match stub::to_fixture(&path, &capture, media) {
+                Some(steps) => format!("{steps}\n{test}"),
+                None => test,
+            })
         }
         other => Err(format!("unknown command {other:?}; see --help")),
     }

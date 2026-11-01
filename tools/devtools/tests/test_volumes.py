@@ -1,6 +1,7 @@
 import hashlib
 import os
 import struct
+import sys
 import tempfile
 import unittest
 import zlib
@@ -153,9 +154,13 @@ class FakeDevice:
             if payload.decode() not in self.store:
                 return 8, 0, 0, b''
             self.reads.append(arg)
-            records = self.store[payload.decode()][1][arg:]
+            # A record the medium lost is None.
+            records = [*self.store[payload.decode()][1][arg:], b'']
+            lost = next(i for i, record in enumerate(records) if record is not None)
+            if lost:
+                return volumes.STATUS.index('hole'), arg, lost, b''
             data, sent = b'', 0
-            while sent < min(count, len(records)) and len(data) + 486 <= 4096:
+            while sent < min(count, len(records) - 1) and records[sent] is not None and len(data) + 486 <= 4096:
                 data += records[sent]
                 sent += 1
             return 0, arg + sent, sent, data
@@ -390,6 +395,29 @@ class VolumesTests(unittest.TestCase):
         transfer.call('store_delete', payload=b'traces/0001')
         self.assertEqual([e['name'] for e in volumes.store_list(transfer, 'traces/')], ['traces/0002'])
         self.assertEqual(volumes.inspect(transfer)['store']['generation'], 2)
+
+    def test_a_get_keeps_the_records_before_a_hole_and_names_it(self):
+        device = FakeDevice()
+        trace = [bytes([i % 251]) * 486 for i in range(40)]
+        device.store = {'traces/0001': (1, [*trace[:20], None, None, *trace[22:]])}
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            result = volumes.store_get(FakeTransfer(device), 'traces/0001', out)
+            self.assertEqual(out.read_bytes(), b''.join(trace[:20]))
+            self.assertFalse(Path(f'{out}.partial').exists())
+            self.assertEqual(
+                result,
+                {'name': 'traces/0001', 'records': 20, 'bytes': 20 * 486, 'hole': {'record': 20, 'records': 2}},
+            )
+            argv = ['volumes', 'store', 'get', 'traces/0001', str(out)]
+            with (
+                mock.patch.object(sys, 'argv', argv),
+                mock.patch.object(volumes, 'selected_port', return_value='port'),
+                mock.patch.object(volumes, 'run', return_value=result),
+                mock.patch('builtins.print'),
+                self.assertRaisesRegex(SystemExit, 'lost 2 record\\(s\\) from record 20; .* holds the 20 records'),
+            ):
+                volumes.main()
 
     def test_a_get_whose_bytes_do_not_match_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as directory:

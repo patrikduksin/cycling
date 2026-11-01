@@ -74,6 +74,7 @@ STATUS = [
     'too_large',
     'corrupt',
     'empty',
+    'hole',
 ]
 LAYOUTS = {0: 'blank', 1: 'legacy', 2: 'volumes', 3: 'foreign', 4: 'lost'}
 PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
@@ -434,23 +435,35 @@ def store_list(transfer, directory=''):
 
 
 def store_get(transfer, name, output):
-    """Pull every record of `name` into `output`; nothing is left on failure."""
+    """Pull every record of `name` into `output`.
+
+    Records the medium lost end the pull: `output` keeps the records before
+    them and the result names the first lost record. Any other failure
+    leaves no file.
+    """
     name_bytes = name.encode()
     partial = Path(f'{output}.partial')
-    record, length = 0, 0
+    record, records, length, hole = 0, 0, 0, None
     try:
         with partial.open('wb') as out:
             while True:
-                _, record, count, data = transfer.call('store_read', record, STORE_RECORDS, name_bytes)
+                status, record, count, data = transfer.call(
+                    'store_read', record, STORE_RECORDS, name_bytes, allow=('hole',)
+                )
+                if status == 'hole':
+                    hole = {'record': record, 'records': count}
+                    break
                 if count == 0:
                     break
                 out.write(data)
+                records += count
                 length += len(data)
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
     partial.replace(output)
-    return {'name': name, 'records': record, 'bytes': length}
+    result = {'name': name, 'records': records, 'bytes': length}
+    return {**result, 'hole': hole} if hole else result
 
 
 # Table writes run as ordinary terminal commands, outside the transfer session.
@@ -551,6 +564,12 @@ def main():
             parser.error(f'{path} is not a file')
     result = run(args, selected_port(parser, args.port))
     print(json.dumps(result, indent=2))
+    if isinstance(result, dict) and 'hole' in result:
+        hole = result['hole']
+        raise SystemExit(
+            f'{args.name}: the device lost {hole["records"]} record(s) from record {hole["record"]}; '
+            f'{args.path} holds the {result["records"]} records before them'
+        )
 
 
 if __name__ == '__main__':

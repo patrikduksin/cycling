@@ -108,16 +108,37 @@ impl<'m, M: ReadWrite> Boot<'m, M> {
         Ok(names)
     }
 
+    /// The file's bytes; nothing writes a record twice, so a hole is corrupt.
     fn read(&mut self, text: &str) -> Result<Vec<u8>, Error> {
         let mut reader = self
             .store
             .reader(self.media, &name(text), &mut self.sector)?;
         let mut out = [0u8; PAYLOAD];
         let mut bytes = Vec::new();
-        while let Some(n) = reader.next(&self.store, self.media, &mut out, &mut self.sector)? {
-            bytes.extend_from_slice(&out[..n]);
+        loop {
+            match reader.next(&self.store, self.media, &mut out, &mut self.sector)? {
+                Next::Record(n) => bytes.extend_from_slice(&out[..n]),
+                Next::Hole { .. } => return Err(Error::Corrupt),
+                Next::End => return Ok(bytes),
+            }
         }
-        Ok(bytes)
+    }
+}
+
+/// What a reader of `text` finds, in order: each record as its first byte
+/// and length, and each hole.
+fn events(media: &mut Media, text: &str) -> Vec<String> {
+    let mut s = sector();
+    let store = mount(media, &mut s).unwrap();
+    let mut reader = store.reader(media, &name(text), &mut s).unwrap();
+    let mut out = [0u8; PAYLOAD];
+    let mut found = Vec::new();
+    loop {
+        match reader.next(&store, media, &mut out, &mut s).unwrap() {
+            Next::Record(n) => found.push(std::format!("{:02x}x{n}", out[0])),
+            Next::Hole { from, to } => found.push(std::format!("hole {from}..{to}")),
+            Next::End => return found,
+        }
     }
 }
 
@@ -177,7 +198,7 @@ fn files_grow_across_chunks_and_read_back_after_a_reboot() {
         .unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].chunks >= 3, "{entries:?}");
-    // A reboot: the file continues after its last record.
+    // A reboot: the file continues in another chunk.
     let mut store = mount(&mut media, &mut s).unwrap();
     let mut file = store
         .open_append(&mut media, &name("traces/a"), None, &mut s)
@@ -193,25 +214,32 @@ fn files_grow_across_chunks_and_read_back_after_a_reboot() {
     let mut reader = store.reader(&mut media, &name("traces/a"), &mut s).unwrap();
     let mut out = [0u8; PAYLOAD];
     let mut records = Vec::new();
-    while let Some(n) = reader.next(&store, &mut media, &mut out, &mut s).unwrap() {
-        records.push(out[..n].to_vec());
+    loop {
+        let number = reader.record(&store);
+        match reader.next(&store, &mut media, &mut out, &mut s).unwrap() {
+            Next::Record(n) => records.push((number, out[..n].to_vec())),
+            next => {
+                assert_eq!(next, Next::End);
+                break;
+            }
+        }
     }
-    assert_eq!(reader.record(&store), records.len() as u32);
-    reader.seek(&store, &mut media, 5, &mut s).unwrap();
-    assert_eq!(
-        reader.next(&store, &mut media, &mut out, &mut s).unwrap(),
-        Some(records[5].len())
-    );
-    assert_eq!(out[..records[5].len()], records[5]);
-    reader.seek(&store, &mut media, 1, &mut s).unwrap();
-    let n = reader
-        .next(&store, &mut media, &mut out, &mut s)
-        .unwrap()
-        .unwrap();
-    assert_eq!(out[..n], records[1]);
-    for past in [records.len() as u32, 1000] {
+    let (end, last) = (reader.record(&store), records[records.len() - 1].0);
+    assert!(end > last, "{end} {last}");
+    for (number, bytes) in [&records[5], &records[1], &records[records.len() - 1]] {
+        reader.seek(&store, &mut media, *number, &mut s).unwrap();
+        assert_eq!(
+            reader.next(&store, &mut media, &mut out, &mut s),
+            Ok(Next::Record(bytes.len()))
+        );
+        assert_eq!(out[..bytes.len()], bytes[..]);
+    }
+    for past in [end, 1000] {
         reader.seek(&store, &mut media, past, &mut s).unwrap();
-        assert_eq!(reader.next(&store, &mut media, &mut out, &mut s), Ok(None));
+        assert_eq!(
+            reader.next(&store, &mut media, &mut out, &mut s),
+            Ok(Next::End)
+        );
     }
 }
 
@@ -554,16 +582,69 @@ fn only_a_volume_without_the_magic_is_uninitialized() {
 }
 
 #[test]
-fn a_missing_record_inside_a_file_is_corrupt_not_its_end() {
+fn a_missing_record_at_the_end_of_a_full_chunk_is_a_hole_not_its_end() {
     let mut media = formatted(4, 2);
     let mut s = sector();
     let mut store = mount(&mut media, &mut s).unwrap();
     let mut file = store.create(&mut media, &name("a"), None, &mut s).unwrap();
-    file.append(&mut store, &mut media, &[1; 3 * PAYLOAD], &mut s)
-        .unwrap();
+    for k in 1..4 {
+        file.append(&mut store, &mut media, &[k; PAYLOAD], &mut s)
+            .unwrap();
+    }
     // The file's first chunk is chunk 0: damage its second record.
     media.set(DATA + 1, [0; SECTOR_SIZE]);
-    assert_eq!(snapshot(&mut media).err(), Some(Error::Corrupt));
+    assert_eq!(
+        events(&mut media, "a"),
+        [
+            std::format!("01x{PAYLOAD}"),
+            "hole 1..2".into(),
+            std::format!("03x{PAYLOAD}")
+        ]
+    );
+}
+
+/// The reviewer's probe: a record inside the last chunk stops reading back,
+/// then the file is reopened, appended to, cut, reopened and appended again.
+#[test]
+fn a_damaged_record_before_the_end_neither_loses_nor_reorders_synced_records() {
+    let mut media = formatted(8, 64);
+    let mut s = sector();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store.create(&mut media, &name("a"), None, &mut s).unwrap();
+    for k in 0..40u8 {
+        file.append(&mut store, &mut media, &[k; PAYLOAD], &mut s)
+            .unwrap();
+    }
+    media.set(DATA + 32, [0; SECTOR_SIZE]);
+    assert_eq!(events(&mut media, "a")[32..34], ["hole 32..33", "21x486"]);
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store
+        .open_append(&mut media, &name("a"), None, &mut s)
+        .unwrap();
+    for _ in 0..3 {
+        file.append(&mut store, &mut media, &[0xee; PAYLOAD], &mut s)
+            .unwrap();
+    }
+    media.cut = Some((0, Tear::Prefix(300)));
+    let _ = file.append(&mut store, &mut media, &[0xcc; PAYLOAD], &mut s);
+    media.reboot();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store
+        .open_append(&mut media, &name("a"), None, &mut s)
+        .unwrap();
+    file.append(&mut store, &mut media, &[0xaa; 5], &mut s)
+        .unwrap();
+    file.sync(&mut store, &mut media, &mut s).unwrap();
+
+    let mut expected: Vec<String> = (0..40u8)
+        .map(|k| match k {
+            32 => "hole 32..33".into(),
+            k => std::format!("{k:02x}x{PAYLOAD}"),
+        })
+        .collect();
+    expected.extend(std::iter::repeat_n(std::format!("eex{PAYLOAD}"), 3));
+    expected.push("aax5".into());
+    assert_eq!(events(&mut media, "a"), expected);
 }
 
 // The power-cut property: cut at every write of a scenario of creates,
@@ -970,17 +1051,17 @@ enum Kind {
 
 /// (reads, writes) at most, for `table` table sectors and `chunk`-sector chunks.
 fn bound(kind: Kind, table: u64, chunk: u32) -> (u64, u64) {
-    let (d, t, b) = (DIR_SECTORS as u64, table, u64::from(chunk.ilog2()) + 1);
+    let (d, t) = (DIR_SECTORS as u64, table);
     match kind {
         Kind::Mount => (2, 0),
         Kind::Format => (2, d + t + 2),
         Kind::List | Kind::Reader => (d + t, 0),
-        Kind::OpenAppend => (d + t + b, 0),
+        Kind::OpenAppend => (d + t, 0),
         Kind::Delete => (2 * d + t + 2, d + t + 2),
         Kind::Create => (2 * d + 2 * t + 2, d + t + 2),
         Kind::CreateRollingOver => (5 * d + 4 * t + 4, 2 * d + 2 * t + 4),
         Kind::Append => (3 * d + 4 * t + 4, 2 * d + 2 * t + 5),
-        Kind::Next => (t + 1, 0),
+        Kind::Next => (t + u64::from(chunk), 0),
         Kind::Seek => (t, 0),
     }
 }
@@ -1102,7 +1183,8 @@ fn operations_have_the_documented_worst_case_costs() {
         }
         // Fill the store, so the next create rolls over for a chunk.
         while session % 4 == 1
-            && (file.index < chunk || store.free_chunk(&mut media, &mut s).unwrap().is_some())
+            && (file.index.is_some_and(|index| index < chunk)
+                || store.free_chunk(&mut media, &mut s).unwrap().is_some())
         {
             costs.measure(&mut media, Kind::Append, |m| {
                 file.append(&mut store, m, &[0; PAYLOAD], &mut s).unwrap()
@@ -1131,7 +1213,7 @@ fn operations_have_the_documented_worst_case_costs() {
         .unwrap();
     let mut out = [0; PAYLOAD];
     let mut pulled = 0;
-    while let Some(n) = costs.measure(&mut media, Kind::Next, |m| {
+    while let Next::Record(n) = costs.measure(&mut media, Kind::Next, |m| {
         reader.next(&store, m, &mut out, &mut s).unwrap()
     }) {
         pulled += n;
@@ -1188,12 +1270,9 @@ fn the_c606_store_volume_has_1039_chunks_and_bounded_costs_at_full_chunk_size() 
         .unwrap();
     let mut out = [0; PAYLOAD];
     let mut records = 0;
-    while costs
-        .measure(&mut media, Kind::Next, |m| {
-            reader.next(&store, m, &mut out, &mut s).unwrap()
-        })
-        .is_some()
-    {
+    while let Next::Record(_) = costs.measure(&mut media, Kind::Next, |m| {
+        reader.next(&store, m, &mut out, &mut s).unwrap()
+    }) {
         records += 1;
     }
     assert_eq!(records, 2 * CHUNK + 100);

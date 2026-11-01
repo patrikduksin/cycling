@@ -917,8 +917,8 @@ impl Sim {
         assert_eq!(status, "OK", "VOLUME ADD STORE: {out}");
     }
 
-    /// A file's bytes from STORE, if it exists, as the host's `store get`
-    /// would read them.
+    /// A file's bytes from STORE, as the host's `store get` would read
+    /// them, if it exists and the medium lost none of its records.
     pub fn store_file(&mut self, name: &str) -> Option<Vec<u8>> {
         use firmware_services::{store, volume};
         let mut sector = [0u8; 512];
@@ -927,13 +927,16 @@ impl Sim {
         let name = store::Name::new(name).ok()?;
         let mut reader = mounted.reader(&mut vol, &name, &mut sector).ok()?;
         let (mut bytes, mut record) = (Vec::new(), [0u8; store::PAYLOAD]);
-        while let Some(n) = reader
-            .next(&mounted, &mut vol, &mut record, &mut sector)
-            .ok()?
-        {
-            bytes.extend_from_slice(&record[..n]);
+        loop {
+            match reader
+                .next(&mounted, &mut vol, &mut record, &mut sector)
+                .ok()?
+            {
+                store::Next::Record(n) => bytes.extend_from_slice(&record[..n]),
+                store::Next::Hole { .. } => return None,
+                store::Next::End => return Some(bytes),
+            }
         }
-        Some(bytes)
     }
 
     /// Rides on the bulk log, read through `EXPORT BULK` as a host would.

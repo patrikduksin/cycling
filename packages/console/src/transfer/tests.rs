@@ -509,8 +509,9 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
     );
 
     // A pull keeps its reader open: one read per record (2.1 per KB of full
-    // records), plus opening the file, a table pass at each chunk and the
-    // end, which the last two requests both read.
+    // records), plus opening the file, a table pass at each chunk, and at
+    // the end the rest of the last chunk, which the last two requests both
+    // read.
     let reads = host.media.reads;
     let (mut pulled, mut at) = (Vec::new(), 0);
     loop {
@@ -526,9 +527,11 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
     assert_eq!(at, u64::from(records));
     assert!(pulled == trace, "the pulled trace differs");
     let (table, dir) = (9, 1);
+    let rest =
+        u64::from(firmware_services::store::CHUNK - records % firmware_services::store::CHUNK);
     let overhead = host.media.reads - reads - u64::from(records);
     assert!(
-        overhead <= dir + 3 * table + 2,
+        overhead <= dir + 3 * table + 2 * rest,
         "{overhead} reads besides records"
     );
 
@@ -563,4 +566,43 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
     host.id = 0;
     let (_, _, count, list) = host.call(op::STORE_LIST, 0, 0, b"");
     assert_eq!((count, &list[..14]), (1, &b"other/settings"[..]));
+}
+
+#[test]
+fn a_pull_stops_at_records_the_medium_lost_and_says_which() {
+    use firmware_services::store::{CHUNK, DATA, PAYLOAD};
+    let mut host = Host::new();
+    volumes::execute(
+        volumes::Command::AddStore,
+        &mut host.media,
+        &mut String::new(),
+    );
+    let trace = record_traces(&mut host.media, CHUNK + 100);
+    let offset =
+        |record: u32| -> usize { (0..record).map(|i| PAYLOAD - (i as usize % 7) * 50).sum() };
+    let mut sector = [0u8; 512];
+    let start = volume::open(&mut host.media, &volume::STORE, &mut sector)
+        .unwrap()
+        .extent()
+        .start;
+    // The trace holds chunks 1 and 2, after the settings file's chunk 0.
+    let lost = CHUNK + 20;
+    host.media
+        .written
+        .insert(start + DATA + 2 * u64::from(CHUNK) + 20, [0; 512]);
+
+    let (status, next, count, data) =
+        host.call(op::STORE_READ, u64::from(lost - 5), 100, b"traces/0001");
+    assert_eq!((status, next, count), (status::OK, u64::from(lost), 5));
+    assert!(data == trace[offset(lost - 5)..offset(lost)]);
+    let (status, first, missing, data) =
+        host.call(op::STORE_READ, u64::from(lost), 100, b"traces/0001");
+    assert_eq!(
+        (status, first, missing, data.len()),
+        (status::HOLE, u64::from(lost), 1, 0)
+    );
+    let (status, _, count, data) =
+        host.call(op::STORE_READ, u64::from(lost + 1), 1, b"traces/0001");
+    assert_eq!((status, count), (status::OK, 1));
+    assert!(data == trace[offset(lost + 1)..offset(lost + 2)]);
 }

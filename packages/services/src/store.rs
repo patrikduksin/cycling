@@ -10,15 +10,24 @@
 //!   every body sector; its own CRC seals the copy. The current copy is the
 //!   valid header of the newest generation.
 //! - Data from `DATA` in chunks of `CHUNK` sectors (256 KiB). A file holds at
-//!   least one chunk; every chunk but its last is full.
+//!   least one chunk; every chunk but its last is full unless its table
+//!   entry marks it partial.
 //!
 //! Each data sector is a self-checking record: store id, file id, record
-//! number, payload length and a CRC over all of it. Records are written once,
-//! in order, so the valid records of a file's last chunk are a prefix of it
-//! and its end is found by binary search. An append writes record sectors
-//! and no metadata; a full chunk takes one metadata commit to link the next.
+//! number (the chunk's position in the file times `CHUNK`, plus the index in
+//! the chunk), payload length and a CRC over all of it. A record sector is
+//! written at most once, in order. An append writes record sectors and no
+//! metadata; a full chunk takes one metadata commit to link the next.
+//! [`Store::open_append`] never continues after the records it finds, since
+//! a record the medium lost would hide the ones after it: the first record
+//! it writes links another chunk and marks the last one partial.
 //! [`Appender::sync`] writes the partly filled record, so a cut loses at most
 //! the bytes appended since the last sync or full record.
+//!
+//! A record that does not read back is lost, not the end of the file, when
+//! a later record of its chunk reads back or its chunk is a full one before
+//! the last: then [`Reader::next`] reports [`Next::Hole`] and goes on after
+//! it.
 //!
 //! Metadata changes (create, a new chunk, delete) are copy-on-write into the
 //! copy that is not current: its header is invalidated first, then the body
@@ -32,8 +41,9 @@
 //! nothing and fails with [`Error::Stale`]. Appends do not read metadata, so
 //! after a transfer session [`mount`] again and compare [`Store::generation`]:
 //! when it changed, reopen held files with [`Store::open_append`] (the host
-//! may have deleted them). Only one [`Appender`] per store writes at a time;
-//! opening another one makes the first fail with `Stale`.
+//! may have deleted them); each reopen leaves the rest of a chunk unused.
+//! Only one [`Appender`] per store writes at a time; opening another one
+//! makes the first fail with `Stale`.
 //!
 //! Rollover: an appender or a create given a directory deletes the oldest
 //! closed file in it (lowest id, never the open one) when the store is full.
@@ -45,26 +55,27 @@
 //!
 //! Every operation does a bounded number of sector operations, whatever the
 //! volume size: with `D = DIR_SECTORS` (8), `T` table sectors (at most
-//! `MAX_TABLE`, 9 on the C606 STORE volume) and `B = ⌊log2 CHUNK⌋ + 1` (10),
-//! a metadata commit reads at most `D + T + 2` and writes at most `D + T + 2`
-//! sectors, and
+//! `MAX_TABLE`, 9 on the C606 STORE volume) and `C = CHUNK` (512), a metadata
+//! commit reads at most `D + T + 2` and writes at most `D + T + 2` sectors,
+//! and
 //!
 //! | operation | reads | writes | C606 |
 //! | --- | --- | --- | --- |
 //! | [`mount`] | 2 | 0 | 2 / 0 |
 //! | [`format`] | 2 | `D + T + 2` | 2 / 19 |
-//! | [`Store::list`], [`Store::reader`] | `D + T` | 0 | 17 / 0 |
-//! | [`Store::open_append`] | `D + T + B` | 0 | 27 / 0 |
+//! | [`Store::list`], [`Store::reader`], [`Store::open_append`] | `D + T` | 0 | 17 / 0 |
 //! | [`Store::delete`], [`Store::delete_oldest`] | `2D + T + 2` | `D + T + 2` | 27 / 19 |
 //! | [`Store::create`] | `2D + 2T + 2` | `D + T + 2` | 36 / 19 |
 //! | [`Store::create`] that rolls over | `5D + 4T + 4` | `2D + 2T + 4` | 80 / 38 |
 //! | [`Appender::append`] of up to `PAYLOAD` bytes, [`Appender::sync`] | `3D + 4T + 4` | `2D + 2T + 5` | 64 / 39 |
-//! | [`Reader::next`] | `T + 1` | 0 | 10 / 0 |
+//! | [`Reader::next`] | `T + C`, and `T + C` more for each empty chunk it passes | 0 | 521 / 0 |
 //! | [`Reader::seek`] | `T` | 0 | 9 / 0 |
 //!
 //! Appends are 1 write per `PAYLOAD` bytes; the full costs come from linking
 //! a chunk (once per `CHUNK` records), rolling over, and a commit after a cut
-//! (when the other copy holds nothing it can vouch for).
+//! (when the other copy holds nothing it can vouch for). A read is 1 read per
+//! record; it costs more only at a lost record or where a chunk's records
+//! end before the chunk does, where it reads the rest of the chunk.
 //! `tests::operations_have_the_documented_worst_case_costs` measures them.
 
 use crate::checksum::crc32;
@@ -448,20 +459,35 @@ fn decode_entry(bytes: &[u8]) -> Result<Option<(Name, u32)>, Error> {
     Ok(Some((name, id)))
 }
 
-/// A chunk table entry: the owning slot and the position in its file.
-type Link = Option<(usize, u32)>;
-
-fn put_link(sector: &mut Sector, chunk: u32, link: Link) {
-    let at = 4 * (chunk as usize % LINKS);
-    let (owner, position) = link.map_or((0, 0), |(slot, position)| (slot + 1, position));
-    put_u16(sector, at, owner as u16);
-    put_u16(sector, at + 2, position as u16);
+/// The table entry of a chunk a file holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Link {
+    slot: usize,
+    position: u32,
+    /// The file went on in its next chunk before this one filled.
+    partial: bool,
 }
 
-/// Where a file's chunks are: how many, the first and the last.
+/// Set in an entry's position field for a partial chunk.
+const PARTIAL: u16 = 0x8000;
+
+const _: () = assert!(MAX_CHUNKS <= PARTIAL as usize);
+
+fn put_link(sector: &mut Sector, chunk: u32, link: Option<Link>) {
+    let at = 4 * (chunk as usize % LINKS);
+    let (owner, position) = link.map_or((0, 0), |link| {
+        let flag = if link.partial { PARTIAL } else { 0 };
+        (link.slot as u16 + 1, link.position as u16 | flag)
+    });
+    put_u16(sector, at, owner);
+    put_u16(sector, at + 2, position);
+}
+
+/// Where a file's chunks are: how many, the first and whether it is
+/// partial, and the last.
 struct Chain {
     count: u32,
-    first: u32,
+    first: (u32, bool),
     last: u32,
 }
 
@@ -547,14 +573,14 @@ impl Store {
         &self,
         media: &mut impl ReadWrite,
         sector: &mut Sector,
-        mut visit: impl FnMut(u32, Link),
+        mut visit: impl FnMut(u32, Option<Link>),
     ) -> Result<(), Error> {
         for t in 0..self.head.table() {
             self.body(media, DIR_SECTORS + t, sector)?;
             for i in 0..LINKS {
                 let chunk = (t * LINKS + i) as u32;
                 let owner = usize::from(get_u16(sector, 4 * i));
-                let position = u32::from(get_u16(sector, 4 * i + 2));
+                let position = get_u16(sector, 4 * i + 2);
                 match owner {
                     0 if position == 0 => {
                         if chunk < self.head.chunks {
@@ -562,7 +588,14 @@ impl Store {
                         }
                     }
                     1..=CAPACITY if chunk < self.head.chunks => {
-                        visit(chunk, Some((owner - 1, position)));
+                        visit(
+                            chunk,
+                            Some(Link {
+                                slot: owner - 1,
+                                position: u32::from(position & !PARTIAL),
+                                partial: position & PARTIAL != 0,
+                            }),
+                        );
                     }
                     _ => return Err(Error::Corrupt),
                 }
@@ -597,15 +630,15 @@ impl Store {
     ) -> Result<Chain, Error> {
         let (mut count, mut first, mut last) = (0, None, None);
         self.table(media, sector, |chunk, link| {
-            if let Some((owner, position)) = link
-                && owner == slot
+            if let Some(link) = link
+                && link.slot == slot
             {
                 count += 1;
-                if position == 0 {
-                    first = Some(chunk);
+                if link.position == 0 {
+                    first = Some((chunk, link.partial));
                 }
-                if last.is_none_or(|(p, _)| position > p) {
-                    last = Some((position, chunk));
+                if last.is_none_or(|(p, _)| link.position > p) {
+                    last = Some((link.position, chunk));
                 }
             }
         })?;
@@ -617,18 +650,21 @@ impl Store {
         }
     }
 
-    /// The chunk at `position` of the file in `slot`: `T` reads.
+    /// The chunk at `position` of the file in `slot`, and whether it is
+    /// partial: `T` reads.
     fn locate(
         &self,
         media: &mut impl ReadWrite,
         slot: usize,
         position: u32,
         sector: &mut Sector,
-    ) -> Result<u32, Error> {
+    ) -> Result<(u32, bool), Error> {
         let mut found = None;
         self.table(media, sector, |chunk, link| {
-            if link == Some((slot, position)) {
-                found = Some(chunk);
+            if let Some(link) = link
+                && (link.slot, link.position) == (slot, position)
+            {
+                found = Some((chunk, link.partial));
             }
         })?;
         found.ok_or(Error::Corrupt)
@@ -715,8 +751,8 @@ impl Store {
     ) -> Result<(), Error> {
         let mut chunks = [0u32; CAPACITY];
         self.table(media, sector, |_, link| {
-            if let Some((slot, _)) = link {
-                chunks[slot] += 1;
+            if let Some(link) = link {
+                chunks[link.slot] += 1;
             }
         })?;
         self.scan(media, sector, |slot, file| {
@@ -780,12 +816,17 @@ impl Store {
                             put_u32(bytes, NAME, id);
                         }
                         if k == link_k {
-                            put_link(s, chunk, Some((slot, 0)));
+                            let link = Link {
+                                slot,
+                                position: 0,
+                                partial: false,
+                            };
+                            put_link(s, chunk, Some(link));
                         }
                     },
                 )?;
                 self.writer = id;
-                return Ok(Appender::new(slot, id, chunk, 0, 0, rollover));
+                return Ok(Appender::new(slot, id, chunk, 0, Some(0), rollover));
             }
             match rollover {
                 Some(dir) if self.delete_oldest(media, &dir, sector)?.is_some() => {}
@@ -796,8 +837,8 @@ impl Store {
         Err(Error::Corrupt)
     }
 
-    /// Open `name` for appending after its last record, in place of any
-    /// open appender.
+    /// Open `name` for appending, in place of any open appender. Its next
+    /// record starts another chunk.
     pub fn open_append(
         &mut self,
         media: &mut impl ReadWrite,
@@ -808,22 +849,15 @@ impl Store {
         self.writer = 0;
         let (slot, id) = self.find(media, name, sector)?;
         let chain = self.chain(media, slot, sector)?;
-        let position = chain.count - 1;
-        let (mut low, mut high) = (0, self.head.chunk);
-        while low < high {
-            let middle = (low + high) / 2;
-            let number = position * self.head.chunk + middle;
-            if self
-                .record(media, id, chain.last, middle, number, sector)?
-                .is_some()
-            {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
         self.writer = id;
-        Ok(Appender::new(slot, id, chain.last, position, low, rollover))
+        Ok(Appender::new(
+            slot,
+            id,
+            chain.last,
+            chain.count - 1,
+            None,
+            rollover,
+        ))
     }
 
     /// A reader of `name` from its first record.
@@ -835,13 +869,15 @@ impl Store {
     ) -> Result<Reader, Error> {
         let (slot, id) = self.find(media, name, sector)?;
         let chain = self.chain(media, slot, sector)?;
+        let (chunk, partial) = chain.first;
         Ok(Reader {
             store: self.head.id,
             generation: self.head.generation,
             slot,
             id,
             chunks: chain.count,
-            chunk: chain.first,
+            chunk,
+            partial,
             position: 0,
             index: 0,
         })
@@ -928,7 +964,9 @@ pub struct Appender {
     id: u32,
     chunk: u32,
     position: u32,
-    index: u32,
+    /// The next record in `chunk`; `None` after a reopen, when the next
+    /// record starts another chunk.
+    index: Option<u32>,
     fill: usize,
     buffer: [u8; PAYLOAD],
     rollover: Option<Dir>,
@@ -940,7 +978,7 @@ impl Appender {
         id: u32,
         chunk: u32,
         position: u32,
-        index: u32,
+        index: Option<u32>,
         rollover: Option<Dir>,
     ) -> Self {
         Self {
@@ -956,7 +994,7 @@ impl Appender {
     }
 
     /// Append `bytes`; each `PAYLOAD` of them writes a record. After an
-    /// error, open the file again: it ends after its last written record.
+    /// error, open the file again.
     pub fn append(
         &mut self,
         store: &mut Store,
@@ -1002,30 +1040,36 @@ impl Appender {
         sector: &mut Sector,
     ) -> Result<(), Error> {
         let chunk = store.head.chunk;
-        if self.index == chunk {
-            self.extend(store, media, sector)?;
-        }
+        let index = match self.index {
+            Some(index) if index < chunk => index,
+            full => {
+                self.extend(store, media, full.is_none(), sector)?;
+                0
+            }
+        };
         sector.fill(0);
         sector[..4].copy_from_slice(RECORD);
         put_u64(sector, 4, store.head.id);
         put_u32(sector, 12, self.id);
-        put_u32(sector, 16, self.position * chunk + self.index);
+        put_u32(sector, 16, self.position * chunk + index);
         put_u16(sector, 20, self.fill as u16);
         sector[RECORD_HEADER..RECORD_HEADER + self.fill].copy_from_slice(&self.buffer[..self.fill]);
         let checksum = crc32(&sector[..CRC]);
         put_u32(sector, CRC, checksum);
-        let at = DATA + u64::from(self.chunk) * u64::from(chunk) + u64::from(self.index);
+        let at = DATA + u64::from(self.chunk) * u64::from(chunk) + u64::from(index);
         media.owned_write(at, sector)?;
-        self.index += 1;
+        self.index = Some(index + 1);
         self.fill = 0;
         Ok(())
     }
 
-    /// Give the file another chunk, rolling over if the store is full.
+    /// Give the file another chunk, rolling over if the store is full, and
+    /// mark the last one `partial`.
     fn extend(
         &mut self,
         store: &mut Store,
         media: &mut impl ReadWrite,
+        partial: bool,
         sector: &mut Sector,
     ) -> Result<(), Error> {
         let next = match store.free_chunk(media, sector)? {
@@ -1038,17 +1082,48 @@ impl Appender {
                 store.free_chunk(media, sector)?.ok_or(Error::Corrupt)?
             }
         };
-        let link_k = DIR_SECTORS + next as usize / LINKS;
-        let (slot, position) = (self.slot, self.position + 1);
+        let (last, slot, position) = (self.chunk, self.slot, self.position);
+        let (link_k, last_k) = (
+            DIR_SECTORS + next as usize / LINKS,
+            DIR_SECTORS + last as usize / LINKS,
+        );
+        let change = (1 << link_k) | u32::from(partial) << last_k;
         let (next_id, cursor) = (store.head.next_id, (next + 1) % store.head.chunks);
-        store.commit(media, 1 << link_k, next_id, cursor, sector, |_, s| {
-            put_link(s, next, Some((slot, position)));
+        store.commit(media, change, next_id, cursor, sector, |k, s| {
+            if k == link_k {
+                let link = Link {
+                    slot,
+                    position: position + 1,
+                    partial: false,
+                };
+                put_link(s, next, Some(link));
+            }
+            if partial && k == last_k {
+                let link = Link {
+                    slot,
+                    position,
+                    partial,
+                };
+                put_link(s, last, Some(link));
+            }
         })?;
         self.chunk = next;
-        self.position = position;
-        self.index = 0;
+        self.position = position + 1;
+        self.index = Some(0);
         Ok(())
     }
+}
+
+/// What [`Reader::next`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Next {
+    /// A record of this many payload bytes, copied to the output.
+    Record(usize),
+    /// Records `from..to` were written and no longer read back. The reader
+    /// goes on at record `to`.
+    Hole { from: u32, to: u32 },
+    /// No record follows yet.
+    End,
 }
 
 /// A sequential reader of one file's records, valid while the store's
@@ -1061,6 +1136,7 @@ pub struct Reader {
     id: u32,
     chunks: u32,
     chunk: u32,
+    partial: bool,
     position: u32,
     index: u32,
 }
@@ -1093,39 +1169,63 @@ impl Reader {
             return Ok(());
         }
         if position != self.position {
-            self.chunk = store.locate(media, self.slot, position, sector)?;
+            (self.chunk, self.partial) = store.locate(media, self.slot, position, sector)?;
         }
         (self.position, self.index) = (position, record % store.head.chunk);
         Ok(())
     }
 
-    /// Copy the next record's payload to `out` and return its length; `None`
-    /// at the end of the file.
+    /// Copy the next record's payload to `out`, or report the lost records
+    /// before it or the end of the file.
     pub fn next(
         &mut self,
         store: &Store,
         media: &mut impl ReadWrite,
         out: &mut [u8; PAYLOAD],
         sector: &mut Sector,
-    ) -> Result<Option<usize>, Error> {
+    ) -> Result<Next, Error> {
         self.check(store)?;
         let chunk = store.head.chunk;
-        if self.index == chunk && self.position + 1 < self.chunks {
-            self.chunk = store.locate(media, self.slot, self.position + 1, sector)?;
-            (self.position, self.index) = (self.position + 1, 0);
-        }
-        if self.position >= self.chunks || self.index == chunk {
-            return Ok(None);
-        }
-        let number = self.position * chunk + self.index;
-        match store.record(media, self.id, self.chunk, self.index, number, sector)? {
-            Some(length) => {
+        loop {
+            let last = self.position + 1 >= self.chunks;
+            if self.index == chunk && !last {
+                let position = self.position + 1;
+                (self.chunk, self.partial) = store.locate(media, self.slot, position, sector)?;
+                (self.position, self.index) = (position, 0);
+                continue;
+            }
+            if self.position >= self.chunks || self.index == chunk {
+                return Ok(Next::End);
+            }
+            let from = self.record(store);
+            let found = store.record(media, self.id, self.chunk, self.index, from, sector)?;
+            if let Some(length) = found {
                 out[..length].copy_from_slice(&sector[RECORD_HEADER..RECORD_HEADER + length]);
                 self.index += 1;
-                Ok(Some(length))
+                return Ok(Next::Record(length));
             }
-            None if self.position + 1 == self.chunks => Ok(None),
-            None => Err(Error::Corrupt),
+            // Records are written once and in order: one that reads back
+            // after this one means this one was lost.
+            let mut after = self.index + 1;
+            while after < chunk {
+                let number = from + after - self.index;
+                if store
+                    .record(media, self.id, self.chunk, after, number, sector)?
+                    .is_some()
+                {
+                    break;
+                }
+                after += 1;
+            }
+            if after < chunk || !(last || self.partial) {
+                self.index = after;
+                let to = self.record(store);
+                return Ok(Next::Hole { from, to });
+            }
+            if last {
+                return Ok(Next::End);
+            }
+            self.index = chunk;
         }
     }
 }

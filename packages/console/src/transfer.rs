@@ -82,6 +82,9 @@ pub mod status {
     pub const TOO_LARGE: u16 = 11;
     pub const CORRUPT: u16 = 12;
     pub const EMPTY: u16 = 13;
+    /// `STORE_READ` reached records the medium lost: `arg` is the first,
+    /// `count` how many.
+    pub const HOLE: u16 = 14;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -696,8 +699,9 @@ impl Session {
                 }
             }
             op::STORE_READ => {
-                // Records from `arg`, at most `count`, as many as fit; the
-                // reply's `arg` is the next record and `count` 0 the end.
+                // Records from `arg`, at most `count`, as many as fit, up to
+                // a hole; the reply's `arg` is the next record and `count` 0
+                // the end. A request that starts at a hole gets `HOLE`.
                 let Ok(name) = store::Name::new(text) else {
                     return Reply::error(status::INVALID);
                 };
@@ -720,18 +724,31 @@ impl Session {
                     Ok(reader) => reader,
                     Err(e) => return Reply::error(store_error(e)),
                 };
-                let (mut length, mut records) = (0, 0);
+                let (mut length, mut records, mut hole) = (0, 0, None);
                 while records < request.count && length + store::PAYLOAD <= MAX_PAYLOAD {
                     let Ok(record) = (&mut out[length..length + store::PAYLOAD]).try_into() else {
                         break;
                     };
                     match reader.next(&pull.store, &mut vol, record, &mut sector) {
-                        Ok(Some(n)) => (length, records) = (length + n, records + 1),
-                        Ok(None) => break,
+                        Ok(store::Next::Record(n)) => (length, records) = (length + n, records + 1),
+                        Ok(store::Next::End) => break,
+                        Ok(store::Next::Hole { from, to }) if records == 0 => {
+                            pull.reader = Some((name, reader));
+                            return Reply {
+                                status: status::HOLE,
+                                arg: u64::from(from),
+                                count: to - from,
+                                length: 0,
+                            };
+                        }
+                        Ok(store::Next::Hole { from, .. }) => {
+                            hole = Some(from);
+                            break;
+                        }
                         Err(e) => return Reply::error(store_error(e)),
                     }
                 }
-                let next = reader.record(&pull.store);
+                let next = hole.unwrap_or_else(|| reader.record(&pull.store));
                 pull.reader = Some((name, reader));
                 Reply::ok(u64::from(next), records, length)
             }

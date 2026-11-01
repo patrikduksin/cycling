@@ -99,6 +99,13 @@ volume size. The module documentation in `packages/services/src/store.rs`
 lists them, and the power-cut property test in `store/tests.rs` cuts power at
 every write.
 
+Each record sector is written once. A file that is opened again, after a
+power cut or a transfer session, continues in a new chunk, and the rest of
+its last chunk stays unused. It never continues after the records it finds:
+a record that the medium lost would hide the records after it, which a new
+record would then overwrite. A reader reports a lost record as a hole, with
+its record number, and continues after it.
+
 ## Files
 
 Each change to `FILES` is copy-on-write and commits with a single sector
@@ -137,7 +144,11 @@ cycling store list [traces/] | get NAME PATH | delete NAME
 ```
 
 `cycling store get` pulls a file record by record. The session keeps the
-file open between requests, so a pull reads about one sector per 486 bytes.
+file open between requests, so a pull reads about one sector per 486 bytes,
+and at the end the rest of the file's last chunk (at most 512 sectors). If
+the device lost records of the file, `get` stops at the first one: `PATH`
+keeps the records before it, and the command names the lost record and
+exits with status 1.
 A delete changes the store while the app is paused. After the session the
 app mounts the store again and compares its generation with the one it held;
 if they differ, it reopens its files.

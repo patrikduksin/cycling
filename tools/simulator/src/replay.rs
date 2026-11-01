@@ -211,6 +211,9 @@ impl Sources {
                 self.diverge(format!("{count} {what} left over"));
             }
         }
+        if let Some(other) = self.ant.other.take() {
+            self.diverge(other);
+        }
     }
 
     fn apply(&mut self, event: Event<'_>) {
@@ -234,7 +237,8 @@ impl Sources {
                 }
             }
             Event::AntPacket(packet) => self.ant.packets.push_back(packet),
-            Event::AntAdmission(result) => self.ant.admissions.push_back(Answer {
+            Event::AntRequest { operation, result } => self.ant.admissions.push_back(Answer {
+                operation,
                 result,
                 after: Vec::new(),
             }),
@@ -305,8 +309,9 @@ enum AntChange {
     Link(usize, Option<ant::Snapshot>),
 }
 
-/// The answer to one request, and what the request changed.
+/// One request, its answer, and what the request changed.
 struct Answer {
+    operation: AntOperation,
     result: Result<ant::Admission, ant::Error>,
     after: Vec<AntChange>,
 }
@@ -320,6 +325,8 @@ pub struct ReplayAnt {
     admissions: VecDeque<Answer>,
     sends: RefCell<VecDeque<Option<ant::SendObservation>>>,
     unanswered: Cell<usize>,
+    /// The first request that differed from the recorded one.
+    other: Option<String>,
     now: u64,
 }
 
@@ -366,11 +373,17 @@ impl Ant for ReplayAnt {
             .at(self.now)
             .unwrap_or([None; DISCOVERY_CAPACITY])
     }
-    fn request(&mut self, _: AntOperation, _: u64) -> Result<ant::Admission, ant::Error> {
+    fn request(&mut self, operation: AntOperation, _: u64) -> Result<ant::Admission, ant::Error> {
         let Some(answer) = self.admissions.pop_front() else {
             self.unanswered.set(self.unanswered.get() + 1);
             return Err(ant::Error::Unavailable);
         };
+        if answer.operation != operation && self.other.is_none() {
+            self.other = Some(format!(
+                "VANA asked {operation:?}, the recording {:?}",
+                answer.operation
+            ));
+        }
         for change in answer.after {
             self.apply(change);
         }

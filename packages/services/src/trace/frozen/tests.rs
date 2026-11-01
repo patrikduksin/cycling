@@ -171,7 +171,7 @@ fn takes_and_requests_are_recorded_in_call_order() {
     let _ = ant.send_status(ant::OperationId(1));
     assert_eq!(
         kinds(&log),
-        ["AntPacket", "AntAdmission", "AntLink", "AntSend"],
+        ["AntPacket", "AntRequest", "AntLink", "AntSend"],
         "what the request changed follows its answer"
     );
 }

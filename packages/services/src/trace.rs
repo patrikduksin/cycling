@@ -123,8 +123,11 @@ pub enum Event<'a> {
         snapshot: Option<ant::Snapshot>,
     },
     AntPacket(ant::Packet),
-    /// The answer to the pass's next ANT request.
-    AntAdmission(Result<ant::Admission, ant::Error>),
+    /// An ANT request VANA made and the radio's answer.
+    AntRequest {
+        operation: ant::AntOperation,
+        result: Result<ant::Admission, ant::Error>,
+    },
     /// The answer to the pass's next send status query.
     AntSend(Option<ant::SendObservation>),
     BleLink {
@@ -174,7 +177,7 @@ mod tag {
     pub const ANT_DISCOVERIES: u8 = 4;
     pub const ANT_LINK: u8 = 5;
     pub const ANT_PACKET: u8 = 6;
-    pub const ANT_ADMISSION: u8 = 7;
+    pub const ANT_REQUEST: u8 = 7;
     pub const ANT_SEND: u8 = 8;
     pub const BLE_LINK: u8 = 9;
     pub const BLE_PACKET: u8 = 10;
@@ -682,6 +685,47 @@ impl Wire<'_> for ant::OperationId {
     }
 }
 
+impl Wire<'_> for ant::AntOperation {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Self::Scan(duration_ms) => {
+                w.byte(0);
+                duration_ms.put(w);
+            }
+            Self::StopScan => w.byte(1),
+            Self::Connect(identity) => {
+                w.byte(2);
+                identity.put(w);
+            }
+            Self::Disconnect(device_type) => {
+                w.byte(3);
+                device_type.put(w);
+            }
+            Self::Send { target, data } => {
+                w.byte(4);
+                target.put(w);
+                data.put(w);
+            }
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Scan(u32::take(r)),
+            1 => Self::StopScan,
+            2 => Self::Connect(ant::Identity::take(r)),
+            3 => Self::Disconnect(u8::take(r)),
+            4 => Self::Send {
+                target: ant::Target::take(r),
+                data: <[u8; 8]>::take(r),
+            },
+            _ => {
+                r.fail();
+                Self::StopScan
+            }
+        }
+    }
+}
+
 impl Wire<'_> for ant::SendStage {
     fn put(&self, w: &mut Writer) {
         match self {
@@ -800,7 +844,7 @@ impl<'a> Event<'a> {
             Self::AntDiscoveries(_) => tag::ANT_DISCOVERIES,
             Self::AntLink { .. } => tag::ANT_LINK,
             Self::AntPacket(_) => tag::ANT_PACKET,
-            Self::AntAdmission(_) => tag::ANT_ADMISSION,
+            Self::AntRequest { .. } => tag::ANT_REQUEST,
             Self::AntSend(_) => tag::ANT_SEND,
             Self::BleLink { .. } => tag::BLE_LINK,
             Self::BlePacket(_) => tag::BLE_PACKET,
@@ -834,7 +878,10 @@ impl<'a> Event<'a> {
                 snapshot.put(w);
             }
             Self::AntPacket(packet) => packet.put(w),
-            Self::AntAdmission(result) => result.put(w),
+            Self::AntRequest { operation, result } => {
+                operation.put(w);
+                result.put(w);
+            }
             Self::AntSend(observation) => observation.put(w),
             Self::BleLink {
                 availability,
@@ -893,7 +940,10 @@ impl<'a> Event<'a> {
                 snapshot: Wire::take(r),
             },
             tag::ANT_PACKET => Self::AntPacket(Wire::take(r)),
-            tag::ANT_ADMISSION => Self::AntAdmission(Wire::take(r)),
+            tag::ANT_REQUEST => Self::AntRequest {
+                operation: Wire::take(r),
+                result: Wire::take(r),
+            },
             tag::ANT_SEND => Self::AntSend(Wire::take(r)),
             tag::BLE_LINK => Self::BleLink {
                 availability: Wire::take(r),

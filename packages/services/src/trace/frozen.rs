@@ -321,7 +321,7 @@ impl<A: Ant + ?Sized, R: Record + ?Sized> Ant for PassAnt<'_, A, R> {
         let result = self.inner.request(operation, now_ms);
         self.record
             .borrow_mut()
-            .record(&Event::AntAdmission(result));
+            .record(&Event::AntRequest { operation, result });
         self.frozen.sample(self.inner, self.now, self.record);
         result
     }

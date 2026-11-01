@@ -153,9 +153,32 @@ fn sample() -> Vec<Event<'static>> {
             generation: 7,
             loss_count: 0,
         }),
-        Event::AntAdmission(Ok(Admission::Accepted)),
-        Event::AntAdmission(Ok(Admission::SendQueued(OperationId(9)))),
-        Event::AntAdmission(Err(ant::Error::Busy)),
+        Event::AntRequest {
+            operation: ant::AntOperation::Scan(10_000),
+            result: Ok(Admission::Accepted),
+        },
+        Event::AntRequest {
+            operation: ant::AntOperation::Send {
+                target: ant::Target {
+                    identity: identity(11),
+                    generation: 7,
+                },
+                data: [0x01, 0xaa, 0, 0, 0, 0, 0, 0],
+            },
+            result: Ok(Admission::SendQueued(OperationId(9))),
+        },
+        Event::AntRequest {
+            operation: ant::AntOperation::Connect(identity(120)),
+            result: Err(ant::Error::Busy),
+        },
+        Event::AntRequest {
+            operation: ant::AntOperation::Disconnect(121),
+            result: Err(ant::Error::Disconnected),
+        },
+        Event::AntRequest {
+            operation: ant::AntOperation::StopScan,
+            result: Ok(Admission::Accepted),
+        },
         Event::AntSend(Some(ant::SendObservation {
             id: OperationId(9),
             target: ant::Target {

@@ -1,6 +1,7 @@
 use super::*;
 use crate::sector_log::{self, Recovery, Step};
 use crate::testing::{Media, Tear};
+use std::vec::Vec;
 
 const C606: u64 = 5_777_407;
 const TAG: &[u8; 16] = b"TEST-LOG-SCHEMA1";
@@ -25,8 +26,8 @@ fn the_default_plan_fits_the_c606_region_in_disjoint_aligned_volumes() {
     // STORE takes the last 260 MiB.
     let store = table.find(&STORE).unwrap();
     assert_eq!(
-        (store.start, store.sectors, store.kind),
-        (terrain.start + terrain.sectors, 532_479, Kind::Store)
+        (store.start, store.sectors),
+        (terrain.start + terrain.sectors, 532_479)
     );
     assert_eq!(table.unallocated(C606), 0);
     // About 2,000 hours of one-record-per-second rides.
@@ -187,24 +188,15 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Lost));
     assert_eq!(media.writes, writes);
-    // A foreign table, and a STORE this version did not write.
+    // A foreign table.
     let mut media = Media::new(C606);
-    let old = table_before_store(&mut media);
+    table_before_store(&mut media);
     let good = media.get(0);
     let mut newer = good;
     newer[16] = 2;
     let checksum = crc32(&newer[..CRC]);
     newer[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(0, newer);
-    assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign));
-    let mut odd = old;
-    odd.volumes[3] = Some(Extent {
-        kind: Kind::Files,
-        ..plan(C606).unwrap().find(&STORE).unwrap()
-    });
-    odd.encode(&mut s);
-    media.set(0, s);
-    media.set(1, s);
     assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign));
     assert_eq!(media.writes, 0);
     // No room: small media give rides everything.
@@ -213,6 +205,123 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     let writes = small.writes;
     assert_eq!(add_store(&mut small, &mut s), Err(Error::Small));
     assert_eq!(small.writes, writes);
+}
+
+/// The table decoder of the last firmware before STORE (`main` at ee97abe,
+/// `packages/services/src/volume.rs`): its checks unchanged, its result the
+/// extents it accepts. A rollback to that firmware is checked against it.
+mod before_store {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum Kind {
+        Log = 1,
+        Pack = 2,
+        Files = 3,
+    }
+
+    impl Kind {
+        fn from_u8(value: u8) -> Option<Self> {
+            match value {
+                1 => Some(Self::Log),
+                2 => Some(Self::Pack),
+                3 => Some(Self::Files),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Replica {
+        Table(Vec<(Name, Kind, u64, u64)>),
+        Foreign,
+        Invalid,
+    }
+
+    pub fn decode(sector: &Sector, region: u64) -> Replica {
+        if sector[..16] != MAGIC[..] {
+            return Replica::Invalid;
+        }
+        if get_u32(sector, CRC) != crc32(&sector[..CRC]) {
+            return Replica::Invalid;
+        }
+        let count = usize::from(get_u16(sector, 18));
+        if get_u16(sector, 16) != VERSION
+            || get_u32(sector, 20) != SECTOR_SIZE as u32
+            || count > MAX_VOLUMES
+            || sector[40..ENTRIES].iter().any(|b| *b != 0)
+            || sector[ENTRIES + count * ENTRY..CRC].iter().any(|b| *b != 0)
+        {
+            return Replica::Foreign;
+        }
+        let mut volumes = Vec::new();
+        let mut end = TABLE;
+        for index in 0..count {
+            let entry = &sector[ENTRIES + index * ENTRY..][..ENTRY];
+            let mut name = [0; 8];
+            name.copy_from_slice(&entry[..8]);
+            let start = get_u64(entry, 16);
+            let sectors = get_u64(entry, 24);
+            let Some(kind) = Kind::from_u8(entry[8]) else {
+                return Replica::Foreign;
+            };
+            if name[0] == 0
+                || entry[9..16].iter().any(|b| *b != 0)
+                || start < end
+                || sectors == 0
+                || start.checked_add(sectors).is_none_or(|e| e > region)
+            {
+                return Replica::Foreign;
+            }
+            end = start + sectors;
+            volumes.push((name, kind, start, sectors));
+        }
+        for (index, a) in volumes.iter().enumerate() {
+            if volumes.iter().skip(index + 1).any(|b| b.0 == a.0) {
+                return Replica::Foreign;
+            }
+        }
+        Replica::Table(volumes)
+    }
+}
+
+#[test]
+fn firmware_from_before_store_still_opens_its_volumes_in_a_table_with_store() {
+    use before_store::{Kind, Replica, decode};
+    let expected = |table: &Table| {
+        let found = |name| {
+            let v = table.find(&name).unwrap();
+            (name, v.start, v.sectors)
+        };
+        [found(RIDES), found(FILES), found(TERRAIN)]
+    };
+    let mut migrated = Media::new(C606);
+    let mut s = sector();
+    let old = table_before_store(&mut migrated);
+    let migrated_table = add_store(&mut migrated, &mut s).unwrap();
+    let mut fresh = Media::new(C606);
+    let fresh_table = create(&mut fresh, &mut s).unwrap();
+    for (media, table) in [(&migrated, migrated_table), (&fresh, fresh_table)] {
+        assert!(table.find(&STORE).is_some());
+        for copy in 0..2 {
+            let Replica::Table(volumes) = decode(&media.get(copy), C606) else {
+                panic!("copy {copy} rejected: {:?}", decode(&media.get(copy), C606));
+            };
+            let seen: Vec<_> = volumes
+                .iter()
+                .filter(|v| v.0 != STORE)
+                .map(|v| (v.0, v.2, v.3))
+                .collect();
+            assert_eq!(seen, expected(&table), "copy {copy}");
+            assert_eq!(seen, expected(&old), "copy {copy}: what it had before");
+            // It looks volumes up by name; these kinds are the ones it wrote.
+            let kinds: Vec<_> = volumes.iter().map(|v| (v.0, v.1)).collect();
+            assert!(kinds.contains(&(RIDES, Kind::Log)));
+            assert!(kinds.contains(&(FILES, Kind::Files)));
+            assert!(kinds.contains(&(TERRAIN, Kind::Pack)));
+        }
+    }
 }
 
 #[test]

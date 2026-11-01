@@ -313,7 +313,7 @@ fn line_commands_report_volumes_terrain_and_files() {
     volumes::execute(volumes::Command::Status, &mut media, &mut out);
     assert_eq!(
         out,
-        "layout=volumes sectors=5777407 generation=1 unallocated=0 rides=2048+2097152:log files=2099200+524288:files terrain=2623488+2621440:pack store=5244928+532479:store"
+        "layout=volumes sectors=5777407 generation=1 unallocated=0 rides=2048+2097152 files=2099200+524288 terrain=2623488+2621440 store=5244928+532479"
     );
     out.clear();
     volumes::execute(volumes::Command::Terrain, &mut media, &mut out);
@@ -380,7 +380,7 @@ fn line_commands_add_and_report_the_store() {
         volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
         "OK"
     );
-    assert!(out.ends_with(" store=5244928+532479:store"), "{out}");
+    assert!(out.ends_with(" store=5244928+532479"), "{out}");
     out.clear();
     volumes::execute(volumes::Command::Store, &mut media, &mut out);
     assert!(

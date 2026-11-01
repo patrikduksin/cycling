@@ -52,7 +52,7 @@ fn the_ride_log_from_before_volumes_is_reported_until_initialized_again() {
     assert_eq!(field(&status, "rides"), "0");
     let (_, volumes) = sim.command("VOLUME STATUS");
     assert!(volumes.starts_with("layout=volumes"), "{volumes}");
-    assert!(volumes.contains("rides=2048+2097152:log"), "{volumes}");
+    assert!(volumes.contains("rides=2048+2097152"), "{volumes}");
 }
 
 fn files_entries(sim: &mut Sim) -> usize {
@@ -206,10 +206,10 @@ fn the_owner_adds_store_to_a_table_from_before_it_and_rides_and_files_stay() {
         (
             "2",
             "0",
-            "2048+2097152:log",
-            "2099200+524288:files",
-            "2623488+2621440:pack",
-            "5244928+532479:store"
+            "2048+2097152",
+            "2099200+524288",
+            "2623488+2621440",
+            "5244928+532479"
         )
     );
     let (_, store) = sim.command("STORE STATUS");
@@ -240,7 +240,7 @@ fn a_trace_appended_to_the_store_reads_back_after_a_power_loss() {
     let mut sim = sim.boot();
     sim.init_bulk();
     let (_, volumes) = sim.command("VOLUME STATUS");
-    assert_eq!(field(&volumes, "store"), "5244928+532479:store");
+    assert_eq!(field(&volumes, "store"), "5244928+532479");
     assert_eq!(
         sim.command("STORE STATUS"),
         ("OK", "state=uninitialized".into())

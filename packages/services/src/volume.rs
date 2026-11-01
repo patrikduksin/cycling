@@ -18,6 +18,12 @@
 //! table written before `STORE` existed gains it only through [`add_store`],
 //! an explicit migration that adds that one extent in the unallocated tail
 //! as a new generation and leaves every existing extent as it was.
+//!
+//! A volume is its name; the mechanism inside checks its own format. Byte 8
+//! of an entry was once a kind code, and readers from before `STORE` reject a
+//! table holding any code but 1, 2 or 3, while they find volumes by name and
+//! ignore the others. So every table keeps writing those codes, `STORE` as 3,
+//! and a migrated table still opens RIDES, FILES and TERRAIN after a rollback.
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -59,8 +65,8 @@ const ENTRY: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Media(MediaError),
-    /// A valid table this version cannot use: newer version, unknown kinds or
-    /// extents that do not fit this region. Never overwritten.
+    /// A valid table this version cannot use: newer version, unknown kind
+    /// codes or extents that do not fit this region. Never overwritten.
     Foreign,
     /// The named volume is not in the table, or there is no table.
     Missing,
@@ -74,33 +80,13 @@ impl From<MediaError> for Error {
     }
 }
 
-/// What a volume holds; the owning mechanism checks its own format inside.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Kind {
-    Log = 1,
-    Pack = 2,
-    Files = 3,
-    Store = 4,
-}
-
-impl Kind {
-    fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::Log),
-            2 => Some(Self::Pack),
-            3 => Some(Self::Files),
-            4 => Some(Self::Store),
-            _ => None,
-        }
-    }
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Log => "log",
-            Self::Pack => "pack",
-            Self::Files => "files",
-            Self::Store => "store",
-        }
+/// The kind code written for a volume (see the module docs): RIDES and
+/// TERRAIN keep 1 and 2, and FILES and STORE write 3.
+fn kind_code(name: &Name) -> u8 {
+    match *name {
+        RIDES => 1,
+        TERRAIN => 2,
+        _ => 3,
     }
 }
 
@@ -108,7 +94,6 @@ impl Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Extent {
     pub name: Name,
-    pub kind: Kind,
     pub start: u64,
     pub sectors: u64,
 }
@@ -159,7 +144,6 @@ impl Table {
         let rest = sectors.saturating_sub(start);
         (rest >= STORE_MIN).then_some(Extent {
             name: STORE,
-            kind: Kind::Store,
             start,
             sectors: rest,
         })
@@ -176,7 +160,7 @@ impl Table {
         for (index, volume) in self.volumes().enumerate() {
             let entry = &mut sector[ENTRIES + index * ENTRY..][..ENTRY];
             entry[..8].copy_from_slice(&volume.name);
-            entry[8] = volume.kind as u8;
+            entry[8] = kind_code(&volume.name);
             put_u64(entry, 16, volume.start);
             put_u64(entry, 24, volume.sectors);
         }
@@ -249,10 +233,8 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         name.copy_from_slice(&entry[..8]);
         let start = get_u64(entry, 16);
         let sectors = get_u64(entry, 24);
-        let Some(kind) = Kind::from_u8(entry[8]) else {
-            return Replica::Foreign;
-        };
         if name[0] == 0
+            || !(1..=3).contains(&entry[8])
             || entry[9..16].iter().any(|b| *b != 0)
             || start < end
             || sectors == 0
@@ -263,7 +245,6 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         end = start + sectors;
         *slot = Some(Extent {
             name,
-            kind,
             start,
             sectors,
         });
@@ -332,14 +313,13 @@ pub fn plan(sectors: u64) -> Result<Table, Error> {
     };
     if sectors >= ALIGN + RIDES_SECTORS + FILES_SECTORS + TERRAIN_SECTORS {
         let mut start = ALIGN;
-        for (slot, (name, kind, size)) in table.volumes.iter_mut().zip([
-            (RIDES, Kind::Log, RIDES_SECTORS),
-            (FILES, Kind::Files, FILES_SECTORS),
-            (TERRAIN, Kind::Pack, TERRAIN_SECTORS),
+        for (slot, (name, size)) in table.volumes.iter_mut().zip([
+            (RIDES, RIDES_SECTORS),
+            (FILES, FILES_SECTORS),
+            (TERRAIN, TERRAIN_SECTORS),
         ]) {
             *slot = Some(Extent {
                 name,
-                kind,
                 start,
                 sectors: size,
             });
@@ -351,7 +331,6 @@ pub fn plan(sectors: u64) -> Result<Table, Error> {
         let rides = sectors.checked_sub(TABLE).filter(|s| *s > 0);
         table.volumes[0] = Some(Extent {
             name: RIDES,
-            kind: Kind::Log,
             start: TABLE,
             sectors: rides.ok_or(Error::Small)?,
         });
@@ -384,21 +363,17 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
 /// Running it again converges: a table that has STORE is written only to a
 /// copy that does not hold it yet, so an interrupted migration completes.
 /// Without a table (blank, legacy or lost) it fails with `Missing`; a foreign
-/// table, or a STORE of another kind, is `Foreign`. Neither writes anything.
+/// table is `Foreign`. Neither writes anything.
 pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, Error> {
     let mut table = match read(media, sector)? {
         Layout::Table(table) => table,
         Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing),
     };
-    match table.find(&STORE) {
-        Some(store) if store.kind != Kind::Store => return Err(Error::Foreign),
-        Some(_) => {}
-        None => {
-            let store = table.store_extent(media.owned_info()?.sectors);
-            let slot = table.volumes.iter_mut().find(|v| v.is_none());
-            *slot.ok_or(Error::Small)? = Some(store.ok_or(Error::Small)?);
-            table.generation += 1;
-        }
+    if table.find(&STORE).is_none() {
+        let store = table.store_extent(media.owned_info()?.sectors);
+        let slot = table.volumes.iter_mut().find(|v| v.is_none());
+        *slot.ok_or(Error::Small)? = Some(store.ok_or(Error::Small)?);
+        table.generation += 1;
     }
     let mut copy = [0u8; SECTOR_SIZE];
     table.encode(sector);

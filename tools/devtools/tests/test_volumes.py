@@ -62,12 +62,12 @@ class FakeDevice:
             table = bytearray(40)
             table[0] = 2
             table[8:40] = struct.pack('<QQQQ', 5_777_407, 1, 5_777_407, 532_479)
-            for name, kind, start, sectors in [
-                (b'RIDES', 1, 2048, 2_097_152),
-                (b'FILES', 3, 2_099_200, 524_288),
-                (b'TERRAIN', 2, 2_623_488, 2_621_440),
+            for name, start, sectors in [
+                (b'RIDES', 2048, 2_097_152),
+                (b'FILES', 2_099_200, 524_288),
+                (b'TERRAIN', 2_623_488, 2_621_440),
             ]:
-                table += name.ljust(8, b'\0') + bytes([kind]) + struct.pack('<QQ', start, sectors)
+                table += name.ljust(8, b'\0') + bytes(1) + struct.pack('<QQ', start, sectors)
             return 0, 0, 3, bytes(table)
         if op == OP['terrain_status']:
             return 0, 0, 0, self.terrain_info()
@@ -224,9 +224,7 @@ class VolumesTests(unittest.TestCase):
         result = volumes.inspect(FakeTransfer(device))
         self.assertEqual(result['layout'], 'volumes')
         self.assertEqual([v['name'] for v in result['volumes']], ['RIDES', 'FILES', 'TERRAIN'])
-        self.assertEqual(
-            result['volumes'][2], {'name': 'TERRAIN', 'kind': 'pack', 'start': 2_623_488, 'sectors': 2_621_440}
-        )
+        self.assertEqual(result['volumes'][2], {'name': 'TERRAIN', 'start': 2_623_488, 'sectors': 2_621_440})
         self.assertEqual(result['terrain']['state'], 'empty')
         self.assertEqual(result['unallocated'], 532_479)
         self.assertEqual((result['files']['state'], result['files']['store']), ('ready', '00000000000000ab'))
@@ -307,7 +305,7 @@ class VolumesTests(unittest.TestCase):
 
             def terminal_command(self, command):
                 sent.append(command)
-                return {'status': self.status, 'data': 'layout=volumes store=5244928+532479:store'}
+                return {'status': self.status, 'data': 'layout=volumes store=5244928+532479'}
 
         with tempfile.TemporaryDirectory() as directory:
             for status in ('OK', 'UNINITIALIZED'):
@@ -318,7 +316,7 @@ class VolumesTests(unittest.TestCase):
                 ):
                     if status == 'OK':
                         result = volumes.run(Namespace(action='add-store'), 'port')
-                        self.assertEqual(result, {'status': 'layout=volumes store=5244928+532479:store'})
+                        self.assertEqual(result, {'status': 'layout=volumes store=5244928+532479'})
                     else:
                         with self.assertRaisesRegex(RuntimeError, 'VOLUME ADD STORE: UNINITIALIZED'):
                             volumes.run(Namespace(action='add-store'), 'port')

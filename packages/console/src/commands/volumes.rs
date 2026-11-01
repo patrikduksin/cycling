@@ -196,11 +196,10 @@ pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Writ
                         for v in table.volumes() {
                             let _ = write!(
                                 out,
-                                " {}={}+{}:{}",
+                                " {}={}+{}",
                                 v.label().to_ascii_lowercase_str(),
                                 v.start,
-                                v.sectors,
-                                v.kind.name()
+                                v.sectors
                             );
                         }
                     }

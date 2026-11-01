@@ -333,7 +333,8 @@ impl Session {
                     Err(_) => return Reply::error(status::MEDIA),
                 };
                 // Layout code, then region, generation, planned and
-                // unallocated sectors at 8..40, then 25-byte entries.
+                // unallocated sectors at 8..40, then 25-byte entries: name,
+                // a zero byte that once held the kind, start and sectors.
                 out[..TABLE_HEAD].fill(0);
                 put_u64(out, 8, region);
                 let mut length = TABLE_HEAD;
@@ -349,7 +350,7 @@ impl Session {
                         for v in table.volumes() {
                             let e = &mut out[length..length + 25];
                             e[..8].copy_from_slice(&v.name);
-                            e[8] = v.kind as u8;
+                            e[8] = 0;
                             put_u64(e, 9, v.start);
                             put_u64(e, 17, v.sectors);
                             length += 25;

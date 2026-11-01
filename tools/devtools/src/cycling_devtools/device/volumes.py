@@ -76,7 +76,6 @@ STATUS = [
     'empty',
 ]
 LAYOUTS = {0: 'blank', 1: 'legacy', 2: 'volumes', 3: 'foreign', 4: 'lost'}
-KINDS = {1: 'log', 2: 'pack', 3: 'files', 4: 'store'}
 PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
 NAME = 40
 ENTRY = 2 + NAME + 12
@@ -186,7 +185,7 @@ def decode_volumes(data):
         entry = data[offset : offset + 25]
         name = entry[:8].rstrip(b'\0').decode()
         start, sectors = struct.unpack('<QQ', entry[9:25])
-        volumes.append({'name': name, 'kind': KINDS.get(entry[8], entry[8]), 'start': start, 'sectors': sectors})
+        volumes.append({'name': name, 'start': start, 'sectors': sectors})
     result = {'layout': layout, 'sectors': region, 'volumes': volumes}
     if layout == 'volumes':
         result.update(generation=generation, planned=planned, unallocated=unallocated)

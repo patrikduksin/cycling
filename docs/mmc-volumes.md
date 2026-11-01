@@ -14,8 +14,14 @@ so code using one volume cannot reach another one or the table.
 The layout code is `firmware_services::volume`. Relative sectors 0 and 1 hold
 two CRC-sealed copies of the table, and volumes start on 1 MiB boundaries.
 Readers use the valid copy with the newest generation. A table this firmware
-cannot use (newer version, unknown kind, or extents beyond the region) is
-`foreign` and is never overwritten.
+cannot use (newer version, unknown kind code, or extents beyond the region)
+is `foreign` and is never overwritten.
+
+A volume is identified by its name. Each table entry also has a kind code
+byte, which firmware from before `STORE` checks: it accepts only 1, 2 and 3
+and reports any other code as `foreign`. Every table therefore writes
+`RIDES` as 1, `TERRAIN` as 2, and `FILES` and `STORE` as 3. A store is
+identified by the magic in its own header, not by this code.
 
 `STORE` is the last volume. New data areas are directories in it, not new
 volumes.
@@ -52,9 +58,17 @@ and leave about 260 MiB unallocated. Only the owner adds `STORE`, with
 The command is idempotent. Run it again after a power cut: it writes the new
 table only to a copy that does not hold it yet, then formats the store if
 needed. A table that already has `STORE`, such as one from `VOLUME INIT`,
-only gets its store formatted. Firmware from before `STORE` reports a
-migrated table as `foreign` and cannot open any volume until a newer build
-runs again. It never overwrites a foreign table, so no data is lost.
+only gets its store formatted.
+
+### Rolling back after the migration
+
+Firmware from before `STORE` still accepts a migrated or fresh table,
+because `STORE` uses kind code 3. That firmware finds `RIDES`, `FILES` and
+`TERRAIN` by name and does not use `STORE`. It never writes a table over an
+existing one, so `STORE` and its files remain for the next newer build.
+`cycling rollback` keeps rides, files and terrain available. The test
+`firmware_from_before_store_still_opens_its_volumes_in_a_table_with_store`
+decodes both tables with a copy of that firmware's decoder.
 
 ## Store
 

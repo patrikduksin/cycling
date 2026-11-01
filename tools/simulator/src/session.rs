@@ -315,6 +315,15 @@ impl Staging for Staged {
     }
 }
 
+fn record_synthetic(shell: &mut VirtualShell, recorder: &RefCell<TraceRecorder>) {
+    #[cfg(feature = "debug-harness")]
+    for input in shell.take_synthetic() {
+        recorder.borrow_mut().record(&Event::Synthetic(input));
+    }
+    #[cfg(not(feature = "debug-harness"))]
+    let _ = (shell, recorder);
+}
+
 struct Trace {
     recorder: RefCell<TraceRecorder>,
     #[cfg(feature = "cycling")]
@@ -1332,6 +1341,7 @@ impl Session {
             self.shell
                 .input_source()
                 .record(&mut *self.trace.recorder.borrow_mut());
+            record_synthetic(&mut self.shell, &self.trace.recorder);
             self.shell.observe_position(&position, now);
             self.shell.present();
         }
@@ -1417,6 +1427,7 @@ impl Session {
         self.shell
             .input_source()
             .record(&mut *self.trace.recorder.borrow_mut());
+        record_synthetic(&mut self.shell, &self.trace.recorder);
         for _ in 0..16 {
             let Some(edge) = self.shell.take_app_input() else {
                 break;

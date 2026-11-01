@@ -621,10 +621,52 @@ pub fn execute(
     terminal.command_completed();
 }
 
+/// The card for one transfer session. Its ownership is checked at the
+/// session's first read instead of before every read, which reads two more
+/// sectors each time; a write still checks it. The app is paused, so
+/// nothing else uses the card meanwhile.
+struct SessionCard<'a> {
+    bulk: &'a mut device::board::Bulk,
+    owned: Option<device_api::bulk::OwnedInfo>,
+}
+
+impl device_api::bulk::ReadWrite for SessionCard<'_> {
+    fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
+        if let Some(owned) = self.owned {
+            return Ok(owned);
+        }
+        let owned = self.bulk.owned_info()?;
+        self.owned = Some(owned);
+        Ok(owned)
+    }
+    fn owned_read(
+        &mut self,
+        sector: u64,
+        output: &mut [u8; device_api::bulk::SECTOR_SIZE],
+    ) -> Result<(), device_api::bulk::Error> {
+        let address = self.owned_info()?.address(sector)?;
+        device_api::bulk::Read::read(self.bulk, address, output)
+    }
+    fn owned_write(
+        &mut self,
+        sector: u64,
+        input: &[u8; device_api::bulk::SECTOR_SIZE],
+    ) -> Result<(), device_api::bulk::Error> {
+        self.bulk.owned_write(sector, input)
+    }
+    fn entropy(&mut self) -> u64 {
+        self.bulk.entropy()
+    }
+}
+
 /// Serve the binary volume transfer session on the terminal's USB until the
 /// host ends it or stays silent for `IDLE_MS`. The app does not run meanwhile;
 /// `VOLUME TRANSFER` refused while a ride records.
-pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::board::Bulk) {
+pub async fn transfer(
+    usb: &mut device::drivers::usb::Usb,
+    bulk: &mut device::board::Bulk,
+    handover_us: u64,
+) {
     use device_api::console::Console;
     use firmware_console::transfer::{self, HEADER, MAX_PAYLOAD, Session};
     use firmware_services::checksum::crc32;
@@ -671,9 +713,18 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
             &mut *session,
         )
     };
+    session.spent.before_us = micros(handover_us);
+    let mut card = SessionCard { bulk, owned: None };
     let mut header = [0u8; HEADER];
     let mut last = embassy_time::Instant::now();
     let idle = embassy_time::Duration::from_millis(transfer::IDLE_MS);
+    // The host answers and takes each packet within a USB frame or so: for
+    // that long, only yield to the other tasks between looks, as a timer's
+    // wake-up costs more than the wait.
+    let spin = embassy_time::Duration::from_millis(1);
+    fn micros(us: u64) -> u32 {
+        u32::try_from(us).unwrap_or(u32::MAX)
+    }
     // Bytes until `deadline`, or `None` if the host went quiet.
     async fn receive(
         usb: &mut device::drivers::usb::Usb,
@@ -698,6 +749,7 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
         usb: &mut device::drivers::usb::Usb,
         bytes: &[u8],
         deadline: embassy_time::Instant,
+        spin: embassy_time::Duration,
     ) -> Option<()> {
         // 63-byte packets: every packet is short, so cdc-acm hands each one up
         // at once instead of waiting for a ZLP after a full 64-byte packet.
@@ -711,11 +763,17 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
                 }
             }
             usb.flush();
+            let flushed = embassy_time::Instant::now();
             while !usb.tx_ready() {
-                if embassy_time::Instant::now() >= deadline {
+                let now = embassy_time::Instant::now();
+                if now >= deadline {
                     return None;
                 }
-                embassy_time::Timer::after_micros(50).await;
+                if now - flushed < spin {
+                    embassy_futures::yield_now().await;
+                } else {
+                    embassy_time::Timer::after_micros(50).await;
+                }
             }
         }
         Some(())
@@ -723,12 +781,18 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
     while !session.ended() {
         // Find the request magic, so stray bytes cannot become a request.
         let mut found = 0;
+        let waiting = embassy_time::Instant::now();
         while found < 4 {
             let Some(byte) = usb.read() else {
-                if last.elapsed() >= idle {
+                let quiet = last.elapsed();
+                if quiet >= idle {
                     return;
                 }
-                embassy_time::Timer::after_micros(50).await;
+                if quiet < spin {
+                    embassy_futures::yield_now().await;
+                } else {
+                    embassy_time::Timer::after_micros(50).await;
+                }
                 continue;
             };
             if byte == transfer::REQUEST[found] {
@@ -751,6 +815,11 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
             continue;
         }
         last = embassy_time::Instant::now();
+        let spent = &mut session.spent;
+        spent.waiting_us = spent
+            .waiting_us
+            .saturating_add(micros((last - waiting).as_micros()));
+        spent.requests = spent.requests.saturating_add(1);
         let reply = if crc32(body) != request.payload_crc {
             transfer::Reply {
                 status: transfer::status::INVALID,
@@ -759,15 +828,26 @@ pub async fn transfer(usb: &mut device::drivers::usb::Usb, bulk: &mut device::bo
                 length: 0,
             }
         } else {
-            session.handle(&request, body, bulk, out)
+            let reply = session.handle(&request, body, &mut card, out);
+            let spent = &mut session.spent;
+            spent.serving_us = spent
+                .serving_us
+                .saturating_add(micros(last.elapsed().as_micros()));
+            reply
         };
         let data = &out[..reply.length];
         let head = transfer::encode_reply(&request, &reply, data);
-        let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(5);
-        if transmit(usb, &head, deadline).await.is_none()
-            || transmit(usb, data, deadline).await.is_none()
+        let sending = embassy_time::Instant::now();
+        let deadline = sending + embassy_time::Duration::from_secs(5);
+        if transmit(usb, &head, deadline, spin).await.is_none()
+            || transmit(usb, data, deadline, spin).await.is_none()
         {
             return;
         }
+        last = embassy_time::Instant::now();
+        let spent = &mut session.spent;
+        spent.sending_us = spent
+            .sending_us
+            .saturating_add(micros((last - sending).as_micros()));
     }
 }

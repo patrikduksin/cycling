@@ -23,9 +23,17 @@ pub enum Screen {
     Status,
     Blank,
 }
+/// A pass's first synthetic inputs, at most 4: the shell sits in the console
+/// task's future, so the rest of a crowded pass go unrecorded rather than
+/// take its RAM.
+#[cfg(feature = "debug-harness")]
+pub type Synthetic = heapless::Vec<Input, 4>;
+
 pub struct Shell<D, I, P, B> {
     #[cfg(feature = "debug-harness")]
     pub harness: crate::harness::State,
+    #[cfg(feature = "debug-harness")]
+    synthetic: Synthetic,
     pub boot_id: u32,
     pub synthetic_events: u32,
     store: Store<B>,
@@ -122,6 +130,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         Ok(Self {
             #[cfg(feature = "debug-harness")]
             harness: crate::harness::State::default(),
+            #[cfg(feature = "debug-harness")]
+            synthetic: Synthetic::new(),
             boot_id: 0,
             synthetic_events: 0,
             store,
@@ -184,6 +194,12 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     }
     pub fn take_app_input(&mut self) -> Option<device_api::input::Edge> {
         self.app_input.pop()
+    }
+    /// The harness's synthetic inputs handed on like physical ones since the
+    /// last call, in order.
+    #[cfg(feature = "debug-harness")]
+    pub fn take_synthetic(&mut self) -> Synthetic {
+        core::mem::take(&mut self.synthetic)
     }
     /// The physical input source, for composition that records what `tick` took.
     pub fn input_source(&mut self) -> &mut I {
@@ -255,6 +271,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                     break;
                 };
                 self.synthetic_events = self.synthetic_events.saturating_add(1);
+                let _ = self.synthetic.push(event);
                 self.consume(event, now, self.harness.due);
             }
             if self.harness.capture_due(now) {
@@ -347,6 +364,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             );
             if self.harness.take_cancel() {
                 self.synthetic_events = self.synthetic_events.saturating_add(1);
+                let _ = self.synthetic.push(Input::Cancel);
                 self.consume(Input::Cancel, now, now);
             }
             status

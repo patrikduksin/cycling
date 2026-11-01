@@ -692,6 +692,9 @@ impl Reader {
                 self.passes += 1;
             }
             Event::Input(edge) => self.push(Kind::Input, input(edge.input)),
+            Event::Synthetic(pressed) => {
+                self.push(Kind::Input, format!("synthetic {}", input(pressed)))
+            }
             Event::Command(line) => self.push(Kind::Command, super::secret::shown_command(line)),
             Event::Startup(startup) => {
                 self.push(Kind::Startup, format!("companion {}", startup.name()))

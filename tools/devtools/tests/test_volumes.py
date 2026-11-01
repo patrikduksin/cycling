@@ -192,6 +192,15 @@ class FakeTransfer(Transfer):
 
 
 class VolumesTests(unittest.TestCase):
+    def test_the_end_reply_says_where_the_session_time_went(self):
+        device = FakeDevice()
+        self.assertEqual(volumes.end(FakeTransfer(device)), {}, 'firmware from before it says nothing')
+        device.handle = lambda *_: (0, 0, 0, struct.pack('<5I', 41_000, 900_000, 1_200_500, 300_000, 175))
+        self.assertEqual(
+            volumes.end(FakeTransfer(device)),
+            {'before_ms': 41.0, 'serving_ms': 900.0, 'sending_ms': 1200.5, 'waiting_ms': 300.0, 'requests': 175},
+        )
+
     def pack(self, directory, size=300_001):
         path = Path(directory) / 'chile.pack'
         path.write_bytes(bytes((i * 31 + i // 4096) % 256 for i in range(size)))

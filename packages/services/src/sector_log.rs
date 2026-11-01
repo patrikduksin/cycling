@@ -332,9 +332,24 @@ impl Log {
         if index >= self.capacity {
             return Err(Error::Media(device_api::bulk::Error::Range));
         }
-        media.owned_read(DATA_START + index, sector)?;
-        Ok(record(sector, self.store, index).map(|header| payload(sector, header)))
+        read_record(media, self.store, index, sector)
     }
+}
+
+/// Record `index` of the epoch `store`, as [`Log::read`] reads it, for a
+/// reader that holds no `Log`: `None` when that sector is not a valid
+/// record of the epoch. Reads one sector.
+pub fn read_record<'a>(
+    media: &mut impl ReadWrite,
+    store: u64,
+    index: u64,
+    sector: &'a mut Sector,
+) -> Result<Option<&'a [u8]>, Error> {
+    let at = DATA_START
+        .checked_add(index)
+        .ok_or(Error::Media(device_api::bulk::Error::Range))?;
+    media.owned_read(at, sector)?;
+    Ok(record(sector, store, index).map(|header| payload(sector, header)))
 }
 
 /// Start a new epoch with `initial` as its first checkpoint. Reads both

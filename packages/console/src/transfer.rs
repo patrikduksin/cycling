@@ -18,7 +18,7 @@
 //! Each request gets exactly one reply. Raw writes exist only for the
 //! terrain pack's data sectors in order (`pack::Writer`) and file data before
 //! its commit (`files::Writer`); every other write is a header or directory
-//! commit owned by those mechanisms. Nothing here touches RIDES.
+//! commit owned by those mechanisms. RIDES is only read, a record at a time.
 //!
 //! The session keeps STORE mounted, and the reader of the file being pulled
 //! open, across requests: a pull reads one sector per record (about 2 reads
@@ -30,7 +30,7 @@ use device_api::bulk::ReadWrite;
 use firmware_services::checksum::crc32;
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
 use firmware_services::volume::{self, Layout};
-use firmware_services::{files, pack, store};
+use firmware_services::{files, pack, sector_log, store};
 
 pub const HEADER: usize = 36;
 pub const MAX_PAYLOAD: usize = 4096;
@@ -64,7 +64,12 @@ pub mod op {
     pub const STORE_LIST: u16 = 31;
     pub const STORE_READ: u16 = 32;
     pub const STORE_DELETE: u16 = 33;
+    pub const RIDES_READ: u16 = 40;
 }
+
+/// A `RIDES_READ` record's length when its sector holds no valid record of
+/// the epoch asked for.
+pub const RIDES_NONE: u16 = u16::MAX;
 
 /// Reply statuses; the host maps them to messages.
 pub mod status {
@@ -285,9 +290,25 @@ struct Pull {
     reader: Option<(store::Name, store::Reader)>,
 }
 
+/// Where a session's time went, as the transport measured it. The `END`
+/// reply carries it as five u32s in this order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Spent {
+    /// The app's own work before the session, such as syncing its trace.
+    pub before_us: u32,
+    /// Serving requests: reading and writing the card.
+    pub serving_us: u32,
+    pub sending_us: u32,
+    /// Waiting for the host's next request.
+    pub waiting_us: u32,
+    pub requests: u32,
+}
+
 /// One session's state: the open terrain and file writers, and STORE.
 #[derive(Default)]
 pub struct Session {
+    /// Kept by whoever runs the transport; see [`Spent`].
+    pub spent: Spent,
     last_id: u32,
     terrain: Option<pack::Writer>,
     file: Option<files::Writer>,
@@ -327,7 +348,18 @@ impl Session {
             }
             op::END => {
                 self.ended = true;
-                Reply::ok(0, 0, 0)
+                let spent = self.spent;
+                let words = [
+                    spent.before_us,
+                    spent.serving_us,
+                    spent.sending_us,
+                    spent.waiting_us,
+                    spent.requests,
+                ];
+                for (index, word) in words.into_iter().enumerate() {
+                    put_u32(out, 4 * index, word);
+                }
+                Reply::ok(0, 0, 4 * words.len())
             }
             op::VOLUMES => {
                 let region = match media.owned_info() {
@@ -365,6 +397,7 @@ impl Session {
             }
             op::TERRAIN_STATUS..=op::TERRAIN_CRC => self.terrain(request, payload, media, out),
             op::FILES_STATUS..=op::FILES_STAT => self.files(request, payload, media, out),
+            op::RIDES_READ => rides(request, payload, media, out),
             op::STORE_STATUS..=op::STORE_DELETE => {
                 let reply = self.store(request, payload, media, out);
                 if matches!(
@@ -762,6 +795,49 @@ impl Session {
             _ => Reply::error(status::INVALID),
         }
     }
+}
+
+/// `RIDES_READ`: the RIDES log's records from `arg`, at most `count`, as
+/// many as fit, of the epoch whose store id is the payload. Each is its
+/// length (u16, [`RIDES_NONE`] when the sector holds no valid record of that
+/// epoch) and its payload; the reply's `arg` is the next record.
+fn rides(
+    request: &Request,
+    payload: &[u8],
+    media: &mut impl ReadWrite,
+    out: &mut [u8; MAX_PAYLOAD],
+) -> Reply {
+    let Ok(store) = <[u8; 8]>::try_from(payload).map(u64::from_le_bytes) else {
+        return Reply::error(status::INVALID);
+    };
+    let mut sector = [0u8; 512];
+    let mut vol = match volume::open(media, &volume::RIDES, &mut sector) {
+        Ok(v) => v,
+        Err(e) => return Reply::error(volume_error(e)),
+    };
+    let (mut length, mut records, mut index) = (0, 0, request.arg);
+    while records < request.count && length + 2 <= MAX_PAYLOAD {
+        let record = match sector_log::read_record(&mut vol, store, index, &mut sector) {
+            Ok(record) => record,
+            Err(_) if records > 0 => break,
+            Err(sector_log::Error::Media(device_api::bulk::Error::Range)) => {
+                return Reply::error(status::RANGE);
+            }
+            Err(_) => return Reply::error(status::MEDIA),
+        };
+        let Some(data) = record else {
+            put_u16(out, length, RIDES_NONE);
+            (length, records, index) = (length + 2, records + 1, index + 1);
+            continue;
+        };
+        if length + 2 + data.len() > MAX_PAYLOAD {
+            break;
+        }
+        put_u16(out, length, data.len() as u16);
+        out[length + 2..length + 2 + data.len()].copy_from_slice(data);
+        (length, records, index) = (length + 2 + data.len(), records + 1, index + 1);
+    }
+    Reply::ok(index, records, length)
 }
 
 #[cfg(test)]

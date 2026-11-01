@@ -125,6 +125,25 @@ pub fn init(peripheral: PSRAM<'static>) -> Report {
     }
 }
 
+/// `len` zeroed bytes of PSRAM, given back when the block drops.
+pub fn owned(len: usize) -> Option<super::external::Owned> {
+    let layout = Layout::from_size_align(len, 4)
+        .ok()
+        .filter(|layout| layout.size() > 0)?;
+    // SAFETY: the layout's size is not zero.
+    let pointer = unsafe { allocate_external(layout) };
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: the allocator returned `len` writable bytes. Zeroed here,
+    // nothing else references them, and `deallocate_external` takes them
+    // back with `layout`.
+    unsafe {
+        ptr::write_bytes(pointer, 0, len);
+        super::external::Owned::from_raw(pointer, layout, deallocate_external)
+    }
+}
+
 /// `len` zeroed bytes of external RAM for the program's lifetime, for
 /// buffers only tasks touch (never interrupts: flash writes disable the
 /// cache, but they also block the executor).

@@ -605,8 +605,17 @@ fn replay_never_claims_or_replaces_the_directory_it_runs_in() {
         let refused = cycling_replay(&cwd, Some(out));
         assert!(!refused.status.success(), "{}: {refused:?}", out.display());
     }
-    let refused = cycling_replay(&parent_of_cwd, Some(Path::new("..")));
-    assert!(!refused.status.success(), "..: {refused:?}");
+    for out in ["..", "nope/../..", "gone/../../inside/.."] {
+        let refused = cycling_replay(&parent_of_cwd, Some(Path::new(out)));
+        assert!(!refused.status.success(), "{out}: {refused:?}");
+    }
+    std::fs::remove_file(cwd.join(recording::MARKER)).unwrap();
+    let refused = cycling_replay(&cwd, Some(Path::new("nope/..")));
+    assert!(!refused.status.success(), "nope/..: {refused:?}");
+    assert!(
+        !cwd.join(recording::MARKER).exists(),
+        "nope/.. marked the working directory"
+    );
     assert_eq!(std::fs::read_to_string(&mine).unwrap(), "the rider's notes");
     std::fs::remove_dir_all(&cwd).unwrap();
 }

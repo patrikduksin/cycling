@@ -69,36 +69,28 @@ pub fn replace_dir(dir: &Path) -> io::Result<()> {
     if dir.as_os_str().is_empty() {
         return Err(io::Error::other("the output directory is empty; name one"));
     }
-    if let (Ok(target), Ok(cwd)) = (dir.canonicalize(), std::env::current_dir()?.canonicalize())
-        && cwd.starts_with(&target)
-    {
+    let located =
+        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", dir.display()));
+    fs::create_dir_all(dir).map_err(located)?;
+    let real = dir.canonicalize().map_err(located)?;
+    if std::env::current_dir()?.canonicalize()?.starts_with(&real) {
         return Err(io::Error::other(format!(
             "{} is this directory or one above it; choose a directory inside it",
             dir.display()
         )));
     }
-    match fs::read_dir(dir) {
-        Ok(mut entries) => {
-            if !dir.join(MARKER).is_file() && entries.next().is_some() {
-                return Err(io::Error::other(format!(
-                    "{} holds files the simulator did not write (it has no {MARKER}); \
-                     choose another directory, or empty this one yourself",
-                    dir.display()
-                )));
-            }
-            fs::remove_dir_all(dir)?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(io::Error::new(
-                error.kind(),
-                format!("{}: {error}", dir.display()),
-            ));
-        }
+    let mut entries = fs::read_dir(&real).map_err(located)?;
+    if !real.join(MARKER).is_file() && entries.next().is_some() {
+        return Err(io::Error::other(format!(
+            "{} holds files the simulator did not write (it has no {MARKER}); \
+             choose another directory, or empty this one yourself",
+            dir.display()
+        )));
     }
-    fs::create_dir_all(dir)?;
+    fs::remove_dir_all(&real)?;
+    fs::create_dir_all(&real)?;
     fs::write(
-        dir.join(MARKER),
+        real.join(MARKER),
         "Written by the simulator; the next run into this directory replaces it.\n",
     )
 }

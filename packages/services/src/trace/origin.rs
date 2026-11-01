@@ -253,6 +253,19 @@ pub fn generations(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Ge
     Generations { files, terrain }
 }
 
+/// Whether two stamps name the same commit: the shorter, up to its last
+/// non-zero byte, starts the longer. A zero stamp names no commit.
+pub fn same_build(a: &[u8; 20], b: &[u8; 20]) -> bool {
+    let named = |build: &[u8; 20]| build.iter().rposition(|&byte| byte != 0).map(|i| i + 1);
+    match (named(a), named(b)) {
+        (Some(a_len), Some(b_len)) => {
+            let len = a_len.min(b_len);
+            a[..len] == b[..len]
+        }
+        _ => false,
+    }
+}
+
 /// Room for every file FILES can hold in [`Files::entries`].
 pub const FILE_ENTRIES: usize = crate::files::CAPACITY * (1 + crate::files::NAME + 3 * 5 + 4);
 

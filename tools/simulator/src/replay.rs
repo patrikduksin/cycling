@@ -365,7 +365,11 @@ impl Replay {
         let cursor = events.cursor();
         let ledger = Ledger(Rc::new(RefCell::new(Report::new(mode))));
         let known = |build: [u8; 20]| build != [0; 20];
-        if mode == Mode::Strict && known(header.build) && known(build) && header.build != build {
+        if mode == Mode::Strict
+            && known(header.build)
+            && known(build)
+            && !trace::origin::same_build(&header.build, &build)
+        {
             ledger.note(Kind::Unreplayable, 1, || {
                 "another build recorded this trace; replay it as a stimulus".into()
             });
@@ -500,7 +504,13 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
         Ok(decoded) => decoded,
         Err(error) => return Some(format!("the replayed trace does not decode: {error:?}")),
     };
-    if header != replayed_header {
+    let stamped = header.build == replayed_header.build
+        || trace::origin::same_build(&header.build, &replayed_header.build);
+    let unstamped = trace::Header {
+        build: replayed_header.build,
+        ..header
+    };
+    if !stamped || unstamped != replayed_header {
         return Some(format!("header {header:?}, replayed {replayed_header:?}"));
     }
     let (mut pass, mut read) = (0, 0);
@@ -1675,10 +1685,14 @@ mod tests {
     }
 
     fn recorder() -> RefCell<Recorder<Box<[u8]>, Blocks>> {
+        recorded_by([0; 20])
+    }
+
+    fn recorded_by(build: [u8; 20]) -> RefCell<Recorder<Box<[u8]>, Blocks>> {
         let header = Header {
             version: VERSION,
             oldest_reader: firmware_services::trace::OLDEST_READER,
-            build: [0; 20],
+            build,
             boot: 1,
             profile: 0,
             config: &[],
@@ -1716,6 +1730,36 @@ mod tests {
             bulk: SimBulk::default().scripted(),
         };
         Replay::new(bytes, shelled, Mode::Strict, [0; 20]).unwrap()
+    }
+
+    #[test]
+    fn a_strict_replay_takes_a_c606_stamp_as_its_commit() {
+        use firmware_services::trace::origin::build;
+        let full = "0123456789abcdef0123456789abcdef01234567";
+        let unreplayable = |recorded: &str, current: &str| {
+            let recorder = recorded_by(build(recorded));
+            recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+            let shelled = Shelled {
+                input: InputDevice::new(&[Button::TopLeft], Availability::Ready),
+                display: DisplayDevice::new(16, 16),
+                power: PowerDevice::new(Availability::Ready),
+                flash: FileFlash::memory(),
+                bulk: SimBulk::default().scripted(),
+            };
+            let replay = Replay::new(bytes(&recorder), shelled, Mode::Strict, build(current));
+            replay.unwrap().sources.report().count(Kind::Unreplayable)
+        };
+        assert_eq!(unreplayable(&full[..12], full), 0, "the C606's 12 digits");
+        assert_eq!(unreplayable(full, &full[..12]), 0);
+        assert_eq!(unreplayable(full, full), 0);
+        assert_eq!(unreplayable("fedcba987654", full), 1, "another build");
+        let traced = |commit: &str| {
+            let recorder = recorded_by(build(commit));
+            recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+            bytes(&recorder)
+        };
+        assert_eq!(first_difference(&traced(&full[..12]), &traced(full)), None);
+        assert!(first_difference(&traced("fedcba987654"), &traced(full)).is_some());
     }
 
     #[test]

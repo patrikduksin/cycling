@@ -62,6 +62,35 @@ pub const RING_BYTES: usize = 256 * 1024;
 /// nine a phone upload adds, so the drain catches up after a store stall.
 pub const IDLE_RECORDS: u32 = 16;
 
+/// What the card allows a trace in a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Card {
+    /// Closed to work: a power request was accepted, or charging standby.
+    Closed,
+    /// Open while a ride records: one record, so a frame waits on at most
+    /// one card write.
+    Riding,
+    /// Open and no ride records: up to [`IDLE_RECORDS`].
+    Idle,
+    /// Open for the last pass before VANA asks to turn off: everything the
+    /// spool holds, then a sync.
+    Closing,
+}
+
+impl Card {
+    /// The card as the C606 composes it: `open` while its power owner
+    /// admits work, and VANA `riding` or asking to turn off next pass
+    /// (`shutdown_due`).
+    pub fn of(open: bool, riding: bool, shutdown_due: bool) -> Self {
+        match (open, shutdown_due, riding) {
+            (false, ..) => Self::Closed,
+            (true, true, _) => Self::Closing,
+            (true, false, true) => Self::Riding,
+            (true, false, false) => Self::Idle,
+        }
+    }
+}
+
 /// Sealed blocks waiting for the store, oldest first, in a ring of bytes.
 pub struct Spool<R> {
     ring: R,
@@ -351,24 +380,23 @@ impl<H: AsRef<[u8]>> File<H> {
         matches!(self, Self::Open(..))
     }
 
-    /// This pass's share of the spool, at most `records` whole records,
-    /// while the card admits work (`admitted`). The file opens at the first
-    /// such pass `header` gives the header and the boot id, named by
-    /// [`next_name`]. An error ends the file and says why.
-    #[allow(clippy::too_many_arguments)]
+    /// This pass's share of the spool, as `card` allows. The file opens at
+    /// the first open pass `header` gives the header and the boot id, named
+    /// by [`next_name`]. An error ends the file and says why.
     pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
         recorder: &mut Recorder<B, S>,
         bulk: &mut impl ReadWrite,
-        admitted: bool,
-        records: u32,
+        card: Card,
         header: impl FnOnce() -> Option<(H, u32)>,
         now: u64,
         sector: &mut Sector,
     ) -> Result<(), &'static str> {
-        if !admitted {
-            return Ok(());
-        }
+        let records = match card {
+            Card::Closed => return Ok(()),
+            Card::Riding => 1,
+            Card::Idle | Card::Closing => IDLE_RECORDS,
+        };
         if let Self::Staging(extent, generations) = *self {
             let Some((header, boot)) = header() else {
                 return Ok(());
@@ -388,10 +416,11 @@ impl<H: AsRef<[u8]>> File<H> {
             return Ok(());
         };
         let mut volume = Volume::new(&mut *bulk, *extent);
-        if drain
-            .pass(recorder, &mut volume, records, now, sector)
-            .is_err()
-        {
+        let mut drained = drain.pass(recorder, &mut volume, records, now, sector);
+        if card == Card::Closing {
+            drained = drained.and_then(|()| drain.sync(recorder, &mut volume, now, sector));
+        }
+        if drained.is_err() {
             return self.end("the store failed");
         }
         Ok(())

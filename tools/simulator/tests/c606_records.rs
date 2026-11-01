@@ -3,14 +3,14 @@
 //! `RecordedBulk`; the simulator's devices record it from their own state.
 //! A replay fails the operation a fault names, so both must name the same
 //! one.
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 use device_api::bulk::ReadWrite;
 use device_api::display::Display;
 use device_api::observation::Availability;
 use device_api::power::Power;
 use device_api::storage::{OwnedFlash, Region};
 use firmware_services::trace::frozen::{CompanionView, Record, RecordedBulk};
-use firmware_services::trace::shell::{ShellDisplay, ShellFlash, ShellLog, ShellPower};
+use firmware_services::trace::shell::{PassLog, ShellDisplay, ShellFlash, ShellPower};
 use firmware_services::trace::{Event, Output, StorageFault};
 use shell_simulator::bulk::{BulkFault, SimBulk};
 use shell_simulator::devices::{DisplayDevice, PowerDevice};
@@ -21,14 +21,14 @@ struct Kept(Vec<String>, Vec<StorageFault>);
 
 impl Record for Kept {
     fn record(&mut self, event: &Event<'_>) {
-        match event {
-            Event::StorageFault(fault) => self.1.push(*fault),
-            event => self.0.push(format!("{event:?}")),
+        if let Event::StorageFault(fault) = event {
+            self.1.push(*fault);
         }
+        self.0.push(format!("{event:?}"));
     }
 }
 
-fn log() -> &'static ShellLog {
+fn log() -> &'static PassLog {
     Box::leak(Box::default())
 }
 
@@ -127,24 +127,76 @@ fn a_failed_flash_operation_has_the_number_the_simulator_gives_it() {
 
 #[test]
 fn a_failed_card_operation_has_the_number_the_simulator_gives_it() {
+    let log = log();
     let card = SimBulk::default();
     card.fail(BulkFault {
         after: 2,
         partial: 100,
     });
-    let attempts = Cell::new(0);
     let kept = RefCell::new(Kept::default());
     let sector = [5u8; 512];
     card.begin_pass();
-    attempts.set(0);
+    log.begin_pass(Availability::Ready, &CompanionView(None));
     for binding in 0..2 {
         let mut inner = card.clone();
-        let mut bulk = RecordedBulk::counted(&mut inner, &kept, &attempts);
+        let mut bulk = RecordedBulk::counted(&mut inner, &kept, log);
         let _ = bulk.owned_info();
         let _ = bulk.owned_write(100 + binding, &sector);
         let _ = bulk.owned_write(200 + binding, &sector);
     }
+    log.record(&kept);
     let simulated = card.take_log();
     assert!(!simulated.is_empty(), "the simulator failed an operation");
     assert_eq!(kept.borrow().1, landed_unknown(simulated));
+}
+
+#[test]
+fn a_pass_records_refusals_and_faults_in_the_order_the_simulator_does() {
+    let log = log();
+    let display = DisplayDevice::new(4, 4);
+    let power = PowerDevice::new(Availability::Ready);
+    let flash = FileFlash::memory();
+    let card = SimBulk::default();
+    let mut panel = ShellDisplay::new(display.clone(), log);
+    let mut backlight = ShellPower::new(power.clone(), log);
+    let mut recorded_flash = ShellFlash::new(flash.clone(), log);
+    let kept = RefCell::new(Kept::default());
+    display.0.borrow_mut().refusals.scripted = vec![0];
+    power.0.borrow_mut().refusals.scripted = vec![0];
+    flash.fault.borrow_mut().after = Some(0);
+    card.fail(BulkFault {
+        after: 0,
+        partial: 0,
+    });
+    log.begin_pass(Availability::Ready, &CompanionView(None));
+    let mut inner = card.clone();
+    let _ = RecordedBulk::counted(&mut inner, &kept, log).owned_write(70, &[1; 512]);
+    let _ = recorded_flash.program(Region::Data, 0, &[1; 4]);
+    let _ = backlight.brightness(10);
+    let _ = panel.submit(|_, row| row.fill(1));
+    log.record(&kept);
+    let flash_fault = flash.fault.borrow().log[0];
+    let card_fault = card.take_log()[0];
+    let simulated: Vec<String> = [
+        Event::Refused {
+            output: Output::Panel,
+            attempt: 0,
+        },
+        Event::Refused {
+            output: Output::Backlight,
+            attempt: 0,
+        },
+        Event::StorageFault(StorageFault {
+            landed: 0,
+            ..flash_fault
+        }),
+        Event::StorageFault(StorageFault {
+            landed: 0,
+            ..card_fault
+        }),
+    ]
+    .iter()
+    .map(|event| format!("{event:?}"))
+    .collect();
+    assert_eq!(kept.borrow().0, simulated);
 }

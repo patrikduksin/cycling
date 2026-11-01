@@ -288,6 +288,12 @@ impl Runtime {
         matches!(self.power.sheet, Sheet::Requested { .. })
     }
 
+    /// Charging standby went dark: until power control changes, a pass of
+    /// `standby` reads and draws nothing.
+    pub fn standby_dark(&self) -> bool {
+        self.power.standby.dark
+    }
+
     /// Whether the next pass's `power` asks the device to turn off: the
     /// turning-off frame is on the panel. A preferences save that fails
     /// first keeps the device on.

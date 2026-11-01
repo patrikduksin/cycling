@@ -135,6 +135,25 @@ impl Kept {
         room[3 + target.len()..].copy_from_slice(text.as_bytes());
         self.len = end;
     }
+
+    fn each(&self, each: &mut impl FnMut(firmware_services::trace::Level, &str, &str)) {
+        use firmware_services::trace::Level;
+        let mut at = 0;
+        while at + 3 <= self.len {
+            let [level, target, text] = [self.bytes[at], self.bytes[at + 1], self.bytes[at + 2]];
+            let target_at = at + 3;
+            let text_at = target_at + usize::from(target);
+            at = text_at + usize::from(text);
+            let target = core::str::from_utf8(&self.bytes[target_at..text_at]).unwrap_or("");
+            let text = core::str::from_utf8(&self.bytes[text_at..at]).unwrap_or("");
+            let level = if level == 1 {
+                Level::Error
+            } else {
+                Level::Warn
+            };
+            each(level, target, text);
+        }
+    }
 }
 
 /// Keep warnings and errors in `bytes` for the trace from now on.
@@ -144,34 +163,19 @@ pub fn keep_warnings(bytes: &'static mut [u8]) {
 }
 
 /// Hand over the warnings and errors kept since the last call, oldest
-/// first.
+/// first. The buffer leaves the lock while they are recorded; a warning
+/// logged meanwhile is dropped.
 #[cfg(feature = "cycling")]
 pub fn drain_warnings(mut each: impl FnMut(firmware_services::trace::Level, &str, &str)) {
-    use firmware_services::trace::Level;
+    let Some(kept) = critical_section::with(|cs| KEPT.borrow_ref_mut(cs).take()) else {
+        return;
+    };
+    kept.each(&mut each);
     critical_section::with(|cs| {
-        let mut kept = KEPT.borrow_ref_mut(cs);
-        let Some(kept) = kept.as_mut() else {
-            return;
-        };
-        let mut at = 0;
-        while at + 3 <= kept.len {
-            let [level, target, text] = [kept.bytes[at], kept.bytes[at + 1], kept.bytes[at + 2]];
-            let target_at = at + 3;
-            let text_at = target_at + usize::from(target);
-            at = text_at + usize::from(text);
-            let target = core::str::from_utf8(&kept.bytes[target_at..text_at]).unwrap_or("");
-            let text = core::str::from_utf8(&kept.bytes[text_at..at]).unwrap_or("");
-            each(
-                if level == 1 {
-                    Level::Error
-                } else {
-                    Level::Warn
-                },
-                target,
-                text,
-            );
-        }
-        kept.len = 0;
+        *KEPT.borrow_ref_mut(cs) = Some(Kept {
+            bytes: kept.bytes,
+            len: 0,
+        })
     });
 }
 

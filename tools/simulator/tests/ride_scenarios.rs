@@ -2775,7 +2775,9 @@ fn turned_off_on_usb_power_the_device_starts_again_in_charging_standby() {
     let ridden = sim.device.boot;
     sim.press(Button::TopLeft);
     sim.press(Button::BottomRight);
+    let pressed = sim.now();
     sim.advance(seconds(2));
+    assert_eq!(sim.now(), pressed + 2_000, "the world went on for 2 s");
     assert!(sim.is_off(), "turned off");
     let standby = sim.device.boot;
     assert_ne!(standby, ridden, "the companion started the device again");
@@ -2792,6 +2794,55 @@ fn turned_off_on_usb_power_the_device_starts_again_in_charging_standby() {
     sim.advance(seconds(3));
     sim.expect_text("READY TO RIDE");
     assert_eq!(sim.device.boot, standby, "the wake keeps the session");
+}
+
+#[test]
+fn a_ride_after_a_long_charging_standby_is_in_its_file_whole() {
+    use firmware_services::trace::{Event, decode};
+    use shell_simulator::replay::first_difference;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    sim.set_battery(64, true);
+    sim.advance(seconds(2));
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "in charging standby");
+    sim.advance(minutes(40));
+    sim.turn_on();
+    sim.advance(seconds(3));
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    assert!(sim.device.sync_trace(), "the wake opened the file");
+    let pulled = sim.store_file(&sim.device.trace_file().unwrap()).unwrap();
+    let (_, events) = decode(&pulled).unwrap();
+    let lost = events
+        .filter(|event| matches!(event, Event::Lost { .. }))
+        .count();
+    assert_eq!(lost, 0, "the standby fit the spool");
+    println!("{}", trace_size(&pulled, sim.device.now));
+    let mut capture = sim.capture();
+    capture.trace = pulled;
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert!(
+        replayed.frame_hashes() == sim.frame_hashes(),
+        "the same frames"
+    );
+    let samples = |sim: &mut Sim| {
+        sim.rides()
+            .iter()
+            .map(|ride| ride.samples().count())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(samples(&mut replayed), samples(&mut sim));
 }
 
 /// Falling charge is announced once at 20%, then urgently at 10% and 5%,

@@ -37,6 +37,7 @@ pub struct Recorder<B, S> {
     encoder: Encoder<B>,
     sink: S,
     lost: Lost,
+    quiet: Option<u64>,
 }
 
 /// Blocks the sink refused since it last took one.
@@ -53,7 +54,15 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
             encoder: Encoder::new(buf),
             sink,
             lost: Lost::default(),
+            quiet: None,
         }
+    }
+
+    /// A pass that is recorded only when something else is recorded in it:
+    /// its pass event waits for the first event, and goes when the next
+    /// pass begins with none.
+    pub fn quiet_pass(&mut self, now_ms: u64) {
+        self.quiet = Some(now_ms);
     }
 
     /// The block being filled, framed, or nothing while it holds no event.
@@ -111,6 +120,11 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
     fn record(&mut self, event: &Event<'_>) {
+        if let Some(now_ms) = self.quiet.take()
+            && !matches!(event, Event::Pass { .. })
+        {
+            self.record(&Event::Pass { now_ms });
+        }
         if self.push(event) == Err(Full::Record) {
             let _ = self.push(&Event::TooLarge(event.tag()));
         }
@@ -596,7 +610,7 @@ impl InputObservation for CompanionView {
 pub struct RecordedBulk<'a, B: ?Sized, R: ?Sized> {
     inner: &'a mut B,
     record: &'a RefCell<R>,
-    attempts: Option<&'a core::cell::Cell<u32>>,
+    log: Option<&'a super::shell::PassLog>,
 }
 
 impl<'a, B: ?Sized, R: ?Sized> RecordedBulk<'a, B, R> {
@@ -604,51 +618,33 @@ impl<'a, B: ?Sized, R: ?Sized> RecordedBulk<'a, B, R> {
         Self {
             inner,
             record,
-            attempts: None,
+            log: None,
         }
     }
 
-    /// As `new`, and each operation that fails is recorded as a storage
-    /// fault, numbered by `attempts`, which composition sets to zero each
-    /// pass: the C606's card, whose faults the simulator's medium records
-    /// itself. What a failed write left on the card is unknown, so the
-    /// fault says nothing landed.
+    /// As `new`, and each operation is numbered in `log`, which notes the
+    /// ones that fail: the C606's card, whose faults the simulator's medium
+    /// records itself.
     pub fn counted(
         inner: &'a mut B,
         record: &'a RefCell<R>,
-        attempts: &'a core::cell::Cell<u32>,
+        log: &'a super::shell::PassLog,
     ) -> Self {
         Self {
             inner,
             record,
-            attempts: Some(attempts),
+            log: Some(log),
         }
     }
-}
 
-impl<B: ?Sized, R: Record + ?Sized> RecordedBulk<'_, B, R> {
     fn noted<T>(
         &self,
         op: super::StorageOp,
         at: u64,
         result: Result<T, bulk::Error>,
     ) -> Result<T, bulk::Error> {
-        let Some(attempts) = self.attempts else {
-            return result;
-        };
-        let attempt = attempts.get();
-        attempts.set(attempt + 1);
-        if let Err(error) = &result {
-            self.record
-                .borrow_mut()
-                .record(&Event::StorageFault(super::StorageFault {
-                    medium: super::Medium::Bulk,
-                    attempt,
-                    op,
-                    at,
-                    landed: 0,
-                    error: super::StorageError::from_bulk(*error),
-                }));
+        if let Some(log) = self.log {
+            log.card(op, at, &result);
         }
         result
     }
@@ -1014,6 +1010,11 @@ impl Default for FrozenPowerControl {
 }
 
 impl FrozenPowerControl {
+    /// The status the last pass froze.
+    pub fn frozen(&self) -> power::Status {
+        self.view
+    }
+
     /// Sample `inner` and record it when it changed; the status this pass
     /// reads until VANA's own request.
     pub fn freeze<P: PowerControl + ?Sized, R: Record + ?Sized>(

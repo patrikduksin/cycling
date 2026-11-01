@@ -506,13 +506,27 @@ mod file {
         assert!(matches!(file, File::Staging(..)));
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
-        file.pass(&mut recorder, &mut media, true, 1, || None, 10, &mut sector)
-            .unwrap();
+        file.pass(
+            &mut recorder,
+            &mut media,
+            Card::Riding,
+            || None,
+            10,
+            &mut sector,
+        )
+        .unwrap();
         assert!(!file.is_open(), "no header yet");
         recorder.record(&Event::Pass { now_ms: 20 });
         let known = || Some((header(), 7));
-        file.pass(&mut recorder, &mut media, true, 1, known, 20, &mut sector)
-            .unwrap();
+        file.pass(
+            &mut recorder,
+            &mut media,
+            Card::Riding,
+            known,
+            20,
+            &mut sector,
+        )
+        .unwrap();
         file.sync(&mut recorder, &mut media, 30, &mut sector)
             .unwrap();
         let name = opened(&file);
@@ -531,8 +545,15 @@ mod file {
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
         let known = || Some((header(), 7));
-        file.pass(&mut recorder, &mut media, true, 1, known, 10, &mut sector)
-            .unwrap();
+        file.pass(
+            &mut recorder,
+            &mut media,
+            Card::Riding,
+            known,
+            10,
+            &mut sector,
+        )
+        .unwrap();
         let table = table(&mut media, &mut sector);
         let store_extent = table.find(&volume::STORE).unwrap();
         let files_extent = table.find(&volume::FILES).unwrap();

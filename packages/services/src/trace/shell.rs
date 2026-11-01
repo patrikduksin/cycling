@@ -1,19 +1,23 @@
-//! The shell's own devices as a C606 records them: the panel, the backlight
-//! and the internal flash. The shell owns each device, so its wrapper notes
-//! what the trace needs in a [`ShellLog`] it shares with composition, which
-//! records the log after each pass and each command. The simulator's devices
-//! record the same events from their own state
-//! (`tools/simulator/src/devices.rs` and `storage.rs`), numbered alike:
-//! attempts count from zero each pass.
+//! The shell's own devices and the card as a C606 records them: the panel,
+//! the backlight, the internal flash and the card. The shell owns its
+//! devices, so each wrapper notes what the trace needs in a [`PassLog`] it
+//! shares with composition, as a counted `RecordedBulk` does for the card;
+//! composition records the log after each pass and each command. The
+//! simulator's devices record the same events from their own state
+//! (`tools/simulator/src/devices.rs`, `storage.rs` and `bulk.rs`), numbered
+//! alike and in the same order: attempts count from zero each pass.
 use super::frozen::{CompanionView, Record};
 use super::{Event, Output, StorageError, StorageFault, StorageOp};
 use core::cell::{Cell, RefCell};
+use device_api::bulk;
 use device_api::display::{Display, Format, Geometry};
 use device_api::observation::{Availability, Error};
 use device_api::power::Power;
 use device_api::storage::{AccessError, OwnedFlash, Region};
 
-const FAULTS: usize = 8;
+/// Faults a pass keeps; a card that fails every operation of a pass fails
+/// fewer than this.
+const FAULTS: usize = 64;
 
 #[derive(Clone, Copy, Default)]
 struct Refusals {
@@ -30,19 +34,22 @@ impl Refusals {
     }
 }
 
-/// What the shell's devices did since the pass began, until composition
-/// records it, and the backlight and battery the pass froze for the shell.
+/// What the shell's devices and the card did since the pass began, until
+/// composition records it, and the backlight and battery the pass froze
+/// for the shell.
 #[derive(Default)]
-pub struct ShellLog {
+pub struct PassLog {
     panel: Cell<Refusals>,
     backlight: Cell<Refusals>,
     availability: Cell<Option<Availability>>,
     battery: Cell<Option<(u8, u16, u64)>>,
     flash_attempts: Cell<u32>,
     faults: RefCell<heapless::Vec<StorageFault, FAULTS>>,
+    card_attempts: Cell<u32>,
+    card_faults: RefCell<heapless::Vec<StorageFault, FAULTS>>,
 }
 
-impl ShellLog {
+impl PassLog {
     /// A new pass: attempts count from zero, and the shell reads this
     /// backlight availability and the battery of `companion` until the
     /// next pass, as the simulator's shell does.
@@ -54,6 +61,7 @@ impl ShellLog {
             });
         }
         self.flash_attempts.set(0);
+        self.card_attempts.set(0);
         self.availability.set(Some(backlight));
         self.battery.set(super::frozen::battery(companion));
     }
@@ -74,8 +82,28 @@ impl ShellLog {
                 ..refusals
             });
         }
-        for fault in self.faults.borrow_mut().drain(..) {
-            record.record(&Event::StorageFault(fault));
+        for faults in [&self.faults, &self.card_faults] {
+            for fault in faults.borrow_mut().drain(..) {
+                record.record(&Event::StorageFault(fault));
+            }
+        }
+    }
+
+    /// Number a card operation and note it when it failed. The card cannot
+    /// say what a failed write left behind, so the fault says nothing
+    /// landed.
+    pub fn card<T>(&self, op: StorageOp, at: u64, result: &Result<T, bulk::Error>) {
+        let attempt = self.card_attempts.get();
+        self.card_attempts.set(attempt + 1);
+        if let Err(error) = result {
+            let _ = self.card_faults.borrow_mut().push(StorageFault {
+                medium: super::Medium::Bulk,
+                attempt,
+                op,
+                at,
+                landed: 0,
+                error: StorageError::from_bulk(*error),
+            });
         }
     }
 
@@ -100,11 +128,11 @@ impl ShellLog {
 /// The panel, its refused frames noted for the trace.
 pub struct ShellDisplay<D> {
     inner: D,
-    log: &'static ShellLog,
+    log: &'static PassLog,
 }
 
 impl<D> ShellDisplay<D> {
-    pub fn new(inner: D, log: &'static ShellLog) -> Self {
+    pub fn new(inner: D, log: &'static PassLog) -> Self {
         Self { inner, log }
     }
 }
@@ -132,11 +160,11 @@ impl<D: Display> Display for ShellDisplay<D> {
 /// and its refused writes noted for the trace.
 pub struct ShellPower<P> {
     inner: P,
-    log: &'static ShellLog,
+    log: &'static PassLog,
 }
 
 impl<P> ShellPower<P> {
-    pub fn new(inner: P, log: &'static ShellLog) -> Self {
+    pub fn new(inner: P, log: &'static PassLog) -> Self {
         Self { inner, log }
     }
 }
@@ -186,11 +214,11 @@ impl<E> FlashError for AccessError<E> {
 /// the fault says nothing landed.
 pub struct ShellFlash<B> {
     inner: B,
-    log: &'static ShellLog,
+    log: &'static PassLog,
 }
 
 impl<B> ShellFlash<B> {
-    pub fn new(inner: B, log: &'static ShellLog) -> Self {
+    pub fn new(inner: B, log: &'static PassLog) -> Self {
         Self { inner, log }
     }
 

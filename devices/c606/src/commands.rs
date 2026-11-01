@@ -183,7 +183,7 @@ pub fn execute(
                 let mut recorded = firmware_services::trace::frozen::RecordedBulk::counted(
                     &mut *bulk,
                     &trace.record,
-                    &trace.card,
+                    trace.log,
                 );
                 status = volumes::execute(command, &mut recorded, &mut output);
                 if command == volumes::Command::Store {
@@ -220,7 +220,7 @@ pub fn execute(
                 &mut firmware_services::trace::frozen::RecordedBulk::counted(
                     bulk,
                     &trace.record,
-                    &trace.card,
+                    trace.log,
                 ),
                 now,
                 &mut output,

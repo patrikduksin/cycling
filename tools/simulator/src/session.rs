@@ -30,15 +30,15 @@ use device_api::server::AccessPoint;
 use device_api::{power::PowerControl, server::Server, sound::Sound};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
-use firmware_services::trace::frozen::Sink;
 #[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::CompanionView;
+use firmware_services::trace::frozen::Sink;
+#[cfg(feature = "cycling")]
+use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
 use firmware_services::trace::frozen::{
     FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record, RecordedBulk,
     RecordedEdges, Recorder,
 };
-#[cfg(feature = "cycling")]
-use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
 use firmware_services::trace::origin::{self, Config, Media, Memory};
 use firmware_services::trace::redact;
 use firmware_services::trace::spool::{self, Spool, Staging};
@@ -338,6 +338,7 @@ struct Trace {
     server: FrozenServer,
     start: Start,
     file: spool::File<Vec<u8>>,
+    spooling: bool,
 }
 
 /// What the device started from, for the trace's header: the settings and
@@ -419,6 +420,7 @@ impl Trace {
             start,
             recorder: RefCell::new(Recorder::new(buffer, Staged::default())),
             file: spool::File::Waiting,
+            spooling: false,
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]
@@ -445,18 +447,30 @@ impl Trace {
         self.recorder.borrow_mut().record(event);
     }
 
-    fn stage(&mut self, bulk: &crate::bulk::SimBulk) {
-        self.start.read_volumes(bulk);
+    /// From the first pass, as the C606 spools from power-on, when the
+    /// card holds a STORE its trace will stage for: the card does not
+    /// change while it is closed.
+    fn spool(&mut self, bulk: &crate::bulk::SimBulk) {
+        self.spooling = true;
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
-        self.file = spool::File::stage(&mut bulk.host(), &mut sector);
-        if let spool::File::Staging(..) = self.file {
+        let file: spool::File<Vec<u8>> = spool::File::stage(&mut bulk.host(), &mut sector);
+        if let spool::File::Staging(..) = file {
             self.recorder.borrow_mut().sink_mut().spool =
                 Some(Spool::new(vec![0u8; spool::RING_BYTES]));
         }
     }
 
-    fn drain(&mut self, bulk: &crate::bulk::SimBulk, admitted: bool, records: u32, now: u64) {
-        if admitted && matches!(self.file, spool::File::Waiting) {
+    fn stage(&mut self, bulk: &crate::bulk::SimBulk) {
+        self.start.read_volumes(bulk);
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        self.file = spool::File::stage(&mut bulk.host(), &mut sector);
+        if !matches!(self.file, spool::File::Staging(..)) {
+            self.recorder.borrow_mut().sink_mut().spool = None;
+        }
+    }
+
+    fn drain(&mut self, bulk: &crate::bulk::SimBulk, card: spool::Card, now: u64) {
+        if card != spool::Card::Closed && matches!(self.file, spool::File::Waiting) {
             self.stage(bulk);
         }
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
@@ -466,8 +480,7 @@ impl Trace {
         let passed = self.file.pass(
             &mut recorder,
             &mut bulk.host(),
-            admitted,
-            records,
+            card,
             header,
             now,
             &mut sector,
@@ -997,12 +1010,22 @@ impl Session {
                 }
             }
         }
-        self.trace.record(&Event::Pass { now_ms: self.now });
+        if !self.trace.spooling {
+            self.trace.spool(&self.bulk);
+        }
+        let quiet = self.quiet();
+        if quiet {
+            self.trace.recorder.borrow_mut().quiet_pass(self.now);
+        } else {
+            self.trace.record(&Event::Pass { now_ms: self.now });
+        }
         self.display.0.borrow_mut().refusals.begin_pass();
         self.power.0.borrow_mut().refusals.begin_pass();
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
-        self.pass();
+        if self.pass(quiet) {
+            return;
+        }
         if self.trace.start.journals.is_none() {
             #[cfg(feature = "cycling")]
             let journals = self
@@ -1018,20 +1041,15 @@ impl Session {
         if let Devices::Replayed(replay) = &mut self.devices {
             replay.saw(&seen);
         }
-        let admitted = self.card_admits();
         #[cfg(feature = "cycling")]
-        let riding = self.sdk.recording();
+        let card = spool::Card::of(
+            self.card_admits(),
+            self.sdk.recording(),
+            self.sdk.shutdown_due(),
+        );
         #[cfg(not(feature = "cycling"))]
-        let riding = false;
-        let records = if riding { 1 } else { spool::IDLE_RECORDS };
-        self.trace.drain(&self.bulk, admitted, records, self.now);
-        if self.off && matches!(&self.devices, Devices::Simulated(sim) if sim.battery.charging) {
-            self.start_charging().expect("memory media reopens");
-        }
-        #[cfg(feature = "cycling")]
-        if admitted && self.sdk.shutdown_due() {
-            self.trace.sync(&self.bulk, self.now);
-        }
+        let card = spool::Card::of(self.card_admits(), false, false);
+        self.trace.drain(&self.bulk, card, self.now);
     }
     /// Whether the card admits work after this pass, as the C606's power
     /// owner admits it: while work is ready or the companion starts, and
@@ -1086,26 +1104,43 @@ impl Session {
             Devices::Replayed(replay) => replay.sources.startup(),
         }
     }
-    fn pass(&mut self) {
+    /// A pass in dark charging standby, as the C606 runs it: only the
+    /// startup and power status are read, and only a change records it.
+    #[cfg(feature = "cycling")]
+    fn quiet(&self) -> bool {
+        self.trace.power.frozen().state == device_api::power::State::Charging
+            && self.sdk.standby_dark()
+    }
+    #[cfg(not(feature = "cycling"))]
+    fn quiet(&self) -> bool {
+        false
+    }
+    /// One pass; true when it stayed quiet.
+    fn pass(&mut self, quiet: bool) -> bool {
         let now = self.now;
-        let record = &self.trace.recorder;
-        let companion = match &self.devices {
-            Devices::Replayed(replay) => {
-                self.trace
-                    .companion
-                    .freeze(&replay.sources.companion, now, record)
+        let freeze_companion = |session: &mut Self| {
+            let record = &session.trace.recorder;
+            match &session.devices {
+                Devices::Replayed(replay) => {
+                    session
+                        .trace
+                        .companion
+                        .freeze(&replay.sources.companion, now, record)
+                }
+                Devices::Simulated(sim) => {
+                    session.trace.companion.freeze(&sim.battery, now, record)
+                }
             }
-            Devices::Simulated(sim) => self.trace.companion.freeze(&sim.battery, now, record),
         };
+        let companion = (!quiet).then(|| freeze_companion(self));
         if self.off {
-            return;
+            return false;
         }
         let startup = self.startup();
         let startup =
             self.trace
                 .startup
                 .observe(startup, now, &self.trace.recorder, Event::Startup);
-        self.power.0.borrow_mut().battery = firmware_services::trace::frozen::battery(&companion);
         let record = &self.trace.recorder;
         let power = match &mut self.devices {
             Devices::Simulated(sim) => {
@@ -1119,8 +1154,13 @@ impl Session {
         let Some(power) = power else {
             self.trace.record(&Event::PoweredOff);
             self.turn_off();
-            return;
+            return false;
         };
+        if quiet && power.state == device_api::power::State::Charging {
+            return true;
+        }
+        let companion = companion.unwrap_or_else(|| freeze_companion(self));
+        self.power.0.borrow_mut().battery = firmware_services::trace::frozen::battery(&companion);
         // C606 composition scans the ride journal while the companion starts
         // and runs the shell and VANA only once power work is ready; until
         // then the backlight stays dark.
@@ -1137,7 +1177,7 @@ impl Session {
             self.standby(companion);
         }
         if !power.ready {
-            return;
+            return false;
         }
         let record = &self.trace.recorder;
         self.trace.backlight.observe(
@@ -1165,6 +1205,7 @@ impl Session {
             self.shell.observe_position(&position, now);
             self.shell.present();
         }
+        false
     }
     #[cfg(feature = "cycling")]
     fn vana_pass(
@@ -1375,13 +1416,19 @@ impl Session {
         Ok(())
     }
     /// Advance device and world time together in 10 ms firmware passes.
+    /// Off on USB power, the companion starts the device again for
+    /// charging, and the rest of `ms` runs on the new session's clock.
     pub fn step(&mut self, ms: u64) {
-        let end = self.now + ms;
-        while self.now < end {
-            let step = (end - self.now).min(10);
+        let mut left = ms;
+        while left > 0 {
+            let step = left.min(10);
+            left -= step;
             self.now += step;
             self.sim_mut().world.advance(step);
             self.tick();
+            if self.off && self.sim().battery.charging {
+                self.start_charging().expect("the media reopens");
+            }
         }
     }
     pub fn advance(&mut self, ms: u64) -> Result<(), Error> {

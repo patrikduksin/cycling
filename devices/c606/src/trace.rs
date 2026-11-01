@@ -19,7 +19,7 @@ use firmware_services::trace::frozen::{
     FrozenServer, FrozenSound, Latest, Record, Recorder,
 };
 use firmware_services::trace::origin::{self, Config, Files, Media, Memory, Terrain};
-use firmware_services::trace::spool::{self, File, Spool, Spooled};
+use firmware_services::trace::spool::{self, Card, File, Spool, Spooled};
 use firmware_services::trace::{Event, redact};
 
 type Bytes = &'static mut [u8];
@@ -34,12 +34,12 @@ const RINGS: [usize; 3] = [
 ];
 const RESERVE: usize = 64 * 1024;
 const BLOCK: usize = 4096;
-const CUE: usize = 32;
+const CUE_NAME: usize = 32;
 
 #[derive(Clone, Copy, Default)]
 struct Note {
     pattern: u8,
-    cue: [u8; CUE],
+    cue: [u8; CUE_NAME],
     len: usize,
     note: u8,
     of: u8,
@@ -75,8 +75,7 @@ pub struct Trace {
     pub sound: FrozenSound,
     pub access_point: FrozenAccessPoint,
     pub server: FrozenServer,
-    pub shell: &'static firmware_services::trace::shell::ShellLog,
-    pub card: core::cell::Cell<u32>,
+    pub log: &'static firmware_services::trace::shell::PassLog,
     file: File<&'static [u8]>,
     start: Option<Start>,
     sector: [u8; device_api::bulk::SECTOR_SIZE],
@@ -90,7 +89,7 @@ impl Trace {
         boot: u32,
         settings: firmware_shell::preferences::Settings,
         memory: Memory,
-        shell: &'static firmware_services::trace::shell::ShellLog,
+        log: &'static firmware_services::trace::shell::PassLog,
     ) -> Self {
         let mut trace = Self {
             record: RefCell::new(None),
@@ -106,8 +105,7 @@ impl Trace {
             sound: FrozenSound::default(),
             access_point: FrozenAccessPoint::default(),
             server: FrozenServer::default(),
-            shell,
-            card: core::cell::Cell::new(0),
+            log,
             file: File::Waiting,
             start: None,
             sector: [0; device_api::bulk::SECTOR_SIZE],
@@ -153,6 +151,7 @@ impl Trace {
         Ok(())
     }
 
+    #[inline(never)]
     fn stage(&mut self, bulk: &mut impl ReadWrite) {
         self.file = File::stage(bulk, &mut self.sector);
         let (File::Staging(..), Some(start)) = (&self.file, &mut self.start) else {
@@ -171,6 +170,12 @@ impl Trace {
     /// The file is open: a STORE format would erase it.
     pub fn open(&self) -> bool {
         self.file.is_open()
+    }
+
+    pub fn quiet_pass(&self, now: u64) {
+        if let Some(recorder) = self.record.borrow_mut().as_mut() {
+            recorder.quiet_pass(now);
+        }
     }
 
     pub fn record(&self, event: &Event<'_>) {
@@ -205,8 +210,8 @@ impl Trace {
                 note,
                 of,
             } => {
-                let len = cue.len().min(CUE);
-                let mut name = [0u8; CUE];
+                let len = cue.len().min(CUE_NAME);
+                let mut name = [0u8; CUE_NAME];
                 name[..len].copy_from_slice(&cue.as_bytes()[..len]);
                 heard = Some(Note {
                     pattern,
@@ -238,28 +243,20 @@ impl Trace {
         });
     }
 
-    /// This pass's share of the spool to the trace file while the card
-    /// admits work (`admitted`): one record while a ride records (`riding`),
-    /// up to `spool::IDLE_RECORDS` otherwise, and everything when VANA asks
-    /// to turn off in the next pass (`shutdown_due`).
+    /// This pass's share of the spool to the trace file, as `card` allows;
+    /// staging waits for the first pass the card is open.
     pub fn drain(
         &mut self,
         bulk: &mut impl ReadWrite,
         journals: Option<vana::app::Journals>,
-        admitted: bool,
-        riding: bool,
-        shutdown_due: bool,
+        card: Card,
         now: u64,
     ) {
-        if !admitted || self.record.get_mut().is_none() {
+        if card == Card::Closed || self.record.get_mut().is_none() {
             return;
         }
         if let File::Waiting = self.file {
             self.stage(bulk);
-        }
-        if shutdown_due {
-            self.sync(bulk, now);
-            return;
         }
         let Some(recorder) = self.record.get_mut() else {
             return;
@@ -272,10 +269,9 @@ impl Trace {
             let boot = start.boot;
             Some((start.header(journals)?, boot))
         };
-        let records = if riding { 1 } else { spool::IDLE_RECORDS };
         let passed = self
             .file
-            .pass(recorder, bulk, true, records, header, now, &mut self.sector);
+            .pass(recorder, bulk, card, header, now, &mut self.sector);
         if let File::Open(_, _, drain) = &self.file
             && opening
         {
@@ -290,6 +286,9 @@ impl Trace {
         let Some(recorder) = self.record.get_mut() else {
             return;
         };
+        if device::capabilities::power::ACCESS.closed() {
+            return;
+        }
         let synced = self.file.sync(recorder, bulk, now, &mut self.sector);
         self.ended(synced);
     }

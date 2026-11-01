@@ -506,7 +506,10 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
         Ok(decoded) => decoded,
         Err(error) => return Some(format!("the replayed trace does not decode: {error:?}")),
     };
+    let unknown = |build: &[u8; 20]| *build == [0; 20];
     let stamped = header.build == replayed_header.build
+        || unknown(&header.build)
+        || unknown(&replayed_header.build)
         || trace::origin::same_build(&header.build, &replayed_header.build);
     let unstamped = trace::Header {
         build: replayed_header.build,
@@ -517,7 +520,7 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     }
     let logged = |event: &Event<'_>| matches!(event, Event::Log { .. });
     let (mut pass, mut read) = (0, 0);
-    for (index, event) in events.by_ref().filter(|e| !logged(e)).enumerate() {
+    for (index, event) in events.by_ref().enumerate().filter(|(_, e)| !logged(e)) {
         if let Event::Pass { now_ms } = event {
             pass = now_ms;
         }

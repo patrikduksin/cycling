@@ -50,15 +50,29 @@ and leave about 260 MiB unallocated. Only the owner adds `STORE`, with
 2. It adds one extent, `STORE`, from the 1 MiB boundary after the last volume
    to the end of the region, and increments the generation. No other extent
    moves or changes.
-3. It writes the new table to copy 1, then to copy 0. A power cut leaves the
+3. It reads the two store header sectors of `STORE` (volume sectors 0 and
+   32). If neither one holds the store magic, the volume is blank. If one
+   holds the magic but no header is valid, the reply is `CORRUPT`. If a
+   header is from another store version or geometry, the reply is `FOREIGN`. In both
+   cases the command writes nothing, not even the table.
+4. It writes the new table to copy 1, then to copy 0. A power cut leaves the
    old table or the new one.
-4. It formats an empty store in `STORE` if the volume holds none. A store
-   that exists is kept.
+5. It formats an empty store in a blank volume. A store that exists is kept.
+
+A blank volume is defined by the magic, not by zero bytes. Sectors that
+were never written can hold stale bytes of an old filesystem, as the
+simulator and the test media model them, or read as zeros or 0xFF when
+erased. None of these hold the magic. The format writes its header first without the magic and then
+complete. A power cut tears a sector into new and old bytes, so a torn
+header is either complete or has no magic. A format that a cut stopped is
+therefore still blank, never `CORRUPT`.
 
 The command is idempotent. Run it again after a power cut: it writes the new
 table only to a copy that does not hold it yet, then formats the store if
-needed. A table that already has `STORE`, such as one from `VOLUME INIT`,
-only gets its store formatted.
+the volume is still blank. A table that already has `STORE`, such as one from
+`VOLUME INIT`, only gets its store formatted. The property test in
+`packages/services/src/volume/tests.rs` cuts power at every write of the
+migration.
 
 ### Rolling back after the migration
 

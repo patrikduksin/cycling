@@ -163,22 +163,13 @@ pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Writ
         Command::Status | Command::Init | Command::AddStore => {
             let found = match command {
                 Command::Init => volume::create(media, &mut sector).map(Layout::Table),
-                Command::AddStore => volume::add_store(media, &mut sector).map(Layout::Table),
+                Command::AddStore => match volume::add_store(media, &mut sector) {
+                    Ok(table) => Ok(Layout::Table(table)),
+                    Err(volume::AddStoreError::Table(e)) => Err(e),
+                    Err(volume::AddStoreError::Store(e)) => return store_status(e),
+                },
                 _ => volume::read(media, &mut sector),
             };
-            if command == Command::AddStore && found.is_ok() {
-                let mut vol = match volume::open(media, &volume::STORE, &mut sector) {
-                    Ok(v) => v,
-                    Err(e) => return volume_status(e),
-                };
-                let formatted = match store::mount(&mut vol, &mut sector) {
-                    Err(store::Error::Uninitialized) => store::format(&mut vol, 0, &mut sector),
-                    mounted => mounted,
-                };
-                if let Err(e) = formatted {
-                    return store_status(e);
-                }
-            }
             let region = match media.owned_info() {
                 Ok(info) => info.sectors,
                 Err(e) => return media_status(e),

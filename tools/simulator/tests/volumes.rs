@@ -231,6 +231,26 @@ fn the_owner_adds_store_to_a_table_from_before_it_and_rides_and_files_stay() {
     assert_eq!(field(&sim.command("STORE STATUS").1, "state"), "ready");
 }
 
+#[test]
+fn adding_store_over_a_damaged_store_reports_it_and_writes_nothing() {
+    use device_api::bulk::ReadWrite;
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    sim.init_volumes();
+    table_before_store(&mut sim);
+    // The store's magic in its first header sector, without a valid CRC.
+    let mut header = [0u8; 512];
+    header[..16].copy_from_slice(firmware_services::store::MAGIC);
+    sim.device.bulk.owned_write(5_244_928, &header).unwrap();
+    let mut sim = sim.boot();
+    let writes = sim.device.bulk.writes();
+    let (status, _) = sim.command("VOLUME ADD STORE");
+    assert_eq!(status, "CORRUPT");
+    assert_eq!(sim.device.bulk.writes(), writes, "nothing written");
+    let (_, volumes) = sim.command("VOLUME STATUS");
+    assert_eq!(field(&volumes, "generation"), "1", "{volumes}");
+}
+
 /// What a recorder of a later phase does: append to a trace in `traces/`.
 #[test]
 fn a_trace_appended_to_the_store_reads_back_after_a_power_loss() {

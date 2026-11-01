@@ -17,7 +17,8 @@
 //! The default plan ends with `STORE`, which takes the rest of the region. A
 //! table written before `STORE` existed gains it only through [`add_store`],
 //! an explicit migration that adds that one extent in the unallocated tail
-//! as a new generation and leaves every existing extent as it was.
+//! as a new generation and leaves every existing extent as it was. It formats
+//! an empty store there only when the volume never held one.
 //!
 //! A volume is its name; the mechanism inside checks its own format. Byte 8
 //! of an entry was once a kind code, and readers from before `STORE` reject a
@@ -27,6 +28,7 @@
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
+use crate::store::Error as StoreError;
 use device_api::bulk::{Error as MediaError, OwnedInfo, ReadWrite, SECTOR_SIZE};
 
 pub type Sector = [u8; SECTOR_SIZE];
@@ -356,25 +358,65 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
     Ok(table)
 }
 
-/// Add STORE over the unallocated tail of the current table: the one
-/// migration a table from before STORE needs. The table with one more
-/// extent and the next generation goes to copy 1, then copy 0, so a cut
-/// leaves the old table or the new one; no existing extent moves or changes.
-/// Running it again converges: a table that has STORE is written only to a
-/// copy that does not hold it yet, so an interrupted migration completes.
-/// Without a table (blank, legacy or lost) it fails with `Missing`; a foreign
-/// table is `Foreign`. Neither writes anything.
-pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, Error> {
+/// Why [`add_store`] stopped. It writes nothing for any of these but a
+/// media error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddStoreError {
+    /// No table (blank, legacy or lost: `Missing`), a foreign one, or no
+    /// room for STORE.
+    Table(Error),
+    /// The STORE volume holds neither a store nor nothing: corrupt or foreign
+    /// metadata is never formatted over.
+    Store(StoreError),
+}
+
+impl From<Error> for AddStoreError {
+    fn from(error: Error) -> Self {
+        Self::Table(error)
+    }
+}
+
+impl From<MediaError> for AddStoreError {
+    fn from(error: MediaError) -> Self {
+        Self::Table(Error::Media(error))
+    }
+}
+
+impl From<StoreError> for AddStoreError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+/// Add STORE and an empty store in it: the one migration a table from before
+/// STORE needs. STORE takes the unallocated tail as one more extent in the
+/// next generation; no existing extent moves or changes. The volume must
+/// hold a store or be blank ([`StoreError::Uninitialized`]), or nothing is
+/// written. The table goes to copy 1, then copy 0, so a cut leaves the old
+/// table or the new one, and a blank volume is formatted last. Running it
+/// again converges: a table that has STORE is written only to a copy that
+/// does not hold it yet, and a store that exists is kept.
+pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, AddStoreError> {
     let mut table = match read(media, sector)? {
         Layout::Table(table) => table,
-        Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing),
+        Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing.into()),
     };
-    if table.find(&STORE).is_none() {
-        let store = table.store_extent(media.owned_info()?.sectors);
-        let slot = table.volumes.iter_mut().find(|v| v.is_none());
-        *slot.ok_or(Error::Small)? = Some(store.ok_or(Error::Small)?);
-        table.generation += 1;
-    }
+    let store = match table.find(&STORE) {
+        Some(store) => store,
+        None => {
+            let store = table.store_extent(media.owned_info()?.sectors);
+            let store = store.ok_or(Error::Small)?;
+            let slot = table.volumes.iter_mut().find(|v| v.is_none());
+            *slot.ok_or(Error::Small)? = Some(store);
+            table.generation += 1;
+            store
+        }
+    };
+    let blank = match crate::store::mount(&mut Volume::new(media, store), sector) {
+        Ok(_) => false,
+        Err(StoreError::Uninitialized) => true,
+        Err(error) => return Err(error.into()),
+    };
     let mut copy = [0u8; SECTOR_SIZE];
     table.encode(sector);
     for index in [1, 0] {
@@ -382,6 +424,9 @@ pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Tabl
         if copy != *sector {
             media.owned_write(index, sector)?;
         }
+    }
+    if blank {
+        crate::store::format(&mut Volume::new(media, store), 0, sector)?;
     }
     Ok(table)
 }

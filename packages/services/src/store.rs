@@ -102,11 +102,14 @@ const _: () = assert!(CRCS + 4 * BODY <= CRC && CAPACITY < u16::MAX as usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Media(MediaError),
-    /// No metadata: the volume was never formatted as a store.
+    /// Neither header sector carries [`MAGIC`]: the volume never held a
+    /// store. Never-written sectors read as zeros, 0xFF or the stale bytes
+    /// of an earlier filesystem, and none of them carry it.
     Uninitialized,
     /// Metadata of another version or geometry. Never overwritten.
     Foreign,
-    /// The metadata or a full chunk does not match its checks.
+    /// The metadata or a full chunk does not match its checks, or a header
+    /// carries the magic but no copy is valid.
     Corrupt,
     /// Not a name or directory: see [`Name`] and [`Dir`].
     Name,
@@ -255,13 +258,18 @@ impl Header {
 enum Replica {
     Ours(Header),
     Foreign,
-    Invalid,
+    /// The magic without a valid CRC.
+    Damaged,
+    Absent,
 }
 
 /// A header copy, for a volume with `data` sectors after `DATA`.
 fn decode(sector: &Sector, data: u64) -> Replica {
-    if sector[..16] != MAGIC[..] || get_u32(sector, CRC) != crc32(&sector[..CRC]) {
-        return Replica::Invalid;
+    if sector[..16] != MAGIC[..] {
+        return Replica::Absent;
+    }
+    if get_u32(sector, CRC) != crc32(&sector[..CRC]) {
+        return Replica::Damaged;
     }
     let mut head = Header {
         id: get_u64(sector, 24),
@@ -294,31 +302,37 @@ fn decode(sector: &Sector, data: u64) -> Replica {
     Replica::Ours(head)
 }
 
-fn headers(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<[Option<Header>; 2], Error> {
+/// The valid header copies, and whether any copy is damaged.
+fn headers(
+    media: &mut impl ReadWrite,
+    sector: &mut Sector,
+) -> Result<([Option<Header>; 2], bool), Error> {
     let data = media
         .owned_info()?
         .sectors
         .checked_sub(DATA)
         .ok_or(Error::Range)?;
-    let mut copies = [None, None];
+    let (mut copies, mut damaged) = ([None, None], false);
     for (copy, slot) in copies.iter_mut().enumerate() {
         media.owned_read(base(copy as u64), sector)?;
         match decode(sector, data) {
             Replica::Ours(head) => *slot = Some(head),
             Replica::Foreign => return Err(Error::Foreign),
-            Replica::Invalid => {}
+            Replica::Damaged => damaged = true,
+            Replica::Absent => {}
         }
     }
-    Ok(copies)
+    Ok((copies, damaged))
 }
 
 /// The current metadata of the store in `media`.
 pub fn mount(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Store, Error> {
-    let [a, b] = headers(media, sector)?;
+    let ([a, b], damaged) = headers(media, sector)?;
     let (copy, head, other) = match (a, b) {
         (Some(a), Some(b)) if b.generation > a.generation => (1, b, Some(a)),
         (Some(a), b) => (0, a, b),
         (None, Some(b)) => (1, b, None),
+        (None, None) if damaged => return Err(Error::Corrupt),
         (None, None) => return Err(Error::Uninitialized),
     };
     let other = other
@@ -352,7 +366,7 @@ fn format_chunks(
     chunk: u32,
     sector: &mut Sector,
 ) -> Result<Store, Error> {
-    let copies = headers(media, sector)?;
+    let (copies, _) = headers(media, sector)?;
     let data = media.owned_info()?.sectors - DATA;
     let chunks = (data / u64::from(chunk)).min(MAX_CHUNKS as u64) as u32;
     if chunks == 0 {
@@ -375,11 +389,20 @@ fn format_chunks(
         chunk,
         crcs: [0; BODY],
     };
+    // A cut tears a sector into new and old bytes. The header goes out first
+    // without its magic and then whole, so a torn header is the whole one or
+    // has no magic: a store that never had a valid header still reads as
+    // `Uninitialized`, never `Corrupt`. The body is zeros, so its CRCs are
+    // known before it is written.
     sector.fill(0);
+    let body = head.body();
+    head.crcs[..body].fill(crc32(sector));
+    head.encode(sector);
+    sector[..MAGIC.len()].fill(0);
     media.owned_write(base(copy), sector)?;
-    for k in 0..head.body() {
+    sector.fill(0);
+    for k in 0..body {
         media.owned_write(base(copy) + 1 + k as u64, sector)?;
-        head.crcs[k] = crc32(sector);
     }
     head.encode(sector);
     media.owned_write(base(copy), sector)?;

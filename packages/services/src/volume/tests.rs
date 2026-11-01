@@ -1,6 +1,10 @@
 use super::*;
 use crate::sector_log::{self, Recovery, Step};
+use crate::store;
 use crate::testing::{Media, Tear};
+use std::collections::BTreeMap;
+use std::string::{String, ToString};
+use std::vec;
 use std::vec::Vec;
 
 const C606: u64 = 5_777_407;
@@ -63,6 +67,26 @@ fn fill_volumes(media: &mut Media) {
     media.set(terrain.start, [0x7e; SECTOR_SIZE]);
 }
 
+/// The names of the files in the STORE volume's store.
+fn store_files(media: &mut Media) -> Result<Vec<String>, store::Error> {
+    let mut s = sector();
+    let mut volume = open(media, &STORE, &mut s).unwrap();
+    let mounted = store::mount(&mut volume, &mut s)?;
+    let mut names = Vec::new();
+    mounted.list(&mut volume, &store::Dir::ROOT, &mut s, |e| {
+        names.push(e.name.as_str().to_string());
+    })?;
+    Ok(names)
+}
+
+/// The written sectors outside the table and the STORE volume.
+fn outside_store(media: &Media) -> BTreeMap<u64, Sector> {
+    let store = plan(C606).unwrap().find(&STORE).unwrap();
+    let mut sectors = media.written.clone();
+    sectors.retain(|at, _| *at >= TABLE && *at < store.start);
+    sectors
+}
+
 #[test]
 fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
     let mut media = Media::new(C606);
@@ -73,11 +97,18 @@ fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
     assert_eq!(open(&mut media, &STORE, &mut s).err(), Some(Error::Missing));
     // Opening volumes and initializing never add it.
     assert_eq!(create(&mut media, &mut s), Ok(old));
-    let before = media.written.clone();
+    let before = outside_store(&media);
     let writes = media.writes;
 
     let migrated = add_store(&mut media, &mut s).unwrap();
-    assert_eq!(media.writes - writes, 2, "both table copies, nothing else");
+    let format = (store::DIR_SECTORS + 9 + 2) as u64;
+    assert_eq!(
+        media.writes - writes,
+        2 + format,
+        "both table copies and a store"
+    );
+    assert_eq!(outside_store(&media), before, "no other volume changed");
+    assert_eq!(store_files(&mut media), Ok(Vec::new()));
     assert_eq!(migrated.generation, old.generation + 1);
     assert_eq!(migrated.planned, old.planned);
     for volume in old.volumes() {
@@ -94,11 +125,6 @@ fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
         migrated,
         plan(C606).map(|t| Table { generation: 2, ..t }).unwrap()
     );
-    for (at, bytes) in &before {
-        if *at >= TABLE {
-            assert_eq!(media.get(*at), *bytes, "sector {at} changed");
-        }
-    }
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(migrated)));
     let mut rides = open(&mut media, &RIDES, &mut s).unwrap();
     let mut recovery = Recovery::new(TAG, 32);
@@ -117,34 +143,51 @@ fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
     let volume = open(&mut media, &STORE, &mut s).unwrap();
     assert_eq!(volume.extent(), store);
 
-    // Already migrated: nothing to write, the same table.
+    // Already migrated: nothing to write, the same table, the files kept.
+    let mut volume = open(&mut media, &STORE, &mut s).unwrap();
+    let mut mounted = store::mount(&mut volume, &mut s).unwrap();
+    let trace = store::Name::new("traces/1").unwrap();
+    mounted.create(&mut volume, &trace, None, &mut s).unwrap();
     let writes = media.writes;
     assert_eq!(add_store(&mut media, &mut s), Ok(migrated));
     assert_eq!(media.writes, writes);
-    // A fresh table already has it.
+    assert_eq!(store_files(&mut media), Ok(vec!["traces/1".to_string()]));
+    // A fresh table has STORE and only needs the store.
     let mut fresh = Media::new(C606);
     let table = create(&mut fresh, &mut s).unwrap();
+    assert_eq!(store_files(&mut fresh), Err(store::Error::Uninitialized));
     let writes = fresh.writes;
     assert_eq!(add_store(&mut fresh, &mut s), Ok(table));
-    assert_eq!(fresh.writes, writes);
+    assert_eq!(fresh.writes - writes, format);
+    assert_eq!(store_files(&mut fresh), Ok(Vec::new()));
 }
 
 #[test]
-fn a_cut_while_adding_store_leaves_the_old_or_new_table_and_running_again_completes_it() {
-    for at in 0..2 {
-        for tear in [Tear::Old, Tear::Prefix(100), Tear::Prefix(511), Tear::New] {
+fn a_cut_anywhere_in_adding_store_leaves_old_or_new_data_and_running_again_completes_it() {
+    let new = Table {
+        generation: 2,
+        ..plan(C606).unwrap()
+    };
+    // Two table copies, then the store's header, body and header again.
+    let writes = 2 + (store::DIR_SECTORS + 9 + 2) as u64;
+    let tears = [
+        Tear::Old,
+        Tear::Prefix(8),
+        Tear::Prefix(16),
+        Tear::Prefix(100),
+        Tear::Prefix(511),
+        Tear::New,
+    ];
+    for at in 0..writes {
+        for tear in tears {
             let mut media = Media::new(C606);
             let mut s = sector();
             let old = table_before_store(&mut media);
             fill_volumes(&mut media);
-            let before = media.written.clone();
+            let before = outside_store(&media);
             media.cut = Some((at, tear));
             assert!(add_store(&mut media, &mut s).is_err());
             media.reboot();
-            let new = Table {
-                generation: 2,
-                ..plan(C606).unwrap()
-            };
             match read(&mut media, &mut s) {
                 Ok(Layout::Table(table)) => assert!(
                     table == old || table == new,
@@ -152,14 +195,24 @@ fn a_cut_while_adding_store_leaves_the_old_or_new_table_and_running_again_comple
                 ),
                 other => panic!("cut at {at} {tear:?}: {other:?}"),
             }
-            assert_eq!(add_store(&mut media, &mut s), Ok(new));
-            assert_eq!(media.get(0), media.get(1), "both copies hold it");
-            assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(new)));
-            for (sector, bytes) in &before {
-                if *sector >= TABLE {
-                    assert_eq!(media.get(*sector), *bytes);
+            if read(&mut media, &mut s) == Ok(Layout::Table(new)) {
+                match store_files(&mut media) {
+                    Ok(files) => assert!(files.is_empty()),
+                    Err(error) => assert_eq!(
+                        error,
+                        store::Error::Uninitialized,
+                        "cut at {at} {tear:?}: a half-formatted store is blank, not corrupt"
+                    ),
                 }
             }
+            assert_eq!(
+                add_store(&mut media, &mut s),
+                Ok(new),
+                "cut at {at} {tear:?}"
+            );
+            assert_eq!(media.get(0), media.get(1), "both copies hold it");
+            assert_eq!(store_files(&mut media), Ok(Vec::new()));
+            assert_eq!(outside_store(&media), before);
         }
     }
 }
@@ -169,13 +222,13 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     let mut s = sector();
     // Blank.
     let mut media = Media::new(C606);
-    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
     assert_eq!(media.writes, 0);
     // The ride log from before volumes.
     let mut log = sector_log::format(&mut media, TAG, 7, b"catalog", &mut s).unwrap();
     log.append(&mut media, b"old test ride", &mut s).unwrap();
     let writes = media.writes;
-    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Legacy));
     assert_eq!(media.writes, writes);
     // A lost table over a ride log.
@@ -185,7 +238,7 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     media.set(0, [0xa5; SECTOR_SIZE]);
     media.set(1, [0; SECTOR_SIZE]);
     let writes = media.writes;
-    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing.into()));
     assert_eq!(read(&mut media, &mut s), Ok(Layout::Lost));
     assert_eq!(media.writes, writes);
     // A foreign table.
@@ -197,14 +250,74 @@ fn without_a_table_this_version_understands_adding_store_writes_nothing() {
     let checksum = crc32(&newer[..CRC]);
     newer[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(0, newer);
-    assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign));
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign.into()));
     assert_eq!(media.writes, 0);
     // No room: small media give rides everything.
     let mut small = Media::new(100);
     create(&mut small, &mut s).unwrap();
     let writes = small.writes;
-    assert_eq!(add_store(&mut small, &mut s), Err(Error::Small));
+    assert_eq!(add_store(&mut small, &mut s), Err(Error::Small.into()));
     assert_eq!(small.writes, writes);
+}
+
+#[test]
+fn adding_store_formats_only_a_volume_that_never_held_a_store() {
+    let store = plan(C606).unwrap().find(&STORE).unwrap();
+    let copy_b = store.start + store::COPY_B;
+    // What never-written sectors read as: an earlier filesystem's bytes
+    // (`Media` returns those), or an erased medium's zeros or 0xFF.
+    for fill in [None, Some(0x00), Some(0xff)] {
+        let mut media = Media::new(C606);
+        let mut s = sector();
+        table_before_store(&mut media);
+        if let Some(byte) = fill {
+            for at in store.start..store.start + store::DATA {
+                media.set(at, [byte; SECTOR_SIZE]);
+            }
+        }
+        add_store(&mut media, &mut s).unwrap();
+        assert_eq!(store_files(&mut media), Ok(Vec::new()), "{fill:?}");
+    }
+    // A header with the store's magic and no valid copy is a damaged store:
+    // reported, and neither the table nor the volume is written.
+    let mut good = Media::new(C606);
+    let mut s = sector();
+    create(&mut good, &mut s).unwrap();
+    add_store(&mut good, &mut s).unwrap();
+    let header = good.get(store.start);
+    let mut damaged = header;
+    damaged[100] ^= 1;
+    for (a, b) in [(damaged, [0; SECTOR_SIZE]), ([0; SECTOR_SIZE], damaged)] {
+        for migrated in [false, true] {
+            let mut media = Media::new(C606);
+            if migrated {
+                create(&mut media, &mut s).unwrap();
+            } else {
+                table_before_store(&mut media);
+            }
+            media.set(store.start, a);
+            media.set(copy_b, b);
+            let writes = media.writes;
+            assert_eq!(
+                add_store(&mut media, &mut s),
+                Err(AddStoreError::Store(store::Error::Corrupt))
+            );
+            assert_eq!(media.writes, writes, "nothing written");
+        }
+    }
+    // A store of another version is foreign and kept too.
+    let mut media = Media::new(C606);
+    table_before_store(&mut media);
+    let mut newer = header;
+    newer[16] = 2;
+    let checksum = crc32(&newer[..CRC]);
+    newer[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(store.start, newer);
+    assert_eq!(
+        add_store(&mut media, &mut s),
+        Err(AddStoreError::Store(store::Error::Foreign))
+    );
+    assert_eq!(media.writes, 0);
 }
 
 /// The table decoder of the last firmware before STORE (`main` at ee97abe,

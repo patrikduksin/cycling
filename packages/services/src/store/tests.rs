@@ -492,6 +492,25 @@ fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
 }
 
 #[test]
+fn only_a_volume_without_the_magic_is_uninitialized() {
+    let mut s = sector();
+    for fill in [None, Some(0x00), Some(0xff)] {
+        let mut media = Media::new(DATA + 64);
+        if let Some(byte) = fill {
+            media.set(0, [byte; SECTOR_SIZE]);
+            media.set(COPY_B, [byte; SECTOR_SIZE]);
+        }
+        assert_eq!(mount(&mut media, &mut s).err(), Some(Error::Uninitialized));
+    }
+    let mut media = formatted(8, 8);
+    let store = mount(&mut media, &mut s).unwrap();
+    let mut damaged = media.get(base(store.copy));
+    damaged[100] ^= 1;
+    media.set(base(store.copy), damaged);
+    assert_eq!(mount(&mut media, &mut s).err(), Some(Error::Corrupt));
+}
+
+#[test]
 fn a_missing_record_inside_a_file_is_corrupt_not_its_end() {
     let mut media = formatted(4, 2);
     let mut s = sector();

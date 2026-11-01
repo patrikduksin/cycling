@@ -7739,7 +7739,9 @@ fn assert_replays_exactly_after(
     let mut replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    if let Some(difference) = first_difference(&capture.trace, &replayed.trace()) {
+    if let Some(difference) =
+        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace())
+    {
         panic!("the replay read or showed something else: {difference}");
     }
     let (frames, replayed_frames) = (recorded.frame_hashes(), replayed.frame_hashes());
@@ -7771,32 +7773,6 @@ fn assert_replays_exactly_after(
     );
     assert_eq!(samples(&mut replayed, bulk), rides);
     capture
-}
-
-/// The first event where two traces part, with the pass it belongs to.
-fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
-    use firmware_services::trace::{End, Event, decode};
-    let (header, mut events) = decode(recorded).expect("the recorded trace decodes");
-    let (replayed_header, mut replayed_events) = decode(replayed).expect("the replay's decodes");
-    if header != replayed_header {
-        return Some(format!("header {header:?}, replayed {replayed_header:?}"));
-    }
-    let mut pass = 0;
-    for (index, event) in events.by_ref().enumerate() {
-        if let Event::Pass { now_ms } = event {
-            pass = now_ms;
-        }
-        let other = replayed_events.next();
-        if other != Some(event) {
-            return Some(format!(
-                "event {index}, pass at {pass} ms: recorded {event:?}, replayed {other:?}"
-            ));
-        }
-    }
-    assert_eq!(events.end(), Some(End::Complete));
-    replayed_events
-        .next()
-        .map(|extra| format!("the replay went on with {extra:?}"))
 }
 
 /// Trace bytes per minute of uptime, and which events take them.
@@ -8246,5 +8222,421 @@ fn a_ride_ended_by_turning_off_replays_exactly() {
         (asked, off),
         (1, 1),
         "one shutdown asked, then the power went"
+    );
+}
+
+/// Mutation tests: drop or alter one event of a kind in a recorded trace,
+/// replay it strictly, and require the change to show. It shows in the
+/// replay's own report, in what the rider saw or what was saved, or, for an
+/// input whose effect heals (a page whose running totals catch up), in the
+/// values VANA was handed: the trace the replay records again differs from
+/// the original wherever a value reached VANA from somewhere else.
+mod mutations {
+    use super::*;
+    use firmware_services::trace::frozen::{Record, Recorder};
+    use firmware_services::trace::{Event, Header, decode};
+    use shell_simulator::replay::{Blocks, Capture, first_difference};
+
+    pub struct Recording {
+        capture: Capture,
+        pub trace: &'static [u8],
+        frames: Vec<u64>,
+        media: Vec<u8>,
+    }
+
+    pub fn record(sim: Sim, scenario: fn(&mut Sim)) -> Recording {
+        let mut sim = sim;
+        scenario(&mut sim);
+        let capture = sim.capture();
+        Recording {
+            trace: Vec::leak(capture.trace.clone()),
+            frames: sim.frame_hashes(),
+            media: sim.ride_media(),
+            capture,
+        }
+    }
+
+    /// The event's kind, as its debug form names it.
+    pub fn kind(event: &Event<'_>) -> String {
+        let debug = format!("{event:?}");
+        debug
+            .split([' ', '(', '{'])
+            .next()
+            .unwrap_or_default()
+            .into()
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mutation {
+        Drop,
+        Alter,
+    }
+
+    /// One value VANA would read differently.
+    fn altered(event: Event<'static>) -> Option<Event<'static>> {
+        use device_api::observation::{Error, Observation};
+        let flip = |result: Result<(), Error>| match result {
+            Ok(()) => Err(Error::Failed),
+            Err(_) => Ok(()),
+        };
+        Some(match event {
+            Event::Input(mut edge) => {
+                edge.input = match edge.input {
+                    device_api::input::Input::Button { button, code } => {
+                        device_api::input::Input::Button {
+                            button: if button == Button::TopLeft {
+                                Button::BottomRight
+                            } else {
+                                Button::TopLeft
+                            },
+                            code,
+                        }
+                    }
+                    _ => device_api::input::Input::Cancel,
+                };
+                Event::Input(edge)
+            }
+            Event::AntPacket(mut packet) => {
+                packet.data[7] = packet.data[7].wrapping_add(40);
+                Event::AntPacket(packet)
+            }
+            Event::AntRequest { operation, result } => Event::AntRequest {
+                operation,
+                result: match result {
+                    Ok(_) => Err(device_api::ant::Error::Busy),
+                    Err(_) => Ok(device_api::ant::Admission::Accepted),
+                },
+            },
+            Event::BlePacket(mut packet) => {
+                packet.bytes[1] = packet.bytes[1].wrapping_add(40);
+                Event::BlePacket(packet)
+            }
+            Event::Physical(mut snapshot) => {
+                if let Observation::Fresh { value, .. } = &mut snapshot.pressure {
+                    value.pressure_centi_pa -= 50_000;
+                }
+                Event::Physical(snapshot)
+            }
+            Event::Power(Some(mut snapshot)) => {
+                if let Observation::Fresh { value, .. } = &mut snapshot.power {
+                    *value = if *value == 0 { 7 } else { 0 };
+                }
+                Event::Power(Some(snapshot))
+            }
+            Event::Position {
+                availability,
+                snapshot: Some(mut snapshot),
+            } => {
+                snapshot.gps.latitude_e7 = snapshot.gps.latitude_e7.map(|lat| lat + 100_000);
+                Event::Position {
+                    availability,
+                    snapshot: Some(snapshot),
+                }
+            }
+            Event::NetworkTime(mut time) => {
+                time.unix_seconds = time.unix_seconds.map(|seconds| seconds + 7 * 3_600);
+                Event::NetworkTime(time)
+            }
+            Event::Entropy(value) => Event::Entropy(value ^ 0xffff),
+            Event::StorageFault(mut fault) => {
+                use firmware_services::trace::StorageError;
+                match fault.landed {
+                    0 => {
+                        fault.error = match fault.error {
+                            StorageError::Unsupported => StorageError::Unavailable,
+                            _ => StorageError::Unsupported,
+                        }
+                    }
+                    landed => fault.landed = landed - 5,
+                }
+                Event::StorageFault(fault)
+            }
+            Event::Refused { output, attempt } => Event::Refused {
+                output,
+                attempt: attempt + 1,
+            },
+            Event::SoundRequest { play, result } => Event::SoundRequest {
+                play,
+                result: flip(result),
+            },
+            Event::PowerRequest {
+                operation,
+                delay_ms,
+                result,
+            } => Event::PowerRequest {
+                operation,
+                delay_ms,
+                result: flip(result),
+            },
+            Event::AccessPointRequest { start, result } => Event::AccessPointRequest {
+                start,
+                result: flip(result),
+            },
+            Event::ServerRead { id, part, more } if !part.is_empty() => {
+                let mut changed = part.to_vec();
+                changed[0] ^= 0x20;
+                Event::ServerRead {
+                    id,
+                    part: Vec::leak(changed),
+                    more,
+                }
+            }
+            Event::ServerWrite { id, taken } => Event::ServerWrite {
+                id,
+                taken: taken.saturating_sub(1),
+            },
+            _ => return None,
+        })
+    }
+
+    fn encode(header: &Header<'_>, events: impl IntoIterator<Item = Event<'static>>) -> Vec<u8> {
+        let buffer = vec![0u8; 4096].into_boxed_slice();
+        let mut recorder = Recorder::new(header, buffer, Blocks::default()).unwrap();
+        for event in events {
+            recorder.record(&event);
+        }
+        let mut bytes = recorder.sink().0.clone();
+        bytes.extend_from_slice(recorder.open_block());
+        bytes
+    }
+
+    /// The trace with the middle event of `kind` mutated; `None` when the
+    /// trace has no such event or it cannot be altered.
+    pub fn mutated(trace: &'static [u8], kind: &str, how: Mutation) -> Option<Vec<u8>> {
+        let (header, events) = decode(trace).unwrap();
+        let mut events: Vec<Event<'static>> = events.collect();
+        let of_kind: Vec<usize> = (0..events.len())
+            .filter(|&index| self::kind(&events[index]) == kind)
+            .collect();
+        let at = *of_kind.get(of_kind.len() / 2)?;
+        match how {
+            Mutation::Drop => {
+                events.remove(at);
+            }
+            Mutation::Alter => {
+                let changed = altered(events[at]).filter(|changed| *changed != events[at])?;
+                events[at] = changed;
+            }
+        }
+        Some(encode(&header, events))
+    }
+
+    /// A marker that a record was too large, among the first pass's events.
+    pub fn with_too_large(trace: &'static [u8]) -> Vec<u8> {
+        let (header, events) = decode(trace).unwrap();
+        let mut events: Vec<Event<'static>> = events.collect();
+        let second = events
+            .iter()
+            .position(|event| matches!(event, Event::Pass { .. }))
+            .unwrap()
+            + 1;
+        events.insert(second, Event::TooLarge(Event::Command("").tag()));
+        encode(&header, events)
+    }
+
+    /// How a replay showed a mutation.
+    #[derive(Debug)]
+    pub struct Caught {
+        /// The replay's report: its first divergence.
+        pub report: Option<String>,
+        /// The frames shown or the journal saved differ from the recording.
+        pub visible: bool,
+        /// The values VANA was handed differ from the original trace's.
+        pub handed: bool,
+    }
+
+    impl Caught {
+        pub fn any(&self) -> bool {
+            self.report.is_some() || self.visible || self.handed
+        }
+
+        /// The strongest way it showed: the replay alone, the outputs, or
+        /// only the values handed to VANA.
+        pub fn how(&self) -> String {
+            match (&self.report, self.visible, self.handed) {
+                (Some(report), _, _) => format!("report: {report}"),
+                (None, true, _) => "visible: frames or journal".into(),
+                (None, false, true) => "handed: re-recorded trace".into(),
+                (None, false, false) => "NOT CAUGHT".into(),
+            }
+        }
+    }
+
+    pub fn replay(recording: &Recording, trace: Vec<u8>) -> Caught {
+        let capture = Capture {
+            origin: recording.capture.origin.clone(),
+            trace,
+        };
+        let mut replayed = Sim::replay(&capture);
+        let report = replayed.device.report().unwrap();
+        let report = report
+            .first
+            .map(|first| format!("{:?} at {} ms", first.kind, first.at_ms));
+        let visible =
+            replayed.frame_hashes() != recording.frames || replayed.ride_media() != recording.media;
+        let handed = first_difference(recording.trace, &replayed.trace()).is_some();
+        Caught {
+            report,
+            visible,
+            handed,
+        }
+    }
+
+    /// Every kind's middle event, dropped and where it can be altered: each
+    /// must show. The unmutated trace must not, or the check proves nothing.
+    #[track_caller]
+    pub fn assert_every_mutation_shows(recording: &Recording, kinds: &[&str]) {
+        let clean = replay(recording, recording.trace.to_vec());
+        assert!(!clean.any(), "the unmutated trace replays clean: {clean:?}");
+        let mut missed = Vec::new();
+        for &kind in kinds {
+            for how in [Mutation::Drop, Mutation::Alter] {
+                let Some(trace) = mutated(recording.trace, kind, how) else {
+                    assert!(how == Mutation::Alter, "the trace holds no {kind}");
+                    continue;
+                };
+                let caught = replay(recording, trace);
+                println!("| {kind} | {how:?} | {} |", caught.how());
+                if !caught.any() {
+                    missed.push((kind, how));
+                }
+            }
+        }
+        assert!(missed.is_empty(), "mutations that did not show: {missed:?}");
+    }
+}
+
+/// Paired ANT sensors and a BLE strap, Wi-Fi time, and a short ride with a
+/// lap: the radios, the receiver, the companion and the buzzer.
+fn a_short_ride_with_every_sensor(sim: &mut Sim) {
+    sim.ble_heart_strap(true);
+    sim.ble_heart_strap_battery(Some(80));
+    sim.select_ble_heart_strap();
+    sim.sync_network_time(WIFI_UTC_MS);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(40));
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(40));
+    sim.stop_ride();
+}
+
+#[test]
+fn every_sensor_input_mutated_shows_in_its_replay() {
+    let recording = mutations::record(equip(hashed().boot()), a_short_ride_with_every_sensor);
+    mutations::assert_every_mutation_shows(
+        &recording,
+        &[
+            "Pass",
+            "Input",
+            "Command",
+            "AntRadio",
+            "AntDiscoveries",
+            "AntLink",
+            "AntPacket",
+            "AntRequest",
+            "BleLink",
+            "BlePacket",
+            "BleBattery",
+            "Position",
+            "Physical",
+            "Power",
+            "NetworkTime",
+            "Startup",
+            "SoundState",
+            "SoundRequest",
+            "PowerControl",
+            "Backlight",
+            "StorageFault",
+            "Page",
+            "Sound",
+        ],
+    );
+    let marked = mutations::with_too_large(recording.trace);
+    let caught = mutations::replay(&recording, marked);
+    println!("| TooLarge | Insert | {} |", caught.how());
+    assert!(caught.report.is_some(), "{caught:?}");
+}
+
+/// The power meter asked to zero itself: VANA sends to the sensor and
+/// follows the send.
+fn a_power_meter_calibrated(sim: &mut Sim) {
+    calibrate_power_meter(sim, ZeroReply::Offset(-37), true);
+    sim.press(Button::BottomRight);
+    sim.wait_for("CALIBRATED", seconds(25)).unwrap();
+}
+
+#[test]
+fn every_ant_send_mutated_shows_in_its_replay() {
+    let recording = mutations::record(equip(hashed().boot()), a_power_meter_calibrated);
+    mutations::assert_every_mutation_shows(&recording, &["AntSend", "AntRequest"]);
+}
+
+/// A course from the phone, with no ride after it.
+fn a_course_from_the_phone(sim: &mut Sim) {
+    use device_api::server::Method;
+    sim.init_bulk();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(2));
+}
+
+#[test]
+fn every_phone_input_mutated_shows_in_its_replay() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    let recording = mutations::record(equip(sim.boot()), a_course_from_the_phone);
+    mutations::assert_every_mutation_shows(
+        &recording,
+        &[
+            "AccessPoint",
+            "AccessPointRequest",
+            "Server",
+            "ServerRead",
+            "ServerWrite",
+            "ServerFinish",
+            "Entropy",
+        ],
+    );
+}
+
+/// A refused frame and brightness, then a torn journal write.
+fn a_ride_with_faults(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.device.display.0.borrow_mut().fail_next = true;
+    sim.device.power.0.borrow_mut().fail = true;
+    let (status, out) = sim.command("BRIGHTNESS 40");
+    assert_eq!(status, "OK", "{out}");
+    sim.advance(seconds(2));
+    sim.device.power.0.borrow_mut().fail = false;
+    sim.advance(seconds(20));
+    sim.fail_storage(0, 10);
+    sim.advance(seconds(20));
+}
+
+/// The card is fitted but not formatted, so it fails nothing and the ride
+/// goes to internal flash: the torn write is the trace's one storage fault.
+#[test]
+fn every_fault_input_mutated_shows_in_its_replay() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let recording = mutations::record(equip(sim.boot()), a_ride_with_faults);
+    mutations::assert_every_mutation_shows(&recording, &["StorageFault", "Refused", "Backlight"]);
+}
+
+#[test]
+fn every_power_input_mutated_shows_in_its_replay() {
+    let recording = mutations::record(equip(hashed().boot()), a_ride_then_turned_off);
+    mutations::assert_every_mutation_shows(
+        &recording,
+        &["PowerRequest", "PowerControl", "PoweredOff"],
     );
 }

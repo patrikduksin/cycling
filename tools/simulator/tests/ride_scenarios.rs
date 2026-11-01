@@ -7062,6 +7062,8 @@ fn riding_out_toward_dusk_says_when_to_turn_back() {
     let ids = played_since(&sim, 0);
     assert!(ids.windows(2).any(|pair| pair == [10, 10]), "{ids:?}");
     sim.checkpoint("toast: turn back by 19:17");
+    // The toast ends on the first frame after its two seconds.
+    sim.wait_gone("TURN BACK", seconds(2)).unwrap();
     // Once: the margin holds while riding on, and the toast does not return,
     // not at the sunset warning, nor at sunset, nor in the dark after it.
     expect_quiet(&mut sim, 3, "TURN BACK");

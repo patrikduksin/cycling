@@ -409,6 +409,7 @@ async fn console(
     system.forget_frame();
     loop {
         device::activity::pass_began();
+        device::capabilities::io::pass_began();
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         bringup.poll(now, &mut devices.network, &mut devices.ble);
@@ -519,15 +520,16 @@ async fn console(
             stage_ended(Stage::Log);
         }
         device::activity::pass_ended();
-        // A host talking on the terminal keeps the usual pace.
         #[cfg(feature = "cycling")]
-        let pass_ms = match sdk.pass_rest_ms(trace.power.frozen().state) {
-            Some(rest_ms) if !terminal.take_traffic() => rest_ms,
-            _ => 5,
-        };
+        let rest_ms = sdk.pass_rest_ms(
+            &system,
+            trace.power.frozen().state,
+            terminal.take_traffic(),
+            embassy_time::Instant::now().as_millis(),
+        );
         #[cfg(not(feature = "cycling"))]
-        let pass_ms = 5;
-        embassy_time::Timer::after_millis(pass_ms).await;
+        let rest_ms = 5;
+        device::capabilities::io::rest(rest_ms).await;
     }
 }
 

@@ -799,6 +799,12 @@ pub struct Session {
     unrecorded: Option<(&'static str, u64)>,
     unseen_ms: u64,
     rest_ms: u64,
+    /// `Edges::pushed` when the last pass began: an edge since ends a rest.
+    edges_seen: u32,
+    /// A terminal request ran since the last pass, as the C606's terminal
+    /// reports traffic.
+    #[cfg(feature = "cycling")]
+    host: bool,
     devices: Devices,
 }
 impl Session {
@@ -947,6 +953,9 @@ impl Session {
             unrecorded: None,
             unseen_ms: 0,
             rest_ms: 0,
+            edges_seen: 0,
+            #[cfg(feature = "cycling")]
+            host: false,
             devices: Devices::Simulated(Box::new(Simulated::new())),
         })
     }
@@ -1066,6 +1075,7 @@ impl Session {
         if !self.trace.spooling {
             self.trace.spool(&self.bulk);
         }
+        self.edges_seen = self.input.edges.borrow().pushed();
         let quiet = self.quiet();
         // A replay runs only the passes the recording kept, so it keeps
         // each one, also one kept for its health and activity alone.
@@ -1082,10 +1092,12 @@ impl Session {
         #[cfg(feature = "cycling")]
         {
             let power = self.trace.power.frozen().state;
-            self.rest_ms = (!self.off)
-                .then(|| self.sdk.pass_rest_ms(power))
-                .flatten()
-                .unwrap_or(0);
+            let host = core::mem::take(&mut self.host);
+            self.rest_ms = if self.off {
+                0
+            } else {
+                self.sdk.pass_rest_ms(&self.shell, power, host, self.now)
+            };
         }
         self.trace.window.passes += 1;
         if !self.off && self.trace.vitals.due(self.now, quiet) {
@@ -1572,9 +1584,10 @@ impl Session {
         self.sim_mut().companion_charging();
         Ok(())
     }
-    /// Advance device and world time together in 10 ms firmware passes,
-    /// or a pass each `STANDBY_DARK_PASS_MS` while dark charging standby
-    /// rests; the device clock then reads the last pass.
+    /// Advance device and world time together in 10 ms slices, with a pass
+    /// in each slice where VANA's rest (`Runtime::pass_rest_ms`) is over or
+    /// an input edge arrived, as it wakes the C606 console; the device clock
+    /// then reads the last pass.
     /// Off on USB power, the companion starts the device again for
     /// charging, and the rest of `ms` runs on the new session's clock.
     pub fn step(&mut self, ms: u64) {
@@ -1584,7 +1597,9 @@ impl Session {
             left -= step;
             self.sim_mut().world.advance(step);
             self.unseen_ms += step;
-            if self.unseen_ms < self.rest_ms {
+            if self.unseen_ms < self.rest_ms
+                && self.input.edges.borrow().pushed() == self.edges_seen
+            {
                 continue;
             }
             self.now += core::mem::take(&mut self.unseen_ms);
@@ -1593,6 +1608,17 @@ impl Session {
                 self.start_charging().expect("the media reopens");
             }
         }
+    }
+    /// The device clock between passes: the last pass's time plus the world
+    /// time since, as the C606's input task stamps an edge when it arrives.
+    pub fn clock_ms(&self) -> u64 {
+        self.now + self.unseen_ms
+    }
+    /// End the rest under way with a pass at the device clock, so a request
+    /// that follows runs at the time it arrives, not the last pass's.
+    pub fn close_rest(&mut self) {
+        self.now += core::mem::take(&mut self.unseen_ms);
+        self.tick();
     }
     pub fn advance(&mut self, ms: u64) -> Result<(), Error> {
         if ms > 120000 {
@@ -1604,12 +1630,16 @@ impl Session {
     }
     /// A terminal request line: recorded into the trace, then executed, as
     /// the C606 runs one after the pass before it, in no pass of its own.
+    /// One sent during a rest ends it first.
     pub fn command(
         &mut self,
         line: &[u8],
         out: &mut String,
     ) -> Result<(Request, &'static str), firmware_console::protocol::Error> {
         let request = firmware_console::protocol::parse(line)?;
+        if self.unseen_ms > 0 {
+            self.close_rest();
+        }
         if let Ok(text) = core::str::from_utf8(line) {
             let mut redacted = [0u8; 256];
             let text = match self.trace.start.redacted {
@@ -1626,7 +1656,7 @@ impl Session {
     /// session will not either.
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
         self.unrecorded("a request ran unrecorded");
-        self.tick();
+        self.close_rest();
         let power = self.gate();
         self.execute_gated(request, power, out)
     }
@@ -1651,6 +1681,10 @@ impl Session {
     ) -> &'static str {
         // A host talking on the terminal keeps the usual pace.
         self.rest_ms = 0;
+        #[cfg(feature = "cycling")]
+        {
+            self.host = true;
+        }
         let status = self.respond(request, power, out);
         self.record_faults();
         status
@@ -2125,7 +2159,7 @@ pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64)
         } else if fixture {
             session.fixture(core::str::from_utf8(&line).unwrap_or(""), &mut out)
         } else {
-            session.tick();
+            session.close_rest();
             match session.command(&line, &mut out) {
                 Ok((request, status)) => {
                     id = request.id;

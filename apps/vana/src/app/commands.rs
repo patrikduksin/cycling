@@ -5,6 +5,7 @@
 //! ride uses, while `INIT`, `CLEAR` and `EXPORT` keep addressing the internal
 //! journal, so existing tools never act on bulk media by accident.
 use super::Runtime;
+use super::pace::Touched;
 use super::recording::{Medium, Request};
 use crate::ride::control::Action;
 use crate::ride::log::{SLOT_SIZE, Slot, Source, VERSION, transport_checksum};
@@ -27,6 +28,9 @@ impl Runtime {
         now: u64,
         output: &mut impl Write,
     ) -> &'static str {
+        // Wrapped as `tick` wraps them, so the storage code both reach is
+        // built once.
+        let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));
         let mut workout = words.split_ascii_whitespace();
         if workout.next() == Some("WORKOUT") {
             return self.workout_command(&mut workout, bulk, now, output);

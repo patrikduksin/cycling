@@ -143,6 +143,7 @@ impl Runtime {
         let Some(state) = self.lookahead.as_deref_mut() else {
             return terrain::Status::NoPack;
         };
+        let media = &mut super::pace::Touched::new(media);
         let engine = &mut state.engine;
         match self.readings.live.location_e7 {
             Some((lat, lon)) => {
@@ -201,6 +202,7 @@ impl Runtime {
         } else {
             state.forecast.update(engine.ahead())
         };
+        self.storage_worked |= media.touched;
         self.pin_climb(fresh);
         self.follow_road();
         status

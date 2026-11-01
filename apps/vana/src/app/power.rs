@@ -294,14 +294,6 @@ impl Runtime {
         self.power.standby.dark
     }
 
-    /// How long composition may wait before its next pass, given the power
-    /// state this pass froze: dark charging standby only watches for the
-    /// power change that a hold on top left starts. `None` keeps the usual
-    /// pace.
-    pub fn pass_rest_ms(&self, power: State) -> Option<u64> {
-        (power == State::Charging && self.power.standby.dark).then_some(STANDBY_DARK_PASS_MS)
-    }
-
     /// Whether the next pass's `power` asks the device to turn off: the
     /// turning-off frame is on the panel. A preferences save that fails
     /// first keeps the device on.
@@ -409,9 +401,6 @@ impl Runtime {
 /// While VANA is off on USB power the charge shows for this long, then the
 /// screen goes dark until the rider turns VANA on.
 pub const STANDBY_LIT_MS: u64 = 20_000;
-/// Five passes a second stay under the trace's flag for a task that wakes
-/// ten times a second or more while the screen is dark.
-pub const STANDBY_DARK_PASS_MS: u64 = 200;
 /// Charging standby frames: often enough for the charging animation.
 const STANDBY_FRAME_MS: u64 = 500;
 

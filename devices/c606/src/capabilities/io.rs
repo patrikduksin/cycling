@@ -15,6 +15,7 @@ use crate::drivers::companion::Status;
 use crate::drivers::input::Report;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use embassy_time::Timer;
 use firmware_services::input::{Poll, TouchContact};
@@ -24,6 +25,10 @@ static EDGES: Mutex<CriticalSectionRawMutex, RefCell<Edges>> =
 static LATEST: Mutex<CriticalSectionRawMutex, RefCell<Option<State>>> =
     Mutex::new(RefCell::new(None));
 static SLEEP_BOUNDARY: AtomicBool = AtomicBool::new(false);
+/// Raised when an edge is queued and reset as a pass begins, so a rest
+/// ends for an edge that pass has not taken. One queued while the pass
+/// takes edges costs one early pass.
+static EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[derive(Clone, Copy)]
 struct State {
@@ -58,6 +63,15 @@ pub fn snapshot(now: u64) -> Option<Snapshot> {
 pub fn take_edge() -> Option<Edge> {
     EDGES.lock(|edges| edges.borrow_mut().pop())
 }
+/// The edges' consumer begins a pass and takes the edges queued so far:
+/// only one queued after this ends the rest after the pass.
+pub fn pass_began() {
+    EDGE.reset();
+}
+/// Wait `ms`, or less if an edge is queued first, for the edges' consumer.
+pub async fn rest(ms: u64) {
+    embassy_futures::select::select(Timer::after_millis(ms), EDGE.wait()).await;
+}
 /// Queue an edge; returns whether the queue overflowed and sent a Cancel,
 /// so the touch contact in progress must be cancelled too.
 #[must_use]
@@ -65,15 +79,25 @@ fn edge(now: u64, input: Input) -> bool {
     if super::power::ACCESS.closed() {
         return false;
     }
-    EDGES.lock(|edges| edges.borrow_mut().push(now, input))
+    EDGES.lock(|edges| queue(&mut edges.borrow_mut(), now, input))
 }
 pub fn power_boundary(now: u64) {
     EDGES.lock(|edges| {
         let mut edges = edges.borrow_mut();
         while edges.pop().is_some() {}
         // An empty queue cannot overflow.
-        let _ = edges.push(now, Input::Cancel);
+        let _ = queue(&mut edges, now, Input::Cancel);
     });
+}
+/// Push `input` and wake a resting consumer if the queue took it; a touch
+/// point of a cancelled contact is dropped and wakes nothing.
+fn queue(edges: &mut Edges, now: u64, input: Input) -> bool {
+    let before = edges.pushed();
+    let overflowed = edges.push(now, input);
+    if edges.pushed() != before {
+        EDGE.signal(());
+    }
+    overflowed
 }
 
 /// Invalidate cached observations across intentional receive loss, including

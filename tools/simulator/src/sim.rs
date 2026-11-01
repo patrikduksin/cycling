@@ -365,7 +365,7 @@ impl Sim {
         self.power_hold = 0;
         self.device
             .input
-            .push(self.device.now, Input::Button { button, code: 1 });
+            .push(self.device.clock_ms(), Input::Button { button, code: 1 });
     }
 
     /// A finger on the screen at (x, y), lifted at once.
@@ -416,11 +416,15 @@ impl Sim {
                 x: lerp(from.0, to.0, i),
                 y: lerp(from.1, to.1, i),
             };
-            self.device.input.push(self.device.now, Input::Touch(point));
+            self.device
+                .input
+                .push(self.device.clock_ms(), Input::Touch(point));
             self.advance(10);
         }
         self.advance(hold_ms);
-        self.device.input.push(self.device.now, Input::Release);
+        self.device
+            .input
+            .push(self.device.clock_ms(), Input::Release);
         self.advance(PRESS_GAP_MS);
     }
 
@@ -439,10 +443,12 @@ impl Sim {
         for &(x, y) in points {
             self.device
                 .input
-                .push(self.device.now, Input::Touch(Point { x, y }));
+                .push(self.device.clock_ms(), Input::Touch(Point { x, y }));
             self.advance(TOUCH_STEP_MS);
         }
-        self.device.input.push(self.device.now, Input::Release);
+        self.device
+            .input
+            .push(self.device.clock_ms(), Input::Release);
         self.advance(PRESS_GAP_MS);
     }
 

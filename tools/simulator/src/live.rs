@@ -175,7 +175,7 @@ impl Live {
         );
         let point = (sx.clamp(0.0, w - 1.0) as u16, sy.clamp(0.0, h - 1.0) as u16);
         let on_screen = (0.0..w).contains(&sx) && (0.0..h).contains(&sy);
-        let now = self.sim.device.now;
+        let now = self.sim.device.clock_ms();
         match (self.finger, down) {
             (None, true) if on_screen => {
                 self.sim

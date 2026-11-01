@@ -366,6 +366,22 @@ impl State {
     pub fn capture_due(&self, now: u64) -> bool {
         self.capture_state == CaptureState::Running && now >= self.next_frame
     }
+    /// When `next_input` next returns an input, `capture_due` next holds or
+    /// the open session expires, without another command; a pending cancel
+    /// is due now. Expiry cancels a held touch.
+    pub fn next_due(&self) -> Option<u64> {
+        let input = if self.cancel_pending {
+            Some(self.now)
+        } else if self.input_state == InputState::Running {
+            let next = self.events.get(self.delivered);
+            next.map(|scheduled| self.started + u64::from(scheduled.offset))
+        } else {
+            None
+        };
+        let capture = (self.capture_state == CaptureState::Running).then_some(self.next_frame);
+        let expiry = (self.session != 0).then_some(self.deadline);
+        input.into_iter().chain(capture).chain(expiry).min()
+    }
     pub fn begin_frame(&mut self, g: Geometry) -> bool {
         let now = self.time();
         if !self.capture_due(now) {
@@ -777,5 +793,84 @@ fn encode_chunk(bytes: &[u8], encoded: &mut [u8; ENCODED_BYTES]) -> (&'static st
         let length = bytes.len().min(ENCODED_BYTES);
         encoded[..length].copy_from_slice(&bytes[..length]);
         ("raw", length, length)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CONTROLS: Controls = Controls {
+        touch: Availability::Ready,
+        buttons: &[Button::BottomRight],
+    };
+    const PANEL: Geometry = Geometry {
+        width: 240,
+        height: 320,
+    };
+
+    fn run(state: &mut State, line: &str, now: u64) -> &'static str {
+        let mut words = line.split_ascii_whitespace();
+        let command = parse(&mut words).expect("a harness command");
+        state.command(
+            command,
+            CONTROLS,
+            PANEL,
+            now,
+            &mut std::string::String::new(),
+        )
+    }
+
+    /// A session opened at 1 s with a 5 s lease, a touch held from 1.2 s
+    /// for 10 s.
+    fn holding() -> State {
+        let mut state = State::new(1);
+        assert_eq!(run(&mut state, "OPEN 7 5000", 1000), "OK");
+        let session = (1u64 << 32) | 1;
+        for line in [
+            "INPUT BEGIN 1",
+            "INPUT ADD 1 200 DOWN 10 10",
+            "INPUT ADD 1 10200 UP",
+            "INPUT RUN 1",
+        ] {
+            let status = run(&mut state, &std::format!("{session} {line}"), 1000);
+            assert!(matches!(status, "OK" | "ACCEPTED"), "{line}: {status}");
+        }
+        state
+    }
+
+    #[test]
+    fn the_next_input_is_due_at_its_offset_from_the_run() {
+        let mut state = holding();
+        assert_eq!(state.next_due(), Some(1200));
+        assert_eq!(state.next_input(1199), None);
+        assert!(matches!(state.next_input(1200), Some(Input::Touch(_))));
+    }
+
+    #[test]
+    fn a_session_is_due_when_its_lease_ends_and_cancels_the_held_touch() {
+        let mut state = holding();
+        assert!(state.next_input(1200).is_some());
+        assert_eq!(state.next_due(), Some(6000), "the lease ends first");
+        assert_eq!(state.next_input(5999), None);
+        assert_eq!(state.next_input(6000), Some(Input::Cancel));
+        assert_eq!(state.next_due(), None, "nothing is due once it expired");
+    }
+
+    #[test]
+    fn a_running_capture_is_due_at_its_next_frame() {
+        let mut state = State::new(1);
+        state.buffer = Some(CaptureBuffer::Owned(
+            std::vec![0; 2 * PANEL.width * PANEL.height * 2].into_boxed_slice(),
+        ));
+        assert_eq!(run(&mut state, "OPEN 7 60000", 0), "OK");
+        let session = (1u64 << 32) | 1;
+        let line = std::format!("{session} CAPTURE START 2 500");
+        assert_eq!(run(&mut state, &line, 1000), "ACCEPTED");
+        assert_eq!(state.next_due(), Some(1000));
+        state.now = 1000;
+        assert!(state.begin_frame(PANEL));
+        state.finish_frame(true);
+        assert_eq!(state.next_due(), Some(1500));
     }
 }

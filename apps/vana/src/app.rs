@@ -28,7 +28,9 @@ mod lists;
 mod lookahead;
 mod motion;
 mod night;
+mod pace;
 pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
+pub use pace::STANDBY_DARK_PASS_MS;
 mod power;
 mod preferences;
 pub use preferences::decode as decode_preferences;
@@ -51,8 +53,7 @@ pub use phone::{
 };
 
 pub use power::{
-    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_DARK_PASS_MS,
-    STANDBY_LIT_MS, auto_off,
+    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
 };
 
 /// Observations recorded with each ride sample, beyond the radios VANA drives.
@@ -100,6 +101,8 @@ pub struct Runtime {
     /// Back to start's breadcrumb lives in the block composition gives it.
     back: Option<&'static mut back::BackToStart>,
     reported: seen::Reported,
+    /// This pass's `tick` or `look_ahead` read or wrote storage.
+    storage_worked: bool,
 }
 
 impl Runtime {
@@ -134,6 +137,7 @@ impl Runtime {
             alerts: crate::ride::alerts::Alerts::default(),
             back: None,
             reported: seen::Reported::default(),
+            storage_worked: false,
         }
     }
 
@@ -180,7 +184,13 @@ impl Runtime {
         if self.ride.internal.status() == Status::Scanning
             || self.ride.bulk.status() == Status::Scanning
         {
-            self.record(store, bulk, now, crate::ride::log::Sample::default());
+            // Wrapped as `tick` wraps them, so `record` is built once.
+            self.record(
+                &mut pace::Touched::new(store),
+                &mut pace::Touched::new(bulk),
+                now,
+                crate::ride::log::Sample::default(),
+            );
         }
     }
 
@@ -228,6 +238,10 @@ impl Runtime {
         ble: &mut impl Ble,
         observations: Observations<'_, impl Positioning, impl InputObservation>,
     ) {
+        let (store, bulk) = (
+            &mut pace::Touched::new(store),
+            &mut pace::Touched::new(bulk),
+        );
         self.service_sensor_links(ant, now);
         self.receive_ant(ant, now);
         self.service_calibration(ant, now);
@@ -297,5 +311,6 @@ impl Runtime {
         self.service_form();
         self.track_back(store, bulk, now);
         self.follow_road();
+        self.storage_worked = store.touched || bulk.touched;
     }
 }

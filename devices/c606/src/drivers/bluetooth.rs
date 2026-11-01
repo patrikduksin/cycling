@@ -91,6 +91,9 @@ static SCAN_REPORTS: AtomicU32 = AtomicU32::new(0);
 static SCAN_RSSI_MIN: AtomicI32 = AtomicI32::new(i32::MAX);
 static SCAN_RSSI_MAX: AtomicI32 = AtomicI32::new(i32::MIN);
 static TARGET: Mutex<RefCell<Option<Address>>> = Mutex::new(RefCell::new(None));
+/// The chosen sensor's signal in its last advertisement this scan found;
+/// `i32::MIN` until one does.
+static TARGET_RSSI: AtomicI32 = AtomicI32::new(i32::MIN);
 
 static STATE: Mutex<RefCell<Snapshot>> = Mutex::new(RefCell::new(Snapshot {
     link: Link::Off,
@@ -165,6 +168,7 @@ impl EventHandler for ScanCounter {
                 .address
                 .is_none_or(|address| report.addr.raw() == address.as_slice());
             if name_matches && address_matches {
+                TARGET_RSSI.store(i32::from(report.rssi), Ordering::Relaxed);
                 critical_section::with(|cs| {
                     *TARGET.borrow_ref_mut(cs) = Some(Address {
                         kind: report.addr_kind,
@@ -174,6 +178,12 @@ impl EventHandler for ScanCounter {
             }
         }
     }
+}
+
+/// The chosen sensor's signal at its last advertisement.
+pub fn target_rssi() -> Option<i8> {
+    let rssi = TARGET_RSSI.load(Ordering::Relaxed);
+    (rssi != i32::MIN).then(|| rssi.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8)
 }
 
 pub fn snapshot() -> Snapshot {
@@ -466,6 +476,7 @@ where
     let reports_before = SCAN_REPORTS.load(Ordering::Relaxed);
     SCAN_RSSI_MIN.store(i32::MAX, Ordering::Relaxed);
     SCAN_RSSI_MAX.store(i32::MIN, Ordering::Relaxed);
+    TARGET_RSSI.store(i32::MIN, Ordering::Relaxed);
     let mut scanner = Scanner::new(central);
     let scan_config = ScanConfig {
         active: true,

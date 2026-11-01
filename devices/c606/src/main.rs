@@ -61,11 +61,14 @@ impl device_api::input::InputSource for ShellInput {
 
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) -> ! {
+    use device::activity::Task;
     device::stack::paint();
+    device::activity::name_current(Task::Main).await;
     let board = device::board::start(spawner).await;
     let boot = esp_hal::rng::Rng::new().random();
     logging::init(boot);
     logging::metadata(false);
+    device::activity::calibrate();
     #[cfg(feature = "cycling")]
     let pass_log: &'static firmware_services::trace::shell::PassLog = external(Default::default);
     #[cfg(feature = "cycling")]
@@ -137,10 +140,16 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         }
         system.tick(embassy_time::Instant::now().as_millis());
         system.present();
-        spawner.spawn(device::drivers::bulk_maintenance::run(board.terminal, board.bulk).unwrap());
+        device::activity::spawn(
+            spawner,
+            Task::Maintenance,
+            device::drivers::bulk_maintenance::run(board.terminal, board.bulk).unwrap(),
+        );
     }
     #[cfg(not(feature = "bulk-maintenance"))]
-    spawner.spawn(
+    device::activity::spawn(
+        spawner,
+        Task::Console,
         console(
             board.terminal,
             system,
@@ -397,18 +406,22 @@ async fn console(
     system.present();
     system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
     loop {
+        device::activity::pass_began();
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         bringup.poll(now, &mut devices.network, &mut devices.ble);
         #[cfg(feature = "cycling")]
-        vana_pass(
-            sdk,
-            trace,
-            &mut system,
-            &mut devices,
-            now,
-            &mut terrain_step_max_us,
-        );
+        {
+            let quiet = vana_pass(
+                sdk,
+                trace,
+                &mut system,
+                &mut devices,
+                now,
+                &mut terrain_step_max_us,
+            );
+            trace.vitals(&devices, system.heap_min_sampled, now, quiet);
+        }
         #[cfg(not(feature = "cycling"))]
         let power = device_api::power::PowerControl::status(&devices.power);
         // Diagnostic power requests enter only with no active domain work.
@@ -429,6 +442,7 @@ async fn console(
             // The ACCEPTED reply went out; the host now speaks binary frames.
             commands::transfer(terminal.transport(), &mut devices.bulk).await;
             terminal.end_transfer();
+            device::activity::pass_began();
             #[cfg(feature = "cycling")]
             trace.after_host(
                 &mut devices.bulk,
@@ -494,6 +508,7 @@ async fn console(
                 terrain_step_max_us = 0;
             }
         }
+        device::activity::pass_ended();
         embassy_time::Timer::after_millis(5).await;
     }
 }
@@ -503,7 +518,7 @@ async fn console(
 /// simulator records them (`tools/simulator/src/session.rs`), then this
 /// pass's share of the trace to the card. Inlined, as the pass was before
 /// it had a name: a frame of its own would sit under every frame VANA
-/// prepares.
+/// prepares. True for a pass in dark charging standby.
 #[cfg(feature = "cycling")]
 #[inline(always)]
 fn vana_pass(
@@ -513,7 +528,7 @@ fn vana_pass(
     devices: &mut commands::Devices,
     now: u64,
     terrain_step_max_us: &mut u64,
-) {
+) -> bool {
     use device_api::power::{Power as _, State};
     use device_api::sensors::Sensors as _;
     use firmware_services::trace::Event;
@@ -533,7 +548,7 @@ fn vana_pass(
     let startup = trace.startup.observe(startup, now, record, Event::Startup);
     let power = trace.power.freeze(&devices.power, now, record);
     if quiet && power.state == State::Charging {
-        return;
+        return quiet;
     }
     let companion =
         companion.unwrap_or_else(|| trace.companion.freeze(&devices.input, now, record));
@@ -643,6 +658,7 @@ fn vana_pass(
         ),
         now,
     );
+    quiet
 }
 
 /// Moves long-lived state into PSRAM so it stays out of the console task

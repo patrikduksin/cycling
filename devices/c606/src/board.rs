@@ -353,13 +353,34 @@ pub struct Parts {
 }
 pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
     let board = init();
-    spawner.spawn(crate::capabilities::power::run(board.backlight).unwrap());
-    spawner.spawn(crate::capabilities::positioning::run(board.gps_receiver).unwrap());
-    spawner.spawn(crate::capabilities::io::run(board.touch, board.touch_available).unwrap());
+    use crate::activity::{Task, spawn};
+    spawn(
+        spawner,
+        Task::Power,
+        crate::capabilities::power::run(board.backlight).unwrap(),
+    );
+    spawn(
+        spawner,
+        Task::Positioning,
+        crate::capabilities::positioning::run(board.gps_receiver).unwrap(),
+    );
+    spawn(
+        spawner,
+        Task::Io,
+        crate::capabilities::io::run(board.touch, board.touch_available).unwrap(),
+    );
     let stacks = crate::drivers::wifi::initialize(board.wifi, spawner).await;
     if let Some(stacks) = stacks {
-        spawner.spawn(crate::drivers::wifi::time_sync(stacks.station).unwrap());
-        spawner.spawn(crate::drivers::wifi::access_point_dhcp(stacks.access_point).unwrap());
+        spawn(
+            spawner,
+            Task::TimeSync,
+            crate::drivers::wifi::time_sync(stacks.station).unwrap(),
+        );
+        spawn(
+            spawner,
+            Task::Dhcp,
+            crate::drivers::wifi::access_point_dhcp(stacks.access_point).unwrap(),
+        );
         // One connection per stack; the web client asks one thing at a time.
         // Two listeners per stack: one accepts while the other closes, so a
         // browser's next request is not refused.
@@ -369,11 +390,19 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
             stacks.access_point,
             stacks.access_point,
         ] {
-            spawner.spawn(crate::drivers::http::serve(stack).unwrap());
+            spawn(
+                spawner,
+                Task::Http,
+                crate::drivers::http::serve(stack).unwrap(),
+            );
         }
     }
     let stack = stacks.map(|stacks| stacks.station);
-    spawner.spawn(crate::drivers::bluetooth::start(board.bluetooth).unwrap());
+    spawn(
+        spawner,
+        Task::Bluetooth,
+        crate::drivers::bluetooth::start(board.bluetooth).unwrap(),
+    );
     // Output intentionally remains asserted for the device lifetime. Today
     // Output has no drop glue, but forgetting keeps that true if the HAL adds one.
     #[allow(clippy::forget_non_drop)]

@@ -6,6 +6,7 @@
 //! Callers must invalidate acquisition stamps across the receive gap. Compare
 //! RTC and uptime intervals rather than assuming which retained clocks advance.
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 use critical_section::Mutex;
 use device_api::observation::Error;
 use esp_hal::peripherals::LPWR;
@@ -45,6 +46,13 @@ pub struct Observation {
     pub woke: bool,
 }
 
+/// Light sleep since the trace last took it, as the RTC measured it.
+static SLEPT_US: AtomicU32 = AtomicU32::new(0);
+
+pub fn take_slept_ms() -> u32 {
+    SLEPT_US.swap(0, Ordering::Relaxed) / 1000
+}
+
 pub fn initialize(peripheral: LPWR<'static>) {
     critical_section::with(|cs| {
         *RTC.borrow_ref_mut(cs) = Some(Rtc::new(peripheral));
@@ -65,6 +73,10 @@ pub fn enter(after_wake: impl FnOnce()) -> Result<Observation, Error> {
         let status =
             rtc.sleep_light_with_status(&[&timer], Duration::from_secs(ENTRY_DEADLINE_SECONDS));
         let uptime_elapsed_us = uptime_before.elapsed().as_micros();
+        SLEPT_US.fetch_add(
+            status.elapsed_us.min(u64::from(u32::MAX)) as u32,
+            Ordering::Relaxed,
+        );
         after_wake();
         let outcome = if status.timed_out {
             Outcome::TimedOut

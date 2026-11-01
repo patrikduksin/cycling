@@ -10,7 +10,7 @@ use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, SILENCE_MS, Timeline, duration, read, session_clock,
 };
-use shell_simulator::trace::{divergence, origin, otlp, stub};
+use shell_simulator::trace::{battery, divergence, origin, otlp, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,14 @@ commands:
       A warning names what began or which ride ended in the same pass, and
       a ride counts the warnings logged in it. A page names its cause (the
       input, command, ride state or toast in its pass, else by itself) and
-      the shown readings it draws (shows=). Run this first.
+      the shown readings it draws (shows=). Then, from the device's activity
+      and health records, where the CPU time went per device state (home
+      idle, riding, paused, screen off, charging standby): executor wakeups,
+      timer ticks, CPU awake, radio drivers and idle, and each task's
+      wakeups a second and CPU share; battery flags (a task that keeps
+      waking or burning CPU while the screen is dark, a falling heap, an
+      error counter that rose, stalled passes); and the health trends.
+      Run this first.
   origin <trace>
       The media a replay starts from, in words: power-on number, shell
       settings and VANA's preferences (saved sensors), rides on internal
@@ -45,8 +52,9 @@ commands:
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
       gps, sensors, battery, time, storage (media faults and VANA's warnings
       about saving or reading), entropy, page, toast, sound, ride, shown,
-      log, phone, power, display, buzzer, trace; groups seen, inputs,
-      default, all. --all also lists entries
+      log, phone, power, display, buzzer, trace, health, activity; groups
+      seen, inputs, default, all (health and activity, every few seconds,
+      only by name or all). --all also lists entries
       that only repeat their source (a counter or reading moved); a press,
       a command or a note is never one. A sound names its cue. ANT+ pages
       read as words (power 230 W, hr 142 bpm, cadence 86 rpm, radar targets);
@@ -58,7 +66,9 @@ commands:
       other text gives entries containing it, ignoring case. --where keeps
       entries containing TEXT.
   otlp <trace> [--out FILE]
-      OTLP/JSON: a traces request and a metrics request, one per line.
+      OTLP/JSON: a traces request and a metrics request, one per line. The
+      metrics hold the shown readings, the battery, the health records and
+      each activity window, per task.
   replay <trace> [--from T] [--to T] [--mode auto|stimulus|strict]
          [--every T] [--video] [--out DIR]
       Replay the session up to --to (default --from plus 60s), screenshots every
@@ -307,6 +317,7 @@ fn summary(path: &Path, timeline: &Timeline, media: Media) -> String {
             _ => format!("{} {new}+{repeats}", kind.name()),
         })
         .collect();
+    out.push_str(&battery::summary(timeline));
     let _ = writeln!(out, "entries: {}", counts.join(", "));
     let _ = writeln!(
         out,

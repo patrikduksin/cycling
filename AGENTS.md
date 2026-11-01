@@ -72,7 +72,8 @@ access or device tests. It owns the procedure; these rules always apply:
 ## Workflows
 
 - Autonomous issue or queue delivery: [deliver](.agents/skills/deliver/SKILL.md).
-- A rider's account of a ride problem, or a `.trace` file: [ride-trace](.agents/skills/ride-trace/SKILL.md).
+- A rider's account of a ride problem, a battery that drains too fast, or a
+  `.trace` file: [ride-trace](.agents/skills/ride-trace/SKILL.md).
 - Issue tracker: GitHub Issues; read `docs/agents/issue-tracker.md` first.
 - Triage: the five default labels; read `docs/agents/triage-labels.md` first.
 - Domain docs: single-context layout; read `docs/agents/domain.md` before

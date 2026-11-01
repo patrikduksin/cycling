@@ -269,6 +269,140 @@ pub enum Level {
     Warn,
 }
 
+/// How often [`Health`] and [`Activity`] are recorded, and how often in
+/// dark charging standby, where nothing else records and the card stays
+/// closed: hours of standby still fit the spool.
+pub const VITALS_MS: u64 = 5_000;
+pub const QUIET_VITALS_MS: u64 = 60_000;
+
+/// When the next [`Health`] and [`Activity`] records are due.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Vitals {
+    last_ms: u64,
+}
+
+impl Vitals {
+    /// Whether a pass at `now` records them; `quiet` for a pass in dark
+    /// charging standby.
+    pub fn due(&mut self, now: u64, quiet: bool) -> bool {
+        let every = if quiet { QUIET_VITALS_MS } else { VITALS_MS };
+        if now.saturating_sub(self.last_ms) < every {
+            return false;
+        }
+        self.last_ms = now;
+        true
+    }
+}
+
+/// How the device fared since the record before. Not an input: a replay
+/// reads past it and compares nothing. Fields a source cannot know, as the
+/// simulator cannot know its heap, are absent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Health {
+    /// The simulator wrote it.
+    pub simulated: bool,
+    pub heap_free: Option<u32>,
+    /// The least heap free sampled since power-on.
+    pub heap_min: Option<u32>,
+    pub psram_free: Option<u32>,
+    /// The slowest frame the panel took and the slowest main-loop pass
+    /// since the record before.
+    pub frame_max_us: Option<u32>,
+    pub pass_max_us: Option<u32>,
+    /// Counts since power-on: NMEA sentences that decoded, receive DMA
+    /// overflows and UART errors.
+    pub gps_sentences: u32,
+    pub gps_overflows: u32,
+    pub gps_uart_errors: u32,
+    /// Companion frames that failed their check, UART errors and lost
+    /// input, since power-on.
+    pub companion_errors: u32,
+    /// The slowest card write since the record before, and the card's
+    /// recoveries since power-on.
+    pub card_write_max_us: Option<u32>,
+    pub card_recoveries: Option<u32>,
+    /// Bytes the trace's spool holds and can hold; zero without a spool.
+    pub spool_used: u32,
+    pub spool_size: u32,
+    pub wifi: Option<device_api::connectivity::WifiState>,
+    pub wifi_rssi: Option<i8>,
+    /// The chosen BLE sensor's signal at its last advertisement.
+    pub ble_rssi: Option<i8>,
+}
+
+/// Where the CPU's time went since the record before, and what drew power
+/// as the window ended. Not an input. Its executor tasks follow it as
+/// [`Event::Task`] records. Times are µs; an interrupt counts in whatever
+/// it interrupted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activity {
+    /// The simulator wrote it: its tasks are its own passes, and it has no
+    /// CPU times.
+    pub simulated: bool,
+    pub window_ms: u32,
+    /// Times the executor woke to poll its tasks, and how long it ran then.
+    pub wakes: u32,
+    pub awake_us: Option<u32>,
+    /// The RTOS thread the executor runs in, the radio drivers' threads,
+    /// and the idle hook waiting for an interrupt.
+    pub main_us: Option<u32>,
+    pub radio_us: Option<u32>,
+    pub idle_us: Option<u32>,
+    /// RTOS thread switches and timer interrupts.
+    pub switches: Option<u32>,
+    pub ticks: Option<u32>,
+    /// What counting all this cost, estimated from the hooks' calls.
+    pub hooks_us: Option<u32>,
+    pub consumers: Consumers,
+}
+
+/// What draws power, as it stood when an [`Activity`] window ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Consumers {
+    pub cpu_mhz: Option<u16>,
+    /// Percent; zero is a dark screen.
+    pub backlight: u8,
+    /// Frames the panel took in the window.
+    pub frames: u32,
+    pub gnss: Gnss,
+    pub wifi: Option<device_api::connectivity::WifiState>,
+    pub access_point: AccessPointState,
+    pub ble: ble_transport::Link,
+    pub ant: Availability,
+    pub ant_scanning: bool,
+    /// ANT channels linked to a sensor.
+    pub ant_channels: u8,
+    /// Light sleep in the window, ms.
+    pub slept_ms: u32,
+}
+
+impl Default for Consumers {
+    fn default() -> Self {
+        Self {
+            cpu_mhz: None,
+            backlight: 0,
+            frames: 0,
+            gnss: Gnss::Off,
+            wifi: None,
+            access_point: AccessPointState::Off,
+            ble: ble_transport::Link::Off,
+            ant: Availability::Unsupported,
+            ant_scanning: false,
+            ant_channels: 0,
+            slept_ms: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gnss {
+    Off,
+    Receiving,
+    /// Paused to save power, or its pause or resume is under way.
+    Paused,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// One main-loop pass began at this uptime.
@@ -405,6 +539,15 @@ pub enum Event<'a> {
         target: &'a str,
         text: &'a str,
     },
+    Health(Health),
+    Activity(Activity),
+    /// One executor task's share of the [`Event::Activity`] window before
+    /// it. A task that never ran in the window has none.
+    Task {
+        name: &'a str,
+        polls: u32,
+        busy_us: Option<u32>,
+    },
 }
 
 mod tag {
@@ -451,6 +594,9 @@ mod tag {
     pub const RIDE_STATE: u8 = 67;
     pub const SHOWN: u8 = 68;
     pub const LOG: u8 = 69;
+    pub const HEALTH: u8 = 80;
+    pub const ACTIVITY: u8 = 81;
+    pub const TASK: u8 = 82;
 }
 
 const SHORT_PASS: u8 = 0x80;
@@ -866,6 +1012,11 @@ codes! {
         Companion = 8, Sleep = 9, PreparationTimeout = 10, Submission = 11,
         CompletionUnobservable = 12, Recovery = 13,
     }
+    device_api::connectivity::WifiState {
+        Unconfigured = 0, Connecting = 1, Associated = 2, AddressReady = 3, Verified = 4,
+        Retrying = 5, Failed = 6,
+    }
+    Gnss { Off = 0, Receiving = 1, Paused = 2, Failed = 3 }
 }
 
 record! {
@@ -907,6 +1058,19 @@ record! {
     AntCapabilities<'a> {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
+    }
+    Health {
+        simulated, heap_free, heap_min, psram_free, frame_max_us, pass_max_us, gps_sentences,
+        gps_overflows, gps_uart_errors, companion_errors, card_write_max_us, card_recoveries,
+        spool_used, spool_size, wifi, wifi_rssi, ble_rssi,
+    }
+    Consumers {
+        cpu_mhz, backlight, frames, gnss, wifi, access_point, ble, ant, ant_scanning,
+        ant_channels, slept_ms,
+    }
+    Activity {
+        simulated, window_ms, wakes, awake_us, main_us, radio_us, idle_us, switches, ticks,
+        hooks_us, consumers,
     }
 }
 
@@ -1202,6 +1366,9 @@ impl<'a> Event<'a> {
             Self::RideState(_) => tag::RIDE_STATE,
             Self::Shown(_) => tag::SHOWN,
             Self::Log { .. } => tag::LOG,
+            Self::Health(_) => tag::HEALTH,
+            Self::Activity(_) => tag::ACTIVITY,
+            Self::Task { .. } => tag::TASK,
         }
     }
 
@@ -1319,6 +1486,17 @@ impl<'a> Event<'a> {
                 target.put(w);
                 text.put(w);
             }
+            Self::Health(health) => health.put(w),
+            Self::Activity(activity) => activity.put(w),
+            Self::Task {
+                name,
+                polls,
+                busy_us,
+            } => {
+                name.put(w);
+                polls.put(w);
+                busy_us.put(w);
+            }
         }
     }
 
@@ -1417,6 +1595,13 @@ impl<'a> Event<'a> {
                 level: Wire::take(r),
                 target: Wire::take(r),
                 text: Wire::take(r),
+            },
+            tag::HEALTH => Self::Health(Wire::take(r)),
+            tag::ACTIVITY => Self::Activity(Wire::take(r)),
+            tag::TASK => Self::Task {
+                name: Wire::take(r),
+                polls: Wire::take(r),
+                busy_us: Wire::take(r),
             },
             _ => return None,
         })

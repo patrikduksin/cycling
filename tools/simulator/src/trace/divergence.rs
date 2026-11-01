@@ -181,6 +181,9 @@ mod tests {
             torn: false,
             utc_at_boot_ms: None,
             silences: Vec::new(),
+            power: Vec::new(),
+            health: Vec::new(),
+            activity: Vec::new(),
         }
     }
 

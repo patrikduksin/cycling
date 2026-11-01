@@ -8,6 +8,7 @@ use device_api::observation::Observation;
 use firmware_services::trace::{self, End, Event, Level};
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Write as _;
 
 const GAP_MS: u64 = 1_000;
 /// An ANT+ sensor broadcasts four times a second; this long without a
@@ -138,10 +139,12 @@ pub enum Kind {
     Display,
     Buzzer,
     Trace,
+    Health,
+    Activity,
 }
 
 impl Kind {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 28] = [
         Self::Gap,
         Self::Input,
         Self::Command,
@@ -168,6 +171,8 @@ impl Kind {
         Self::Display,
         Self::Buzzer,
         Self::Trace,
+        Self::Health,
+        Self::Activity,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -198,6 +203,8 @@ impl Kind {
             Self::Display => "display",
             Self::Buzzer => "buzzer",
             Self::Trace => "trace",
+            Self::Health => "health",
+            Self::Activity => "activity",
         }
     }
 
@@ -211,6 +218,11 @@ impl Kind {
         )
     }
 
+    /// What the device measured of itself: neither an input nor seen.
+    pub const fn measured(self) -> bool {
+        matches!(self, Self::Health | Self::Activity)
+    }
+
     /// Each entry is something that happened (a press, a command, a note
     /// played), not a state reported again, so none is ever a repeat: two
     /// presses of one button are two presses.
@@ -218,11 +230,17 @@ impl Kind {
         matches!(self, Self::Input | Self::Command | Self::Sound)
     }
 
-    /// Many per second; hidden unless asked for.
+    /// Many per second, or every few seconds all session long; hidden
+    /// unless asked for.
     pub const fn bulky(self) -> bool {
         matches!(
             self,
-            Self::AntPacket | Self::AntRequest | Self::BlePacket | Self::Entropy
+            Self::AntPacket
+                | Self::AntRequest
+                | Self::BlePacket
+                | Self::Entropy
+                | Self::Health
+                | Self::Activity
         )
     }
 
@@ -234,7 +252,10 @@ impl Kind {
                 "all" => Self::ALL.to_vec(),
                 "default" => Self::ALL.into_iter().filter(|k| !k.bulky()).collect(),
                 "seen" => Self::ALL.into_iter().filter(|k| k.seen()).collect(),
-                "inputs" => Self::ALL.into_iter().filter(|k| !k.seen()).collect(),
+                "inputs" => Self::ALL
+                    .into_iter()
+                    .filter(|k| !k.seen() && !k.measured())
+                    .collect(),
                 name => match Self::ALL.into_iter().find(|k| k.name() == name) {
                     Some(kind) => vec![kind],
                     None => {
@@ -351,6 +372,27 @@ pub struct Timeline {
     /// Stretches in which a sensor that had sent packets sent none, in
     /// the order they began.
     pub silences: Vec<Silence>,
+    /// Each power control state, from the session time it was reported.
+    pub power: Vec<(u64, device_api::power::State)>,
+    /// Each health record, with the session time it was recorded at.
+    pub health: Vec<(u64, trace::Health)>,
+    /// Each activity window, in order.
+    pub activity: Vec<Window>,
+}
+
+/// Where the CPU time went in the window that ended at `end_ms`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Window {
+    pub end_ms: u64,
+    pub activity: trace::Activity,
+    pub tasks: Vec<TaskTime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskTime {
+    pub name: String,
+    pub polls: u32,
+    pub busy_us: Option<u32>,
 }
 
 /// No packet from `sensor` after `last_ms` until `next_ms`, or to the end.
@@ -488,6 +530,9 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         clock: reader.clock,
         utc_at_boot_ms: reader.utc_at_boot_ms,
         silences: reader.silences,
+        power: reader.power,
+        health: reader.health,
+        activity: reader.activity,
     })
 }
 
@@ -508,6 +553,11 @@ struct Reader {
     pass_start: usize,
     /// A page was reported before this pass.
     paged: bool,
+    power: Vec<(u64, device_api::power::State)>,
+    health: Vec<(u64, trace::Health)>,
+    activity: Vec<Window>,
+    /// The activity window of this pass, while its tasks are read.
+    window: Option<Window>,
 }
 
 impl Reader {
@@ -543,8 +593,10 @@ impl Reader {
         });
     }
 
-    /// Give each page that changed in the pass just read its cause.
+    /// Give each page that changed in the pass just read its cause, and
+    /// enter its activity window.
     fn end_pass(&mut self) {
+        self.close_window();
         let pass = &mut self.entries[self.pass_start..];
         if pass.iter().any(|e| e.kind == Kind::Page) {
             let cause = if self.paged {
@@ -580,6 +632,13 @@ impl Reader {
                 ride_ms: self.ride_ms,
                 running: self.recording,
             });
+        }
+    }
+
+    fn close_window(&mut self) {
+        if let Some(window) = self.window.take() {
+            self.push(Kind::Activity, self::window(&window));
+            self.activity.push(window);
         }
     }
 
@@ -848,10 +907,13 @@ impl Reader {
             Event::ServerWrite { id, taken } => {
                 self.push(Kind::Phone, format!("server write #{id} took {taken} B"))
             }
-            Event::PowerControl(status) => self.push(
-                Kind::Power,
-                format!("{:?} {:?}", status.state, status.operation).to_lowercase(),
-            ),
+            Event::PowerControl(status) => {
+                self.power.push((self.now, status.state));
+                self.push(
+                    Kind::Power,
+                    format!("{:?} {:?}", status.state, status.operation).to_lowercase(),
+                )
+            }
             Event::PowerRequest {
                 operation,
                 delay_ms,
@@ -907,6 +969,31 @@ impl Reader {
                     body.len()
                 ),
             ),
+            Event::Health(health) => {
+                self.push(Kind::Health, self::health(&health));
+                self.health.push((self.now, health));
+            }
+            Event::Activity(activity) => {
+                self.close_window();
+                self.window = Some(Window {
+                    end_ms: self.now,
+                    activity,
+                    tasks: Vec::new(),
+                });
+            }
+            Event::Task {
+                name,
+                polls,
+                busy_us,
+            } => {
+                if let Some(window) = &mut self.window {
+                    window.tasks.push(TaskTime {
+                        name: name.into(),
+                        polls,
+                        busy_us,
+                    });
+                }
+            }
         }
     }
 }
@@ -1067,6 +1154,166 @@ fn battery(snapshot: Option<device_api::input::InputSnapshot>) -> String {
     format!("{level}{supply}")
 }
 
+pub fn rate(per_second: f64) -> String {
+    if per_second >= 10.0 {
+        format!("{per_second:.0}/s")
+    } else {
+        format!("{per_second:.1}/s")
+    }
+}
+
+pub fn percent(share: f64) -> String {
+    format!("{:.1}%", share * 100.0)
+}
+
+/// A health record as one timeline line.
+fn health(h: &trace::Health) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if h.simulated {
+        parts.push("simulated".into());
+    }
+    if let Some(free) = h.heap_free {
+        parts.push(format!("heap {}", bytes(u64::from(free))));
+    }
+    if let Some(least) = h.heap_min {
+        parts.push(format!("least {}", bytes(u64::from(least))));
+    }
+    if let Some(free) = h.psram_free {
+        parts.push(format!("psram {}", bytes(u64::from(free))));
+    }
+    if let Some(us) = h.frame_max_us {
+        parts.push(format!("frame {}", millis(us)));
+    }
+    if let Some(us) = h.pass_max_us {
+        parts.push(format!("pass {}", millis(us)));
+    }
+    parts.push(format!(
+        "gps {} sentences, {} overflows, {} uart errors",
+        h.gps_sentences, h.gps_overflows, h.gps_uart_errors
+    ));
+    parts.push(format!("companion {} errors", h.companion_errors));
+    if let Some(us) = h.card_write_max_us {
+        parts.push(format!("card write {}", millis(us)));
+    }
+    if let Some(recoveries) = h.card_recoveries {
+        parts.push(format!("card {recoveries} recoveries"));
+    }
+    if h.spool_size > 0 {
+        parts.push(format!(
+            "spool {} of {}",
+            bytes(u64::from(h.spool_used)),
+            bytes(u64::from(h.spool_size))
+        ));
+    }
+    if let Some(state) = h.wifi {
+        parts.push(format!("wifi {}", wifi(state)));
+    }
+    if let Some(rssi) = h.wifi_rssi {
+        parts.push(format!("wifi {rssi} dBm"));
+    }
+    if let Some(rssi) = h.ble_rssi {
+        parts.push(format!("ble sensor {rssi} dBm"));
+    }
+    parts.join(", ")
+}
+
+/// An activity window as one timeline line.
+fn window(window: &Window) -> String {
+    let a = &window.activity;
+    let span_ms = u64::from(a.window_ms).max(1);
+    let share = |us: u32| percent(f64::from(us) / (span_ms * 1000) as f64);
+    let per_s = |count: u32| rate(f64::from(count) * 1000.0 / span_ms as f64);
+    let mut text = format!(
+        "{}{}: {} wakeups",
+        if a.simulated { "simulated " } else { "" },
+        duration(span_ms),
+        per_s(a.wakes),
+    );
+    if let Some(ticks) = a.ticks {
+        let _ = write!(text, ", {} ticks", per_s(ticks));
+    }
+    if let Some(switches) = a.switches {
+        let _ = write!(text, ", {} switches", per_s(switches));
+    }
+    let cpu: Vec<String> = [
+        ("awake", a.awake_us),
+        ("main", a.main_us),
+        ("radio", a.radio_us),
+        ("idle", a.idle_us),
+        ("counting", a.hooks_us),
+    ]
+    .into_iter()
+    .filter_map(|(name, us)| Some(format!("{name} {}", share(us?))))
+    .collect();
+    if !cpu.is_empty() {
+        let _ = write!(text, ", {}", cpu.join(", "));
+    }
+    let tasks: Vec<String> = window
+        .tasks
+        .iter()
+        .map(|task| match task.busy_us {
+            Some(busy) => format!("{} {} {}", task.name, per_s(task.polls), share(busy)),
+            None => format!("{} {}", task.name, per_s(task.polls)),
+        })
+        .collect();
+    if !tasks.is_empty() {
+        let _ = write!(text, "; {}", tasks.join(", "));
+    }
+    let c = &a.consumers;
+    let _ = write!(
+        text,
+        "; backlight {}%, {} frames, gnss {}{}, ap {}, ble {}, ant {}{}{}",
+        c.backlight,
+        c.frames,
+        match c.gnss {
+            trace::Gnss::Off => "off",
+            trace::Gnss::Receiving => "on",
+            trace::Gnss::Paused => "paused",
+            trace::Gnss::Failed => "failed",
+        },
+        c.wifi
+            .map(|state| format!(", wifi {}", wifi(state)))
+            .unwrap_or_default(),
+        match c.access_point {
+            device_api::server::AccessPointState::Off
+            | device_api::server::AccessPointState::Unsupported => "off".to_string(),
+            device_api::server::AccessPointState::Up { clients } => format!("up {clients}"),
+            other => format!("{other:?}").to_lowercase(),
+        },
+        c.ble.name(),
+        format!("{:?}", c.ant).to_lowercase(),
+        if c.ant_scanning { " scanning" } else { "" },
+        if c.ant_channels > 0 {
+            format!(" {} linked", c.ant_channels)
+        } else {
+            String::new()
+        }
+    );
+    if let Some(mhz) = c.cpu_mhz {
+        let _ = write!(text, ", cpu {mhz} MHz");
+    }
+    if c.slept_ms > 0 {
+        let _ = write!(text, ", slept {}", duration(u64::from(c.slept_ms)));
+    }
+    text
+}
+
+fn wifi(state: device_api::connectivity::WifiState) -> String {
+    format!("{state:?}").to_lowercase()
+}
+
+pub fn bytes(n: u64) -> String {
+    if n >= 1024 * 1024 {
+        format!("{:.2} MiB", n as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} KiB", n as f64 / 1024.0)
+    }
+}
+
+pub fn millis(us: u32) -> String {
+    format!("{:.1} ms", f64::from(us) / 1000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,6 +1344,21 @@ mod tests {
         };
         assert_eq!(moment.to_string(), "80:12.345 ride 78:05");
         assert_eq!(Moment::default().to_string(), "00:00.000 ride --:--");
+    }
+
+    #[test]
+    fn health_and_activity_show_only_when_asked_for_by_name() {
+        for group in ["default", "seen", "inputs"] {
+            let kinds = Kind::parse_list(group).unwrap();
+            assert!(
+                !kinds.contains(&Kind::Health) && !kinds.contains(&Kind::Activity),
+                "{group}: {kinds:?}"
+            );
+        }
+        assert_eq!(
+            Kind::parse_list("activity,health"),
+            Ok(vec![Kind::Health, Kind::Activity])
+        );
     }
 
     #[test]

@@ -495,8 +495,7 @@ impl Replay {
 }
 
 /// The first event where two traces part, with the pass it belongs to.
-/// Logged warnings and errors are left out: no input, and a device logs
-/// lines from its drivers that a replay never runs.
+/// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     let (header, mut events) = match trace::decode(recorded) {
         Ok(decoded) => decoded,
@@ -518,13 +517,12 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     if !stamped || unstamped != replayed_header {
         return Some(format!("header {header:?}, replayed {replayed_header:?}"));
     }
-    let logged = |event: &Event<'_>| matches!(event, Event::Log { .. });
     let (mut pass, mut read) = (0, 0);
-    for (index, event) in events.by_ref().enumerate().filter(|(_, e)| !logged(e)) {
+    for (index, event) in events.by_ref().enumerate().filter(|(_, e)| !measured(e)) {
         if let Event::Pass { now_ms } = event {
             pass = now_ms;
         }
-        let other = replayed_events.by_ref().find(|e| !logged(e));
+        let other = replayed_events.by_ref().find(|e| !measured(e));
         if other != Some(event) {
             return Some(format!(
                 "event {index}, pass at {pass} ms: recorded {event:?}, replayed {other:?}"
@@ -539,7 +537,7 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     if let Some(damaged) = damaged(&events, "recorded") {
         return Some(damaged);
     }
-    if let Some(extra) = replayed_events.by_ref().find(|e| !logged(e)) {
+    if let Some(extra) = replayed_events.by_ref().find(|e| !measured(e)) {
         return Some(format!("the replay went on with {extra:?}"));
     }
     damaged(&replayed_events, "replayed")
@@ -562,9 +560,19 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
             note: *note,
             of: *of,
         })),
-        Event::Log { .. } => Some(None),
+        event if measured(event) => Some(None),
         _ => None,
     }
+}
+
+/// Logged warnings and errors, health and where the CPU time went: no
+/// input, and a device logs and measures its drivers, which a replay never
+/// runs, so none of it is compared.
+pub(crate) fn measured(event: &Event<'_>) -> bool {
+    matches!(
+        event,
+        Event::Log { .. } | Event::Health(_) | Event::Activity(_) | Event::Task { .. }
+    )
 }
 
 /// The devices as the trace reports them, one pass at a time.
@@ -863,7 +871,10 @@ impl Sources {
             | Event::Sound { .. }
             | Event::RideState(_)
             | Event::Shown(_)
-            | Event::Log { .. } => self.ledger.note(Kind::Unreplayable, 1, || {
+            | Event::Log { .. }
+            | Event::Health(_)
+            | Event::Activity(_)
+            | Event::Task { .. } => self.ledger.note(Kind::Unreplayable, 1, || {
                 format!("{event:?} where an input belongs")
             }),
         }

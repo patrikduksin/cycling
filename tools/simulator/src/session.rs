@@ -42,7 +42,7 @@ use firmware_services::trace::frozen::{
 use firmware_services::trace::origin::{self, Config, Media, Memory};
 use firmware_services::trace::redact;
 use firmware_services::trace::spool::{self, Spool, Staging};
-use firmware_services::trace::{Event, Output};
+use firmware_services::trace::{Activity, Consumers, Event, Gnss, Health, Output, Vitals};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io;
@@ -339,6 +339,17 @@ struct Trace {
     start: Start,
     file: spool::File<Vec<u8>>,
     spooling: bool,
+    vitals: Vitals,
+    window: Window,
+}
+
+/// What the current activity window has counted so far.
+#[derive(Clone, Copy, Default)]
+struct Window {
+    start_ms: u64,
+    passes: u32,
+    /// The display's frame count as the window began.
+    frames: u32,
 }
 
 /// What the device started from, for the trace's header: the settings and
@@ -421,6 +432,8 @@ impl Trace {
             recorder: RefCell::new(Recorder::new(buffer, Staged::default())),
             file: spool::File::Waiting,
             spooling: false,
+            vitals: Vitals::default(),
+            window: Window::default(),
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]
@@ -1014,7 +1027,9 @@ impl Session {
             self.trace.spool(&self.bulk);
         }
         let quiet = self.quiet();
-        if quiet {
+        // A replay runs only the passes the recording kept, so it keeps
+        // each one, also one kept for its health and activity alone.
+        if quiet && !self.is_replay() {
             self.trace.recorder.borrow_mut().quiet_pass(self.now);
         } else {
             self.trace.record(&Event::Pass { now_ms: self.now });
@@ -1023,7 +1038,12 @@ impl Session {
         self.power.0.borrow_mut().refusals.begin_pass();
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
-        if self.pass(quiet) {
+        let stayed_quiet = self.pass(quiet);
+        self.trace.window.passes += 1;
+        if !self.off && self.trace.vitals.due(self.now, quiet) {
+            self.record_vitals();
+        }
+        if stayed_quiet {
             return;
         }
         if self.trace.start.journals.is_none() {
@@ -1080,6 +1100,90 @@ impl Session {
             spool::File::Open(_, _, drain) => Some(drain.name().as_str().to_string()),
             _ => None,
         }
+    }
+    /// Health and activity as the simulator knows them: its own passes,
+    /// what its devices report and the trace's spool. What it cannot know,
+    /// such as memory, CPU and pass times or signal, stays absent. A replay
+    /// records none: its device is the recording's.
+    fn record_vitals(&mut self) {
+        let Devices::Simulated(sim) = &self.devices else {
+            return;
+        };
+        let now = self.now;
+        let gps = sim.position.snapshot(now).map(|position| position.gps);
+        let input = InputObservation::snapshot(&sim.battery, now);
+        let (spool_used, spool_size) = self
+            .trace
+            .recorder
+            .borrow()
+            .sink()
+            .spool
+            .as_ref()
+            .map_or((0, 0), |spool| (spool.len(), spool.capacity()));
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let health = Health {
+            simulated: true,
+            gps_sentences: gps.map_or(0, |gps| gps.valid_sentences),
+            gps_overflows: gps.map_or(0, |gps| gps.overflows),
+            gps_uart_errors: gps.map_or(0, |gps| gps.uart_errors),
+            companion_errors: input.map_or(0, |input| {
+                input
+                    .companion_bad_crc
+                    .saturating_add(input.uart_errors)
+                    .saturating_add(input.input_lost)
+            }),
+            spool_used: count(spool_used),
+            spool_size: count(spool_size),
+            ..Health::default()
+        };
+        let frames = self.display.0.borrow().submissions;
+        let window = core::mem::replace(
+            &mut self.trace.window,
+            Window {
+                start_ms: now,
+                passes: 0,
+                frames,
+            },
+        );
+        let ant_channels = sim
+            .ant
+            .channels(now)
+            .iter()
+            .flatten()
+            .filter(|channel| channel.link == device_api::ant::LinkState::Connected)
+            .count();
+        #[cfg(feature = "cycling")]
+        let access_point = AccessPoint::state(&sim.access_point);
+        #[cfg(not(feature = "cycling"))]
+        let access_point = device_api::server::AccessPointState::Unsupported;
+        let activity = Activity {
+            simulated: true,
+            window_ms: u32::try_from(now - window.start_ms).unwrap_or(u32::MAX),
+            wakes: window.passes,
+            consumers: Consumers {
+                backlight: self.power.0.borrow().brightness,
+                frames: frames.wrapping_sub(window.frames),
+                gnss: match (&sim.gps, sim.position.missing) {
+                    (Some(_), false) => Gnss::Receiving,
+                    _ => Gnss::Off,
+                },
+                access_point,
+                ble: sim.ble.snapshot.link,
+                ant: sim.ant.availability,
+                ant_scanning: Ant::scanning(&sim.ant),
+                ant_channels: u8::try_from(ant_channels).unwrap_or(u8::MAX),
+                ..Consumers::default()
+            },
+            ..Activity::default()
+        };
+        let mut recorder = self.trace.recorder.borrow_mut();
+        recorder.record(&Event::Health(health));
+        recorder.record(&Event::Activity(activity));
+        recorder.record(&Event::Task {
+            name: "console",
+            polls: window.passes,
+            busy_us: None,
+        });
     }
     fn record_faults(&mut self) {
         let panel = core::mem::take(&mut self.display.0.borrow_mut().refusals.refused);

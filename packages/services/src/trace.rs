@@ -23,6 +23,7 @@ use device_api::server::{self, AccessPointState, Method, Reach};
 use device_api::sound;
 
 pub mod frozen;
+pub mod origin;
 pub mod spool;
 #[cfg(test)]
 mod tests;

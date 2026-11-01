@@ -7904,6 +7904,100 @@ fn a_ride_on_bulk_media_replays_exactly() {
 }
 
 #[test]
+fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() {
+    use firmware_services::trace::origin::{Config, FileEntry, Media, Memory};
+    let field = |out: &str, key: &str| -> String {
+        out.split_whitespace()
+            .find_map(|word| word.strip_prefix(key))
+            .unwrap_or_else(|| panic!("{key} in {out}"))
+            .to_string()
+    };
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    sim.install_terrain(b"CHILE-V1\0\0\0\0\0\0\0\0", &[7u8; 2048]);
+    sim.put_file("workouts/tempo.workout", b"tempo");
+    let mut sim = equip(sim.boot());
+    a_ride_on_new_bulk_media(&mut sim);
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    let (_, internal) = sim.command("RIDE INTERNAL STATUS");
+    sim.device.restart().unwrap();
+    let mut sim = sim.boot();
+    let settings = sim.device.shell.settings;
+    a_ride_on_new_bulk_media_again(&mut sim);
+    let (_, after) = sim.command("RIDE BULK STATUS");
+    assert!(
+        field(&after, "slot=") != field(&bulk, "slot="),
+        "this session rode on the card"
+    );
+
+    let capture = sim.capture();
+    let (header, _) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let config = Config::decode(header.config).unwrap();
+    assert_eq!(config.memory, Memory::ALL);
+    assert!(!config.redacted);
+    let (stored, _) = firmware_shell::preferences::decode(Some(config.settings));
+    assert_eq!(stored, settings, "the settings at power-on");
+
+    let media = Media::decode(header.media).unwrap();
+    let (store, head) = media.rides.expect("the card's ride log");
+    assert_eq!(format!("{store:016x}"), field(&bulk, "store="));
+    assert_eq!(
+        head.to_string(),
+        field(&bulk, "slot="),
+        "the card's head at power-on"
+    );
+    let journal = media.journal.expect("the internal journal");
+    assert_eq!(journal.to_string(), field(&internal, "slot="));
+    let terrain = media.terrain.expect("the pack");
+    assert!(terrain.ready);
+    assert_eq!(terrain.length, 2048);
+    assert_eq!(&terrain.tag[..8], b"CHILE-V1");
+    let files = media.files.expect("FILES");
+    let names: Vec<FileEntry<'_>> = files.entries().collect();
+    assert!(
+        names
+            .iter()
+            .any(|file| file.name == "workouts/tempo.workout" && file.length == 5),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_replay_gives_vana_only_the_working_memory_the_recording_had() {
+    use firmware_services::trace::{self, origin::Config};
+    let mut sim = equip(Sim::new().boot());
+    sim.advance(seconds(5));
+    let mut capture = sim.capture();
+    assert!(sim.device.sdk.detach_terrain().is_some());
+    let (header, _) = trace::decode(&capture.trace).unwrap();
+    let mut config = Config::decode(header.config).unwrap();
+    config.memory.terrain = false;
+    let mut encoded = vec![0u8; 1024];
+    let len = config.encode(&mut encoded).unwrap();
+    let rewritten = trace::Header {
+        config: &encoded[..len],
+        ..header
+    };
+    let mut block = vec![0u8; trace::MAX_BLOCK];
+    let block_len = trace::encode_header(&rewritten, &mut block).unwrap();
+    let old = 6 + usize::from(u16::from_le_bytes([capture.trace[0], capture.trace[1]]));
+    capture.trace = [&block[..block_len], &capture.trace[old..]].concat();
+    let mut replayed = Sim::replay(&capture);
+    assert!(
+        replayed.device.sdk.detach_terrain().is_none(),
+        "no tile cache, as the recording had none"
+    );
+}
+
+fn a_ride_on_new_bulk_media_again(sim: &mut Sim) {
+    sim.advance(seconds(10));
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+}
+
+#[test]
 fn a_new_store_replays_with_the_entropy_it_was_named_from() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);

@@ -48,7 +48,8 @@ struct Region {
 }
 
 /// The region, and whether this handle is a host's: a host's operations
-/// are neither counted nor logged as the device's.
+/// are neither counted nor logged as the device's, and never meet a fault
+/// a replay scripts for the device's.
 #[derive(Clone)]
 pub struct SimBulk(Rc<RefCell<Region>>, bool);
 
@@ -241,6 +242,7 @@ impl SimBulk {
             error: StorageError::from_bulk(error),
         };
         let fault = match &mut region.script {
+            Some(_) if self.1 => None,
             Some(script) => script
                 .iter()
                 .position(|f| (f.attempt, f.op, f.at) == (attempt, op, sector))

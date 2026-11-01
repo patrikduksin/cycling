@@ -35,7 +35,8 @@ use firmware_services::trace::frozen::{
 };
 #[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
-use firmware_services::trace::{Event, Header, Output, encode_header};
+use firmware_services::trace::origin::{self, Config, Media, Memory};
+use firmware_services::trace::{Event, Output};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io;
@@ -303,25 +304,77 @@ struct Trace {
     access_point: FrozenAccessPoint,
     #[cfg(feature = "cycling")]
     server: FrozenServer,
+    start: Start,
+}
+
+/// What the device started from, for the trace's header: the settings and
+/// working memory at power-on, FILES and TERRAIN as the first pass found
+/// them, and the ride journals once VANA's boot scans ended.
+struct Start {
+    boot: u32,
+    profile: u8,
+    settings: Vec<u8>,
+    memory: Memory,
+    volumes: Option<Volumes>,
+    journals: Option<Journals>,
+}
+
+type Volumes = (Option<(u64, u64, Vec<u8>)>, Option<origin::Terrain>);
+/// The internal journal's next slot and the card log's store id and head.
+type Journals = (Option<u32>, Option<(u64, u64)>);
+
+impl Start {
+    fn read_volumes(&mut self, bulk: &crate::bulk::SimBulk) {
+        let mut entries = vec![0u8; origin::FILE_ENTRIES];
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let (files, terrain) = origin::volumes(&mut bulk.host(), &mut entries, &mut sector);
+        let files = files.map(|files| (files.store, files.generation, files.entries.to_vec()));
+        self.volumes = Some((files, terrain));
+    }
+
+    fn header(&self) -> Vec<u8> {
+        let (files, terrain) = self.volumes.clone().unwrap_or((None, None));
+        let (journal, rides) = self.journals.unwrap_or((None, None));
+        let config = Config {
+            settings: &self.settings,
+            memory: self.memory,
+            redacted: false,
+        };
+        let media = Media {
+            journal,
+            rides,
+            files: files
+                .as_ref()
+                .map(|(store, generation, entries)| origin::Files {
+                    store: *store,
+                    generation: *generation,
+                    entries,
+                }),
+            terrain,
+        };
+        let (mut scratch, mut out) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);
+        let commit = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
+        let len = origin::header(
+            commit,
+            self.boot,
+            self.profile,
+            &config,
+            &media,
+            &mut scratch,
+            &mut out,
+        )
+        .expect("the header fits a block");
+        out.truncate(len);
+        out
+    }
 }
 
 impl Trace {
-    fn new(boot: u32, profile: u8) -> Self {
-        let header = Header {
-            version: firmware_services::trace::VERSION,
-            oldest_reader: firmware_services::trace::OLDEST_READER,
-            build: build_id(),
-            boot,
-            profile,
-            config: &[],
-            media: &[],
-        };
-        let mut file = vec![0u8; TRACE_BLOCK];
-        let len = encode_header(&header, &mut file).expect("the header fits a block");
-        file.truncate(len);
+    fn new(start: Start) -> Self {
         let buffer = vec![0u8; TRACE_BLOCK].into_boxed_slice();
         Self {
-            recorder: RefCell::new(Recorder::new(buffer, Blocks(file))),
+            start,
+            recorder: RefCell::new(Recorder::new(buffer, Blocks::default())),
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]
@@ -350,7 +403,8 @@ impl Trace {
 
     fn bytes(&self) -> Vec<u8> {
         let mut recorder = self.recorder.borrow_mut();
-        let mut bytes = recorder.sink().0.clone();
+        let mut bytes = self.start.header();
+        bytes.extend_from_slice(&recorder.sink().0);
         bytes.extend_from_slice(recorder.open_block());
         bytes
     }
@@ -362,20 +416,8 @@ pub fn build_sources() -> Vec<&'static str> {
     env!("CYCLING_BUILD_SOURCES").split(' ').collect()
 }
 
-/// The build's commit; zero, unknown, for a build with uncommitted changes,
-/// since no commit holds what it ran.
 fn build_id() -> [u8; 20] {
-    let mut id = [0u8; 20];
-    let hex = option_env!("CYCLING_BUILD_COMMIT")
-        .filter(|commit| !commit.ends_with("-dirty"))
-        .unwrap_or("");
-    for (byte, pair) in id.iter_mut().zip(hex.as_bytes().chunks(2)) {
-        *byte = core::str::from_utf8(pair)
-            .ok()
-            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            .unwrap_or(0);
-    }
-    id
+    origin::build(option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""))
 }
 
 fn recorded_bulk<'a>(
@@ -623,12 +665,12 @@ impl Session {
                 "geometry must be 16..320",
             ));
         }
-        Self::with_media(FileFlash::open(root)?, width, height)
+        Self::with_media(FileFlash::open(root)?, width, height, Memory::ALL)
     }
     /// A C606-sized device on memory media whose companion and ANT radio
     /// start shortly after boot.
     pub fn device() -> io::Result<Self> {
-        let mut session = Self::with_media(FileFlash::memory(), 240, 320)?;
+        let mut session = Self::with_media(FileFlash::memory(), 240, 320, Memory::ALL)?;
         let sim = session.sim_mut();
         sim.companion_starting(Availability::Ready);
         sim.restart_probe_ms = RESTART_PROBE_MS;
@@ -650,7 +692,12 @@ impl Session {
     pub fn is_replay(&self) -> bool {
         matches!(self.devices, Devices::Replayed(_))
     }
-    fn with_media(media: FileFlash, width: usize, height: usize) -> io::Result<Self> {
+    fn with_media(
+        media: FileFlash,
+        width: usize,
+        height: usize,
+        memory: Memory,
+    ) -> io::Result<Self> {
         crate::logs::install();
         let boot = media.begin_boot()?;
         let display = DisplayDevice::new(width, height);
@@ -694,22 +741,30 @@ impl Session {
         {
             use vana::ride::directory::{ENTRY, RIDES, RideIndex};
             let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
-            sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
+            if memory.ride_index {
+                sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
+            }
             let facts = vec![0u8; vana::ride::facts::SHELF_BYTES].into_boxed_slice();
-            sdk.attach_ride_facts(Box::leak(facts));
+            if memory.ride_facts {
+                sdk.attach_ride_facts(Box::leak(facts));
+            }
         }
         #[cfg(feature = "cycling")]
         sdk.load_preferences(&shell.settings.app);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;
         // each boot starts them over, as device memory does.
         #[cfg(feature = "cycling")]
-        sdk.attach_terrain(terrain_block());
+        if memory.terrain {
+            sdk.attach_terrain(terrain_block());
+        }
         #[cfg(feature = "cycling")]
-        sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
+        if memory.phone {
+            sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
+        }
         // Back to start's breadcrumb, which the device keeps in PSRAM; each
         // boot gets a fresh one, as device memory starts over.
         #[cfg(feature = "cycling")]
-        {
+        if memory.back_to_start {
             let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::BACK_CRUMBS]);
             let map = Box::leak(Box::new(vana::app::MapFrame::default()));
             let line = Vec::leak(vec![vana::app::Crumb::default(); vana::app::COURSE_POINTS]);
@@ -721,7 +776,14 @@ impl Session {
             ));
             sdk.attach_back(Box::leak(back));
         }
-        let trace = Trace::new(boot, shell.settings.ble_profile);
+        let trace = Trace::new(Start {
+            boot,
+            profile: shell.settings.ble_profile,
+            settings: shell.settings.encode().to_vec(),
+            memory,
+            volumes: None,
+            journals: None,
+        });
         Ok(Self {
             shell,
             now: 0,
@@ -747,7 +809,11 @@ impl Session {
         let flash = origin.flash.copy_before_boot(origin.boot).ok_or_else(|| {
             io::Error::other("the capture's media is file-backed and cannot be replayed")
         })?;
-        let mut session = Self::with_media(flash, 240, 320)?;
+        let memory = firmware_services::trace::decode(&capture.trace)
+            .ok()
+            .and_then(|(header, _)| Config::decode(header.config))
+            .map_or(Memory::ALL, |config| config.memory);
+        let mut session = Self::with_media(flash, 240, 320, memory)?;
         session.bulk = origin.bulk.scripted();
         let shelled = Shelled {
             input: session.input.clone(),
@@ -839,12 +905,25 @@ impl Session {
                 }
             }
         }
+        if self.trace.start.volumes.is_none() {
+            self.trace.start.read_volumes(&self.bulk);
+        }
         self.trace.record(&Event::Pass { now_ms: self.now });
         self.display.0.borrow_mut().refusals.begin_pass();
         self.power.0.borrow_mut().refusals.begin_pass();
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
         self.pass();
+        if self.trace.start.journals.is_none() {
+            #[cfg(feature = "cycling")]
+            let journals = self
+                .sdk
+                .journals_at_boot()
+                .map(|journals| (Some(journals.internal), journals.bulk));
+            #[cfg(not(feature = "cycling"))]
+            let journals = Some((None, None));
+            self.trace.start.journals = journals;
+        }
         self.record_faults();
         let seen = self.record_seen();
         if let Devices::Replayed(replay) = &mut self.devices {
@@ -1586,7 +1665,7 @@ impl Session {
     /// persist; everything held in device memory starts over.
     fn reboot(&mut self, power: bool) -> io::Result<()> {
         let g = self.display.geometry();
-        let mut next = Self::with_media(self.media.clone(), g.width, g.height)?;
+        let mut next = Self::with_media(self.media.clone(), g.width, g.height, Memory::ALL)?;
         self.bulk.begin_boot();
         next.bulk = self.bulk.clone();
         let uptime = self.now;

@@ -30,6 +30,10 @@ class FakeDevice:
         self.writer = None
         self.writes = []
         self.fail_write_at = None
+        # STORE: name -> (file id, records), and the generation deletes advance.
+        self.store = {}
+        self.generation = 1
+        self.reads = []
 
     def terrain_info(self):
         info = bytearray(93)
@@ -134,6 +138,32 @@ class FakeDevice:
             return 0, 128, len(self.files), entries
         if op == OP['files_delete']:
             return (0, 0, 0, b'') if self.files.pop(payload.decode(), None) is not None else (8, 0, 0, b'')
+        if op == OP['store_status']:
+            info = struct.pack('<QQ6I', self.generation, 0xCD, len(self.store), 64, 1039, 1000, 512, 486)
+            return 0, self.generation, len(self.store), info
+        if op == OP['store_list']:
+            prefix = payload.decode()
+            entries = b''.join(
+                name.encode().ljust(40, b'\0') + struct.pack('<II', file_id, 1 + len(records) // 512)
+                for name, (file_id, records) in self.store.items()
+                if name.startswith(prefix)
+            )
+            return 0, self.generation, len(entries) // 48, entries
+        if op == OP['store_read']:
+            if payload.decode() not in self.store:
+                return 8, 0, 0, b''
+            self.reads.append(arg)
+            records = self.store[payload.decode()][1][arg:]
+            data, sent = b'', 0
+            while sent < min(count, len(records)) and len(data) + 486 <= 4096:
+                data += records[sent]
+                sent += 1
+            return 0, arg + sent, sent, data
+        if op == OP['store_delete']:
+            if self.store.pop(payload.decode(), None) is None:
+                return 8, 0, 0, b''
+            self.generation += 1
+            return 0, self.generation, 0, b''
         raise AssertionError(op)
 
     def entry(self, slot, name):
@@ -334,6 +364,34 @@ class VolumesTests(unittest.TestCase):
             self.assertEqual(out.read_bytes(), source.read_bytes())
             transfer.call('files_delete', payload=b'workouts/ftp.json')
             self.assertEqual(volumes.files_list(transfer), [])
+
+    def test_store_lists_a_directory_pulls_a_file_by_records_and_deletes(self):
+        device = FakeDevice()
+        trace = [bytes([i % 251]) * (486 - (i % 5) * 90) for i in range(1300)]
+        device.store = {'traces/0002': (3, trace), 'traces/0001': (2, [b'old']), 'other/settings': (1, [b's'])}
+        transfer = FakeTransfer(device)
+        self.assertEqual(
+            volumes.store_list(transfer, 'traces/'),
+            [{'name': 'traces/0001', 'id': 2, 'chunks': 1}, {'name': 'traces/0002', 'id': 3, 'chunks': 3}],
+        )
+        self.assertEqual(len(volumes.store_list(transfer)), 3)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'trace.bin'
+            result = volumes.store_get(transfer, 'traces/0002', out)
+            self.assertEqual(out.read_bytes(), b''.join(trace))
+            self.assertEqual(result, {'name': 'traces/0002', 'records': 1300, 'bytes': len(b''.join(trace))})
+            # Each request continues where the last reply ended.
+            self.assertEqual(device.reads[0], 0)
+            self.assertEqual(device.reads, sorted(set(device.reads)))
+            missing = Path(directory) / 'missing.bin'
+            with self.assertRaisesRegex(volumes.TransferError, 'not_found'):
+                volumes.store_get(transfer, 'traces/none', missing)
+            self.assertFalse(missing.exists() or Path(f'{missing}.partial').exists())
+        status = volumes.inspect(transfer)['store']
+        self.assertEqual((status['files'], status['free_chunks'], status['generation']), (3, 1000, 1))
+        transfer.call('store_delete', payload=b'traces/0001')
+        self.assertEqual([e['name'] for e in volumes.store_list(transfer, 'traces/')], ['traces/0002'])
+        self.assertEqual(volumes.inspect(transfer)['store']['generation'], 2)
 
     def test_a_get_whose_bytes_do_not_match_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as directory:

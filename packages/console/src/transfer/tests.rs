@@ -11,6 +11,7 @@ const C606: u64 = 5_777_407;
 #[derive(Default)]
 struct Media {
     written: BTreeMap<u64, [u8; SECTOR_SIZE]>,
+    reads: u64,
 }
 
 impl ReadWrite for Media {
@@ -25,6 +26,7 @@ impl ReadWrite for Media {
         if sector >= C606 {
             return Err(Error::Range);
         }
+        self.reads += 1;
         *output = self
             .written
             .get(&sector)
@@ -435,4 +437,130 @@ fn line_commands_add_and_report_the_store() {
         let mut words = line.split_ascii_whitespace();
         assert_eq!(volumes::parse("STORE", &mut words), parsed, "{line}");
     }
+}
+
+/// What the app leaves in STORE: a trace of `records` records, each as long
+/// as its number allows, and a small settings file.
+fn record_traces(media: &mut Media, records: u32) -> Vec<u8> {
+    use firmware_services::store::{self, Name};
+    let mut sector = [0u8; 512];
+    let mut vol = firmware_services::volume::open(media, &volume::STORE, &mut sector).unwrap();
+    let mut mounted = store::mount(&mut vol, &mut sector).unwrap();
+    let mut other = mounted
+        .create(
+            &mut vol,
+            &Name::new("other/settings").unwrap(),
+            None,
+            &mut sector,
+        )
+        .unwrap();
+    other
+        .append(&mut mounted, &mut vol, b"settings", &mut sector)
+        .unwrap();
+    other.sync(&mut mounted, &mut vol, &mut sector).unwrap();
+    let mut trace = mounted
+        .create(
+            &mut vol,
+            &Name::new("traces/0001").unwrap(),
+            None,
+            &mut sector,
+        )
+        .unwrap();
+    let mut bytes = Vec::new();
+    for i in 0..records {
+        let record: Vec<u8> = (0..store::PAYLOAD - (i as usize % 7) * 50)
+            .map(|b| (b as u32 * 13 + i) as u8)
+            .collect();
+        trace
+            .append(&mut mounted, &mut vol, &record, &mut sector)
+            .unwrap();
+        trace.sync(&mut mounted, &mut vol, &mut sector).unwrap();
+        bytes.extend_from_slice(&record);
+    }
+    bytes
+}
+
+#[test]
+fn store_files_are_listed_pulled_by_record_range_and_deleted() {
+    let mut host = Host::new();
+    assert_eq!(
+        host.call(op::STORE_STATUS, 0, 0, &[]).0,
+        status::UNINITIALIZED
+    );
+    host.session = Session::default();
+    host.id = 0;
+    let mut out = String::new();
+    volumes::execute(volumes::Command::AddStore, &mut host.media, &mut out);
+    let records = 2 * firmware_services::store::CHUNK + 300;
+    let trace = record_traces(&mut host.media, records);
+
+    let (status, generation, files, info) = host.call(op::STORE_STATUS, 0, 0, &[]);
+    assert_eq!((status, files), (status::OK, 2));
+    assert_eq!(get_u64(&info, 0), generation);
+    assert_eq!(get_u32(&info, 24) - get_u32(&info, 28), 4, "chunks in use");
+    let (status, _, count, list) = host.call(op::STORE_LIST, 0, 0, b"traces/");
+    assert_eq!((status, count, list.len()), (status::OK, 1, 48));
+    assert_eq!(&list[..11], b"traces/0001");
+    assert_eq!(get_u32(&list, 44), 3, "chunks");
+    assert_eq!(host.call(op::STORE_LIST, 0, 0, b"").2, 2);
+    assert_eq!(
+        host.call(op::STORE_LIST, 0, 0, b"traces").0,
+        status::INVALID
+    );
+
+    // A pull keeps its reader open: one read per record (2.1 per KB of full
+    // records), plus opening the file, a table pass at each chunk and the
+    // end, which the last two requests both read.
+    let reads = host.media.reads;
+    let (mut pulled, mut at) = (Vec::new(), 0);
+    loop {
+        let (status, next, count, data) = host.call(op::STORE_READ, at, 100, b"traces/0001");
+        assert_eq!(status, status::OK);
+        if count == 0 {
+            break;
+        }
+        assert_eq!(next, at + u64::from(count));
+        pulled.extend_from_slice(&data);
+        at = next;
+    }
+    assert_eq!(at, u64::from(records));
+    assert!(pulled == trace, "the pulled trace differs");
+    let (table, dir) = (9, 1);
+    let overhead = host.media.reads - reads - u64::from(records);
+    assert!(
+        overhead <= dir + 3 * table + 2,
+        "{overhead} reads besides records"
+    );
+
+    // Any record range, in another chunk or back at the start.
+    let first = firmware_services::store::CHUNK + 5;
+    let (_, next, count, data) = host.call(op::STORE_READ, u64::from(first), 2, b"traces/0001");
+    assert_eq!((next, count), (u64::from(first) + 2, 2));
+    let offset: usize = (0..first)
+        .map(|i| firmware_services::store::PAYLOAD - (i as usize % 7) * 50)
+        .sum();
+    assert!(data == trace[offset..offset + data.len()]);
+    let (_, _, _, data) = host.call(op::STORE_READ, 0, 1, b"traces/0001");
+    assert!(data == trace[..firmware_services::store::PAYLOAD]);
+    assert_eq!(
+        host.call(op::STORE_READ, 0, 1, b"traces/none").0,
+        status::NOT_FOUND
+    );
+    assert_eq!(host.call(op::STORE_READ, 0, 1, b"/bad").0, status::INVALID);
+
+    // A delete is a new generation the app compares after the session.
+    let (status, after, _, _) = host.call(op::STORE_DELETE, 0, 0, b"traces/0001");
+    assert_eq!(status, status::OK);
+    assert!(after > generation);
+    assert_eq!(
+        host.call(op::STORE_READ, 0, 1, b"traces/0001").0,
+        status::NOT_FOUND
+    );
+    let (_, _, files, info) = host.call(op::STORE_STATUS, 0, 0, &[]);
+    assert_eq!((files, get_u64(&info, 0)), (1, after));
+    // A new session sees what this one committed.
+    host.session = Session::default();
+    host.id = 0;
+    let (_, _, count, list) = host.call(op::STORE_LIST, 0, 0, b"");
+    assert_eq!((count, &list[..14]), (1, &b"other/settings"[..]));
 }

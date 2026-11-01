@@ -295,6 +295,11 @@ TASKS = [
         f'{DEV}device.volumes files',
     ),
     task(
+        'store',
+        'List, get or delete files in the MMC STORE, such as ride traces (list [dir/]|get name path|delete name)',
+        f'{DEV}device.volumes store',
+    ),
+    task(
         'mmc-maintenance',
         'Back up or explicitly write MMC using the dedicated maintenance image',
         f'{DEV}device.mmc_maintenance',

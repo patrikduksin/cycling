@@ -104,7 +104,14 @@ cycling volumes add-store                     # add STORE to a table from before
 cycling terrain-write pack.bin --tag CHILE-V1 --verify   # resumes a matching writing pack
 cycling terrain-verify pack.bin
 cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
+cycling store list [traces/] | get NAME PATH | delete NAME
 ```
+
+`cycling store get` pulls a file record by record. The session keeps the
+file open between requests, so a pull reads about one sector per 486 bytes.
+A delete changes the store while the app is paused. After the session the
+app mounts the store again and compares its generation with the one it held;
+if they differ, it reopens its files.
 
 Line commands: `VOLUME [STATUS|INIT|ADD STORE|TRANSFER]`, `TERRAIN [STATUS]`,
 `FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]` and

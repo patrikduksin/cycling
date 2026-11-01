@@ -1,10 +1,11 @@
-"""Inspect the C606 MMC volumes, write and verify the TERRAIN pack and manage FILES.
+"""Inspect the C606 MMC volumes, write and verify the TERRAIN pack, manage FILES and STORE.
 
 Bulk data moves through the firmware's binary transfer session: `VOLUME TRANSFER`
 on the ordinary terminal, then CRC-checked frames until `END` (layout in
 `packages/console/src/transfer.rs`). The device pauses the app meanwhile and
 refuses while a ride records. Writes reach only the TERRAIN pack's data sectors
-in order, its header commit and the FILES store; RIDES is never touched.
+in order, its header commit, the FILES store and deletes in STORE; RIDES is
+never touched.
 
 A terrain write is resumable: a pack left `writing` with the same length, CRC and
 SHA-256 is read back chunk by chunk against the file and continues from the first
@@ -53,6 +54,10 @@ OP = {
     'files_read': 26,
     'files_delete': 27,
     'files_stat': 28,
+    'store_status': 30,
+    'store_list': 31,
+    'store_read': 32,
+    'store_delete': 33,
 }
 STATUS = [
     'ok',
@@ -75,6 +80,9 @@ KINDS = {1: 'log', 2: 'pack', 3: 'files', 4: 'store'}
 PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
 NAME = 40
 ENTRY = 2 + NAME + 12
+STORE_ENTRY = NAME + 8
+# Records one STORE_READ asks for; the device sends as many as fit 4 KiB.
+STORE_RECORDS = 16
 
 
 def crc(data, value=0):
@@ -230,7 +238,24 @@ def inspect(transfer):
         }
     else:
         result['files'] = {'state': status}
+    status, _, _, data = transfer.call('store_status', allow=('uninitialized', 'foreign', 'corrupt'))
+    result['store'] = decode_store_status(data) if status == 'ok' else {'state': status}
     return result
+
+
+def decode_store_status(data):
+    generation, store = struct.unpack('<QQ', data[:16])
+    files, capacity, chunks, free, chunk_sectors, record = struct.unpack('<6I', data[16:40])
+    return {
+        'state': 'ready',
+        'files': files,
+        'capacity': capacity,
+        'chunks': chunks,
+        'free_chunks': free,
+        'chunk_bytes': chunk_sectors * record,
+        'generation': generation,
+        'store': f'{store:016x}',
+    }
 
 
 def digest_file(path):
@@ -398,6 +423,37 @@ def files_get(transfer, name, output):
     return {**stat, 'name': name}
 
 
+def store_list(transfer, directory=''):
+    """Files in `directory` (a prefix ending in `/`, or empty for all) and below."""
+    _, _, count, data = transfer.call('store_list', payload=directory.encode())
+    entries = []
+    for offset in range(0, count * STORE_ENTRY, STORE_ENTRY):
+        entry = data[offset : offset + STORE_ENTRY]
+        file_id, chunks = struct.unpack('<II', entry[NAME:])
+        entries.append({'name': entry[:NAME].rstrip(b'\0').decode(), 'id': file_id, 'chunks': chunks})
+    return sorted(entries, key=lambda entry: entry['id'])
+
+
+def store_get(transfer, name, output):
+    """Pull every record of `name` into `output`; nothing is left on failure."""
+    name_bytes = name.encode()
+    partial = Path(f'{output}.partial')
+    record, length = 0, 0
+    try:
+        with partial.open('wb') as out:
+            while True:
+                _, record, count, data = transfer.call('store_read', record, STORE_RECORDS, name_bytes)
+                if count == 0:
+                    break
+                out.write(data)
+                length += len(data)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    partial.replace(output)
+    return {'name': name, 'records': record, 'bytes': length}
+
+
 # Table writes run as ordinary terminal commands, outside the transfer session.
 LINE_ACTIONS = {'init': 'VOLUME INIT', 'add-store': 'VOLUME ADD STORE'}
 
@@ -437,6 +493,14 @@ def run(args, port):
                         raise ValueError('files format erases every file; pass --confirm')
                     transfer.call('files_format', int.from_bytes(os.urandom(8), 'little'))
                     return {'formatted': True}
+            if args.action == 'store':
+                if args.verb == 'list':
+                    return store_list(transfer, args.directory)
+                if args.verb == 'get':
+                    return store_get(transfer, args.name, args.path)
+                if args.verb == 'delete':
+                    transfer.call('store_delete', payload=args.name.encode())
+                    return {'deleted': args.name}
             raise AssertionError(args.action)
         finally:
             transfer.call('end')
@@ -473,6 +537,15 @@ def main():
     delete.add_argument('name')
     fmt = verbs.add_parser('format')
     fmt.add_argument('--confirm', action='store_true')
+    store = actions.add_parser('store', help='list, get or delete files in STORE')
+    verbs = store.add_subparsers(dest='verb', required=True)
+    listing = verbs.add_parser('list')
+    listing.add_argument('directory', nargs='?', default='', help='a prefix ending in /, such as traces/')
+    get = verbs.add_parser('get')
+    get.add_argument('name')
+    get.add_argument('path', type=Path)
+    delete = verbs.add_parser('delete')
+    delete.add_argument('name')
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():

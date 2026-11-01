@@ -387,6 +387,42 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     );
 }
 
+#[cfg(feature = "debug-harness")]
+#[test]
+fn a_page_a_harness_press_brought_up_names_the_press() {
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(2));
+    let (status, opened) = sim.command("HARNESS OPEN 1 60000");
+    assert_eq!(status, "OK", "{opened}");
+    let session = opened
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("session="))
+        .unwrap()
+        .to_string();
+    for command in ["INPUT BEGIN 1", "INPUT ADD 1 0 BUTTON 1", "INPUT RUN 1"] {
+        let (status, out) = sim.command(&format!("HARNESS {session} {command}"));
+        assert!(
+            matches!(status, "OK" | "ACCEPTED"),
+            "{command}: {status} {out}"
+        );
+    }
+    sim.advance(seconds(1));
+    let trace = read(&sim.capture().trace).unwrap();
+    let page = trace
+        .entries
+        .iter()
+        .rfind(|e| e.kind == Kind::Page)
+        .unwrap()
+        .to_string();
+    assert!(
+        page.ends_with("ride/stats  (after synthetic button BottomLeft code 1; shows dist)"),
+        "{page}"
+    );
+}
+
 #[test]
 fn each_note_names_the_cue_vana_played_it_for() {
     let timeline = timeline("laps-and-a-menu");

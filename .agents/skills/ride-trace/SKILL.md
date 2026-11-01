@@ -116,7 +116,9 @@ the page up and which of the shown readings it draws:
 `page ride/back ... cause="after button BottomLeft code 1" shows=none`. The
 cause is the input or command in the pass the page changed in, the ride state
 that changed with it (`with ride auto_paused`), a toast, `at power-on`, or
-`by itself`: VANA's own rule, such as the climb page coming up on a climb.
+`by itself`: VANA's own rule, such as the climb page coming up on a climb. A
+press a diagnostic harness made (`cycling screenshot --press`, harness
+recipes) reads `after synthetic button BottomLeft code 1`.
 
 Every line opens with two clocks: `03:10.000 ride 02:47` is session time
 (mm:ss.mmm since power-on) and ride time (mm:ss of recording; it stops while

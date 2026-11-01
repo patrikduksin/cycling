@@ -606,6 +606,13 @@ fn vana_pass(
         system.set_app_active(sdk.input_active());
         system.tick(now);
         system.input_source().0.record(&mut *record.borrow_mut());
+        #[cfg(feature = "debug-harness")]
+        for input in system.take_synthetic() {
+            firmware_services::trace::frozen::Record::record(
+                &mut *record.borrow_mut(),
+                &Event::Synthetic(input),
+            );
+        }
         for _ in 0..16 {
             let Some(edge) = system.take_app_input() else {
                 break;

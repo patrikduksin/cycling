@@ -567,11 +567,15 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
 
 /// Logged warnings and errors, health and where the CPU time went: no
 /// input, and a device logs and measures its drivers, which a replay never
-/// runs, so none of it is compared.
+/// runs, so none of it is compared. Nor is a harness's synthetic input.
 pub(crate) fn measured(event: &Event<'_>) -> bool {
     matches!(
         event,
-        Event::Log { .. } | Event::Health(_) | Event::Activity(_) | Event::Task { .. }
+        Event::Log { .. }
+            | Event::Health(_)
+            | Event::Activity(_)
+            | Event::Task { .. }
+            | Event::Synthetic(_)
     )
 }
 
@@ -874,7 +878,8 @@ impl Sources {
             | Event::Log { .. }
             | Event::Health(_)
             | Event::Activity(_)
-            | Event::Task { .. } => self.ledger.note(Kind::Unreplayable, 1, || {
+            | Event::Task { .. }
+            | Event::Synthetic(_) => self.ledger.note(Kind::Unreplayable, 1, || {
                 format!("{event:?} where an input belongs")
             }),
         }

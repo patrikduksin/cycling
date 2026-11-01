@@ -381,6 +381,10 @@ fn sample() -> Vec<Event<'static>> {
         },
         Event::RideState("recording"),
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
+        Event::Synthetic(Input::Button {
+            button: Button::BottomLeft,
+            code: 1,
+        }),
         Event::Log {
             level: Level::Warn,
             target: "terrain",

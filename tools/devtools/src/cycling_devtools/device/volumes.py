@@ -470,18 +470,25 @@ def store_get(transfer, name, output):
     return {**result, 'hole': hole} if hole else result
 
 
-# Table writes run as ordinary terminal commands, outside the transfer session.
-LINE_ACTIONS = {'init': 'VOLUME INIT', 'add-store': 'VOLUME ADD STORE'}
+# Table writes and the store format run as ordinary terminal commands,
+# outside the transfer session, which keeps STORE open.
+LINE_ACTIONS = {
+    ('init', None): 'VOLUME INIT',
+    ('add-store', None): 'VOLUME ADD STORE',
+    ('store', 'format'): 'STORE FORMAT CONFIRM',
+}
 
 
 def run(args, port):
+    command = LINE_ACTIONS.get((args.action, getattr(args, 'verb', None)))
+    if command == 'STORE FORMAT CONFIRM' and not args.confirm:
+        raise ValueError('store format erases every file; pass --confirm')
     log_dir = private_path(ROOT / '.local' / 'volumes')
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Hash packs before the transfer session starts, so its idle timeout cannot expire meanwhile.
     digest = digest_file(args.file) if args.action in ('terrain-write', 'terrain-verify') else None
     with UsbConnection(port, log_dir / f'usb-{time.time_ns()}.log') as connection:
-        if args.action in LINE_ACTIONS:
-            command = LINE_ACTIONS[args.action]
+        if command:
             reply = connection.terminal_command(command)
             if reply['status'] != 'OK':
                 raise RuntimeError(f'{command}: {reply["status"]} {reply["data"]}')
@@ -553,7 +560,7 @@ def main():
     delete.add_argument('name')
     fmt = verbs.add_parser('format')
     fmt.add_argument('--confirm', action='store_true')
-    store = actions.add_parser('store', help='list, get or delete files in STORE')
+    store = actions.add_parser('store', help='list, get or delete files in STORE, or erase it')
     verbs = store.add_subparsers(dest='verb', required=True)
     listing = verbs.add_parser('list')
     listing.add_argument('directory', nargs='?', default='', help='a prefix ending in /, such as traces/')
@@ -562,6 +569,8 @@ def main():
     get.add_argument('path', type=Path)
     delete = verbs.add_parser('delete')
     delete.add_argument('name')
+    fmt = verbs.add_parser('format', help='erase every file and start an empty store')
+    fmt.add_argument('--confirm', action='store_true')
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():

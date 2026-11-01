@@ -329,6 +329,30 @@ class VolumesTests(unittest.TestCase):
                             volumes.run(Namespace(action='add-store'), 'port')
         self.assertEqual(sent, ['VOLUME ADD STORE', 'VOLUME ADD STORE'])
 
+    def test_store_format_needs_confirm_and_runs_the_line_command(self):
+        sent = []
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def terminal_command(self, command):
+                sent.append(command)
+                return {'status': 'OK', 'data': 'state=ready files=0'}
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.multiple(
+                volumes, private_path=lambda _: Path(directory), UsbConnection=lambda *_: Connection()
+            ):
+                with self.assertRaisesRegex(ValueError, 'pass --confirm'):
+                    volumes.run(Namespace(action='store', verb='format', confirm=False), 'port')
+                self.assertEqual(sent, [])
+                result = volumes.run(Namespace(action='store', verb='format', confirm=True), 'port')
+        self.assertEqual((sent, result), (['STORE FORMAT CONFIRM'], {'status': 'state=ready files=0'}))
+
     def test_verify_reports_a_differing_pack(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.pack(directory)

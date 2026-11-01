@@ -213,7 +213,7 @@ pub fn execute(
             );
             let _ = write!(
                 output,
-                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; VOLUME [STATUS|INIT|ADD STORE|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; STORE [STATUS|LIST index]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
+                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; VOLUME [STATUS|INIT|ADD STORE|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; STORE [STATUS|FORMAT CONFIRM|LIST index]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
             );
             let _ = write!(
                 output,

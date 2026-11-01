@@ -433,6 +433,9 @@ fn line_commands_add_and_report_the_store() {
         ("LIST 63", Some(volumes::Command::StoreList(63))),
         ("LIST 64", None),
         ("DELETE traces/1", None),
+        ("FORMAT CONFIRM", Some(volumes::Command::StoreFormat)),
+        ("FORMAT", None),
+        ("FORMAT CONFIRM NOW", None),
     ] {
         let mut words = line.split_ascii_whitespace();
         assert_eq!(volumes::parse("STORE", &mut words), parsed, "{line}");
@@ -605,4 +608,50 @@ fn a_pull_stops_at_records_the_medium_lost_and_says_which() {
         host.call(op::STORE_READ, u64::from(lost + 1), 1, b"traces/0001");
     assert_eq!((status, count), (status::OK, 1));
     assert!(data == trace[offset(lost + 1)..offset(lost + 2)]);
+}
+
+/// A store whose only header a fault damaged mounts as corrupt, and VOLUME
+/// ADD STORE never formats over it: the owner's explicit format does.
+#[test]
+fn only_the_owners_store_format_replaces_a_corrupt_store() {
+    use firmware_services::store::COPY_B;
+    let mut media = Media::default();
+    let mut out = String::new();
+    volumes::execute(volumes::Command::Init, &mut media, &mut out);
+    volumes::execute(volumes::Command::AddStore, &mut media, &mut out);
+    let mut sector = [0u8; 512];
+    let start = volume::open(&mut media, &volume::STORE, &mut sector)
+        .unwrap()
+        .extent()
+        .start;
+    let mut header = media.written[&start];
+    header[100] ^= 1;
+    media.written.insert(start, header);
+    assert!(!media.written.contains_key(&(start + COPY_B)));
+    for command in [volumes::Command::Store, volumes::Command::AddStore] {
+        out.clear();
+        assert_eq!(volumes::execute(command, &mut media, &mut out), "CORRUPT");
+    }
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),
+        "OK"
+    );
+    assert!(
+        out.starts_with("state=ready files=0 capacity=64 chunks=1039 free=1039 generation=1 "),
+        "{out}"
+    );
+    // A store of another version is never formatted over.
+    let mut newer = media.written[&start];
+    newer[16] = 2;
+    let checksum = crc32(&newer[..508]);
+    newer[508..].copy_from_slice(&checksum.to_le_bytes());
+    media.written.insert(start + COPY_B, newer);
+    let written = media.written.clone();
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),
+        "FOREIGN"
+    );
+    assert!(media.written == written, "nothing written");
 }

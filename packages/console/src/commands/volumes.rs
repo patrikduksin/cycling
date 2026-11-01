@@ -25,6 +25,9 @@ pub enum Command {
     FilesStat(files::Name),
     FilesDelete(files::Name),
     Store,
+    /// Erase every file and start an empty store; refused over a foreign
+    /// one.
+    StoreFormat,
     /// List the store's files from the one at this index on, in slot order.
     StoreList(u8),
 }
@@ -39,6 +42,10 @@ pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Opt
         },
         ("VOLUME", Some("TRANSFER")) => Command::Transfer,
         ("STORE", None | Some("STATUS")) => Command::Store,
+        ("STORE", Some("FORMAT")) => match words.next() {
+            Some("CONFIRM") => Command::StoreFormat,
+            _ => return None,
+        },
         ("STORE", Some("LIST")) => {
             let index = words.next().map_or(Some(0), |index| index.parse().ok())?;
             (usize::from(index) < store::CAPACITY).then_some(Command::StoreList(index))?
@@ -322,12 +329,17 @@ pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Writ
                 Err(e) => files_status(e),
             }
         }
-        Command::Store | Command::StoreList(_) => {
+        Command::Store | Command::StoreFormat | Command::StoreList(_) => {
             let mut vol = match volume::open(media, &volume::STORE, &mut sector) {
                 Ok(v) => v,
                 Err(e) => return volume_status(e),
             };
-            let mounted = match store::mount(&mut vol, &mut sector) {
+            let mounted = if command == Command::StoreFormat {
+                store::format(&mut vol, 0, &mut sector)
+            } else {
+                store::mount(&mut vol, &mut sector)
+            };
+            let mounted = match mounted {
                 Ok(mounted) => mounted,
                 Err(store::Error::Uninitialized) if command == Command::Store => {
                     let _ = write!(out, "state=uninitialized");

@@ -296,7 +296,7 @@ TASKS = [
     ),
     task(
         'store',
-        'List, get or delete files in the MMC STORE, such as ride traces (list [dir/]|get name path|delete name)',
+        'List, get or delete files in the MMC STORE, such as ride traces, or erase it (list [dir/]|get name path|delete name|format --confirm)',
         f'{DEV}device.volumes store',
     ),
     task(

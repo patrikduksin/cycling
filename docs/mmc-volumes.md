@@ -107,6 +107,12 @@ a record that the medium lost would hide the records after it, which a new
 record would then overwrite. A reader reports a lost record as a hole, with
 its record number, and continues after it.
 
+`STORE FORMAT CONFIRM` (or `cycling store format --confirm`) is the owner's
+way out of a `CORRUPT` store, which `VOLUME ADD STORE` never formats over.
+It erases every file and starts an empty store with a new store id. It never writes over a `FOREIGN` store. It is a line
+command, so it never runs during a transfer session, which keeps the store
+open; nothing else holds `STORE` open yet.
+
 ## Files
 
 Each change to `FILES` is copy-on-write and commits with a single sector
@@ -141,7 +147,7 @@ cycling volumes add-store                     # add STORE to a table from before
 cycling terrain-write pack.bin --tag CHILE-V1 --verify   # resumes a matching writing pack
 cycling terrain-verify pack.bin
 cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
-cycling store list [traces/] | get NAME PATH | delete NAME
+cycling store list [traces/] | get NAME PATH | delete NAME | format --confirm
 ```
 
 `cycling store get` pulls a file record by record. The session keeps the
@@ -156,6 +162,6 @@ if they differ, it reopens its files.
 
 Line commands: `VOLUME [STATUS|INIT|ADD STORE|TRANSFER]`, `TERRAIN [STATUS]`,
 `FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]` and
-`STORE [STATUS|LIST index]`. The simulator supports the line commands. Its
+`STORE [STATUS|FORMAT CONFIRM|LIST index]`. The simulator supports the line commands. Its
 `Sim::install_terrain`, `Sim::put_file`, `Sim::file`, `Sim::format_store` and
 `Sim::store_file` stand in for the host transfer.

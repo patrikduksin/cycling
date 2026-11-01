@@ -118,7 +118,7 @@ before a reopen read that chunk back, read as the end of that chunk.
 way out of a `CORRUPT` store, which `VOLUME ADD STORE` never formats over.
 It erases every file and starts an empty store with a new store id. It never writes over a `FOREIGN` store. It is a line
 command, so it never runs during a transfer session, which keeps the store
-open; nothing else holds `STORE` open yet.
+open, and the C606 refuses it with `BUSY` while a ride records.
 
 ## Files
 

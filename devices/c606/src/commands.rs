@@ -157,10 +157,15 @@ pub fn execute(
         }
         Command::Volume(command) => {
             use firmware_console::commands::volumes;
-            // Transfers pause the app; refuse while a ride records. Volume
-            // writes never reach RIDES, so other commands need no guard.
+            // A transfer pauses the app, and a STORE format erases every
+            // file in STORE; refuse both while a ride records. Other volume
+            // writes never reach RIDES or STORE.
             #[cfg(feature = "cycling")]
-            if command == volumes::Command::Transfer && sdk.recording() {
+            if matches!(
+                command,
+                volumes::Command::Transfer | volumes::Command::StoreFormat
+            ) && sdk.recording()
+            {
                 terminal.reply(request.id, "BUSY", "active work", now);
                 return;
             }

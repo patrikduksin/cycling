@@ -33,6 +33,11 @@ path = "src/bin/sim-bench.rs"
 required-features = ["cycling"]
 
 [[bin]]
+name = "trace"
+path = "src/bin/trace.rs"
+required-features = ["cycling"]
+
+[[bin]]
 name = "sim-live"
 path = "src/bin/sim-live.rs"
 required-features = ["cycling", "live"]

@@ -476,6 +476,9 @@ impl Trace {
 
 impl Start {
     /// The header, built into PSRAM, with the saved Wi-Fi password redacted.
+    // Runs once per boot; kept out of line so its buffers stay off the
+    // console task's frame.
+    #[inline(never)]
     fn header(self, journals: vana::app::Journals) -> Option<&'static [u8]> {
         let mut settings = self.settings;
         if let Some(wifi) = &mut settings.wifi {

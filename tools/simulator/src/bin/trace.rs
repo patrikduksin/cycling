@@ -50,10 +50,11 @@ commands:
       rebuild. A trace without .origin starts blank.
   media <trace>
       The media the trace's header names, one line each, as `cycling trace
-      pull` reads them: boot N; journal SLOTS; rides STORE HEAD; files
-      STORE GENERATION; file NAME LENGTH CRC per file; terrain LENGTH
-      SHA256 ready|writing TAG. A medium the device could not read is
-      `<medium> none`.
+      pull` reads them: boot N; journal SLOTS, or journal unusable; rides
+      log|uncertain STORE HEAD, or rides unusable|uninitialized; files
+      STORE GENERATION, or files unreadable card|table|volume; file NAME
+      LENGTH CRC per file; terrain LENGTH SHA256 ready|writing TAG, or
+      terrain unreadable card|table|volume.
   rebuild <trace> --pulled DIR
       Write <trace>.origin from the header and the media pulled after the
       session into DIR (the layout `cycling trace pull` writes; see

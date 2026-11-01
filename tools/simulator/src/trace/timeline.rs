@@ -461,6 +461,8 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         reader.event(&event);
     }
     reader.end_pass();
+    #[cfg(feature = "cycling")]
+    super::cue::name(&mut reader.entries, reader.now);
     reader.silent_at_end();
     let build_len = header
         .build

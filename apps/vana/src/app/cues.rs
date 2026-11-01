@@ -69,6 +69,32 @@ enum Note {
 }
 
 impl Cue {
+    /// Every cue, so a trace reader can name the patterns it heard.
+    pub const ALL: [Self; 22] = [
+        Self::Start,
+        Self::Pause,
+        Self::Resume,
+        Self::Lap,
+        Self::Saved,
+        Self::StillPaused,
+        Self::Best,
+        Self::LowBattery,
+        Self::Countdown,
+        Self::Step,
+        Self::RadarApproach,
+        Self::RadarNear,
+        Self::RadarClose,
+        Self::RadarPassing,
+        Self::RadarClear,
+        Self::BandAlert,
+        Self::Fuel,
+        Self::OffTrack,
+        Self::OnTrack,
+        Self::AtStart,
+        Self::TurnAhead,
+        Self::Turn,
+    ];
+
     const fn notes(self) -> &'static [Note] {
         use Note::*;
         match self {
@@ -114,7 +140,7 @@ impl Cue {
 
 /// The pattern ids a cue plays on this sound, in order. A sound with fewer
 /// notes plays what it has: one short pattern stands for every note.
-fn resolve(patterns: &[Pattern], cue: Cue) -> heapless::Vec<u8, 4> {
+pub fn resolve(patterns: &[Pattern], cue: Cue) -> heapless::Vec<u8, 4> {
     let mut short: heapless::Vec<Pattern, 8> = patterns
         .iter()
         .filter(|pattern| pattern.nominal_ms <= NOTE_MAX_MS)
@@ -221,6 +247,37 @@ mod tests {
         let single = [pattern(4, 3000, 100)];
         assert_eq!(resolve(&single, Cue::Saved).to_vec(), [4, 4, 4]);
         assert!(resolve(&[], Cue::Start).is_empty());
+    }
+
+    #[test]
+    fn every_cue_is_listed_once() {
+        for (i, cue) in Cue::ALL.iter().enumerate() {
+            assert_eq!(Cue::ALL.iter().position(|c| c == cue), Some(i), "{cue:?}");
+            let _ = match cue {
+                Cue::Start
+                | Cue::Pause
+                | Cue::Resume
+                | Cue::Lap
+                | Cue::Saved
+                | Cue::StillPaused
+                | Cue::Best
+                | Cue::LowBattery
+                | Cue::Countdown
+                | Cue::Step
+                | Cue::RadarApproach
+                | Cue::RadarNear
+                | Cue::RadarClose
+                | Cue::RadarPassing
+                | Cue::RadarClear
+                | Cue::BandAlert
+                | Cue::Fuel
+                | Cue::OffTrack
+                | Cue::OnTrack
+                | Cue::AtStart
+                | Cue::TurnAhead
+                | Cue::Turn => (),
+            };
+        }
     }
 
     #[test]

@@ -381,6 +381,36 @@ fn a_page_names_the_press_or_the_rule_that_brought_it_up() {
 }
 
 #[test]
+fn each_note_names_the_cue_it_played() {
+    let timeline = timeline("laps-and-a-menu");
+    let heard: Vec<&str> = timeline
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Sound)
+        .map(|e| e.text.as_str())
+        .collect();
+    assert_eq!(
+        heard[..6],
+        [
+            "pattern 0: start (1 of 2)",
+            "pattern 10: start (2 of 2)",
+            "pattern 0: lap",
+            "pattern 0: lap",
+            "pattern 10: pause (1 of 2)",
+            "pattern 0: pause (2 of 2)",
+        ],
+        "{heard:#?}"
+    );
+    assert!(
+        heard
+            .last()
+            .unwrap()
+            .contains("the start of saved or low battery"),
+        "{heard:#?}"
+    );
+}
+
+#[test]
 fn otlp_export_is_one_traces_and_one_metrics_request() {
     let timeline = timeline("power-dropout-after-descent");
     let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));

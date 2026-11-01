@@ -20,6 +20,7 @@ pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
 mod course;
 mod cues;
+pub use cues::{Cue, resolve as cue_patterns};
 mod facts;
 mod form;
 mod history;

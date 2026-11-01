@@ -526,6 +526,10 @@ def run(args, port):
             if reply['status'] != 'OK':
                 raise RuntimeError(f'{command}: {reply["status"]} {reply["data"]}')
             return {'status': reply['data']}
+        if args.action == 'trace-pull':
+            from cycling_devtools.device import trace_media
+
+            return trace_media.pull(connection, args.name)
         transfer = open_session(connection)
         try:
             if args.action == 'inspect':
@@ -557,8 +561,6 @@ def run(args, port):
                 if args.verb == 'delete':
                     transfer.call('store_delete', payload=args.name.encode())
                     return {'deleted': args.name}
-            if args.action == 'trace-pull':
-                return trace_pull(transfer, args.name)
             raise AssertionError(args.action)
         finally:
             transfer.call('end')
@@ -606,7 +608,10 @@ def main():
     delete.add_argument('name')
     fmt = verbs.add_parser('format', help='erase every file and start an empty store')
     fmt.add_argument('--confirm', action='store_true')
-    pull = actions.add_parser('trace-pull', help='pull a ride trace from STORE into .local/traces/')
+    pull = actions.add_parser(
+        'trace-pull',
+        help='pull a ride trace from STORE into .local/traces/ and rebuild the media it started on beside it',
+    )
     pull.add_argument('name', nargs='?', help='the trace, such as 000042-1a2b3c4d.trace; the newest by default')
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
@@ -622,7 +627,8 @@ def main():
         problems.append(f'a sector read failed at record {stop["record"]}, so the pull stopped there')
     if problems:
         raise SystemExit(
-            f'{args.name}: {"; ".join(problems)}; {args.path} holds the {result["records"]} records that read back'
+            f'{result["name"]}: {"; ".join(problems)}; {result.get("path", getattr(args, "path", None))} '
+            f'holds the {result["records"]} records that read back'
         )
 
 

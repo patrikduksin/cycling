@@ -246,7 +246,8 @@ TASKS = [
     task(
         'trace',
         'Read a ride trace as text: summary, timeline, find, otlp, replay, test-stub (--help; skill: ride-trace); '
-        'pull [file] copies the newest or a named device trace into .local/traces/',
+        'pull [file] copies the newest or a named device trace into .local/traces/ and rebuilds the media it '
+        'started on beside it (.origin)',
         f'if [ "${{1:-}}" = pull ]; then shift; {DEV}device.volumes trace-pull "$@"; else {TRACE} "$@"; fi',
     ),
     task(

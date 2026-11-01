@@ -32,13 +32,17 @@ frame without that copy.
 For responsiveness, `cycling latency` times button presses to the end of the next
 frame on the C606 and reports the idle frame rate and frame time. A harness press
 is scheduled for a due time, so on a still page the pass that takes it starts at
-that time. A physical press instead ends the console's rest through the input
-edge signal, which `cycling latency` does not exercise. The tool sends nothing
-from starting a press until it is due and drawn, because terminal traffic keeps
-the console at its busy pace.
+that time, or one pass and 5 ms later when a full still rest ends just before
+it. A physical press instead ends the console's rest through the input edge
+signal, which `cycling latency` does not exercise. The tool sends nothing from
+starting a press until it is due and drawn, because terminal traffic keeps the
+console at its busy pace. A physical input during the timed presses fails the
+run: VANA ignores a press within 350 ms of another, and the hidden press is
+timed to an unrelated frame. The default button is bottom-left, which moves the
+focus on Home; top-left there opens Turn off.
 
 ```sh
-cycling latency --press top-left --count 20        # On Home
+cycling latency --count 20                         # On Home
 cycling latency --press bottom-left --count 21     # During a ride: steps through the pages
 ```
 

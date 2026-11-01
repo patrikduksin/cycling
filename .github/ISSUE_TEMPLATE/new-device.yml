@@ -1,0 +1,34 @@
+name: Support my device
+description: Ask for cycling on your bike computer.
+labels: [device-request, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        I'd love to bring cycling to your device. Only the model is required. Anything else just helps.
+  - type: input
+    id: model
+    attributes:
+      label: Make and model
+      placeholder: Wahoo ELEMNT Bolt v2, Garmin Edge 530, iGPSPORT BSC300...
+    validations:
+      required: true
+  - type: textarea
+    id: annoyances
+    attributes:
+      label: What bothers you about its current software?
+  - type: dropdown
+    id: help
+    attributes:
+      label: Could you help test?
+      description: No pressure, asking is enough.
+      options:
+        - Not right now
+        - Yes, I can run commands and send USB output
+        - Yes, and I can take photos of the board
+        - I could lend or send a device
+  - type: textarea
+    id: details
+    attributes:
+      label: Anything else
+      description: Firmware version, what shows up when you plug it in over USB (for example `lsusb` output), links you've found.

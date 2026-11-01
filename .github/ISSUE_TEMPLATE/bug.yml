@@ -1,0 +1,35 @@
+name: Bug report
+description: Something isn't working the way it should.
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Rough notes are fine, I'll ask if I need more.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected instead. A photo of the screen helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can I see it too?
+      description: The steps that led there, if you know them.
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: Magene C606
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version or commit
+      description: If you know it. "Built from main last week" is fine.
+  - type: textarea
+    id: sensors
+    attributes:
+      label: Sensors connected
+      description: Power meter, heart rate strap, radar and so on, if it matters.

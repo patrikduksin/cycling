@@ -495,6 +495,8 @@ impl Replay {
 }
 
 /// The first event where two traces part, with the pass it belongs to.
+/// Logged warnings and errors are left out: no input, and a device logs
+/// lines from its drivers that a replay never runs.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     let (header, mut events) = match trace::decode(recorded) {
         Ok(decoded) => decoded,
@@ -513,12 +515,13 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     if !stamped || unstamped != replayed_header {
         return Some(format!("header {header:?}, replayed {replayed_header:?}"));
     }
+    let logged = |event: &Event<'_>| matches!(event, Event::Log { .. });
     let (mut pass, mut read) = (0, 0);
-    for (index, event) in events.by_ref().enumerate() {
+    for (index, event) in events.by_ref().filter(|e| !logged(e)).enumerate() {
         if let Event::Pass { now_ms } = event {
             pass = now_ms;
         }
-        let other = replayed_events.next();
+        let other = replayed_events.by_ref().find(|e| !logged(e));
         if other != Some(event) {
             return Some(format!(
                 "event {index}, pass at {pass} ms: recorded {event:?}, replayed {other:?}"
@@ -533,7 +536,7 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     if let Some(damaged) = damaged(&events, "recorded") {
         return Some(damaged);
     }
-    if let Some(extra) = replayed_events.next() {
+    if let Some(extra) = replayed_events.by_ref().find(|e| !logged(e)) {
         return Some(format!("the replay went on with {extra:?}"));
     }
     damaged(&replayed_events, "replayed")
@@ -1760,6 +1763,29 @@ mod tests {
         };
         assert_eq!(first_difference(&traced(&full[..12]), &traced(full)), None);
         assert!(first_difference(&traced("fedcba987654"), &traced(full)).is_some());
+    }
+
+    #[test]
+    fn a_warning_only_the_device_logged_parts_no_replay_from_its_recording() {
+        use firmware_services::trace::Level;
+        let traced = |events: &[Event<'_>]| {
+            let recorder = recorder();
+            for event in events {
+                recorder.borrow_mut().record(event);
+            }
+            bytes(&recorder)
+        };
+        let pass = Event::Pass { now_ms: 10 };
+        let warned = Event::Log {
+            level: Level::Warn,
+            target: "mmc",
+            text: "auto recover ok=true",
+        };
+        let home = Event::Page("home");
+        let device = traced(&[pass, warned, home]);
+        assert_eq!(first_difference(&device, &traced(&[pass, home])), None);
+        let other = traced(&[pass, Event::Page("ride/main")]);
+        assert!(first_difference(&device, &other).is_some());
     }
 
     #[test]

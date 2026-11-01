@@ -624,7 +624,7 @@ fn vana_pass(
         sdk.power(system, &mut control, now);
     }
     trace.shell.record(&trace.record);
-    trace.seen(sdk.page());
+    trace.seen(sdk, now);
     trace.drain(
         &mut devices.bulk,
         sdk.journals_at_boot(),

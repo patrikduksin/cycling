@@ -34,6 +34,20 @@ const RINGS: [usize; 3] = [
 ];
 const RESERVE: usize = 64 * 1024;
 const BLOCK: usize = 4096;
+/// The longest cue name a sound record keeps.
+const CUE: usize = 32;
+
+/// A cue note VANA reported, kept until the sound it started is recorded.
+#[derive(Clone, Copy, Default)]
+struct Note {
+    pattern: u8,
+    cue: [u8; CUE],
+    len: usize,
+    note: u8,
+    of: u8,
+}
+/// Warnings and errors a pass can hand the trace: a dozen full log lines.
+const WARNINGS: usize = 2048;
 /// A header, and its config and media encoded first: the settings record
 /// and every FILES entry, with room to spare.
 const HEADER: usize = 2 * (1024 + origin::FILE_ENTRIES);
@@ -70,7 +84,6 @@ pub struct Trace {
     /// The card operations VANA made this pass, numbered as the simulator
     /// numbers them, so a fault names the one that failed.
     pub card: core::cell::Cell<u32>,
-    page: Option<vana::screens::workout::Page>,
     file: File<&'static [u8]>,
     start: Option<Start>,
     sector: [u8; device_api::bulk::SECTOR_SIZE],
@@ -102,7 +115,6 @@ impl Trace {
             server: FrozenServer::default(),
             shell,
             card: core::cell::Cell::new(0),
-            page: None,
             file: File::Waiting,
             start: None,
             sector: [0; device_api::bulk::SECTOR_SIZE],
@@ -124,6 +136,7 @@ impl Trace {
         let entries = device::drivers::psram::zeroed(origin::FILE_ENTRIES).ok_or("no PSRAM")?;
         let header = device::drivers::psram::zeroed(HEADER).ok_or("no PSRAM")?;
         let block = device::drivers::psram::zeroed(BLOCK).ok_or("no PSRAM")?;
+        let warnings = device::drivers::psram::zeroed(WARNINGS).ok_or("no PSRAM")?;
         let ring = RINGS
             .into_iter()
             .find_map(|len| {
@@ -134,6 +147,7 @@ impl Trace {
             })
             .ok_or("no PSRAM for the spool")?;
         *self.record.get_mut() = Some(Recorder::new(block, Spool::new(ring)));
+        crate::logging::keep_warnings(warnings);
         self.start = Some(Start {
             boot,
             settings,
@@ -180,23 +194,58 @@ impl Trace {
         }
     }
 
-    /// What the rider saw this pass: the page and the sounds that started.
-    /// Follow-up hook: the seen layer of #316 (toasts, ride state, shown
-    /// fields, warn and error logs) is recorded here once VANA reports it,
-    /// as the simulator's `record_seen` does.
-    pub fn seen(&mut self, page: vana::screens::workout::Page) {
-        if self.page != Some(page) {
-            self.page = Some(page);
-            self.record(&Event::Page(page.name()));
-        }
+    /// What the rider saw this pass, as the simulator records it
+    /// (`record_seen` in `tools/simulator/src/session.rs`): the page,
+    /// toast, ride state and shown fields VANA reports, each sound that
+    /// started with the cue note it played, and the warnings and errors
+    /// logged. Out of line: a frame of its own, never under VANA's.
+    #[inline(never)]
+    pub fn seen(&mut self, sdk: &mut vana::app::Runtime, now: u64) {
+        use vana::app::Seen;
+        let mut heard: Option<Note> = None;
+        let mut record = self.record.borrow_mut();
+        sdk.report_seen(now, &mut |shown| match shown {
+            Seen::Page(page) => record.record(&Event::Page(page)),
+            Seen::Toast(text) => record.record(&Event::Toast(text)),
+            Seen::RideState(state) => record.record(&Event::RideState(state)),
+            Seen::Shown(fields) => record.record(&Event::Shown(fields)),
+            Seen::Note {
+                cue,
+                pattern,
+                note,
+                of,
+            } => {
+                let len = cue.len().min(CUE);
+                let mut name = [0u8; CUE];
+                name[..len].copy_from_slice(&cue.as_bytes()[..len]);
+                heard = Some(Note {
+                    pattern,
+                    cue: name,
+                    len,
+                    note,
+                    of,
+                });
+            }
+        });
+        drop(record);
         for pattern in self.sound.take_started() {
+            let played = heard
+                .take_if(|heard| heard.pattern == pattern)
+                .unwrap_or_default();
             self.record(&Event::Sound {
                 pattern,
-                cue: "",
-                note: 0,
-                of: 0,
+                cue: core::str::from_utf8(&played.cue[..played.len]).unwrap_or(""),
+                note: played.note,
+                of: played.of,
             });
         }
+        crate::logging::drain_warnings(|level, target, text| {
+            self.record(&Event::Log {
+                level,
+                target,
+                text,
+            });
+        });
     }
 
     /// This pass's share of the spool to the trace file while the power

@@ -55,6 +55,19 @@ impl log::Log for Logger {
             truncated: false,
         };
         let _ = write!(msg, "{}", r.args());
+        #[cfg(feature = "cycling")]
+        if r.level() <= log::Level::Warn {
+            let level = match r.level() {
+                log::Level::Error => firmware_services::trace::Level::Error,
+                _ => firmware_services::trace::Level::Warn,
+            };
+            let text = core::str::from_utf8(&msg.bytes[..msg.len]).unwrap_or("");
+            critical_section::with(|cs| {
+                if let Some(kept) = KEPT.borrow_ref_mut(cs).as_mut() {
+                    kept.push(level, r.target(), text);
+                }
+            });
+        }
         event(
             r.level().as_str(),
             r.target(),
@@ -96,6 +109,75 @@ pub fn event(level: &str, component: &str, event: &str, message: &str) {
     });
     MAX_ENQUEUE_US.fetch_max(elapsed, Ordering::Relaxed);
 }
+/// Warnings and errors waiting for the session's trace, in PSRAM that
+/// composition hands over: each is its level, target length, text length,
+/// target and text. A record that finds no room is dropped.
+#[cfg(feature = "cycling")]
+struct Kept {
+    bytes: &'static mut [u8],
+    len: usize,
+}
+
+#[cfg(feature = "cycling")]
+static KEPT: Mutex<RefCell<Option<Kept>>> = Mutex::new(RefCell::new(None));
+
+#[cfg(feature = "cycling")]
+impl Kept {
+    fn push(&mut self, level: firmware_services::trace::Level, target: &str, text: &str) {
+        let (target, text) = (
+            &target[..target.len().min(255)],
+            &text[..text.len().min(255)],
+        );
+        let end = self.len + 3 + target.len() + text.len();
+        let Some(room) = self.bytes.get_mut(self.len..end) else {
+            return;
+        };
+        let level = matches!(level, firmware_services::trace::Level::Error) as u8;
+        room[..3].copy_from_slice(&[level, target.len() as u8, text.len() as u8]);
+        room[3..3 + target.len()].copy_from_slice(target.as_bytes());
+        room[3 + target.len()..].copy_from_slice(text.as_bytes());
+        self.len = end;
+    }
+}
+
+/// Keep warnings and errors in `bytes` for the trace from now on.
+#[cfg(feature = "cycling")]
+pub fn keep_warnings(bytes: &'static mut [u8]) {
+    critical_section::with(|cs| *KEPT.borrow_ref_mut(cs) = Some(Kept { bytes, len: 0 }));
+}
+
+/// Hand over the warnings and errors kept since the last call, oldest
+/// first.
+#[cfg(feature = "cycling")]
+pub fn drain_warnings(mut each: impl FnMut(firmware_services::trace::Level, &str, &str)) {
+    use firmware_services::trace::Level;
+    critical_section::with(|cs| {
+        let mut kept = KEPT.borrow_ref_mut(cs);
+        let Some(kept) = kept.as_mut() else {
+            return;
+        };
+        let mut at = 0;
+        while at + 3 <= kept.len {
+            let [level, target, text] = [kept.bytes[at], kept.bytes[at + 1], kept.bytes[at + 2]];
+            let target_at = at + 3;
+            let text_at = target_at + usize::from(target);
+            at = text_at + usize::from(text);
+            let target = core::str::from_utf8(&kept.bytes[target_at..text_at]).unwrap_or("");
+            let text = core::str::from_utf8(&kept.bytes[text_at..at]).unwrap_or("");
+            each(
+                if level == 1 {
+                    Level::Error
+                } else {
+                    Level::Warn
+                },
+                target,
+                text,
+            );
+        }
+        kept.len = 0;
+    });
+}
+
 pub fn take() -> Option<Line> {
     critical_section::with(|cs| QUEUE.borrow(cs).borrow_mut().pop())
 }

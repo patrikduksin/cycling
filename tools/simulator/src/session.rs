@@ -1091,7 +1091,6 @@ impl Session {
                 of,
             });
         }
-        drop(record);
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {
                 level,

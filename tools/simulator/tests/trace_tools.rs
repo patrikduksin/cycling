@@ -831,13 +831,12 @@ fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
         .unwrap();
     let root = std::fs::canonicalize(&root).unwrap();
     for line in String::from_utf8_lossy(&tree.stdout).lines() {
-        if let Some(path) = line
+        if let Some((path, _)) = line
             .split_once(" (")
             .and_then(|(_, rest)| rest.split_once(')'))
+            && let Ok(local) = Path::new(path).strip_prefix(&root)
         {
-            if let Ok(local) = Path::new(path.0).strip_prefix(&root) {
-                read.push(local.to_string_lossy().into_owned());
-            }
+            read.push(local.to_string_lossy().into_owned());
         }
     }
     let unwatched: Vec<&String> = read.iter().filter(|path| !covered(path)).collect();

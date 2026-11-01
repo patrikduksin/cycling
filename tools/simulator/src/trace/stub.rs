@@ -12,9 +12,7 @@ use std::fmt::Write as _;
 /// Where `tools/simulator/tests` keeps traces, and how a test names one.
 pub const FIXTURES: &str = "tools/simulator/tests/traces";
 
-/// Units the main ride page writes after a reading, by shown field.
 const UNITS: [(&str, &str); 3] = [("speed", "KM/H"), ("power", "W"), ("hr", "BPM")];
-/// What the rider saw besides the readings, by `--expect` name.
 const SLOTS: [&str; 3] = ["page", "toast", "ride"];
 
 /// What the rider should have seen: `power!=--`, `page=ride/climb`.
@@ -45,7 +43,6 @@ impl Expect {
         }
     }
 
-    /// The assert, on `actual`, an expression of type `Option<&str>`.
     fn assert(&self, actual: &str, recorded: Option<&str>) -> String {
         let value = &self.value;
         let message = format!(
@@ -120,7 +117,6 @@ pub fn stub(
             characterization.push(format!(
                 "    assert_eq!(field(&shown, {field_name:?}), Some({value:?}));"
             ));
-            // A number glides on screen between samples; dashes do not.
             if on_main && value == "--" {
                 characterization.push(format!(
                     "    assert_eq!(sim.screen().field({unit:?}).as_deref(), Some(\"--\"), \"{field_name} on screen\");"
@@ -234,8 +230,6 @@ pub fn stub(
     Ok(format!("{doc}#[test]\nfn {name}() {{\n{body}}}\n"))
 }
 
-/// Each ANT channel's and the BLE and GPS link's last state at `at_ms`, and
-/// each sensor's last packet and any silence it was in.
 fn sensors(timeline: &Timeline, at_ms: u64) -> Vec<String> {
     let mut links: BTreeMap<String, String> = BTreeMap::new();
     let mut packets: BTreeMap<String, u64> = BTreeMap::new();
@@ -250,7 +244,6 @@ fn sensors(timeline: &Timeline, at_ms: u64) -> Vec<String> {
             Kind::Ant if entry.text.starts_with("ch") => {
                 let channel = entry.text.split(' ').next().unwrap_or_default();
                 let key = format!("ant {channel}");
-                // A channel with no sensor says nothing about the moment.
                 if entry.text.contains('#') {
                     links.insert(key, format!("ant {} since {since}", entry.text));
                 } else {

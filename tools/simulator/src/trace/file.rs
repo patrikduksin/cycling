@@ -9,7 +9,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 12] = b"VANA-ORIGIN1";
-/// Media is saved in pages; erased pages are left out.
 const PAGE: usize = 4096;
 
 /// Where a loaded capture's media came from.

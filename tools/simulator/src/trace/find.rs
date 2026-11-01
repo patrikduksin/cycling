@@ -6,7 +6,6 @@ use std::fmt;
 /// What to look for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Query {
-    /// Entries of these kinds.
     Kinds(Vec<Kind>),
     /// Stretches in which a shown field's value matched.
     Field {
@@ -125,7 +124,6 @@ pub fn find<'a>(
             let mut found = Vec::new();
             let mut since: Option<&Entry> = None;
             for entry in timeline.entries.iter().filter(in_window) {
-                // Leaving the ride pages ends what they showed.
                 let shown = match entry.kind {
                     Kind::Shown => Some(entry.text.as_str()),
                     Kind::Page if !entry.text.starts_with("ride/") => None,

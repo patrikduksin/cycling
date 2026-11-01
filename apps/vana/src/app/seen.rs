@@ -1,9 +1,3 @@
-//! What the rider sees, handed to composition as it changes so a ride trace
-//! keeps it beside the inputs: the page, the toast, the ride's state and,
-//! about once a second on the ride pages, the main page's readings.
-//!
-//! Sounds and log records are not here: composition sees them at the sound
-//! handle and the logger.
 use crate::ride::log::Status;
 use crate::screens::workout::Page;
 use core::fmt::Write;
@@ -24,7 +18,6 @@ pub enum Seen<'a> {
     Shown(&'a str),
 }
 
-/// What was last handed out, so each change goes out once.
 #[derive(Default)]
 pub(super) struct Reported {
     page: &'static str,
@@ -91,7 +84,6 @@ impl super::Runtime {
     }
 }
 
-/// Text kept as written, cut at `N` bytes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Line<const N: usize> {
     bytes: [u8; N],

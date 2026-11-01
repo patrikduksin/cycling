@@ -116,7 +116,6 @@ pub fn describe(capture: &Capture, media: Media, origin: &str) -> String {
     out
 }
 
-/// How a record was found, `missing` meaning the defaults below are in force.
 fn stored(source: &str) -> String {
     match source.to_lowercase().as_str() {
         "missing" => "none saved, so defaults".into(),

@@ -48,7 +48,6 @@ fn page(number: u8) -> String {
     format!("page {number:#04x}")
 }
 
-/// Pages every paged sensor may send.
 fn common(data: [u8; 8]) -> String {
     match data[0] {
         BATTERY_PAGE => battery(data[6], data[7]),
@@ -91,7 +90,6 @@ fn heart_rate(data: [u8; 8]) -> String {
     }
 }
 
-/// `GOOD 2.98 V`, from the status nibble and the voltage bytes.
 fn battery(fraction: u8, coarse: u8) -> String {
     let status = match coarse >> 4 & 0b111 {
         1 => "NEW",
@@ -118,8 +116,6 @@ enum Rate {
     PerSecond,
 }
 
-/// A revolution counter at byte `at`: event time in 1/1024 s, then count,
-/// both wrapping; the rate since the sensor's packet before.
 fn revolutions(
     name: &str,
     data: [u8; 8],
@@ -237,7 +233,6 @@ mod tests {
             pages.describe(sensor, [0, 0, 10, 0, 0, 0, 100, 0]),
             "cadence rev 10, wheel rev 100"
         );
-        // One crank turn in 0.7 s; four wheel turns in a second.
         assert_eq!(
             pages.describe(sensor, [0xcd, 0x02, 11, 0, 0x00, 0x04, 104, 0]),
             "cadence 86 rpm (rev 11), wheel 4.00 rev/s (rev 104)"
@@ -251,7 +246,6 @@ mod tests {
     #[test]
     fn radar_lists_each_target_with_side_range_and_closing_speed() {
         let mut pages = Pages::default();
-        // Target 0 approaching from behind at 10 x 3.125 m, closing 3 x 3.04 m/s.
         assert_eq!(
             pages.describe(sensor(RADAR), [0x30, 0b01, 0b00, 10, 0, 0, 3, 0]),
             "radar targets A: behind 31 m approaching 9.1 m/s"

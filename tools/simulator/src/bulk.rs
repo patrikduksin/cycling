@@ -100,7 +100,6 @@ impl SimBulk {
         }
     }
 
-    /// A region holding a saved `image`.
     pub fn from_image(image: Image) -> Self {
         let bulk = Self::default();
         {

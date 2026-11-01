@@ -172,7 +172,6 @@ impl Recording {
         Some(Self::at(Path::new(&root).join(&name), &name, width, height))
     }
 
-    /// A recording called `name` that writes into `dir`.
     pub fn at(dir: PathBuf, name: &str, width: usize, height: usize) -> Self {
         capture_panics();
         PANIC.with(|p| p.borrow_mut().take());

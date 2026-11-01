@@ -591,8 +591,6 @@ pub(super) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
     };
 }
 
-/// The main page's readings as `name=value` pairs, each value written as
-/// the page writes it: what a trace keeps of the ride screen.
 pub(crate) fn shown(
     out: &mut impl Write,
     active_secs: u64,

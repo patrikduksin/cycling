@@ -659,7 +659,6 @@ impl Sim {
         }
     }
 
-    /// Record artifacts from now on, into `recording`.
     pub fn attach_recording(&mut self, recording: Recording) {
         self.recording = Some(recording);
     }

@@ -1,8 +1,3 @@
-//! The agent's trace tools on recorded rides: the fixtures under
-//! `tests/traces/` and what `cycling trace` reads from them.
-//!
-//! Refresh the fixtures after a change to what VANA reads or shows:
-//! `cargo test -p shell-simulator --features cycling,debug-harness --test trace_tools -- --ignored`
 #![cfg(feature = "cycling")]
 use device_api::input::Button;
 use shell_simulator::ant::device_type;
@@ -24,9 +19,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(format!("{name}.trace"))
 }
 
-/// Ride over a hill: the climb page comes up on the way up; past the top
-/// and down the descent the power meter drops out for half a minute, then
-/// comes back. Paused at a junction, then saved.
 fn power_dropout_after_descent(sim: &mut Sim) {
     sim.ant_sensor(device_type::POWER, POWER);
     sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
@@ -58,7 +50,6 @@ fn power_dropout_after_descent(sim: &mut Sim) {
     sim.stop_ride();
 }
 
-/// Ride at a steady effort until `metres` along the route.
 fn ride_to(sim: &mut Sim, metres: f64, speed_kmh: f64, power_w: f64, cadence_rpm: f64) {
     sim.ride_at(speed_kmh, power_w, 0.0, cadence_rpm);
     while sim.world().distance_m < metres {
@@ -66,7 +57,6 @@ fn ride_to(sim: &mut Sim, metres: f64, speed_kmh: f64, power_w: f64, cadence_rpm
     }
 }
 
-/// Boot, look at the sensors, start a ride and lap it twice.
 fn laps_and_a_menu(sim: &mut Sim) {
     sim.ant_sensor(device_type::POWER, POWER);
     sim.ride_route(Route::loop_around(
@@ -199,7 +189,6 @@ fn the_meter_out_of_range_is_one_silence_between_its_last_and_first_packet() {
     assert_eq!(silence.sensor, format!("power#{POWER}"));
     let next_ms = silence.next_ms.expect("the meter came back");
     let silent = next_ms - silence.last_ms;
-    // Out of range for 25 s; the packets around it are 250 ms apart.
     assert!(
         (24_500..=25_500).contains(&silent),
         "silent for {silent} ms"
@@ -340,9 +329,6 @@ fn otlp_export_is_one_traces_and_one_metrics_request() {
     );
 }
 
-/// Replays power-dropout-after-descent.trace to 03:22.660 ride 03:00, where the rider reported the
-/// problem. Recorded by `cycling trace test-stub`; each assert states what the
-/// recording showed. Change the wrong ones to what the rider should have seen.
 #[test]
 fn power_shows_dashes_while_the_meter_is_out() {
     let (capture, _) = shell_simulator::trace::file::load(std::path::Path::new(concat!(
@@ -380,7 +366,6 @@ fn power_shows_dashes_while_the_meter_is_out() {
         Some("--"),
         "hr on screen"
     );
-    // shown then: time=0:02:59 speed=30.0 power=-- hr=-- cad=86 dist=1.33 grade=0.0%
 }
 
 #[test]

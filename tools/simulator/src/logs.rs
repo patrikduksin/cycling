@@ -4,8 +4,7 @@
 use firmware_services::trace::Level;
 use std::cell::RefCell;
 
-/// Records kept between passes; more are dropped.
-const KEPT: usize = 64;
+const MAX_WAITING: usize = 64;
 
 struct Record {
     level: Level,
@@ -32,7 +31,7 @@ impl log::Log for Logger {
         };
         WAITING.with(|waiting| {
             let mut waiting = waiting.borrow_mut();
-            if waiting.len() < KEPT {
+            if waiting.len() < MAX_WAITING {
                 waiting.push(Record {
                     level,
                     target: record.target().into(),

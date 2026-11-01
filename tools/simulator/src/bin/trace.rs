@@ -98,7 +98,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// The parsed options after a command and its trace.
 struct Options {
     positional: Vec<String>,
     flags: BTreeMap<String, Option<String>>,
@@ -375,9 +374,6 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
-/// The mode a replay runs in, and why. `auto` is strict when this checkout
-/// built the trace's commit and has no uncommitted change to what builds
-/// VANA, else stimulus.
 fn pick_mode(
     asked: &str,
     recorded: &str,
@@ -432,8 +428,6 @@ fn pick_mode(
     }
 }
 
-/// Files with uncommitted changes that go into this binary's VANA, from the
-/// checkout that built it; none when git cannot say.
 fn uncommitted() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     std::process::Command::new("git")
@@ -503,16 +497,12 @@ fn replay(
     }
     let mut sim = Sim::replaying(capture, mode, None);
     let mut ran = sim.replay_until(from);
-    // Divergences before the window are counted apart; the first one
-    // reported is the window's own.
     let before = sim
         .device
         .replay_sources()
         .map(|sources| sources.open_window())
         .unwrap_or_default();
     sim.attach_recording(recording);
-    // Stop at each screenshot and at each change the recording saw, which
-    // becomes a caption at its own time.
     let shots = (0..).map(|i| from + i * every).take_while(|at| *at <= to);
     let changes = in_window(timeline, from, to)
         .filter(|e| e.kind.seen() && e.kind != Kind::Shown && !e.repeat)
@@ -593,7 +583,6 @@ mod tests {
             pick_mode("auto", recorded, current, edits).unwrap().0
         };
         assert_eq!(auto(BUILD, BUILD, &[]), Mode::Strict);
-        // The device stamps 12 hex digits.
         assert_eq!(auto(&BUILD[..12], BUILD, &[]), Mode::Strict);
         assert_eq!(auto("", BUILD, &[]), Mode::Stimulus);
         assert_eq!(auto(BUILD, "", &[]), Mode::Stimulus);

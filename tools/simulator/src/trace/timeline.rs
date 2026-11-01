@@ -9,7 +9,6 @@ use firmware_services::trace::{self, End, Event, Level};
 use std::collections::HashMap;
 use std::fmt;
 
-/// A pass this long after the one before is a gap: the loop stalled.
 const GAP_MS: u64 = 1_000;
 /// An ANT+ sensor broadcasts four times a second; this long without a
 /// packet from it is a silence.
@@ -435,15 +434,12 @@ struct Reader {
     entries: Vec<Entry>,
     now: u64,
     passes: u64,
-    /// The ride clock, while a ride is open, and whether it runs.
     ride_ms: Option<u64>,
     recording: bool,
     clock: Vec<Anchor>,
     utc_at_boot_ms: Option<u64>,
-    /// Each source's last text, to mark repeats.
     last: HashMap<(Kind, u8), String>,
     pages: Pages,
-    /// Each sensor's last packet, to find silences.
     heard: HashMap<String, u64>,
     silences: Vec<Silence>,
 }
@@ -465,8 +461,6 @@ impl Reader {
         self.push_from(kind, 0, text);
     }
 
-    /// An entry from source `source` of `kind`, a repeat when it says what
-    /// that source said last.
     fn push_from(&mut self, kind: Kind, source: u8, text: String) {
         let repeat = self.last.get(&(kind, source)) == Some(&text);
         if !repeat {
@@ -494,7 +488,6 @@ impl Reader {
         }
     }
 
-    /// Sensors still silent when the trace ends.
     fn silent_at_end(&mut self) {
         let mut open: Vec<Silence> = self
             .heard
@@ -793,7 +786,6 @@ fn answer(result: Result<(), device_api::observation::Error>) -> String {
     }
 }
 
-/// Words in a VANA warning that name saving to or reading from media.
 const STORAGE_WORDS: [&str; 11] = [
     "save",
     "load",
@@ -808,7 +800,6 @@ const STORAGE_WORDS: [&str; 11] = [
     "turns_not",
 ];
 
-/// A warning about media goes with the storage faults, not other logs.
 fn about_storage(text: &str) -> bool {
     let text = text.to_lowercase();
     STORAGE_WORDS.iter().any(|word| text.contains(word))

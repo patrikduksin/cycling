@@ -31,7 +31,6 @@ mod night;
 pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
 mod power;
 mod preferences;
-/// VANA's stored preferences as it reads them, for tools that describe media.
 pub use preferences::decode as decode_preferences;
 mod presentation;
 mod readings;
@@ -98,7 +97,6 @@ pub struct Runtime {
     alerts: crate::ride::alerts::Alerts,
     /// Back to start's breadcrumb lives in the block composition gives it.
     back: Option<&'static mut back::BackToStart>,
-    /// What `report_seen` last handed composition.
     reported: seen::Reported,
 }
 

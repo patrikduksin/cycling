@@ -11,7 +11,6 @@ use crate::trace::story::Story;
 use crate::trace::timeline::{Kind, Timeline, field};
 use std::fmt::Write as _;
 
-/// Fields of the shown line exported as gauges, with their units.
 const SHOWN: [(&str, &str); 6] = [
     ("speed", "km/h"),
     ("power", "W"),
@@ -21,22 +20,25 @@ const SHOWN: [(&str, &str); 6] = [
     ("grade", "%"),
 ];
 
-/// A data point with no value, as a reading the screen showed as dashes.
 const NO_RECORDED_VALUE: u32 = 1;
 
 pub fn export(timeline: &Timeline, story: &Story) -> String {
     let base_ms = timeline.utc_at_boot_ms.unwrap_or(0);
     let nanos = |ms: u64| json(&((base_ms + ms) as u128 * 1_000_000).to_string());
-    let trace_id = hash(&[
+    let trace_id = fnv1a(&[
         timeline.build.as_bytes(),
         &timeline.boot.to_le_bytes(),
         &base_ms.to_le_bytes(),
     ]);
-    let trace_id = format!("{:016x}{:016x}", trace_id, hash(&[&trace_id.to_le_bytes()]));
+    let trace_id = format!(
+        "{:016x}{:016x}",
+        trace_id,
+        fnv1a(&[&trace_id.to_le_bytes()])
+    );
     let span_id = |index: usize| {
         format!(
             "{:016x}",
-            hash(&[trace_id.as_bytes(), &index.to_le_bytes()])
+            fnv1a(&[trace_id.as_bytes(), &index.to_le_bytes()])
         )
     };
     let resource = format!(
@@ -141,8 +143,6 @@ fn attribute(key: &str, value: &str) -> String {
     )
 }
 
-/// A gauge point; a value that is no number, such as `--`, is a point
-/// with no recorded value.
 fn point(time: String, value: &str) -> String {
     match value.parse::<f64>() {
         Ok(number) if number.is_finite() => {
@@ -164,8 +164,7 @@ fn gauge(name: &str, unit: &str, points: &[String]) -> String {
     )
 }
 
-/// FNV-1a over the parts: stable ids from what names the session.
-fn hash(parts: &[&[u8]]) -> u64 {
+fn fnv1a(parts: &[&[u8]]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in parts.iter().flat_map(|part| part.iter()) {
         hash ^= u64::from(*byte);

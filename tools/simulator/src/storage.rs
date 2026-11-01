@@ -182,7 +182,6 @@ impl FileFlash {
         let media = media.borrow();
         Some((media.boot, media.configuration.clone(), media.data.clone()))
     }
-    /// Memory media holding a saved `image`.
     pub fn from_image(boot: u32, configuration: Vec<u8>, data: Vec<u8>) -> Self {
         Self {
             backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {

@@ -54,13 +54,10 @@ pub struct Story {
     pub events: Vec<Point>,
 }
 
-/// The ride states in which a ride is open.
 fn ride_open(state: &str) -> bool {
     matches!(state, "recording" | "paused" | "auto_paused")
 }
 
-/// Which spans an entry closes and opens: one span per source at a time,
-/// lasting until that source says something else.
 fn state_span(entry: &Entry) -> Option<(String, Option<String>)> {
     let text = entry.text.as_str();
     let (source, name) = match entry.kind {
@@ -218,8 +215,6 @@ pub fn tell(timeline: &Timeline) -> Story {
     Story { spans, events }
 }
 
-/// Put each event in the ride it happened in, and say what a warning
-/// coincided with, so a ride saved while a save failed reads as one moment.
 fn attach(spans: &mut [Span], events: &mut [Point]) {
     let mut warnings: HashMap<usize, u32> = HashMap::new();
     for event in events.iter_mut() {
@@ -253,7 +248,6 @@ fn attach(spans: &mut [Span], events: &mut [Point]) {
     }
 }
 
-/// Sorting moved the spans; point each stretch at its ride again.
 fn reparent(spans: &mut [Span]) {
     let mut ride = None;
     for (index, span) in spans.iter_mut().enumerate() {

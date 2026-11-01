@@ -944,8 +944,6 @@ impl Runtime {
         self.toast_at(now)
     }
 
-    /// The toast band at `now`, as `toast` finds it, without forgetting an
-    /// expired confirmation.
     pub(super) fn toast_at(&self, now: u64) -> Option<Toast> {
         if let Some(lap) = self.ride.lap_toast(now) {
             return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));

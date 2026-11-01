@@ -22,7 +22,6 @@ TERRAIN = 'uv run --project tools/terrain --locked'
 # system Python provides; they use the source tree instead of the uv environment.
 SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devtools.'
 SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios'
-# Same features as the scenarios, so both share one build.
 TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --features cycling,debug-harness --bin trace --'
 
 

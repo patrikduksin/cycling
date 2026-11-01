@@ -63,6 +63,15 @@ impl Reading {
         }
     }
 
+    /// The reading's name in a trace's shown line, if it has one there.
+    pub const fn shown(self) -> Option<&'static str> {
+        match self {
+            Self::Cadence => Some("cad"),
+            Self::Distance => Some("dist"),
+            _ => None,
+        }
+    }
+
     pub const fn from_id(id: u8) -> Option<Self> {
         match id {
             0 => Some(Self::Cadence),

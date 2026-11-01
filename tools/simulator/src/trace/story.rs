@@ -145,6 +145,12 @@ pub fn tell(timeline: &Timeline) -> Story {
                         .cause
                         .iter()
                         .map(|cause| ("cause".into(), cause.to_string()))
+                        .chain(
+                            entry
+                                .shows
+                                .iter()
+                                .map(|shows| ("shows".into(), shows.clone())),
+                        )
                         .collect(),
                     open: true,
                 });

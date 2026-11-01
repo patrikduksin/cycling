@@ -266,6 +266,9 @@ pub struct Entry {
     pub hex: Option<String>,
     /// For a page: what in its pass brought it up.
     pub cause: Option<Cause>,
+    /// For a ride page: which shown readings it draws, `power,hr,grade`, or
+    /// `none`.
+    pub shows: Option<String>,
 }
 
 /// What brought a page up, read from the pass it changed in.
@@ -315,7 +318,11 @@ impl fmt::Display for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}  {:<11} {}", self.at, self.kind.name(), self.text)?;
         if let Some(cause) = &self.cause {
-            write!(f, "  ({cause})")?;
+            write!(f, "  ({cause}")?;
+            if let Some(shows) = &self.shows {
+                write!(f, "; shows {shows}")?;
+            }
+            write!(f, ")")?;
         }
         match &self.hex {
             Some(hex) if f.alternate() => write!(f, "  [{hex}]"),
@@ -534,6 +541,7 @@ impl Reader {
             repeat,
             hex: None,
             cause: None,
+            shows: None,
         });
     }
 
@@ -549,6 +557,10 @@ impl Reader {
             self.paged = true;
             for page in pass.iter_mut().filter(|e| e.kind == Kind::Page) {
                 page.cause = Some(cause.clone());
+                #[cfg(feature = "cycling")]
+                {
+                    page.shows = readings(&page.text);
+                }
             }
         }
         self.pass_start = self.entries.len();
@@ -857,6 +869,25 @@ impl Reader {
             ),
         }
     }
+}
+
+/// Which shown readings a ride page draws, from VANA's own pages; the main
+/// page's lower line as the rider left it by default.
+#[cfg(feature = "cycling")]
+fn readings(page: &str) -> Option<String> {
+    use vana::screens::ride::{PAUSED_READINGS, RidePage, slots::Slots};
+    let readings = match page {
+        "ride/paused" => PAUSED_READINGS.to_vec(),
+        name => match RidePage::named(name)?.readings(Slots::default()) {
+            Some(readings) => readings.to_vec(),
+            None => return Some("the workout step's target".into()),
+        },
+    };
+    Some(if readings.is_empty() {
+        "none".into()
+    } else {
+        readings.join(",")
+    })
 }
 
 fn answer(result: Result<(), device_api::observation::Error>) -> String {

@@ -339,7 +339,7 @@ fn every_press_of_the_same_button_is_found() {
 }
 
 #[test]
-fn a_page_names_the_press_or_the_rule_that_brought_it_up() {
+fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     let mut sim = Sim::new().boot();
     sim.discard_recording();
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
@@ -354,14 +354,20 @@ fn a_page_names_the_press_or_the_rule_that_brought_it_up() {
         .entries
         .iter()
         .filter(|e| e.kind == Kind::Page)
-        .map(|e| format!("{} ({})", e.text, e.cause.as_ref().unwrap()))
+        .map(|e| {
+            e.to_string()
+                .split_once("page        ")
+                .unwrap()
+                .1
+                .to_string()
+        })
         .collect();
     let last_two = &pages[pages.len() - 2..];
     assert_eq!(
         last_two,
         [
-            "ride/stats (after button BottomLeft code 1)",
-            "ride/lap (after button BottomLeft code 1)"
+            "ride/stats  (after button BottomLeft code 1; shows dist)",
+            "ride/lap  (after button BottomLeft code 1; shows none)"
         ],
         "{pages:?}"
     );

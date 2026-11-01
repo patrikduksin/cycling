@@ -22,6 +22,9 @@ const TEXT_WIDTH: usize = WIDTH - 2 * 24;
 const BARS_TOP: usize = 54;
 const BARS_HEIGHT: usize = 40;
 
+/// Which of the trace's shown readings the paused screen draws.
+pub const READINGS: [&str; 2] = ["time", "dist"];
+
 pub fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     for left in [CENTRE - 20, CENTRE + 6] {

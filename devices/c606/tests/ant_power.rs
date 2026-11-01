@@ -56,6 +56,17 @@ pub mod power {
     }
 }
 
+pub mod io {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// How often the owner woke the IO task to send what it queued.
+    pub static WAKES: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn wake() {
+        WAKES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub mod sensors {
     pub fn ant_allowed() -> bool {
         true
@@ -73,12 +84,18 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
     };
     use device_api::power::PeripheralState;
     let mut ant = adapter::Ant;
+    let wakes = || io::WAKES.load(std::sync::atomic::Ordering::Relaxed);
     let ended = [0xf3, 3, 0, 0, 0, 0, 0, 0];
     assert_eq!(
         ant.request(AntOperation::Scan(5_000), 0),
         Ok(Admission::Accepted)
     );
-    adapter::tick(1);
+    assert_eq!(wakes(), 1, "an admitted request wakes the IO task");
+    assert_eq!(
+        adapter::tick(1),
+        Some(5_000),
+        "due when the scan window ends"
+    );
     assert_eq!(
         ant.request(AntOperation::StopScan, 1_000),
         Ok(Admission::Accepted)
@@ -90,6 +107,7 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
         ant.request(AntOperation::Scan(5_000), 3_002),
         Err(Error::Busy)
     );
+    assert_eq!(wakes(), 2, "a refused request does not");
     assert_eq!(ant.scan().state, ScanState::Stopping);
     adapter::receive(16, ended, 6_001); // Previous natural timer is now drained.
     assert_eq!(
@@ -111,8 +129,17 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
         ant.request(AntOperation::Connect(peer), 14_000),
         Ok(Admission::Accepted)
     );
-    adapter::tick(14_001);
+    let connecting = adapter::tick(14_001);
+    assert_eq!(
+        connecting,
+        Some(14_000 + device_api::ant::CONNECT_TIMEOUT_MS)
+    );
     adapter::receive(1, [0x17, 120, 123, 0, 1, 3, 0, 0], 14_002);
+    assert_eq!(
+        adapter::tick(14_002),
+        None,
+        "a connected link waits on the radio"
+    );
     adapter::receive(120, [1; 8], 14_003);
     let observed = ant.take_diagnostic_packet().unwrap();
     assert_eq!(ant.take_packet(), Some(observed));
@@ -129,8 +156,9 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
     };
     assert_eq!(ant.send_status(id).unwrap().stage, SendStage::Queued);
     assert_eq!(ant.request(send(3), 14_004), Err(Error::Busy));
-    adapter::tick(14_005);
+    let submitted = adapter::tick(14_005);
     assert_eq!(ant.send_status(id).unwrap().stage, SendStage::UartSubmitted);
+    assert_eq!(submitted, Some(14_005 + device_api::ant::SEND_TIMEOUT_MS));
     adapter::reply(120, [2, 2, 1, 0, 0, 0, 0, 0], 14_006);
     assert_eq!(
         ant.send_status(id).unwrap().stage,

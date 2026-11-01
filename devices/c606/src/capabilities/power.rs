@@ -17,6 +17,7 @@ use device_api::power::WakeSources;
 use device_api::sensors::Startup;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use embassy_time::Timer;
 use esp_hal::ledc::LowSpeed;
@@ -36,6 +37,16 @@ static LIT: AtomicU8 = AtomicU8::new(0);
 /// The backlight composition asks for while charging standby shows the charge.
 static STANDBY_LIGHT: AtomicU8 = AtomicU8::new(0);
 static LIGHT_FAILED: AtomicBool = AtomicBool::new(false);
+static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// With nothing due, the owner still runs this often: the bound on anything
+/// a `wake` misses.
+const IDLE_MS: u64 = 1_000;
+
+/// Run the power owner now: a request, a brightness or standby light, or a
+/// change in the companion's startup phase or reason.
+pub fn wake() {
+    WAKE.signal(());
+}
 
 /// Accept a brightness target. The sole LEDC owner applies it on its next tick;
 /// driver failure is observable through the Power capability's availability.
@@ -47,7 +58,9 @@ pub fn brightness(percent: u8) -> Result<(), Error> {
     if LIGHT_FAILED.load(Ordering::Acquire) {
         return Err(Error::Failed);
     }
-    BRIGHTNESS.store(percent, Ordering::Release);
+    if BRIGHTNESS.swap(percent, Ordering::AcqRel) != percent {
+        wake();
+    }
     Ok(())
 }
 /// Charging standby: the device rests on USB power with normal work closed.
@@ -57,8 +70,12 @@ pub fn standby() -> bool {
 }
 /// The backlight to show during charging standby, 0 for dark. It applies
 /// only in standby; waking restores the selected brightness.
+/// Composition sets it every pass; only a change wakes the owner.
 pub fn standby_light(percent: u8) {
-    STANDBY_LIGHT.store(percent.min(100), Ordering::Release);
+    let percent = percent.min(100);
+    if STANDBY_LIGHT.swap(percent, Ordering::AcqRel) != percent {
+        wake();
+    }
 }
 pub fn light_available() -> bool {
     !LIGHT_FAILED.load(Ordering::Acquire)
@@ -127,7 +144,9 @@ pub fn request_after(operation: Operation, delay_ms: u32, now: u64) -> Result<()
             return Err(Error::Unavailable);
         }
         super::sensors::power_request_wake()?;
-        return TRANSITION.lock(|t| t.borrow_mut().wake(now));
+        TRANSITION.lock(|t| t.borrow_mut().wake(now))?;
+        wake();
+        return Ok(());
     }
     if !matches!(
         super::sensors::startup_status(),
@@ -143,7 +162,9 @@ pub fn request_after(operation: Operation, delay_ms: u32, now: u64) -> Result<()
         }
         ACCESS.close();
         Ok(())
-    })
+    })?;
+    wake();
+    Ok(())
 }
 fn abort(failure: Failure, now: u64) {
     TRANSITION.lock(|t| t.borrow_mut().abort(failure, now));
@@ -219,7 +240,10 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
                 light.percent = standby;
             }
         }
-        LIT.store(light.percent, Ordering::Relaxed);
+        if LIT.swap(light.percent, Ordering::Relaxed) != light.percent {
+            // Touch is read only while the panel is lit.
+            super::io::wake();
+        }
         TRANSITION.lock(|t| t.borrow_mut().tick(now));
         match status().state {
             State::Requested => {
@@ -245,11 +269,21 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
             _ => {}
         }
         let current = status();
-        if current.state != previous {
+        let moved = current.state != previous;
+        if moved {
             log::info!(target: "power", "sequence={} state={:?} failure={:?} ready={}", current.sequence, current.state, current.failure, current.ready);
             previous = current.state;
         }
-        Timer::after_millis(10).await;
+        // A state this pass moved to is acted on in the next one, at the
+        // transition's watch pace.
+        let watch = Some(now + crate::drivers::power_transition::WATCH_MS);
+        let due = if moved {
+            watch
+        } else {
+            TRANSITION.lock(|t| t.borrow().due(now))
+        };
+        let until = due.map_or(now + IDLE_MS, |due| due.min(now + IDLE_MS));
+        embassy_futures::select::select(WAKE.wait(), Timer::at(Instant::from_millis(until))).await;
     }
 }
 
@@ -427,5 +461,7 @@ fn recover(work: &mut Work, light: &mut Backlight, now: u64) {
         TRANSITION.lock(|t| t.borrow_mut().recovered());
         super::io::power_boundary(now);
         ACCESS.open();
+        // Touch is read only while input is open.
+        super::io::wake();
     }
 }

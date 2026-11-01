@@ -87,6 +87,13 @@ impl ScanOwnership {
     fn idle(self) -> bool {
         matches!(self, Self::Idle)
     }
+    /// When `tick` gives up on the companion's scan timer.
+    fn due(self) -> Option<u64> {
+        match self {
+            Self::Active(deadline) | Self::Stopping(deadline, _) => Some(deadline),
+            Self::Idle | Self::Uncertain => None,
+        }
+    }
 }
 
 pub fn power_status() -> PeripheralState {
@@ -121,7 +128,9 @@ pub fn power_request(suspend: bool, now: u64) -> Result<(), Error> {
         s.power_deadline = now.saturating_add(device_api::ant::CONNECT_TIMEOUT_MS + 2_000);
         s.progress_power(now);
         Ok(())
-    })
+    })?;
+    super::io::wake();
+    Ok(())
 }
 
 impl Shared {
@@ -271,7 +280,13 @@ pub fn take_packet() -> Option<Packet> {
 }
 
 pub use device_api::ant::AntOperation as Operation;
+/// Admit `operation`; the IO task sends what it queued at once.
 pub fn request(operation: Operation, now: u64) -> Result<Admission, AntError> {
+    let admission = admit(operation, now)?;
+    super::io::wake();
+    Ok(admission)
+}
+fn admit(operation: Operation, now: u64) -> Result<Admission, AntError> {
     if matches!(
         operation,
         Operation::Scan(_) | Operation::Connect(_) | Operation::Send { .. }
@@ -398,7 +413,8 @@ pub fn loss(now: u64) {
         }
     });
 }
-pub fn tick(now: u64) {
+/// Send what is queued and time out what is overdue; when ANT is next due.
+pub fn tick(now: u64) -> Option<u64> {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
         s.state.tick(now);
@@ -426,7 +442,13 @@ pub fn tick(now: u64) {
                 s.state.send_failed(id);
             }
         }
-    });
+        let request = s.pending.is_some().then_some(now);
+        let power = s.power_active.then_some(s.power_deadline);
+        [s.state.due(now), s.scan.due(), power, request]
+            .into_iter()
+            .flatten()
+            .min()
+    })
 }
 
 pub fn reply(group: u8, payload: [u8; 8], now: u64) {

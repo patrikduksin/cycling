@@ -317,12 +317,22 @@ what that costs in each device state.
    - These tasks wake on a timer: `console` 5 ms after a pass while
      something needs passes (a ride, a finger, a sheet, storage work, a host
      on the terminal), up to 50 ms after one on a still page, sooner when a
-     button or touch arrives, and every 200 ms in dark charging standby;
-     `io`, `gps` and `power` every 10 ms in every state. `io` reads the
-     touch panel only while the panel is lit. `ble` wakes once a second
-     while a sensor is connected, and `wifi` every 5 s while the station is
-     associated. They show up as flags while the screen is dark until they
-     wait on an event instead.
+     button or touch arrives, and every 200 ms in dark charging standby.
+     `ble` wakes once a second while a sensor is connected, and `wifi`
+     every 5 s while the station is associated. They show up as flags
+     while the screen is dark until they wait on an event instead.
+   - These tasks wake on events and deadlines. `io` wakes on each
+     companion receive interrupt (a few dozen frames a second), on queued
+     companion work (a sound, an ANT request, a GNSS pause or resume), at
+     that work's deadlines, and for each touch read while the panel is lit
+     and open: every 10 ms while a finger is down and for 2 s after, every
+     20 ms otherwise; and at least once a second. Each touch read costs
+     about three wakeups, since it waits twice on the I2C interrupt. `gps` drains the receiver every
+     10 ms while a burst arrives, every 100 ms between the 1 Hz bursts, and
+     every 500 ms once the receiver has been silent for 6 s, as in
+     charging standby. `power` wakes on a request, a brightness or standby
+     light change and a companion startup change, every 10 ms while a
+     transition prepares or recovers, and at least once a second.
 5. Find the code. `main` and `console` are in `devices/c606/src/main.rs`;
    VANA picks the `console` rest after each pass in
    `apps/vana/src/app/pace.rs`.

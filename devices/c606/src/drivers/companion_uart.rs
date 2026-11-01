@@ -4,6 +4,8 @@ use core::cell::RefCell;
 
 use crate::drivers::uart_ring::LossRing;
 use critical_section::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use esp_hal::Blocking;
 use esp_hal::peripherals::GPIO41;
 use esp_hal::peripherals::GPIO42;
@@ -55,6 +57,9 @@ static STATE: Mutex<RefCell<State>> = Mutex::new(RefCell::new(State {
         other_errors: 0,
     },
 }));
+/// Raised each time the receive interrupt runs, so the owner drains bytes
+/// and counts errors as they arrive instead of polling the ring.
+static RECEIVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 pub fn init(uart: UART2<'static>, rx: GPIO41<'static>, tx: GPIO42<'static>) -> Result<usize, ()> {
     let config = Config::default()
@@ -94,6 +99,11 @@ pub fn send(frame: &[u8; 16]) -> Result<(), ()> {
             _ => Err(()),
         }
     })
+}
+
+/// Wait until the receive interrupt has run since the last wait ended.
+pub async fn received() {
+    RECEIVED.wait().await;
 }
 
 pub fn drain(output: &mut [u8]) -> (usize, Counters) {
@@ -174,4 +184,5 @@ fn interrupt_handler() {
             uart.clear_interrupts(pending);
         }
     });
+    RECEIVED.signal(());
 }

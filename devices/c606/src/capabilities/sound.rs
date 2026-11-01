@@ -14,20 +14,27 @@ pub fn play(id: u8, now: u64) -> Result<(), Error> {
         .iter()
         .find(|p| p.id == id)
         .ok_or(Error::Invalid)?;
-    PLAYER.lock(|p| p.borrow_mut().play(*pattern, now))
+    PLAYER.lock(|p| p.borrow_mut().play(*pattern, now))?;
+    super::io::wake();
+    Ok(())
 }
 pub fn stop(now: u64) -> Result<(), Error> {
     let _access = super::power::ACCESS.enter()?;
     power_stop(now)
 }
 pub fn power_stop(now: u64) -> Result<(), Error> {
-    PLAYER.lock(|p| p.borrow_mut().stop(now))
+    PLAYER.lock(|p| p.borrow_mut().stop(now))?;
+    super::io::wake();
+    Ok(())
 }
-pub fn tick(now: u64) {
+/// Send what was asked; when the player is next due.
+pub fn tick(now: u64) -> Option<u64> {
     PLAYER.lock(|p| {
-        p.borrow_mut().dispatch(now, |id| {
+        let mut p = p.borrow_mut();
+        p.dispatch(now, |id| {
             let frame = crate::drivers::sound_protocol::encode(id).ok_or(())?;
             crate::drivers::companion_uart::send(&frame)
-        })
-    });
+        });
+        p.due(now)
+    })
 }

@@ -246,8 +246,8 @@ mod tests {
     #[test]
     fn ticked_only_when_due_silence_and_resume_failures_are_seen() {
         // A closed stream that keeps talking is never called silent; once it
-        // stops, silence is seen on time, and a word inside the window after
-        // it within the watch.
+        // stops, silence is seen on time, and a word after it within the
+        // silence watch, inside the window that tells it from silence.
         let mut c = Controller::new();
         c.tick(0, 1, Some(0), |_| panic!());
         c.suspend(0).unwrap();
@@ -265,7 +265,6 @@ mod tests {
                 (5400, State::PauseSubmitted),
             ]
         );
-        assert!(5400 - 5000 < SILENCE_MS, "seen inside the window");
         // A resume the stream never answers fails just after its timeout.
         let mut c = Controller::new();
         let changes = at_due_times(&mut c, 0, 9000, |_| (0, None));

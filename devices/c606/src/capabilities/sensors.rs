@@ -17,6 +17,17 @@ static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefC
     query: IdentityQuery::Idle,
     at: 0,
 }));
+/// An identity query with no reply after this long timed out.
+const QUERY_MS: u64 = 2000;
+impl Shared {
+    /// What the power owner reads of startup: its phase and reason.
+    fn seen(&self) -> (Startup, Option<u8>) {
+        (self.startup.status(), self.startup.reason())
+    }
+}
+fn seen() -> (Startup, Option<u8>) {
+    SHARED.lock(|s| s.borrow().seen())
+}
 pub fn startup_begin(now: u64) {
     SHARED.lock(|s| s.borrow_mut().startup.begin(now));
 }
@@ -31,7 +42,9 @@ pub fn startup_phase() -> Startup {
     SHARED.lock(|s| s.borrow().startup.status())
 }
 pub fn power_request_wake() -> Result<(), Error> {
-    SHARED.lock(|s| s.borrow_mut().startup.request_wake())
+    SHARED.lock(|s| s.borrow_mut().startup.request_wake())?;
+    super::io::wake();
+    Ok(())
 }
 pub fn startup_reason() -> Option<u8> {
     SHARED.lock(|s| s.borrow().startup.reason())
@@ -55,21 +68,28 @@ pub fn query(now: u64) -> Result<(), Error> {
         s.query = IdentityQuery::Queued;
         s.at = now;
         Ok(())
-    })
+    })?;
+    super::io::wake();
+    Ok(())
 }
 pub fn receive(group: u8, payload: &[u8], now: u64) {
-    SHARED.lock(|s| {
+    let moved = SHARED.lock(|s| {
         let mut s = s.borrow_mut();
+        let before = s.seen();
         s.startup.report(group, payload, now);
         s.state.get_or_insert_default().receive(group, payload, now);
-    })
+        s.seen() != before
+    });
+    if moved {
+        super::power::wake();
+    }
 }
 // Untagged query replies can establish receipt during this window, not a
 // cryptographically or sequence-identified installed firmware version.
 pub fn identity_reply(payload: &[u8], now: u64) {
     SHARED.lock(|s| {
         let mut s = s.borrow_mut();
-        if s.query == IdentityQuery::Waiting && now.saturating_sub(s.at) <= 2000 {
+        if s.query == IdentityQuery::Waiting && now.saturating_sub(s.at) <= QUERY_MS {
             s.state.get_or_insert_default().receive(1, payload, now);
             s.query = IdentityQuery::ReplyObserved;
         }
@@ -87,11 +107,13 @@ pub fn loss() {
 }
 /// `link_faults` is this acquisition tick's cumulative UART error and bad-CRC
 /// count. The published bridge snapshot lags one tick behind framing losses
-/// counted here, which would split one fault across two ticks.
-pub fn tick(now: u64, link_faults: u32) {
+/// counted here, which would split one fault across two ticks. Returns when
+/// startup or the identity query is next due.
+pub fn tick(now: u64, link_faults: u32) -> Option<u64> {
     // Ordinary recovery/query writers stop during a power transition. Explicit
     // charging wake and passive physical-startup observations still progress.
     let blocked = super::power::ACCESS.closed();
+    let before = seen();
     use device_api::observation::Observation;
     let bridge = super::io::snapshot(now);
     let bridge_fresh = bridge.is_some_and(|s| {
@@ -139,7 +161,7 @@ pub fn tick(now: u64, link_faults: u32) {
         if blocked {
             return false;
         }
-        if s.query.outstanding() && now.saturating_sub(s.at) > 2000 {
+        if s.query.outstanding() && now.saturating_sub(s.at) > QUERY_MS {
             s.query = IdentityQuery::Timeout;
         }
         if s.query == IdentityQuery::Queued {
@@ -157,4 +179,16 @@ pub fn tick(now: u64, link_faults: u32) {
             SHARED.lock(|s| s.borrow_mut().query = IdentityQuery::Failed);
         }
     }
+    if seen() != before {
+        super::power::wake();
+    }
+    // A probe and the query wait while a power transition blocks them, and
+    // admission reopening wakes this task.
+    SHARED.lock(|s| {
+        let s = s.borrow();
+        let probing = s.startup.status() == Startup::Probing;
+        let startup = s.startup.due().filter(|_| !(blocked && probing));
+        let query = (!blocked && s.query.outstanding()).then_some(s.at + QUERY_MS + 1);
+        startup.into_iter().chain(query).min()
+    })
 }

@@ -4,8 +4,8 @@ const LINE: usize = 512;
 use device_api::gps::*;
 
 /// A reading less than this far behind the clock is the same clock read late
-/// (sentence latency, a 10 ms poll). Further behind may be a correction the
-/// receiver made, such as learning the leap seconds.
+/// (sentence latency, the drain cadence in `positioning`). Further behind may
+/// be a correction the receiver made, such as learning the leap seconds.
 const RESYNC_MS: u64 = 1_000;
 /// Readings, each at least `CONFIRM_GAP_MS` after the last, that must all be
 /// `RESYNC_MS` behind before the clock is stepped back. A stalled executor

@@ -1,6 +1,10 @@
 //! Continuous physical input and companion observations. No gesture, navigation
 //! or injected-input policy belongs here. Single-consumer edges have a 16-entry
 //! queue with explicit cancellation after loss; status is latest-value only.
+//!
+//! The task runs when the companion's receive interrupt fires, when another
+//! task queues companion work (`wake`), and at the earliest deadline of that
+//! work or of the next touch read while the panel is lit and open.
 use core::cell::RefCell;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
@@ -20,6 +24,12 @@ use embassy_time::Instant;
 use embassy_time::Timer;
 use firmware_services::input::{Poll, TouchContact};
 
+/// With nothing due, the task still runs this often: the bound on anything
+/// a `wake` misses.
+const IDLE_MS: u64 = 1_000;
+/// A deadline its tick did not move is retried at this pace, never in a spin.
+const RETRY_MS: u64 = 10;
+
 static EDGES: Mutex<CriticalSectionRawMutex, RefCell<Edges>> =
     Mutex::new(RefCell::new(Edges::new()));
 static LATEST: Mutex<CriticalSectionRawMutex, RefCell<Option<State>>> =
@@ -29,6 +39,14 @@ static SLEEP_BOUNDARY: AtomicBool = AtomicBool::new(false);
 /// ends for an edge that pass has not taken. One queued while the pass
 /// takes edges costs one early pass.
 static EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Run the IO task now: work for the companion is queued (a sound, a GNSS
+/// stream command, an ANT request, an identity query or a wake), or the
+/// panel was lit or opened to input.
+pub fn wake() {
+    WAKE.signal(());
+}
 
 #[derive(Clone, Copy)]
 struct State {
@@ -116,6 +134,7 @@ pub fn sleep_boundary(now: u64) {
     // A deliberate boundary must preserve that closure and reconnect identity.
     super::positioning::sleep_boundary();
     power_boundary(now);
+    wake();
 }
 
 #[embassy_executor::task]
@@ -133,8 +152,11 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
     let mut decoder = Decoder::default();
     let mut last_rx = Instant::now().as_millis();
     let mut contact = TouchContact::default();
+    // When to read the panel next; `None` while it is unread.
+    let mut touch_at: Option<u64> = None;
     let mut hold = crate::drivers::hold_reboot::Hold::default();
-    log::info!(target: "input", "acquisition started poll_ms=10 edges=16");
+    log::info!(target: "input", "acquisition started touch_ms={}/{} idle_ms={} edges=16",
+        firmware_services::input::TOUCH_ACTIVE_POLL_MS, firmware_services::input::TOUCH_IDLE_POLL_MS, IDLE_MS);
     loop {
         let now = Instant::now().as_millis();
         if SLEEP_BOUNDARY.swap(false, Ordering::AcqRel) {
@@ -149,100 +171,133 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
             decoder.reset();
         }
         let mut bytes = [0u8; 256];
-        let (count, counters) = crate::drivers::companion_uart::drain(&mut bytes);
-        if count > 0 {
-            last_rx = now;
-        }
-        let errors = counters.errors();
-        if errors != state.uart_errors {
-            let _ = edge(now, Input::Cancel);
-            contact.cancel(now);
-            log::warn!(target: "input", "companion loss uart={} ring={}", errors, counters.ring_overflows);
-        }
-        state.uart_errors = crate::drivers::companion::feed_frames(
-            &mut decoder,
-            state.uart_errors,
-            errors,
-            &bytes[..count],
-            |frame| {
-                let Ok(frame) = frame else {
-                    super::ant::loss(now);
-                    super::sensors::loss();
-                    let _ = edge(now, Input::Cancel);
-                    contact.cancel(now);
-                    return;
-                };
-                if let Some(payload) = frame.identity_reply() {
-                    super::sensors::identity_reply(payload, now);
-                }
-                if let Some((group, payload)) = frame.report_payload() {
-                    super::sensors::receive(group, payload, now);
-                }
-                if let Some((group, payload)) = frame.report() {
-                    super::ant::receive(group, payload, now);
-                }
-                if let Some((group, payload)) = frame.reply() {
-                    super::ant::reply(group, payload, now);
-                }
-                if let Some(event) = frame.input() {
-                    state.status.update(event);
-                    match event {
-                        Event::Battery {
-                            percent,
-                            millivolts,
-                        } => state.battery = Some(((percent, millivolts), now)),
-                        Event::Power { status } => state.power = Some((status, now)),
-                        Event::Button { button, code } => {
-                            log::info!(target: "button", "id={} code={}", button.index(), code);
-                            if hold.report(button, code, now) {
-                                log::warn!(target: "input", "reboot hold");
-                                esp_hal::system::software_reset();
-                            }
-                            if edge(now, Input::Button { button, code }) {
-                                contact.cancel(now);
+        loop {
+            let (count, counters) = crate::drivers::companion_uart::drain(&mut bytes);
+            if count > 0 {
+                last_rx = now;
+            }
+            let errors = counters.errors();
+            if errors != state.uart_errors {
+                let _ = edge(now, Input::Cancel);
+                contact.cancel(now);
+                log::warn!(target: "input", "companion loss uart={} ring={}", errors, counters.ring_overflows);
+            }
+            state.uart_errors = crate::drivers::companion::feed_frames(
+                &mut decoder,
+                state.uart_errors,
+                errors,
+                &bytes[..count],
+                |frame| {
+                    let Ok(frame) = frame else {
+                        super::ant::loss(now);
+                        super::sensors::loss();
+                        let _ = edge(now, Input::Cancel);
+                        contact.cancel(now);
+                        return;
+                    };
+                    if let Some(payload) = frame.identity_reply() {
+                        super::sensors::identity_reply(payload, now);
+                    }
+                    if let Some((group, payload)) = frame.report_payload() {
+                        super::sensors::receive(group, payload, now);
+                    }
+                    if let Some((group, payload)) = frame.report() {
+                        super::ant::receive(group, payload, now);
+                    }
+                    if let Some((group, payload)) = frame.reply() {
+                        super::ant::reply(group, payload, now);
+                    }
+                    if let Some(event) = frame.input() {
+                        state.status.update(event);
+                        match event {
+                            Event::Battery {
+                                percent,
+                                millivolts,
+                            } => state.battery = Some(((percent, millivolts), now)),
+                            Event::Power { status } => state.power = Some((status, now)),
+                            Event::Button { button, code } => {
+                                log::info!(target: "button", "id={} code={}", button.index(), code);
+                                if hold.report(button, code, now) {
+                                    log::warn!(target: "input", "reboot hold");
+                                    esp_hal::system::software_reset();
+                                }
+                                if edge(now, Input::Button { button, code }) {
+                                    contact.cancel(now);
+                                }
                             }
                         }
                     }
-                }
-            },
-        );
+                },
+            );
+            if count < bytes.len() {
+                break;
+            }
+        }
         // Startup compares fault counts between ticks: give it this tick's,
         // counted together with the framing losses decoded above.
-        super::sensors::tick(now, state.uart_errors.saturating_add(decoder.bad_crc));
-        super::ant::tick(now);
-        super::sound::tick(now);
-        super::position_control::tick(now);
+        let due = [
+            super::sensors::tick(now, state.uart_errors.saturating_add(decoder.bad_crc)),
+            super::ant::tick(now),
+            super::sound::tick(now),
+            super::position_control::tick(now),
+        ];
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;
         // Dimming never reaches 0%, so a touch still wakes a dimmed screen.
-        let poll = match super::power::ACCESS.enter() {
-            Ok(_lease) if super::power::lit() > 0 => match touch.poll().await {
-                Ok(report) => {
-                    if report != Report::Invalid {
-                        state.touch_available = true;
-                    }
-                    Poll::from(report)
-                }
-                Err(_) => {
-                    state.touch_available = false;
-                    state.touch_errors = state.touch_errors.saturating_add(1);
-                    Poll::Failed
-                }
-            },
-            _ => Poll::Unread,
-        };
-        // See `Input::Cancel` for the contract these edges keep. An overflow
-        // cancels the contact, as the queue's Cancel told the consumer.
-        for input in contact.poll(poll, now).into_iter().flatten() {
-            if edge(now, input) {
-                contact.cancel(now);
+        let readable = super::power::lit() > 0 && !super::power::ACCESS.closed();
+        let poll = if !readable {
+            touch_at = None;
+            Some(Poll::Unread)
+        } else if touch_at.is_none_or(|at| now >= at) {
+            if touch_at.is_none() {
+                // Unread until now, so a finger held through the dark does not land again.
+                let _ = contact.poll(Poll::Unread, now);
             }
+            Some(match super::power::ACCESS.enter() {
+                Ok(_lease) => match touch.poll().await {
+                    Ok(report) => {
+                        if report != Report::Invalid {
+                            state.touch_available = true;
+                        }
+                        Poll::from(report)
+                    }
+                    Err(_) => {
+                        state.touch_available = false;
+                        state.touch_errors = state.touch_errors.saturating_add(1);
+                        Poll::Failed
+                    }
+                },
+                Err(_) => Poll::Unread,
+            })
+        } else {
+            None
+        };
+        if let Some(poll) = poll {
+            // See `Input::Cancel` for the contract these edges keep. An overflow
+            // cancels the contact, as the queue's Cancel told the consumer.
+            for input in contact.poll(poll, now).into_iter().flatten() {
+                if edge(now, input) {
+                    contact.cancel(now);
+                }
+            }
+            touch_at = (poll != Poll::Unread).then(|| contact.next_read(now));
         }
         if state.touch_available != was_available {
             log::info!(target: "input", "touch available={} errors={}", state.touch_available, state.touch_errors);
         }
         LATEST.lock(|latest| *latest.borrow_mut() = Some(state));
-        Timer::after_millis(10).await;
+        let end = Instant::now().as_millis();
+        let until = match due.into_iter().flatten().chain(touch_at).min() {
+            Some(due) if due <= end => end + RETRY_MS,
+            Some(due) => due.min(end + IDLE_MS),
+            None => end + IDLE_MS,
+        };
+        embassy_futures::select::select3(
+            WAKE.wait(),
+            crate::drivers::companion_uart::received(),
+            Timer::at(Instant::from_millis(until)),
+        )
+        .await;
     }
 }

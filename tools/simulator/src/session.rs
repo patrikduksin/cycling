@@ -266,6 +266,11 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
+/// How often the simulated companion reports barometric pressure: 10 Hz, a
+/// common barometer rate and fine enough that no screen changes. A model;
+/// C606's rate is unmeasured.
+#[cfg(feature = "cycling")]
+const BAROMETER_MS: u64 = 100;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
 /// startup: three seconds of passive observation before the startup
 /// acknowledgment, then an operating reason and two advancing sensor samples.
@@ -485,6 +490,9 @@ pub struct Simulated {
     restart_probe: Option<(u64, Startup)>,
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
+    /// The barometer's last report: when, and the pressure then.
+    #[cfg(feature = "cycling")]
+    barometer: Option<(u64, u32)>,
     wifi_control: device_api::connectivity::ControlStatus,
     ble_control: device_api::connectivity::ControlStatus,
     #[cfg(feature = "cycling")]
@@ -510,6 +518,8 @@ impl Simulated {
             restart_probe_ms: 0,
             restart_probe: None,
             switch: PowerSwitch::default(),
+            #[cfg(feature = "cycling")]
+            barometer: None,
             wifi_control: device_api::connectivity::ControlStatus::new(),
             ble_control: device_api::connectivity::ControlStatus::new(),
             #[cfg(feature = "cycling")]
@@ -557,16 +567,23 @@ impl Simulated {
         }
     }
 
-    /// The companion's sensors: the barometer reads the world's pressure.
+    /// The companion's sensors: the barometer reports the world's pressure
+    /// every `BAROMETER_MS`, and goes silent as soon as it is lost.
     #[cfg(feature = "cycling")]
-    fn physical(&self, now: u64) -> device_api::sensors::Snapshot {
-        let pressure = match self.world.pressure_centi_pa() {
-            Some(pressure_centi_pa) => Observation::Fresh {
+    fn physical(&mut self, now: u64) -> device_api::sensors::Snapshot {
+        let second = now - now % BAROMETER_MS;
+        self.barometer = match (self.world.pressure_centi_pa(), self.barometer) {
+            (None, _) => None,
+            (Some(_), Some((at, pressure))) if at == second => Some((at, pressure)),
+            (Some(pressure), _) => Some((second, pressure)),
+        };
+        let pressure = match self.barometer {
+            Some((received_ms, pressure_centi_pa)) => Observation::Fresh {
                 value: device_api::sensors::Pressure {
                     pressure_centi_pa,
                     temperature_centi_c: 2000,
                 },
-                received_ms: now,
+                received_ms,
             },
             None => Observation::Unavailable,
         };
@@ -953,7 +970,7 @@ impl Session {
         startup: Startup,
     ) {
         let now = self.now;
-        let (physical, network_time) = match &self.devices {
+        let (physical, network_time) = match &mut self.devices {
             Devices::Replayed(replay) => (replay.sources.physical(), replay.sources.network_time()),
             Devices::Simulated(sim) => (
                 sim.physical(now),

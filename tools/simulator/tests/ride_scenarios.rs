@@ -2763,7 +2763,38 @@ fn charging_while_off_shows_the_charge_then_goes_dark() {
     assert!(sim.screen().pixels.iter().all(|&p| p == 0));
     sim.checkpoint("off on USB: dark");
     sim.turn_on();
+    sim.advance(seconds(3));
     sim.expect_text("READY TO RIDE");
+}
+
+/// Off on USB power, the C606's power goes and the companion starts it
+/// again for charging: a new session in charging standby, whose trace
+/// replays strictly, and a wake in that same session brings VANA up.
+#[test]
+fn turned_off_on_usb_power_the_device_starts_again_in_charging_standby() {
+    let mut sim = hashed().boot();
+    sim.set_battery(64, true);
+    sim.advance(seconds(2));
+    let ridden = sim.device.boot;
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "turned off");
+    let standby = sim.device.boot;
+    assert_ne!(standby, ridden, "the companion started the device again");
+    assert!(sim.device.standby_lit(), "the charge shows");
+    sim.expect_text("CHARGING");
+    sim.advance(seconds(3));
+    let capture = sim.capture();
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    let frames = sim.frame_hashes();
+    assert!(!frames.is_empty() && replayed.frame_hashes() == frames);
+    sim.turn_on();
+    sim.advance(seconds(3));
+    sim.expect_text("READY TO RIDE");
+    assert_eq!(sim.device.boot, standby, "the wake keeps the session");
 }
 
 /// Falling charge is announced once at 20%, then urgently at 10% and 5%,

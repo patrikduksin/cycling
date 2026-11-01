@@ -384,6 +384,10 @@ impl device_api::input::InputObservation for Battery {
 /// quiesces Wi-Fi, BLE, ANT, GNSS and sound, then darkens the backlight.
 /// Modelled, not measured; see the power-flow PR for device timings.
 pub const SHUTDOWN_PREPARE_MS: u64 = 500;
+/// From holding the top-left button in charging standby until work is
+/// ready again: about a second on the C606, wake request to completed
+/// recovery (`devices/c606/research/foundation-research.md`).
+pub const WAKE_MS: u64 = 1_000;
 
 /// Coordinated power control as C606 composition sees it
 /// (`devices/c606/src/capabilities/power.rs`): work is not ready while the
@@ -407,6 +411,51 @@ impl Default for PowerSwitch {
     }
 }
 impl PowerSwitch {
+    /// A device the companion started for charging: work stays closed and
+    /// only the panel is open, to show the charge.
+    pub fn charging() -> Self {
+        Self {
+            status: device_api::power::Status {
+                state: device_api::power::State::Charging,
+                ready: false,
+                ..device_api::power::Status::IDLE
+            },
+            ..Self::default()
+        }
+    }
+
+    /// Charging standby: the device rests with work closed until a wake.
+    pub fn standby(&self) -> bool {
+        self.status.state == device_api::power::State::Charging
+    }
+
+    /// The top-left button held in charging standby: the device recovers
+    /// its work for [`WAKE_MS`].
+    pub fn wake(&mut self) {
+        if self.standby() {
+            self.status = device_api::power::Status {
+                sequence: self.status.sequence.wrapping_add(1),
+                operation: Some(device_api::power::Operation::Wake),
+                state: device_api::power::State::Recovering,
+                at_ms: self.now,
+                prepare_at_ms: None,
+                failure: None,
+                ready: false,
+            };
+        }
+    }
+
+    /// A wake's recovery ends [`WAKE_MS`] after it began, and work is ready.
+    pub fn recover(&mut self) {
+        if self.status.state == device_api::power::State::Recovering
+            && self.now >= self.status.at_ms + WAKE_MS
+        {
+            self.status.state = device_api::power::State::Completed;
+            self.status.at_ms = self.now;
+            self.status.ready = true;
+        }
+    }
+
     /// When an accepted shutdown has finished preparing and the device is off.
     pub fn off_due(&self) -> bool {
         self.status.state == device_api::power::State::Requested

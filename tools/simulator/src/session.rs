@@ -524,6 +524,7 @@ fn recorded_bulk<'a>(
 
 fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
     switch.now = now;
+    switch.recover();
     switch.startup_ready = matches!(
         startup,
         Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
@@ -543,16 +544,6 @@ fn battery(companion: CompanionView) -> Option<(u8, u16, u64)> {
         } => Some((percent, mv, received_ms)),
         Observation::Unavailable => None,
     }
-}
-
-/// USB power: the companion reports power status zero.
-fn charging(companion: CompanionView) -> bool {
-    companion.0.is_some_and(|snapshot| {
-        matches!(
-            snapshot.power,
-            Observation::Fresh { value: 0, .. } | Observation::Stale { value: 0, .. }
-        )
-    })
 }
 
 /// Look-ahead blocks of ended sessions. VANA holds its block as `&'static mut`,
@@ -660,6 +651,25 @@ impl Simulated {
         self.startup = Startup::Probing;
         self.ant.availability = Availability::Initializing;
         self.companion_boot_ms = Some((COMPANION_BOOT_MS, ant));
+    }
+
+    /// The companion started the device for charging: it runs, and radios
+    /// stay closed until a wake.
+    fn companion_charging(&mut self) {
+        self.startup = Startup::Charging;
+        self.ant.availability = self.ant_ready_availability();
+        self.companion_boot_ms = None;
+        self.switch = PowerSwitch::charging();
+    }
+
+    /// The top-left button held in charging standby: work is ready again
+    /// after the companion's wake.
+    fn wake(&mut self, now: u64) {
+        self.switch.now = now;
+        self.switch.wake();
+        let ant = self.ant.availability;
+        self.ant.availability = Availability::Initializing;
+        self.companion_boot_ms = Some((now + crate::devices::WAKE_MS, ant));
     }
 
     fn ant_ready_availability(&self) -> Availability {
@@ -1029,6 +1039,9 @@ impl Session {
         }
         let admitted = self.card_admits();
         self.trace.drain(&self.bulk, admitted, self.now);
+        if self.off && matches!(&self.devices, Devices::Simulated(sim) if sim.battery.charging) {
+            self.start_charging().expect("memory media reopens");
+        }
         // The C606 closes the card when it accepts the shutdown VANA asks
         // for in the next pass: the trace is whole on it first.
         #[cfg(feature = "cycling")]
@@ -1094,7 +1107,6 @@ impl Session {
             Devices::Simulated(sim) => self.trace.companion.freeze(&sim.battery, now, record),
         };
         if self.off {
-            self.standby(companion);
             return;
         }
         let startup = self.startup();
@@ -1128,6 +1140,10 @@ impl Session {
                 &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
                 now,
             );
+        }
+        #[cfg(feature = "cycling")]
+        if power.state == device_api::power::State::Charging {
+            self.standby(companion);
         }
         if !power.ready {
             return;
@@ -1322,31 +1338,29 @@ impl Session {
     fn record_seen(&mut self) -> Vec<Seen> {
         Vec::new()
     }
-    /// Off on USB power the C606 rests in charging standby: VANA shows the
-    /// charge for a while, then the panel goes dark. Off on battery, nothing
-    /// runs at all.
+    /// Charging standby, as C606 composition runs it while power control
+    /// reports `Charging`: VANA shows the charge for a while, then the
+    /// panel goes dark.
+    #[cfg(feature = "cycling")]
     fn standby(&mut self, companion: CompanionView) {
-        let charging = charging(companion);
-        if !charging {
-            self.power.0.borrow_mut().brightness = 0;
-        }
-        #[cfg(feature = "cycling")]
-        if charging {
-            self.power.0.borrow_mut().battery = battery(companion);
-            let lit = self.sdk.standby(&mut self.shell, &companion, self.now);
-            self.power.0.borrow_mut().brightness = if lit {
-                self.shell.settings.brightness
-            } else {
-                0
-            };
-        }
+        let lit = self.sdk.standby(&mut self.shell, &companion, self.now);
+        self.power.0.borrow_mut().brightness = if lit {
+            self.shell.settings.brightness
+        } else {
+            0
+        };
     }
-    /// The panel shows something while the device is off: charging standby.
+    /// The device rests in charging standby, VANA off.
+    pub fn charging_standby(&self) -> bool {
+        matches!(&self.devices, Devices::Simulated(sim) if sim.switch.standby())
+    }
+    /// The panel shows something while VANA is off: charging standby.
     pub fn standby_lit(&self) -> bool {
-        self.off && self.power.0.borrow().brightness > 0
+        self.charging_standby() && self.power.0.borrow().brightness > 0
     }
     /// The coordinated shutdown finished: the backlight is dark and nothing
-    /// runs, unless USB power keeps the device in charging standby.
+    /// runs. On USB power the companion then starts the device again for
+    /// charging, at the end of this pass.
     fn turn_off(&mut self) {
         self.off = true;
         self.power.0.borrow_mut().brightness = 0;
@@ -1356,14 +1370,25 @@ impl Session {
     }
     /// Whether the panel is lit: the shell set a brightness since power-on.
     pub fn lit(&self) -> bool {
-        !self.off && self.power.0.borrow().brightness > 0
+        !self.off && !self.charging_standby() && self.power.0.borrow().brightness > 0
     }
     /// Hold the top-left button of a device that is off: it starts again,
-    /// companion included. A running device ignores this.
+    /// companion included; in charging standby, it wakes in the same
+    /// session. A running device ignores this.
     pub fn power_button(&mut self) -> io::Result<()> {
         if self.off {
             self.reboot(true)?;
+        } else if self.charging_standby() {
+            let now = self.now;
+            self.sim_mut().wake(now);
         }
+        Ok(())
+    }
+    /// The companion starts a device whose power went, or that is off, as
+    /// soon as USB power is there: a new session in charging standby.
+    fn start_charging(&mut self) -> io::Result<()> {
+        self.reboot(true)?;
+        self.sim_mut().companion_charging();
         Ok(())
     }
     /// Advance device and world time together in 10 ms firmware passes.
@@ -1812,6 +1837,9 @@ impl Session {
     fn reboot(&mut self, power: bool) -> io::Result<()> {
         let g = self.display.geometry();
         let mut next = Self::with_media(self.media.clone(), g.width, g.height, Memory::ALL)?;
+        if self.display.0.borrow().hashes.is_some() {
+            next.display.0.borrow_mut().hashes = Some(Vec::new());
+        }
         if self.trace.start.redacted {
             next.redact_secrets();
         }

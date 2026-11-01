@@ -8024,7 +8024,7 @@ fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
     let report = replayed.device.report().unwrap();
     println!("{report:#?}");
     assert!(report.count(Kind::NotRequested) >= 1, "{report:?}");
-    assert!(report.count(Kind::Unanswered) >= 1, "{report:?}");
+    assert!(report.count(Kind::Modelled) >= 1, "{report:?}");
     assert!(report.count(Kind::NotHeard) > 0, "{report:?}");
     assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
 }

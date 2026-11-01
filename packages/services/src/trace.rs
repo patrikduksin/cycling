@@ -17,7 +17,10 @@ use device_api::ble_transport;
 use device_api::input::{Button, Edge, Input, InputSnapshot, Point};
 use device_api::observation::{Availability, Observation};
 use device_api::positioning;
+use device_api::power;
 use device_api::sensors;
+use device_api::server::{self, AccessPointState, Method, Reach};
+use device_api::sound;
 
 pub mod frozen;
 #[cfg(test)]
@@ -96,11 +99,159 @@ pub struct AntRadio<'a> {
     pub scan: ant::ScanSnapshot,
 }
 
+/// A request head as the phone server presents it; its text borrows the trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerRequest<'a> {
+    pub id: u32,
+    pub method: Method,
+    pub path: &'a str,
+    pub query: &'a str,
+    pub session: &'a str,
+    pub gzip: bool,
+    pub body: u32,
+}
+
+impl<'a> From<&'a server::Request> for ServerRequest<'a> {
+    fn from(request: &'a server::Request) -> Self {
+        Self {
+            id: request.id,
+            method: request.method,
+            path: &request.path,
+            query: &request.query,
+            session: &request.session,
+            gzip: request.gzip,
+            body: request.body,
+        }
+    }
+}
+
+impl ServerRequest<'_> {
+    /// The device-api form. Text longer than the server holds is cut, as
+    /// the transport would.
+    pub fn to_request(&self) -> server::Request {
+        fn cut<const N: usize>(text: &str) -> heapless::String<N> {
+            let mut out = heapless::String::new();
+            for c in text.chars() {
+                if out.push(c).is_err() {
+                    break;
+                }
+            }
+            out
+        }
+        server::Request {
+            id: self.id,
+            method: self.method,
+            path: cut(self.path),
+            query: cut(self.query),
+            session: cut(self.session),
+            gzip: self.gzip,
+            body: self.body,
+        }
+    }
+}
+
+/// Where a storage operation failed: a region of internal flash, or the
+/// owned bulk medium.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Medium {
+    Configuration,
+    Data,
+    Crash,
+    Bulk,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOp {
     Read,
     Write,
     Erase,
+    /// The bulk medium's size and place.
+    Info,
+}
+
+/// A storage error, whichever medium gave it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageError {
+    Unsupported,
+    Unavailable,
+    Failed,
+    Invalid,
+    Range,
+}
+
+/// A storage operation that failed, and how many of its bytes reached the
+/// medium first. `at` is a byte offset into a flash region, or a sector of
+/// the bulk medium.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageFault {
+    pub medium: Medium,
+    pub op: StorageOp,
+    pub at: u64,
+    pub landed: u32,
+    pub error: StorageError,
+}
+
+impl From<device_api::storage::Region> for Medium {
+    fn from(region: device_api::storage::Region) -> Self {
+        match region {
+            device_api::storage::Region::Configuration => Self::Configuration,
+            device_api::storage::Region::Data => Self::Data,
+            device_api::storage::Region::Crash => Self::Crash,
+        }
+    }
+}
+
+impl From<device_api::observation::Error> for StorageError {
+    fn from(error: device_api::observation::Error) -> Self {
+        match error {
+            device_api::observation::Error::Unsupported => Self::Unsupported,
+            device_api::observation::Error::Unavailable => Self::Unavailable,
+            device_api::observation::Error::Failed => Self::Failed,
+            device_api::observation::Error::Invalid => Self::Invalid,
+        }
+    }
+}
+
+impl From<device_api::bulk::Error> for StorageError {
+    fn from(error: device_api::bulk::Error) -> Self {
+        match error {
+            device_api::bulk::Error::Unsupported => Self::Unsupported,
+            device_api::bulk::Error::Unavailable => Self::Unavailable,
+            device_api::bulk::Error::Range => Self::Range,
+            device_api::bulk::Error::Failed => Self::Failed,
+        }
+    }
+}
+
+/// Named rather than `From`: a second `From` into the device errors would
+/// leave `?` in firmware code with two conversions to choose from.
+impl StorageError {
+    pub fn flash(self) -> device_api::observation::Error {
+        use device_api::observation::Error;
+        match self {
+            Self::Unsupported => Error::Unsupported,
+            Self::Unavailable => Error::Unavailable,
+            Self::Failed => Error::Failed,
+            Self::Invalid | Self::Range => Error::Invalid,
+        }
+    }
+
+    pub fn bulk(self) -> device_api::bulk::Error {
+        use device_api::bulk::Error;
+        match self {
+            Self::Unsupported => Error::Unsupported,
+            Self::Unavailable => Error::Unavailable,
+            Self::Range | Self::Invalid => Error::Range,
+            Self::Failed => Error::Failed,
+        }
+    }
+}
+
+/// An output the shell drives that can refuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    Panel,
+    Backlight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,14 +299,66 @@ pub enum Event<'a> {
     Startup(sensors::Startup),
     /// A terminal request line, executed after the pass before it.
     Command(&'a str),
-    StorageFault {
-        op: StorageOp,
-        sector: u32,
-    },
+    StorageFault(StorageFault),
     /// A hardware random value VANA consumed, in the order it asked.
     Entropy(u64),
     /// A record with this tag was larger than a block and left out.
     TooLarge(u8),
+    /// What the phone access point reports, recorded when it changes.
+    AccessPoint {
+        state: AccessPointState,
+        reach: Reach,
+    },
+    /// The access point's answer to VANA starting or stopping it.
+    AccessPointRequest {
+        start: bool,
+        result: Result<(), device_api::observation::Error>,
+    },
+    /// The request the phone server holds and its room for the response,
+    /// recorded when either changes.
+    Server {
+        request: Option<ServerRequest<'a>>,
+        room: u32,
+    },
+    /// VANA's listen or finish, recorded when it changed what the server
+    /// holds; the change follows.
+    ServerListen(bool),
+    ServerFinish(u32),
+    /// Body bytes one read gave VANA, in parts that each fit a block; every
+    /// part but the last has `more`.
+    ServerRead {
+        id: u32,
+        part: &'a [u8],
+        more: bool,
+    },
+    /// How many response bytes the server took from one write.
+    ServerWrite {
+        id: u32,
+        taken: u32,
+    },
+    /// What the buzzer reports, recorded when it changes.
+    SoundState(sound::Snapshot),
+    /// VANA asked the buzzer to play a pattern, or to stop, and its answer.
+    SoundRequest {
+        play: Option<u8>,
+        result: Result<(), device_api::observation::Error>,
+    },
+    /// What power control reports, recorded when it changes.
+    PowerControl(power::Status),
+    PowerRequest {
+        operation: power::Operation,
+        delay_ms: u32,
+        result: Result<(), device_api::observation::Error>,
+    },
+    /// The device's power went away after an accepted shutdown.
+    PoweredOff,
+    /// Whether the backlight works, recorded when it changes.
+    Backlight(Availability),
+    /// The output refused the shell's request at this attempt of the pass.
+    Refused {
+        output: Output,
+        attempt: u8,
+    },
     /// The page the rider sees, by its wire name.
     Page(&'a str),
     Toast(&'a str),
@@ -193,6 +396,20 @@ mod tag {
     pub const STORAGE_FAULT: u8 = 19;
     pub const ENTROPY: u8 = 20;
     pub const TOO_LARGE: u8 = 21;
+    pub const ACCESS_POINT: u8 = 22;
+    pub const ACCESS_POINT_REQUEST: u8 = 23;
+    pub const SERVER: u8 = 24;
+    pub const SERVER_LISTEN: u8 = 25;
+    pub const SERVER_FINISH: u8 = 26;
+    pub const SERVER_READ: u8 = 27;
+    pub const SERVER_WRITE: u8 = 28;
+    pub const SOUND_STATE: u8 = 29;
+    pub const SOUND_REQUEST: u8 = 30;
+    pub const POWER_CONTROL: u8 = 31;
+    pub const POWER_REQUEST: u8 = 32;
+    pub const POWERED_OFF: u8 = 33;
+    pub const BACKLIGHT: u8 = 34;
+    pub const REFUSED: u8 = 35;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -605,8 +822,27 @@ codes! {
         TimedOut = 11, Unavailable = 12, PowerTransition = 13,
     }
     crate::network_time::Status { Unavailable = 0, Syncing = 1, Fresh = 2, Offline = 3, Stale = 4 }
-    StorageOp { Read = 0, Write = 1, Erase = 2 }
+    Medium { Configuration = 0, Data = 1, Crash = 2, Bulk = 3 }
+    StorageOp { Read = 0, Write = 1, Erase = 2, Info = 3 }
+    StorageError { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3, Range = 4 }
+    Output { Panel = 0, Backlight = 1 }
     Level { Error = 0, Warn = 1 }
+    device_api::observation::Error { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3 }
+    Method { Get = 0, Head = 1, Delete = 2, Put = 3, Post = 4, Options = 5 }
+    sound::State {
+        Idle = 0, Queued = 1, Submitted = 2, Elapsed = 3, StopQueued = 4, StopSubmitted = 5,
+        Failed = 6,
+    }
+    power::Operation { Shutdown = 0, Sleep = 1, Wake = 2 }
+    power::State {
+        Initializing = 0, Idle = 1, Charging = 2, Requested = 3, Quiescing = 4, Submitted = 5,
+        Sleeping = 6, Recovering = 7, Completed = 8, Failed = 9, Uncertain = 10,
+    }
+    power::Failure {
+        Busy = 0, Storage = 1, Display = 2, Wifi = 3, Ble = 4, Ant = 5, Gnss = 6, Sound = 7,
+        Companion = 8, Sleep = 9, PreparationTimeout = 10, Submission = 11,
+        CompletionUnobservable = 12, Recovery = 13,
+    }
 }
 
 record! {
@@ -640,6 +876,11 @@ record! {
     }
     crate::network_time::Snapshot { unix_seconds, millis, local_minutes, age_ms, status }
     AntRadio<'a> { availability, capabilities, scanning, scan }
+    ServerRequest<'a> { id, method, path, query, session, gzip, body }
+    Reach { access_point, station }
+    sound::Snapshot { state, pattern, requested_ms: time, submitted_ms: times, until_ms: time }
+    power::Status { sequence, operation, state, at_ms: time, prepare_at_ms: times, failure, ready }
+    StorageFault { medium, op, at, landed, error }
     AntCapabilities<'a> {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
@@ -786,6 +1027,60 @@ impl Wire<'_> for Result<ant::Admission, ant::Error> {
     }
 }
 
+impl Wire<'_> for Result<(), device_api::observation::Error> {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Ok(()) => w.byte(0),
+            Err(error) => {
+                w.byte(1);
+                error.put(w);
+            }
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Ok(()),
+            1 => Err(Wire::take(r)),
+            _ => {
+                r.fail();
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Wire<'_> for AccessPointState {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Self::Off => w.byte(0),
+            Self::Starting => w.byte(1),
+            Self::Up { clients } => {
+                w.byte(2);
+                clients.put(w);
+            }
+            Self::Stopping => w.byte(3),
+            Self::Failed => w.byte(4),
+            Self::Unsupported => w.byte(5),
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Off,
+            1 => Self::Starting,
+            2 => Self::Up {
+                clients: u8::take(r),
+            },
+            3 => Self::Stopping,
+            4 => Self::Failed,
+            5 => Self::Unsupported,
+            _ => {
+                r.fail();
+                Self::Failed
+            }
+        }
+    }
+}
+
 /// The length the device reported, and the bytes of the buffer it covers.
 impl Wire<'_> for ble_transport::Packet {
     fn put(&self, w: &mut Writer) {
@@ -857,9 +1152,23 @@ impl<'a> Event<'a> {
             Self::NetworkTime(_) => tag::NETWORK_TIME,
             Self::Startup(_) => tag::STARTUP,
             Self::Command(_) => tag::COMMAND,
-            Self::StorageFault { .. } => tag::STORAGE_FAULT,
+            Self::StorageFault(_) => tag::STORAGE_FAULT,
             Self::Entropy(_) => tag::ENTROPY,
             Self::TooLarge(_) => tag::TOO_LARGE,
+            Self::AccessPoint { .. } => tag::ACCESS_POINT,
+            Self::AccessPointRequest { .. } => tag::ACCESS_POINT_REQUEST,
+            Self::Server { .. } => tag::SERVER,
+            Self::ServerListen(_) => tag::SERVER_LISTEN,
+            Self::ServerFinish(_) => tag::SERVER_FINISH,
+            Self::ServerRead { .. } => tag::SERVER_READ,
+            Self::ServerWrite { .. } => tag::SERVER_WRITE,
+            Self::SoundState(_) => tag::SOUND_STATE,
+            Self::SoundRequest { .. } => tag::SOUND_REQUEST,
+            Self::PowerControl(_) => tag::POWER_CONTROL,
+            Self::PowerRequest { .. } => tag::POWER_REQUEST,
+            Self::PoweredOff => tag::POWERED_OFF,
+            Self::Backlight(_) => tag::BACKLIGHT,
+            Self::Refused { .. } => tag::REFUSED,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
             Self::Sound(_) => tag::SOUND,
@@ -911,9 +1220,50 @@ impl<'a> Event<'a> {
             | Self::Toast(text)
             | Self::RideState(text)
             | Self::Shown(text) => text.put(w),
-            Self::StorageFault { op, sector } => {
-                op.put(w);
-                sector.put(w);
+            Self::StorageFault(fault) => fault.put(w),
+            Self::AccessPoint { state, reach } => {
+                state.put(w);
+                reach.put(w);
+            }
+            Self::AccessPointRequest { start, result } => {
+                start.put(w);
+                result.put(w);
+            }
+            Self::Server { request, room } => {
+                request.put(w);
+                room.put(w);
+            }
+            Self::ServerListen(on) => on.put(w),
+            Self::ServerFinish(id) => id.put(w),
+            Self::ServerRead { id, part, more } => {
+                id.put(w);
+                part.put(w);
+                more.put(w);
+            }
+            Self::ServerWrite { id, taken } => {
+                id.put(w);
+                taken.put(w);
+            }
+            Self::SoundState(snapshot) => snapshot.put(w),
+            Self::SoundRequest { play, result } => {
+                play.put(w);
+                result.put(w);
+            }
+            Self::PowerControl(status) => status.put(w),
+            Self::PowerRequest {
+                operation,
+                delay_ms,
+                result,
+            } => {
+                operation.put(w);
+                delay_ms.put(w);
+                result.put(w);
+            }
+            Self::PoweredOff => {}
+            Self::Backlight(availability) => availability.put(w),
+            Self::Refused { output, attempt } => {
+                output.put(w);
+                attempt.put(w);
             }
             Self::Sound(pattern) | Self::TooLarge(pattern) => pattern.put(w),
             Self::Entropy(value) => value.put(w),
@@ -963,9 +1313,46 @@ impl<'a> Event<'a> {
             tag::NETWORK_TIME => Self::NetworkTime(Wire::take(r)),
             tag::STARTUP => Self::Startup(Wire::take(r)),
             tag::COMMAND => Self::Command(Wire::take(r)),
-            tag::STORAGE_FAULT => Self::StorageFault {
-                op: Wire::take(r),
-                sector: Wire::take(r),
+            tag::STORAGE_FAULT => Self::StorageFault(Wire::take(r)),
+            tag::ACCESS_POINT => Self::AccessPoint {
+                state: Wire::take(r),
+                reach: Wire::take(r),
+            },
+            tag::ACCESS_POINT_REQUEST => Self::AccessPointRequest {
+                start: Wire::take(r),
+                result: Wire::take(r),
+            },
+            tag::SERVER => Self::Server {
+                request: Wire::take(r),
+                room: Wire::take(r),
+            },
+            tag::SERVER_LISTEN => Self::ServerListen(Wire::take(r)),
+            tag::SERVER_FINISH => Self::ServerFinish(Wire::take(r)),
+            tag::SERVER_READ => Self::ServerRead {
+                id: Wire::take(r),
+                part: Wire::take(r),
+                more: Wire::take(r),
+            },
+            tag::SERVER_WRITE => Self::ServerWrite {
+                id: Wire::take(r),
+                taken: Wire::take(r),
+            },
+            tag::SOUND_STATE => Self::SoundState(Wire::take(r)),
+            tag::SOUND_REQUEST => Self::SoundRequest {
+                play: Wire::take(r),
+                result: Wire::take(r),
+            },
+            tag::POWER_CONTROL => Self::PowerControl(Wire::take(r)),
+            tag::POWER_REQUEST => Self::PowerRequest {
+                operation: Wire::take(r),
+                delay_ms: Wire::take(r),
+                result: Wire::take(r),
+            },
+            tag::POWERED_OFF => Self::PoweredOff,
+            tag::BACKLIGHT => Self::Backlight(Wire::take(r)),
+            tag::REFUSED => Self::Refused {
+                output: Wire::take(r),
+                attempt: Wire::take(r),
             },
             tag::ENTROPY => Self::Entropy(Wire::take(r)),
             tag::TOO_LARGE => Self::TooLarge(Wire::take(r)),

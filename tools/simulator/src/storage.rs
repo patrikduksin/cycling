@@ -2,6 +2,7 @@
 //! torn writes. Memory media outlives a simulated power loss like flash does.
 use device_api::observation::{Availability, Error};
 use device_api::storage::{OwnedFlash, Region};
+use firmware_services::trace::{StorageError, StorageFault, StorageOp};
 use std::{
     cell::RefCell,
     fs::{self, OpenOptions},
@@ -10,10 +11,53 @@ use std::{
     rc::Rc,
 };
 const DATA_BYTES: usize = 1024 * 1024;
+/// Tear the mutation after `after` succeed, leaving `partial` bytes of it.
+/// Every failure is logged for the trace; a replay fails exactly the
+/// operations its trace scripts.
 #[derive(Default)]
 pub struct Fault {
     pub after: Option<u32>,
     pub partial: usize,
+    pub log: Vec<StorageFault>,
+    pub script: std::collections::VecDeque<StorageFault>,
+}
+impl Fault {
+    /// How the operation fails, if it does.
+    fn fails(
+        &mut self,
+        region: Region,
+        op: StorageOp,
+        at: usize,
+        len: usize,
+    ) -> Option<StorageFault> {
+        let scripted = self
+            .script
+            .iter()
+            .position(|f| f.medium == region.into() && f.op == op && f.at == at as u64);
+        let fault = match scripted {
+            Some(index) => self.script.remove(index)?,
+            None if op == StorageOp::Read => return None,
+            None => {
+                let injected = self.after == Some(0);
+                if let Some(n) = self.after.as_mut() {
+                    *n = n.saturating_sub(1);
+                }
+                if !injected {
+                    return None;
+                }
+                self.after = None;
+                StorageFault {
+                    medium: region.into(),
+                    op,
+                    at: at as u64,
+                    landed: self.partial.min(len) as u32,
+                    error: StorageError::Failed,
+                }
+            }
+        };
+        self.log.push(fault);
+        Some(fault)
+    }
 }
 #[derive(Clone)]
 enum Backing {
@@ -159,20 +203,14 @@ impl FileFlash {
         erase: bool,
     ) -> Result<(), Error> {
         self.check(r, offset, bytes.len(), if erase { 4096 } else { 4 })?;
-        let mut fault = self.fault.borrow_mut();
-        let failed = fault.after == Some(0);
-        if let Some(n) = fault.after.as_mut() {
-            *n = n.saturating_sub(1);
-        }
-        let count = if failed {
-            fault.partial.min(bytes.len())
+        let op = if erase {
+            StorageOp::Erase
         } else {
-            bytes.len()
+            StorageOp::Write
         };
-        if failed {
-            fault.after = None;
-        }
-        drop(fault);
+        let fault = self.fault.borrow_mut().fails(r, op, offset, bytes.len());
+        let count = fault.map_or(bytes.len(), |fault| fault.landed as usize);
+        let failed = fault.map(|fault| fault.error.flash());
         let root = match &self.backing {
             Backing::Files { root, .. } => root,
             Backing::Memory(media) => {
@@ -185,7 +223,7 @@ impl FileFlash {
                 for (dst, src) in region[offset..offset + count].iter_mut().zip(bytes) {
                     *dst = if erase { *src } else { *dst & *src };
                 }
-                return if failed { Err(Error::Failed) } else { Ok(()) };
+                return failed.map_or(Ok(()), Err);
             }
         };
         let mut file = OpenOptions::new()
@@ -205,7 +243,7 @@ impl FileFlash {
         file.write_all(&result)
             .and_then(|_| file.sync_data())
             .map_err(|_| Error::Failed)?;
-        if failed { Err(Error::Failed) } else { Ok(()) }
+        failed.map_or(Ok(()), Err)
     }
 }
 impl OwnedFlash for FileFlash {
@@ -227,6 +265,13 @@ impl OwnedFlash for FileFlash {
     }
     fn read(&mut self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         self.check(r, offset, out.len(), 1)?;
+        let fault = self
+            .fault
+            .borrow_mut()
+            .fails(r, StorageOp::Read, offset, out.len());
+        if let Some(fault) = fault {
+            return Err(fault.error.flash());
+        }
         let root = match &self.backing {
             Backing::Files { root, .. } => root,
             Backing::Memory(media) => {

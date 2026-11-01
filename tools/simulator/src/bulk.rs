@@ -3,7 +3,12 @@
 //! reused an old filesystem. Like the device, a failed write leaves the
 //! controller failed until the next boot, and every write is verified.
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use firmware_services::trace::{Medium, StorageFault, StorageOp};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+};
 
 /// Sectors in the C606 owned data region (the ownership marker excluded).
 pub const C606_SECTORS: u64 = 5_777_407;
@@ -37,6 +42,11 @@ struct Region {
     writes: u64,
     /// Entropy state; it survives reboots like a hardware source would not repeat.
     entropy: u64,
+    /// Every failure the medium answered, for the trace.
+    log: Vec<StorageFault>,
+    /// In a replay, the failures its trace holds: the medium then fails
+    /// only these, whatever its presence or fault.
+    script: Option<VecDeque<StorageFault>>,
 }
 
 #[derive(Clone)]
@@ -53,6 +63,8 @@ impl Default for SimBulk {
             reads: 0,
             writes: 0,
             entropy: 0x5eed,
+            log: Vec::new(),
+            script: None,
         })))
     }
 }
@@ -61,6 +73,35 @@ impl SimBulk {
     /// A separate region holding the same sectors and state.
     pub fn copy(&self) -> Self {
         Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+    }
+
+    /// The same sectors, failing only as a trace says: presence, faults
+    /// and failure come from the trace from now on.
+    pub fn scripted(&self) -> Self {
+        let copy = self.copy();
+        copy.0.borrow_mut().script = Some(VecDeque::new());
+        copy
+    }
+
+    /// A failure the trace recorded, for the operation that met it.
+    pub fn script(&self, fault: StorageFault) {
+        if let Some(script) = &mut self.0.borrow_mut().script {
+            script.push_back(fault);
+        }
+    }
+
+    /// Scripted failures no operation met; they are dropped.
+    pub fn unmet(&self) -> Vec<StorageFault> {
+        let mut region = self.0.borrow_mut();
+        region
+            .script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.drain(..).collect())
+    }
+
+    /// The failures answered since the last call.
+    pub fn take_log(&self) -> Vec<StorageFault> {
+        core::mem::take(&mut self.0.borrow_mut().log)
     }
 
     pub fn set_presence(&self, presence: Presence) {
@@ -112,18 +153,35 @@ impl SimBulk {
             .map_or_else(|| stale(sector), |bytes| **bytes)
     }
 
-    fn check(&self, sector: u64) -> Result<(), Error> {
-        let region = self.0.borrow();
-        match region.presence {
-            Presence::Absent => return Err(Error::Unsupported),
-            Presence::Missing => return Err(Error::Unavailable),
-            Presence::Ready => {}
+    /// Whether `op` on `sector` may go ahead, and the failure it meets
+    /// otherwise, logged. Range is the caller's error, not the medium's.
+    fn answer(&self, op: StorageOp, sector: u64) -> Result<(), StorageFault> {
+        let mut region = self.0.borrow_mut();
+        let failure = |error: Error| StorageFault {
+            medium: Medium::Bulk,
+            op,
+            at: sector,
+            landed: 0,
+            error: error.into(),
+        };
+        let fault = match &mut region.script {
+            Some(script) => script
+                .iter()
+                .position(|f| f.op == op && f.at == sector)
+                .and_then(|index| script.remove(index)),
+            None => match region.presence {
+                Presence::Absent => Some(failure(Error::Unsupported)),
+                Presence::Missing => Some(failure(Error::Unavailable)),
+                Presence::Ready if region.failed => Some(failure(Error::Failed)),
+                Presence::Ready => None,
+            },
+        };
+        if let Some(fault) = fault {
+            region.log.push(fault);
+            return Err(fault);
         }
-        if region.failed {
-            return Err(Error::Failed);
-        }
-        if sector >= region.sectors {
-            return Err(Error::Range);
+        if op != StorageOp::Info && sector >= region.sectors {
+            return Err(failure(Error::Range));
         }
         Ok(())
     }
@@ -153,7 +211,8 @@ impl ReadWrite for SimBulk {
         state
     }
     fn owned_info(&mut self) -> Result<OwnedInfo, Error> {
-        self.check(0)?;
+        self.answer(StorageOp::Info, 0)
+            .map_err(|fault| fault.error.bulk())?;
         Ok(OwnedInfo {
             start_sector: 1_955_841,
             sectors: self.0.borrow().sectors,
@@ -162,26 +221,33 @@ impl ReadWrite for SimBulk {
     }
 
     fn owned_read(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<(), Error> {
-        self.check(sector)?;
+        self.answer(StorageOp::Read, sector)
+            .map_err(|fault| fault.error.bulk())?;
         *output = self.sector(sector);
         self.0.borrow_mut().reads += 1;
         Ok(())
     }
 
     fn owned_write(&mut self, sector: u64, input: &[u8; SECTOR_SIZE]) -> Result<(), Error> {
-        self.check(sector)?;
+        if let Err(fault) = self.answer(StorageOp::Write, sector) {
+            self.tear(sector, input, fault.landed as usize);
+            return Err(fault.error.bulk());
+        }
         let mut region = self.0.borrow_mut();
         if let Some(fault) = region.fault.as_mut() {
             if fault.after == 0 {
                 let partial = fault.partial.min(SECTOR_SIZE);
-                let mut torn = region
-                    .written
-                    .get(&sector)
-                    .map_or_else(|| stale(sector), |bytes| **bytes);
-                torn[..partial].copy_from_slice(&input[..partial]);
-                region.written.insert(sector, Box::new(torn));
                 region.fault = None;
                 region.failed = true;
+                region.log.push(StorageFault {
+                    medium: Medium::Bulk,
+                    op: StorageOp::Write,
+                    at: sector,
+                    landed: partial as u32,
+                    error: Error::Failed.into(),
+                });
+                drop(region);
+                self.tear(sector, input, partial);
                 return Err(Error::Failed);
             }
             fault.after -= 1;
@@ -189,5 +255,19 @@ impl ReadWrite for SimBulk {
         region.written.insert(sector, Box::new(*input));
         region.writes += 1;
         Ok(())
+    }
+}
+
+impl SimBulk {
+    /// The first `partial` bytes of `input` reach the sector; the rest keep
+    /// what it held.
+    fn tear(&self, sector: u64, input: &[u8; SECTOR_SIZE], partial: usize) {
+        if partial == 0 {
+            return;
+        }
+        let partial = partial.min(SECTOR_SIZE);
+        let mut torn = self.sector(sector);
+        torn[..partial].copy_from_slice(&input[..partial]);
+        self.0.borrow_mut().written.insert(sector, Box::new(torn));
     }
 }

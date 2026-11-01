@@ -6,7 +6,7 @@
 //! only when it differs from what a replay would present: the last recorded
 //! value, aged to this pass. Takes and requests pass through to the device
 //! and are recorded as they happen, in call order.
-use super::{AntRadio, Encoder, Event, Full, Header, encode_header};
+use super::{AntRadio, Encoder, Event, Full, Header, ServerRequest, encode_header};
 use core::cell::RefCell;
 use device_api::ant::{self, Ant, AntOperation};
 use device_api::ble_transport::{self, Ble};
@@ -14,7 +14,9 @@ use device_api::bulk::{self, ReadWrite};
 use device_api::input::{Controls, Edge, InputObservation, InputSnapshot, InputSource};
 use device_api::observation::{Availability, Error};
 use device_api::positioning::{self, Positioning};
-use device_api::server::{AccessPoint, AccessPointConfig, AccessPointState, Reach};
+use device_api::power::{self, PowerControl};
+use device_api::server::{self, AccessPoint, AccessPointConfig, AccessPointState, Reach, Server};
+use device_api::sound::{self, Sound};
 
 /// Where a pass's events go.
 pub trait Record {
@@ -77,7 +79,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
 
 /// How a value read at one pass reads `ms` later, for the parts its producer
 /// computes from the time of the read. Most values do not age.
-pub trait Aging: Copy + PartialEq {
+pub trait Aging: Clone + PartialEq {
     fn aged(self, _ms: u64) -> Self {
         self
     }
@@ -92,6 +94,12 @@ impl Aging for ble_transport::Snapshot {}
 impl Aging for ant::Capabilities {}
 impl Aging for ant::ScanSnapshot {}
 impl Aging for [Option<ant::Discovery>; ant::DISCOVERY_CAPACITY] {}
+impl Aging for usize {}
+impl Aging for AccessPointState {}
+impl Aging for Reach {}
+impl Aging for server::Request {}
+impl Aging for sound::Snapshot {}
+impl Aging for power::Status {}
 
 impl Aging for ant::Snapshot {
     fn aged(self, ms: u64) -> Self {
@@ -166,7 +174,7 @@ impl<T: Aging> Latest<T> {
     /// Whether `value`, read at `now`, differs from the recorded value aged
     /// to `now`. A different value becomes the recorded one.
     pub fn changed(&mut self, value: T, now: u64) -> bool {
-        if self.at(now) == Some(value) {
+        if self.at(now).as_ref() == Some(&value) {
             return false;
         }
         self.recorded = Some((value, now));
@@ -180,8 +188,8 @@ impl<T: Aging> Latest<T> {
 
     /// The recorded value as it reads at `now`.
     pub fn at(&self, now: u64) -> Option<T> {
-        self.recorded
-            .map(|(value, at)| value.aged(now.saturating_sub(at)))
+        let (value, at) = self.recorded.as_ref()?;
+        Some(value.clone().aged(now.saturating_sub(*at)))
     }
 
     /// The value, recorded as `event` when it changed.
@@ -192,8 +200,8 @@ impl<T: Aging> Latest<T> {
         record: &RefCell<R>,
         event: impl FnOnce(T) -> Event<'static>,
     ) -> T {
-        if self.changed(value, now) {
-            record.borrow_mut().record(&event(value));
+        if self.changed(value.clone(), now) {
+            record.borrow_mut().record(&event(value.clone()));
         }
         value
     }
@@ -559,31 +567,76 @@ impl<B: ReadWrite + ?Sized, R: Record + ?Sized> ReadWrite for RecordedBulk<'_, B
     }
 }
 
-/// The phone access point, recording each entropy word it gives; VANA
-/// drives its state and reads it back.
-pub struct RecordedAccessPoint<'a, A: ?Sized, R: ?Sized> {
+/// The phone access point as VANA sees it across passes.
+#[derive(Default)]
+pub struct FrozenAccessPoint {
+    latest: Latest<(AccessPointState, Reach)>,
+    view: (AccessPointState, Reach),
+}
+
+impl FrozenAccessPoint {
+    /// Sample `inner` for this pass and record what changed.
+    pub fn bind<'a, A: AccessPoint + ?Sized, R: Record + ?Sized>(
+        &'a mut self,
+        inner: &'a mut A,
+        now: u64,
+        record: &'a RefCell<R>,
+    ) -> PassAccessPoint<'a, A, R> {
+        let mut pass = PassAccessPoint {
+            frozen: self,
+            inner,
+            now,
+            record,
+        };
+        pass.sample();
+        pass
+    }
+}
+
+/// The access point for one pass. VANA's start and stop are recorded with
+/// their answers, and what they changed is sampled right after; each
+/// entropy word is recorded as it is given.
+pub struct PassAccessPoint<'a, A: ?Sized, R: ?Sized> {
+    frozen: &'a mut FrozenAccessPoint,
     inner: &'a mut A,
+    now: u64,
     record: &'a RefCell<R>,
 }
 
-impl<'a, A: ?Sized, R: ?Sized> RecordedAccessPoint<'a, A, R> {
-    pub fn new(inner: &'a mut A, record: &'a RefCell<R>) -> Self {
-        Self { inner, record }
+impl<A: AccessPoint + ?Sized, R: Record + ?Sized> PassAccessPoint<'_, A, R> {
+    fn sample(&mut self) {
+        let view = (self.inner.state(), self.inner.reach());
+        self.frozen.view =
+            self.frozen
+                .latest
+                .observe(view, self.now, self.record, |(state, reach)| {
+                    Event::AccessPoint { state, reach }
+                });
+    }
+
+    fn answered(&mut self, start: bool, result: Result<(), Error>) -> Result<(), Error> {
+        self.record
+            .borrow_mut()
+            .record(&Event::AccessPointRequest { start, result });
+        self.sample();
+        result
     }
 }
 
-impl<A: AccessPoint + ?Sized, R: Record + ?Sized> AccessPoint for RecordedAccessPoint<'_, A, R> {
+impl<A: AccessPoint + ?Sized, R: Record + ?Sized> AccessPoint for PassAccessPoint<'_, A, R> {
     fn start(&mut self, config: AccessPointConfig) -> Result<(), Error> {
-        self.inner.start(config)
+        let result = self.inner.start(config);
+        self.answered(true, result)
     }
     fn stop(&mut self) -> Result<(), Error> {
-        self.inner.stop()
+        let result = self.inner.stop();
+        self.answered(false, result)
     }
     fn state(&self) -> AccessPointState {
-        self.inner.state()
+        self.frozen.view.0
     }
     fn reach(&self) -> Reach {
-        self.inner.reach()
+        self.frozen.view.1
     }
     fn entropy(&mut self) -> u32 {
         let value = self.inner.entropy();
@@ -591,6 +644,296 @@ impl<A: AccessPoint + ?Sized, R: Record + ?Sized> AccessPoint for RecordedAccess
             .borrow_mut()
             .record(&Event::Entropy(value.into()));
         value
+    }
+}
+
+/// Body bytes a server read records in one event, so that a read of a whole
+/// transport buffer splits into records that each fit a block.
+pub const READ_PART: usize = 1024;
+
+/// The phone server as VANA sees it across passes: the request it holds and
+/// its room for the response.
+#[derive(Default)]
+pub struct FrozenServer {
+    latest: Latest<(Option<server::Request>, usize)>,
+    view: (Option<server::Request>, usize),
+}
+
+impl FrozenServer {
+    /// Sample `inner` for this pass and record what changed.
+    pub fn bind<'a, S: Server + ?Sized, R: Record + ?Sized>(
+        &'a mut self,
+        inner: &'a mut S,
+        now: u64,
+        record: &'a RefCell<R>,
+    ) -> PassServer<'a, S, R> {
+        let mut pass = PassServer {
+            frozen: self,
+            inner,
+            now,
+            record,
+        };
+        pass.sample(None);
+        pass
+    }
+}
+
+/// The server for one pass. Reads and writes are recorded with what they
+/// moved; a listen or finish is recorded only when it changed what the
+/// server holds, just before the change.
+pub struct PassServer<'a, S: ?Sized, R: ?Sized> {
+    frozen: &'a mut FrozenServer,
+    inner: &'a mut S,
+    now: u64,
+    record: &'a RefCell<R>,
+}
+
+impl<S: Server + ?Sized, R: Record + ?Sized> PassServer<'_, S, R> {
+    fn sample(&mut self, cause: Option<Event<'_>>) {
+        let view = (self.inner.request(), self.inner.room());
+        if !self.frozen.latest.changed(view.clone(), self.now) {
+            return;
+        }
+        self.frozen.view = view;
+        let mut record = self.record.borrow_mut();
+        if let Some(cause) = cause {
+            record.record(&cause);
+        }
+        let (request, room) = &self.frozen.view;
+        record.record(&Event::Server {
+            request: request.as_ref().map(ServerRequest::from),
+            room: u32::try_from(*room).unwrap_or(u32::MAX),
+        });
+    }
+}
+
+impl<S: Server + ?Sized, R: Record + ?Sized> Server for PassServer<'_, S, R> {
+    fn listen(&mut self, on: bool) {
+        self.inner.listen(on);
+        self.sample(Some(Event::ServerListen(on)));
+    }
+    fn request(&self) -> Option<server::Request> {
+        self.frozen.view.0.clone()
+    }
+    fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
+        let n = self.inner.read(id, out);
+        let read = &out[..n.min(out.len())];
+        let mut parts = read.chunks(READ_PART).peekable();
+        let mut record = self.record.borrow_mut();
+        if parts.peek().is_none() {
+            record.record(&Event::ServerRead {
+                id,
+                part: &[],
+                more: false,
+            });
+        }
+        while let Some(part) = parts.next() {
+            let more = parts.peek().is_some();
+            record.record(&Event::ServerRead { id, part, more });
+        }
+        drop(record);
+        self.sample(None);
+        n
+    }
+    fn room(&self) -> usize {
+        self.frozen.view.1
+    }
+    fn write(&mut self, id: u32, bytes: &[u8]) -> usize {
+        let taken = self.inner.write(id, bytes);
+        self.record.borrow_mut().record(&Event::ServerWrite {
+            id,
+            taken: u32::try_from(taken).unwrap_or(u32::MAX),
+        });
+        self.sample(None);
+        taken
+    }
+    fn finish(&mut self, id: u32) {
+        self.inner.finish(id);
+        self.sample(Some(Event::ServerFinish(id)));
+    }
+}
+
+/// The buzzer as VANA sees it across passes, and the patterns it accepted.
+pub struct FrozenSound {
+    latest: Latest<sound::Snapshot>,
+    view: sound::Snapshot,
+    started: heapless::Vec<u8, 4>,
+}
+
+impl Default for FrozenSound {
+    fn default() -> Self {
+        Self {
+            latest: Latest::default(),
+            view: sound::Snapshot {
+                state: sound::State::Idle,
+                pattern: None,
+                requested_ms: 0,
+                submitted_ms: None,
+                until_ms: 0,
+            },
+            started: heapless::Vec::new(),
+        }
+    }
+}
+
+impl FrozenSound {
+    /// Sample `inner` for this pass and record what changed.
+    pub fn bind<'a, S: Sound + ?Sized, R: Record + ?Sized>(
+        &'a mut self,
+        inner: &'a mut S,
+        now: u64,
+        record: &'a RefCell<R>,
+    ) -> PassSound<'a, S, R> {
+        let mut pass = PassSound {
+            frozen: self,
+            inner,
+            now,
+            record,
+        };
+        pass.sample();
+        pass
+    }
+
+    /// The patterns the buzzer accepted since the last call, in order.
+    pub fn take_started(&mut self) -> heapless::Vec<u8, 4> {
+        core::mem::take(&mut self.started)
+    }
+}
+
+/// The buzzer for one pass. The pattern list is the build's own and passes
+/// through.
+pub struct PassSound<'a, S: ?Sized, R: ?Sized> {
+    frozen: &'a mut FrozenSound,
+    inner: &'a mut S,
+    now: u64,
+    record: &'a RefCell<R>,
+}
+
+impl<S: Sound + ?Sized, R: Record + ?Sized> PassSound<'_, S, R> {
+    fn sample(&mut self) {
+        self.frozen.view = self.frozen.latest.observe(
+            self.inner.snapshot(),
+            self.now,
+            self.record,
+            Event::SoundState,
+        );
+    }
+
+    fn answered(&mut self, play: Option<u8>, result: Result<(), Error>) -> Result<(), Error> {
+        self.record
+            .borrow_mut()
+            .record(&Event::SoundRequest { play, result });
+        if let (Some(id), Ok(())) = (play, result) {
+            let _ = self.frozen.started.push(id);
+        }
+        self.sample();
+        result
+    }
+}
+
+impl<S: Sound + ?Sized, R: Record + ?Sized> Sound for PassSound<'_, S, R> {
+    fn patterns(&self) -> &'static [sound::Pattern] {
+        self.inner.patterns()
+    }
+    fn snapshot(&self) -> sound::Snapshot {
+        self.frozen.view
+    }
+    fn play(&mut self, id: u8, now: u64) -> Result<(), Error> {
+        let result = self.inner.play(id, now);
+        self.answered(Some(id), result)
+    }
+    fn stop(&mut self, now: u64) -> Result<(), Error> {
+        let result = self.inner.stop(now);
+        self.answered(None, result)
+    }
+}
+
+/// Power control as composition and VANA see it across passes.
+pub struct FrozenPowerControl {
+    latest: Latest<power::Status>,
+    view: power::Status,
+}
+
+impl Default for FrozenPowerControl {
+    fn default() -> Self {
+        Self {
+            latest: Latest::default(),
+            view: power::Status::IDLE,
+        }
+    }
+}
+
+impl FrozenPowerControl {
+    /// Sample `inner` and record it when it changed; the status this pass
+    /// reads until VANA's own request.
+    pub fn freeze<P: PowerControl + ?Sized, R: Record + ?Sized>(
+        &mut self,
+        inner: &P,
+        now: u64,
+        record: &RefCell<R>,
+    ) -> power::Status {
+        self.view = self
+            .latest
+            .observe(inner.status(), now, record, Event::PowerControl);
+        self.view
+    }
+
+    /// The status as frozen, for VANA's requests this pass.
+    pub fn bind<'a, P: PowerControl + ?Sized, R: Record + ?Sized>(
+        &'a mut self,
+        inner: &'a mut P,
+        now: u64,
+        record: &'a RefCell<R>,
+    ) -> PassPowerControl<'a, P, R> {
+        PassPowerControl {
+            frozen: self,
+            inner,
+            now,
+            record,
+        }
+    }
+}
+
+/// Power control for one pass. Capabilities pass through: VANA does not
+/// read them.
+pub struct PassPowerControl<'a, P: ?Sized, R: ?Sized> {
+    frozen: &'a mut FrozenPowerControl,
+    inner: &'a mut P,
+    now: u64,
+    record: &'a RefCell<R>,
+}
+
+impl<P: PowerControl + ?Sized, R: Record + ?Sized> PassPowerControl<'_, P, R> {
+    fn answered(
+        &mut self,
+        operation: power::Operation,
+        delay_ms: u32,
+        result: Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.record.borrow_mut().record(&Event::PowerRequest {
+            operation,
+            delay_ms,
+            result,
+        });
+        self.frozen.freeze(self.inner, self.now, self.record);
+        result
+    }
+}
+
+impl<P: PowerControl + ?Sized, R: Record + ?Sized> PowerControl for PassPowerControl<'_, P, R> {
+    fn capabilities(&self) -> power::Capabilities {
+        self.inner.capabilities()
+    }
+    fn status(&self) -> power::Status {
+        self.frozen.view
+    }
+    fn request(&mut self, operation: power::Operation) -> Result<(), Error> {
+        let result = self.inner.request(operation);
+        self.answered(operation, 0, result)
+    }
+    fn request_after(&mut self, operation: power::Operation, delay_ms: u32) -> Result<(), Error> {
+        let result = self.inner.request_after(operation, delay_ms);
+        self.answered(operation, delay_ms, result)
     }
 }
 

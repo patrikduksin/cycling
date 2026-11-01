@@ -866,10 +866,9 @@ impl Sim {
             NoteKind::Device,
             format!("storage fails after {after} writes"),
         );
-        *self.device.media.fault.borrow_mut() = crate::storage::Fault {
-            after: Some(after),
-            partial,
-        };
+        let mut fault = self.device.media.fault.borrow_mut();
+        fault.after = Some(after);
+        fault.partial = partial;
     }
 
     /// Fit the C606 owned MMC region, as it is before VANA formats it.

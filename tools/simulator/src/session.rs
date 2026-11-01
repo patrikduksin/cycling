@@ -7,8 +7,8 @@ use crate::devices::PowerDevice;
 use crate::devices::PowerSwitch;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
-use crate::replay::{Blocks, Capture, Mode, Next, Origin, Replay, Report, Seen, Sources};
-use crate::storage::{Fault, FileFlash};
+use crate::replay::{Blocks, Capture, Mode, Next, Origin, Replay, Report, Seen, Shelled, Sources};
+use crate::storage::FileFlash;
 use crate::world::World;
 use device_api::ant::Ant;
 use device_api::ant::AntOperation;
@@ -25,13 +25,17 @@ use device_api::positioning::Positioning;
 use device_api::sensors::Startup;
 #[cfg(feature = "cycling")]
 use device_api::server::AccessPoint;
+#[cfg(feature = "cycling")]
+use device_api::{power::PowerControl, server::Server, sound::Sound};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use firmware_services::trace::frozen::{
-    CompanionView, FrozenCompanion, FrozenPosition, Latest, Record, RecordedBulk, RecordedEdges,
-    Recorder,
+    CompanionView, FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record,
+    RecordedBulk, RecordedEdges, Recorder,
 };
-use firmware_services::trace::{Event, Header};
+#[cfg(feature = "cycling")]
+use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
+use firmware_services::trace::{Event, Header, Output};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io;
@@ -293,8 +297,14 @@ struct Trace {
     network_time: Latest<firmware_services::network_time::Snapshot>,
     #[cfg(feature = "cycling")]
     page: Option<vana::screens::workout::Page>,
-    /// Sounds already recorded.
-    sounds: usize,
+    power: FrozenPowerControl,
+    backlight: Latest<Availability>,
+    #[cfg(feature = "cycling")]
+    sound: FrozenSound,
+    #[cfg(feature = "cycling")]
+    access_point: FrozenAccessPoint,
+    #[cfg(feature = "cycling")]
+    server: FrozenServer,
 }
 
 impl Trace {
@@ -325,7 +335,14 @@ impl Trace {
             network_time: Latest::default(),
             #[cfg(feature = "cycling")]
             page: None,
-            sounds: 0,
+            power: FrozenPowerControl::default(),
+            backlight: Latest::default(),
+            #[cfg(feature = "cycling")]
+            sound: FrozenSound::default(),
+            #[cfg(feature = "cycling")]
+            access_point: FrozenAccessPoint::default(),
+            #[cfg(feature = "cycling")]
+            server: FrozenServer::default(),
         }
     }
 
@@ -722,14 +739,16 @@ impl Session {
             io::Error::other("the capture's media is file-backed and cannot be replayed")
         })?;
         let mut session = Self::with_media(flash, 240, 320)?;
-        session.bulk = origin.bulk.copy();
-        let replay = Replay::new(
-            capture.trace.clone(),
-            session.input.clone(),
-            session.bulk.clone(),
-            mode,
-        )
-        .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
+        session.bulk = origin.bulk.scripted();
+        let shelled = Shelled {
+            input: session.input.clone(),
+            display: session.display.clone(),
+            power: session.power.clone(),
+            flash: session.media.clone(),
+            bulk: session.bulk.clone(),
+        };
+        let replay = Replay::new(capture.trace.clone(), shelled, mode)
+            .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
         session.devices = Devices::Replayed(Box::new(replay));
         Ok(session)
     }
@@ -744,14 +763,20 @@ impl Session {
             Next::Command(line) => {
                 let _ = self.command(line.as_bytes(), &mut String::new());
             }
-            Next::End => return false,
+            Next::End => {
+                let trace = self.trace();
+                if let Devices::Replayed(replay) = &mut self.devices {
+                    replay.rerecorded(&trace);
+                }
+                return false;
+            }
         }
         true
     }
     /// Where a replay parted from its recording so far.
-    pub fn report(&self) -> Option<&Report> {
+    pub fn report(&self) -> Option<Report> {
         match &self.devices {
-            Devices::Replayed(replay) => Some(&replay.sources.report),
+            Devices::Replayed(replay) => Some(replay.sources.report()),
             Devices::Simulated(_) => None,
         }
     }
@@ -791,17 +816,32 @@ impl Session {
             }
         }
         self.trace.record(&Event::Pass { now_ms: self.now });
+        self.display.0.borrow_mut().refusals.begin_pass();
+        self.power.0.borrow_mut().refusals.begin_pass();
         self.pass();
+        self.record_faults();
         let seen = self.record_seen();
         if let Devices::Replayed(replay) = &mut self.devices {
             replay.saw(&seen);
         }
     }
-    /// The buzzer and power control, as the world or the trace has them.
-    fn speaker_and_switch(&mut self) -> (&mut Speaker, &mut PowerSwitch) {
-        match &mut self.devices {
-            Devices::Simulated(sim) => (&mut sim.speaker, &mut sim.switch),
-            Devices::Replayed(replay) => (&mut replay.sources.speaker, &mut replay.sources.switch),
+    /// What the panel, the backlight and the media refused since the last
+    /// call, into the trace.
+    fn record_faults(&mut self) {
+        let panel = core::mem::take(&mut self.display.0.borrow_mut().refusals.refused);
+        let backlight = core::mem::take(&mut self.power.0.borrow_mut().refusals.refused);
+        let flash = core::mem::take(&mut self.media.fault.borrow_mut().log);
+        let bulk = self.bulk.take_log();
+        let refused = (panel.into_iter().map(|attempt| (Output::Panel, attempt))).chain(
+            backlight
+                .into_iter()
+                .map(|attempt| (Output::Backlight, attempt)),
+        );
+        for (output, attempt) in refused {
+            self.trace.record(&Event::Refused { output, attempt });
+        }
+        for fault in flash.into_iter().chain(bulk) {
+            self.trace.record(&Event::StorageFault(fault));
         }
     }
     /// The companion's startup as this pass reads it.
@@ -832,13 +872,18 @@ impl Session {
                 .startup
                 .observe(startup, now, &self.trace.recorder, Event::Startup);
         self.power.0.borrow_mut().battery = battery(companion);
-        let power = {
-            let (speaker, switch) = self.speaker_and_switch();
-            speaker.tick(now);
-            observe_startup(switch, now, startup);
-            (!switch.off_due()).then(|| device_api::power::PowerControl::status(switch))
+        let record = &self.trace.recorder;
+        let power = match &mut self.devices {
+            Devices::Simulated(sim) => {
+                sim.speaker.tick(now);
+                observe_startup(&mut sim.switch, now, startup);
+                (!sim.switch.off_due()).then(|| self.trace.power.freeze(&sim.switch, now, record))
+            }
+            Devices::Replayed(replay) => (!replay.sources.power.powered_off())
+                .then(|| self.trace.power.freeze(&replay.sources.power, now, record)),
         };
         let Some(power) = power else {
+            self.trace.record(&Event::PoweredOff);
             self.turn_off();
             return;
         };
@@ -847,13 +892,9 @@ impl Session {
         // then the backlight stays dark.
         #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Initializing {
-            let bulk: &mut dyn ReadWrite = match &mut self.devices {
-                Devices::Replayed(replay) => &mut replay.sources.bulk,
-                Devices::Simulated(_) => &mut self.bulk,
-            };
             self.sdk.prepare(
                 &mut self.shell.data_storage(),
-                &mut RecordedBulk::new(bulk, &self.trace.recorder),
+                &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
                 now,
             );
         }
@@ -861,6 +902,12 @@ impl Session {
             return;
         }
         let record = &self.trace.recorder;
+        self.trace.backlight.observe(
+            self.power.0.borrow().available,
+            now,
+            record,
+            Event::Backlight,
+        );
         let position = match &self.devices {
             Devices::Replayed(replay) => {
                 self.trace
@@ -911,11 +958,11 @@ impl Session {
             &'a mut dyn Ble,
             &'a mut dyn ReadWrite,
             &'a mut dyn AccessPoint,
-            &'a mut crate::phone::SimServer,
-            &'a mut Speaker,
-            &'a mut PowerSwitch,
+            &'a mut dyn Server,
+            &'a mut dyn Sound,
+            &'a mut dyn PowerControl,
         );
-        let (ant, ble, bulk, access_point, server, speaker, switch): Handles =
+        let (ant, ble, bulk, access_point, server, sound, control): Handles =
             match &mut self.devices {
                 Devices::Replayed(replay) => {
                     let sources = &mut replay.sources;
@@ -925,8 +972,8 @@ impl Session {
                         &mut sources.bulk,
                         &mut sources.access_point,
                         &mut sources.server,
-                        &mut sources.speaker,
-                        &mut sources.switch,
+                        &mut sources.sound,
+                        &mut sources.power,
                     )
                 }
                 Devices::Simulated(sim) => (
@@ -942,8 +989,10 @@ impl Session {
         let mut ant = self.trace.ant.bind(ant, now, record);
         let mut ble = self.trace.ble.bind(ble, now, record);
         let mut bulk = RecordedBulk::new(bulk, record);
-        let mut access_point =
-            firmware_services::trace::frozen::RecordedAccessPoint::new(access_point, record);
+        let mut access_point = self.trace.access_point.bind(access_point, now, record);
+        let mut server = self.trace.server.bind(server, now, record);
+        let mut sound = self.trace.sound.bind(sound, now, record);
+        let mut control = self.trace.power.bind(control, now, record);
         self.sdk.set_startup_status(startup);
         self.shell.set_app_active(self.sdk.input_active());
         self.shell.tick(now);
@@ -976,7 +1025,7 @@ impl Session {
         // reading the TERRAIN volume's pack when one is installed.
         self.sdk.look_ahead(&mut bulk, now);
         self.sdk.serve_phone(
-            server,
+            &mut server,
             &mut access_point,
             &mut self.shell.data_storage(),
             &mut bulk,
@@ -984,37 +1033,29 @@ impl Session {
         );
         self.sdk.present(&mut self.shell, now, &ant, &position);
         self.sdk.save_preferences(&mut self.shell, now);
-        self.sdk.alert(speaker, now);
-        self.sdk.power(&mut self.shell, switch, now);
+        self.sdk.alert(&mut sound, now);
+        self.sdk.power(&mut self.shell, &mut control, now);
     }
-    /// What the rider saw change this pass: the page and any sound.
+    /// What the rider saw change this pass: the page and any sound the
+    /// buzzer accepted.
+    #[cfg(feature = "cycling")]
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();
-        #[cfg(feature = "cycling")]
-        {
-            let page = self.sdk.page();
-            if self.trace.page != Some(page) {
-                self.trace.page = Some(page);
-                self.trace.record(&Event::Page(page.name()));
-                seen.push(Seen::Page(page.name().into()));
-            }
+        let page = self.sdk.page();
+        if self.trace.page != Some(page) {
+            self.trace.page = Some(page);
+            self.trace.record(&Event::Page(page.name()));
+            seen.push(Seen::Page(page.name().into()));
         }
-        let from = self.trace.sounds;
-        let (speaker, _) = self.speaker_and_switch();
-        let played: Vec<u8> = speaker
-            .played
-            .get(from..)
-            .unwrap_or(&[])
-            .iter()
-            .map(|&(_, pattern)| pattern)
-            .collect();
-        let total = speaker.played.len();
-        for pattern in played {
+        for pattern in self.trace.sound.take_started() {
             self.trace.record(&Event::Sound(pattern));
             seen.push(Seen::Sound(pattern));
         }
-        self.trace.sounds = total;
         seen
+    }
+    #[cfg(not(feature = "cycling"))]
+    fn record_seen(&mut self) -> Vec<Seen> {
+        Vec::new()
     }
     /// Off on USB power the C606 rests in charging standby: VANA shows the
     /// charge for a while, then the panel goes dark. Off on battery, nothing
@@ -1085,21 +1126,54 @@ impl Session {
         out: &mut String,
     ) -> Result<(Request, &'static str), firmware_console::protocol::Error> {
         let request = firmware_console::protocol::parse(line)?;
+        let power = self.gate();
         if let Ok(text) = core::str::from_utf8(line) {
             self.trace.record(&Event::Command(text));
         }
-        Ok((request, self.execute(request, out)))
+        Ok((request, self.execute_gated(request, power, out)))
     }
     /// Execute a parsed request. Unlike `command`, the trace does not see it,
     /// so a replay of this session will not either.
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
-        let (now, startup) = (self.now, self.startup());
-        let power = {
-            let (_, switch) = self.speaker_and_switch();
-            observe_startup(switch, now, startup);
-            device_api::power::PowerControl::status(switch)
-        };
+        let power = self.gate();
+        self.execute_gated(request, power, out)
+    }
+    /// Power control as composition reads it before a request, recorded.
+    fn gate(&mut self) -> device_api::power::Status {
+        let now = self.now;
+        let record = &self.trace.recorder;
+        match &mut self.devices {
+            Devices::Simulated(sim) => {
+                observe_startup(&mut sim.switch, now, sim.startup);
+                self.trace.power.freeze(&sim.switch, now, record)
+            }
+            Devices::Replayed(replay) => {
+                self.trace.power.freeze(&replay.sources.power, now, record)
+            }
+        }
+    }
+    fn execute_gated(
+        &mut self,
+        request: Request,
+        power: device_api::power::Status,
+        out: &mut String,
+    ) -> &'static str {
+        let status = self.respond(request, power, out);
+        self.record_faults();
+        status
+    }
+    fn respond(
+        &mut self,
+        request: Request,
+        power: device_api::power::Status,
+        out: &mut String,
+    ) -> &'static str {
+        let now = self.now;
         if !power.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
+            let startup = match &self.devices {
+                Devices::Simulated(sim) => sim.startup,
+                Devices::Replayed(_) => self.trace.startup.at(now).unwrap_or(Startup::Unsupported),
+            };
             firmware_console::protocol::write_not_ready(out, power.state, startup);
             return "BUSY";
         }
@@ -1342,10 +1416,9 @@ impl Session {
                 if after > 1024 || partial > 4096 || w.next().is_some() {
                     return "INVALID";
                 }
-                *self.media.fault.borrow_mut() = Fault {
-                    after: Some(after),
-                    partial,
-                };
+                let mut fault = self.media.fault.borrow_mut();
+                fault.after = Some(after);
+                fault.partial = partial;
             }
             Some("POSITION") => {
                 let now = self.now;
@@ -1499,7 +1572,6 @@ impl Session {
             strap
         });
         next_sim.speaker.played = core::mem::take(&mut sim.speaker.played);
-        next.trace.sounds = next.sim().speaker.played.len();
         *self = next;
         Ok(())
     }

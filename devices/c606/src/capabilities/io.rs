@@ -192,10 +192,8 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;
         // Dimming never reaches 0%, so a touch still wakes a dimmed screen.
-        let poll = if super::power::lit() == 0 || super::power::ACCESS.closed() {
-            Poll::Unread
-        } else {
-            match touch.poll() {
+        let poll = match super::power::ACCESS.enter() {
+            Ok(_lease) if super::power::lit() > 0 => match touch.poll().await {
                 Ok(report) => {
                     if report != Report::Invalid {
                         state.touch_available = true;
@@ -207,7 +205,8 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                     state.touch_errors = state.touch_errors.saturating_add(1);
                     Poll::Failed
                 }
-            }
+            },
+            _ => Poll::Unread,
         };
         // See `Input::Cancel` for the contract these edges keep. An overflow
         // cancels the contact, as the queue's Cancel told the consumer.

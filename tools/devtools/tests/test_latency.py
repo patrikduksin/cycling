@@ -13,7 +13,7 @@ class FakeDevice:
 
     def __init__(self, latencies, timed=True, dim_ms=None):
         self.latencies, self.timed, self.dim_ms = list(latencies), timed, dim_ms
-        self.commands, self.request_id = [], 1
+        self.commands, self.sent, self.request_id = [], [], 1
         self.uptime, self.submissions, self.presses, self.last = 0, 0, 0, 0
         self.active, self.wakes = 0, 0
 
@@ -22,11 +22,12 @@ class FakeDevice:
 
     def delay(self, seconds):
         # Two idle frames a second, counted from uptime so short waits add up.
-        self.uptime += int(seconds * 1000)
+        self.uptime += round(seconds * 1000)
         self.submissions = self.uptime // 500
 
     def terminal_command(self, command, **_):
         self.commands.append(command)
+        self.sent.append(self.uptime)
         self.request_id += 1
         words = command.split()
         common = 'boot=9 session=5'
@@ -90,6 +91,16 @@ class LatencyTests(unittest.TestCase):
         self.assertEqual(result['press_frame_ms'], [20, 14])
         self.assertEqual(fake.wakes, 0, 'no timed press was spent waking the screen')
         self.assertGreater(fake.commands.count('ACTIVITY'), 3)
+
+    def test_sends_nothing_from_a_press_until_it_is_due_and_drawn(self):
+        # Terminal traffic would keep the console at its busy pace.
+        fake = FakeDevice([5, 20, 14])
+        self.run_tool(fake, count=2, setup=[1], idle_s=5, seed=1)
+        runs = [i for i, command in enumerate(fake.commands) if ' INPUT RUN ' in command][1:]
+        dues = [int(command.split()[-3]) for command in fake.commands if ' INPUT ADD ' in command][1:]
+        self.assertEqual(len(runs), 2)
+        for run, due in zip(runs, dues, strict=True):
+            self.assertGreaterEqual(fake.sent[run + 1] - fake.sent[run], due + 250, fake.commands[run + 1])
 
     def test_refuses_firmware_without_press_timing(self):
         with self.assertRaisesRegex(RuntimeError, 'press_frame_ms and display_ms'):

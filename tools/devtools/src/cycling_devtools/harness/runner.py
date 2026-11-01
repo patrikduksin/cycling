@@ -518,13 +518,17 @@ class Runner:
             self.delay(0.05)
         raise TimeoutError('condition did not complete within bounded wait')
 
-    def inject(self, step):
+    def inject(self, step, silent_s=0):
+        """Run one input sequence; with `silent_s`, send nothing for that long
+        after starting it, before polling for its end."""
         events = events_for(step)
         self.sequence += 1
         self.operation(f'INPUT BEGIN {self.sequence}')
         for event in events:
             self.operation(f'INPUT ADD {self.sequence} {event["at_ms"]} {event["event"]}', ('ACCEPTED',))
         self.operation(f'INPUT RUN {self.sequence}', ('ACCEPTED',))
+        if silent_s:
+            self.transport.delay(silent_s)
         result = self.wait('INPUT STATUS', {'state': 'completed'}, 35, harness=True)
         if result['accepted'] != result['delivered'] or result['losses'] != '0' or result['held'] != 'false':
             raise RuntimeError('input sequence lost events or left held state')

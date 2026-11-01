@@ -1,15 +1,19 @@
 """Measure button-press-to-frame latency and idle frames on a C606 harness build.
 
-Each trial schedules one synthetic press at a random phase, so it can fall due
-while a frame is rendering. The firmware times each routed press from when it
-fell due (physical presses: when they were received) to the end of the next
-frame submission and reports it in STATUS as press_frame_ms. Before the
-presses, an idle window gives the frame rate (display_submissions per second)
-and the last idle frame's render-and-transfer time (display_ms), with no
-capture running. The idle window can outlast the dim timeout, and a press on a
-dimmed screen only wakes it, so the tool refreshes activity before timing and
-before every press. Requires a CYCLING_HARNESS=1 C606 build; the simulator has no
-wall clock to time.
+Each trial schedules one synthetic press at a random offset. The harness keeps
+the console's rest to the press's due time, so on a still page the pass that
+takes it starts when it falls due. A physical press instead ends the rest
+through the input edge signal, which this tool does not exercise. The firmware
+times each routed press from when it fell due (physical presses: when they
+were received) to the end of the next frame submission and reports it in
+STATUS as press_frame_ms. Before the presses, an idle window gives the frame
+rate (display_submissions per second) and the last idle frame's
+render-and-transfer time (display_ms), with no capture running. The idle
+window can outlast the dim timeout, and a press on a dimmed screen only wakes
+it, so the tool refreshes activity before timing and before every press.
+Terminal traffic keeps the console at its busy pace, so the tool sends nothing
+from starting a press until it is due and its frame drawn. Requires a
+CYCLING_HARNESS=1 C606 build; the simulator has no wall clock to time.
 """
 
 import argparse
@@ -27,6 +31,8 @@ from cycling_devtools.workspace import ROOT, private_path
 
 # VANA ignores presses within 350 ms of the previous one.
 PHASE_MS = (400, 900)
+# Silence past a press's due time, for its pass and frame.
+DRAWN_MS = 250
 
 
 def idle_frames(runner, seconds):
@@ -56,7 +62,10 @@ def press_once(runner, index, phase_ms, timeout_s=5):
     # Keep the screen awake: a press that only wakes it draws no timed frame.
     runner.command('ACTIVITY')
     before = int(runner.command('STATUS')['press_frames'])
-    runner.inject({'events': [{'at_ms': phase_ms, 'event': f'BUTTON {index}'}]})
+    runner.inject(
+        {'events': [{'at_ms': phase_ms, 'event': f'BUTTON {index}'}]},
+        silent_s=(phase_ms + DRAWN_MS) / 1000,
+    )
     stop = time.monotonic() + timeout_s
     while time.monotonic() < stop:
         status = runner.command('STATUS')

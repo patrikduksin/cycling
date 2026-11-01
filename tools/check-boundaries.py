@@ -46,6 +46,10 @@ SINGLE_WRITERS = {
 ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
     re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')
 
+STACK_STATE_WAITER = ('devices/c606/src/drivers/wifi.rs', 'network')
+STACK_STATE_WAIT = re.compile(r'(?:\.|::)\s*(wait_(?:config|link)_(?:up|down))\s*\(')
+FUNCTION = re.compile(r'\bfn\s+(\w+)')
+
 
 # A Rust lifetime is not a character literal; do not blank code between two
 # lifetimes such as &'a and &'b when scanning an import or qualified expression.
@@ -141,6 +145,18 @@ def foreign_writes(text, path):
     return findings
 
 
+def foreign_stack_waits(text, path):
+    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
+    findings = []
+    for match in STACK_STATE_WAIT.finditer(code):
+        functions = FUNCTION.findall(code, 0, match.start())
+        if (path, functions[-1] if functions else None) != STACK_STATE_WAITER:
+            line = code.count('\n', 0, match.start()) + 1
+            findings.append((line, f'{match[1]} outside `network`: embassy-net wakes one task per stack, and a '
+                                   f'second one makes both spin; use config_up or config_down in {STACK_STATE_WAITER[0]}'))
+    return findings
+
+
 def dependencies(manifest, workspace=None):
     """Include aliased, optional, target, development and build dependencies."""
     for key, section in manifest.items():
@@ -223,6 +239,16 @@ ui = { package = "firmware-shell", path = "../shell" }
                    'let name = "page = Page::EndRide";', 'page = Page::EndRideLater;']:
         assert not foreign_writes(source, elsewhere), source
     assert not foreign_writes('self.navigation.page = Page::EndRide;', SINGLE_WRITERS['Page::EndRide'])
+    wifi = STACK_STATE_WAITER[0]
+    publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \
+                '        stack\n            .wait_config_down()\n            .await;\n    }\n}\n'
+    assert not foreign_stack_waits(publisher, wifi)
+    assert not foreign_stack_waits('// fn f() { stack.wait_link_up() }\nlet doc = "stack.wait_config_up()";', wifi)
+    assert [line for line, _ in foreign_stack_waits(publisher, 'devices/c606/src/drivers/http.rs')] == [3, 5]
+    for helper in ['async fn up(stack: Stack) { stack.wait_config_up().await }',
+                   'fn verify() { Stack::wait_config_down(&stack).await; }',
+                   'fn time_sync() { select(stack.wait_link_down(), timer).await; }']:
+        assert foreign_stack_waits(publisher + helper, wifi), helper
 
 
 def main():
@@ -252,9 +278,11 @@ def main():
                                 allowed_paths=TEST_SOURCE_SEAMS.get(path.relative_to(ROOT).as_posix(), ())))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_writes(path.read_text(), path.relative_to(ROOT).as_posix()))
+            failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
+                            for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Dependency boundaries and single writers passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, single writers and the stack waiter passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

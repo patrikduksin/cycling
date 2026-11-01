@@ -414,6 +414,45 @@ fn a_ride_log_vana_kept_read_only_at_power_on_is_reported() {
     );
 }
 
+/// `trace` with the media in its header changed by `change`, as a build
+/// that recorded them so would have written it.
+fn with_media(
+    trace: &[u8],
+    change: impl FnOnce(&mut firmware_services::trace::origin::Media<'_>),
+) -> Vec<u8> {
+    use firmware_services::trace::{self, origin::Media};
+    let (header, _) = trace::decode(trace).unwrap();
+    let mut media = Media::decode(header.media).unwrap();
+    change(&mut media);
+    let mut encoded = vec![0u8; 16 * 1024];
+    let len = media.encode(&mut encoded).unwrap();
+    let header = trace::Header {
+        media: &encoded[..len],
+        ..header
+    };
+    let mut block = vec![0u8; 64 * 1024];
+    let len = trace::encode_header(&header, &mut block).unwrap();
+    let first = 2 + usize::from(u16::from_le_bytes([trace[0], trace[1]])) + 4;
+    [&block[..len], &trace[first..]].concat()
+}
+
+#[test]
+fn a_journal_whose_last_slot_vana_could_not_read_is_not_called_cleared() {
+    let (mut sim, trace, _) = recorded_session();
+    let trace = with_media(&trace, |media| {
+        media.journal.as_mut().unwrap().last = None;
+    });
+    let pulled = pull(&mut sim, &trace);
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(
+        gaps.iter()
+            .any(|gap| matches!(gap, Gap::JournalUnchecked { .. })),
+        "{gaps:?}"
+    );
+    let report = rebuild::report(&gaps);
+    assert!(!report.contains("cleared since"), "{report}");
+}
+
 #[test]
 fn a_ride_saved_again_since_leaves_the_facts_table_out() {
     use vana::ride::facts;

@@ -71,6 +71,9 @@ pub enum Gap {
     /// power-on, so it was cleared and filled again since; the rebuilt
     /// journal is empty.
     JournalReplaced { slots: u32 },
+    /// VANA could not read the internal journal's last slot at power-on, so
+    /// no copy can be checked against it; the rebuilt journal is empty.
+    JournalUnchecked { slots: u32 },
     /// RIDES was not pulled; the rebuilt card has no ride log.
     RidesNotPulled,
     /// RIDES now holds another log, so it was cleared or initialized since;
@@ -121,8 +124,11 @@ impl fmt::Display for Gap {
             ),
             Self::JournalReplaced { slots } => write!(
                 f,
-                "internal ride journal: slot {} on the device is not the one VANA found at power-on, so the journal was cleared since; it starts empty",
-                slots - 1
+                "internal ride journal: the slot before slot {slots} on the device is not the one VANA found at power-on, so the journal was cleared since; it starts empty"
+            ),
+            Self::JournalUnchecked { slots } => write!(
+                f,
+                "internal ride journal: VANA could not read the slot before slot {slots} at power-on, so the pulled journal cannot be checked against it; it starts empty"
             ),
             Self::RidesNotPulled => {
                 write!(f, "RIDES: not pulled; the card starts without a ride log")
@@ -320,11 +326,12 @@ fn internal_at_power_on<'a>(
         .0
         .last()
         .map(|slot| crc32(slot));
-    if last != journal.last {
-        gaps.push(Gap::JournalReplaced { slots });
-        return None;
+    match (last, journal.last) {
+        (Some(_), None) => gaps.push(Gap::JournalUnchecked { slots }),
+        (last, recorded) if last != recorded => gaps.push(Gap::JournalReplaced { slots }),
+        _ => return Some(kept),
     }
-    Some(kept)
+    None
 }
 
 /// The RIDES log of epoch `store` and its first `head` records' slots.

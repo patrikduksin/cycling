@@ -2,6 +2,8 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #[cfg(test)]
 extern crate std;
+#[cfg(any(feature = "hardware", test))]
+pub mod activity;
 #[cfg(feature = "hardware")]
 pub mod board;
 #[cfg(feature = "hardware")]

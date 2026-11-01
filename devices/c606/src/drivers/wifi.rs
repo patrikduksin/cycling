@@ -2,12 +2,15 @@
 //! and a soft access point for the phone companion that takes the radio from
 //! the station while it is up.
 use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
 use embassy_executor::Spawner;
 use embassy_futures::select::Either;
+use embassy_futures::select::Either3;
 use embassy_futures::select::select;
+use embassy_futures::select::select3;
 use embassy_net::Runner;
 use embassy_net::Stack;
 use embassy_net::StackResources;
@@ -134,6 +137,10 @@ static GENERATION: AtomicU32 = AtomicU32::new(0);
 static ASSOCIATIONS: AtomicU32 = AtomicU32::new(0);
 static PROBE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
 static PROBE_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// The associated station's signal in dBm, read this often by the
+/// connection owner; `i32::MIN` until it has read one.
+static RSSI: AtomicI32 = AtomicI32::new(i32::MIN);
+const RSSI_EVERY: Duration = Duration::from_secs(5);
 /// DHCP, DNS, the connectivity probe and SNTP, the two phone server
 /// listeners and one spare. Both sets live in PSRAM, so room costs no
 /// internal RAM.
@@ -243,6 +250,13 @@ pub fn online() -> bool {
     !suspended() && Link::load() == Link::Associated
 }
 
+/// The station's signal while it is associated.
+pub fn rssi() -> Option<i8> {
+    let rssi = RSSI.load(Ordering::Relaxed);
+    (Link::load() == Link::Associated && rssi != i32::MIN)
+        .then(|| rssi.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8)
+}
+
 /// Initialize the station and return Embassy's actual DNS/TCP/UDP capability.
 ///
 /// None means unconfigured or failed radio initialization. Some means the stack
@@ -296,10 +310,19 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         seed.rotate_left(17) ^ u64::from(rng.random()),
     );
     CONTROL.set_ready();
-    spawner.spawn(connection(controller).unwrap());
-    spawner.spawn(network(runner).unwrap());
-    spawner.spawn(access_point_network(ap_runner).unwrap());
-    spawner.spawn(verify(stack).unwrap());
+    use crate::activity::{Task, spawn};
+    spawn(
+        spawner,
+        Task::WifiConnection,
+        connection(controller).unwrap(),
+    );
+    spawn(spawner, Task::WifiStation, network(runner).unwrap());
+    spawn(
+        spawner,
+        Task::WifiAccessPoint,
+        access_point_network(ap_runner).unwrap(),
+    );
+    spawn(spawner, Task::WifiVerify, verify(stack).unwrap());
     Some(Stacks {
         station: stack,
         access_point,
@@ -518,20 +541,30 @@ async fn next_work(
     // another task and can remain true after the disconnect event; polling an
     // already-disconnected controller against that stale flag would never yield.
     if controller.is_connected() {
-        match select(controller.wait_for_disconnect_async(), next_command()).await {
-            Either::First(_) => {
-                GENERATION.fetch_add(1, Ordering::AcqRel);
-                Link::Failed.store();
-                Probe::Waiting.store();
-                CONTROL.with(|c| {
-                    if !c.has_command() {
-                        c.complete(Some(ControlError::LinkLost));
-                    }
-                });
-                Timer::after_millis(1).await;
-                None
+        loop {
+            RSSI.store(controller.rssi().unwrap_or(i32::MIN), Ordering::Relaxed);
+            match select3(
+                controller.wait_for_disconnect_async(),
+                next_command(),
+                Timer::after(RSSI_EVERY),
+            )
+            .await
+            {
+                Either3::First(_) => {
+                    GENERATION.fetch_add(1, Ordering::AcqRel);
+                    Link::Failed.store();
+                    Probe::Waiting.store();
+                    CONTROL.with(|c| {
+                        if !c.has_command() {
+                            c.complete(Some(ControlError::LinkLost));
+                        }
+                    });
+                    Timer::after_millis(1).await;
+                    return None;
+                }
+                Either3::Second(operation) => return operation,
+                Either3::Third(()) => {}
             }
-            Either::Second(operation) => operation,
         }
     } else if retry.requested() {
         match select(next_command(), Timer::after_secs(retry.delay())).await {

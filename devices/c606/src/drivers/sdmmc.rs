@@ -151,13 +151,15 @@ const ERRORS: [&str; 18] = [
 
 /// Media failures kept for STATUS. The boot log ring is too small to keep the
 /// line naming the first failure, and a failed medium stays failed until it
-/// recovers, so the root cause must outlive the log.
+/// recovers, so the root cause must outlive the log. The slowest owned write
+/// since the trace last took it.
 pub struct Health {
     first: AtomicU32,
     last: AtomicU32,
     recoveries: AtomicU32,
     recover_failures: AtomicU32,
     recover_max_ms: AtomicU32,
+    write_max_us: AtomicU32,
 }
 
 pub static HEALTH: Health = Health {
@@ -166,6 +168,7 @@ pub static HEALTH: Health = Health {
     recoveries: AtomicU32::new(0),
     recover_failures: AtomicU32::new(0),
     recover_max_ms: AtomicU32::new(0),
+    write_max_us: AtomicU32::new(0),
 };
 
 impl Health {
@@ -191,6 +194,17 @@ impl Health {
             &self.recover_failures
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Recoveries since boot, whether they succeeded or not.
+    pub fn recoveries(&self) -> u32 {
+        self.recoveries
+            .load(Ordering::Relaxed)
+            .saturating_add(self.recover_failures.load(Ordering::Relaxed))
+    }
+
+    pub fn take_write_max_us(&self) -> u32 {
+        self.write_max_us.swap(0, Ordering::Relaxed)
     }
 
     fn describe(code: u32) -> (&'static str, &'static str) {
@@ -722,6 +736,7 @@ impl Reader<'_> {
         }
         let address = self.range(start, 512)?;
         let mut buffer = Sector(*input);
+        let started = Instant::now();
         let result = (|| {
             self.host.data_command(24, address, &mut buffer.0, true)?;
             self.ready()?;
@@ -731,6 +746,8 @@ impl Reader<'_> {
             }
             Ok(())
         })();
+        let took = started.elapsed().as_micros().min(u64::from(u32::MAX)) as u32;
+        HEALTH.write_max_us.fetch_max(took, Ordering::Relaxed);
         self.complete(result)
     }
 

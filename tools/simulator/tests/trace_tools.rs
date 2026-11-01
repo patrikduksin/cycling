@@ -104,6 +104,56 @@ fn record_trace_fixtures() {
     }
 }
 
+#[test]
+fn no_committed_fixture_holds_a_wifi_password_or_a_phone_token() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("the fixtures directory") {
+        let path = entry.expect("a fixture").path();
+        if path.extension().is_some_and(|ext| ext == "trace") {
+            let (capture, _) = file::load(&path).expect("the fixture loads");
+            let found = shell_simulator::trace::secret::secrets(&capture);
+            assert!(
+                found.is_empty(),
+                "{} holds secrets: {found:?}. Record fixtures from a simulator scenario, never from a device",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no fixtures in {}", dir.display());
+}
+
+#[test]
+fn secrets_finds_a_wifi_password_a_phone_token_and_saved_credentials() {
+    use shell_simulator::trace::secret::secrets;
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.advance(seconds(5));
+    sim.device
+        .command(
+            b"CMD 1 WIFI CONFIG WPA2 54657374 70617373776f7264",
+            &mut String::new(),
+        )
+        .expect("the command parses");
+    sim.advance(seconds(1));
+    sim.connect_phone();
+    sim.phone_request(device_api::server::Method::Get, "/api/workouts", b"");
+    let found = secrets(&sim.capture());
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found[0].ends_with("a Wi-Fi password"), "{found:?}");
+    assert!(found[1].ends_with("a phone session token"), "{found:?}");
+
+    sim.device
+        .power_cycle()
+        .expect("the device powers on again");
+    sim.advance(seconds(5));
+    assert_eq!(
+        secrets(&sim.capture()),
+        ["the origin's settings: saved Wi-Fi credentials"]
+    );
+}
+
 fn timeline(name: &str) -> Timeline {
     let (capture, _) = file::load(&fixture(name)).expect("the fixture loads");
     read(&capture.trace).expect("the fixture decodes")

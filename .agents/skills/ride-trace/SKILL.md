@@ -6,7 +6,8 @@ description: Turn a rider's account of a ride problem into the moment in the rid
 # Ride trace
 
 The device records every power-on session as a trace: each input VANA read
-(buttons, ANT and BLE sensors, GPS, barometer, battery, commands) and a thin
+(buttons, ANT and BLE sensors, GPS, barometer, battery, commands, the phone
+server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
 main page's readings once a second, sounds, warnings). The seen layer is ground
 truth for finding the moment; the inputs drive the replay. Every command below
@@ -17,7 +18,9 @@ prints text: start there, and open a PNG only to confirm what the text says.
 - From the device: `cycling store get traces/<file>` (arguments in
   `cycling store --help`). A device trace has no `.origin`, so its replay
   starts on blank media: rides and settings saved before that power-on are
-  absent.
+  absent. Keep it under `.local/` and never commit it: a trace records the
+  rider's location and the secrets a replay needs, the password of each
+  `WIFI CONFIG` command and the token of each phone request.
 - From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
   `<name>.trace` with the media it started on in `<name>.origin`.
 
@@ -69,7 +72,9 @@ others with entries. Then read the window:
 `cycling trace timeline <trace> --from T --to T`. It hides bulky kinds (ANT and
 BLE packets, ANT requests, entropy) and entries that only repeat their source;
 `--kinds all --all` shows everything, `--kinds seen` or `--kinds ant,shown`
-narrows it. ANT+ packets read as words (`power#1234 power 200 W, cadence
+narrows it. `phone`, `power`, `display` and `buzzer` show the phone access
+point and server, power control, the backlight and the buzzer; a
+`WIFI CONFIG` command shows without its password. ANT+ packets read as words (`power#1234 power 200 W, cadence
 86 rpm (event 60)`, heart rate, cadence and wheel rates, radar targets);
 `--hex` adds the bytes.
 
@@ -118,9 +123,16 @@ Done when the screenshot at the moment shows what the rider described, or
 
 ## 5. Write the regression test
 
-1. Copy the trace (and its `.origin`) to
-   `tools/simulator/tests/traces/<name>.trace`. Keep fixtures small: a trace
-   costs about 30 KB a minute.
+1. Make a fixture from a simulator scenario, never from a device trace.
+   Write a scenario in `tools/simulator/tests/trace_tools.rs` that gives VANA
+   the inputs the timeline showed around the moment (the sensors, the route,
+   the silence), add it to `record_trace_fixtures`, and record it with the
+   command under Reference. Its summary must show the moment the rider
+   described. Keep fixtures short: a trace costs about 40 KB a minute.
+   `no_committed_fixture_holds_a_wifi_password_or_a_phone_token` fails on a
+   fixture that holds a Wi-Fi password, a phone session token or saved Wi-Fi
+   credentials. A sanitizer that turns a real trace into a fixture does not
+   exist yet; it is future work.
 2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see> --expect <field>=<value>`
    prints a test that replays to T in stimulus mode, in two sections. Its doc
    comment says what the recording showed and what the sensors were doing

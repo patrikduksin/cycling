@@ -238,8 +238,12 @@ def inspect(transfer):
         }
     else:
         result['files'] = {'state': status}
-    status, _, _, data = transfer.call('store_status', allow=('uninitialized', 'foreign', 'corrupt'))
-    result['store'] = decode_store_status(data) if status == 'ok' else {'state': status}
+    status, _, _, data = transfer.call('store_status', allow=('uninitialized', 'foreign', 'corrupt', 'invalid'))
+    if status == 'ok':
+        result['store'] = decode_store_status(data)
+    else:
+        # Firmware from before STORE does not know the request.
+        result['store'] = {'state': 'unsupported' if status == 'invalid' else status}
     return result
 
 

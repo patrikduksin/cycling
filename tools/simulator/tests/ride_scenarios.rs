@@ -8480,8 +8480,11 @@ mod mutations {
     }
 
     fn encode(header: &Header<'_>, events: impl IntoIterator<Item = Event<'static>>) -> Vec<u8> {
+        let mut file = vec![0u8; 4096];
+        let len = firmware_services::trace::encode_header(header, &mut file).unwrap();
+        file.truncate(len);
         let buffer = vec![0u8; 4096].into_boxed_slice();
-        let mut recorder = Recorder::new(header, buffer, Blocks::default()).unwrap();
+        let mut recorder = Recorder::new(buffer, Blocks(file));
         for event in events {
             recorder.record(&event);
         }

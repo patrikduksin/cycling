@@ -35,7 +35,7 @@ use firmware_services::trace::frozen::{
 };
 #[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
-use firmware_services::trace::{Event, Header, Output};
+use firmware_services::trace::{Event, Header, Output, encode_header};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io;
@@ -316,11 +316,12 @@ impl Trace {
             config: &[],
             media: &[],
         };
+        let mut file = vec![0u8; TRACE_BLOCK];
+        let len = encode_header(&header, &mut file).expect("the header fits a block");
+        file.truncate(len);
         let buffer = vec![0u8; TRACE_BLOCK].into_boxed_slice();
         Self {
-            recorder: RefCell::new(
-                Recorder::new(&header, buffer, Blocks::default()).expect("the header fits a block"),
-            ),
+            recorder: RefCell::new(Recorder::new(buffer, Blocks(file))),
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]

@@ -6,7 +6,7 @@
 //! only when it differs from what a replay would present: the last recorded
 //! value, aged to this pass. Takes and requests pass through to the device
 //! and are recorded as they happen, in call order.
-use super::{AntRadio, Encoder, Event, Full, Header, ServerRequest, encode_header};
+use super::{AntRadio, Encoder, Event, Full, ServerRequest};
 use core::cell::RefCell;
 use device_api::ant::{self, Ant, AntOperation};
 use device_api::ble_transport::{self, Ble};
@@ -23,26 +23,37 @@ pub trait Record {
     fn record(&mut self, event: &Event<'_>);
 }
 
-/// Where sealed blocks go, in order. The first is the header.
+/// Where sealed event blocks go, in order.
 pub trait Sink {
-    fn block(&mut self, bytes: &[u8]);
+    /// Take a sealed block; false when there is no room for it, and it is
+    /// lost.
+    fn block(&mut self, bytes: &[u8]) -> bool;
 }
 
-/// Encodes events into blocks and hands each full block to its sink.
+/// Encodes events into blocks and hands each full block to its sink. The
+/// header goes ahead of them, written by whoever writes the trace; see
+/// [`super::encode_header`].
 pub struct Recorder<B, S> {
     encoder: Encoder<B>,
     sink: S,
+    lost: Lost,
+}
+
+/// Blocks the sink refused since it last took one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Lost {
+    blocks: u32,
+    bytes: u32,
 }
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
-    /// Writes the header block first; `None` when it does not fit `buf`.
-    pub fn new(header: &Header<'_>, mut buf: B, mut sink: S) -> Option<Self> {
-        let len = encode_header(header, buf.as_mut())?;
-        sink.block(&buf.as_ref()[..len]);
-        Some(Self {
+    /// `buf` holds one block, of 64 to [`super::MAX_BLOCK`] bytes.
+    pub fn new(buf: B, sink: S) -> Self {
+        Self {
             encoder: Encoder::new(buf),
             sink,
-        })
+            lost: Lost::default(),
+        }
     }
 
     /// The block being filled, framed. It stays open.
@@ -50,20 +61,47 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
         self.encoder.sealed()
     }
 
+    /// Hand the block being filled to the sink now, so that a reader of the
+    /// sink is at most this old; nothing when it holds no event.
+    pub fn flush(&mut self) {
+        if !self.encoder.is_empty() {
+            self.seal();
+        }
+    }
+
     pub fn sink(&self) -> &S {
         &self.sink
     }
-}
 
-impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
+    pub fn sink_mut(&mut self) -> &mut S {
+        &mut self.sink
+    }
+
     fn push(&mut self, event: &Event<'_>) -> Result<(), Full> {
         let result = self.encoder.push(event);
         if result != Err(Full::Block) {
             return result;
         }
-        self.sink.block(self.encoder.sealed());
-        self.encoder.restart();
+        self.seal();
         self.encoder.push(event)
+    }
+
+    /// Hand the open block to the sink and open the next one, which says
+    /// first what the sink refused since it last took a block.
+    fn seal(&mut self) {
+        let block = self.encoder.sealed();
+        let len = u32::try_from(block.len()).unwrap_or(u32::MAX);
+        if self.sink.block(block) {
+            self.lost = Lost::default();
+        } else {
+            self.lost.blocks = self.lost.blocks.saturating_add(1);
+            self.lost.bytes = self.lost.bytes.saturating_add(len);
+        }
+        self.encoder.restart();
+        if self.lost != Lost::default() {
+            let Lost { blocks, bytes } = self.lost;
+            let _ = self.encoder.push(&Event::Lost { blocks, bytes });
+        }
     }
 }
 

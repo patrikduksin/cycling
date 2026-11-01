@@ -26,7 +26,9 @@ impl Meaning {
     pub fn of(kind: Kind, mode: Mode) -> Self {
         match kind {
             Kind::Seen => Self::RiderVisible,
-            Kind::Unrecorded | Kind::Unreplayable | Kind::Truncated => Self::ReplayFault,
+            Kind::Unrecorded | Kind::Unreplayable | Kind::Truncated | Kind::Lost => {
+                Self::ReplayFault
+            }
             Kind::Modelled
             | Kind::LeftOver
             | Kind::OtherRequest

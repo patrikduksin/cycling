@@ -1,8 +1,10 @@
 use super::*;
+use crate::trace::Header;
 use device_api::ant::{Identity, LinkState, STALE_MS};
 use device_api::input::{Button, Input};
 use std::format;
 use std::string::String;
+use std::vec;
 use std::vec::Vec;
 
 #[derive(Default)]
@@ -210,70 +212,129 @@ fn edges_past_one_tick_wait_for_the_next_pass() {
     assert_eq!(rest.first().map(|edge| edge.sequence), Some(17));
 }
 
+/// Blocks behind a header, as a trace file holds them; `room` bytes in all,
+/// or no limit.
+struct File {
+    bytes: Vec<u8>,
+    room: Option<usize>,
+}
+
+impl File {
+    fn new(room: Option<usize>) -> Self {
+        let header = Header {
+            version: crate::trace::VERSION,
+            oldest_reader: crate::trace::OLDEST_READER,
+            build: [0; 20],
+            boot: 1,
+            profile: 0,
+            config: &[],
+            media: &[],
+        };
+        let mut bytes = vec![0u8; 128];
+        let len = crate::trace::encode_header(&header, &mut bytes).unwrap();
+        bytes.truncate(len);
+        Self { bytes, room }
+    }
+}
+
+impl Sink for File {
+    fn block(&mut self, bytes: &[u8]) -> bool {
+        if self
+            .room
+            .is_some_and(|room| self.bytes.len() + bytes.len() > room)
+        {
+            return false;
+        }
+        self.bytes.extend_from_slice(bytes);
+        true
+    }
+}
+
+fn events(recorder: &mut Recorder<[u8; 128], File>) -> Vec<Event<'static>> {
+    let mut bytes = recorder.sink().bytes.clone();
+    bytes.extend_from_slice(recorder.open_block());
+    let bytes = Vec::leak(bytes);
+    let (_, events) = crate::trace::decode(bytes).unwrap();
+    events.collect()
+}
+
 #[test]
 fn a_full_block_moves_on_to_the_next() {
-    struct Blocks(Vec<Vec<u8>>);
-    impl Sink for Blocks {
-        fn block(&mut self, bytes: &[u8]) {
-            self.0.push(bytes.into());
-        }
-    }
-    let header = Header {
-        version: crate::trace::VERSION,
-        oldest_reader: crate::trace::OLDEST_READER,
-        build: [0; 20],
-        boot: 1,
-        profile: 0,
-        config: &[],
-        media: &[],
-    };
-    let mut recorder = Recorder::new(&header, [0u8; 128], Blocks(Vec::new())).unwrap();
+    let mut recorder = Recorder::new([0u8; 128], File::new(None));
     for now in 1..=500 {
         recorder.record(&Event::Pass { now_ms: now * 10 });
     }
-    let mut bytes: Vec<u8> = recorder.sink().0.concat();
-    assert!(recorder.sink().0.len() > 4, "several blocks");
-    bytes.extend_from_slice(recorder.open_block());
-    let (_, events) = crate::trace::decode(&bytes).unwrap();
-    let passes: Vec<_> = events.collect();
+    assert!(recorder.sink().bytes.len() > 4 * 64, "several blocks");
+    let passes = events(&mut recorder);
     assert_eq!(passes.len(), 500);
     assert_eq!(passes.last(), Some(&Event::Pass { now_ms: 5_000 }));
 }
 
 #[test]
 fn a_record_larger_than_a_block_leaves_a_marker() {
-    let header = Header {
-        version: crate::trace::VERSION,
-        oldest_reader: crate::trace::OLDEST_READER,
-        build: [0; 20],
-        boot: 1,
-        profile: 0,
-        config: &[],
-        media: &[],
-    };
-    struct Bytes(Vec<u8>);
-    impl Sink for Bytes {
-        fn block(&mut self, bytes: &[u8]) {
-            self.0.extend_from_slice(bytes);
-        }
-    }
-    let mut recorder = Recorder::new(&header, [0u8; 128], Bytes(Vec::new())).unwrap();
+    let mut recorder = Recorder::new([0u8; 128], File::new(None));
     let text = core::str::from_utf8(&[b'x'; 200]).unwrap();
     recorder.record(&Event::Pass { now_ms: 10 });
     recorder.record(&Event::Command(text));
     recorder.record(&Event::Pass { now_ms: 20 });
-    let mut bytes = recorder.sink().0.clone();
-    bytes.extend_from_slice(recorder.open_block());
-    let (_, events) = crate::trace::decode(&bytes).unwrap();
     let command = Event::Command("").tag();
     assert_eq!(
-        events.collect::<Vec<_>>(),
+        events(&mut recorder),
         [
             Event::Pass { now_ms: 10 },
             Event::TooLarge(command),
             Event::Pass { now_ms: 20 },
         ]
     );
+}
+
+#[test]
+fn a_flush_hands_over_what_the_open_block_holds_and_nothing_when_empty() {
+    let mut recorder = Recorder::new([0u8; 128], File::new(None));
+    let header = recorder.sink().bytes.len();
+    recorder.flush();
+    assert_eq!(recorder.sink().bytes.len(), header, "an empty block stays");
+    recorder.record(&Event::Pass { now_ms: 10 });
+    recorder.flush();
+    let sealed = recorder.sink().bytes.clone();
+    let (_, events) = crate::trace::decode(&sealed).unwrap();
+    assert_eq!(events.collect::<Vec<_>>(), [Event::Pass { now_ms: 10 }]);
+    recorder.record(&Event::Pass { now_ms: 20 });
+    assert_eq!(
+        self::events(&mut recorder),
+        [Event::Pass { now_ms: 10 }, Event::Pass { now_ms: 20 }]
+    );
+}
+
+#[test]
+fn blocks_the_sink_refuses_are_counted_in_the_next_block_it_takes() {
+    let mut recorder = Recorder::new([0u8; 128], File::new(Some(400)));
+    let text = core::str::from_utf8(&[b'x'; 100]).unwrap();
+    for now in 1..=12 {
+        recorder.record(&Event::Pass { now_ms: now * 10 });
+        recorder.record(&Event::Command(text));
+    }
+    let taken = recorder.sink().bytes.len();
+    assert!(taken <= 400);
+    recorder.sink_mut().room = None;
+    recorder.flush();
+    let events = events(&mut recorder);
+    let lost: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, Event::Lost { .. }))
+        .collect();
+    assert_eq!(lost.len(), 1, "{events:?}");
+    let Event::Lost { blocks, bytes } = *lost[0] else {
+        unreachable!()
+    };
+    let commands = events
+        .iter()
+        .filter(|event| matches!(event, Event::Command(_)))
+        .count();
+    assert!(blocks >= 2, "{blocks}");
+    assert_eq!(commands + blocks as usize, 12, "a block holds one command");
+    assert!(bytes as usize >= 100 * blocks as usize);
+    assert_eq!(events.last(), Some(&Event::Command(text)));
 }
 
 #[test]

@@ -892,6 +892,10 @@ impl Reader {
                 Kind::Trace,
                 format!("a record tagged {tag} was too large and left out"),
             ),
+            Event::Lost { blocks, bytes } => self.push(
+                Kind::Trace,
+                format!("{blocks} blocks, {bytes} B, lost here: the recorder had no room for them"),
+            ),
             Event::Unknown { tag, body } => self.push(
                 Kind::Trace,
                 format!(

@@ -36,8 +36,9 @@ use std::rc::Rc;
 pub struct Blocks(pub Vec<u8>);
 
 impl Sink for Blocks {
-    fn block(&mut self, bytes: &[u8]) {
+    fn block(&mut self, bytes: &[u8]) -> bool {
         self.0.extend_from_slice(bytes);
+        true
     }
 }
 
@@ -105,6 +106,8 @@ pub enum Kind {
     Unreplayable,
     /// The trace is damaged here: the rest of it does not read.
     Truncated,
+    /// The recording lost events here: its sink had no room for them.
+    Lost,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -827,6 +830,9 @@ impl Sources {
             Event::TooLarge(tag) => self
                 .ledger
                 .unrecorded(&format!("a record with tag {tag}, too large for a block")),
+            Event::Lost { blocks, bytes } => self.ledger.note(Kind::Lost, 1, || {
+                format!("the recording lost {blocks} blocks, {bytes} bytes, of events here")
+            }),
             Event::Unknown { tag, .. } => self.ledger.note(Kind::Unreplayable, 1, || {
                 format!("a record with tag {tag} this build cannot read")
             }),
@@ -1662,8 +1668,11 @@ mod tests {
             config: &[],
             media: &[],
         };
+        let mut file = vec![0u8; 4096];
+        let len = trace::encode_header(&header, &mut file).unwrap();
+        file.truncate(len);
         let buffer = vec![0u8; 4096].into_boxed_slice();
-        RefCell::new(Recorder::new(&header, buffer, Blocks::default()).unwrap())
+        RefCell::new(Recorder::new(buffer, Blocks(file)))
     }
 
     fn bytes(recorder: &RefCell<Recorder<Box<[u8]>, Blocks>>) -> Vec<u8> {
@@ -1742,6 +1751,23 @@ mod tests {
         server.listen(true);
         assert_eq!(server.request().map(|request| request.id), Some(9));
         assert_eq!(replay.sources.report().first, None);
+    }
+
+    #[test]
+    fn events_the_recording_lost_are_reported_where_they_were_lost() {
+        let recorder = recorder();
+        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+        recorder.borrow_mut().record(&Event::Lost {
+            blocks: 2,
+            bytes: 8_000,
+        });
+        recorder.borrow_mut().record(&Event::Pass { now_ms: 20 });
+        let mut replay = replay(bytes(&recorder));
+        assert!(matches!(replay.step(), Next::Pass));
+        assert_eq!(replay.load_pass(), 10);
+        let report = replay.sources.report();
+        assert_eq!(report.count(Kind::Lost), 1);
+        assert_eq!(report.first.map(|first| first.at_ms), Some(10));
     }
 
     #[test]

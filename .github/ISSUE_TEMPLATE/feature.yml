@@ -1,0 +1,24 @@
+name: Feature request
+description: Something you wish your bike computer did.
+labels: [enhancement, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Big or small, every idea is welcome. Tell me about the ride where you wanted it.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: When would you use it?
+      description: The ride, the moment, or the problem it solves for you.
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Seen it somewhere else?
+      description: Another bike computer or app that does this well, if any.

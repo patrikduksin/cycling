@@ -189,7 +189,15 @@ cycling terrain-write pack.bin --tag CHILE-V1 --verify   # resumes a matching wr
 cycling terrain-verify pack.bin
 cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
 cycling store list [traces/] | get NAME PATH | delete NAME | format --confirm
+cycling trace pull [FILE]                     # a ride trace and the media it started on, read only
 ```
+
+`cycling trace pull` copies a ride trace into `.local/traces/` and rebuilds
+the media it started on beside it, as `<name>.origin`, for a replay. It reads
+only: ride export up to the ends the trace header records, `files get` for
+each file the header lists, and a local terrain pack with the header's
+SHA-256. The [ride-trace skill](../.agents/skills/ride-trace/SKILL.md) says
+what a rebuild cannot give back.
 
 `cycling store get` pulls a file record by record. The session keeps the
 file open between requests, so a pull reads about one sector per 486 bytes,

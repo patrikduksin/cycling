@@ -29,27 +29,48 @@ text: start there, and open a PNG only to confirm what the text says.
   `traces/<sequence>-<boot>.trace` in the card's STORE volume. Connect it
   over USB and run `cycling trace pull` for the newest trace, or
   `cycling trace pull <file>` for another; both copy it to
-  `.local/traces/<file>`. By hand: `cycling store list traces/` lists them,
-  `cycling store get traces/<file> .local/traces/<file>` copies one. When
-  `CYCLING_DEVICE_HOST` is set, the device is on another machine: follow the
-  remote device skill. Keep device traces under `.local/` and never commit
-  one: it records the rider's location.
+  `.local/traces/<file>` and rebuild the media it started on beside it, as
+  `<name>.origin`. The pull only reads the device. It asks the trace's
+  header what VANA started from (`cycling trace media <trace>` prints it),
+  then reads the ride journals with ride export up to the ends the header
+  recorded, each file the header lists with `files get`, and finds the
+  terrain pack by its SHA-256 under `.local/terrain/`. The copies go to
+  `.local/traces/<name>.media/`, and `cycling trace rebuild <trace>
+  --pulled <dir>` turns them into the `.origin`. The pull prints what
+  could not be rebuilt, one line each, and the `.origin` keeps that list.
+  When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
+  follow the remote device skill. Keep device traces and their `.origin`
+  and `.media/` under `.local/` and never commit them: they record the
+  rider's location.
+- What a rebuilt origin holds: the settings, VANA's saved sensors and
+  setup, the rides on internal flash and on the card's RIDES log as they
+  were at power-on, the files of FILES under the same revisions, and the
+  terrain pack. A file the host or VANA wrote again after power-on is
+  lost, and FILES starts without it: a pull names it
+  (`file bests.dat: written again since power-on`). VANA writes
+  `bests.dat` when a ride sets a best, and `course.dat` when the phone
+  sends a course. The ride facts table is the exception: the rebuild takes
+  it back to the rides that had ended at power-on and checks it against
+  the header. A ride log or a FILES store cleared since, and a pack no
+  local file matches, are lost the same way. STORE starts empty, since
+  VANA reads nothing in it.
 - What a device trace holds: the C606 redacts secrets as it records (each
   `WIFI CONFIG` password, the phone session's token and Wi-Fi password), and
-  a replay runs on placeholders. Its header names the settings and media at
-  power-on, but it has no `.origin`, so its replay starts on blank media:
-  rides and settings saved before that power-on are absent, and a strict
-  replay reports what differs. The file ends with the pass before VANA
+  a replay runs on placeholders. The file ends with the pass before VANA
   asked to turn off, or at its last sync (5 s at most) when power was cut.
   A session the companion started for charging records its standby while
   the card stays closed; once the standby screen is dark, a pass is
   recorded only when the startup or power status changes. Warnings
   in a device trace include driver lines that a replay never logs, and
-  replays ignore them.
+  replays ignore them. A device trace without a `.origin` (copied with
+  `cycling store get`) replays on blank media: rides and settings saved
+  before that power-on are absent, and a strict replay reports what
+  differs.
 
 `cycling trace origin <trace>` says in words what a replay starts from: the
 power-on number, settings, VANA's saved sensors and setup step, rides on
-internal flash, and the bulk card.
+internal flash, and the bulk card; for a rebuilt `.origin`, what it could
+not rebuild.
 
 Done when `cycling trace summary <trace>` prints a header line, not an error.
 
@@ -179,6 +200,14 @@ line says which and why.
   difference. It reproduces the recording frame for frame and tells a replay
   fault from a VANA change. To get it for an older trace, check out its
   `build` first.
+
+The replay starts from the trace's `.origin`; the header line's `media`
+says which kind and, for a pulled device trace, what the rebuild could not
+give back. Each such gap is a difference strict replay expects: a lost
+file shows as a `header` difference at the end (`replayed.trace` lists the
+media the replay found), and as a `rider-visible` one wherever VANA showed
+what the file held, such as a best or the course. Read the gap before you
+call a divergence a replay fault.
 
 Done when the screenshot at the moment shows what the rider described, or
 `divergence.txt` explains why it does not.

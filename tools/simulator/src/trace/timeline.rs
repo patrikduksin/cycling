@@ -789,7 +789,7 @@ impl Reader {
                         request.method,
                         request.path,
                         if request.query.is_empty() { "" } else { "?" },
-                        request.query,
+                        super::secret::shown_query(request.query),
                         request.body
                     ),
                     None => format!("server holds nothing, room {room} B"),

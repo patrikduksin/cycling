@@ -55,6 +55,19 @@ pub fn shown_command(line: &str) -> String {
     }
 }
 
+/// A request's query as a timeline shows it: the phone's session token in
+/// `t=` is hidden, the rest kept.
+pub fn shown_query(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some(("t", _)) => "t=(not shown)",
+            _ => pair,
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// `WIFI CONFIG <auth> <ssid>`: the words a `WIFI CONFIG` line keeps.
 const NETWORK_WORDS: usize = 4;
 

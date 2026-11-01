@@ -642,3 +642,46 @@ fn the_build_stamp_is_this_checkouts_commit_and_says_when_it_was_edited() {
     let expected = format!("{head}{}", if edited { "-dirty" } else { "" });
     assert_eq!(option_env!("CYCLING_BUILD_COMMIT"), Some(expected.as_str()));
 }
+
+#[test]
+fn timeline_and_find_never_print_the_phone_token() {
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.connect_phone();
+    let token = sim
+        .device
+        .sdk
+        .phone_status()
+        .unwrap()
+        .token
+        .text()
+        .to_string();
+    let (status, _) = sim.phone_request(
+        device_api::server::Method::Get,
+        &format!("/?t={token}&start=5"),
+        b"",
+    );
+    assert_eq!(status, 200);
+    let timeline = read(&sim.capture().trace).unwrap();
+    let asked: Vec<&str> = timeline
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Phone && e.text.contains("server holds #"))
+        .map(|e| e.text.as_str())
+        .collect();
+    assert!(
+        asked
+            .iter()
+            .any(|text| text.contains("/?t=(not shown)&start=5")),
+        "{asked:#?}"
+    );
+    let printed: Vec<&str> = timeline
+        .entries
+        .iter()
+        .map(|e| e.text.as_str())
+        .filter(|text| text.contains(&token))
+        .collect();
+    assert!(printed.is_empty(), "{printed:#?}");
+    let found = find(&timeline, &Query::parse(&token), (0, u64::MAX), None);
+    assert!(found.is_empty(), "{found:#?}");
+}

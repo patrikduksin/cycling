@@ -13,10 +13,8 @@ use device_api::observation::{Availability, Error};
 use device_api::power::Power;
 use device_api::storage::{AccessError, OwnedFlash, Region};
 
-/// Faults one pass holds for the trace; more are dropped.
 const FAULTS: usize = 8;
 
-/// The attempts an output refused this pass, by number.
 #[derive(Clone, Copy, Default)]
 struct Refusals {
     attempts: u8,

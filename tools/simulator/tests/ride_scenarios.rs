@@ -2767,9 +2767,6 @@ fn charging_while_off_shows_the_charge_then_goes_dark() {
     sim.expect_text("READY TO RIDE");
 }
 
-/// Off on USB power, the C606's power goes and the companion starts it
-/// again for charging: a new session in charging standby, whose trace
-/// replays strictly, and a wake in that same session brings VANA up.
 #[test]
 fn turned_off_on_usb_power_the_device_starts_again_in_charging_standby() {
     let mut sim = hashed().boot();
@@ -7869,9 +7866,6 @@ fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
 }
 
-/// The C606 reads a terminal line after its pass and runs the command
-/// there, in no pass of its own, so a trace it records holds no second pass
-/// at one uptime.
 #[test]
 fn a_command_runs_after_its_pass_as_on_the_c606() {
     use firmware_services::trace::{Event, decode};
@@ -8245,9 +8239,6 @@ fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
     assert_eq!(joined, 1, "the phone joined once");
 }
 
-/// While no ride records, a pass drains as much of the trace as a phone
-/// upload adds, so the largest body the phone server takes reaches the
-/// trace file whole.
 #[test]
 fn the_largest_phone_upload_reaches_the_trace_file_whole() {
     use device_api::server::Method;
@@ -8531,9 +8522,6 @@ fn a_ride_ended_by_turning_off_replays_exactly() {
     );
 }
 
-/// The C606 closes the card the moment it accepts a shutdown, so the trace
-/// syncs in the pass before VANA asks for one: the file a host pulls holds
-/// every pass up to the one that asked and replays strictly.
 #[test]
 fn a_session_turned_off_is_in_its_file_up_to_the_shutdown_request() {
     use firmware_services::trace::{Event, decode};

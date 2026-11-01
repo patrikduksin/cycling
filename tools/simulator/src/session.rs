@@ -445,8 +445,6 @@ impl Trace {
         self.recorder.borrow_mut().record(event);
     }
 
-    /// Read FILES and TERRAIN for the header, and stage blocks for a STORE
-    /// volume on the card, if it holds a store.
     fn stage(&mut self, bulk: &crate::bulk::SimBulk) {
         self.start.read_volumes(bulk);
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
@@ -457,9 +455,6 @@ impl Trace {
         }
     }
 
-    /// This pass's share of the staged trace to its file, while the card
-    /// admits work; staging waits for the first such pass, and the file
-    /// opens once VANA's boot scans ended. A file that ends ends staging.
     fn drain(&mut self, bulk: &crate::bulk::SimBulk, admitted: bool, records: u32, now: u64) {
         if admitted && matches!(self.file, spool::File::Waiting) {
             self.stage(bulk);
@@ -643,8 +638,6 @@ impl Simulated {
         self.companion_boot_ms = Some((COMPANION_BOOT_MS, ant));
     }
 
-    /// The companion started the device for charging: it runs, and radios
-    /// stay closed until a wake.
     fn companion_charging(&mut self) {
         self.startup = Startup::Charging;
         self.ant.availability = self.ant_ready_availability();
@@ -652,8 +645,6 @@ impl Simulated {
         self.switch = PowerSwitch::charging();
     }
 
-    /// The top-left button held in charging standby: work is ready again
-    /// after the companion's wake.
     fn wake(&mut self, now: u64) {
         self.switch.now = now;
         self.switch.wake();
@@ -1037,8 +1028,6 @@ impl Session {
         if self.off && matches!(&self.devices, Devices::Simulated(sim) if sim.battery.charging) {
             self.start_charging().expect("memory media reopens");
         }
-        // The C606 closes the card when it accepts the shutdown VANA asks
-        // for in the next pass: the trace is whole on it first.
         #[cfg(feature = "cycling")]
         if admitted && self.sdk.shutdown_due() {
             self.trace.sync(&self.bulk, self.now);
@@ -1340,9 +1329,6 @@ impl Session {
     fn record_seen(&mut self) -> Vec<Seen> {
         Vec::new()
     }
-    /// Charging standby, as C606 composition runs it while power control
-    /// reports `Charging`: VANA shows the charge for a while, then the
-    /// panel goes dark.
     #[cfg(feature = "cycling")]
     fn standby(&mut self, companion: CompanionView) {
         let lit = self.sdk.standby(&mut self.shell, &companion, self.now);
@@ -1360,9 +1346,6 @@ impl Session {
     pub fn standby_lit(&self) -> bool {
         self.charging_standby() && self.power.0.borrow().brightness > 0
     }
-    /// The coordinated shutdown finished: the backlight is dark and nothing
-    /// runs. On USB power the companion then starts the device again for
-    /// charging, at the end of this pass.
     fn turn_off(&mut self) {
         self.off = true;
         self.power.0.borrow_mut().brightness = 0;
@@ -1386,8 +1369,6 @@ impl Session {
         }
         Ok(())
     }
-    /// The companion starts a device whose power went, or that is off, as
-    /// soon as USB power is there: a new session in charging standby.
     fn start_charging(&mut self) -> io::Result<()> {
         self.reboot(true)?;
         self.sim_mut().companion_charging();
@@ -1932,8 +1913,6 @@ pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64)
         } else if fixture {
             session.fixture(core::str::from_utf8(&line).unwrap_or(""), &mut out)
         } else {
-            // The C606's loop runs a pass between two lines; this terminal
-            // has no clock, so it runs one for each.
             session.tick();
             match session.command(&line, &mut out) {
                 Ok((request, status)) => {

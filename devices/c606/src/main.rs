@@ -33,9 +33,6 @@ type FirmwareShell = firmware_shell::shell::Shell<
     device::drivers::storage::Backend<'static>,
 >;
 
-/// The shell's devices note for the trace what they refused or failed,
-/// and read the battery and backlight each pass froze; see
-/// `firmware_services::trace::shell`.
 #[cfg(feature = "cycling")]
 type FirmwareShell = firmware_shell::shell::Shell<
     firmware_services::trace::shell::ShellDisplay<device::drivers::display::Display<'static>>,

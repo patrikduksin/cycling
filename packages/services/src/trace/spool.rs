@@ -352,11 +352,9 @@ impl<H: AsRef<[u8]>> File<H> {
     }
 
     /// This pass's share of the spool, at most `records` whole records,
-    /// while the card admits work: the C606 closes it from the moment it
-    /// accepts a power request until the device is ready again, and in
-    /// charging standby. The file opens at the first such pass `header`
-    /// gives the header and the boot id, named by [`next_name`]. An error
-    /// ends the file and says why.
+    /// while the card admits work (`admitted`). The file opens at the first
+    /// such pass `header` gives the header and the boot id, named by
+    /// [`next_name`]. An error ends the file and says why.
     #[allow(clippy::too_many_arguments)]
     pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,

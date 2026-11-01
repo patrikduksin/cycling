@@ -441,10 +441,7 @@ def store_list(transfer, directory=''):
 
 
 def trace_pull(transfer, name=None, directory=Path('.local/traces')):
-    """Pull the ride trace `name` from STORE into `directory`, or the newest when no name is given.
-
-    Trace names start with their session's sequence number, so the newest sorts last.
-    """
+    """Pull the ride trace `name` from STORE into `directory`, or the newest when no name is given."""
     if name is None:
         names = [entry['name'] for entry in store_list(transfer, TRACES)]
         if not names:

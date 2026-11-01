@@ -34,10 +34,8 @@ const RINGS: [usize; 3] = [
 ];
 const RESERVE: usize = 64 * 1024;
 const BLOCK: usize = 4096;
-/// The longest cue name a sound record keeps.
 const CUE: usize = 32;
 
-/// A cue note VANA reported, kept until the sound it started is recorded.
 #[derive(Clone, Copy, Default)]
 struct Note {
     pattern: u8,
@@ -52,8 +50,7 @@ const WARNINGS: usize = 2048;
 /// and every FILES entry, with room to spare.
 const HEADER: usize = 2 * (1024 + origin::FILE_ENTRIES);
 
-/// What the device started from, for the header. FILES and TERRAIN are
-/// read when the card first admits work.
+/// What the device started from, for the header.
 struct Start {
     boot: u32,
     settings: firmware_shell::preferences::Settings,
@@ -78,11 +75,7 @@ pub struct Trace {
     pub sound: FrozenSound,
     pub access_point: FrozenAccessPoint,
     pub server: FrozenServer,
-    /// What the shell's devices refused or failed, to record after each
-    /// pass and command.
     pub shell: &'static firmware_services::trace::shell::ShellLog,
-    /// The card operations VANA made this pass, numbered as the simulator
-    /// numbers them, so a fault names the one that failed.
     pub card: core::cell::Cell<u32>,
     file: File<&'static [u8]>,
     start: Option<Start>,
@@ -160,8 +153,6 @@ impl Trace {
         Ok(())
     }
 
-    /// At the first pass the card admits work: FILES and TERRAIN for the
-    /// header (about twenty sectors), and the STORE volume to stage for.
     fn stage(&mut self, bulk: &mut impl ReadWrite) {
         self.file = File::stage(bulk, &mut self.sector);
         let (File::Staging(..), Some(start)) = (&self.file, &mut self.start) else {
@@ -195,10 +186,9 @@ impl Trace {
     }
 
     /// What the rider saw this pass, as the simulator records it
-    /// (`record_seen` in `tools/simulator/src/session.rs`): the page,
-    /// toast, ride state and shown fields VANA reports, each sound that
-    /// started with the cue note it played, and the warnings and errors
-    /// logged. Out of line: a frame of its own, never under VANA's.
+    /// (`record_seen` in `tools/simulator/src/session.rs`). Not inlined, so
+    /// its locals stay out of `vana_pass`'s frame, which stays under every
+    /// frame VANA runs.
     #[inline(never)]
     pub fn seen(&mut self, sdk: &mut vana::app::Runtime, now: u64) {
         use vana::app::Seen;
@@ -248,15 +238,10 @@ impl Trace {
         });
     }
 
-    /// This pass's share of the spool to the trace file while the power
-    /// owner admits work to the card (`admitted`), which it closes from
-    /// the moment it accepts a request and in charging standby. Staging
-    /// waits for the first such pass, and the file opens once VANA's boot
-    /// scans ended. A pass writes one record while a ride records
-    /// (`riding`), so a frame waits on at most one card write, and enough
-    /// otherwise to keep up with a phone upload. When VANA asks to turn off
-    /// in the next pass (`shutdown_due`), everything the spool holds goes
-    /// to the card.
+    /// This pass's share of the spool to the trace file while the card
+    /// admits work (`admitted`): one record while a ride records (`riding`),
+    /// up to `spool::IDLE_RECORDS` otherwise, and everything when VANA asks
+    /// to turn off in the next pass (`shutdown_due`).
     pub fn drain(
         &mut self,
         bulk: &mut impl ReadWrite,

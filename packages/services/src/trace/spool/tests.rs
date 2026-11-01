@@ -96,7 +96,6 @@ struct Session {
     passes: u64,
     most_records_a_pass: u64,
     longest_pass_ms: u64,
-    /// Records a pass may write: one while a ride records.
     records: u32,
 }
 
@@ -288,8 +287,6 @@ fn at_the_measured_rate_a_stalling_store_keeps_every_event_one_record_a_pass() {
     );
 }
 
-/// The largest body the phone server takes (`crate::http::MAX_BODY`). VANA
-/// reads it at 4 KiB a pass, and no ride records meanwhile.
 const UPLOAD_BYTES: usize = crate::http::MAX_BODY as usize;
 
 #[test]

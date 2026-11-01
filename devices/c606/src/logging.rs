@@ -109,9 +109,6 @@ pub fn event(level: &str, component: &str, event: &str, message: &str) {
     });
     MAX_ENQUEUE_US.fetch_max(elapsed, Ordering::Relaxed);
 }
-/// Warnings and errors waiting for the session's trace, in PSRAM that
-/// composition hands over: each is its level, target length, text length,
-/// target and text. A record that finds no room is dropped.
 #[cfg(feature = "cycling")]
 struct Kept {
     bytes: &'static mut [u8],

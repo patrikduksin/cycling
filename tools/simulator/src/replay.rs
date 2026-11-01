@@ -509,8 +509,18 @@ impl Replay {
         } else {
             (Kind::Seen, ": the same, in other pixels")
         };
+        let compared = |seen: &[Seen]| -> Vec<Seen> {
+            seen.iter()
+                .filter(|seen| strict || !frame(seen))
+                .cloned()
+                .collect()
+        };
         self.sources.ledger.note(kind, 1, || {
-            format!("the rider saw {seen:?}, the recording {recorded:?}{how}")
+            format!(
+                "the rider saw {:?}, the recording {:?}{how}",
+                compared(seen),
+                compared(&recorded)
+            )
         });
     }
 

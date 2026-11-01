@@ -8468,6 +8468,20 @@ fn a_redacted_phone_session_leaves_a_later_difference_first() {
     );
 }
 
+#[test]
+fn a_stimulus_replay_names_no_frame_in_what_the_rider_saw() {
+    let (sim, _) = a_redacted_phone_session_then_a_ride();
+    let capture = with_the_last_page_unseen(sim.capture());
+    let stimulus = shell_simulator::replay::Mode::Stimulus;
+    let replayed = Sim::replay_as(&capture, stimulus, |_| {});
+    let report = replayed.device.report().unwrap();
+    let first = report.first.as_ref().expect("the altered page diverges");
+    assert!(
+        first.detail.contains("a page the rider never saw") && !first.detail.contains("Frame("),
+        "a stimulus replay compares no frames: {report}"
+    );
+}
+
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);

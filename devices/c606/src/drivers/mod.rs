@@ -13,6 +13,7 @@ pub mod companion_uart;
 pub mod crash_rtc;
 #[cfg(feature = "hardware")]
 pub mod display;
+pub mod external;
 #[cfg(feature = "hardware")]
 pub mod gps_uart;
 pub mod hold_reboot;

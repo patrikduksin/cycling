@@ -8,9 +8,13 @@
 //! end and the header holds the media they found. Without a STORE
 //! volume when the card first admits work, or without PSRAM for the spool,
 //! recording is off for the session and says why; nothing else changes.
+//! A session that stops recording, off or ended, gives the spool's PSRAM
+//! back: the spool takes it from power-on, before the card says whether it
+//! can record, so that the passes before then are kept.
 use c606_firmware as device;
 use core::cell::RefCell;
 use core::fmt::Write;
+use device::drivers::external::Owned;
 use device_api::bulk::ReadWrite;
 use device_api::observation::Availability;
 use device_api::sensors::Startup;
@@ -23,7 +27,7 @@ use firmware_services::trace::spool::{self, Card, File, Spool, Spooled};
 use firmware_services::trace::{Activity, Consumers, Event, Gnss, Health, Vitals, redact};
 
 type Bytes = &'static mut [u8];
-pub type Recording = Option<Spooled<Bytes, Bytes>>;
+pub type Recording = Option<Spooled<Owned, Owned>>;
 
 /// Spool sizes to try, largest first, each leaving [`RESERVE`] of PSRAM for
 /// what allocates later: the transfer session, the phone server's DHCP.
@@ -134,7 +138,7 @@ impl Trace {
     ) -> Result<(), &'static str> {
         let entries = device::drivers::psram::zeroed(origin::FILE_ENTRIES).ok_or("no PSRAM")?;
         let header = device::drivers::psram::zeroed(HEADER).ok_or("no PSRAM")?;
-        let block = device::drivers::psram::zeroed(BLOCK).ok_or("no PSRAM")?;
+        let block = device::drivers::psram::owned(BLOCK).ok_or("no PSRAM")?;
         let warnings = device::drivers::psram::zeroed(WARNINGS).ok_or("no PSRAM")?;
         let ring = RINGS
             .into_iter()
@@ -142,7 +146,7 @@ impl Trace {
                 if device::drivers::psram::external_free() < len + RESERVE {
                     return None;
                 }
-                device::drivers::psram::zeroed(len)
+                device::drivers::psram::owned(len)
             })
             .ok_or("no PSRAM for the spool")?;
         *self.record.get_mut() = Some(Recorder::new(block, Spool::new(ring)));

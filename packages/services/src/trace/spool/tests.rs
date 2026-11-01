@@ -433,3 +433,138 @@ fn each_session_names_its_trace_one_past_the_highest_in_traces() {
     let next = next_name(&store, &mut media, 0x1a2b3c4d, &mut sector).unwrap();
     assert_eq!(next.as_str(), "traces/000042-1a2b3c4d.trace");
 }
+
+mod file {
+    use super::*;
+    use crate::volume::{self, Table, Volume};
+
+    const REGION: u64 = 5_777_407;
+
+    fn table(media: &mut Media, sector: &mut Sector) -> Table {
+        match volume::read(media, sector).unwrap() {
+            volume::Layout::Table(table) => table,
+            _ => unreachable!(),
+        }
+    }
+
+    fn card(store: bool) -> (Media, Sector) {
+        let mut media = Media::new(REGION);
+        let mut sector = [0u8; SECTOR_SIZE];
+        let table = volume::create(&mut media, &mut sector).unwrap();
+        let files = table.find(&volume::FILES).unwrap();
+        crate::files::format(&mut Volume::new(&mut media, files), 1, &mut sector).unwrap();
+        if store {
+            let extent = table.find(&volume::STORE).unwrap();
+            store::format(&mut Volume::new(&mut media, extent), 2, &mut sector).unwrap();
+        }
+        (media, sector)
+    }
+
+    fn recorder() -> Spooled<Vec<u8>, Vec<u8>> {
+        Recorder::new(vec![0u8; 4096], Spool::new(vec![0u8; 64 * 1024]))
+    }
+
+    fn opened(file: &File<Vec<u8>>) -> String {
+        match file {
+            File::Open(_, _, drain) => String::from(drain.name().as_str()),
+            _ => panic!("no open file"),
+        }
+    }
+
+    fn read(media: &mut Media, sector: &mut Sector, name: &str) -> Vec<u8> {
+        let extent = table(media, sector).find(&volume::STORE).unwrap();
+        let mut store = Volume::new(media, extent);
+        let mounted = store::mount(&mut store, sector).unwrap();
+        let name = Name::new(name).unwrap();
+        let mut reader = mounted.reader(&mut store, &name, sector).unwrap();
+        let (mut bytes, mut out) = (Vec::new(), [0u8; PAYLOAD]);
+        while let Next::Record(n) = reader.next(&mounted, &mut store, &mut out, sector).unwrap() {
+            bytes.extend_from_slice(&out[..n]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_card_without_a_store_records_nothing_and_says_why() {
+        let mut sector = [0u8; SECTOR_SIZE];
+        let blank: File<Vec<u8>> = File::stage(&mut Media::new(REGION), &mut sector);
+        assert!(matches!(blank, File::Off("no volume table")));
+        let (mut media, mut sector) = card(false);
+        let unformatted: File<Vec<u8>> = File::stage(&mut media, &mut sector);
+        assert!(matches!(unformatted, File::Off("STORE does not mount")));
+    }
+
+    #[test]
+    fn the_file_opens_with_its_header_once_the_header_is_known() {
+        let (mut media, mut sector) = card(true);
+        let mut file: File<Vec<u8>> = File::stage(&mut media, &mut sector);
+        assert!(matches!(file, File::Staging(..)));
+        let mut recorder = recorder();
+        recorder.record(&Event::Pass { now_ms: 10 });
+        file.pass(&mut recorder, &mut media, || None, 10, &mut sector)
+            .unwrap();
+        assert!(!file.is_open(), "no header yet");
+        recorder.record(&Event::Pass { now_ms: 20 });
+        let known = || Some((header(), 7));
+        file.pass(&mut recorder, &mut media, known, 20, &mut sector)
+            .unwrap();
+        file.sync(&mut recorder, &mut media, 30, &mut sector)
+            .unwrap();
+        let name = opened(&file);
+        assert_eq!(name, "traces/000001-00000007.trace");
+        let bytes = read(&mut media, &mut sector, &name);
+        assert_eq!(
+            events(&bytes),
+            ["Pass { now_ms: 10 }", "Pass { now_ms: 20 }"]
+        );
+    }
+
+    #[test]
+    fn a_host_write_to_files_ends_the_trace_and_says_so_a_store_change_reopens_it() {
+        let (mut media, mut sector) = card(true);
+        let mut file: File<Vec<u8>> = File::stage(&mut media, &mut sector);
+        let mut recorder = recorder();
+        recorder.record(&Event::Pass { now_ms: 10 });
+        let known = || Some((header(), 7));
+        file.pass(&mut recorder, &mut media, known, 10, &mut sector)
+            .unwrap();
+        let table = table(&mut media, &mut sector);
+        let store_extent = table.find(&volume::STORE).unwrap();
+        let files_extent = table.find(&volume::FILES).unwrap();
+        let mut host_store = Volume::new(&mut media, store_extent);
+        let mut host = store::mount(&mut host_store, &mut sector).unwrap();
+        let notes = Name::new("notes").unwrap();
+        host.create(&mut host_store, &notes, None, &mut sector)
+            .unwrap();
+        file.after_host(&mut recorder, &mut media, true, 20, &mut sector)
+            .unwrap();
+        assert!(file.is_open(), "the store changed; the file goes on");
+        recorder.record(&Event::Pass { now_ms: 30 });
+
+        let course = crate::files::Name::new("course").unwrap();
+        let mut seen = Volume::new(&mut media, files_extent);
+        crate::files::write(&mut seen, &course, b"gpx", &mut sector).unwrap();
+        file.after_host(&mut recorder, &mut media, false, 35, &mut sector)
+            .unwrap();
+        assert!(file.is_open(), "a recorded command's write replays");
+        file.before_host(&mut recorder, &mut media, 36, &mut sector)
+            .unwrap();
+        file.after_host(&mut recorder, &mut media, true, 37, &mut sector)
+            .unwrap();
+        assert!(file.is_open(), "a transfer that wrote nothing VANA reads");
+
+        let mut host_files = Volume::new(&mut media, files_extent);
+        crate::files::write(&mut host_files, &course, b"gpx 2", &mut sector).unwrap();
+        let name = opened(&file);
+        assert_eq!(
+            file.after_host(&mut recorder, &mut media, true, 40, &mut sector),
+            Err("the host wrote the card")
+        );
+        assert!(matches!(file, File::Ended(_)));
+        let bytes = read(&mut media, &mut sector, &name);
+        assert_eq!(
+            events(&bytes),
+            ["Pass { now_ms: 10 }", "Pass { now_ms: 30 }", "HostWrote"]
+        );
+    }
+}

@@ -892,6 +892,10 @@ impl Reader {
                 Kind::Trace,
                 format!("a record tagged {tag} was too large and left out"),
             ),
+            Event::HostWrote => self.push(
+                Kind::Trace,
+                "a host wrote FILES or TERRAIN; the trace ends here".into(),
+            ),
             Event::Lost { blocks, bytes } => self.push(
                 Kind::Trace,
                 format!("{blocks} blocks, {bytes} B, lost here: the recorder had no room for them"),

@@ -354,6 +354,11 @@ fn sample() -> Vec<Event<'static>> {
             result: Ok(()),
         },
         Event::PoweredOff,
+        Event::HostWrote,
+        Event::Lost {
+            blocks: 3,
+            bytes: 12_000,
+        },
         Event::Backlight(Availability::Failed),
         Event::Refused {
             output: Output::Panel,

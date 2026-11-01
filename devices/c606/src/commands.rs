@@ -68,6 +68,7 @@ pub fn execute(
     devices: &mut Devices,
     diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut vana::app::Runtime,
+    #[cfg(feature = "cycling")] trace: &mut crate::trace::Trace,
 ) {
     let Devices {
         ant,
@@ -169,7 +170,28 @@ pub fn execute(
                 terminal.reply(request.id, "BUSY", "active work", now);
                 return;
             }
-            status = volumes::execute(command, bulk, &mut output);
+            // The session's trace is open in STORE: a format would erase it.
+            #[cfg(feature = "cycling")]
+            if command == volumes::Command::StoreFormat && trace.open() {
+                terminal.reply(request.id, "BUSY", "trace open", now);
+                return;
+            }
+            #[cfg(feature = "cycling")]
+            {
+                let mut recorded =
+                    firmware_services::trace::frozen::RecordedBulk::new(&mut *bulk, &trace.record);
+                status = volumes::execute(command, &mut recorded, &mut output);
+                if command == volumes::Command::Store {
+                    trace.status(&mut output);
+                }
+                if command != volumes::Command::Transfer {
+                    trace.after_host(bulk, now);
+                }
+            }
+            #[cfg(not(feature = "cycling"))]
+            {
+                status = volumes::execute(command, bulk, &mut output);
+            }
             if command == volumes::Command::Transfer && status == "ACCEPTED" {
                 terminal.schedule_transfer();
             }
@@ -190,7 +212,7 @@ pub fn execute(
             status = sdk.command(
                 core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                 &mut system.data_storage(),
-                bulk,
+                &mut firmware_services::trace::frozen::RecordedBulk::new(bulk, &trace.record),
                 now,
                 &mut output,
             );

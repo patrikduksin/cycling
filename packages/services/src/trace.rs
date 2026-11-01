@@ -312,6 +312,10 @@ pub enum Event<'a> {
     Entropy(u64),
     /// A record with this tag was larger than a block and left out.
     TooLarge(u8),
+    /// A host wrote media VANA reads, such as FILES or TERRAIN in a
+    /// transfer session. The trace ends here: what follows ran on media no
+    /// header names.
+    HostWrote,
     /// Blocks of events the recorder sealed and its sink had no room for,
     /// since the last block it took. They are missing just before this.
     Lost {
@@ -439,6 +443,7 @@ mod tag {
     pub const BACKLIGHT: u8 = 34;
     pub const REFUSED: u8 = 35;
     pub const LOST: u8 = 36;
+    pub const HOST_WROTE: u8 = 37;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -1189,6 +1194,7 @@ impl<'a> Event<'a> {
             Self::Backlight(_) => tag::BACKLIGHT,
             Self::Refused { .. } => tag::REFUSED,
             Self::Lost { .. } => tag::LOST,
+            Self::HostWrote => tag::HOST_WROTE,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
             Self::Sound { .. } => tag::SOUND,
@@ -1281,6 +1287,7 @@ impl<'a> Event<'a> {
             }
             Self::PoweredOff => {}
             Self::Backlight(availability) => availability.put(w),
+            Self::HostWrote => {}
             Self::Lost { blocks, bytes } => {
                 blocks.put(w);
                 bytes.put(w);
@@ -1390,6 +1397,7 @@ impl<'a> Event<'a> {
             },
             tag::ENTROPY => Self::Entropy(Wire::take(r)),
             tag::TOO_LARGE => Self::TooLarge(Wire::take(r)),
+            tag::HOST_WROTE => Self::HostWrote,
             tag::LOST => Self::Lost {
                 blocks: Wire::take(r),
                 bytes: Wire::take(r),

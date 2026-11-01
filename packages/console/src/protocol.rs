@@ -94,6 +94,7 @@ pub enum Error {
 pub struct Lines {
     bytes: [u8; MAX_LINE],
     length: usize,
+    parsed: usize,
     discard: bool,
 }
 
@@ -102,12 +103,18 @@ impl Default for Lines {
         Self {
             bytes: [0; MAX_LINE],
             length: 0,
+            parsed: 0,
             discard: false,
         }
     }
 }
 
 impl Lines {
+    /// The line the last completed record held, until the next byte.
+    pub fn line(&self) -> &[u8] {
+        &self.bytes[..self.parsed]
+    }
+
     /// Consume through newline after an invalid/overlong record. Exactly one
     /// error is emitted, and suffixes cannot become unrelated commands.
     pub fn push(&mut self, byte: u8) -> Option<Result<Request, Error>> {
@@ -117,10 +124,12 @@ impl Lines {
             } else {
                 parse(&self.bytes[..self.length])
             };
+            self.parsed = if self.discard { 0 } else { self.length };
             self.length = 0;
             self.discard = false;
             return Some(result);
         }
+        self.parsed = 0;
         if !self.discard {
             if self.length == MAX_LINE {
                 self.discard = true;

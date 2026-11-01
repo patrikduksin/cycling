@@ -831,6 +831,9 @@ impl Sources {
             Event::TooLarge(tag) => self
                 .ledger
                 .unrecorded(&format!("a record with tag {tag}, too large for a block")),
+            Event::HostWrote => self.ledger.note(Kind::Unreplayable, 1, || {
+                "a host wrote the card here; the media after it are not the header's".into()
+            }),
             Event::Lost { blocks, bytes } => self.ledger.note(Kind::Lost, 1, || {
                 format!("the recording lost {blocks} blocks, {bytes} bytes, of events here")
             }),

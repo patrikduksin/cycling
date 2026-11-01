@@ -229,6 +229,30 @@ pub fn build(commit: &str) -> [u8; 20] {
     id
 }
 
+/// The FILES store's id and generation and the TERRAIN pack's generation,
+/// which change with every write a host makes to them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Generations {
+    pub files: Option<(u64, u64)>,
+    pub terrain: Option<u64>,
+}
+
+/// [`Generations`] as they stand on the owned region `bulk`.
+pub fn generations(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Generations {
+    let Ok(Layout::Table(table)) = volume::read(bulk, sector) else {
+        return Generations::default();
+    };
+    let files = table.find(&volume::FILES).and_then(|extent| {
+        let dir = crate::files::mount(&mut Volume::new(&mut *bulk, extent), sector).ok()?;
+        Some((dir.store_id(), dir.generation()))
+    });
+    let terrain = table.find(&volume::TERRAIN).and_then(|extent| {
+        let header = crate::pack::status(&mut Volume::new(&mut *bulk, extent), sector).ok()??;
+        Some(header.generation)
+    });
+    Generations { files, terrain }
+}
+
 /// Room for every file FILES can hold in [`Files::entries`].
 pub const FILE_ENTRIES: usize = crate::files::CAPACITY * (1 + crate::files::NAME + 3 * 5 + 4);
 

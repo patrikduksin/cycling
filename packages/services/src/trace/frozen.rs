@@ -117,6 +117,15 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
     }
 }
 
+/// A recorder that may be off: then events go nowhere.
+impl<T: Record> Record for Option<T> {
+    fn record(&mut self, event: &Event<'_>) {
+        if let Some(record) = self {
+            record.record(event);
+        }
+    }
+}
+
 /// How a value read at one pass reads `ms` later, for the parts its producer
 /// computes from the time of the read. Most values do not age.
 pub trait Aging: Clone + PartialEq {

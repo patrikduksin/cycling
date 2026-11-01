@@ -13,8 +13,10 @@
 //! A block the spool has no room for is lost; the recorder names it in the
 //! next block the spool takes, as [`super::Event::Lost`], so a full ring
 //! leaves a gap a reader sees.
-use super::frozen::{Recorder, Sink};
+use super::frozen::{Record, Recorder, Sink};
+use super::origin::{self, Generations};
 use crate::store::{self, Appender, Dir, Error, Name, Sector, Store};
+use crate::volume::{self, Extent, Layout, Volume};
 use device_api::bulk::ReadWrite;
 
 /// The directory traces live in; the oldest rolls over when the store is
@@ -293,6 +295,154 @@ impl<H: AsRef<[u8]>> Drain<H> {
             self.written += taken as u64;
         }
         Ok(())
+    }
+}
+
+/// A session's trace file in the card's STORE volume, from power-on: what
+/// both the C606 and the simulator do with it. One per session, held where
+/// composition keeps its state (PSRAM on the C606), so the open file's
+/// record buffer stays inline: there is no allocator to box it.
+#[allow(clippy::large_enum_variant)]
+pub enum File<H> {
+    /// No file this session, and why.
+    Off(&'static str),
+    /// Blocks wait in the spool; the file opens once its header is known.
+    Staging(Extent, Generations),
+    Open(Extent, Generations, Drain<H>),
+    /// The file ended mid-session, and why.
+    Ended(&'static str),
+}
+
+impl<H: AsRef<[u8]>> File<H> {
+    /// At power-on, before the first pass: staging when the owned region
+    /// `bulk` has a STORE volume that mounts.
+    pub fn stage(bulk: &mut impl ReadWrite, sector: &mut Sector) -> Self {
+        let Ok(Layout::Table(table)) = volume::read(bulk, sector) else {
+            return Self::Off("no volume table");
+        };
+        let Some(extent) = table.find(&volume::STORE) else {
+            return Self::Off("no STORE volume");
+        };
+        if store::mount(&mut Volume::new(&mut *bulk, extent), sector).is_err() {
+            return Self::Off("STORE does not mount");
+        }
+        Self::Staging(extent, origin::generations(bulk, sector))
+    }
+
+    /// The file is open: a STORE format would erase it.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open(..))
+    }
+
+    /// This pass's share of the spool. The file opens at the first pass
+    /// `header` gives the header and the boot id, named by
+    /// [`next_name`]. An error ends the file and says why.
+    pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
+        &mut self,
+        recorder: &mut Recorder<B, S>,
+        bulk: &mut impl ReadWrite,
+        header: impl FnOnce() -> Option<(H, u32)>,
+        now: u64,
+        sector: &mut Sector,
+    ) -> Result<(), &'static str> {
+        if let Self::Staging(extent, generations) = *self {
+            let Some((header, boot)) = header() else {
+                return Ok(());
+            };
+            let mut volume = Volume::new(&mut *bulk, extent);
+            let opened = store::mount(&mut volume, sector).and_then(|mounted| {
+                let name = next_name(&mounted, &mut volume, boot, sector)?;
+                let traces = Dir::new(TRACES)?;
+                Drain::create(&mut volume, mounted, name, traces, header, now, sector)
+            });
+            match opened {
+                Ok(drain) => *self = Self::Open(extent, generations, drain),
+                Err(_) => return self.end("the trace file does not open"),
+            }
+        }
+        let Self::Open(extent, _, drain) = self else {
+            return Ok(());
+        };
+        let mut volume = Volume::new(&mut *bulk, *extent);
+        if drain.pass(recorder, &mut volume, now, sector).is_err() {
+            return self.end("the store failed");
+        }
+        Ok(())
+    }
+
+    /// Append everything the spool holds and sync.
+    pub fn sync<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
+        &mut self,
+        recorder: &mut Recorder<B, S>,
+        bulk: &mut impl ReadWrite,
+        now: u64,
+        sector: &mut Sector,
+    ) -> Result<(), &'static str> {
+        let Self::Open(extent, _, drain) = self else {
+            return Ok(());
+        };
+        let mut volume = Volume::new(&mut *bulk, *extent);
+        if drain.sync(recorder, &mut volume, now, sector).is_err() {
+            return self.end("the store failed");
+        }
+        Ok(())
+    }
+
+    /// Before a host takes the card in a transfer session, which the trace
+    /// does not see: sync, and note FILES and TERRAIN as they stand, VANA's
+    /// own writes and recorded commands included.
+    pub fn before_host<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
+        &mut self,
+        recorder: &mut Recorder<B, S>,
+        bulk: &mut impl ReadWrite,
+        now: u64,
+        sector: &mut Sector,
+    ) -> Result<(), &'static str> {
+        self.sync(recorder, bulk, now, sector)?;
+        if let Self::Staging(_, generations) | Self::Open(_, generations, _) = self {
+            *generations = origin::generations(bulk, sector);
+        }
+        Ok(())
+    }
+
+    /// After a host had the card: in a transfer session (`unseen`), a write
+    /// to what VANA reads, FILES or TERRAIN, records
+    /// [`super::Event::HostWrote`] and ends the file; so does a moved STORE
+    /// after a recorded volume command too. A store that changed otherwise
+    /// opens the file again.
+    pub fn after_host<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
+        &mut self,
+        recorder: &mut Recorder<B, S>,
+        bulk: &mut impl ReadWrite,
+        unseen: bool,
+        now: u64,
+        sector: &mut Sector,
+    ) -> Result<(), &'static str> {
+        let (Self::Staging(extent, generations) | Self::Open(extent, generations, _)) = *self
+        else {
+            return Ok(());
+        };
+        let wrote = unseen && origin::generations(bulk, sector) != generations;
+        let table = volume::read(bulk, sector);
+        let moved = !matches!(table, Ok(Layout::Table(table)) if table.find(&volume::STORE) == Some(extent));
+        if wrote || moved {
+            recorder.record(&super::Event::HostWrote);
+            self.sync(recorder, bulk, now, sector)?;
+            return self.end("the host wrote the card");
+        }
+        if let Self::Open(_, _, drain) = self
+            && drain
+                .resume(&mut Volume::new(&mut *bulk, extent), sector)
+                .is_err()
+        {
+            return self.end("the host deleted the trace");
+        }
+        Ok(())
+    }
+
+    fn end(&mut self, why: &'static str) -> Result<(), &'static str> {
+        *self = Self::Ended(why);
+        Err(why)
     }
 }
 

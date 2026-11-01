@@ -38,7 +38,7 @@ use firmware_services::trace::frozen::{
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
 use firmware_services::trace::origin::{self, Config, Media, Memory};
 use firmware_services::trace::redact;
-use firmware_services::trace::spool::{self, Drain, Spool, Staging};
+use firmware_services::trace::spool::{self, Spool, Staging};
 use firmware_services::trace::{Event, Output};
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -312,13 +312,6 @@ impl Staging for Staged {
     }
 }
 
-/// The trace's file in the card's STORE volume, once VANA's boot scans
-/// ended and its header was known.
-struct Stored {
-    drain: Drain<Vec<u8>>,
-    extent: firmware_services::volume::Extent,
-}
-
 struct Trace {
     recorder: RefCell<TraceRecorder>,
     #[cfg(feature = "cycling")]
@@ -341,8 +334,7 @@ struct Trace {
     #[cfg(feature = "cycling")]
     server: FrozenServer,
     start: Start,
-    store: Option<firmware_services::volume::Extent>,
-    stored: Option<Stored>,
+    file: spool::File<Vec<u8>>,
 }
 
 /// What the device started from, for the trace's header: the settings and
@@ -423,8 +415,7 @@ impl Trace {
         Self {
             start,
             recorder: RefCell::new(Recorder::new(buffer, Staged::default())),
-            store: None,
-            stored: None,
+            file: spool::File::Off("not staged yet"),
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]
@@ -453,85 +444,40 @@ impl Trace {
 
     /// Stage blocks for a STORE volume on the card, if it holds a store.
     fn stage(&mut self, bulk: &crate::bulk::SimBulk) {
-        use firmware_services::volume::{self, Layout, STORE};
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
-        let mut host = bulk.host();
-        let Ok(Layout::Table(table)) = volume::read(&mut host, &mut sector) else {
-            return;
-        };
-        let Some(extent) = table.find(&STORE) else {
-            return;
-        };
-        let mut store = volume::Volume::new(&mut host, extent);
-        if firmware_services::store::mount(&mut store, &mut sector).is_ok() {
-            self.store = Some(extent);
+        self.file = spool::File::stage(&mut bulk.host(), &mut sector);
+        if let spool::File::Staging(..) = self.file {
             self.recorder.borrow_mut().sink_mut().spool =
                 Some(Spool::new(vec![0u8; spool::RING_BYTES]));
         }
     }
 
     /// This pass's share of the staged trace to its file, which opens once
-    /// the header is known. A store that fails ends staging.
+    /// VANA's boot scans ended. A file that ends ends staging.
     fn drain(&mut self, bulk: &crate::bulk::SimBulk, now: u64) {
-        let Some(extent) = self.store else {
-            return;
-        };
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
-        let mut host = bulk.host();
-        let mut volume = firmware_services::volume::Volume::new(&mut host, extent);
-        if self.stored.is_none() {
-            if self.start.journals.is_none() {
-                return;
-            }
-            let opened =
-                firmware_services::store::mount(&mut volume, &mut sector).and_then(|store| {
-                    let name = spool::next_name(&store, &mut volume, self.start.boot, &mut sector)?;
-                    let traces = firmware_services::store::Dir::new(spool::TRACES)?;
-                    let header = self.start.header();
-                    Drain::create(&mut volume, store, name, traces, header, now, &mut sector)
-                });
-            match opened {
-                Ok(drain) => self.stored = Some(Stored { drain, extent }),
-                Err(_) => return self.unstage(),
-            }
-        }
-        let Some(stored) = self.stored.as_mut() else {
-            return;
-        };
+        let start = &self.start;
+        let header = || start.journals.map(|_| (start.header(), start.boot));
         let mut recorder = self.recorder.borrow_mut();
-        let mut volume = firmware_services::volume::Volume::new(&mut host, stored.extent);
-        if stored
-            .drain
-            .pass(&mut recorder, &mut volume, now, &mut sector)
-            .is_err()
-        {
-            drop(recorder);
-            self.unstage();
+        let passed = self
+            .file
+            .pass(&mut recorder, &mut bulk.host(), header, now, &mut sector);
+        if passed.is_err() {
+            recorder.sink_mut().spool = None;
         }
     }
 
     fn sync(&mut self, bulk: &crate::bulk::SimBulk, now: u64) -> bool {
-        let Some(stored) = self.stored.as_mut() else {
-            return false;
-        };
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
-        let mut host = bulk.host();
-        let mut volume = firmware_services::volume::Volume::new(&mut host, stored.extent);
         let mut recorder = self.recorder.borrow_mut();
-        let synced = stored
-            .drain
-            .sync(&mut recorder, &mut volume, now, &mut sector);
-        drop(recorder);
+        let open = self.file.is_open();
+        let synced = self
+            .file
+            .sync(&mut recorder, &mut bulk.host(), now, &mut sector);
         if synced.is_err() {
-            self.unstage();
+            recorder.sink_mut().spool = None;
         }
-        synced.is_ok()
-    }
-
-    fn unstage(&mut self) {
-        self.store = None;
-        self.stored = None;
-        self.recorder.borrow_mut().sink_mut().spool = None;
+        open && synced.is_ok()
     }
 
     fn bytes(&self) -> Vec<u8> {
@@ -1083,8 +1029,10 @@ impl Session {
     }
     /// The name of this session's trace file in the card's STORE volume.
     pub fn trace_file(&self) -> Option<String> {
-        let stored = self.trace.stored.as_ref()?;
-        Some(stored.drain.name().as_str().to_string())
+        match &self.trace.file {
+            spool::File::Open(_, _, drain) => Some(drain.name().as_str().to_string()),
+            _ => None,
+        }
     }
     fn record_faults(&mut self) {
         let panel = core::mem::take(&mut self.display.0.borrow_mut().refusals.refused);

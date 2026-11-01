@@ -1,0 +1,309 @@
+//! The trace of this power-on session. The handles VANA reads are frozen
+//! once a pass and recorded as the simulator records them
+//! (`tools/simulator/src/session.rs`), so a trace replays there. Blocks wait
+//! in a PSRAM spool and drain into `traces/` on the card's STORE volume, at
+//! most one record a pass (`firmware_services::trace::spool`); the file opens
+//! once VANA's boot scans end and the header holds the media they found.
+//! Without a STORE volume at power-on, or without PSRAM for the spool,
+//! recording is off for the session and says why; nothing else changes.
+use c606_firmware as device;
+use core::cell::RefCell;
+use core::fmt::Write;
+use device_api::bulk::ReadWrite;
+use device_api::observation::Availability;
+use device_api::sensors::Startup;
+use firmware_services::trace::frozen::{
+    FrozenAccessPoint, FrozenAnt, FrozenBle, FrozenCompanion, FrozenPosition, FrozenPowerControl,
+    FrozenServer, FrozenSound, Latest, Record, Recorder,
+};
+use firmware_services::trace::origin::{self, Config, Files, Media, Memory, Terrain};
+use firmware_services::trace::spool::{self, File, Spool, Spooled};
+use firmware_services::trace::{Event, redact};
+
+type Bytes = &'static mut [u8];
+pub type Recording = Option<Spooled<Bytes, Bytes>>;
+
+/// Spool sizes to try, largest first, each leaving [`RESERVE`] of PSRAM for
+/// what allocates later: the transfer session, the phone server's DHCP.
+const RINGS: [usize; 3] = [
+    spool::RING_BYTES,
+    spool::RING_BYTES / 2,
+    spool::RING_BYTES / 4,
+];
+const RESERVE: usize = 64 * 1024;
+const BLOCK: usize = 4096;
+/// A header, and its config and media encoded first: the settings record
+/// and every FILES entry, with room to spare.
+const HEADER: usize = 2 * (1024 + origin::FILE_ENTRIES);
+
+/// What the device started from, for the header.
+struct Start {
+    boot: u32,
+    settings: firmware_shell::preferences::Settings,
+    memory: Memory,
+    files: Option<(u64, u64, usize)>,
+    terrain: Option<Terrain>,
+    entries: Bytes,
+    header: Bytes,
+}
+
+pub struct Trace {
+    pub record: RefCell<Recording>,
+    pub ant: FrozenAnt,
+    pub ble: FrozenBle,
+    pub position: FrozenPosition,
+    pub companion: FrozenCompanion,
+    pub startup: Latest<Startup>,
+    pub physical: Latest<device_api::sensors::Snapshot>,
+    pub network_time: Latest<firmware_services::network_time::Snapshot>,
+    pub power: FrozenPowerControl,
+    pub backlight: Latest<Availability>,
+    pub sound: FrozenSound,
+    pub access_point: FrozenAccessPoint,
+    pub server: FrozenServer,
+    page: Option<vana::screens::workout::Page>,
+    file: File<&'static [u8]>,
+    start: Option<Start>,
+    synced_for: Option<device_api::power::State>,
+    sector: [u8; device_api::bulk::SECTOR_SIZE],
+}
+
+impl Trace {
+    /// The trace of a session that just powered on, before its first pass.
+    /// Reads the card's volume table, FILES and TERRAIN (about twenty
+    /// sectors) and takes its PSRAM; `settings` and `memory` are what the
+    /// shell and VANA start with.
+    pub fn start(
+        bulk: &mut impl ReadWrite,
+        boot: u32,
+        settings: firmware_shell::preferences::Settings,
+        memory: Memory,
+    ) -> Self {
+        let mut trace = Self {
+            record: RefCell::new(None),
+            ant: FrozenAnt::default(),
+            ble: FrozenBle::default(),
+            position: FrozenPosition::default(),
+            companion: FrozenCompanion::default(),
+            startup: Latest::default(),
+            physical: Latest::default(),
+            network_time: Latest::default(),
+            power: FrozenPowerControl::default(),
+            backlight: Latest::default(),
+            sound: FrozenSound::default(),
+            access_point: FrozenAccessPoint::default(),
+            server: FrozenServer::default(),
+            page: None,
+            file: File::Off("starting"),
+            start: None,
+            synced_for: None,
+            sector: [0; device_api::bulk::SECTOR_SIZE],
+        };
+        trace.access_point.redact();
+        trace.file = File::stage(bulk, &mut trace.sector);
+        if let File::Staging(..) = trace.file
+            && let Err(why) = trace.allocate(bulk, boot, settings, memory)
+        {
+            trace.file = File::Off(why);
+        }
+        match &trace.file {
+            File::Off(why) => log::warn!(target: "trace", "off: {why}"),
+            _ => log::info!(target: "trace", "staging boot={boot:08x}"),
+        }
+        trace
+    }
+
+    fn allocate(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        boot: u32,
+        settings: firmware_shell::preferences::Settings,
+        memory: Memory,
+    ) -> Result<(), &'static str> {
+        let entries = device::drivers::psram::zeroed(origin::FILE_ENTRIES).ok_or("no PSRAM")?;
+        let header = device::drivers::psram::zeroed(HEADER).ok_or("no PSRAM")?;
+        let block = device::drivers::psram::zeroed(BLOCK).ok_or("no PSRAM")?;
+        let ring = RINGS
+            .into_iter()
+            .find_map(|len| {
+                if device::drivers::psram::external_free() < len + RESERVE {
+                    return None;
+                }
+                device::drivers::psram::zeroed(len)
+            })
+            .ok_or("no PSRAM for the spool")?;
+        let (files, terrain) = origin::volumes(bulk, &mut *entries, &mut self.sector);
+        let files = files.map(|files| (files.store, files.generation, files.entries.len()));
+        *self.record.get_mut() = Some(Recorder::new(block, Spool::new(ring)));
+        self.start = Some(Start {
+            boot,
+            settings,
+            memory,
+            files,
+            terrain,
+            entries,
+            header,
+        });
+        Ok(())
+    }
+
+    /// The file is open: a STORE format would erase it.
+    pub fn open(&self) -> bool {
+        self.file.is_open()
+    }
+
+    pub fn record(&self, event: &Event<'_>) {
+        self.record.borrow_mut().record(event);
+    }
+
+    /// A terminal request line, with its secrets redacted.
+    pub fn command(&self, line: &[u8]) {
+        if let Ok(text) = core::str::from_utf8(line) {
+            let mut redacted = [0u8; 256];
+            self.record(&Event::Command(redact::command(text, &mut redacted)));
+        }
+    }
+
+    /// What the rider saw this pass: the page and the sounds that started.
+    /// Follow-up hook: the seen layer of #316 (toasts, ride state, shown
+    /// fields, warn and error logs) is recorded here once VANA reports it,
+    /// as the simulator's `record_seen` does.
+    pub fn seen(&mut self, page: vana::screens::workout::Page) {
+        if self.page != Some(page) {
+            self.page = Some(page);
+            self.record(&Event::Page(page.name()));
+        }
+        for pattern in self.sound.take_started() {
+            self.record(&Event::Sound(pattern));
+        }
+    }
+
+    /// This pass's share of the spool to the trace file, which opens once
+    /// VANA's boot scans ended. Drains while the card is reachable, and
+    /// syncs once when a power transition begins.
+    pub fn drain(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        journals: Option<vana::app::Journals>,
+        power: device_api::power::State,
+        now: u64,
+    ) {
+        use device_api::power::State as Power;
+        if !matches!(power, Power::Initializing | Power::Idle | Power::Charging) {
+            if self.synced_for.is_none() {
+                self.synced_for = Some(power);
+                self.sync(bulk, now);
+            }
+            return;
+        }
+        self.synced_for = None;
+        let Some(recorder) = self.record.get_mut() else {
+            return;
+        };
+        let opening = !self.file.is_open();
+        let start = &mut self.start;
+        let header = || {
+            let journals = journals?;
+            let start = start.take()?;
+            let boot = start.boot;
+            Some((start.header(journals)?, boot))
+        };
+        let passed = self
+            .file
+            .pass(recorder, bulk, header, now, &mut self.sector);
+        if let File::Open(_, _, drain) = &self.file
+            && opening
+        {
+            log::info!(target: "trace", "recording file={}", drain.name().as_str());
+        }
+        self.ended(passed);
+    }
+
+    /// Append everything the spool holds and sync: before a host takes the
+    /// card, a restart, or a power transition.
+    pub fn sync(&mut self, bulk: &mut impl ReadWrite, now: u64) {
+        let Some(recorder) = self.record.get_mut() else {
+            return;
+        };
+        let synced = self.file.sync(recorder, bulk, now, &mut self.sector);
+        self.ended(synced);
+    }
+
+    /// After a transfer session or a volume command, which may have changed
+    /// the card; see [`File::after_host`].
+    pub fn after_host(&mut self, bulk: &mut impl ReadWrite, now: u64) {
+        let Some(recorder) = self.record.get_mut() else {
+            return;
+        };
+        let after = self.file.after_host(recorder, bulk, now, &mut self.sector);
+        self.ended(after);
+    }
+
+    fn ended(&mut self, result: Result<(), &'static str>) {
+        if let Err(why) = result {
+            log::warn!(target: "trace", "ended: {why}");
+            *self.record.get_mut() = None;
+        }
+    }
+
+    /// ` trace=STATE ...` for `STORE STATUS`.
+    pub fn status(&self, out: &mut impl Write) {
+        let _ = match &self.file {
+            File::Off(why) => write!(out, " trace=off why=\"{why}\""),
+            File::Ended(why) => write!(out, " trace=ended why=\"{why}\""),
+            File::Staging(..) => write!(out, " trace=staging"),
+            File::Open(_, _, drain) => write!(
+                out,
+                " trace=recording file={} written={}",
+                drain.name().as_str(),
+                drain.written()
+            ),
+        };
+        if let Some(recorder) = self.record.borrow().as_ref() {
+            let spool = recorder.sink();
+            let _ = write!(
+                out,
+                " spool={}/{} spool_peak={} spool_refused={}",
+                spool.len(),
+                spool.capacity(),
+                spool.peak(),
+                spool.refused()
+            );
+        }
+    }
+}
+
+impl Start {
+    /// The header, built into PSRAM, with the saved Wi-Fi password redacted.
+    fn header(self, journals: vana::app::Journals) -> Option<&'static [u8]> {
+        let mut settings = self.settings;
+        if let Some(wifi) = &mut settings.wifi {
+            let mut password = [0u8; 63];
+            let len = redact::password(wifi.password.bytes(), &mut password);
+            wifi.password = device_api::connectivity::Text::new(&password[..len])?;
+        }
+        let encoded = settings.encode();
+        let config = Config {
+            settings: &encoded,
+            memory: self.memory,
+            redacted: true,
+        };
+        let entries: &'static [u8] = self.entries;
+        let media = Media {
+            journal: Some(journals.internal),
+            rides: journals.bulk,
+            files: self.files.map(|(store, generation, len)| Files {
+                store,
+                generation,
+                entries: &entries[..len],
+            }),
+            terrain: self.terrain,
+        };
+        let (scratch, out) = self.header.split_at_mut(HEADER / 2);
+        let commit = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
+        let profile = self.settings.ble_profile;
+        let len = origin::header(commit, self.boot, profile, &config, &media, scratch, out)?;
+        let out: &'static [u8] = out;
+        Some(&out[..len])
+    }
+}

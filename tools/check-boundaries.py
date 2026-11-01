@@ -26,7 +26,7 @@ OWNERS = {
 }
 HARDWARE = {"esp_hal", "esp32s3", "esp_radio", "esp_rtos", "esp_storage", "esp_alloc", "esp_println", "esp_backtrace", "esp_bootloader_esp_idf", "c606_firmware", "shell_simulator"}
 CONSUMERS = {"firmware_shell", "firmware_console", "vana", "shell_simulator"}
-DEVICE_COMPOSITION = {"src/main.rs", "src/commands.rs", "src/logging.rs"}
+DEVICE_COMPOSITION = {"src/main.rs", "src/commands.rs", "src/logging.rs", "src/trace.rs"}
 
 
 # The host ANT regression compiles the production owner against fake UART and
@@ -156,7 +156,7 @@ def dependencies(manifest, workspace=None):
 def source_rules(owner, relative, aliases):
     if owner == 'c606-firmware':
         composition = relative.as_posix() in DEVICE_COMPOSITION or relative.parts[0] == 'tests'
-        forbidden = set() if composition else CONSUMERS | {'main', 'commands', 'logging'}
+        forbidden = set() if composition else CONSUMERS | {'main', 'commands', 'logging', 'trace'}
         portable, hardware = False, not composition
     elif owner == 'shell-simulator':
         forbidden, portable, hardware = {'c606_firmware'}, False, False

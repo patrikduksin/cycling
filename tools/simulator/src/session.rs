@@ -1359,7 +1359,8 @@ impl Session {
         self.step(ms);
         Ok(())
     }
-    /// A terminal request line: recorded into the trace, then executed.
+    /// A terminal request line: recorded into the trace, then executed, as
+    /// the C606 runs one after the pass before it, in no pass of its own.
     pub fn command(
         &mut self,
         line: &[u8],
@@ -1377,10 +1378,12 @@ impl Session {
         let power = self.gate();
         Ok((request, self.execute_gated(request, power, out)))
     }
-    /// Execute a parsed request. Unlike `command`, the trace does not see it,
-    /// so a replay of this session will not either.
+    /// Run a pass, then a parsed request, as the terminal does. Unlike
+    /// `command`, the trace does not see the request, so a replay of this
+    /// session will not either.
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
         self.unrecorded("a request ran unrecorded");
+        self.tick();
         let power = self.gate();
         self.execute_gated(request, power, out)
     }
@@ -1440,7 +1443,6 @@ impl Session {
         if let Some(status) = status {
             return status;
         }
-        self.tick();
         if let Some(status) = firmware_console::commands::shell::execute(
             request.command,
             &mut self.shell,
@@ -1875,6 +1877,9 @@ pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64)
         } else if fixture {
             session.fixture(core::str::from_utf8(&line).unwrap_or(""), &mut out)
         } else {
+            // The C606's loop runs a pass between two lines; this terminal
+            // has no clock, so it runs one for each.
+            session.tick();
             match session.command(&line, &mut out) {
                 Ok((request, status)) => {
                     id = request.id;

@@ -7838,6 +7838,27 @@ fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
 }
 
+/// The C606 reads a terminal line after its pass and runs the command
+/// there, in no pass of its own, so a trace it records holds no second pass
+/// at one uptime.
+#[test]
+fn a_command_runs_after_its_pass_as_on_the_c606() {
+    use firmware_services::trace::{Event, decode};
+    let capture = assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
+    let (_, events) = decode(&capture.trace).unwrap();
+    let (mut passes, mut commands) = (Vec::new(), 0);
+    for event in events {
+        match event {
+            Event::Pass { now_ms } => passes.push(now_ms),
+            Event::Command(_) => commands += 1,
+            _ => {}
+        }
+    }
+    assert!(commands > 0, "the scenario sends a command");
+    let again = passes.windows(2).find(|pair| pair[1] <= pair[0]);
+    assert_eq!(again, None, "a pass at or before the one before it");
+}
+
 #[test]
 fn a_two_hour_ride_with_a_pause_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), two_hour_ride_with_a_pause, false);

@@ -404,7 +404,7 @@ fn press_to_frame_latency_includes_the_time_spent_drawing() {
     let mut radio = Radio::new();
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
-    runtime.set_clock(|| CLOCK.load(Ordering::Relaxed));
+    runtime.set_latency_clock(|| CLOCK.load(Ordering::Relaxed));
     runtime.navigation.page = Page::Ride;
     runtime.input(press(Button::BottomLeft), 10_000, &mut radio);
     // The pass started at 10 000 ms; the frame finished 800 ms later.
@@ -512,7 +512,7 @@ fn recording_is_confirmed_after_the_start_write_finishes() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.set_clock(|| WRITE_CLOCK.load(Ordering::Relaxed));
+    runtime.set_latency_clock(|| WRITE_CLOCK.load(Ordering::Relaxed));
     runtime.navigation.page = Page::Ride;
     WRITE_CLOCK.store(1_000, Ordering::Relaxed);
     runtime.input(press(Button::BottomRight), 1_000, &mut radio);

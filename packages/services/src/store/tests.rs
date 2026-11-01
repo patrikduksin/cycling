@@ -430,6 +430,49 @@ fn a_store_changed_by_another_writer_is_stale_until_mounted_again() {
     );
 }
 
+/// The host's delete fails part way through its commit with a media error,
+/// not a cut: the app keeps running on the store it mounted before, while
+/// the copy it would commit into holds part of the host's body under an
+/// invalidated header.
+#[test]
+fn a_commit_another_writer_left_unfinished_does_not_vouch_for_the_next() {
+    let mut failures = 0;
+    for fail in 0..(BODY + 2) as u64 {
+        for tear in [Tear::Old, Tear::Prefix(100), Tear::New] {
+            let label = std::format!("host delete failed at write {fail} {tear:?}");
+            let mut media = formatted(16, 2);
+            let mut s = sector();
+            let mut app = mount(&mut media, &mut s).unwrap();
+            // The ninth file's entry sits in the second directory sector, so
+            // the last commit leaves the first one equal in both copies.
+            for i in 0..9 {
+                app.create(&mut media, &name(&std::format!("f{i}")), None, &mut s)
+                    .unwrap();
+            }
+            let mut host = mount(&mut media, &mut s).unwrap();
+            media.cut = Some((fail, tear));
+            let deleted = host.delete(&mut media, &name("f0"), &mut s);
+            media.reboot();
+            if deleted.is_ok() {
+                continue;
+            }
+            failures += 1;
+            let created = app.create(&mut media, &name("new"), None, &mut s);
+            let files = snapshot(&mut media).unwrap_or_else(|e| panic!("{label}: {e:?}"));
+            if created.is_ok() {
+                assert!(
+                    files.contains_key("f0") && files.contains_key("new"),
+                    "{label}: {:?}",
+                    files.keys()
+                );
+            } else {
+                assert_eq!(created.err(), Some(Error::Stale), "{label}");
+            }
+        }
+    }
+    assert!(failures >= 3 * 3, "{failures}");
+}
+
 #[test]
 fn deleting_the_open_file_makes_its_appender_stale() {
     let mut media = formatted(8, 2);

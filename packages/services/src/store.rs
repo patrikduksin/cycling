@@ -332,6 +332,15 @@ fn headers(
 
 /// The current metadata of the store in `media`.
 pub fn mount(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Store, Error> {
+    current(media, sector).map(|(store, _)| store)
+}
+
+/// The current metadata, and the body CRCs the other copy's valid header
+/// vouches for.
+fn current(
+    media: &mut impl ReadWrite,
+    sector: &mut Sector,
+) -> Result<(Store, Option<[u32; BODY]>), Error> {
     let ([a, b], damaged) = headers(media, sector)?;
     let (copy, head, other) = match (a, b) {
         (Some(a), Some(b)) if b.generation > a.generation => (1, b, Some(a)),
@@ -343,12 +352,14 @@ pub fn mount(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Store, E
     let other = other
         .filter(|o| (o.id, o.chunks, o.chunk) == (head.id, head.chunks, head.chunk))
         .map(|o| o.crcs);
-    Ok(Store {
-        copy,
-        head,
+    Ok((
+        Store {
+            copy,
+            head,
+            writer: 0,
+        },
         other,
-        writer: 0,
-    })
+    ))
 }
 
 fn mix(mut value: u64) -> u64 {
@@ -414,7 +425,6 @@ fn format_chunks(
     Ok(Store {
         copy,
         head,
-        other: None,
         writer: 0,
     })
 }
@@ -455,14 +465,11 @@ struct Chain {
     last: u32,
 }
 
-/// The mounted metadata: the current header, what the other copy holds and
-/// the open appender's file.
+/// The mounted metadata: the current header and the open appender's file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Store {
     copy: u64,
     head: Header,
-    /// Body CRCs the other copy's valid header vouches for.
-    other: Option<[u32; BODY]>,
     /// File id of the open appender, 0 for none.
     writer: u32,
 }
@@ -663,15 +670,13 @@ impl Store {
         sector: &mut Sector,
         mut edit: impl FnMut(usize, &mut Sector),
     ) -> Result<(), Error> {
-        let current = mount(media, sector)?;
-        if (current.copy, current.head) != (self.copy, self.head) {
+        // The other copy as the medium holds it now: another writer's commit
+        // may have failed part way through rewriting it.
+        let (now, held) = current(media, sector)?;
+        if (now.copy, now.head) != (self.copy, self.head) {
             return Err(Error::Stale);
         }
-        // Even a header this value does not trust may still be valid on the
-        // medium (a failed earlier commit, another store's), and it must not
-        // vouch for a body being rewritten.
         let target = 1 - self.copy;
-        let held = self.other.take();
         sector.fill(0);
         media.owned_write(base(target), sector)?;
         let mut head = self.head;
@@ -695,7 +700,6 @@ impl Store {
         head.cursor = cursor;
         head.encode(sector);
         media.owned_write(base(target), sector)?;
-        self.other = Some(self.head.crcs);
         self.head = head;
         self.copy = target;
         Ok(())

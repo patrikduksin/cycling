@@ -568,6 +568,23 @@ impl FrozenCompanion {
 #[derive(Clone, Copy, Debug)]
 pub struct CompanionView(pub Option<InputSnapshot>);
 
+/// The battery a pass's companion view reports, as the shell reads it:
+/// percent, millivolts and when it was received.
+pub fn battery(view: &CompanionView) -> Option<(u8, u16, u64)> {
+    use device_api::observation::Observation;
+    match view.0?.battery {
+        Observation::Fresh {
+            value: (percent, mv),
+            received_ms,
+        }
+        | Observation::Stale {
+            value: (percent, mv),
+            received_ms,
+        } => Some((percent, mv, received_ms)),
+        Observation::Unavailable => None,
+    }
+}
+
 impl InputObservation for CompanionView {
     fn snapshot(&self, _now_ms: u64) -> Option<InputSnapshot> {
         self.0
@@ -579,31 +596,84 @@ impl InputObservation for CompanionView {
 pub struct RecordedBulk<'a, B: ?Sized, R: ?Sized> {
     inner: &'a mut B,
     record: &'a RefCell<R>,
+    attempts: Option<&'a core::cell::Cell<u32>>,
 }
 
 impl<'a, B: ?Sized, R: ?Sized> RecordedBulk<'a, B, R> {
     pub fn new(inner: &'a mut B, record: &'a RefCell<R>) -> Self {
-        Self { inner, record }
+        Self {
+            inner,
+            record,
+            attempts: None,
+        }
+    }
+
+    /// As `new`, and each operation that fails is recorded as a storage
+    /// fault, numbered by `attempts`, which composition sets to zero each
+    /// pass: the C606's card, whose faults the simulator's medium records
+    /// itself. What a failed write left on the card is unknown, so the
+    /// fault says nothing landed.
+    pub fn counted(
+        inner: &'a mut B,
+        record: &'a RefCell<R>,
+        attempts: &'a core::cell::Cell<u32>,
+    ) -> Self {
+        Self {
+            inner,
+            record,
+            attempts: Some(attempts),
+        }
+    }
+}
+
+impl<B: ?Sized, R: Record + ?Sized> RecordedBulk<'_, B, R> {
+    fn noted<T>(
+        &self,
+        op: super::StorageOp,
+        at: u64,
+        result: Result<T, bulk::Error>,
+    ) -> Result<T, bulk::Error> {
+        let Some(attempts) = self.attempts else {
+            return result;
+        };
+        let attempt = attempts.get();
+        attempts.set(attempt + 1);
+        if let Err(error) = &result {
+            self.record
+                .borrow_mut()
+                .record(&Event::StorageFault(super::StorageFault {
+                    medium: super::Medium::Bulk,
+                    attempt,
+                    op,
+                    at,
+                    landed: 0,
+                    error: super::StorageError::from_bulk(*error),
+                }));
+        }
+        result
     }
 }
 
 impl<B: ReadWrite + ?Sized, R: Record + ?Sized> ReadWrite for RecordedBulk<'_, B, R> {
     fn owned_info(&mut self) -> Result<bulk::OwnedInfo, bulk::Error> {
-        self.inner.owned_info()
+        let result = self.inner.owned_info();
+        self.noted(super::StorageOp::Info, 0, result)
     }
     fn owned_read(
         &mut self,
         sector: u64,
         output: &mut [u8; bulk::SECTOR_SIZE],
     ) -> Result<(), bulk::Error> {
-        self.inner.owned_read(sector, output)
+        let result = self.inner.owned_read(sector, output);
+        self.noted(super::StorageOp::Read, sector, result)
     }
     fn owned_write(
         &mut self,
         sector: u64,
         input: &[u8; bulk::SECTOR_SIZE],
     ) -> Result<(), bulk::Error> {
-        self.inner.owned_write(sector, input)
+        let result = self.inner.owned_write(sector, input);
+        self.noted(super::StorageOp::Write, sector, result)
     }
     fn entropy(&mut self) -> u64 {
         let value = self.inner.entropy();

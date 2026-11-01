@@ -63,6 +63,12 @@ pub struct Trace {
     pub sound: FrozenSound,
     pub access_point: FrozenAccessPoint,
     pub server: FrozenServer,
+    /// What the shell's devices refused or failed, to record after each
+    /// pass and command.
+    pub shell: &'static firmware_services::trace::shell::ShellLog,
+    /// The card operations VANA made this pass, numbered as the simulator
+    /// numbers them, so a fault names the one that failed.
+    pub card: core::cell::Cell<u32>,
     page: Option<vana::screens::workout::Page>,
     file: File<&'static [u8]>,
     start: Option<Start>,
@@ -77,6 +83,7 @@ impl Trace {
         boot: u32,
         settings: firmware_shell::preferences::Settings,
         memory: Memory,
+        shell: &'static firmware_services::trace::shell::ShellLog,
     ) -> Self {
         let mut trace = Self {
             record: RefCell::new(None),
@@ -92,6 +99,8 @@ impl Trace {
             sound: FrozenSound::default(),
             access_point: FrozenAccessPoint::default(),
             server: FrozenServer::default(),
+            shell,
+            card: core::cell::Cell::new(0),
             page: None,
             file: File::Waiting,
             start: None,

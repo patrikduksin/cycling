@@ -20,6 +20,7 @@ use device_api::input::InputObservation;
 use device_api::input::InputSnapshot;
 use device_api::observation::Availability;
 use device_api::observation::Error;
+#[cfg(feature = "cycling")]
 use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use device_api::sensors::Startup;
@@ -30,9 +31,11 @@ use device_api::{power::PowerControl, server::Server, sound::Sound};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use firmware_services::trace::frozen::Sink;
+#[cfg(feature = "cycling")]
+use firmware_services::trace::frozen::CompanionView;
 use firmware_services::trace::frozen::{
-    CompanionView, FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record,
-    RecordedBulk, RecordedEdges, Recorder,
+    FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record, RecordedBulk,
+    RecordedEdges, Recorder,
 };
 #[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
@@ -530,20 +533,6 @@ fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
         Startup::Ready | Startup::AlreadyRunning | Startup::Unsupported
     );
     switch.startup_running = switch.startup_ready || startup == Startup::RunningDegraded;
-}
-
-fn battery(companion: CompanionView) -> Option<(u8, u16, u64)> {
-    match companion.0?.battery {
-        Observation::Fresh {
-            value: (percent, mv),
-            received_ms,
-        }
-        | Observation::Stale {
-            value: (percent, mv),
-            received_ms,
-        } => Some((percent, mv, received_ms)),
-        Observation::Unavailable => None,
-    }
 }
 
 /// Look-ahead blocks of ended sessions. VANA holds its block as `&'static mut`,
@@ -1114,7 +1103,7 @@ impl Session {
             self.trace
                 .startup
                 .observe(startup, now, &self.trace.recorder, Event::Startup);
-        self.power.0.borrow_mut().battery = battery(companion);
+        self.power.0.borrow_mut().battery = firmware_services::trace::frozen::battery(&companion);
         let record = &self.trace.recorder;
         let power = match &mut self.devices {
             Devices::Simulated(sim) => {

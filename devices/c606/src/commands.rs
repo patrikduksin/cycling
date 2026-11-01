@@ -182,8 +182,11 @@ pub fn execute(
             }
             #[cfg(feature = "cycling")]
             {
-                let mut recorded =
-                    firmware_services::trace::frozen::RecordedBulk::new(&mut *bulk, &trace.record);
+                let mut recorded = firmware_services::trace::frozen::RecordedBulk::counted(
+                    &mut *bulk,
+                    &trace.record,
+                    &trace.card,
+                );
                 status = volumes::execute(command, &mut recorded, &mut output);
                 if command == volumes::Command::Store {
                     trace.status(&mut output);
@@ -216,7 +219,11 @@ pub fn execute(
             status = sdk.command(
                 core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                 &mut system.data_storage(),
-                &mut firmware_services::trace::frozen::RecordedBulk::new(bulk, &trace.record),
+                &mut firmware_services::trace::frozen::RecordedBulk::counted(
+                    bulk,
+                    &trace.record,
+                    &trace.card,
+                ),
                 now,
                 &mut output,
             );

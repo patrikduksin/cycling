@@ -25,14 +25,24 @@ esp_bootloader_esp_idf::esp_app_desc!(
     esp_bootloader_esp_idf::SECURE_VERSION
 );
 
+#[cfg(not(feature = "cycling"))]
 type FirmwareShell = firmware_shell::shell::Shell<
     device::drivers::display::Display<'static>,
-    ShellInput,
+    device::board::Input,
     device::board::Power,
     device::drivers::storage::Backend<'static>,
 >;
-#[cfg(not(feature = "cycling"))]
-type ShellInput = device::board::Input;
+
+/// The shell's devices note for the trace what they refused or failed,
+/// and read the battery and backlight each pass froze; see
+/// `firmware_services::trace::shell`.
+#[cfg(feature = "cycling")]
+type FirmwareShell = firmware_shell::shell::Shell<
+    firmware_services::trace::shell::ShellDisplay<device::drivers::display::Display<'static>>,
+    ShellInput,
+    firmware_services::trace::shell::ShellPower<device::board::Power>,
+    firmware_services::trace::shell::ShellFlash<device::drivers::storage::Backend<'static>>,
+>;
 
 /// The edges the shell takes, kept for the trace until the pass records
 /// them, in PSRAM: the shell lives in the console task's future, where 16
@@ -60,14 +70,26 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     logging::init(boot);
     logging::metadata(false);
     #[cfg(feature = "cycling")]
-    let input = ShellInput(external(|| {
-        firmware_services::trace::frozen::RecordedEdges::new(board.input)
-    }));
+    let shell_log: &'static firmware_services::trace::shell::ShellLog = external(Default::default);
+    #[cfg(feature = "cycling")]
+    let mut system = {
+        use firmware_services::trace::shell::{ShellDisplay, ShellFlash, ShellPower};
+        let input = ShellInput(external(|| {
+            firmware_services::trace::frozen::RecordedEdges::new(board.input)
+        }));
+        firmware_shell::shell::Shell::new(
+            ShellDisplay::new(board.display, shell_log),
+            input,
+            ShellPower::new(board.power, shell_log),
+            ShellFlash::new(board.storage, shell_log),
+            embassy_time::Instant::now().as_millis(),
+        )
+        .unwrap()
+    };
     #[cfg(not(feature = "cycling"))]
-    let input = board.input;
     let mut system = firmware_shell::shell::Shell::new(
         board.display,
-        input,
+        board.input,
         board.power,
         board.storage,
         embassy_time::Instant::now().as_millis(),
@@ -140,6 +162,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             },
             #[cfg(feature = "cycling")]
             profile,
+            #[cfg(feature = "cycling")]
+            shell_log,
         )
         .unwrap(),
     );
@@ -265,6 +289,7 @@ async fn console(
     mut system: FirmwareShell,
     mut devices: commands::Devices,
     #[cfg(feature = "cycling")] profile: vana::sensors::ble_profile::Profile,
+    #[cfg(feature = "cycling")] shell_log: &'static firmware_services::trace::shell::ShellLog,
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
@@ -348,7 +373,8 @@ async fn console(
     // This session's trace, staged in PSRAM from the first pass; it takes
     // what PSRAM VANA left.
     #[cfg(feature = "cycling")]
-    let trace = external(|| trace::Trace::start(system.boot_id, system.settings, memory));
+    let trace =
+        external(|| trace::Trace::start(system.boot_id, system.settings, memory, shell_log));
     #[cfg(feature = "cycling")]
     let mut terrain_step_max_us = 0u64;
     // Only VANA selects a saved BLE peer at startup.
@@ -439,6 +465,8 @@ async fn console(
                 #[cfg(feature = "cycling")]
                 trace,
             );
+            #[cfg(feature = "cycling")]
+            trace.shell.record(&trace.record);
         }
         if now >= next_health {
             next_health = now + 5_000;
@@ -497,13 +525,16 @@ fn vana_pass(
     trace.record(&Event::Pass { now_ms: now });
     let record = &trace.record;
     let companion = trace.companion.freeze(&devices.input, now, record);
+    let backlight = device::board::Power.availability();
+    trace.card.set(0);
+    trace.shell.begin_pass(backlight, &companion);
     let startup = devices.sensors.startup_status();
     let startup = trace.startup.observe(startup, now, record, Event::Startup);
     let power = trace.power.freeze(&devices.power, now, record);
     // While the companion starts, VANA scans its ride journal so Home
     // opens with storage ready. Charging standby and transitions skip it.
     if power.state == State::Initializing {
-        let mut bulk = RecordedBulk::new(&mut devices.bulk, record);
+        let mut bulk = RecordedBulk::counted(&mut devices.bulk, record, &trace.card);
         sdk.prepare(&mut system.data_storage(), &mut bulk, now);
     }
     // On USB power with VANA off, VANA shows the charge for a while,
@@ -519,7 +550,6 @@ fn vana_pass(
     // Diagnostic power requests enter only with no active domain work.
     // Keep USB observations alive while device owners complete the transition.
     if power.ready {
-        let backlight = device::board::Power.availability();
         trace
             .backlight
             .observe(backlight, now, record, Event::Backlight);
@@ -540,7 +570,7 @@ fn vana_pass(
             .redact(token.as_ref().map(|token| token.bytes()));
         let mut ant = trace.ant.bind(&mut devices.ant, now, record);
         let mut ble = trace.ble.bind(&mut devices.ble, now, record);
-        let mut bulk = RecordedBulk::new(&mut devices.bulk, record);
+        let mut bulk = RecordedBulk::counted(&mut devices.bulk, record, &trace.card);
         let mut access_point = trace
             .access_point
             .bind(&mut devices.access_point, now, record);
@@ -593,6 +623,7 @@ fn vana_pass(
         // shutdown takes over; this loop then only serves the terminal.
         sdk.power(system, &mut control, now);
     }
+    trace.shell.record(&trace.record);
     trace.seen(sdk.page());
     trace.drain(
         &mut devices.bulk,

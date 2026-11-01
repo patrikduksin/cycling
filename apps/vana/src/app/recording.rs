@@ -163,7 +163,6 @@ pub(super) struct Ride {
     last: Option<Medium>,
     /// The latest ride started, open or not.
     outing: Outing,
-    /// Times synchronous work; see `Runtime::set_latency_clock`.
     pub(super) latency_clock: Option<fn() -> u64>,
     /// The workout this ride plays, kept after it ends until the rider
     /// leaves the ride screen or starts the next ride.

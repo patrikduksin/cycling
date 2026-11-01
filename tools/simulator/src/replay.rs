@@ -120,7 +120,6 @@ pub struct Report {
     pub mode: Mode,
     pub first: Option<Divergence>,
     pub counts: BTreeMap<Kind, u32>,
-    /// The pass being replayed.
     now: u64,
 }
 
@@ -185,7 +184,6 @@ impl fmt::Display for Report {
     }
 }
 
-/// The report every source of a replay notes into as VANA reads it.
 #[derive(Clone)]
 struct Ledger(Rc<RefCell<Report>>);
 
@@ -207,8 +205,6 @@ impl Ledger {
     }
 }
 
-/// A value the trace records when it changes, read as the trace last held
-/// it. A read before the trace held any is unrecorded.
 struct Served<T> {
     latest: Latest<T>,
     input: &'static str,
@@ -237,8 +233,6 @@ impl<T: Aging> Served<T> {
     }
 }
 
-/// One handle's recorded calls in the pass, each with its answer and what
-/// the handle reported right after it.
 struct Calls<C, V> {
     queue: VecDeque<(C, Vec<V>)>,
     input: &'static str,
@@ -262,8 +256,6 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         self.queue.back_mut().map(|(call, _)| call)
     }
 
-    /// A change to what the handle reports: it follows the last recorded
-    /// call, or holds from the pass's start when no call is pending.
     fn change(&mut self, change: V) -> Option<V> {
         match self.queue.back_mut() {
             Some((_, after)) => {
@@ -274,8 +266,6 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         }
     }
 
-    /// The recorded call VANA's `asked` meets: the next one in a strict
-    /// replay, the first that `matches` in a stimulus replay.
     fn take(
         &mut self,
         asked: impl fmt::Debug,
@@ -297,15 +287,11 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         Some(taken)
     }
 
-    /// The next recorded call when it is one `matches` picks. For calls
-    /// recorded only when they changed what the handle reports.
     fn take_if(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
         let front = self.queue.front().is_some_and(|(call, _)| matches(call));
         front.then(|| self.queue.pop_front()).flatten()
     }
 
-    /// The pass ended. Calls it did not make are left over; what they
-    /// changed still holds.
     fn drained(&mut self) -> Vec<V> {
         let left = self.queue.len();
         let kind = match self.ledger.mode() {
@@ -342,7 +328,6 @@ pub struct Replay {
     bytes: Vec<u8>,
     cursor: Cursor,
     pub sources: Sources,
-    /// What the recording showed in the pass being replayed.
     seen: Vec<Seen>,
 }
 
@@ -483,8 +468,6 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
         .map(|extra| format!("the replay went on with {extra:?}"))
 }
 
-/// `Some` for an output, the rider's view recorded for agents, holding what
-/// a replay compares: the page and sounds. The rest only describe.
 fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
     match event {
         Event::Page(page) => Some(Some(Seen::Page((*page).into()))),
@@ -580,9 +563,6 @@ impl Sources {
         self.power.off = false;
     }
 
-    /// The pass's events are applied: the backlight takes its recorded
-    /// state, which composition samples before the shell reads it, and the
-    /// radio model steps to the pass.
     fn ready(&mut self) {
         if let Some(available) = self.backlight.latest.at(self.ledger.now()) {
             self.shelled.power.0.borrow_mut().available = available;
@@ -592,7 +572,6 @@ impl Sources {
         }
     }
 
-    /// The pass that ran left nothing behind it should have used.
     fn drained(&mut self) {
         let mode = self.ledger.mode();
         let queued = [
@@ -647,7 +626,6 @@ impl Sources {
         }
     }
 
-    /// The trace is spent.
     fn ended(&mut self) {
         if let AntSource::Model(model) = &mut self.ant {
             model.expire(u64::MAX);
@@ -787,8 +765,6 @@ impl Sources {
     }
 }
 
-/// The capability list as the `&'static` the ANT contract wants. Each
-/// distinct list is leaked once per process.
 fn intern(types: &[u8]) -> &'static [u8] {
     static KNOWN: std::sync::Mutex<Vec<&'static [u8]>> = std::sync::Mutex::new(Vec::new());
     let mut known = KNOWN
@@ -862,14 +838,12 @@ impl Ant for AntSource {
 
 type Radio = ((Availability, ant::Capabilities), (bool, ant::ScanSnapshot));
 
-/// A recorded change to what the radio reports.
 enum AntChange {
     Radio(Radio),
     Discoveries([Option<ant::Discovery>; DISCOVERY_CAPACITY]),
     Link(usize, Option<ant::Snapshot>),
 }
 
-/// One request, its answer, and what the request changed.
 struct Answer {
     operation: AntOperation,
     result: Result<Admission, ant::Error>,
@@ -928,8 +902,6 @@ impl RecordedAnt {
         }
     }
 
-    /// A change recorded after a request belongs to that request; one
-    /// before any request is how the pass begins.
     fn change(&mut self, change: AntChange) {
         match self.admissions.back_mut() {
             Some(answer) => answer.after.push(change),
@@ -945,7 +917,6 @@ impl RecordedAnt {
         }
     }
 
-    /// Every answer recorded for the pass that ended was used.
     fn drained(&mut self) {
         let left = [
             ("ANT packets", self.packets.len()),
@@ -1030,15 +1001,11 @@ impl Ant for RecordedAnt {
     }
 }
 
-/// How long a recorded request waits for the replay to make the same one.
 const MATCH_MS: u64 = 1_000;
-/// A recorded sensor is in range this close to a page or discovery of it.
 const EVIDENCE_MS: u64 = 3_000;
 
-/// A changed build's admission ahead of the model: `Some` answers the request.
 type Adapter = dyn FnMut(&AntOperation, u64) -> Option<Result<Admission, ant::Error>>;
 
-/// A request the recording made, kept for the replay's same request.
 struct Recorded {
     at_ms: u64,
     operation: AntOperation,
@@ -1050,18 +1017,14 @@ struct Recorded {
 /// sensors in range wherever the recording heard them.
 pub struct ModelAnt {
     radio: SimulatedAnt,
-    /// When the recording heard each of `radio.sensors`, in order.
     heard: Vec<Vec<u64>>,
-    /// Pages the recording received this pass.
     pages: Vec<(Identity, [u8; 8])>,
-    /// Recorded requests the replay has yet to make.
     recorded: VecDeque<Recorded>,
     adapter: Option<Box<Adapter>>,
     ledger: Ledger,
 }
 
 impl ModelAnt {
-    /// Every sensor the recording discovered or heard, with when.
     fn hearing(events: Events<'_>, ledger: &Ledger) -> Self {
         let mut radio = SimulatedAnt::new(Availability::Unsupported);
         let mut heard: Vec<Vec<u64>> = Vec::new();
@@ -1071,7 +1034,6 @@ impl ModelAnt {
                 None => {
                     let mut sensor = AntSensor::new(identity.device_type, identity.device_number);
                     sensor.identity = identity;
-                    // Its answer to a zero request is among the recorded pages.
                     sensor.zero = ZeroReply::Silence;
                     radio.sensors.push(sensor);
                     heard.push(Vec::new());
@@ -1133,13 +1095,10 @@ impl ModelAnt {
                 operation,
                 result,
             }),
-            // The model keeps its own channels, scan and sends.
             _ => {}
         }
     }
 
-    /// Move the model to this pass: sensors in range as recorded, and the
-    /// recorded pages sent.
     fn step(&mut self) {
         let now = self.ledger.now();
         self.expire(now);
@@ -1155,7 +1114,6 @@ impl ModelAnt {
         }
     }
 
-    /// Recorded requests the replay did not make in time are dropped.
     fn expire(&mut self, now: u64) {
         while let Some(recorded) = self.recorded.front() {
             if recorded.at_ms.saturating_add(MATCH_MS) >= now {
@@ -1169,8 +1127,6 @@ impl ModelAnt {
         }
     }
 
-    /// The adapter's answer, else the recorded answer to the same request
-    /// when the recording failed it, else the model's.
     fn request(&mut self, operation: AntOperation, now: u64) -> Result<Admission, ant::Error> {
         if let Some(adapter) = &mut self.adapter
             && let Some(answer) = adapter(&operation, now)
@@ -1198,8 +1154,6 @@ impl ModelAnt {
     }
 }
 
-/// The same request, but for the channel generation a send names: that is
-/// the radio's own count, and the model keeps another.
 fn same_request(a: &AntOperation, b: &AntOperation) -> bool {
     match (a, b) {
         (
@@ -1273,8 +1227,6 @@ impl InputObservation for ReplayCompanion {
     }
 }
 
-/// Entropy values in the order the recording consumed them, shared by the
-/// medium and the access point. Past the recording there are none.
 #[derive(Clone)]
 struct Entropy {
     values: Rc<RefCell<VecDeque<u64>>>,
@@ -1358,26 +1310,16 @@ impl AccessPoint for ReplayAccessPoint {
         self.view.read().map(|view| view.1).unwrap_or_default()
     }
     fn entropy(&mut self) -> u32 {
-        // The recording's access point gave 32 bits.
         self.entropy.take() as u32
     }
 }
 
-/// A call VANA made of the phone server, as recorded.
 #[derive(Debug, PartialEq, Eq)]
 enum ServerCall {
     Listen(bool),
     Finish(u32),
-    /// One read's bytes; `open` while more parts of it follow.
-    Read {
-        id: u32,
-        bytes: Vec<u8>,
-        open: bool,
-    },
-    Write {
-        id: u32,
-        taken: u32,
-    },
+    Read { id: u32, bytes: Vec<u8>, open: bool },
+    Write { id: u32, taken: u32 },
 }
 
 type ServerView = (Option<server::Request>, usize);
@@ -1549,8 +1491,6 @@ mod tests {
     use firmware_services::trace::frozen::{FrozenServer, READ_PART, Record, Recorder};
     use firmware_services::trace::{Header, VERSION};
 
-    /// A server holding one request whose body the transport hands over
-    /// whole.
     struct Transport {
         request: server::Request,
         body: Vec<u8>,
@@ -1587,8 +1527,6 @@ mod tests {
         Replay::new(bytes, shelled, Mode::Strict).unwrap()
     }
 
-    /// A read larger than a part is recorded in parts that each fit a
-    /// block, and a replay hands the read back whole.
     #[test]
     fn a_read_recorded_in_parts_replays_whole() {
         let header = Header {

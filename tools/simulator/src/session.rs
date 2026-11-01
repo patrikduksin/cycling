@@ -266,9 +266,6 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
-/// How often the simulated companion reports barometric pressure: 10 Hz, a
-/// common barometer rate and fine enough that no screen changes. A model;
-/// C606's rate is unmeasured.
 #[cfg(feature = "cycling")]
 const BAROMETER_MS: u64 = 100;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
@@ -281,12 +278,10 @@ pub const RESTART_PROBE_MS: u64 = 3_000;
 pub type VirtualShell =
     firmware_shell::shell::Shell<DisplayDevice, RecordedEdges<InputDevice>, PowerDevice, FileFlash>;
 
-/// Trace blocks of 4 KiB, a flash sector.
 const TRACE_BLOCK: usize = 4096;
 
 type TraceRecorder = Recorder<Box<[u8]>, Blocks>;
 
-/// What the session read and showed, frozen once a pass and recorded.
 struct Trace {
     recorder: RefCell<TraceRecorder>,
     #[cfg(feature = "cycling")]
@@ -355,7 +350,6 @@ impl Trace {
         self.recorder.borrow_mut().record(event);
     }
 
-    /// Every block so far, the open one included.
     fn bytes(&self) -> Vec<u8> {
         let mut recorder = self.recorder.borrow_mut();
         let mut bytes = recorder.sink().0.clone();
@@ -364,7 +358,6 @@ impl Trace {
     }
 }
 
-/// The build's commit as bytes, zero when the build does not say.
 fn build_id() -> [u8; 20] {
     let mut id = [0u8; 20];
     let hex = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
@@ -377,8 +370,6 @@ fn build_id() -> [u8; 20] {
     id
 }
 
-/// The medium as VANA and the terminal reach it outside a pass's bound
-/// handles: its entropy recorded, and in a replay answered from the trace.
 fn recorded_bulk<'a>(
     bulk: &'a mut crate::bulk::SimBulk,
     devices: &'a mut Devices,
@@ -391,7 +382,6 @@ fn recorded_bulk<'a>(
     RecordedBulk::new(bulk, record)
 }
 
-/// Power work readiness follows the companion's startup, as on C606.
 fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
     switch.now = now;
     switch.startup_ready = matches!(
@@ -401,8 +391,6 @@ fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
     switch.startup_running = switch.startup_ready || startup == Startup::RunningDegraded;
 }
 
-/// The companion's battery report as the shell's power handle gives it, as
-/// on C606.
 fn battery(companion: CompanionView) -> Option<(u8, u16, u64)> {
     match companion.0?.battery {
         Observation::Fresh {
@@ -490,7 +478,6 @@ pub struct Simulated {
     restart_probe: Option<(u64, Startup)>,
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
-    /// The barometer's last report: when, and the pressure then.
     #[cfg(feature = "cycling")]
     barometer: Option<(u64, u32)>,
     wifi_control: device_api::connectivity::ControlStatus,
@@ -529,7 +516,6 @@ impl Simulated {
         }
     }
 
-    /// The companion is probing after power-on; ANT admits nothing until it runs.
     fn companion_starting(&mut self, ant: Availability) {
         self.startup = Startup::Probing;
         self.ant.availability = Availability::Initializing;
@@ -543,7 +529,6 @@ impl Simulated {
         }
     }
 
-    /// The world moves the simulated devices on to this pass.
     fn environment(&mut self, now: u64, ble_selected: bool) {
         if let Some((at, ant)) = self.companion_boot_ms
             && now >= at
@@ -567,8 +552,6 @@ impl Simulated {
         }
     }
 
-    /// The companion's sensors: the barometer reports the world's pressure
-    /// every `BAROMETER_MS`, and goes silent as soon as it is lost.
     #[cfg(feature = "cycling")]
     fn physical(&mut self, now: u64) -> device_api::sensors::Snapshot {
         let second = now - now % BAROMETER_MS;
@@ -598,7 +581,6 @@ impl Simulated {
     }
 }
 
-/// What answers the device's reads: the simulated world, or a trace.
 enum Devices {
     Simulated(Box<Simulated>),
     Replayed(Box<Replay>),
@@ -621,9 +603,7 @@ pub struct Session {
     #[cfg(feature = "cycling")]
     pub sdk: vana::app::Runtime,
     trace: Trace,
-    /// The media before the first pass, for replaying this session.
     origin: Option<Origin>,
-    /// When a host first wrote the bulk medium after the first pass.
     host_write_ms: Option<u64>,
     devices: Devices,
 }
@@ -859,8 +839,6 @@ impl Session {
             replay.saw(&seen);
         }
     }
-    /// What the panel, the backlight and the media refused since the last
-    /// call, into the trace.
     fn record_faults(&mut self) {
         let panel = core::mem::take(&mut self.display.0.borrow_mut().refusals.refused);
         let backlight = core::mem::take(&mut self.power.0.borrow_mut().refusals.refused);
@@ -878,7 +856,6 @@ impl Session {
             self.trace.record(&Event::StorageFault(fault));
         }
     }
-    /// The companion's startup as this pass reads it.
     fn startup(&self) -> Startup {
         match &self.devices {
             Devices::Simulated(sim) => sim.startup,
@@ -1055,8 +1032,6 @@ impl Session {
                 physical,
             },
         );
-        // As composition does: one bounded look-ahead step a pass,
-        // reading the TERRAIN volume's pack when one is installed.
         self.sdk.look_ahead(&mut bulk, now);
         self.sdk.serve_phone(
             &mut server,
@@ -1070,8 +1045,6 @@ impl Session {
         self.sdk.alert(&mut sound, now);
         self.sdk.power(&mut self.shell, &mut control, now);
     }
-    /// What the rider saw change this pass: the page and any sound the
-    /// buzzer accepted.
     #[cfg(feature = "cycling")]
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();
@@ -1172,7 +1145,6 @@ impl Session {
         let power = self.gate();
         self.execute_gated(request, power, out)
     }
-    /// Power control as composition reads it before a request, recorded.
     fn gate(&mut self) -> device_api::power::Status {
         let now = self.now;
         let record = &self.trace.recorder;
@@ -1215,8 +1187,6 @@ impl Session {
             Devices::Simulated(sim) => {
                 firmware_console::commands::ant::execute(request.command, &mut sim.ant, now, out)
             }
-            // The terminal's own ANT requests reached VANA's radio only
-            // through what it reported after, which the trace holds.
             Devices::Replayed(_) => {
                 firmware_console::commands::ant::execute(request.command, &mut NoAnt, now, out)
             }
@@ -1566,7 +1536,6 @@ impl Session {
         let uptime = self.now;
         let (sim, next_sim) = (self.sim_mut(), next.sim_mut());
         next_sim.world = core::mem::take(&mut sim.world);
-        // Read before the swap: afterwards `sim.ant` is the fresh radio.
         let ready = sim.ant_ready_availability();
         core::mem::swap(&mut next_sim.ant, &mut sim.ant);
         if power {

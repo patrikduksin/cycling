@@ -7705,16 +7705,12 @@ fn calibrating_a_power_meter_never_disturbs_a_later_ride() {
     );
 }
 
-/// A device that hashes every frame from power-on.
 fn hashed() -> Sim {
     let mut sim = Sim::new();
     sim.hash_frames();
     sim
 }
 
-/// Run `scenario`, then replay this power-on session's trace on a fresh
-/// device from the media it began with. The replay must read and show what
-/// the recording did, frame for frame, and save the same rides.
 #[track_caller]
 fn assert_replays_exactly(
     recorded: Sim,
@@ -7724,7 +7720,6 @@ fn assert_replays_exactly(
     assert_replays_exactly_after(recorded, scenario, bulk, |_| {})
 }
 
-/// As `assert_replays_exactly`, replaying the capture as `alter` leaves it.
 #[track_caller]
 fn assert_replays_exactly_after(
     mut recorded: Sim,
@@ -7775,7 +7770,6 @@ fn assert_replays_exactly_after(
     capture
 }
 
-/// Trace bytes per minute of uptime, and which events take them.
 fn trace_size(bytes: &[u8], uptime_ms: u64) -> String {
     use firmware_services::trace::{Encoder, MAX_BLOCK, decode};
     let (_, events) = decode(bytes).unwrap();
@@ -7830,8 +7824,6 @@ fn a_two_hour_ride_with_a_pause_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), two_hour_ride_with_a_pause, false);
 }
 
-/// Wi-Fi time for the ride below: 08:30 UTC on 1 November 2026, well
-/// apart from the receiver's clock.
 const WIFI_UTC_MS: u64 = 1_793_521_800_000;
 
 fn a_ride_dated_by_wifi(sim: &mut Sim) {
@@ -7849,10 +7841,6 @@ fn a_ride_dated_by_wifi(sim: &mut Sim) {
     );
 }
 
-/// VANA reads Wi-Fi time from what composition hands it each pass, not
-/// from the process-wide clock, which here holds a time a year off. The
-/// recording and the replay both ignore it, and the trace carries the time
-/// VANA used.
 #[test]
 fn a_ride_dated_by_wifi_replays_exactly_whatever_the_process_clock_holds() {
     use firmware_services::network_time::{Timestamp, update};
@@ -7896,8 +7884,6 @@ fn a_ride_on_bulk_media_replays_exactly() {
     assert_replays_exactly(equip(sim.boot()), a_ride_on_new_bulk_media, true);
 }
 
-/// Initializing the card names its new store from hardware entropy. The
-/// replay's card would give other values; the replay takes the recorded ones.
 #[test]
 fn a_new_store_replays_with_the_entropy_it_was_named_from() {
     let mut sim = hashed();
@@ -7915,7 +7901,6 @@ fn a_new_store_replays_with_the_entropy_it_was_named_from() {
     assert!(entropy > 0, "the store's entropy is recorded");
 }
 
-/// Three sensors paired, a few seconds on Home, then four minutes ridden.
 fn paired_then_ridden(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
@@ -7927,7 +7912,6 @@ fn paired_then_ridden(sim: &mut Sim) {
     sim.stop_ride();
 }
 
-/// What each sensor, the receiver and the barometer gave each saved sample.
 fn sensor_data(sim: &mut Sim) -> Vec<Vec<Sample>> {
     sim.rides()
         .iter()
@@ -7951,7 +7935,6 @@ fn a_ride_replayed_as_stimulus_on_the_same_build_saves_the_same_ride() {
     assert_eq!(sensor_data(&mut replayed), rides);
 }
 
-/// The sensors whose connection the radio accepted, in order.
 fn connected_in_order(trace: &[u8]) -> Vec<u8> {
     use firmware_services::trace::{Event, decode};
     let (_, events) = decode(trace).unwrap();
@@ -7966,10 +7949,6 @@ fn connected_in_order(trace: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// A changed build asks for the power meter before any other sensor, so
-/// it connects the three in another order than the recording did. The
-/// model answers what the recording never asked, the heart strap is heard
-/// once its channel opens, and the ride saves what the sensors sent.
 #[test]
 fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
     use device_api::ant::{AntOperation, Error};
@@ -8005,7 +7984,6 @@ fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
     assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
 }
 
-/// How many events of the trace `matches` picks.
 fn count_events(
     trace: &[u8],
     matches: impl Fn(&firmware_services::trace::Event<'_>) -> bool,
@@ -8014,8 +7992,6 @@ fn count_events(
     events.filter(|event| matches(event)).count()
 }
 
-/// A course from the phone mid-session, then ridden: the access point,
-/// the request and its body, read in parts that each fit a trace block.
 fn a_course_uploaded_from_the_phone(sim: &mut Sim) {
     use device_api::server::Method;
     sim.init_bulk();
@@ -8062,7 +8038,6 @@ fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
     assert_eq!(joined, 1, "the phone joined once");
 }
 
-/// Internal flash tears a write of the ride journal a minute in.
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
@@ -8093,8 +8068,6 @@ fn a_storage_failure_mid_ride_replays_exactly() {
     assert_eq!(torn, 1, "one torn write, with what landed");
 }
 
-/// The card's next write tears and its controller stays failed: the ride
-/// moves to internal flash.
 fn a_ride_whose_card_fails(sim: &mut Sim) {
     sim.init_bulk();
     sim.pair(&["HEART RATE", "POWER METER"]);
@@ -8125,7 +8098,6 @@ fn a_bulk_failure_mid_ride_replays_exactly() {
     assert_eq!(torn, 1, "the torn write, with what landed");
 }
 
-/// The card stops answering mid-ride, as one that lost its contact would.
 fn a_ride_whose_card_goes_missing(sim: &mut Sim) {
     sim.init_bulk();
     sim.pair(&["HEART RATE", "POWER METER"]);
@@ -8156,8 +8128,6 @@ fn a_card_that_goes_missing_mid_ride_replays_exactly() {
     assert!(missing > 0, "the card's absence is recorded");
 }
 
-/// The panel refuses one frame and the backlight one brightness change
-/// and then works again, mid-ride; the backlight then reports it failed.
 fn a_ride_whose_panel_and_backlight_refuse(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
@@ -8195,7 +8165,6 @@ fn a_panel_and_backlight_that_refuse_replay_exactly() {
     assert_eq!(changes, 3, "ready, failed, ready again");
 }
 
-/// A ride, then the rider turns the device off from Home.
 fn a_ride_then_turned_off(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
@@ -8225,12 +8194,6 @@ fn a_ride_ended_by_turning_off_replays_exactly() {
     );
 }
 
-/// Mutation tests: drop or alter one event of a kind in a recorded trace,
-/// replay it strictly, and require the change to show. It shows in the
-/// replay's own report, in what the rider saw or what was saved, or, for an
-/// input whose effect heals (a page whose running totals catch up), in the
-/// values VANA was handed: the trace the replay records again differs from
-/// the original wherever a value reached VANA from somewhere else.
 mod mutations {
     use super::*;
     use firmware_services::trace::frozen::{Record, Recorder};
@@ -8256,7 +8219,6 @@ mod mutations {
         }
     }
 
-    /// The event's kind, as its debug form names it.
     pub fn kind(event: &Event<'_>) -> String {
         let debug = format!("{event:?}");
         debug
@@ -8272,7 +8234,6 @@ mod mutations {
         Alter,
     }
 
-    /// One value VANA would read differently.
     fn altered(event: Event<'static>) -> Option<Event<'static>> {
         use device_api::observation::{Error, Observation};
         let flip = |result: Result<(), Error>| match result {
@@ -8400,8 +8361,6 @@ mod mutations {
         bytes
     }
 
-    /// The trace with the middle event of `kind` mutated; `None` when the
-    /// trace has no such event or it cannot be altered.
     pub fn mutated(trace: &'static [u8], kind: &str, how: Mutation) -> Option<Vec<u8>> {
         let (header, events) = decode(trace).unwrap();
         let mut events: Vec<Event<'static>> = events.collect();
@@ -8421,7 +8380,6 @@ mod mutations {
         Some(encode(&header, events))
     }
 
-    /// A marker that a record was too large, among the first pass's events.
     pub fn with_too_large(trace: &'static [u8]) -> Vec<u8> {
         let (header, events) = decode(trace).unwrap();
         let mut events: Vec<Event<'static>> = events.collect();
@@ -8434,14 +8392,10 @@ mod mutations {
         encode(&header, events)
     }
 
-    /// How a replay showed a mutation.
     #[derive(Debug)]
     pub struct Caught {
-        /// The replay's report: its first divergence.
         pub report: Option<String>,
-        /// The frames shown or the journal saved differ from the recording.
         pub visible: bool,
-        /// The values VANA was handed differ from the original trace's.
         pub handed: bool,
     }
 
@@ -8450,8 +8404,6 @@ mod mutations {
             self.report.is_some() || self.visible || self.handed
         }
 
-        /// The strongest way it showed: the replay alone, the outputs, or
-        /// only the values handed to VANA.
         pub fn how(&self) -> String {
             match (&self.report, self.visible, self.handed) {
                 (Some(report), _, _) => format!("report: {report}"),
@@ -8482,8 +8434,6 @@ mod mutations {
         }
     }
 
-    /// Every kind's middle event, dropped and where it can be altered: each
-    /// must show. The unmutated trace must not, or the check proves nothing.
     #[track_caller]
     pub fn assert_every_mutation_shows(recording: &Recording, kinds: &[&str]) {
         let clean = replay(recording, recording.trace.to_vec());
@@ -8506,8 +8456,6 @@ mod mutations {
     }
 }
 
-/// Paired ANT sensors and a BLE strap, Wi-Fi time, and a short ride with a
-/// lap: the radios, the receiver, the companion and the buzzer.
 fn a_short_ride_with_every_sensor(sim: &mut Sim) {
     sim.ble_heart_strap(true);
     sim.ble_heart_strap_battery(Some(80));
@@ -8559,8 +8507,6 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
     assert!(caught.report.is_some(), "{caught:?}");
 }
 
-/// The power meter asked to zero itself: VANA sends to the sensor and
-/// follows the send.
 fn a_power_meter_calibrated(sim: &mut Sim) {
     calibrate_power_meter(sim, ZeroReply::Offset(-37), true);
     sim.press(Button::BottomRight);
@@ -8573,7 +8519,6 @@ fn every_ant_send_mutated_shows_in_its_replay() {
     mutations::assert_every_mutation_shows(&recording, &["AntSend", "AntRequest"]);
 }
 
-/// A course from the phone, with no ride after it.
 fn a_course_from_the_phone(sim: &mut Sim) {
     use device_api::server::Method;
     sim.init_bulk();
@@ -8605,7 +8550,6 @@ fn every_phone_input_mutated_shows_in_its_replay() {
     );
 }
 
-/// A refused frame and brightness, then a torn journal write.
 fn a_ride_with_faults(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
@@ -8622,8 +8566,6 @@ fn a_ride_with_faults(sim: &mut Sim) {
     sim.advance(seconds(20));
 }
 
-/// The card is fitted but not formatted, so it fails nothing and the ride
-/// goes to internal flash: the torn write is the trace's one storage fault.
 #[test]
 fn every_fault_input_mutated_shows_in_its_replay() {
     let mut sim = hashed();

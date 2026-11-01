@@ -41,7 +41,6 @@ impl Frame {
         }
     }
 }
-/// FNV-1a over the pixels: fast enough to hash every frame of a long ride.
 fn hash(pixels: &[u16]) -> u64 {
     pixels.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &pixel| {
         (hash ^ u64::from(pixel)).wrapping_mul(0x0100_0000_01b3)

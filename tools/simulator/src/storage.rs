@@ -22,7 +22,6 @@ pub struct Fault {
     pub script: std::collections::VecDeque<StorageFault>,
 }
 impl Fault {
-    /// How the operation fails, if it does.
     fn fails(
         &mut self,
         region: Region,

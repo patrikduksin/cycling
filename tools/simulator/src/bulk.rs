@@ -42,10 +42,7 @@ struct Region {
     writes: u64,
     /// Entropy state; it survives reboots like a hardware source would not repeat.
     entropy: u64,
-    /// Every failure the medium answered, for the trace.
     log: Vec<StorageFault>,
-    /// In a replay, the failures its trace holds: the medium then fails
-    /// only these, whatever its presence or fault.
     script: Option<VecDeque<StorageFault>>,
 }
 
@@ -153,8 +150,6 @@ impl SimBulk {
             .map_or_else(|| stale(sector), |bytes| **bytes)
     }
 
-    /// Whether `op` on `sector` may go ahead, and the failure it meets
-    /// otherwise, logged. Range is the caller's error, not the medium's.
     fn answer(&self, op: StorageOp, sector: u64) -> Result<(), StorageFault> {
         let mut region = self.0.borrow_mut();
         let failure = |error: Error| StorageFault {
@@ -259,8 +254,6 @@ impl ReadWrite for SimBulk {
 }
 
 impl SimBulk {
-    /// The first `partial` bytes of `input` reach the sector; the rest keep
-    /// what it held.
     fn tear(&self, sector: u64, input: &[u8; SECTOR_SIZE], partial: usize) {
         if partial == 0 {
             return;

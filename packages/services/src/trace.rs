@@ -27,7 +27,6 @@ pub mod frozen;
 mod tests;
 
 pub const VERSION: u16 = 1;
-/// The payload length is a u16; the frame adds its length and CRC.
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
@@ -418,11 +417,8 @@ mod tag {
     pub const LOG: u8 = 69;
 }
 
-/// A short pass: the top bit set and the delta in the low seven.
 const SHORT_PASS: u8 = 0x80;
 
-/// Bounded writes into a caller's buffer; a write past the end marks the
-/// whole record as not fitting instead of failing at each field.
 pub struct Writer<'b> {
     buf: &'b mut [u8],
     len: usize,
@@ -472,8 +468,6 @@ impl<'b> Writer<'b> {
         self.varint(((value << 1) ^ (value >> 63)) as u64);
     }
 
-    /// One tagged record: tag, body length, body. The body goes after a
-    /// one-byte length and moves when its length needs more bytes.
     fn record(&mut self, tag: u8, body: impl FnOnce(&mut Self)) {
         self.byte(tag);
         let at = self.len;
@@ -495,7 +489,6 @@ impl<'b> Writer<'b> {
         self.len += width - 1;
     }
 
-    /// A timestamp, as its distance before the current pass.
     fn time(&mut self, at: u64) {
         self.zigzag(self.now.wrapping_sub(at) as i64);
     }
@@ -508,8 +501,6 @@ impl<'b> Writer<'b> {
     }
 }
 
-/// Bounded reads; a read past the end or an invalid value marks the record
-/// malformed and yields zeros, checked once at the record's end.
 pub struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -596,7 +587,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// One value's place in a record. Encode and decode stay beside each other.
 trait Wire<'a>: Sized {
     fn put(&self, w: &mut Writer);
     fn take(r: &mut Reader<'a>) -> Self;
@@ -752,8 +742,6 @@ impl<'a, T: Wire<'a>> Wire<'a> for Observation<T> {
     }
 }
 
-/// Each field in declaration order; `time` fields are stored relative to the
-/// pass and `times` fields are optional timestamps.
 macro_rules! record {
     ($($ty:path { $($field:ident $(: $kind:ident)?),* $(,)? })*) => {$(
         impl<'a> Wire<'a> for $ty {
@@ -773,7 +761,6 @@ macro_rules! record {
     (@take $r:ident, times) => { $r.times() };
 }
 
-/// Fieldless enums as one byte each; an unknown code is malformed.
 macro_rules! codes {
     ($($ty:path { $first:ident = $first_code:literal $(, $variant:ident = $code:literal)* $(,)? })*) => {$(
         impl Wire<'_> for $ty {
@@ -1081,7 +1068,6 @@ impl Wire<'_> for AccessPointState {
     }
 }
 
-/// The length the device reported, and the bytes of the buffer it covers.
 impl Wire<'_> for ble_transport::Packet {
     fn put(&self, w: &mut Writer) {
         self.connection.put(w);
@@ -1178,7 +1164,6 @@ impl<'a> Event<'a> {
         }
     }
 
-    /// The body; a pass stores its distance from the previous one.
     fn put_body(&self, w: &mut Writer, previous_pass: u64) {
         match self {
             Self::Pass { now_ms } => w.zigzag(now_ms.wrapping_sub(previous_pass) as i64),
@@ -1279,7 +1264,6 @@ impl<'a> Event<'a> {
         }
     }
 
-    /// `None` for a tag this version does not know.
     fn take_body(tag: u8, r: &mut Reader<'a>) -> Option<Self> {
         Some(match tag {
             tag::PASS => Self::Pass {
@@ -1381,7 +1365,6 @@ pub fn encode_header(header: &Header<'_>, out: &mut [u8]) -> Option<usize> {
     seal(out, len)
 }
 
-/// Write the frame around `len` payload bytes already at `out[2..]`.
 fn seal(out: &mut [u8], len: usize) -> Option<usize> {
     let crc = crc32(out.get(2..2 + len)?);
     out.get_mut(2 + len..FRAME + len)?
@@ -1401,11 +1384,8 @@ pub enum Full {
 /// Records events into one block of a caller-provided buffer.
 pub struct Encoder<B> {
     buf: B,
-    /// Payload bytes so far, after the two length bytes.
     len: usize,
-    /// Payload bytes of the block's opening clock.
     opening: usize,
-    /// The current pass; every block opens with it.
     now: u64,
 }
 
@@ -1423,7 +1403,6 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
         encoder
     }
 
-    /// The payload area: after the length, before the CRC.
     fn payload(&mut self) -> &mut [u8] {
         let end = self.buf.as_ref().len().min(MAX_BLOCK) - 4;
         &mut self.buf.as_mut()[2..end]
@@ -1494,13 +1473,9 @@ pub enum End {
 /// same trace grown since: the open block resealed longer, or more blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cursor {
-    /// Where the current block starts.
     block: usize,
-    /// The read position in that block's payload.
     at: usize,
     now: u64,
-    /// The trace comes from a later version, whose records may carry fields
-    /// after the ones this version reads.
     later: bool,
     end: Option<End>,
 }
@@ -1509,7 +1484,6 @@ pub struct Cursor {
 pub struct Events<'a> {
     bytes: &'a [u8],
     cursor: Cursor,
-    /// The current block's payload, once checked.
     payload: Option<&'a [u8]>,
 }
 
@@ -1544,7 +1518,6 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     Ok((header, Events::resume(bytes, cursor)))
 }
 
-/// The payload of the block at `start` and where the next one starts.
 fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
     let len = usize::from(u16::from_le_bytes(
         bytes.get(start..start.checked_add(2)?)?.try_into().ok()?,
@@ -1577,8 +1550,6 @@ impl<'a> Events<'a> {
         self.cursor.end
     }
 
-    /// The next record: an event; nothing for a block boundary, the block's
-    /// clock or a tag this version does not know; or the end.
     fn step(&mut self) -> Result<Option<Event<'a>>, End> {
         let c = &mut self.cursor;
         let payload = match self.payload {
@@ -1593,7 +1564,6 @@ impl<'a> Events<'a> {
             }
         };
         let Some(&first) = payload.get(c.at) else {
-            // The last block stays current: it may yet be resealed longer.
             let next = c.block + FRAME + payload.len();
             if next >= self.bytes.len() {
                 return Err(End::Complete);

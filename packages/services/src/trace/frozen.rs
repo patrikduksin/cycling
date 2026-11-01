@@ -68,8 +68,6 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
 }
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
-    /// A record larger than a block leaves a marker in its place, so a
-    /// replay knows what it lacks.
     fn record(&mut self, event: &Event<'_>) {
         if self.push(event) == Err(Full::Record) {
             let _ = self.push(&Event::TooLarge(event.tag()));
@@ -119,7 +117,6 @@ impl Aging for positioning::Snapshot {
 }
 
 impl Aging for crate::network_time::Snapshot {
-    /// UTC advances with uptime, as the clock owner computes it.
     fn aged(self, ms: u64) -> Self {
         let Some(seconds) = self.unix_seconds else {
             return self;
@@ -264,8 +261,6 @@ impl FrozenAnt {
         }
     }
 
-    /// Out of line and into the held view: the radio's state is about 800
-    /// bytes, too large for VANA's call chains to carry on their stacks.
     #[inline(never)]
     fn sample<A: Ant + ?Sized, R: Record + ?Sized>(
         &mut self,
@@ -348,7 +343,6 @@ impl<A: Ant + ?Sized, R: Record + ?Sized> Ant for PassAnt<'_, A, R> {
         self.record.borrow_mut().record(&Event::AntSend(status));
         status
     }
-    /// The diagnostic stream is the terminal's, not VANA's: not recorded.
     fn take_diagnostic_packet(&mut self) -> Option<ant::Packet> {
         self.inner.take_diagnostic_packet()
     }

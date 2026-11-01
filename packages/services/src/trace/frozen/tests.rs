@@ -5,7 +5,6 @@ use std::format;
 use std::string::String;
 use std::vec::Vec;
 
-/// Each event as text, in the order recorded.
 #[derive(Default)]
 struct Log(Vec<String>);
 
@@ -29,12 +28,10 @@ const POWER: Identity = Identity {
     transmission_type: 1,
 };
 
-/// A radio with one power meter channel that last heard a page at `heard`.
 struct Radio {
     heard: u64,
     link: LinkState,
     packets: Vec<ant::Packet>,
-    /// Pages the companion counted; set it to change the channel between reads.
     pages: std::rc::Rc<core::cell::Cell<u32>>,
 }
 
@@ -286,7 +283,6 @@ fn a_synced_clock_is_recorded_once_and_reads_on_as_the_clock_owner_computes() {
     };
     let mut latest = Latest::default();
     let mut recorded = 0;
-    // Across a minute, the end of a UTC day and the hour the anchor goes stale.
     let passes = (2_000..10_000)
         .step_by(10)
         .chain((STALE_AFTER_MS - 1_000..STALE_AFTER_MS + 3_000).step_by(10));

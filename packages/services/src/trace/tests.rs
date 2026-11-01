@@ -13,7 +13,6 @@ const HEADER: Header<'static> = Header {
     media: b"rides@1234",
 };
 
-/// A recorder's loop: seal a full block and carry on in the next.
 fn encode(events: &[Event<'_>], block: usize) -> Vec<u8> {
     let mut out = std::vec![0u8; block];
     let len = encode_header(&HEADER, &mut out).unwrap();
@@ -63,7 +62,6 @@ fn gps() -> device_api::gps::Snapshot {
     }
 }
 
-/// Every kind of event, timed around passes as a recorder emits them.
 fn sample() -> Vec<Event<'static>> {
     let mut ble = [0u8; 60];
     ble[..2].copy_from_slice(&[0, 142]);
@@ -445,9 +443,6 @@ fn decoding_resumes_from_a_cursor() {
     assert_eq!([head, rest].concat(), events);
 }
 
-/// A host reading a trace while the device writes it: the open block is
-/// resealed longer, then sealed and followed by the next. A reader that
-/// stops wherever the bytes end and resumes later reads every event once.
 #[test]
 fn a_reader_resumes_over_a_trace_that_grew() {
     let events = sample();
@@ -492,7 +487,6 @@ fn a_cursor_past_the_bytes_ends_torn_without_panicking() {
     }
 }
 
-/// A later version appends fields to an existing record and the header.
 #[test]
 fn fields_a_later_version_appends_are_skipped() {
     let later = Header {

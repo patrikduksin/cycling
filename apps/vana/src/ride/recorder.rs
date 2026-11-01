@@ -604,7 +604,6 @@ impl Recorder {
     }
 
     /// One initialize or clear step; completion leaves an empty journal.
-    /// `clock` only times the step: the journal's bytes follow the pass.
     fn prepare(&mut self, journal: &mut impl Journal, now: u64, clock: &impl Fn() -> u64) {
         let clearing = self.status == Status::Clearing;
         let started = clock();

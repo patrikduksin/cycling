@@ -495,8 +495,6 @@ impl SimulatedAnt {
         missed
     }
 
-    /// Everything a step does before the sensors send; false while the
-    /// radio is not ready.
     fn advance(&mut self, now: u64) -> bool {
         if self.availability != Availability::Ready {
             return false;

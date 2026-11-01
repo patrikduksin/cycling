@@ -8151,6 +8151,92 @@ fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
     assert_eq!(joined, 1, "the phone joined once");
 }
 
+#[test]
+fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
+    use firmware_services::trace::origin::{Config, Media};
+    use firmware_services::trace::{Event, decode};
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    sim.device.redact_secrets();
+    let mut sim = equip(sim.boot());
+    let (status, out) = sim.command("WIFI CONFIG WPA2 486f6d65 7365637265743132");
+    assert_eq!(status, "ACCEPTED", "{out}");
+    sim.device.restart().unwrap();
+    let mut sim = sim.boot();
+    sim.command("WIFI CONFIG WPA3 486f6d65 70617373776f7264");
+    sim.init_bulk();
+    sim.connect_phone();
+    let status = sim.device.sdk.phone_status().expect("a phone session");
+    let secrets = [
+        status.token.text().to_string(),
+        status.password.text().to_string(),
+        "7365637265743132".to_string(),
+        "70617373776f7264".to_string(),
+        "secret12".to_string(),
+    ];
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (code, body) = sim.phone_request(
+        device_api::server::Method::Put,
+        "/api/course",
+        course.as_bytes(),
+    );
+    assert_eq!(code, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+
+    let capture = sim.capture();
+    let text = String::from_utf8_lossy(&capture.trace);
+    for secret in &secrets {
+        assert!(!text.contains(secret.as_str()), "the trace holds {secret}");
+    }
+    let (header, events) = decode(&capture.trace).unwrap();
+    let config = Config::decode(header.config).unwrap();
+    assert!(config.redacted);
+    let (settings, _) = firmware_shell::preferences::decode(Some(config.settings));
+    let wifi = settings.wifi.expect("the saved network");
+    assert_eq!(wifi.ssid.text(), "Home");
+    assert_eq!(wifi.password.text(), "xxxxxxxx", "kept its length");
+    assert!(Media::decode(header.media).is_some());
+    let sessions: Vec<String> = events
+        .filter_map(|event| match event {
+            Event::Server {
+                request: Some(request),
+                ..
+            } => Some(request.session.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        sessions.iter().any(|session| session == "****************"),
+        "{sessions:?}"
+    );
+
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(
+        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace()),
+        None
+    );
+    assert!(
+        replayed.ride_media() == sim.ride_media(),
+        "the same journal"
+    );
+    assert_eq!(replayed.bulk_rides().len(), sim.bulk_rides().len());
+    assert_eq!(
+        replayed.file("course"),
+        sim.file("course"),
+        "the same course"
+    );
+    let placeholder = replayed.device.sdk.phone_status();
+    assert!(placeholder.is_none(), "the session closed for the ride");
+}
+
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);

@@ -24,6 +24,7 @@ use device_api::sound;
 
 pub mod frozen;
 pub mod origin;
+pub mod redact;
 pub mod spool;
 #[cfg(test)]
 mod tests;

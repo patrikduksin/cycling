@@ -594,6 +594,7 @@ impl Sources {
             server: ReplayServer {
                 view: Served::new("phone server", &ledger),
                 calls: Calls::new("phone server", &ledger),
+                token: None,
             },
             sound: ReplaySound {
                 view: Served::new("buzzer", &ledger),
@@ -1445,6 +1446,9 @@ type ServerView = (Option<server::Request>, usize);
 pub struct ReplayServer {
     view: Served<ServerView>,
     calls: Calls<ServerCall, ServerView>,
+    /// The open phone session's token, which a redacted recording's
+    /// placeholder for its own session's token stands for.
+    pub token: Option<device_api::connectivity::Text<32>>,
 }
 
 impl ReplayServer {
@@ -1486,7 +1490,16 @@ impl Server for ReplayServer {
         self.changes(ServerCall::Listen(on), hides);
     }
     fn request(&self) -> Option<server::Request> {
-        self.view.read().and_then(|view| view.0)
+        let mut request = self.view.read().and_then(|view| view.0)?;
+        if let Some(token) = &self.token
+            && firmware_services::trace::redact::is_token(&request.session)
+        {
+            request.session.clear();
+            for byte in token.bytes() {
+                let _ = request.session.push(char::from(*byte));
+            }
+        }
+        Some(request)
     }
     fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
         let read =

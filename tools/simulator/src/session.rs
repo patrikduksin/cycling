@@ -36,6 +36,7 @@ use firmware_services::trace::frozen::{
 #[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
 use firmware_services::trace::origin::{self, Config, Media, Memory};
+use firmware_services::trace::redact;
 use firmware_services::trace::{Event, Output};
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -313,8 +314,9 @@ struct Trace {
 struct Start {
     boot: u32,
     profile: u8,
-    settings: Vec<u8>,
+    settings: firmware_shell::preferences::Settings,
     memory: Memory,
+    redacted: bool,
     volumes: Option<Volumes>,
     journals: Option<Journals>,
 }
@@ -335,10 +337,19 @@ impl Start {
     fn header(&self) -> Vec<u8> {
         let (files, terrain) = self.volumes.clone().unwrap_or((None, None));
         let (journal, rides) = self.journals.unwrap_or((None, None));
+        let mut settings = self.settings;
+        if self.redacted
+            && let Some(wifi) = &mut settings.wifi
+        {
+            let mut password = [0u8; 63];
+            let len = redact::password(wifi.password.bytes(), &mut password);
+            wifi.password =
+                device_api::connectivity::Text::new(&password[..len]).expect("a password's length");
+        }
         let config = Config {
-            settings: &self.settings,
+            settings: &settings.encode(),
             memory: self.memory,
-            redacted: false,
+            redacted: self.redacted,
         };
         let media = Media {
             journal,
@@ -779,8 +790,9 @@ impl Session {
         let trace = Trace::new(Start {
             boot,
             profile: shell.settings.ble_profile,
-            settings: shell.settings.encode().to_vec(),
+            settings: shell.settings,
             memory,
+            redacted: false,
             volumes: None,
             journals: None,
         });
@@ -809,11 +821,14 @@ impl Session {
         let flash = origin.flash.copy_before_boot(origin.boot).ok_or_else(|| {
             io::Error::other("the capture's media is file-backed and cannot be replayed")
         })?;
-        let memory = firmware_services::trace::decode(&capture.trace)
+        let config = firmware_services::trace::decode(&capture.trace)
             .ok()
-            .and_then(|(header, _)| Config::decode(header.config))
-            .map_or(Memory::ALL, |config| config.memory);
+            .and_then(|(header, _)| Config::decode(header.config));
+        let memory = config.map_or(Memory::ALL, |config| config.memory);
         let mut session = Self::with_media(flash, 240, 320, memory)?;
+        if config.is_some_and(|config| config.redacted) {
+            session.redact_secrets();
+        }
         session.bulk = origin.bulk.scripted();
         let shelled = Shelled {
             input: session.input.clone(),
@@ -883,6 +898,13 @@ impl Session {
         if self.origin.is_some() {
             self.unrecorded.get_or_insert((what, self.now));
         }
+    }
+    /// Record secrets redacted, as the C606 does, from the next pass on and
+    /// after every restart; see `firmware_services::trace::redact`.
+    pub fn redact_secrets(&mut self) {
+        self.trace.start.redacted = true;
+        #[cfg(feature = "cycling")]
+        self.trace.access_point.redact();
     }
     /// The trace of this power-on session so far.
     pub fn trace(&self) -> Vec<u8> {
@@ -1055,6 +1077,15 @@ impl Session {
             self.trace
                 .network_time
                 .observe(network_time, now, record, Event::NetworkTime);
+        if self.trace.start.redacted {
+            let token = self.sdk.phone_status().map(|status| status.token);
+            self.trace
+                .server
+                .redact(token.as_ref().map(|token| token.bytes()));
+        }
+        if let Devices::Replayed(replay) = &mut self.devices {
+            replay.sources.server.token = self.sdk.phone_status().map(|status| status.token);
+        }
         type Handles<'a> = (
             &'a mut dyn Ant,
             &'a mut dyn Ble,
@@ -1254,6 +1285,11 @@ impl Session {
     ) -> Result<(Request, &'static str), firmware_console::protocol::Error> {
         let request = firmware_console::protocol::parse(line)?;
         if let Ok(text) = core::str::from_utf8(line) {
+            let mut redacted = [0u8; 256];
+            let text = match self.trace.start.redacted {
+                true => redact::command(text, &mut redacted),
+                false => text,
+            };
             self.trace.record(&Event::Command(text));
         }
         let power = self.gate();
@@ -1666,6 +1702,9 @@ impl Session {
     fn reboot(&mut self, power: bool) -> io::Result<()> {
         let g = self.display.geometry();
         let mut next = Self::with_media(self.media.clone(), g.width, g.height, Memory::ALL)?;
+        if self.trace.start.redacted {
+            next.redact_secrets();
+        }
         self.bulk.begin_boot();
         next.bulk = self.bulk.clone();
         let uptime = self.now;

@@ -604,9 +604,15 @@ impl<B: ReadWrite + ?Sized, R: Record + ?Sized> ReadWrite for RecordedBulk<'_, B
 pub struct FrozenAccessPoint {
     latest: Latest<(AccessPointState, Reach)>,
     view: (AccessPointState, Reach),
+    redacting: bool,
 }
 
 impl FrozenAccessPoint {
+    /// Record each entropy word as [`super::redact::ENTROPY`] from now on.
+    pub fn redact(&mut self) {
+        self.redacting = true;
+    }
+
     /// Sample `inner` for this pass and record what changed.
     pub fn bind<'a, A: AccessPoint + ?Sized, R: Record + ?Sized>(
         &'a mut self,
@@ -672,9 +678,11 @@ impl<A: AccessPoint + ?Sized, R: Record + ?Sized> AccessPoint for PassAccessPoin
     }
     fn entropy(&mut self) -> u32 {
         let value = self.inner.entropy();
-        self.record
-            .borrow_mut()
-            .record(&Event::Entropy(value.into()));
+        let recorded = match self.frozen.redacting {
+            true => super::redact::ENTROPY,
+            false => value.into(),
+        };
+        self.record.borrow_mut().record(&Event::Entropy(recorded));
         value
     }
 }
@@ -689,9 +697,17 @@ pub const READ_PART: usize = 1024;
 pub struct FrozenServer {
     latest: Latest<(Option<server::Request>, usize)>,
     view: (Option<server::Request>, usize),
+    redacting: Option<heapless::Vec<u8, 32>>,
 }
 
 impl FrozenServer {
+    /// Record session tokens redacted from now on, given the open session's
+    /// `token` (see [`super::redact`]); call it each pass before binding.
+    pub fn redact(&mut self, token: Option<&[u8]>) {
+        let token = token.and_then(|token| heapless::Vec::from_slice(token).ok());
+        self.redacting = Some(token.unwrap_or_default());
+    }
+
     /// Sample `inner` for this pass and record what changed.
     pub fn bind<'a, S: Server + ?Sized, R: Record + ?Sized>(
         &'a mut self,
@@ -732,9 +748,28 @@ impl<S: Server + ?Sized, R: Record + ?Sized> PassServer<'_, S, R> {
             record.record(&cause);
         }
         let (request, room) = &self.frozen.view;
+        let room = u32::try_from(*room).unwrap_or(u32::MAX);
+        let Some(request) = request else {
+            record.record(&Event::Server {
+                request: None,
+                room,
+            });
+            return;
+        };
+        let mut recorded = ServerRequest::from(request);
+        let redacted = self.frozen.redacting.as_ref().map(|token| {
+            let token = (!token.is_empty()).then_some(token.as_slice());
+            (
+                super::redact::session::<32>(&request.session, token),
+                super::redact::query::<96>(&request.query, token),
+            )
+        });
+        if let Some((session, query)) = &redacted {
+            (recorded.session, recorded.query) = (session, query);
+        }
         record.record(&Event::Server {
-            request: request.as_ref().map(ServerRequest::from),
-            room: u32::try_from(*room).unwrap_or(u32::MAX),
+            request: Some(recorded),
+            room,
         });
     }
 }

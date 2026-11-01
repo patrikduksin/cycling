@@ -114,6 +114,13 @@ pub struct Line<const N: usize> {
     width: u16,
 }
 
+impl<const N: usize> core::hash::Hash for Line<N> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::ptr::hash(self.face, state);
+        self.text().hash(state);
+    }
+}
+
 impl<const N: usize> Line<N> {
     /// Text beyond `N` characters is cut.
     pub const fn new(face: &'static Face, text: &[u8]) -> Self {
@@ -330,7 +337,7 @@ pub enum Align {
 }
 
 /// A line of text placed on the canvas in one colour.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 pub struct Label<const N: usize> {
     pub line: Line<N>,
     pub left: usize,

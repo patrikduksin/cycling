@@ -294,6 +294,14 @@ impl Default for Display {
     }
 }
 
+/// A Home frame on the panel: what it shows, and the panel's submission
+/// count once it was drawn, which any later frame raises.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct HomeOnPanel {
+    digest: u64,
+    submissions: u32,
+}
+
 impl Display {
     pub(super) fn is_active(self) -> bool {
         matches!(self, Self::Active { .. })
@@ -564,6 +572,12 @@ impl Runtime {
             .max(now)
     }
 
+    /// Home draws its next frame at its usual pace even if nothing on it
+    /// changed, for a tool that measures a frame.
+    pub fn invalidate_home(&mut self) {
+        self.home_on_panel = None;
+    }
+
     pub fn suspend_display(&mut self) {
         self.display = Display::Suspended;
     }
@@ -821,6 +835,13 @@ impl Runtime {
             view.show_map(super::back::map_of(&self.back));
         }
         view.prepare();
+        let home = view.home_digest().map(|digest| HomeOnPanel {
+            digest,
+            submissions: system.display_submissions,
+        });
+        if home.is_some() && home == self.home_on_panel && !system.frame_wanted(now) {
+            return;
+        }
         let menu = &self.menu;
         // The FTP sheet covers the Sensors menu too, as it takes the buttons.
         let sheet = view.ftp_offer;
@@ -835,6 +856,12 @@ impl Runtime {
                 look::apply(row.pixels_mut());
             }
         });
+        self.home_on_panel = home
+            .filter(|_| !system.display_error)
+            .map(|home| HomeOnPanel {
+                submissions: system.display_submissions,
+                ..home
+            });
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.
         if system.display_error {

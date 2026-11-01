@@ -258,6 +258,7 @@ mod scenes {
     /// Paint the next frame `frames` times, plus once counted.
     #[track_caller]
     pub fn measure(sim: &mut Sim, frames: u32) -> Request {
+        sim.device.sdk.invalidate_home();
         let display = sim.device.display.clone();
         display.0.borrow_mut().bench = Some(Request::new(frames));
         let submitted = display.0.borrow().submissions;

@@ -25,7 +25,7 @@ pub enum Action {
 }
 
 /// A selected sensor as Home summarises it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Glance {
     pub kind: u8,
     pub live: bool,

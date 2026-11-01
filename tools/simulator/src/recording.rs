@@ -56,6 +56,39 @@ fn claim(name: String) -> String {
     unique
 }
 
+/// The file that marks a directory as the simulator's own output.
+pub const MARKER: &str = ".simulator-output";
+
+/// Make `dir` an empty directory marked as the simulator's output. A
+/// directory is replaced only when it holds [`MARKER`] or is empty; anything
+/// else is refused, so a mistyped path never loses someone's files.
+pub fn replace_dir(dir: &Path) -> io::Result<()> {
+    match fs::read_dir(dir) {
+        Ok(mut entries) => {
+            if !dir.join(MARKER).is_file() && entries.next().is_some() {
+                return Err(io::Error::other(format!(
+                    "{} holds files the simulator did not write (it has no {MARKER}); \
+                     choose another directory, or empty this one yourself",
+                    dir.display()
+                )));
+            }
+            fs::remove_dir_all(dir)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("{}: {error}", dir.display()),
+            ));
+        }
+    }
+    fs::create_dir_all(dir)?;
+    fs::write(
+        dir.join(MARKER),
+        "Written by the simulator; the next run into this directory replaces it.\n",
+    )
+}
+
 /// Remember panic messages per thread, then defer to the default hook.
 pub fn capture_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -242,10 +275,7 @@ impl Recording {
     pub fn write(&self, outcome: Outcome<'_>) -> io::Result<()> {
         let failure = std::thread::panicking()
             .then(|| PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default());
-        if self.dir.exists() {
-            fs::remove_dir_all(&self.dir)?;
-        }
-        fs::create_dir_all(&self.dir)?;
+        replace_dir(&self.dir)?;
         let mut files = Vec::new();
 
         let stills = if self.video {

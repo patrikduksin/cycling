@@ -65,6 +65,8 @@ commands:
       --every (default 5s) from --from, the screen's text, the replay's own
       trace and where it parted from the recording, into --out (default
       .local/replay/<trace>-<from>/ under the checkout; paths print absolute).
+      An existing --out is replaced only when a replay or scenario wrote it
+      (it holds .simulator-output) or it is empty; anything else is refused.
       stimulus runs this build against the recorded world; strict expects
       the recording build and counts every call it answers differently.
       auto (default) picks strict when this checkout, without uncommitted
@@ -497,9 +499,7 @@ fn replay(
         },
         PathBuf::from,
     );
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
+    shell_simulator::recording::replace_dir(&dir).map_err(|e| e.to_string())?;
     let mut recording = Recording::at(dir.clone(), stem, 240, 320);
     if !options.has("video") {
         recording = recording.without_video();

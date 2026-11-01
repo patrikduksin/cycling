@@ -544,3 +544,76 @@ fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
         report.first
     );
 }
+
+fn cycling_replay(cwd: &Path, out: Option<&Path>) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_trace"));
+    command
+        .current_dir(cwd)
+        .arg("replay")
+        .arg(fixture("laps-and-a-menu"))
+        .args(["--to", "3s", "--every", "1s"]);
+    if let Some(out) = out {
+        command.arg("--out").arg(out);
+    }
+    command.output().expect("the trace tool runs")
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn replay_never_deletes_a_directory_it_did_not_write() {
+    let dir = scratch("replay-out");
+    let mine = dir.join("notes.txt");
+    std::fs::write(&mine, "the rider's notes").unwrap();
+    let refused = cycling_replay(&dir, Some(&dir));
+    assert!(!refused.status.success(), "{refused:?}");
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(error.contains("did not write"), "{error}");
+    assert_eq!(std::fs::read_to_string(&mine).unwrap(), "the rider's notes");
+
+    let empty = dir.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    for run in ["into an empty directory", "over its own output"] {
+        let replayed = cycling_replay(&dir, Some(&empty));
+        assert!(
+            replayed.status.success(),
+            "{run}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(empty.join("divergence.txt").exists(), "{run}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn replay_guards_its_default_directory_the_same_way() {
+    let cwd = scratch("replay-default");
+    let first = cycling_replay(&cwd, None);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let replay = cwd.join(".local/replay");
+    let out = std::fs::read_dir(&replay)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    for entry in std::fs::read_dir(&out).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.ends_with("divergence.txt") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    let refused = cycling_replay(&cwd, None);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(out.join("divergence.txt").exists());
+    std::fs::remove_dir_all(&cwd).unwrap();
+}

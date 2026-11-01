@@ -976,8 +976,8 @@ fn the_summary_splits_activity_by_what_the_device_was_doing() {
 }
 
 #[test]
-fn the_summary_flags_a_pass_loop_that_keeps_waking_in_dark_standby() {
-    use vana::app::STANDBY_LIT_MS;
+fn dark_charging_standby_rests_between_passes() {
+    use vana::app::{STANDBY_DARK_PASS_MS, STANDBY_LIT_MS};
     let mut sim = Sim::new().boot();
     sim.set_battery(64, true);
     sim.advance(seconds(2));
@@ -989,19 +989,33 @@ fn the_summary_flags_a_pass_loop_that_keeps_waking_in_dark_standby() {
     let timeline = read(&sim.trace()).expect("the trace decodes");
     let summary = shell_simulator::trace::battery::summary(&timeline);
     assert!(summary.contains("  charging standby for "), "{summary}");
-    assert!(
-        summary.contains("console keeps 100/s while the screen is dark"),
-        "{summary}"
-    );
-    let dark = timeline
+    assert!(summary.contains("battery flags: none"), "{summary}");
+    let dark: Vec<_> = timeline
         .activity
         .iter()
         .filter(|window| window.activity.consumers.backlight == 0)
-        .count();
+        .collect();
     assert!(
-        (2..=4).contains(&dark),
-        "dark standby records once a minute, {dark} windows"
+        (2..=4).contains(&dark.len()),
+        "dark standby records once a minute, {} windows",
+        dark.len()
     );
+    let (_going_dark, dark_minutes) = dark.split_first().expect("dark windows");
+    for window in dark_minutes {
+        let passes = window
+            .tasks
+            .iter()
+            .find(|task| task.name == "console")
+            .map_or(0, |task| task.polls);
+        let most = u64::from(window.activity.window_ms) / STANDBY_DARK_PASS_MS + 1;
+        assert!(
+            u64::from(passes) <= most,
+            "{passes} passes in a dark {} ms window",
+            window.activity.window_ms
+        );
+    }
+    sim.turn_on();
+    sim.wait_for("READY TO RIDE", seconds(5)).unwrap();
 }
 
 #[test]

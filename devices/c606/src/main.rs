@@ -509,7 +509,15 @@ async fn console(
             }
         }
         device::activity::pass_ended();
-        embassy_time::Timer::after_millis(5).await;
+        // A host talking on the terminal keeps the usual pace.
+        #[cfg(feature = "cycling")]
+        let pass_ms = match sdk.pass_rest_ms(trace.power.frozen().state) {
+            Some(rest_ms) if !terminal.take_traffic() => rest_ms,
+            _ => 5,
+        };
+        #[cfg(not(feature = "cycling"))]
+        let pass_ms = 5;
+        embassy_time::Timer::after_millis(pass_ms).await;
     }
 }
 

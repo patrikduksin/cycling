@@ -51,7 +51,8 @@ pub use phone::{
 };
 
 pub use power::{
-    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
+    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_DARK_PASS_MS,
+    STANDBY_LIT_MS, auto_off,
 };
 
 /// Observations recorded with each ride sample, beyond the radios VANA drives.

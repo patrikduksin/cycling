@@ -30,8 +30,12 @@ includes copying the frame into capture memory; STATUS `display_ms` is the lates
 frame without that copy.
 
 For responsiveness, `cycling latency` times button presses to the end of the next
-frame on the C606 and reports the idle frame rate and frame time. Presses fall due
-at random phases, so some wait for a frame already rendering.
+frame on the C606 and reports the idle frame rate and frame time. A harness press
+is scheduled for a due time, so on a still page the pass that takes it starts at
+that time. A physical press instead ends the console's rest through the input
+edge signal, which `cycling latency` does not exercise. The tool sends nothing
+from starting a press until it is due and drawn, because terminal traffic keeps
+the console at its busy pace.
 
 ```sh
 cycling latency --press top-left --count 20        # On Home

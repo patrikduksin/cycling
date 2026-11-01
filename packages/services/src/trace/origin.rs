@@ -8,7 +8,7 @@
 //! A later version may append fields; this one reads its known prefix.
 use super::{Reader, Wire, Writer};
 use crate::volume::{self, Layout, Volume};
-use device_api::bulk::ReadWrite;
+use device_api::bulk::{Error as MediaError, ReadWrite};
 
 /// The header's `config`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,16 +43,68 @@ impl Memory {
     };
 }
 
-/// The header's `media`. A medium that could not be read is `None`.
+/// The header's `media`. VANA reports the ride journals; `None` is one it
+/// did not report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Media<'a> {
-    /// The internal ride journal's next slot when its boot scan ended.
-    pub journal: Option<u32>,
-    /// The card's ride log when VANA's boot scan ended: its epoch's store id
-    /// and head. RIDES only grows, so a host rewinds a later copy to this.
-    pub rides: Option<(u64, u64)>,
-    pub files: Option<Files<'a>>,
-    pub terrain: Option<Terrain>,
+    pub journal: Option<Journal>,
+    pub rides: Option<RideLog>,
+    pub files: Found<Files<'a>>,
+    /// VANA's ride facts table, `rides/facts.tbl` in FILES, by the digest
+    /// of its slots (`vana::ride::facts::digest`); `None` without a table
+    /// or when it did not read.
+    pub facts: Option<u32>,
+    pub terrain: Found<Terrain>,
+}
+
+/// A volume as composition found it at power-on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Found<T> {
+    /// Nothing there: no card, no volume table, no such volume, or one
+    /// nothing was ever written to.
+    Absent,
+    Read(T),
+    /// There, but it did not read.
+    Unreadable(Failure),
+}
+
+/// Why a volume that is there did not read at power-on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The card did not answer.
+    Card = 0,
+    /// The volume table was damaged or of another version.
+    Table = 1,
+    /// The volume's header or directory was damaged or of another version.
+    Volume = 2,
+}
+
+/// The internal ride journal when VANA's boot scan ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Journal {
+    Scanned {
+        next: u32,
+        /// The CRC32 of the slot before `next`; `None` when the journal is
+        /// empty or that slot did not read.
+        last: Option<u32>,
+    },
+    /// The scan could not read the journal.
+    Unusable,
+}
+
+/// The card's ride log as VANA's boot scan found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RideLog {
+    /// No ride log: RIDES, or the volume table, was never initialized.
+    Uninitialized,
+    /// A log whose end the scan proved: its epoch's store id and head.
+    Log { store: u64, head: u64 },
+    /// A log whose end the scan could not prove, so VANA kept it read only:
+    /// `head` is one past the last valid record it saw.
+    Uncertain { store: u64, head: u64 },
+    /// No log VANA could use: the volume table or the log's metadata was
+    /// corrupt, lost or foreign, or the card did not read.
+    Unusable,
 }
 
 /// The FILES store, and every file in it, as [`FileEntry`] records.
@@ -133,24 +185,48 @@ impl FileEntry<'_> {
 
 /// FILES and TERRAIN as they stand on the owned region `bulk`: what
 /// [`Media`] holds besides the ride journals, which VANA reports. The file
-/// entries go into `entries`; a volume, store or pack that does not read,
-/// or files that do not fit, are `None`.
+/// entries go into `entries`; files that do not fit are a damaged directory.
 pub fn volumes<'e>(
     bulk: &mut impl ReadWrite,
     entries: &'e mut [u8],
     sector: &mut volume::Sector,
-) -> (Option<Files<'e>>, Option<Terrain>) {
-    let Ok(Layout::Table(table)) = volume::read(bulk, sector) else {
-        return (None, None);
+) -> (Found<Files<'e>>, Found<Terrain>) {
+    use crate::{files, pack};
+    let table = match volume::read(bulk, sector) {
+        Ok(Layout::Table(table)) => table,
+        Ok(Layout::Blank | Layout::Legacy) | Err(volume::Error::Media(MediaError::Unsupported)) => {
+            return (Found::Absent, Found::Absent);
+        }
+        Ok(Layout::Lost)
+        | Err(volume::Error::Foreign | volume::Error::Missing | volume::Error::Small) => {
+            return (
+                Found::Unreadable(Failure::Table),
+                Found::Unreadable(Failure::Table),
+            );
+        }
+        Err(volume::Error::Media(_)) => {
+            return (
+                Found::Unreadable(Failure::Card),
+                Found::Unreadable(Failure::Card),
+            );
+        }
     };
-    let files = table.find(&volume::FILES).and_then(|extent| {
+    let store = |error: files::Error| match error {
+        files::Error::Media(_) => Failure::Card,
+        _ => Failure::Volume,
+    };
+    let files = table.find(&volume::FILES).map_or(Ok(None), |extent| {
         let mut files = Volume::new(&mut *bulk, extent);
-        let dir = crate::files::mount(&mut files, sector).ok()?;
+        let dir = match files::mount(&mut files, sector) {
+            Ok(dir) => dir,
+            Err(files::Error::Uninitialized) => return Ok(None),
+            Err(error) => return Err(store(error)),
+        };
         let mut len = 0;
-        for index in 0..crate::files::DIR_SECTORS {
+        for index in 0..files::DIR_SECTORS {
             for entry in dir
                 .entries(&mut files, index, sector)
-                .ok()?
+                .map_err(store)?
                 .iter()
                 .flatten()
             {
@@ -160,28 +236,55 @@ pub fn volumes<'e>(
                     crc: entry.crc,
                     revision: entry.revision,
                 };
-                entry.append(entries, &mut len).then_some(())?;
+                if !entry.append(entries, &mut len) {
+                    return Err(Failure::Volume);
+                }
             }
         }
-        Some((dir.store_id(), dir.generation(), len))
+        Ok(Some((dir.store_id(), dir.generation(), len)))
     });
-    let terrain = table.find(&volume::TERRAIN).and_then(|extent| {
-        let header = crate::pack::status(&mut Volume::new(&mut *bulk, extent), sector).ok()??;
-        Some(Terrain {
-            ready: header.state == crate::pack::State::Ready,
+    let terrain = table.find(&volume::TERRAIN).map_or(Ok(None), |extent| {
+        let header = pack::status(&mut Volume::new(&mut *bulk, extent), sector).map_err(
+            |error| match error {
+                pack::Error::Media(_) => Failure::Card,
+                _ => Failure::Volume,
+            },
+        )?;
+        Ok(header.map(|header| Terrain {
+            ready: header.state == pack::State::Ready,
             generation: header.generation,
             length: header.spec.length,
             tag: header.spec.tag,
             digest: header.spec.digest,
-        })
+        }))
     });
     let entries: &'e [u8] = entries;
-    let files = files.map(|(store, generation, len)| Files {
+    let files = Found::from(files).map(|(store, generation, len)| Files {
         store,
         generation,
         entries: &entries[..len],
     });
-    (files, terrain)
+    (files, terrain.into())
+}
+
+impl<T> From<Result<Option<T>, Failure>> for Found<T> {
+    fn from(read: Result<Option<T>, Failure>) -> Self {
+        match read {
+            Ok(Some(value)) => Self::Read(value),
+            Ok(None) => Self::Absent,
+            Err(failure) => Self::Unreadable(failure),
+        }
+    }
+}
+
+impl<T> Found<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Found<U> {
+        match self {
+            Self::Absent => Found::Absent,
+            Self::Read(value) => Found::Read(f(value)),
+            Self::Unreadable(failure) => Found::Unreadable(failure),
+        }
+    }
 }
 
 /// The header block of a trace this build records, from what the device
@@ -329,6 +432,7 @@ impl<'a> Wire<'a> for Media<'a> {
         self.journal.put(w);
         self.rides.put(w);
         self.files.put(w);
+        self.facts.put(w);
         self.terrain.put(w);
     }
     fn take(r: &mut Reader<'a>) -> Self {
@@ -336,7 +440,104 @@ impl<'a> Wire<'a> for Media<'a> {
             journal: Wire::take(r),
             rides: Wire::take(r),
             files: Wire::take(r),
+            facts: Wire::take(r),
             terrain: Wire::take(r),
+        }
+    }
+}
+
+impl Wire<'_> for Journal {
+    fn put(&self, w: &mut Writer) {
+        match *self {
+            Self::Scanned { next, last } => {
+                w.byte(0);
+                next.put(w);
+                last.map(u32::to_le_bytes).put(w);
+            }
+            Self::Unusable => w.byte(1),
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Scanned {
+                next: Wire::take(r),
+                last: <Option<[u8; 4]> as Wire>::take(r).map(u32::from_le_bytes),
+            },
+            1 => Self::Unusable,
+            _ => {
+                r.fail();
+                Self::Unusable
+            }
+        }
+    }
+}
+
+impl<'a, T: Wire<'a>> Wire<'a> for Found<T> {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Self::Absent => w.byte(0),
+            Self::Read(value) => {
+                w.byte(1);
+                value.put(w);
+            }
+            Self::Unreadable(failure) => {
+                w.byte(2);
+                w.byte(*failure as u8);
+            }
+        }
+    }
+    fn take(r: &mut Reader<'a>) -> Self {
+        match r.byte() {
+            0 => Self::Absent,
+            1 => Self::Read(T::take(r)),
+            2 => match r.byte() {
+                0 => Self::Unreadable(Failure::Card),
+                1 => Self::Unreadable(Failure::Table),
+                2 => Self::Unreadable(Failure::Volume),
+                _ => {
+                    r.fail();
+                    Self::Absent
+                }
+            },
+            _ => {
+                r.fail();
+                Self::Absent
+            }
+        }
+    }
+}
+
+impl Wire<'_> for RideLog {
+    fn put(&self, w: &mut Writer) {
+        match *self {
+            Self::Uninitialized => w.byte(0),
+            Self::Log { store, head } => {
+                w.byte(1);
+                (store, head).put(w);
+            }
+            Self::Uncertain { store, head } => {
+                w.byte(2);
+                (store, head).put(w);
+            }
+            Self::Unusable => w.byte(3),
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Uninitialized,
+            1 => {
+                let (store, head) = Wire::take(r);
+                Self::Log { store, head }
+            }
+            2 => {
+                let (store, head) = Wire::take(r);
+                Self::Uncertain { store, head }
+            }
+            3 => Self::Unusable,
+            _ => {
+                r.fail();
+                Self::Unusable
+            }
         }
     }
 }
@@ -433,14 +634,21 @@ mod tests {
             assert!(file.append(&mut entries, &mut used));
         }
         let media = Media {
-            journal: Some(41),
-            rides: Some((0x1234, 900)),
-            files: Some(Files {
+            journal: Some(Journal::Scanned {
+                next: 41,
+                last: Some(0xdead_beef),
+            }),
+            rides: Some(RideLog::Uncertain {
+                store: 0x1234,
+                head: 900,
+            }),
+            files: Found::Read(Files {
                 store: 5,
                 generation: 77,
                 entries: &entries[..used],
             }),
-            terrain: Some(Terrain {
+            facts: Some(0x2144_df1c),
+            terrain: Found::Read(Terrain {
                 ready: true,
                 generation: 2,
                 length: 1 << 30,
@@ -452,16 +660,115 @@ mod tests {
         let len = media.encode(&mut out).unwrap();
         let decoded = Media::decode(&out[..len]).unwrap();
         assert_eq!(decoded, media);
-        let listed: Vec<FileEntry<'_>> = decoded.files.unwrap().entries().collect();
-        assert_eq!(listed, files);
+        let Found::Read(listed) = decoded.files else {
+            panic!("{:?}", decoded.files);
+        };
+        assert_eq!(listed.entries().collect::<Vec<_>>(), files);
         let none = Media {
             journal: None,
             rides: None,
-            files: None,
-            terrain: None,
+            files: Found::Absent,
+            facts: None,
+            terrain: Found::Absent,
         };
         let len = none.encode(&mut out).unwrap();
         assert_eq!(Media::decode(&out[..len]), Some(none));
+        for rides in [
+            RideLog::Uninitialized,
+            RideLog::Log { store: 7, head: 3 },
+            RideLog::Uncertain { store: 7, head: 3 },
+            RideLog::Unusable,
+        ] {
+            let media = Media {
+                rides: Some(rides),
+                ..none
+            };
+            let len = media.encode(&mut out).unwrap();
+            assert_eq!(Media::decode(&out[..len]), Some(media));
+        }
+        for failure in [Failure::Card, Failure::Table, Failure::Volume] {
+            let media = Media {
+                journal: Some(Journal::Unusable),
+                files: Found::Unreadable(failure),
+                terrain: Found::Unreadable(failure),
+                ..none
+            };
+            let len = media.encode(&mut out).unwrap();
+            assert_eq!(Media::decode(&out[..len]), Some(media));
+        }
+    }
+
+    #[test]
+    fn a_volume_that_does_not_read_is_unreadable_and_not_absent() {
+        use crate::testing::Media as Card;
+        use crate::{checksum::crc32, files, pack};
+        let mut card = Card::new(5_777_407);
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let mut entries = vec![0u8; FILE_ENTRIES];
+        let read = |card: &mut Card, entries: &mut [u8]| {
+            let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+            let (files, terrain) = volumes(card, entries, &mut sector);
+            (files.map(|files| files.store), terrain.map(|t| t.length))
+        };
+        assert_eq!(
+            read(&mut card, &mut entries),
+            (Found::Absent, Found::Absent),
+            "no volume table"
+        );
+        let table = volume::create(&mut card, &mut sector).unwrap();
+        assert_eq!(
+            read(&mut card, &mut entries),
+            (Found::Absent, Found::Absent),
+            "nothing written"
+        );
+
+        let mut store = volume::open(&mut card, &volume::FILES, &mut sector).unwrap();
+        let dir = files::format(&mut store, 7, &mut sector).unwrap();
+        let name = files::Name::new("course.dat").unwrap();
+        files::write(&mut store, &name, b"course", &mut sector).unwrap();
+        let mut terrain = volume::open(&mut card, &volume::TERRAIN, &mut sector).unwrap();
+        let spec = pack::Spec {
+            length: 512,
+            crc: 0,
+            tag: [1; 16],
+            digest: [2; 32],
+            stamp: 0,
+        };
+        pack::begin(&mut terrain, spec, &mut sector).unwrap();
+        assert_eq!(
+            read(&mut card, &mut entries),
+            (Found::Read(dir.store_id()), Found::Read(512))
+        );
+
+        let files_at = table.find(&volume::FILES).unwrap().start;
+        card.set(files_at + 1, [0x5a; 512]);
+        card.set(files_at + files::COPY_B + 1, [0x5a; 512]);
+        let pack_at = table.find(&volume::TERRAIN).unwrap().start;
+        for copy in [pack_at, pack_at + 1] {
+            let mut header = card.get(copy);
+            if header[..16] == pack::MAGIC[..] {
+                header[16] = 9;
+                let crc = crc32(&header[..508]).to_le_bytes();
+                header[508..].copy_from_slice(&crc);
+                card.set(copy, header);
+            }
+        }
+        assert_eq!(
+            read(&mut card, &mut entries),
+            (
+                Found::Unreadable(Failure::Volume),
+                Found::Unreadable(Failure::Volume)
+            ),
+            "a directory sector that fails its CRC, a pack header of another version"
+        );
+        card.off = true;
+        assert_eq!(
+            read(&mut card, &mut entries),
+            (
+                Found::Unreadable(Failure::Card),
+                Found::Unreadable(Failure::Card)
+            )
+        );
     }
 
     #[test]

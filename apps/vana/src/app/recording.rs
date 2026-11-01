@@ -25,6 +25,8 @@ use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::screens::ride::ElevationChart;
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
+use firmware_services::checksum::crc32;
+use firmware_services::trace::origin;
 
 /// A finished lap shows in the status row this long.
 const LAP_TOAST_MS: u64 = 2000;
@@ -175,8 +177,8 @@ pub(super) struct Ride {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Scanned {
-    internal: Option<u32>,
-    bulk: Option<Option<(u64, u64)>>,
+    internal: Option<origin::Journal>,
+    bulk: Option<origin::RideLog>,
 }
 
 /// Where both ride journals stood when their boot scans ended, before VANA
@@ -184,10 +186,8 @@ struct Scanned {
 /// the media as they were at power-on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Journals {
-    /// The internal journal's next slot.
-    pub internal: u32,
-    /// The card's ride log, its epoch's store id and head, when it holds one.
-    pub bulk: Option<(u64, u64)>,
+    pub internal: origin::Journal,
+    pub bulk: origin::RideLog,
 }
 
 impl Default for Ride {
@@ -549,6 +549,48 @@ impl Ride {
             .map(|(_, lap)| lap)
     }
 
+    /// The internal journal where its boot scan ended. Not inlined, so its
+    /// slot stays out of `record`'s frame.
+    #[inline(never)]
+    fn internal_at_boot(&mut self, store: &mut impl RideStorage) -> origin::Journal {
+        use crate::ride::journal::Journal;
+        if matches!(
+            self.internal.status(),
+            Status::Error | Status::Unavailable | Status::Unsupported
+        ) {
+            return origin::Journal::Unusable;
+        }
+        let next = self.internal.next_slot();
+        let mut slot = crate::ride::log::Slot::default();
+        let last = next
+            .checked_sub(1)
+            .and_then(|index| {
+                Internal::new(&mut self.internal_media, store).read_slot(index, &mut slot)
+            })
+            .map(|_| crc32(&slot.0));
+        origin::Journal::Scanned {
+            next: u32::try_from(next).unwrap_or(u32::MAX),
+            last,
+        }
+    }
+
+    /// The card's ride log where its boot scan ended. A scan that could not
+    /// prove the log's end keeps it, read only, and reports it corrupt.
+    fn bulk_at_boot(&self) -> origin::RideLog {
+        match (self.bulk.status(), self.bulk_media.log()) {
+            (Status::Corrupt, Some(log)) => origin::RideLog::Uncertain {
+                store: log.store_id(),
+                head: log.head(),
+            },
+            (_, Some(log)) => origin::RideLog::Log {
+                store: log.store_id(),
+                head: log.head(),
+            },
+            (Status::NeedsInit, None) => origin::RideLog::Uninitialized,
+            (_, None) => origin::RideLog::Unusable,
+        }
+    }
+
     /// Read one slot of `medium` for export; `Some(false)` marks an invalid
     /// bulk container, whose slot bytes are zeroed.
     pub(super) fn read_slot(
@@ -763,8 +805,7 @@ impl Runtime {
             clock,
         );
         if ride.scanned.internal.is_none() && ride.internal.status() != Status::Scanning {
-            ride.scanned.internal =
-                Some(u32::try_from(ride.internal.next_slot()).unwrap_or(u32::MAX));
+            ride.scanned.internal = Some(ride.internal_at_boot(store));
         }
         ride.bulk.service(
             &mut Bulk::new(&mut ride.bulk_media, bulk),
@@ -773,8 +814,7 @@ impl Runtime {
             clock,
         );
         if ride.scanned.bulk.is_none() && ride.bulk.status() != Status::Scanning {
-            let log = ride.bulk_media.log();
-            ride.scanned.bulk = Some(log.map(|log| (log.store_id(), log.head())));
+            ride.scanned.bulk = Some(ride.bulk_at_boot());
         }
         // Clearing or initializing internal flash removes the ride a moved
         // ride continued as, and with it the bulk time carried into it.

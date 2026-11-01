@@ -10,6 +10,8 @@ pub mod find;
 #[cfg(feature = "cycling")]
 pub mod origin;
 pub mod otlp;
+#[cfg(feature = "cycling")]
+pub mod rebuild;
 pub mod secret;
 pub mod story;
 pub mod stub;

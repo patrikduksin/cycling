@@ -210,6 +210,31 @@ pub fn begin(media: &mut impl ReadWrite, spec: Spec, sector: &mut Sector) -> Res
     Ok(Writer::new(header))
 }
 
+/// Install `bytes` under `header`, its generation and state included, as
+/// the current pack: for a host rebuilding the medium a recording started
+/// on. The bytes must have the header's length and CRC.
+pub fn restore(
+    media: &mut impl ReadWrite,
+    header: Header,
+    bytes: &[u8],
+    sector: &mut Sector,
+) -> Result<(), Error> {
+    if bytes.len() as u64 != header.spec.length || crc32(bytes) != header.spec.crc {
+        return Err(Error::Mismatch);
+    }
+    if header.spec.length > capacity(media.owned_info()?.sectors) {
+        return Err(Error::Range);
+    }
+    for (index, chunk) in bytes.chunks(SECTOR_SIZE).enumerate() {
+        sector.fill(0);
+        sector[..chunk.len()].copy_from_slice(chunk);
+        media.owned_write(DATA + index as u64, sector)?;
+    }
+    header.encode(sector);
+    media.owned_write(0, sector)?;
+    Ok(())
+}
+
 /// Raw CRC32 of `count` data sectors from `start`, for host readback checks.
 pub fn crc(
     media: &mut impl ReadWrite,

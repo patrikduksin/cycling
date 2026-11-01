@@ -18,7 +18,7 @@ use firmware_services::trace::frozen::{
     FrozenAccessPoint, FrozenAnt, FrozenBle, FrozenCompanion, FrozenPosition, FrozenPowerControl,
     FrozenServer, FrozenSound, Latest, Record, Recorder,
 };
-use firmware_services::trace::origin::{self, Config, Files, Media, Memory, Terrain};
+use firmware_services::trace::origin::{self, Config, Files, Found, Media, Memory, Terrain};
 use firmware_services::trace::spool::{self, Card, File, Spool, Spooled};
 use firmware_services::trace::{Activity, Consumers, Event, Gnss, Health, Vitals, redact};
 
@@ -55,8 +55,9 @@ struct Start {
     boot: u32,
     settings: firmware_shell::preferences::Settings,
     memory: Memory,
-    files: Option<(u64, u64, usize)>,
-    terrain: Option<Terrain>,
+    files: Found<(u64, u64, usize)>,
+    facts: Option<u32>,
+    terrain: Found<Terrain>,
     entries: Bytes,
     header: Bytes,
 }
@@ -150,8 +151,9 @@ impl Trace {
             boot,
             settings,
             memory,
-            files: None,
-            terrain: None,
+            files: Found::Absent,
+            facts: None,
+            terrain: Found::Absent,
             entries,
             header,
         });
@@ -170,6 +172,7 @@ impl Trace {
         };
         let (files, terrain) = origin::volumes(bulk, &mut *start.entries, &mut self.sector);
         start.files = files.map(|files| (files.store, files.generation, files.entries.len()));
+        start.facts = vana::ride::facts::digest(bulk).ok().flatten();
         start.terrain = terrain;
         log::info!(target: "trace", "staging boot={:08x}", start.boot);
     }
@@ -473,6 +476,9 @@ impl Trace {
 
 impl Start {
     /// The header, built into PSRAM, with the saved Wi-Fi password redacted.
+    // Runs once per boot; kept out of line so its buffers stay off the
+    // console task's frame.
+    #[inline(never)]
     fn header(self, journals: vana::app::Journals) -> Option<&'static [u8]> {
         let mut settings = self.settings;
         if let Some(wifi) = &mut settings.wifi {
@@ -489,12 +495,13 @@ impl Start {
         let entries: &'static [u8] = self.entries;
         let media = Media {
             journal: Some(journals.internal),
-            rides: journals.bulk,
+            rides: Some(journals.bulk),
             files: self.files.map(|(store, generation, len)| Files {
                 store,
                 generation,
                 entries: &entries[..len],
             }),
+            facts: self.facts,
             terrain: self.terrain,
         };
         let (scratch, out) = self.header.split_at_mut(HEADER / 2);

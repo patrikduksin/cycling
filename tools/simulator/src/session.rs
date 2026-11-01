@@ -365,9 +365,14 @@ struct Start {
     journals: Option<Journals>,
 }
 
-type Volumes = (Option<(u64, u64, Vec<u8>)>, Option<origin::Terrain>);
-/// The internal journal's next slot and the card log's store id and head.
-type Journals = (Option<u32>, Option<(u64, u64)>);
+#[derive(Clone)]
+struct Volumes {
+    /// FILES' store id, generation and entries.
+    files: origin::Found<(u64, u64, Vec<u8>)>,
+    facts: Option<u32>,
+    terrain: origin::Found<origin::Terrain>,
+}
+type Journals = (Option<origin::Journal>, Option<origin::RideLog>);
 
 impl Start {
     fn read_volumes(&mut self, bulk: &crate::bulk::SimBulk) {
@@ -375,11 +380,27 @@ impl Start {
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
         let (files, terrain) = origin::volumes(&mut bulk.host(), &mut entries, &mut sector);
         let files = files.map(|files| (files.store, files.generation, files.entries.to_vec()));
-        self.volumes = Some((files, terrain));
+        #[cfg(feature = "cycling")]
+        let facts = vana::ride::facts::digest(&mut bulk.host()).ok().flatten();
+        #[cfg(not(feature = "cycling"))]
+        let facts = None;
+        self.volumes = Some(Volumes {
+            files,
+            facts,
+            terrain,
+        });
     }
 
     fn header(&self) -> Vec<u8> {
-        let (files, terrain) = self.volumes.clone().unwrap_or((None, None));
+        let Volumes {
+            files,
+            facts,
+            terrain,
+        } = self.volumes.clone().unwrap_or(Volumes {
+            files: origin::Found::Absent,
+            facts: None,
+            terrain: origin::Found::Absent,
+        });
         let (journal, rides) = self.journals.unwrap_or((None, None));
         let mut settings = self.settings;
         if self.redacted
@@ -398,13 +419,18 @@ impl Start {
         let media = Media {
             journal,
             rides,
-            files: files
-                .as_ref()
-                .map(|(store, generation, entries)| origin::Files {
-                    store: *store,
-                    generation: *generation,
-                    entries,
-                }),
+            files: match &files {
+                origin::Found::Read((store, generation, entries)) => {
+                    origin::Found::Read(origin::Files {
+                        store: *store,
+                        generation: *generation,
+                        entries,
+                    })
+                }
+                origin::Found::Absent => origin::Found::Absent,
+                origin::Found::Unreadable(failure) => origin::Found::Unreadable(*failure),
+            },
+            facts,
             terrain,
         };
         let (mut scratch, mut out) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);
@@ -934,7 +960,7 @@ impl Session {
             bulk: session.bulk.clone(),
         };
         let replay = Replay::new(capture.trace.clone(), shelled, mode, build_id())
-            .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
+            .map_err(|error| io::Error::other(format!("trace: {error}")))?;
         session.devices = Devices::Replayed(Box::new(replay));
         Ok(session)
     }
@@ -1051,7 +1077,7 @@ impl Session {
             let journals = self
                 .sdk
                 .journals_at_boot()
-                .map(|journals| (Some(journals.internal), journals.bulk));
+                .map(|journals| (Some(journals.internal), Some(journals.bulk)));
             #[cfg(not(feature = "cycling"))]
             let journals = Some((None, None));
             self.trace.start.journals = journals;

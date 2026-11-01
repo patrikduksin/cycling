@@ -267,7 +267,7 @@ fn encode_slot(record: &Record, slot: &mut [u8]) {
 }
 
 /// A slot of any record version from 1 on, or `None` if damaged or empty.
-fn decode_slot(slot: &[u8]) -> Option<Record> {
+pub fn decode_slot(slot: &[u8]) -> Option<Record> {
     let end = slot.len().checked_sub(4)?;
     if end < SLOT_FIELDS + 24 || slot[0] < 1 || crc32(&slot[..end]) != get_u32(slot, end) {
         return None;
@@ -298,6 +298,12 @@ pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
     };
     let stride = stride.unwrap_or(bytes.len().max(1));
     bytes.chunks_exact(stride).skip(1).filter_map(decode_slot)
+}
+
+/// The slot stride of a table whose header is sound and which holds whole
+/// slots: for a host taking a table back to the rides it held earlier.
+pub fn table_stride(bytes: &[u8]) -> Option<usize> {
+    stride(bytes).filter(|stride| bytes.len().is_multiple_of(*stride))
 }
 
 fn header(slot: &mut [u8]) {
@@ -786,6 +792,41 @@ pub fn read(
         revision: entry.revision,
         next: (to < table.sectors()).then_some(index + 1),
     }))
+}
+
+/// What the table holds and in what order, for a host to check a copy
+/// against: the CRC32 of every slot's bytes before its own CRC, the header
+/// first, in file order. `None` without a table.
+pub fn digest(media: &mut impl ReadWrite) -> Result<Option<u32>, Error> {
+    let mut sector = [0; SECTOR_SIZE];
+    let mut bytes = [0; SECTOR_SIZE];
+    let mut store = volume::open(media, &volume::FILES, &mut sector)?;
+    let dir = files::mount(&mut store, &mut sector)?;
+    let Some(entry) = dir.find(&mut store, &table_name(), &mut sector)? else {
+        return Ok(None);
+    };
+    let table = Table::open(&mut store, &dir, entry, &mut sector, &mut bytes)?;
+    let mut crc = Crc32::new();
+    table.each(
+        &mut store,
+        &dir,
+        0..table.sectors(),
+        &mut sector,
+        &mut bytes,
+        |_, (Slot::Header(slot) | Slot::Ride(slot))| crc = crc.update(&slot[..slot.len() - 4]),
+    )?;
+    Ok(Some(crc.finish()))
+}
+
+/// [`digest`] of a whole table held in `bytes`, whose header is sound.
+pub fn table_digest(bytes: &[u8]) -> Option<u32> {
+    let stride = table_stride(bytes)?;
+    let slots = bytes.chunks_exact(stride);
+    Some(
+        slots
+            .fold(Crc32::new(), |crc, slot| crc.update(&slot[..stride - 4]))
+            .finish(),
+    )
 }
 
 /// Visit the older files listed in directory sector `index`, one sector's

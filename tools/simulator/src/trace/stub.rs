@@ -67,7 +67,7 @@ impl Expect {
 /// For a trace outside the fixtures directory: whether it may become a
 /// fixture and the steps that make it one, as comment lines to print before
 /// the stub, which reads it from there. None for a fixture.
-pub fn to_fixture(path: &Path, capture: &Capture, media: Media) -> Option<String> {
+pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<String> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -82,11 +82,11 @@ pub fn to_fixture(path: &Path, capture: &Capture, media: Media) -> Option<String
         source.display()
     );
     let found = secrets(capture);
-    if media == Media::Blank {
+    if matches!(media, Media::Blank | Media::Rebuilt(_)) {
         out.push_str(
-            "// It has no .origin, so it is a device trace: it records where the rider rode and\n\
-             // is never committed. Write a simulator scenario that gives VANA the same inputs\n\
-             // and record it as a fixture instead (ride-trace skill, step 5).\n",
+            "// It is a device trace (no .origin, or one `cycling trace pull` rebuilt): it records\n\
+             // where the rider rode and is never committed. Write a simulator scenario that gives\n\
+             // VANA the same inputs and record it as a fixture instead (ride-trace skill, step 5).\n",
         );
     } else if !found.is_empty() {
         let _ = writeln!(

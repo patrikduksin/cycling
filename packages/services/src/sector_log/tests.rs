@@ -701,3 +701,38 @@ fn recovery_is_exact_or_uncertain_under_random_damage() {
         "{exact} {uncertain} {corrupt} {cut}"
     );
 }
+
+#[test]
+fn a_restored_epoch_is_the_formatted_one_given_its_identity() {
+    let mut formatted = Media::new(DATA_START + 4096);
+    workload(&mut formatted, 100, 32).1.unwrap();
+    let original = recover(&mut formatted).unwrap().log.unwrap();
+
+    let mut restored = Media::new(DATA_START + 4096);
+    let mut sector = [0u8; SECTOR_SIZE];
+    let mut log = restore(
+        &mut restored,
+        TAG,
+        original.store_id(),
+        original.generation(),
+        &0u64.to_le_bytes(),
+        &mut sector,
+    )
+    .unwrap();
+    for index in 0..100 {
+        log.append(&mut restored, &body(index), &mut sector)
+            .unwrap();
+        if (index + 1) % 32 == 0 {
+            log.checkpoint(&mut restored, &(index + 1).to_le_bytes(), &mut sector)
+                .unwrap();
+        }
+    }
+    assert_eq!(restored.written, formatted.written, "the same sectors");
+    let log = recover(&mut restored).unwrap().log.unwrap();
+    assert_eq!(log, original);
+    assert_eq!(
+        restore(&mut Media::new(64), TAG, 0, 1, &[], &mut sector).unwrap_err(),
+        Error::Foreign,
+        "store id 0 is never a store"
+    );
+}

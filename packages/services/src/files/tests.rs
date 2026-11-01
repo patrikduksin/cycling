@@ -409,3 +409,40 @@ fn a_delete_repairs_a_header_count_below_its_entries() {
     assert_eq!(delete(&mut media, &name("a"), &mut s), Ok(()));
     assert!(snapshot(&mut media).unwrap().is_empty());
 }
+
+#[test]
+fn a_restored_store_lists_the_files_and_identity_it_was_given() {
+    let mut media = Media::new(DATA + 4096);
+    let mut s = sector();
+    let mut rng = Rng::new(9);
+    let course = content(1300, &mut rng);
+    let workout = content(90, &mut rng);
+    let files = [
+        (name("course"), 7, &course[..]),
+        (name("empty"), 3, &[][..]),
+        (name("workouts/ftp.json"), 41, &workout[..]),
+    ];
+    let dir = restore(&mut media, 0xfeed, 42, &files, &mut s).unwrap();
+    assert_eq!(mount(&mut media, &mut s), Ok(dir));
+    assert_eq!((dir.store_id(), dir.generation()), (0xfeed, 42));
+    let mut listed = Vec::new();
+    dir.list(&mut media, &mut s, |e| {
+        listed.push((e.name.as_str().to_string(), e.revision))
+    })
+    .unwrap();
+    assert_eq!(
+        listed,
+        [
+            ("course".to_string(), 7),
+            ("empty".to_string(), 3),
+            ("workouts/ftp.json".to_string(), 41)
+        ]
+    );
+    let model = snapshot(&mut media).unwrap();
+    assert_eq!(model["course"], course);
+    assert_eq!(model["workouts/ftp.json"], workout);
+
+    let next = write(&mut media, &name("later"), b"after", &mut s).unwrap();
+    assert_eq!(next.revision, 43, "a write commits the next generation");
+    assert_eq!(snapshot(&mut media).unwrap()["course"], course);
+}

@@ -30,11 +30,14 @@ pub mod spool;
 #[cfg(test)]
 mod tests;
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 /// The oldest version that reads what this version writes. A later version
 /// that only appends fields and adds tags keeps it; one that changes the
 /// meaning of a field raises it.
-pub const OLDEST_READER: u16 = 1;
+pub const OLDEST_READER: u16 = 2;
+/// The oldest version this one reads. Version 2 laid the header's media out
+/// anew, so a version 1 trace would read as other media than it names.
+pub const OLDEST_READABLE: u16 = 2;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
@@ -1749,8 +1752,25 @@ pub struct Events<'a> {
 pub enum Error {
     /// The header block is missing, torn or malformed.
     Header,
-    /// No version of the format has this number.
+    /// A version this build does not read: one before
+    /// [`OLDEST_READABLE`], or a later one that needs a later reader.
     Version(u16),
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Header => f.write_str("the header block is missing, torn or malformed"),
+            Self::Version(version) if version > VERSION => write!(
+                f,
+                "trace format version {version} is newer than this build reads ({OLDEST_READABLE} to {VERSION}): read it with a later build"
+            ),
+            Self::Version(version) => write!(
+                f,
+                "trace format version {version} is older than this build reads ({OLDEST_READABLE} to {VERSION}): read it with the build that recorded it"
+            ),
+        }
+    }
 }
 
 /// The header and the events after it. A later version may append fields to
@@ -1763,7 +1783,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     if !r.ok() || (r.at != payload.len() && !later) {
         return Err(Error::Header);
     }
-    if header.version == 0 || header.oldest_reader > VERSION {
+    if header.version < OLDEST_READABLE || header.oldest_reader > VERSION {
         return Err(Error::Version(header.version));
     }
     let cursor = Cursor {

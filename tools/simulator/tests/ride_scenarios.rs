@@ -8002,7 +8002,9 @@ fn a_ride_on_bulk_media_replays_exactly() {
 
 #[test]
 fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() {
-    use firmware_services::trace::origin::{Config, FileEntry, Media, Memory};
+    use firmware_services::trace::origin::{
+        Config, FileEntry, Found, Journal, Media, Memory, RideLog,
+    };
     let field = |out: &str, key: &str| -> String {
         out.split_whitespace()
             .find_map(|word| word.strip_prefix(key))
@@ -8036,20 +8038,29 @@ fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() 
     assert_eq!(stored, settings, "the settings at power-on");
 
     let media = Media::decode(header.media).unwrap();
-    let (store, head) = media.rides.expect("the card's ride log");
+    let Some(RideLog::Log { store, head }) = media.rides else {
+        panic!("the card's ride log: {:?}", media.rides);
+    };
     assert_eq!(format!("{store:016x}"), field(&bulk, "store="));
     assert_eq!(
         head.to_string(),
         field(&bulk, "slot="),
         "the card's head at power-on"
     );
-    let journal = media.journal.expect("the internal journal");
-    assert_eq!(journal.to_string(), field(&internal, "slot="));
-    let terrain = media.terrain.expect("the pack");
+    let Some(Journal::Scanned { next, last }) = media.journal else {
+        panic!("the internal journal: {:?}", media.journal);
+    };
+    assert_eq!(next.to_string(), field(&internal, "slot="));
+    assert_eq!(last.is_some(), next > 0, "its last slot's CRC");
+    let Found::Read(terrain) = media.terrain else {
+        panic!("the pack: {:?}", media.terrain);
+    };
     assert!(terrain.ready);
     assert_eq!(terrain.length, 2048);
     assert_eq!(&terrain.tag[..8], b"CHILE-V1");
-    let files = media.files.expect("FILES");
+    let Found::Read(files) = media.files else {
+        panic!("FILES: {:?}", media.files);
+    };
     let names: Vec<FileEntry<'_>> = files.entries().collect();
     assert!(
         names

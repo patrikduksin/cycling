@@ -768,6 +768,12 @@ fn a_failed_journal_scan_is_reported_not_stamped_as_ready() {
     runtime.timing.report(&mut report);
     assert!(report.contains("storage_ms=- "), "{report}");
     assert!(report.contains("storage_state=error "), "{report}");
+    let journals = runtime.journals_at_boot().expect("both scans ended");
+    assert_eq!(
+        journals.internal,
+        firmware_services::trace::origin::Journal::Unusable,
+        "a trace names a journal that did not read, not an empty one"
+    );
 }
 
 #[test]

@@ -20,4 +20,5 @@ pub mod screen;
 pub mod session;
 pub mod sim;
 pub mod storage;
+pub mod trace;
 pub mod world;

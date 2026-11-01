@@ -173,6 +173,26 @@ impl FileFlash {
             fault: Rc::default(),
         })
     }
+    /// Memory media's boot counter, configuration and data bytes, to save
+    /// them; `None` for file-backed media.
+    pub fn image(&self) -> Option<(u32, Vec<u8>, Vec<u8>)> {
+        let Backing::Memory(media) = &self.backing else {
+            return None;
+        };
+        let media = media.borrow();
+        Some((media.boot, media.configuration.clone(), media.data.clone()))
+    }
+    /// Memory media holding a saved `image`.
+    pub fn from_image(boot: u32, configuration: Vec<u8>, data: Vec<u8>) -> Self {
+        Self {
+            backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
+                boot,
+                configuration,
+                data,
+            }))),
+            fault: Rc::default(),
+        }
+    }
     /// A copy of a region's bytes, for inspection after a scenario.
     pub fn contents(&mut self, r: Region) -> Vec<u8> {
         let mut bytes = vec![0; self.geometry(r).capacity];

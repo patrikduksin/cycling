@@ -73,7 +73,50 @@ impl Default for SimBulk {
     }
 }
 
+/// What a region holds, to save it: the sectors written and the state a
+/// boot keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub presence: Presence,
+    pub sectors: u64,
+    pub entropy: u64,
+    pub written: Vec<(u64, [u8; SECTOR_SIZE])>,
+}
+
 impl SimBulk {
+    pub fn image(&self) -> Image {
+        let region = self.0.borrow();
+        let mut written: Vec<_> = region
+            .written
+            .iter()
+            .map(|(&sector, bytes)| (sector, **bytes))
+            .collect();
+        written.sort_unstable_by_key(|&(sector, _)| sector);
+        Image {
+            presence: region.presence,
+            sectors: region.sectors,
+            entropy: region.entropy,
+            written,
+        }
+    }
+
+    /// A region holding a saved `image`.
+    pub fn from_image(image: Image) -> Self {
+        let bulk = Self::default();
+        {
+            let mut region = bulk.0.borrow_mut();
+            region.presence = image.presence;
+            region.sectors = image.sectors;
+            region.entropy = image.entropy;
+            region.written = image
+                .written
+                .into_iter()
+                .map(|(sector, bytes)| (sector, Box::new(bytes)))
+                .collect();
+        }
+        bulk
+    }
+
     /// A separate region holding the same sectors and state.
     pub fn copy(&self) -> Self {
         Self(Rc::new(RefCell::new(self.0.borrow().clone())), false)

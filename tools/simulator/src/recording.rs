@@ -133,6 +133,7 @@ pub struct Recording {
     truth: Vec<Truth>,
     submissions: u32,
     next_truth_ms: u64,
+    video: bool,
 }
 
 /// What a finished scenario hands to the report.
@@ -167,12 +168,17 @@ impl Recording {
     /// A recording called `name`, when artifacts are requested.
     pub fn named(name: &str, width: usize, height: usize) -> Option<Self> {
         let root = std::env::var_os("SIM_ARTIFACTS")?;
-        capture_panics();
         let name = claim(name.to_string());
+        Some(Self::at(Path::new(&root).join(&name), &name, width, height))
+    }
+
+    /// A recording called `name` that writes into `dir`.
+    pub fn at(dir: PathBuf, name: &str, width: usize, height: usize) -> Self {
+        capture_panics();
         PANIC.with(|p| p.borrow_mut().take());
-        Some(Self {
-            dir: Path::new(&root).join(&name),
-            name,
+        Self {
+            dir,
+            name: name.to_string(),
             width,
             height,
             frames: Vec::new(),
@@ -180,11 +186,19 @@ impl Recording {
             truth: Vec::new(),
             submissions: u32::MAX,
             next_truth_ms: 0,
-        })
+            video: true,
+        }
     }
 
-    /// Keep the panel when it changed since the last observation.
-    pub fn observe(&mut self, at_ms: u64, submissions: u32, pixels: &[u16], world: &World) {
+    /// Write screenshots and the report, but no video.
+    pub fn without_video(mut self) -> Self {
+        self.video = false;
+        self
+    }
+
+    /// Keep the panel when it changed since the last observation, and the
+    /// world each second when there is one.
+    pub fn observe(&mut self, at_ms: u64, submissions: u32, pixels: &[u16], world: Option<&World>) {
         if submissions != self.submissions {
             self.submissions = submissions;
             let frame = Frame::new(at_ms, pixels);
@@ -196,7 +210,9 @@ impl Recording {
                 self.frames.push(frame);
             }
         }
-        if at_ms >= self.next_truth_ms {
+        if let Some(world) = world
+            && at_ms >= self.next_truth_ms
+        {
             self.next_truth_ms = at_ms - at_ms % 1000 + 1000;
             self.truth.push(Truth {
                 at_ms,
@@ -233,7 +249,11 @@ impl Recording {
         fs::create_dir_all(&self.dir)?;
         let mut files = Vec::new();
 
-        let stills = self.stills(&outcome, failure.as_deref());
+        let stills = if self.video {
+            self.stills(&outcome, failure.as_deref())
+        } else {
+            Vec::new()
+        };
         if !stills.is_empty() {
             if mp4(&stills, FPS, &self.dir.join("video.mp4"))? {
                 files.push("video.mp4".to_string());
@@ -632,17 +652,7 @@ mod tests {
     }
 
     fn recording(frames: &[u64]) -> Recording {
-        let mut recording = Recording {
-            name: "timing".into(),
-            dir: PathBuf::new(),
-            width: 4,
-            height: 2,
-            frames: Vec::new(),
-            checkpoints: Vec::new(),
-            truth: Vec::new(),
-            submissions: u32::MAX,
-            next_truth_ms: 0,
-        };
+        let mut recording = Recording::at(PathBuf::new(), "timing", 4, 2);
         for (i, &at) in frames.iter().enumerate() {
             recording.frames.push(Frame::new(at, &[i as u16; 8]));
         }

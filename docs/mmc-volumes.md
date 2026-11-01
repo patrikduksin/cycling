@@ -55,8 +55,9 @@ and leave about 260 MiB unallocated. Only the owner adds `STORE`, with
    holds the magic but no header is valid, the reply is `CORRUPT`. If a
    header is from another store version or geometry, the reply is `FOREIGN`. In both
    cases the command writes nothing, not even the table.
-4. It writes the new table to copy 1, then to copy 0. A power cut leaves the
-   old table or the new one.
+4. It writes the new table first to the copy that does not hold the current
+   table, then to the other copy. A power cut leaves the old table or the
+   new one.
 5. It formats an empty store in a blank volume. A store that exists is kept.
 
 A blank volume is defined by the magic, not by zero bytes. Sectors that

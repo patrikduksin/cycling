@@ -3,11 +3,12 @@
 //! Relative owned sectors 0 and 1 hold two copies of a volume table: magic,
 //! version, generation, the region size it was planned for and up to
 //! `MAX_VOLUMES` named extents, sealed by a CRC32. Readers take the valid copy
-//! of the newest generation. Writers write copy 1 and then copy 0, so a cut
-//! leaves either table whole. Each volume is an independent block device
-//! ([`Volume`]) whose relative sector 0 is its first sector, so a mechanism
-//! written for the whole region (the sector log) runs unchanged inside it, and
-//! no access through a volume can reach another volume or the table.
+//! of the newest generation. Writers write first the copy that does not hold
+//! the current table, so a cut leaves either table whole. Each volume is an
+//! independent block device ([`Volume`]) whose relative sector 0 is its first
+//! sector, so a mechanism written for the whole region (the sector log) runs
+//! unchanged inside it, and no access through a volume can reach another
+//! volume or the table.
 //!
 //! Before volumes existed the sector log owned the whole region; its
 //! superblocks sit where the table now does. Reading reports such a region as
@@ -392,15 +393,17 @@ impl From<StoreError> for AddStoreError {
 /// STORE needs. STORE takes the unallocated tail as one more extent in the
 /// next generation; no existing extent moves or changes. The volume must
 /// hold a store or be blank ([`StoreError::Uninitialized`]), or nothing is
-/// written. The table goes to copy 1, then copy 0, so a cut leaves the old
-/// table or the new one, and a blank volume is formatted last. Running it
-/// again converges: a table that has STORE is written only to a copy that
-/// does not hold it yet, and a store that exists is kept.
+/// written. The table goes first to the copy that does not hold the current
+/// table, then to the other, so a cut leaves the old table or the new one,
+/// and a blank volume is formatted last. Running it again converges: a table
+/// that has STORE is written only to a copy that does not hold it yet, and a
+/// store that exists is kept.
 pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, AddStoreError> {
-    let mut table = match read(media, sector)? {
+    let current = match read(media, sector)? {
         Layout::Table(table) => table,
         Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing.into()),
     };
+    let mut table = current;
     let store = match table.find(&STORE) {
         Some(store) => store,
         None => {
@@ -418,8 +421,14 @@ pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Tabl
         Err(error) => return Err(error.into()),
     };
     let mut copy = [0u8; SECTOR_SIZE];
+    media.owned_read(0, &mut copy)?;
+    let region = media.owned_info()?.sectors;
+    let first = match decode(&copy, region) {
+        Replica::Table(held) if held == current => 1,
+        _ => 0,
+    };
     table.encode(sector);
-    for index in [1, 0] {
+    for index in [first, 1 - first] {
         media.owned_read(index, &mut copy)?;
         if copy != *sector {
             media.owned_write(index, sector)?;

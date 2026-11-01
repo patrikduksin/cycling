@@ -121,6 +121,19 @@ impl RidePage {
         Self::Back,
     ];
 
+    /// The page as a trace names it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Main => "ride/main",
+            Self::Stats => "ride/stats",
+            Self::Lap => "ride/lap",
+            Self::Climb => "ride/climb",
+            Self::Workout => "ride/workout",
+            Self::Map => "ride/map",
+            Self::Back => "ride/back",
+        }
+    }
+
     /// A number unique to the page, for touch ownership.
     pub fn index(self) -> usize {
         self as usize
@@ -576,6 +589,33 @@ pub(super) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
         ),
         None => value.push_str("--%"),
     };
+}
+
+/// The main page's readings as `name=value` pairs, each value written as
+/// the page writes it: what a trace keeps of the ride screen.
+pub(crate) fn shown(
+    out: &mut impl Write,
+    active_secs: u64,
+    sample: &crate::ride::log::Sample,
+    distance_mm: u64,
+) -> core::fmt::Result {
+    let mut values: [Text<12>; 7] = Default::default();
+    elapsed(&mut values[0], active_secs);
+    speed(&mut values[1], sample.speed_mm_s);
+    whole(&mut values[2], sample.power_watts);
+    whole(&mut values[3], sample.heart_bpm);
+    whole(
+        &mut values[4],
+        sample.cadence_tenths.map(|tenths| (tenths + 5) / 10),
+    );
+    kilometres(&mut values[5], distance_mm);
+    grade(&mut values[6], sample.gradient_tenths.map(i32::from));
+    let names = ["time", "speed", "power", "hr", "cad", "dist", "grade"];
+    for (i, (name, value)) in names.iter().zip(&values).enumerate() {
+        let gap = if i == 0 { "" } else { " " };
+        write!(out, "{gap}{name}={}", value.as_str())?;
+    }
+    Ok(())
 }
 
 /// A whole reading, or "--" without one.

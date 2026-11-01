@@ -295,8 +295,6 @@ struct Trace {
     physical: Latest<device_api::sensors::Snapshot>,
     #[cfg(feature = "cycling")]
     network_time: Latest<firmware_services::network_time::Snapshot>,
-    #[cfg(feature = "cycling")]
-    page: Option<vana::screens::workout::Page>,
     power: FrozenPowerControl,
     backlight: Latest<Availability>,
     #[cfg(feature = "cycling")]
@@ -334,8 +332,6 @@ impl Trace {
             physical: Latest::default(),
             #[cfg(feature = "cycling")]
             network_time: Latest::default(),
-            #[cfg(feature = "cycling")]
-            page: None,
             power: FrozenPowerControl::default(),
             backlight: Latest::default(),
             #[cfg(feature = "cycling")]
@@ -644,6 +640,7 @@ impl Session {
         matches!(self.devices, Devices::Replayed(_))
     }
     fn with_media(media: FileFlash, width: usize, height: usize) -> io::Result<Self> {
+        crate::logs::install();
         let boot = media.begin_boot()?;
         let display = DisplayDevice::new(width, height);
         let input = InputDevice::new(
@@ -1052,16 +1049,28 @@ impl Session {
     #[cfg(feature = "cycling")]
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();
-        let page = self.sdk.page();
-        if self.trace.page != Some(page) {
-            self.trace.page = Some(page);
-            self.trace.record(&Event::Page(page.name()));
-            seen.push(Seen::Page(page.name().into()));
-        }
+        let mut recorder = self.trace.recorder.borrow_mut();
+        self.sdk.report_seen(self.now, &mut |shown| {
+            let event = match shown {
+                vana::app::Seen::Page(page) => Event::Page(page),
+                vana::app::Seen::Toast(text) => Event::Toast(text),
+                vana::app::Seen::RideState(state) => Event::RideState(state),
+                vana::app::Seen::Shown(fields) => Event::Shown(fields),
+            };
+            recorder.record(&event);
+            seen.extend(crate::replay::seen(&event).flatten());
+        });
         for pattern in self.trace.sound.take_started() {
-            self.trace.record(&Event::Sound(pattern));
+            recorder.record(&Event::Sound(pattern));
             seen.push(Seen::Sound(pattern));
         }
+        crate::logs::drain(|level, target, text| {
+            recorder.record(&Event::Log {
+                level,
+                target,
+                text,
+            });
+        });
         seen
     }
     #[cfg(not(feature = "cycling"))]

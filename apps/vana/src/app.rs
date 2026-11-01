@@ -35,8 +35,10 @@ mod presentation;
 mod readings;
 mod recording;
 mod ride_control;
+mod seen;
 mod setup;
 pub use recording::Medium;
+pub use seen::Seen;
 mod phone;
 mod sensor_links;
 #[cfg(test)]
@@ -94,6 +96,8 @@ pub struct Runtime {
     alerts: crate::ride::alerts::Alerts,
     /// Back to start's breadcrumb lives in the block composition gives it.
     back: Option<&'static mut back::BackToStart>,
+    /// What `report_seen` last handed composition.
+    reported: seen::Reported,
 }
 
 impl Runtime {
@@ -126,6 +130,7 @@ impl Runtime {
             motion: motion::Motion::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             back: None,
+            reported: seen::Reported::default(),
         }
     }
 

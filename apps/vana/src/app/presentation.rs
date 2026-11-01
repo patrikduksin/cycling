@@ -933,13 +933,6 @@ impl Runtime {
     /// confirmation, then ride problems and low storage, which last until
     /// they are resolved, then what auto-pause is doing.
     pub(super) fn toast(&mut self, now: u64) -> Option<Toast> {
-        if let Some(lap) = self.ride.lap_toast(now) {
-            return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
-        }
-        let auto = self.ride.auto_toast(now);
-        if !auto.is_empty() {
-            return Some(Toast::new(auto, Tone::Info));
-        }
         let navigation = &mut self.navigation;
         if navigation
             .toast
@@ -948,7 +941,23 @@ impl Runtime {
         {
             navigation.toast = None;
         }
-        if let Some((toast, _)) = &navigation.toast {
+        self.toast_at(now)
+    }
+
+    /// The toast band at `now`, as `toast` finds it, without forgetting an
+    /// expired confirmation.
+    pub(super) fn toast_at(&self, now: u64) -> Option<Toast> {
+        if let Some(lap) = self.ride.lap_toast(now) {
+            return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
+        }
+        let auto = self.ride.auto_toast(now);
+        if !auto.is_empty() {
+            return Some(Toast::new(auto, Tone::Info));
+        }
+        let navigation = &self.navigation;
+        if let Some((toast, until)) = &navigation.toast
+            && now < *until
+        {
             return Some(*toast);
         }
         if navigation.page != Page::Ride {
@@ -1474,7 +1483,7 @@ impl Runtime {
 }
 
 /// The readings the ride page shows, to glide: power is its 3 s average.
-fn shown_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
+pub(super) fn shown_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,
         ..readings.live

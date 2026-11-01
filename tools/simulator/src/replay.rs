@@ -315,6 +315,9 @@ impl<C: fmt::Debug, V> Calls<C, V> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
     Page(String),
+    Toast(String),
+    RideState(String),
+    Shown(String),
     Sound(u8),
 }
 
@@ -497,11 +500,14 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
         .map(|extra| format!("the replay went on with {extra:?}"))
 }
 
-fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
+pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
     match event {
         Event::Page(page) => Some(Some(Seen::Page((*page).into()))),
+        Event::Toast(text) => Some(Some(Seen::Toast((*text).into()))),
+        Event::RideState(state) => Some(Some(Seen::RideState((*state).into()))),
+        Event::Shown(fields) => Some(Some(Seen::Shown((*fields).into()))),
         Event::Sound(pattern) => Some(Some(Seen::Sound(*pattern))),
-        Event::Toast(_) | Event::RideState(_) | Event::Shown(_) | Event::Log { .. } => Some(None),
+        Event::Log { .. } => Some(None),
         _ => None,
     }
 }

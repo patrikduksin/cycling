@@ -575,7 +575,10 @@ fn a_speed_and_cadence_sensor_alone_drives_cadence_and_its_low_alert() {
 
 #[test]
 fn ble_heart_strap_drives_heart_rate_and_drops_out_honestly() {
-    let mut sim = rider();
+    ble_heart_strap(&mut rider());
+}
+
+fn ble_heart_strap(sim: &mut Sim) {
     sim.ble_heart_strap(true);
     sim.start_ride();
     sim.ride_at(22.0, 0.0, 131.0, 0.0);
@@ -668,7 +671,10 @@ fn radar_tracks_a_group_of_six_vehicles_until_they_pass() {
 
 #[test]
 fn pause_excludes_time_and_two_hour_ride_keeps_every_sample() {
-    let mut sim = rider();
+    two_hour_ride_with_a_pause(&mut rider());
+}
+
+fn two_hour_ride_with_a_pause(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.ride_at(30.0, 220.0, 145.0, 90.0);
     sim.start_ride();
@@ -1371,7 +1377,10 @@ fn color_of(sim: &Sim, text: &str) -> u16 {
 
 #[test]
 fn manual_laps_compare_each_effort_with_the_last() {
-    let mut sim = rider();
+    manual_laps(&mut rider());
+}
+
+fn manual_laps(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.start_ride();
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
@@ -1390,26 +1399,26 @@ fn manual_laps_compare_each_effort_with_the_last() {
     // A harder, faster second lap shows green with a plus.
     sim.ride_at(33.0, 250.0, 150.0, 92.0);
     sim.advance(minutes(4));
-    ride_page(&mut sim, "3/6");
+    ride_page(sim, "3/6");
     sim.expect_text("LAP 2");
     let lap = sim.screen().field("LAP TIME").unwrap();
     assert!(lap.starts_with("04:0"), "{lap}");
-    expect_near(&mut sim, "LAP KM", 2.2, 0.05);
+    expect_near(sim, "LAP KM", 2.2, 0.05);
     // Within a watt or a beat: the change of effort spans a second.
-    expect_near(&mut sim, "LAP W", 250.0, 1.0);
-    expect_near(&mut sim, "LAP KM/H", 33.0, 0.2);
-    expect_near(&mut sim, "LAP BPM", 150.0, 1.0);
+    expect_near(sim, "LAP W", 250.0, 1.0);
+    expect_near(sim, "LAP KM/H", 33.0, 0.2);
+    expect_near(sim, "LAP BPM", 150.0, 1.0);
     sim.expect_text("LAP 1");
     sim.expect_field("LAP 1 W", "200");
     let harder = sim.screen().field("W DIFF").unwrap();
     assert!(harder == "+49" || harder == "+50", "{harder}");
-    assert_eq!(color_of(&sim, &harder), GREEN);
+    assert_eq!(color_of(sim, &harder), GREEN);
     let faster = sim.screen().field("KM/H DIFF").unwrap();
     assert!(
         faster.starts_with("+2.") || faster.starts_with("+3."),
         "{faster}"
     );
-    assert_eq!(color_of(&sim, &faster), GREEN);
+    assert_eq!(color_of(sim, &faster), GREEN);
     sim.checkpoint("lap page, second lap harder");
 
     // An easy third lap is plain grey with a minus: not an alert.
@@ -1423,10 +1432,10 @@ fn manual_laps_compare_each_effort_with_the_last() {
     sim.expect_text("LAP 3");
     sim.expect_text("LAP 2");
     let previous: f64 = sim.screen().field("LAP 2 W").unwrap().parse().unwrap();
-    let easier = reading(&sim, "W DIFF");
+    let easier = reading(sim, "W DIFF");
     assert!((easier - (150.0 - previous)).abs() <= 1.0, "{easier}");
     assert_eq!(
-        color_of(&sim, &sim.screen().field("W DIFF").unwrap()),
+        color_of(sim, &sim.screen().field("W DIFF").unwrap()),
         SECONDARY
     );
     let slower = sim.screen().field("KM/H DIFF").unwrap();
@@ -1434,7 +1443,7 @@ fn manual_laps_compare_each_effort_with_the_last() {
         slower.starts_with("-8.") || slower.starts_with("-9."),
         "{slower}"
     );
-    assert_eq!(color_of(&sim, &slower), SECONDARY);
+    assert_eq!(color_of(sim, &slower), SECONDARY);
     sim.checkpoint("lap page, easy third lap");
     sim.stop_ride();
     // The summary counts the three laps, the open one included.
@@ -2279,7 +2288,10 @@ fn elapsed_secs(sim: &Sim) -> u64 {
 
 #[test]
 fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
-    let mut sim = rider();
+    traffic_light_stop(&mut rider());
+}
+
+fn traffic_light_stop(sim: &mut Sim) {
     sim.pair(&["SPEED/CAD"]);
     // Rolling already, so the start does not read as a stop.
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
@@ -2299,12 +2311,12 @@ fn traffic_light_stop_auto_pauses_and_excludes_the_wait() {
     sim.expect_text("AUTO PAUSED");
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO RESUME", seconds(10)).unwrap();
-    assert!(recording(&mut sim));
+    assert!(recording(sim));
     sim.checkpoint("auto resumed when the light turns green");
     sim.advance(seconds(20));
     sim.expect_no_text("AUTO");
     // About 30 + 7 + 20 s riding; the 60 s wait is not in there.
-    let secs = elapsed_secs(&sim);
+    let secs = elapsed_secs(sim);
     assert!((50..=75).contains(&secs), "active {secs} s");
     sim.stop_ride();
     let kinds = sim.rides()[0].kinds();
@@ -7676,4 +7688,154 @@ fn calibrating_a_power_meter_never_disturbs_a_later_ride() {
         ride.samples().skip(5).all(|s| s.power_watts == Some(205)),
         "calibration pages leaked into the recording"
     );
+}
+
+/// A device that hashes every frame from power-on.
+fn hashed() -> Sim {
+    let mut sim = Sim::new();
+    sim.hash_frames();
+    sim
+}
+
+/// Run `scenario`, then replay this power-on session's trace on a fresh
+/// device from the media it began with. The replay must read and show what
+/// the recording did, frame for frame, and save the same rides.
+#[track_caller]
+fn assert_replays_exactly(mut recorded: Sim, scenario: fn(&mut Sim), bulk: bool) {
+    scenario(&mut recorded);
+    let capture = recorded.capture();
+    println!("{}", trace_size(&capture.trace, recorded.device.now));
+    let mut replayed = Sim::replay(&capture);
+    assert_eq!(replayed.device.divergence(), None);
+    if let Some(difference) = first_difference(&capture.trace, &replayed.trace()) {
+        panic!("the replay read or showed something else: {difference}");
+    }
+    let (frames, replayed_frames) = (recorded.frame_hashes(), replayed.frame_hashes());
+    assert!(frames.len() > 100, "{} frames", frames.len());
+    let first = frames
+        .iter()
+        .zip(&replayed_frames)
+        .position(|(a, b)| a != b);
+    assert_eq!(
+        (first, replayed_frames.len()),
+        (None, frames.len()),
+        "the first frame that differs, and how many the replay showed"
+    );
+    assert!(
+        replayed.ride_media() == recorded.ride_media(),
+        "the internal journal's bytes differ"
+    );
+    let samples = |sim: &mut Sim, bulk: bool| {
+        let rides = if bulk { sim.bulk_rides() } else { sim.rides() };
+        rides
+            .iter()
+            .map(|ride| (ride.id, ride.kinds(), ride.samples().copied().collect()))
+            .collect::<Vec<(u32, Vec<Kind>, Vec<Sample>)>>()
+    };
+    let rides = samples(&mut recorded, bulk);
+    assert!(
+        rides.iter().any(|ride| ride.2.len() > 30),
+        "a ride was saved"
+    );
+    assert_eq!(samples(&mut replayed, bulk), rides);
+}
+
+/// The first event where two traces part, with the pass it belongs to.
+fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
+    use firmware_services::trace::{End, Event, decode};
+    let (header, mut events) = decode(recorded).expect("the recorded trace decodes");
+    let (replayed_header, mut replayed_events) = decode(replayed).expect("the replay's decodes");
+    if header != replayed_header {
+        return Some(format!("header {header:?}, replayed {replayed_header:?}"));
+    }
+    let mut pass = 0;
+    for (index, event) in events.by_ref().enumerate() {
+        if let Event::Pass { now_ms } = event {
+            pass = now_ms;
+        }
+        let other = replayed_events.next();
+        if other != Some(event) {
+            return Some(format!(
+                "event {index}, pass at {pass} ms: recorded {event:?}, replayed {other:?}"
+            ));
+        }
+    }
+    assert_eq!(events.end(), Some(End::Complete));
+    replayed_events
+        .next()
+        .map(|extra| format!("the replay went on with {extra:?}"))
+}
+
+/// Trace bytes per minute of uptime, and which events take them.
+fn trace_size(bytes: &[u8], uptime_ms: u64) -> String {
+    use firmware_services::trace::{Encoder, MAX_BLOCK, decode};
+    let (_, events) = decode(bytes).unwrap();
+    let mut encoder = Encoder::new(vec![0u8; MAX_BLOCK]);
+    let mut kinds = std::collections::BTreeMap::<String, (usize, usize)>::new();
+    for event in events {
+        let before = encoder.len();
+        let size = match encoder.push(&event) {
+            Ok(()) => encoder.len() - before,
+            Err(_) => {
+                encoder.restart();
+                let before = encoder.len();
+                encoder.push(&event).unwrap();
+                encoder.len() - before
+            }
+        };
+        let debug = format!("{event:?}");
+        let kind = debug.split([' ', '(', '{']).next().unwrap_or_default();
+        let entry = kinds.entry(kind.into()).or_default();
+        entry.0 += 1;
+        entry.1 += size;
+    }
+    let minutes = uptime_ms as f64 / 60_000.0;
+    let mut out = format!(
+        "trace: {} bytes over {minutes:.1} min of uptime, {:.0} bytes/min;",
+        bytes.len(),
+        bytes.len() as f64 / minutes
+    );
+    for (kind, (count, size)) in kinds {
+        out += &format!(" {kind} {count}x {:.0} B/min,", size as f64 / minutes);
+    }
+    out
+}
+
+#[test]
+fn a_ride_with_laps_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), manual_laps, false);
+}
+
+#[test]
+fn an_auto_paused_ride_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), traffic_light_stop, false);
+}
+
+#[test]
+fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
+}
+
+#[test]
+fn a_two_hour_ride_with_a_pause_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), two_hour_ride_with_a_pause, false);
+}
+
+#[test]
+fn a_ride_on_bulk_media_replays_exactly() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let ride = |sim: &mut Sim| {
+        sim.init_bulk();
+        sim.pair(&["HEART RATE", "POWER METER"]);
+        sim.start_ride();
+        sim.ride_at(28.0, 200.0, 140.0, 85.0);
+        sim.advance(minutes(5));
+        sim.pause_ride();
+        sim.advance(minutes(1));
+        sim.resume_ride();
+        sim.advance(minutes(5));
+        sim.stop_ride();
+    };
+    assert_replays_exactly(equip(sim.boot()), ride, true);
 }

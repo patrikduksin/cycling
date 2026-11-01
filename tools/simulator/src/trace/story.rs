@@ -221,6 +221,7 @@ pub fn tell(timeline: &Timeline) -> Story {
 /// Put each event in the ride it happened in, and say what a warning
 /// coincided with, so a ride saved while a save failed reads as one moment.
 fn attach(spans: &mut [Span], events: &mut [Point]) {
+    let mut warnings: HashMap<usize, u32> = HashMap::new();
     for event in events.iter_mut() {
         let at = event.at.session_ms;
         let within = |span: &Span| (span.start.session_ms..=span.end.session_ms).contains(&at);
@@ -242,12 +243,13 @@ fn attach(spans: &mut [Span], events: &mut [Point]) {
             })
             .collect();
         if event.span != 0 {
-            let warnings = &mut spans[event.span].attributes;
-            match warnings.iter_mut().find(|(key, _)| key == "warnings") {
-                Some((_, count)) => *count = (count.parse::<u32>().unwrap_or(0) + 1).to_string(),
-                None => warnings.push(("warnings".into(), "1".into())),
-            }
+            *warnings.entry(event.span).or_default() += 1;
         }
+    }
+    for (span, count) in warnings {
+        spans[span]
+            .attributes
+            .push(("warnings".into(), count.to_string()));
     }
 }
 

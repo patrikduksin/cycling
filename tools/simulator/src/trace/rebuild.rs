@@ -396,8 +396,11 @@ fn internal_flash(boot: u32, settings: &[u8], journal: Option<&[u8]>) -> Result<
     Ok(FileFlash::from_image(boot - 1, configuration, data))
 }
 
-/// The log of `log`'s epoch holding `slots`, checkpointed where VANA does: after each
-/// ride's last record and every `CHECKPOINT_RECORDS` records.
+/// The log of `log`'s epoch holding `slots`, checkpointed as VANA does
+/// when nothing interrupts it: after each ride's last record and every
+/// `CHECKPOINT_RECORDS` records. After a power cut the device's
+/// checkpoints can sit elsewhere, so a boot here replays other records to
+/// the same rides.
 fn write_rides(card: &mut SimBulk, log: &Rides, slots: &[u8]) -> Result<(), String> {
     let mut sector = [0u8; SECTOR_SIZE];
     let mut volume =

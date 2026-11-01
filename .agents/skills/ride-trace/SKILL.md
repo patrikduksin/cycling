@@ -49,11 +49,22 @@ text: start there, and open a PNG only to confirm what the text says.
   lost, and FILES starts without it: a pull names it
   (`file bests.dat: written again since power-on`). VANA writes
   `bests.dat` when a ride sets a best, and `course.dat` when the phone
-  sends a course. The ride facts table is the exception: the rebuild takes
-  it back to the rides that had ended at power-on and checks it against
-  the header. A ride log or a FILES store cleared since, and a pack no
-  local file matches, are lost the same way. STORE starts empty, since
-  VANA reads nothing in it.
+  sends a course. A file whose read failed in the pull is lost the same
+  way. The ride facts table is the exception: the rebuild takes it back
+  to the rides that had ended at power-on and keeps it only when it
+  matches the digest of its slots the header recorded. A ride saved again
+  since does not match. A ride journal cleared since, a FILES store
+  formatted since, and a pack whose SHA-256 is not the header's are lost
+  the same way: the header records the CRC32 of the internal journal's
+  last slot, and the store ids of RIDES and FILES. The header also says
+  how VANA found RIDES. A log VANA kept read only because it could not
+  prove where the log ended is rebuilt as a log that takes rides, and one
+  it could not use (corrupt, lost or foreign) as no log; the rebuild names
+  both. The rebuilt RIDES log has a checkpoint after each ride and every
+  32 records. After a power cut the device's checkpoints can sit
+  elsewhere, so boot recovery in the replay reads a different number of
+  records, but it recovers the same rides. STORE starts empty, since VANA
+  reads nothing in it.
 - What a device trace holds: the C606 redacts secrets as it records (each
   `WIFI CONFIG` password, the phone session's token and Wi-Fi password), and
   a replay runs on placeholders. The file ends with the pass before VANA

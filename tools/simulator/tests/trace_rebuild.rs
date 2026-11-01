@@ -304,6 +304,32 @@ fn a_pulled_device_trace_replays_strict_from_the_media_it_started_on() {
 }
 
 #[test]
+fn a_terrain_pack_of_the_right_length_and_another_digest_is_left_out() {
+    let (mut sim, trace, _) = recorded_session();
+    let mut pulled = pull(&mut sim, &trace);
+    let pack = pulled.terrain.as_mut().unwrap();
+    pack[1000] ^= 1;
+    let (origin, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(
+        matches!(&gaps[..], [Gap::Terrain { tag, .. }] if tag == "CHILE-TERRAIN-V1"),
+        "{gaps:?}"
+    );
+    let mut sector = [0u8; 512];
+    let mut card = origin.bulk.host();
+    let mut terrain = firmware_services::volume::open(
+        &mut card,
+        &firmware_services::volume::TERRAIN,
+        &mut sector,
+    )
+    .unwrap();
+    assert_eq!(
+        firmware_services::pack::status(&mut terrain, &mut sector).unwrap(),
+        None,
+        "the card starts without a pack"
+    );
+}
+
+#[test]
 fn a_file_changed_after_the_session_is_reported_and_left_out() {
     let (mut sim, trace, _) = recorded_session();
     sim.put_file(WORKOUT, &workout(30));

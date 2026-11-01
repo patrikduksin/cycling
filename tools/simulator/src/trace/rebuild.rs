@@ -14,6 +14,7 @@ use crate::storage::FileFlash;
 use device_api::bulk::SECTOR_SIZE;
 use firmware_services::trace::origin::{self, Config, FileEntry};
 use firmware_services::{checksum::crc32, files, pack, sector_log, volume};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
@@ -461,11 +462,9 @@ fn write_terrain(
     pulled: &Pulled,
     gaps: &mut Vec<Gap>,
 ) -> Result<(), String> {
-    let Some(bytes) = pulled
-        .terrain
-        .as_ref()
-        .filter(|bytes| bytes.len() as u64 == terrain.length)
-    else {
+    let Some(bytes) = pulled.terrain.as_ref().filter(|bytes| {
+        bytes.len() as u64 == terrain.length && Sha256::digest(bytes)[..] == terrain.digest
+    }) else {
         gaps.push(Gap::Terrain {
             tag: tag(&terrain.tag),
             digest: terrain.digest,

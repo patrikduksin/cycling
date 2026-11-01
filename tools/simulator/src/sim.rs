@@ -948,6 +948,7 @@ impl Sim {
     /// would (volume table created if needed).
     pub fn install_terrain(&mut self, tag: &[u8; 16], bytes: &[u8]) {
         use firmware_services::{pack, volume};
+        use sha2::Digest;
         self.init_volumes();
         let mut sector = [0u8; 512];
         let mut media = self.device.host_bulk();
@@ -956,7 +957,7 @@ impl Sim {
             length: bytes.len() as u64,
             crc: firmware_services::checksum::crc32(bytes),
             tag: *tag,
-            digest: [0; 32],
+            digest: sha2::Sha256::digest(bytes).into(),
             stamp: 0,
         };
         let mut writer = pack::begin(&mut terrain, spec, &mut sector).expect("begin");

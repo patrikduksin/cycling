@@ -99,6 +99,10 @@ pub enum Kind {
     Carried,
     /// The rider saw another page or heard another sound.
     Seen,
+    /// The panel showed the phone page in other pixels, all else the same.
+    /// The page draws the session's credentials, which a redacted trace
+    /// replaced, so this is expected and never the first divergence.
+    Redacted,
     /// What the replay handed VANA, as it recorded it again, differs from
     /// the trace it replayed.
     Rerecorded,
@@ -160,6 +164,9 @@ impl Report {
             return;
         }
         *self.counts.entry(kind).or_default() += count as u32;
+        if kind == Kind::Redacted {
+            return;
+        }
         let at_ms = self.now;
         self.first.get_or_insert_with(|| Divergence {
             at_ms,
@@ -173,19 +180,17 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.header())?;
         match &self.first {
-            None => writeln!(f, "no divergence"),
-            Some(first) => {
-                writeln!(
-                    f,
-                    "first at {} ms, {:?}: {}",
-                    first.at_ms, first.kind, first.detail
-                )?;
-                for (kind, count) in &self.counts {
-                    writeln!(f, "{kind:?} {count}")?;
-                }
-                Ok(())
-            }
+            None => writeln!(f, "no divergence")?,
+            Some(first) => writeln!(
+                f,
+                "first at {} ms, {:?}: {}",
+                first.at_ms, first.kind, first.detail
+            )?,
         }
+        for (kind, count) in &self.counts {
+            writeln!(f, "{kind:?} {count}")?;
+        }
+        Ok(())
     }
 }
 
@@ -352,6 +357,10 @@ pub struct Replay {
     cursor: Cursor,
     pub sources: Sources,
     seen: Vec<Seen>,
+    /// The page the recording last showed.
+    page: String,
+    /// The trace replaced secrets as it recorded them.
+    redacted: bool,
 }
 
 impl Replay {
@@ -363,6 +372,8 @@ impl Replay {
         build: [u8; 20],
     ) -> Result<Self, trace::Error> {
         let (header, events) = trace::decode(&bytes)?;
+        let redacted =
+            trace::origin::Config::decode(header.config).is_some_and(|config| config.redacted);
         let cursor = events.cursor();
         let ledger = Ledger(Rc::new(RefCell::new(Report::new(mode))));
         let known = |build: [u8; 20]| build != [0; 20];
@@ -384,6 +395,8 @@ impl Replay {
             bytes,
             cursor,
             seen: Vec::new(),
+            page: String::new(),
+            redacted,
         })
     }
 
@@ -471,37 +484,46 @@ impl Replay {
     /// stimulus replay can run another build, which may draw the same
     /// things in other pixels, so it leaves the frames out.
     pub fn saw(&mut self, seen: &[Seen]) {
+        let recorded = core::mem::take(&mut self.seen);
+        if let Some(page) = recorded.iter().rev().find_map(|seen| match seen {
+            Seen::Page(page) => Some(page),
+            _ => None,
+        }) {
+            self.page.clone_from(page);
+        }
+        let strict = self.sources.ledger.mode() == Mode::Strict;
         let frame = |seen: &&Seen| matches!(seen, Seen::Frame(_));
-        let recorded = || self.seen.iter();
-        let differs = if !seen
+        let (kind, how) = if !seen
             .iter()
             .filter(|s| !frame(s))
-            .eq(recorded().filter(|s| !frame(s)))
+            .eq(recorded.iter().filter(|s| !frame(s)))
         {
-            Some("")
-        } else if self.sources.ledger.mode() == Mode::Strict
-            && !seen.iter().filter(frame).eq(recorded().filter(frame))
-        {
-            Some(": the same, in other pixels")
+            (Kind::Seen, "")
+        } else if !strict || seen.iter().filter(frame).eq(recorded.iter().filter(frame)) {
+            return;
+        } else if self.redacted && self.page == "phone" {
+            (
+                Kind::Redacted,
+                ": the same, in other pixels, on the phone page whose credentials the trace redacted",
+            )
         } else {
-            None
+            (Kind::Seen, ": the same, in other pixels")
         };
-        if let Some(how) = differs {
-            let recorded = core::mem::take(&mut self.seen);
-            self.sources.ledger.note(Kind::Seen, 1, || {
-                format!("the rider saw {seen:?}, the recording {recorded:?}{how}")
-            });
-        }
+        self.sources.ledger.note(kind, 1, || {
+            format!("the rider saw {seen:?}, the recording {recorded:?}{how}")
+        });
     }
 
     /// A strict replay hands VANA what the trace holds, so recording it
     /// again gives the trace back. Where it does not, VANA was handed a
-    /// value from elsewhere or the trace held one VANA never took.
+    /// value from elsewhere or the trace held one VANA never took. Frames
+    /// are left to `saw`, which knows the ones a redacted trace changes.
     pub fn rerecorded(&mut self, trace: &[u8]) {
         if self.sources.ledger.mode() != Mode::Strict {
             return;
         }
-        if let Some(difference) = first_difference(&self.bytes, trace) {
+        let compared = |event: &Event<'_>| !measured(event) && !matches!(event, Event::Frame(_));
+        if let Some(difference) = first_difference_of(&self.bytes, trace, compared) {
             self.sources.ledger.note(Kind::Rerecorded, 1, || difference);
         }
     }
@@ -515,6 +537,15 @@ impl Replay {
 /// The first event where two traces part, with the pass it belongs to.
 /// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
+    first_difference_of(recorded, replayed, |event| !measured(event))
+}
+
+/// The first `compared` event where two traces part.
+fn first_difference_of(
+    recorded: &[u8],
+    replayed: &[u8],
+    compared: impl Fn(&Event<'_>) -> bool,
+) -> Option<String> {
     let (header, mut events) = match trace::decode(recorded) {
         Ok(decoded) => decoded,
         Err(error) => return Some(format!("the recorded trace does not decode: {error}")),
@@ -536,11 +567,11 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
         return Some(format!("header {header:?}, replayed {replayed_header:?}"));
     }
     let (mut pass, mut read) = (0, 0);
-    for (index, event) in events.by_ref().enumerate().filter(|(_, e)| !measured(e)) {
+    for (index, event) in events.by_ref().enumerate().filter(|(_, e)| compared(e)) {
         if let Event::Pass { now_ms } = event {
             pass = now_ms;
         }
-        let other = replayed_events.by_ref().find(|e| !measured(e));
+        let other = replayed_events.by_ref().find(|e| compared(e));
         if other != Some(event) {
             return Some(format!(
                 "event {index}, pass at {pass} ms: recorded {event:?}, replayed {other:?}"
@@ -555,7 +586,7 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     if let Some(damaged) = damaged(&events, "recorded") {
         return Some(damaged);
     }
-    if let Some(extra) = replayed_events.by_ref().find(|e| !measured(e)) {
+    if let Some(extra) = replayed_events.by_ref().find(|e| compared(e)) {
         return Some(format!("the replay went on with {extra:?}"));
     }
     damaged(&replayed_events, "replayed")

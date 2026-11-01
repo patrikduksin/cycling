@@ -20,12 +20,16 @@ pub enum Meaning {
     ModelOnly,
     /// Stimulus: recorded input waited for VANA's next pass.
     Timing,
+    /// Strict: the phone page's pixels, where the trace redacted the
+    /// credentials it draws.
+    Redacted,
 }
 
 impl Meaning {
     pub fn of(kind: Kind, mode: Mode) -> Self {
         match kind {
             Kind::Seen => Self::RiderVisible,
+            Kind::Redacted => Self::Redacted,
             Kind::Unrecorded | Kind::Unreplayable | Kind::Truncated | Kind::Lost => {
                 Self::ReplayFault
             }
@@ -51,6 +55,7 @@ impl Meaning {
             Self::CallLevel => "call-level",
             Self::ModelOnly => "model-only",
             Self::Timing => "timing-only",
+            Self::Redacted => "redacted",
         }
     }
 
@@ -69,6 +74,9 @@ impl Meaning {
                 "the stimulus ANT model or fresh entropy answered where the recording's radio did; the rider does not see it"
             }
             Self::Timing => "recorded input waited for VANA's next pass",
+            Self::Redacted => {
+                "the phone page drew other credentials than the redacted trace holds; expected"
+            }
         }
     }
 }

@@ -8342,10 +8342,7 @@ fn the_largest_phone_upload_reaches_the_trace_file_whole() {
     assert!(peak < capacity / 8, "the drain keeps up: {peak} B");
 }
 
-#[test]
-fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
-    use firmware_services::trace::origin::{Config, Media};
-    use firmware_services::trace::{Event, decode};
+fn a_redacted_phone_session_then_a_ride() -> (Sim, [String; 5]) {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
     sim.format_files();
@@ -8379,7 +8376,14 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     sim.start_ride();
     sim.advance(minutes(1));
     sim.stop_ride();
+    (sim, secrets)
+}
 
+#[test]
+fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
+    use firmware_services::trace::origin::{Config, Media};
+    use firmware_services::trace::{Event, decode};
+    let (mut sim, secrets) = a_redacted_phone_session_then_a_ride();
     let capture = sim.capture();
     let text = String::from_utf8_lossy(&capture.trace);
     for secret in &secrets {
@@ -8409,15 +8413,12 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
 
     let mut replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
-    let first = report.first.as_ref().map(|first| first.detail.as_str());
-    assert!(
-        first.is_some_and(
-            |detail| detail.starts_with(r#"the rider saw [Page("phone"), Frame("#)
-                && detail.ends_with(": the same, in other pixels")
-        ),
-        "only the phone page, which draws the redacted credentials, differs: {first:?}"
+    assert_eq!(report.first, None, "{report}");
+    assert_eq!(
+        report.count(shell_simulator::replay::Kind::Redacted),
+        2,
+        "the phone page draws the redacted credentials: {report}"
     );
-    assert_eq!(report.count(shell_simulator::replay::Kind::Seen), 2);
     assert!(
         replayed.ride_media() == sim.ride_media(),
         "the same journal"
@@ -8430,6 +8431,41 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     );
     let placeholder = replayed.device.sdk.phone_status();
     assert!(placeholder.is_none(), "the session closed for the ride");
+}
+
+/// The capture, with the rider shown another page where its last page
+/// opened.
+fn with_the_last_page_unseen(
+    mut capture: shell_simulator::replay::Capture,
+) -> shell_simulator::replay::Capture {
+    use firmware_services::trace::{Event, decode};
+    let trace: &'static [u8] = Box::leak(capture.trace.clone().into_boxed_slice());
+    let (header, events) = decode(trace).unwrap();
+    let mut events: Vec<Event<'static>> = events.collect();
+    let last = events
+        .iter()
+        .rposition(|event| matches!(event, Event::Page(_)))
+        .unwrap();
+    events[last] = Event::Page("a page the rider never saw");
+    capture.trace = mutations::encode(&header, events);
+    capture
+}
+
+#[test]
+fn a_redacted_phone_session_leaves_a_later_difference_first() {
+    let (sim, _) = a_redacted_phone_session_then_a_ride();
+    let replayed = Sim::replay(&with_the_last_page_unseen(sim.capture()));
+    let report = replayed.device.report().unwrap();
+    let first = report.first.as_ref().expect("the altered page diverges");
+    assert_eq!(first.kind, shell_simulator::replay::Kind::Seen, "{report}");
+    assert!(
+        first.detail.contains("a page the rider never saw"),
+        "{report}"
+    );
+    assert!(
+        report.count(shell_simulator::replay::Kind::Redacted) > 0,
+        "{report}"
+    );
 }
 
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
@@ -8901,7 +8937,10 @@ mod mutations {
         })
     }
 
-    fn encode(header: &Header<'_>, events: impl IntoIterator<Item = Event<'static>>) -> Vec<u8> {
+    pub fn encode(
+        header: &Header<'_>,
+        events: impl IntoIterator<Item = Event<'static>>,
+    ) -> Vec<u8> {
         let mut file = vec![0u8; 4096];
         let len = firmware_services::trace::encode_header(header, &mut file).unwrap();
         file.truncate(len);

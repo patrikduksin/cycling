@@ -238,9 +238,9 @@ file shows as a `header` difference at the end (`replayed.trace` lists the
 media the replay found), and as a `rider-visible` one wherever VANA showed
 what the file held, such as a best or the course. A device trace keeps its
 secrets redacted, so the phone page, which draws the session's network name,
-password and code, shows as a `rider-visible` difference "the same, in other
-pixels". Read the
-gap before you call a divergence a replay fault.
+password and code, draws other pixels. A strict replay counts these frames
+as `redacted`, never as the first divergence, so a later difference still
+shows as first. Read the gap before you call a divergence a replay fault.
 
 Done when the screenshot at the moment shows what the rider described, or
 `divergence.txt` explains why it does not.

@@ -26,6 +26,7 @@ pub struct BulkFault {
     pub partial: usize,
 }
 
+#[derive(Clone)]
 struct Region {
     presence: Presence,
     sectors: u64,
@@ -57,6 +58,11 @@ impl Default for SimBulk {
 }
 
 impl SimBulk {
+    /// A separate region holding the same sectors and state.
+    pub fn copy(&self) -> Self {
+        Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+    }
+
     pub fn set_presence(&self, presence: Presence) {
         self.0.borrow_mut().presence = presence;
     }

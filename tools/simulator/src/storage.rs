@@ -107,6 +107,22 @@ impl FileFlash {
             fault: Rc::default(),
         }
     }
+    /// Separate memory media holding these bytes, whose next boot is
+    /// `boot`. `None` for file-backed media.
+    pub fn copy_before_boot(&self, boot: u32) -> Option<Self> {
+        let Backing::Memory(media) = &self.backing else {
+            return None;
+        };
+        let media = media.borrow();
+        Some(Self {
+            backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
+                boot: boot.checked_sub(1)?,
+                configuration: media.configuration.clone(),
+                data: media.data.clone(),
+            }))),
+            fault: Rc::default(),
+        })
+    }
     /// A copy of a region's bytes, for inspection after a scenario.
     pub fn contents(&mut self, r: Region) -> Vec<u8> {
         let mut bytes = vec![0; self.geometry(r).capacity];

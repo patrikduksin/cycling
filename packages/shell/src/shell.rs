@@ -185,6 +185,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn take_app_input(&mut self) -> Option<device_api::input::Edge> {
         self.app_input.pop()
     }
+    /// The physical input source, for composition that records what `tick` took.
+    pub fn input_source(&mut self) -> &mut I {
+        &mut self.input
+    }
     pub fn effective(&self) -> u8 {
         self.effective
     }

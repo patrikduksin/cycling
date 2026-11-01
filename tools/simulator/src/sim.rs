@@ -586,13 +586,53 @@ impl Sim {
 
     /// A terminal command as the USB console would send it.
     pub fn command(&mut self, text: &str) -> (&'static str, String) {
-        let request = match firmware_console::protocol::parse(format!("CMD 1 {text}").as_bytes()) {
-            Ok(request) => request,
-            Err(_) => return ("INVALID", String::new()),
-        };
         let mut out = String::new();
-        let status = self.device.execute(request, &mut out);
-        (status, out)
+        match self
+            .device
+            .command(format!("CMD 1 {text}").as_bytes(), &mut out)
+        {
+            Ok((_, status)) => (status, out),
+            Err(_) => ("INVALID", String::new()),
+        }
+    }
+
+    /// Keep a hash of every frame from now on, to compare two runs.
+    pub fn hash_frames(&mut self) {
+        self.device.display.0.borrow_mut().hashes = Some(Vec::new());
+    }
+
+    /// The hash of every frame shown since `hash_frames`.
+    pub fn frame_hashes(&self) -> Vec<u64> {
+        let frame = self.device.display.0.borrow();
+        frame.hashes.clone().unwrap_or_default()
+    }
+
+    /// The trace of this power-on session so far.
+    pub fn trace(&self) -> Vec<u8> {
+        self.device.trace()
+    }
+
+    /// What a replay of this power-on session needs.
+    pub fn capture(&self) -> crate::replay::Capture {
+        self.device
+            .capture()
+            .expect("the session ran at least one pass")
+    }
+
+    /// Run a captured session again on its media, pass by pass at the
+    /// recorded uptimes, with the trace standing in for the world. Frames
+    /// are hashed throughout.
+    pub fn replay(capture: &crate::replay::Capture) -> Self {
+        let device = crate::session::Session::replaying(capture).expect("a replayable capture");
+        let mut sim = Self {
+            device,
+            notes: Vec::new(),
+            recording: None,
+            power_hold: 0,
+        };
+        sim.hash_frames();
+        while sim.device.replay_step() {}
+        sim
     }
 
     /// An ANT+ sensor near the rider; created in range when new.

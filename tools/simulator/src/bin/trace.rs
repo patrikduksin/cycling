@@ -33,7 +33,9 @@ commands:
       stretches, pages, toasts, sensor links and silences, GPS fix) and
       events (boot, laps, warnings, storage, gaps, commands), one line each.
       A warning names what began or which ride ended in the same pass, and
-      a ride counts the warnings logged in it. Run this first.
+      a ride counts the warnings logged in it. A page names its cause (the
+      input, command, ride state or toast in its pass, else by itself) and
+      the shown readings it draws (shows=). Run this first.
   origin <trace>
       The media a replay starts from, in words: power-on number, shell
       settings and VANA's preferences (saved sensors), rides on internal
@@ -45,7 +47,8 @@ commands:
       about saving or reading), entropy, page, toast, sound, ride, shown,
       log, phone, power, display, buzzer, trace; groups seen, inputs,
       default, all. --all also lists entries
-      that only repeat their source (a counter or reading moved). ANT+ pages
+      that only repeat their source (a counter or reading moved); a press,
+      a command or a note is never one. A sound names its cue. ANT+ pages
       read as words (power 230 W, hr 142 bpm, cadence 86 rpm, radar targets);
       --hex adds each packet's bytes.
   find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N] [--hex]

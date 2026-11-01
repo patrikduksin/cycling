@@ -10,8 +10,11 @@ The device records every power-on session as a trace: each input VANA read
 server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
 main page's readings once a second, sounds, warnings). The seen layer is ground
-truth for finding the moment; the inputs drive the replay. Every command below
-prints text: start there, and open a PNG only to confirm what the text says.
+truth for finding the moment; the inputs drive the replay. The trace holds only
+what VANA read: a BLE sensor shows as VANA's link to it and the packets it took,
+never as advertisements or anything else on the air, so a sensor that never
+appears was never connected, not necessarily absent. Every command below prints
+text: start there, and open a PNG only to confirm what the text says.
 
 ## 1. Get the trace
 
@@ -41,7 +44,12 @@ and paused stretches, page visits, toasts, sensor links
 laps, warnings, storage, gaps and commands. A ride counts the warnings logged
 in it (`warnings=1`), and a warning names what changed in the same pass
 (`(same pass: ride ended saved, page summary began)`). VANA's warnings about
-saving or reading media are `storage` events.
+saving or reading media are `storage` events. A page span says what brought
+the page up and which of the shown readings it draws:
+`page ride/back ... cause="after button BottomLeft code 1" shows=none`. The
+cause is the input or command in the pass the page changed in, the ride state
+that changed with it (`with ride auto_paused`), a toast, `at power-on`, or
+`by itself`: VANA's own rule, such as the climb page coming up on a climb.
 
 Every line opens with two clocks: `03:10.000 ride 02:47` is session time
 (mm:ss.mmm since power-on) and ride time (mm:ss of recording; it stops while
@@ -62,6 +70,8 @@ explains it:
 | a reading showed dashes | `cycling trace find <trace> power=--` (also `hr`, `speed`, `cad`, `dist`, `grade`, `time`; `!=` and `~` work too) |
 | a page did or did not come up | `find <trace> page --where climb` |
 | a message flashed | `find <trace> toast` |
+| the screen changed, a page vanished | `find <trace> page`: each page with its cause; then `find <trace> input` |
+| a beep or an alarm | `find <trace> sound`: each note names its cue (`pattern 22: radar approach`) |
 | a sensor dropped | the summary's silences line; `find <trace> stale`, `find <trace> ant` |
 | something about saving | `find <trace> storage` |
 | it froze or stuttered | `find <trace> gap` |
@@ -77,6 +87,25 @@ point and server, power control, the backlight and the buzzer; a
 `WIFI CONFIG` command shows without its password. ANT+ packets read as words (`power#1234 power 200 W, cadence
 86 rpm (event 60)`, heart rate, cadence and wheel rates, radar targets);
 `--hex` adds the bytes.
+
+Two checks before you trust a reading or a page change:
+
+- **Could the rider see it?** The `shown` line always holds the main page's
+  readings, whatever page was up. A page line's `shows` lists what that page
+  draws (`ride/climb` power,hr,grade; `ride/map` dist; `ride/back` none), so
+  `hr=--` while the rider was on `ride/back` is a gap in the data the rider
+  never saw. The main page's lower pair is the rider's choice; the tool
+  assumes the default, cad and dist.
+- **A press or a rule?** A page change `by itself` is VANA's rule. A run of
+  `after button ...` changes a second or two apart is the rider paging: two
+  presses of BottomLeft step two pages (ride/climb, ride/map, ride/back). The
+  climb page comes up and goes back by itself only until the rider pages
+  during the climb; then the page stays where they put it. "The page
+  vanished" is often that.
+
+A note's cue comes from VANA's palette by the patterns it played; where
+several cues spell the same notes the line names each (`lap or radar close`),
+so read it with what else happened then (a LAP toast, radar packets).
 
 Done when you can write one sentence of the form "at `<session> ride <ride>`
 the rider saw X, and the inputs then were Y". When Y explains X (the meter
@@ -136,7 +165,11 @@ Done when the screenshot at the moment shows what the rider described, or
 2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see> --expect <field>=<value>`
    prints a test that replays to T in stimulus mode, in two sections. Its doc
    comment says what the recording showed and what the sensors were doing
-   (each link, each sensor's last packet and silence). The characterization
+   (each link, each sensor's last packet and silence). For a trace outside
+   the fixtures directory it first prints whether the trace may become a
+   fixture (never a device trace or one holding a secret) and the commands
+   that copy it there and run the secrets test; the stub already reads the
+   path the copy will have. The characterization
    asserts the rest of the moment as recorded. The expectation asserts what
    the rider should have seen: `--expect power!=--`, `power=230`,
    `page=ride/climb` or `toast~SAVED`, several joined with commas, for a

@@ -793,3 +793,63 @@ fn a_test_stub_compiles_in_a_fresh_file_whatever_it_expects() {
     let open = stub(&timeline, "dropout", "stub", riding, &[]).unwrap();
     assert_eq!(fresh_file_faults(&open), Vec::<String>::new(), "{open}");
 }
+
+#[test]
+fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let covered = |path: &str| {
+        BUILD_SOURCES
+            .iter()
+            .any(|source| path == *source || path.starts_with(&format!("{source}/")))
+    };
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let mut read: Vec<String> = manifest
+        .lines()
+        .filter_map(|line| line.split_once("path = \"")?.1.split_once('"'))
+        .map(|(path, _)| path.to_string())
+        .collect();
+    assert!(
+        !read.is_empty(),
+        "the workspace patches a crate from the checkout"
+    );
+    read.push(".cargo/config.toml".into());
+    read.extend(
+        std::fs::read_dir(root.join("patches"))
+            .unwrap()
+            .map(|entry| format!("patches/{}", entry.unwrap().file_name().to_string_lossy())),
+    );
+    let tree = std::process::Command::new(env!("CARGO"))
+        .current_dir(&root)
+        .args([
+            "tree",
+            "-p",
+            "shell-simulator",
+            "--locked",
+            "--offline",
+            "--no-default-features",
+            "--features",
+            "cycling,debug-harness",
+            "--prefix",
+            "none",
+            "-e",
+            "normal,build",
+        ])
+        .output()
+        .unwrap();
+    let root = std::fs::canonicalize(&root).unwrap();
+    for line in String::from_utf8_lossy(&tree.stdout).lines() {
+        if let Some(path) = line
+            .split_once(" (")
+            .and_then(|(_, rest)| rest.split_once(')'))
+        {
+            if let Ok(local) = Path::new(path.0).strip_prefix(&root) {
+                read.push(local.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let unwatched: Vec<&String> = read.iter().filter(|path| !covered(path)).collect();
+    assert!(
+        unwatched.is_empty(),
+        "{unwatched:?} are not in BUILD_SOURCES"
+    );
+}

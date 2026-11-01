@@ -415,7 +415,7 @@ impl Trace {
         Self {
             start,
             recorder: RefCell::new(Recorder::new(buffer, Staged::default())),
-            file: spool::File::Off("not staged yet"),
+            file: spool::File::Waiting,
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]
@@ -442,8 +442,10 @@ impl Trace {
         self.recorder.borrow_mut().record(event);
     }
 
-    /// Stage blocks for a STORE volume on the card, if it holds a store.
+    /// Read FILES and TERRAIN for the header, and stage blocks for a STORE
+    /// volume on the card, if it holds a store.
     fn stage(&mut self, bulk: &crate::bulk::SimBulk) {
+        self.start.read_volumes(bulk);
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
         self.file = spool::File::stage(&mut bulk.host(), &mut sector);
         if let spool::File::Staging(..) = self.file {
@@ -452,16 +454,25 @@ impl Trace {
         }
     }
 
-    /// This pass's share of the staged trace to its file, which opens once
-    /// VANA's boot scans ended. A file that ends ends staging.
-    fn drain(&mut self, bulk: &crate::bulk::SimBulk, now: u64) {
+    /// This pass's share of the staged trace to its file, while the card
+    /// admits work; staging waits for the first such pass, and the file
+    /// opens once VANA's boot scans ended. A file that ends ends staging.
+    fn drain(&mut self, bulk: &crate::bulk::SimBulk, admitted: bool, now: u64) {
+        if admitted && matches!(self.file, spool::File::Waiting) {
+            self.stage(bulk);
+        }
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
         let start = &self.start;
         let header = || start.journals.map(|_| (start.header(), start.boot));
         let mut recorder = self.recorder.borrow_mut();
-        let passed = self
-            .file
-            .pass(&mut recorder, &mut bulk.host(), header, now, &mut sector);
+        let passed = self.file.pass(
+            &mut recorder,
+            &mut bulk.host(),
+            admitted,
+            header,
+            now,
+            &mut sector,
+        );
         if passed.is_err() {
             recorder.sink_mut().spool = None;
         }
@@ -995,10 +1006,6 @@ impl Session {
                 }
             }
         }
-        if self.trace.start.volumes.is_none() {
-            self.trace.start.read_volumes(&self.bulk);
-            self.trace.stage(&self.bulk);
-        }
         self.trace.record(&Event::Pass { now_ms: self.now });
         self.display.0.borrow_mut().refusals.begin_pass();
         self.power.0.borrow_mut().refusals.begin_pass();
@@ -1020,7 +1027,25 @@ impl Session {
         if let Devices::Replayed(replay) = &mut self.devices {
             replay.saw(&seen);
         }
-        self.trace.drain(&self.bulk, self.now);
+        let admitted = self.card_admits();
+        self.trace.drain(&self.bulk, admitted, self.now);
+        // The C606 closes the card when it accepts the shutdown VANA asks
+        // for in the next pass: the trace is whole on it first.
+        #[cfg(feature = "cycling")]
+        if admitted && self.sdk.shutdown_due() {
+            self.trace.sync(&self.bulk, self.now);
+        }
+    }
+    /// Whether the card admits work after this pass, as the C606's power
+    /// owner admits it: while work is ready or the companion starts, and
+    /// not from the moment a power request was accepted.
+    fn card_admits(&self) -> bool {
+        use device_api::power::PowerControl as _;
+        let status = match &self.devices {
+            Devices::Simulated(sim) => sim.switch.status(),
+            Devices::Replayed(replay) => replay.sources.power.status(),
+        };
+        !self.off && (status.ready || status.state == device_api::power::State::Initializing)
     }
     /// Append everything the trace staged to its file and sync it, as the
     /// C606 does before a host takes the card; false when it has no file.

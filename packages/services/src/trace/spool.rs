@@ -304,6 +304,8 @@ impl<H: AsRef<[u8]>> Drain<H> {
 /// record buffer stays inline: there is no allocator to box it.
 #[allow(clippy::large_enum_variant)]
 pub enum File<H> {
+    /// From power-on until the card admits work: nothing read from it yet.
+    Waiting,
     /// No file this session, and why.
     Off(&'static str),
     /// Blocks wait in the spool; the file opens once its header is known.
@@ -314,8 +316,8 @@ pub enum File<H> {
 }
 
 impl<H: AsRef<[u8]>> File<H> {
-    /// At power-on, before the first pass: staging when the owned region
-    /// `bulk` has a STORE volume that mounts.
+    /// At the first pass the card admits work: staging when the owned
+    /// region `bulk` has a STORE volume that mounts.
     pub fn stage(bulk: &mut impl ReadWrite, sector: &mut Sector) -> Self {
         let Ok(Layout::Table(table)) = volume::read(bulk, sector) else {
             return Self::Off("no volume table");
@@ -334,17 +336,23 @@ impl<H: AsRef<[u8]>> File<H> {
         matches!(self, Self::Open(..))
     }
 
-    /// This pass's share of the spool. The file opens at the first pass
-    /// `header` gives the header and the boot id, named by
-    /// [`next_name`]. An error ends the file and says why.
+    /// This pass's share of the spool, while the card admits work: the C606
+    /// closes it from the moment it accepts a power request until the
+    /// device is ready again, and in charging standby. The file opens at
+    /// the first such pass `header` gives the header and the boot id, named
+    /// by [`next_name`]. An error ends the file and says why.
     pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
         recorder: &mut Recorder<B, S>,
         bulk: &mut impl ReadWrite,
+        admitted: bool,
         header: impl FnOnce() -> Option<(H, u32)>,
         now: u64,
         sector: &mut Sector,
     ) -> Result<(), &'static str> {
+        if !admitted {
+            return Ok(());
+        }
         if let Self::Staging(extent, generations) = *self {
             let Some((header, boot)) = header() else {
                 return Ok(());

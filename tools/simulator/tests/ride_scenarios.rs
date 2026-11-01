@@ -8456,6 +8456,55 @@ fn a_ride_ended_by_turning_off_replays_exactly() {
     );
 }
 
+/// The C606 closes the card the moment it accepts a shutdown, so the trace
+/// syncs in the pass before VANA asks for one: the file a host pulls holds
+/// every pass up to the one that asked and replays strictly.
+#[test]
+fn a_session_turned_off_is_in_its_file_up_to_the_shutdown_request() {
+    use firmware_services::trace::{Event, decode};
+    use shell_simulator::replay::first_difference;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    sim.advance(seconds(1));
+    let name = sim
+        .device
+        .trace_file()
+        .expect("the session records into STORE");
+    a_ride_then_turned_off(&mut sim);
+    let passes = |trace: &[u8]| {
+        let (_, events) = decode(trace).unwrap();
+        let (mut passes, mut asked) = (Vec::new(), None);
+        for event in events {
+            match event {
+                Event::Pass { now_ms } => passes.push(now_ms),
+                Event::PowerRequest { .. } | Event::PoweredOff => {
+                    asked = asked.or(passes.last().copied())
+                }
+                _ => {}
+            }
+        }
+        (passes, asked)
+    };
+    let (recorded, asked) = passes(&sim.capture().trace);
+    let asked = asked.expect("VANA asked to turn off");
+    let pulled = sim.store_file(&name).expect("every record reads back");
+    let (filed, _) = passes(&pulled);
+    let before = recorded.iter().position(|&at| at == asked).unwrap();
+    assert_eq!(
+        filed,
+        recorded[..before],
+        "every pass before the one that asked"
+    );
+    let mut capture = sim.capture();
+    capture.trace = pulled;
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+}
+
 mod mutations {
     use super::*;
     use firmware_services::trace::frozen::{Record, Recorder};

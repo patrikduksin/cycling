@@ -2,9 +2,10 @@
 //! once a pass and recorded as the simulator records them
 //! (`tools/simulator/src/session.rs`), so a trace replays there. Blocks wait
 //! in a PSRAM spool and drain into `traces/` on the card's STORE volume, at
-//! most one record a pass (`firmware_services::trace::spool`); the file opens
-//! once VANA's boot scans end and the header holds the media they found.
-//! Without a STORE volume at power-on, or without PSRAM for the spool,
+//! most one record a pass (`firmware_services::trace::spool`), while the
+//! power owner admits work to the card; the file opens once VANA's boot
+//! scans end and the header holds the media they found. Without a STORE
+//! volume when the card first admits work, or without PSRAM for the spool,
 //! recording is off for the session and says why; nothing else changes.
 use c606_firmware as device;
 use core::cell::RefCell;
@@ -36,7 +37,8 @@ const BLOCK: usize = 4096;
 /// and every FILES entry, with room to spare.
 const HEADER: usize = 2 * (1024 + origin::FILE_ENTRIES);
 
-/// What the device started from, for the header.
+/// What the device started from, for the header. FILES and TERRAIN are
+/// read when the card first admits work.
 struct Start {
     boot: u32,
     settings: firmware_shell::preferences::Settings,
@@ -64,17 +66,14 @@ pub struct Trace {
     page: Option<vana::screens::workout::Page>,
     file: File<&'static [u8]>,
     start: Option<Start>,
-    synced_for: Option<device_api::power::State>,
     sector: [u8; device_api::bulk::SECTOR_SIZE],
 }
 
 impl Trace {
-    /// The trace of a session that just powered on, before its first pass.
-    /// Reads the card's volume table, FILES and TERRAIN (about twenty
-    /// sectors) and takes its PSRAM; `settings` and `memory` are what the
-    /// shell and VANA start with.
+    /// The trace of a session that just powered on, before its first pass:
+    /// it takes its PSRAM; `settings` and `memory` are what the shell and
+    /// VANA start with.
     pub fn start(
-        bulk: &mut impl ReadWrite,
         boot: u32,
         settings: firmware_shell::preferences::Settings,
         memory: Memory,
@@ -94,28 +93,20 @@ impl Trace {
             access_point: FrozenAccessPoint::default(),
             server: FrozenServer::default(),
             page: None,
-            file: File::Off("starting"),
+            file: File::Waiting,
             start: None,
-            synced_for: None,
             sector: [0; device_api::bulk::SECTOR_SIZE],
         };
         trace.access_point.redact();
-        trace.file = File::stage(bulk, &mut trace.sector);
-        if let File::Staging(..) = trace.file
-            && let Err(why) = trace.allocate(bulk, boot, settings, memory)
-        {
+        if let Err(why) = trace.allocate(boot, settings, memory) {
+            log::warn!(target: "trace", "off: {why}");
             trace.file = File::Off(why);
-        }
-        match &trace.file {
-            File::Off(why) => log::warn!(target: "trace", "off: {why}"),
-            _ => log::info!(target: "trace", "staging boot={boot:08x}"),
         }
         trace
     }
 
     fn allocate(
         &mut self,
-        bulk: &mut impl ReadWrite,
         boot: u32,
         settings: firmware_shell::preferences::Settings,
         memory: Memory,
@@ -132,19 +123,34 @@ impl Trace {
                 device::drivers::psram::zeroed(len)
             })
             .ok_or("no PSRAM for the spool")?;
-        let (files, terrain) = origin::volumes(bulk, &mut *entries, &mut self.sector);
-        let files = files.map(|files| (files.store, files.generation, files.entries.len()));
         *self.record.get_mut() = Some(Recorder::new(block, Spool::new(ring)));
         self.start = Some(Start {
             boot,
             settings,
             memory,
-            files,
-            terrain,
+            files: None,
+            terrain: None,
             entries,
             header,
         });
         Ok(())
+    }
+
+    /// At the first pass the card admits work: FILES and TERRAIN for the
+    /// header (about twenty sectors), and the STORE volume to stage for.
+    fn stage(&mut self, bulk: &mut impl ReadWrite) {
+        self.file = File::stage(bulk, &mut self.sector);
+        let (File::Staging(..), Some(start)) = (&self.file, &mut self.start) else {
+            if let File::Off(why) = self.file {
+                log::warn!(target: "trace", "off: {why}");
+            }
+            *self.record.get_mut() = None;
+            return;
+        };
+        let (files, terrain) = origin::volumes(bulk, &mut *start.entries, &mut self.sector);
+        start.files = files.map(|files| (files.store, files.generation, files.entries.len()));
+        start.terrain = terrain;
+        log::info!(target: "trace", "staging boot={:08x}", start.boot);
     }
 
     /// The file is open: a STORE format would erase it.
@@ -183,25 +189,30 @@ impl Trace {
         }
     }
 
-    /// This pass's share of the spool to the trace file, which opens once
-    /// VANA's boot scans ended. Drains while the card is reachable, and
-    /// syncs once when a power transition begins.
+    /// This pass's share of the spool to the trace file while the power
+    /// owner admits work to the card (`admitted`), which it closes from
+    /// the moment it accepts a request and in charging standby. Staging
+    /// waits for the first such pass, and the file opens once VANA's boot
+    /// scans ended. When VANA asks to turn off in the next pass
+    /// (`shutdown_due`), everything the spool holds goes to the card.
     pub fn drain(
         &mut self,
         bulk: &mut impl ReadWrite,
         journals: Option<vana::app::Journals>,
-        power: device_api::power::State,
+        admitted: bool,
+        shutdown_due: bool,
         now: u64,
     ) {
-        use device_api::power::State as Power;
-        if !matches!(power, Power::Initializing | Power::Idle | Power::Charging) {
-            if self.synced_for.is_none() {
-                self.synced_for = Some(power);
-                self.sync(bulk, now);
-            }
+        if !admitted || self.record.get_mut().is_none() {
             return;
         }
-        self.synced_for = None;
+        if let File::Waiting = self.file {
+            self.stage(bulk);
+        }
+        if shutdown_due {
+            self.sync(bulk, now);
+            return;
+        }
         let Some(recorder) = self.record.get_mut() else {
             return;
         };
@@ -215,7 +226,7 @@ impl Trace {
         };
         let passed = self
             .file
-            .pass(recorder, bulk, header, now, &mut self.sector);
+            .pass(recorder, bulk, true, header, now, &mut self.sector);
         if let File::Open(_, _, drain) = &self.file
             && opening
         {
@@ -273,6 +284,7 @@ impl Trace {
             Ok::<(), core::fmt::Error>(())
         };
         let _ = match &self.file {
+            File::Waiting => write!(out, " trace=waiting"),
             File::Off(why) => reason(out, "off", why),
             File::Ended(why) => reason(out, "ended", why),
             File::Staging(..) => write!(out, " trace=staging"),

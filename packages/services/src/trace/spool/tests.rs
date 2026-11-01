@@ -501,12 +501,12 @@ mod file {
         assert!(matches!(file, File::Staging(..)));
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
-        file.pass(&mut recorder, &mut media, || None, 10, &mut sector)
+        file.pass(&mut recorder, &mut media, true, || None, 10, &mut sector)
             .unwrap();
         assert!(!file.is_open(), "no header yet");
         recorder.record(&Event::Pass { now_ms: 20 });
         let known = || Some((header(), 7));
-        file.pass(&mut recorder, &mut media, known, 20, &mut sector)
+        file.pass(&mut recorder, &mut media, true, known, 20, &mut sector)
             .unwrap();
         file.sync(&mut recorder, &mut media, 30, &mut sector)
             .unwrap();
@@ -526,7 +526,7 @@ mod file {
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
         let known = || Some((header(), 7));
-        file.pass(&mut recorder, &mut media, known, 10, &mut sector)
+        file.pass(&mut recorder, &mut media, true, known, 10, &mut sector)
             .unwrap();
         let table = table(&mut media, &mut sector);
         let store_extent = table.find(&volume::STORE).unwrap();

@@ -348,9 +348,7 @@ async fn console(
     // This session's trace, staged in PSRAM from the first pass; it takes
     // what PSRAM VANA left.
     #[cfg(feature = "cycling")]
-    let trace = external(|| {
-        trace::Trace::start(&mut devices.bulk, system.boot_id, system.settings, memory)
-    });
+    let trace = external(|| trace::Trace::start(system.boot_id, system.settings, memory));
     #[cfg(feature = "cycling")]
     let mut terrain_step_max_us = 0u64;
     // Only VANA selects a saved BLE peer at startup.
@@ -596,7 +594,13 @@ fn vana_pass(
         sdk.power(system, &mut control, now);
     }
     trace.seen(sdk.page());
-    trace.drain(&mut devices.bulk, sdk.journals_at_boot(), power.state, now);
+    trace.drain(
+        &mut devices.bulk,
+        sdk.journals_at_boot(),
+        !device::capabilities::power::ACCESS.closed(),
+        sdk.shutdown_due(),
+        now,
+    );
 }
 
 /// Moves long-lived state into PSRAM so it stays out of the console task

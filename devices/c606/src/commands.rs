@@ -145,6 +145,10 @@ pub fn execute(
                     terminal.reply(request.id, "BUSY", "active work", now);
                     return;
                 }
+                // An accepted request closes the card: the trace is whole
+                // on it first.
+                #[cfg(feature = "cycling")]
+                trace.sync(&mut *bulk, now);
                 status = firmware_console::protocol::request_status(
                     power.request_after(operation, delay_ms),
                 );

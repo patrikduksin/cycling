@@ -32,6 +32,7 @@ pub(super) const TURNING_OFF: Sheet = Sheet::TurningOff {
     progress: 0,
     drawn: false,
     failed: 0,
+    due: false,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,12 +44,15 @@ pub(super) enum Sheet {
     },
     /// The farewell is on its way to the panel; the request follows once
     /// its last, black frame is drawn. `progress` is in thousandths of
-    /// `FAREWELL_MS` from the first frame, `started`.
+    /// `FAREWELL_MS` from the first frame, `started`. `due` once `power`
+    /// saw the frame drawn: the request waits for the next pass, so
+    /// composition can make storage the device closes whole first.
     TurningOff {
         started: Option<u64>,
         progress: u16,
         drawn: bool,
         failed: u8,
+        due: bool,
     },
     /// The device accepted shutdown; VANA stops drawing until power returns.
     Requested {
@@ -284,6 +288,13 @@ impl Runtime {
         matches!(self.power.sheet, Sheet::Requested { .. })
     }
 
+    /// Whether the next pass's `power` asks the device to turn off: the
+    /// turning-off frame is on the panel. A preferences save that fails
+    /// first keeps the device on.
+    pub fn shutdown_due(&self) -> bool {
+        matches!(self.power.sheet, Sheet::TurningOff { due: true, .. })
+    }
+
     /// Advance the turn-off flow and idle policy, and hand an accepted
     /// "turn off" to the device once its frame is on the panel. Composition
     /// calls this each pass while the device reports power work ready.
@@ -353,7 +364,7 @@ impl Runtime {
             self.power.notice = Some((Notice::Unsaved, now));
             system.activity(now);
         }
-        if matches!(self.power.sheet, Sheet::TurningOff { drawn: true, .. }) {
+        if matches!(self.power.sheet, Sheet::TurningOff { due: true, .. }) {
             match control.request(Operation::Shutdown) {
                 Ok(()) => {
                     log::info!(target: "sdk.power", "shutdown accepted");
@@ -368,6 +379,12 @@ impl Runtime {
                     system.activity(now);
                 }
             }
+        }
+        if let Sheet::TurningOff {
+            drawn: true, due, ..
+        } = &mut self.power.sheet
+        {
+            *due = true;
         }
         if self.power.view() != before {
             self.display.redraw();

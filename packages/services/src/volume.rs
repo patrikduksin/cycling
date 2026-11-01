@@ -359,8 +359,8 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
 /// media error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddStoreError {
-    /// No table (blank, legacy or lost: `Missing`), a foreign one, or no
-    /// room for STORE.
+    /// No table (blank, legacy or lost: `Missing`), a foreign one, no room
+    /// for STORE, or a media error.
     Table(Error),
     /// The STORE volume holds neither a store nor nothing: corrupt or foreign
     /// metadata is never formatted over.
@@ -381,7 +381,10 @@ impl From<MediaError> for AddStoreError {
 
 impl From<StoreError> for AddStoreError {
     fn from(error: StoreError) -> Self {
-        Self::Store(error)
+        match error {
+            StoreError::Media(error) => Self::Table(Error::Media(error)),
+            error => Self::Store(error),
+        }
     }
 }
 

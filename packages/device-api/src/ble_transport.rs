@@ -42,7 +42,7 @@ impl core::fmt::Debug for Selection {
             .finish()
     }
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub link: Link,
     pub connections: u32,
@@ -54,7 +54,7 @@ pub struct Snapshot {
 /// One complete notification, never truncated. Four packets fit in the producer
 /// queue; later packets are dropped when full. Generation, sequence and drop
 /// stamps expose discontinuity to consumers. No acknowledgment blocks the radio.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Packet {
     pub connection: u32,
     pub sequence: u32,

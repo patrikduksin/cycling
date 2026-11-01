@@ -24,7 +24,7 @@ impl Transport {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub gps: gps::Snapshot,
     pub transport: Transport,

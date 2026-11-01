@@ -26,4 +26,5 @@ pub mod storage;
 pub mod store;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod trace;
 pub mod volume;

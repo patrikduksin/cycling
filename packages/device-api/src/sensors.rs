@@ -20,7 +20,7 @@ pub struct Identity {
     pub fields: [u8; 3],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub pressure: Observation<Pressure>,
     /// Index zero is subtype one; index one is subtype two. No gyroscope claim.

@@ -267,7 +267,7 @@ fn encode_slot(record: &Record, slot: &mut [u8]) {
 }
 
 /// A slot of any record version from 1 on, or `None` if damaged or empty.
-fn decode_slot(slot: &[u8]) -> Option<Record> {
+pub fn decode_slot(slot: &[u8]) -> Option<Record> {
     let end = slot.len().checked_sub(4)?;
     if end < SLOT_FIELDS + 24 || slot[0] < 1 || crc32(&slot[..end]) != get_u32(slot, end) {
         return None;
@@ -298,6 +298,12 @@ pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
     };
     let stride = stride.unwrap_or(bytes.len().max(1));
     bytes.chunks_exact(stride).skip(1).filter_map(decode_slot)
+}
+
+/// The slot stride of a table whose header is sound and which holds whole
+/// slots: for a host taking a table back to the rides it held earlier.
+pub fn table_stride(bytes: &[u8]) -> Option<usize> {
+    stride(bytes).filter(|stride| bytes.len().is_multiple_of(*stride))
 }
 
 fn header(slot: &mut [u8]) {

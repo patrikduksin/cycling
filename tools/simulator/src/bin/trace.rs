@@ -10,7 +10,7 @@ use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, SILENCE_MS, Timeline, duration, read, session_clock,
 };
-use shell_simulator::trace::{battery, divergence, origin, otlp, stub};
+use shell_simulator::trace::{battery, divergence, origin, otlp, rebuild, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -20,8 +20,8 @@ const USAGE: &str = "\
 usage: cycling trace <command> <trace> [options]
        cycling replay <trace> [options]
 
-Read a ride trace (<name>.trace; a simulator capture keeps its media in
-<name>.origin beside it). Times are the session clock, mm:ss.mmm since power-on,
+Read a ride trace (<name>.trace; the media it started on are in <name>.origin
+beside it: saved by the simulator, or rebuilt for a device trace by pull). Times are the session clock, mm:ss.mmm since power-on,
 and the ride clock, which runs only while a ride records; every line starts
 `<session> ride <ride>`. Time options take 40:00, 1:02:03, 90s, 40m or 2500ms,
 and r40:00 for a ride time.
@@ -46,7 +46,18 @@ commands:
   origin <trace>
       The media a replay starts from, in words: power-on number, shell
       settings and VANA's preferences (saved sensors), rides on internal
-      flash, and the bulk card. A trace without .origin starts blank.
+      flash, and the bulk card; for a rebuilt .origin, what it could not
+      rebuild. A trace without .origin starts blank.
+  media <trace>
+      The media the trace's header names, one line each, as `cycling trace
+      pull` reads them: boot N; journal SLOTS; rides STORE HEAD; files
+      STORE GENERATION; file NAME LENGTH CRC per file; terrain LENGTH
+      SHA256 ready|writing TAG. A medium the device could not read is
+      `<medium> none`.
+  rebuild <trace> --pulled DIR
+      Write <trace>.origin from the header and the media pulled after the
+      session into DIR (the layout `cycling trace pull` writes; see
+      shell_simulator::trace::rebuild), and say what could not be rebuilt.
   timeline <trace> [--from T] [--to T] [--kinds LIST] [--all] [--hex]
       Every event in the window, inputs and what the rider saw. Kinds: gap,
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
@@ -176,15 +187,34 @@ fn run(args: &[String]) -> Result<String, String> {
         file::load(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     let timeline = read(&capture.trace)?;
     match command.as_str() {
-        "summary" => Ok(summary(&path, &timeline, media)),
+        "summary" => Ok(summary(&path, &timeline, &media)),
         "origin" => Ok(origin::describe(
             &capture,
-            media,
+            media.clone(),
             &std::fs::canonicalize(file::origin_path(&path))
                 .unwrap_or_else(|_| file::origin_path(&path))
                 .display()
                 .to_string(),
         )),
+        "media" => rebuild::media(&capture.trace),
+        "rebuild" => {
+            let dir = options
+                .value("pulled")
+                .ok_or("rebuild needs --pulled DIR")?;
+            let pulled =
+                rebuild::Pulled::read(Path::new(dir)).map_err(|e| format!("{dir}: {e}"))?;
+            let (origin, gaps) = rebuild::rebuild(&capture.trace, &pulled)?;
+            let report = rebuild::report(&gaps);
+            file::save_rebuilt(&origin, &report, &path)
+                .map_err(|e| format!("{}: {e}", file::origin_path(&path).display()))?;
+            let written = std::fs::canonicalize(file::origin_path(&path))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(format!(
+                "origin {}
+{report}",
+                written.display()
+            ))
+        }
         "timeline" => timeline_text(&timeline, &options),
         "find" => find_text(&timeline, &options),
         "otlp" => {
@@ -198,7 +228,7 @@ fn run(args: &[String]) -> Result<String, String> {
                 None => Ok(json),
             }
         }
-        "replay" => replay(&path, &capture, &timeline, media, &options),
+        "replay" => replay(&path, &capture, &timeline, &media, &options),
         "test-stub" => {
             let at = options
                 .time(&timeline, "at")?
@@ -217,7 +247,7 @@ fn run(args: &[String]) -> Result<String, String> {
                 .transpose()?
                 .unwrap_or_default();
             let test = stub::stub(&timeline, fixture, &name, at, &expect)?;
-            Ok(match stub::to_fixture(&path, &capture, media) {
+            Ok(match stub::to_fixture(&path, &capture, &media) {
                 Some(steps) => format!("{steps}\n{test}"),
                 None => test,
             })
@@ -226,7 +256,7 @@ fn run(args: &[String]) -> Result<String, String> {
     }
 }
 
-fn header(path: &Path, timeline: &Timeline, media: Media) -> String {
+fn header(path: &Path, timeline: &Timeline, media: &Media) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "trace {}", path.display());
     let _ = writeln!(
@@ -247,14 +277,18 @@ fn header(path: &Path, timeline: &Timeline, media: Media) -> String {
             "complete"
         },
         match media {
-            Media::Saved => "saved beside it (.origin)",
-            Media::Blank => "not saved: replays start on blank media",
+            Media::Saved => "saved beside it (.origin)".into(),
+            Media::Rebuilt(report) => format!(
+                "rebuilt from its header and the pulled media (.origin); {}",
+                report.trim_end().replace('\n', "; ")
+            ),
+            Media::Blank => "not saved: replays start on blank media".into(),
         }
     );
     out
 }
 
-fn summary(path: &Path, timeline: &Timeline, media: Media) -> String {
+fn summary(path: &Path, timeline: &Timeline, media: &Media) -> String {
     let mut out = header(path, timeline, media);
     let silences: Vec<String> = timeline
         .silences
@@ -481,7 +515,7 @@ fn replay(
     path: &Path,
     capture: &shell_simulator::replay::Capture,
     timeline: &Timeline,
-    media: Media,
+    media: &Media,
     options: &Options,
 ) -> Result<String, String> {
     let from = options.time(timeline, "from")?.unwrap_or(0);

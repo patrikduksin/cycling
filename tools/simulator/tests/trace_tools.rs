@@ -500,7 +500,7 @@ fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
     use shell_simulator::trace::stub::to_fixture;
     let fixture = fixture("laps-and-a-menu");
     let (capture, media) = file::load(&fixture).unwrap();
-    assert_eq!(to_fixture(&fixture, &capture, media), None);
+    assert_eq!(to_fixture(&fixture, &capture, &media), None);
 
     let dir = std::env::temp_dir().join(format!("trace-stub-{}", std::process::id()));
     let outside = dir.join("morning.trace");
@@ -509,7 +509,7 @@ fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
     sim.advance(seconds(2));
     file::save(&sim.capture(), &outside).unwrap();
     let (capture, media) = file::load(&outside).unwrap();
-    let steps = to_fixture(&outside, &capture, media).unwrap();
+    let steps = to_fixture(&outside, &capture, &media).unwrap();
     assert!(steps.contains("holds no Wi-Fi password"), "{steps}");
     assert!(
         steps.contains("tools/simulator/tests/traces/morning.trace\n"),
@@ -520,9 +520,15 @@ fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
         "{steps}"
     );
 
+    file::save_rebuilt(&capture.origin, "file bests.dat: gone\n", &outside).unwrap();
+    let (capture, media) = file::load(&outside).unwrap();
+    assert_eq!(media, file::Media::Rebuilt("file bests.dat: gone\n".into()));
+    let steps = to_fixture(&outside, &capture, &media).unwrap();
+    assert!(steps.contains("device trace"), "a rebuilt origin: {steps}");
+
     std::fs::remove_file(file::origin_path(&outside)).unwrap();
     let (capture, media) = file::load(&outside).unwrap();
-    let steps = to_fixture(&outside, &capture, media).unwrap();
+    let steps = to_fixture(&outside, &capture, &media).unwrap();
     assert!(steps.contains("device trace"), "{steps}");
     assert!(!steps.contains("cp "), "{steps}");
     std::fs::remove_dir_all(&dir).unwrap();

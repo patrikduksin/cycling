@@ -1,0 +1,347 @@
+//! A device trace replays from the media it started on, rebuilt from its
+//! header and the media pulled after the session, as `cycling trace pull`
+//! pulls them through ride export and `files get`.
+#![cfg(feature = "cycling")]
+use device_api::server::Method;
+use shell_simulator::ant::device_type;
+use shell_simulator::bulk::Presence;
+use shell_simulator::replay::{Capture, first_difference};
+use shell_simulator::route::{Point, Route, to_gpx};
+use shell_simulator::sim::{Sim, seconds};
+use shell_simulator::trace::rebuild::{self, Files, Gap, Pulled, Rides};
+use vana::ride::log::{Kind, Sample};
+use vana::workout::codec::encode;
+use vana::workout::model::{Intensity, Length, Step, Target, Workout};
+
+const HEART: u16 = 4242;
+const POWER: u16 = 1234;
+const SPEED: u16 = 777;
+const WORKOUT: &str = "workouts/tempo.vw";
+
+fn data(name: &str) -> String {
+    format!(
+        "{}/../../packages/terrain/tests/data/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+/// Route G-21 up to Farellones, which the sample terrain pack holds.
+fn g21() -> Route {
+    let track = std::fs::read_to_string(data("farellones-g21.csv")).unwrap();
+    let points: Vec<_> = track
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            let mut fields = line.split(',').map(|f| f.parse::<f64>().unwrap());
+            let (lat, lon, ele) = (
+                fields.next().unwrap(),
+                fields.next().unwrap(),
+                fields.next().unwrap(),
+            );
+            (
+                Point {
+                    ele: Some(ele),
+                    ..Point::new(lat, lon)
+                },
+                None,
+            )
+        })
+        .collect();
+    Route::from_gpx(&to_gpx("G-21", &points)).unwrap()
+}
+
+fn workout(minutes: u16) -> Vec<u8> {
+    const WARMUP: Target = Target::Ftp { low: 50, high: 65 };
+    let steps = [
+        Step::new(Intensity::Warmup, Length::Time(300), WARMUP),
+        Step::new(
+            Intensity::Work,
+            Length::Time(minutes * 60),
+            Target::Ftp { low: 80, high: 88 },
+        ),
+    ];
+    encode(&Workout::new("TEMPO", &steps, &[], None)).to_vec()
+}
+
+fn ride(sim: &mut Sim, seconds_long: u64, power_w: f64) {
+    sim.ride_at(28.0, power_w, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(seconds_long));
+    sim.stop_ride();
+    sim.done();
+}
+
+/// A device with a past: saved sensors, a ride on the internal journal and
+/// one on the card's RIDES log, a workout, a course and a terrain pack. Then
+/// the session the test pulls: a power-on that rides G-21 into the pack.
+/// Returns the device after that session, its trace as the device wrote it
+/// to STORE, and what the session left: the frames the rider saw and the
+/// rides on both journals.
+fn recorded_session() -> (Sim, Vec<u8>, Session) {
+    let mut sim = Sim::new();
+    sim.hash_frames();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    sim.put_file(WORKOUT, &workout(20));
+    let pack = std::fs::read(data("farellones.terrain")).unwrap();
+    sim.install_terrain(b"CHILE-TERRAIN-V1", &pack);
+    let mut sim = sim.boot();
+    sim.ant_sensor(device_type::HEART_RATE, HEART);
+    sim.ant_sensor(device_type::POWER, POWER);
+    sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
+    sim.ride_route(g21());
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    ride(&mut sim, 40, 200.0);
+    assert_eq!(sim.rides().len(), 1, "the first ride is on internal flash");
+    sim.init_bulk();
+    ride(&mut sim, 40, 200.0);
+    assert_eq!(sim.bulk_rides().len(), 1, "the second is on the card");
+    sim.connect_phone();
+    let course = to_gpx(
+        "Farellones",
+        &[
+            (Point::new(-33.36, -70.53), None),
+            (Point::new(-33.35, -70.32), None),
+        ],
+    );
+    let (code, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(code, 200, "{body}");
+    assert!(sim.file("course.dat").is_some(), "the course is on FILES");
+
+    sim.device.restart().unwrap();
+    sim.wait_usable();
+    // Shorter, easier and lower than the rides before: it sets no best, so
+    // VANA rewrites only the ride facts table, which the rebuild rewinds.
+    sim.ride_route(g21());
+    ride(&mut sim, 30, 150.0);
+    assert!(sim.device.sync_trace(), "the session's trace is open");
+    let name = sim.device.trace_file().expect("the trace file");
+    let trace = sim.store_file(&name).expect("the trace reads back whole");
+    let session = Session::of(&mut sim);
+    assert!(
+        session.frames.len() > 100,
+        "{} frames",
+        session.frames.len()
+    );
+    (sim, trace, session)
+}
+
+#[derive(Debug, PartialEq)]
+struct Session {
+    frames: Vec<u64>,
+    journal: Vec<u8>,
+    rides: Vec<(u32, Vec<Kind>, Vec<Sample>)>,
+}
+
+impl Session {
+    fn of(sim: &mut Sim) -> Self {
+        Self {
+            frames: sim.frame_hashes(),
+            journal: sim.ride_media(),
+            rides: sim
+                .bulk_rides()
+                .iter()
+                .map(|ride| (ride.id, ride.kinds(), ride.samples().copied().collect()))
+                .collect(),
+        }
+    }
+}
+
+/// Rides after the session, on internal flash with the card out and on
+/// the card again, so both journals hold more than the header names.
+fn ride_on(sim: &mut Sim) {
+    sim.fit_bulk(Presence::Missing);
+    sim.device.restart().unwrap();
+    sim.wait_usable();
+    ride(sim, 30, 150.0);
+    sim.fit_bulk(Presence::Ready);
+    sim.device.restart().unwrap();
+    sim.wait_usable();
+    ride(sim, 30, 150.0);
+}
+
+/// What `cycling trace pull` copies for `trace`: the header's media lines
+/// decide it, ride export reads the journals' slots up to the ends they
+/// name, and `files get` reads each file they list.
+fn pull(sim: &mut Sim, trace: &[u8]) -> Pulled {
+    let lines = rebuild::media(trace).unwrap();
+    let mut pulled = Pulled::default();
+    for line in lines.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words[..] {
+            ["journal", slots] if slots != "none" => {
+                let (_, info) = sim.command("EXPORT INFO");
+                let upper: usize = info.split_whitespace().nth(3).unwrap().parse().unwrap();
+                let count = upper.min(slots.parse().unwrap());
+                pulled.internal = Some(slots_of(sim, "EXPORT", count));
+            }
+            ["rides", "none"] => {}
+            ["rides", _, head] => {
+                let (_, info) = sim.command("EXPORT BULK INFO");
+                let info: Vec<&str> = info.split_whitespace().collect();
+                let upper: usize = info[3].parse().unwrap();
+                let (store, generation) = (info[5].to_string(), info[6].parse().unwrap());
+                let count = upper.min(head.parse().unwrap());
+                pulled.rides = Some(Rides {
+                    store: u64::from_str_radix(&store, 16).unwrap(),
+                    generation,
+                    slots: slots_of(sim, "EXPORT BULK", count),
+                    invalid: Vec::new(),
+                });
+            }
+            ["files", "none"] => {}
+            ["files", ..] => {
+                let (store, _) = files_now(sim);
+                pulled.files = Some(Files {
+                    store,
+                    ..Files::default()
+                });
+            }
+            ["file", name, ..] => {
+                let (_, revisions) = files_now(sim);
+                if let (Some(revision), Some(bytes)) = (revisions.get(name), sim.file(name)) {
+                    let files = pulled.files.as_mut().unwrap();
+                    files.files.insert(name.to_string(), (*revision, bytes));
+                }
+            }
+            ["terrain", length, ..] => {
+                let pack = std::fs::read(data("farellones.terrain")).unwrap();
+                assert_eq!(pack.len().to_string(), length);
+                pulled.terrain = Some(pack);
+            }
+            _ => {}
+        }
+    }
+    pulled
+}
+
+/// The FILES store's id and each file's revision, as `files status` and
+/// `files stat` read them.
+fn files_now(sim: &mut Sim) -> (u64, std::collections::BTreeMap<String, u32>) {
+    use firmware_services::{files, volume};
+    let mut sector = [0u8; 512];
+    let mut card = sim.device.bulk.host();
+    let mut store = volume::open(&mut card, &volume::FILES, &mut sector).unwrap();
+    let dir = files::mount(&mut store, &mut sector).unwrap();
+    let mut revisions = std::collections::BTreeMap::new();
+    dir.list(&mut store, &mut sector, |entry| {
+        revisions.insert(entry.name.as_str().to_string(), entry.revision);
+    })
+    .unwrap();
+    (dir.store_id(), revisions)
+}
+
+/// `pulled` written in the layout `cycling trace pull` writes, and read
+/// back as `cycling trace rebuild` reads it.
+fn through_dir(pulled: &Pulled) -> Pulled {
+    let dir = std::env::temp_dir().join(format!("trace-pulled-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("internal.slots"),
+        pulled.internal.as_ref().unwrap(),
+    )
+    .unwrap();
+    let rides = pulled.rides.as_ref().unwrap();
+    std::fs::write(dir.join("rides.slots"), &rides.slots).unwrap();
+    std::fs::write(
+        dir.join("rides.epoch"),
+        format!(
+            "store {:016x}\ngeneration {}\ninvalid\n",
+            rides.store, rides.generation
+        ),
+    )
+    .unwrap();
+    let files = pulled.files.as_ref().unwrap();
+    let mut list = format!("store {:016x}\n", files.store);
+    for (name, (revision, bytes)) in &files.files {
+        let path = dir.join("files").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+        list += &format!("file {revision} {name}\n");
+    }
+    std::fs::write(dir.join("files.list"), list).unwrap();
+    std::fs::write(dir.join("terrain.pack"), pulled.terrain.as_ref().unwrap()).unwrap();
+    let read = Pulled::read(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    read
+}
+
+fn slots_of(sim: &mut Sim, export: &str, count: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for index in 0..count {
+        let (status, out) = sim.command(&format!("{export} SLOT {index}"));
+        assert_eq!(status, "OK", "{out}");
+        let hex = out.split_whitespace().nth(3).unwrap();
+        for pair in hex.as_bytes().chunks(2) {
+            bytes.push(u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap());
+        }
+    }
+    bytes
+}
+
+#[test]
+fn a_pulled_device_trace_replays_strict_from_the_media_it_started_on() {
+    let (mut sim, trace, session) = recorded_session();
+    ride_on(&mut sim);
+    let pulled = through_dir(&pull(&mut sim, &trace));
+    assert!(
+        pulled.internal.as_ref().unwrap().len() < sim.ride_media().len(),
+        "the journal grew after the session"
+    );
+    let (origin, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert_eq!(gaps, [], "{}", rebuild::report(&gaps));
+
+    let capture = Capture { origin, trace };
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert!(
+        Session::of(&mut replayed) == session,
+        "the same frames, and the same rides on both journals"
+    );
+}
+
+#[test]
+fn a_file_changed_after_the_session_is_reported_and_left_out() {
+    let (mut sim, trace, _) = recorded_session();
+    sim.put_file(WORKOUT, &workout(30));
+    let pulled = pull(&mut sim, &trace);
+    let (origin, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    let revision = files_now(&mut sim).1[WORKOUT];
+    assert!(
+        matches!(&gaps[..], [Gap::File { name, now: Some(now), .. }] if name == WORKOUT && *now == revision),
+        "{gaps:?}"
+    );
+    let report = rebuild::report(&gaps);
+    assert!(
+        report.contains(&format!("file {WORKOUT}: written again since power-on"))
+            && report.contains("cannot be recovered"),
+        "{report}"
+    );
+    let mut sector = [0u8; 512];
+    let mut card = origin.bulk.host();
+    let mut volume =
+        firmware_services::volume::open(&mut card, &firmware_services::volume::FILES, &mut sector)
+            .unwrap();
+    let dir = firmware_services::files::mount(&mut volume, &mut sector).unwrap();
+    let mut names = Vec::new();
+    dir.list(&mut volume, &mut sector, |entry| {
+        names.push(entry.name.as_str().to_string())
+    })
+    .unwrap();
+    assert!(!names.iter().any(|name| name == WORKOUT), "{names:?}");
+    assert!(names.iter().any(|name| name == "course.dat"), "{names:?}");
+
+    let capture = Capture {
+        origin,
+        trace: trace.clone(),
+    };
+    let replayed = Sim::replay(&capture);
+    let difference = first_difference(&trace, &replayed.trace()).expect("a header difference");
+    assert!(
+        difference.starts_with("header"),
+        "only the file list differs: {difference}"
+    );
+}

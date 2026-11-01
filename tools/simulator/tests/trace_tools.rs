@@ -339,6 +339,48 @@ fn every_press_of_the_same_button_is_found() {
 }
 
 #[test]
+fn a_page_names_the_press_or_the_rule_that_brought_it_up() {
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(2));
+    sim.press(Button::BottomLeft);
+    sim.advance(1_400);
+    sim.press(Button::BottomLeft);
+    sim.advance(seconds(1));
+    let pressed = read(&sim.capture().trace).unwrap();
+    let pages: Vec<String> = pressed
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Page)
+        .map(|e| format!("{} ({})", e.text, e.cause.as_ref().unwrap()))
+        .collect();
+    let last_two = &pages[pages.len() - 2..];
+    assert_eq!(
+        last_two,
+        [
+            "ride/stats (after button BottomLeft code 1)",
+            "ride/lap (after button BottomLeft code 1)"
+        ],
+        "{pages:?}"
+    );
+    assert!(pages[0].ends_with("(at power-on)"), "{pages:?}");
+
+    let climb = tell(&timeline("power-dropout-after-descent"))
+        .spans
+        .into_iter()
+        .find(|s| s.name == "page ride/climb")
+        .unwrap();
+    assert!(
+        climb
+            .attributes
+            .contains(&("cause".into(), "by itself".into())),
+        "{climb}"
+    );
+}
+
+#[test]
 fn otlp_export_is_one_traces_and_one_metrics_request() {
     let timeline = timeline("power-dropout-after-descent");
     let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));

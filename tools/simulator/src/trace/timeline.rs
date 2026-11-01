@@ -264,12 +264,59 @@ pub struct Entry {
     pub repeat: bool,
     /// The bytes behind a decoded packet, in hex.
     pub hex: Option<String>,
+    /// For a page: what in its pass brought it up.
+    pub cause: Option<Cause>,
+}
+
+/// What brought a page up, read from the pass it changed in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// An input in the same pass, as the timeline writes it.
+    Input(String),
+    Command(String),
+    /// The ride changed state in the same pass.
+    Ride(String),
+    /// A toast came up or cleared in the same pass.
+    Toast(String),
+    /// None of those: VANA's own rule, such as the climb page following the
+    /// road, or a screen that moves on when its work is done.
+    Itself,
+    /// The first page of the session.
+    PowerOn,
+}
+
+impl Cause {
+    fn of(pass: &[Entry]) -> Self {
+        let first = |kind: Kind| pass.iter().find(|e| e.kind == kind).map(|e| e.text.clone());
+        first(Kind::Input)
+            .map(Self::Input)
+            .or_else(|| first(Kind::Command).map(Self::Command))
+            .or_else(|| first(Kind::Ride).map(Self::Ride))
+            .or_else(|| first(Kind::Toast).map(Self::Toast))
+            .unwrap_or(Self::Itself)
+    }
+}
+
+impl fmt::Display for Cause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input(input) => write!(f, "after {input}"),
+            Self::Command(command) => write!(f, "after command {command}"),
+            Self::Ride(state) => write!(f, "with ride {state}"),
+            Self::Toast(text) => write!(f, "with toast {text}"),
+            Self::Itself => write!(f, "by itself"),
+            Self::PowerOn => write!(f, "at power-on"),
+        }
+    }
 }
 
 impl fmt::Display for Entry {
     /// `{:#}` adds the packet's bytes after its words.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}  {:<11} {}", self.at, self.kind.name(), self.text)?;
+        if let Some(cause) = &self.cause {
+            write!(f, "  ({cause})")?;
+        }
         match &self.hex {
             Some(hex) if f.alternate() => write!(f, "  [{hex}]"),
             _ => Ok(()),
@@ -413,6 +460,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     for event in events.by_ref() {
         reader.event(&event);
     }
+    reader.end_pass();
     reader.silent_at_end();
     let build_len = header
         .build
@@ -449,6 +497,10 @@ struct Reader {
     pages: Pages,
     heard: HashMap<String, u64>,
     silences: Vec<Silence>,
+    /// The first entry of the pass being read.
+    pass_start: usize,
+    /// A page was reported before this pass.
+    paged: bool,
 }
 
 impl Reader {
@@ -479,7 +531,25 @@ impl Reader {
             text,
             repeat,
             hex: None,
+            cause: None,
         });
+    }
+
+    /// Give each page that changed in the pass just read its cause.
+    fn end_pass(&mut self) {
+        let pass = &mut self.entries[self.pass_start..];
+        if pass.iter().any(|e| e.kind == Kind::Page) {
+            let cause = if self.paged {
+                Cause::of(pass)
+            } else {
+                Cause::PowerOn
+            };
+            self.paged = true;
+            for page in pass.iter_mut().filter(|e| e.kind == Kind::Page) {
+                page.cause = Some(cause.clone());
+            }
+        }
+        self.pass_start = self.entries.len();
     }
 
     fn heard_from(&mut self, sensor: &str) {
@@ -514,6 +584,7 @@ impl Reader {
     fn event(&mut self, event: &Event<'_>) {
         match *event {
             Event::Pass { now_ms } => {
+                self.end_pass();
                 if self.passes > 0 && now_ms.saturating_sub(self.now) >= GAP_MS {
                     let text = format!(
                         "no pass for {} until {}",

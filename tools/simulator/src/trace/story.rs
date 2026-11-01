@@ -141,7 +141,11 @@ pub fn tell(timeline: &Timeline) -> Story {
                     start: entry.at,
                     end,
                     parent: Some(0),
-                    attributes: Vec::new(),
+                    attributes: entry
+                        .cause
+                        .iter()
+                        .map(|cause| ("cause".into(), cause.to_string()))
+                        .collect(),
                     open: true,
                 });
             }
@@ -272,7 +276,11 @@ impl fmt::Display for Span {
             if self.open { ", open at end" } else { "" }
         )?;
         for (key, value) in &self.attributes {
-            write!(f, " {key}={value}")?;
+            if value.contains(' ') {
+                write!(f, " {key}=\"{value}\"")?;
+            } else {
+                write!(f, " {key}={value}")?;
+            }
         }
         Ok(())
     }

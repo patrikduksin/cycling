@@ -17,14 +17,20 @@ use device_api::ble_transport;
 use device_api::input::{Button, Edge, Input, InputSnapshot, Point};
 use device_api::observation::{Availability, Observation};
 use device_api::positioning;
+use device_api::power;
 use device_api::sensors;
+use device_api::server::{self, AccessPointState, Method, Reach};
+use device_api::sound;
 
 pub mod frozen;
 #[cfg(test)]
 mod tests;
 
 pub const VERSION: u16 = 1;
-/// The payload length is a u16; the frame adds its length and CRC.
+/// The oldest version that reads what this version writes. A later version
+/// that only appends fields and adds tags keeps it; one that changes the
+/// meaning of a field raises it.
+pub const OLDEST_READER: u16 = 1;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
@@ -32,6 +38,7 @@ const FRAME: usize = 2 + 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header<'a> {
     pub version: u16,
+    pub oldest_reader: u16,
     /// Git commit of the recording firmware, zero when unknown.
     pub build: [u8; 20],
     pub boot: u32,
@@ -96,11 +103,161 @@ pub struct AntRadio<'a> {
     pub scan: ant::ScanSnapshot,
 }
 
+/// A request head as the phone server presents it; its text borrows the trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerRequest<'a> {
+    pub id: u32,
+    pub method: Method,
+    pub path: &'a str,
+    pub query: &'a str,
+    pub session: &'a str,
+    pub gzip: bool,
+    pub body: u32,
+}
+
+impl<'a> From<&'a server::Request> for ServerRequest<'a> {
+    fn from(request: &'a server::Request) -> Self {
+        Self {
+            id: request.id,
+            method: request.method,
+            path: &request.path,
+            query: &request.query,
+            session: &request.session,
+            gzip: request.gzip,
+            body: request.body,
+        }
+    }
+}
+
+impl ServerRequest<'_> {
+    /// The device-api form. Text longer than the server holds is cut, as
+    /// the transport would.
+    pub fn to_request(&self) -> server::Request {
+        fn cut<const N: usize>(text: &str) -> heapless::String<N> {
+            let mut out = heapless::String::new();
+            for c in text.chars() {
+                if out.push(c).is_err() {
+                    break;
+                }
+            }
+            out
+        }
+        server::Request {
+            id: self.id,
+            method: self.method,
+            path: cut(self.path),
+            query: cut(self.query),
+            session: cut(self.session),
+            gzip: self.gzip,
+            body: self.body,
+        }
+    }
+}
+
+/// Where a storage operation failed: a region of internal flash, or the
+/// owned bulk medium.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Medium {
+    Configuration,
+    Data,
+    Crash,
+    Bulk,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOp {
     Read,
     Write,
     Erase,
+    /// The bulk medium's size and place.
+    Info,
+}
+
+/// A storage error, whichever medium gave it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageError {
+    Unsupported,
+    Unavailable,
+    Failed,
+    Invalid,
+    Range,
+}
+
+/// A storage operation that failed, and how many of its bytes reached the
+/// medium first. `attempt` is its place among the medium's operations since
+/// the pass began; `at` is a byte offset into a flash region, or a sector of
+/// the bulk medium.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageFault {
+    pub medium: Medium,
+    pub attempt: u32,
+    pub op: StorageOp,
+    pub at: u64,
+    pub landed: u32,
+    pub error: StorageError,
+}
+
+impl From<device_api::storage::Region> for Medium {
+    fn from(region: device_api::storage::Region) -> Self {
+        match region {
+            device_api::storage::Region::Configuration => Self::Configuration,
+            device_api::storage::Region::Data => Self::Data,
+            device_api::storage::Region::Crash => Self::Crash,
+        }
+    }
+}
+
+impl From<device_api::observation::Error> for StorageError {
+    fn from(error: device_api::observation::Error) -> Self {
+        match error {
+            device_api::observation::Error::Unsupported => Self::Unsupported,
+            device_api::observation::Error::Unavailable => Self::Unavailable,
+            device_api::observation::Error::Failed => Self::Failed,
+            device_api::observation::Error::Invalid => Self::Invalid,
+        }
+    }
+}
+
+impl From<device_api::bulk::Error> for StorageError {
+    fn from(error: device_api::bulk::Error) -> Self {
+        match error {
+            device_api::bulk::Error::Unsupported => Self::Unsupported,
+            device_api::bulk::Error::Unavailable => Self::Unavailable,
+            device_api::bulk::Error::Range => Self::Range,
+            device_api::bulk::Error::Failed => Self::Failed,
+        }
+    }
+}
+
+/// Named rather than `From`: a second `From` into the device errors would
+/// leave `?` in firmware code with two conversions to choose from.
+impl StorageError {
+    pub fn flash(self) -> device_api::observation::Error {
+        use device_api::observation::Error;
+        match self {
+            Self::Unsupported => Error::Unsupported,
+            Self::Unavailable => Error::Unavailable,
+            Self::Failed => Error::Failed,
+            Self::Invalid | Self::Range => Error::Invalid,
+        }
+    }
+
+    pub fn bulk(self) -> device_api::bulk::Error {
+        use device_api::bulk::Error;
+        match self {
+            Self::Unsupported => Error::Unsupported,
+            Self::Unavailable => Error::Unavailable,
+            Self::Range | Self::Invalid => Error::Range,
+            Self::Failed => Error::Failed,
+        }
+    }
+}
+
+/// An output the shell drives that can refuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    Panel,
+    Backlight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,8 +280,11 @@ pub enum Event<'a> {
         snapshot: Option<ant::Snapshot>,
     },
     AntPacket(ant::Packet),
-    /// The answer to the pass's next ANT request.
-    AntAdmission(Result<ant::Admission, ant::Error>),
+    /// An ANT request VANA made and the radio's answer.
+    AntRequest {
+        operation: ant::AntOperation,
+        result: Result<ant::Admission, ant::Error>,
+    },
     /// The answer to the pass's next send status query.
     AntSend(Option<ant::SendObservation>),
     BleLink {
@@ -139,16 +299,77 @@ pub enum Event<'a> {
     },
     Physical(sensors::Snapshot),
     Power(Option<InputSnapshot>),
-    Network {
-        online: bool,
-    },
+    /// UTC from Wi-Fi synchronization, recorded when it no longer reads as
+    /// the last recorded value advanced to this pass.
     NetworkTime(crate::network_time::Snapshot),
     Startup(sensors::Startup),
     /// A terminal request line, executed after the pass before it.
     Command(&'a str),
-    StorageFault {
-        op: StorageOp,
-        sector: u32,
+    StorageFault(StorageFault),
+    /// A hardware random value VANA consumed, in the order it asked.
+    Entropy(u64),
+    /// A record with this tag was larger than a block and left out.
+    TooLarge(u8),
+    /// A record this version cannot read: its tag is unknown, or a later
+    /// version wrote a value this one has no code for. Kept whole.
+    Unknown {
+        tag: u8,
+        body: &'a [u8],
+    },
+    /// What the phone access point reports, recorded when it changes.
+    AccessPoint {
+        state: AccessPointState,
+        reach: Reach,
+    },
+    /// The access point's answer to VANA starting or stopping it.
+    AccessPointRequest {
+        start: bool,
+        result: Result<(), device_api::observation::Error>,
+    },
+    /// The request the phone server holds and its room for the response,
+    /// recorded when either changes.
+    Server {
+        request: Option<ServerRequest<'a>>,
+        room: u32,
+    },
+    /// VANA's listen or finish, recorded when it changed what the server
+    /// holds; the change follows.
+    ServerListen(bool),
+    ServerFinish(u32),
+    /// Body bytes one read gave VANA, in parts that each fit a block; every
+    /// part but the last has `more`.
+    ServerRead {
+        id: u32,
+        part: &'a [u8],
+        more: bool,
+    },
+    /// How many response bytes the server took from one write.
+    ServerWrite {
+        id: u32,
+        taken: u32,
+    },
+    /// What the buzzer reports, recorded when it changes.
+    SoundState(sound::Snapshot),
+    /// VANA asked the buzzer to play a pattern, or to stop, and its answer.
+    SoundRequest {
+        play: Option<u8>,
+        result: Result<(), device_api::observation::Error>,
+    },
+    /// What power control reports, recorded when it changes.
+    PowerControl(power::Status),
+    PowerRequest {
+        operation: power::Operation,
+        delay_ms: u32,
+        result: Result<(), device_api::observation::Error>,
+    },
+    /// The device's power went away after an accepted shutdown.
+    PoweredOff,
+    /// Whether the backlight works, recorded when it changes.
+    Backlight(Availability),
+    /// The output refused the shell's request at this attempt of the pass.
+    Refused {
+        output: Output,
+        attempt: u8,
     },
     /// The page the rider sees, by its wire name.
     Page(&'a str),
@@ -173,7 +394,7 @@ mod tag {
     pub const ANT_DISCOVERIES: u8 = 4;
     pub const ANT_LINK: u8 = 5;
     pub const ANT_PACKET: u8 = 6;
-    pub const ANT_ADMISSION: u8 = 7;
+    pub const ANT_REQUEST: u8 = 7;
     pub const ANT_SEND: u8 = 8;
     pub const BLE_LINK: u8 = 9;
     pub const BLE_PACKET: u8 = 10;
@@ -181,11 +402,26 @@ mod tag {
     pub const POSITION: u8 = 12;
     pub const PHYSICAL: u8 = 13;
     pub const POWER: u8 = 14;
-    pub const NETWORK: u8 = 15;
     pub const NETWORK_TIME: u8 = 16;
     pub const STARTUP: u8 = 17;
     pub const COMMAND: u8 = 18;
     pub const STORAGE_FAULT: u8 = 19;
+    pub const ENTROPY: u8 = 20;
+    pub const TOO_LARGE: u8 = 21;
+    pub const ACCESS_POINT: u8 = 22;
+    pub const ACCESS_POINT_REQUEST: u8 = 23;
+    pub const SERVER: u8 = 24;
+    pub const SERVER_LISTEN: u8 = 25;
+    pub const SERVER_FINISH: u8 = 26;
+    pub const SERVER_READ: u8 = 27;
+    pub const SERVER_WRITE: u8 = 28;
+    pub const SOUND_STATE: u8 = 29;
+    pub const SOUND_REQUEST: u8 = 30;
+    pub const POWER_CONTROL: u8 = 31;
+    pub const POWER_REQUEST: u8 = 32;
+    pub const POWERED_OFF: u8 = 33;
+    pub const BACKLIGHT: u8 = 34;
+    pub const REFUSED: u8 = 35;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -194,11 +430,8 @@ mod tag {
     pub const LOG: u8 = 69;
 }
 
-/// A short pass: the top bit set and the delta in the low seven.
 const SHORT_PASS: u8 = 0x80;
 
-/// Bounded writes into a caller's buffer; a write past the end marks the
-/// whole record as not fitting instead of failing at each field.
 pub struct Writer<'b> {
     buf: &'b mut [u8],
     len: usize,
@@ -248,8 +481,6 @@ impl<'b> Writer<'b> {
         self.varint(((value << 1) ^ (value >> 63)) as u64);
     }
 
-    /// One tagged record: tag, body length, body. The body goes after a
-    /// one-byte length and moves when its length needs more bytes.
     fn record(&mut self, tag: u8, body: impl FnOnce(&mut Self)) {
         self.byte(tag);
         let at = self.len;
@@ -271,7 +502,6 @@ impl<'b> Writer<'b> {
         self.len += width - 1;
     }
 
-    /// A timestamp, as its distance before the current pass.
     fn time(&mut self, at: u64) {
         self.zigzag(self.now.wrapping_sub(at) as i64);
     }
@@ -284,8 +514,6 @@ impl<'b> Writer<'b> {
     }
 }
 
-/// Bounded reads; a read past the end or an invalid value marks the record
-/// malformed and yields zeros, checked once at the record's end.
 pub struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -372,7 +600,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// One value's place in a record. Encode and decode stay beside each other.
 trait Wire<'a>: Sized {
     fn put(&self, w: &mut Writer);
     fn take(r: &mut Reader<'a>) -> Self;
@@ -528,8 +755,6 @@ impl<'a, T: Wire<'a>> Wire<'a> for Observation<T> {
     }
 }
 
-/// Each field in declaration order; `time` fields are stored relative to the
-/// pass and `times` fields are optional timestamps.
 macro_rules! record {
     ($($ty:path { $($field:ident $(: $kind:ident)?),* $(,)? })*) => {$(
         impl<'a> Wire<'a> for $ty {
@@ -549,7 +774,6 @@ macro_rules! record {
     (@take $r:ident, times) => { $r.times() };
 }
 
-/// Fieldless enums as one byte each; an unknown code is malformed.
 macro_rules! codes {
     ($($ty:path { $first:ident = $first_code:literal $(, $variant:ident = $code:literal)* $(,)? })*) => {$(
         impl Wire<'_> for $ty {
@@ -598,8 +822,27 @@ codes! {
         TimedOut = 11, Unavailable = 12, PowerTransition = 13,
     }
     crate::network_time::Status { Unavailable = 0, Syncing = 1, Fresh = 2, Offline = 3, Stale = 4 }
-    StorageOp { Read = 0, Write = 1, Erase = 2 }
+    Medium { Configuration = 0, Data = 1, Crash = 2, Bulk = 3 }
+    StorageOp { Read = 0, Write = 1, Erase = 2, Info = 3 }
+    StorageError { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3, Range = 4 }
+    Output { Panel = 0, Backlight = 1 }
     Level { Error = 0, Warn = 1 }
+    device_api::observation::Error { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3 }
+    Method { Get = 0, Head = 1, Delete = 2, Put = 3, Post = 4, Options = 5 }
+    sound::State {
+        Idle = 0, Queued = 1, Submitted = 2, Elapsed = 3, StopQueued = 4, StopSubmitted = 5,
+        Failed = 6,
+    }
+    power::Operation { Shutdown = 0, Sleep = 1, Wake = 2 }
+    power::State {
+        Initializing = 0, Idle = 1, Charging = 2, Requested = 3, Quiescing = 4, Submitted = 5,
+        Sleeping = 6, Recovering = 7, Completed = 8, Failed = 9, Uncertain = 10,
+    }
+    power::Failure {
+        Busy = 0, Storage = 1, Display = 2, Wifi = 3, Ble = 4, Ant = 5, Gnss = 6, Sound = 7,
+        Companion = 8, Sleep = 9, PreparationTimeout = 10, Submission = 11,
+        CompletionUnobservable = 12, Recovery = 13,
+    }
 }
 
 record! {
@@ -633,6 +876,11 @@ record! {
     }
     crate::network_time::Snapshot { unix_seconds, millis, local_minutes, age_ms, status }
     AntRadio<'a> { availability, capabilities, scanning, scan }
+    ServerRequest<'a> { id, method, path, query, session, gzip, body }
+    Reach { access_point, station }
+    sound::Snapshot { state, pattern, requested_ms: time, submitted_ms: times, until_ms: time }
+    power::Status { sequence, operation, state, at_ms: time, prepare_at_ms: times, failure, ready }
+    StorageFault { medium, attempt, op, at, landed, error }
     AntCapabilities<'a> {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
@@ -678,6 +926,47 @@ impl Wire<'_> for ant::OperationId {
     }
     fn take(r: &mut Reader<'_>) -> Self {
         Self(u32::take(r))
+    }
+}
+
+impl Wire<'_> for ant::AntOperation {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Self::Scan(duration_ms) => {
+                w.byte(0);
+                duration_ms.put(w);
+            }
+            Self::StopScan => w.byte(1),
+            Self::Connect(identity) => {
+                w.byte(2);
+                identity.put(w);
+            }
+            Self::Disconnect(device_type) => {
+                w.byte(3);
+                device_type.put(w);
+            }
+            Self::Send { target, data } => {
+                w.byte(4);
+                target.put(w);
+                data.put(w);
+            }
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Scan(u32::take(r)),
+            1 => Self::StopScan,
+            2 => Self::Connect(ant::Identity::take(r)),
+            3 => Self::Disconnect(u8::take(r)),
+            4 => Self::Send {
+                target: ant::Target::take(r),
+                data: <[u8; 8]>::take(r),
+            },
+            _ => {
+                r.fail();
+                Self::StopScan
+            }
+        }
     }
 }
 
@@ -738,33 +1027,85 @@ impl Wire<'_> for Result<ant::Admission, ant::Error> {
     }
 }
 
-/// Only the notification's own bytes, not the whole buffer.
+impl Wire<'_> for Result<(), device_api::observation::Error> {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Ok(()) => w.byte(0),
+            Err(error) => {
+                w.byte(1);
+                error.put(w);
+            }
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Ok(()),
+            1 => Err(Wire::take(r)),
+            _ => {
+                r.fail();
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Wire<'_> for AccessPointState {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Self::Off => w.byte(0),
+            Self::Starting => w.byte(1),
+            Self::Up { clients } => {
+                w.byte(2);
+                clients.put(w);
+            }
+            Self::Stopping => w.byte(3),
+            Self::Failed => w.byte(4),
+            Self::Unsupported => w.byte(5),
+        }
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        match r.byte() {
+            0 => Self::Off,
+            1 => Self::Starting,
+            2 => Self::Up {
+                clients: u8::take(r),
+            },
+            3 => Self::Stopping,
+            4 => Self::Failed,
+            5 => Self::Unsupported,
+            _ => {
+                r.fail();
+                Self::Failed
+            }
+        }
+    }
+}
+
 impl Wire<'_> for ble_transport::Packet {
     fn put(&self, w: &mut Writer) {
         self.connection.put(w);
         self.sequence.put(w);
         self.dropped.put(w);
         w.time(self.received_ms);
-        self.data().unwrap_or(&[]).put(w);
+        self.length.put(w);
+        w.bytes(&self.bytes[..usize::from(self.length).min(self.bytes.len())]);
     }
     fn take(r: &mut Reader<'_>) -> Self {
         let connection = u32::take(r);
         let sequence = u32::take(r);
         let dropped = u32::take(r);
         let received_ms = r.time();
-        let data = <&[u8]>::take(r);
+        let length = u8::take(r);
         let mut bytes = [0; 60];
-        match bytes.get_mut(..data.len()) {
-            Some(slot) => slot.copy_from_slice(data),
-            None => r.fail(),
-        }
+        let data = r.bytes(usize::from(length).min(bytes.len()));
+        bytes[..data.len()].copy_from_slice(data);
         Self {
             connection,
             sequence,
             dropped,
             received_ms,
             bytes,
-            length: data.len() as u8,
+            length,
         }
     }
 }
@@ -772,6 +1113,7 @@ impl Wire<'_> for ble_transport::Packet {
 impl<'a> Wire<'a> for Header<'a> {
     fn put(&self, w: &mut Writer) {
         self.version.put(w);
+        self.oldest_reader.put(w);
         w.bytes(&self.build);
         self.boot.put(w);
         self.profile.put(w);
@@ -781,6 +1123,7 @@ impl<'a> Wire<'a> for Header<'a> {
     fn take(r: &mut Reader<'a>) -> Self {
         Self {
             version: u16::take(r),
+            oldest_reader: u16::take(r),
             build: <[u8; 20]>::take(r),
             boot: u32::take(r),
             profile: u8::take(r),
@@ -791,7 +1134,7 @@ impl<'a> Wire<'a> for Header<'a> {
 }
 
 impl<'a> Event<'a> {
-    fn tag(&self) -> u8 {
+    pub fn tag(&self) -> u8 {
         match self {
             Self::Pass { .. } => tag::PASS,
             Self::Input(_) => tag::INPUT,
@@ -799,7 +1142,7 @@ impl<'a> Event<'a> {
             Self::AntDiscoveries(_) => tag::ANT_DISCOVERIES,
             Self::AntLink { .. } => tag::ANT_LINK,
             Self::AntPacket(_) => tag::ANT_PACKET,
-            Self::AntAdmission(_) => tag::ANT_ADMISSION,
+            Self::AntRequest { .. } => tag::ANT_REQUEST,
             Self::AntSend(_) => tag::ANT_SEND,
             Self::BleLink { .. } => tag::BLE_LINK,
             Self::BlePacket(_) => tag::BLE_PACKET,
@@ -807,11 +1150,27 @@ impl<'a> Event<'a> {
             Self::Position { .. } => tag::POSITION,
             Self::Physical(_) => tag::PHYSICAL,
             Self::Power(_) => tag::POWER,
-            Self::Network { .. } => tag::NETWORK,
             Self::NetworkTime(_) => tag::NETWORK_TIME,
             Self::Startup(_) => tag::STARTUP,
             Self::Command(_) => tag::COMMAND,
-            Self::StorageFault { .. } => tag::STORAGE_FAULT,
+            Self::StorageFault(_) => tag::STORAGE_FAULT,
+            Self::Entropy(_) => tag::ENTROPY,
+            Self::TooLarge(_) => tag::TOO_LARGE,
+            Self::Unknown { tag, .. } => *tag,
+            Self::AccessPoint { .. } => tag::ACCESS_POINT,
+            Self::AccessPointRequest { .. } => tag::ACCESS_POINT_REQUEST,
+            Self::Server { .. } => tag::SERVER,
+            Self::ServerListen(_) => tag::SERVER_LISTEN,
+            Self::ServerFinish(_) => tag::SERVER_FINISH,
+            Self::ServerRead { .. } => tag::SERVER_READ,
+            Self::ServerWrite { .. } => tag::SERVER_WRITE,
+            Self::SoundState(_) => tag::SOUND_STATE,
+            Self::SoundRequest { .. } => tag::SOUND_REQUEST,
+            Self::PowerControl(_) => tag::POWER_CONTROL,
+            Self::PowerRequest { .. } => tag::POWER_REQUEST,
+            Self::PoweredOff => tag::POWERED_OFF,
+            Self::Backlight(_) => tag::BACKLIGHT,
+            Self::Refused { .. } => tag::REFUSED,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
             Self::Sound(_) => tag::SOUND,
@@ -821,7 +1180,6 @@ impl<'a> Event<'a> {
         }
     }
 
-    /// The body; a pass stores its distance from the previous one.
     fn put_body(&self, w: &mut Writer, previous_pass: u64) {
         match self {
             Self::Pass { now_ms } => w.zigzag(now_ms.wrapping_sub(previous_pass) as i64),
@@ -833,7 +1191,10 @@ impl<'a> Event<'a> {
                 snapshot.put(w);
             }
             Self::AntPacket(packet) => packet.put(w),
-            Self::AntAdmission(result) => result.put(w),
+            Self::AntRequest { operation, result } => {
+                operation.put(w);
+                result.put(w);
+            }
             Self::AntSend(observation) => observation.put(w),
             Self::BleLink {
                 availability,
@@ -853,7 +1214,6 @@ impl<'a> Event<'a> {
             }
             Self::Physical(snapshot) => snapshot.put(w),
             Self::Power(snapshot) => snapshot.put(w),
-            Self::Network { online } => online.put(w),
             Self::NetworkTime(snapshot) => snapshot.put(w),
             Self::Startup(startup) => startup.put(w),
             Self::Command(text)
@@ -861,11 +1221,54 @@ impl<'a> Event<'a> {
             | Self::Toast(text)
             | Self::RideState(text)
             | Self::Shown(text) => text.put(w),
-            Self::StorageFault { op, sector } => {
-                op.put(w);
-                sector.put(w);
+            Self::StorageFault(fault) => fault.put(w),
+            Self::Unknown { body, .. } => w.bytes(body),
+            Self::AccessPoint { state, reach } => {
+                state.put(w);
+                reach.put(w);
             }
-            Self::Sound(pattern) => pattern.put(w),
+            Self::AccessPointRequest { start, result } => {
+                start.put(w);
+                result.put(w);
+            }
+            Self::Server { request, room } => {
+                request.put(w);
+                room.put(w);
+            }
+            Self::ServerListen(on) => on.put(w),
+            Self::ServerFinish(id) => id.put(w),
+            Self::ServerRead { id, part, more } => {
+                id.put(w);
+                part.put(w);
+                more.put(w);
+            }
+            Self::ServerWrite { id, taken } => {
+                id.put(w);
+                taken.put(w);
+            }
+            Self::SoundState(snapshot) => snapshot.put(w),
+            Self::SoundRequest { play, result } => {
+                play.put(w);
+                result.put(w);
+            }
+            Self::PowerControl(status) => status.put(w),
+            Self::PowerRequest {
+                operation,
+                delay_ms,
+                result,
+            } => {
+                operation.put(w);
+                delay_ms.put(w);
+                result.put(w);
+            }
+            Self::PoweredOff => {}
+            Self::Backlight(availability) => availability.put(w),
+            Self::Refused { output, attempt } => {
+                output.put(w);
+                attempt.put(w);
+            }
+            Self::Sound(pattern) | Self::TooLarge(pattern) => pattern.put(w),
+            Self::Entropy(value) => value.put(w),
             Self::Log {
                 level,
                 target,
@@ -878,7 +1281,6 @@ impl<'a> Event<'a> {
         }
     }
 
-    /// `None` for a tag this version does not know.
     fn take_body(tag: u8, r: &mut Reader<'a>) -> Option<Self> {
         Some(match tag {
             tag::PASS => Self::Pass {
@@ -892,7 +1294,10 @@ impl<'a> Event<'a> {
                 snapshot: Wire::take(r),
             },
             tag::ANT_PACKET => Self::AntPacket(Wire::take(r)),
-            tag::ANT_ADMISSION => Self::AntAdmission(Wire::take(r)),
+            tag::ANT_REQUEST => Self::AntRequest {
+                operation: Wire::take(r),
+                result: Wire::take(r),
+            },
             tag::ANT_SEND => Self::AntSend(Wire::take(r)),
             tag::BLE_LINK => Self::BleLink {
                 availability: Wire::take(r),
@@ -906,16 +1311,52 @@ impl<'a> Event<'a> {
             },
             tag::PHYSICAL => Self::Physical(Wire::take(r)),
             tag::POWER => Self::Power(Wire::take(r)),
-            tag::NETWORK => Self::Network {
-                online: Wire::take(r),
-            },
             tag::NETWORK_TIME => Self::NetworkTime(Wire::take(r)),
             tag::STARTUP => Self::Startup(Wire::take(r)),
             tag::COMMAND => Self::Command(Wire::take(r)),
-            tag::STORAGE_FAULT => Self::StorageFault {
-                op: Wire::take(r),
-                sector: Wire::take(r),
+            tag::STORAGE_FAULT => Self::StorageFault(Wire::take(r)),
+            tag::ACCESS_POINT => Self::AccessPoint {
+                state: Wire::take(r),
+                reach: Wire::take(r),
             },
+            tag::ACCESS_POINT_REQUEST => Self::AccessPointRequest {
+                start: Wire::take(r),
+                result: Wire::take(r),
+            },
+            tag::SERVER => Self::Server {
+                request: Wire::take(r),
+                room: Wire::take(r),
+            },
+            tag::SERVER_LISTEN => Self::ServerListen(Wire::take(r)),
+            tag::SERVER_FINISH => Self::ServerFinish(Wire::take(r)),
+            tag::SERVER_READ => Self::ServerRead {
+                id: Wire::take(r),
+                part: Wire::take(r),
+                more: Wire::take(r),
+            },
+            tag::SERVER_WRITE => Self::ServerWrite {
+                id: Wire::take(r),
+                taken: Wire::take(r),
+            },
+            tag::SOUND_STATE => Self::SoundState(Wire::take(r)),
+            tag::SOUND_REQUEST => Self::SoundRequest {
+                play: Wire::take(r),
+                result: Wire::take(r),
+            },
+            tag::POWER_CONTROL => Self::PowerControl(Wire::take(r)),
+            tag::POWER_REQUEST => Self::PowerRequest {
+                operation: Wire::take(r),
+                delay_ms: Wire::take(r),
+                result: Wire::take(r),
+            },
+            tag::POWERED_OFF => Self::PoweredOff,
+            tag::BACKLIGHT => Self::Backlight(Wire::take(r)),
+            tag::REFUSED => Self::Refused {
+                output: Wire::take(r),
+                attempt: Wire::take(r),
+            },
+            tag::ENTROPY => Self::Entropy(Wire::take(r)),
+            tag::TOO_LARGE => Self::TooLarge(Wire::take(r)),
             tag::PAGE => Self::Page(Wire::take(r)),
             tag::TOAST => Self::Toast(Wire::take(r)),
             tag::SOUND => Self::Sound(Wire::take(r)),
@@ -941,7 +1382,6 @@ pub fn encode_header(header: &Header<'_>, out: &mut [u8]) -> Option<usize> {
     seal(out, len)
 }
 
-/// Write the frame around `len` payload bytes already at `out[2..]`.
 fn seal(out: &mut [u8], len: usize) -> Option<usize> {
     let crc = crc32(out.get(2..2 + len)?);
     out.get_mut(2 + len..FRAME + len)?
@@ -961,11 +1401,8 @@ pub enum Full {
 /// Records events into one block of a caller-provided buffer.
 pub struct Encoder<B> {
     buf: B,
-    /// Payload bytes so far, after the two length bytes.
     len: usize,
-    /// Payload bytes of the block's opening clock.
     opening: usize,
-    /// The current pass; every block opens with it.
     now: u64,
 }
 
@@ -983,7 +1420,6 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
         encoder
     }
 
-    /// The payload area: after the length, before the CRC.
     fn payload(&mut self) -> &mut [u8] {
         let end = self.buf.as_ref().len().min(MAX_BLOCK) - 4;
         &mut self.buf.as_mut()[2..end]
@@ -1005,7 +1441,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
         let mut w = Writer::new(&mut self.payload()[len..], previous);
         match event {
             Event::Pass { now_ms } if now_ms.wrapping_sub(previous) < 0x80 => {
-                w.byte(SHORT_PASS | (now_ms - previous) as u8);
+                w.byte(SHORT_PASS | now_ms.wrapping_sub(previous) as u8);
             }
             _ => w.record(event.tag(), |w| event.put_body(w, previous)),
         }
@@ -1050,15 +1486,14 @@ pub enum End {
     Torn,
 }
 
-/// A position in a trace's events, to resume decoding later.
+/// A position in a trace's events, to resume decoding later, also over the
+/// same trace grown since: the open block resealed longer, or more blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cursor {
-    /// Where the next block starts.
-    next: usize,
-    /// The read position in the current block's payload, and its end.
+    block: usize,
     at: usize,
-    payload_end: usize,
     now: u64,
+    later: bool,
     end: Option<End>,
 }
 
@@ -1066,36 +1501,43 @@ pub struct Cursor {
 pub struct Events<'a> {
     bytes: &'a [u8],
     cursor: Cursor,
+    payload: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The header block is missing, torn or malformed.
     Header,
+    /// No version of the format has this number.
+    Version(u16),
 }
 
-/// The header and the events after it.
+/// The header and the events after it. A later version may append fields to
+/// the header and to any record; they are skipped.
 pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     let (payload, next) = block(bytes, 0).ok_or(Error::Header)?;
     let mut r = Reader::new(payload, 0);
     let header = Header::take(&mut r);
-    if !r.ok() || r.at != payload.len() {
+    let later = header.version > VERSION;
+    if !r.ok() || (r.at != payload.len() && !later) {
         return Err(Error::Header);
     }
+    if header.version == 0 || header.oldest_reader > VERSION {
+        return Err(Error::Version(header.version));
+    }
     let cursor = Cursor {
-        next,
-        at: next,
-        payload_end: next,
+        block: next,
+        at: 0,
         now: 0,
+        later,
         end: None,
     };
-    Ok((header, Events { bytes, cursor }))
+    Ok((header, Events::resume(bytes, cursor)))
 }
 
-/// The payload of the block at `start` and where the next one starts.
 fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
     let len = usize::from(u16::from_le_bytes(
-        bytes.get(start..start + 2)?.try_into().ok()?,
+        bytes.get(start..start.checked_add(2)?)?.try_into().ok()?,
     ));
     let payload = bytes.get(start + 2..start + 2 + len)?;
     let crc = bytes.get(start + 2 + len..start + FRAME + len)?;
@@ -1103,9 +1545,17 @@ fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
 }
 
 impl<'a> Events<'a> {
-    /// Continue from a cursor taken from events over the same bytes.
+    /// Continue from a cursor taken from events over the same trace, which
+    /// may have grown since. A trace that ended there is read on.
     pub fn resume(bytes: &'a [u8], cursor: Cursor) -> Self {
-        Self { bytes, cursor }
+        Self {
+            bytes,
+            cursor: Cursor {
+                end: None,
+                ..cursor
+            },
+            payload: None,
+        }
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -1117,28 +1567,35 @@ impl<'a> Events<'a> {
         self.cursor.end
     }
 
-    /// The next record: an event; nothing for a block boundary, the block's
-    /// clock or a tag this version does not know; or the end.
     fn step(&mut self) -> Result<Option<Event<'a>>, End> {
-        let bytes = self.bytes;
         let c = &mut self.cursor;
-        if c.at >= c.payload_end {
-            if c.next >= bytes.len() {
+        let payload = match self.payload {
+            Some(payload) => payload,
+            None if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
+            None => {
+                let (payload, _) = block(self.bytes, c.block).ok_or(End::Torn)?;
+                if c.at > payload.len() {
+                    return Err(End::Torn);
+                }
+                *self.payload.insert(payload)
+            }
+        };
+        let Some(&first) = payload.get(c.at) else {
+            let next = c.block + FRAME + payload.len();
+            if next >= self.bytes.len() {
                 return Err(End::Complete);
             }
-            let (payload, next) = block(bytes, c.next).ok_or(End::Torn)?;
-            c.at = c.next + 2;
-            c.payload_end = c.at + payload.len();
-            c.next = next;
+            c.block = next;
+            c.at = 0;
+            self.payload = None;
             return Ok(None);
-        }
-        let first = bytes[c.at];
+        };
         if first & SHORT_PASS != 0 {
             c.at += 1;
-            c.now += u64::from(first & !SHORT_PASS);
+            c.now = c.now.wrapping_add(u64::from(first & !SHORT_PASS));
             return Ok(Some(Event::Pass { now_ms: c.now }));
         }
-        let mut r = Reader::new(&bytes[c.at + 1..c.payload_end], c.now);
+        let mut r = Reader::new(&payload[c.at + 1..], c.now);
         let len = r.narrow();
         let body = r.bytes(len);
         if !r.ok() {
@@ -1150,12 +1607,14 @@ impl<'a> Events<'a> {
             c.now = r.varint();
             None
         } else {
-            let Some(event) = Event::take_body(first, &mut r) else {
-                return Ok(None);
-            };
-            Some(event)
+            let unknown = Event::Unknown { tag: first, body };
+            match Event::take_body(first, &mut r) {
+                Some(_) if c.later && !r.ok() => return Ok(Some(unknown)),
+                Some(event) => Some(event),
+                None => return Ok(Some(unknown)),
+            }
         };
-        if !r.ok() || r.at != body.len() {
+        if !r.ok() || (r.at != body.len() && !c.later) {
             return Err(End::Torn);
         }
         if let Some(Event::Pass { now_ms }) = event {

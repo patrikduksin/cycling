@@ -3,7 +3,12 @@
 //! reused an old filesystem. Like the device, a failed write leaves the
 //! controller failed until the next boot, and every write is verified.
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use firmware_services::trace::{Medium, StorageFault, StorageOp};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+};
 
 /// Sectors in the C606 owned data region (the ownership marker excluded).
 pub const C606_SECTORS: u64 = 5_777_407;
@@ -37,34 +42,92 @@ struct Region {
     writes: u64,
     /// Entropy state; it survives reboots like a hardware source would not repeat.
     entropy: u64,
+    log: Vec<StorageFault>,
+    script: Option<VecDeque<StorageFault>>,
+    attempts: u32,
 }
 
+/// The region, and whether this handle is a host's: a host's operations
+/// are neither counted nor logged as the device's.
 #[derive(Clone)]
-pub struct SimBulk(Rc<RefCell<Region>>);
+pub struct SimBulk(Rc<RefCell<Region>>, bool);
 
 impl Default for SimBulk {
     fn default() -> Self {
-        Self(Rc::new(RefCell::new(Region {
-            presence: Presence::Absent,
-            sectors: C606_SECTORS,
-            written: HashMap::new(),
-            fault: None,
-            failed: false,
-            reads: 0,
-            writes: 0,
-            entropy: 0x5eed,
-        })))
+        Self(
+            Rc::new(RefCell::new(Region {
+                presence: Presence::Absent,
+                sectors: C606_SECTORS,
+                written: HashMap::new(),
+                fault: None,
+                failed: false,
+                reads: 0,
+                writes: 0,
+                entropy: 0x5eed,
+                log: Vec::new(),
+                script: None,
+                attempts: 0,
+            })),
+            false,
+        )
     }
 }
 
 impl SimBulk {
     /// A separate region holding the same sectors and state.
     pub fn copy(&self) -> Self {
-        Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+        Self(Rc::new(RefCell::new(self.0.borrow().clone())), false)
+    }
+
+    /// The same region as a host reaches it over USB.
+    pub fn host(&self) -> Self {
+        Self(self.0.clone(), true)
+    }
+
+    pub fn begin_pass(&self) {
+        self.0.borrow_mut().attempts = 0;
+    }
+
+    /// The same sectors, failing only as a trace says: presence, faults
+    /// and failure come from the trace from now on.
+    pub fn scripted(&self) -> Self {
+        let copy = self.copy();
+        let mut region = copy.0.borrow_mut();
+        region.script = Some(VecDeque::new());
+        region.fault = None;
+        region.failed = false;
+        drop(region);
+        copy
+    }
+
+    /// A failure the trace recorded, for the operation that met it.
+    pub fn script(&self, fault: StorageFault) {
+        if let Some(script) = &mut self.0.borrow_mut().script {
+            script.push_back(fault);
+        }
+    }
+
+    /// Scripted failures no operation met; they are dropped.
+    pub fn unmet(&self) -> Vec<StorageFault> {
+        let mut region = self.0.borrow_mut();
+        region
+            .script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.drain(..).collect())
+    }
+
+    /// The failures answered since the last call.
+    pub fn take_log(&self) -> Vec<StorageFault> {
+        core::mem::take(&mut self.0.borrow_mut().log)
     }
 
     pub fn set_presence(&self, presence: Presence) {
         self.0.borrow_mut().presence = presence;
+    }
+
+    /// Another card's entropy source: it gives other values from now on.
+    pub fn reseed_entropy(&self, seed: u64) {
+        self.0.borrow_mut().entropy = seed | 1;
     }
 
     /// Shrink the region, to reach full media quickly.
@@ -81,6 +144,20 @@ impl SimBulk {
         let mut region = self.0.borrow_mut();
         region.fault = None;
         region.failed = false;
+    }
+
+    /// A digest of every sector written, to compare two media.
+    pub fn digest(&self) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let region = self.0.borrow();
+        let mut sectors: Vec<_> = region.written.iter().collect();
+        sectors.sort_unstable_by_key(|(sector, _)| **sector);
+        let mut hasher = DefaultHasher::new();
+        for (sector, bytes) in sectors {
+            sector.hash(&mut hasher);
+            bytes.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     pub fn writes(&self) -> u64 {
@@ -107,18 +184,40 @@ impl SimBulk {
             .map_or_else(|| stale(sector), |bytes| **bytes)
     }
 
-    fn check(&self, sector: u64) -> Result<(), Error> {
-        let region = self.0.borrow();
-        match region.presence {
-            Presence::Absent => return Err(Error::Unsupported),
-            Presence::Missing => return Err(Error::Unavailable),
-            Presence::Ready => {}
+    fn answer(&self, op: StorageOp, sector: u64) -> Result<(), StorageFault> {
+        let mut region = self.0.borrow_mut();
+        let attempt = region.attempts;
+        if !self.1 {
+            region.attempts += 1;
         }
-        if region.failed {
-            return Err(Error::Failed);
+        let failure = |error: Error| StorageFault {
+            medium: Medium::Bulk,
+            attempt,
+            op,
+            at: sector,
+            landed: 0,
+            error: error.into(),
+        };
+        let fault = match &mut region.script {
+            Some(script) => script
+                .iter()
+                .position(|f| (f.attempt, f.op, f.at) == (attempt, op, sector))
+                .and_then(|index| script.remove(index)),
+            None => match region.presence {
+                Presence::Absent => Some(failure(Error::Unsupported)),
+                Presence::Missing => Some(failure(Error::Unavailable)),
+                Presence::Ready if region.failed => Some(failure(Error::Failed)),
+                Presence::Ready => None,
+            },
+        };
+        if let Some(fault) = fault {
+            if !self.1 {
+                region.log.push(fault);
+            }
+            return Err(fault);
         }
-        if sector >= region.sectors {
-            return Err(Error::Range);
+        if op != StorageOp::Info && sector >= region.sectors {
+            return Err(failure(Error::Range));
         }
         Ok(())
     }
@@ -148,7 +247,8 @@ impl ReadWrite for SimBulk {
         state
     }
     fn owned_info(&mut self) -> Result<OwnedInfo, Error> {
-        self.check(0)?;
+        self.answer(StorageOp::Info, 0)
+            .map_err(|fault| fault.error.bulk())?;
         Ok(OwnedInfo {
             start_sector: 1_955_841,
             sectors: self.0.borrow().sectors,
@@ -157,26 +257,37 @@ impl ReadWrite for SimBulk {
     }
 
     fn owned_read(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<(), Error> {
-        self.check(sector)?;
+        self.answer(StorageOp::Read, sector)
+            .map_err(|fault| fault.error.bulk())?;
         *output = self.sector(sector);
         self.0.borrow_mut().reads += 1;
         Ok(())
     }
 
     fn owned_write(&mut self, sector: u64, input: &[u8; SECTOR_SIZE]) -> Result<(), Error> {
-        self.check(sector)?;
+        if let Err(fault) = self.answer(StorageOp::Write, sector) {
+            self.tear(sector, input, fault.landed as usize);
+            return Err(fault.error.bulk());
+        }
         let mut region = self.0.borrow_mut();
         if let Some(fault) = region.fault.as_mut() {
             if fault.after == 0 {
                 let partial = fault.partial.min(SECTOR_SIZE);
-                let mut torn = region
-                    .written
-                    .get(&sector)
-                    .map_or_else(|| stale(sector), |bytes| **bytes);
-                torn[..partial].copy_from_slice(&input[..partial]);
-                region.written.insert(sector, Box::new(torn));
                 region.fault = None;
                 region.failed = true;
+                if !self.1 {
+                    let attempt = region.attempts - 1;
+                    region.log.push(StorageFault {
+                        medium: Medium::Bulk,
+                        attempt,
+                        op: StorageOp::Write,
+                        at: sector,
+                        landed: partial as u32,
+                        error: Error::Failed.into(),
+                    });
+                }
+                drop(region);
+                self.tear(sector, input, partial);
                 return Err(Error::Failed);
             }
             fault.after -= 1;
@@ -184,5 +295,17 @@ impl ReadWrite for SimBulk {
         region.written.insert(sector, Box::new(*input));
         region.writes += 1;
         Ok(())
+    }
+}
+
+impl SimBulk {
+    fn tear(&self, sector: u64, input: &[u8; SECTOR_SIZE], partial: usize) {
+        if partial == 0 {
+            return;
+        }
+        let partial = partial.min(SECTOR_SIZE);
+        let mut torn = self.sector(sector);
+        torn[..partial].copy_from_slice(&input[..partial]);
+        self.0.borrow_mut().written.insert(sector, Box::new(torn));
     }
 }

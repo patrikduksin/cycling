@@ -856,3 +856,25 @@ fn random_rides_with_power_cut_at_any_write_keep_what_was_acknowledged() {
         check(&mut device, seed);
     }
 }
+
+#[test]
+fn a_new_store_is_named_by_the_pass_and_entropy_not_the_latency_clock() {
+    let store = |latency_clock: u64| {
+        let mut device = Device::new(CAPACITY);
+        device.reboot();
+        device.now = 5_000;
+        assert!(device.recorder.initialize(1));
+        device.recorder.service(
+            &mut Probe {
+                bulk: Bulk::new(&mut device.state, &mut device.media),
+                acknowledged: &mut device.acknowledged,
+            },
+            device.now,
+            Sample::default(),
+            &|| latency_clock,
+        );
+        assert_eq!(device.recorder.status(), Status::Ready);
+        device.state.log().unwrap().store_id()
+    };
+    assert_eq!(store(5_000), store(5_973));
+}

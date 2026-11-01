@@ -5,7 +5,6 @@ use std::format;
 use std::string::String;
 use std::vec::Vec;
 
-/// Each event as text, in the order recorded.
 #[derive(Default)]
 struct Log(Vec<String>);
 
@@ -29,12 +28,10 @@ const POWER: Identity = Identity {
     transmission_type: 1,
 };
 
-/// A radio with one power meter channel that last heard a page at `heard`.
 struct Radio {
     heard: u64,
     link: LinkState,
     packets: Vec<ant::Packet>,
-    /// Pages the companion counted; set it to change the channel between reads.
     pages: std::rc::Rc<core::cell::Cell<u32>>,
 }
 
@@ -171,7 +168,7 @@ fn takes_and_requests_are_recorded_in_call_order() {
     let _ = ant.send_status(ant::OperationId(1));
     assert_eq!(
         kinds(&log),
-        ["AntPacket", "AntAdmission", "AntLink", "AntSend"],
+        ["AntPacket", "AntRequest", "AntLink", "AntSend"],
         "what the request changed follows its answer"
     );
 }
@@ -223,6 +220,7 @@ fn a_full_block_moves_on_to_the_next() {
     }
     let header = Header {
         version: crate::trace::VERSION,
+        oldest_reader: crate::trace::OLDEST_READER,
         build: [0; 20],
         boot: 1,
         profile: 0,
@@ -240,5 +238,69 @@ fn a_full_block_moves_on_to_the_next() {
     let passes: Vec<_> = events.collect();
     assert_eq!(passes.len(), 500);
     assert_eq!(passes.last(), Some(&Event::Pass { now_ms: 5_000 }));
-    assert_eq!(recorder.refused(), 0);
+}
+
+#[test]
+fn a_record_larger_than_a_block_leaves_a_marker() {
+    let header = Header {
+        version: crate::trace::VERSION,
+        oldest_reader: crate::trace::OLDEST_READER,
+        build: [0; 20],
+        boot: 1,
+        profile: 0,
+        config: &[],
+        media: &[],
+    };
+    struct Bytes(Vec<u8>);
+    impl Sink for Bytes {
+        fn block(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+    }
+    let mut recorder = Recorder::new(&header, [0u8; 128], Bytes(Vec::new())).unwrap();
+    let text = core::str::from_utf8(&[b'x'; 200]).unwrap();
+    recorder.record(&Event::Pass { now_ms: 10 });
+    recorder.record(&Event::Command(text));
+    recorder.record(&Event::Pass { now_ms: 20 });
+    let mut bytes = recorder.sink().0.clone();
+    bytes.extend_from_slice(recorder.open_block());
+    let (_, events) = crate::trace::decode(&bytes).unwrap();
+    let command = Event::Command("").tag();
+    assert_eq!(
+        events.collect::<Vec<_>>(),
+        [
+            Event::Pass { now_ms: 10 },
+            Event::TooLarge(command),
+            Event::Pass { now_ms: 20 },
+        ]
+    );
+}
+
+#[test]
+fn a_synced_clock_is_recorded_once_and_reads_on_as_the_clock_owner_computes() {
+    use crate::network_time::{Anchor, STALE_AFTER_MS, Snapshot};
+    let anchor = Anchor {
+        unix_ms: 1_793_577_599_400,
+        uptime_ms: 2_000,
+    };
+    let mut latest = Latest::default();
+    let mut recorded = 0;
+    let passes = (2_000..10_000)
+        .step_by(10)
+        .chain((STALE_AFTER_MS - 1_000..STALE_AFTER_MS + 3_000).step_by(10));
+    for now in passes {
+        let reading = anchor.snapshot(now, -180, false);
+        if latest.changed(reading, now) {
+            recorded += 1;
+        }
+        assert_eq!(latest.at(now), Some(reading), "at {now} ms");
+    }
+    assert_eq!(recorded, 1);
+    let now = STALE_AFTER_MS + 3_000;
+    let corrected = Anchor {
+        unix_ms: anchor.unix_ms + 1_500,
+        uptime_ms: now,
+    };
+    assert!(latest.changed(corrected.snapshot(now, -180, false), now));
+    assert!(latest.changed(Snapshot::unsynced(false), now + 10));
 }

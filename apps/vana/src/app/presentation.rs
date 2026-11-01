@@ -558,7 +558,10 @@ impl Runtime {
     /// When the frame just submitted reached the panel: the monotonic clock
     /// after submission, so slow rendering shows up in press-to-frame latency.
     fn drawn_at(&self, now: u64) -> u64 {
-        self.ride.clock.map_or(now, |clock| clock()).max(now)
+        self.ride
+            .latency_clock
+            .map_or(now, |clock| clock())
+            .max(now)
     }
 
     pub fn suspend_display(&mut self) {

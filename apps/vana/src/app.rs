@@ -54,7 +54,8 @@ pub use power::{
 /// Observations recorded with each ride sample, beyond the radios VANA drives.
 pub struct Observations<'a, P, I> {
     pub position: &'a P,
-    pub network_online: bool,
+    /// UTC from Wi-Fi time synchronization, as the device clock reads now.
+    pub network_time: firmware_services::network_time::Snapshot,
     /// Battery level source.
     pub input: &'a I,
     /// Companion sensors, including barometric pressure.
@@ -150,9 +151,12 @@ impl Runtime {
         valid
     }
 
-    /// Supply the monotonic clock used to measure synchronous recording work.
-    pub fn set_clock(&mut self, clock: fn() -> u64) {
-        self.ride.clock = Some(clock);
+    /// Supply the monotonic clock that times synchronous work within a pass:
+    /// journal writes and erases (`RIDE STATUS write_ms`), and frames, storage
+    /// and recording milestones (`RIDE TIMING`, `sdk.timing` logs). Nothing a
+    /// rider sees or the journal holds reads it, so a replay need not.
+    pub fn set_latency_clock(&mut self, clock: fn() -> u64) {
+        self.ride.latency_clock = Some(clock);
     }
 
     /// Scan both ride journals ahead of the first `tick`, while the device

@@ -340,7 +340,7 @@ impl Sim {
         self.tap(row.x as u16 + 4, row.y as u16 + 4);
         self.advance(seconds(1));
         assert_eq!(self.vana_page(), "phone");
-        self.device.access_point.clients = 1;
+        self.device.sim_mut().access_point.clients = 1;
         self.advance(seconds(1));
     }
 
@@ -365,10 +365,11 @@ impl Sim {
             format!("phone {method:?} {path} ({} bytes)", body.len()),
         );
         self.device
+            .sim_mut()
             .phone_server
             .ask(method, path, token.text(), body);
         for _ in 0..600 {
-            if let Some(response) = self.device.phone_server.response() {
+            if let Some(response) = self.device.sim_mut().phone_server.response() {
                 let text = String::from_utf8_lossy(response).into_owned();
                 let status = text
                     .split(' ')

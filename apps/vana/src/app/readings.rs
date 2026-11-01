@@ -499,8 +499,10 @@ impl Runtime {
                 .then(|| Some((snapshot.gps.latitude_e7?, snapshot.gps.longitude_e7?)))
                 .flatten()
         });
-        let network = network_time::snapshot(now, 0, observations.network_online);
-        let utc_ms = utc_ms(network, position.and_then(|snapshot| snapshot.gps.utc_ms));
+        let utc_ms = utc_ms(
+            observations.network_time,
+            position.and_then(|snapshot| snapshot.gps.utc_ms),
+        );
         // Keep existing last-observed battery behavior. Core status still exposes
         // its age; these ride format bytes have no battery-age field.
         let battery_percent = observations

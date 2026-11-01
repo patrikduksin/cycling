@@ -163,8 +163,7 @@ pub(super) struct Ride {
     last: Option<Medium>,
     /// The latest ride started, open or not.
     outing: Outing,
-    /// Monotonic clock used to measure synchronous recording work.
-    pub(super) clock: Option<fn() -> u64>,
+    pub(super) latency_clock: Option<fn() -> u64>,
     /// The workout this ride plays, kept after it ends until the rider
     /// leaves the ride screen or starts the next ride.
     pub(super) workout: Option<crate::workout::player::Player>,
@@ -209,7 +208,7 @@ impl Default for Ride {
             pause_continuation: false,
             last: None,
             outing: Outing(0),
-            clock: None,
+            latency_clock: None,
             workout: None,
             workout_events: crate::workout::player::Events::new(),
         }
@@ -700,7 +699,7 @@ impl Runtime {
         now: u64,
         sample: Sample,
     ) {
-        let clock = self.ride.clock;
+        let clock = self.ride.latency_clock;
         let clock = &|| clock.map_or(now, |clock| clock());
         let ride = &mut self.ride;
         let before = ride.active().status();

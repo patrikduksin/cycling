@@ -737,3 +737,59 @@ fn the_ride_clock_reads_what_the_rider_saw_after_the_card_fails() {
         "the fallback shows in the ride states: {states:?}"
     );
 }
+
+/// What a pasted stub needs that a fresh test file lacks, and what it
+/// imports without using (clippy -D warnings refuses both).
+fn fresh_file_faults(test: &str) -> Vec<String> {
+    let imported: Vec<&str> = test
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("use ")?.strip_suffix(';'))
+        .filter_map(|path| path.rsplit("::").next())
+        .collect();
+    let code: String = test
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect();
+    let used = |name: &str| match name {
+        "Sim" => code.contains("Sim::"),
+        "field" => code.contains("field(&shown"),
+        other => panic!("the stub imports {other}"),
+    };
+    let mut faults: Vec<String> = imported
+        .iter()
+        .filter(|name| !used(name))
+        .map(|name| format!("imports {name} unused"))
+        .collect();
+    for name in ["Sim", "field"] {
+        if used(name) && !imported.contains(&name) {
+            faults.push(format!("uses {name} without importing it"));
+        }
+    }
+    if !test.contains("#[cfg(feature = \"cycling\")]\n#[test]") {
+        faults.push("runs in builds without VANA".into());
+    }
+    faults
+}
+
+#[test]
+fn a_test_stub_compiles_in_a_fresh_file_whatever_it_expects() {
+    use shell_simulator::trace::stub::{Expect, stub};
+    let timeline = timeline("power-dropout-after-descent");
+    let riding = timeline.session_ms(At::Ride(seconds(170))).unwrap();
+    let before_the_ride = 2_000;
+    for (at, expect) in [
+        (riding, "page=ride/climb"),
+        (before_the_ride, "page=ride/main"),
+        (before_the_ride, "toast~SAVED,ride=recording"),
+        (riding, "power!=--"),
+    ] {
+        let expect: Vec<Expect> = expect
+            .split(',')
+            .map(|e| Expect::parse(e).unwrap())
+            .collect();
+        let test = stub(&timeline, "dropout", "stub", at, &expect).unwrap();
+        assert_eq!(fresh_file_faults(&test), Vec::<String>::new(), "{test}");
+    }
+    let open = stub(&timeline, "dropout", "stub", riding, &[]).unwrap();
+    assert_eq!(fresh_file_faults(&open), Vec::<String>::new(), "{open}");
+}

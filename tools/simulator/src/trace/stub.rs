@@ -213,10 +213,13 @@ pub fn stub(
             "    todo!(\"state what the rider should have seen at {moment}; the replay showed {{shown}}\");"
         ));
     }
-    let uses_shown = characterization
-        .iter()
-        .chain(&expectation)
-        .any(|line| line.contains("shown"));
+    let uses = |text: &str| {
+        characterization
+            .iter()
+            .chain(&expectation)
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .any(|line| line.contains(text))
+    };
 
     let mut doc = String::new();
     let _ = writeln!(
@@ -247,7 +250,10 @@ pub fn stub(
         let _ = writeln!(doc, "///   {line}");
     }
 
-    let mut body = String::new();
+    let mut body = String::from("    use shell_simulator::sim::Sim;\n");
+    if uses("field(&shown") {
+        body.push_str("    use shell_simulator::trace::timeline::field;\n");
+    }
     let _ = writeln!(
         body,
         "    let (capture, _) = shell_simulator::trace::file::load(std::path::Path::new(concat!(\n        env!(\"CARGO_MANIFEST_DIR\"),\n        \"/tests/traces/{fixture}.trace\"\n    )))\n    .expect(\"the fixture loads\");"
@@ -264,11 +270,8 @@ pub fn stub(
     body.push_str(
         "    let text = |slot: &Option<(u64, String)>| slot.as_ref().map(|(_, text)| text.clone());\n",
     );
-    if uses_shown {
+    if uses("shown") {
         body.push_str("    let shown = text(&seen.shown).unwrap_or_default();\n");
-    }
-    if !expect.is_empty() {
-        body.push_str("    use shell_simulator::trace::timeline::field;\n");
     }
     body.push_str(
         "\n    // Characterization: the rest of the moment as the recording showed it.\n    // Keep it; a fix should change only what the expectation names.\n",
@@ -282,7 +285,9 @@ pub fn stub(
     for line in &expectation {
         let _ = writeln!(body, "{line}");
     }
-    Ok(format!("{doc}#[test]\nfn {name}() {{\n{body}}}\n"))
+    Ok(format!(
+        "{doc}#[cfg(feature = \"cycling\")]\n#[test]\nfn {name}() {{\n{body}}}\n"
+    ))
 }
 
 fn sensors(timeline: &Timeline, at_ms: u64) -> Vec<String> {

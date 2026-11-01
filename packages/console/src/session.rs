@@ -32,6 +32,7 @@ pub struct Terminal<T> {
     tx_max_us: u64,
     reboot: Option<(u64, bool)>,
     transfer: bool,
+    traffic: bool,
 }
 impl<T: device_api::console::Console> Terminal<T> {
     pub fn new(usb: T) -> Self {
@@ -48,6 +49,7 @@ impl<T: device_api::console::Console> Terminal<T> {
             tx_max_us: 0,
             reboot: None,
             transfer: false,
+            traffic: false,
         }
     }
     pub fn reply(&mut self, id: u32, status: &'static str, data: &str, now: u64) {
@@ -110,6 +112,7 @@ impl<T: device_api::console::Console> Terminal<T> {
                 break;
             }
             self.offset += 1;
+            self.traffic = true;
         }
         self.usb.flush();
         self.tx_max_us = self.tx_max_us.max(clock_us().saturating_sub(started));
@@ -156,6 +159,10 @@ impl<T: device_api::console::Console> Terminal<T> {
     pub fn tx_max_us(&self) -> u64 {
         self.tx_max_us
     }
+    /// Whether a byte went to or came from the host since the last call.
+    pub fn take_traffic(&mut self) -> bool {
+        core::mem::take(&mut self.traffic)
+    }
     pub fn command_completed(&mut self) {
         self.sent = self.sent.saturating_add(1);
     }
@@ -172,6 +179,7 @@ impl<T: device_api::console::Console> Terminal<T> {
             let Some(byte) = self.usb.read() else {
                 break;
             };
+            self.traffic = true;
             if let Some(result) = self.lines.push(byte) {
                 return match result {
                     Ok(request) => Some(request),
@@ -250,6 +258,23 @@ mod tests {
             output,
             "{\"type\":\"reply\",\"id\":7,\"status\":\"OK\",\"ms\":20,\"data\":\"done\"}\nnext log\n"
         );
+    }
+
+    #[test]
+    fn traffic_is_any_byte_either_way_since_the_last_look() {
+        let mut session = Terminal::new(Transport::default());
+        assert!(!session.take_traffic());
+        session.usb.input.extend(b"CMD 1 IN");
+        assert!(session.request(0).is_none());
+        assert!(session.take_traffic(), "part of a line came in");
+        assert!(!session.take_traffic());
+        session.reply(1, "OK", "", 0);
+        session.usb.blocked = true;
+        session.pump(|| None, || 0);
+        assert!(!session.take_traffic(), "no host takes the reply");
+        session.usb.blocked = false;
+        session.pump(|| None, || 0);
+        assert!(session.take_traffic(), "the reply went out");
     }
 
     #[test]

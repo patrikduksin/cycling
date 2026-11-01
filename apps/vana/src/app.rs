@@ -51,7 +51,8 @@ pub use phone::{
 };
 
 pub use power::{
-    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
+    AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_DARK_PASS_MS,
+    STANDBY_LIT_MS, auto_off,
 };
 
 /// Observations recorded with each ride sample, beyond the radios VANA drives.
@@ -69,6 +70,7 @@ pub struct Runtime {
     navigation: presentation::Navigation,
     phone: phone::Phone,
     display: presentation::Display,
+    home_on_panel: Option<presentation::HomeOnPanel>,
     startup_status: &'static str,
     startup: device_api::sensors::Startup,
     menu: Menu,
@@ -106,6 +108,7 @@ impl Runtime {
             navigation: presentation::Navigation::default(),
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
+            home_on_panel: None,
             startup_status: "unknown",
             startup: device_api::sensors::Startup::Unsupported,
             menu: Menu::new(),

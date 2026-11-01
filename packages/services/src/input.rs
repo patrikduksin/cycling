@@ -102,6 +102,9 @@ pub enum Poll {
     Nothing,
     /// The panel could not be read.
     Failed,
+    /// The panel was not read, as while it is dark. The contact stands as it
+    /// was, so a finger still down when reading resumes does not land again.
+    Unread,
 }
 
 /// Turns polled touch reports into `Input` edges, keeping the
@@ -136,6 +139,10 @@ impl TouchContact {
             }
             Poll::Nothing => None,
             Poll::Failed => self.cancel(now).then_some(Input::Cancel),
+            Poll::Unread => {
+                self.last_press = now;
+                return [None; 3];
+            }
         };
         let [cancel, end] = self.tick(now);
         [edge, cancel, end]
@@ -309,6 +316,23 @@ mod tests {
         );
         assert_eq!(contact.poll(Release, 30), [None; 3]);
         assert_eq!(contact.poll(Nothing, 40), [None; 3]);
+    }
+
+    #[test]
+    fn a_finger_held_while_the_panel_goes_unread_does_not_land_again() {
+        use Poll::{Press, Release, Unread};
+        let mut contact = TouchContact::default();
+        let mut polls = std::vec![(0, Press(at(10)))];
+        polls.extend((10..=2000).step_by(10).map(|now| (now, Unread)));
+        polls.extend([
+            (2010, Press(at(10))),
+            (2020, Press(at(30))),
+            (2030, Release),
+        ]);
+        assert_eq!(
+            edges(&mut contact, &polls),
+            [Input::Touch(at(10)), Input::Touch(at(30)), Input::Release]
+        );
     }
 
     /// A finger the panel stops reporting ends at once, so a fresh tap right

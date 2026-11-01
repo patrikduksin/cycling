@@ -136,23 +136,19 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
         .count();
     assert_eq!(reveal, 9, "ten reveal frames in 400 ms");
     assert!(runtime.navigation.page == Page::Boot);
-    // Home opens as the flash ends and then redraws once a second.
     assert!(screen.present(&mut runtime, &radio, 3400));
     assert!(runtime.navigation.page == Page::Home);
-    assert!(screen.present(&mut runtime, &radio, 7000));
+    assert!(!screen.present(&mut runtime, &radio, 7000));
     assert!(!screen.present(&mut runtime, &radio, 7999));
     // Input redraws immediately.
     runtime.input(press(Button::BottomLeft), 7999, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 7999));
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
-    assert!(screen.present(&mut runtime, &radio, 8000));
+    assert!(!screen.present(&mut runtime, &radio, 8000));
     assert_eq!(
         runtime.menu.diagnostics().message,
         Some(MenuMessage::WaitingForCompanion)
     );
-    // An unchanged status does not force another frame.
-    runtime.set_startup_status(device_api::sensors::Startup::Probing);
-    assert!(!screen.present(&mut runtime, &radio, 8001));
 
     runtime.suspend_display();
     assert!(!runtime.input_active());
@@ -163,6 +159,27 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     );
     assert!(!screen.present(&mut runtime, &radio, 9000));
     assert!(!screen.present(&mut runtime, &radio, 20_000));
+}
+
+#[test]
+fn a_new_startup_status_draws_at_once_where_it_shows() {
+    let mut screen = Screen::new();
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut radio = Radio::new();
+    assert!(screen.present(&mut runtime, &radio, 3000));
+    assert!(screen.present(&mut runtime, &radio, 3400));
+    runtime.input(press(Button::BottomLeft), 4000, &mut radio);
+    runtime.input(press(Button::BottomRight), 4400, &mut radio);
+    assert!(screen.present(&mut runtime, &radio, 4400));
+    assert!(runtime.navigation.page == Page::Sensors);
+    runtime.set_startup_status(device_api::sensors::Startup::Probing);
+    assert!(screen.present(&mut runtime, &radio, 4401));
+    assert_eq!(
+        runtime.menu.diagnostics().message,
+        Some(MenuMessage::WaitingForCompanion)
+    );
+    runtime.set_startup_status(device_api::sensors::Startup::Probing);
+    assert!(!screen.present(&mut runtime, &radio, 4402));
 }
 
 #[test]

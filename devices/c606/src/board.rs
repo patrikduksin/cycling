@@ -203,15 +203,15 @@ fn init() -> Resources {
     );
     screen.init();
 
-    let touch_bus = esp_hal::i2c::master::I2c::new(
+    let mut touch_bus = esp_hal::i2c::master::I2c::new(
         p.I2C0,
         esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(100)),
     )
     .unwrap()
     .with_sda(p.GPIO21)
     .with_scl(p.GPIO12);
-    let mut touch = touch::Touch::new(touch_bus);
-    let probe = touch.probe();
+    let probe = touch::probe(&mut touch_bus);
+    let touch = touch::Touch::new(touch_bus);
     println!("CYCLING_TOUCH probe={:02x?}", probe);
     let touch_available = probe.is_ok();
 

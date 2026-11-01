@@ -219,6 +219,17 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn dimmed(&self) -> bool {
         self.idle.dimmed()
     }
+    /// Something waits for the next frame even if it shows nothing new: a
+    /// routed press waits for its answer, or a harness capture is due.
+    pub fn frame_wanted(&self, now: u64) -> bool {
+        #[cfg(feature = "debug-harness")]
+        if self.harness.capture_due(now) {
+            return true;
+        }
+        #[cfg(not(feature = "debug-harness"))]
+        let _ = now;
+        self.pressed_at.is_some()
+    }
     /// Time since the last input or reported activity. The shell owns this
     /// inactivity clock; applications combine it with their own work state.
     pub fn inactive_ms(&self, now: u64) -> u64 {
@@ -460,8 +471,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             self.display_max_ms = self.display_max_ms.max(self.display_ms);
         }
         if !self.display_error
-            && let Some(clock) = self.clock
             && let Some(at) = self.pressed_at.take()
+            && let Some(clock) = self.clock
         {
             self.press_frame_ms = clock().saturating_sub(at);
             self.press_frame_max_ms = self.press_frame_max_ms.max(self.press_frame_ms);

@@ -17,9 +17,10 @@ def idle_frames_allowed(build, elapsed_ms):
     """Frames an idle device may submit in `elapsed_ms`.
 
     Base firmware draws only on change. VANA keeps drawing while awake: once a
-    second on still pages, twice while something animates, as the battery does
-    on USB. A state change pulls one frame forward, and the window may start
-    just before a frame is due.
+    second on still pages other than Home, which draws only on change, and
+    twice while something animates, as the battery does on USB. A state change
+    pulls one frame forward, and the window may start just before a frame is
+    due.
     """
     if build.get('cycling') == 'false':
         return 0

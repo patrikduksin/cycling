@@ -223,6 +223,49 @@ impl<'a> Extra<'a> {
     }
 }
 
+/// Everything a Home frame draws: `View::paint` draws Home from it alone,
+/// and `View::home_digest` hashes it.
+#[derive(Hash)]
+struct HomeScene<'v> {
+    bar: &'v StatusBar,
+    home: &'v Home,
+    toast: Option<&'v Toast>,
+    light: bool,
+}
+
+impl HomeScene<'_> {
+    fn paint(&self, row: &mut Row) {
+        if row.y() < CONTENT.top {
+            self.bar.paint(row);
+            return;
+        }
+        self.home.paint(row);
+        if let Some(toast) = self.toast {
+            toast.paint(row);
+        }
+    }
+}
+
+struct Fnv1a(u64);
+
+impl Fnv1a {
+    const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl core::hash::Hasher for Fnv1a {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+}
+
 static NO_CANVAS: Canvas = Canvas::EMPTY;
 static NO_SMOOTH: Smooth = Smooth::EMPTY;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
@@ -654,6 +697,10 @@ impl<'a> View<'a> {
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
         row.fill(BLACK);
+        if let Some(scene) = self.home_scene() {
+            scene.paint(row);
+            return;
+        }
         if self.page == Page::Boot || self.ftp_offer.is_some() {
             self.canvas().paint(row);
             return;
@@ -664,12 +711,7 @@ impl<'a> View<'a> {
         }
         match self.page {
             Page::Ride if !self.pause_screen => ride::paint(self, row),
-            Page::Home => {
-                if let Some(home) = self.home() {
-                    home.paint(row);
-                }
-            }
-            Page::Sensors => {}
+            Page::Home | Page::Sensors => {}
             Page::Phone => {
                 self.canvas().paint(row);
                 super::phone::paint(self, row);
@@ -700,6 +742,28 @@ impl<'a> View<'a> {
             cue.paint(row);
         }
         self.paint_toast(row);
+    }
+
+    /// Home with no sheet over it.
+    fn home_scene(&self) -> Option<HomeScene<'_>> {
+        if self.page != Page::Home || self.ftp_offer.is_some() {
+            return None;
+        }
+        Some(HomeScene {
+            bar: &self.bar,
+            home: self.home()?,
+            toast: self.toast.as_ref(),
+            light: self.light,
+        })
+    }
+
+    /// A digest of what Home draws; `None` on any other page or under a
+    /// sheet.
+    pub fn home_digest(&self) -> Option<u64> {
+        use core::hash::{Hash, Hasher};
+        let mut fnv = Fnv1a::new();
+        self.home_scene()?.hash(&mut fnv);
+        Some(fnv.finish())
     }
 
     /// The toast over the content, if one is shown.

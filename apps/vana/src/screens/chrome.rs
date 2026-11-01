@@ -14,7 +14,7 @@ pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 320;
 
 /// A half-open box on the 240 × 320 canvas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rect {
     pub left: usize,
     pub top: usize,
@@ -560,7 +560,7 @@ impl Ring {
 }
 
 /// The ride state the status bar marks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Mark {
     #[default]
     None,
@@ -625,7 +625,7 @@ pub const fn bolt(left: usize, top: usize, x: usize, y: usize) -> u8 {
 }
 
 /// What the status bar knows about the battery.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Battery {
     /// Charge, 0 to 100, as the device reports it.
     pub percent: u8,
@@ -693,7 +693,7 @@ const fn small(text: &[u8], x: usize, align: Align, color: u16) -> Small {
 /// the clock, the battery (a red percentage once low), GPS, then page dots,
 /// which close up before they are dropped. An item that does not fit is left
 /// out; nothing overlaps.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 pub struct StatusBar {
     clock: Small,
     /// The battery, when its icon fits.
@@ -777,6 +777,7 @@ impl StatusBar {
             Some(battery) if fits(battery_left) => {
                 bar.battery = Some(Battery {
                     charging: false,
+                    phase: 0,
                     ..battery
                 });
                 bar.battery_left = battery_left;
@@ -996,7 +997,7 @@ impl StatusBar {
 }
 
 /// How a toast should read: the colour of its dot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tone {
     /// Confirmations: saved, resumed.
     Good,
@@ -1026,7 +1027,7 @@ const TOAST_PADDING: usize = 12 + 6 + 14;
 
 /// A short message in a pill floating over the bottom of the content. The
 /// owner decides how long it lives; above its band it costs one comparison.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 pub struct Toast {
     label: Label<20>,
     pill: Rect,

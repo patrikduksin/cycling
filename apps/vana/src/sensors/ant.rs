@@ -95,7 +95,7 @@ pub const HEART_RATE_BATTERY_PAGE: u8 = 0x07;
 
 /// The descriptive battery status a sensor reports. The wire's reserved
 /// and invalid values have no variant.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BatteryStatus {
     New,
     Good,

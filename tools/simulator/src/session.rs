@@ -797,6 +797,8 @@ pub struct Session {
     trace: Trace,
     origin: Option<Origin>,
     unrecorded: Option<(&'static str, u64)>,
+    unseen_ms: u64,
+    rest_ms: u64,
     devices: Devices,
 }
 impl Session {
@@ -942,6 +944,8 @@ impl Session {
             trace,
             origin: None,
             unrecorded: None,
+            unseen_ms: 0,
+            rest_ms: 0,
             devices: Devices::Simulated(Box::new(Simulated::new())),
         })
     }
@@ -1074,6 +1078,14 @@ impl Session {
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
         let stayed_quiet = self.pass(quiet);
+        #[cfg(feature = "cycling")]
+        {
+            let power = self.trace.power.frozen().state;
+            self.rest_ms = (!self.off)
+                .then(|| self.sdk.pass_rest_ms(power))
+                .flatten()
+                .unwrap_or(0);
+        }
         self.trace.window.passes += 1;
         if !self.off && self.trace.vitals.due(self.now, quiet) {
             self.record_vitals();
@@ -1556,7 +1568,9 @@ impl Session {
         self.sim_mut().companion_charging();
         Ok(())
     }
-    /// Advance device and world time together in 10 ms firmware passes.
+    /// Advance device and world time together in 10 ms firmware passes,
+    /// or a pass each `STANDBY_DARK_PASS_MS` while dark charging standby
+    /// rests; the device clock then reads the last pass.
     /// Off on USB power, the companion starts the device again for
     /// charging, and the rest of `ms` runs on the new session's clock.
     pub fn step(&mut self, ms: u64) {
@@ -1564,8 +1578,12 @@ impl Session {
         while left > 0 {
             let step = left.min(10);
             left -= step;
-            self.now += step;
             self.sim_mut().world.advance(step);
+            self.unseen_ms += step;
+            if self.unseen_ms < self.rest_ms {
+                continue;
+            }
+            self.now += core::mem::take(&mut self.unseen_ms);
             self.tick();
             if self.off && self.sim().battery.charging {
                 self.start_charging().expect("the media reopens");
@@ -1627,6 +1645,8 @@ impl Session {
         power: device_api::power::Status,
         out: &mut String,
     ) -> &'static str {
+        // A host talking on the terminal keeps the usual pace.
+        self.rest_ms = 0;
         let status = self.respond(request, power, out);
         self.record_faults();
         status

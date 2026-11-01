@@ -305,14 +305,15 @@ what that costs in each device state.
      its poll. The radio drivers' time includes the interrupts they took.
    - `counting` is what the hooks themselves cost, estimated from the
      startup log's `hook_cycles=`. Subtract it first.
-   - A simulator trace counts its 10 ms passes as task `console` and has no
-     CPU times, memory or signal. Use it to test the tools, never to judge
-     the battery.
-   - These tasks wake on a timer in every state: `console` every 5 ms, and
-     `io`, `gps` and `power` every 10 ms. `ble` wakes once a second while a
-     sensor is connected, and `wifi` every 5 s while the station is
-     associated. They show up as flags while the screen is dark until they
-     wait on an event instead.
+   - A simulator trace counts its passes as task `console` (every 10 ms,
+     every 200 ms in dark charging standby) and has no CPU times, memory or
+     signal. Use it to test the tools, never to judge the battery.
+   - These tasks wake on a timer: `console` every 5 ms, or every 200 ms in
+     dark charging standby, and `io`, `gps` and `power` every 10 ms in every
+     state. `io` reads the touch panel only while the panel is lit. `ble`
+     wakes once a second while a sensor is connected, and `wifi` every 5 s
+     while the station is associated. They show up as flags while the
+     screen is dark until they wait on an event instead.
 5. Find the code. `main` and `console` are in `devices/c606/src/main.rs`.
    `power`, `gps` and `io` are in `devices/c606/src/capabilities/` (`power.rs`,
    `positioning.rs`, `io.rs`). `ble` is in `drivers/bluetooth.rs`. `wifi`,

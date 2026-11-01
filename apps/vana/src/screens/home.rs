@@ -94,6 +94,7 @@ const fn label(
 }
 
 /// What Home shows, prepared once per frame.
+#[derive(Hash)]
 pub struct Home {
     /// The focused card: Ride, Sensors or Settings.
     pub cursor: usize,

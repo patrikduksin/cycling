@@ -105,3 +105,51 @@ fn a_paused_ride_draws_twice_a_second_on_every_page() {
     }
     assert!(pages >= 5, "visited {pages} ride pages");
 }
+
+fn frames_over(sim: &mut Sim, ms: u64) -> u32 {
+    let before = sim.device.shell.display_submissions;
+    sim.advance(ms);
+    sim.device.shell.display_submissions - before
+}
+
+#[test]
+fn a_still_home_draws_only_when_what_it_shows_changes() {
+    let mut sim = device();
+    sim.set_battery(80, false);
+    sim.set_gps_fix(true);
+    sim.ant_sensor(device_type::HEART_RATE, 1);
+    sim.pair(&["HEART RATE"]);
+    go_home(&mut sim);
+    let next_minute_ms = 1_800_000_000_000;
+    let minute_turns_in = seconds(40);
+    sim.sync_network_time(next_minute_ms - minute_turns_in);
+    sim.advance(seconds(3));
+    sim.expect_text("1/1 LIVE");
+    let clock = sim.screen().text();
+    assert_eq!(frames_over(&mut sim, seconds(30)), 0, "still Home");
+    assert!(frames_over(&mut sim, seconds(10)) >= 1, "the minute turned");
+    assert_ne!(sim.screen().text(), clock, "the clock moved on");
+    assert_eq!(frames_over(&mut sim, seconds(20)), 0, "still Home");
+    sim.set_battery(12, false);
+    assert!(frames_over(&mut sim, seconds(3)) >= 1, "the battery fell");
+    sim.expect_text("12%");
+    sim.set_present(device_type::HEART_RATE, 1, false);
+    sim.wait_for("0/1 LIVE", seconds(30)).unwrap();
+    sim.set_battery(12, true);
+    let frames = frames_over(&mut sim, seconds(30));
+    assert!(frames >= 50, "{frames} charging frames in 30 s");
+}
+
+#[cfg(feature = "debug-harness")]
+#[test]
+fn a_capture_on_a_still_home_gets_a_frame() {
+    let mut sim = device();
+    assert_eq!(frames_over(&mut sim, seconds(5)), 0, "still Home");
+    let id = (u64::from(sim.device.boot) << 32) | 1;
+    assert_eq!(sim.command("HARNESS OPEN 1 10000").0, "OK");
+    let start = sim.command(&format!("HARNESS {id} CAPTURE START 1 100"));
+    assert_eq!(start.0, "ACCEPTED", "{start:?}");
+    sim.advance(seconds(2));
+    let status = sim.command(&format!("HARNESS {id} CAPTURE STATUS"));
+    assert!(status.1.contains("state=completed"), "{status:?}");
+}

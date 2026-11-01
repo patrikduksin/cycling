@@ -86,16 +86,17 @@ decodes both tables with a copy of that firmware's decoder.
 
 ## Store
 
-`STORE` holds growable files that are written by appending. A name is a
-path such as `traces/0001`, and a directory is a name prefix such as
-`traces/`. Two copy-on-write metadata copies hold the directory (64 files)
-and a table of 256 KiB data chunks. Each data sector is a self-checking
-record, so an append writes no metadata and a power cut loses at most the
-bytes appended since the last sync. When the store is full, an appender
-given a directory deletes the oldest closed file in it (rollover). Every
-operation does a bounded number of sector operations, whatever the volume
-size. The module documentation in `packages/services/src/store.rs` lists
-them, and the power-cut property test in `store/tests.rs` cuts power at
+`STORE` holds growable files that are written by appending. A name is a path
+such as `traces/0001`, and a directory is a name prefix such as `traces/`. Two
+copy-on-write metadata copies hold the directory (64 files at most) and a
+table of 256 KiB data chunks. Each data sector is a self-checking record, so
+an append writes no metadata and a power cut loses at most the bytes appended
+since the last sync. When the store is full, an appender given a directory
+deletes the oldest closed file in it (rollover). Otherwise only the host
+deletes a file, with `cycling store delete`; there is no line command for it.
+Every operation does a bounded number of sector operations, whatever the
+volume size. The module documentation in `packages/services/src/store.rs`
+lists them, and the power-cut property test in `store/tests.rs` cuts power at
 every write.
 
 ## Files

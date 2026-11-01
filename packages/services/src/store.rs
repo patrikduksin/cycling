@@ -38,6 +38,11 @@
 //! Rollover: an appender or a create given a directory deletes the oldest
 //! closed file in it (lowest id, never the open one) when the store is full.
 //!
+//! Limits: the directory holds `CAPACITY` (64) files, whatever the volume
+//! size, and a 65th fails with `Full` unless it rolls over. Outside
+//! rollover only the host deletes, through the transfer session; there is
+//! no line command for it.
+//!
 //! Every operation does a bounded number of sector operations, whatever the
 //! volume size: with `D = DIR_SECTORS` (8), `T` table sectors (at most
 //! `MAX_TABLE`, 9 on the C606 STORE volume) and `B = ⌊log2 CHUNK⌋ + 1` (10),

@@ -36,17 +36,21 @@ text: start there, and open a PNG only to confirm what the text says.
   with ride export, and the RIDES log's records and each file the header
   lists in one transfer session. RIDES slots it pulled before are kept in
   `.local/traces/.cache/`, so a later pull reads only the newer ones. It
-  finds the terrain pack by its SHA-256 under `.local/terrain/`. The copies
-  go to `.local/traces/<name>.media/`, and `cycling trace rebuild <trace>
-  --pulled <dir>` turns them into the `.origin`. The pull prints what could
-  not be rebuilt, one line each, and the `.origin` keeps that list, and
-  `timing` says how long each transfer session paused VANA and where the
-  device spent that time.
+  finds the terrain pack by its SHA-256 under `.local/terrain/` and keeps
+  it once as `.local/terrain/sha256/<digest>`. The copies go to
+  `.local/traces/<name>.media/`, whose `terrain.pack` links to the kept
+  pack by a relative path, so `cycling trace rebuild <trace> --pulled
+  <dir>` turns them into the `.origin` on whichever machine holds
+  `.local/`. The pull prints what could not be rebuilt, one line each, and
+  the `.origin` keeps that list, and `timing` says how long each transfer
+  session paused VANA and where the device spent that time.
   A trace whose format version this build does not read is refused with
   the version and the versions it reads; read it with the build that
   recorded it.
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
-  follow the remote device skill. Keep device traces and their `.origin`
+  follow the remote device skill; `cycling device trace pull` brings
+  `.local/` back with the kept pack, so the first pull of a pack copies it
+  across. Keep device traces and their `.origin`
   and `.media/` under `.local/` and never commit them: they record the
   rider's location.
 - What a rebuilt origin holds: the settings, VANA's saved sensors and

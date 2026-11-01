@@ -11,13 +11,16 @@ written to the device.
 
 The pulled media go into <trace stem>.media/ beside the trace:
 internal.slots, rides.slots and rides.epoch, files.list and files/<name>,
-and terrain.pack, a link to the local pack. RIDES only grows within an
-epoch, so the slots pulled for one are kept in .cache/ beside the traces, and
-a later pull reads only the records after them once the device still holds
-their last one.
+and terrain.pack. RIDES only grows within an epoch, so the slots pulled for
+one are kept in .cache/ beside the traces, and a later pull reads only the
+records after them once the device still holds their last one. The pack is
+kept once, under .local/terrain/sha256/, and terrain.pack links to it by a
+relative path, so the media stay whole when .local/ is copied to another
+machine (`cycling device trace pull` does).
 """
 
 import hashlib
+import os
 import shlex
 import shutil
 import subprocess
@@ -31,6 +34,7 @@ from cycling_devtools.workspace import DEVICE_LOCAL, ROOT
 
 SLOT_SIZE = export.SLOT_SIZE
 PACK_ROOTS = (ROOT / '.local' / 'terrain', DEVICE_LOCAL / 'terrain')
+PACK_COPIES = ROOT / '.local' / 'terrain' / 'sha256'
 
 
 def trace_tool(*args):
@@ -185,6 +189,23 @@ def pull_rides(transfer, store, head, output, cache):
     return sorted(invalid)
 
 
+def keep_pack(terrain, roots, copies):
+    """The pack with the header's length and SHA-256, copied to copies/<sha256> once; None when no local pack has
+    it."""
+    kept = copies / terrain['sha256']
+    if find_pack(terrain['length'], terrain['sha256'], (copies,)) == kept.resolve():
+        return kept
+    pack = find_pack(terrain['length'], terrain['sha256'], roots)
+    if pack is None:
+        return None
+    copies.mkdir(parents=True, exist_ok=True)
+    partial = copies / f'{terrain["sha256"]}.partial'
+    # A copy, not a hard link: a pack rebuilt in place would change the kept one.
+    shutil.copyfile(pack, partial)
+    partial.replace(kept)
+    return kept
+
+
 def pull_file(transfer, name, path):
     """The revision whose bytes `files get` wrote to `path`; None when the file is gone."""
     try:
@@ -279,6 +300,7 @@ def pull(
     directory=Path('.local/traces'),
     tool=trace_tool,
     roots=PACK_ROOTS,
+    copies=PACK_COPIES,
 ):
     """Pull the trace `name` (the newest by default) and rebuild the media it started on beside it."""
     started, timing = time.monotonic(), {}
@@ -296,9 +318,9 @@ def pull(
     timing['internal_s'] = round(time.monotonic() - lap, 3)
     pull_media(connection, media, out, directory / '.cache', problems, timing)
     if media['terrain'] is not None:
-        pack = find_pack(media['terrain']['length'], media['terrain']['sha256'], roots)
+        pack = keep_pack(media['terrain'], roots, copies)
         if pack is not None:
-            (out / 'terrain.pack').symlink_to(pack)
+            (out / 'terrain.pack').symlink_to(os.path.relpath(pack, out))
     report = tool('rebuild', trace, '--pulled', out).splitlines()
     timing['total_s'] = round(time.monotonic() - started, 3)
     result.update(media=str(out), origin=report[0].removeprefix('origin '), rebuilt=report[1:], timing=timing)

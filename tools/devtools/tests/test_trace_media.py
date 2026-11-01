@@ -1,4 +1,6 @@
 import hashlib
+import os
+import shutil
 import struct
 import tempfile
 import unittest
@@ -128,7 +130,9 @@ class TracePullTests(unittest.TestCase):
             return f'origin {args[0].with_suffix(".origin")}\nfile bests.dat (revision 3): gone from the device\n'
 
         with mock.patch.object(volumes, 'open_session', return_value=FakeTransfer(device)):
-            result = trace_media.pull(export, directory=directory, tool=tool, roots=roots)
+            result = trace_media.pull(
+                export, directory=directory, tool=tool, roots=roots, copies=directory / 'terrain' / 'sha256'
+            )
         return result, calls
 
     def test_pull_copies_what_the_header_names_up_to_the_ends_it_recorded(self):
@@ -147,7 +151,13 @@ class TracePullTests(unittest.TestCase):
             self.assertEqual((media / 'rides.epoch').read_text(), f'store {STORE}\ngeneration 3\ninvalid \n')
             self.assertEqual((media / 'files.list').read_text(), f'store {STORE}\nfile 1 workouts/tempo.vw\n')
             self.assertEqual((media / 'files' / 'workouts' / 'tempo.vw').read_bytes(), b'tempo workout')
-            self.assertEqual((media / 'terrain.pack').resolve(), (directory / 'terrain' / 'chile.terrain').resolve())
+            link = media / 'terrain.pack'
+            self.assertFalse(Path(os.readlink(link)).is_absolute(), 'a link that holds on another machine')
+            self.assertEqual(link.read_bytes(), pack)
+            moved = Path(tempfile.mkdtemp(dir=directory.parent))
+            shutil.copytree(directory, moved / 'local', symlinks=True)
+            self.assertEqual((moved / 'local' / media.relative_to(directory) / 'terrain.pack').read_bytes(), pack)
+            shutil.rmtree(moved)
             self.assertEqual(calls[0], ('media', directory / '000003-00000007.trace'))
             self.assertEqual(calls[1][:2], ('rebuild', directory / '000003-00000007.trace'))
             self.assertIn('files/workouts/tempo.vw', calls[2])

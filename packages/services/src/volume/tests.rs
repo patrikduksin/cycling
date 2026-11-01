@@ -158,20 +158,26 @@ fn a_cut_anywhere_in_adding_store_leaves_old_or_new_data_and_running_again_compl
 }
 
 #[test]
-fn a_cut_in_adding_store_keeps_a_table_that_only_copy_1_holds() {
-    let (mut table, mut torn) = (sector(), sector());
+fn a_cut_in_adding_store_keeps_a_table_that_only_one_copy_holds() {
+    let (mut table, mut torn, mut older) = (sector(), sector(), sector());
     plan(C606).unwrap().encode(&mut table);
     torn[..100].copy_from_slice(&table[..100]);
     let mut log = Media::new(64);
     sector_log::format(&mut log, TAG, 7, b"catalog", &mut sector()).unwrap();
     let legacy = log.get(0);
     assert!(sector_log::is_superblock(&legacy));
-    for copy_0 in [[0; SECTOR_SIZE], torn, legacy] {
-        cut_everywhere_in_add_store(|media| media.set(0, copy_0));
+    let mut before = plan(C606).unwrap();
+    before.volumes[3] = None;
+    before.generation = 0;
+    before.encode(&mut older);
+    for other in [[0; SECTOR_SIZE], torn, legacy, older] {
+        for copy in [0, 1] {
+            cut_everywhere_in_add_store(|media| media.set(copy, other));
+        }
     }
 }
 
-fn cut_everywhere_in_add_store(copy_0: impl Fn(&mut Media)) {
+fn cut_everywhere_in_add_store(damage: impl Fn(&mut Media)) {
     let new = Table {
         generation: 2,
         ..plan(C606).unwrap()
@@ -191,7 +197,7 @@ fn cut_everywhere_in_add_store(copy_0: impl Fn(&mut Media)) {
             let mut s = sector();
             let old = table_before_store(&mut media);
             fill_volumes(&mut media);
-            copy_0(&mut media);
+            damage(&mut media);
             assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(old)));
             let before = outside_store(&media);
             media.cut = Some((at, tear));

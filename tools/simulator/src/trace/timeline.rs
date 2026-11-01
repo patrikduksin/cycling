@@ -11,6 +11,9 @@ use std::fmt;
 
 /// A pass this long after the one before is a gap: the loop stalled.
 const GAP_MS: u64 = 1_000;
+/// An ANT+ sensor broadcasts four times a second; this long without a
+/// packet from it is a silence.
+pub const SILENCE_MS: u64 = 3_000;
 
 /// When something happened: uptime since power-on, and the ride clock while
 /// a ride is open (it stops while the ride is paused).
@@ -283,6 +286,17 @@ pub struct Timeline {
     pub torn: bool,
     /// UTC in ms at uptime zero, from the first GPS or Wi-Fi time.
     pub utc_at_boot_ms: Option<u64>,
+    /// Stretches in which a sensor that had sent packets sent none, in
+    /// the order they began.
+    pub silences: Vec<Silence>,
+}
+
+/// No packet from `sensor` after `last_ms` until `next_ms`, or to the end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Silence {
+    pub sensor: String,
+    pub last_ms: u64,
+    pub next_ms: Option<u64>,
 }
 
 impl Timeline {
@@ -391,6 +405,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     for event in events.by_ref() {
         reader.event(&event);
     }
+    reader.silent_at_end();
     let build_len = header
         .build
         .iter()
@@ -409,6 +424,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         entries: reader.entries,
         clock: reader.clock,
         utc_at_boot_ms: reader.utc_at_boot_ms,
+        silences: reader.silences,
     })
 }
 
@@ -425,6 +441,9 @@ struct Reader {
     /// Each source's last text, to mark repeats.
     last: HashMap<(Kind, u8), String>,
     pages: Pages,
+    /// Each sensor's last packet, to find silences.
+    heard: HashMap<String, u64>,
+    silences: Vec<Silence>,
 }
 
 impl Reader {
@@ -458,6 +477,36 @@ impl Reader {
             repeat,
             hex: None,
         });
+    }
+
+    fn heard_from(&mut self, sensor: &str) {
+        let Some(last_ms) = self.heard.insert(sensor.to_string(), self.now) else {
+            return;
+        };
+        if self.now - last_ms > SILENCE_MS {
+            self.silences.push(Silence {
+                sensor: sensor.to_string(),
+                last_ms,
+                next_ms: Some(self.now),
+            });
+        }
+    }
+
+    /// Sensors still silent when the trace ends.
+    fn silent_at_end(&mut self) {
+        let mut open: Vec<Silence> = self
+            .heard
+            .iter()
+            .filter(|(_, last_ms)| self.now - **last_ms > SILENCE_MS)
+            .map(|(sensor, last_ms)| Silence {
+                sensor: sensor.clone(),
+                last_ms: *last_ms,
+                next_ms: None,
+            })
+            .collect();
+        self.silences.append(&mut open);
+        self.silences
+            .sort_by(|a, b| (a.last_ms, &a.sensor).cmp(&(b.last_ms, &b.sensor)));
     }
 
     fn event(&mut self, event: &Event<'_>) {
@@ -509,10 +558,9 @@ impl Reader {
             }
             Event::AntPacket(packet) => {
                 let words = self.pages.describe(packet.identity, packet.data);
-                self.push(
-                    Kind::AntPacket,
-                    format!("{} {words}", sensor(packet.identity)),
-                );
+                let sensor = sensor(packet.identity);
+                self.heard_from(&sensor);
+                self.push(Kind::AntPacket, format!("{sensor} {words}"));
                 if let Some(entry) = self.entries.last_mut() {
                     entry.hex = Some(hex(&packet.data));
                 }

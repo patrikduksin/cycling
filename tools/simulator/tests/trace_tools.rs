@@ -141,6 +141,29 @@ fn the_dropout_shows_as_a_stretch_of_dashed_power_after_the_descent() {
 }
 
 #[test]
+fn the_meter_out_of_range_is_one_silence_between_its_last_and_first_packet() {
+    let timeline = timeline("power-dropout-after-descent");
+    let [silence] = timeline.silences.as_slice() else {
+        panic!("only the power meter went quiet: {:?}", timeline.silences);
+    };
+    assert_eq!(silence.sensor, format!("power#{POWER}"));
+    let next_ms = silence.next_ms.expect("the meter came back");
+    let silent = next_ms - silence.last_ms;
+    // Out of range for 25 s; the packets around it are 250 ms apart.
+    assert!((24_500..=25_500).contains(&silent), "silent for {silent} ms");
+    let story = tell(&timeline);
+    let span = story
+        .spans
+        .iter()
+        .find(|s| s.name == format!("ant power#{POWER} silent"))
+        .expect("a span for the silence");
+    assert_eq!(
+        (span.start.session_ms, span.end.session_ms),
+        (silence.last_ms, next_ms)
+    );
+}
+
+#[test]
 fn the_story_holds_the_ride_its_pause_and_the_climb_page() {
     let timeline = timeline("power-dropout-after-descent");
     let story = tell(&timeline);

@@ -1,7 +1,7 @@
 //! A session told as OpenTelemetry-shaped spans and notable events: the
 //! session, each ride and its recording and paused stretches, page visits,
-//! toasts, sensor links, GPS fix and companion start-up as spans; boot,
-//! laps, warnings, commands and gaps as events.
+//! toasts, sensor links and silences, GPS fix and companion start-up as
+//! spans; boot, laps, warnings, commands and gaps as events.
 use crate::trace::timeline::{
     Entry, Kind, Moment, TOAST_CLEARED, Timeline, duration, session_clock,
 };
@@ -186,6 +186,16 @@ pub fn tell(timeline: &Timeline) -> Story {
         spans[index]
             .attributes
             .push(("laps".into(), laps.to_string()));
+    }
+    for silence in &timeline.silences {
+        spans.push(Span {
+            name: format!("ant {} silent", silence.sensor),
+            start: timeline.moment(silence.last_ms),
+            end: silence.next_ms.map_or(end, |ms| timeline.moment(ms)),
+            parent: Some(0),
+            attributes: Vec::new(),
+            open: silence.next_ms.is_none(),
+        });
     }
     spans[1..].sort_by_key(|span| span.start.session_ms);
     reparent(&mut spans);

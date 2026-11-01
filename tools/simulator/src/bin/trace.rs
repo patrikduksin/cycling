@@ -7,7 +7,9 @@ use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
 use shell_simulator::trace::find::{Query, find};
 use shell_simulator::trace::story::tell;
-use shell_simulator::trace::timeline::{At, Entry, Kind, Timeline, duration, read, session_clock};
+use shell_simulator::trace::timeline::{
+    At, Entry, Kind, SILENCE_MS, Timeline, duration, read, session_clock,
+};
 use shell_simulator::trace::{otlp, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -26,9 +28,11 @@ and r40:00 for a ride time.
 
 commands:
   summary <trace>
-      Spans (session, rides, recording and paused stretches, pages, toasts,
-      sensor links, GPS fix) and events (boot, laps, warnings, gaps, commands),
-      one line each. Run this first.
+      Sensor silences first (each sensor's last packet before a pause and its
+      first after), then spans (session, rides, recording and paused
+      stretches, pages, toasts, sensor links and silences, GPS fix) and
+      events (boot, laps, warnings, gaps, commands), one line each. Run this
+      first.
   timeline <trace> [--from T] [--to T] [--kinds LIST] [--all] [--hex]
       Every event in the window, inputs and what the rider saw. Kinds: gap,
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
@@ -197,6 +201,35 @@ fn header(path: &Path, timeline: &Timeline, media: Media) -> String {
 
 fn summary(path: &Path, timeline: &Timeline, media: Media) -> String {
     let mut out = header(path, timeline, media);
+    let silences: Vec<String> = timeline
+        .silences
+        .iter()
+        .map(|silence| {
+            let until = silence.next_ms.unwrap_or(timeline.end_ms);
+            format!(
+                "{} silent {}-{} ({}{})",
+                silence.sensor,
+                session_clock(silence.last_ms),
+                session_clock(until),
+                duration(until - silence.last_ms),
+                if silence.next_ms.is_none() {
+                    ", to the end"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "sensor silences (no ANT+ packet for over {}): {}",
+        duration(SILENCE_MS),
+        if silences.is_empty() {
+            "none".into()
+        } else {
+            silences.join("; ")
+        }
+    );
     let story = tell(timeline);
     let mut lines: Vec<(u64, String)> = story
         .spans

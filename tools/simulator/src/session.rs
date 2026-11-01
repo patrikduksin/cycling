@@ -365,7 +365,12 @@ struct Start {
     journals: Option<Journals>,
 }
 
-type Volumes = (Option<(u64, u64, Vec<u8>)>, Option<origin::Terrain>);
+/// FILES with its entries, the ride facts table's digest, and TERRAIN.
+type Volumes = (
+    Option<(u64, u64, Vec<u8>)>,
+    Option<u32>,
+    Option<origin::Terrain>,
+);
 /// The internal journal's next slot and the card log's store id and head.
 type Journals = (Option<u32>, Option<(u64, u64)>);
 
@@ -375,11 +380,15 @@ impl Start {
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
         let (files, terrain) = origin::volumes(&mut bulk.host(), &mut entries, &mut sector);
         let files = files.map(|files| (files.store, files.generation, files.entries.to_vec()));
-        self.volumes = Some((files, terrain));
+        #[cfg(feature = "cycling")]
+        let facts = vana::ride::facts::digest(&mut bulk.host()).ok().flatten();
+        #[cfg(not(feature = "cycling"))]
+        let facts = None;
+        self.volumes = Some((files, facts, terrain));
     }
 
     fn header(&self) -> Vec<u8> {
-        let (files, terrain) = self.volumes.clone().unwrap_or((None, None));
+        let (files, facts, terrain) = self.volumes.clone().unwrap_or((None, None, None));
         let (journal, rides) = self.journals.unwrap_or((None, None));
         let mut settings = self.settings;
         if self.redacted
@@ -405,6 +414,7 @@ impl Start {
                     generation: *generation,
                     entries,
                 }),
+            facts,
             terrain,
         };
         let (mut scratch, mut out) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);

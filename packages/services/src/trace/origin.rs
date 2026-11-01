@@ -52,6 +52,11 @@ pub struct Media<'a> {
     /// and head. RIDES only grows, so a host rewinds a later copy to this.
     pub rides: Option<(u64, u64)>,
     pub files: Option<Files<'a>>,
+    /// VANA's ride facts table, `rides/facts.tbl` in FILES, by the digest
+    /// of its slots (`vana::ride::facts::digest`); `None` without a table.
+    /// VANA rewrites it as rides are saved, and each of its slots ends in
+    /// its own CRC32, so its entry's CRC tells only its length.
+    pub facts: Option<u32>,
     pub terrain: Option<Terrain>,
 }
 
@@ -329,6 +334,7 @@ impl<'a> Wire<'a> for Media<'a> {
         self.journal.put(w);
         self.rides.put(w);
         self.files.put(w);
+        self.facts.put(w);
         self.terrain.put(w);
     }
     fn take(r: &mut Reader<'a>) -> Self {
@@ -336,6 +342,7 @@ impl<'a> Wire<'a> for Media<'a> {
             journal: Wire::take(r),
             rides: Wire::take(r),
             files: Wire::take(r),
+            facts: Wire::take(r),
             terrain: Wire::take(r),
         }
     }
@@ -440,6 +447,7 @@ mod tests {
                 generation: 77,
                 entries: &entries[..used],
             }),
+            facts: Some(0x2144_df1c),
             terrain: Some(Terrain {
                 ready: true,
                 generation: 2,
@@ -458,6 +466,7 @@ mod tests {
             journal: None,
             rides: None,
             files: None,
+            facts: None,
             terrain: None,
         };
         let len = none.encode(&mut out).unwrap();

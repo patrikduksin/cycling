@@ -304,6 +304,31 @@ fn a_pulled_device_trace_replays_strict_from_the_media_it_started_on() {
 }
 
 #[test]
+fn a_ride_saved_again_since_leaves_the_facts_table_out() {
+    use vana::ride::facts;
+    let (mut sim, trace, _) = recorded_session();
+    let table = sim.file(facts::TABLE).unwrap();
+    let mut again = facts::decode_table(&table)
+        .next()
+        .expect("a ride before power-on");
+    again.facts.recovery_bpm = Some(31);
+    facts::save(&mut sim.device.bulk.host(), &again).unwrap();
+    let pulled = pull(&mut sim, &trace);
+    let now = pulled.files.as_ref().unwrap().files[facts::TABLE].1.clone();
+    assert_eq!(
+        now.len(),
+        table.len(),
+        "a ride saved again takes no more room"
+    );
+
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(
+        matches!(&gaps[..], [Gap::File { name, now: Some(_), .. }] if name == facts::TABLE),
+        "{gaps:?}"
+    );
+}
+
+#[test]
 fn a_terrain_pack_of_the_right_length_and_another_digest_is_left_out() {
     let (mut sim, trace, _) = recorded_session();
     let mut pulled = pull(&mut sim, &trace);

@@ -56,6 +56,7 @@ struct Start {
     settings: firmware_shell::preferences::Settings,
     memory: Memory,
     files: Option<(u64, u64, usize)>,
+    facts: Option<u32>,
     terrain: Option<Terrain>,
     entries: Bytes,
     header: Bytes,
@@ -151,6 +152,7 @@ impl Trace {
             settings,
             memory,
             files: None,
+            facts: None,
             terrain: None,
             entries,
             header,
@@ -170,6 +172,7 @@ impl Trace {
         };
         let (files, terrain) = origin::volumes(bulk, &mut *start.entries, &mut self.sector);
         start.files = files.map(|files| (files.store, files.generation, files.entries.len()));
+        start.facts = vana::ride::facts::digest(bulk).ok().flatten();
         start.terrain = terrain;
         log::info!(target: "trace", "staging boot={:08x}", start.boot);
     }
@@ -495,6 +498,7 @@ impl Start {
                 generation,
                 entries: &entries[..len],
             }),
+            facts: self.facts,
             terrain: self.terrain,
         };
         let (scratch, out) = self.header.split_at_mut(HEADER / 2);

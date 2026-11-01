@@ -226,6 +226,32 @@ fn the_table_keeps_the_newest_saved_rides_in_one_entry_and_a_save_replaces_its_r
 }
 
 #[test]
+fn the_digest_tells_apart_tables_of_one_length_that_the_file_crc_cannot() {
+    let mut region = formatted();
+    assert_eq!(digest(&mut region).unwrap(), None, "no table");
+    for ride in 1..=3 {
+        save(&mut region, &record(ride)).unwrap();
+    }
+    let before = raw(&mut region, TABLE).unwrap();
+    assert_eq!(digest(&mut region).unwrap(), table_digest(&before));
+    let mut again = record(1);
+    again.facts.recovery_bpm = Some(31);
+    save(&mut region, &again).unwrap();
+    let after = raw(&mut region, TABLE).unwrap();
+    assert_eq!(after.len(), before.len());
+    assert_eq!(
+        crc32(&after),
+        crc32(&before),
+        "each slot ends in its own CRC32"
+    );
+    assert_eq!(digest(&mut region).unwrap(), table_digest(&after));
+    assert_ne!(table_digest(&after), table_digest(&before));
+    let mut moved = before.clone();
+    moved[SLOT..].rotate_left(SLOT);
+    assert_ne!(table_digest(&moved), table_digest(&before), "order counts");
+}
+
+#[test]
 fn a_clear_forgets_its_journal_and_its_older_files_and_nothing_else() {
     let mut region = formatted();
     put(&mut region, "rides/b1.workout", b"a workout record");

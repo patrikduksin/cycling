@@ -3,11 +3,14 @@
 //! The header names each medium as VANA found it at power-on; the pulled
 //! copies are later. The ride journals only grow, so they are rewound to
 //! the ends the header recorded. A file is the one of power-on when FILES is
-//! the same store and the file still has the revision the header recorded;
-//! the ride facts table VANA rewrote since is taken back to the rides that
-//! had ended at power-on and checked against the header's length and CRC.
-//! What the pull cannot give back is a [`Gap`], and its medium starts
-//! without it.
+//! the same store and the file still has the revision the header recorded:
+//! the revision names the directory commit that wrote it. Its CRC cannot,
+//! since a file that ends in the CRC32 of its bytes, as workouts, the bests
+//! and each slot of the ride facts table do, has a whole-file CRC32 that
+//! depends only on its length. The ride facts table VANA rewrote since is
+//! taken back to the rides that had ended at power-on and checked against
+//! the digest of its slots the header recorded. What the pull cannot give
+//! back is a [`Gap`], and its medium starts without it.
 use crate::bulk::{Presence, SimBulk};
 use crate::replay::Origin;
 use crate::storage::FileFlash;
@@ -191,7 +194,7 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
         write_rides(&mut card, store, log, slots)?;
     }
     if let Some(listed) = media.files {
-        write_files(&mut card, &listed, pulled, &ended, &mut gaps)?;
+        write_files(&mut card, &listed, media.facts, pulled, &ended, &mut gaps)?;
     }
     if let Some(terrain) = media.terrain {
         write_terrain(&mut card, &terrain, pulled, &mut gaps)?;
@@ -380,10 +383,12 @@ fn write_rides(card: &mut SimBulk, store: u64, log: &Rides, slots: &[u8]) -> Res
 }
 
 /// FILES as the header lists it: each file still at its revision, the ride
-/// facts table taken back to the rides that had ended, and nothing else.
+/// facts table taken back to the rides that had ended when that gives the
+/// table of digest `facts`, and nothing else.
 fn write_files(
     card: &mut SimBulk,
     listed: &origin::Files<'_>,
+    facts: Option<u32>,
     pulled: &Pulled,
     ended: &BTreeSet<(u8, u32)>,
     gaps: &mut Vec<Gap>,
@@ -397,6 +402,7 @@ fn write_files(
                     Some((revision, bytes)) if *revision == entry.revision => Some(bytes.clone()),
                     Some((_, bytes)) if entry.name == facts::TABLE => {
                         facts_at_power_on(bytes, ended)
+                            .filter(|table| facts.is_some() && facts::table_digest(table) == facts)
                     }
                     _ => None,
                 };

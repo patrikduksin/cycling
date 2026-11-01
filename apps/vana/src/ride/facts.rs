@@ -794,6 +794,43 @@ pub fn read(
     }))
 }
 
+/// What the table holds and in what order, for a host to check a copy
+/// against: the CRC32 of every slot's bytes before its own CRC, the header
+/// first, in file order. `None` without a table. The CRC32 of the whole
+/// file cannot tell two tables of one length apart, as every slot ends in
+/// the CRC32 of the bytes before it.
+pub fn digest(media: &mut impl ReadWrite) -> Result<Option<u32>, Error> {
+    let mut sector = [0; SECTOR_SIZE];
+    let mut bytes = [0; SECTOR_SIZE];
+    let mut store = volume::open(media, &volume::FILES, &mut sector)?;
+    let dir = files::mount(&mut store, &mut sector)?;
+    let Some(entry) = dir.find(&mut store, &table_name(), &mut sector)? else {
+        return Ok(None);
+    };
+    let table = Table::open(&mut store, &dir, entry, &mut sector, &mut bytes)?;
+    let mut crc = Crc32::new();
+    table.each(
+        &mut store,
+        &dir,
+        0..table.sectors(),
+        &mut sector,
+        &mut bytes,
+        |_, (Slot::Header(slot) | Slot::Ride(slot))| crc = crc.update(&slot[..slot.len() - 4]),
+    )?;
+    Ok(Some(crc.finish()))
+}
+
+/// [`digest`] of a whole table held in `bytes`, whose header is sound.
+pub fn table_digest(bytes: &[u8]) -> Option<u32> {
+    let stride = table_stride(bytes)?;
+    let slots = bytes.chunks_exact(stride);
+    Some(
+        slots
+            .fold(Crc32::new(), |crc, slot| crc.update(&slot[..stride - 4]))
+            .finish(),
+    )
+}
+
 /// Visit the older files listed in directory sector `index`, one sector's
 /// entries per call. Files that do not decode or name another ride than their
 /// own are skipped. Returns the next sector, or `None` after the last.

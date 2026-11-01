@@ -1,6 +1,7 @@
 //! A trace decoded into readable entries, each stamped with the session
 //! uptime and the ride's own clock: what every `cycling trace` subcommand
 //! reads.
+use crate::trace::ant_page::Pages;
 use device_api::ant;
 use device_api::input::Input;
 use device_api::observation::Observation;
@@ -250,11 +251,18 @@ pub struct Entry {
     /// The same source said the same thing before: only counters or a
     /// reading moved. Hidden unless asked for.
     pub repeat: bool,
+    /// The bytes behind a decoded packet, in hex.
+    pub hex: Option<String>,
 }
 
 impl fmt::Display for Entry {
+    /// `{:#}` adds the packet's bytes after its words.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}  {:<11} {}", self.at, self.kind.name(), self.text)
+        write!(f, "{}  {:<11} {}", self.at, self.kind.name(), self.text)?;
+        match &self.hex {
+            Some(hex) if f.alternate() => write!(f, "  [{hex}]"),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -416,6 +424,7 @@ struct Reader {
     utc_at_boot_ms: Option<u64>,
     /// Each source's last text, to mark repeats.
     last: HashMap<(Kind, u8), String>,
+    pages: Pages,
 }
 
 impl Reader {
@@ -447,6 +456,7 @@ impl Reader {
             kind,
             text,
             repeat,
+            hex: None,
         });
     }
 
@@ -497,15 +507,16 @@ impl Reader {
             Event::AntLink { channel, snapshot } => {
                 self.push_from(Kind::Ant, channel, ant_link(channel, snapshot))
             }
-            Event::AntPacket(packet) => self.push(
-                Kind::AntPacket,
-                format!(
-                    "{} page {:#04x} data {}",
-                    sensor(packet.identity),
-                    packet.data[0],
-                    hex(&packet.data)
-                ),
-            ),
+            Event::AntPacket(packet) => {
+                let words = self.pages.describe(packet.identity, packet.data);
+                self.push(
+                    Kind::AntPacket,
+                    format!("{} {words}", sensor(packet.identity)),
+                );
+                if let Some(entry) = self.entries.last_mut() {
+                    entry.hex = Some(hex(&packet.data));
+                }
+            }
             Event::AntRequest { operation, result } => self.push(
                 Kind::AntRequest,
                 format!("{} -> {}", ant_operation(operation), ant_result(result)),

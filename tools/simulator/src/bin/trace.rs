@@ -29,13 +29,15 @@ commands:
       Spans (session, rides, recording and paused stretches, pages, toasts,
       sensor links, GPS fix) and events (boot, laps, warnings, gaps, commands),
       one line each. Run this first.
-  timeline <trace> [--from T] [--to T] [--kinds LIST] [--all]
+  timeline <trace> [--from T] [--to T] [--kinds LIST] [--all] [--hex]
       Every event in the window, inputs and what the rider saw. Kinds: gap,
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
       gps, sensors, battery, time, storage, entropy, page, toast, sound, ride,
       shown, log; groups seen, inputs, default, all. --all also lists entries
-      that only repeat their source (a counter or reading moved).
-  find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N]
+      that only repeat their source (a counter or reading moved). ANT+ pages
+      read as words (power 230 W, hr 142 bpm, cadence 86 rpm, radar targets);
+      --hex adds each packet's bytes.
+  find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N] [--hex]
       field=value, field!=value or field~text over the shown readings (time,
       speed, power, hr, cad, dist, grade) gives the stretches it held, e.g.
       power=--; a kind or kinds (toast, page,ride) gives those entries; any
@@ -122,7 +124,7 @@ impl Options {
 
 fn run(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().expect("arguments checked");
-    let options = Options::parse(rest, &["all", "video"])?;
+    let options = Options::parse(rest, &["all", "video", "hex"])?;
     let path = PathBuf::from(
         options
             .positional
@@ -246,6 +248,8 @@ fn timeline_text(timeline: &Timeline, options: &Options) -> Result<String, Strin
             *hidden.entry(entry.kind.name()).or_default() += 1;
         } else if entry.repeat && !all {
             *hidden.entry("repeats").or_default() += 1;
+        } else if options.has("hex") {
+            let _ = writeln!(out, "{entry:#}");
         } else {
             let _ = writeln!(out, "{entry}");
         }
@@ -282,7 +286,11 @@ fn find_text(timeline: &Timeline, options: &Options) -> Result<String, String> {
     );
     let mut out = String::new();
     for line in found.iter().take(limit) {
-        let _ = writeln!(out, "{line}");
+        if options.has("hex") {
+            let _ = writeln!(out, "{line:#}");
+        } else {
+            let _ = writeln!(out, "{line}");
+        }
     }
     match found.len() {
         0 => out.push_str("found nothing\n"),

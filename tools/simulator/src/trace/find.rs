@@ -64,6 +64,7 @@ pub enum Found<'a> {
 impl fmt::Display for Found<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Entry(entry) if f.alternate() => write!(f, "{entry:#}"),
             Self::Entry(entry) => write!(f, "{entry}"),
             Self::Stretch { from, to, first } => {
                 write!(f, "{from}  stretch     ")?;

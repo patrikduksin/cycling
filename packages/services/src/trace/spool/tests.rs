@@ -413,3 +413,23 @@ fn a_spool_keeps_blocks_in_order_across_its_end() {
     assert!(spool.is_empty());
     assert_eq!(spool.peak(), 7);
 }
+
+#[test]
+fn each_session_names_its_trace_one_past_the_highest_in_traces() {
+    let mut media = Media::new(DATA + 4 * u64::from(store::CHUNK));
+    let mut sector = [0u8; SECTOR_SIZE];
+    let mut store = store::format(&mut media, 3, &mut sector).unwrap();
+    let first = next_name(&store, &mut media, 0xa, &mut sector).unwrap();
+    assert_eq!(first.as_str(), "traces/000001-0000000a.trace");
+    for name in [
+        "traces/000041-00000001.trace",
+        "traces/000007-00000002.trace",
+        "notes",
+    ] {
+        store
+            .create(&mut media, &Name::new(name).unwrap(), None, &mut sector)
+            .unwrap();
+    }
+    let next = next_name(&store, &mut media, 0x1a2b3c4d, &mut sector).unwrap();
+    assert_eq!(next.as_str(), "traces/000042-1a2b3c4d.trace");
+}

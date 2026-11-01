@@ -7998,6 +7998,48 @@ fn a_ride_on_new_bulk_media_again(sim: &mut Sim) {
 }
 
 #[test]
+fn a_session_recorded_into_the_store_replays_exactly_from_the_file_a_host_pulls() {
+    use shell_simulator::replay::first_difference;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    a_ride_on_new_bulk_media(&mut sim);
+    assert!(sim.device.sync_trace(), "the session records into STORE");
+    let name = sim.device.trace_file().unwrap();
+    assert!(name.starts_with("traces/000001-"), "{name}");
+    let pulled = sim.store_file(&name).expect("every record reads back");
+    let mut capture = sim.capture();
+    assert_eq!(pulled.len(), capture.trace.len());
+    assert!(pulled == capture.trace, "the file is the trace");
+    capture.trace = pulled;
+
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    let (frames, replayed_frames) = (sim.frame_hashes(), replayed.frame_hashes());
+    assert!(frames.len() > 100);
+    assert!(frames == replayed_frames, "the same frames from power-on");
+    assert!(
+        replayed.ride_media() == sim.ride_media(),
+        "the same journal"
+    );
+    let samples = |sim: &mut Sim| {
+        sim.bulk_rides()
+            .iter()
+            .map(|ride| (ride.id, ride.samples().copied().collect::<Vec<Sample>>()))
+            .collect::<Vec<_>>()
+    };
+    let rides = samples(&mut sim);
+    assert!(
+        rides.iter().any(|ride| ride.1.len() > 30),
+        "a ride was saved"
+    );
+    assert_eq!(samples(&mut replayed), rides);
+}
+
+#[test]
 fn a_new_store_replays_with_the_entropy_it_was_named_from() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);

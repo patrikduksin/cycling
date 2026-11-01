@@ -7,7 +7,7 @@ use crate::devices::PowerDevice;
 use crate::devices::PowerSwitch;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
-use crate::replay::{Blocks, Capture, Mode, Next, Origin, Replay, Report, Seen, Shelled, Sources};
+use crate::replay::{Capture, Mode, Next, Origin, Replay, Report, Seen, Shelled, Sources};
 use crate::storage::FileFlash;
 use crate::world::World;
 use device_api::ant::Ant;
@@ -29,6 +29,7 @@ use device_api::server::AccessPoint;
 use device_api::{power::PowerControl, server::Server, sound::Sound};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
+use firmware_services::trace::frozen::Sink;
 use firmware_services::trace::frozen::{
     CompanionView, FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record,
     RecordedBulk, RecordedEdges, Recorder,
@@ -37,6 +38,7 @@ use firmware_services::trace::frozen::{
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
 use firmware_services::trace::origin::{self, Config, Media, Memory};
 use firmware_services::trace::redact;
+use firmware_services::trace::spool::{self, Drain, Spool, Staging};
 use firmware_services::trace::{Event, Output};
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -282,7 +284,40 @@ pub type VirtualShell =
 
 const TRACE_BLOCK: usize = 4096;
 
-type TraceRecorder = Recorder<Box<[u8]>, Blocks>;
+type TraceRecorder = Recorder<Box<[u8]>, Staged>;
+
+/// The trace's sealed blocks: kept for a capture, and staged for its file
+/// while the card's STORE volume records it, as the C606 stages them. A
+/// block the spool has no room for is lost from both.
+#[derive(Default)]
+struct Staged {
+    kept: Vec<u8>,
+    spool: Option<Spool<Vec<u8>>>,
+}
+
+impl Sink for Staged {
+    fn block(&mut self, bytes: &[u8]) -> bool {
+        let taken = self.spool.as_mut().is_none_or(|spool| spool.block(bytes));
+        if taken {
+            self.kept.extend_from_slice(bytes);
+        }
+        taken
+    }
+}
+
+impl Staging for Staged {
+    type Ring = Vec<u8>;
+    fn spool(&mut self) -> &mut Spool<Vec<u8>> {
+        self.spool.get_or_insert_with(|| Spool::new(Vec::new()))
+    }
+}
+
+/// The trace's file in the card's STORE volume, once VANA's boot scans
+/// ended and its header was known.
+struct Stored {
+    drain: Drain<Vec<u8>>,
+    extent: firmware_services::volume::Extent,
+}
 
 struct Trace {
     recorder: RefCell<TraceRecorder>,
@@ -306,6 +341,8 @@ struct Trace {
     #[cfg(feature = "cycling")]
     server: FrozenServer,
     start: Start,
+    store: Option<firmware_services::volume::Extent>,
+    stored: Option<Stored>,
 }
 
 /// What the device started from, for the trace's header: the settings and
@@ -385,7 +422,9 @@ impl Trace {
         let buffer = vec![0u8; TRACE_BLOCK].into_boxed_slice();
         Self {
             start,
-            recorder: RefCell::new(Recorder::new(buffer, Blocks::default())),
+            recorder: RefCell::new(Recorder::new(buffer, Staged::default())),
+            store: None,
+            stored: None,
             #[cfg(feature = "cycling")]
             ant: Default::default(),
             #[cfg(feature = "cycling")]
@@ -412,10 +451,93 @@ impl Trace {
         self.recorder.borrow_mut().record(event);
     }
 
+    /// Stage blocks for a STORE volume on the card, if it holds a store.
+    fn stage(&mut self, bulk: &crate::bulk::SimBulk) {
+        use firmware_services::volume::{self, Layout, STORE};
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let mut host = bulk.host();
+        let Ok(Layout::Table(table)) = volume::read(&mut host, &mut sector) else {
+            return;
+        };
+        let Some(extent) = table.find(&STORE) else {
+            return;
+        };
+        let mut store = volume::Volume::new(&mut host, extent);
+        if firmware_services::store::mount(&mut store, &mut sector).is_ok() {
+            self.store = Some(extent);
+            self.recorder.borrow_mut().sink_mut().spool =
+                Some(Spool::new(vec![0u8; spool::RING_BYTES]));
+        }
+    }
+
+    /// This pass's share of the staged trace to its file, which opens once
+    /// the header is known. A store that fails ends staging.
+    fn drain(&mut self, bulk: &crate::bulk::SimBulk, now: u64) {
+        let Some(extent) = self.store else {
+            return;
+        };
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let mut host = bulk.host();
+        let mut volume = firmware_services::volume::Volume::new(&mut host, extent);
+        if self.stored.is_none() {
+            if self.start.journals.is_none() {
+                return;
+            }
+            let opened =
+                firmware_services::store::mount(&mut volume, &mut sector).and_then(|store| {
+                    let name = spool::next_name(&store, &mut volume, self.start.boot, &mut sector)?;
+                    let traces = firmware_services::store::Dir::new(spool::TRACES)?;
+                    let header = self.start.header();
+                    Drain::create(&mut volume, store, name, traces, header, now, &mut sector)
+                });
+            match opened {
+                Ok(drain) => self.stored = Some(Stored { drain, extent }),
+                Err(_) => return self.unstage(),
+            }
+        }
+        let Some(stored) = self.stored.as_mut() else {
+            return;
+        };
+        let mut recorder = self.recorder.borrow_mut();
+        let mut volume = firmware_services::volume::Volume::new(&mut host, stored.extent);
+        if stored
+            .drain
+            .pass(&mut recorder, &mut volume, now, &mut sector)
+            .is_err()
+        {
+            drop(recorder);
+            self.unstage();
+        }
+    }
+
+    fn sync(&mut self, bulk: &crate::bulk::SimBulk, now: u64) -> bool {
+        let Some(stored) = self.stored.as_mut() else {
+            return false;
+        };
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let mut host = bulk.host();
+        let mut volume = firmware_services::volume::Volume::new(&mut host, stored.extent);
+        let mut recorder = self.recorder.borrow_mut();
+        let synced = stored
+            .drain
+            .sync(&mut recorder, &mut volume, now, &mut sector);
+        drop(recorder);
+        if synced.is_err() {
+            self.unstage();
+        }
+        synced.is_ok()
+    }
+
+    fn unstage(&mut self) {
+        self.store = None;
+        self.stored = None;
+        self.recorder.borrow_mut().sink_mut().spool = None;
+    }
+
     fn bytes(&self) -> Vec<u8> {
         let mut recorder = self.recorder.borrow_mut();
         let mut bytes = self.start.header();
-        bytes.extend_from_slice(&recorder.sink().0);
+        bytes.extend_from_slice(&recorder.sink().kept);
         bytes.extend_from_slice(recorder.open_block());
         bytes
     }
@@ -929,6 +1051,7 @@ impl Session {
         }
         if self.trace.start.volumes.is_none() {
             self.trace.start.read_volumes(&self.bulk);
+            self.trace.stage(&self.bulk);
         }
         self.trace.record(&Event::Pass { now_ms: self.now });
         self.display.0.borrow_mut().refusals.begin_pass();
@@ -951,6 +1074,17 @@ impl Session {
         if let Devices::Replayed(replay) = &mut self.devices {
             replay.saw(&seen);
         }
+        self.trace.drain(&self.bulk, self.now);
+    }
+    /// Append everything the trace staged to its file and sync it, as the
+    /// C606 does before a host takes the card; false when it has no file.
+    pub fn sync_trace(&mut self) -> bool {
+        self.trace.sync(&self.bulk, self.now)
+    }
+    /// The name of this session's trace file in the card's STORE volume.
+    pub fn trace_file(&self) -> Option<String> {
+        let stored = self.trace.stored.as_ref()?;
+        Some(stored.drain.name().as_str().to_string())
     }
     fn record_faults(&mut self) {
         let panel = core::mem::take(&mut self.display.0.borrow_mut().refusals.refused);
@@ -1691,6 +1825,7 @@ impl Session {
     /// A main-CPU restart, as the terminal `RESTART` requests. The companion
     /// keeps running with its channels; see `power_cycle` for a full loss.
     pub fn restart(&mut self) -> io::Result<()> {
+        self.sync_trace();
         self.reboot(false)
     }
     /// Power lost and restored: the companion boots again too.

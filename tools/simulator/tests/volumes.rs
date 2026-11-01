@@ -279,5 +279,10 @@ fn a_trace_appended_to_the_store_reads_back_after_a_power_loss() {
     assert_eq!(sim.command("STORE LIST").1, "traces/0001:1:1");
     sim.power_loss();
     assert_eq!(sim.store_file("traces/0001"), Some(trace));
-    assert_eq!(field(&sim.command("STORE STATUS").1, "files"), "1");
+    let own = sim
+        .device
+        .trace_file()
+        .expect("the session records its own trace");
+    assert!(own.starts_with("traces/000001-"), "{own}");
+    assert_eq!(field(&sim.command("STORE STATUS").1, "files"), "2");
 }

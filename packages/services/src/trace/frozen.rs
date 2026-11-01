@@ -56,8 +56,12 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
         }
     }
 
-    /// The block being filled, framed. It stays open.
+    /// The block being filled, framed, or nothing while it holds no event.
+    /// It stays open.
     pub fn open_block(&mut self) -> &[u8] {
+        if self.encoder.is_empty() {
+            return &[];
+        }
         self.encoder.sealed()
     }
 

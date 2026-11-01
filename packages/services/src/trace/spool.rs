@@ -17,6 +17,32 @@ use super::frozen::{Recorder, Sink};
 use crate::store::{self, Appender, Dir, Error, Name, Sector, Store};
 use device_api::bulk::ReadWrite;
 
+/// The directory traces live in; the oldest rolls over when the store is
+/// full.
+pub const TRACES: &str = "traces/";
+
+/// The name of the next power-on session's trace: one past the highest
+/// sequence number in [`TRACES`], then the boot id, as in
+/// `traces/000042-1a2b3c4d.trace`.
+pub fn next_name(
+    store: &Store,
+    media: &mut impl ReadWrite,
+    boot: u32,
+    sector: &mut Sector,
+) -> Result<Name, Error> {
+    use core::fmt::Write;
+    let mut highest = 0u32;
+    store.list(media, &Dir::new(TRACES)?, sector, |entry| {
+        let sequence = entry.name.as_str().strip_prefix(TRACES);
+        if let Some(sequence) = sequence.and_then(|rest| rest.get(..6)?.parse::<u32>().ok()) {
+            highest = highest.max(sequence);
+        }
+    })?;
+    let mut text = heapless::String::<{ store::NAME }>::new();
+    write!(text, "{TRACES}{:06}-{boot:08x}.trace", highest + 1).map_err(|_| Error::Name)?;
+    Name::new(&text)
+}
+
 /// How often the drain makes the trace durable.
 pub const SYNC_MS: u64 = 5_000;
 
@@ -109,6 +135,20 @@ impl<R: AsRef<[u8]> + AsMut<[u8]>> Sink for Spool<R> {
 /// A recorder whose sealed blocks wait in a spool.
 pub type Spooled<B, R> = Recorder<B, Spool<R>>;
 
+/// A sink whose blocks wait in a spool for a [`Drain`], such as the spool
+/// itself or one that also keeps a copy.
+pub trait Staging: Sink {
+    type Ring: AsRef<[u8]> + AsMut<[u8]>;
+    fn spool(&mut self) -> &mut Spool<Self::Ring>;
+}
+
+impl<R: AsRef<[u8]> + AsMut<[u8]>> Staging for Spool<R> {
+    type Ring = R;
+    fn spool(&mut self) -> &mut Self {
+        self
+    }
+}
+
 /// The trace file a spool drains into: its header, then the blocks.
 pub struct Drain<H> {
     store: Store,
@@ -165,9 +205,9 @@ impl<H: AsRef<[u8]>> Drain<H> {
 
     /// This pass's share: at most one record of the header and the spool,
     /// and every [`SYNC_MS`] the recorder's open block and a sync.
-    pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, R: AsRef<[u8]> + AsMut<[u8]>>(
+    pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
-        recorder: &mut Spooled<B, R>,
+        recorder: &mut Recorder<B, S>,
         media: &mut impl ReadWrite,
         now: u64,
         sector: &mut Sector,
@@ -176,7 +216,7 @@ impl<H: AsRef<[u8]>> Drain<H> {
             recorder.flush();
             self.flushed_ms = now;
         }
-        let spool = recorder.sink_mut();
+        let spool = recorder.sink_mut().spool();
         let room = self.appender.room();
         let pending = self.header_left() + spool.len();
         if pending >= room {
@@ -193,15 +233,15 @@ impl<H: AsRef<[u8]>> Drain<H> {
     /// Append everything the recorder holds and sync: before another writer
     /// takes the medium, and before power goes. Writes as many records as
     /// that takes.
-    pub fn sync<B: AsRef<[u8]> + AsMut<[u8]>, R: AsRef<[u8]> + AsMut<[u8]>>(
+    pub fn sync<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
-        recorder: &mut Spooled<B, R>,
+        recorder: &mut Recorder<B, S>,
         media: &mut impl ReadWrite,
         now: u64,
         sector: &mut Sector,
     ) -> Result<(), Error> {
         recorder.flush();
-        let spool = recorder.sink_mut();
+        let spool = recorder.sink_mut().spool();
         let pending = self.header_left() + spool.len();
         self.append(spool, pending, media, sector)?;
         self.appender.sync(&mut self.store, media, sector)?;

@@ -18,7 +18,7 @@ use firmware_services::trace::frozen::{
     FrozenAccessPoint, FrozenAnt, FrozenBle, FrozenCompanion, FrozenPosition, FrozenPowerControl,
     FrozenServer, FrozenSound, Latest, Record, Recorder,
 };
-use firmware_services::trace::origin::{self, Config, Files, Media, Memory, Terrain};
+use firmware_services::trace::origin::{self, Config, Files, Found, Media, Memory, Terrain};
 use firmware_services::trace::spool::{self, Card, File, Spool, Spooled};
 use firmware_services::trace::{Activity, Consumers, Event, Gnss, Health, Vitals, redact};
 
@@ -55,9 +55,9 @@ struct Start {
     boot: u32,
     settings: firmware_shell::preferences::Settings,
     memory: Memory,
-    files: Option<(u64, u64, usize)>,
+    files: Found<(u64, u64, usize)>,
     facts: Option<u32>,
-    terrain: Option<Terrain>,
+    terrain: Found<Terrain>,
     entries: Bytes,
     header: Bytes,
 }
@@ -151,9 +151,9 @@ impl Trace {
             boot,
             settings,
             memory,
-            files: None,
+            files: Found::Absent,
             facts: None,
-            terrain: None,
+            terrain: Found::Absent,
             entries,
             header,
         });

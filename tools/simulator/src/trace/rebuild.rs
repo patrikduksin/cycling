@@ -13,7 +13,7 @@ use crate::bulk::{Presence, SimBulk};
 use crate::replay::Origin;
 use crate::storage::FileFlash;
 use device_api::bulk::SECTOR_SIZE;
-use firmware_services::trace::origin::{self, Config, FileEntry, RideLog};
+use firmware_services::trace::origin::{self, Config, Failure, FileEntry, Found, Journal, RideLog};
 use firmware_services::{checksum::crc32, files, pack, sector_log, volume};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,6 +72,9 @@ pub enum Gap {
     /// VANA could not read the internal journal's last slot at power-on, so
     /// no copy can be checked against it; the rebuilt journal is empty.
     JournalUnchecked { slots: u32 },
+    /// VANA's boot scan could not read the internal journal; the rebuilt
+    /// journal is empty.
+    JournalUnusable,
     /// RIDES was not pulled; the rebuilt card has no ride log.
     RidesNotPulled,
     /// RIDES now holds another log, so it was cleared or initialized since;
@@ -103,6 +106,11 @@ pub enum Gap {
     },
     /// A file whose read failed in the pull; the rebuilt FILES leaves it out.
     FileUnread { name: String, revision: u32 },
+    /// FILES did not read at power-on; the rebuilt FILES is empty.
+    FilesUnreadable(Failure),
+    /// The terrain pack did not read at power-on; the rebuilt card has no
+    /// terrain pack.
+    TerrainUnreadable(Failure),
     /// No local pack has the SHA-256 the header names; the rebuilt card has
     /// no terrain pack.
     Terrain { tag: String, digest: [u8; 32] },
@@ -127,6 +135,10 @@ impl fmt::Display for Gap {
             Self::JournalUnchecked { slots } => write!(
                 f,
                 "internal ride journal: VANA could not read the slot before slot {slots} at power-on, so the pulled journal cannot be checked against it; it starts empty"
+            ),
+            Self::JournalUnusable => write!(
+                f,
+                "internal ride journal: VANA could not read it at power-on; it starts empty"
             ),
             Self::RidesNotPulled => {
                 write!(f, "RIDES: not pulled; the card starts without a ride log")
@@ -186,6 +198,16 @@ impl fmt::Display for Gap {
                 f,
                 "file {name} (revision {revision}): its read failed in the pull; FILES starts without it"
             ),
+            Self::FilesUnreadable(failure) => write!(
+                f,
+                "FILES: it did not read at power-on ({}); it starts empty",
+                why(*failure)
+            ),
+            Self::TerrainUnreadable(failure) => write!(
+                f,
+                "terrain pack: it did not read at power-on ({}); the card starts without one",
+                why(*failure)
+            ),
             Self::Terrain { tag, digest } => write!(
                 f,
                 "terrain pack {tag} (SHA-256 {}): no local pack under .local/ has it; the card starts without one",
@@ -204,9 +226,16 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
     let media = media_of(&header)?;
     let boot = header.boot.max(1);
     let mut gaps = Vec::new();
-    let internal = media
-        .journal
-        .and_then(|journal| internal_at_power_on(journal, pulled, &mut gaps));
+    let internal = match media.journal {
+        Some(Journal::Scanned { next, last }) => {
+            internal_at_power_on(next, last, pulled, &mut gaps)
+        }
+        Some(Journal::Unusable) => {
+            gaps.push(Gap::JournalUnusable);
+            None
+        }
+        None => None,
+    };
     let rides = match media.rides {
         Some(RideLog::Log { store, head }) => rides_at_power_on(store, head, pulled, &mut gaps),
         Some(RideLog::Uncertain { store, head }) => {
@@ -238,11 +267,17 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
     if let Some((log, slots)) = rides {
         write_rides(&mut card, log, slots)?;
     }
-    if let Some(listed) = media.files {
-        write_files(&mut card, &listed, media.facts, pulled, &ended, &mut gaps)?;
+    match media.files {
+        Found::Read(listed) => {
+            write_files(&mut card, &listed, media.facts, pulled, &ended, &mut gaps)?
+        }
+        Found::Unreadable(failure) => gaps.push(Gap::FilesUnreadable(failure)),
+        Found::Absent => {}
     }
-    if let Some(terrain) = media.terrain {
-        write_terrain(&mut card, &terrain, pulled, &mut gaps)?;
+    match media.terrain {
+        Found::Read(terrain) => write_terrain(&mut card, &terrain, pulled, &mut gaps)?,
+        Found::Unreadable(failure) => gaps.push(Gap::TerrainUnreadable(failure)),
+        Found::Absent => {}
     }
     Ok((Origin { flash, bulk, boot }, gaps))
 }
@@ -263,7 +298,8 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
     let media = media_of(&header)?;
     let mut out = format!("boot {}\n", header.boot);
     match media.journal {
-        Some(journal) => out += &format!("journal {}\n", journal.next),
+        Some(Journal::Scanned { next, .. }) => out += &format!("journal {next}\n"),
+        Some(Journal::Unusable) => out += "journal unusable\n",
         None => out += "journal none\n",
     }
     match media.rides {
@@ -276,7 +312,7 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
         None => out += "rides none\n",
     }
     match media.files {
-        Some(files) => {
+        Found::Read(files) => {
             out += &format!("files {:016x} {}\n", files.store, files.generation);
             for entry in files.entries() {
                 out += &format!(
@@ -285,10 +321,11 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
                 );
             }
         }
-        None => out += "files none\n",
+        Found::Unreadable(failure) => out += &format!("files unreadable {}\n", word(failure)),
+        Found::Absent => out += "files none\n",
     }
     match media.terrain {
-        Some(terrain) => {
+        Found::Read(terrain) => {
             out += &format!(
                 "terrain {} {} {} {}\n",
                 terrain.length,
@@ -297,19 +334,20 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
                 tag(&terrain.tag)
             )
         }
-        None => out += "terrain none\n",
+        Found::Unreadable(failure) => out += &format!("terrain unreadable {}\n", word(failure)),
+        Found::Absent => out += "terrain none\n",
     }
     Ok(out)
 }
 
-/// The internal journal's slots as VANA found them, when the pull still
-/// holds them: as many, the last of them the one the header names.
+/// The internal journal's `slots` slots as VANA found them, when the pull
+/// still holds them: the last of them the one whose CRC32 is `last`.
 fn internal_at_power_on<'a>(
-    journal: origin::Journal,
+    slots: u32,
+    last_at_boot: Option<u32>,
     pulled: &'a Pulled,
     gaps: &mut Vec<Gap>,
 ) -> Option<&'a [u8]> {
-    let slots = journal.next;
     let wanted = slots as usize * SLOT_SIZE;
     let Some(now) = pulled.internal.as_ref().filter(|now| now.len() >= wanted) else {
         gaps.push(Gap::Journal {
@@ -324,7 +362,7 @@ fn internal_at_power_on<'a>(
         .0
         .last()
         .map(|slot| crc32(slot));
-    match (last, journal.last) {
+    match (last, last_at_boot) {
         (Some(_), None) => gaps.push(Gap::JournalUnchecked { slots }),
         (last, recorded) if last != recorded => gaps.push(Gap::JournalReplaced { slots }),
         _ => return Some(kept),
@@ -671,6 +709,22 @@ fn media_of<'a>(
         );
     }
     origin::Media::decode(header.media).ok_or_else(|| "the header's media do not decode".into())
+}
+
+fn word(failure: Failure) -> &'static str {
+    match failure {
+        Failure::Card => "card",
+        Failure::Table => "table",
+        Failure::Volume => "volume",
+    }
+}
+
+fn why(failure: Failure) -> &'static str {
+    match failure {
+        Failure::Card => "the card did not answer",
+        Failure::Table => "the volume table was damaged or of another version",
+        Failure::Volume => "its header or directory was damaged or of another version",
+    }
 }
 
 fn tag(tag: &[u8; 16]) -> String {

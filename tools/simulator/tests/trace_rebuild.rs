@@ -2,7 +2,9 @@
 //! header and the media pulled after the session, as `cycling trace pull`
 //! pulls them through ride export and `files get`.
 #![cfg(feature = "cycling")]
+use device_api::bulk::ReadWrite;
 use device_api::server::Method;
+use firmware_services::trace::origin::{Failure, Journal};
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
 use shell_simulator::replay::{Capture, first_difference};
@@ -178,7 +180,7 @@ fn pull(sim: &mut Sim, trace: &[u8]) -> Pulled {
     for line in lines.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words[..] {
-            ["journal", slots] if slots != "none" => {
+            ["journal", slots] if !["none", "unusable"].contains(&slots) => {
                 let (_, info) = sim.command("EXPORT INFO");
                 let upper: usize = info.split_whitespace().nth(3).unwrap().parse().unwrap();
                 let count = upper.min(slots.parse().unwrap());
@@ -197,7 +199,7 @@ fn pull(sim: &mut Sim, trace: &[u8]) -> Pulled {
                     invalid: Vec::new(),
                 });
             }
-            ["files", "none"] => {}
+            ["files" | "terrain", "none" | "unreadable", ..] => {}
             ["files", ..] => {
                 let (store, _) = files_now(sim);
                 pulled.files = Some(Files {
@@ -439,7 +441,10 @@ fn with_media(
 fn a_journal_whose_last_slot_vana_could_not_read_is_not_called_cleared() {
     let (mut sim, trace, _) = recorded_session();
     let trace = with_media(&trace, |media| {
-        media.journal.as_mut().unwrap().last = None;
+        let Some(Journal::Scanned { last, .. }) = media.journal.as_mut() else {
+            panic!("{:?}", media.journal);
+        };
+        *last = None;
     });
     let pulled = pull(&mut sim, &trace);
     let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
@@ -450,6 +455,65 @@ fn a_journal_whose_last_slot_vana_could_not_read_is_not_called_cleared() {
     );
     let report = rebuild::report(&gaps);
     assert!(!report.contains("cleared since"), "{report}");
+}
+
+#[test]
+fn a_journal_vana_could_not_read_at_power_on_is_reported() {
+    let (mut sim, trace, _) = recorded_session();
+    let trace = with_media(&trace, |media| media.journal = Some(Journal::Unusable));
+    assert!(
+        rebuild::media(&trace)
+            .unwrap()
+            .contains("journal unusable\n")
+    );
+    let pulled = pull(&mut sim, &trace);
+    assert!(pulled.internal.is_none(), "nothing to pull");
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(gaps.contains(&Gap::JournalUnusable), "{gaps:?}");
+}
+
+#[test]
+fn files_and_a_pack_that_did_not_read_at_power_on_are_reported() {
+    use firmware_services::checksum::crc32;
+    use firmware_services::{files, pack, volume};
+    let (mut sim, trace, _) = recorded_session_after(|sim| {
+        let mut sector = [0u8; 512];
+        let mut card = sim.device.bulk.host();
+        let Ok(volume::Layout::Table(table)) = volume::read(&mut card, &mut sector) else {
+            panic!("a volume table");
+        };
+        let store = table.find(&volume::FILES).unwrap().start;
+        sim.device.bulk.corrupt(store + 1);
+        sim.device.bulk.corrupt(store + files::COPY_B + 1);
+        let terrain = table.find(&volume::TERRAIN).unwrap().start;
+        for copy in [terrain, terrain + 1] {
+            let mut header = sim.device.bulk.sector(copy);
+            if header[..16] == pack::MAGIC[..] {
+                header[16] = 9;
+                let crc = crc32(&header[..508]).to_le_bytes();
+                header[508..].copy_from_slice(&crc);
+                card.owned_write(copy, &header).unwrap();
+            }
+        }
+    });
+    let lines = rebuild::media(&trace).unwrap();
+    assert!(
+        lines.contains("files unreadable volume\n")
+            && lines.contains("terrain unreadable volume\n"),
+        "a directory sector that fails its CRC, a pack header of another version: {lines}"
+    );
+    let pulled = pull(&mut sim, &trace);
+    assert!(
+        pulled.files.is_none() && pulled.terrain.is_none(),
+        "nothing to pull"
+    );
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    for gap in [
+        Gap::FilesUnreadable(Failure::Volume),
+        Gap::TerrainUnreadable(Failure::Volume),
+    ] {
+        assert!(gaps.contains(&gap), "{gap:?} in {gaps:?}");
+    }
 }
 
 #[test]

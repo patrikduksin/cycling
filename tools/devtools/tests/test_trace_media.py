@@ -195,6 +195,8 @@ class TracePullTests(unittest.TestCase):
         self.assertEqual(media['rides'], {'store': STORE, 'head': 5}, 'its records are pulled')
         for line in ('rides unusable', 'rides uninitialized'):
             self.assertIsNone(trace_media.header_media(line)['rides'], line)
+        media = trace_media.header_media('journal unusable\nfiles unreadable volume\nterrain unreadable card\n')
+        self.assertEqual(media, {'journal': None, 'rides': None, 'files': None, 'terrain': None}, 'nothing to pull')
 
 
 if __name__ == '__main__':

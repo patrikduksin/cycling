@@ -60,7 +60,11 @@ text: start there, and open a PNG only to confirm what the text says.
   how VANA found RIDES. A log VANA kept read only because it could not
   prove where the log ended is rebuilt as a log that takes rides, and one
   it could not use (corrupt, lost or foreign) as no log; the rebuild names
-  both. The rebuilt RIDES log has a checkpoint after each ride and every
+  both. The header tells a medium that was not there from one that did not
+  read: an internal journal VANA's boot scan could not read, and a FILES
+  store or terrain pack that did not read at power-on, start empty, and the
+  rebuild names each (`FILES: it did not read at power-on (...)`). The
+  rebuilt RIDES log has a checkpoint after each ride and every
   32 records. After a power cut the device's checkpoints can sit
   elsewhere, so boot recovery in the replay reads a different number of
   records, but it recovers the same rides. STORE starts empty, since VANA

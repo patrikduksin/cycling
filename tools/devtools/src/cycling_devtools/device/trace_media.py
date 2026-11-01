@@ -42,7 +42,7 @@ def header_media(text):
     media = {'journal': None, 'rides': None, 'files': None, 'terrain': None}
     for line in text.splitlines():
         words = line.split()
-        if not words or words[1:] == ['none']:
+        if len(words) < 2 or words[1] in ('none', 'unusable', 'unreadable'):
             continue
         kind = words[0]
         if kind == 'journal':

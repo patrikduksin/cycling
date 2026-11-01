@@ -554,6 +554,12 @@ impl Ride {
     #[inline(never)]
     fn internal_at_boot(&mut self, store: &mut impl RideStorage) -> origin::Journal {
         use crate::ride::journal::Journal;
+        if matches!(
+            self.internal.status(),
+            Status::Error | Status::Unavailable | Status::Unsupported
+        ) {
+            return origin::Journal::Unusable;
+        }
         let next = self.internal.next_slot();
         let mut slot = crate::ride::log::Slot::default();
         let last = next
@@ -562,7 +568,7 @@ impl Ride {
                 Internal::new(&mut self.internal_media, store).read_slot(index, &mut slot)
             })
             .map(|_| crc32(&slot.0));
-        origin::Journal {
+        origin::Journal::Scanned {
             next: u32::try_from(next).unwrap_or(u32::MAX),
             last,
         }

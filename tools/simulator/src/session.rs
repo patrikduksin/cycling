@@ -365,12 +365,12 @@ struct Start {
     journals: Option<Journals>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Volumes {
     /// FILES' store id, generation and entries.
-    files: Option<(u64, u64, Vec<u8>)>,
+    files: origin::Found<(u64, u64, Vec<u8>)>,
     facts: Option<u32>,
-    terrain: Option<origin::Terrain>,
+    terrain: origin::Found<origin::Terrain>,
 }
 type Journals = (Option<origin::Journal>, Option<origin::RideLog>);
 
@@ -396,7 +396,11 @@ impl Start {
             files,
             facts,
             terrain,
-        } = self.volumes.clone().unwrap_or_default();
+        } = self.volumes.clone().unwrap_or(Volumes {
+            files: origin::Found::Absent,
+            facts: None,
+            terrain: origin::Found::Absent,
+        });
         let (journal, rides) = self.journals.unwrap_or((None, None));
         let mut settings = self.settings;
         if self.redacted
@@ -415,13 +419,17 @@ impl Start {
         let media = Media {
             journal,
             rides,
-            files: files
-                .as_ref()
-                .map(|(store, generation, entries)| origin::Files {
-                    store: *store,
-                    generation: *generation,
-                    entries,
-                }),
+            files: match &files {
+                origin::Found::Read((store, generation, entries)) => {
+                    origin::Found::Read(origin::Files {
+                        store: *store,
+                        generation: *generation,
+                        entries,
+                    })
+                }
+                origin::Found::Absent => origin::Found::Absent,
+                origin::Found::Unreadable(failure) => origin::Found::Unreadable(*failure),
+            },
             facts,
             terrain,
         };

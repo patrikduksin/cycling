@@ -606,6 +606,8 @@ pub struct Session {
     trace: Trace,
     /// The media before the first pass, for replaying this session.
     origin: Option<Origin>,
+    /// When a host first wrote the bulk medium after the first pass.
+    host_write_ms: Option<u64>,
     devices: Devices,
 }
 impl Session {
@@ -728,6 +730,7 @@ impl Session {
             sdk,
             trace,
             origin: None,
+            host_write_ms: None,
             devices: Devices::Simulated(Box::new(Simulated::new())),
         })
     }
@@ -787,12 +790,26 @@ impl Session {
             Devices::Simulated(_) => None,
         }
     }
-    /// What a replay of this session needs; `None` before the first pass.
-    pub fn capture(&self) -> Option<Capture> {
-        Some(Capture {
-            origin: self.origin.clone()?,
+    /// What a replay of this session needs.
+    pub fn capture(&self) -> Result<Capture, String> {
+        if let Some(at) = self.host_write_ms {
+            return Err(format!(
+                "a host wrote the bulk medium at {at} ms, after the media the replay starts from"
+            ));
+        }
+        Ok(Capture {
+            origin: self.origin.clone().ok_or("no pass ran yet")?,
             trace: self.trace(),
         })
+    }
+    /// The bulk medium as a host writes it over USB. After the first pass
+    /// such a write changes what VANA reads unseen by the trace, so this
+    /// session no longer has a capture.
+    pub fn host_bulk(&mut self) -> &mut crate::bulk::SimBulk {
+        if self.origin.is_some() {
+            self.host_write_ms.get_or_insert(self.now);
+        }
+        &mut self.bulk
     }
     /// The trace of this power-on session so far.
     pub fn trace(&self) -> Vec<u8> {

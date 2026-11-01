@@ -312,9 +312,11 @@ impl<C: fmt::Debug, V> Calls<C, V> {
             Mode::Strict => Kind::LeftOver,
             Mode::Stimulus => Kind::NotRequested,
         };
-        let input = self.input;
-        self.ledger
-            .note(kind, left, || format!("{left} {input} answers"));
+        let (input, queue) = (self.input, &self.queue);
+        self.ledger.note(kind, left, || {
+            let calls: Vec<_> = queue.iter().map(|(call, _)| call).collect();
+            format!("{left} {input} answers VANA did not ask for: {calls:?}")
+        });
         self.queue.drain(..).flat_map(|(_, after)| after).collect()
     }
 }
@@ -1536,5 +1538,103 @@ impl PowerControl for ReplayPowerControl {
     }
     fn request_after(&mut self, operation: power::Operation, delay_ms: u32) -> Result<(), Error> {
         self.answer(operation, delay_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use device_api::input::Button;
+    use device_api::server::Method;
+    use firmware_services::trace::frozen::{FrozenServer, READ_PART, Record, Recorder};
+    use firmware_services::trace::{Header, VERSION};
+
+    /// A server holding one request whose body the transport hands over
+    /// whole.
+    struct Transport {
+        request: server::Request,
+        body: Vec<u8>,
+    }
+
+    impl Server for Transport {
+        fn listen(&mut self, _: bool) {}
+        fn request(&self) -> Option<server::Request> {
+            Some(self.request.clone())
+        }
+        fn read(&mut self, _: u32, out: &mut [u8]) -> usize {
+            let n = out.len().min(self.body.len());
+            out[..n].copy_from_slice(&self.body[..n]);
+            self.body.drain(..n);
+            n
+        }
+        fn room(&self) -> usize {
+            0
+        }
+        fn write(&mut self, _: u32, _: &[u8]) -> usize {
+            0
+        }
+        fn finish(&mut self, _: u32) {}
+    }
+
+    fn replay(bytes: Vec<u8>) -> Replay {
+        let shelled = Shelled {
+            input: InputDevice::new(&[Button::TopLeft], Availability::Ready),
+            display: DisplayDevice::new(16, 16),
+            power: PowerDevice::new(Availability::Ready),
+            flash: FileFlash::memory(),
+            bulk: SimBulk::default().scripted(),
+        };
+        Replay::new(bytes, shelled, Mode::Strict).unwrap()
+    }
+
+    /// A read larger than a part is recorded in parts that each fit a
+    /// block, and a replay hands the read back whole.
+    #[test]
+    fn a_read_recorded_in_parts_replays_whole() {
+        let header = Header {
+            version: VERSION,
+            build: [0; 20],
+            boot: 1,
+            profile: 0,
+            config: &[],
+            media: &[],
+        };
+        let recorder = RefCell::new(
+            Recorder::new(
+                &header,
+                vec![0u8; 4096].into_boxed_slice(),
+                Blocks::default(),
+            )
+            .unwrap(),
+        );
+        let body: Vec<u8> = (0..3 * READ_PART + 100).map(|i| i as u8).collect();
+        let mut request = server::Request::new(Method::Put);
+        request.id = 9;
+        let mut transport = Transport {
+            request,
+            body: body.clone(),
+        };
+        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+        let mut frozen = FrozenServer::default();
+        let mut out = vec![0u8; 4096];
+        let n = frozen.bind(&mut transport, 10, &recorder).read(9, &mut out);
+        assert_eq!(n, body.len());
+        let mut bytes = recorder.borrow().sink().0.clone();
+        bytes.extend_from_slice(recorder.borrow_mut().open_block());
+        let parts = {
+            let (_, events) = trace::decode(&bytes).unwrap();
+            events
+                .filter(|event| matches!(event, Event::ServerRead { .. }))
+                .count()
+        };
+        assert_eq!(parts, 4);
+
+        let mut replay = replay(bytes);
+        assert!(matches!(replay.step(), Next::Pass));
+        replay.load_pass();
+        let mut again = vec![0u8; 4096];
+        assert_eq!(replay.sources.server.read(9, &mut again), body.len());
+        assert_eq!(&again[..body.len()], &body[..]);
+        assert_eq!(replay.sources.report().first, None);
     }
 }

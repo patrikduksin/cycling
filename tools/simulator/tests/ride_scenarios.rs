@@ -8028,3 +8028,223 @@ fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
     assert!(report.count(Kind::NotHeard) > 0, "{report:?}");
     assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
 }
+
+/// How many events of the trace `matches` picks.
+fn count_events(
+    trace: &[u8],
+    matches: impl Fn(&firmware_services::trace::Event<'_>) -> bool,
+) -> usize {
+    let (_, events) = firmware_services::trace::decode(trace).unwrap();
+    events.filter(|event| matches(event)).count()
+}
+
+/// A course from the phone mid-session, then ridden: the access point,
+/// the request and its body, read in parts that each fit a trace block.
+fn a_course_uploaded_from_the_phone(sim: &mut Sim) {
+    use device_api::server::Method;
+    sim.init_bulk();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
+    use firmware_services::trace::Event;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    let capture = assert_replays_exactly(equip(sim.boot()), a_course_uploaded_from_the_phone, true);
+    let read: usize = {
+        let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+        events
+            .filter_map(|event| match event {
+                Event::ServerRead { part, .. } => Some(part.len()),
+                _ => None,
+            })
+            .sum()
+    };
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    assert_eq!(read, course.len(), "the whole body is in the trace");
+    let joined = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::AccessPoint {
+                state: device_api::server::AccessPointState::Up { clients: 1 },
+                ..
+            }
+        )
+    });
+    assert_eq!(joined, 1, "the phone joined once");
+}
+
+/// Internal flash tears a write of the ride journal a minute in.
+fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.fail_storage(0, 10);
+    sim.advance(seconds(30));
+}
+
+#[test]
+fn a_storage_failure_mid_ride_replays_exactly() {
+    use firmware_services::trace::{Event, Medium, StorageFault};
+    let capture = assert_replays_exactly(
+        equip(hashed().boot()),
+        a_ride_whose_journal_write_tears,
+        false,
+    );
+    let torn = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::StorageFault(StorageFault {
+                medium: Medium::Data,
+                landed: 10,
+                ..
+            })
+        )
+    });
+    assert_eq!(torn, 1, "one torn write, with what landed");
+}
+
+/// The card's next write tears and its controller stays failed: the ride
+/// moves to internal flash.
+fn a_ride_whose_card_fails(sim: &mut Sim) {
+    sim.init_bulk();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.fail_bulk(0, 100);
+    sim.advance(minutes(1));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_bulk_failure_mid_ride_replays_exactly() {
+    use firmware_services::trace::{Event, Medium, StorageFault};
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let capture = assert_replays_exactly(equip(sim.boot()), a_ride_whose_card_fails, false);
+    let torn = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::StorageFault(StorageFault {
+                medium: Medium::Bulk,
+                landed: 100,
+                ..
+            })
+        )
+    });
+    assert_eq!(torn, 1, "the torn write, with what landed");
+}
+
+/// The card stops answering mid-ride, as one that lost its contact would.
+fn a_ride_whose_card_goes_missing(sim: &mut Sim) {
+    sim.init_bulk();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.fit_bulk(Presence::Missing);
+    sim.advance(minutes(1));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_card_that_goes_missing_mid_ride_replays_exactly() {
+    use firmware_services::trace::{Event, Medium, StorageError, StorageFault};
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let capture = assert_replays_exactly(equip(sim.boot()), a_ride_whose_card_goes_missing, false);
+    let missing = count_events(&capture.trace, |event| {
+        matches!(
+            event,
+            Event::StorageFault(StorageFault {
+                medium: Medium::Bulk,
+                error: StorageError::Unavailable,
+                ..
+            })
+        )
+    });
+    assert!(missing > 0, "the card's absence is recorded");
+}
+
+/// The panel refuses one frame and the backlight one brightness change
+/// and then works again, mid-ride; the backlight then reports it failed.
+fn a_ride_whose_panel_and_backlight_refuse(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(seconds(30));
+    sim.device.display.0.borrow_mut().fail_next = true;
+    sim.device.power.0.borrow_mut().fail = true;
+    let (status, out) = sim.command("BRIGHTNESS 40");
+    assert_eq!(status, "OK", "{out}");
+    sim.advance(seconds(5));
+    sim.device.power.0.borrow_mut().fail = false;
+    sim.device.power.0.borrow_mut().available = device_api::observation::Availability::Failed;
+    sim.advance(seconds(5));
+    sim.device.power.0.borrow_mut().available = device_api::observation::Availability::Ready;
+    sim.advance(seconds(30));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_panel_and_backlight_that_refuse_replay_exactly() {
+    use firmware_services::trace::{Event, Output};
+    let capture = assert_replays_exactly(
+        equip(hashed().boot()),
+        a_ride_whose_panel_and_backlight_refuse,
+        false,
+    );
+    for output in [Output::Panel, Output::Backlight] {
+        let refused = count_events(
+            &capture.trace,
+            |event| matches!(event, Event::Refused { output: refused, .. } if *refused == output),
+        );
+        assert!(refused > 0, "{output:?} refused");
+    }
+    let changes = count_events(&capture.trace, |event| matches!(event, Event::Backlight(_)));
+    assert_eq!(changes, 3, "ready, failed, ready again");
+}
+
+/// A ride, then the rider turns the device off from Home.
+fn a_ride_then_turned_off(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    sim.done();
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "turned off");
+    sim.advance(seconds(2));
+}
+
+#[test]
+fn a_ride_ended_by_turning_off_replays_exactly() {
+    use firmware_services::trace::Event;
+    let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_then_turned_off, false);
+    let asked = count_events(&capture.trace, |event| {
+        matches!(event, Event::PowerRequest { result: Ok(()), .. })
+    });
+    let off = count_events(&capture.trace, |event| matches!(event, Event::PoweredOff));
+    assert_eq!(
+        (asked, off),
+        (1, 1),
+        "one shutdown asked, then the power went"
+    );
+}

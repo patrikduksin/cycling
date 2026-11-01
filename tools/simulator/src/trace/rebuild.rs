@@ -56,6 +56,8 @@ pub struct Rides {
 pub struct Files {
     pub store: u64,
     pub files: BTreeMap<String, (u32, Vec<u8>)>,
+    /// Files the header lists whose read failed in the pull.
+    pub unread: BTreeSet<String>,
 }
 
 /// Something the rebuilt media holds otherwise than the device did at
@@ -91,6 +93,8 @@ pub enum Gap {
         revision: u32,
         now: Option<u32>,
     },
+    /// A file whose read failed in the pull; the rebuilt FILES leaves it out.
+    FileUnread { name: String, revision: u32 },
     /// No local pack has the SHA-256 the header names; the rebuilt card has
     /// no terrain pack.
     Terrain { tag: String, digest: [u8; 32] },
@@ -158,6 +162,10 @@ impl fmt::Display for Gap {
             } => write!(
                 f,
                 "file {name}: written again since power-on (revision {now}, was {revision}), so its bytes at power-on cannot be recovered; FILES starts without it"
+            ),
+            Self::FileUnread { name, revision } => write!(
+                f,
+                "file {name} (revision {revision}): its read failed in the pull; FILES starts without it"
             ),
             Self::Terrain { tag, digest } => write!(
                 f,
@@ -416,6 +424,13 @@ fn write_files(
     match &pulled.files {
         Some(now) if now.store == listed.store => {
             for entry in listed.entries() {
+                if now.unread.contains(entry.name) {
+                    gaps.push(Gap::FileUnread {
+                        name: entry.name.into(),
+                        revision: entry.revision,
+                    });
+                    continue;
+                }
                 let pulled = now.files.get(entry.name);
                 let bytes = match pulled {
                     Some((revision, bytes)) if *revision == entry.revision => Some(bytes.clone()),
@@ -521,8 +536,9 @@ impl Pulled {
     /// What `cycling trace pull` wrote into `dir`: `internal.slots`;
     /// `rides.slots` with `rides.epoch` (`store <hex>`, `generation <n>` and
     /// `invalid <records>` lines); `files.list` (a `store <hex>` line, then
-    /// `file <revision> <name>` for each file under `files/` by its name);
-    /// and `terrain.pack`. A medium without its file was not pulled.
+    /// `file <revision> <name>` for each file under `files/` by its name and
+    /// `unread <name>` for each whose read failed); and `terrain.pack`. A
+    /// medium without its file was not pulled.
     pub fn read(dir: &Path) -> io::Result<Self> {
         let optional = |name: &str| match std::fs::read(dir.join(name)) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -585,12 +601,15 @@ fn files_of(text: &str, dir: &Path) -> io::Result<Files> {
                 files.store = u64::from_str_radix(store, 16).map_err(|_| malformed())?;
             }
             ["file", revision, name] => {
-                if files::Name::new(name).is_err() || name.split('/').any(|part| part == "..") {
-                    return Err(malformed());
-                }
+                let name = file_name(name).ok_or_else(malformed)?;
                 let revision = revision.parse().map_err(|_| malformed())?;
                 let bytes = std::fs::read(dir.join(name))?;
                 files.files.insert(name.into(), (revision, bytes));
+            }
+            ["unread", name] => {
+                files
+                    .unread
+                    .insert(file_name(name).ok_or_else(malformed)?.into());
             }
             [] => {}
             _ => return Err(malformed()),
@@ -600,6 +619,11 @@ fn files_of(text: &str, dir: &Path) -> io::Result<Files> {
         return Err(malformed());
     }
     Ok(files)
+}
+
+/// `name` when it is a FILES name that stays under `files/`.
+fn file_name(name: &str) -> Option<&str> {
+    (files::Name::new(name).is_ok() && !name.split('/').any(|part| part == "..")).then_some(name)
 }
 
 fn media_of<'a>(

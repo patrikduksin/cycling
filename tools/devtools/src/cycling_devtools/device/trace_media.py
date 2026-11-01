@@ -120,6 +120,27 @@ def pull_journals(connection, media, out, problems):
             problems.append(f'RIDES: {error}')
 
 
+def pull_file(transfer, name, path):
+    """The revision whose bytes `files get` wrote to `path`; None when the file is gone.
+
+    A file that ends in the CRC32 of its bytes has the same whole-file CRC32
+    whatever it holds, so the CRC check cannot tell a file written again
+    while it was read. Its revision after the read must still be the one
+    before it.
+    """
+    try:
+        stat = volumes.files_get(transfer, name, path)
+    except volumes.TransferError as error:
+        if error.status == 'not_found':
+            return None
+        raise
+    _, _, _, after = transfer.call('files_stat', payload=name.encode(), allow=('not_found',))
+    if not after or volumes.decode_entry(after)['revision'] != stat['revision']:
+        path.unlink()
+        raise RuntimeError(f'written again while it was read (revision {stat["revision"]})')
+    return stat['revision']
+
+
 def pull_files(connection, media, out, problems):
     if media['files'] is None:
         return
@@ -133,12 +154,15 @@ def pull_files(connection, media, out, problems):
         for entry in media['files']['entries']:
             name = entry['name']
             path = out / 'files' / safe_name(name)
-            status, _, _, stat = transfer.call('files_stat', payload=name.encode(), allow=('not_found',))
-            if status == 'not_found':
-                continue
             path.parent.mkdir(parents=True, exist_ok=True)
-            volumes.files_get(transfer, name, path)
-            lines.append(f'file {volumes.decode_entry(stat)["revision"]} {name}')
+            try:
+                revision = pull_file(transfer, name, path)
+            except (RuntimeError, ValueError, TimeoutError) as error:
+                problems.append(f'file {name}: {error}')
+                lines.append(f'unread {name}')
+                continue
+            if revision is not None:
+                lines.append(f'file {revision} {name}')
         (out / 'files.list').write_text('\n'.join(lines) + '\n')
     finally:
         transfer.call('end')

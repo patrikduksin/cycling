@@ -260,6 +260,9 @@ fn through_dir(pulled: &Pulled) -> Pulled {
         std::fs::write(path, bytes).unwrap();
         list += &format!("file {revision} {name}\n");
     }
+    for name in &files.unread {
+        list += &format!("unread {name}\n");
+    }
     std::fs::write(dir.join("files.list"), list).unwrap();
     std::fs::write(dir.join("terrain.pack"), pulled.terrain.as_ref().unwrap()).unwrap();
     let read = Pulled::read(&dir).unwrap();
@@ -392,6 +395,22 @@ fn a_terrain_pack_of_the_right_length_and_another_digest_is_left_out() {
         None,
         "the card starts without a pack"
     );
+}
+
+#[test]
+fn a_file_whose_read_failed_in_the_pull_is_reported_and_left_out() {
+    let (mut sim, trace, _) = recorded_session();
+    let mut pulled = pull(&mut sim, &trace);
+    let files = pulled.files.as_mut().unwrap();
+    files.files.remove(WORKOUT).unwrap();
+    files.unread.insert(WORKOUT.into());
+    let (_, gaps) = rebuild::rebuild(&trace, &through_dir(&pulled)).unwrap();
+    assert!(
+        matches!(&gaps[..], [Gap::FileUnread { name, .. }] if name == WORKOUT),
+        "{gaps:?}"
+    );
+    let report = rebuild::report(&gaps);
+    assert!(report.contains("its read failed in the pull"), "{report}");
 }
 
 #[test]

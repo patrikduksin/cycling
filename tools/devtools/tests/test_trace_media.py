@@ -1,4 +1,5 @@
 import hashlib
+import struct
 import tempfile
 import unittest
 import zlib
@@ -6,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from cycling_devtools.device import trace_media, volumes
+from cycling_devtools.device.volumes import OP, crc
 from test_volumes import FakeDevice, FakeTransfer
 
 SLOT_SIZE = trace_media.SLOT_SIZE
@@ -36,6 +38,38 @@ class FakeExport:
         return dict(id=len(self.commands), status='OK', data=data)
 
 
+def sealed(body):
+    """`body` followed by its CRC32, as a workout or the bests end."""
+    return body + struct.pack('<I', zlib.crc32(body))
+
+
+class RewritingDevice(FakeDevice):
+    """FILES with revisions, where a write of `name` to `again` lands right after the host first stats it,
+    and reads of the files in `unreadable` fail on the medium."""
+
+    def __init__(self, name=None, again=None, unreadable=()):
+        super().__init__()
+        self.revisions, self.rewrite, self.unreadable_files = {}, (name, again), set(unreadable)
+
+    def handle(self, op, arg, count, payload):
+        if op == OP['files_read'] and payload.decode() in self.unreadable_files:
+            return volumes.STATUS.index('media'), 0, 0, b''
+        reply = super().handle(op, arg, count, payload)
+        name, again = self.rewrite
+        if op == OP['files_stat'] and payload.decode() == name:
+            self.files[name], self.revisions[name] = again, 2
+            self.rewrite = (None, None)
+        return reply
+
+    def entry(self, slot, name):
+        data = self.files[name]
+        return (
+            struct.pack('<H', slot)
+            + name.encode().ljust(40, b'\0')
+            + struct.pack('<III', len(data), crc(data), self.revisions.get(name, 1))
+        )
+
+
 def header(pack=None):
     lines = ['boot 7', 'journal 2', f'rides {STORE} 3', 'files 00000000000000ab 9']
     lines += ['file workouts/tempo.vw 46 2144df1c 1', 'file bests.dat 42 2144df1c 3']
@@ -47,10 +81,10 @@ def header(pack=None):
 
 
 class TracePullTests(unittest.TestCase):
-    def pull(self, directory, export, pack=None, roots=()):
-        device = FakeDevice()
+    def pull(self, directory, export, pack=None, roots=(), device=None):
+        device = device or FakeDevice()
         device.store = {'traces/000003-00000007.trace': (1, [b'trace'])}
-        device.files = {'workouts/tempo.vw': b'tempo workout'}
+        device.files = device.files or {'workouts/tempo.vw': b'tempo workout'}
         calls = []
 
         def tool(command, *args):
@@ -104,6 +138,38 @@ class TracePullTests(unittest.TestCase):
             self.assertEqual((media / 'internal.slots').read_bytes(), slot(0), 'all the device holds')
             self.assertFalse((media / 'terrain.pack').exists())
         self.assertFalse(any(command.startswith('EXPORT BULK SLOT') for command in export.commands))
+
+    def test_a_file_written_again_while_it_is_pulled_is_not_paired_with_a_revision(self):
+        export = FakeExport([slot(0), slot(1)], [slot(10 + i) for i in range(3)])
+        before, after = sealed(b'tempo workout A'), sealed(b'tempo workout B')
+        self.assertEqual(zlib.crc32(before), zlib.crc32(after), 'the whole-file CRC32 cannot tell them apart')
+        device = RewritingDevice('workouts/tempo.vw', after)
+        device.files = {'workouts/tempo.vw': before}
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            result, calls = self.pull(directory, export, device=device)
+            media = directory / '000003-00000007.media'
+            self.assertEqual((media / 'files.list').read_text(), f'store {STORE}\nunread workouts/tempo.vw\n')
+            self.assertFalse((media / 'files' / 'workouts' / 'tempo.vw').exists())
+            self.assertEqual(
+                result['problems'], ['file workouts/tempo.vw: written again while it was read (revision 1)']
+            )
+            self.assertEqual(calls[1][:2], ('rebuild', directory / '000003-00000007.trace'))
+
+    def test_a_file_that_does_not_read_is_listed_unread_and_the_pull_goes_on(self):
+        export = FakeExport([slot(0), slot(1)], [slot(10 + i) for i in range(3)])
+        device = RewritingDevice(unreadable={'workouts/tempo.vw'})
+        device.files = {'workouts/tempo.vw': b'tempo workout', 'bests.dat': b'bests'}
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            result, calls = self.pull(directory, export, device=device)
+            media = directory / '000003-00000007.media'
+            self.assertEqual(
+                (media / 'files.list').read_text(), f'store {STORE}\nunread workouts/tempo.vw\nfile 1 bests.dat\n'
+            )
+            self.assertEqual((media / 'files' / 'bests.dat').read_bytes(), b'bests')
+            self.assertEqual(result['problems'], ['file workouts/tempo.vw: files_read failed: media'])
+            self.assertEqual(calls[1][:2], ('rebuild', directory / '000003-00000007.trace'))
 
     def test_a_file_name_that_leaves_files_is_refused(self):
         for name in ('../escape', '/etc/passwd', 'a/../../b'):

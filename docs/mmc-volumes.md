@@ -100,12 +100,19 @@ volume size. The module documentation in `packages/services/src/store.rs`
 lists them, and the power-cut property test in `store/tests.rs` cuts power at
 every write.
 
-Each record sector is written once. A file that is opened again, after a
-power cut or a transfer session, continues in a new chunk, and the rest of
-its last chunk stays unused. It never continues after the records it finds:
-a record that the medium lost would hide the records after it, which a new
-record would then overwrite. A reader reports a lost record as a hole, with
-its record number, and continues after it.
+While a chunk belongs to a file, each of its record sectors is written once.
+A file that is opened again, after a power cut or a transfer session, reads
+its last chunk back to the last record that reads back, and continues in a
+new chunk. The chunk table records how many records the old chunk holds,
+and the rest of it stays unused. The file never continues after the records
+it finds: a record that the medium lost could hide records after it, which a
+new record would then overwrite. Only a last chunk that holds no record is
+written from its start. An appender that gets an error writes nothing more
+until the file is opened again.
+
+A reader reports a lost record as a hole, with its record number, and
+continues after it. Records lost at the end of a file's last chunk, or
+before a reopen read that chunk back, read as the end of that chunk.
 
 `STORE FORMAT CONFIRM` (or `cycling store format --confirm`) is the owner's
 way out of a `CORRUPT` store, which `VOLUME ADD STORE` never formats over.

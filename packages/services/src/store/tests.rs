@@ -576,6 +576,84 @@ fn a_missing_record_at_the_end_of_a_full_chunk_is_a_hole_not_its_end() {
 }
 
 #[test]
+fn a_record_lost_after_a_reopen_is_a_hole_even_at_the_end_of_its_chunk() {
+    let mut media = formatted(8, 64);
+    let mut s = sector();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store.create(&mut media, &name("a"), None, &mut s).unwrap();
+    for k in 0..10u8 {
+        file.append(&mut store, &mut media, &[k; PAYLOAD], &mut s)
+            .unwrap();
+    }
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store
+        .open_append(&mut media, &name("a"), None, &mut s)
+        .unwrap();
+    file.append(&mut store, &mut media, &[0xee; 7], &mut s)
+        .unwrap();
+    file.sync(&mut store, &mut media, &mut s).unwrap();
+    media.set(DATA + 9, [0; SECTOR_SIZE]);
+    let mut expected: Vec<String> = (0..9u8)
+        .map(|k| std::format!("{k:02x}x{PAYLOAD}"))
+        .collect();
+    expected.extend(["hole 9..10".into(), "eex7".into()]);
+    assert_eq!(events(&mut media, "a"), expected);
+}
+
+#[test]
+fn an_appender_that_failed_writes_nothing_more() {
+    let mut media = formatted(8, 8);
+    let mut s = sector();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    let mut file = store.create(&mut media, &name("a"), None, &mut s).unwrap();
+    file.append(&mut store, &mut media, b"kept", &mut s)
+        .unwrap();
+    file.sync(&mut store, &mut media, &mut s).unwrap();
+    file.append(&mut store, &mut media, b" landed", &mut s)
+        .unwrap();
+    media.cut = Some((0, Tear::New));
+    assert!(file.sync(&mut store, &mut media, &mut s).is_err());
+    media.reboot();
+    let writes = media.writes;
+    assert_eq!(file.sync(&mut store, &mut media, &mut s), Err(Error::Stale));
+    assert_eq!(
+        file.append(&mut store, &mut media, &[1; PAYLOAD], &mut s),
+        Err(Error::Stale)
+    );
+    assert_eq!(media.writes, writes, "no sector written again");
+    let mut file = store
+        .open_append(&mut media, &name("a"), None, &mut s)
+        .unwrap();
+    file.append(&mut store, &mut media, b", then more", &mut s)
+        .unwrap();
+    file.sync(&mut store, &mut media, &mut s).unwrap();
+    assert_eq!(
+        snapshot(&mut media).unwrap()["a"],
+        b"kept landed, then more"
+    );
+}
+
+#[test]
+fn a_reopened_file_whose_last_chunk_holds_no_record_writes_it_from_its_start() {
+    let mut media = formatted(8, 8);
+    let mut s = sector();
+    let mut store = mount(&mut media, &mut s).unwrap();
+    store.create(&mut media, &name("a"), None, &mut s).unwrap();
+    let mut file = store
+        .open_append(&mut media, &name("a"), None, &mut s)
+        .unwrap();
+    file.append(&mut store, &mut media, b"first", &mut s)
+        .unwrap();
+    file.sync(&mut store, &mut media, &mut s).unwrap();
+    let mut chunks = Vec::new();
+    store
+        .list(&mut media, &Dir::ROOT, &mut s, |e| chunks.push(e.chunks))
+        .unwrap();
+    assert_eq!(chunks, [1]);
+    assert_eq!(snapshot(&mut media).unwrap()["a"], b"first");
+}
+
+#[test]
 fn a_damaged_record_before_the_end_neither_loses_nor_reorders_synced_records() {
     let mut media = formatted(8, 64);
     let mut s = sector();
@@ -1004,7 +1082,7 @@ fn bound(kind: Kind, table: u64, chunk: u32) -> (u64, u64) {
         Kind::Mount => (2, 0),
         Kind::Format => (2, d + t + 2),
         Kind::List | Kind::Reader => (d + t, 0),
-        Kind::OpenAppend => (d + t, 0),
+        Kind::OpenAppend => (d + t + u64::from(chunk), 0),
         Kind::Delete => (2 * d + t + 2, d + t + 2),
         Kind::Create => (2 * d + 2 * t + 2, d + t + 2),
         Kind::CreateRollingOver => (5 * d + 4 * t + 4, 2 * d + 2 * t + 4),
@@ -1125,7 +1203,7 @@ fn operations_have_the_documented_worst_case_costs() {
             }
         }
         while session % 4 == 1
-            && (file.index.is_some_and(|index| index < chunk)
+            && (matches!(file.tail, Tail::At(index) if index < chunk)
                 || store.free_chunk(&mut media, &mut s).unwrap().is_some())
         {
             costs.measure(&mut media, Kind::Append, |m| {

@@ -262,6 +262,10 @@ pub struct Sources {
     pub bulk: ReplayBulk,
     #[cfg(feature = "cycling")]
     pub access_point: ReplayAccessPoint,
+    #[cfg(feature = "cycling")]
+    pub server: crate::phone::SimServer,
+    pub speaker: crate::devices::Speaker,
+    pub switch: crate::devices::PowerSwitch,
     entropy: Entropy,
     startup: Latest<sensors::Startup>,
     physical: Latest<sensors::Snapshot>,
@@ -289,6 +293,10 @@ impl Sources {
                 inner: SimAccessPoint::default(),
                 entropy: entropy.clone(),
             },
+            #[cfg(feature = "cycling")]
+            server: Default::default(),
+            speaker: Default::default(),
+            switch: Default::default(),
             entropy,
             startup: Latest::default(),
             physical: Latest::default(),

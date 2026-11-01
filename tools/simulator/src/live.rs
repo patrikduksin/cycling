@@ -126,20 +126,25 @@ impl Live {
                 sim.checkpoint(&format!("moment {}", self.checkpoints));
             }
             'b' => {
-                let present = sim.device.ble_strap.as_ref().is_some_and(|s| s.present);
+                let present = sim
+                    .device
+                    .sim_mut()
+                    .ble_strap
+                    .as_ref()
+                    .is_some_and(|s| s.present);
                 sim.ble_heart_strap(!present);
             }
             'g' => {
-                let fix = sim.device.gps.as_ref().is_some_and(|g| g.fix);
+                let fix = sim.device.sim_mut().gps.as_ref().is_some_and(|g| g.fix);
                 sim.set_gps_fix(!fix);
             }
             'l' => {
                 self.battery = (self.battery + 1) % BATTERY.len();
-                let charging = sim.device.battery.charging;
+                let charging = sim.device.sim_mut().battery.charging;
                 sim.set_battery(BATTERY[self.battery], charging);
             }
             'k' => {
-                let charging = sim.device.battery.charging;
+                let charging = sim.device.sim_mut().battery.charging;
                 sim.set_battery(BATTERY[self.battery], !charging);
             }
             'v' => sim.vehicle(Vehicle {
@@ -151,7 +156,7 @@ impl Live {
             'x' => sim.cut_power(),
             _ => {
                 if let Some(&(_, _, kind, number)) = SENSORS.iter().find(|s| s.0 == key) {
-                    let present = sim.device.ant.sensor(kind, number).present;
+                    let present = sim.device.sim_mut().ant.sensor(kind, number).present;
                     sim.set_present(kind, number, !present);
                 }
             }
@@ -251,7 +256,7 @@ impl Live {
         drop(frame);
 
         let sim = &self.sim;
-        let world = &sim.device.world;
+        let world = &sim.device.sim().world;
         let x = MARGIN * 2 + screen_w;
         let mut y = MARGIN;
         canvas.text(x, y, 2, INK, "LIVE SESSION");
@@ -290,7 +295,7 @@ impl Live {
             y += 11;
         };
         for (_, label, kind, number) in SENSORS {
-            let present = sim.device.ant.sensors.iter().any(|s| {
+            let present = sim.device.sim().ant.sensors.iter().any(|s| {
                 s.identity.device_type == kind && s.identity.device_number == number && s.present
             });
             status(
@@ -298,14 +303,19 @@ impl Live {
                 present,
             );
         }
-        let strap = sim.device.ble_strap.as_ref().is_some_and(|s| s.present);
+        let strap = sim
+            .device
+            .sim()
+            .ble_strap
+            .as_ref()
+            .is_some_and(|s| s.present);
         status(
             format!("BLE STRAP {}", if strap { "ON" } else { "OFF" }),
             strap,
         );
-        let fix = sim.device.gps.as_ref().is_some_and(|g| g.fix);
+        let fix = sim.device.sim().gps.as_ref().is_some_and(|g| g.fix);
         status(format!("GPS {}", if fix { "FIX" } else { "NO FIX" }), fix);
-        let battery = &sim.device.battery;
+        let battery = &sim.device.sim().battery;
         let percent = battery.level.map_or(0, |(percent, _)| percent);
         status(
             format!(
@@ -399,14 +409,15 @@ mod tests {
             !live
                 .sim
                 .device
+                .sim_mut()
                 .ant
                 .sensor(device_type::HEART_RATE, 4242)
                 .present
         );
         live.key_down('g');
-        assert!(!live.sim.device.gps.as_ref().unwrap().fix);
+        assert!(!live.sim.device.sim_mut().gps.as_ref().unwrap().fix);
         live.key_down('k');
-        assert!(live.sim.device.battery.charging);
+        assert!(live.sim.device.sim_mut().battery.charging);
     }
 
     /// Moves of the Home cursor while `key` stays down for `ms`.

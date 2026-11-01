@@ -269,12 +269,16 @@ impl Sim {
         self.wait_usable()
     }
 
+    /// World time; a replay has no world, so its device uptime.
     pub fn now(&self) -> u64 {
-        self.device.world.time_ms
+        if self.device.is_replay() {
+            return self.device.now;
+        }
+        self.device.sim().world.time_ms
     }
 
     pub fn world(&mut self) -> &mut World {
-        &mut self.device.world
+        &mut self.device.sim_mut().world
     }
 
     pub fn note(&mut self, kind: NoteKind, text: impl Into<String>) {
@@ -290,15 +294,16 @@ impl Sim {
             self.device.step(ms);
             return;
         };
-        let end = self.device.world.time_ms + ms;
-        while self.device.world.time_ms < end {
-            self.device.step((end - self.device.world.time_ms).min(10));
+        let end = self.device.sim().world.time_ms + ms;
+        while self.device.sim().world.time_ms < end {
+            self.device
+                .step((end - self.device.sim().world.time_ms).min(10));
             let frame = self.device.display.0.borrow();
             recording.observe(
-                self.device.world.time_ms,
+                self.device.sim().world.time_ms,
                 frame.submissions,
                 &frame.pixels,
-                &self.device.world,
+                &self.device.sim().world,
             );
         }
     }
@@ -309,7 +314,7 @@ impl Sim {
         if let Some(recording) = &mut self.recording {
             recording.checkpoint(
                 name,
-                self.device.world.time_ms,
+                self.device.sim().world.time_ms,
                 &self.device.display.0.borrow().pixels,
                 self.notes.len(),
             );
@@ -653,7 +658,7 @@ impl Sim {
             NoteKind::World,
             format!("ANT sensor {device_type}/{device_number} nearby"),
         );
-        self.device.ant.sensor(device_type, device_number)
+        self.device.sim_mut().ant.sensor(device_type, device_number)
     }
 
     pub fn set_present(&mut self, device_type: u8, device_number: u16, present: bool) {
@@ -664,7 +669,11 @@ impl Sim {
                 if present { "in range" } else { "out of range" }
             ),
         );
-        self.device.ant.sensor(device_type, device_number).present = present;
+        self.device
+            .sim_mut()
+            .ant
+            .sensor(device_type, device_number)
+            .present = present;
     }
 
     /// Follow a route with a GPS receiver that has sky view.
@@ -673,9 +682,12 @@ impl Sim {
             NoteKind::World,
             format!("route of {:.0} m with GPS", route.length_m()),
         );
-        self.device.world.route = Some(route);
-        self.device.world.distance_m = 0.0;
-        self.device.gps.get_or_insert_with(Default::default);
+        self.device.sim_mut().world.route = Some(route);
+        self.device.sim_mut().world.distance_m = 0.0;
+        self.device
+            .sim_mut()
+            .gps
+            .get_or_insert_with(Default::default);
     }
 
     /// Store a BLE heart-rate strap as the selected peer, as the companion
@@ -695,7 +707,7 @@ impl Sim {
             NoteKind::World,
             format!("network time synced to {unix_ms} ms"),
         );
-        self.device.network_time = Some(firmware_services::network_time::Anchor {
+        self.device.sim_mut().network_time = Some(firmware_services::network_time::Anchor {
             unix_ms,
             uptime_ms: self.device.now,
         });
@@ -710,6 +722,7 @@ impl Sim {
             format!("BLE heart strap battery level {raw:?}"),
         );
         self.device
+            .sim_mut()
             .ble_strap
             .get_or_insert_with(crate::session::BleStrap::new)
             .battery = raw;
@@ -727,6 +740,7 @@ impl Sim {
             },
         );
         self.device
+            .sim_mut()
             .ble_strap
             .get_or_insert_with(crate::session::BleStrap::new)
             .present = present;
@@ -742,7 +756,7 @@ impl Sim {
                 "barometer silent"
             },
         );
-        self.device.world.barometer_lost = !present;
+        self.device.sim_mut().world.barometer_lost = !present;
     }
 
     pub fn set_gps_fix(&mut self, fix: bool) {
@@ -754,7 +768,7 @@ impl Sim {
                 "GPS sky view lost"
             },
         );
-        if let Some(gps) = &mut self.device.gps {
+        if let Some(gps) = &mut self.device.sim_mut().gps {
             gps.fix = fix;
         }
     }
@@ -769,7 +783,7 @@ impl Sim {
                 if doppler { "with" } else { "without" }
             ),
         );
-        if let Some(gps) = &mut self.device.gps {
+        if let Some(gps) = &mut self.device.sim_mut().gps {
             gps.nmea.doppler = doppler;
             gps.nmea.hdop = hdop;
             gps.jitter_m = jitter_m;
@@ -790,8 +804,8 @@ impl Sim {
                 date.2
             ),
         );
-        let now_ms = self.device.world.time_ms;
-        if let Some(gps) = &mut self.device.gps {
+        let now_ms = self.device.sim().world.time_ms;
+        if let Some(gps) = &mut self.device.sim_mut().gps {
             let mut nmea = crate::route::Nmea::reading(utc_s, date, now_ms);
             nmea.doppler = gps.nmea.doppler;
             nmea.hdop = gps.nmea.hdop;
@@ -804,7 +818,7 @@ impl Sim {
             NoteKind::World,
             format!("riding {speed_kmh} km/h {power_w} W {heart_bpm} bpm {cadence_rpm} rpm"),
         );
-        let world = &mut self.device.world;
+        let world = &mut self.device.sim_mut().world;
         world.speed_kmh = speed_kmh;
         world.power_w = power_w;
         world.heart_bpm = heart_bpm;
@@ -819,7 +833,7 @@ impl Sim {
                 vehicle.side, vehicle.range_m, vehicle.closing_kmh
             ),
         );
-        self.device.world.vehicles.push(vehicle);
+        self.device.sim_mut().world.vehicles.push(vehicle);
     }
 
     pub fn set_battery(&mut self, percent: u8, charging: bool) {
@@ -830,8 +844,8 @@ impl Sim {
                 if charging { " charging" } else { "" }
             ),
         );
-        self.device.battery.level = Some((percent, 3300 + u16::from(percent) * 9));
-        self.device.battery.charging = charging;
+        self.device.sim_mut().battery.level = Some((percent, 3300 + u16::from(percent) * 9));
+        self.device.sim_mut().battery.charging = charging;
     }
 
     /// Cut power without warning and boot again; media keeps what was written.
@@ -1037,7 +1051,7 @@ impl Sim {
     /// A readable summary of what the device and world look like right now.
     pub fn describe(&self) -> String {
         let mut out = String::new();
-        let world = &self.device.world;
+        let world = &self.device.sim().world;
         let _ = writeln!(
             out,
             "t={} ms uptime={} ms boot={} distance={:.0} m speed={} km/h",
@@ -1062,7 +1076,7 @@ impl Drop for Sim {
             let rides = Vec::new();
             recording.write(Outcome {
                 notes: &self.notes,
-                end_ms: self.device.world.time_ms,
+                end_ms: self.device.sim().world.time_ms,
                 rides,
             })
         }));

@@ -264,7 +264,13 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     use shell_simulator::session::NoAnt;
     use vana::ride::log::Kind;
     fn present(s: &mut Session) {
-        s.sdk.present(&mut s.shell, s.now, &NoAnt, &s.position);
+        use device_api::positioning::Positioning;
+        let fixture = &s.sim().position;
+        let position = firmware_services::trace::frozen::PositionView {
+            availability: fixture.availability(),
+            snapshot: fixture.snapshot(s.now),
+        };
+        s.sdk.present(&mut s.shell, s.now, &NoAnt, &position);
     }
     fn press(s: &mut Session, button: Button) {
         s.advance(400).unwrap();
@@ -364,14 +370,14 @@ fn power_cycle_of_a_running_device_brings_the_companion_back_ready() {
     let mut s = Session::device().unwrap();
     s.step(COMPANION_BOOT_MS + 500);
     assert_eq!(
-        (s.startup, s.ant.availability),
+        (s.sim_mut().startup, s.sim_mut().ant.availability),
         (Startup::Ready, Availability::Ready)
     );
     s.power_cycle().unwrap();
-    assert_eq!(s.ant.availability, Availability::Initializing);
+    assert_eq!(s.sim_mut().ant.availability, Availability::Initializing);
     s.step(COMPANION_BOOT_MS + 500);
     assert_eq!(
-        (s.startup, s.ant.availability),
+        (s.sim_mut().startup, s.sim_mut().ant.availability),
         (Startup::Ready, Availability::Ready)
     );
 }
@@ -382,12 +388,12 @@ fn cpu_restart_while_the_companion_boots_lets_it_finish() {
     use device_api::sensors::Startup;
     let mut s = Session::device().unwrap();
     s.step(500);
-    assert_eq!(s.startup, Startup::Probing);
+    assert_eq!(s.sim_mut().startup, Startup::Probing);
     s.restart().unwrap();
-    assert_eq!(s.ant.availability, Availability::Initializing);
+    assert_eq!(s.sim_mut().ant.availability, Availability::Initializing);
     s.step(COMPANION_BOOT_MS - 400);
     assert_eq!(
-        (s.startup, s.ant.availability),
+        (s.sim_mut().startup, s.sim_mut().ant.availability),
         (Startup::Ready, Availability::Ready)
     );
 }
@@ -397,7 +403,7 @@ fn work_after_a_restart_waits_for_the_companion_probe_and_says_starting() {
     // #137: a restart's harness session was refused as a power transition.
     let t = Temp::new();
     let mut s = Session::new(&t.0, 32, 24).unwrap();
-    s.restart_probe_ms = RESTART_PROBE_MS;
+    s.sim_mut().restart_probe_ms = RESTART_PROBE_MS;
     assert_eq!(command(&mut s, "BRIGHTNESS 61").0, "OK");
     assert_eq!(command(&mut s, "SAVE").0, "OK");
     s.restart().unwrap();

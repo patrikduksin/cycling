@@ -159,6 +159,7 @@ fn power_loss_mid_ride_keeps_the_recorded_prefix() {
 /// Radar alerts sounded: the 300 ms pattern, which ride chimes never use.
 fn alerts(sim: &Sim) -> usize {
     sim.device
+        .sim()
         .speaker
         .played
         .iter()
@@ -286,7 +287,10 @@ fn approaching_vehicle_is_drawn_and_sounds_one_alarm() {
     sim.advance(seconds(5));
     // Starting chimed once; no alert yet.
     assert_eq!(alerts(&sim), 0);
-    assert!(!sim.device.speaker.played.is_empty(), "the start chime");
+    assert!(
+        !sim.device.sim_mut().speaker.played.is_empty(),
+        "the start chime"
+    );
 
     sim.vehicle(Vehicle {
         range_m: 120.0,
@@ -434,7 +438,7 @@ fn radar_beeps_faster_and_higher_as_a_vehicle_closes_then_calls_all_clear() {
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.advance(seconds(5));
-    let before = sim.device.speaker.played.len();
+    let before = sim.device.sim_mut().speaker.played.len();
     sim.vehicle(Vehicle {
         range_m: 140.0,
         closing_kmh: 30.0,
@@ -450,7 +454,7 @@ fn radar_beeps_faster_and_higher_as_a_vehicle_closes_then_calls_all_clear() {
     sim.expect_text("ALL CLEAR");
     sim.checkpoint("radar: all clear after the vehicle passed");
     sim.advance(seconds(1));
-    let heard = sim.device.speaker.played[before..].to_vec();
+    let heard = sim.device.sim_mut().speaker.played[before..].to_vec();
 
     // The alarm, then low, middle and high ticks, then ALL CLEAR (low, high).
     let mut ids: Vec<_> = heard.iter().map(|&(_, id)| id).collect();
@@ -596,10 +600,10 @@ fn ble_heart_strap(sim: &mut Sim) {
     // The link survives a short gap; the reading goes stale, then the link drops.
     sim.ble_heart_strap(false);
     sim.advance(seconds(3));
-    assert_eq!(sim.device.ble.snapshot.link, Link::Connected);
+    assert_eq!(sim.device.sim_mut().ble.snapshot.link, Link::Connected);
     sim.advance(seconds(4));
     sim.expect_field("BPM", "--");
-    assert_ne!(sim.device.ble.snapshot.link, Link::Connected);
+    assert_ne!(sim.device.sim_mut().ble.snapshot.link, Link::Connected);
     sim.checkpoint("strap out of range");
 
     // Back in range, it reconnects on the next scan after the backoff.
@@ -2050,7 +2054,7 @@ fn a_silent_barometer_mid_climb_is_a_gap_not_a_flat_road() {
 }
 
 fn link(sim: &Sim, kind: u8) -> Option<LinkState> {
-    shell_simulator::ant::link(&sim.device.ant, kind, sim.device.now)
+    shell_simulator::ant::link(&sim.device.sim().ant, kind, sim.device.now)
 }
 
 /// Let time pass until the channel of this kind is connected.
@@ -2072,6 +2076,7 @@ fn wait_connected(sim: &mut Sim, kind: u8, timeout_ms: u64) {
 /// Connect requests the companion received since it last started.
 fn connects(sim: &Sim, kind: u8) -> Vec<u16> {
     sim.device
+        .sim()
         .ant
         .log
         .iter()
@@ -2106,12 +2111,13 @@ fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     // Saved identities were asked for directly: no discovery ran.
     assert!(
         sim.device
+            .sim_mut()
             .ant
             .log
             .iter()
             .all(|(_, request)| !matches!(request, Request::Scan { .. })),
         "{:?}",
-        sim.device.ant.log
+        sim.device.sim_mut().ant.log
     );
     assert_eq!(connects(&sim, device_type::HEART_RATE), [HEART]);
     assert_eq!(connects(&sim, device_type::POWER), [POWER]);
@@ -2191,7 +2197,7 @@ fn disconnect_is_remembered_across_reboot() {
     // The channel closes once the cancelled discovery has released the radio.
     let mut waited = 0;
     while link(&sim, device_type::HEART_RATE) != Some(LinkState::Disconnected) {
-        assert!(waited < seconds(15), "{:?}", sim.device.ant.log);
+        assert!(waited < seconds(15), "{:?}", sim.device.sim_mut().ant.log);
         sim.advance(100);
         waited += 100;
     }
@@ -2365,7 +2371,7 @@ fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
     sim.advance(seconds(10));
     sim.pause_ride();
     sim.advance(seconds(1));
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.advance(seconds(60));
     assert_eq!(
         played_since(&sim, from),
@@ -2375,7 +2381,7 @@ fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
     assert!(sim.screen().run("PAUSED").is_some());
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(10));
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.advance(seconds(60));
     assert_eq!(
         played_since(&sim, from),
@@ -3600,6 +3606,7 @@ fn training_rider() -> Sim {
 /// The device's beeps since `from` (uptime), as pattern ids.
 fn beeps_since(sim: &Sim, from: u64) -> Vec<u8> {
     sim.device
+        .sim()
         .speaker
         .played
         .iter()
@@ -4008,14 +4015,14 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.checkpoint("ready: GPS, three sensors, battery and room");
 
     // ACT starts at once: the ride pages, a RECORDING toast and a chime.
-    let chimes = sim.device.speaker.played.len();
+    let chimes = sim.device.sim_mut().speaker.played.len();
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     assert_eq!(sim.vana_page(), "ride");
     // The second note follows the first's guard.
     sim.advance(seconds(1));
     assert_eq!(
-        sim.device.speaker.played.len(),
+        sim.device.sim_mut().speaker.played.len(),
         chimes + 2,
         "start cue: two notes"
     );
@@ -4051,10 +4058,14 @@ fn the_ride_lifecycle_walks_from_ready_to_the_summary() {
     sim.press(Button::TopLeft);
     assert_eq!(sim.ride_state(), "paused");
     // Resuming chimes too.
-    let chimes = sim.device.speaker.played.len();
+    let chimes = sim.device.sim_mut().speaker.played.len();
     sim.resume_ride();
     sim.wait_for("RESUMED", seconds(2)).unwrap();
-    assert_eq!(sim.device.speaker.played.len(), chimes + 1, "resume chime");
+    assert_eq!(
+        sim.device.sim_mut().speaker.played.len(),
+        chimes + 1,
+        "resume chime"
+    );
     sim.advance(minutes(1));
 
     // Now end it: the summary shows the ride over three pages.
@@ -4109,11 +4120,14 @@ fn a_second_ride_sets_personal_bests_and_offers_an_ftp() {
     sim.ride_at(30.0, 200.0, 140.0, 90.0);
     sim.start_ride();
     sim.advance(minutes(22));
-    let chimes = sim.device.speaker.played.len();
+    let chimes = sim.device.sim_mut().speaker.played.len();
     sim.stop_ride();
     sim.expect_text("7 NEW BESTS");
     sim.advance(seconds(1));
-    assert!(sim.device.speaker.played.len() >= chimes + 3, "best chime");
+    assert!(
+        sim.device.sim_mut().speaker.played.len() >= chimes + 3,
+        "best chime"
+    );
     sim.checkpoint("first ride: seven new bests");
     sim.expect_text("BEST");
     // 95% of 200 W is under the FTP in force: no offer, three pages.
@@ -4488,7 +4502,7 @@ fn show_setting(sim: &mut Sim, label: &str) {
 
 /// The patterns played since the `from`th.
 fn played_since(sim: &Sim, from: usize) -> Vec<u8> {
-    let played = &sim.device.speaker.played;
+    let played = &sim.device.sim().speaker.played;
     played[from..].iter().map(|(_, id)| *id).collect()
 }
 
@@ -4596,26 +4610,26 @@ fn ride_cues_rise_to_go_fall_to_pause_and_mark_laps() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.start_ride();
     sim.advance(seconds(2));
     // Middle then high: go.
     assert_eq!(played_since(&sim, from), [0, 10], "start");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.lap(1);
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [0], "one note marks a lap");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.pause_ride();
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [10, 0], "high then middle: stop");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.resume_ride();
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [10], "resume");
     sim.pause_ride();
     sim.advance(seconds(2));
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.stop_ride();
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [21, 0, 10], "a rising run: saved");
@@ -4635,7 +4649,7 @@ fn without_auto_pause_or_sounds_a_stop_keeps_recording_quietly_and_laps_follow_t
     go_home(&mut sim);
 
     sim.ride_at(30.0, 0.0, 0.0, 0.0);
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     sim.start_ride();
     // 1 km at 30 km/h is two minutes.
     sim.advance(minutes(2) + seconds(20));
@@ -5193,7 +5207,7 @@ fn a_receiver_date_outside_the_plausible_window_leaves_the_ride_undated() {
     // A GPS week rollover reports 2006 for today.
     sim.set_gps_clock(10 * 3600, (14, 10, 6));
     sim.advance(seconds(5));
-    let gps = sim.device.position.snapshot(sim.now()).unwrap().gps;
+    let gps = sim.device.sim().position.snapshot(sim.now()).unwrap().gps;
     assert_eq!(gps.state, FixState::Fresh);
     assert_eq!(gps.utc_ms, None, "the receiver never takes the date");
     cyclist(&mut sim);
@@ -5903,6 +5917,7 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
     sim.expect_text("JOIN VANA WI-FI");
     let config = sim
         .device
+        .sim_mut()
         .access_point
         .config
         .expect("access point started");
@@ -5915,10 +5930,10 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
             config.password.text()
         )
     );
-    assert!(sim.device.phone_server.listening);
+    assert!(sim.device.sim_mut().phone_server.listening);
     sim.checkpoint("connect phone: join wi-fi");
 
-    sim.device.access_point.clients = 1;
+    sim.device.sim_mut().access_point.clients = 1;
     sim.advance(seconds(1));
     sim.expect_text("OPEN YOUR RIDES");
     let page = scanned(&sim);
@@ -5929,10 +5944,10 @@ fn connect_phone_shows_scannable_join_and_page_codes() {
     sim.advance(seconds(1));
     assert_eq!(sim.vana_page(), "home");
     assert!(
-        sim.device.access_point.config.is_none(),
+        sim.device.sim_mut().access_point.config.is_none(),
         "access point stopped"
     );
-    assert!(!sim.device.phone_server.listening);
+    assert!(!sim.device.sim_mut().phone_server.listening);
 }
 
 /// A course loaded from the phone page is kept on the memory card beside
@@ -6611,13 +6626,13 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
     }
     sim.expect_text("MAP");
 
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     let ahead = ride_until_toast(&mut sim, "RIGHT IN 150 M", 500.0);
     assert!((435.0..465.0).contains(&ahead), "{ahead}");
     sim.checkpoint("the right turn 150 m ahead on the map");
     sim.advance(seconds(1));
     assert_eq!(played_since(&sim, from), [0, 21], "the soft cue");
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     let at = ride_until_toast(&mut sim, "RIGHT", 620.0);
     assert!((560.0..600.0).contains(&at), "{at}");
     sim.checkpoint("at the right turn");
@@ -6626,7 +6641,7 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
 
     // Round the gentle bend and on: silence until the hairpin is near.
     ride_to(&mut sim, 700.0);
-    let from = sim.device.speaker.played.len();
+    let from = sim.device.sim_mut().speaker.played.len();
     while sim.world().distance_m < 1_400.0 {
         sim.advance(seconds(1));
         let screen = sim.screen();
@@ -7600,7 +7615,7 @@ fn a_failed_ble_link_is_left_off_home_and_ready() {
     sim.ble_heart_strap(false);
     sim.select_ble_heart_strap();
     sim.advance(seconds(15));
-    sim.device.ble.snapshot.link = Link::Failed;
+    sim.device.sim_mut().ble.snapshot.link = Link::Failed;
     sim.advance(seconds(1));
     sim.home("RIDE");
     sim.expect_text("NO SENSORS");

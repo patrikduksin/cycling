@@ -11,8 +11,10 @@ class FakeDevice:
 
     virtual = True
 
-    def __init__(self, latencies, timed=True, dim_ms=None):
+    def __init__(self, latencies, timed=True, dim_ms=None, touched_at=()):
         self.latencies, self.timed, self.dim_ms = list(latencies), timed, dim_ms
+        # Presses (1-based, setup included) a hand on the device follows with a physical edge.
+        self.touched_at, self.input_events = set(touched_at), 0
         self.commands, self.sent, self.request_id = [], [], 1
         self.uptime, self.submissions, self.presses, self.last = 0, 0, 0, 0
         self.active, self.wakes = 0, 0
@@ -33,7 +35,7 @@ class FakeDevice:
         common = 'boot=9 session=5'
         if command == 'STATUS':
             timing = f'press_frame_ms={self.last} press_frames={self.presses} display_ms=13 ' if self.timed else ''
-            data = f'{timing}uptime_ms={self.uptime} display_submissions={self.submissions}'
+            data = f'{timing}uptime_ms={self.uptime} display_submissions={self.submissions} input_events={self.input_events}'
         elif command == 'HARNESS CAPS':
             data = 'capture=supported input=supported buttons=0,1,2,3, boot=9'
         elif words[:2] == ['HARNESS', 'OPEN']:
@@ -53,6 +55,7 @@ class FakeDevice:
             self.active = self.uptime
             self.presses += 1
             self.last = self.latencies.pop(0)
+            self.input_events += self.presses in self.touched_at
             return {'status': 'ACCEPTED', 'data': common}
         elif words[2:4] == ['INPUT', 'STATUS']:
             data = f'{common} state=completed accepted=1 delivered=1 losses=0 held=false'
@@ -101,6 +104,17 @@ class LatencyTests(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         for run, due in zip(runs, dues, strict=True):
             self.assertGreaterEqual(fake.sent[run + 1] - fake.sent[run], due + 250, fake.commands[run + 1])
+
+    def test_fails_a_run_a_hand_touched_during_the_timed_presses(self):
+        # VANA ignores a synthetic press within 350 ms of a physical one, so its sample waits for an unrelated frame.
+        result = self.run_tool(FakeDevice([5, 20, 274, 16], touched_at={2}), count=3, setup=[1], idle_s=5, seed=1)
+        self.assertEqual(result['status'], 'fail')
+        self.assertEqual(result['physical_inputs'], 1)
+        self.assertEqual(result['press_frame_ms'], [20, 274, 16])
+
+    def test_a_touch_before_the_timed_presses_does_not_fail_the_run(self):
+        result = self.run_tool(FakeDevice([5, 20, 14], touched_at={1}), count=2, setup=[1], idle_s=5, seed=1)
+        self.assertEqual((result['status'], result['physical_inputs']), ('pass', 0))
 
     def test_refuses_firmware_without_press_timing(self):
         with self.assertRaisesRegex(RuntimeError, 'press_frame_ms and display_ms'):

@@ -7,6 +7,7 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
 use embassy_executor::Spawner;
+use embassy_futures::join::join;
 use embassy_futures::select::Either;
 use embassy_futures::select::Either3;
 use embassy_futures::select::select;
@@ -18,6 +19,8 @@ use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::PacketMetadata;
 use embassy_net::udp::UdpSocket;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Instant;
 use embassy_time::Timer;
@@ -137,6 +140,24 @@ static GENERATION: AtomicU32 = AtomicU32::new(0);
 static ASSOCIATIONS: AtomicU32 = AtomicU32::new(0);
 static PROBE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
 static PROBE_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// Embassy-net keeps one waker per stack for its configuration, and two tasks
+/// waiting on the stack take it from each other in a busy loop.
+static STATION_CONFIG: Watch<CriticalSectionRawMutex, (), 2> = Watch::new_with(());
+
+async fn config_up(stack: Stack<'static>) {
+    let mut changes = STATION_CONFIG
+        .receiver()
+        .expect("a receiver per waiting task");
+    changes.get_and(|_| stack.is_config_up()).await;
+}
+
+async fn config_down(stack: Stack<'static>) {
+    let mut changes = STATION_CONFIG
+        .receiver()
+        .expect("a receiver per waiting task");
+    changes.get_and(|_| !stack.is_config_up()).await;
+}
+
 /// The associated station's signal in dBm, read this often by the
 /// connection owner; `i32::MIN` until it has read one.
 static RSSI: AtomicI32 = AtomicI32::new(i32::MIN);
@@ -261,7 +282,6 @@ pub fn rssi() -> Option<i8> {
 ///
 /// None means unconfigured or failed radio initialization. Some means the stack
 /// and its runner exist, not that association, DHCP or internet access succeeded.
-/// Await `stack.wait_config_up()` under a caller deadline before data operations.
 /// The same handle survives reconnects. Compare `connection_generation()` around
 /// awaited operations when a result must belong to the same association.
 ///
@@ -316,7 +336,7 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         Task::WifiConnection,
         connection(controller).unwrap(),
     );
-    spawn(spawner, Task::WifiStation, network(runner).unwrap());
+    spawn(spawner, Task::WifiStation, network(runner, stack).unwrap());
     spawn(
         spawner,
         Task::WifiAccessPoint,
@@ -718,8 +738,17 @@ async fn connect(controller: &mut WifiController<'static>, retry: &mut Reconnect
 }
 
 #[embassy_executor::task]
-async fn network(mut runner: Runner<'static, Interface>) {
-    runner.run().await
+async fn network(mut runner: Runner<'static, Interface>, stack: Stack<'static>) {
+    let publish = async {
+        let changes = STATION_CONFIG.sender();
+        loop {
+            stack.wait_config_up().await;
+            changes.send(());
+            stack.wait_config_down().await;
+            changes.send(());
+        }
+    };
+    join(runner.run(), publish).await;
 }
 
 #[embassy_executor::task]
@@ -781,7 +810,7 @@ async fn verify(stack: Stack<'static>) {
             continue;
         }
 
-        if with_timeout(Duration::from_secs(20), stack.wait_config_up())
+        if with_timeout(Duration::from_secs(20), config_up(stack))
             .await
             .is_err()
         {
@@ -830,7 +859,7 @@ async fn verify(stack: Stack<'static>) {
                     successes,
                     esp_alloc::HEAP.free()
                 );
-                stack.wait_config_down().await;
+                config_down(stack).await;
                 continue;
             }
             Ok(Err(kind)) => {
@@ -847,7 +876,7 @@ async fn verify(stack: Stack<'static>) {
         let delay = firmware_services::network::retry_delay_secs(probe_failures);
         probe_failures = probe_failures.saturating_add(1);
         log::info!(target: "wifi", "CYCLING_WIFI request_retry_in_s={}", delay);
-        let _ = with_timeout(Duration::from_secs(delay), stack.wait_config_down()).await;
+        let _ = with_timeout(Duration::from_secs(delay), config_down(stack)).await;
     }
 }
 
@@ -905,7 +934,7 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
 pub async fn time_sync(stack: Stack<'static>) {
     let mut retry_not_before = 0u64;
     loop {
-        stack.wait_config_up().await;
+        config_up(stack).await;
         let mut failures = 0u8;
         while stack.is_config_up() {
             if suspended() {
@@ -916,7 +945,7 @@ pub async fn time_sync(stack: Stack<'static>) {
             if now < retry_not_before {
                 if matches!(
                     select(
-                        stack.wait_config_down(),
+                        config_down(stack),
                         Timer::after_millis(retry_not_before - now),
                     )
                     .await,
@@ -940,7 +969,7 @@ pub async fn time_sync(stack: Stack<'static>) {
                         "CYCLING_TIME synced unix={} stratum={} rtt_ms={}",
                         timestamp.unix_seconds, timestamp.stratum, rtt_ms
                     );
-                    match select(stack.wait_config_down(), Timer::after_secs(60 * 60)).await {
+                    match select(config_down(stack), Timer::after_secs(60 * 60)).await {
                         Either::First(_) => firmware_services::network_time::set_syncing(false),
                         Either::Second(_) => {}
                     }
@@ -965,7 +994,7 @@ pub async fn time_sync(stack: Stack<'static>) {
                             kind, delay
                         );
                         if matches!(
-                            select(stack.wait_config_down(), Timer::after_secs(delay)).await,
+                            select(config_down(stack), Timer::after_secs(delay)).await,
                             Either::First(_)
                         ) {
                             break;

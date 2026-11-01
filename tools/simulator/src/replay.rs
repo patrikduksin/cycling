@@ -124,7 +124,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(mode: Mode) -> Self {
+    pub(crate) fn new(mode: Mode) -> Self {
         Self {
             mode,
             first: None,
@@ -596,6 +596,14 @@ impl Sources {
     /// Where the replay parted from its recording so far.
     pub fn report(&self) -> Report {
         self.ledger.0.borrow().clone()
+    }
+
+    /// Open a window: the next divergence becomes the report's first.
+    /// Returns the counts before the window.
+    pub fn open_window(&mut self) -> BTreeMap<Kind, u32> {
+        let mut report = self.ledger.0.borrow_mut();
+        report.first = None;
+        report.counts.clone()
     }
 
     fn begin(&mut self, now: u64) {

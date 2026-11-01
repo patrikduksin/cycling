@@ -712,7 +712,12 @@ impl Reader {
             ),
             Event::ServerListen(listen) => self.push(
                 Kind::Phone,
-                if listen { "server listen" } else { "server stop" }.into(),
+                if listen {
+                    "server listen"
+                } else {
+                    "server stop"
+                }
+                .into(),
             ),
             Event::ServerFinish(id) => self.push(Kind::Phone, format!("server finish #{id}")),
             Event::ServerRead { id, part, more } => self.push(
@@ -772,7 +777,10 @@ impl Reader {
             ),
             Event::Unknown { tag, body } => self.push(
                 Kind::Trace,
-                format!("a record tagged {tag} this build cannot read, {} B", body.len()),
+                format!(
+                    "a record tagged {tag} this build cannot read, {} B",
+                    body.len()
+                ),
             ),
         }
     }

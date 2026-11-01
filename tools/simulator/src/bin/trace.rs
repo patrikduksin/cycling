@@ -2,7 +2,7 @@
 //! moments in it, export it to OpenTelemetry, replay a window of it with
 //! screenshots, and write a regression test from it.
 use shell_simulator::recording::Recording;
-use shell_simulator::replay::{Kind as Divergence, Mode};
+use shell_simulator::replay::Mode;
 use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
 use shell_simulator::trace::find::{Query, find};
@@ -10,7 +10,7 @@ use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, SILENCE_MS, Timeline, duration, read, session_clock,
 };
-use shell_simulator::trace::{otlp, stub};
+use shell_simulator::trace::{divergence, otlp, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -56,11 +56,15 @@ commands:
          [--every T] [--video] [--out DIR]
       Replay the session up to --to (default --from plus 60s), screenshots every
       --every (default 5s) from --from, the screen's text, the replay's own
-      trace and where it parted from the recording. stimulus runs this build
-      against the recorded world; strict expects the recording build and
-      counts every call it answers differently. auto (default) picks strict
-      when this checkout, without uncommitted VANA changes, built the trace's
-      commit, else stimulus, and prints which and why.
+      trace and where it parted from the recording, into --out (default
+      .local/replay/<trace>-<from>/ under the checkout; paths print absolute).
+      stimulus runs this build against the recorded world; strict expects
+      the recording build and counts every call it answers differently.
+      auto (default) picks strict when this checkout, without uncommitted
+      VANA changes, built the trace's commit, else stimulus, and says why.
+      Divergences count inside the window, with a total for before it, each
+      labelled rider-visible, model-only (the stimulus ANT model),
+      timing-only, call-level (strict) or replay fault.
   test-stub <trace> --at T [--name NAME]
       A regression test that replays the trace to T and asserts what the
       rider saw then. Put the trace under tools/simulator/tests/traces/.
@@ -152,7 +156,8 @@ fn run(args: &[String]) -> Result<String, String> {
             match options.value("out") {
                 Some(out) => {
                     std::fs::write(out, json).map_err(|e| format!("{out}: {e}"))?;
-                    Ok(format!("{out}\n"))
+                    let out = std::fs::canonicalize(out).map_err(|e| format!("{out}: {e}"))?;
+                    Ok(format!("{}\n", out.display()))
                 }
                 None => Ok(json),
             }
@@ -475,6 +480,13 @@ fn replay(
     }
     let mut sim = Sim::replaying(capture, mode, None);
     let mut ran = sim.replay_until(from);
+    // Divergences before the window are counted apart; the first one
+    // reported is the window's own.
+    let before = sim
+        .device
+        .replay_sources()
+        .map(|sources| sources.open_window())
+        .unwrap_or_default();
     sim.attach_recording(recording);
     // Stop at each screenshot and at each change the recording saw, which
     // becomes a caption at its own time.
@@ -504,34 +516,11 @@ fn replay(
         }
     }
     let reached = timeline.moment(sim.device.now);
-    let report = sim.device.report().map(|report| {
-        let mut text = String::new();
-        match &report.first {
-            None => text.push_str("none\n"),
-            Some(first) => {
-                let _ = writeln!(
-                    text,
-                    "first at {}: {:?}: {}",
-                    timeline.moment(first.at_ms),
-                    first.kind,
-                    first.detail
-                );
-                let counts: Vec<String> = report
-                    .counts
-                    .iter()
-                    .map(|(kind, n)| format!("{kind:?} {n}"))
-                    .collect();
-                let _ = writeln!(text, "counts: {}", counts.join(", "));
-                if mode == Mode::Stimulus && report.count(Divergence::Seen) == 0 {
-                    text.push_str(
-                        "the rider saw what the recording saw; the rest is how this build asked\n",
-                    );
-                }
-            }
-        }
-        text
-    });
-    let report = report.unwrap_or_default();
+    let report = sim
+        .device
+        .report()
+        .map(|report| divergence::describe(timeline, (from, to), &before, &report))
+        .unwrap_or_default();
     let own = sim.trace();
     drop(sim);
     let write = |name: &str, bytes: &[u8]| {
@@ -552,6 +541,7 @@ fn replay(
         if ran { "" } else { " (the trace ended)" }
     );
     let _ = write!(out, "divergence: {report}");
+    let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|entry| Some(entry.ok()?.path()))

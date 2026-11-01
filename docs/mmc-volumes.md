@@ -118,7 +118,35 @@ before a reopen read that chunk back, read as the end of that chunk.
 way out of a `CORRUPT` store, which `VOLUME ADD STORE` never formats over.
 It erases every file and starts an empty store with a new store id. It never writes over a `FOREIGN` store. It is a line
 command, so it never runs during a transfer session, which keeps the store
-open, and the C606 refuses it with `BUSY` while a ride records.
+open, and the C606 refuses it with `BUSY` while a ride records or while
+the session's trace file is open.
+
+### Ride traces
+
+The C606 (cycling builds) records each power-on session into
+`traces/<sequence>-<boot id>.trace`, the sequence one past the highest in
+`traces/`. Blocks wait in a PSRAM spool from the first pass; the file
+opens once VANA's boot scans end, so the header can name the media they
+found, and each pass drains at most one record into it, syncing every
+5 s, before a transfer session, a restart and a power transition. The
+mechanism is `firmware_services::trace::spool`; the simulator records
+through it too.
+
+- No STORE volume at power-on, or no PSRAM for the spool: recording is off
+  for the session, logged under the `trace` target with the reason, and
+  nothing else changes.
+- After a transfer session, a host write to `FILES` or `TERRAIN`, which
+  the trace does not see, ends it with a `HostWrote` record; so does a
+  `STORE` volume that a volume command moved. Any other change to the
+  store reopens the file, which continues in a new chunk.
+- A burst the spool cannot hold (a phone upload larger than about
+  280 KiB) is lost from the trace, which names the loss in its next block.
+- Secrets are redacted as they are recorded; see
+  `firmware_services::trace::redact` for what a replay does with them.
+
+`STORE STATUS` adds `trace=off|staging|recording|ended`, the file and the
+bytes written, `why` (words joined by `_`) when it is off or ended, and
+the spool's use, peak and refused blocks.
 
 ## Files
 

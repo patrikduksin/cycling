@@ -76,18 +76,22 @@ fn power(data: [u8; 8]) -> String {
     }
 }
 
+/// Every heart rate page ends with the reading VANA takes, its own battery
+/// page too; only the common battery page reuses those bytes.
 fn heart_rate(data: [u8; 8]) -> String {
-    if data[0] & 0x7f == HEART_RATE_BATTERY_PAGE {
-        return battery(data[2], data[3]);
-    }
-    if data[0] == BATTERY_PAGE {
-        return common(data);
+    let page = data[0] & 0x7f;
+    if page == BATTERY_PAGE {
+        return battery(data[6], data[7]);
     }
     let beats = data[6];
-    match data[7] {
+    let reading = match data[7] {
         0 => format!("hr -- (beat {beats})"),
         bpm => format!("hr {bpm} bpm (beat {beats})"),
+    };
+    if page == HEART_RATE_BATTERY_PAGE {
+        return format!("{reading}, {}", battery(data[2], data[3]));
     }
+    reading
 }
 
 fn battery(fraction: u8, coarse: u8) -> String {
@@ -222,6 +226,23 @@ mod tests {
         assert_eq!(
             pages.describe(sensor(HEART_RATE), [0x04, 0, 0, 0, 0, 0, 38, 0]),
             "hr -- (beat 38)"
+        );
+    }
+
+    #[test]
+    fn heart_rate_battery_page_still_carries_the_reading_vana_reads() {
+        let mut pages = Pages::default();
+        assert_eq!(
+            pages.describe(
+                sensor(HEART_RATE),
+                [0x87, 0x40, 0xfa, 0x22, 0x34, 0x12, 39, 141]
+            ),
+            "hr 141 bpm (beat 39), battery GOOD 2.98 V"
+        );
+        assert_eq!(
+            pages.describe(sensor(HEART_RATE), [0xd2, 0xff, 0, 0, 0, 0, 0xfa, 0x22]),
+            "battery GOOD 2.98 V",
+            "the common battery page with the toggle bit set"
         );
     }
 

@@ -621,6 +621,44 @@ pub fn execute(
     terminal.command_completed();
 }
 
+/// The card for one transfer session. Its ownership is checked at the
+/// session's first read instead of before every read, which reads two more
+/// sectors each time; a write still checks it. The app is paused, so
+/// nothing else uses the card meanwhile.
+struct SessionCard<'a> {
+    bulk: &'a mut device::board::Bulk,
+    owned: Option<device_api::bulk::OwnedInfo>,
+}
+
+impl device_api::bulk::ReadWrite for SessionCard<'_> {
+    fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
+        if let Some(owned) = self.owned {
+            return Ok(owned);
+        }
+        let owned = self.bulk.owned_info()?;
+        self.owned = Some(owned);
+        Ok(owned)
+    }
+    fn owned_read(
+        &mut self,
+        sector: u64,
+        output: &mut [u8; device_api::bulk::SECTOR_SIZE],
+    ) -> Result<(), device_api::bulk::Error> {
+        let address = self.owned_info()?.address(sector)?;
+        device_api::bulk::Read::read(self.bulk, address, output)
+    }
+    fn owned_write(
+        &mut self,
+        sector: u64,
+        input: &[u8; device_api::bulk::SECTOR_SIZE],
+    ) -> Result<(), device_api::bulk::Error> {
+        self.bulk.owned_write(sector, input)
+    }
+    fn entropy(&mut self) -> u64 {
+        self.bulk.entropy()
+    }
+}
+
 /// Serve the binary volume transfer session on the terminal's USB until the
 /// host ends it or stays silent for `IDLE_MS`. The app does not run meanwhile;
 /// `VOLUME TRANSFER` refused while a ride records.
@@ -676,6 +714,7 @@ pub async fn transfer(
         )
     };
     session.spent.before_us = micros(handover_us);
+    let mut card = SessionCard { bulk, owned: None };
     let mut header = [0u8; HEADER];
     let mut last = embassy_time::Instant::now();
     let idle = embassy_time::Duration::from_millis(transfer::IDLE_MS);
@@ -789,7 +828,7 @@ pub async fn transfer(
                 length: 0,
             }
         } else {
-            let reply = session.handle(&request, body, bulk, out);
+            let reply = session.handle(&request, body, &mut card, out);
             let spent = &mut session.spent;
             spent.serving_us = spent
                 .serving_us

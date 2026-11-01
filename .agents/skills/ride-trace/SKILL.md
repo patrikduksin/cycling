@@ -21,14 +21,24 @@ prints text: start there, and open a PNG only to confirm what the text says.
 - From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
   `<name>.trace` with the media it started on in `<name>.origin`.
 
+`cycling trace origin <trace>` says in words what a replay starts from: the
+power-on number, settings, VANA's saved sensors and setup step, rides on
+internal flash, and the bulk card.
+
 Done when `cycling trace summary <trace>` prints a header line, not an error.
 
 ## 2. Read the summary
 
-`cycling trace summary <trace>` gives the session as spans and events, one line
-each, in time order: rides with their recording and paused stretches, page
-visits, toasts, sensor links (`ant power#1234 connected stale`), GPS fix,
-companion start-up, laps, warnings, gaps and commands.
+`cycling trace summary <trace>` opens with the build, then the sensor
+silences: each sensor's last packet before a pause of over 3 s and its first
+after (`power#1234 silent 03:06.010-03:31.260 (25.2s)`). Then the session as
+spans and events, one line each, in time order: rides with their recording
+and paused stretches, page visits, toasts, sensor links
+(`ant power#1234 connected stale`) and silences, GPS fix, companion start-up,
+laps, warnings, storage, gaps and commands. A ride counts the warnings logged
+in it (`warnings=1`), and a warning names what changed in the same pass
+(`(same pass: ride ended saved, page summary began)`). VANA's warnings about
+saving or reading media are `storage` events.
 
 Every line opens with two clocks: `03:10.000 ride 02:47` is session time
 (mm:ss.mmm since power-on) and ride time (mm:ss of recording; it stops while
@@ -49,44 +59,59 @@ explains it:
 | a reading showed dashes | `cycling trace find <trace> power=--` (also `hr`, `speed`, `cad`, `dist`, `grade`, `time`; `!=` and `~` work too) |
 | a page did or did not come up | `find <trace> page --where climb` |
 | a message flashed | `find <trace> toast` |
-| a sensor dropped | `find <trace> stale`, `find <trace> ant` |
+| a sensor dropped | the summary's silences line; `find <trace> stale`, `find <trace> ant` |
+| something about saving | `find <trace> storage` |
 | it froze or stuttered | `find <trace> gap` |
-| anything else | `find <trace> <text>` (any text, case ignored); `find <trace> log` for warnings |
+| anything else | `find <trace> <text>` (any text, case ignored); `find <trace> log,storage` for warnings |
 
 A field query answers with stretches (`stretch until 03:32.000 (22.0s)`), the
 others with entries. Then read the window:
 `cycling trace timeline <trace> --from T --to T`. It hides bulky kinds (ANT and
 BLE packets, ANT requests, entropy) and entries that only repeat their source;
 `--kinds all --all` shows everything, `--kinds seen` or `--kinds ant,shown`
-narrows it.
+narrows it. ANT+ packets read as words (`power#1234 power 200 W, cadence
+86 rpm (event 60)`, heart rate, cadence and wheel rates, radar targets);
+`--hex` adds the bytes.
 
 Done when you can write one sentence of the form "at `<session> ride <ride>`
-the rider saw X, and the inputs then were Y".
+the rider saw X, and the inputs then were Y". When Y explains X (the meter
+fell silent, so power showed dashes), VANA did what it should: say so, and
+write a test only for what VANA got wrong.
 
 ## 4. Replay the window
 
 `cycling replay <trace> --from T --to T [--every 1s] [--video]` replays the
-session from power-on, records from `--from`, and prints its artifact paths.
-Read them in this order:
+session from power-on, records from `--from`, and prints the absolute path of
+each artifact. They land in `.local/replay/<trace name>-<from>/` in the
+checkout you ran it from (`--out DIR` puts them elsewhere); a rerun with the
+same trace and `--from` replaces them. Read them in this order:
 
 - `screens.txt`: the screen's text at each screenshot, one line each.
-- `divergence.txt`: where the replay parted from the recording (`none`, or the
-  first difference and counts by kind). A `Seen` count means the rider would
-  have seen something else than in the recording.
+- `divergence.txt`: where the replay parted from the recording inside the
+  window, with one total for before it. Each count has a meaning:
+  `rider-visible` (the rider would have seen something else), `model-only`
+  (the stimulus ANT model or fresh entropy answered; the rider sees nothing),
+  `timing-only`, `call-level` (strict: VANA asked differently) or
+  `replay fault`. The `verdict` line sums it up; `rider-visible: none` with
+  model-only counts is a clean window, not a replay fault.
 - `timeline.txt`: what the recording saw in the window, at its own times; the
   PNGs and `video.mp4` carry the same captions.
 - `replayed.trace`: the replay's own trace; `cycling trace timeline` reads it,
   to compare with the recording line by line.
 
-Pick the mode by the build:
+The mode follows the build. A trace names the commit that recorded it (the
+summary's `build`; `unknown` for traces from before builds were stamped).
+The default, `--mode auto`, replays strict when this checkout built that
+commit and has no uncommitted change under `apps`, `packages` or
+`tools/simulator`, and stimulus otherwise; the `mode` line says which and why.
 
-- `--mode stimulus` (default) runs this checkout against the recorded world:
-  sensors, GPS and buttons arrive when they did, and the ANT radio is a model.
-  Use it for a changed build, for a fix and for every regression test.
-- `--mode strict` expects the build that recorded the trace (the summary's
-  `build`; check it out first). Every call VANA makes is answered from the
-  recording and any difference is a divergence. Use it to reproduce the
-  recording frame for frame, or to tell a replay fault from a VANA change.
+- `stimulus` runs this checkout against the recorded world: sensors, GPS and
+  buttons arrive when they did, and the ANT radio is a model. It is what a
+  changed build, a fix and every regression test use.
+- `strict` answers every call VANA makes from the recording and counts any
+  difference. It reproduces the recording frame for frame and tells a replay
+  fault from a VANA change. To get it for an older trace, check out its
+  `build` first.
 
 Done when the screenshot at the moment shows what the rider described, or
 `divergence.txt` explains why it does not.
@@ -96,15 +121,22 @@ Done when the screenshot at the moment shows what the rider described, or
 1. Copy the trace (and its `.origin`) to
    `tools/simulator/tests/traces/<name>.trace`. Keep fixtures small: a trace
    costs about 30 KB a minute.
-2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see>`
-   prints a test that replays to T in stimulus mode and asserts what the
-   recording showed: page, toast, ride state and readings, plus the screen
-   where a reading showed dashes.
+2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see> --expect <field>=<value>`
+   prints a test that replays to T in stimulus mode, in two sections. Its doc
+   comment says what the recording showed and what the sensors were doing
+   (each link, each sensor's last packet and silence). The characterization
+   asserts the rest of the moment as recorded. The expectation asserts what
+   the rider should have seen: `--expect power!=--`, `power=230`,
+   `page=ride/climb` or `toast~SAVED`, several joined with commas, for a
+   reading (`time`, `speed`, `power`, `hr`, `cad`, `dist`, `grade`) or `page`,
+   `toast` or `ride`. It refuses an expectation the recording already meets.
+   Without `--expect`, the expectation is a `todo!()` to replace.
 3. Paste it into `tools/simulator/tests/trace_tools.rs`, or a test file beside
-   it. Change the asserts that describe the bug to what the rider should have
-   seen. Run it: it goes red on the bug.
-4. Fix VANA; the test goes green. The stub's untouched asserts keep the rest of
-   the moment as it was.
+   it. Run it: it goes red on the expectation, with the recorded value in the
+   message. A red in the characterization means the replay itself differs;
+   go back to step 4.
+4. Fix VANA; the test goes green. The characterization keeps the rest of the
+   moment as it was.
 
 Done when the test is red before the fix and green after it.
 

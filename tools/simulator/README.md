@@ -37,7 +37,8 @@ worktree and reports only screens whose pixels changed, Before | After
 `cycling sim-live` opens a window (`src/bin/sim-live.rs`, behind the `live`
 feature) onto `live.rs`: the device powers on beside a rider at 25 km/h on a
 loop route with GPS and ANT heart-rate, power, speed/cadence and radar sensors
-in range. Time runs in 10 ms firmware passes at real time or faster:
+in range. Time runs in 10 ms steps at real time or faster, with a firmware
+pass each step while the device is busy and every 50 ms on a still page:
 
 | Keys | Action |
 | --- | --- |

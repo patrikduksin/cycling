@@ -46,3 +46,4 @@ required-features = ["cycling", "live"]
 [dev-dependencies]
 # Reads the Connect phone QR codes back from rendered frames.
 rqrr = "=0.11.0"
+terrain = { path = "../../packages/terrain" }

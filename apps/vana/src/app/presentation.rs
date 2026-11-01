@@ -753,7 +753,13 @@ impl Runtime {
             Observation::Fresh { value, .. } | Observation::Stale { value, .. } => Some(Battery {
                 percent: value.0,
                 charging: self.readings.battery.charging(),
-                phase: (now / ANIMATED_FRAME_MS % u64::from(CHARGE_STEPS)) as u8,
+                // A full fill cannot climb, so one phase keeps the frame's
+                // digest unchanged.
+                phase: if value.0 >= 100 {
+                    0
+                } else {
+                    (now / ANIMATED_FRAME_MS % u64::from(CHARGE_STEPS)) as u8
+                },
             }),
             Observation::Unavailable => None,
         };

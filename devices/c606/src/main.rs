@@ -2,6 +2,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![no_main]
 use c606_firmware as device;
+use device::activity::{Stage, stage_ended};
 mod bringup;
 mod commands;
 mod logging;
@@ -408,9 +409,11 @@ async fn console(
     system.forget_frame();
     loop {
         device::activity::pass_began();
+        device::capabilities::io::pass_began();
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         bringup.poll(now, &mut devices.network, &mut devices.ble);
+        stage_ended(Stage::Bringup);
         #[cfg(feature = "cycling")]
         {
             let quiet = vana_pass(
@@ -422,6 +425,7 @@ async fn console(
                 &mut terrain_step_max_us,
             );
             trace.vitals(&devices, system.heap_min_sampled, now, quiet);
+            stage_ended(Stage::Vitals);
         }
         #[cfg(not(feature = "cycling"))]
         let power = device_api::power::PowerControl::status(&devices.power);
@@ -458,7 +462,9 @@ async fn console(
             trace.sync(&mut devices.bulk, now);
             commands::Diagnostics::restart(&FirmwareDiagnostics, panic);
         }
-        if let Some(request) = terminal.request(now) {
+        let request = terminal.request(now);
+        stage_ended(Stage::Terminal);
+        if let Some(request) = request {
             // The trace holds the line and the power status the command's
             // gate reads, as the simulator records them.
             #[cfg(feature = "cycling")]
@@ -480,6 +486,7 @@ async fn console(
             );
             #[cfg(feature = "cycling")]
             trace.log.record(&trace.record);
+            stage_ended(Stage::Command);
         }
         if now >= next_health {
             next_health = now + 5_000;
@@ -510,17 +517,19 @@ async fn console(
                 );
                 terrain_step_max_us = 0;
             }
+            stage_ended(Stage::Log);
         }
         device::activity::pass_ended();
-        // A host talking on the terminal keeps the usual pace.
         #[cfg(feature = "cycling")]
-        let pass_ms = match sdk.pass_rest_ms(trace.power.frozen().state) {
-            Some(rest_ms) if !terminal.take_traffic() => rest_ms,
-            _ => 5,
-        };
+        let rest_ms = sdk.pass_rest_ms(
+            &system,
+            trace.power.frozen().state,
+            terminal.take_traffic(),
+            embassy_time::Instant::now().as_millis(),
+        );
         #[cfg(not(feature = "cycling"))]
-        let pass_ms = 5;
-        embassy_time::Timer::after_millis(pass_ms).await;
+        let rest_ms = 5;
+        device::capabilities::io::rest(rest_ms).await;
     }
 }
 
@@ -559,12 +568,14 @@ fn vana_pass(
     let startup = trace.startup.observe(startup, now, record, Event::Startup);
     let power = trace.power.freeze(&devices.power, now, record);
     if quiet && power.state == State::Charging {
+        stage_ended(Stage::Inputs);
         return quiet;
     }
     let companion =
         companion.unwrap_or_else(|| trace.companion.freeze(&devices.input, now, record));
     let backlight = device::board::Power.availability();
     trace.log.begin_pass(backlight, &companion);
+    stage_ended(Stage::Inputs);
     // While the companion starts, VANA scans its ride journal so Home
     // opens with storage ready. Charging standby and transitions skip it.
     if power.state == State::Initializing {
@@ -581,6 +592,7 @@ fn vana_pass(
             0
         });
     }
+    stage_ended(Stage::Standby);
     // Diagnostic power requests enter only with no active domain work.
     // Keep USB observations alive while device owners complete the transition.
     if power.ready {
@@ -611,6 +623,7 @@ fn vana_pass(
         let mut server = trace.server.bind(&mut devices.server, now, record);
         let mut sound = trace.sound.bind(&mut devices.sound, now, record);
         let mut control = trace.power.bind(&mut devices.power, now, record);
+        stage_ended(Stage::Observe);
         sdk.set_startup_status(startup);
         system.set_app_active(sdk.input_active());
         system.tick(now);
@@ -629,9 +642,11 @@ fn vana_pass(
             sdk.input_received(edge.input, edge.received_ms, now, &mut ant);
         }
         system.observe_position(&position, now);
+        stage_ended(Stage::Shell);
         let started = embassy_time::Instant::now();
         system.present();
         system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
+        stage_ended(Stage::ShellPresent);
         sdk.tick(
             &mut system.data_storage(),
             &mut bulk,
@@ -645,11 +660,13 @@ fn vana_pass(
                 physical,
             },
         );
+        stage_ended(Stage::VanaTick);
         // One bounded look-ahead step a pass (a tile chunk, a match or a
         // prediction), before the frame that may show its result.
         let started = embassy_time::Instant::now();
         sdk.look_ahead(&mut bulk, now);
         *terrain_step_max_us = (*terrain_step_max_us).max(started.elapsed().as_micros());
+        stage_ended(Stage::LookAhead);
         sdk.serve_phone(
             &mut server,
             &mut access_point,
@@ -657,15 +674,19 @@ fn vana_pass(
             &mut bulk,
             now,
         );
+        stage_ended(Stage::Phone);
         sdk.present(system, now, &ant, &position);
+        stage_ended(Stage::VanaPresent);
         sdk.save_preferences(system, now);
         sdk.alert(&mut sound, now);
         // After VANA's "TURNING OFF" frame, the device's coordinated
         // shutdown takes over; this loop then only serves the terminal.
         sdk.power(system, &mut control, now);
+        stage_ended(Stage::VanaAfter);
     }
     trace.log.record(&trace.record);
     trace.seen(sdk, system.take_frame(), now);
+    stage_ended(Stage::Seen);
     trace.drain(
         &mut devices.bulk,
         sdk.journals_at_boot(),
@@ -676,6 +697,7 @@ fn vana_pass(
         ),
         now,
     );
+    stage_ended(Stage::Drain);
     quiet
 }
 

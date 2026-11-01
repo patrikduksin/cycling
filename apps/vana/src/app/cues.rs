@@ -226,6 +226,11 @@ impl Cues {
         }
     }
 
+    /// A cue waits for the buzzer or is still sounding.
+    pub(super) fn busy(&self) -> bool {
+        self.pending.is_some() || self.run.is_playing()
+    }
+
     pub(super) fn take_played(&mut self) -> Option<Played> {
         self.played.take()
     }

@@ -22,6 +22,7 @@
 //! of a body and never writes more output than the transport has room for.
 
 use super::Runtime;
+use super::pace::Touched;
 use super::recording::Medium;
 use crate::ride::course::{self, gpx};
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
@@ -218,6 +219,11 @@ pub(super) struct Phone {
 }
 
 impl Phone {
+    /// A session is open, or the next service step opens or ends one.
+    pub(super) fn busy(&self) -> bool {
+        self.session.is_some() || self.wanted.is_some() || self.stopping
+    }
+
     fn w(&mut self) -> &mut Work {
         self.work.as_deref_mut().expect("phone work is attached")
     }
@@ -418,6 +424,9 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
+        // Wrapped as `tick` wraps them, so the storage code both reach is
+        // built once.
+        let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));
         match self.phone.wanted.take() {
             Some(Some(mode)) => self.begin_session(mode, ap, now),
             Some(None) => self.end_session(Closed::Rider),

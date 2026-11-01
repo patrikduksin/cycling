@@ -635,6 +635,7 @@ pub(crate) fn measured(event: &Event<'_>) -> bool {
             | Event::Health(_)
             | Event::Activity(_)
             | Event::Task { .. }
+            | Event::Stage { .. }
             | Event::Synthetic(_)
     )
 }
@@ -940,6 +941,7 @@ impl Sources {
             | Event::Health(_)
             | Event::Activity(_)
             | Event::Task { .. }
+            | Event::Stage { .. }
             | Event::Synthetic(_) => self.ledger.note(Kind::Unreplayable, 1, || {
                 format!("{event:?} where an input belongs")
             }),

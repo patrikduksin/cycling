@@ -91,6 +91,10 @@ impl Edges {
     pub fn pop(&mut self) -> Option<Edge> {
         self.values.pop_front()
     }
+    /// The last queued edge's sequence: it changes with each edge queued.
+    pub fn pushed(&self) -> u32 {
+        self.sequence
+    }
 }
 
 /// One poll of a touch panel.

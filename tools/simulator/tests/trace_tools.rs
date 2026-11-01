@@ -1004,10 +1004,44 @@ fn the_summary_splits_activity_by_what_the_device_was_doing() {
             "{state} in {summary}"
         );
     }
-    assert!(
-        summary.contains("task console: home idle 100/s, riding 100/s, paused 100/s"),
-        "{summary}"
-    );
+    let console = summary
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("task console: "))
+        .unwrap_or_else(|| panic!("the console's wakeups in {summary}"));
+    let rate = |state: &str| -> u32 {
+        console
+            .split(", ")
+            .find_map(|part| {
+                part.strip_prefix(state)?
+                    .trim()
+                    .strip_suffix("/s")?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or_else(|| panic!("{state} in {console}"))
+    };
+    // A ride keeps the busy pace. Home rests between passes once the
+    // pairing scan is over, as in the last window before the ride.
+    assert!(rate("riding") >= 95 && rate("paused") >= 95, "{console}");
+    let ride = timeline
+        .clock
+        .iter()
+        .find(|anchor| anchor.ride_ms.is_some())
+        .expect("a ride");
+    let home = timeline
+        .activity
+        .iter()
+        .rev()
+        .find(|window| window.end_ms <= ride.session_ms)
+        .expect("a window on Home");
+    let still = home
+        .tasks
+        .iter()
+        .find(|task| task.name == "console")
+        .map_or(0, |task| task.polls)
+        * 1000
+        / home.activity.window_ms;
+    assert!((15..=25).contains(&still), "{still}/s on a still Home");
     assert!(summary.contains("battery flags: none"), "{summary}");
 }
 

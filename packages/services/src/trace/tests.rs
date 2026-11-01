@@ -449,6 +449,12 @@ fn sample() -> Vec<Event<'static>> {
             polls: 500,
             busy_us: None,
         },
+        Event::Stage {
+            name: "vana.tick",
+            runs: 1_000,
+            busy_us: 90_000,
+            max_us: 4_000,
+        },
         Event::Pass { now_ms: 3_500 },
         Event::Pass { now_ms: 3_500 },
         Event::Pass { now_ms: 900_000 },

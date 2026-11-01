@@ -291,6 +291,18 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         let _ = now;
         self.pressed_at.is_some()
     }
+    /// When the shell next acts without an input: the harness's next
+    /// scheduled input or capture frame.
+    pub fn next_due_ms(&self) -> Option<u64> {
+        #[cfg(feature = "debug-harness")]
+        {
+            self.harness.next_due()
+        }
+        #[cfg(not(feature = "debug-harness"))]
+        {
+            None
+        }
+    }
     /// Time since the last input or reported activity. The shell owns this
     /// inactivity clock; applications combine it with their own work state.
     pub fn inactive_ms(&self, now: u64) -> u64 {

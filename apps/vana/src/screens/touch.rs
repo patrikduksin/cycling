@@ -277,6 +277,11 @@ impl Touches {
         })
     }
 
+    /// A finger rests on a control or moves a list.
+    pub fn down(&self) -> bool {
+        matches!(self.contact, Contact::Down { .. })
+    }
+
     /// When `tick` will press a control, so a frame can be drawn then.
     pub fn due(&self) -> Option<u64> {
         match self.contact {

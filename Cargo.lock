@@ -2275,6 +2275,7 @@ dependencies = [
  "serde",
  "serde-json-core",
  "sha2",
+ "terrain",
  "vana",
 ]
 

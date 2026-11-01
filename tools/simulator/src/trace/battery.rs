@@ -6,7 +6,7 @@
 //! measure current: these say what kept the CPU and radios busy, and a USB
 //! power meter on the bench says what that cost.
 use crate::trace::timeline::{
-    Timeline, Window, bytes, duration, millis, percent, rate, session_clock,
+    Timeline, Window, bytes, duration, micros, millis, percent, rate, session_clock,
 };
 use device_api::power::State as Power;
 use firmware_services::trace::Health;
@@ -82,6 +82,8 @@ struct Totals {
     wakes: u64,
     cpu: Option<Cpu>,
     tasks: BTreeMap<String, TaskTotal>,
+    /// The main-loop pass's stages, in the order the device recorded them.
+    stages: Vec<(String, StageTotal)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -97,6 +99,13 @@ struct Cpu {
 struct TaskTotal {
     polls: u64,
     busy: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StageTotal {
+    runs: u64,
+    busy: u64,
+    max: u32,
 }
 
 impl Totals {
@@ -130,6 +139,20 @@ impl Totals {
             total.busy = total
                 .busy
                 .and_then(|busy| Some(busy + u64::from(task.busy_us?)));
+        }
+        for stage in &window.stages {
+            let at = match self.stages.iter().position(|(name, _)| *name == stage.name) {
+                Some(at) => at,
+                None => {
+                    self.stages
+                        .push((stage.name.clone(), StageTotal::default()));
+                    self.stages.len() - 1
+                }
+            };
+            let total = &mut self.stages[at].1;
+            total.runs += u64::from(stage.runs);
+            total.busy += u64::from(stage.busy_us);
+            total.max = total.max.max(stage.max_us);
         }
     }
 
@@ -230,6 +253,30 @@ fn activity(timeline: &Timeline, out: &mut String) {
             })
             .collect();
         let _ = writeln!(out, "  task {name}: {}", rows.join(", "));
+    }
+    let mut stages: Vec<&String> = Vec::new();
+    for totals in by_state.values() {
+        for (name, _) in &totals.stages {
+            if !stages.contains(&name) {
+                stages.push(name);
+            }
+        }
+    }
+    for name in stages {
+        let rows: Vec<String> = by_state
+            .iter()
+            .filter_map(|(state, totals)| {
+                let (_, stage) = totals.stages.iter().find(|(n, _)| n == name)?;
+                Some(format!(
+                    "{} {} a pass {} (max {})",
+                    state.name(),
+                    micros(stage.busy / stage.runs.max(1)),
+                    percent(totals.share(stage.busy)),
+                    micros(u64::from(stage.max)),
+                ))
+            })
+            .collect();
+        let _ = writeln!(out, "  pass stage {name}: {}", rows.join(", "));
     }
 }
 
@@ -603,6 +650,25 @@ mod tests {
                 "battery flags: console keeps 200/s 2.0% while the screen is dark (5.0s); \
                  io keeps 100/s 0.1% while the screen is dark (5.0s)"
             ),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn each_pass_stage_reads_as_its_time_a_pass_and_its_share_in_each_state() {
+        let stage = |busy_us, max_us| Event::Stage {
+            name: "vana.tick",
+            runs: 500,
+            busy_us,
+            max_us,
+        };
+        let mut first = window(80, (500, 60_000));
+        first.push(stage(40_000, 900));
+        let mut second = window(80, (500, 60_000));
+        second.push(stage(60_000, 2_400));
+        let summary = summary(&timeline(&[(5_000, first), (10_000, second)]));
+        assert!(
+            summary.contains("  pass stage vana.tick: home idle 100 µs a pass 1.0% (max 2.40 ms)"),
             "{summary}"
         );
     }

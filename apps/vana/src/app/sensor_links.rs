@@ -56,6 +56,14 @@ pub(super) struct Discovery {
     generation: u32,
 }
 
+impl Discovery {
+    /// A search the rider asked for starts or runs; its results arrive a
+    /// few packets a pass.
+    pub(super) fn searching(&self) -> bool {
+        self.requested || self.scan.active()
+    }
+}
+
 /// Retry state of one saved sensor or closing channel.
 #[derive(Clone, Copy, Default)]
 struct Schedule {

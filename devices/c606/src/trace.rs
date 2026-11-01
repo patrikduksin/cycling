@@ -365,6 +365,14 @@ impl Trace {
                 busy_us: Some(task.busy_us),
             });
         }
+        for stage in device::activity::take_stages().iter().flatten() {
+            record.record(&Event::Stage {
+                name: stage.stage.name(),
+                runs: stage.runs,
+                busy_us: stage.busy_us,
+                max_us: stage.max_us,
+            });
+        }
     }
 
     /// This pass's share of the spool to the trace file, as `card` allows;

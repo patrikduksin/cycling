@@ -240,7 +240,41 @@ fn a_full_block_moves_on_to_the_next() {
     let passes: Vec<_> = events.collect();
     assert_eq!(passes.len(), 500);
     assert_eq!(passes.last(), Some(&Event::Pass { now_ms: 5_000 }));
-    assert_eq!(recorder.refused(), 0);
+}
+
+#[test]
+fn a_record_larger_than_a_block_leaves_a_marker() {
+    let header = Header {
+        version: crate::trace::VERSION,
+        build: [0; 20],
+        boot: 1,
+        profile: 0,
+        config: &[],
+        media: &[],
+    };
+    struct Bytes(Vec<u8>);
+    impl Sink for Bytes {
+        fn block(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+    }
+    let mut recorder = Recorder::new(&header, [0u8; 128], Bytes(Vec::new())).unwrap();
+    let text = core::str::from_utf8(&[b'x'; 200]).unwrap();
+    recorder.record(&Event::Pass { now_ms: 10 });
+    recorder.record(&Event::Command(text));
+    recorder.record(&Event::Pass { now_ms: 20 });
+    let mut bytes = recorder.sink().0.clone();
+    bytes.extend_from_slice(recorder.open_block());
+    let (_, events) = crate::trace::decode(&bytes).unwrap();
+    let command = Event::Command("").tag();
+    assert_eq!(
+        events.collect::<Vec<_>>(),
+        [
+            Event::Pass { now_ms: 10 },
+            Event::TooLarge(command),
+            Event::Pass { now_ms: 20 },
+        ]
+    );
 }
 
 #[test]

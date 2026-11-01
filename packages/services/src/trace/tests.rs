@@ -1,6 +1,7 @@
 use super::*;
 use device_api::ant::{Admission, Discovery, Identity, LinkState, OperationId, ScanState};
 use device_api::gps::FixState;
+use std::string::String;
 use std::vec::Vec;
 
 const HEADER: Header<'static> = Header {
@@ -357,6 +358,131 @@ fn decoding_resumes_from_a_cursor() {
     let head: Vec<_> = first.by_ref().take(10).collect();
     let rest: Vec<_> = Events::resume(&bytes, first.cursor()).collect();
     assert_eq!([head, rest].concat(), events);
+}
+
+/// A host reading a trace while the device writes it: the open block is
+/// resealed longer, then sealed and followed by the next. A reader that
+/// stops wherever the bytes end and resumes later reads every event once.
+#[test]
+fn a_reader_resumes_over_a_trace_that_grew() {
+    let events = sample();
+    let mut out = std::vec![0u8; 128];
+    let len = encode_header(&HEADER, &mut out).unwrap();
+    let mut written = out[..len].to_vec();
+    let mut encoder = Encoder::new(std::vec![0u8; 128]);
+    let (_, first) = decode(&written).unwrap();
+    let mut cursor = first.cursor();
+    let mut read = Vec::new();
+    let read_on = |bytes: &[u8], cursor: &mut Cursor, read: &mut Vec<String>| {
+        let mut events = Events::resume(bytes, *cursor);
+        read.extend(events.by_ref().map(|event| std::format!("{event:?}")));
+        assert_eq!(events.end(), Some(End::Complete));
+        *cursor = events.cursor();
+    };
+    for event in &events {
+        if encoder.push(event) == Err(Full::Block) {
+            written.extend_from_slice(encoder.sealed());
+            encoder.restart();
+            encoder.push(event).unwrap();
+        }
+        let mut now = written.clone();
+        now.extend_from_slice(encoder.sealed());
+        read_on(&now, &mut cursor, &mut read);
+    }
+    let expected: Vec<_> = events.iter().map(|e| std::format!("{e:?}")).collect();
+    assert_eq!(read, expected);
+}
+
+#[test]
+fn a_cursor_past_the_bytes_ends_torn_without_panicking() {
+    let bytes = encode(&sample(), 128);
+    let (_, mut events) = decode(&bytes).unwrap();
+    events.by_ref().take(40).for_each(drop);
+    let cursor = events.cursor();
+    let header = block(&bytes, 0).unwrap().1;
+    for cut in header..bytes.len() {
+        let mut shorter = Events::resume(&bytes[..cut], cursor);
+        shorter.by_ref().for_each(drop);
+        assert!(shorter.end().is_some(), "cut at {cut}");
+    }
+}
+
+/// A later version appends fields to an existing record and the header.
+#[test]
+fn fields_a_later_version_appends_are_skipped() {
+    let later = Header {
+        version: VERSION + 1,
+        ..HEADER
+    };
+    let mut bytes = std::vec![0u8; 512];
+    let mut w = Writer::new(&mut bytes[2..], 0);
+    later.put(&mut w);
+    w.bytes(b"a later header field");
+    let len = w.len;
+    let header_end = seal(&mut bytes, len).unwrap();
+    let mut w = Writer::new(&mut bytes[header_end + 2..], 0);
+    w.byte(SHORT_PASS | 10);
+    w.record(tag::ENTROPY, |w| {
+        w.varint(7);
+        w.bytes(b"a later field");
+    });
+    w.byte(SHORT_PASS | 10);
+    let len = w.len;
+    let end = header_end + seal(&mut bytes[header_end..], len).unwrap();
+    let (header, events) = decode(&bytes[..end]).unwrap();
+    assert_eq!(header, later);
+    assert_eq!(
+        events.collect::<Vec<_>>(),
+        [
+            Event::Pass { now_ms: 10 },
+            Event::Entropy(7),
+            Event::Pass { now_ms: 20 },
+        ]
+    );
+    let mut own = bytes.clone();
+    own[2] = VERSION as u8;
+    let crc = crc32(&own[2..header_end - 4]).to_le_bytes();
+    own[header_end - 4..header_end].copy_from_slice(&crc);
+    assert_eq!(decode(&own[..end]).err(), Some(Error::Header));
+}
+
+#[test]
+fn a_version_zero_trace_is_refused() {
+    let mut bytes = std::vec![0u8; 128];
+    let len = encode_header(
+        &Header {
+            version: 0,
+            ..HEADER
+        },
+        &mut bytes,
+    )
+    .unwrap();
+    assert_eq!(decode(&bytes[..len]).err(), Some(Error::Version(0)));
+}
+
+#[test]
+fn a_ble_packet_keeps_a_length_past_its_buffer() {
+    let packet = device_api::ble_transport::Packet {
+        connection: 1,
+        sequence: 2,
+        dropped: 0,
+        received_ms: 5,
+        bytes: [9; 60],
+        length: 61,
+    };
+    let events = [Event::Pass { now_ms: 5 }, Event::BlePacket(packet)];
+    assert_eq!(decoded(&encode(&events, 4096)).0, events);
+}
+
+#[test]
+fn a_pass_clock_near_its_end_wraps_instead_of_panicking() {
+    let events = [
+        Event::Pass {
+            now_ms: u64::MAX - 5,
+        },
+        Event::Pass { now_ms: 3 },
+    ];
+    assert_eq!(decoded(&encode(&events, 4096)).0, events);
 }
 
 #[test]

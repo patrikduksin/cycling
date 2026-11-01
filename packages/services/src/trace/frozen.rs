@@ -30,7 +30,6 @@ pub trait Sink {
 pub struct Recorder<B, S> {
     encoder: Encoder<B>,
     sink: S,
-    refused: u32,
 }
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
@@ -41,7 +40,6 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
         Some(Self {
             encoder: Encoder::new(buf),
             sink,
-            refused: 0,
         })
     }
 
@@ -53,23 +51,26 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
     pub fn sink(&self) -> &S {
         &self.sink
     }
+}
 
-    /// Events larger than a whole block, which were left out.
-    pub fn refused(&self) -> u32 {
-        self.refused
+impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
+    fn push(&mut self, event: &Event<'_>) -> Result<(), Full> {
+        let result = self.encoder.push(event);
+        if result != Err(Full::Block) {
+            return result;
+        }
+        self.sink.block(self.encoder.sealed());
+        self.encoder.restart();
+        self.encoder.push(event)
     }
 }
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
+    /// A record larger than a block leaves a marker in its place, so a
+    /// replay knows what it lacks.
     fn record(&mut self, event: &Event<'_>) {
-        let mut result = self.encoder.push(event);
-        if result == Err(Full::Block) {
-            self.sink.block(self.encoder.sealed());
-            self.encoder.restart();
-            result = self.encoder.push(event);
-        }
-        if result.is_err() {
-            self.refused = self.refused.saturating_add(1);
+        if self.push(event) == Err(Full::Record) {
+            let _ = self.push(&Event::TooLarge(event.tag()));
         }
     }
 }
@@ -115,7 +116,10 @@ impl Aging for crate::network_time::Snapshot {
         let Some(seconds) = self.unix_seconds else {
             return self;
         };
-        let total_ms = seconds * 1_000 + u64::from(self.millis) + ms;
+        let total_ms = seconds
+            .saturating_mul(1_000)
+            .saturating_add(u64::from(self.millis))
+            .saturating_add(ms);
         let current = total_ms / 1_000;
         let age_ms = self.age_ms.map(|age| age.saturating_add(ms));
         Self {
@@ -252,20 +256,22 @@ impl FrozenAnt {
         }
     }
 
+    /// Out of line and into the held view: the radio's state is about 800
+    /// bytes, too large for VANA's call chains to carry on their stacks.
+    #[inline(never)]
     fn sample<A: Ant + ?Sized, R: Record + ?Sized>(
         &mut self,
         inner: &A,
         now: u64,
         record: &RefCell<R>,
     ) {
-        let view = AntView {
-            availability: inner.availability(),
-            capabilities: inner.capabilities(),
-            scanning: inner.scanning(),
-            scan: inner.scan(),
-            discoveries: inner.discoveries(),
-            channels: inner.channels(now),
-        };
+        let view = &mut self.view;
+        view.availability = inner.availability();
+        view.capabilities = inner.capabilities();
+        view.scanning = inner.scanning();
+        view.scan = inner.scan();
+        view.discoveries = inner.discoveries();
+        view.channels = inner.channels(now);
         let radio = (
             (view.availability, view.capabilities),
             (view.scanning, view.scan),
@@ -291,8 +297,6 @@ impl FrozenAnt {
                 });
             }
         }
-        drop(r);
-        self.view = view;
     }
 }
 

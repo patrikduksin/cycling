@@ -154,6 +154,8 @@ pub enum Event<'a> {
     },
     /// A hardware random value VANA consumed, in the order it asked.
     Entropy(u64),
+    /// A record with this tag was larger than a block and left out.
+    TooLarge(u8),
     /// The page the rider sees, by its wire name.
     Page(&'a str),
     Toast(&'a str),
@@ -190,6 +192,7 @@ mod tag {
     pub const COMMAND: u8 = 18;
     pub const STORAGE_FAULT: u8 = 19;
     pub const ENTROPY: u8 = 20;
+    pub const TOO_LARGE: u8 = 21;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -783,33 +786,32 @@ impl Wire<'_> for Result<ant::Admission, ant::Error> {
     }
 }
 
-/// Only the notification's own bytes, not the whole buffer.
+/// The length the device reported, and the bytes of the buffer it covers.
 impl Wire<'_> for ble_transport::Packet {
     fn put(&self, w: &mut Writer) {
         self.connection.put(w);
         self.sequence.put(w);
         self.dropped.put(w);
         w.time(self.received_ms);
-        self.data().unwrap_or(&[]).put(w);
+        self.length.put(w);
+        w.bytes(&self.bytes[..usize::from(self.length).min(self.bytes.len())]);
     }
     fn take(r: &mut Reader<'_>) -> Self {
         let connection = u32::take(r);
         let sequence = u32::take(r);
         let dropped = u32::take(r);
         let received_ms = r.time();
-        let data = <&[u8]>::take(r);
+        let length = u8::take(r);
         let mut bytes = [0; 60];
-        match bytes.get_mut(..data.len()) {
-            Some(slot) => slot.copy_from_slice(data),
-            None => r.fail(),
-        }
+        let data = r.bytes(usize::from(length).min(bytes.len()));
+        bytes[..data.len()].copy_from_slice(data);
         Self {
             connection,
             sequence,
             dropped,
             received_ms,
             bytes,
-            length: data.len() as u8,
+            length,
         }
     }
 }
@@ -836,7 +838,7 @@ impl<'a> Wire<'a> for Header<'a> {
 }
 
 impl<'a> Event<'a> {
-    fn tag(&self) -> u8 {
+    pub fn tag(&self) -> u8 {
         match self {
             Self::Pass { .. } => tag::PASS,
             Self::Input(_) => tag::INPUT,
@@ -857,6 +859,7 @@ impl<'a> Event<'a> {
             Self::Command(_) => tag::COMMAND,
             Self::StorageFault { .. } => tag::STORAGE_FAULT,
             Self::Entropy(_) => tag::ENTROPY,
+            Self::TooLarge(_) => tag::TOO_LARGE,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
             Self::Sound(_) => tag::SOUND,
@@ -912,7 +915,7 @@ impl<'a> Event<'a> {
                 op.put(w);
                 sector.put(w);
             }
-            Self::Sound(pattern) => pattern.put(w),
+            Self::Sound(pattern) | Self::TooLarge(pattern) => pattern.put(w),
             Self::Entropy(value) => value.put(w),
             Self::Log {
                 level,
@@ -965,6 +968,7 @@ impl<'a> Event<'a> {
                 sector: Wire::take(r),
             },
             tag::ENTROPY => Self::Entropy(Wire::take(r)),
+            tag::TOO_LARGE => Self::TooLarge(Wire::take(r)),
             tag::PAGE => Self::Page(Wire::take(r)),
             tag::TOAST => Self::Toast(Wire::take(r)),
             tag::SOUND => Self::Sound(Wire::take(r)),
@@ -1054,7 +1058,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
         let mut w = Writer::new(&mut self.payload()[len..], previous);
         match event {
             Event::Pass { now_ms } if now_ms.wrapping_sub(previous) < 0x80 => {
-                w.byte(SHORT_PASS | (now_ms - previous) as u8);
+                w.byte(SHORT_PASS | now_ms.wrapping_sub(previous) as u8);
             }
             _ => w.record(event.tag(), |w| event.put_body(w, previous)),
         }
@@ -1099,15 +1103,18 @@ pub enum End {
     Torn,
 }
 
-/// A position in a trace's events, to resume decoding later.
+/// A position in a trace's events, to resume decoding later, also over the
+/// same trace grown since: the open block resealed longer, or more blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cursor {
-    /// Where the next block starts.
-    next: usize,
-    /// The read position in the current block's payload, and its end.
+    /// Where the current block starts.
+    block: usize,
+    /// The read position in that block's payload.
     at: usize,
-    payload_end: usize,
     now: u64,
+    /// The trace comes from a later version, whose records may carry fields
+    /// after the ones this version reads.
+    later: bool,
     end: Option<End>,
 }
 
@@ -1115,36 +1122,45 @@ pub struct Cursor {
 pub struct Events<'a> {
     bytes: &'a [u8],
     cursor: Cursor,
+    /// The current block's payload, once checked.
+    payload: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The header block is missing, torn or malformed.
     Header,
+    /// No version of the format has this number.
+    Version(u16),
 }
 
-/// The header and the events after it.
+/// The header and the events after it. A later version may append fields to
+/// the header and to any record; they are skipped.
 pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     let (payload, next) = block(bytes, 0).ok_or(Error::Header)?;
     let mut r = Reader::new(payload, 0);
     let header = Header::take(&mut r);
-    if !r.ok() || r.at != payload.len() {
+    let later = header.version > VERSION;
+    if !r.ok() || (r.at != payload.len() && !later) {
         return Err(Error::Header);
     }
+    if header.version == 0 {
+        return Err(Error::Version(header.version));
+    }
     let cursor = Cursor {
-        next,
-        at: next,
-        payload_end: next,
+        block: next,
+        at: 0,
         now: 0,
+        later,
         end: None,
     };
-    Ok((header, Events { bytes, cursor }))
+    Ok((header, Events::resume(bytes, cursor)))
 }
 
 /// The payload of the block at `start` and where the next one starts.
 fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
     let len = usize::from(u16::from_le_bytes(
-        bytes.get(start..start + 2)?.try_into().ok()?,
+        bytes.get(start..start.checked_add(2)?)?.try_into().ok()?,
     ));
     let payload = bytes.get(start + 2..start + 2 + len)?;
     let crc = bytes.get(start + 2 + len..start + FRAME + len)?;
@@ -1152,9 +1168,17 @@ fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
 }
 
 impl<'a> Events<'a> {
-    /// Continue from a cursor taken from events over the same bytes.
+    /// Continue from a cursor taken from events over the same trace, which
+    /// may have grown since. A trace that ended there is read on.
     pub fn resume(bytes: &'a [u8], cursor: Cursor) -> Self {
-        Self { bytes, cursor }
+        Self {
+            bytes,
+            cursor: Cursor {
+                end: None,
+                ..cursor
+            },
+            payload: None,
+        }
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -1169,25 +1193,35 @@ impl<'a> Events<'a> {
     /// The next record: an event; nothing for a block boundary, the block's
     /// clock or a tag this version does not know; or the end.
     fn step(&mut self) -> Result<Option<Event<'a>>, End> {
-        let bytes = self.bytes;
         let c = &mut self.cursor;
-        if c.at >= c.payload_end {
-            if c.next >= bytes.len() {
+        let payload = match self.payload {
+            Some(payload) => payload,
+            None if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
+            None => {
+                let (payload, _) = block(self.bytes, c.block).ok_or(End::Torn)?;
+                if c.at > payload.len() {
+                    return Err(End::Torn);
+                }
+                *self.payload.insert(payload)
+            }
+        };
+        let Some(&first) = payload.get(c.at) else {
+            // The last block stays current: it may yet be resealed longer.
+            let next = c.block + FRAME + payload.len();
+            if next >= self.bytes.len() {
                 return Err(End::Complete);
             }
-            let (payload, next) = block(bytes, c.next).ok_or(End::Torn)?;
-            c.at = c.next + 2;
-            c.payload_end = c.at + payload.len();
-            c.next = next;
+            c.block = next;
+            c.at = 0;
+            self.payload = None;
             return Ok(None);
-        }
-        let first = bytes[c.at];
+        };
         if first & SHORT_PASS != 0 {
             c.at += 1;
-            c.now += u64::from(first & !SHORT_PASS);
+            c.now = c.now.wrapping_add(u64::from(first & !SHORT_PASS));
             return Ok(Some(Event::Pass { now_ms: c.now }));
         }
-        let mut r = Reader::new(&bytes[c.at + 1..c.payload_end], c.now);
+        let mut r = Reader::new(&payload[c.at + 1..], c.now);
         let len = r.narrow();
         let body = r.bytes(len);
         if !r.ok() {
@@ -1204,7 +1238,7 @@ impl<'a> Events<'a> {
             };
             Some(event)
         };
-        if !r.ok() || r.at != body.len() {
+        if !r.ok() || (r.at != body.len() && !c.later) {
             return Err(End::Torn);
         }
         if let Some(Event::Pass { now_ms }) = event {

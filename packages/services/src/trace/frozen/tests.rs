@@ -34,6 +34,8 @@ struct Radio {
     heard: u64,
     link: LinkState,
     packets: Vec<ant::Packet>,
+    /// Pages the companion counted; set it to change the channel between reads.
+    pages: std::rc::Rc<core::cell::Cell<u32>>,
 }
 
 impl Radio {
@@ -42,6 +44,7 @@ impl Radio {
             heard: 0,
             link: LinkState::Connected,
             packets: Vec::new(),
+            pages: std::rc::Rc::default(),
         }
     }
 }
@@ -68,7 +71,7 @@ impl Ant for Radio {
             link: self.link,
             selected: Some(POWER),
             generation: 1,
-            packets: 0,
+            packets: self.pages.get(),
             dropped_packets: 0,
             discovery_overflows: 0,
             transport_losses: 0,
@@ -84,19 +87,22 @@ impl Ant for Radio {
 }
 
 #[test]
-fn a_pass_reads_the_value_sampled_at_its_start() {
+fn a_pass_reads_one_value_until_its_own_request() {
     let log = RefCell::new(Log::default());
     let mut frozen = FrozenAnt::default();
     let mut radio = Radio::new();
+    let pages = radio.pages.clone();
     let mut ant = frozen.bind(&mut radio, 100, &log);
+    pages.set(5);
+    let channel = ant.channel(11, 100).unwrap();
+    assert_eq!(channel.packets, 0, "a page heard mid-pass waits");
     assert_eq!(
         ant.request(AntOperation::StopScan, 100),
         Ok(ant::Admission::Accepted)
     );
-    let link = ant.channel(11, 100).unwrap().link;
-    assert_eq!(link, LinkState::Connected, "the request shows next pass");
-    let ant = frozen.bind(&mut radio, 110, &log);
-    assert_eq!(ant.channel(11, 110).unwrap().link, LinkState::Disconnecting);
+    let channel = ant.channel(11, 100).unwrap();
+    assert_eq!(channel.link, LinkState::Disconnecting, "the request shows");
+    assert_eq!(channel.packets, 5, "and what came before it");
 }
 
 #[test]
@@ -163,7 +169,11 @@ fn takes_and_requests_are_recorded_in_call_order() {
     assert!(ant.take_packet().is_none());
     let _ = ant.request(AntOperation::StopScan, 10);
     let _ = ant.send_status(ant::OperationId(1));
-    assert_eq!(kinds(&log), ["AntPacket", "AntAdmission", "AntSend"]);
+    assert_eq!(
+        kinds(&log),
+        ["AntPacket", "AntAdmission", "AntLink", "AntSend"],
+        "what the request changed follows its answer"
+    );
 }
 
 struct Queue(Vec<Edge>);

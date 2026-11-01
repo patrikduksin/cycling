@@ -1028,6 +1028,11 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
         self.len == self.opening
     }
 
+    /// The block's size once sealed.
+    pub fn len(&self) -> usize {
+        FRAME + self.len
+    }
+
     /// The block so far, framed. It stays open: later pushes extend it.
     pub fn sealed(&mut self) -> &[u8] {
         let len = self.len;

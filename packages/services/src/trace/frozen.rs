@@ -216,6 +216,21 @@ impl FrozenAnt {
         now: u64,
         record: &'a RefCell<R>,
     ) -> PassAnt<'a, A, R> {
+        self.sample(inner, now, record);
+        PassAnt {
+            frozen: self,
+            inner,
+            now,
+            record,
+        }
+    }
+
+    fn sample<A: Ant + ?Sized, R: Record + ?Sized>(
+        &mut self,
+        inner: &A,
+        now: u64,
+        record: &RefCell<R>,
+    ) {
         let view = AntView {
             availability: inner.availability(),
             capabilities: inner.capabilities(),
@@ -251,27 +266,25 @@ impl FrozenAnt {
         }
         drop(r);
         self.view = view;
-        PassAnt {
-            view: &self.view,
-            inner,
-            record,
-        }
     }
 }
 
-/// The ANT radio for one pass.
+/// The ANT radio for one pass. VANA's own request is the one thing that
+/// changes it mid-pass: what changed is sampled and recorded right after the
+/// request's answer, so the rest of the pass sees the request taken.
 pub struct PassAnt<'a, A: ?Sized, R: ?Sized> {
-    view: &'a AntView,
+    frozen: &'a mut FrozenAnt,
     inner: &'a mut A,
+    now: u64,
     record: &'a RefCell<R>,
 }
 
 impl<A: Ant + ?Sized, R: Record + ?Sized> Ant for PassAnt<'_, A, R> {
     fn scanning(&self) -> bool {
-        self.view.scanning
+        self.frozen.view.scanning
     }
     fn discoveries(&self) -> [Option<ant::Discovery>; 8] {
-        self.view.discoveries
+        self.frozen.view.discoveries
     }
     fn request(
         &mut self,
@@ -282,13 +295,14 @@ impl<A: Ant + ?Sized, R: Record + ?Sized> Ant for PassAnt<'_, A, R> {
         self.record
             .borrow_mut()
             .record(&Event::AntAdmission(result));
+        self.frozen.sample(self.inner, self.now, self.record);
         result
     }
     fn capabilities(&self) -> ant::Capabilities {
-        self.view.capabilities
+        self.frozen.view.capabilities
     }
     fn scan(&self) -> ant::ScanSnapshot {
-        self.view.scan
+        self.frozen.view.scan
     }
     fn send_status(&self, id: ant::OperationId) -> Option<ant::SendObservation> {
         let status = self.inner.send_status(id);
@@ -300,10 +314,10 @@ impl<A: Ant + ?Sized, R: Record + ?Sized> Ant for PassAnt<'_, A, R> {
         self.inner.take_diagnostic_packet()
     }
     fn availability(&self) -> Availability {
-        self.view.availability
+        self.frozen.view.availability
     }
     fn channels(&self, _now_ms: u64) -> [Option<ant::Snapshot>; ant::CHANNEL_CAPACITY] {
-        self.view.channels
+        self.frozen.view.channels
     }
     fn take_packet(&mut self) -> Option<ant::Packet> {
         let packet = self.inner.take_packet()?;

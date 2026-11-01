@@ -4,10 +4,8 @@
 //! copies are later. The ride journals only grow, so they are rewound to
 //! the ends the header recorded. A file is the one of power-on when FILES is
 //! the same store and the file still has the revision the header recorded:
-//! the revision names the directory commit that wrote it. Its CRC cannot,
-//! since a file that ends in the CRC32 of its bytes, as workouts, the bests
-//! and each slot of the ride facts table do, has a whole-file CRC32 that
-//! depends only on its length. The ride facts table VANA rewrote since is
+//! the revision names the directory commit that wrote it. The ride facts
+//! table VANA rewrote since is
 //! taken back to the rides that had ended at power-on and checked against
 //! the digest of its slots the header recorded. What the pull cannot give
 //! back is a [`Gap`], and its medium starts without it.
@@ -660,7 +658,6 @@ fn files_of(text: &str, dir: &Path) -> io::Result<Files> {
     Ok(files)
 }
 
-/// `name` when it is a FILES name that stays under `files/`.
 fn file_name(name: &str) -> Option<&str> {
     (files::Name::new(name).is_ok() && !name.split('/').any(|part| part == "..")).then_some(name)
 }

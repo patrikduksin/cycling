@@ -39,25 +39,21 @@ class FakeExport:
 
 
 def sealed(body):
-    """`body` followed by its CRC32, as a workout or the bests end."""
     return body + struct.pack('<I', zlib.crc32(body))
 
 
 class RewritingDevice(FakeDevice):
-    """FILES with revisions, where a write of `name` to `again` lands right after the host first stats it,
-    and reads of the files in `unreadable` fail on the medium."""
+    """FILES where `rewritten` gets the bytes `again`, at revision 2, right after a host first stats it."""
 
-    def __init__(self, name=None, again=None, unreadable=()):
+    def __init__(self, rewritten, again):
         super().__init__()
-        self.revisions, self.rewrite, self.unreadable_files = {}, (name, again), set(unreadable)
+        self.revisions, self.rewrite = {}, (rewritten, again)
 
     def handle(self, op, arg, count, payload):
-        if op == OP['files_read'] and payload.decode() in self.unreadable_files:
-            return volumes.STATUS.index('media'), 0, 0, b''
         reply = super().handle(op, arg, count, payload)
-        name, again = self.rewrite
-        if op == OP['files_stat'] and payload.decode() == name:
-            self.files[name], self.revisions[name] = again, 2
+        rewritten, again = self.rewrite
+        if op == OP['files_stat'] and payload.decode() == rewritten:
+            self.files[rewritten], self.revisions[rewritten] = again, 2
             self.rewrite = (None, None)
         return reply
 
@@ -68,6 +64,17 @@ class RewritingDevice(FakeDevice):
             + name.encode().ljust(40, b'\0')
             + struct.pack('<III', len(data), crc(data), self.revisions.get(name, 1))
         )
+
+
+class UnreadableDevice(FakeDevice):
+    def __init__(self, unreadable):
+        super().__init__()
+        self.unreadable = set(unreadable)
+
+    def handle(self, op, arg, count, payload):
+        if op == OP['files_read'] and payload.decode() in self.unreadable:
+            return volumes.STATUS.index('media'), 0, 0, b''
+        return super().handle(op, arg, count, payload)
 
 
 def header(pack=None):
@@ -158,7 +165,7 @@ class TracePullTests(unittest.TestCase):
 
     def test_a_file_that_does_not_read_is_listed_unread_and_the_pull_goes_on(self):
         export = FakeExport([slot(0), slot(1)], [slot(10 + i) for i in range(3)])
-        device = RewritingDevice(unreadable={'workouts/tempo.vw'})
+        device = UnreadableDevice({'workouts/tempo.vw'})
         device.files = {'workouts/tempo.vw': b'tempo workout', 'bests.dat': b'bests'}
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

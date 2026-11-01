@@ -38,11 +38,7 @@ def trace_tool(*args):
 
 
 def header_media(text):
-    """`cycling trace media` lines as a dict; a medium without anything to pull is None.
-
-    RIDES is pulled when VANA found a log at power-on, `log` or `uncertain`; the rebuild says
-    what an uncertain, unusable or uninitialized one means for the replay.
-    """
+    """`cycling trace media` lines as a dict; a medium without anything to pull is None."""
     media = {'journal': None, 'rides': None, 'files': None, 'terrain': None}
     for line in text.splitlines():
         words = line.split()
@@ -125,13 +121,7 @@ def pull_journals(connection, media, out, problems):
 
 
 def pull_file(transfer, name, path):
-    """The revision whose bytes `files get` wrote to `path`; None when the file is gone.
-
-    A file that ends in the CRC32 of its bytes has the same whole-file CRC32
-    whatever it holds, so the CRC check cannot tell a file written again
-    while it was read. Its revision after the read must still be the one
-    before it.
-    """
+    """The revision whose bytes `files get` wrote to `path`; None when the file is gone."""
     try:
         stat = volumes.files_get(transfer, name, path)
     except volumes.TransferError as error:

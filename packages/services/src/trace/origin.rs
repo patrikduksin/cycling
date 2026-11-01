@@ -43,16 +43,15 @@ impl Memory {
     };
 }
 
-/// The header's `media`. A medium that could not be read is `None`.
+/// The header's `media`: `None` for a medium nothing read at power-on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Media<'a> {
     pub journal: Option<Journal>,
     pub rides: Option<RideLog>,
     pub files: Option<Files<'a>>,
     /// VANA's ride facts table, `rides/facts.tbl` in FILES, by the digest
-    /// of its slots (`vana::ride::facts::digest`); `None` without a table.
-    /// VANA rewrites it as rides are saved, and each of its slots ends in
-    /// its own CRC32, so its entry's CRC tells only its length.
+    /// of its slots (`vana::ride::facts::digest`); `None` without a table
+    /// or when it did not read.
     pub facts: Option<u32>,
     pub terrain: Option<Terrain>,
 }
@@ -60,22 +59,18 @@ pub struct Media<'a> {
 /// The internal ride journal when VANA's boot scan ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Journal {
-    /// Its next slot.
     pub next: u32,
     /// The CRC32 of the slot before `next`; `None` when the journal is
-    /// empty or that slot did not read. The journal only grows until a clear
-    /// starts it again from slot 0, so a host tells a later copy that still
-    /// holds the slots of power-on from one cleared and filled again since.
+    /// empty or that slot did not read.
     pub last: Option<u32>,
 }
 
 /// The card's ride log as VANA's boot scan found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RideLog {
-    /// RIDES holds no log.
+    /// No ride log: RIDES, or the volume table, was never initialized.
     Uninitialized,
-    /// A log whose end the scan proved: its epoch's store id and head. RIDES
-    /// only grows, so a host rewinds a later copy to this.
+    /// A log whose end the scan proved: its epoch's store id and head.
     Log { store: u64, head: u64 },
     /// A log whose end the scan could not prove, so VANA kept it read only:
     /// `head` is one past the last valid record it saw.

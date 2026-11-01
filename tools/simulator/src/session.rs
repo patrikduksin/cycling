@@ -365,12 +365,13 @@ struct Start {
     journals: Option<Journals>,
 }
 
-/// FILES with its entries, the ride facts table's digest, and TERRAIN.
-type Volumes = (
-    Option<(u64, u64, Vec<u8>)>,
-    Option<u32>,
-    Option<origin::Terrain>,
-);
+#[derive(Clone, Default)]
+struct Volumes {
+    /// FILES' store id, generation and entries.
+    files: Option<(u64, u64, Vec<u8>)>,
+    facts: Option<u32>,
+    terrain: Option<origin::Terrain>,
+}
 type Journals = (Option<origin::Journal>, Option<origin::RideLog>);
 
 impl Start {
@@ -383,11 +384,19 @@ impl Start {
         let facts = vana::ride::facts::digest(&mut bulk.host()).ok().flatten();
         #[cfg(not(feature = "cycling"))]
         let facts = None;
-        self.volumes = Some((files, facts, terrain));
+        self.volumes = Some(Volumes {
+            files,
+            facts,
+            terrain,
+        });
     }
 
     fn header(&self) -> Vec<u8> {
-        let (files, facts, terrain) = self.volumes.clone().unwrap_or((None, None, None));
+        let Volumes {
+            files,
+            facts,
+            terrain,
+        } = self.volumes.clone().unwrap_or_default();
         let (journal, rides) = self.journals.unwrap_or((None, None));
         let mut settings = self.settings;
         if self.redacted

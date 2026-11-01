@@ -139,7 +139,6 @@ struct Session {
 }
 
 impl Session {
-    /// The card's rides only when it holds a log VANA can export.
     fn of(sim: &mut Sim) -> Self {
         let rides = if sim.command("EXPORT BULK INFO").0 == "OK" {
             sim.bulk_rides()

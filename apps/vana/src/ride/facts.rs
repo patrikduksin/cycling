@@ -796,9 +796,7 @@ pub fn read(
 
 /// What the table holds and in what order, for a host to check a copy
 /// against: the CRC32 of every slot's bytes before its own CRC, the header
-/// first, in file order. `None` without a table. The CRC32 of the whole
-/// file cannot tell two tables of one length apart, as every slot ends in
-/// the CRC32 of the bytes before it.
+/// first, in file order. `None` without a table.
 pub fn digest(media: &mut impl ReadWrite) -> Result<Option<u32>, Error> {
     let mut sector = [0; SECTOR_SIZE];
     let mut bytes = [0; SECTOR_SIZE];

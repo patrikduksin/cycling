@@ -56,6 +56,45 @@ fn claim(name: String) -> String {
     unique
 }
 
+/// The file that marks a directory as the simulator's own output.
+pub const MARKER: &str = ".simulator-output";
+
+/// Make `dir` an empty directory marked as the simulator's output. A
+/// directory is replaced only when it holds [`MARKER`] or is empty; anything
+/// else is refused, so a mistyped path never loses someone's files. The
+/// directory the process runs in, and any directory above it, is never
+/// claimed: an empty `--out` would otherwise mark it, and a later `--out .`
+/// would empty it.
+pub fn replace_dir(dir: &Path) -> io::Result<()> {
+    if dir.as_os_str().is_empty() {
+        return Err(io::Error::other("the output directory is empty; name one"));
+    }
+    let located =
+        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", dir.display()));
+    fs::create_dir_all(dir).map_err(located)?;
+    let real = dir.canonicalize().map_err(located)?;
+    if std::env::current_dir()?.canonicalize()?.starts_with(&real) {
+        return Err(io::Error::other(format!(
+            "{} is this directory or one above it; choose a directory inside it",
+            dir.display()
+        )));
+    }
+    let mut entries = fs::read_dir(&real).map_err(located)?;
+    if !real.join(MARKER).is_file() && entries.next().is_some() {
+        return Err(io::Error::other(format!(
+            "{} holds files the simulator did not write (it has no {MARKER}); \
+             choose another directory, or empty this one yourself",
+            dir.display()
+        )));
+    }
+    fs::remove_dir_all(&real)?;
+    fs::create_dir_all(&real)?;
+    fs::write(
+        real.join(MARKER),
+        "Written by the simulator; the next run into this directory replaces it.\n",
+    )
+}
+
 /// Remember panic messages per thread, then defer to the default hook.
 pub fn capture_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -133,6 +172,7 @@ pub struct Recording {
     truth: Vec<Truth>,
     submissions: u32,
     next_truth_ms: u64,
+    video: bool,
 }
 
 /// What a finished scenario hands to the report.
@@ -167,12 +207,16 @@ impl Recording {
     /// A recording called `name`, when artifacts are requested.
     pub fn named(name: &str, width: usize, height: usize) -> Option<Self> {
         let root = std::env::var_os("SIM_ARTIFACTS")?;
-        capture_panics();
         let name = claim(name.to_string());
+        Some(Self::at(Path::new(&root).join(&name), &name, width, height))
+    }
+
+    pub fn at(dir: PathBuf, name: &str, width: usize, height: usize) -> Self {
+        capture_panics();
         PANIC.with(|p| p.borrow_mut().take());
-        Some(Self {
-            dir: Path::new(&root).join(&name),
-            name,
+        Self {
+            dir,
+            name: name.to_string(),
             width,
             height,
             frames: Vec::new(),
@@ -180,11 +224,19 @@ impl Recording {
             truth: Vec::new(),
             submissions: u32::MAX,
             next_truth_ms: 0,
-        })
+            video: true,
+        }
     }
 
-    /// Keep the panel when it changed since the last observation.
-    pub fn observe(&mut self, at_ms: u64, submissions: u32, pixels: &[u16], world: &World) {
+    /// Write screenshots and the report, but no video.
+    pub fn without_video(mut self) -> Self {
+        self.video = false;
+        self
+    }
+
+    /// Keep the panel when it changed since the last observation, and the
+    /// world each second when there is one.
+    pub fn observe(&mut self, at_ms: u64, submissions: u32, pixels: &[u16], world: Option<&World>) {
         if submissions != self.submissions {
             self.submissions = submissions;
             let frame = Frame::new(at_ms, pixels);
@@ -196,7 +248,9 @@ impl Recording {
                 self.frames.push(frame);
             }
         }
-        if at_ms >= self.next_truth_ms {
+        if let Some(world) = world
+            && at_ms >= self.next_truth_ms
+        {
             self.next_truth_ms = at_ms - at_ms % 1000 + 1000;
             self.truth.push(Truth {
                 at_ms,
@@ -227,13 +281,14 @@ impl Recording {
     pub fn write(&self, outcome: Outcome<'_>) -> io::Result<()> {
         let failure = std::thread::panicking()
             .then(|| PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default());
-        if self.dir.exists() {
-            fs::remove_dir_all(&self.dir)?;
-        }
-        fs::create_dir_all(&self.dir)?;
+        replace_dir(&self.dir)?;
         let mut files = Vec::new();
 
-        let stills = self.stills(&outcome, failure.as_deref());
+        let stills = if self.video {
+            self.stills(&outcome, failure.as_deref())
+        } else {
+            Vec::new()
+        };
         if !stills.is_empty() {
             if mp4(&stills, FPS, &self.dir.join("video.mp4"))? {
                 files.push("video.mp4".to_string());
@@ -632,17 +687,7 @@ mod tests {
     }
 
     fn recording(frames: &[u64]) -> Recording {
-        let mut recording = Recording {
-            name: "timing".into(),
-            dir: PathBuf::new(),
-            width: 4,
-            height: 2,
-            frames: Vec::new(),
-            checkpoints: Vec::new(),
-            truth: Vec::new(),
-            submissions: u32::MAX,
-            next_truth_ms: 0,
-        };
+        let mut recording = Recording::at(PathBuf::new(), "timing", 4, 2);
         for (i, &at) in frames.iter().enumerate() {
             recording.frames.push(Frame::new(at, &[i as u16; 8]));
         }

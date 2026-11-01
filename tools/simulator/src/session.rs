@@ -295,8 +295,6 @@ struct Trace {
     physical: Latest<device_api::sensors::Snapshot>,
     #[cfg(feature = "cycling")]
     network_time: Latest<firmware_services::network_time::Snapshot>,
-    #[cfg(feature = "cycling")]
-    page: Option<vana::screens::workout::Page>,
     power: FrozenPowerControl,
     backlight: Latest<Availability>,
     #[cfg(feature = "cycling")]
@@ -334,8 +332,6 @@ impl Trace {
             physical: Latest::default(),
             #[cfg(feature = "cycling")]
             network_time: Latest::default(),
-            #[cfg(feature = "cycling")]
-            page: None,
             power: FrozenPowerControl::default(),
             backlight: Latest::default(),
             #[cfg(feature = "cycling")]
@@ -359,9 +355,19 @@ impl Trace {
     }
 }
 
+/// The checkout paths whose tracked files build VANA, as `build.rs` lists
+/// them: an uncommitted change under one means no commit holds this build.
+pub fn build_sources() -> Vec<&'static str> {
+    env!("CYCLING_BUILD_SOURCES").split(' ').collect()
+}
+
+/// The build's commit; zero, unknown, for a build with uncommitted changes,
+/// since no commit holds what it ran.
 fn build_id() -> [u8; 20] {
     let mut id = [0u8; 20];
-    let hex = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
+    let hex = option_env!("CYCLING_BUILD_COMMIT")
+        .filter(|commit| !commit.ends_with("-dirty"))
+        .unwrap_or("");
     for (byte, pair) in id.iter_mut().zip(hex.as_bytes().chunks(2)) {
         *byte = core::str::from_utf8(pair)
             .ok()
@@ -644,6 +650,7 @@ impl Session {
         matches!(self.devices, Devices::Replayed(_))
     }
     fn with_media(media: FileFlash, width: usize, height: usize) -> io::Result<Self> {
+        crate::logs::install();
         let boot = media.begin_boot()?;
         let display = DisplayDevice::new(width, height);
         let input = InputDevice::new(
@@ -1052,16 +1059,45 @@ impl Session {
     #[cfg(feature = "cycling")]
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();
-        let page = self.sdk.page();
-        if self.trace.page != Some(page) {
-            self.trace.page = Some(page);
-            self.trace.record(&Event::Page(page.name()));
-            seen.push(Seen::Page(page.name().into()));
-        }
+        let mut notes = Vec::new();
+        let mut recorder = self.trace.recorder.borrow_mut();
+        let mut record = |event: Event<'_>| {
+            recorder.record(&event);
+            seen.extend(crate::replay::seen(&event).flatten());
+        };
+        self.sdk.report_seen(self.now, &mut |shown| match shown {
+            vana::app::Seen::Page(page) => record(Event::Page(page)),
+            vana::app::Seen::Toast(text) => record(Event::Toast(text)),
+            vana::app::Seen::RideState(state) => record(Event::RideState(state)),
+            vana::app::Seen::Shown(fields) => record(Event::Shown(fields)),
+            vana::app::Seen::Note {
+                cue,
+                pattern,
+                note,
+                of,
+            } => notes.push((pattern, cue.to_string(), note, of)),
+        });
         for pattern in self.trace.sound.take_started() {
-            self.trace.record(&Event::Sound(pattern));
-            seen.push(Seen::Sound(pattern));
+            let played = notes
+                .iter()
+                .position(|played| played.0 == pattern)
+                .map(|at| notes.remove(at));
+            let (cue, note, of) =
+                played.map_or((String::new(), 0, 0), |(_, cue, note, of)| (cue, note, of));
+            record(Event::Sound {
+                pattern,
+                cue: &cue,
+                note,
+                of,
+            });
         }
+        crate::logs::drain(|level, target, text| {
+            recorder.record(&Event::Log {
+                level,
+                target,
+                text,
+            });
+        });
         seen
     }
     #[cfg(not(feature = "cycling"))]

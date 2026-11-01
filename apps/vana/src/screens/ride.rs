@@ -33,6 +33,7 @@ mod lap;
 mod main;
 mod map;
 pub(super) mod paused;
+pub use paused::READINGS as PAUSED_READINGS;
 pub mod slots;
 mod stats;
 pub mod summary;
@@ -120,6 +121,41 @@ impl RidePage {
         Self::Map,
         Self::Back,
     ];
+
+    /// The page as a trace names it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Main => "ride/main",
+            Self::Stats => "ride/stats",
+            Self::Lap => "ride/lap",
+            Self::Climb => "ride/climb",
+            Self::Workout => "ride/workout",
+            Self::Map => "ride/map",
+            Self::Back => "ride/back",
+        }
+    }
+
+    /// The page named as a trace names it.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::TRAINING.into_iter().find(|page| page.name() == name)
+    }
+
+    /// Which of the trace's shown readings ([`READINGS`]) the page draws
+    /// live, the main page's lower line from `slots`; none for the workout
+    /// page, which draws the step's target metric.
+    pub fn readings(self, slots: slots::Slots) -> Option<heapless::Vec<&'static str, 7>> {
+        let chosen = [slots.left, slots.right].map(slots::Reading::shown);
+        let drawn = |reading: &str| match self {
+            Self::Main => {
+                matches!(reading, "time" | "speed" | "power" | "hr" | "grade")
+                    || chosen.contains(&Some(reading))
+            }
+            Self::Climb => matches!(reading, "power" | "hr" | "grade"),
+            Self::Stats | Self::Map => reading == "dist",
+            Self::Lap | Self::Back | Self::Workout => false,
+        };
+        (self != Self::Workout).then(|| READINGS.into_iter().filter(|r| drawn(r)).collect())
+    }
 
     /// A number unique to the page, for touch ownership.
     pub fn index(self) -> usize {
@@ -578,6 +614,33 @@ pub(super) fn grade(value: &mut Text<12>, tenths: Option<i32>) {
     };
 }
 
+/// The live readings a trace's shown line names, in its order.
+pub const READINGS: [&str; 7] = ["time", "speed", "power", "hr", "cad", "dist", "grade"];
+
+pub(crate) fn shown(
+    out: &mut impl Write,
+    active_secs: u64,
+    sample: &crate::ride::log::Sample,
+    distance_mm: u64,
+) -> core::fmt::Result {
+    let mut values: [Text<12>; 7] = Default::default();
+    elapsed(&mut values[0], active_secs);
+    speed(&mut values[1], sample.speed_mm_s);
+    whole(&mut values[2], sample.power_watts);
+    whole(&mut values[3], sample.heart_bpm);
+    whole(
+        &mut values[4],
+        sample.cadence_tenths.map(|tenths| (tenths + 5) / 10),
+    );
+    kilometres(&mut values[5], distance_mm);
+    grade(&mut values[6], sample.gradient_tenths.map(i32::from));
+    for (i, (name, value)) in READINGS.iter().zip(&values).enumerate() {
+        let gap = if i == 0 { "" } else { " " };
+        write!(out, "{gap}{name}={}", value.as_str())?;
+    }
+    Ok(())
+}
+
 /// A whole reading, or "--" without one.
 pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Display>) {
     let _ = match reading {
@@ -589,6 +652,126 @@ pub(super) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Displa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The readings `page` draws, found by drawing it with every reading
+    /// at a value nothing else on the page takes.
+    fn drawn(page: Option<RidePage>, slots: slots::Slots) -> std::vec::Vec<&'static str> {
+        use crate::ride::log::Sample;
+        use crate::screens::workout::Page;
+        use std::boxed::Box;
+        let sample = Sample {
+            speed_mm_s: Some(10_389),
+            power_watts: Some(287),
+            heart_bpm: Some(153),
+            cadence_tenths: Some(914),
+            gradient_tenths: Some(63),
+            ..Sample::default()
+        };
+        let mut view = View::new(Page::Ride, 0, None);
+        view.ride_page = page.unwrap_or_default();
+        view.main_slots = slots;
+        view.radar_paired = true;
+        view.active_secs = 5_025;
+        view.totals.add(1000, 12_345_000, &Sample::default(), None);
+        view.sample = sample;
+        view.power_3s = sample.power_watts;
+        let crumbs = Box::leak(Box::new([
+            crate::ride::homing::Crumb {
+                east: 0.0,
+                north: 0.0,
+                along: 0.0,
+            },
+            crate::ride::homing::Crumb {
+                east: 400.0,
+                north: 300.0,
+                along: 500.0,
+            },
+        ]));
+        let track = Track {
+            available: true,
+            crumbs,
+            here: Some((400.0, 300.0)),
+            heading: None,
+            home: None,
+            course: &[],
+            ahead: None,
+        };
+        let frame = Box::leak(Box::default());
+        update_map(frame, &mut None, &track);
+        match page {
+            Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
+            Some(RidePage::Climb) => view.show_climb(ClimbLent {
+                climbs: Box::leak(Box::default()),
+                trace: Box::leak(Box::default()),
+                forecast: &crate::ride::climb_ahead::Forecast::NONE,
+                pinned: None,
+            }),
+            Some(RidePage::Map) => view.show_map(Some(frame)),
+            Some(RidePage::Back) => view.show_back(Back::default(), Light::default()),
+            _ => {}
+        }
+        let texts: std::vec::Vec<std::string::String> = match page {
+            None => paused::prepare(&view)
+                .runs
+                .iter()
+                .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
+                .collect(),
+            Some(RidePage::Main) => {
+                view.prepare();
+                view.smooth()
+                    .labels
+                    .iter()
+                    .filter_map(chrome::layout::text)
+                    .map(|(text, _)| text)
+                    .collect()
+            }
+            Some(_) => {
+                view.prepare();
+                view.canvas()
+                    .runs
+                    .iter()
+                    .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
+                    .collect()
+            }
+        };
+        let mut line = std::string::String::new();
+        shown(
+            &mut line,
+            view.active_secs,
+            &sample,
+            view.totals.distance_mm(),
+        )
+        .unwrap();
+        READINGS
+            .into_iter()
+            .zip(line.split(' '))
+            .filter(|(_, pair)| {
+                let value = pair.split_once('=').unwrap().1;
+                texts
+                    .iter()
+                    .any(|text| text.split(' ').any(|word| word == value))
+            })
+            .map(|(reading, _)| reading)
+            .collect()
+    }
+
+    #[test]
+    fn each_page_declares_the_readings_it_draws() {
+        let chosen = slots::Slots {
+            left: slots::Reading::AvgPower,
+            right: slots::Reading::Distance,
+        };
+        for slots in [slots::Slots::default(), chosen] {
+            for page in RidePage::ALL {
+                assert_eq!(
+                    page.readings(slots).unwrap().to_vec(),
+                    drawn(Some(page), slots),
+                    "{page:?} with {slots:?}"
+                );
+            }
+        }
+        assert_eq!(paused::READINGS.to_vec(), drawn(None, chosen), "paused");
+    }
 
     #[test]
     fn every_turn_warning_fits_a_toast_whole() {

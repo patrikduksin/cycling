@@ -303,7 +303,7 @@ impl Sim {
                 self.device.sim().world.time_ms,
                 frame.submissions,
                 &frame.pixels,
-                &self.device.sim().world,
+                Some(&self.device.sim().world),
             );
         }
     }
@@ -311,10 +311,11 @@ impl Sim {
     /// Name this moment; recordings keep a screenshot of it.
     pub fn checkpoint(&mut self, name: &str) {
         self.note(NoteKind::Check, format!("checkpoint {name}"));
+        let now = self.now();
         if let Some(recording) = &mut self.recording {
             recording.checkpoint(
                 name,
-                self.device.sim().world.time_ms,
+                now,
                 &self.device.display.0.borrow().pixels,
                 self.notes.len(),
             );
@@ -636,18 +637,52 @@ impl Sim {
         mode: crate::replay::Mode,
         setup: impl FnOnce(&mut crate::replay::Sources),
     ) -> Self {
-        let device =
-            crate::session::Session::replaying(capture, mode).expect("a replayable capture");
-        let mut sim = Self {
-            device,
-            notes: Vec::new(),
-            recording: None,
-            power_hold: 0,
-        };
+        let mut sim = Self::replaying(capture, mode, None);
         sim.hash_frames();
         setup(sim.device.replay_sources().expect("a replay"));
-        while sim.device.replay_step() {}
+        sim.replay_until(u64::MAX);
         sim
+    }
+
+    /// A replay of `capture` in `mode` that has run nothing yet, recorded
+    /// into `recording` when given. Drive it with `replay_until`.
+    pub fn replaying(
+        capture: &crate::replay::Capture,
+        mode: crate::replay::Mode,
+        recording: Option<Recording>,
+    ) -> Self {
+        Self {
+            device: Session::replaying(capture, mode).expect("a replayable capture"),
+            notes: Vec::new(),
+            recording,
+            power_hold: 0,
+        }
+    }
+
+    pub fn attach_recording(&mut self, recording: Recording) {
+        self.recording = Some(recording);
+    }
+
+    /// Run the trace's passes and commands until the uptime reaches
+    /// `until_ms`; false once the trace is spent.
+    pub fn replay_until(&mut self, until_ms: u64) -> bool {
+        while self.device.now < until_ms {
+            if !self.device.replay_step() {
+                return false;
+            }
+            if let Some(recording) = &mut self.recording {
+                let frame = self.device.display.0.borrow();
+                recording.observe(self.device.now, frame.submissions, &frame.pixels, None);
+            }
+        }
+        true
+    }
+
+    /// What the rider saw at this moment, by this session's own trace.
+    pub fn seen(&self) -> crate::trace::timeline::SeenAt {
+        crate::trace::timeline::read(&self.trace())
+            .expect("the session's own trace decodes")
+            .seen_at(self.device.now)
     }
 
     /// An ANT+ sensor near the rider; created in range when new.
@@ -1076,7 +1111,7 @@ impl Drop for Sim {
             let rides = Vec::new();
             recording.write(Outcome {
                 notes: &self.notes,
-                end_ms: self.device.sim().world.time_ms,
+                end_ms: self.now(),
                 rides,
             })
         }));

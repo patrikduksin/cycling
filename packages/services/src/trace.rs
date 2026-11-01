@@ -374,8 +374,16 @@ pub enum Event<'a> {
     /// The page the rider sees, by its wire name.
     Page(&'a str),
     Toast(&'a str),
-    /// A sound pattern started.
-    Sound(u8),
+    /// A sound pattern started, with the cue VANA played it for by name and
+    /// the note's place in that cue (`note` of `of`, from 1). A pattern no
+    /// cue played, such as a console `SOUND PLAY`, has an empty cue and
+    /// zeros.
+    Sound {
+        pattern: u8,
+        cue: &'a str,
+        note: u8,
+        of: u8,
+    },
     RideState(&'a str),
     /// The displayed fields, about once a second.
     Shown(&'a str),
@@ -1173,7 +1181,7 @@ impl<'a> Event<'a> {
             Self::Refused { .. } => tag::REFUSED,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
-            Self::Sound(_) => tag::SOUND,
+            Self::Sound { .. } => tag::SOUND,
             Self::RideState(_) => tag::RIDE_STATE,
             Self::Shown(_) => tag::SHOWN,
             Self::Log { .. } => tag::LOG,
@@ -1267,7 +1275,18 @@ impl<'a> Event<'a> {
                 output.put(w);
                 attempt.put(w);
             }
-            Self::Sound(pattern) | Self::TooLarge(pattern) => pattern.put(w),
+            Self::Sound {
+                pattern,
+                cue,
+                note,
+                of,
+            } => {
+                pattern.put(w);
+                cue.put(w);
+                note.put(w);
+                of.put(w);
+            }
+            Self::TooLarge(pattern) => pattern.put(w),
             Self::Entropy(value) => value.put(w),
             Self::Log {
                 level,
@@ -1359,7 +1378,12 @@ impl<'a> Event<'a> {
             tag::TOO_LARGE => Self::TooLarge(Wire::take(r)),
             tag::PAGE => Self::Page(Wire::take(r)),
             tag::TOAST => Self::Toast(Wire::take(r)),
-            tag::SOUND => Self::Sound(Wire::take(r)),
+            tag::SOUND => Self::Sound {
+                pattern: Wire::take(r),
+                cue: Wire::take(r),
+                note: Wire::take(r),
+                of: Wire::take(r),
+            },
             tag::RIDE_STATE => Self::RideState(Wire::take(r)),
             tag::SHOWN => Self::Shown(Wire::take(r)),
             tag::LOG => Self::Log {

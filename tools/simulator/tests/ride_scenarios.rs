@@ -8445,7 +8445,17 @@ mod mutations {
                 room: room / 2,
             },
             Event::Page(_) => Event::Page("bests"),
-            Event::Sound(pattern) => Event::Sound(pattern ^ 1),
+            Event::Sound {
+                pattern,
+                cue,
+                note,
+                of,
+            } => Event::Sound {
+                pattern: pattern ^ 1,
+                cue,
+                note,
+                of,
+            },
             _ => return None,
         })
     }

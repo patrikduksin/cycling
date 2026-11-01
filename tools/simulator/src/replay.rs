@@ -124,7 +124,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(mode: Mode) -> Self {
+    pub(crate) fn new(mode: Mode) -> Self {
         Self {
             mode,
             first: None,
@@ -315,7 +315,15 @@ impl<C: fmt::Debug, V> Calls<C, V> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
     Page(String),
-    Sound(u8),
+    Toast(String),
+    RideState(String),
+    Shown(String),
+    Sound {
+        pattern: u8,
+        cue: String,
+        note: u8,
+        of: u8,
+    },
 }
 
 /// The shell's own devices, which a replay scripts from the trace: the
@@ -497,11 +505,24 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
         .map(|extra| format!("the replay went on with {extra:?}"))
 }
 
-fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
+pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
     match event {
         Event::Page(page) => Some(Some(Seen::Page((*page).into()))),
-        Event::Sound(pattern) => Some(Some(Seen::Sound(*pattern))),
-        Event::Toast(_) | Event::RideState(_) | Event::Shown(_) | Event::Log { .. } => Some(None),
+        Event::Toast(text) => Some(Some(Seen::Toast((*text).into()))),
+        Event::RideState(state) => Some(Some(Seen::RideState((*state).into()))),
+        Event::Shown(fields) => Some(Some(Seen::Shown((*fields).into()))),
+        Event::Sound {
+            pattern,
+            cue,
+            note,
+            of,
+        } => Some(Some(Seen::Sound {
+            pattern: *pattern,
+            cue: (*cue).into(),
+            note: *note,
+            of: *of,
+        })),
+        Event::Log { .. } => Some(None),
         _ => None,
     }
 }
@@ -590,6 +611,14 @@ impl Sources {
     /// Where the replay parted from its recording so far.
     pub fn report(&self) -> Report {
         self.ledger.0.borrow().clone()
+    }
+
+    /// Open a window: the next divergence becomes the report's first.
+    /// Returns the counts before the window.
+    pub fn open_window(&mut self) -> BTreeMap<Kind, u32> {
+        let mut report = self.ledger.0.borrow_mut();
+        report.first = None;
+        report.counts.clone()
     }
 
     fn begin(&mut self, now: u64) {
@@ -784,7 +813,7 @@ impl Sources {
             | Event::Command(_)
             | Event::Page(_)
             | Event::Toast(_)
-            | Event::Sound(_)
+            | Event::Sound { .. }
             | Event::RideState(_)
             | Event::Shown(_)
             | Event::Log { .. } => self.ledger.note(Kind::Unreplayable, 1, || {

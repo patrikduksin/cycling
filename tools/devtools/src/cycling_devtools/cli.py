@@ -22,6 +22,7 @@ TERRAIN = 'uv run --project tools/terrain --locked'
 # system Python provides; they use the source tree instead of the uv environment.
 SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devtools.'
 SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios'
+TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --features cycling,debug-harness --bin trace --'
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,16 @@ TASKS = [
         'sim-live',
         'Open a window onto the simulated device; the session is recorded to .local/sim/live',
         'SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features cycling,debug-harness,live --bin sim-live',
+    ),
+    task(
+        'trace',
+        'Read a ride trace as text: summary, timeline, find, otlp, replay, test-stub (--help; skill: ride-trace)',
+        TRACE,
+    ),
+    task(
+        'replay',
+        'Replay a window of a ride trace with screenshots, screen text and divergence: replay <trace> --from T --to T',
+        f'{TRACE} replay',
     ),
     task(
         'harness',

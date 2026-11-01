@@ -334,6 +334,32 @@ fn power_shows_dashes_while_the_meter_is_out() {
 }
 
 #[test]
+fn a_test_stub_never_asserts_the_symptom_it_is_told_to_expect_away() {
+    use shell_simulator::trace::stub::{Expect, stub};
+    let timeline = timeline("power-dropout-after-descent");
+    let at = timeline.session_ms(At::Ride(seconds(170))).unwrap();
+    let not_dashed = [Expect::parse("power!=--").unwrap()];
+    let test = stub(&timeline, "dropout", "power_shows", at, &not_dashed).unwrap();
+    let (characterization, expectation) = test.split_once("// Expectation").unwrap();
+    assert!(
+        !characterization.contains(r#"field(&shown, "power")"#),
+        "{test}"
+    );
+    assert!(
+        expectation.contains(r#"assert_ne!(field(&shown, "power"), Some("--")"#),
+        "{test}"
+    );
+    assert!(
+        characterization.contains(&format!("power#{POWER} last packet")),
+        "{test}"
+    );
+    let unchanged = [Expect::parse("power=--").unwrap()];
+    assert!(stub(&timeline, "dropout", "power_shows", at, &unchanged).is_err());
+    let open = stub(&timeline, "dropout", "power_shows", at, &[]).unwrap();
+    assert!(open.contains("todo!("), "{open}");
+}
+
+#[test]
 fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
     let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
     let sim = Sim::replay_as(&capture, Mode::Stimulus, |_| {});

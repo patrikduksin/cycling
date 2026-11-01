@@ -69,9 +69,15 @@ commands:
       Divergences count inside the window, with a total for before it, each
       labelled rider-visible, model-only (the stimulus ANT model),
       timing-only, call-level (strict) or replay fault.
-  test-stub <trace> --at T [--name NAME]
-      A regression test that replays the trace to T and asserts what the
-      rider saw then. Put the trace under tools/simulator/tests/traces/.
+  test-stub <trace> --at T [--name NAME] [--expect FIELD=VALUE,...]
+      A regression test that replays the trace to T. Its doc comment says
+      what the recording showed and what the sensors were doing then; its
+      characterization asserts the rest of the moment as recorded; its
+      expectation states what the rider should have seen. --expect writes
+      the expectation (power!=--, power=230, page=ride/climb, toast~SAVE)
+      and refuses one the recording already meets; without it the
+      expectation is a todo!() to replace. Either way the test is red on the
+      recording. Put the trace under tools/simulator/tests/traces/.
 ";
 
 fn main() -> ExitCode {
@@ -187,7 +193,12 @@ fn run(args: &[String]) -> Result<String, String> {
                 .value("name")
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("{}_at_{}", fixture.replace('-', "_"), at / 1000));
-            Ok(stub::stub(&timeline, fixture, &name, at))
+            let expect: Vec<stub::Expect> = options
+                .value("expect")
+                .map(|list| list.split(',').map(stub::Expect::parse).collect())
+                .transpose()?
+                .unwrap_or_default();
+            stub::stub(&timeline, fixture, &name, at, &expect)
         }
         other => Err(format!("unknown command {other:?}; see --help")),
     }

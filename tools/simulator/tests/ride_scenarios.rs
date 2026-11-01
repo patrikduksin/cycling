@@ -8945,6 +8945,7 @@ mod mutations {
     pub struct Caught {
         pub report: Option<String>,
         pub visible: bool,
+        pub frames: bool,
         pub handed: bool,
     }
 
@@ -8973,7 +8974,9 @@ mod mutations {
         let report = report
             .first
             .map(|first| format!("{:?} at {} ms", first.kind, first.at_ms));
-        let visible = outputs(&mut replayed)
+        let outputs = outputs(&mut replayed);
+        let frames = shown(&outputs.0) != shown(&recording.frames);
+        let visible = outputs
             != (
                 recording.frames.clone(),
                 recording.media.clone(),
@@ -8985,8 +8988,17 @@ mod mutations {
         Caught {
             report,
             visible,
+            frames,
             handed,
         }
+    }
+
+    /// What the panel showed, frame by frame, without a frame drawn again
+    /// as it was.
+    fn shown(frames: &[u64]) -> Vec<u64> {
+        let mut shown = frames.to_vec();
+        shown.dedup();
+        shown
     }
 
     /// How a mutation must show. Most change what VANA does where the
@@ -9005,11 +9017,14 @@ mod mutations {
     pub fn assert_every_mutation_shows(recording: &Recording, rows: &[(&str, Mutation, Shows)]) {
         let clean = replay(recording, recording.trace.to_vec());
         assert!(!clean.any(), "the unmutated trace replays clean: {clean:?}");
-        let mut missed = Vec::new();
+        let (mut missed, mut silent) = (Vec::new(), Vec::new());
         for &(kind, how, shows) in rows {
             let trace = mutated(recording.trace, kind, how)
                 .unwrap_or_else(|| panic!("no {kind} to {how:?} in the trace"));
             let caught = replay(recording, trace);
+            if caught.frames && caught.report.is_none() {
+                silent.push((kind, how));
+            }
             let (shown, why) = match shows {
                 Shows::Directly => (caught.report.is_some() || caught.visible, ""),
                 Shows::Heals(why) => (caught.any(), why),
@@ -9022,6 +9037,10 @@ mod mutations {
         assert!(
             missed.is_empty(),
             "mutations that did not show as expected: {missed:?}"
+        );
+        assert!(
+            silent.is_empty(),
+            "strict replays that showed other frames and reported nothing: {silent:?}"
         );
     }
 }
@@ -9324,4 +9343,66 @@ fn every_power_input_mutated_shows_in_its_replay() {
         mutations::Shows::Directly,
     ));
     mutations::assert_every_mutation_shows(&recording, &rows);
+}
+
+/// A ride whose page turns on a press the harness sent over the terminal,
+/// mid-ride, as a host test drives a C606.
+#[cfg(feature = "debug-harness")]
+fn a_ride_paged_by_the_harness(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(seconds(30));
+    let (status, opened) = sim.command("HARNESS OPEN 1 60000");
+    assert_eq!(status, "OK", "{opened}");
+    let session = opened
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("session="))
+        .unwrap()
+        .to_string();
+    for command in ["INPUT BEGIN 1", "INPUT ADD 1 0 BUTTON 1", "INPUT RUN 1"] {
+        let (status, out) = sim.command(&format!("HARNESS {session} {command}"));
+        assert!(
+            matches!(status, "OK" | "ACCEPTED"),
+            "{command}: {status} {out}"
+        );
+    }
+    sim.advance(seconds(1));
+    expect_page(sim, "ride/stats");
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.done();
+}
+
+#[cfg(feature = "debug-harness")]
+#[test]
+fn a_ride_paged_by_the_harness_replays_exactly() {
+    use firmware_services::trace::Event;
+    let capture =
+        assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_the_harness, false);
+    let pressed = count_events(&capture.trace, |event| matches!(event, Event::Synthetic(_)));
+    assert_eq!(pressed, 1, "the harness pressed once");
+}
+
+fn a_ride_paged_by_a_press(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(seconds(30));
+    sim.press(Button::BottomLeft);
+    expect_page(sim, "ride/stats");
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.done();
+}
+
+#[track_caller]
+fn expect_page(sim: &Sim, page: &str) {
+    let seen = sim.seen().page.map(|(_, page)| page);
+    assert_eq!(seen.as_deref(), Some(page));
+}
+
+#[test]
+fn a_ride_paged_by_a_press_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_a_press, false);
 }

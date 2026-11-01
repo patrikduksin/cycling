@@ -58,6 +58,7 @@ OP = {
     'store_list': 31,
     'store_read': 32,
     'store_delete': 33,
+    'rides_read': 40,
 }
 STATUS = [
     'ok',
@@ -175,6 +176,19 @@ def open_session(connection):
         raise RuntimeError(f'unsupported transfer session version={version} max_payload={max_payload}')
     transfer.region = sectors
     return transfer
+
+
+SPENT = ('before_ms', 'serving_ms', 'sending_ms', 'waiting_ms')
+
+
+def end(transfer):
+    """End the session; where its time went on the device, as the END reply reports it (empty before firmware
+    that does)."""
+    data = transfer.call('end')[3]
+    if len(data) < 20:
+        return {}
+    words = struct.unpack('<5I', data[:20])
+    return {**{name: round(us / 1000, 1) for name, us in zip(SPENT, words, strict=False)}, 'requests': words[4]}
 
 
 def decode_volumes(data):
@@ -424,6 +438,30 @@ def files_get(transfer, name, output):
         raise RuntimeError('file read does not match its CRC')
     partial.replace(output)
     return {**stat, 'name': name}
+
+
+RIDES_NONE = 0xFFFF
+
+
+def rides_read(transfer, store, first, count):
+    """Records `first` to `first + count` of the RIDES log epoch `store`: each its payload, or None when its
+    sector holds no valid record of that epoch."""
+    records = []
+    while len(records) < count:
+        at = first + len(records)
+        _, _, sent, data = transfer.call('rides_read', at, count - len(records), struct.pack('<Q', store))
+        if sent == 0:
+            raise RuntimeError(f'rides_read returned no record at {at}')
+        offset = 0
+        for _ in range(sent):
+            (length,) = struct.unpack_from('<H', data, offset)
+            offset += 2
+            if length == RIDES_NONE:
+                records.append(None)
+                continue
+            records.append(data[offset : offset + length])
+            offset += length
+    return records
 
 
 TRACES = 'traces/'

@@ -2,21 +2,26 @@
 
 `cycling trace pull` copies the trace from STORE, asks `cycling trace media`
 what its header names, and reads those media back through read-only paths
-only: ride export for the internal journal and RIDES, up to the ends the
-header recorded, and `files get` for each file the header lists. A local
-terrain pack under .local/ with the header's SHA-256 stands in for TERRAIN.
-`cycling trace rebuild` then writes <trace>.origin beside the trace and says
-what it could not rebuild. Nothing is written to the device.
+only, up to the ends the header recorded: ride export for the internal
+journal, and one transfer session for the RIDES log's records and `files get`
+of each file the header lists. A local terrain pack under .local/ with the
+header's SHA-256 stands in for TERRAIN. `cycling trace rebuild` then writes
+<trace>.origin beside the trace and says what it could not rebuild. Nothing is
+written to the device.
 
 The pulled media go into <trace stem>.media/ beside the trace:
 internal.slots, rides.slots and rides.epoch, files.list and files/<name>,
-and terrain.pack, a link to the local pack.
+and terrain.pack, a link to the local pack. RIDES only grows within an
+epoch, so the slots pulled for one are kept in .cache/ beside the traces, and
+a later pull reads only the records after them once the device still holds
+their last one.
 """
 
 import hashlib
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from cycling_devtools.cli import TRACE
@@ -96,28 +101,88 @@ def pull_slots(connection, medium, count, output):
     return invalid
 
 
-def pull_journals(connection, media, out, problems):
-    if media['journal'] is not None:
-        try:
-            upper = export.info(connection, 'internal')['upper_bound']
-            pull_slots(connection, 'internal', min(upper, media['journal']), out / 'internal.slots')
-        except (RuntimeError, ValueError, TimeoutError) as error:
-            problems.append(f'internal ride journal: {error}')
-    if media['rides'] is not None:
-        try:
-            info = export.info(connection, 'bulk')
-            slots = out / 'rides.slots'
-            invalid = []
-            if int(info['store_id'], 16) == int(media['rides']['store'], 16):
-                invalid = pull_slots(connection, 'bulk', min(info['upper_bound'], media['rides']['head']), slots)
-            else:
-                slots.write_bytes(b'')
-            epoch = (
-                f'store {info["store_id"]}\ngeneration {info["generation"]}\ninvalid {" ".join(map(str, invalid))}\n'
-            )
-            (out / 'rides.epoch').write_text(epoch)
-        except (RuntimeError, ValueError, TimeoutError) as error:
-            problems.append(f'RIDES: {error}')
+def pull_internal(connection, media, out, problems):
+    if media['journal'] is None:
+        return
+    try:
+        upper = export.info(connection, 'internal')['upper_bound']
+        pull_slots(connection, 'internal', min(upper, media['journal']), out / 'internal.slots')
+    except (RuntimeError, ValueError, TimeoutError) as error:
+        problems.append(f'internal ride journal: {error}')
+
+
+def rides_log(connection, media, problems):
+    """The RIDES log the device holds now: its store id, its generation, and how many of its slots the trace
+    started on, none when the log was cleared since. None when the header names no log or the device does not
+    answer."""
+    if media['rides'] is None:
+        return None
+    try:
+        info = export.info(connection, 'bulk')
+    except (RuntimeError, ValueError, TimeoutError) as error:
+        problems.append(f'RIDES: {error}')
+        return None
+    store = int(info['store_id'], 16)
+    head = min(info['upper_bound'], media['rides']['head']) if store == int(media['rides']['store'], 16) else 0
+    return store, info['generation'], head
+
+
+def slot_of(record):
+    """A record as ride export gives it: its slot, and whether its container was valid."""
+    if record is None or len(record) != SLOT_SIZE:
+        return bytes(SLOT_SIZE), False
+    return record, True
+
+
+def cached_rides(cache, store):
+    """The cached slots of the RIDES epoch `store` and the indices of its invalid ones; nothing when there is no
+    readable cache."""
+    slots, invalid = cache / f'rides-{store:016x}.slots', cache / f'rides-{store:016x}.invalid'
+    try:
+        return slots.read_bytes(), {int(word) for word in invalid.read_text().split()}
+    except OSError, ValueError:
+        return b'', set()
+
+
+def keep_rides(cache, store, slots, invalid):
+    """Cache the slots of the RIDES epoch `store`: the invalid indices first, so a cache cut short between the
+    two files lists none past its slots."""
+    cache.mkdir(parents=True, exist_ok=True)
+    for name, data in (
+        (f'rides-{store:016x}.invalid', ' '.join(map(str, sorted(invalid))).encode()),
+        (f'rides-{store:016x}.slots', slots),
+    ):
+        partial = cache / f'{name}.partial'
+        partial.write_bytes(data)
+        partial.replace(cache / name)
+
+
+def pull_rides(transfer, store, head, output, cache):
+    """The first `head` slots of the RIDES epoch `store` into `output`; the indices of invalid containers.
+
+    A cached prefix of the same epoch is kept when the device still holds the prefix's last slot as cached: an
+    epoch's records never change once written, so only the records after it are read."""
+    cached, cached_invalid = cached_rides(cache, store)
+    kept = min(len(cached) // SLOT_SIZE, head)
+    slots, invalid = cached[: kept * SLOT_SIZE], {index for index in cached_invalid if index < kept}
+    stale = kept and slot_of(volumes.rides_read(transfer, store, kept - 1, 1)[0]) != (
+        slots[-SLOT_SIZE:],
+        kept - 1 not in invalid,
+    )
+    if stale:
+        slots, invalid = b'', set()
+    first = len(slots) // SLOT_SIZE
+    fresh = bytearray()
+    for index, record in enumerate(volumes.rides_read(transfer, store, first, head - first), first):
+        slot, valid = slot_of(record)
+        fresh += slot
+        if not valid:
+            invalid.add(index)
+    slots += fresh
+    if stale or len(slots) > len(cached):
+        keep_rides(cache, store, slots, invalid)
+    output.write_bytes(slots)
+    return sorted(invalid)
 
 
 def pull_file(transfer, name, path):
@@ -135,54 +200,108 @@ def pull_file(transfer, name, path):
     return stat['revision']
 
 
-def pull_files(connection, media, out, problems):
+def pull_files(transfer, media, out, problems):
     if media['files'] is None:
         return
-    transfer = volumes.open_session(connection)
-    try:
-        status, _, _, data = transfer.call('files_status', allow=('uninitialized', 'foreign', 'corrupt'))
-        if status != 'ok':
-            problems.append(f'FILES: {status}')
-            return
-        lines = [f'store {int.from_bytes(data[8:16], "little"):016x}']
-        for entry in media['files']['entries']:
-            name = entry['name']
-            path = out / 'files' / safe_name(name)
-            path.parent.mkdir(parents=True, exist_ok=True)
+    status, _, _, data = transfer.call('files_status', allow=('uninitialized', 'foreign', 'corrupt'))
+    if status != 'ok':
+        problems.append(f'FILES: {status}')
+        return
+    lines = [f'store {int.from_bytes(data[8:16], "little"):016x}']
+    for entry in media['files']['entries']:
+        name = entry['name']
+        path = out / 'files' / safe_name(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            revision = pull_file(transfer, name, path)
+        except (RuntimeError, ValueError, TimeoutError) as error:
+            problems.append(f'file {name}: {error}')
+            lines.append(f'unread {name}')
+            continue
+        if revision is not None:
+            lines.append(f'file {revision} {name}')
+    (out / 'files.list').write_text('\n'.join(lines) + '\n')
+
+
+def pull_media(connection, media, out, cache, problems, timing):
+    """RIDES and FILES as the header names them, in one transfer session. RIDES goes through ride export instead
+    on firmware from before RIDES_READ."""
+    rides = rides_log(connection, media, problems)
+    head = rides[2] if rides else 0
+    pulled = {}
+
+    def work(transfer):
+        if head:
             try:
-                revision = pull_file(transfer, name, path)
+                pulled['invalid'] = pull_rides(transfer, rides[0], head, out / 'rides.slots', cache)
+            except volumes.TransferError as error:
+                if error.status == 'invalid':
+                    pulled['export'] = True
+                else:
+                    problems.append(f'RIDES: {error}')
             except (RuntimeError, ValueError, TimeoutError) as error:
-                problems.append(f'file {name}: {error}')
-                lines.append(f'unread {name}')
-                continue
-            if revision is not None:
-                lines.append(f'file {revision} {name}')
-        (out / 'files.list').write_text('\n'.join(lines) + '\n')
-    finally:
-        transfer.call('end')
+                problems.append(f'RIDES: {error}')
+        pull_files(transfer, media, out, problems)
+
+    if head or media['files'] is not None:
+        session(connection, timing, 'media_session', work)
+    if rides is None:
+        return
+    if not head:
+        (out / 'rides.slots').write_bytes(b'')
+        pulled['invalid'] = []
+    elif pulled.get('export'):
+        try:
+            pulled['invalid'] = pull_slots(connection, 'bulk', head, out / 'rides.slots')
+        except (RuntimeError, ValueError, TimeoutError) as error:
+            problems.append(f'RIDES: {error}')
+    if 'invalid' in pulled:
+        store, generation, _ = rides
+        invalid = ' '.join(map(str, pulled['invalid']))
+        (out / 'rides.epoch').write_text(f'store {store:016x}\ngeneration {generation}\ninvalid {invalid}\n')
 
 
-def pull(connection, name=None, directory=Path('.local/traces'), tool=trace_tool, roots=PACK_ROOTS):
-    """Pull the trace `name` (the newest by default) and rebuild the media it started on beside it."""
+def session(connection, timing, name, work):
+    """Run `work(transfer)` in one transfer session, the app paused, and note how long it took here and where its
+    time went on the device."""
+    started = time.monotonic()
     transfer = volumes.open_session(connection)
     try:
-        result = volumes.trace_pull(transfer, name, directory)
+        return work(transfer)
     finally:
-        transfer.call('end')
+        spent = volumes.end(transfer)
+        timing[name] = {'s': round(time.monotonic() - started, 3), **spent}
+
+
+def pull(
+    connection,
+    name=None,
+    directory=Path('.local/traces'),
+    tool=trace_tool,
+    roots=PACK_ROOTS,
+):
+    """Pull the trace `name` (the newest by default) and rebuild the media it started on beside it."""
+    started, timing = time.monotonic(), {}
+    result = session(
+        connection, timing, 'trace_session', lambda transfer: volumes.trace_pull(transfer, name, directory)
+    )
     trace = Path(result['path'])
     media = header_media(tool('media', trace))
     out = trace.with_name(trace.stem + '.media')
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(mode=0o700)
     problems = []
-    pull_journals(connection, media, out, problems)
-    pull_files(connection, media, out, problems)
+    lap = time.monotonic()
+    pull_internal(connection, media, out, problems)
+    timing['internal_s'] = round(time.monotonic() - lap, 3)
+    pull_media(connection, media, out, directory / '.cache', problems, timing)
     if media['terrain'] is not None:
         pack = find_pack(media['terrain']['length'], media['terrain']['sha256'], roots)
         if pack is not None:
             (out / 'terrain.pack').symlink_to(pack)
     report = tool('rebuild', trace, '--pulled', out).splitlines()
-    result.update(media=str(out), origin=report[0].removeprefix('origin '), rebuilt=report[1:])
+    timing['total_s'] = round(time.monotonic() - started, 3)
+    result.update(media=str(out), origin=report[0].removeprefix('origin '), rebuilt=report[1:], timing=timing)
     if problems:
         result['problems'] = problems
     return result

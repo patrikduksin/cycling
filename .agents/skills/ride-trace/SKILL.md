@@ -32,12 +32,16 @@ text: start there, and open a PNG only to confirm what the text says.
   `.local/traces/<file>` and rebuild the media it started on beside it, as
   `<name>.origin`. The pull only reads the device. It asks the trace's
   header what VANA started from (`cycling trace media <trace>` prints it),
-  then reads the ride journals with ride export up to the ends the header
-  recorded, each file the header lists with `files get`, and finds the
-  terrain pack by its SHA-256 under `.local/terrain/`. The copies go to
-  `.local/traces/<name>.media/`, and `cycling trace rebuild <trace>
-  --pulled <dir>` turns them into the `.origin`. The pull prints what
-  could not be rebuilt, one line each, and the `.origin` keeps that list.
+  then reads, up to the ends the header recorded, the internal ride journal
+  with ride export, and the RIDES log's records and each file the header
+  lists in one transfer session. RIDES slots it pulled before are kept in
+  `.local/traces/.cache/`, so a later pull reads only the newer ones. It
+  finds the terrain pack by its SHA-256 under `.local/terrain/`. The copies
+  go to `.local/traces/<name>.media/`, and `cycling trace rebuild <trace>
+  --pulled <dir>` turns them into the `.origin`. The pull prints what could
+  not be rebuilt, one line each, and the `.origin` keeps that list, and
+  `timing` says how long each transfer session paused VANA and where the
+  device spent that time.
   A trace whose format version this build does not read is refused with
   the version and the versions it reads; read it with the build that
   recorded it.

@@ -640,3 +640,103 @@ fn only_the_owners_store_format_replaces_a_corrupt_store() {
     );
     assert!(media.written == written, "nothing written");
 }
+
+/// A RIDES log of `slots` 256-byte ride slots, as VANA appends them; the
+/// last record holds 100 bytes. Its store id.
+fn record_rides(media: &mut Media, slots: u64) -> u64 {
+    use firmware_services::sector_log;
+    let mut sector = [0u8; 512];
+    let mut vol = volume::open(media, &volume::RIDES, &mut sector).unwrap();
+    let mut log =
+        sector_log::format(&mut vol, b"VANA-RIDES-V1\0\0\0", 7, &[], &mut sector).unwrap();
+    for index in 0..slots {
+        log.append(&mut vol, &[index as u8; 256], &mut sector)
+            .unwrap();
+    }
+    log.append(&mut vol, &[0xEE; 100], &mut sector).unwrap();
+    log.store_id()
+}
+
+/// Records as `RIDES_READ` sends them: `None` for a sector that holds no
+/// valid record of the epoch.
+fn rides_records(data: &[u8]) -> Vec<Option<Vec<u8>>> {
+    let (mut records, mut at) = (Vec::new(), 0);
+    while at < data.len() {
+        let length = usize::from(get_u16(data, at));
+        at += 2;
+        if length == usize::from(RIDES_NONE) {
+            records.push(None);
+            continue;
+        }
+        records.push(Some(data[at..at + length].to_vec()));
+        at += length;
+    }
+    records
+}
+
+#[test]
+fn ride_log_records_are_read_in_batches_and_never_written() {
+    let mut host = Host::new();
+    let store = record_rides(&mut host.media, 40);
+    let mut sector = [0u8; 512];
+    let start = volume::open(&mut host.media, &volume::RIDES, &mut sector)
+        .unwrap()
+        .extent()
+        .start;
+    let damaged = start + firmware_services::sector_log::DATA_START + 17;
+    host.media.written.insert(damaged, [0; 512]);
+    let before = host.media.written.clone();
+
+    let (mut records, mut at) = (Vec::new(), 0);
+    while at < 41 {
+        let wanted = 41 - at as u32;
+        let (status, next, count, data) =
+            host.call(op::RIDES_READ, at, wanted, &store.to_le_bytes());
+        assert_eq!(status, status::OK);
+        assert!(count >= wanted.min(15), "{count} records in a request");
+        assert_eq!(next, at + u64::from(count));
+        let batch = rides_records(&data);
+        assert_eq!(batch.len(), count as usize);
+        records.extend(batch);
+        at = next;
+    }
+    assert_eq!(records.len(), 41);
+    for (index, record) in records.iter().enumerate().take(40) {
+        if index == 17 {
+            assert_eq!(*record, None, "a damaged record");
+        } else {
+            assert_eq!(
+                record.as_deref(),
+                Some(&[index as u8; 256][..]),
+                "record {index}"
+            );
+        }
+    }
+    assert_eq!(records[40].as_deref(), Some(&[0xEE; 100][..]));
+    let (_, _, count, data) = host.call(op::RIDES_READ, 3, 2, &(store + 1).to_le_bytes());
+    assert_eq!(
+        rides_records(&data),
+        [None, None],
+        "another epoch's records"
+    );
+    assert_eq!(count, 2);
+    assert_eq!(host.call(op::RIDES_READ, 0, 1, &[1, 2]).0, status::INVALID);
+    assert!(host.media.written == before, "a read wrote the card");
+}
+
+#[test]
+fn the_end_reply_says_where_the_session_time_went() {
+    let mut host = Host::new();
+    host.session.spent = Spent {
+        before_us: 41_000,
+        serving_us: 900_000,
+        sending_us: 1_200_000,
+        waiting_us: 300_000,
+        requests: 175,
+    };
+    let (status, _, _, data) = host.call(op::END, 0, 0, &[]);
+    assert_eq!(status, status::OK);
+    let words: Vec<u32> = (0..5).map(|i| get_u32(&data, 4 * i)).collect();
+    assert_eq!(words, [41_000, 900_000, 1_200_000, 300_000, 175]);
+    assert!(host.session.ended());
+}

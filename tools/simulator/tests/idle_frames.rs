@@ -140,6 +140,21 @@ fn a_still_home_draws_only_when_what_it_shows_changes() {
     assert!(frames >= 50, "{frames} charging frames in 30 s");
 }
 
+#[test]
+fn a_full_battery_on_usb_leaves_home_still() {
+    let mut sim = device();
+    sim.set_battery(100, true);
+    let next_minute_ms = 1_800_000_000_000;
+    sim.sync_network_time(next_minute_ms - seconds(50));
+    sim.advance(seconds(5));
+    assert_eq!(frames_over(&mut sim, seconds(30)), 0, "no fill to animate");
+    sim.set_battery(90, true);
+    assert!(
+        frames_over(&mut sim, seconds(5)) >= 8,
+        "a fill climbing from 90% animates"
+    );
+}
+
 #[cfg(feature = "debug-harness")]
 #[test]
 fn a_capture_on_a_still_home_gets_a_frame() {

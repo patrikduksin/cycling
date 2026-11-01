@@ -69,32 +69,6 @@ enum Note {
 }
 
 impl Cue {
-    /// Every cue, so a trace reader can name the patterns it heard.
-    pub const ALL: [Self; 22] = [
-        Self::Start,
-        Self::Pause,
-        Self::Resume,
-        Self::Lap,
-        Self::Saved,
-        Self::StillPaused,
-        Self::Best,
-        Self::LowBattery,
-        Self::Countdown,
-        Self::Step,
-        Self::RadarApproach,
-        Self::RadarNear,
-        Self::RadarClose,
-        Self::RadarPassing,
-        Self::RadarClear,
-        Self::BandAlert,
-        Self::Fuel,
-        Self::OffTrack,
-        Self::OnTrack,
-        Self::AtStart,
-        Self::TurnAhead,
-        Self::Turn,
-    ];
-
     const fn notes(self) -> &'static [Note] {
         use Note::*;
         match self {
@@ -129,6 +103,34 @@ impl Cue {
         }
     }
 
+    /// The cue's name in a trace: `start`, `radar_clear`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Lap => "lap",
+            Self::Saved => "saved",
+            Self::StillPaused => "still_paused",
+            Self::Best => "best",
+            Self::LowBattery => "low_battery",
+            Self::Countdown => "countdown",
+            Self::Step => "step",
+            Self::RadarApproach => "radar_approach",
+            Self::RadarNear => "radar_near",
+            Self::RadarClose => "radar_close",
+            Self::RadarPassing => "radar_passing",
+            Self::RadarClear => "radar_clear",
+            Self::BandAlert => "band_alert",
+            Self::Fuel => "fuel",
+            Self::OffTrack => "off_track",
+            Self::OnTrack => "on_track",
+            Self::AtStart => "at_start",
+            Self::TurnAhead => "turn_ahead",
+            Self::Turn => "turn",
+        }
+    }
+
     /// Sounds even when the rider muted cues, and is never replaced by one.
     pub const fn safety(self) -> bool {
         matches!(
@@ -140,7 +142,7 @@ impl Cue {
 
 /// The pattern ids a cue plays on this sound, in order. A sound with fewer
 /// notes plays what it has: one short pattern stands for every note.
-pub fn resolve(patterns: &[Pattern], cue: Cue) -> heapless::Vec<u8, 4> {
+fn resolve(patterns: &[Pattern], cue: Cue) -> heapless::Vec<u8, 4> {
     let mut short: heapless::Vec<Pattern, 8> = patterns
         .iter()
         .filter(|pattern| pattern.nominal_ms <= NOTE_MAX_MS)
@@ -166,12 +168,26 @@ pub fn resolve(patterns: &[Pattern], cue: Cue) -> heapless::Vec<u8, 4> {
         .collect()
 }
 
-/// The cue waiting to start and the run in progress.
+/// A note of a cue the sound accepted: the pattern, the cue, and the note's
+/// place in it (`note` of `of`, from 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Played {
+    pub cue: Cue,
+    pub pattern: u8,
+    pub note: u8,
+    pub of: u8,
+}
+
+/// The cue waiting to start, the run in progress and its last note played.
 #[derive(Default)]
 pub(super) struct Cues {
     pending: Option<(Cue, u64)>,
     playing: Option<Cue>,
     run: Sequence,
+    /// Notes of the playing cue: played so far, and in all.
+    note: u8,
+    of: u8,
+    played: Option<Played>,
 }
 
 impl Cues {
@@ -196,10 +212,26 @@ impl Cues {
         if let Some((cue, at)) = self.pending.take()
             && now.saturating_sub(at) < STALE_MS
         {
-            self.run.start(&resolve(sound.patterns(), cue), now);
+            let notes = resolve(sound.patterns(), cue);
+            self.run.start(&notes, now);
             self.playing = Some(cue);
+            self.note = 0;
+            self.of = notes.len() as u8;
         }
-        self.run.pump(sound, now);
+        if let (Some(pattern), Some(cue)) = (self.run.pump(sound, now), self.playing) {
+            self.note += 1;
+            self.played = Some(Played {
+                cue,
+                pattern,
+                note: self.note,
+                of: self.of,
+            });
+        }
+    }
+
+    /// The note the sound accepted since the last call.
+    pub(super) fn take_played(&mut self) -> Option<Played> {
+        self.played.take()
     }
 }
 
@@ -249,35 +281,76 @@ mod tests {
         assert!(resolve(&[], Cue::Start).is_empty());
     }
 
-    #[test]
-    fn every_cue_is_listed_once() {
-        for (i, cue) in Cue::ALL.iter().enumerate() {
-            assert_eq!(Cue::ALL.iter().position(|c| c == cue), Some(i), "{cue:?}");
-            match cue {
-                Cue::Start
-                | Cue::Pause
-                | Cue::Resume
-                | Cue::Lap
-                | Cue::Saved
-                | Cue::StillPaused
-                | Cue::Best
-                | Cue::LowBattery
-                | Cue::Countdown
-                | Cue::Step
-                | Cue::RadarApproach
-                | Cue::RadarNear
-                | Cue::RadarClose
-                | Cue::RadarPassing
-                | Cue::RadarClear
-                | Cue::BandAlert
-                | Cue::Fuel
-                | Cue::OffTrack
-                | Cue::OnTrack
-                | Cue::AtStart
-                | Cue::TurnAhead
-                | Cue::Turn => {}
-            }
+    /// A buzzer that accepts every pattern.
+    struct Open;
+
+    impl Sound for Open {
+        fn patterns(&self) -> &'static [Pattern] {
+            const C606: [Pattern; 3] = [
+                Pattern {
+                    id: 0,
+                    frequency_hz: 3000,
+                    nominal_ms: 75,
+                    guard_ms: 500,
+                },
+                Pattern {
+                    id: 10,
+                    frequency_hz: 4000,
+                    nominal_ms: 100,
+                    guard_ms: 500,
+                },
+                Pattern {
+                    id: 21,
+                    frequency_hz: 2500,
+                    nominal_ms: 150,
+                    guard_ms: 500,
+                },
+            ];
+            &C606
         }
+        fn snapshot(&self) -> device_api::sound::Snapshot {
+            unreachable!("cues never read the buzzer's state")
+        }
+        fn play(&mut self, _: u8, _: u64) -> Result<(), device_api::observation::Error> {
+            Ok(())
+        }
+        fn stop(&mut self, _: u64) -> Result<(), device_api::observation::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn each_note_played_names_its_cue_and_its_place_in_it() {
+        let mut cues = Cues::default();
+        let mut heard = std::vec::Vec::new();
+        cues.raise(Cue::Start, false, 0);
+        for now in [0, 500, 1000] {
+            cues.play(&mut Open, now);
+            heard.extend(cues.take_played());
+        }
+        // Saved cut short after its first note by a lap.
+        cues.raise(Cue::Saved, false, 1000);
+        cues.play(&mut Open, 1000);
+        heard.extend(cues.take_played());
+        cues.raise(Cue::Lap, false, 1500);
+        cues.play(&mut Open, 1500);
+        heard.extend(cues.take_played());
+        let played = |cue, pattern, note, of| Played {
+            cue,
+            pattern,
+            note,
+            of,
+        };
+        assert_eq!(
+            heard,
+            [
+                played(Cue::Start, 0, 1, 2),
+                played(Cue::Start, 10, 2, 2),
+                played(Cue::Saved, 21, 1, 3),
+                played(Cue::Lap, 0, 1, 1),
+            ]
+        );
+        assert_eq!(Cue::RadarClear.name(), "radar_clear");
     }
 
     #[test]

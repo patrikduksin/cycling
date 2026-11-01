@@ -318,7 +318,12 @@ pub enum Seen {
     Toast(String),
     RideState(String),
     Shown(String),
-    Sound(u8),
+    Sound {
+        pattern: u8,
+        cue: String,
+        note: u8,
+        of: u8,
+    },
 }
 
 /// The shell's own devices, which a replay scripts from the trace: the
@@ -506,7 +511,17 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
         Event::Toast(text) => Some(Some(Seen::Toast((*text).into()))),
         Event::RideState(state) => Some(Some(Seen::RideState((*state).into()))),
         Event::Shown(fields) => Some(Some(Seen::Shown((*fields).into()))),
-        Event::Sound(pattern) => Some(Some(Seen::Sound(*pattern))),
+        Event::Sound {
+            pattern,
+            cue,
+            note,
+            of,
+        } => Some(Some(Seen::Sound {
+            pattern: *pattern,
+            cue: (*cue).into(),
+            note: *note,
+            of: *of,
+        })),
         Event::Log { .. } => Some(None),
         _ => None,
     }
@@ -798,7 +813,7 @@ impl Sources {
             | Event::Command(_)
             | Event::Page(_)
             | Event::Toast(_)
-            | Event::Sound(_)
+            | Event::Sound { .. }
             | Event::RideState(_)
             | Event::Shown(_)
             | Event::Log { .. } => self.ledger.note(Kind::Unreplayable, 1, || {

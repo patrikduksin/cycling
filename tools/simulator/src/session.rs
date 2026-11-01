@@ -1053,21 +1053,41 @@ impl Session {
     #[cfg(feature = "cycling")]
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();
+        let mut notes = Vec::new();
         let mut recorder = self.trace.recorder.borrow_mut();
-        self.sdk.report_seen(self.now, &mut |shown| {
-            let event = match shown {
-                vana::app::Seen::Page(page) => Event::Page(page),
-                vana::app::Seen::Toast(text) => Event::Toast(text),
-                vana::app::Seen::RideState(state) => Event::RideState(state),
-                vana::app::Seen::Shown(fields) => Event::Shown(fields),
-            };
+        let mut record = |event: Event<'_>| {
             recorder.record(&event);
             seen.extend(crate::replay::seen(&event).flatten());
+        };
+        self.sdk.report_seen(self.now, &mut |shown| match shown {
+            vana::app::Seen::Page(page) => record(Event::Page(page)),
+            vana::app::Seen::Toast(text) => record(Event::Toast(text)),
+            vana::app::Seen::RideState(state) => record(Event::RideState(state)),
+            vana::app::Seen::Shown(fields) => record(Event::Shown(fields)),
+            vana::app::Seen::Note {
+                cue,
+                pattern,
+                note,
+                of,
+            } => notes.push((pattern, cue.to_string(), note, of)),
         });
+        // VANA names the cue of each note it played; any other pattern, such
+        // as a console SOUND PLAY, has none.
         for pattern in self.trace.sound.take_started() {
-            recorder.record(&Event::Sound(pattern));
-            seen.push(Seen::Sound(pattern));
+            let played = notes
+                .iter()
+                .position(|played| played.0 == pattern)
+                .map(|at| notes.remove(at));
+            let (cue, note, of) =
+                played.map_or((String::new(), 0, 0), |(_, cue, note, of)| (cue, note, of));
+            record(Event::Sound {
+                pattern,
+                cue: &cue,
+                note,
+                of,
+            });
         }
+        drop(record);
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {
                 level,

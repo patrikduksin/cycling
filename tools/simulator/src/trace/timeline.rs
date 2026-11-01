@@ -469,7 +469,6 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     }
     reader.end_pass();
     #[cfg(feature = "cycling")]
-    super::cue::name(&mut reader.entries, reader.now);
     reader.silent_at_end();
     let build_len = header
         .build
@@ -752,7 +751,19 @@ impl Reader {
                     text.into()
                 },
             ),
-            Event::Sound(pattern) => self.push(Kind::Sound, format!("pattern {pattern}")),
+            Event::Sound {
+                pattern,
+                cue,
+                note,
+                of,
+            } => self.push(
+                Kind::Sound,
+                match (cue.replace('_', " "), of) {
+                    (cue, _) if cue.is_empty() => format!("pattern {pattern}"),
+                    (cue, 1) => format!("pattern {pattern}: {cue}"),
+                    (cue, of) => format!("pattern {pattern}: {cue} ({note} of {of})"),
+                },
+            ),
             Event::RideState(state) => {
                 let open = matches!(state, "recording" | "paused" | "auto_paused");
                 self.ride_ms = match (self.ride_ms, open) {

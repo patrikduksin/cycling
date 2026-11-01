@@ -131,25 +131,26 @@ impl Sequence {
     pub fn clear(&mut self) {
         self.next = self.len;
     }
-    /// Offer the next pattern to `sound`. Call once per loop.
-    pub fn pump(&mut self, sound: &mut impl Sound, now: u64) {
+    /// Offer the next pattern to `sound`; the pattern it accepted, if any.
+    /// Call once per loop.
+    pub fn pump(&mut self, sound: &mut impl Sound, now: u64) -> Option<u8> {
         if !self.is_playing() {
-            return;
+            return None;
         }
         if now > self.due_ms.saturating_add(SEQUENCE_LATE_MS) {
             self.clear();
-            return;
+            return None;
         }
         let id = self.ids[usize::from(self.next)];
-        if sound.play(id, now).is_ok() {
-            self.next += 1;
-            let guard = sound
-                .patterns()
-                .iter()
-                .find(|pattern| pattern.id == id)
-                .map_or(0, |pattern| u64::from(pattern.guard_ms));
-            self.due_ms = now.saturating_add(guard);
-        }
+        sound.play(id, now).ok()?;
+        self.next += 1;
+        let guard = sound
+            .patterns()
+            .iter()
+            .find(|pattern| pattern.id == id)
+            .map_or(0, |pattern| u64::from(pattern.guard_ms));
+        self.due_ms = now.saturating_add(guard);
+        Some(id)
     }
 }
 #[cfg(test)]
@@ -243,10 +244,12 @@ mod tests {
         };
         let mut run = Sequence::new();
         run.start(&[0, 10, 0, 10, 0], 0);
-        for now in (0..3000).step_by(50) {
-            run.pump(&mut buzzer, now);
-        }
+        let accepted: heapless::Vec<u8, 8> = (0..3000)
+            .step_by(50)
+            .filter_map(|now| run.pump(&mut buzzer, now))
+            .collect();
         assert_eq!(buzzer.played, [(0, 0), (500, 10), (1000, 0), (1500, 10)]);
+        assert_eq!(accepted, [0, 10, 0, 10], "each pump names what it played");
         assert!(!run.is_playing());
         // A new run replaces the rest of an old one.
         run.start(&[0, 10], 3000);

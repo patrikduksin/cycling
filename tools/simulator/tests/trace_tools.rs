@@ -387,7 +387,7 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
 }
 
 #[test]
-fn each_note_names_the_cue_it_played() {
+fn each_note_names_the_cue_vana_played_it_for() {
     let timeline = timeline("laps-and-a-menu");
     let heard: Vec<&str> = timeline
         .entries
@@ -396,7 +396,7 @@ fn each_note_names_the_cue_it_played() {
         .map(|e| e.text.as_str())
         .collect();
     assert_eq!(
-        heard[..6],
+        heard,
         [
             "pattern 0: start (1 of 2)",
             "pattern 10: start (2 of 2)",
@@ -404,15 +404,12 @@ fn each_note_names_the_cue_it_played() {
             "pattern 0: lap",
             "pattern 10: pause (1 of 2)",
             "pattern 0: pause (2 of 2)",
-        ],
-        "{heard:#?}"
-    );
-    assert!(
-        heard
-            .last()
-            .unwrap()
-            .contains("the start of saved or low battery"),
-        "{heard:#?}"
+            // Ending the ride cut the reminder short after two notes.
+            "pattern 0: still paused (1 of 3)",
+            "pattern 0: still paused (2 of 3)",
+            // The trace ends a moment after the first note.
+            "pattern 21: saved (1 of 3)",
+        ]
     );
 }
 

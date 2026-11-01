@@ -16,6 +16,14 @@ pub enum Seen<'a> {
     /// The main page's readings as `name=value` pairs, e.g.
     /// `time=0:40:12 speed=31.2 power=-- hr=142 cad=88 dist=12.40 grade=4.0%`.
     Shown(&'a str),
+    /// A note of a cue the sound accepted: the cue by name (`radar_clear`),
+    /// its pattern, and the note's place in the cue (`note` of `of`, from 1).
+    Note {
+        cue: &'a str,
+        pattern: u8,
+        note: u8,
+        of: u8,
+    },
 }
 
 #[derive(Default)]
@@ -28,9 +36,9 @@ pub(super) struct Reported {
 }
 
 impl super::Runtime {
-    /// Hand `sink` what the rider sees that changed since the last call.
-    /// Call once a pass, after `present`. Reads VANA; writes only what it
-    /// last reported.
+    /// Hand `sink` what the rider sees that changed since the last call, and
+    /// the cue note the rider heard. Call once a pass, after `alert`. Reads
+    /// VANA; writes only what it last reported.
     pub fn report_seen(&mut self, now: u64, sink: &mut impl FnMut(Seen<'_>)) {
         let page = self.seen_page();
         if self.reported.page != page {
@@ -67,6 +75,14 @@ impl super::Runtime {
                 sink(Seen::Shown(shown.as_str()));
                 self.reported.shown = shown;
             }
+        }
+        if let Some(played) = self.cues.take_played() {
+            sink(Seen::Note {
+                cue: played.cue.name(),
+                pattern: played.pattern,
+                note: played.note,
+                of: played.of,
+            });
         }
     }
 

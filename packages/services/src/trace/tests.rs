@@ -362,7 +362,18 @@ fn sample() -> Vec<Event<'static>> {
         Event::Entropy(0x9e37_79b9_7f4a_7c15),
         Event::Page("ride"),
         Event::Toast("LAP 1 05:00"),
-        Event::Sound(21),
+        Event::Sound {
+            pattern: 21,
+            cue: "radar_clear",
+            note: 1,
+            of: 2,
+        },
+        Event::Sound {
+            pattern: 4,
+            cue: "",
+            note: 0,
+            of: 0,
+        },
         Event::RideState("recording"),
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
         Event::Log {

@@ -8044,7 +8044,12 @@ fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() 
         "the card's head at power-on"
     );
     let journal = media.journal.expect("the internal journal");
-    assert_eq!(journal.to_string(), field(&internal, "slot="));
+    assert_eq!(journal.next.to_string(), field(&internal, "slot="));
+    assert_eq!(
+        journal.last.is_some(),
+        journal.next > 0,
+        "its last slot's CRC"
+    );
     let terrain = media.terrain.expect("the pack");
     assert!(terrain.ready);
     assert_eq!(terrain.length, 2048);

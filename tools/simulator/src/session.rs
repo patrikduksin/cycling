@@ -371,8 +371,8 @@ type Volumes = (
     Option<u32>,
     Option<origin::Terrain>,
 );
-/// The internal journal's next slot and the card log's store id and head.
-type Journals = (Option<u32>, Option<(u64, u64)>);
+/// The internal journal, and the card log's store id and head.
+type Journals = (Option<origin::Journal>, Option<(u64, u64)>);
 
 impl Start {
     fn read_volumes(&mut self, bulk: &crate::bulk::SimBulk) {

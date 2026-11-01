@@ -25,6 +25,8 @@ use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::screens::ride::ElevationChart;
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
+use firmware_services::checksum::crc32;
+use firmware_services::trace::origin;
 
 /// A finished lap shows in the status row this long.
 const LAP_TOAST_MS: u64 = 2000;
@@ -175,7 +177,7 @@ pub(super) struct Ride {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Scanned {
-    internal: Option<u32>,
+    internal: Option<origin::Journal>,
     bulk: Option<Option<(u64, u64)>>,
 }
 
@@ -184,8 +186,7 @@ struct Scanned {
 /// the media as they were at power-on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Journals {
-    /// The internal journal's next slot.
-    pub internal: u32,
+    pub internal: origin::Journal,
     /// The card's ride log, its epoch's store id and head, when it holds one.
     pub bulk: Option<(u64, u64)>,
 }
@@ -549,6 +550,25 @@ impl Ride {
             .map(|(_, lap)| lap)
     }
 
+    /// The internal journal where its boot scan ended. Not inlined, so its
+    /// slot stays out of `record`'s frame.
+    #[inline(never)]
+    fn internal_at_boot(&mut self, store: &mut impl RideStorage) -> origin::Journal {
+        use crate::ride::journal::Journal;
+        let next = self.internal.next_slot();
+        let mut slot = crate::ride::log::Slot::default();
+        let last = next
+            .checked_sub(1)
+            .and_then(|index| {
+                Internal::new(&mut self.internal_media, store).read_slot(index, &mut slot)
+            })
+            .map(|_| crc32(&slot.0));
+        origin::Journal {
+            next: u32::try_from(next).unwrap_or(u32::MAX),
+            last,
+        }
+    }
+
     /// Read one slot of `medium` for export; `Some(false)` marks an invalid
     /// bulk container, whose slot bytes are zeroed.
     pub(super) fn read_slot(
@@ -763,8 +783,7 @@ impl Runtime {
             clock,
         );
         if ride.scanned.internal.is_none() && ride.internal.status() != Status::Scanning {
-            ride.scanned.internal =
-                Some(u32::try_from(ride.internal.next_slot()).unwrap_or(u32::MAX));
+            ride.scanned.internal = Some(ride.internal_at_boot(store));
         }
         ride.bulk.service(
             &mut Bulk::new(&mut ride.bulk_media, bulk),

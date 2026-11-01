@@ -65,6 +65,10 @@ pub enum Gap {
     /// The internal journal holds fewer slots than at power-on, so it was
     /// cleared since, or it was not pulled; the rebuilt journal is empty.
     Journal { slots: u32, pulled: Option<usize> },
+    /// The internal journal holds another slot where VANA's last one was at
+    /// power-on, so it was cleared and filled again since; the rebuilt
+    /// journal is empty.
+    JournalReplaced { slots: u32 },
     /// RIDES was not pulled; the rebuilt card has no ride log.
     RidesNotPulled,
     /// RIDES now holds another log, so it was cleared or initialized since;
@@ -103,6 +107,11 @@ impl fmt::Display for Gap {
                         format!("the device holds {pulled} now, so it was cleared since"),
                     None => "and it was not pulled".into(),
                 }
+            ),
+            Self::JournalReplaced { slots } => write!(
+                f,
+                "internal ride journal: slot {} on the device is not the one VANA found at power-on, so the journal was cleared since; it starts empty",
+                slots - 1
             ),
             Self::RidesNotPulled => {
                 write!(f, "RIDES: not pulled; the card starts without a ride log")
@@ -170,7 +179,7 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
     let mut gaps = Vec::new();
     let internal = media
         .journal
-        .and_then(|slots| internal_at_power_on(slots, pulled, &mut gaps));
+        .and_then(|journal| internal_at_power_on(journal, pulled, &mut gaps));
     let rides = media
         .rides
         .and_then(|(store, head)| rides_at_power_on(store, head, pulled, &mut gaps));
@@ -218,7 +227,7 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
     let media = media_of(&header)?;
     let mut out = format!("boot {}\n", header.boot);
     match media.journal {
-        Some(slots) => out += &format!("journal {slots}\n"),
+        Some(journal) => out += &format!("journal {}\n", journal.next),
         None => out += "journal none\n",
     }
     match media.rides {
@@ -252,23 +261,33 @@ pub fn media(trace: &[u8]) -> Result<String, String> {
     Ok(out)
 }
 
-/// The internal journal's first `slots` slots, as VANA found them.
+/// The internal journal's slots as VANA found them, when the pull still
+/// holds them: as many, the last of them the one the header names.
 fn internal_at_power_on<'a>(
-    slots: u32,
+    journal: origin::Journal,
     pulled: &'a Pulled,
     gaps: &mut Vec<Gap>,
 ) -> Option<&'a [u8]> {
+    let slots = journal.next;
     let wanted = slots as usize * SLOT_SIZE;
-    match &pulled.internal {
-        Some(journal) if journal.len() >= wanted => Some(&journal[..wanted]),
-        journal => {
-            gaps.push(Gap::Journal {
-                slots,
-                pulled: journal.as_ref().map(|journal| journal.len() / SLOT_SIZE),
-            });
-            None
-        }
+    let Some(now) = pulled.internal.as_ref().filter(|now| now.len() >= wanted) else {
+        gaps.push(Gap::Journal {
+            slots,
+            pulled: pulled.internal.as_ref().map(|now| now.len() / SLOT_SIZE),
+        });
+        return None;
+    };
+    let kept = &now[..wanted];
+    let last = kept
+        .as_chunks::<SLOT_SIZE>()
+        .0
+        .last()
+        .map(|slot| crc32(slot));
+    if last != journal.last {
+        gaps.push(Gap::JournalReplaced { slots });
+        return None;
     }
+    Some(kept)
 }
 
 /// The RIDES log of epoch `store` and its first `head` records' slots.

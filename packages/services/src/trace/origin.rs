@@ -46,8 +46,7 @@ impl Memory {
 /// The header's `media`. A medium that could not be read is `None`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Media<'a> {
-    /// The internal ride journal's next slot when its boot scan ended.
-    pub journal: Option<u32>,
+    pub journal: Option<Journal>,
     /// The card's ride log when VANA's boot scan ended: its epoch's store id
     /// and head. RIDES only grows, so a host rewinds a later copy to this.
     pub rides: Option<(u64, u64)>,
@@ -58,6 +57,18 @@ pub struct Media<'a> {
     /// its own CRC32, so its entry's CRC tells only its length.
     pub facts: Option<u32>,
     pub terrain: Option<Terrain>,
+}
+
+/// The internal ride journal when VANA's boot scan ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Journal {
+    /// Its next slot.
+    pub next: u32,
+    /// The CRC32 of the slot before `next`; `None` when the journal is
+    /// empty or that slot did not read. The journal only grows until a clear
+    /// starts it again from slot 0, so a host tells a later copy that still
+    /// holds the slots of power-on from one cleared and filled again since.
+    pub last: Option<u32>,
 }
 
 /// The FILES store, and every file in it, as [`FileEntry`] records.
@@ -348,6 +359,19 @@ impl<'a> Wire<'a> for Media<'a> {
     }
 }
 
+impl Wire<'_> for Journal {
+    fn put(&self, w: &mut Writer) {
+        self.next.put(w);
+        self.last.map(u32::to_le_bytes).put(w);
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        Self {
+            next: Wire::take(r),
+            last: <Option<[u8; 4]> as Wire>::take(r).map(u32::from_le_bytes),
+        }
+    }
+}
+
 impl<'a> Wire<'a> for Files<'a> {
     fn put(&self, w: &mut Writer) {
         self.store.put(w);
@@ -440,7 +464,10 @@ mod tests {
             assert!(file.append(&mut entries, &mut used));
         }
         let media = Media {
-            journal: Some(41),
+            journal: Some(Journal {
+                next: 41,
+                last: Some(0xdead_beef),
+            }),
             rides: Some((0x1234, 900)),
             files: Some(Files {
                 store: 5,

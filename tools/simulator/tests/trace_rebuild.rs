@@ -304,6 +304,46 @@ fn a_pulled_device_trace_replays_strict_from_the_media_it_started_on() {
 }
 
 #[test]
+fn an_internal_journal_cleared_and_filled_again_since_starts_empty() {
+    let (mut sim, trace, _) = recorded_session();
+    let power_on = sim.ride_media();
+    let (_, internal) = sim.command("RIDE INTERNAL STATUS");
+    let upper = internal
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("slot="))
+        .unwrap()
+        .to_string();
+    let (status, out) = sim.command(&format!("RIDE CLEAR CONFIRM {upper}"));
+    assert_eq!(status, "ACCEPTED", "{out}");
+    sim.advance(seconds(10));
+    sim.fit_bulk(Presence::Missing);
+    sim.device.restart().unwrap();
+    sim.wait_usable();
+    ride(&mut sim, 60, 150.0);
+    sim.fit_bulk(Presence::Ready);
+    sim.device.restart().unwrap();
+    sim.wait_usable();
+    let pulled = pull(&mut sim, &trace);
+    let slots = pulled.internal.as_ref().unwrap();
+    assert!(
+        slots.len() >= 2 * 256 && power_on[..slots.len()] != slots[..],
+        "the device holds as many slots as at power-on, and other rides"
+    );
+
+    let (_, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert!(
+        gaps.iter()
+            .any(|gap| matches!(gap, Gap::JournalReplaced { .. })),
+        "{gaps:?}"
+    );
+    let report = rebuild::report(&gaps);
+    assert!(
+        report.contains("cleared since; it starts empty"),
+        "{report}"
+    );
+}
+
+#[test]
 fn a_ride_saved_again_since_leaves_the_facts_table_out() {
     use vana::ride::facts;
     let (mut sim, trace, _) = recorded_session();

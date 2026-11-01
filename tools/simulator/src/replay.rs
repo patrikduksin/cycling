@@ -25,7 +25,7 @@ use device_api::sensors;
 use device_api::server::{self, AccessPoint, AccessPointConfig, AccessPointState, Reach, Server};
 use device_api::sound::{self, Sound};
 use firmware_services::trace::frozen::{Aging, Latest, Sink};
-use firmware_services::trace::{self, Cursor, Event, Events, Medium, Output};
+use firmware_services::trace::{self, Cursor, End, Event, Events, Medium, Output};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -103,6 +103,8 @@ pub enum Kind {
     Rerecorded,
     /// An event the simulator cannot replay.
     Unreplayable,
+    /// The trace is damaged here: the rest of it does not read.
+    Truncated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -292,6 +294,11 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         front.then(|| self.queue.pop_front()).flatten()
     }
 
+    fn take_first(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
+        let index = self.queue.iter().position(|(call, _)| matches(call))?;
+        self.queue.remove(index)
+    }
+
     fn drained(&mut self) -> Vec<V> {
         let left = self.queue.len();
         let kind = match self.ledger.mode() {
@@ -381,6 +388,11 @@ impl Replay {
             let Some(event) = events.next() else {
                 self.sources.drained();
                 self.sources.ended();
+                if events.end() == Some(End::Corrupt) {
+                    self.sources.ledger.note(Kind::Truncated, 1, || {
+                        "the trace is damaged after this pass; the rest does not read".into()
+                    });
+                }
                 return Next::End;
             };
             match event {
@@ -488,7 +500,7 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     if header != replayed_header {
         return Some(format!("header {header:?}, replayed {replayed_header:?}"));
     }
-    let mut pass = 0;
+    let (mut pass, mut read) = (0, 0);
     for (index, event) in events.by_ref().enumerate() {
         if let Event::Pass { now_ms } = event {
             pass = now_ms;
@@ -499,10 +511,19 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
                 "event {index}, pass at {pass} ms: recorded {event:?}, replayed {other:?}"
             ));
         }
+        read = index + 1;
     }
-    replayed_events
-        .next()
-        .map(|extra| format!("the replay went on with {extra:?}"))
+    let damaged = |events: &trace::Events<'_>, which: &str| {
+        (events.end() == Some(End::Corrupt))
+            .then(|| format!("the {which} trace is damaged after event {read}, pass at {pass} ms"))
+    };
+    if let Some(damaged) = damaged(&events, "recorded") {
+        return Some(damaged);
+    }
+    if let Some(extra) = replayed_events.next() {
+        return Some(format!("the replay went on with {extra:?}"));
+    }
+    damaged(&replayed_events, "replayed")
 }
 
 pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
@@ -1426,16 +1447,37 @@ impl ReplayServer {
             self.view.set(view);
         }
     }
+
+    /// The recorded listen or finish that answers VANA's: the next call in
+    /// a strict replay, the first such call of the pass in a stimulus one.
+    /// Either is recorded only when it changed the request the server
+    /// holds, so VANA's call meets none when it changed nothing there; one
+    /// that would hide the held request and meets none parts from the
+    /// recording.
+    fn changes(&mut self, call: ServerCall, hides: bool) {
+        let found = match self.calls.ledger.mode() {
+            Mode::Strict => self.calls.take_if_next(|next| *next == call),
+            Mode::Stimulus => self.calls.take_first(|next| *next == call),
+        };
+        match found {
+            Some((_, after)) => self.changed(after),
+            None if hides => self.calls.ledger.note(Kind::OtherRequest, 1, || {
+                format!("VANA's {call:?} hides the request the recording kept")
+            }),
+            None => {}
+        }
+    }
+
+    fn held(&self) -> Option<u32> {
+        let now = self.calls.ledger.now();
+        self.view.latest.at(now)?.0.map(|request| request.id)
+    }
 }
 
 impl Server for ReplayServer {
     fn listen(&mut self, on: bool) {
-        if let Some((_, after)) = self
-            .calls
-            .take_if_next(|call| *call == ServerCall::Listen(on))
-        {
-            self.changed(after);
-        }
+        let hides = !on && self.held().is_some();
+        self.changes(ServerCall::Listen(on), hides);
     }
     fn request(&self) -> Option<server::Request> {
         self.view.read().and_then(|view| view.0)
@@ -1479,12 +1521,8 @@ impl Server for ReplayServer {
         }
     }
     fn finish(&mut self, id: u32) {
-        if let Some((_, after)) = self
-            .calls
-            .take_if_next(|call| *call == ServerCall::Finish(id))
-        {
-            self.changed(after);
-        }
+        let hides = self.held() == Some(id);
+        self.changes(ServerCall::Finish(id), hides);
     }
 }
 
@@ -1704,5 +1742,34 @@ mod tests {
         server.listen(true);
         assert_eq!(server.request().map(|request| request.id), Some(9));
         assert_eq!(replay.sources.report().first, None);
+    }
+
+    #[test]
+    fn a_finish_or_listen_that_hides_the_held_request_unrecorded_is_reported() {
+        let recorder = recorder();
+        let mut transport = transport(b"");
+        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+        let mut frozen = FrozenServer::default();
+        frozen.bind(&mut transport, 10, &recorder);
+        for mode in [Mode::Strict, Mode::Stimulus] {
+            let hides: [fn(&mut ReplayServer); 2] =
+                [|server| server.finish(9), |server| server.listen(false)];
+            for hide in hides {
+                let mut replay = replay(bytes(&recorder));
+                replay.sources.ledger.0.borrow_mut().mode = mode;
+                assert!(matches!(replay.step(), Next::Pass));
+                replay.load_pass();
+                let server = &mut replay.sources.server;
+                server.finish(8);
+                server.listen(true);
+                assert_eq!(replay.sources.report().first, None, "{mode:?}");
+                hide(&mut replay.sources.server);
+                assert_eq!(
+                    replay.sources.report().count(Kind::OtherRequest),
+                    1,
+                    "{mode:?}"
+                );
+            }
+        }
     }
 }

@@ -421,6 +421,26 @@ fn a_cut_or_damaged_tail_drops_only_the_last_block() {
 }
 
 #[test]
+fn a_damaged_block_with_blocks_after_it_ends_corrupt() {
+    let events = sample();
+    let bytes = encode(&events, 128);
+    let header = block(&bytes, 0).unwrap().1;
+    let second = block(&bytes, header).unwrap().1;
+    let mut damaged = bytes.clone();
+    damaged[second + 3] ^= 0x40;
+    let (got, end) = decoded(&damaged);
+    assert_eq!(end, Some(End::Corrupt));
+    assert_eq!(got, decoded(&bytes[..second]).0);
+    let mut missing = bytes[..second + 10].to_vec();
+    missing.extend_from_slice(&bytes[second + 10 + 40..]);
+    assert_eq!(
+        decoded(&missing).1,
+        Some(End::Corrupt),
+        "bytes lost mid-trace"
+    );
+}
+
+#[test]
 fn a_torn_header_is_refused() {
     let bytes = encode(&sample(), 4096);
     let header = block(&bytes, 0).unwrap().1;

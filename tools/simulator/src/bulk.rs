@@ -3,7 +3,7 @@
 //! reused an old filesystem. Like the device, a failed write leaves the
 //! controller failed until the next boot, and every write is verified.
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
-use firmware_services::trace::{Medium, StorageFault, StorageOp};
+use firmware_services::trace::{Medium, StorageError, StorageFault, StorageOp};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -238,7 +238,7 @@ impl SimBulk {
             op,
             at: sector,
             landed: 0,
-            error: error.into(),
+            error: StorageError::from_bulk(error),
         };
         let fault = match &mut region.script {
             Some(script) => script
@@ -325,7 +325,7 @@ impl ReadWrite for SimBulk {
                         op: StorageOp::Write,
                         at: sector,
                         landed: partial as u32,
-                        error: Error::Failed.into(),
+                        error: StorageError::Failed,
                     });
                 }
                 drop(region);

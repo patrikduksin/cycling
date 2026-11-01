@@ -7810,6 +7810,25 @@ fn a_ride_with_laps_replays_exactly() {
 }
 
 #[test]
+fn a_trace_damaged_mid_way_replays_to_where_it_breaks_and_says_so() {
+    use shell_simulator::replay::{Kind, first_difference};
+    let mut sim = equip(Sim::new().boot());
+    manual_laps(&mut sim);
+    let mut capture = sim.capture();
+    let middle = capture.trace.len() / 2;
+    capture.trace[middle] ^= 0x40;
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.count(Kind::Truncated), 1, "{report}");
+    assert!(
+        replayed.device.now < sim.device.now,
+        "the replay stops where the trace breaks"
+    );
+    let difference = first_difference(&capture.trace, &replayed.trace()).unwrap();
+    assert!(difference.contains("damaged"), "{difference}");
+}
+
+#[test]
 fn an_auto_paused_ride_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), traffic_light_stop, false);
 }

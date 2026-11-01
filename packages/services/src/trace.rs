@@ -207,31 +207,30 @@ impl From<device_api::storage::Region> for Medium {
     }
 }
 
-impl From<device_api::observation::Error> for StorageError {
-    fn from(error: device_api::observation::Error) -> Self {
-        match error {
-            device_api::observation::Error::Unsupported => Self::Unsupported,
-            device_api::observation::Error::Unavailable => Self::Unavailable,
-            device_api::observation::Error::Failed => Self::Failed,
-            device_api::observation::Error::Invalid => Self::Invalid,
-        }
-    }
-}
-
-impl From<device_api::bulk::Error> for StorageError {
-    fn from(error: device_api::bulk::Error) -> Self {
-        match error {
-            device_api::bulk::Error::Unsupported => Self::Unsupported,
-            device_api::bulk::Error::Unavailable => Self::Unavailable,
-            device_api::bulk::Error::Range => Self::Range,
-            device_api::bulk::Error::Failed => Self::Failed,
-        }
-    }
-}
-
-/// Named rather than `From`: a second `From` into the device errors would
-/// leave `?` in firmware code with two conversions to choose from.
+/// Named rather than `From`, both ways: a `From` between these and the
+/// device errors leaves `?` and `.into()` in firmware code with two
+/// conversions to choose from (E0283).
 impl StorageError {
+    pub fn from_flash(error: device_api::observation::Error) -> Self {
+        use device_api::observation::Error;
+        match error {
+            Error::Unsupported => Self::Unsupported,
+            Error::Unavailable => Self::Unavailable,
+            Error::Failed => Self::Failed,
+            Error::Invalid => Self::Invalid,
+        }
+    }
+
+    pub fn from_bulk(error: device_api::bulk::Error) -> Self {
+        use device_api::bulk::Error;
+        match error {
+            Error::Unsupported => Self::Unsupported,
+            Error::Unavailable => Self::Unavailable,
+            Error::Range => Self::Range,
+            Error::Failed => Self::Failed,
+        }
+    }
+
     pub fn flash(self) -> device_api::observation::Error {
         use device_api::observation::Error;
         match self {
@@ -1506,8 +1505,13 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
 pub enum End {
     /// Every block decoded.
     Complete,
-    /// A block was cut short or failed its check; it and the rest are dropped.
+    /// The last block was cut short or failed its check, as a write that
+    /// power loss stopped leaves it; it is dropped.
     Torn,
+    /// A block failed its check with bytes after it, or passed its check
+    /// and did not decode: the trace was damaged, not cut, and everything
+    /// from that block on is dropped.
+    Corrupt,
 }
 
 /// A position in a trace's events, to resume decoding later, also over the
@@ -1559,6 +1563,18 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     Ok((header, Events::resume(bytes, cursor)))
 }
 
+/// Why the block at `start` does not read: torn when it reaches the end of
+/// `bytes`, corrupt when bytes follow it.
+fn failed(bytes: &[u8], start: usize) -> End {
+    let claimed = bytes
+        .get(start..start.saturating_add(2))
+        .map(|len| start + FRAME + usize::from(u16::from_le_bytes([len[0], len[1]])));
+    match claimed {
+        Some(end) if end < bytes.len() => End::Corrupt,
+        _ => End::Torn,
+    }
+}
+
 fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
     let len = usize::from(u16::from_le_bytes(
         bytes.get(start..start.checked_add(2)?)?.try_into().ok()?,
@@ -1597,7 +1613,8 @@ impl<'a> Events<'a> {
             Some(payload) => payload,
             None if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
             None => {
-                let (payload, _) = block(self.bytes, c.block).ok_or(End::Torn)?;
+                let (payload, _) =
+                    block(self.bytes, c.block).ok_or_else(|| failed(self.bytes, c.block))?;
                 if c.at > payload.len() {
                     return Err(End::Torn);
                 }
@@ -1623,7 +1640,7 @@ impl<'a> Events<'a> {
         let len = r.narrow();
         let body = r.bytes(len);
         if !r.ok() {
-            return Err(End::Torn);
+            return Err(End::Corrupt);
         }
         c.at += 1 + r.at;
         let mut r = Reader::new(body, c.now);
@@ -1639,7 +1656,7 @@ impl<'a> Events<'a> {
             }
         };
         if !r.ok() || (r.at != body.len() && !c.later) {
-            return Err(End::Torn);
+            return Err(End::Corrupt);
         }
         if let Some(Event::Pass { now_ms }) = event {
             c.now = now_ms;

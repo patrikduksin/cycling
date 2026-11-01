@@ -629,6 +629,7 @@ fn vana_pass(
         &mut devices.bulk,
         sdk.journals_at_boot(),
         !device::capabilities::power::ACCESS.closed(),
+        sdk.recording(),
         sdk.shutdown_due(),
         now,
     );

@@ -8245,6 +8245,50 @@ fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
     assert_eq!(joined, 1, "the phone joined once");
 }
 
+/// While no ride records, a pass drains as much of the trace as a phone
+/// upload adds, so the largest body the phone server takes reaches the
+/// trace file whole.
+#[test]
+fn the_largest_phone_upload_reaches_the_trace_file_whole() {
+    use device_api::server::Method;
+    use firmware_services::trace::{Event, decode};
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let end = course.rfind("</gpx>").unwrap();
+    let max = firmware_services::http::MAX_BODY as usize;
+    let mut body = course[..end].to_string();
+    body.push_str(&" ".repeat(max - course.len()));
+    body.push_str(&course[end..]);
+    assert_eq!(body.len(), max);
+    let (status, reply) = sim.phone_request(Method::Put, "/api/course", body.as_bytes());
+    assert_eq!(status, 200, "{reply}");
+    sim.advance(seconds(6));
+    let (peak, capacity) = sim.device.trace_spool_peak().unwrap();
+    println!(
+        "a {} KiB upload peaks the spool at {peak} of {capacity} B",
+        max / 1024
+    );
+    assert!(sim.device.sync_trace());
+    let pulled = sim.store_file(&sim.device.trace_file().unwrap()).unwrap();
+    let (_, events) = decode(&pulled).unwrap();
+    let (mut read, mut lost) = (0, 0);
+    for event in events {
+        match event {
+            Event::ServerRead { part, .. } => read += part.len(),
+            Event::Lost { blocks, .. } => lost += blocks,
+            _ => {}
+        }
+    }
+    assert_eq!((read, lost), (max, 0), "the whole body, nothing lost");
+    assert!(peak < capacity / 8, "the drain keeps up: {peak} B");
+}
+
 #[test]
 fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     use firmware_services::trace::origin::{Config, Media};

@@ -96,6 +96,8 @@ struct Session {
     passes: u64,
     most_records_a_pass: u64,
     longest_pass_ms: u64,
+    /// Records a pass may write: one while a ride records.
+    records: u32,
 }
 
 struct Kept(Vec<u8>);
@@ -110,7 +112,7 @@ impl Sink for Kept {
 impl Session {
     fn new(ring: usize) -> Self {
         let mut disk = Stalling {
-            media: Media::new(DATA + 16 * u64::from(store::CHUNK)),
+            media: Media::new(DATA + 32 * u64::from(store::CHUNK)),
             physical: 0,
             records: 0,
             stalled_ms: 0,
@@ -130,6 +132,7 @@ impl Session {
             now: 0,
             passes: 0,
             most_records_a_pass: 0,
+            records: 1,
             longest_pass_ms: 0,
         }
     }
@@ -152,6 +155,7 @@ impl Session {
             .pass(
                 &mut self.recorder,
                 &mut self.disk,
+                self.records,
                 self.now,
                 &mut self.sector,
             )
@@ -247,7 +251,12 @@ fn at_the_measured_rate_a_stalling_store_keeps_every_event_one_record_a_pass() {
         riding <= 4096 + 512,
         "riding, the spool holds about a flushed block: {riding}"
     );
+    assert_eq!(session.most_records_a_pass, 1);
+    session.records = IDLE_RECORDS;
     session.upload(UPLOAD_BYTES);
+    let upload = session.recorder.sink().peak();
+    let most = session.most_records_a_pass;
+    session.records = 1;
     session.ride(60_000);
     let now = session.now;
     session
@@ -267,22 +276,21 @@ fn at_the_measured_rate_a_stalling_store_keeps_every_event_one_record_a_pass() {
     );
     assert_eq!(events(&file), session.kept());
     assert_eq!(session.recorder.sink().refused(), 0);
-    assert_eq!(session.most_records_a_pass, 1);
-    let spool = session.recorder.sink();
     std::println!(
-        "riding peak {riding} B, longest pass {} ms; a {} KiB upload peaks at {} of {} B",
+        "riding peak {riding} B, longest pass {} ms; a {} KiB upload at up to {IDLE_RECORDS} records a pass writes {most} at most and peaks at {upload} of {} B",
         session.longest_pass_ms,
         UPLOAD_BYTES / 1024,
-        spool.peak(),
-        spool.capacity()
+        session.recorder.sink().capacity()
     );
-    assert!(spool.peak() < spool.capacity());
+    assert!(
+        upload <= 2 * 4096,
+        "the drain keeps up with the upload: {upload}"
+    );
 }
 
-/// The largest phone upload the spool takes whole: VANA reads 4 KiB a pass
-/// and the drain writes one record, so the spool fills by about 88% of an
-/// upload.
-const UPLOAD_BYTES: usize = 280 * 1024;
+/// The largest body the phone server takes (`crate::http::MAX_BODY`). VANA
+/// reads it at 4 KiB a pass, and no ride records meanwhile.
+const UPLOAD_BYTES: usize = crate::http::MAX_BODY as usize;
 
 #[test]
 fn a_burst_larger_than_the_spool_is_lost_and_named_where_it_was_lost() {
@@ -501,12 +509,12 @@ mod file {
         assert!(matches!(file, File::Staging(..)));
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
-        file.pass(&mut recorder, &mut media, true, || None, 10, &mut sector)
+        file.pass(&mut recorder, &mut media, true, 1, || None, 10, &mut sector)
             .unwrap();
         assert!(!file.is_open(), "no header yet");
         recorder.record(&Event::Pass { now_ms: 20 });
         let known = || Some((header(), 7));
-        file.pass(&mut recorder, &mut media, true, known, 20, &mut sector)
+        file.pass(&mut recorder, &mut media, true, 1, known, 20, &mut sector)
             .unwrap();
         file.sync(&mut recorder, &mut media, 30, &mut sector)
             .unwrap();
@@ -526,7 +534,7 @@ mod file {
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
         let known = || Some((header(), 7));
-        file.pass(&mut recorder, &mut media, true, known, 10, &mut sector)
+        file.pass(&mut recorder, &mut media, true, 1, known, 10, &mut sector)
             .unwrap();
         let table = table(&mut media, &mut sector);
         let store_extent = table.find(&volume::STORE).unwrap();

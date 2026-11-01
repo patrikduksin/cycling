@@ -130,7 +130,8 @@ owner closes the card from the moment it accepts a power request until
 the device is ready again, and in charging standby, so the trace touches
 the card only while it is open: it stages at the first such pass, and the
 file opens once VANA's boot scans end, so the header can name the media
-they found. Each pass drains at most one record into it, syncing every
+they found. A pass drains one record into it while a ride records, and up
+to 16 otherwise, to keep up with a phone upload; the file syncs every
 5 s, before a transfer session, a restart and a terminal power request,
 and in the pass before VANA asks to turn off: the file ends with the pass
 before that request. The mechanism is `firmware_services::trace::spool`;
@@ -143,8 +144,9 @@ the simulator records through it too.
   the trace does not see, ends it with a `HostWrote` record; so does a
   `STORE` volume that a volume command moved. Any other change to the
   store reopens the file, which continues in a new chunk.
-- A burst the spool cannot hold (a phone upload larger than about
-  280 KiB) is lost from the trace, which names the loss in its next block.
+- A burst the spool cannot hold is lost from the trace, which names the
+  loss in its next block. A phone upload of the largest body the phone
+  server takes (4 MiB) peaks the spool at about two blocks.
 - Secrets are redacted as they are recorded; see
   `firmware_services::trace::redact` for what a replay does with them.
 

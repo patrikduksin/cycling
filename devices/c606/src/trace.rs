@@ -1,10 +1,11 @@
 //! The trace of this power-on session. The handles VANA reads are frozen
 //! once a pass and recorded as the simulator records them
 //! (`tools/simulator/src/session.rs`), so a trace replays there. Blocks wait
-//! in a PSRAM spool and drain into `traces/` on the card's STORE volume, at
-//! most one record a pass (`firmware_services::trace::spool`), while the
-//! power owner admits work to the card; the file opens once VANA's boot
-//! scans end and the header holds the media they found. Without a STORE
+//! in a PSRAM spool and drain into `traces/` on the card's STORE volume
+//! (`firmware_services::trace::spool`) while the power owner admits work to
+//! the card: one record a pass while a ride records, up to
+//! `spool::IDLE_RECORDS` otherwise. The file opens once VANA's boot scans
+//! end and the header holds the media they found. Without a STORE
 //! volume when the card first admits work, or without PSRAM for the spool,
 //! recording is off for the session and says why; nothing else changes.
 use c606_firmware as device;
@@ -202,13 +203,17 @@ impl Trace {
     /// owner admits work to the card (`admitted`), which it closes from
     /// the moment it accepts a request and in charging standby. Staging
     /// waits for the first such pass, and the file opens once VANA's boot
-    /// scans ended. When VANA asks to turn off in the next pass
-    /// (`shutdown_due`), everything the spool holds goes to the card.
+    /// scans ended. A pass writes one record while a ride records
+    /// (`riding`), so a frame waits on at most one card write, and enough
+    /// otherwise to keep up with a phone upload. When VANA asks to turn off
+    /// in the next pass (`shutdown_due`), everything the spool holds goes
+    /// to the card.
     pub fn drain(
         &mut self,
         bulk: &mut impl ReadWrite,
         journals: Option<vana::app::Journals>,
         admitted: bool,
+        riding: bool,
         shutdown_due: bool,
         now: u64,
     ) {
@@ -233,9 +238,10 @@ impl Trace {
             let boot = start.boot;
             Some((start.header(journals)?, boot))
         };
+        let records = if riding { 1 } else { spool::IDLE_RECORDS };
         let passed = self
             .file
-            .pass(recorder, bulk, true, header, now, &mut self.sector);
+            .pass(recorder, bulk, true, records, header, now, &mut self.sector);
         if let File::Open(_, _, drain) = &self.file
             && opening
         {

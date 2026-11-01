@@ -460,7 +460,7 @@ impl Trace {
     /// This pass's share of the staged trace to its file, while the card
     /// admits work; staging waits for the first such pass, and the file
     /// opens once VANA's boot scans ended. A file that ends ends staging.
-    fn drain(&mut self, bulk: &crate::bulk::SimBulk, admitted: bool, now: u64) {
+    fn drain(&mut self, bulk: &crate::bulk::SimBulk, admitted: bool, records: u32, now: u64) {
         if admitted && matches!(self.file, spool::File::Waiting) {
             self.stage(bulk);
         }
@@ -472,6 +472,7 @@ impl Trace {
             &mut recorder,
             &mut bulk.host(),
             admitted,
+            records,
             header,
             now,
             &mut sector,
@@ -1027,7 +1028,12 @@ impl Session {
             replay.saw(&seen);
         }
         let admitted = self.card_admits();
-        self.trace.drain(&self.bulk, admitted, self.now);
+        #[cfg(feature = "cycling")]
+        let riding = self.sdk.recording();
+        #[cfg(not(feature = "cycling"))]
+        let riding = false;
+        let records = if riding { 1 } else { spool::IDLE_RECORDS };
+        self.trace.drain(&self.bulk, admitted, records, self.now);
         if self.off && matches!(&self.devices, Devices::Simulated(sim) if sim.battery.charging) {
             self.start_charging().expect("memory media reopens");
         }
@@ -1053,6 +1059,13 @@ impl Session {
     /// C606 does before a host takes the card; false when it has no file.
     pub fn sync_trace(&mut self) -> bool {
         self.trace.sync(&self.bulk, self.now)
+    }
+    /// The most the trace's spool held so far, and its size; none while
+    /// nothing is staged.
+    pub fn trace_spool_peak(&self) -> Option<(usize, usize)> {
+        let recorder = self.trace.recorder.borrow();
+        let spool = recorder.sink().spool.as_ref()?;
+        Some((spool.peak(), spool.capacity()))
     }
     /// The name of this session's trace file in the card's STORE volume.
     pub fn trace_file(&self) -> Option<String> {

@@ -2,10 +2,11 @@
 //!
 //! The recorder seals event blocks into a [`Spool`], a ring in memory the
 //! caller provides (PSRAM on the C606), and never waits for the medium. Once
-//! a pass, [`Drain::pass`] appends at most one record payload
-//! ([`store::PAYLOAD`] bytes) of the header and the spooled blocks to the
-//! trace file, so a pass writes at most one record sector, plus the
-//! metadata that links the next chunk once every [`store::CHUNK`] records.
+//! a pass, [`Drain::pass`] appends whole record payloads ([`store::PAYLOAD`]
+//! bytes) of the header and the spooled blocks to the trace file: one while
+//! a ride records, so such a pass writes at most one record sector, plus
+//! the metadata that links the next chunk once every [`store::CHUNK`]
+//! records, and up to [`IDLE_RECORDS`] otherwise.
 //! Every [`SYNC_MS`] it hands the recorder's open block to the spool and,
 //! once the spool holds less than a record, syncs the file: a power cut
 //! loses at most that long of the trace, plus what the spool still holds.
@@ -51,11 +52,15 @@ pub const SYNC_MS: u64 = 5_000;
 /// The spool the C606 keeps in PSRAM. Riding, at the 2.9 MB an hour the
 /// simulator measures, a pass adds about 8 bytes and the spool holds little
 /// more than the block a flush hands it, even across a 150 ms store stall.
-/// What fills it is a phone upload: VANA reads up to 4 KiB a pass while the
-/// drain writes one record, so the spool fills by about 88% of an upload,
-/// whatever the pass rate, and this one takes uploads up to about 280 KiB
-/// whole (`tests::UPLOAD_BYTES`).
+/// What fills it is a phone upload, which never overlaps a ride: VANA reads
+/// up to 4 KiB a pass, about nine records, and the drain writes up to
+/// [`IDLE_RECORDS`], so the spool holds about one block whatever the
+/// upload's size (`tests::UPLOAD_BYTES`, the phone server's largest body).
 pub const RING_BYTES: usize = 256 * 1024;
+
+/// The records a pass writes at most while no ride records: more than the
+/// nine a phone upload adds, so the drain catches up after a store stall.
+pub const IDLE_RECORDS: u32 = 16;
 
 /// Sealed blocks waiting for the store, oldest first, in a ring of bytes.
 pub struct Spool<R> {
@@ -205,12 +210,14 @@ impl<H: AsRef<[u8]>> Drain<H> {
         self.written
     }
 
-    /// This pass's share: at most one record of the header and the spool,
-    /// and every [`SYNC_MS`] the recorder's open block and a sync.
+    /// This pass's share: at most `records` whole records of the header and
+    /// the spool, and, in a pass that wrote none, every [`SYNC_MS`] the
+    /// recorder's open block and a sync.
     pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
         recorder: &mut Recorder<B, S>,
         media: &mut impl ReadWrite,
+        records: u32,
         now: u64,
         sector: &mut Sector,
     ) -> Result<(), Error> {
@@ -219,11 +226,19 @@ impl<H: AsRef<[u8]>> Drain<H> {
             self.flushed_ms = now;
         }
         let spool = recorder.sink_mut().spool();
-        let room = self.appender.room();
-        let pending = self.header_left() + spool.len();
-        if pending >= room {
-            return self.append(spool, room, media, sector);
+        let mut written = 0;
+        while written < records {
+            let room = self.appender.room();
+            if self.header_left() + spool.len() < room {
+                break;
+            }
+            self.append(spool, room, media, sector)?;
+            written += 1;
         }
+        if written > 0 {
+            return Ok(());
+        }
+        let pending = self.header_left() + spool.len();
         if now.saturating_sub(self.synced_ms) >= SYNC_MS {
             self.append(spool, pending, media, sector)?;
             self.appender.sync(&mut self.store, media, sector)?;
@@ -336,16 +351,19 @@ impl<H: AsRef<[u8]>> File<H> {
         matches!(self, Self::Open(..))
     }
 
-    /// This pass's share of the spool, while the card admits work: the C606
-    /// closes it from the moment it accepts a power request until the
-    /// device is ready again, and in charging standby. The file opens at
-    /// the first such pass `header` gives the header and the boot id, named
-    /// by [`next_name`]. An error ends the file and says why.
+    /// This pass's share of the spool, at most `records` whole records,
+    /// while the card admits work: the C606 closes it from the moment it
+    /// accepts a power request until the device is ready again, and in
+    /// charging standby. The file opens at the first such pass `header`
+    /// gives the header and the boot id, named by [`next_name`]. An error
+    /// ends the file and says why.
+    #[allow(clippy::too_many_arguments)]
     pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
         recorder: &mut Recorder<B, S>,
         bulk: &mut impl ReadWrite,
         admitted: bool,
+        records: u32,
         header: impl FnOnce() -> Option<(H, u32)>,
         now: u64,
         sector: &mut Sector,
@@ -372,7 +390,10 @@ impl<H: AsRef<[u8]>> File<H> {
             return Ok(());
         };
         let mut volume = Volume::new(&mut *bulk, *extent);
-        if drain.pass(recorder, &mut volume, now, sector).is_err() {
+        if drain
+            .pass(recorder, &mut volume, records, now, sector)
+            .is_err()
+        {
             return self.end("the store failed");
         }
         Ok(())

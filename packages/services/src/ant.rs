@@ -102,6 +102,12 @@ impl Channel {
         self.last_packet = None;
     }
 
+    /// When `tick` times out this channel's open or close.
+    fn due(&self) -> Option<u64> {
+        matches!(self.link, LinkState::Connecting | LinkState::Disconnecting)
+            .then_some(self.connect_until)
+    }
+
     pub fn tick(&mut self, now: u64) {
         if matches!(self.link, LinkState::Connecting | LinkState::Disconnecting)
             && now >= self.connect_until
@@ -441,6 +447,24 @@ impl Channels {
             self.channels[slot].receive(event, now);
         }
         self.tick(now);
+    }
+
+    /// When `tick` next changes something by itself, or `now` while a
+    /// queued send waits for its adapter: a scan window's end, a submitted
+    /// send's timeout, a link's open or close timeout. `None` while only
+    /// radio reports and requests change anything.
+    pub fn due(&self, now: u64) -> Option<u64> {
+        let send = self.send.and_then(|send| match send.observation.stage {
+            SendStage::Queued => Some(now),
+            SendStage::UartSubmitted => Some(send.deadline),
+            _ => None,
+        });
+        self.channels
+            .iter()
+            .filter_map(Channel::due)
+            .chain(self.scanner.until)
+            .chain(send)
+            .min()
     }
 
     pub fn tick(&mut self, now: u64) {
@@ -950,6 +974,49 @@ mod tests {
             channels.queue_send(target, [3; 8], SEND_TIMEOUT_MS + 9),
             Err(Error::StaleGeneration)
         );
+    }
+
+    #[test]
+    fn due_names_each_timeout_tick_acts_on() {
+        let mut channels = three_channels();
+        assert_eq!(channels.due(2), None, "connected links wait on the radio");
+        let target = Target {
+            identity: PEER,
+            generation: channels.channel(40, 2).unwrap().generation,
+        };
+        let id = channels.queue_send(target, [1; 8], 2).unwrap();
+        assert_eq!(channels.due(3), Some(3), "a queued send goes at once");
+        channels.send_submitted(id, 3);
+        assert_eq!(channels.due(4), Some(SEND_TIMEOUT_MS + 3));
+        channels.tick(SEND_TIMEOUT_MS + 2);
+        assert_eq!(
+            channels.send_status(id).unwrap().stage,
+            SendStage::UartSubmitted
+        );
+        channels.tick(SEND_TIMEOUT_MS + 3);
+        assert_eq!(
+            channels.send_status(id).unwrap().stage,
+            SendStage::Uncertain
+        );
+        assert_eq!(channels.due(SEND_TIMEOUT_MS + 3), None);
+
+        let mut channels = Channels::new();
+        channels.connect(HR, 100).unwrap();
+        assert_eq!(channels.due(101), Some(100 + CONNECT_TIMEOUT_MS));
+        channels.tick(99 + CONNECT_TIMEOUT_MS);
+        assert_eq!(
+            channels.channel(120, 0).unwrap().link,
+            LinkState::Connecting
+        );
+        channels.tick(100 + CONNECT_TIMEOUT_MS);
+        assert_eq!(channels.channel(120, 0).unwrap().link, LinkState::TimedOut);
+        channels.begin_scan(20_000, 30_000).unwrap();
+        assert_eq!(channels.due(20_001), Some(50_000), "the scan window's end");
+        channels.tick(49_999);
+        assert!(channels.scanning());
+        channels.tick(50_000);
+        assert!(!channels.scanning());
+        assert_eq!(channels.due(50_000), None);
     }
 
     #[test]

@@ -263,6 +263,32 @@ fn transient_transport_loss_forbids_ack_until_a_clean_window() {
     assert_eq!(startup.status(), Startup::Pending);
 }
 
+#[test]
+fn ticked_only_when_due_a_silent_companion_is_acknowledged_and_timed_out_on_time() {
+    let mut startup = startup::Startup::new();
+    let empty = State::default().snapshot(0, 5000);
+    assert_eq!(startup.due(), None);
+    startup.begin(100);
+    assert_eq!(startup.due(), Some(3100), "the probe window's end");
+    assert!(!startup.probe(empty, 3099, true, 0, false));
+    assert!(startup.probe(empty, 3100, true, 0, false));
+    assert_eq!(startup.due(), None, "pending: the tick that probed sends");
+    startup.submitted(Ok(16), 3100);
+    assert_eq!(startup.due(), Some(13_100));
+    startup.observe(empty, 13_099);
+    assert_eq!(startup.status(), Startup::Waiting);
+    startup.observe(empty, 13_100);
+    assert_eq!((startup.status(), startup.due()), (Startup::TimedOut, None));
+
+    // A fault restarts the window twice as long: due follows it.
+    let mut startup = startup::Startup::new();
+    startup.begin(0);
+    assert!(!startup.probe(empty, 0, true, 0, false));
+    assert!(!startup.probe(empty, 50, true, 1, false));
+    assert!(!startup.probe(empty, 3000, true, 1, false));
+    assert_eq!(startup.due(), Some(9000));
+}
+
 /// Probe every 100 ms; `faults(now)` is the cumulative fault count.
 fn run(
     startup: &mut startup::Startup,

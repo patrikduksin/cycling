@@ -3,6 +3,35 @@ use crate::gps::Parser;
 use device_api::gps;
 use device_api::positioning::*;
 
+/// A drain that found bytes is followed this soon: the rest of the epoch's
+/// burst is still arriving, and readers see an epoch whole once all of it
+/// is parsed.
+pub const BURST_DRAIN_MS: u64 = 10;
+/// Between bursts the receiver is drained this often, so a fix reaches
+/// readers up to this late; its 1 Hz epochs, `SILENT_MS` and the parser's
+/// clock tolerance are far coarser. The bytes of an epoch wait in the
+/// receive buffer meanwhile, so one epoch's burst must fit in it.
+pub const LIVE_DRAIN_MS: u64 = 100;
+/// After this long without a byte or a stream boundary (a pause or resume)
+/// the receiver is paused or gone. It is longer than the 5 s a resumed
+/// stream may take to talk again.
+pub const LISTEN_MS: u64 = 6_000;
+/// A paused or gone receiver is drained this often.
+pub const QUIET_DRAIN_MS: u64 = 500;
+
+/// The rest before the next drain, after one that found `drained` bytes
+/// `unheard_ms` after the receiver last sent a byte or its stream last
+/// paused or resumed.
+pub fn drain_rest_ms(drained: usize, unheard_ms: u64) -> u64 {
+    if drained > 0 {
+        BURST_DRAIN_MS
+    } else if unheard_ms < LISTEN_MS {
+        LIVE_DRAIN_MS
+    } else {
+        QUIET_DRAIN_MS
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Acquisition {
     parser: Parser,
@@ -132,6 +161,58 @@ mod tests {
         assert_eq!(state.snapshot(30).transport, Transport::Receiving);
         assert_eq!(state.snapshot(30).fault_at_ms, Some(20));
     }
+    /// Drains a receiver that sends a burst of `burst_ms` from `phase` into
+    /// each second, at the rests `drain_rest_ms` picks, for `seconds`; the
+    /// drain times and the bytes (ms of burst) each found.
+    fn drains(phase: u64, burst_ms: u64, seconds: u64) -> std::vec::Vec<(u64, u64)> {
+        let sent = |from: u64, to: u64| {
+            (from..to)
+                .filter(|ms| (phase..phase + burst_ms).contains(&(ms % 1000)))
+                .count() as u64
+        };
+        let (mut out, mut now, mut last, mut heard) = (std::vec::Vec::new(), 0, 0, 0);
+        while now < seconds * 1000 {
+            let drained = sent(last, now);
+            out.push((now, drained));
+            if drained > 0 {
+                heard = now;
+            }
+            last = now;
+            now += drain_rest_ms(drained as usize, now - heard);
+        }
+        out
+    }
+
+    #[test]
+    fn an_epoch_is_drained_soon_and_whole_and_the_quiet_receiver_rarely() {
+        for phase in (100..900).step_by(7) {
+            let drained = drains(phase, 30, 10);
+            for second in 1..9 {
+                let start = second * 1000 + phase;
+                let found: std::vec::Vec<_> = drained
+                    .iter()
+                    .filter(|(at, ms)| *ms > 0 && (start..start + 1000).contains(at))
+                    .collect();
+                let (first, last) = (found[0].0, found[found.len() - 1].0);
+                assert!(first - start <= LIVE_DRAIN_MS, "phase {phase}: seen late");
+                assert!(
+                    last <= (start + 30).max(first) + BURST_DRAIN_MS,
+                    "phase {phase}: split"
+                );
+                assert_eq!(found.iter().map(|(_, ms)| ms).sum::<u64>(), 30);
+            }
+            let per_second = drained.iter().filter(|(at, _)| *at >= 1000).count() / 9;
+            assert!(
+                per_second <= 15,
+                "phase {phase}: {per_second} drains a second"
+            );
+        }
+        let silent = drains(0, 0, 20);
+        let late = silent.iter().filter(|(at, _)| *at >= LISTEN_MS + 100);
+        assert!(late.clone().count() as u64 <= (20_000 - LISTEN_MS) / QUIET_DRAIN_MS);
+        assert!(late.clone().count() > 0);
+    }
+
     #[test]
     fn absent_consumer_does_not_retain_a_queue() {
         let mut state = Acquisition::default();

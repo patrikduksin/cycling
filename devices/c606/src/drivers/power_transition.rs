@@ -11,6 +11,9 @@ use device_api::power::Status;
 pub const PREPARE_MS: u64 = 30_000;
 pub const RECOVER_MS: u64 = 30_000;
 pub const OBSERVE_MS: u64 = 5_000;
+/// How often the owner looks again while a transition waits on peripherals
+/// or admission leases, which change without telling it.
+pub const WATCH_MS: u64 = 10;
 
 pub struct Transition {
     status: Status,
@@ -176,6 +179,30 @@ impl Transition {
             self.status.state = State::Failed;
             self.status.ready = false;
             self.status.failure = Some(Failure::Recovery);
+        }
+    }
+    /// When the owner must run again unasked: a delayed shutdown's start,
+    /// the end of a submitted shutdown's observation, and every `WATCH_MS`
+    /// while preparation or recovery waits on other owners or an
+    /// unrecovered shutdown waits for accepted work to drain. `None` in a
+    /// settled state, which only a request or a companion report moves.
+    pub fn due(&self, now: u64) -> Option<u64> {
+        let watch = Some(now + WATCH_MS);
+        match self.status.state {
+            State::Requested => match self.status.prepare_at_ms {
+                Some(at) if now < at => Some(at),
+                _ => watch,
+            },
+            State::Quiescing | State::Recovering => watch,
+            State::Failed if self.unrecovered_shutdown() => watch,
+            State::Submitted => Some(self.status.at_ms + OBSERVE_MS),
+            State::Initializing
+            | State::Idle
+            | State::Charging
+            | State::Sleeping
+            | State::Completed
+            | State::Failed
+            | State::Uncertain => None,
         }
     }
     /// A shutdown that aborted and then failed to recover can neither return

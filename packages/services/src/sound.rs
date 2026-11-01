@@ -71,6 +71,16 @@ impl Player {
             self.snapshot.state = State::Failed;
         }
     }
+    /// When `dispatch` next changes the sound by itself: `now` while a request
+    /// waits to be sent, then when the guard of what was sent ends. `None`
+    /// while nothing is in flight; only `play` or `stop` changes it then.
+    pub fn due(&self, now: u64) -> Option<u64> {
+        if self.pending.is_some() {
+            return Some(now);
+        }
+        matches!(self.snapshot.state, State::Submitted | State::StopSubmitted)
+            .then_some(self.snapshot.until_ms)
+    }
     /// Exactly one transport attempt. Err is uncertain and requires explicit stop.
     pub fn dispatch(&mut self, now: u64, mut send: impl FnMut(Option<u8>) -> Result<(), ()>) {
         self.tick(now);
@@ -202,6 +212,26 @@ mod tests {
         p.play(P, 0).unwrap();
         p.dispatch(1000, |_| panic!("expired"));
         assert_eq!(p.snapshot().state, State::Failed);
+    }
+    #[test]
+    fn due_names_the_first_dispatch_that_changes_the_sound() {
+        let mut p = Player::new();
+        assert_eq!(p.due(0), None, "idle");
+        p.play(P, 10).unwrap();
+        assert_eq!(p.due(12), Some(12), "a queued request is sent at once");
+        p.dispatch(12, |_| Ok(()));
+        assert_eq!(p.due(13), Some(512));
+        p.dispatch(511, |_| panic!("nothing to send"));
+        assert_eq!(p.snapshot().state, State::Submitted, "unchanged before due");
+        p.dispatch(512, |_| panic!("nothing to send"));
+        assert_eq!(p.snapshot().state, State::Elapsed, "changed at due");
+        assert_eq!(p.due(512), None);
+        p.stop(600).unwrap();
+        assert_eq!(p.due(601), Some(601));
+        p.dispatch(601, |_| Ok(()));
+        assert_eq!(p.due(602), Some(701));
+        p.dispatch(701, |_| panic!("nothing to send"));
+        assert_eq!((p.snapshot().state, p.due(701)), (State::Elapsed, None));
     }
     /// A sound that accepts a pattern once the last one's guard is over.
     struct Buzzer {

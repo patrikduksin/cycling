@@ -111,6 +111,15 @@ pub enum Poll {
     Unread,
 }
 
+/// A polled panel is read this often while a finger is down, and for
+/// `TOUCH_ACTIVE_MS` after one was: drags and flings move every 10 ms.
+pub const TOUCH_ACTIVE_POLL_MS: u64 = 10;
+/// Otherwise it is read this often. A first touch lands up to 10 ms later
+/// than at the active rate, and a contact shorter than this can be missed;
+/// a tap lasts about 80 to 150 ms.
+pub const TOUCH_IDLE_POLL_MS: u64 = 20;
+pub const TOUCH_ACTIVE_MS: u64 = 2_000;
+
 /// Turns polled touch reports into `Input` edges, keeping the
 /// `Input::Cancel` contract: once a contact is cancelled its later presses
 /// send nothing, and one `Release` ends it when the panel reports the lift or
@@ -150,6 +159,18 @@ impl TouchContact {
         };
         let [cancel, end] = self.tick(now);
         [edge, cancel, end]
+    }
+
+    /// When to read the panel after a read at `now`.
+    pub fn next_read(&self, now: u64) -> u64 {
+        let active = self.point.is_some()
+            || self.cancelled.is_some()
+            || now.saturating_sub(self.last_press) < TOUCH_ACTIVE_MS;
+        now + if active {
+            TOUCH_ACTIVE_POLL_MS
+        } else {
+            TOUCH_IDLE_POLL_MS
+        }
     }
 
     /// Input was lost (a poll failure, companion framing, a power boundary or
@@ -337,6 +358,63 @@ mod tests {
             edges(&mut contact, &polls),
             [Input::Touch(at(10)), Input::Touch(at(30)), Input::Release]
         );
+    }
+
+    /// Reads `panel` at the times `next_read` asks for, from `from` to
+    /// `until`; the edges and the read times.
+    fn read_when_due(
+        contact: &mut TouchContact,
+        from: u64,
+        until: u64,
+        panel: impl Fn(u64) -> Poll,
+    ) -> (std::vec::Vec<Input>, std::vec::Vec<u64>) {
+        let (mut inputs, mut reads) = (std::vec::Vec::new(), std::vec::Vec::new());
+        let mut now = from;
+        while now < until {
+            inputs.extend(contact.poll(panel(now), now).into_iter().flatten());
+            reads.push(now);
+            now = contact.next_read(now);
+        }
+        (inputs, reads)
+    }
+
+    #[test]
+    fn a_quiet_panel_is_read_less_often_and_still_sees_every_tap() {
+        let quiet = TOUCH_ACTIVE_MS + 1_000;
+        let mut contact = TouchContact::default();
+        let (_, reads) = read_when_due(&mut contact, 0, quiet, |_| Poll::Release);
+        let gaps = reads.windows(2).map(|w| w[1] - w[0]);
+        assert!(
+            gaps.zip(&reads)
+                .all(|(gap, at)| gap == if *at < TOUCH_ACTIVE_MS { 10 } else { 20 })
+        );
+        // A tap as short as the idle read interval, at every phase against
+        // the reads, lands once and lifts; reads go back to the active rate
+        // for a drag that follows it.
+        for phase in 0..TOUCH_IDLE_POLL_MS {
+            let mut contact = TouchContact::default();
+            let down = quiet + phase;
+            let up = down + TOUCH_IDLE_POLL_MS;
+            let panel = |now: u64| {
+                if (down..up).contains(&now) {
+                    Poll::Press(at(10))
+                } else {
+                    Poll::Release
+                }
+            };
+            let (inputs, reads) = read_when_due(&mut contact, 0, up + 100, panel);
+            assert_eq!(
+                inputs,
+                [Input::Touch(at(10)), Input::Release],
+                "phase {phase}"
+            );
+            let pressed = reads.iter().position(|at| (down..up).contains(at)).unwrap();
+            assert!(
+                reads[pressed] - down < TOUCH_IDLE_POLL_MS,
+                "lands within one idle read"
+            );
+            assert_eq!(reads[pressed + 1] - reads[pressed], TOUCH_ACTIVE_POLL_MS);
+        }
     }
 
     /// A finger the panel stops reporting ends at once, so a fresh tap right

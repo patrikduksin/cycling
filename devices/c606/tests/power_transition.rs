@@ -197,6 +197,55 @@ fn preparation_and_recovery_deadlines_fail_closed() {
 }
 
 #[test]
+fn the_owner_rests_until_a_deadline_and_watches_only_while_work_is_in_flight() {
+    use transition::WATCH_MS;
+    let mut t = Transition::new();
+    assert_eq!(t.due(0), None, "idle waits for a request");
+    t.request_after(Operation::Shutdown, 30_000, 100).unwrap();
+    assert_eq!(
+        t.due(200),
+        Some(30_100),
+        "a delayed shutdown starts on time"
+    );
+    t.tick(30_099);
+    t.quiescing(30_099);
+    assert_eq!(t.status().state, State::Requested);
+    assert_eq!(
+        t.due(30_100),
+        Some(30_100 + WATCH_MS),
+        "waits for accepted IO"
+    );
+    t.quiescing(30_100);
+    assert_eq!(t.due(30_101), Some(30_101 + WATCH_MS));
+    t.submitted(Ok(()), 30_200);
+    assert_eq!(t.due(30_201), Some(30_200 + transition::OBSERVE_MS));
+    t.tick(30_199 + transition::OBSERVE_MS);
+    assert_eq!(t.status().state, State::Submitted);
+    t.tick(30_200 + transition::OBSERVE_MS);
+    assert_eq!(t.status().state, State::Uncertain);
+    assert_eq!(t.due(40_000), None);
+
+    // Charging standby rests until its wake, which recovery watches.
+    let mut t = Transition::new();
+    t.begin_charging(0);
+    assert_eq!(t.due(1), Some(1 + WATCH_MS));
+    t.charging(5);
+    assert_eq!(t.due(6), None);
+    t.wake(7).unwrap();
+    assert_eq!(t.due(8), Some(8 + WATCH_MS));
+    t.recovered();
+    assert_eq!((t.status().state, t.due(9)), (State::Completed, None));
+
+    // An unrecovered shutdown watches until it can turn off.
+    let mut t = Transition::new();
+    t.request(Operation::Shutdown, 0).unwrap();
+    t.quiescing(1);
+    t.abort(Failure::Ant, 2);
+    t.recovery_failed();
+    assert_eq!(t.due(3), Some(3 + WATCH_MS));
+}
+
+#[test]
 fn shutdown_that_cannot_recover_turns_off_anyway() {
     let mut t = Transition::new();
     t.request(Operation::Shutdown, 0).unwrap();

@@ -17,6 +17,8 @@ const PROBE_WINDOW_MS: u64 = 3000;
 /// Windows observed again, each twice as long, after a transport fault
 /// before the companion is reported unavailable.
 const PROBE_RETRIES: u8 = 3;
+/// An acknowledged or woken companion has this long to show advancing sensors.
+const WAIT_MS: u64 = 10_000;
 
 pub struct Startup {
     status: Phase,
@@ -213,8 +215,19 @@ impl Startup {
         self.reason
     }
 
+    /// When a tick next decides by itself: the end of the probe window, or
+    /// of a waiting companion's time to show advancing sensors. `None` in
+    /// the other phases, which only reports and requests move.
+    pub fn due(&self) -> Option<u64> {
+        match self.status {
+            Phase::Probing => Some(self.started_ms + (PROBE_WINDOW_MS << self.retries)),
+            Phase::Waiting => Some(self.started_ms + WAIT_MS),
+            _ => None,
+        }
+    }
+
     fn expire(&mut self, now: u64) {
-        if self.status == Phase::Waiting && now.saturating_sub(self.started_ms) >= 10_000 {
+        if self.status == Phase::Waiting && now.saturating_sub(self.started_ms) >= WAIT_MS {
             self.status = Phase::TimedOut;
         }
     }

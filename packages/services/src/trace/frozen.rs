@@ -107,6 +107,31 @@ impl Aging for positioning::Snapshot {
     }
 }
 
+impl Aging for crate::network_time::Snapshot {
+    /// UTC advances with uptime, as the clock owner computes it.
+    fn aged(self, ms: u64) -> Self {
+        let Some(seconds) = self.unix_seconds else {
+            return self;
+        };
+        let total_ms = seconds * 1_000 + u64::from(self.millis) + ms;
+        let current = total_ms / 1_000;
+        let age_ms = self.age_ms.map(|age| age.saturating_add(ms));
+        Self {
+            unix_seconds: Some(current),
+            millis: (total_ms % 1_000) as u16,
+            local_minutes: self.local_minutes.map(|minutes| {
+                ((u64::from(minutes) + current / 60 - seconds / 60) % (24 * 60)) as u16
+            }),
+            age_ms,
+            status: if age_ms.is_some_and(|age| age >= crate::network_time::STALE_AFTER_MS) {
+                crate::network_time::Status::Stale
+            } else {
+                self.status
+            },
+        }
+    }
+}
+
 impl<T: Aging> Aging for Option<T> {
     fn aged(self, ms: u64) -> Self {
         self.map(|value| value.aged(ms))

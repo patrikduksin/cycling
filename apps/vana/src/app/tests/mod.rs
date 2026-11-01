@@ -289,7 +289,7 @@ fn tick(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut Radio, 
         &mut Absent,
         Observations {
             position: &Absent,
-            network_online: false,
+            network_time: Default::default(),
             input: &Absent,
             physical: no_physical_sensors(),
         },

@@ -134,7 +134,7 @@ pub struct Sources {
     pub companion: ReplayCompanion,
     startup: Latest<sensors::Startup>,
     physical: Latest<sensors::Snapshot>,
-    network: Latest<bool>,
+    network_time: Latest<firmware_services::network_time::Snapshot>,
     input: InputDevice,
     now: u64,
     /// The first place this run asked for something the recording did not
@@ -151,7 +151,7 @@ impl Sources {
             companion: ReplayCompanion::default(),
             startup: Latest::default(),
             physical: Latest::default(),
-            network: Latest::default(),
+            network_time: Latest::default(),
             input,
             now: 0,
             divergence: None,
@@ -227,7 +227,7 @@ impl Sources {
             } => self.position.latest.set((availability, snapshot), now),
             Event::Physical(snapshot) => self.physical.set(snapshot, now),
             Event::Power(snapshot) => self.companion.0.set(snapshot, now),
-            Event::Network { online } => self.network.set(online, now),
+            Event::NetworkTime(snapshot) => self.network_time.set(snapshot, now),
             Event::Startup(startup) => self.startup.set(startup, now),
             event if seen(&event) => {}
             event => self.diverge(format!("{event:?} is not replayed in the simulator")),
@@ -251,8 +251,8 @@ impl Sources {
         })
     }
 
-    pub fn online(&self) -> bool {
-        self.network.at(self.now).unwrap_or(false)
+    pub fn network_time(&self) -> firmware_services::network_time::Snapshot {
+        self.network_time.at(self.now).unwrap_or_default()
     }
 }
 

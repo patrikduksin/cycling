@@ -242,3 +242,33 @@ fn a_full_block_moves_on_to_the_next() {
     assert_eq!(passes.last(), Some(&Event::Pass { now_ms: 5_000 }));
     assert_eq!(recorder.refused(), 0);
 }
+
+#[test]
+fn a_synced_clock_is_recorded_once_and_reads_on_as_the_clock_owner_computes() {
+    use crate::network_time::{Anchor, STALE_AFTER_MS, Snapshot};
+    let anchor = Anchor {
+        unix_ms: 1_793_577_599_400,
+        uptime_ms: 2_000,
+    };
+    let mut latest = Latest::default();
+    let mut recorded = 0;
+    // Across a minute, the end of a UTC day and the hour the anchor goes stale.
+    let passes = (2_000..10_000)
+        .step_by(10)
+        .chain((STALE_AFTER_MS - 1_000..STALE_AFTER_MS + 3_000).step_by(10));
+    for now in passes {
+        let reading = anchor.snapshot(now, -180, false);
+        if latest.changed(reading, now) {
+            recorded += 1;
+        }
+        assert_eq!(latest.at(now), Some(reading), "at {now} ms");
+    }
+    assert_eq!(recorded, 1);
+    let now = STALE_AFTER_MS + 3_000;
+    let corrected = Anchor {
+        unix_ms: anchor.unix_ms + 1_500,
+        uptime_ms: now,
+    };
+    assert!(latest.changed(corrected.snapshot(now, -180, false), now));
+    assert!(latest.changed(Snapshot::unsynced(false), now + 10));
+}

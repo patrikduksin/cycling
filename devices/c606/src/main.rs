@@ -385,7 +385,11 @@ async fn console(
                 &mut devices.ble,
                 vana::app::Observations {
                     position: &devices.position,
-                    network_online: device_api::network::Network::online(&devices.network),
+                    network_time: firmware_services::network_time::snapshot(
+                        now,
+                        0,
+                        device_api::network::Network::online(&devices.network),
+                    ),
                     input: &devices.input,
                     physical: device_api::sensors::Sensors::snapshot(&devices.sensors, now),
                 },

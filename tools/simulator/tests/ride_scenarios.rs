@@ -7701,7 +7701,11 @@ fn hashed() -> Sim {
 /// device from the media it began with. The replay must read and show what
 /// the recording did, frame for frame, and save the same rides.
 #[track_caller]
-fn assert_replays_exactly(mut recorded: Sim, scenario: fn(&mut Sim), bulk: bool) {
+fn assert_replays_exactly(
+    mut recorded: Sim,
+    scenario: fn(&mut Sim),
+    bulk: bool,
+) -> shell_simulator::replay::Capture {
     scenario(&mut recorded);
     let capture = recorded.capture();
     println!("{}", trace_size(&capture.trace, recorded.device.now));
@@ -7738,6 +7742,7 @@ fn assert_replays_exactly(mut recorded: Sim, scenario: fn(&mut Sim), bulk: bool)
         "a ride was saved"
     );
     assert_eq!(samples(&mut replayed, bulk), rides);
+    capture
 }
 
 /// The first event where two traces part, with the pass it belongs to.
@@ -7819,6 +7824,52 @@ fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
 #[test]
 fn a_two_hour_ride_with_a_pause_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), two_hour_ride_with_a_pause, false);
+}
+
+/// Wi-Fi time for the ride below: 08:30 UTC on 1 November 2026, well
+/// apart from the receiver's clock.
+const WIFI_UTC_MS: u64 = 1_793_521_800_000;
+
+fn a_ride_dated_by_wifi(sim: &mut Sim) {
+    sim.sync_network_time(WIFI_UTC_MS);
+    let synced = sim.now();
+    cyclist(sim);
+    let pressed = press_start(sim);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+    let start = fit_start_ms(&sim.rides().pop().unwrap());
+    let expected = WIFI_UTC_MS + pressed - synced;
+    assert!(
+        start.abs_diff(expected) < 1_000,
+        "the ride starts at {start}, Wi-Fi time at the press is {expected}"
+    );
+}
+
+/// VANA reads Wi-Fi time from what composition hands it each pass, not
+/// from the process-wide clock, which here holds a time a year off. The
+/// recording and the replay both ignore it, and the trace carries the time
+/// VANA used.
+#[test]
+fn a_ride_dated_by_wifi_replays_exactly_whatever_the_process_clock_holds() {
+    use firmware_services::network_time::{Timestamp, update};
+    update(
+        Timestamp {
+            unix_seconds: (WIFI_UTC_MS / 1000 + 365 * 86_400) as u32,
+            millis: 0,
+            stratum: 2,
+        },
+        0,
+    );
+    let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_dated_by_wifi, false);
+    let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let synced = events
+        .filter_map(|event| match event {
+            firmware_services::trace::Event::NetworkTime(time) => time.unix_seconds,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(synced.len(), 1, "one synchronization: {synced:?}");
+    assert!(synced[0].abs_diff(WIFI_UTC_MS / 1000) < 60, "{synced:?}");
 }
 
 #[test]

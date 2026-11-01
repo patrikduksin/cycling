@@ -1809,7 +1809,7 @@ fn tick_with(runtime: &mut Runtime, journal: &mut Journal, bulk: &mut FlakyBulk,
         &mut Absent,
         Observations {
             position: &Absent,
-            network_online: false,
+            network_time: Default::default(),
             input: &Absent,
             physical: no_physical_sensors(),
         },

@@ -178,48 +178,57 @@ pub fn snapshot(now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
         }
     };
     if !available {
-        return Snapshot {
-            unix_seconds: None,
-            millis: 0,
-            local_minutes: None,
-            age_ms: None,
-            status: if SYNCING.load(Ordering::Relaxed) {
+        return Snapshot::unsynced(SYNCING.load(Ordering::Relaxed));
+    }
+    Anchor {
+        unix_ms: u64::from(utc_seconds) * 1_000 + u64::from(utc_millis),
+        uptime_ms: u64::from(mono_seconds) * 1_000 + u64::from(mono_millis),
+    }
+    .snapshot(now_ms, timezone_minutes, online)
+}
+
+impl Snapshot {
+    /// No UTC: never synchronized, or invalidated by a sleep.
+    pub fn unsynced(syncing: bool) -> Self {
+        Self {
+            status: if syncing {
                 Status::Syncing
             } else {
                 Status::Unavailable
             },
-        };
-    }
-    let now_seconds = (now_ms / 1_000) as u32;
-    let seconds_delta = now_seconds.wrapping_sub(mono_seconds);
-    let elapsed_ms = if seconds_delta > i32::MAX as u32 {
-        0
-    } else {
-        let mut elapsed = u64::from(seconds_delta) * 1_000;
-        let remainder = (now_ms % 1_000) as i32 - mono_millis as i32;
-        if remainder < 0 {
-            elapsed = elapsed.saturating_sub((-remainder) as u64);
-        } else {
-            elapsed += remainder as u64;
+            ..Self::default()
         }
-        elapsed
-    };
-    let total_ms = u64::from(utc_seconds) * 1_000 + u64::from(utc_millis) + elapsed_ms;
-    let current_seconds = total_ms / 1_000;
-    let local_minutes =
-        ((current_seconds / 60) as i64 + i64::from(timezone_minutes)).rem_euclid(24 * 60) as u16;
-    Snapshot {
-        unix_seconds: Some(current_seconds),
-        millis: (total_ms % 1_000) as u16,
-        local_minutes: Some(local_minutes),
-        age_ms: Some(elapsed_ms),
-        status: if elapsed_ms >= STALE_AFTER_MS {
-            Status::Stale
-        } else if !online {
-            Status::Offline
-        } else {
-            Status::Fresh
-        },
+    }
+}
+
+/// UTC as a synchronization found it, and the uptime it was taken at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Anchor {
+    pub unix_ms: u64,
+    pub uptime_ms: u64,
+}
+
+impl Anchor {
+    /// UTC at `now_ms` of uptime, advanced from the anchor by monotonic time.
+    pub fn snapshot(self, now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
+        let elapsed_ms = now_ms.saturating_sub(self.uptime_ms);
+        let total_ms = self.unix_ms + elapsed_ms;
+        let current_seconds = total_ms / 1_000;
+        let local_minutes = ((current_seconds / 60) as i64 + i64::from(timezone_minutes))
+            .rem_euclid(24 * 60) as u16;
+        Snapshot {
+            unix_seconds: Some(current_seconds),
+            millis: (total_ms % 1_000) as u16,
+            local_minutes: Some(local_minutes),
+            age_ms: Some(elapsed_ms),
+            status: if elapsed_ms >= STALE_AFTER_MS {
+                Status::Stale
+            } else if !online {
+                Status::Offline
+            } else {
+                Status::Fresh
+            },
+        }
     }
 }
 

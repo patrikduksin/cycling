@@ -284,7 +284,7 @@ struct Trace {
     #[cfg(feature = "cycling")]
     physical: Latest<device_api::sensors::Snapshot>,
     #[cfg(feature = "cycling")]
-    network: Latest<bool>,
+    network_time: Latest<firmware_services::network_time::Snapshot>,
     #[cfg(feature = "cycling")]
     page: Option<vana::screens::workout::Page>,
     /// Sounds already recorded.
@@ -316,7 +316,7 @@ impl Trace {
             #[cfg(feature = "cycling")]
             physical: Latest::default(),
             #[cfg(feature = "cycling")]
-            network: Latest::default(),
+            network_time: Latest::default(),
             #[cfg(feature = "cycling")]
             page: None,
             sounds: 0,
@@ -429,6 +429,9 @@ pub struct Session {
     pub speaker: Speaker,
     pub battery: Battery,
     pub startup: Startup,
+    /// Wi-Fi time synchronization, as the device's clock owner holds it;
+    /// device memory, so a reboot loses it.
+    pub network_time: Option<firmware_services::network_time::Anchor>,
     /// Uptime at which a starting companion runs, and the ANT availability then.
     companion_boot_ms: Option<(u64, Availability)>,
     /// How long a main-CPU restart probes a running companion before work
@@ -574,6 +577,7 @@ impl Session {
             speaker: Speaker::default(),
             battery: Battery::default(),
             startup: Startup::Unsupported,
+            network_time: None,
             companion_boot_ms: None,
             restart_probe_ms: 0,
             restart_probe: None,
@@ -765,16 +769,18 @@ impl Session {
             self.trace
                 .physical
                 .observe(physical, now, &self.trace.recorder, Event::Physical);
-        let online = self
-            .replay
-            .as_ref()
-            .is_some_and(|replay| replay.sources.online());
-        let network_online =
-            self.trace
-                .network
-                .observe(online, now, &self.trace.recorder, |online| Event::Network {
-                    online,
-                });
+        let network_time = match &self.replay {
+            Some(replay) => replay.sources.network_time(),
+            None => self
+                .network_time
+                .map_or_else(Default::default, |anchor| anchor.snapshot(now, 0, true)),
+        };
+        let network_time = self.trace.network_time.observe(
+            network_time,
+            now,
+            &self.trace.recorder,
+            Event::NetworkTime,
+        );
         let (ant, ble): (&mut dyn Ant, &mut dyn Ble) = match &mut self.replay {
             Some(replay) => (&mut replay.sources.ant, &mut replay.sources.ble),
             None => (&mut self.ant, &mut self.ble),
@@ -804,7 +810,7 @@ impl Session {
             &mut ble,
             vana::app::Observations {
                 position: &position,
-                network_online,
+                network_time,
                 input: &companion,
                 physical,
             },

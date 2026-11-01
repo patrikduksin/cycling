@@ -84,7 +84,7 @@ fn tick_with(
         &mut Absent,
         Observations {
             position: &Absent,
-            network_online: false,
+            network_time: Default::default(),
             input,
             physical: no_physical_sensors(),
         },
@@ -349,7 +349,7 @@ fn sensor_data_and_usb_power_keep_vana_on() {
         &mut Absent,
         Observations {
             position: &Absent,
-            network_online: false,
+            network_time: Default::default(),
             input: &Plugged,
             physical: no_physical_sensors(),
         },
@@ -727,7 +727,7 @@ fn a_ble_cadence_sensor_reports_its_first_live_data() {
         &mut ble,
         Observations {
             position: &Absent,
-            network_online: false,
+            network_time: Default::default(),
             input: &Absent,
             physical: no_physical_sensors(),
         },

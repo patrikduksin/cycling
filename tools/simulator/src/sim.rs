@@ -676,6 +676,19 @@ impl Sim {
         assert_eq!(status, "ACCEPTED", "BLE SELECT: {out}");
     }
 
+    /// Wi-Fi time synchronization succeeds now with this UTC, in ms since
+    /// 1970; the device keeps it until it reboots.
+    pub fn sync_network_time(&mut self, unix_ms: u64) {
+        self.note(
+            NoteKind::World,
+            format!("network time synced to {unix_ms} ms"),
+        );
+        self.device.network_time = Some(firmware_services::network_time::Anchor {
+            unix_ms,
+            uptime_ms: self.device.now,
+        });
+    }
+
     /// The raw Battery Level (0x2A19) the BLE heart strap reports on its next
     /// connection and each minute after, or none for a strap without the
     /// Battery Service.

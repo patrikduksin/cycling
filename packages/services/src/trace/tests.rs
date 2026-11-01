@@ -237,7 +237,6 @@ fn sample() -> Vec<Event<'static>> {
             input_lost: 0,
         })),
         Event::Power(None),
-        Event::Network { online: true },
         Event::NetworkTime(crate::network_time::Snapshot {
             unix_seconds: Some(1_793_534_400),
             millis: 250,

@@ -139,9 +139,8 @@ pub enum Event<'a> {
     },
     Physical(sensors::Snapshot),
     Power(Option<InputSnapshot>),
-    Network {
-        online: bool,
-    },
+    /// UTC from Wi-Fi synchronization, recorded when it no longer reads as
+    /// the last recorded value advanced to this pass.
     NetworkTime(crate::network_time::Snapshot),
     Startup(sensors::Startup),
     /// A terminal request line, executed after the pass before it.
@@ -181,7 +180,6 @@ mod tag {
     pub const POSITION: u8 = 12;
     pub const PHYSICAL: u8 = 13;
     pub const POWER: u8 = 14;
-    pub const NETWORK: u8 = 15;
     pub const NETWORK_TIME: u8 = 16;
     pub const STARTUP: u8 = 17;
     pub const COMMAND: u8 = 18;
@@ -807,7 +805,6 @@ impl<'a> Event<'a> {
             Self::Position { .. } => tag::POSITION,
             Self::Physical(_) => tag::PHYSICAL,
             Self::Power(_) => tag::POWER,
-            Self::Network { .. } => tag::NETWORK,
             Self::NetworkTime(_) => tag::NETWORK_TIME,
             Self::Startup(_) => tag::STARTUP,
             Self::Command(_) => tag::COMMAND,
@@ -853,7 +850,6 @@ impl<'a> Event<'a> {
             }
             Self::Physical(snapshot) => snapshot.put(w),
             Self::Power(snapshot) => snapshot.put(w),
-            Self::Network { online } => online.put(w),
             Self::NetworkTime(snapshot) => snapshot.put(w),
             Self::Startup(startup) => startup.put(w),
             Self::Command(text)
@@ -906,9 +902,6 @@ impl<'a> Event<'a> {
             },
             tag::PHYSICAL => Self::Physical(Wire::take(r)),
             tag::POWER => Self::Power(Wire::take(r)),
-            tag::NETWORK => Self::Network {
-                online: Wire::take(r),
-            },
             tag::NETWORK_TIME => Self::NetworkTime(Wire::take(r)),
             tag::STARTUP => Self::Startup(Wire::take(r)),
             tag::COMMAND => Self::Command(Wire::take(r)),

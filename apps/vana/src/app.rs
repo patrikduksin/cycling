@@ -54,7 +54,8 @@ pub use power::{
 /// Observations recorded with each ride sample, beyond the radios VANA drives.
 pub struct Observations<'a, P, I> {
     pub position: &'a P,
-    pub network_online: bool,
+    /// UTC from Wi-Fi time synchronization, as the device clock reads now.
+    pub network_time: firmware_services::network_time::Snapshot,
     /// Battery level source.
     pub input: &'a I,
     /// Companion sensors, including barometric pressure.

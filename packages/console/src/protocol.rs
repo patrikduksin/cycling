@@ -256,7 +256,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             }),
             _ => return Err(Error::Invalid),
         },
-        name @ ("VOLUME" | "TERRAIN" | "FILES") => Command::Volume(
+        name @ ("VOLUME" | "TERRAIN" | "FILES" | "STORE") => Command::Volume(
             crate::commands::volumes::parse(name, &mut words).ok_or(Error::Invalid)?,
         ),
         name @ ("MMC" | "SOUND" | "GNSS" | "PRESSURE" | "MOTION" | "COMPANION") => {
@@ -604,6 +604,8 @@ mod tests {
             "SETTINGS",
             "FILES",
             "TERRAIN",
+            "STORE",
+            "ADD",
             "WORKOUT",
             "STORAGE",
             "VOLUME",

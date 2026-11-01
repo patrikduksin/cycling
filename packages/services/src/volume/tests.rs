@@ -22,10 +22,197 @@ fn the_default_plan_fits_the_c606_region_in_disjoint_aligned_volumes() {
     for volume in table.volumes() {
         assert_eq!(volume.start % ALIGN, 0, "{}", volume.label());
     }
-    // About 260 MiB stays unallocated for later volumes.
-    assert_eq!(table.unallocated(C606), 532_479);
+    // STORE takes the last 260 MiB.
+    let store = table.find(&STORE).unwrap();
+    assert_eq!(
+        (store.start, store.sectors, store.kind),
+        (terrain.start + terrain.sectors, 532_479, Kind::Store)
+    );
+    assert_eq!(table.unallocated(C606), 0);
     // About 2,000 hours of one-record-per-second rides.
     assert!(rides.sectors / 3600 > 580);
+}
+
+/// The table every C606 got before STORE: the default plan's first three
+/// volumes, in both copies.
+fn table_before_store(media: &mut Media) -> Table {
+    let mut table = plan(C606).unwrap();
+    table.volumes[3] = None;
+    let mut s = sector();
+    table.encode(&mut s);
+    media.set(0, s);
+    media.set(1, s);
+    table
+}
+
+/// Rides, a file and the terrain pack's header as an owner's device holds
+/// them, so a migration can be checked not to touch them.
+fn fill_volumes(media: &mut Media) {
+    let mut s = sector();
+    let mut rides = open(media, &RIDES, &mut s).unwrap();
+    let mut log = sector_log::format(&mut rides, TAG, 9, b"cat", &mut s).unwrap();
+    for _ in 0..3 {
+        log.append(&mut rides, b"ride", &mut s).unwrap();
+    }
+    let mut files = open(media, &FILES, &mut s).unwrap();
+    crate::files::format(&mut files, 1, &mut s).unwrap();
+    let name = crate::files::Name::new("course.dat").unwrap();
+    crate::files::write(&mut files, &name, b"course", &mut s).unwrap();
+    let terrain = plan(C606).unwrap().find(&TERRAIN).unwrap();
+    media.set(terrain.start, [0x7e; SECTOR_SIZE]);
+}
+
+#[test]
+fn a_table_from_before_store_gains_it_only_in_the_unallocated_tail() {
+    let mut media = Media::new(C606);
+    let mut s = sector();
+    let old = table_before_store(&mut media);
+    fill_volumes(&mut media);
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(old)));
+    assert_eq!(open(&mut media, &STORE, &mut s).err(), Some(Error::Missing));
+    // Opening volumes and initializing never add it.
+    assert_eq!(create(&mut media, &mut s), Ok(old));
+    let before = media.written.clone();
+    let writes = media.writes;
+
+    let migrated = add_store(&mut media, &mut s).unwrap();
+    assert_eq!(media.writes - writes, 2, "both table copies, nothing else");
+    assert_eq!(migrated.generation, old.generation + 1);
+    assert_eq!(migrated.planned, old.planned);
+    for volume in old.volumes() {
+        assert_eq!(
+            migrated.find(&volume.name),
+            Some(*volume),
+            "{}",
+            volume.label()
+        );
+    }
+    let store = migrated.find(&STORE).unwrap();
+    assert_eq!((store.start, store.sectors), (5_244_928, 532_479));
+    assert_eq!(
+        migrated,
+        plan(C606).map(|t| Table { generation: 2, ..t }).unwrap()
+    );
+    for (at, bytes) in &before {
+        if *at >= TABLE {
+            assert_eq!(media.get(*at), *bytes, "sector {at} changed");
+        }
+    }
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(migrated)));
+    let mut rides = open(&mut media, &RIDES, &mut s).unwrap();
+    let mut recovery = Recovery::new(TAG, 32);
+    let head = loop {
+        match recovery.step(&mut rides, &mut s).unwrap() {
+            Step::Done(log) => break log.head(),
+            Step::Uncertain(_) => panic!("uncertain"),
+            _ => {}
+        }
+    };
+    assert_eq!(head, 3, "the rides are still there");
+    let mut files = open(&mut media, &FILES, &mut s).unwrap();
+    let name = crate::files::Name::new("course.dat").unwrap();
+    let dir = crate::files::mount(&mut files, &mut s).unwrap();
+    assert!(dir.find(&mut files, &name, &mut s).unwrap().is_some());
+    let volume = open(&mut media, &STORE, &mut s).unwrap();
+    assert_eq!(volume.extent(), store);
+
+    // Already migrated: nothing to write, the same table.
+    let writes = media.writes;
+    assert_eq!(add_store(&mut media, &mut s), Ok(migrated));
+    assert_eq!(media.writes, writes);
+    // A fresh table already has it.
+    let mut fresh = Media::new(C606);
+    let table = create(&mut fresh, &mut s).unwrap();
+    let writes = fresh.writes;
+    assert_eq!(add_store(&mut fresh, &mut s), Ok(table));
+    assert_eq!(fresh.writes, writes);
+}
+
+#[test]
+fn a_cut_while_adding_store_leaves_the_old_or_new_table_and_running_again_completes_it() {
+    for at in 0..2 {
+        for tear in [Tear::Old, Tear::Prefix(100), Tear::Prefix(511), Tear::New] {
+            let mut media = Media::new(C606);
+            let mut s = sector();
+            let old = table_before_store(&mut media);
+            fill_volumes(&mut media);
+            let before = media.written.clone();
+            media.cut = Some((at, tear));
+            assert!(add_store(&mut media, &mut s).is_err());
+            media.reboot();
+            let new = Table {
+                generation: 2,
+                ..plan(C606).unwrap()
+            };
+            match read(&mut media, &mut s) {
+                Ok(Layout::Table(table)) => assert!(
+                    table == old || table == new,
+                    "cut at {at} {tear:?}: {table:?}"
+                ),
+                other => panic!("cut at {at} {tear:?}: {other:?}"),
+            }
+            assert_eq!(add_store(&mut media, &mut s), Ok(new));
+            assert_eq!(media.get(0), media.get(1), "both copies hold it");
+            assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(new)));
+            for (sector, bytes) in &before {
+                if *sector >= TABLE {
+                    assert_eq!(media.get(*sector), *bytes);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn without_a_table_this_version_understands_adding_store_writes_nothing() {
+    let mut s = sector();
+    // Blank.
+    let mut media = Media::new(C606);
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
+    assert_eq!(media.writes, 0);
+    // The ride log from before volumes.
+    let mut log = sector_log::format(&mut media, TAG, 7, b"catalog", &mut s).unwrap();
+    log.append(&mut media, b"old test ride", &mut s).unwrap();
+    let writes = media.writes;
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Legacy));
+    assert_eq!(media.writes, writes);
+    // A lost table over a ride log.
+    let mut media = Media::new(C606);
+    table_before_store(&mut media);
+    fill_volumes(&mut media);
+    media.set(0, [0xa5; SECTOR_SIZE]);
+    media.set(1, [0; SECTOR_SIZE]);
+    let writes = media.writes;
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Missing));
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Lost));
+    assert_eq!(media.writes, writes);
+    // A foreign table, and a STORE this version did not write.
+    let mut media = Media::new(C606);
+    let old = table_before_store(&mut media);
+    let good = media.get(0);
+    let mut newer = good;
+    newer[16] = 2;
+    let checksum = crc32(&newer[..CRC]);
+    newer[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(0, newer);
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign));
+    let mut odd = old;
+    odd.volumes[3] = Some(Extent {
+        kind: Kind::Files,
+        ..plan(C606).unwrap().find(&STORE).unwrap()
+    });
+    odd.encode(&mut s);
+    media.set(0, s);
+    media.set(1, s);
+    assert_eq!(add_store(&mut media, &mut s), Err(Error::Foreign));
+    assert_eq!(media.writes, 0);
+    // No room: small media give rides everything.
+    let mut small = Media::new(100);
+    create(&mut small, &mut s).unwrap();
+    let writes = small.writes;
+    assert_eq!(add_store(&mut small, &mut s), Err(Error::Small));
+    assert_eq!(small.writes, writes);
 }
 
 #[test]

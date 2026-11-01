@@ -142,16 +142,17 @@ fn headers_are_checked_and_ids_must_increase() {
 fn the_volume_table_is_reported() {
     let mut host = Host::new();
     let (status, _, count, table) = host.call(op::VOLUMES, 0, 0, &[]);
-    assert_eq!((status, count, table[0]), (status::OK, 3, 2));
+    assert_eq!((status, count, table[0]), (status::OK, 4, 2));
     assert_eq!(get_u64(&table, 8), C606);
-    assert_eq!(get_u64(&table, 32), 532_479);
+    assert_eq!(get_u64(&table, 32), 0);
     let names: Vec<_> = table[40..].chunks(25).map(|e| e[..8].to_vec()).collect();
     assert_eq!(
         names,
         [
             b"RIDES\0\0\0".to_vec(),
             b"FILES\0\0\0".to_vec(),
-            b"TERRAIN\0".to_vec()
+            b"TERRAIN\0".to_vec(),
+            b"STORE\0\0\0".to_vec()
         ]
     );
     let mut blank = Host::new();
@@ -310,7 +311,7 @@ fn line_commands_report_volumes_terrain_and_files() {
     volumes::execute(volumes::Command::Status, &mut media, &mut out);
     assert_eq!(
         out,
-        "layout=volumes sectors=5777407 generation=1 unallocated=532479 rides=2048+2097152:log files=2099200+524288:files terrain=2623488+2621440:pack"
+        "layout=volumes sectors=5777407 generation=1 unallocated=0 rides=2048+2097152:log files=2099200+524288:files terrain=2623488+2621440:pack store=5244928+532479:store"
     );
     out.clear();
     volumes::execute(volumes::Command::Terrain, &mut media, &mut out);
@@ -353,4 +354,85 @@ fn line_commands_report_volumes_terrain_and_files() {
     assert_eq!(volumes::parse("FILES", &mut words), None);
     let mut words = "FORMAT".split_ascii_whitespace();
     assert_eq!(volumes::parse("FILES", &mut words), None);
+}
+
+#[test]
+fn line_commands_add_and_report_the_store() {
+    let mut media = Media::default();
+    let mut out = String::new();
+    // No table yet: nothing to add STORE to.
+    assert_eq!(
+        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        "UNINITIALIZED"
+    );
+    assert!(media.written.is_empty());
+    volumes::execute(volumes::Command::Init, &mut media, &mut out);
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::Store, &mut media, &mut out),
+        "OK"
+    );
+    assert_eq!(out, "state=uninitialized");
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        "OK"
+    );
+    assert!(out.ends_with(" store=5244928+532479:store"), "{out}");
+    out.clear();
+    volumes::execute(volumes::Command::Store, &mut media, &mut out);
+    assert!(
+        out.starts_with(
+            "state=ready files=0 capacity=64 chunks=1039 free=1039 generation=1 store="
+        ),
+        "{out}"
+    );
+    // A store with files is kept as it is.
+    let mut sector = [0u8; 512];
+    let mut vol =
+        firmware_services::volume::open(&mut media, &firmware_services::volume::STORE, &mut sector)
+            .unwrap();
+    let mut store = firmware_services::store::mount(&mut vol, &mut sector).unwrap();
+    for i in 0..10 {
+        let name = firmware_services::store::Name::new(&std::format!("traces/{i}")).unwrap();
+        store.create(&mut vol, &name, None, &mut sector).unwrap();
+    }
+    let writes = media.written.clone();
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        "OK"
+    );
+    assert!(media.written == writes, "nothing written");
+    out.clear();
+    volumes::execute(volumes::Command::Store, &mut media, &mut out);
+    assert!(
+        out.starts_with("state=ready files=10 capacity=64 chunks=1039 free=1029 "),
+        "{out}"
+    );
+    out.clear();
+    volumes::execute(volumes::Command::StoreList(0), &mut media, &mut out);
+    assert!(out.starts_with("traces/0:1:1 traces/1:2:1 "), "{out}");
+    assert!(out.ends_with(" next=8"), "{out}");
+    out.clear();
+    volumes::execute(volumes::Command::StoreList(8), &mut media, &mut out);
+    assert_eq!(out, "traces/8:9:1 traces/9:10:1");
+    for (line, parsed) in [
+        ("ADD STORE", Some(volumes::Command::AddStore)),
+        ("ADD", None),
+        ("ADD FILES", None),
+    ] {
+        let mut words = line.split_ascii_whitespace();
+        assert_eq!(volumes::parse("VOLUME", &mut words), parsed, "{line}");
+    }
+    for (line, parsed) in [
+        ("", Some(volumes::Command::Store)),
+        ("LIST", Some(volumes::Command::StoreList(0))),
+        ("LIST 63", Some(volumes::Command::StoreList(63))),
+        ("LIST 64", None),
+        ("DELETE traces/1", None),
+    ] {
+        let mut words = line.split_ascii_whitespace();
+        assert_eq!(volumes::parse("STORE", &mut words), parsed, "{line}");
+    }
 }

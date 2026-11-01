@@ -1,17 +1,20 @@
 //! Ordinary commands over the owned region's volumes: the table, the terrain
-//! pack and the file store. Bulk data moves through the binary transfer
-//! session (`crate::transfer`) that `VOLUME TRANSFER` enters.
+//! pack, the file store and the growable store. Bulk data moves through the
+//! binary transfer session (`crate::transfer`) that `VOLUME TRANSFER` enters.
 
 use core::fmt::Write;
 use device_api::bulk::{Error as MediaError, ReadWrite};
 use firmware_services::volume::{self, Layout};
-use firmware_services::{files, pack};
+use firmware_services::{files, pack, store};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Status,
     /// Write the default table over a blank or legacy region.
     Init,
+    /// Migrate a table from before STORE to one with it, and format the
+    /// store in it when it has none.
+    AddStore,
     /// Enter the binary transfer session; the composition owns the switch.
     Transfer,
     Terrain,
@@ -21,13 +24,25 @@ pub enum Command {
     FilesList(u8),
     FilesStat(files::Name),
     FilesDelete(files::Name),
+    Store,
+    /// List the store's files from the one at this index on, in slot order.
+    StoreList(u8),
 }
 
 pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Option<Command> {
     let command = match (name, words.next()) {
         ("VOLUME", None | Some("STATUS")) => Command::Status,
         ("VOLUME", Some("INIT")) => Command::Init,
+        ("VOLUME", Some("ADD")) => match words.next() {
+            Some("STORE") => Command::AddStore,
+            _ => return None,
+        },
         ("VOLUME", Some("TRANSFER")) => Command::Transfer,
+        ("STORE", None | Some("STATUS")) => Command::Store,
+        ("STORE", Some("LIST")) => {
+            let index = words.next().map_or(Some(0), |index| index.parse().ok())?;
+            (usize::from(index) < store::CAPACITY).then_some(Command::StoreList(index))?
+        }
         ("TERRAIN", None | Some("STATUS")) => Command::Terrain,
         ("FILES", None | Some("STATUS")) => Command::Files,
         ("FILES", Some("FORMAT")) => match words.next() {
@@ -100,6 +115,20 @@ pub fn files_status(error: files::Error) -> &'static str {
     }
 }
 
+pub fn store_status(error: store::Error) -> &'static str {
+    match error {
+        store::Error::Media(e) => media_status(e),
+        store::Error::Uninitialized => "UNINITIALIZED",
+        store::Error::Foreign => "FOREIGN",
+        store::Error::Corrupt => "CORRUPT",
+        store::Error::Name | store::Error::Range => "INVALID",
+        store::Error::Exists => "EXISTS",
+        store::Error::NotFound => "NOT_FOUND",
+        store::Error::Full => "FULL",
+        store::Error::Stale => "STALE",
+    }
+}
+
 fn hex(out: &mut impl Write, bytes: &[u8]) {
     for byte in bytes {
         let _ = write!(out, "{byte:02x}");
@@ -131,12 +160,25 @@ fn entry(out: &mut impl Write, entry: &files::Entry) {
 pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Write) -> &'static str {
     let mut sector = [0u8; 512];
     match command {
-        Command::Status | Command::Init => {
-            let found = if command == Command::Init {
-                volume::create(media, &mut sector).map(Layout::Table)
-            } else {
-                volume::read(media, &mut sector)
+        Command::Status | Command::Init | Command::AddStore => {
+            let found = match command {
+                Command::Init => volume::create(media, &mut sector).map(Layout::Table),
+                Command::AddStore => volume::add_store(media, &mut sector).map(Layout::Table),
+                _ => volume::read(media, &mut sector),
             };
+            if command == Command::AddStore && found.is_ok() {
+                let mut vol = match volume::open(media, &volume::STORE, &mut sector) {
+                    Ok(v) => v,
+                    Err(e) => return volume_status(e),
+                };
+                let formatted = match store::mount(&mut vol, &mut sector) {
+                    Err(store::Error::Uninitialized) => store::format(&mut vol, 0, &mut sector),
+                    mounted => mounted,
+                };
+                if let Err(e) = formatted {
+                    return store_status(e);
+                }
+            }
             let region = match media.owned_info() {
                 Ok(info) => info.sectors,
                 Err(e) => return media_status(e),
@@ -288,6 +330,64 @@ pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Writ
                 }
                 Ok(None) => "OK",
                 Err(e) => files_status(e),
+            }
+        }
+        Command::Store | Command::StoreList(_) => {
+            let mut vol = match volume::open(media, &volume::STORE, &mut sector) {
+                Ok(v) => v,
+                Err(e) => return volume_status(e),
+            };
+            let mounted = match store::mount(&mut vol, &mut sector) {
+                Ok(mounted) => mounted,
+                Err(store::Error::Uninitialized) if command == Command::Store => {
+                    let _ = write!(out, "state=uninitialized");
+                    return "OK";
+                }
+                Err(e) => return store_status(e),
+            };
+            let listed = match command {
+                // Bounded reply: up to eight files, then where to continue.
+                Command::StoreList(start) => {
+                    let (mut index, mut shown, mut next) = (0, 0, None);
+                    let listed = mounted.list(&mut vol, &store::Dir::ROOT, &mut sector, |e| {
+                        if index >= start && next.is_none() {
+                            if shown == 8 {
+                                next = Some(index);
+                            } else {
+                                let gap = if shown == 0 { "" } else { " " };
+                                let _ =
+                                    write!(out, "{gap}{}:{}:{}", e.name.as_str(), e.id, e.chunks);
+                                shown += 1;
+                            }
+                        }
+                        index += 1;
+                    });
+                    if let Some(next) = next {
+                        let _ = write!(out, " next={next}");
+                    }
+                    listed
+                }
+                _ => {
+                    let (mut files, mut used) = (0, 0);
+                    let listed = mounted.list(&mut vol, &store::Dir::ROOT, &mut sector, |e| {
+                        files += 1;
+                        used += e.chunks;
+                    });
+                    let _ = write!(
+                        out,
+                        "state=ready files={files} capacity={} chunks={} free={} generation={} store={:016x}",
+                        store::CAPACITY,
+                        mounted.chunks(),
+                        mounted.chunks() - used,
+                        mounted.generation(),
+                        mounted.store_id()
+                    );
+                    listed
+                }
+            };
+            match listed {
+                Ok(()) => "OK",
+                Err(e) => store_status(e),
             }
         }
     }

@@ -13,6 +13,11 @@
 //! superblocks sit where the table now does. Reading reports such a region as
 //! [`Layout::Legacy`] and never as a blank one. Only [`create`], an explicit
 //! initialize, writes a table, and it refuses a table it does not understand.
+//!
+//! The default plan ends with `STORE`, which takes the rest of the region. A
+//! table written before `STORE` existed gains it only through [`add_store`],
+//! an explicit migration that adds that one extent in the unallocated tail
+//! as a new generation and leaves every existing extent as it was.
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -35,13 +40,17 @@ pub const RIDES: Name = *b"RIDES\0\0\0";
 pub const TERRAIN: Name = *b"TERRAIN\0";
 /// Small named files (`crate::files`).
 pub const FILES: Name = *b"FILES\0\0\0";
+/// Growable files in directories (`crate::store`), such as ride traces.
+pub const STORE: Name = *b"STORE\0\0\0";
 
 const MIB: u64 = 2048;
 /// Default sizes: about 2,000 h of rides, a terrain pack of several hundred MB
-/// with room to grow, and a small file store. The rest stays unallocated.
+/// with room to grow, and a small file store. STORE takes the rest.
 pub const RIDES_SECTORS: u64 = 1024 * MIB;
 pub const FILES_SECTORS: u64 = 256 * MIB;
 pub const TERRAIN_SECTORS: u64 = 1280 * MIB;
+/// The least STORE takes: a store's metadata and a few chunks.
+pub const STORE_MIN: u64 = 2 * MIB;
 
 const CRC: usize = SECTOR_SIZE - 4;
 const ENTRIES: usize = 64;
@@ -53,9 +62,9 @@ pub enum Error {
     /// A valid table this version cannot use: newer version, unknown kinds or
     /// extents that do not fit this region. Never overwritten.
     Foreign,
-    /// The named volume is not in the table.
+    /// The named volume is not in the table, or there is no table.
     Missing,
-    /// The region is too small for any plan.
+    /// The region is too small for any plan, or has no room for STORE.
     Small,
 }
 
@@ -72,6 +81,7 @@ pub enum Kind {
     Log = 1,
     Pack = 2,
     Files = 3,
+    Store = 4,
 }
 
 impl Kind {
@@ -80,6 +90,7 @@ impl Kind {
             1 => Some(Self::Log),
             2 => Some(Self::Pack),
             3 => Some(Self::Files),
+            4 => Some(Self::Store),
             _ => None,
         }
     }
@@ -88,6 +99,7 @@ impl Kind {
             Self::Log => "log",
             Self::Pack => "pack",
             Self::Files => "files",
+            Self::Store => "store",
         }
     }
 }
@@ -132,8 +144,25 @@ impl Table {
 
     /// Sectors after the last volume, reserved for later volumes.
     pub fn unallocated(&self, sectors: u64) -> u64 {
+        sectors.saturating_sub(self.end())
+    }
+
+    fn end(&self) -> u64 {
         let end = self.volumes().map(|v| v.start + v.sectors).max();
-        sectors.saturating_sub(end.unwrap_or(TABLE))
+        end.unwrap_or(TABLE)
+    }
+
+    /// STORE over the rest of a region of `sectors`, from the next 1 MiB
+    /// boundary after the last volume, if that leaves it `STORE_MIN`.
+    fn store_extent(&self, sectors: u64) -> Option<Extent> {
+        let start = self.end().next_multiple_of(ALIGN);
+        let rest = sectors.saturating_sub(start);
+        (rest >= STORE_MIN).then_some(Extent {
+            name: STORE,
+            kind: Kind::Store,
+            start,
+            sectors: rest,
+        })
     }
 
     fn encode(&self, sector: &mut Sector) {
@@ -293,13 +322,17 @@ pub fn read(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Layout, E
 }
 
 /// The default layout for a region of `sectors`: RIDES, FILES and TERRAIN at
-/// their default sizes, or RIDES alone on a region too small for them (test
-/// and simulator media).
+/// their default sizes and STORE over the rest, or RIDES alone on a region
+/// too small for them (test and simulator media).
 pub fn plan(sectors: u64) -> Result<Table, Error> {
-    let mut volumes = [None; MAX_VOLUMES];
+    let mut table = Table {
+        generation: 1,
+        planned: sectors,
+        volumes: [None; MAX_VOLUMES],
+    };
     if sectors >= ALIGN + RIDES_SECTORS + FILES_SECTORS + TERRAIN_SECTORS {
         let mut start = ALIGN;
-        for (slot, (name, kind, size)) in volumes.iter_mut().zip([
+        for (slot, (name, kind, size)) in table.volumes.iter_mut().zip([
             (RIDES, Kind::Log, RIDES_SECTORS),
             (FILES, Kind::Files, FILES_SECTORS),
             (TERRAIN, Kind::Pack, TERRAIN_SECTORS),
@@ -312,21 +345,18 @@ pub fn plan(sectors: u64) -> Result<Table, Error> {
             });
             start += size;
         }
+        table.volumes[3] = table.store_extent(sectors);
     } else {
         // Small media keep the table area minimal and give rides the rest.
         let rides = sectors.checked_sub(TABLE).filter(|s| *s > 0);
-        volumes[0] = Some(Extent {
+        table.volumes[0] = Some(Extent {
             name: RIDES,
             kind: Kind::Log,
             start: TABLE,
             sectors: rides.ok_or(Error::Small)?,
         });
     }
-    Ok(Table {
-        generation: 1,
-        planned: sectors,
-        volumes,
-    })
+    Ok(table)
 }
 
 /// Write the default table over a blank, legacy or lost one and return it.
@@ -343,6 +373,40 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
     table.encode(sector);
     for copy in [1, 0] {
         media.owned_write(copy, sector)?;
+    }
+    Ok(table)
+}
+
+/// Add STORE over the unallocated tail of the current table: the one
+/// migration a table from before STORE needs. The table with one more
+/// extent and the next generation goes to copy 1, then copy 0, so a cut
+/// leaves the old table or the new one; no existing extent moves or changes.
+/// Running it again converges: a table that has STORE is written only to a
+/// copy that does not hold it yet, so an interrupted migration completes.
+/// Without a table (blank, legacy or lost) it fails with `Missing`; a foreign
+/// table, or a STORE of another kind, is `Foreign`. Neither writes anything.
+pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, Error> {
+    let mut table = match read(media, sector)? {
+        Layout::Table(table) => table,
+        Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing),
+    };
+    match table.find(&STORE) {
+        Some(store) if store.kind != Kind::Store => return Err(Error::Foreign),
+        Some(_) => {}
+        None => {
+            let store = table.store_extent(media.owned_info()?.sectors);
+            let slot = table.volumes.iter_mut().find(|v| v.is_none());
+            *slot.ok_or(Error::Small)? = Some(store.ok_or(Error::Small)?);
+            table.generation += 1;
+        }
+    }
+    let mut copy = [0u8; SECTOR_SIZE];
+    table.encode(sector);
+    for index in [1, 0] {
+        media.owned_read(index, &mut copy)?;
+        if copy != *sector {
+            media.owned_write(index, sector)?;
+        }
     }
     Ok(table)
 }

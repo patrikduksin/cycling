@@ -262,6 +262,38 @@ class VolumesTests(unittest.TestCase):
             volumes.run(Namespace(action='terrain-verify', file=Path('pack')), 'port')
         self.assertEqual(order, ['hash', 'connect', 'session', ('verify', (1, b'', 2))])
 
+    def test_add_store_runs_the_line_command_and_reports_a_refusal(self):
+        sent = []
+
+        class Connection:
+            def __init__(self, status):
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def terminal_command(self, command):
+                sent.append(command)
+                return {'status': self.status, 'data': 'layout=volumes store=5244928+532479:store'}
+
+        with tempfile.TemporaryDirectory() as directory:
+            for status in ('OK', 'UNINITIALIZED'):
+                with mock.patch.multiple(
+                    volumes,
+                    private_path=lambda _: Path(directory),
+                    UsbConnection=lambda *_, status=status: Connection(status),
+                ):
+                    if status == 'OK':
+                        result = volumes.run(Namespace(action='add-store'), 'port')
+                        self.assertEqual(result, {'status': 'layout=volumes store=5244928+532479:store'})
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'VOLUME ADD STORE: UNINITIALIZED'):
+                            volumes.run(Namespace(action='add-store'), 'port')
+        self.assertEqual(sent, ['VOLUME ADD STORE', 'VOLUME ADD STORE'])
+
     def test_verify_reports_a_differing_pack(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.pack(directory)

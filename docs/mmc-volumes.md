@@ -9,13 +9,16 @@ so code using one volume cannot reach another one or the table.
 | `RIDES` | 1 GiB, about 2,330 h | VANA (`apps/vana/src/ride/bulk.rs`) | The sector log of bulk rides ([ride recording](ride-recording.md)) |
 | `FILES` | 256 MiB | `firmware_services::files` | Up to 128 named files of at most 1 MiB: workouts, workout records, ride facts, bests, the course, companion settings |
 | `TERRAIN` | 1.25 GiB | `firmware_services::pack` | One opaque pack written by the host and read by the firmware |
-| unallocated | about 260 MiB | | Room for later volumes |
+| `STORE` | the rest, about 260 MiB | `firmware_services::store` | Growable append-only files in directories, such as ride traces in `traces/` |
 
 The layout code is `firmware_services::volume`. Relative sectors 0 and 1 hold
 two CRC-sealed copies of the table, and volumes start on 1 MiB boundaries.
 Readers use the valid copy with the newest generation. A table this firmware
 cannot use (newer version, unknown kind, or extents beyond the region) is
 `foreign` and is never overwritten.
+
+`STORE` is the last volume. New data areas are directories in it, not new
+volumes.
 
 ## Creating the table, and regions from before volumes
 
@@ -29,6 +32,43 @@ shows `state=needs_init`. Nothing is written until an initialize, which makes
 the old records unreachable. If both table copies are damaged but `RIDES`
 still holds a log, the layout is `lost` (the rides are corrupt, not blank).
 `VOLUME INIT` then rewrites the default table, which restores access to the log.
+
+## Adding STORE to a table from before it
+
+Tables written before `STORE` existed hold `RIDES`, `FILES` and `TERRAIN`
+and leave about 260 MiB unallocated. Only the owner adds `STORE`, with
+`VOLUME ADD STORE` or `cycling volumes add-store`:
+
+1. The command reads the table. It writes nothing when there is no table
+   (`blank`, `legacy` or `lost`: `UNINITIALIZED`) or the table is `foreign`.
+2. It adds one extent, `STORE`, from the 1 MiB boundary after the last volume
+   to the end of the region, and increments the generation. No other extent
+   moves or changes.
+3. It writes the new table to copy 1, then to copy 0. A power cut leaves the
+   old table or the new one.
+4. It formats an empty store in `STORE` if the volume holds none. A store
+   that exists is kept.
+
+The command is idempotent. Run it again after a power cut: it writes the new
+table only to a copy that does not hold it yet, then formats the store if
+needed. A table that already has `STORE`, such as one from `VOLUME INIT`,
+only gets its store formatted. Firmware from before `STORE` reports a
+migrated table as `foreign` and cannot open any volume until a newer build
+runs again. It never overwrites a foreign table, so no data is lost.
+
+## Store
+
+`STORE` holds growable files that are written by appending. A name is a
+path such as `traces/0001`, and a directory is a name prefix such as
+`traces/`. Two copy-on-write metadata copies hold the directory (64 files)
+and a table of 256 KiB data chunks. Each data sector is a self-checking
+record, so an append writes no metadata and a power cut loses at most the
+bytes appended since the last sync. When the store is full, an appender
+given a directory deletes the oldest closed file in it (rollover). Every
+operation does a bounded number of sector operations, whatever the volume
+size. The module documentation in `packages/services/src/store.rs` lists
+them, and the power-cut property test in `store/tests.rs` cuts power at
+every write.
 
 ## Files
 
@@ -60,12 +100,14 @@ session and refuses to start one while a ride is recording.
 
 ```sh
 cycling volumes inspect                       # table, terrain state, file store
+cycling volumes add-store                     # add STORE to a table from before it
 cycling terrain-write pack.bin --tag CHILE-V1 --verify   # resumes a matching writing pack
 cycling terrain-verify pack.bin
 cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
 ```
 
-Line commands: `VOLUME [STATUS|INIT|TRANSFER]`, `TERRAIN [STATUS]` and
-`FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]`. The simulator
-supports the line commands. Its `Sim::install_terrain`, `Sim::put_file` and
-`Sim::file` stand in for the host transfer.
+Line commands: `VOLUME [STATUS|INIT|ADD STORE|TRANSFER]`, `TERRAIN [STATUS]`,
+`FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]` and
+`STORE [STATUS|LIST index]`. The simulator supports the line commands. Its
+`Sim::install_terrain`, `Sim::put_file` and `Sim::file` stand in for the host
+transfer.

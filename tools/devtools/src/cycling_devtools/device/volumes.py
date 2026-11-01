@@ -71,7 +71,7 @@ STATUS = [
     'empty',
 ]
 LAYOUTS = {0: 'blank', 1: 'legacy', 2: 'volumes', 3: 'foreign', 4: 'lost'}
-KINDS = {1: 'log', 2: 'pack', 3: 'files'}
+KINDS = {1: 'log', 2: 'pack', 3: 'files', 4: 'store'}
 PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
 NAME = 40
 ENTRY = 2 + NAME + 12
@@ -398,16 +398,21 @@ def files_get(transfer, name, output):
     return {**stat, 'name': name}
 
 
+# Table writes run as ordinary terminal commands, outside the transfer session.
+LINE_ACTIONS = {'init': 'VOLUME INIT', 'add-store': 'VOLUME ADD STORE'}
+
+
 def run(args, port):
     log_dir = private_path(ROOT / '.local' / 'volumes')
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Hash packs before the transfer session starts, so its idle timeout cannot expire meanwhile.
     digest = digest_file(args.file) if args.action in ('terrain-write', 'terrain-verify') else None
     with UsbConnection(port, log_dir / f'usb-{time.time_ns()}.log') as connection:
-        if args.action == 'init':
-            reply = connection.terminal_command('VOLUME INIT')
+        if args.action in LINE_ACTIONS:
+            command = LINE_ACTIONS[args.action]
+            reply = connection.terminal_command(command)
             if reply['status'] != 'OK':
-                raise RuntimeError(f'VOLUME INIT: {reply["status"]} {reply["data"]}')
+                raise RuntimeError(f'{command}: {reply["status"]} {reply["data"]}')
             return {'status': reply['data']}
         transfer = open_session(connection)
         try:
@@ -443,6 +448,10 @@ def main():
     actions = parser.add_subparsers(dest='action', required=True)
     actions.add_parser('inspect', help='volume table, terrain pack and file store')
     actions.add_parser('init', help='write the default volume table over a blank or legacy region')
+    actions.add_parser(
+        'add-store',
+        help='add the STORE volume to a table from before it, in the unallocated tail, and format its store',
+    )
     write = actions.add_parser('terrain-write', help='install a terrain pack from a file (resumable)')
     write.add_argument('file', type=Path)
     write.add_argument('--tag', required=True, help='pack format tag, up to 16 ASCII characters')

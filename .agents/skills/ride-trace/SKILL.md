@@ -5,11 +5,13 @@ description: Turn a rider's account of a ride problem into the moment in the rid
 
 # Ride trace
 
-The device records every power-on session as a trace: each input VANA read
+The simulator records every power-on session as a trace: each input VANA read
 (buttons, ANT and BLE sensors, GPS, barometer, battery, commands, the phone
 server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
-main page's readings once a second, sounds, warnings). The seen layer is ground
+main page's readings once a second on the ride pages, each cue note,
+warnings). The device does not record traces yet: its recorder is phase 4,
+still pending, so every trace today comes from the simulator. The seen layer is ground
 truth for finding the moment; the inputs drive the replay. The trace holds only
 what VANA read: a BLE sensor shows as VANA's link to it and the packets it took,
 never as advertisements or anything else on the air, so a sensor that never
@@ -18,14 +20,15 @@ text: start there, and open a PNG only to confirm what the text says.
 
 ## 1. Get the trace
 
-- From the device: `cycling store get traces/<file>` (arguments in
-  `cycling store --help`). A device trace has no `.origin`, so its replay
-  starts on blank media: rides and settings saved before that power-on are
-  absent. Keep it under `.local/` and never commit it: a trace records the
-  rider's location and the secrets a replay needs, the password of each
-  `WIFI CONFIG` command and the token of each phone request.
 - From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
   `<name>.trace` with the media it started on in `<name>.origin`.
+- From the device, once phase 4 lands (pending): `cycling store get
+  traces/<file>` (arguments in `cycling store --help`). A device trace has
+  no `.origin`, so its replay starts on blank media: rides and settings saved
+  before that power-on are absent. Keep it under `.local/` and never commit
+  it: a trace records the rider's location and the secrets a replay needs,
+  the password of each `WIFI CONFIG` command and the token of each phone
+  request.
 
 `cycling trace origin <trace>` says in words what a replay starts from: the
 power-on number, settings, VANA's saved sensors and setup step, rides on
@@ -53,7 +56,9 @@ that changed with it (`with ride auto_paused`), a toast, `at power-on`, or
 
 Every line opens with two clocks: `03:10.000 ride 02:47` is session time
 (mm:ss.mmm since power-on) and ride time (mm:ss of recording; it stops while
-paused, `--:--` outside a ride). A rider's "40 minutes in" is ride time:
+paused, `--:--` outside a ride). Ride time follows the ride time VANA
+showed, so it carries on when a card failure moves the ride to internal
+flash. A rider's "40 minutes in" is ride time:
 `r40:00`. Time options take `40:00`, `1:02:03`, `90s`, `40m`, `2500ms`, with a
 leading `r` for ride time.
 
@@ -71,7 +76,7 @@ explains it:
 | a page did or did not come up | `find <trace> page --where climb` |
 | a message flashed | `find <trace> toast` |
 | the screen changed, a page vanished | `find <trace> page`: each page with its cause; then `find <trace> input` |
-| a beep or an alarm | `find <trace> sound`: each note names its cue (`pattern 22: radar approach`) |
+| a beep or an alarm | `find <trace> sound`: each note names the cue VANA played it for (`pattern 22: radar approach`) |
 | a sensor dropped | the summary's silences line; `find <trace> stale`, `find <trace> ant` |
 | something about saving | `find <trace> storage` |
 | it froze or stuttered | `find <trace> gap` |
@@ -84,14 +89,19 @@ BLE packets, ANT requests, entropy) and entries that only repeat their source;
 `--kinds all --all` shows everything, `--kinds seen` or `--kinds ant,shown`
 narrows it. `phone`, `power`, `display` and `buzzer` show the phone access
 point and server, power control, the backlight and the buzzer; a
-`WIFI CONFIG` command shows without its password. ANT+ packets read as words (`power#1234 power 200 W, cadence
+`WIFI CONFIG` command shows without its password and a phone request without
+its session token (`t=(not shown)`). ANT+ packets read as words (`power#1234 power 200 W, cadence
 86 rpm (event 60)`, heart rate, cadence and wheel rates, radar targets);
 `--hex` adds the bytes.
 
 Two checks before you trust a reading or a page change:
 
-- **Could the rider see it?** The `shown` line always holds the main page's
-  readings, whatever page was up. A page line's `shows` lists what that page
+- **Could the rider see it?** VANA emits a `shown` line once a second on
+  every ride page (main, climb, map, back, stats, lap and paused), and it
+  always holds the main page's readings, whatever page was up. Its values are
+  the ones the page glides to, before the glide, with power as the 3 s
+  average: the number on screen can trail a change for a moment, so confirm
+  a borderline reading in `screens.txt`. A page line's `shows` lists what that page
   draws (`ride/climb` power,hr,grade; `ride/map` dist; `ride/back` none), so
   `hr=--` while the rider was on `ride/back` is a gap in the data the rider
   never saw. The main page's lower pair is the rider's choice; the tool
@@ -103,9 +113,10 @@ Two checks before you trust a reading or a page change:
   during the climb; then the page stays where they put it. "The page
   vanished" is often that.
 
-A note's cue comes from VANA's palette by the patterns it played; where
-several cues spell the same notes the line names each (`lap or radar close`),
-so read it with what else happened then (a LAP toast, radar packets).
+Each note names the cue VANA played it for and its place in that cue
+(`pattern 0: still paused (2 of 3)`). A cue with fewer notes heard than its
+count was cut short by a later cue or the end of the trace. A pattern with no
+cue was not VANA's, such as a console `SOUND PLAY`.
 
 Done when you can write one sentence of the form "at `<session> ride <ride>`
 the rider saw X, and the inputs then were Y". When Y explains X (the meter
@@ -118,7 +129,9 @@ write a test only for what VANA got wrong.
 session from power-on, records from `--from`, and prints the absolute path of
 each artifact. They land in `.local/replay/<trace name>-<from>/` in the
 checkout you ran it from (`--out DIR` puts them elsewhere); a rerun with the
-same trace and `--from` replaces them. Read them in this order:
+same trace and `--from` replaces them. A directory is replaced only when a
+replay or scenario wrote it (it holds `.simulator-output`) or it is empty;
+any other `--out` is refused, so a mistyped path never loses files. Read them in this order:
 
 - `screens.txt`: the screen's text at each screenshot, one line each.
 - `divergence.txt`: where the replay parted from the recording inside the
@@ -134,10 +147,13 @@ same trace and `--from` replaces them. Read them in this order:
   to compare with the recording line by line.
 
 The mode follows the build. A trace names the commit that recorded it (the
-summary's `build`; `unknown` for traces from before builds were stamped).
-The default, `--mode auto`, replays strict when this checkout built that
-commit and has no uncommitted change under `apps`, `packages` or
-`tools/simulator`, and stimulus otherwise; the `mode` line says which and why.
+summary's `build`). It is `unknown` for a build with uncommitted changes,
+which no commit holds, and for traces from before builds were stamped. A
+build with uncommitted changes stamps itself `<commit>-dirty`. The default,
+`--mode auto`, replays strict when this checkout built that commit with no
+uncommitted change under `apps`, `packages`, `tools/simulator`, `vendor`,
+`patches`, `.cargo` or the Cargo files, and stimulus otherwise; the `mode`
+line says which and why.
 
 - `stimulus` runs this checkout against the recorded world: sensors, GPS and
   buttons arrive when they did, and the ANT radio is a model. It is what a
@@ -176,8 +192,8 @@ Done when the screenshot at the moment shows what the rider described, or
    reading (`time`, `speed`, `power`, `hr`, `cad`, `dist`, `grade`) or `page`,
    `toast` or `ride`. It refuses an expectation the recording already meets.
    Without `--expect`, the expectation is a `todo!()` to replace.
-3. Paste it into `tools/simulator/tests/trace_tools.rs`, or a test file beside
-   it. Run it: it goes red on the expectation, with the recorded value in the
+3. Paste it into `tools/simulator/tests/trace_tools.rs`, or a new test file
+   beside it: it brings its own imports and `cycling` gate. Run it: it goes red on the expectation, with the recorded value in the
    message. A red in the characterization means the replay itself differs;
    go back to step 4.
 4. Fix VANA; the test goes green. The characterization keeps the rest of the

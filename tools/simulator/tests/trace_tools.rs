@@ -850,3 +850,56 @@ fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
         "{unwatched:?} are not in BUILD_SOURCES"
     );
 }
+
+fn source_files(dir: &Path, out: &mut String) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            source_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push_str(&std::fs::read_to_string(&path).unwrap());
+        }
+    }
+}
+
+#[test]
+fn the_ride_trace_skill_matches_where_traces_come_from_and_what_shown_holds() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let skill = std::fs::read_to_string(root.join(".agents/skills/ride-trace/SKILL.md")).unwrap();
+    let mut firmware = String::new();
+    source_files(&root.join("devices/c606/src"), &mut firmware);
+    if !firmware.contains("report_seen") {
+        assert!(
+            skill.contains("The device does not record traces yet") && skill.contains("phase 4"),
+            "the C606 firmware records no trace, and the skill must say so"
+        );
+    }
+    let mut pages = std::collections::BTreeSet::new();
+    for name in ["power-dropout-after-descent", "laps-and-a-menu"] {
+        let timeline = timeline(name);
+        for entry in timeline.entries.iter().filter(|e| e.kind == Kind::Shown) {
+            if let Some((_, page)) = timeline.seen_at(entry.at.session_ms).page {
+                pages.insert(page);
+            }
+        }
+    }
+    assert!(
+        pages.len() > 1,
+        "shown is emitted on more than the main page: {pages:?}"
+    );
+    let listed = skill
+        .split_once("every ride page (")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map_or("", |(list, _)| list);
+    for page in &pages {
+        let page = page.strip_prefix("ride/").unwrap_or(page);
+        assert!(
+            listed.contains(page),
+            "the skill lists {page} among the pages shown is emitted on: {listed:?}"
+        );
+    }
+    assert!(
+        skill.contains("before the glide"),
+        "shown holds pre-glide values"
+    );
+}

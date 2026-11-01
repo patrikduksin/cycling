@@ -8205,16 +8205,42 @@ mod mutations {
         pub trace: &'static [u8],
         frames: Vec<u64>,
         media: Vec<u8>,
+        settings: Vec<u8>,
+        card: u64,
+        backlight: (u8, u32),
+    }
+
+    type Outputs = (Vec<u64>, Vec<u8>, Vec<u8>, u64, (u8, u32));
+
+    /// What a session left behind: its frames, its ride journal, its saved
+    /// settings, the sectors it wrote to the card, and the backlight.
+    fn outputs(sim: &mut Sim) -> Outputs {
+        let power = sim.device.power.0.borrow();
+        let backlight = (power.brightness, power.writes);
+        drop(power);
+        (
+            sim.frame_hashes(),
+            sim.ride_media(),
+            sim.device
+                .media
+                .contents(device_api::storage::Region::Configuration),
+            sim.device.bulk.digest(),
+            backlight,
+        )
     }
 
     pub fn record(sim: Sim, scenario: fn(&mut Sim)) -> Recording {
         let mut sim = sim;
         scenario(&mut sim);
         let capture = sim.capture();
+        let (frames, media, settings, card, backlight) = outputs(&mut sim);
         Recording {
             trace: Vec::leak(capture.trace.clone()),
-            frames: sim.frame_hashes(),
-            media: sim.ride_media(),
+            frames,
+            media,
+            settings,
+            card,
+            backlight,
             capture,
         }
     }
@@ -8302,7 +8328,7 @@ mod mutations {
             Event::StorageFault(mut fault) => {
                 use firmware_services::trace::StorageError;
                 match fault.landed {
-                    0 => {
+                    0..=5 => {
                         fault.error = match fault.error {
                             StorageError::Unsupported => StorageError::Unavailable,
                             _ => StorageError::Unsupported,
@@ -8314,7 +8340,7 @@ mod mutations {
             }
             Event::Refused { output, attempt } => Event::Refused {
                 output,
-                attempt: attempt + 1,
+                attempt: attempt.wrapping_add(1),
             },
             Event::SoundRequest { play, result } => Event::SoundRequest {
                 play,
@@ -8333,9 +8359,10 @@ mod mutations {
                 start,
                 result: flip(result),
             },
-            Event::ServerRead { id, part, more } if !part.is_empty() => {
+            Event::ServerRead { id, part, more } if part.iter().any(u8::is_ascii_digit) => {
                 let mut changed = part.to_vec();
-                changed[0] ^= 0x20;
+                let digit = changed.iter_mut().find(|byte| byte.is_ascii_digit())?;
+                *digit = if *digit == b'9' { b'0' } else { *digit + 1 };
                 Event::ServerRead {
                     id,
                     part: Vec::leak(changed),
@@ -8346,6 +8373,79 @@ mod mutations {
                 id,
                 taken: taken.saturating_sub(1),
             },
+            Event::ServerFinish(id) => Event::ServerFinish(id + 1),
+            Event::Pass { now_ms } => Event::Pass { now_ms: now_ms + 5 },
+            Event::AntRadio(mut radio) => {
+                radio.scanning = !radio.scanning;
+                Event::AntRadio(radio)
+            }
+            Event::AntDiscoveries(mut found) => {
+                found[0] = match found[0] {
+                    Some(_) => None,
+                    None => found.iter().flatten().next().copied(),
+                };
+                Event::AntDiscoveries(found)
+            }
+            Event::AntLink {
+                channel,
+                snapshot: Some(mut snapshot),
+            } => {
+                snapshot.stale = !snapshot.stale;
+                Event::AntLink {
+                    channel,
+                    snapshot: Some(snapshot),
+                }
+            }
+            Event::AntSend(Some(mut send)) => {
+                send.stage = device_api::ant::SendStage::Uncertain;
+                Event::AntSend(Some(send))
+            }
+            Event::BleLink {
+                availability,
+                mut snapshot,
+            } => {
+                snapshot.disconnections += 1;
+                Event::BleLink {
+                    availability,
+                    snapshot,
+                }
+            }
+            Event::BleBattery(mut level) => {
+                level.raw = level.raw.wrapping_add(30);
+                Event::BleBattery(level)
+            }
+            Event::Startup(startup) => Event::Startup(match startup {
+                device_api::sensors::Startup::Ready => {
+                    device_api::sensors::Startup::RunningDegraded
+                }
+                _ => device_api::sensors::Startup::Ready,
+            }),
+            Event::SoundState(mut snapshot) => {
+                snapshot.state = device_api::sound::State::Failed;
+                Event::SoundState(snapshot)
+            }
+            Event::PowerControl(mut status) => {
+                status.ready = !status.ready;
+                Event::PowerControl(status)
+            }
+            Event::Backlight(_) => Event::Backlight(device_api::observation::Availability::Failed),
+            Event::AccessPoint { state, reach } => Event::AccessPoint {
+                state: match state {
+                    device_api::server::AccessPointState::Up { clients } => {
+                        device_api::server::AccessPointState::Up {
+                            clients: clients + 1,
+                        }
+                    }
+                    _ => device_api::server::AccessPointState::Failed,
+                },
+                reach,
+            },
+            Event::Server { request, room } => Event::Server {
+                request,
+                room: room / 2,
+            },
+            Event::Page(_) => Event::Page("bests"),
+            Event::Sound(pattern) => Event::Sound(pattern ^ 1),
             _ => return None,
         })
     }
@@ -8424,8 +8524,14 @@ mod mutations {
         let report = report
             .first
             .map(|first| format!("{:?} at {} ms", first.kind, first.at_ms));
-        let visible =
-            replayed.frame_hashes() != recording.frames || replayed.ride_media() != recording.media;
+        let visible = outputs(&mut replayed)
+            != (
+                recording.frames.clone(),
+                recording.media.clone(),
+                recording.settings.clone(),
+                recording.card,
+                recording.backlight,
+            );
         let handed = first_difference(recording.trace, &replayed.trace()).is_some();
         Caught {
             report,
@@ -8434,25 +8540,40 @@ mod mutations {
         }
     }
 
+    /// How a mutation must show. Most change what VANA does where the
+    /// report or the outputs see it; some heal, and then only the values
+    /// handed to VANA show it, proving the trace was their only source.
+    #[derive(Clone, Copy, Debug)]
+    pub enum Shows {
+        Directly,
+        Heals(&'static str),
+    }
+
+    /// Each row's middle event, mutated as the row says, must show as the
+    /// row expects. The unmutated trace must not, or the check proves
+    /// nothing.
     #[track_caller]
-    pub fn assert_every_mutation_shows(recording: &Recording, kinds: &[&str]) {
+    pub fn assert_every_mutation_shows(recording: &Recording, rows: &[(&str, Mutation, Shows)]) {
         let clean = replay(recording, recording.trace.to_vec());
         assert!(!clean.any(), "the unmutated trace replays clean: {clean:?}");
         let mut missed = Vec::new();
-        for &kind in kinds {
-            for how in [Mutation::Drop, Mutation::Alter] {
-                let Some(trace) = mutated(recording.trace, kind, how) else {
-                    assert!(how == Mutation::Alter, "the trace holds no {kind}");
-                    continue;
-                };
-                let caught = replay(recording, trace);
-                println!("| {kind} | {how:?} | {} |", caught.how());
-                if !caught.any() {
-                    missed.push((kind, how));
-                }
+        for &(kind, how, shows) in rows {
+            let trace = mutated(recording.trace, kind, how)
+                .unwrap_or_else(|| panic!("no {kind} to {how:?} in the trace"));
+            let caught = replay(recording, trace);
+            let (shown, why) = match shows {
+                Shows::Directly => (caught.report.is_some() || caught.visible, ""),
+                Shows::Heals(why) => (caught.any(), why),
+            };
+            println!("| {kind} | {how:?} | {} | {why} |", caught.how());
+            if !shown {
+                missed.push((kind, how, shows));
             }
         }
-        assert!(missed.is_empty(), "mutations that did not show: {missed:?}");
+        assert!(
+            missed.is_empty(),
+            "mutations that did not show as expected: {missed:?}"
+        );
     }
 }
 
@@ -8470,15 +8591,39 @@ fn a_short_ride_with_every_sensor(sim: &mut Sim) {
     sim.stop_ride();
 }
 
+type Row = (&'static str, mutations::Mutation, mutations::Shows);
+
+/// Rows that drop and alter each kind and expect both to show directly,
+/// with `heals` in place of the rows it names.
+fn rows(kinds: &[&'static str], heals: &[Row]) -> Vec<Row> {
+    use mutations::{Mutation, Shows};
+    let mut rows: Vec<Row> = kinds
+        .iter()
+        .flat_map(|&kind| [Mutation::Drop, Mutation::Alter].map(|how| (kind, how, Shows::Directly)))
+        .collect();
+    for &(kind, how, shows) in heals {
+        let row = rows
+            .iter_mut()
+            .find(|row| (row.0, row.1) == (kind, how))
+            .unwrap_or_else(|| panic!("{kind} {how:?} heals but is not a row"));
+        row.2 = shows;
+    }
+    rows
+}
+
+fn heals(kind: &'static str, how: mutations::Mutation, why: &'static str) -> Row {
+    (kind, how, mutations::Shows::Heals(why))
+}
+
 #[test]
 fn every_sensor_input_mutated_shows_in_its_replay() {
+    use mutations::Mutation::{Alter, Drop};
     let recording = mutations::record(equip(hashed().boot()), a_short_ride_with_every_sensor);
-    mutations::assert_every_mutation_shows(
-        &recording,
+    let once = "the next report, within a second, replaces it";
+    let mut rows = rows(
         &[
             "Pass",
             "Input",
-            "Command",
             "AntRadio",
             "AntDiscoveries",
             "AntLink",
@@ -8500,10 +8645,102 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
             "Page",
             "Sound",
         ],
+        &[
+            heals(
+                "Pass",
+                Drop,
+                "its events join the pass before; nothing VANA shows moves by 10 ms",
+            ),
+            heals(
+                "Pass",
+                Alter,
+                "5 ms later; nothing VANA shows moves by 5 ms",
+            ),
+            heals(
+                "AntRadio",
+                Alter,
+                "no screen this ride shows reads the scan flag",
+            ),
+            heals(
+                "AntDiscoveries",
+                Drop,
+                "the sensors are already chosen; a scan list changes nothing",
+            ),
+            heals(
+                "AntDiscoveries",
+                Alter,
+                "the sensors are already chosen; a scan list changes nothing",
+            ),
+            heals("AntLink", Drop, once),
+            heals("AntLink", Alter, once),
+            heals("AntPacket", Drop, "the next page's running totals catch up"),
+            heals(
+                "AntRequest",
+                Alter,
+                "the channel snapshots that follow still report the sensor connected",
+            ),
+            heals(
+                "BleLink",
+                Drop,
+                "only the strap's counters change there, and no screen shows them",
+            ),
+            heals(
+                "BleLink",
+                Alter,
+                "only the strap's counters change there, and no screen shows them",
+            ),
+            heals("BlePacket", Drop, once),
+            heals("BlePacket", Alter, once),
+            heals(
+                "BleBattery",
+                Drop,
+                "the strap's battery reaches no screen in this ride",
+            ),
+            heals(
+                "BleBattery",
+                Alter,
+                "the strap's battery reaches no screen in this ride",
+            ),
+            heals("Physical", Drop, once),
+            heals("Physical", Alter, once),
+            heals("Power", Drop, once),
+            heals("Power", Alter, once),
+            heals(
+                "Startup",
+                Alter,
+                "VANA shows a ready and a degraded companion alike",
+            ),
+            heals(
+                "SoundState",
+                Drop,
+                "VANA reads only its play answers, never the buzzer's state",
+            ),
+            heals(
+                "SoundState",
+                Alter,
+                "VANA reads only its play answers, never the buzzer's state",
+            ),
+            heals(
+                "StorageFault",
+                Drop,
+                "one of the absent card's refusals; the next request is refused again",
+            ),
+            heals(
+                "StorageFault",
+                Alter,
+                "one of the absent card's refusals; the next request is refused again",
+            ),
+        ],
     );
+    rows.push(heals(
+        "Command",
+        Drop,
+        "the middle command only reads the ride's state",
+    ));
+    mutations::assert_every_mutation_shows(&recording, &rows);
     let marked = mutations::with_too_large(recording.trace);
     let caught = mutations::replay(&recording, marked);
-    println!("| TooLarge | Insert | {} |", caught.how());
+    println!("| TooLarge | Insert | {} | |", caught.how());
     assert!(caught.report.is_some(), "{caught:?}");
 }
 
@@ -8516,7 +8753,15 @@ fn a_power_meter_calibrated(sim: &mut Sim) {
 #[test]
 fn every_ant_send_mutated_shows_in_its_replay() {
     let recording = mutations::record(equip(hashed().boot()), a_power_meter_calibrated);
-    mutations::assert_every_mutation_shows(&recording, &["AntSend", "AntRequest"]);
+    let rows = rows(
+        &["AntSend", "AntRequest"],
+        &[heals(
+            "AntSend",
+            mutations::Mutation::Alter,
+            "the next status poll reports the send again",
+        )],
+    );
+    mutations::assert_every_mutation_shows(&recording, &rows);
 }
 
 fn a_course_from_the_phone(sim: &mut Sim) {
@@ -8536,8 +8781,8 @@ fn every_phone_input_mutated_shows_in_its_replay() {
     sim.fit_bulk(Presence::Ready);
     sim.format_files();
     let recording = mutations::record(equip(sim.boot()), a_course_from_the_phone);
-    mutations::assert_every_mutation_shows(
-        &recording,
+    use mutations::Mutation::{Alter, Drop};
+    let rows = rows(
         &[
             "AccessPoint",
             "AccessPointRequest",
@@ -8547,7 +8792,25 @@ fn every_phone_input_mutated_shows_in_its_replay() {
             "ServerFinish",
             "Entropy",
         ],
+        &[
+            heals(
+                "AccessPoint",
+                Alter,
+                "VANA reads only whether a phone joined, not how many",
+            ),
+            heals(
+                "Server",
+                Alter,
+                "VANA writes what fits, and the response still completes",
+            ),
+            heals(
+                "ServerFinish",
+                Drop,
+                "what finishing changed then follows the write before it, in the same pass",
+            ),
+        ],
     );
+    mutations::assert_every_mutation_shows(&recording, &rows);
 }
 
 fn a_ride_with_faults(sim: &mut Sim) {
@@ -8571,14 +8834,45 @@ fn every_fault_input_mutated_shows_in_its_replay() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
     let recording = mutations::record(equip(sim.boot()), a_ride_with_faults);
-    mutations::assert_every_mutation_shows(&recording, &["StorageFault", "Refused", "Backlight"]);
+    mutations::assert_every_mutation_shows(
+        &recording,
+        &rows(&["StorageFault", "Refused", "Backlight"], &[]),
+    );
+}
+
+#[test]
+fn every_card_fault_mutated_shows_in_its_replay() {
+    for scenario in [a_ride_whose_card_fails, a_ride_whose_card_goes_missing] {
+        let mut sim = hashed();
+        sim.fit_bulk(Presence::Ready);
+        let recording = mutations::record(equip(sim.boot()), scenario);
+        let after = "one of the card's refusals after the ride moved to internal flash";
+        let rows = rows(
+            &["StorageFault"],
+            &[
+                heals("StorageFault", mutations::Mutation::Drop, after),
+                heals("StorageFault", mutations::Mutation::Alter, after),
+            ],
+        );
+        mutations::assert_every_mutation_shows(&recording, &rows);
+    }
 }
 
 #[test]
 fn every_power_input_mutated_shows_in_its_replay() {
     let recording = mutations::record(equip(hashed().boot()), a_ride_then_turned_off);
-    mutations::assert_every_mutation_shows(
-        &recording,
-        &["PowerRequest", "PowerControl", "PoweredOff"],
+    let mut rows = rows(
+        &["PowerRequest", "PowerControl"],
+        &[heals(
+            "PowerRequest",
+            mutations::Mutation::Alter,
+            "the status and the power loss recorded after it still carry the shutdown",
+        )],
     );
+    rows.push((
+        "PoweredOff",
+        mutations::Mutation::Drop,
+        mutations::Shows::Directly,
+    ));
+    mutations::assert_every_mutation_shows(&recording, &rows);
 }

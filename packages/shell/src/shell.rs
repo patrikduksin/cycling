@@ -18,6 +18,49 @@ use device_api::power::Power;
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
+const FNV_OFFSET: u32 = 0x811c_9dc5;
+const FNV_PRIME: u32 = 0x0100_0193;
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "`digest` reads two pixels as the word `first | second << 16`"
+);
+/// FNV-1a's step, then a xorshift. A multiply carries a bit only upward, so
+/// without the shift two words whose top bits differ cancel, and a second
+/// pixel's top bit is a word's.
+fn step(hash: u32, word: u32) -> u32 {
+    let hash = (hash ^ word).wrapping_mul(FNV_PRIME);
+    hash ^ hash >> 16
+}
+/// A row's pixels hashed two to a word, `first | second << 16`, and an odd
+/// last pixel alone. Each step maps the hash one to one, so a row that
+/// differs in one word always digests otherwise. A word a step halves the
+/// multiplies a frame waits on, and a word-aligned row, as the C606's DMA
+/// strips are, reads each word in one load.
+fn digest(hash: u32, pixels: &[u16]) -> u32 {
+    // SAFETY: every bit pattern is a valid u32, and `align_to` keeps the
+    // middle slice inside `pixels` with u32 alignment.
+    let (head, words, tail) = unsafe { pixels.align_to::<u32>() };
+    if !head.is_empty() {
+        return digest_pairs(hash, pixels);
+    }
+    // Four words a turn, so the loop's own count and branch cost less per pixel.
+    let (quads, words) = words.as_chunks::<4>();
+    let hash = quads.iter().fold(hash, |hash, &[a, b, c, d]| {
+        step(step(step(step(hash, a), b), c), d)
+    });
+    digest_pairs(
+        words.iter().fold(hash, |hash, &word| step(hash, word)),
+        tail,
+    )
+}
+fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
+    let (pairs, last) = pixels.as_chunks::<2>();
+    let hash = pairs.iter().fold(hash, |hash, &[first, second]| {
+        step(hash, u32::from(first) | u32::from(second) << 16)
+    });
+    last.iter()
+        .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Status,
@@ -46,6 +89,10 @@ pub struct Shell<D, I, P, B> {
     pub operations: u32,
     pub storage_max_ms: u64,
     pub display_submissions: u32,
+    /// A digest of the pixels on the panel.
+    panel: Option<u32>,
+    /// The digest `take_frame` last handed out.
+    taken: Option<u32>,
     /// The latest submission, rendering included; measured when `clock` is set.
     pub display_ms: u64,
     pub display_max_ms: u64,
@@ -134,6 +181,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             synthetic: Synthetic::new(),
             boot_id: 0,
             synthetic_events: 0,
+            panel: None,
+            taken: None,
             store,
             settings,
             settings_source: source,
@@ -200,6 +249,18 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     #[cfg(feature = "debug-harness")]
     pub fn take_synthetic(&mut self) -> Synthetic {
         core::mem::take(&mut self.synthetic)
+    }
+    /// A digest of the pixels on the panel, when they changed since the
+    /// last call.
+    pub fn take_frame(&mut self) -> Option<u32> {
+        let changed = self.panel != self.taken;
+        self.taken = self.panel;
+        self.panel.filter(|_| changed)
+    }
+    /// Forget the panel, so the next frame drawn counts as a change. Boards
+    /// boot through other frames; their traces start alike after this.
+    pub fn forget_frame(&mut self) {
+        (self.panel, self.taken) = (None, None);
     }
     /// The physical input source, for composition that records what `tick` took.
     pub fn input_source(&mut self) -> &mut I {
@@ -442,8 +503,13 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         result.is_ok()
     }
     /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
-    pub fn draw_rows(&mut self, row: impl FnMut(usize, &mut [u16])) {
+    pub fn draw_rows(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
         let started = self.clock.map(|clock| clock());
+        let mut frame = FNV_OFFSET;
+        let row = |y: usize, pixels: &mut [u16]| {
+            row(y, pixels);
+            frame = digest(frame, pixels);
+        };
         #[cfg(feature = "debug-harness")]
         {
             if self.harness.begin_frame(self.display.geometry()) {
@@ -464,6 +530,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         #[cfg(not(feature = "debug-harness"))]
         {
             self.display_error = self.display.submit(row).is_err();
+        }
+        if !self.display_error {
+            self.panel = Some(frame);
         }
         self.display_submissions = self.display_submissions.saturating_add(1);
         if let (Some(clock), Some(started)) = (self.clock, started) {
@@ -518,5 +587,37 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.fill_color = Some(color);
         self.draw_rows(|_, pixels| pixels.fill(color));
         self.dirty = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FNV_OFFSET, FNV_PRIME, digest};
+
+    #[test]
+    fn a_row_digests_two_pixels_a_word_wherever_it_sits_in_memory() {
+        let defined = |pixels: &[u16]| {
+            pixels.chunks(2).fold(FNV_OFFSET, |hash, pair| {
+                let word = u32::from(pair[0]) | pair.get(1).map_or(0, |&p| u32::from(p) << 16);
+                let hash = (hash ^ word).wrapping_mul(FNV_PRIME);
+                hash ^ hash >> 16
+            })
+        };
+        let mut words = [0u32; 130];
+        // SAFETY: a u16 view of u32s, which every bit pattern fits.
+        let (_, memory, _) = unsafe { words.align_to_mut::<u16>() };
+        for (x, pixel) in memory.iter_mut().enumerate() {
+            *pixel = (x as u16).wrapping_mul(0x9e37);
+        }
+        for start in [0, 1, 2] {
+            for len in 0..=245 {
+                let row = &memory[start..start + len];
+                assert_eq!(
+                    digest(FNV_OFFSET, row),
+                    defined(row),
+                    "{len} pixels from {start}"
+                );
+            }
+        }
     }
 }

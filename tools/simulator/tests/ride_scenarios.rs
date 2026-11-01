@@ -8342,10 +8342,7 @@ fn the_largest_phone_upload_reaches_the_trace_file_whole() {
     assert!(peak < capacity / 8, "the drain keeps up: {peak} B");
 }
 
-#[test]
-fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
-    use firmware_services::trace::origin::{Config, Media};
-    use firmware_services::trace::{Event, decode};
+fn a_redacted_phone_session_then_a_ride() -> (Sim, [String; 5]) {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
     sim.format_files();
@@ -8379,7 +8376,14 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     sim.start_ride();
     sim.advance(minutes(1));
     sim.stop_ride();
+    (sim, secrets)
+}
 
+#[test]
+fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
+    use firmware_services::trace::origin::{Config, Media};
+    use firmware_services::trace::{Event, decode};
+    let (mut sim, secrets) = a_redacted_phone_session_then_a_ride();
     let capture = sim.capture();
     let text = String::from_utf8_lossy(&capture.trace);
     for secret in &secrets {
@@ -8409,10 +8413,11 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
 
     let mut replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
-    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(report.first, None, "{report}");
     assert_eq!(
-        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace()),
-        None
+        report.count(shell_simulator::replay::Kind::Redacted),
+        2,
+        "the phone page draws the redacted credentials: {report}"
     );
     assert!(
         replayed.ride_media() == sim.ride_media(),
@@ -8426,6 +8431,55 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     );
     let placeholder = replayed.device.sdk.phone_status();
     assert!(placeholder.is_none(), "the session closed for the ride");
+}
+
+/// The capture, with the rider shown another page where its last page
+/// opened.
+fn with_the_last_page_unseen(
+    mut capture: shell_simulator::replay::Capture,
+) -> shell_simulator::replay::Capture {
+    use firmware_services::trace::{Event, decode};
+    let trace: &'static [u8] = Box::leak(capture.trace.clone().into_boxed_slice());
+    let (header, events) = decode(trace).unwrap();
+    let mut events: Vec<Event<'static>> = events.collect();
+    let last = events
+        .iter()
+        .rposition(|event| matches!(event, Event::Page(_)))
+        .unwrap();
+    events[last] = Event::Page("a page the rider never saw");
+    capture.trace = mutations::encode(&header, events);
+    capture
+}
+
+#[test]
+fn a_redacted_phone_session_leaves_a_later_difference_first() {
+    let (sim, _) = a_redacted_phone_session_then_a_ride();
+    let replayed = Sim::replay(&with_the_last_page_unseen(sim.capture()));
+    let report = replayed.device.report().unwrap();
+    let first = report.first.as_ref().expect("the altered page diverges");
+    assert_eq!(first.kind, shell_simulator::replay::Kind::Seen, "{report}");
+    assert!(
+        first.detail.contains("a page the rider never saw"),
+        "{report}"
+    );
+    assert!(
+        report.count(shell_simulator::replay::Kind::Redacted) > 0,
+        "{report}"
+    );
+}
+
+#[test]
+fn a_stimulus_replay_names_no_frame_in_what_the_rider_saw() {
+    let (sim, _) = a_redacted_phone_session_then_a_ride();
+    let capture = with_the_last_page_unseen(sim.capture());
+    let stimulus = shell_simulator::replay::Mode::Stimulus;
+    let replayed = Sim::replay_as(&capture, stimulus, |_| {});
+    let report = replayed.device.report().unwrap();
+    let first = report.first.as_ref().expect("the altered page diverges");
+    assert!(
+        first.detail.contains("a page the rider never saw") && !first.detail.contains("Frame("),
+        "a stimulus replay compares no frames: {report}"
+    );
 }
 
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
@@ -8881,6 +8935,7 @@ mod mutations {
                 room: room / 2,
             },
             Event::Page(_) => Event::Page("bests"),
+            Event::Frame(digest) => Event::Frame(digest ^ 1),
             Event::Sound {
                 pattern,
                 cue,
@@ -8896,7 +8951,10 @@ mod mutations {
         })
     }
 
-    fn encode(header: &Header<'_>, events: impl IntoIterator<Item = Event<'static>>) -> Vec<u8> {
+    pub fn encode(
+        header: &Header<'_>,
+        events: impl IntoIterator<Item = Event<'static>>,
+    ) -> Vec<u8> {
         let mut file = vec![0u8; 4096];
         let len = firmware_services::trace::encode_header(header, &mut file).unwrap();
         file.truncate(len);
@@ -8945,6 +9003,7 @@ mod mutations {
     pub struct Caught {
         pub report: Option<String>,
         pub visible: bool,
+        pub frames: bool,
         pub handed: bool,
     }
 
@@ -8973,7 +9032,9 @@ mod mutations {
         let report = report
             .first
             .map(|first| format!("{:?} at {} ms", first.kind, first.at_ms));
-        let visible = outputs(&mut replayed)
+        let outputs = outputs(&mut replayed);
+        let frames = shown(&outputs.0) != shown(&recording.frames);
+        let visible = outputs
             != (
                 recording.frames.clone(),
                 recording.media.clone(),
@@ -8985,8 +9046,17 @@ mod mutations {
         Caught {
             report,
             visible,
+            frames,
             handed,
         }
+    }
+
+    /// What the panel showed, frame by frame, without a frame drawn again
+    /// as it was.
+    fn shown(frames: &[u64]) -> Vec<u64> {
+        let mut shown = frames.to_vec();
+        shown.dedup();
+        shown
     }
 
     /// How a mutation must show. Most change what VANA does where the
@@ -9005,11 +9075,14 @@ mod mutations {
     pub fn assert_every_mutation_shows(recording: &Recording, rows: &[(&str, Mutation, Shows)]) {
         let clean = replay(recording, recording.trace.to_vec());
         assert!(!clean.any(), "the unmutated trace replays clean: {clean:?}");
-        let mut missed = Vec::new();
+        let (mut missed, mut silent) = (Vec::new(), Vec::new());
         for &(kind, how, shows) in rows {
             let trace = mutated(recording.trace, kind, how)
                 .unwrap_or_else(|| panic!("no {kind} to {how:?} in the trace"));
             let caught = replay(recording, trace);
+            if caught.frames && caught.report.is_none() {
+                silent.push((kind, how));
+            }
             let (shown, why) = match shows {
                 Shows::Directly => (caught.report.is_some() || caught.visible, ""),
                 Shows::Heals(why) => (caught.any(), why),
@@ -9022,6 +9095,10 @@ mod mutations {
         assert!(
             missed.is_empty(),
             "mutations that did not show as expected: {missed:?}"
+        );
+        assert!(
+            silent.is_empty(),
+            "strict replays that showed other frames and reported nothing: {silent:?}"
         );
     }
 }
@@ -9093,6 +9170,7 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
             "StorageFault",
             "Page",
             "Sound",
+            "Frame",
         ],
         &[
             heals(
@@ -9324,4 +9402,66 @@ fn every_power_input_mutated_shows_in_its_replay() {
         mutations::Shows::Directly,
     ));
     mutations::assert_every_mutation_shows(&recording, &rows);
+}
+
+/// A ride whose page turns on a press the harness sent over the terminal,
+/// mid-ride, as a host test drives a C606.
+#[cfg(feature = "debug-harness")]
+fn a_ride_paged_by_the_harness(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(seconds(30));
+    let (status, opened) = sim.command("HARNESS OPEN 1 60000");
+    assert_eq!(status, "OK", "{opened}");
+    let session = opened
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("session="))
+        .unwrap()
+        .to_string();
+    for command in ["INPUT BEGIN 1", "INPUT ADD 1 0 BUTTON 1", "INPUT RUN 1"] {
+        let (status, out) = sim.command(&format!("HARNESS {session} {command}"));
+        assert!(
+            matches!(status, "OK" | "ACCEPTED"),
+            "{command}: {status} {out}"
+        );
+    }
+    sim.advance(seconds(1));
+    expect_page(sim, "ride/stats");
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.done();
+}
+
+#[cfg(feature = "debug-harness")]
+#[test]
+fn a_ride_paged_by_the_harness_replays_exactly() {
+    use firmware_services::trace::Event;
+    let capture =
+        assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_the_harness, false);
+    let pressed = count_events(&capture.trace, |event| matches!(event, Event::Synthetic(_)));
+    assert_eq!(pressed, 1, "the harness pressed once");
+}
+
+fn a_ride_paged_by_a_press(sim: &mut Sim) {
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(seconds(30));
+    sim.press(Button::BottomLeft);
+    expect_page(sim, "ride/stats");
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.done();
+}
+
+#[track_caller]
+fn expect_page(sim: &Sim, page: &str) {
+    let seen = sim.seen().page.map(|(_, page)| page);
+    assert_eq!(seen.as_deref(), Some(page));
+}
+
+#[test]
+fn a_ride_paged_by_a_press_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_a_press, false);
 }

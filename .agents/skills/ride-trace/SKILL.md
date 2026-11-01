@@ -10,8 +10,9 @@ trace: each input VANA read (buttons, ANT and BLE sensors, GPS, barometer,
 battery, commands, the phone server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
 main page's readings once a second on the ride pages, each cue note,
-warnings). The seen layer is ground truth for finding the moment; the inputs
-drive the replay. Every 5 s (every minute in dark charging standby) the trace
+warnings, a digest of the panel's pixels each time they change). The seen
+layer is ground truth for finding the moment; the inputs drive the replay.
+Every 5 s (every minute in dark charging standby) the trace
 also holds the device's **health** (memory, slowest frame and pass, error
 counters, signal) and **activity** (where the CPU time went, per task, and
 what drew power); replays read past both. For a battery problem, go to
@@ -225,17 +226,21 @@ line says which and why.
   buttons arrive when they did, and the ANT radio is a model. It is what a
   changed build, a fix and every regression test use.
 - `strict` answers every call VANA makes from the recording and counts any
-  difference. It reproduces the recording frame for frame and tells a replay
-  fault from a VANA change. To get it for an older trace, check out its
-  `build` first.
+  difference. It reproduces the recording frame for frame, checks the
+  panel's pixels against the recorded digests, and tells a replay fault from
+  a VANA change. To get a strict replay of an older trace, check out its
+  `build` first. A stimulus replay does not compare the pixel digests.
 
 The replay starts from the trace's `.origin`; the header line's `media`
 says which kind and, for a pulled device trace, what the rebuild could not
 give back. Each such gap is a difference strict replay expects: a lost
 file shows as a `header` difference at the end (`replayed.trace` lists the
 media the replay found), and as a `rider-visible` one wherever VANA showed
-what the file held, such as a best or the course. Read the gap before you
-call a divergence a replay fault.
+what the file held, such as a best or the course. A device trace keeps its
+secrets redacted, so the phone page, which draws the session's network name,
+password and code, draws other pixels. A strict replay counts these frames
+as `redacted`, never as the first divergence, so a later difference still
+shows as first. Read the gap before you call a divergence a replay fault.
 
 Done when the screenshot at the moment shows what the rider described, or
 `divergence.txt` explains why it does not.

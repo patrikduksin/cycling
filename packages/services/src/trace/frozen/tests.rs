@@ -220,6 +220,7 @@ fn a_full_block_moves_on_to_the_next() {
     }
     let header = Header {
         version: crate::trace::VERSION,
+        oldest_reader: crate::trace::OLDEST_READER,
         build: [0; 20],
         boot: 1,
         profile: 0,
@@ -243,6 +244,7 @@ fn a_full_block_moves_on_to_the_next() {
 fn a_record_larger_than_a_block_leaves_a_marker() {
     let header = Header {
         version: crate::trace::VERSION,
+        oldest_reader: crate::trace::OLDEST_READER,
         build: [0; 20],
         boot: 1,
         profile: 0,

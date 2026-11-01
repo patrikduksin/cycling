@@ -6,6 +6,7 @@ use std::vec::Vec;
 
 const HEADER: Header<'static> = Header {
     version: VERSION,
+    oldest_reader: OLDEST_READER,
     build: [7; 20],
     boot: 42,
     profile: 1,
@@ -269,6 +270,7 @@ fn sample() -> Vec<Event<'static>> {
         Event::Command("RIDE STATUS"),
         Event::StorageFault(StorageFault {
             medium: Medium::Bulk,
+            attempt: 3,
             op: StorageOp::Write,
             at: 1_955_841,
             landed: 300,
@@ -276,6 +278,7 @@ fn sample() -> Vec<Event<'static>> {
         }),
         Event::StorageFault(StorageFault {
             medium: Medium::Data,
+            attempt: 0,
             op: StorageOp::Erase,
             at: 65_536,
             landed: 0,
@@ -414,7 +417,7 @@ fn a_torn_header_is_refused() {
 }
 
 #[test]
-fn a_tag_this_version_does_not_know_is_skipped() {
+fn a_record_this_version_cannot_read_is_kept_whole() {
     let mut payload = std::vec![0u8; 64];
     let mut w = Writer::new(&mut payload, 0);
     w.byte(SHORT_PASS | 10);
@@ -426,11 +429,17 @@ fn a_tag_this_version_does_not_know_is_skipped() {
     bytes[header + 2..header + 2 + len].copy_from_slice(&payload[..len]);
     let end = header + seal(&mut bytes[header..], len).unwrap();
     let (got, finish) = decoded(&bytes[..end]);
-    assert_eq!(
-        got,
-        [Event::Pass { now_ms: 10 }, Event::Pass { now_ms: 20 }]
-    );
+    let expected = [
+        Event::Pass { now_ms: 10 },
+        Event::Unknown {
+            tag: 120,
+            body: b"from a later version",
+        },
+        Event::Pass { now_ms: 20 },
+    ];
+    assert_eq!(got, expected);
     assert_eq!(finish, Some(End::Complete));
+    assert_eq!(decoded(&encode(&expected, 256)).0, expected);
 }
 
 #[test]
@@ -505,6 +514,7 @@ fn fields_a_later_version_appends_are_skipped() {
         w.varint(7);
         w.bytes(b"a later field");
     });
+    w.record(tag::STARTUP, |w| w.byte(200));
     w.byte(SHORT_PASS | 10);
     let len = w.len;
     let end = header_end + seal(&mut bytes[header_end..], len).unwrap();
@@ -515,6 +525,10 @@ fn fields_a_later_version_appends_are_skipped() {
         [
             Event::Pass { now_ms: 10 },
             Event::Entropy(7),
+            Event::Unknown {
+                tag: tag::STARTUP,
+                body: &[200],
+            },
             Event::Pass { now_ms: 20 },
         ]
     );
@@ -523,6 +537,21 @@ fn fields_a_later_version_appends_are_skipped() {
     let crc = crc32(&own[2..header_end - 4]).to_le_bytes();
     own[header_end - 4..header_end].copy_from_slice(&crc);
     assert_eq!(decode(&own[..end]).err(), Some(Error::Header));
+}
+
+#[test]
+fn a_trace_an_older_reader_cannot_read_is_refused() {
+    let mut bytes = std::vec![0u8; 128];
+    let broken = Header {
+        version: VERSION + 2,
+        oldest_reader: VERSION + 1,
+        ..HEADER
+    };
+    let len = encode_header(&broken, &mut bytes).unwrap();
+    assert_eq!(
+        decode(&bytes[..len]).err(),
+        Some(Error::Version(VERSION + 2))
+    );
 }
 
 #[test]

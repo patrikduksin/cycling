@@ -20,8 +20,13 @@ pub struct Fault {
     pub partial: usize,
     pub log: Vec<StorageFault>,
     pub script: std::collections::VecDeque<StorageFault>,
+    attempts: u32,
 }
 impl Fault {
+    pub fn begin_pass(&mut self) {
+        self.attempts = 0;
+    }
+
     fn fails(
         &mut self,
         region: Region,
@@ -29,10 +34,11 @@ impl Fault {
         at: usize,
         len: usize,
     ) -> Option<StorageFault> {
-        let scripted = self
-            .script
-            .iter()
-            .position(|f| f.medium == region.into() && f.op == op && f.at == at as u64);
+        let attempt = self.attempts;
+        self.attempts += 1;
+        let scripted = self.script.iter().position(|f| {
+            (f.medium, f.attempt, f.op, f.at) == (region.into(), attempt, op, at as u64)
+        });
         let fault = match scripted {
             Some(index) => self.script.remove(index)?,
             None if op == StorageOp::Read => return None,
@@ -47,6 +53,7 @@ impl Fault {
                 self.after = None;
                 StorageFault {
                     medium: region.into(),
+                    attempt,
                     op,
                     at: at as u64,
                     landed: self.partial.min(len) as u32,
@@ -169,7 +176,7 @@ impl FileFlash {
     /// A copy of a region's bytes, for inspection after a scenario.
     pub fn contents(&mut self, r: Region) -> Vec<u8> {
         let mut bytes = vec![0; self.geometry(r).capacity];
-        let _ = self.read(r, 0, &mut bytes);
+        let _ = self.raw_read(r, 0, &mut bytes);
         bytes
     }
     fn path(root: &Path, r: Region) -> PathBuf {
@@ -271,6 +278,20 @@ impl OwnedFlash for FileFlash {
         if let Some(fault) = fault {
             return Err(fault.error.flash());
         }
+        self.raw_read(r, offset, out)
+    }
+    fn program(&mut self, r: Region, offset: usize, bytes: &[u8]) -> Result<(), Error> {
+        self.mutation(r, offset, bytes, false)
+    }
+    fn erase(&mut self, r: Region, offset: usize, len: usize) -> Result<(), Error> {
+        self.check(r, offset, len, 4096)?;
+        self.mutation(r, offset, &vec![0xff; len], true)
+    }
+}
+impl FileFlash {
+    /// The region's bytes, as a host reading the medium sees them: no fault
+    /// meets it and the device's operations do not count it.
+    fn raw_read(&self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         let root = match &self.backing {
             Backing::Files { root, .. } => root,
             Backing::Memory(media) => {
@@ -288,12 +309,5 @@ impl OwnedFlash for FileFlash {
         f.seek(SeekFrom::Start(offset as u64))
             .and_then(|_| f.read_exact(out))
             .map_err(|_| Error::Failed)
-    }
-    fn program(&mut self, r: Region, offset: usize, bytes: &[u8]) -> Result<(), Error> {
-        self.mutation(r, offset, bytes, false)
-    }
-    fn erase(&mut self, r: Region, offset: usize, len: usize) -> Result<(), Error> {
-        self.check(r, offset, len, 4096)?;
-        self.mutation(r, offset, &vec![0xff; len], true)
     }
 }

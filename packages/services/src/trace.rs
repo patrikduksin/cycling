@@ -27,6 +27,10 @@ pub mod frozen;
 mod tests;
 
 pub const VERSION: u16 = 1;
+/// The oldest version that reads what this version writes. A later version
+/// that only appends fields and adds tags keeps it; one that changes the
+/// meaning of a field raises it.
+pub const OLDEST_READER: u16 = 1;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
@@ -34,6 +38,7 @@ const FRAME: usize = 2 + 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header<'a> {
     pub version: u16,
+    pub oldest_reader: u16,
     /// Git commit of the recording firmware, zero when unknown.
     pub build: [u8; 20],
     pub boot: u32,
@@ -179,11 +184,13 @@ pub enum StorageError {
 }
 
 /// A storage operation that failed, and how many of its bytes reached the
-/// medium first. `at` is a byte offset into a flash region, or a sector of
+/// medium first. `attempt` is its place among the medium's operations since
+/// the pass began; `at` is a byte offset into a flash region, or a sector of
 /// the bulk medium.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageFault {
     pub medium: Medium,
+    pub attempt: u32,
     pub op: StorageOp,
     pub at: u64,
     pub landed: u32,
@@ -303,6 +310,12 @@ pub enum Event<'a> {
     Entropy(u64),
     /// A record with this tag was larger than a block and left out.
     TooLarge(u8),
+    /// A record this version cannot read: its tag is unknown, or a later
+    /// version wrote a value this one has no code for. Kept whole.
+    Unknown {
+        tag: u8,
+        body: &'a [u8],
+    },
     /// What the phone access point reports, recorded when it changes.
     AccessPoint {
         state: AccessPointState,
@@ -867,7 +880,7 @@ record! {
     Reach { access_point, station }
     sound::Snapshot { state, pattern, requested_ms: time, submitted_ms: times, until_ms: time }
     power::Status { sequence, operation, state, at_ms: time, prepare_at_ms: times, failure, ready }
-    StorageFault { medium, op, at, landed, error }
+    StorageFault { medium, attempt, op, at, landed, error }
     AntCapabilities<'a> {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
@@ -1100,6 +1113,7 @@ impl Wire<'_> for ble_transport::Packet {
 impl<'a> Wire<'a> for Header<'a> {
     fn put(&self, w: &mut Writer) {
         self.version.put(w);
+        self.oldest_reader.put(w);
         w.bytes(&self.build);
         self.boot.put(w);
         self.profile.put(w);
@@ -1109,6 +1123,7 @@ impl<'a> Wire<'a> for Header<'a> {
     fn take(r: &mut Reader<'a>) -> Self {
         Self {
             version: u16::take(r),
+            oldest_reader: u16::take(r),
             build: <[u8; 20]>::take(r),
             boot: u32::take(r),
             profile: u8::take(r),
@@ -1141,6 +1156,7 @@ impl<'a> Event<'a> {
             Self::StorageFault(_) => tag::STORAGE_FAULT,
             Self::Entropy(_) => tag::ENTROPY,
             Self::TooLarge(_) => tag::TOO_LARGE,
+            Self::Unknown { tag, .. } => *tag,
             Self::AccessPoint { .. } => tag::ACCESS_POINT,
             Self::AccessPointRequest { .. } => tag::ACCESS_POINT_REQUEST,
             Self::Server { .. } => tag::SERVER,
@@ -1206,6 +1222,7 @@ impl<'a> Event<'a> {
             | Self::RideState(text)
             | Self::Shown(text) => text.put(w),
             Self::StorageFault(fault) => fault.put(w),
+            Self::Unknown { body, .. } => w.bytes(body),
             Self::AccessPoint { state, reach } => {
                 state.put(w);
                 reach.put(w);
@@ -1505,7 +1522,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     if !r.ok() || (r.at != payload.len() && !later) {
         return Err(Error::Header);
     }
-    if header.version == 0 {
+    if header.version == 0 || header.oldest_reader > VERSION {
         return Err(Error::Version(header.version));
     }
     let cursor = Cursor {
@@ -1590,10 +1607,12 @@ impl<'a> Events<'a> {
             c.now = r.varint();
             None
         } else {
-            let Some(event) = Event::take_body(first, &mut r) else {
-                return Ok(None);
-            };
-            Some(event)
+            let unknown = Event::Unknown { tag: first, body };
+            match Event::take_body(first, &mut r) {
+                Some(_) if c.later && !r.ok() => return Ok(Some(unknown)),
+                Some(event) => Some(event),
+                None => return Ok(Some(unknown)),
+            }
         };
         if !r.ok() || (r.at != body.len() && !c.later) {
             return Err(End::Torn);

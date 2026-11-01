@@ -904,7 +904,7 @@ impl Sim {
     /// `VOLUME INIT` would.
     pub fn init_volumes(&mut self) -> firmware_services::volume::Table {
         let mut sector = [0u8; 512];
-        firmware_services::volume::create(self.device.host_bulk(), &mut sector)
+        firmware_services::volume::create(&mut self.device.host_bulk(), &mut sector)
             .expect("volume table")
     }
 
@@ -914,8 +914,8 @@ impl Sim {
         use firmware_services::{pack, volume};
         self.init_volumes();
         let mut sector = [0u8; 512];
-        let media = self.device.host_bulk();
-        let mut terrain = volume::open(media, &volume::TERRAIN, &mut sector).expect("TERRAIN");
+        let mut media = self.device.host_bulk();
+        let mut terrain = volume::open(&mut media, &volume::TERRAIN, &mut sector).expect("TERRAIN");
         let spec = pack::Spec {
             length: bytes.len() as u64,
             crc: firmware_services::checksum::crc32(bytes),
@@ -944,8 +944,8 @@ impl Sim {
         use firmware_services::{files, volume};
         self.init_volumes();
         let mut sector = [0u8; 512];
-        let media = self.device.host_bulk();
-        let mut store = volume::open(media, &volume::FILES, &mut sector).expect("FILES");
+        let mut media = self.device.host_bulk();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).expect("FILES");
         if files::mount(&mut store, &mut sector) == Err(files::Error::Uninitialized) {
             files::format(&mut store, 1, &mut sector).expect("format");
         }
@@ -957,8 +957,8 @@ impl Sim {
         use firmware_services::{files, volume};
         self.format_files();
         let mut sector = [0u8; 512];
-        let media = self.device.host_bulk();
-        let mut store = volume::open(media, &volume::FILES, &mut sector).expect("FILES");
+        let mut media = self.device.host_bulk();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).expect("FILES");
         let name = files::Name::new(name).expect("file name");
         files::write(&mut store, &name, bytes, &mut sector).expect("file write");
         self.note(
@@ -971,8 +971,8 @@ impl Sim {
     pub fn file(&mut self, name: &str) -> Option<Vec<u8>> {
         use firmware_services::{files, volume};
         let mut sector = [0u8; 512];
-        let media = &mut self.device.bulk;
-        let mut store = volume::open(media, &volume::FILES, &mut sector).ok()?;
+        let mut media = self.device.bulk.host();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).ok()?;
         let dir = files::mount(&mut store, &mut sector).ok()?;
         let entry = dir
             .find(&mut store, &files::Name::new(name).ok()?, &mut sector)
@@ -990,7 +990,8 @@ impl Sim {
         use firmware_console::commands::volumes;
         self.init_volumes();
         let mut out = String::new();
-        let status = volumes::execute(volumes::Command::AddStore, &mut self.device.bulk, &mut out);
+        let mut media = self.device.host_bulk();
+        let status = volumes::execute(volumes::Command::AddStore, &mut media, &mut out);
         assert_eq!(status, "OK", "VOLUME ADD STORE: {out}");
     }
 
@@ -999,7 +1000,8 @@ impl Sim {
     pub fn store_file(&mut self, name: &str) -> Option<Vec<u8>> {
         use firmware_services::{store, volume};
         let mut sector = [0u8; 512];
-        let mut vol = volume::open(&mut self.device.bulk, &volume::STORE, &mut sector).ok()?;
+        let mut media = self.device.bulk.host();
+        let mut vol = volume::open(&mut media, &volume::STORE, &mut sector).ok()?;
         let mounted = store::mount(&mut vol, &mut sector).ok()?;
         let name = store::Name::new(name).ok()?;
         let mut reader = mounted.reader(&mut vol, &name, &mut sector).ok()?;

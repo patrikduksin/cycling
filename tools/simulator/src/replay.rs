@@ -25,7 +25,7 @@ use device_api::sensors;
 use device_api::server::{self, AccessPoint, AccessPointConfig, AccessPointState, Reach, Server};
 use device_api::sound::{self, Sound};
 use firmware_services::trace::frozen::{Aging, Latest, Sink};
-use firmware_services::trace::{self, Cursor, End, Event, Events, Medium, Output};
+use firmware_services::trace::{self, Cursor, Event, Events, Medium, Output};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -287,7 +287,7 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         Some(taken)
     }
 
-    fn take_if(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
+    fn take_if_next(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
         let front = self.queue.front().is_some_and(|(call, _)| matches(call));
         front.then(|| self.queue.pop_front()).flatten()
     }
@@ -303,7 +303,11 @@ impl<C: fmt::Debug, V> Calls<C, V> {
             let calls: Vec<_> = queue.iter().map(|(call, _)| call).collect();
             format!("{left} {input} answers VANA did not ask for: {calls:?}")
         });
-        self.queue.drain(..).flat_map(|(_, after)| after).collect()
+        let after: Vec<V> = self.queue.drain(..).flat_map(|(_, after)| after).collect();
+        match self.ledger.mode() {
+            Mode::Strict => after,
+            Mode::Stimulus => Vec::new(),
+        }
     }
 }
 
@@ -332,10 +336,22 @@ pub struct Replay {
 }
 
 impl Replay {
-    pub fn new(bytes: Vec<u8>, shelled: Shelled, mode: Mode) -> Result<Self, trace::Error> {
-        let (_, events) = trace::decode(&bytes)?;
+    /// `build` is the replaying build's commit, zero when unknown.
+    pub fn new(
+        bytes: Vec<u8>,
+        shelled: Shelled,
+        mode: Mode,
+        build: [u8; 20],
+    ) -> Result<Self, trace::Error> {
+        let (header, events) = trace::decode(&bytes)?;
         let cursor = events.cursor();
         let ledger = Ledger(Rc::new(RefCell::new(Report::new(mode))));
+        let known = |build: [u8; 20]| build != [0; 20];
+        if mode == Mode::Strict && known(header.build) && known(build) && header.build != build {
+            ledger.note(Kind::Unreplayable, 1, || {
+                "another build recorded this trace; replay it as a stimulus".into()
+            });
+        }
         let ant = match mode {
             Mode::Strict => AntSource::Recorded(Box::new(RecordedAnt::new(&ledger))),
             Mode::Stimulus => AntSource::Model(Box::new(ModelAnt::hearing(events, &ledger))),
@@ -362,11 +378,27 @@ impl Replay {
             match event {
                 Event::Pass { .. } => return Next::Pass,
                 Event::Command(line) => {
+                    let line = line.into();
                     self.cursor = events.cursor();
-                    return Next::Command(line.into());
+                    self.apply_until_pass();
+                    return Next::Command(line);
                 }
                 event if seen(&event).is_some() => {}
                 event => self.sources.apply(event),
+            }
+            self.cursor = events.cursor();
+        }
+    }
+
+    /// The inputs recorded after a command and before its pass, such as the
+    /// power status its gate read.
+    fn apply_until_pass(&mut self) {
+        loop {
+            let mut events = Events::resume(&self.bytes, self.cursor);
+            match events.next() {
+                None | Some(Event::Pass { .. } | Event::Command(_)) => return,
+                Some(event) if seen(&event).is_some() => {}
+                Some(event) => self.sources.apply(event),
             }
             self.cursor = events.cursor();
         }
@@ -460,9 +492,6 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
             ));
         }
     }
-    if events.end() != Some(End::Complete) {
-        return Some(format!("the recorded trace ends {:?}", events.end()));
-    }
     replayed_events
         .next()
         .map(|extra| format!("the replay went on with {extra:?}"))
@@ -553,6 +582,11 @@ impl Sources {
         }
     }
 
+    /// Something read an input the trace holds no value for.
+    pub fn unrecorded(&self, input: &str) {
+        self.ledger.unrecorded(input);
+    }
+
     /// Where the replay parted from its recording so far.
     pub fn report(&self) -> Report {
         self.ledger.0.borrow().clone()
@@ -594,6 +628,10 @@ impl Sources {
             let left = self.entropy.values.borrow().len();
             self.ledger
                 .note(Kind::LeftOver, left, || format!("{left} entropy values"));
+            self.ble.packets.clear();
+            self.ble.battery.clear();
+            self.shelled.input.replayed.borrow_mut().clear();
+            self.entropy.values.borrow_mut().clear();
         }
         let panel = core::mem::take(&mut self.shelled.display.0.borrow_mut().refusals.scripted);
         let backlight = core::mem::take(&mut self.shelled.power.0.borrow_mut().refusals.scripted);
@@ -703,17 +741,17 @@ impl Sources {
             Event::ServerFinish(id) => self.server.calls.push(ServerCall::Finish(id)),
             Event::ServerRead { id, part, more } => match self.server.calls.last() {
                 Some(ServerCall::Read {
-                    id: open_id,
+                    id: read,
                     bytes,
-                    open: open @ true,
-                }) if *open_id == id => {
+                    more: pending @ true,
+                }) if *read == id => {
                     bytes.extend_from_slice(part);
-                    *open = more;
+                    *pending = more;
                 }
                 _ => self.server.calls.push(ServerCall::Read {
                     id,
                     bytes: part.to_vec(),
-                    open: more,
+                    more,
                 }),
             },
             Event::ServerWrite { id, taken } => {
@@ -739,8 +777,18 @@ impl Sources {
             Event::TooLarge(tag) => self
                 .ledger
                 .unrecorded(&format!("a record with tag {tag}, too large for a block")),
-            event => self.ledger.note(Kind::Unreplayable, 1, || {
-                format!("{event:?} is not replayed in the simulator")
+            Event::Unknown { tag, .. } => self.ledger.note(Kind::Unreplayable, 1, || {
+                format!("a record with tag {tag} this build cannot read")
+            }),
+            Event::Pass { .. }
+            | Event::Command(_)
+            | Event::Page(_)
+            | Event::Toast(_)
+            | Event::Sound(_)
+            | Event::RideState(_)
+            | Event::Shown(_)
+            | Event::Log { .. } => self.ledger.note(Kind::Unreplayable, 1, || {
+                format!("{event:?} where an input belongs")
             }),
         }
     }
@@ -1204,6 +1252,18 @@ impl Ble for ReplayBle {
         self.ledger.unrecorded("BLE reconnect");
         Err(Error::Unsupported)
     }
+    fn request(&mut self, _: ble_transport::Operation) -> Result<(), Error> {
+        self.ledger.unrecorded("BLE request");
+        Err(Error::Unsupported)
+    }
+    fn control(&self) -> device_api::connectivity::ControlStatus {
+        self.ledger.unrecorded("BLE control status");
+        device_api::connectivity::ControlStatus::new()
+    }
+    fn discoveries(&self) -> [Option<ble_transport::Discovery>; 8] {
+        self.ledger.unrecorded("BLE discoveries");
+        [None; 8]
+    }
 }
 
 pub struct ReplayPosition(Served<(Availability, Option<positioning::Snapshot>)>);
@@ -1318,7 +1378,7 @@ impl AccessPoint for ReplayAccessPoint {
 enum ServerCall {
     Listen(bool),
     Finish(u32),
-    Read { id: u32, bytes: Vec<u8>, open: bool },
+    Read { id: u32, bytes: Vec<u8>, more: bool },
     Write { id: u32, taken: u32 },
 }
 
@@ -1341,7 +1401,10 @@ impl ReplayServer {
 
 impl Server for ReplayServer {
     fn listen(&mut self, on: bool) {
-        if let Some((_, after)) = self.calls.take_if(|call| *call == ServerCall::Listen(on)) {
+        if let Some((_, after)) = self
+            .calls
+            .take_if_next(|call| *call == ServerCall::Listen(on))
+        {
             self.changed(after);
         }
     }
@@ -1387,7 +1450,10 @@ impl Server for ReplayServer {
         }
     }
     fn finish(&mut self, id: u32) {
-        if let Some((_, after)) = self.calls.take_if(|call| *call == ServerCall::Finish(id)) {
+        if let Some((_, after)) = self
+            .calls
+            .take_if_next(|call| *call == ServerCall::Finish(id))
+        {
             self.changed(after);
         }
     }
@@ -1494,12 +1560,15 @@ mod tests {
     struct Transport {
         request: server::Request,
         body: Vec<u8>,
+        listening: bool,
     }
 
     impl Server for Transport {
-        fn listen(&mut self, _: bool) {}
+        fn listen(&mut self, on: bool) {
+            self.listening = on;
+        }
         fn request(&self) -> Option<server::Request> {
-            Some(self.request.clone())
+            self.listening.then(|| self.request.clone())
         }
         fn read(&mut self, _: u32, out: &mut [u8]) -> usize {
             let n = out.len().min(self.body.len());
@@ -1516,6 +1585,36 @@ mod tests {
         fn finish(&mut self, _: u32) {}
     }
 
+    fn recorder() -> RefCell<Recorder<Box<[u8]>, Blocks>> {
+        let header = Header {
+            version: VERSION,
+            oldest_reader: firmware_services::trace::OLDEST_READER,
+            build: [0; 20],
+            boot: 1,
+            profile: 0,
+            config: &[],
+            media: &[],
+        };
+        let buffer = vec![0u8; 4096].into_boxed_slice();
+        RefCell::new(Recorder::new(&header, buffer, Blocks::default()).unwrap())
+    }
+
+    fn bytes(recorder: &RefCell<Recorder<Box<[u8]>, Blocks>>) -> Vec<u8> {
+        let mut bytes = recorder.borrow().sink().0.clone();
+        bytes.extend_from_slice(recorder.borrow_mut().open_block());
+        bytes
+    }
+
+    fn transport(body: &[u8]) -> Transport {
+        let mut request = server::Request::new(Method::Put);
+        request.id = 9;
+        Transport {
+            request,
+            body: body.to_vec(),
+            listening: true,
+        }
+    }
+
     fn replay(bytes: Vec<u8>) -> Replay {
         let shelled = Shelled {
             input: InputDevice::new(&[Button::TopLeft], Availability::Ready),
@@ -1524,41 +1623,20 @@ mod tests {
             flash: FileFlash::memory(),
             bulk: SimBulk::default().scripted(),
         };
-        Replay::new(bytes, shelled, Mode::Strict).unwrap()
+        Replay::new(bytes, shelled, Mode::Strict, [0; 20]).unwrap()
     }
 
     #[test]
     fn a_read_recorded_in_parts_replays_whole() {
-        let header = Header {
-            version: VERSION,
-            build: [0; 20],
-            boot: 1,
-            profile: 0,
-            config: &[],
-            media: &[],
-        };
-        let recorder = RefCell::new(
-            Recorder::new(
-                &header,
-                vec![0u8; 4096].into_boxed_slice(),
-                Blocks::default(),
-            )
-            .unwrap(),
-        );
+        let recorder = recorder();
         let body: Vec<u8> = (0..3 * READ_PART + 100).map(|i| i as u8).collect();
-        let mut request = server::Request::new(Method::Put);
-        request.id = 9;
-        let mut transport = Transport {
-            request,
-            body: body.clone(),
-        };
+        let mut transport = transport(&body);
         recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
         let mut frozen = FrozenServer::default();
         let mut out = vec![0u8; 4096];
         let n = frozen.bind(&mut transport, 10, &recorder).read(9, &mut out);
         assert_eq!(n, body.len());
-        let mut bytes = recorder.borrow().sink().0.clone();
-        bytes.extend_from_slice(recorder.borrow_mut().open_block());
+        let bytes = bytes(&recorder);
         let parts = {
             let (_, events) = trace::decode(&bytes).unwrap();
             events
@@ -1573,6 +1651,29 @@ mod tests {
         let mut again = vec![0u8; 4096];
         assert_eq!(replay.sources.server.read(9, &mut again), body.len());
         assert_eq!(&again[..body.len()], &body[..]);
+        assert_eq!(replay.sources.report().first, None);
+    }
+
+    #[test]
+    fn a_request_appears_only_after_the_listen_that_revealed_it() {
+        let recorder = recorder();
+        let mut transport = transport(b"");
+        transport.listening = false;
+        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+        let mut frozen = FrozenServer::default();
+        {
+            let mut pass = frozen.bind(&mut transport, 10, &recorder);
+            assert_eq!(pass.request(), None);
+            pass.listen(true);
+            assert_eq!(pass.request().map(|request| request.id), Some(9));
+        }
+        let mut replay = replay(bytes(&recorder));
+        assert!(matches!(replay.step(), Next::Pass));
+        replay.load_pass();
+        let server = &mut replay.sources.server;
+        assert_eq!(server.request(), None);
+        server.listen(true);
+        assert_eq!(server.request().map(|request| request.id), Some(9));
         assert_eq!(replay.sources.report().first, None);
     }
 }

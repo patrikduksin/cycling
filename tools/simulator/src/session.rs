@@ -267,7 +267,7 @@ impl InputObservation for NoInputObservation {
     }
 }
 #[cfg(feature = "cycling")]
-const BAROMETER_MS: u64 = 100;
+const ASSUMED_BAROMETER_MS: u64 = 100;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
 /// startup: three seconds of passive observation before the startup
 /// acknowledgment, then an operating reason and two advancing sensor samples.
@@ -311,6 +311,7 @@ impl Trace {
     fn new(boot: u32, profile: u8) -> Self {
         let header = Header {
             version: firmware_services::trace::VERSION,
+            oldest_reader: firmware_services::trace::OLDEST_READER,
             build: build_id(),
             boot,
             profile,
@@ -554,11 +555,11 @@ impl Simulated {
 
     #[cfg(feature = "cycling")]
     fn physical(&mut self, now: u64) -> device_api::sensors::Snapshot {
-        let second = now - now % BAROMETER_MS;
+        let slot = now - now % ASSUMED_BAROMETER_MS;
         self.barometer = match (self.world.pressure_centi_pa(), self.barometer) {
             (None, _) => None,
-            (Some(_), Some((at, pressure))) if at == second => Some((at, pressure)),
-            (Some(pressure), _) => Some((second, pressure)),
+            (Some(_), Some((at, pressure))) if at == slot => Some((at, pressure)),
+            (Some(pressure), _) => Some((slot, pressure)),
         };
         let pressure = match self.barometer {
             Some((received_ms, pressure_centi_pa)) => Observation::Fresh {
@@ -604,7 +605,7 @@ pub struct Session {
     pub sdk: vana::app::Runtime,
     trace: Trace,
     origin: Option<Origin>,
-    host_write_ms: Option<u64>,
+    unrecorded: Option<(&'static str, u64)>,
     devices: Devices,
 }
 impl Session {
@@ -727,7 +728,7 @@ impl Session {
             sdk,
             trace,
             origin: None,
-            host_write_ms: None,
+            unrecorded: None,
             devices: Devices::Simulated(Box::new(Simulated::new())),
         })
     }
@@ -747,7 +748,7 @@ impl Session {
             flash: session.media.clone(),
             bulk: session.bulk.clone(),
         };
-        let replay = Replay::new(capture.trace.clone(), shelled, mode)
+        let replay = Replay::new(capture.trace.clone(), shelled, mode, build_id())
             .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
         session.devices = Devices::Replayed(Box::new(replay));
         Ok(session)
@@ -789,10 +790,8 @@ impl Session {
     }
     /// What a replay of this session needs.
     pub fn capture(&self) -> Result<Capture, String> {
-        if let Some(at) = self.host_write_ms {
-            return Err(format!(
-                "a host wrote the bulk medium at {at} ms, after the media the replay starts from"
-            ));
+        if let Some((what, at)) = self.unrecorded {
+            return Err(format!("{what} at {at} ms, unseen by the trace"));
         }
         Ok(Capture {
             origin: self.origin.clone().ok_or("no pass ran yet")?,
@@ -802,11 +801,14 @@ impl Session {
     /// The bulk medium as a host writes it over USB. After the first pass
     /// such a write changes what VANA reads unseen by the trace, so this
     /// session no longer has a capture.
-    pub fn host_bulk(&mut self) -> &mut crate::bulk::SimBulk {
+    pub fn host_bulk(&mut self) -> crate::bulk::SimBulk {
+        self.unrecorded("a host wrote the bulk medium");
+        self.bulk.host()
+    }
+    fn unrecorded(&mut self, what: &'static str) {
         if self.origin.is_some() {
-            self.host_write_ms.get_or_insert(self.now);
+            self.unrecorded.get_or_insert((what, self.now));
         }
-        &mut self.bulk
     }
     /// The trace of this power-on session so far.
     pub fn trace(&self) -> Vec<u8> {
@@ -832,6 +834,8 @@ impl Session {
         self.trace.record(&Event::Pass { now_ms: self.now });
         self.display.0.borrow_mut().refusals.begin_pass();
         self.power.0.borrow_mut().refusals.begin_pass();
+        self.media.fault.borrow_mut().begin_pass();
+        self.bulk.begin_pass();
         self.pass();
         self.record_faults();
         let seen = self.record_seen();
@@ -1133,15 +1137,16 @@ impl Session {
         out: &mut String,
     ) -> Result<(Request, &'static str), firmware_console::protocol::Error> {
         let request = firmware_console::protocol::parse(line)?;
-        let power = self.gate();
         if let Ok(text) = core::str::from_utf8(line) {
             self.trace.record(&Event::Command(text));
         }
+        let power = self.gate();
         Ok((request, self.execute_gated(request, power, out)))
     }
     /// Execute a parsed request. Unlike `command`, the trace does not see it,
     /// so a replay of this session will not either.
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
+        self.unrecorded("a request ran unrecorded");
         let power = self.gate();
         self.execute_gated(request, power, out)
     }
@@ -1187,8 +1192,15 @@ impl Session {
             Devices::Simulated(sim) => {
                 firmware_console::commands::ant::execute(request.command, &mut sim.ant, now, out)
             }
-            Devices::Replayed(_) => {
-                firmware_console::commands::ant::execute(request.command, &mut NoAnt, now, out)
+            Devices::Replayed(replay) => {
+                let status =
+                    firmware_console::commands::ant::execute(request.command, &mut NoAnt, now, out);
+                if status.is_some() {
+                    replay
+                        .sources
+                        .unrecorded("the ANT radio the terminal reads");
+                }
+                status
             }
         };
         if let Some(status) = status {
@@ -1220,10 +1232,17 @@ impl Session {
         }
         let (wifi_control, ble_control) = match &self.devices {
             Devices::Simulated(sim) => (sim.wifi_control, sim.ble_control),
-            Devices::Replayed(_) => (
-                device_api::connectivity::ControlStatus::new(),
-                device_api::connectivity::ControlStatus::new(),
-            ),
+            Devices::Replayed(replay) => {
+                if matches!(request.command, Command::Wifi | Command::Ble) {
+                    replay
+                        .sources
+                        .unrecorded("the radio control status the terminal reads");
+                }
+                (
+                    device_api::connectivity::ControlStatus::new(),
+                    device_api::connectivity::ControlStatus::new(),
+                )
+            }
         };
         match request.command {
             // The simulator has no binary USB session; tests install volume

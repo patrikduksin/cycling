@@ -255,9 +255,10 @@ impl Sim {
         self.device.lit() && home
     }
 
-    /// Whether the device turned itself off.
+    /// Whether the device turned itself off: no power, or VANA off in
+    /// charging standby.
     pub fn is_off(&self) -> bool {
-        self.device.off
+        self.device.off || self.device.charging_standby()
     }
 
     /// Hold the top-left button of a device that is off, as a rider turns

@@ -1,18 +1,21 @@
 ---
 name: ride-trace
-description: Turn a rider's account of a ride problem into the moment in the ride trace, a simulator replay of it with screenshots, and a regression test. Use when a rider describes something that went wrong during a ride, when handed a `.trace` file, or when a replay diverges.
+description: Turn a rider's account of a ride problem into the moment in the ride trace, a simulator replay of it with screenshots, and a regression test; or find the task or radio that drains the battery. Use when a rider describes something that went wrong during a ride, when the battery runs down faster than it should, when handed a `.trace` file, or when a replay diverges.
 ---
 
 # Ride trace
 
-The simulator records every power-on session as a trace: each input VANA read
-(buttons, ANT and BLE sensors, GPS, barometer, battery, commands, the phone
-server, the buzzer and power control) and a thin
+The C606 (cycling builds) and the simulator record every power-on session as a
+trace: each input VANA read (buttons, ANT and BLE sensors, GPS, barometer,
+battery, commands, the phone server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
 main page's readings once a second on the ride pages, each cue note,
-warnings). The device does not record traces yet: its recorder is phase 4,
-still pending, so every trace today comes from the simulator. The seen layer is ground
-truth for finding the moment; the inputs drive the replay. The trace holds only
+warnings). The seen layer is ground truth for finding the moment; the inputs
+drive the replay. Every 5 s (every minute in dark charging standby) the trace
+also holds the device's **health** (memory, slowest frame and pass, error
+counters, signal) and **activity** (where the CPU time went, per task, and
+what drew power); replays read past both. For a battery problem, go to
+[Battery drain or a background loop](#battery-drain-or-a-background-loop). The trace holds only
 what VANA read: a BLE sensor shows as VANA's link to it and the packets it took,
 never as advertisements or anything else on the air, so a sensor that never
 appears was never connected, not necessarily absent. Every command below prints
@@ -22,13 +25,27 @@ text: start there, and open a PNG only to confirm what the text says.
 
 - From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
   `<name>.trace` with the media it started on in `<name>.origin`.
-- From the device, once phase 4 lands (pending): `cycling store get
-  traces/<file>` (arguments in `cycling store --help`). A device trace has
-  no `.origin`, so its replay starts on blank media: rides and settings saved
-  before that power-on are absent. Keep it under `.local/` and never commit
-  it: a trace records the rider's location and the secrets a replay needs,
-  the password of each `WIFI CONFIG` command and the token of each phone
-  request.
+- From the device: the C606 writes each session to
+  `traces/<sequence>-<boot>.trace` in the card's STORE volume. Connect it
+  over USB and run `cycling trace pull` for the newest trace, or
+  `cycling trace pull <file>` for another; both copy it to
+  `.local/traces/<file>`. By hand: `cycling store list traces/` lists them,
+  `cycling store get traces/<file> .local/traces/<file>` copies one. When
+  `CYCLING_DEVICE_HOST` is set, the device is on another machine: follow the
+  remote device skill. Keep device traces under `.local/` and never commit
+  one: it records the rider's location.
+- What a device trace holds: the C606 redacts secrets as it records (each
+  `WIFI CONFIG` password, the phone session's token and Wi-Fi password), and
+  a replay runs on placeholders. Its header names the settings and media at
+  power-on, but it has no `.origin`, so its replay starts on blank media:
+  rides and settings saved before that power-on are absent, and a strict
+  replay reports what differs. The file ends with the pass before VANA
+  asked to turn off, or at its last sync (5 s at most) when power was cut.
+  A session the companion started for charging records its standby while
+  the card stays closed; once the standby screen is dark, a pass is
+  recorded only when the startup or power status changes. Warnings
+  in a device trace include driver lines that a replay never logs, and
+  replays ignore them.
 
 `cycling trace origin <trace>` says in words what a replay starts from: the
 power-on number, settings, VANA's saved sensors and setup step, rides on
@@ -200,6 +217,58 @@ Done when the screenshot at the moment shows what the rider described, or
    moment as it was.
 
 Done when the test is red before the fix and green after it.
+
+## Battery drain or a background loop
+
+Use this when the battery ran down faster than it should, the device was
+warm, or it drained while dark. A trace cannot measure current: it says what
+kept the CPU and the radios busy, and a USB power meter on the bench says
+what that costs in each device state.
+
+1. Get the trace of that session (step 1). A trace from a build without
+   health and activity records shows none of the lines below.
+2. Run `cycling trace summary <trace>` and read three blocks:
+   - `activity by device state`: for each state (home idle, riding, paused,
+     screen off, charging standby), executor wakeups and timer interrupts a
+     second, and the share of the CPU awake in the executor, in the radio
+     drivers and idle (the CPU waiting for an interrupt). Then one line per
+     task: `task gps: home idle 100/s 0.4%, screen off 100/s 0.3%`.
+   - `battery flags`: a task that wakes 10 times a second or more, or takes
+     1% of the CPU or more, while the screen is dark; the radio drivers over
+     1% while dark; a falling heap; an error counter that rose; passes over
+     100 ms.
+   - `health`: memory, the slowest pass, frame and card write, error
+     counters, the spool's fullest point and the signal range.
+3. Read the window: `cycling trace timeline <trace> --kinds activity,health,power,display,ride --from T --to T`.
+   Follow one task with `cycling trace find <trace> activity --where gps`.
+   `cycling trace otlp` exports the same values as metrics, one series per
+   task.
+4. Check each number before you blame a task:
+   - A task's time includes the interrupts and radio threads that ran during
+     its poll. The radio drivers' time includes the interrupts they took.
+   - `counting` is what the hooks themselves cost, estimated from the
+     startup log's `hook_cycles=`. Subtract it first.
+   - A simulator trace counts its 10 ms passes as task `console` and has no
+     CPU times, memory or signal. Use it to test the tools, never to judge
+     the battery.
+   - These tasks wake on a timer in every state: `console` every 5 ms, and
+     `io`, `gps` and `power` every 10 ms. `ble` wakes once a second while a
+     sensor is connected, and `wifi` every 5 s while the station is
+     associated. They show up as flags while the screen is dark until they
+     wait on an event instead.
+5. Find the code. `main` and `console` are in `devices/c606/src/main.rs`.
+   `power`, `gps` and `io` are in `devices/c606/src/capabilities/` (`power.rs`,
+   `positioning.rs`, `io.rs`). `ble` is in `drivers/bluetooth.rs`. `wifi`,
+   `wifi.station`, `wifi.ap`, `wifi.verify`, `time` and `dhcp` are in
+   `drivers/wifi.rs`, and `http` is in `drivers/http.rs`. `task` is a task
+   spawned without a name in `devices/c606/src/activity.rs`. Change the loop
+   to wait on an event, or to wake less often while the screen is dark. Then
+   record a new session in the same state and compare its line with the old
+   one.
+
+Done when you can name the task or radio that kept the CPU awake in the
+drained state, with its wakeups a second and CPU share, and the code that
+wakes it.
 
 ## Reference
 

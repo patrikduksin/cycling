@@ -31,6 +31,8 @@ struct Backlight {
     percent: u8,
 }
 static BRIGHTNESS: AtomicU8 = AtomicU8::new(0);
+/// The backlight's duty as the LEDC owner last set it.
+static LIT: AtomicU8 = AtomicU8::new(0);
 /// The backlight composition asks for while charging standby shows the charge.
 static STANDBY_LIGHT: AtomicU8 = AtomicU8::new(0);
 static LIGHT_FAILED: AtomicBool = AtomicBool::new(false);
@@ -60,6 +62,10 @@ pub fn standby_light(percent: u8) {
 }
 pub fn light_available() -> bool {
     !LIGHT_FAILED.load(Ordering::Acquire)
+}
+/// The backlight in percent as it shines, 0 when dark.
+pub fn lit() -> u8 {
+    LIT.load(Ordering::Relaxed)
 }
 fn backlight(light: &mut Backlight, suspend: bool) -> Result<(), Error> {
     let percent = if suspend {
@@ -213,6 +219,7 @@ pub async fn run(channel: Channel<'static, LowSpeed>) {
                 light.percent = standby;
             }
         }
+        LIT.store(light.percent, Ordering::Relaxed);
         TRANSITION.lock(|t| t.borrow_mut().tick(now));
         match status().state {
             State::Requested => {

@@ -354,6 +354,11 @@ fn sample() -> Vec<Event<'static>> {
             result: Ok(()),
         },
         Event::PoweredOff,
+        Event::HostWrote,
+        Event::Lost {
+            blocks: 3,
+            bytes: 12_000,
+        },
         Event::Backlight(Availability::Failed),
         Event::Refused {
             output: Output::Panel,
@@ -380,6 +385,64 @@ fn sample() -> Vec<Event<'static>> {
             level: Level::Warn,
             target: "terrain",
             text: "no PSRAM for the tile cache",
+        },
+        Event::Health(Health {
+            simulated: false,
+            heap_free: Some(61_234),
+            heap_min: Some(48_000),
+            psram_free: Some(1_204_000),
+            frame_max_us: Some(41_000),
+            pass_max_us: Some(180_000),
+            gps_sentences: 12_000,
+            gps_overflows: 2,
+            gps_uart_errors: 1,
+            companion_errors: 7,
+            card_write_max_us: Some(9_400),
+            card_recoveries: Some(1),
+            spool_used: 4_096,
+            spool_size: 262_144,
+            wifi: Some(device_api::connectivity::WifiState::Verified),
+            wifi_rssi: Some(-67),
+            ble_rssi: None,
+        }),
+        Event::Health(Health {
+            simulated: true,
+            ..Health::default()
+        }),
+        Event::Activity(Activity {
+            simulated: false,
+            window_ms: 5_004,
+            wakes: 1_210,
+            awake_us: Some(212_000),
+            main_us: Some(230_000),
+            radio_us: Some(41_000),
+            idle_us: Some(4_700_000),
+            switches: Some(2_400),
+            ticks: Some(1_300),
+            hooks_us: Some(900),
+            consumers: Consumers {
+                cpu_mhz: Some(240),
+                backlight: 0,
+                frames: 3,
+                gnss: Gnss::Paused,
+                wifi: None,
+                access_point: AccessPointState::Up { clients: 1 },
+                ble: device_api::ble_transport::Link::Connected,
+                ant: Availability::Ready,
+                ant_scanning: true,
+                ant_channels: 2,
+                slept_ms: 0,
+            },
+        }),
+        Event::Task {
+            name: "console",
+            polls: 1_000,
+            busy_us: Some(150_000),
+        },
+        Event::Task {
+            name: "console",
+            polls: 500,
+            busy_us: None,
         },
         Event::Pass { now_ms: 3_500 },
         Event::Pass { now_ms: 3_500 },
@@ -418,6 +481,26 @@ fn a_cut_or_damaged_tail_drops_only_the_last_block() {
     let (got, end) = decoded(&damaged);
     assert_eq!(end, Some(End::Torn));
     assert_eq!(got, decoded(&bytes[..last]).0);
+}
+
+#[test]
+fn a_damaged_block_with_blocks_after_it_ends_corrupt() {
+    let events = sample();
+    let bytes = encode(&events, 128);
+    let header = block(&bytes, 0).unwrap().1;
+    let second = block(&bytes, header).unwrap().1;
+    let mut damaged = bytes.clone();
+    damaged[second + 3] ^= 0x40;
+    let (got, end) = decoded(&damaged);
+    assert_eq!(end, Some(End::Corrupt));
+    assert_eq!(got, decoded(&bytes[..second]).0);
+    let mut missing = bytes[..second + 10].to_vec();
+    missing.extend_from_slice(&bytes[second + 10 + 40..]);
+    assert_eq!(
+        decoded(&missing).1,
+        Some(End::Corrupt),
+        "bytes lost mid-trace"
+    );
 }
 
 #[test]
@@ -619,4 +702,18 @@ fn a_record_larger_than_a_block_is_refused() {
     let text = core::str::from_utf8(&[b'x'; 80]).unwrap();
     assert_eq!(encoder.push(&Event::Command(text)), Err(Full::Record));
     assert!(encoder.is_empty());
+}
+
+#[test]
+fn vitals_are_due_every_five_seconds_and_every_minute_in_dark_standby() {
+    let mut vitals = Vitals::default();
+    let due = |vitals: &mut Vitals, from: u64, to: u64, quiet: bool| -> Vec<u64> {
+        (from..to)
+            .step_by(10)
+            .filter(|&now| vitals.due(now, quiet))
+            .collect()
+    };
+    assert_eq!(due(&mut vitals, 0, 15_001, false), [5_000, 10_000, 15_000]);
+    assert_eq!(due(&mut vitals, 15_010, 140_000, true), [75_000, 135_000]);
+    assert_eq!(due(&mut vitals, 140_000, 141_000, false), [140_000]);
 }

@@ -933,3 +933,106 @@ fn the_ride_trace_skill_matches_where_traces_come_from_and_what_shown_holds() {
         "shown holds pre-glide values"
     );
 }
+
+/// Home, a ride, a pause and the end of the ride, in the simulator.
+fn a_short_ride() -> Timeline {
+    let mut sim = Sim::new().boot();
+    sim.ant_sensor(device_type::POWER, POWER);
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.pair(&["POWER METER"]);
+    sim.advance(seconds(10));
+    sim.start_ride();
+    sim.ride_at(30.0, 210.0, 0.0, 90.0);
+    sim.advance(seconds(20));
+    sim.pause_ride();
+    sim.advance(seconds(10));
+    sim.stop_ride();
+    read(&sim.trace()).expect("the trace decodes")
+}
+
+#[test]
+fn the_summary_splits_activity_by_what_the_device_was_doing() {
+    let timeline = a_short_ride();
+    let summary = shell_simulator::trace::battery::summary(&timeline);
+    let windows = timeline.activity.len();
+    assert!(windows >= 8, "{windows} activity windows");
+    for state in ["home idle", "riding", "paused"] {
+        assert!(
+            summary.contains(&format!("  {state} for ")),
+            "{state} in {summary}"
+        );
+    }
+    assert!(
+        summary.contains("task console: home idle 100/s, riding 100/s, paused 100/s"),
+        "{summary}"
+    );
+    assert!(summary.contains("battery flags: none"), "{summary}");
+}
+
+#[test]
+fn the_summary_flags_a_pass_loop_that_keeps_waking_in_dark_standby() {
+    use vana::app::STANDBY_LIT_MS;
+    let mut sim = Sim::new().boot();
+    sim.set_battery(64, true);
+    sim.advance(seconds(2));
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "turned off into charging standby");
+    sim.advance(STANDBY_LIT_MS + seconds(150));
+    let timeline = read(&sim.trace()).expect("the trace decodes");
+    let summary = shell_simulator::trace::battery::summary(&timeline);
+    assert!(summary.contains("  charging standby for "), "{summary}");
+    assert!(
+        summary.contains("console keeps 100/s while the screen is dark"),
+        "{summary}"
+    );
+    let dark = timeline
+        .activity
+        .iter()
+        .filter(|window| window.activity.consumers.backlight == 0)
+        .count();
+    assert!(
+        (2..=4).contains(&dark),
+        "dark standby records once a minute, {dark} windows"
+    );
+}
+
+#[test]
+fn activity_and_health_are_found_by_kind_and_exported_per_task() {
+    let timeline = a_short_ride();
+    let found = find(
+        &timeline,
+        &Query::parse("activity"),
+        (0, u64::MAX),
+        Some("console 100/s"),
+    );
+    assert!(found.len() >= 2, "{found:?}");
+    let health = find(&timeline, &Query::parse("health"), (0, u64::MAX), None);
+    assert!(
+        matches!(health.first(), Some(Found::Entry(entry)) if entry.text.starts_with("simulated, gps ")),
+        "{health:?}"
+    );
+    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));
+    let metrics = json.lines().nth(1).expect("a metrics request");
+    assert!(
+        metrics.contains(
+            r#""name":"vana.activity.task.wakeups","unit":"1/s","gauge":{"dataPoints":[{"#
+        ),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains(
+            r#""asDouble":100,"attributes":[{"key":"task","value":{"stringValue":"console"}}]"#
+        ),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains(r#""name":"vana.health.gps.overflows""#),
+        "{metrics}"
+    );
+    assert!(
+        !metrics.contains(r#""name":"vana.health.heap_free""#),
+        "the simulator knows no heap"
+    );
+}

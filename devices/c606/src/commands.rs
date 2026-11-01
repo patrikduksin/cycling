@@ -68,6 +68,7 @@ pub fn execute(
     devices: &mut Devices,
     diagnostics: &impl Diagnostics,
     #[cfg(feature = "cycling")] sdk: &mut vana::app::Runtime,
+    #[cfg(feature = "cycling")] trace: &mut crate::trace::Trace,
 ) {
     let Devices {
         ant,
@@ -144,6 +145,8 @@ pub fn execute(
                     terminal.reply(request.id, "BUSY", "active work", now);
                     return;
                 }
+                #[cfg(feature = "cycling")]
+                trace.sync(&mut *bulk, now);
                 status = firmware_console::protocol::request_status(
                     power.request_after(operation, delay_ms),
                 );
@@ -169,7 +172,31 @@ pub fn execute(
                 terminal.reply(request.id, "BUSY", "active work", now);
                 return;
             }
-            status = volumes::execute(command, bulk, &mut output);
+            // The session's trace is open in STORE: a format would erase it.
+            #[cfg(feature = "cycling")]
+            if command == volumes::Command::StoreFormat && trace.open() {
+                terminal.reply(request.id, "BUSY", "trace open", now);
+                return;
+            }
+            #[cfg(feature = "cycling")]
+            {
+                let mut recorded = firmware_services::trace::frozen::RecordedBulk::counted(
+                    &mut *bulk,
+                    &trace.record,
+                    trace.log,
+                );
+                status = volumes::execute(command, &mut recorded, &mut output);
+                if command == volumes::Command::Store {
+                    trace.status(&mut output);
+                }
+                if command != volumes::Command::Transfer {
+                    trace.after_host(bulk, false, now);
+                }
+            }
+            #[cfg(not(feature = "cycling"))]
+            {
+                status = volumes::execute(command, bulk, &mut output);
+            }
             if command == volumes::Command::Transfer && status == "ACCEPTED" {
                 terminal.schedule_transfer();
             }
@@ -190,7 +217,11 @@ pub fn execute(
             status = sdk.command(
                 core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                 &mut system.data_storage(),
-                bulk,
+                &mut firmware_services::trace::frozen::RecordedBulk::counted(
+                    bulk,
+                    &trace.record,
+                    trace.log,
+                ),
                 now,
                 &mut output,
             );

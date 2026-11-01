@@ -26,7 +26,9 @@ impl Meaning {
     pub fn of(kind: Kind, mode: Mode) -> Self {
         match kind {
             Kind::Seen => Self::RiderVisible,
-            Kind::Unrecorded | Kind::Unreplayable => Self::ReplayFault,
+            Kind::Unrecorded | Kind::Unreplayable | Kind::Truncated | Kind::Lost => {
+                Self::ReplayFault
+            }
             Kind::Modelled
             | Kind::LeftOver
             | Kind::OtherRequest
@@ -179,6 +181,9 @@ mod tests {
             torn: false,
             utc_at_boot_ms: None,
             silences: Vec::new(),
+            power: Vec::new(),
+            health: Vec::new(),
+            activity: Vec::new(),
         }
     }
 

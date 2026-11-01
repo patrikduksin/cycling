@@ -182,6 +182,10 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
             .panel
             .shows_sheet(View::TurningOff { progress: DONE })
     );
+    assert!(switch.requests.is_empty());
+    assert!(runtime.shutdown_due(), "composition gets a pass first");
+    let next = 3_020 + FAREWELL_MS;
+    pass(&mut runtime, &mut screen, &radio, &mut switch, next);
     assert_eq!(switch.requests, [Operation::Shutdown]);
     assert!(runtime.turning_off());
     // Nothing else is drawn or requested while the device turns off.
@@ -207,6 +211,8 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
         &mut refusing,
         1_500 + FAREWELL_MS,
     );
+    let next = 1_510 + FAREWELL_MS;
+    pass(&mut runtime, &mut screen, &radio, &mut refusing, next);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_600);
     assert_eq!(runtime.home_status(1_600), ("CANNOT TURN OFF", true));
@@ -223,6 +229,8 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
         &mut switch,
         10_500 + FAREWELL_MS,
     );
+    let next = 10_510 + FAREWELL_MS;
+    pass(&mut runtime, &mut screen, &radio, &mut switch, next);
     assert!(runtime.turning_off());
     switch.status.state = State::Failed;
     switch.status.ready = true;
@@ -316,6 +324,8 @@ fn an_unanswered_sheet_closes_and_an_idle_device_warns_then_turns_off() {
         &mut switch,
         AUTO_OFF_MS + 10 + FAREWELL_MS,
     );
+    let next = AUTO_OFF_MS + 20 + FAREWELL_MS;
+    pass(&mut runtime, &mut screen, &radio, &mut switch, next);
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 
@@ -476,6 +486,8 @@ fn a_rejected_turning_off_frame_is_drawn_again_before_shutdown() {
             .panel
             .shows_sheet(View::TurningOff { progress: DONE })
     );
+    let next = 1_510 + FAREWELL_MS;
+    pass(&mut runtime, &mut screen, &radio, &mut switch, next);
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 
@@ -501,6 +513,7 @@ fn a_panel_that_keeps_rejecting_frames_still_turns_off() {
     }
     // Staying on would only drain the battery.
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_520);
+    pass(&mut runtime, &mut screen, &radio, &mut switch, 1_530);
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 
@@ -577,6 +590,7 @@ fn turning_off_while_the_terminal_owns_the_panel_is_still_bounded() {
         assert!(switch.requests.is_empty(), "pass {step}");
     }
     pass(&mut runtime, &mut screen, &radio, &mut switch, late + 20);
+    pass(&mut runtime, &mut screen, &radio, &mut switch, late + 30);
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 
@@ -664,6 +678,8 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
         &mut switch,
         3_400 + FAREWELL_MS,
     );
+    let next = 3_410 + FAREWELL_MS;
+    pass(&mut runtime, &mut screen, &radio, &mut switch, next);
     assert_eq!(switch.requests, [Operation::Shutdown]);
 }
 

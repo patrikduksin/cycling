@@ -2763,7 +2763,86 @@ fn charging_while_off_shows_the_charge_then_goes_dark() {
     assert!(sim.screen().pixels.iter().all(|&p| p == 0));
     sim.checkpoint("off on USB: dark");
     sim.turn_on();
+    sim.advance(seconds(3));
     sim.expect_text("READY TO RIDE");
+}
+
+#[test]
+fn turned_off_on_usb_power_the_device_starts_again_in_charging_standby() {
+    let mut sim = hashed().boot();
+    sim.set_battery(64, true);
+    sim.advance(seconds(2));
+    let ridden = sim.device.boot;
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    let pressed = sim.now();
+    sim.advance(seconds(2));
+    assert_eq!(sim.now(), pressed + 2_000, "the world went on for 2 s");
+    assert!(sim.is_off(), "turned off");
+    let standby = sim.device.boot;
+    assert_ne!(standby, ridden, "the companion started the device again");
+    assert!(sim.device.standby_lit(), "the charge shows");
+    sim.expect_text("CHARGING");
+    sim.advance(seconds(3));
+    let capture = sim.capture();
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    let frames = sim.frame_hashes();
+    assert!(!frames.is_empty() && replayed.frame_hashes() == frames);
+    sim.turn_on();
+    sim.advance(seconds(3));
+    sim.expect_text("READY TO RIDE");
+    assert_eq!(sim.device.boot, standby, "the wake keeps the session");
+}
+
+#[test]
+fn a_ride_after_a_long_charging_standby_is_in_its_file_whole() {
+    use firmware_services::trace::{Event, decode};
+    use shell_simulator::replay::first_difference;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    sim.set_battery(64, true);
+    sim.advance(seconds(2));
+    sim.press(Button::TopLeft);
+    sim.press(Button::BottomRight);
+    sim.advance(seconds(2));
+    assert!(sim.is_off(), "in charging standby");
+    sim.advance(minutes(40));
+    sim.turn_on();
+    sim.advance(seconds(3));
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+    assert!(sim.device.sync_trace(), "the wake opened the file");
+    let pulled = sim.store_file(&sim.device.trace_file().unwrap()).unwrap();
+    let (_, events) = decode(&pulled).unwrap();
+    let lost = events
+        .filter(|event| matches!(event, Event::Lost { .. }))
+        .count();
+    assert_eq!(lost, 0, "the standby fit the spool");
+    println!("{}", trace_size(&pulled, sim.device.now));
+    let mut capture = sim.capture();
+    capture.trace = pulled;
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert!(
+        replayed.frame_hashes() == sim.frame_hashes(),
+        "the same frames"
+    );
+    let samples = |sim: &mut Sim| {
+        sim.rides()
+            .iter()
+            .map(|ride| ride.samples().count())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(samples(&mut replayed), samples(&mut sim));
 }
 
 /// Falling charge is announced once at 20%, then urgently at 10% and 5%,
@@ -7810,6 +7889,25 @@ fn a_ride_with_laps_replays_exactly() {
 }
 
 #[test]
+fn a_trace_damaged_mid_way_replays_to_where_it_breaks_and_says_so() {
+    use shell_simulator::replay::{Kind, first_difference};
+    let mut sim = equip(Sim::new().boot());
+    manual_laps(&mut sim);
+    let mut capture = sim.capture();
+    let middle = capture.trace.len() / 2;
+    capture.trace[middle] ^= 0x40;
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.count(Kind::Truncated), 1, "{report}");
+    assert!(
+        replayed.device.now < sim.device.now,
+        "the replay stops where the trace breaks"
+    );
+    let difference = first_difference(&capture.trace, &replayed.trace()).unwrap();
+    assert!(difference.contains("damaged"), "{difference}");
+}
+
+#[test]
 fn an_auto_paused_ride_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), traffic_light_stop, false);
 }
@@ -7817,6 +7915,24 @@ fn an_auto_paused_ride_replays_exactly() {
 #[test]
 fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
+}
+
+#[test]
+fn a_command_runs_after_its_pass_as_on_the_c606() {
+    use firmware_services::trace::{Event, decode};
+    let capture = assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
+    let (_, events) = decode(&capture.trace).unwrap();
+    let (mut passes, mut commands) = (Vec::new(), 0);
+    for event in events {
+        match event {
+            Event::Pass { now_ms } => passes.push(now_ms),
+            Event::Command(_) => commands += 1,
+            _ => {}
+        }
+    }
+    assert!(commands > 0, "the scenario sends a command");
+    let again = passes.windows(2).find(|pair| pair[1] <= pair[0]);
+    assert_eq!(again, None, "a pass at or before the one before it");
 }
 
 #[test]
@@ -7882,6 +7998,142 @@ fn a_ride_on_bulk_media_replays_exactly() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
     assert_replays_exactly(equip(sim.boot()), a_ride_on_new_bulk_media, true);
+}
+
+#[test]
+fn a_trace_header_names_the_settings_memory_and_media_the_device_started_from() {
+    use firmware_services::trace::origin::{Config, FileEntry, Media, Memory};
+    let field = |out: &str, key: &str| -> String {
+        out.split_whitespace()
+            .find_map(|word| word.strip_prefix(key))
+            .unwrap_or_else(|| panic!("{key} in {out}"))
+            .to_string()
+    };
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    sim.install_terrain(b"CHILE-V1\0\0\0\0\0\0\0\0", &[7u8; 2048]);
+    sim.put_file("workouts/tempo.workout", b"tempo");
+    let mut sim = equip(sim.boot());
+    a_ride_on_new_bulk_media(&mut sim);
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    let (_, internal) = sim.command("RIDE INTERNAL STATUS");
+    sim.device.restart().unwrap();
+    let mut sim = sim.boot();
+    let settings = sim.device.shell.settings;
+    a_ride_on_new_bulk_media_again(&mut sim);
+    let (_, after) = sim.command("RIDE BULK STATUS");
+    assert!(
+        field(&after, "slot=") != field(&bulk, "slot="),
+        "this session rode on the card"
+    );
+
+    let capture = sim.capture();
+    let (header, _) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let config = Config::decode(header.config).unwrap();
+    assert_eq!(config.memory, Memory::ALL);
+    assert!(!config.redacted);
+    let (stored, _) = firmware_shell::preferences::decode(Some(config.settings));
+    assert_eq!(stored, settings, "the settings at power-on");
+
+    let media = Media::decode(header.media).unwrap();
+    let (store, head) = media.rides.expect("the card's ride log");
+    assert_eq!(format!("{store:016x}"), field(&bulk, "store="));
+    assert_eq!(
+        head.to_string(),
+        field(&bulk, "slot="),
+        "the card's head at power-on"
+    );
+    let journal = media.journal.expect("the internal journal");
+    assert_eq!(journal.to_string(), field(&internal, "slot="));
+    let terrain = media.terrain.expect("the pack");
+    assert!(terrain.ready);
+    assert_eq!(terrain.length, 2048);
+    assert_eq!(&terrain.tag[..8], b"CHILE-V1");
+    let files = media.files.expect("FILES");
+    let names: Vec<FileEntry<'_>> = files.entries().collect();
+    assert!(
+        names
+            .iter()
+            .any(|file| file.name == "workouts/tempo.workout" && file.length == 5),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_replay_gives_vana_only_the_working_memory_the_recording_had() {
+    use firmware_services::trace::{self, origin::Config};
+    let mut sim = equip(Sim::new().boot());
+    sim.advance(seconds(5));
+    let mut capture = sim.capture();
+    assert!(sim.device.sdk.detach_terrain().is_some());
+    let (header, _) = trace::decode(&capture.trace).unwrap();
+    let mut config = Config::decode(header.config).unwrap();
+    config.memory.terrain = false;
+    let mut encoded = vec![0u8; 1024];
+    let len = config.encode(&mut encoded).unwrap();
+    let rewritten = trace::Header {
+        config: &encoded[..len],
+        ..header
+    };
+    let mut block = vec![0u8; trace::MAX_BLOCK];
+    let block_len = trace::encode_header(&rewritten, &mut block).unwrap();
+    let old = 6 + usize::from(u16::from_le_bytes([capture.trace[0], capture.trace[1]]));
+    capture.trace = [&block[..block_len], &capture.trace[old..]].concat();
+    let mut replayed = Sim::replay(&capture);
+    assert!(
+        replayed.device.sdk.detach_terrain().is_none(),
+        "no tile cache, as the recording had none"
+    );
+}
+
+fn a_ride_on_new_bulk_media_again(sim: &mut Sim) {
+    sim.advance(seconds(10));
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(minutes(2));
+    sim.stop_ride();
+}
+
+#[test]
+fn a_session_recorded_into_the_store_replays_exactly_from_the_file_a_host_pulls() {
+    use shell_simulator::replay::first_difference;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    a_ride_on_new_bulk_media(&mut sim);
+    assert!(sim.device.sync_trace(), "the session records into STORE");
+    let name = sim.device.trace_file().unwrap();
+    assert!(name.starts_with("traces/000001-"), "{name}");
+    let pulled = sim.store_file(&name).expect("every record reads back");
+    let mut capture = sim.capture();
+    assert_eq!(pulled.len(), capture.trace.len());
+    assert!(pulled == capture.trace, "the file is the trace");
+    capture.trace = pulled;
+
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    let (frames, replayed_frames) = (sim.frame_hashes(), replayed.frame_hashes());
+    assert!(frames.len() > 100);
+    assert!(frames == replayed_frames, "the same frames from power-on");
+    assert!(
+        replayed.ride_media() == sim.ride_media(),
+        "the same journal"
+    );
+    let samples = |sim: &mut Sim| {
+        sim.bulk_rides()
+            .iter()
+            .map(|ride| (ride.id, ride.samples().copied().collect::<Vec<Sample>>()))
+            .collect::<Vec<_>>()
+    };
+    let rides = samples(&mut sim);
+    assert!(
+        rides.iter().any(|ride| ride.1.len() > 30),
+        "a ride was saved"
+    );
+    assert_eq!(samples(&mut replayed), rides);
 }
 
 #[test]
@@ -8038,6 +8290,133 @@ fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
     assert_eq!(joined, 1, "the phone joined once");
 }
 
+#[test]
+fn the_largest_phone_upload_reaches_the_trace_file_whole() {
+    use device_api::server::Method;
+    use firmware_services::trace::{Event, decode};
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.connect_phone();
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let end = course.rfind("</gpx>").unwrap();
+    let max = firmware_services::http::MAX_BODY as usize;
+    let mut body = course[..end].to_string();
+    body.push_str(&" ".repeat(max - course.len()));
+    body.push_str(&course[end..]);
+    assert_eq!(body.len(), max);
+    let (status, reply) = sim.phone_request(Method::Put, "/api/course", body.as_bytes());
+    assert_eq!(status, 200, "{reply}");
+    sim.advance(seconds(6));
+    let (peak, capacity) = sim.device.trace_spool_peak().unwrap();
+    println!(
+        "a {} KiB upload peaks the spool at {peak} of {capacity} B",
+        max / 1024
+    );
+    assert!(sim.device.sync_trace());
+    let pulled = sim.store_file(&sim.device.trace_file().unwrap()).unwrap();
+    let (_, events) = decode(&pulled).unwrap();
+    let (mut read, mut lost) = (0, 0);
+    for event in events {
+        match event {
+            Event::ServerRead { part, .. } => read += part.len(),
+            Event::Lost { blocks, .. } => lost += blocks,
+            _ => {}
+        }
+    }
+    assert_eq!((read, lost), (max, 0), "the whole body, nothing lost");
+    assert!(peak < capacity / 8, "the drain keeps up: {peak} B");
+}
+
+#[test]
+fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
+    use firmware_services::trace::origin::{Config, Media};
+    use firmware_services::trace::{Event, decode};
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    sim.device.redact_secrets();
+    let mut sim = equip(sim.boot());
+    let (status, out) = sim.command("WIFI CONFIG WPA2 486f6d65 7365637265743132");
+    assert_eq!(status, "ACCEPTED", "{out}");
+    sim.device.restart().unwrap();
+    let mut sim = sim.boot();
+    sim.command("WIFI CONFIG WPA3 486f6d65 70617373776f7264");
+    sim.init_bulk();
+    sim.connect_phone();
+    let status = sim.device.sdk.phone_status().expect("a phone session");
+    let secrets = [
+        status.token.text().to_string(),
+        status.password.text().to_string(),
+        "7365637265743132".to_string(),
+        "70617373776f7264".to_string(),
+        "secret12".to_string(),
+    ];
+    let course = gpx_through("Cerro loop", &COURSE_LOOP);
+    let (code, body) = sim.phone_request(
+        device_api::server::Method::Put,
+        "/api/course",
+        course.as_bytes(),
+    );
+    assert_eq!(code, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim.ride_at(25.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    sim.advance(minutes(1));
+    sim.stop_ride();
+
+    let capture = sim.capture();
+    let text = String::from_utf8_lossy(&capture.trace);
+    for secret in &secrets {
+        assert!(!text.contains(secret.as_str()), "the trace holds {secret}");
+    }
+    let (header, events) = decode(&capture.trace).unwrap();
+    let config = Config::decode(header.config).unwrap();
+    assert!(config.redacted);
+    let (settings, _) = firmware_shell::preferences::decode(Some(config.settings));
+    let wifi = settings.wifi.expect("the saved network");
+    assert_eq!(wifi.ssid.text(), "Home");
+    assert_eq!(wifi.password.text(), "xxxxxxxx", "kept its length");
+    assert!(Media::decode(header.media).is_some());
+    let sessions: Vec<String> = events
+        .filter_map(|event| match event {
+            Event::Server {
+                request: Some(request),
+                ..
+            } => Some(request.session.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        sessions.iter().any(|session| session == "****************"),
+        "{sessions:?}"
+    );
+
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(
+        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace()),
+        None
+    );
+    assert!(
+        replayed.ride_media() == sim.ride_media(),
+        "the same journal"
+    );
+    assert_eq!(replayed.bulk_rides().len(), sim.bulk_rides().len());
+    assert_eq!(
+        replayed.file("course"),
+        sim.file("course"),
+        "the same course"
+    );
+    let placeholder = replayed.device.sdk.phone_status();
+    assert!(placeholder.is_none(), "the session closed for the ride");
+}
+
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
@@ -8192,6 +8571,52 @@ fn a_ride_ended_by_turning_off_replays_exactly() {
         (1, 1),
         "one shutdown asked, then the power went"
     );
+}
+
+#[test]
+fn a_session_turned_off_is_in_its_file_up_to_the_shutdown_request() {
+    use firmware_services::trace::{Event, decode};
+    use shell_simulator::replay::first_difference;
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_store();
+    let mut sim = equip(sim.boot());
+    sim.advance(seconds(1));
+    let name = sim
+        .device
+        .trace_file()
+        .expect("the session records into STORE");
+    a_ride_then_turned_off(&mut sim);
+    let passes = |trace: &[u8]| {
+        let (_, events) = decode(trace).unwrap();
+        let (mut passes, mut asked) = (Vec::new(), None);
+        for event in events {
+            match event {
+                Event::Pass { now_ms } => passes.push(now_ms),
+                Event::PowerRequest { .. } | Event::PoweredOff => {
+                    asked = asked.or(passes.last().copied())
+                }
+                _ => {}
+            }
+        }
+        (passes, asked)
+    };
+    let (recorded, asked) = passes(&sim.capture().trace);
+    let asked = asked.expect("VANA asked to turn off");
+    let pulled = sim.store_file(&name).expect("every record reads back");
+    let (filed, _) = passes(&pulled);
+    let before = recorded.iter().position(|&at| at == asked).unwrap();
+    assert_eq!(
+        filed,
+        recorded[..before],
+        "every pass before the one that asked"
+    );
+    let mut capture = sim.capture();
+    capture.trace = pulled;
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
 }
 
 mod mutations {
@@ -8461,8 +8886,11 @@ mod mutations {
     }
 
     fn encode(header: &Header<'_>, events: impl IntoIterator<Item = Event<'static>>) -> Vec<u8> {
+        let mut file = vec![0u8; 4096];
+        let len = firmware_services::trace::encode_header(header, &mut file).unwrap();
+        file.truncate(len);
         let buffer = vec![0u8; 4096].into_boxed_slice();
-        let mut recorder = Recorder::new(header, buffer, Blocks::default()).unwrap();
+        let mut recorder = Recorder::new(buffer, Blocks(file));
         for event in events {
             recorder.record(&event);
         }

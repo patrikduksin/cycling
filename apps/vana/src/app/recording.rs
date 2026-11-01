@@ -169,6 +169,25 @@ pub(super) struct Ride {
     pub(super) workout: Option<crate::workout::player::Player>,
     /// What the player reported during the last steps, for the runtime.
     pub(super) workout_events: crate::workout::player::Events,
+    /// Where each journal stood when its boot scan ended.
+    scanned: Scanned,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Scanned {
+    internal: Option<u32>,
+    bulk: Option<Option<(u64, u64)>>,
+}
+
+/// Where both ride journals stood when their boot scans ended, before VANA
+/// wrote to either: what a trace records so that a replay can start from
+/// the media as they were at power-on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Journals {
+    /// The internal journal's next slot.
+    pub internal: u32,
+    /// The card's ride log, its epoch's store id and head, when it holds one.
+    pub bulk: Option<(u64, u64)>,
 }
 
 impl Default for Ride {
@@ -211,6 +230,7 @@ impl Default for Ride {
             latency_clock: None,
             workout: None,
             workout_events: crate::workout::player::Events::new(),
+            scanned: Scanned::default(),
         }
     }
 }
@@ -657,6 +677,17 @@ impl Ride {
 }
 
 impl Runtime {
+    /// Where both ride journals stood when their boot scans ended; `None`
+    /// while either still scans. A scan step writes nothing, so this is the
+    /// media as they were at power-on.
+    pub fn journals_at_boot(&self) -> Option<Journals> {
+        let Scanned { internal, bulk } = self.ride.scanned;
+        Some(Journals {
+            internal: internal?,
+            bulk: bulk?,
+        })
+    }
+
     pub fn recording(&self) -> bool {
         // Protect accepted writes and active/paused rides from host-triggered
         // restart, including a ride moving to internal media whose start or
@@ -731,12 +762,20 @@ impl Runtime {
             sample,
             clock,
         );
+        if ride.scanned.internal.is_none() && ride.internal.status() != Status::Scanning {
+            ride.scanned.internal =
+                Some(u32::try_from(ride.internal.next_slot()).unwrap_or(u32::MAX));
+        }
         ride.bulk.service(
             &mut Bulk::new(&mut ride.bulk_media, bulk),
             now,
             sample,
             clock,
         );
+        if ride.scanned.bulk.is_none() && ride.bulk.status() != Status::Scanning {
+            let log = ride.bulk_media.log();
+            ride.scanned.bulk = Some(log.map(|log| (log.store_id(), log.head())));
+        }
         // Clearing or initializing internal flash removes the ride a moved
         // ride continued as, and with it the bulk time carried into it.
         if internal_reset && !resetting(ride.internal.status()) {

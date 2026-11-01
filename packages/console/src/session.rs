@@ -159,6 +159,11 @@ impl<T: device_api::console::Console> Terminal<T> {
     pub fn command_completed(&mut self) {
         self.sent = self.sent.saturating_add(1);
     }
+    /// The line of the request [`Terminal::request`] returned last, as a
+    /// trace records it.
+    pub fn line(&self) -> &[u8] {
+        self.lines.line()
+    }
     pub fn request(&mut self, now: u64) -> Option<Request> {
         if self.reply_len != 0 || self.transfer {
             return None;
@@ -245,6 +250,22 @@ mod tests {
             output,
             "{\"type\":\"reply\",\"id\":7,\"status\":\"OK\",\"ms\":20,\"data\":\"done\"}\nnext log\n"
         );
+    }
+
+    #[test]
+    fn the_line_of_the_last_request_reads_until_the_next_one() {
+        let mut session = Terminal::new(Transport::default());
+        session
+            .usb
+            .input
+            .extend(b"CMD 4 WIFI CONFIG WPA2 41 6162636465666768\nCMD 5 INFO\n");
+        assert!(session.request(0).is_some());
+        assert_eq!(
+            session.line(),
+            b"CMD 4 WIFI CONFIG WPA2 41 6162636465666768"
+        );
+        assert!(session.request(0).is_some());
+        assert_eq!(session.line(), b"CMD 5 INFO");
     }
 
     #[test]

@@ -1079,6 +1079,11 @@ impl Appender {
         Ok(())
     }
 
+    /// Bytes [`Appender::append`] takes before it writes a record.
+    pub fn room(&self) -> usize {
+        PAYLOAD - self.fill
+    }
+
     /// Make every appended byte durable.
     pub fn sync(
         &mut self,

@@ -144,6 +144,7 @@ dependencies = [
  "firmware-shell",
  "libm",
  "log",
+ "rtos-trace",
  "serde",
  "serde-json-core",
  "static_cell",
@@ -1042,6 +1043,7 @@ dependencies = [
  "esp-sync 0.2.1",
  "portable-atomic",
  "riscv",
+ "rtos-trace",
  "xtensa-lx",
 ]
 
@@ -2089,6 +2091,12 @@ dependencies = [
  "image",
  "lru",
 ]
+
+[[package]]
+name = "rtos-trace"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b98eedd0788a3a3cda71901f199a87f68531bd6800ef69c946210d2dd6ba5456"
 
 [[package]]
 name = "rustix"

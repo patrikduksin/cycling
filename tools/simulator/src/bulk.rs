@@ -3,7 +3,7 @@
 //! reused an old filesystem. Like the device, a failed write leaves the
 //! controller failed until the next boot, and every write is verified.
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
-use firmware_services::trace::{Medium, StorageFault, StorageOp};
+use firmware_services::trace::{Medium, StorageError, StorageFault, StorageOp};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -48,7 +48,8 @@ struct Region {
 }
 
 /// The region, and whether this handle is a host's: a host's operations
-/// are neither counted nor logged as the device's.
+/// are neither counted nor logged as the device's, and never meet a fault
+/// a replay scripts for the device's.
 #[derive(Clone)]
 pub struct SimBulk(Rc<RefCell<Region>>, bool);
 
@@ -238,9 +239,10 @@ impl SimBulk {
             op,
             at: sector,
             landed: 0,
-            error: error.into(),
+            error: StorageError::from_bulk(error),
         };
         let fault = match &mut region.script {
+            Some(_) if self.1 => None,
             Some(script) => script
                 .iter()
                 .position(|f| (f.attempt, f.op, f.at) == (attempt, op, sector))
@@ -325,7 +327,7 @@ impl ReadWrite for SimBulk {
                         op: StorageOp::Write,
                         at: sector,
                         landed: partial as u32,
-                        error: Error::Failed.into(),
+                        error: StorageError::Failed,
                     });
                 }
                 drop(region);

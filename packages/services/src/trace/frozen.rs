@@ -6,7 +6,7 @@
 //! only when it differs from what a replay would present: the last recorded
 //! value, aged to this pass. Takes and requests pass through to the device
 //! and are recorded as they happen, in call order.
-use super::{AntRadio, Encoder, Event, Full, Header, ServerRequest, encode_header};
+use super::{AntRadio, Encoder, Event, Full, ServerRequest};
 use core::cell::RefCell;
 use device_api::ant::{self, Ant, AntOperation};
 use device_api::ble_transport::{self, Ble};
@@ -23,54 +23,119 @@ pub trait Record {
     fn record(&mut self, event: &Event<'_>);
 }
 
-/// Where sealed blocks go, in order. The first is the header.
+/// Where sealed event blocks go, in order.
 pub trait Sink {
-    fn block(&mut self, bytes: &[u8]);
+    /// Take a sealed block; false when there is no room for it, and it is
+    /// lost.
+    fn block(&mut self, bytes: &[u8]) -> bool;
 }
 
-/// Encodes events into blocks and hands each full block to its sink.
+/// Encodes events into blocks and hands each full block to its sink. The
+/// header goes ahead of them, written by whoever writes the trace; see
+/// [`super::encode_header`].
 pub struct Recorder<B, S> {
     encoder: Encoder<B>,
     sink: S,
+    lost: Lost,
+    quiet: Option<u64>,
+}
+
+/// Blocks the sink refused since it last took one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Lost {
+    blocks: u32,
+    bytes: u32,
 }
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
-    /// Writes the header block first; `None` when it does not fit `buf`.
-    pub fn new(header: &Header<'_>, mut buf: B, mut sink: S) -> Option<Self> {
-        let len = encode_header(header, buf.as_mut())?;
-        sink.block(&buf.as_ref()[..len]);
-        Some(Self {
+    /// `buf` holds one block, of 64 to [`super::MAX_BLOCK`] bytes.
+    pub fn new(buf: B, sink: S) -> Self {
+        Self {
             encoder: Encoder::new(buf),
             sink,
-        })
+            lost: Lost::default(),
+            quiet: None,
+        }
     }
 
-    /// The block being filled, framed. It stays open.
+    /// A pass that is recorded only when something else is recorded in it:
+    /// its pass event waits for the first event, and goes when the next
+    /// pass begins with none.
+    pub fn quiet_pass(&mut self, now_ms: u64) {
+        self.quiet = Some(now_ms);
+    }
+
+    /// The block being filled, framed, or nothing while it holds no event.
+    /// It stays open.
     pub fn open_block(&mut self) -> &[u8] {
+        if self.encoder.is_empty() {
+            return &[];
+        }
         self.encoder.sealed()
+    }
+
+    /// Hand the block being filled to the sink now, so that a reader of the
+    /// sink is at most this old; nothing when it holds no event.
+    pub fn flush(&mut self) {
+        if !self.encoder.is_empty() {
+            self.seal();
+        }
     }
 
     pub fn sink(&self) -> &S {
         &self.sink
     }
-}
 
-impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
+    pub fn sink_mut(&mut self) -> &mut S {
+        &mut self.sink
+    }
+
     fn push(&mut self, event: &Event<'_>) -> Result<(), Full> {
         let result = self.encoder.push(event);
         if result != Err(Full::Block) {
             return result;
         }
-        self.sink.block(self.encoder.sealed());
-        self.encoder.restart();
+        self.seal();
         self.encoder.push(event)
+    }
+
+    /// Hand the open block to the sink and open the next one, which says
+    /// first what the sink refused since it last took a block.
+    fn seal(&mut self) {
+        let block = self.encoder.sealed();
+        let len = u32::try_from(block.len()).unwrap_or(u32::MAX);
+        if self.sink.block(block) {
+            self.lost = Lost::default();
+        } else {
+            self.lost.blocks = self.lost.blocks.saturating_add(1);
+            self.lost.bytes = self.lost.bytes.saturating_add(len);
+        }
+        self.encoder.restart();
+        if self.lost != Lost::default() {
+            let Lost { blocks, bytes } = self.lost;
+            let _ = self.encoder.push(&Event::Lost { blocks, bytes });
+        }
     }
 }
 
 impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
     fn record(&mut self, event: &Event<'_>) {
+        if let Some(now_ms) = self.quiet.take()
+            && !matches!(event, Event::Pass { .. })
+        {
+            self.record(&Event::Pass { now_ms });
+        }
         if self.push(event) == Err(Full::Record) {
             let _ = self.push(&Event::TooLarge(event.tag()));
+        }
+    }
+}
+
+/// A recorder that may be off: then events go nowhere.
+impl<T: Record> Record for Option<T> {
+    fn record(&mut self, event: &Event<'_>) {
+        if let Some(record) = self {
+            record.record(event);
         }
     }
 }
@@ -517,6 +582,23 @@ impl FrozenCompanion {
 #[derive(Clone, Copy, Debug)]
 pub struct CompanionView(pub Option<InputSnapshot>);
 
+/// The battery a pass's companion view reports, as the shell reads it:
+/// percent, millivolts and when it was received.
+pub fn battery(view: &CompanionView) -> Option<(u8, u16, u64)> {
+    use device_api::observation::Observation;
+    match view.0?.battery {
+        Observation::Fresh {
+            value: (percent, mv),
+            received_ms,
+        }
+        | Observation::Stale {
+            value: (percent, mv),
+            received_ms,
+        } => Some((percent, mv, received_ms)),
+        Observation::Unavailable => None,
+    }
+}
+
 impl InputObservation for CompanionView {
     fn snapshot(&self, _now_ms: u64) -> Option<InputSnapshot> {
         self.0
@@ -528,31 +610,66 @@ impl InputObservation for CompanionView {
 pub struct RecordedBulk<'a, B: ?Sized, R: ?Sized> {
     inner: &'a mut B,
     record: &'a RefCell<R>,
+    log: Option<&'a super::shell::PassLog>,
 }
 
 impl<'a, B: ?Sized, R: ?Sized> RecordedBulk<'a, B, R> {
     pub fn new(inner: &'a mut B, record: &'a RefCell<R>) -> Self {
-        Self { inner, record }
+        Self {
+            inner,
+            record,
+            log: None,
+        }
+    }
+
+    /// As `new`, and each operation is numbered in `log`, which notes the
+    /// ones that fail: the C606's card, whose faults the simulator's medium
+    /// records itself.
+    pub fn counted(
+        inner: &'a mut B,
+        record: &'a RefCell<R>,
+        log: &'a super::shell::PassLog,
+    ) -> Self {
+        Self {
+            inner,
+            record,
+            log: Some(log),
+        }
+    }
+
+    fn noted<T>(
+        &self,
+        op: super::StorageOp,
+        at: u64,
+        result: Result<T, bulk::Error>,
+    ) -> Result<T, bulk::Error> {
+        if let Some(log) = self.log {
+            log.card(op, at, &result);
+        }
+        result
     }
 }
 
 impl<B: ReadWrite + ?Sized, R: Record + ?Sized> ReadWrite for RecordedBulk<'_, B, R> {
     fn owned_info(&mut self) -> Result<bulk::OwnedInfo, bulk::Error> {
-        self.inner.owned_info()
+        let result = self.inner.owned_info();
+        self.noted(super::StorageOp::Info, 0, result)
     }
     fn owned_read(
         &mut self,
         sector: u64,
         output: &mut [u8; bulk::SECTOR_SIZE],
     ) -> Result<(), bulk::Error> {
-        self.inner.owned_read(sector, output)
+        let result = self.inner.owned_read(sector, output);
+        self.noted(super::StorageOp::Read, sector, result)
     }
     fn owned_write(
         &mut self,
         sector: u64,
         input: &[u8; bulk::SECTOR_SIZE],
     ) -> Result<(), bulk::Error> {
-        self.inner.owned_write(sector, input)
+        let result = self.inner.owned_write(sector, input);
+        self.noted(super::StorageOp::Write, sector, result)
     }
     fn entropy(&mut self) -> u64 {
         let value = self.inner.entropy();
@@ -566,9 +683,15 @@ impl<B: ReadWrite + ?Sized, R: Record + ?Sized> ReadWrite for RecordedBulk<'_, B
 pub struct FrozenAccessPoint {
     latest: Latest<(AccessPointState, Reach)>,
     view: (AccessPointState, Reach),
+    redacting: bool,
 }
 
 impl FrozenAccessPoint {
+    /// Record each entropy word as [`super::redact::ENTROPY`] from now on.
+    pub fn redact(&mut self) {
+        self.redacting = true;
+    }
+
     /// Sample `inner` for this pass and record what changed.
     pub fn bind<'a, A: AccessPoint + ?Sized, R: Record + ?Sized>(
         &'a mut self,
@@ -634,9 +757,11 @@ impl<A: AccessPoint + ?Sized, R: Record + ?Sized> AccessPoint for PassAccessPoin
     }
     fn entropy(&mut self) -> u32 {
         let value = self.inner.entropy();
-        self.record
-            .borrow_mut()
-            .record(&Event::Entropy(value.into()));
+        let recorded = match self.frozen.redacting {
+            true => super::redact::ENTROPY,
+            false => value.into(),
+        };
+        self.record.borrow_mut().record(&Event::Entropy(recorded));
         value
     }
 }
@@ -651,9 +776,17 @@ pub const READ_PART: usize = 1024;
 pub struct FrozenServer {
     latest: Latest<(Option<server::Request>, usize)>,
     view: (Option<server::Request>, usize),
+    redacting: Option<heapless::Vec<u8, 32>>,
 }
 
 impl FrozenServer {
+    /// Record session tokens redacted from now on, given the open session's
+    /// `token` (see [`super::redact`]); call it each pass before binding.
+    pub fn redact(&mut self, token: Option<&[u8]>) {
+        let token = token.and_then(|token| heapless::Vec::from_slice(token).ok());
+        self.redacting = Some(token.unwrap_or_default());
+    }
+
     /// Sample `inner` for this pass and record what changed.
     pub fn bind<'a, S: Server + ?Sized, R: Record + ?Sized>(
         &'a mut self,
@@ -694,9 +827,28 @@ impl<S: Server + ?Sized, R: Record + ?Sized> PassServer<'_, S, R> {
             record.record(&cause);
         }
         let (request, room) = &self.frozen.view;
+        let room = u32::try_from(*room).unwrap_or(u32::MAX);
+        let Some(request) = request else {
+            record.record(&Event::Server {
+                request: None,
+                room,
+            });
+            return;
+        };
+        let mut recorded = ServerRequest::from(request);
+        let redacted = self.frozen.redacting.as_ref().map(|token| {
+            let token = (!token.is_empty()).then_some(token.as_slice());
+            (
+                super::redact::session::<32>(&request.session, token),
+                super::redact::query::<96>(&request.query, token),
+            )
+        });
+        if let Some((session, query)) = &redacted {
+            (recorded.session, recorded.query) = (session, query);
+        }
         record.record(&Event::Server {
-            request: request.as_ref().map(ServerRequest::from),
-            room: u32::try_from(*room).unwrap_or(u32::MAX),
+            request: Some(recorded),
+            room,
         });
     }
 }
@@ -858,6 +1010,11 @@ impl Default for FrozenPowerControl {
 }
 
 impl FrozenPowerControl {
+    /// The status the last pass froze.
+    pub fn frozen(&self) -> power::Status {
+        self.view
+    }
+
     /// Sample `inner` and record it when it changed; the status this pass
     /// reads until VANA's own request.
     pub fn freeze<P: PowerControl + ?Sized, R: Record + ?Sized>(

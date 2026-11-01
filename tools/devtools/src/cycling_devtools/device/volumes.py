@@ -426,6 +426,9 @@ def files_get(transfer, name, output):
     return {**stat, 'name': name}
 
 
+TRACES = 'traces/'
+
+
 def store_list(transfer, directory=''):
     """Files in `directory` (a prefix ending in `/`, or empty for all) and below."""
     _, _, count, data = transfer.call('store_list', payload=directory.encode())
@@ -435,6 +438,19 @@ def store_list(transfer, directory=''):
         file_id, chunks = struct.unpack('<II', entry[NAME:])
         entries.append({'name': entry[:NAME].rstrip(b'\0').decode(), 'id': file_id, 'chunks': chunks})
     return sorted(entries, key=lambda entry: entry['id'])
+
+
+def trace_pull(transfer, name=None, directory=Path('.local/traces')):
+    """Pull the ride trace `name` from STORE into `directory`, or the newest when no name is given."""
+    if name is None:
+        names = [entry['name'] for entry in store_list(transfer, TRACES)]
+        if not names:
+            raise ValueError(f'STORE holds no file in {TRACES}')
+        name = max(names, key=lambda name: name[len(TRACES) :].split('-')[0])
+    elif '/' not in name:
+        name = TRACES + name
+    directory.mkdir(parents=True, exist_ok=True)
+    return {**store_get(transfer, name, directory / Path(name).name), 'path': str(directory / Path(name).name)}
 
 
 def store_get(transfer, name, output):
@@ -541,6 +557,8 @@ def run(args, port):
                 if args.verb == 'delete':
                     transfer.call('store_delete', payload=args.name.encode())
                     return {'deleted': args.name}
+            if args.action == 'trace-pull':
+                return trace_pull(transfer, args.name)
             raise AssertionError(args.action)
         finally:
             transfer.call('end')
@@ -588,6 +606,8 @@ def main():
     delete.add_argument('name')
     fmt = verbs.add_parser('format', help='erase every file and start an empty store')
     fmt.add_argument('--confirm', action='store_true')
+    pull = actions.add_parser('trace-pull', help='pull a ride trace from STORE into .local/traces/')
+    pull.add_argument('name', nargs='?', help='the trace, such as 000042-1a2b3c4d.trace; the newest by default')
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():

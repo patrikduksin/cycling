@@ -38,7 +38,7 @@ mod recording;
 mod ride_control;
 mod seen;
 mod setup;
-pub use recording::Medium;
+pub use recording::{Journals, Medium};
 pub use seen::Seen;
 mod phone;
 mod sensor_links;

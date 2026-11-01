@@ -141,20 +141,22 @@ static ASSOCIATIONS: AtomicU32 = AtomicU32::new(0);
 static PROBE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
 static PROBE_FAILURES: AtomicU32 = AtomicU32::new(0);
 /// Embassy-net keeps one waker per stack for its configuration, and two tasks
-/// waiting on the stack take it from each other in a busy loop.
-static STATION_CONFIG: Watch<CriticalSectionRawMutex, (), 2> = Watch::new_with(());
+/// waiting on the stack take it from each other in a busy loop. Holds at most
+/// `CONFIG_WAITERS` simultaneous waits; one more panics.
+const CONFIG_WAITERS: usize = 4;
+static STATION_CONFIG: Watch<CriticalSectionRawMutex, (), CONFIG_WAITERS> = Watch::new_with(());
 
 async fn config_up(stack: Stack<'static>) {
     let mut changes = STATION_CONFIG
         .receiver()
-        .expect("a receiver per waiting task");
+        .expect("CONFIG_WAITERS covers every simultaneous wait");
     changes.get_and(|_| stack.is_config_up()).await;
 }
 
 async fn config_down(stack: Stack<'static>) {
     let mut changes = STATION_CONFIG
         .receiver()
-        .expect("a receiver per waiting task");
+        .expect("CONFIG_WAITERS covers every simultaneous wait");
     changes.get_and(|_| !stack.is_config_up()).await;
 }
 

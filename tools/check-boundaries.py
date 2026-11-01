@@ -153,7 +153,7 @@ def foreign_stack_waits(text, path):
         if (path, functions[-1] if functions else None) != STACK_STATE_WAITER:
             line = code.count('\n', 0, match.start()) + 1
             findings.append((line, f'{match[1]} outside `network`: embassy-net wakes one task per stack, and a '
-                                   f'second one makes both spin; use config_up or config_down in {STACK_STATE_WAITER[0]}'))
+                                   f'second one makes both spin; use config_up or config_down in {STACK_STATE_WAITER[0]} (at most CONFIG_WAITERS of them at once)'))
     return findings
 
 

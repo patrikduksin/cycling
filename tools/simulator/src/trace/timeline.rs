@@ -503,8 +503,10 @@ pub fn field<'a>(shown: &'a str, name: &str) -> Option<&'a str> {
 
 /// Decode `bytes`; an error for a trace whose header does not decode.
 pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
-    let (header, mut events) = trace::decode(bytes)
-        .map_err(|_| "no trace header: the file is no ride trace".to_string())?;
+    let (header, mut events) = trace::decode(bytes).map_err(|error| match error {
+        trace::Error::Header => "no trace header: the file is no ride trace".to_string(),
+        trace::Error::Version(_) => error.to_string(),
+    })?;
     let mut reader = Reader::default();
     for event in events.by_ref() {
         reader.event(&event);

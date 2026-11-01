@@ -1,7 +1,7 @@
 use super::*;
 use device_api::ant::{Admission, Discovery, Identity, LinkState, OperationId, ScanState};
 use device_api::gps::FixState;
-use std::string::String;
+use std::string::{String, ToString};
 use std::vec::Vec;
 
 const HEADER: Header<'static> = Header {
@@ -660,6 +660,33 @@ fn a_version_zero_trace_is_refused() {
     )
     .unwrap();
     assert_eq!(decode(&bytes[..len]).err(), Some(Error::Version(0)));
+}
+
+#[test]
+fn a_trace_from_before_the_media_layout_is_refused_with_why() {
+    let mut bytes = std::vec![0u8; 128];
+    let len = encode_header(
+        &Header {
+            version: 1,
+            oldest_reader: 1,
+            ..HEADER
+        },
+        &mut bytes,
+    )
+    .unwrap();
+    let error = decode(&bytes[..len]).err();
+    assert_eq!(error, Some(Error::Version(1)));
+    assert_eq!(
+        error.unwrap().to_string(),
+        std::format!(
+            "trace format version 1 is older than this build reads ({OLDEST_READABLE} to {VERSION}): read it with the build that recorded it"
+        )
+    );
+    assert!(
+        Error::Version(VERSION + 1)
+            .to_string()
+            .contains("newer than this build reads"),
+    );
 }
 
 #[test]

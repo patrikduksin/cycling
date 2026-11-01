@@ -38,6 +38,9 @@ text: start there, and open a PNG only to confirm what the text says.
   `.local/traces/<name>.media/`, and `cycling trace rebuild <trace>
   --pulled <dir>` turns them into the `.origin`. The pull prints what
   could not be rebuilt, one line each, and the `.origin` keeps that list.
+  A trace whose format version this build does not read is refused with
+  the version and the versions it reads; read it with the build that
+  recorded it.
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
   follow the remote device skill. Keep device traces and their `.origin`
   and `.media/` under `.local/` and never commit them: they record the

@@ -517,6 +517,31 @@ fn files_and_a_pack_that_did_not_read_at_power_on_are_reported() {
 }
 
 #[test]
+fn a_trace_from_before_the_media_layout_is_refused_with_why() {
+    use firmware_services::trace;
+    let (_, trace, _) = recorded_session();
+    let (header, _) = trace::decode(&trace).unwrap();
+    let older = trace::Header {
+        version: 1,
+        oldest_reader: 1,
+        ..header
+    };
+    let mut block = vec![0u8; 64 * 1024];
+    let len = trace::encode_header(&older, &mut block).unwrap();
+    let first = 2 + usize::from(u16::from_le_bytes([trace[0], trace[1]])) + 4;
+    let older = [&block[..len], &trace[first..]].concat();
+    let why = "trace format version 1 is older than this build reads";
+    for error in [
+        rebuild::media(&older).unwrap_err(),
+        rebuild::rebuild(&older, &Pulled::default())
+            .err()
+            .expect("refused"),
+    ] {
+        assert!(error.contains(why), "{error}");
+    }
+}
+
+#[test]
 fn a_ride_saved_again_since_leaves_the_facts_table_out() {
     use vana::ride::facts;
     let (mut sim, trace, _) = recorded_session();

@@ -221,7 +221,7 @@ impl fmt::Display for Gap {
 /// and what they could not give back.
 pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), String> {
     let (header, _) = firmware_services::trace::decode(trace)
-        .map_err(|error| format!("the trace does not decode: {error:?}"))?;
+        .map_err(|error| format!("the trace does not decode: {error}"))?;
     let config = Config::decode(header.config).ok_or("the header's settings do not decode")?;
     let media = media_of(&header)?;
     let boot = header.boot.max(1);
@@ -294,7 +294,7 @@ pub fn report(gaps: &[Gap]) -> String {
 /// reads them: what to copy from the device and where each log ended.
 pub fn media(trace: &[u8]) -> Result<String, String> {
     let (header, _) = firmware_services::trace::decode(trace)
-        .map_err(|error| format!("the trace does not decode: {error:?}"))?;
+        .map_err(|error| format!("the trace does not decode: {error}"))?;
     let media = media_of(&header)?;
     let mut out = format!("boot {}\n", header.boot);
     match media.journal {

@@ -18,7 +18,7 @@ pub fn secrets(capture: &Capture) -> Vec<String> {
         Ok((_, events)) => events,
         Err(error) => {
             found.push(format!(
-                "the trace does not decode ({error:?}), so it may hold any"
+                "the trace does not decode ({error}), so it may hold any"
             ));
             return found;
         }

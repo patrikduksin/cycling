@@ -499,11 +499,11 @@ impl Replay {
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     let (header, mut events) = match trace::decode(recorded) {
         Ok(decoded) => decoded,
-        Err(error) => return Some(format!("the recorded trace does not decode: {error:?}")),
+        Err(error) => return Some(format!("the recorded trace does not decode: {error}")),
     };
     let (replayed_header, mut replayed_events) = match trace::decode(replayed) {
         Ok(decoded) => decoded,
-        Err(error) => return Some(format!("the replayed trace does not decode: {error:?}")),
+        Err(error) => return Some(format!("the replayed trace does not decode: {error}")),
     };
     let unknown = |build: &[u8; 20]| *build == [0; 20];
     let stamped = header.build == replayed_header.build

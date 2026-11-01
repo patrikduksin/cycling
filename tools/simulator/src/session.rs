@@ -960,7 +960,7 @@ impl Session {
             bulk: session.bulk.clone(),
         };
         let replay = Replay::new(capture.trace.clone(), shelled, mode, build_id())
-            .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
+            .map_err(|error| io::Error::other(format!("trace: {error}")))?;
         session.devices = Devices::Replayed(Box::new(replay));
         Ok(session)
     }

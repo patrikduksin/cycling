@@ -52,13 +52,15 @@ commands:
       entries containing TEXT.
   otlp <trace> [--out FILE]
       OTLP/JSON: a traces request and a metrics request, one per line.
-  replay <trace> [--from T] [--to T] [--mode stimulus|strict] [--every T]
-         [--video] [--out DIR]
+  replay <trace> [--from T] [--to T] [--mode auto|stimulus|strict]
+         [--every T] [--video] [--out DIR]
       Replay the session up to --to (default --from plus 60s), screenshots every
       --every (default 5s) from --from, the screen's text, the replay's own
-      trace and where it parted from the recording. stimulus (default) runs
-      this build against the recorded world; strict expects the recording
-      build and counts every call it answers differently.
+      trace and where it parted from the recording. stimulus runs this build
+      against the recorded world; strict expects the recording build and
+      counts every call it answers differently. auto (default) picks strict
+      when this checkout, without uncommitted VANA changes, built the trace's
+      commit, else stimulus, and prints which and why.
   test-stub <trace> --at T [--name NAME]
       A regression test that replays the trace to T and asserts what the
       rider saw then. Put the trace under tools/simulator/tests/traces/.
@@ -338,6 +340,100 @@ fn find_text(timeline: &Timeline, options: &Options) -> Result<String, String> {
     Ok(out)
 }
 
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Stimulus => "stimulus",
+        Mode::Strict => "strict",
+    }
+}
+
+/// The mode a replay runs in, and why. `auto` is strict when this checkout
+/// built the trace's commit and has no uncommitted change to what builds
+/// VANA, else stimulus.
+fn pick_mode(
+    asked: &str,
+    recorded: &str,
+    current: &str,
+    edits: &[String],
+) -> Result<(Mode, String), String> {
+    let short = |build: &str| build.chars().take(12).collect::<String>();
+    let same = !recorded.is_empty()
+        && !current.is_empty()
+        && (recorded.starts_with(current) || current.starts_with(recorded));
+    let builds = if recorded.is_empty() {
+        "the trace names no build (recorded before builds were stamped)".to_string()
+    } else if current.is_empty() {
+        format!(
+            "the trace's build is {}; this checkout's is unknown",
+            short(recorded)
+        )
+    } else if !same {
+        format!(
+            "the trace's build {} is not this checkout's {}",
+            short(recorded),
+            short(current)
+        )
+    } else if let Some(first) = edits.first() {
+        format!(
+            "this checkout's commit {} recorded the trace, but {} files that build VANA have uncommitted changes ({first})",
+            short(current),
+            edits.len()
+        )
+    } else {
+        format!(
+            "this checkout's build {} recorded the trace",
+            short(current)
+        )
+    };
+    let matched = same && edits.is_empty();
+    match asked {
+        "auto" if matched => Ok((Mode::Strict, builds)),
+        "auto" => Ok((
+            Mode::Stimulus,
+            format!("{builds}, so VANA may ask other things than it did"),
+        )),
+        "strict" if matched => Ok((Mode::Strict, format!("asked; {builds}"))),
+        "strict" => Ok((
+            Mode::Strict,
+            format!(
+                "asked, but {builds}: expect divergences that are VANA's changes, not replay faults"
+            ),
+        )),
+        "stimulus" => Ok((Mode::Stimulus, format!("asked; {builds}"))),
+        other => Err(format!("--mode is auto, stimulus or strict, not {other:?}")),
+    }
+}
+
+/// Files with uncommitted changes that go into this binary's VANA, from the
+/// checkout that built it; none when git cannot say.
+fn uncommitted() -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            "--",
+            "apps",
+            "packages",
+            "tools/simulator",
+            "Cargo.toml",
+            "Cargo.lock",
+        ])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.get(3..).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn replay(
     path: &Path,
     capture: &shell_simulator::replay::Capture,
@@ -354,11 +450,12 @@ fn replay(
         },
         None => 5_000,
     };
-    let mode = match options.value("mode").unwrap_or("stimulus") {
-        "stimulus" => Mode::Stimulus,
-        "strict" => Mode::Strict,
-        other => return Err(format!("--mode is stimulus or strict, not {other:?}")),
-    };
+    let (mode, why) = pick_mode(
+        options.value("mode").unwrap_or("auto"),
+        &timeline.build,
+        option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
+        &uncommitted(),
+    )?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
     let dir = options.value("out").map_or_else(
         || {
@@ -444,13 +541,11 @@ fn replay(
     write("divergence.txt", report.as_bytes())?;
     write("replayed.trace", &own)?;
     let mut out = header(path, timeline, media);
+    let _ = writeln!(out, "mode {}: {why}", mode_name(mode));
     let _ = writeln!(
         out,
         "replayed {} from {} to {}; reached {}{}",
-        match mode {
-            Mode::Stimulus => "stimulus",
-            Mode::Strict => "strict",
-        },
+        mode_name(mode),
         session_clock(from),
         session_clock(to),
         reached,
@@ -471,4 +566,32 @@ fn replay(
         "screens.txt has the screen text at each screenshot; replayed.trace is this replay's own trace (diff it with timeline)"
     );
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BUILD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn auto_replays_strict_only_on_the_build_that_recorded_the_trace() {
+        let auto = |recorded, current, edits: &[String]| {
+            pick_mode("auto", recorded, current, edits).unwrap().0
+        };
+        assert_eq!(auto(BUILD, BUILD, &[]), Mode::Strict);
+        // The device stamps 12 hex digits.
+        assert_eq!(auto(&BUILD[..12], BUILD, &[]), Mode::Strict);
+        assert_eq!(auto("", BUILD, &[]), Mode::Stimulus);
+        assert_eq!(auto(BUILD, "", &[]), Mode::Stimulus);
+        assert_eq!(auto("fedcba9876", BUILD, &[]), Mode::Stimulus);
+        let edited = ["apps/vana/src/app/facts.rs".to_string()];
+        assert_eq!(auto(BUILD, BUILD, &edited), Mode::Stimulus);
+        assert_eq!(
+            pick_mode("strict", "", BUILD, &[]).unwrap().0,
+            Mode::Strict,
+            "asked for"
+        );
+        assert!(pick_mode("exact", BUILD, BUILD, &[]).is_err());
+    }
 }

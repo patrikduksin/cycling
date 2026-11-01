@@ -174,7 +174,12 @@ impl Trace {
             self.record(&Event::Page(page.name()));
         }
         for pattern in self.sound.take_started() {
-            self.record(&Event::Sound(pattern));
+            self.record(&Event::Sound {
+                pattern,
+                cue: "",
+                note: 0,
+                of: 0,
+            });
         }
     }
 
@@ -229,13 +234,24 @@ impl Trace {
         self.ended(synced);
     }
 
-    /// After a transfer session or a volume command, which may have changed
-    /// the card; see [`File::after_host`].
-    pub fn after_host(&mut self, bulk: &mut impl ReadWrite, now: u64) {
+    /// Before a transfer session; see [`File::before_host`].
+    pub fn before_host(&mut self, bulk: &mut impl ReadWrite, now: u64) {
         let Some(recorder) = self.record.get_mut() else {
             return;
         };
-        let after = self.file.after_host(recorder, bulk, now, &mut self.sector);
+        let before = self.file.before_host(recorder, bulk, now, &mut self.sector);
+        self.ended(before);
+    }
+
+    /// After a transfer session (`unseen`) or a recorded volume command,
+    /// which may have changed the card; see [`File::after_host`].
+    pub fn after_host(&mut self, bulk: &mut impl ReadWrite, unseen: bool, now: u64) {
+        let Some(recorder) = self.record.get_mut() else {
+            return;
+        };
+        let after = self
+            .file
+            .after_host(recorder, bulk, unseen, now, &mut self.sector);
         self.ended(after);
     }
 
@@ -246,11 +262,19 @@ impl Trace {
         }
     }
 
-    /// ` trace=STATE ...` for `STORE STATUS`.
+    /// ` trace=STATE ...` for `STORE STATUS`; a reason's words are joined
+    /// by `_`, so every field stays one `key=value` word.
     pub fn status(&self, out: &mut impl Write) {
+        let reason = |out: &mut dyn Write, state: &str, why: &str| {
+            write!(out, " trace={state} why=")?;
+            for (index, word) in why.split(' ').enumerate() {
+                write!(out, "{}{word}", if index > 0 { "_" } else { "" })?;
+            }
+            Ok::<(), core::fmt::Error>(())
+        };
         let _ = match &self.file {
-            File::Off(why) => write!(out, " trace=off why=\"{why}\""),
-            File::Ended(why) => write!(out, " trace=ended why=\"{why}\""),
+            File::Off(why) => reason(out, "off", why),
+            File::Ended(why) => reason(out, "ended", why),
             File::Staging(..) => write!(out, " trace=staging"),
             File::Open(_, _, drain) => write!(
                 out,
@@ -300,7 +324,10 @@ impl Start {
             terrain: self.terrain,
         };
         let (scratch, out) = self.header.split_at_mut(HEADER / 2);
-        let commit = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
+        let commit = match option_env!("CYCLING_BUILD_DIRTY") {
+            Some("1") => "",
+            _ => option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
+        };
         let profile = self.settings.ble_profile;
         let len = origin::header(commit, self.boot, profile, &config, &media, scratch, out)?;
         let out: &'static [u8] = out;

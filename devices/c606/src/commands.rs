@@ -185,7 +185,7 @@ pub fn execute(
                     trace.status(&mut output);
                 }
                 if command != volumes::Command::Transfer {
-                    trace.after_host(bulk, now);
+                    trace.after_host(bulk, false, now);
                 }
             }
             #[cfg(not(feature = "cycling"))]

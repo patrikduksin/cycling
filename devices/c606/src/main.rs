@@ -405,12 +405,16 @@ async fn console(
         if terminal.transfer_due() {
             // The trace is whole on the card before the host can read it.
             #[cfg(feature = "cycling")]
-            trace.sync(&mut devices.bulk, now);
+            trace.before_host(&mut devices.bulk, now);
             // The ACCEPTED reply went out; the host now speaks binary frames.
             commands::transfer(terminal.transport(), &mut devices.bulk).await;
             terminal.end_transfer();
             #[cfg(feature = "cycling")]
-            trace.after_host(&mut devices.bulk, embassy_time::Instant::now().as_millis());
+            trace.after_host(
+                &mut devices.bulk,
+                true,
+                embassy_time::Instant::now().as_millis(),
+            );
         }
         if let Some(panic) = terminal.reboot_due(now) {
             #[cfg(feature = "cycling")]

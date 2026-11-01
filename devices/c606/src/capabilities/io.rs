@@ -191,17 +191,22 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;
-        let poll = match touch.poll() {
-            Ok(report) => {
-                if report != Report::Invalid {
-                    state.touch_available = true;
+        // Dimming never reaches 0%, so a touch still wakes a dimmed screen.
+        let poll = if super::power::lit() == 0 || super::power::ACCESS.closed() {
+            Poll::Unread
+        } else {
+            match touch.poll() {
+                Ok(report) => {
+                    if report != Report::Invalid {
+                        state.touch_available = true;
+                    }
+                    Poll::from(report)
                 }
-                Poll::from(report)
-            }
-            Err(_) => {
-                state.touch_available = false;
-                state.touch_errors = state.touch_errors.saturating_add(1);
-                Poll::Failed
+                Err(_) => {
+                    state.touch_available = false;
+                    state.touch_errors = state.touch_errors.saturating_add(1);
+                    Poll::Failed
+                }
             }
         };
         // See `Input::Cancel` for the contract these edges keep. An overflow
